@@ -65,9 +65,10 @@ class TokenUiManager:
         job.status = "running"
         job.message = "请在服务器终端中根据提示完成 Pixiv 登录"
 
+        command = self._build_gppt_command()
         try:
             process = subprocess.Popen(
-                ["gppt", "get"],
+                command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
@@ -121,6 +122,11 @@ class TokenUiManager:
         job.user_id = user_id
         job.status = "done"
         job.message = "token 获取成功，可复制或写入 .env"
+
+    def _build_gppt_command(self) -> list[str]:
+        if self.settings.pixiv.proxy:
+            return ["gppt", "login", "-p", self.settings.pixiv.proxy]
+        return ["gppt", "login"]
 
 
 def _extract_after_prefix(line: str, key: str) -> str | None:
