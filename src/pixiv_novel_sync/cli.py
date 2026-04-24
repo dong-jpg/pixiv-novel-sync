@@ -23,6 +23,8 @@ def build_parser() -> argparse.ArgumentParser:
     web_parser = subparsers.add_parser("web-token-ui", help="Start local web UI for acquiring Pixiv refresh_token")
     web_parser.add_argument("--host", default="127.0.0.1", help="Bind host for token UI")
     web_parser.add_argument("--port", default=5010, type=int, help="Bind port for token UI")
+    web_parser.add_argument("--config", default="config/config.yaml", help="Path to config YAML")
+    web_parser.add_argument("--env-file", default=None, help="Path to .env file")
     return parser
 
 
@@ -50,8 +52,8 @@ def main() -> None:
             db.close()
     elif args.command == "web-token-ui":
         from .webapp import create_app
-
-        app = create_app()
+ 
+        app = create_app(config_path=args.config, env_path=args.env_file)
         app.run(host=args.host, port=args.port, debug=False)
     else:
         parser.error(f"Unsupported command: {args.command}")

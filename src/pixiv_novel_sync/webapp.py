@@ -10,9 +10,9 @@ from .settings import load_settings
 from .token_helper import TokenUiManager
 
 
-def create_app() -> Flask:
+def create_app(config_path: str | None = None, env_path: str | None = None) -> Flask:
     app = Flask(__name__, template_folder="templates")
-    settings = load_settings()
+    settings = load_settings(config_path=config_path, env_path=env_path)
     manager = TokenUiManager(settings)
     oauth_manager = OAuthManager()
 
