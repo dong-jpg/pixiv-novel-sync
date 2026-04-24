@@ -21,10 +21,16 @@ class PixivSettings:
 
 @dataclass(slots=True)
 class SyncSettings:
+    enabled: bool
+    initial_manual_only: bool
     download_assets: bool
     write_markdown: bool
     write_raw_text: bool
     bookmark_restricts: list[str]
+    max_items_per_run: int | None
+    max_pages_per_run: int | None
+    delay_seconds_between_items: float
+    delay_seconds_between_pages: float
 
 
 @dataclass(slots=True)
@@ -80,10 +86,16 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             user_id=user_id,
         ),
         sync=SyncSettings(
+            enabled=bool(sync_raw.get("enabled", False)),
+            initial_manual_only=bool(sync_raw.get("initial_manual_only", True)),
             download_assets=bool(sync_raw.get("download_assets", True)),
             write_markdown=bool(sync_raw.get("write_markdown", True)),
             write_raw_text=bool(sync_raw.get("write_raw_text", True)),
             bookmark_restricts=list(sync_raw.get("bookmark_restricts", ["public", "private"])),
+            max_items_per_run=_coerce_optional_int(sync_raw.get("max_items_per_run")),
+            max_pages_per_run=_coerce_optional_int(sync_raw.get("max_pages_per_run")),
+            delay_seconds_between_items=_coerce_float(sync_raw.get("delay_seconds_between_items"), 0.0),
+            delay_seconds_between_pages=_coerce_float(sync_raw.get("delay_seconds_between_pages"), 0.0),
         ),
         storage=StorageSettings(
             public_dir=public_dir,
@@ -113,3 +125,17 @@ def _parse_optional_int(value: str | None) -> int | None:
     if value is None or not value.strip():
         return None
     return int(value)
+
+
+
+def _coerce_optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    return int(value)
+
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    if value in (None, ""):
+        return float(default)
+    return float(value)

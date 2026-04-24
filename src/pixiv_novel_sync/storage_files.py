@@ -8,6 +8,7 @@ from typing import Iterable
 import requests
 
 from .settings import Settings
+from .utils_hashing import sha256_text
 from .utils_naming import ensure_parent, safe_name
 
 logger = logging.getLogger(__name__)
@@ -21,8 +22,9 @@ class FileStorage:
         return self.settings.storage.private_dir if restrict == "private" else self.settings.storage.public_dir
 
     def novel_dir(self, restrict: str, user_id: int, user_name: str, novel_id: int, title: str) -> Path:
-        author_dir = self.base_dir(restrict) / "authors" / f"{user_id}_{safe_name(user_name, 'unknown')}"
-        return author_dir / "novels" / f"{novel_id}_{safe_name(title)}"
+        author_dir = self.base_dir(restrict) / "authors" / f"{user_id}_{safe_name(user_name, 'unknown')[:48]}"
+        title_slug = sha256_text(title)[:12]
+        return author_dir / "novels" / f"{novel_id}_{title_slug}"
 
     def write_text(self, path: Path, content: str) -> None:
         ensure_parent(path)

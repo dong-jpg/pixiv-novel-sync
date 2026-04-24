@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlparse
@@ -32,18 +33,36 @@ class BookmarkNovelSyncService:
             "texts_updated": 0,
             "assets_downloaded": 0,
         }
+        max_items = self.settings.sync.max_items_per_run
+        max_pages = self.settings.sync.max_pages_per_run
+        item_delay = self.settings.sync.delay_seconds_between_items
+        page_delay = self.settings.sync.delay_seconds_between_pages
+        processed_items = 0
 
         for restrict in restricts:
             logger.info("Syncing bookmarked novels for restrict=%s", restrict)
             next_query: dict[str, Any] | None = {"user_id": user_id, "restrict": restrict}
+            page_count = 0
             while next_query:
+                if max_pages is not None and page_count >= max_pages:
+                    logger.info("Reached max_pages_per_run=%s, stopping pagination", max_pages)
+                    return stats
                 result = self.api.user_bookmarks_novel(**next_query)
+                page_count += 1
                 novels = getattr(result, "novels", []) or []
                 for novel in novels:
+                    if max_items is not None and processed_items >= max_items:
+                        logger.info("Reached max_items_per_run=%s, stopping sync", max_items)
+                        return stats
                     counters = self._sync_novel(novel, restrict, download_assets, write_markdown, write_raw_text)
+                    processed_items += 1
                     for key, value in counters.items():
                         stats[key] = stats.get(key, 0) + value
+                    if item_delay > 0:
+                        time.sleep(item_delay)
                 next_query = self.api.parse_qs(getattr(result, "next_url", None))
+                if next_query and page_delay > 0:
+                    time.sleep(page_delay)
         return stats
 
     def _sync_novel(self, novel: Any, restrict: str, download_assets: bool, write_markdown: bool, write_raw_text: bool) -> dict[str, int]:

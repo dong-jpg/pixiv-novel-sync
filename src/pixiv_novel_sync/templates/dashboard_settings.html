@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pixiv Dashboard Settings</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    .wrap { max-width: 920px; margin: 32px auto; padding: 24px; }
+    .nav { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+    .nav a { color: white; text-decoration: none; background: #1d4ed8; padding: 10px 14px; border-radius: 8px; }
+    .card { background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 20px; }
+    .row { display: grid; gap: 12px; margin-top: 12px; }
+    label { color: #94a3b8; }
+    input[type="text"], input[type="number"] { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #475569; background: #0b1220; color: #e2e8f0; box-sizing: border-box; }
+    .checks { display: grid; gap: 8px; }
+    .checks label { color: #e2e8f0; }
+    .muted { color: #94a3b8; }
+    button { background: #2563eb; color: #fff; border: 0; padding: 10px 14px; border-radius: 8px; cursor: pointer; margin-top: 16px; }
+    .message { margin-top: 12px; min-height: 24px; }
+    .ok { color: #22c55e; }
+    .bad { color: #f87171; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="nav">
+      <a href="/dashboard">首页</a>
+      <a href="/dashboard/follows">关注</a>
+      <a href="/dashboard/novels">小说</a>
+      <a href="/dashboard/settings">设置</a>
+      <a href="/token-login">Token 登录</a>
+    </div>
+    <div class="card">
+      <h1>同步设置</h1>
+      <p class="muted">此页会直接保存到服务器配置文件。建议首次保持“自动同步关闭 + 首次仅手工开启”。</p>
+      <div class="row">
+        <div class="checks">
+          <label><input type="checkbox" id="enabled"> 启用自动同步</label>
+          <label><input type="checkbox" id="initialManualOnly"> 首次仅允许手工触发</label>
+          <label><input type="checkbox" id="downloadAssets"> 下载封面与插图资源</label>
+          <label><input type="checkbox" id="writeMarkdown"> 输出 Markdown</label>
+          <label><input type="checkbox" id="writeRawText"> 输出原始文本</label>
+          <label><input type="checkbox" id="restrictPublic"> 同步公开收藏</label>
+          <label><input type="checkbox" id="restrictPrivate"> 同步私密收藏</label>
+        </div>
+        <label>单次最大同步条数（留空表示不限）</label>
+        <input id="maxItems" type="number" min="1">
+        <label>单次最大翻页数（留空表示不限）</label>
+        <input id="maxPages" type="number" min="1">
+        <label>每本之间延迟（秒）</label>
+        <input id="itemDelay" type="number" min="0" step="0.1">
+        <label>每页之间延迟（秒）</label>
+        <input id="pageDelay" type="number" min="0" step="0.1">
+      </div>
+      <button id="saveBtn">保存设置</button>
+      <div id="message" class="message muted"></div>
+    </div>
+  </div>
+  <script>
+    function checked(id, value) {
+      document.getElementById(id).checked = !!value;
+    }
+
+    function valueOf(id, value) {
+      document.getElementById(id).value = value ?? '';
+    }
+
+    async function loadSettings() {
+      const resp = await fetch('/api/dashboard/settings');
+      const data = await resp.json();
+      checked('enabled', data.enabled);
+      checked('initialManualOnly', data.initial_manual_only);
+      checked('downloadAssets', data.download_assets);
+      checked('writeMarkdown', data.write_markdown);
+      checked('writeRawText', data.write_raw_text);
+      checked('restrictPublic', (data.bookmark_restricts || []).includes('public'));
+      checked('restrictPrivate', (data.bookmark_restricts || []).includes('private'));
+      valueOf('maxItems', data.max_items_per_run);
+      valueOf('maxPages', data.max_pages_per_run);
+      valueOf('itemDelay', data.delay_seconds_between_items ?? 0);
+      valueOf('pageDelay', data.delay_seconds_between_pages ?? 0);
+    }
+
+    function buildPayload() {
+      const restricts = [];
+      if (document.getElementById('restrictPublic').checked) restricts.push('public');
+      if (document.getElementById('restrictPrivate').checked) restricts.push('private');
+      return {
+        enabled: document.getElementById('enabled').checked,
+        initial_manual_only: document.getElementById('initialManualOnly').checked,
+        download_assets: document.getElementById('downloadAssets').checked,
+        write_markdown: document.getElementById('writeMarkdown').checked,
+        write_raw_text: document.getElementById('writeRawText').checked,
+        bookmark_restricts: restricts,
+        max_items_per_run: document.getElementById('maxItems').value.trim(),
+        max_pages_per_run: document.getElementById('maxPages').value.trim(),
+        delay_seconds_between_items: document.getElementById('itemDelay').value.trim(),
+        delay_seconds_between_pages: document.getElementById('pageDelay').value.trim(),
+      };
+    }
+
+    async function saveSettings() {
+      const msg = document.getElementById('message');
+      msg.className = 'message muted';
+      msg.textContent = '正在保存...';
+      const resp = await fetch('/api/dashboard/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildPayload()),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        msg.className = 'message bad';
+        msg.textContent = data.error || '保存失败';
+        return;
+      }
+      msg.className = 'message ok';
+      msg.textContent = data.message || '设置已保存';
+      await loadSettings();
+    }
+
+    document.getElementById('saveBtn').addEventListener('click', saveSettings);
+    loadSettings();
+  </script>
+</body>
+</html>

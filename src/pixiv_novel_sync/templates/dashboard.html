@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pixiv Dashboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    .wrap { max-width: 1080px; margin: 32px auto; padding: 24px; }
+    .nav { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+    .nav a { color: white; text-decoration: none; background: #1d4ed8; padding: 10px 14px; border-radius: 8px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+    .card { background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 18px; }
+    .title { margin: 0 0 8px; font-size: 14px; color: #94a3b8; }
+    .value { font-size: 28px; font-weight: bold; word-break: break-word; }
+    .muted { color: #94a3b8; }
+    .actions { display: flex; gap: 12px; margin: 20px 0; flex-wrap: wrap; }
+    button { background: #2563eb; color: #fff; border: 0; padding: 10px 14px; border-radius: 8px; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .status { margin-top: 18px; line-height: 1.7; }
+    .ok { color: #22c55e; }
+    .bad { color: #f87171; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="nav">
+      <a href="/dashboard">首页</a>
+      <a href="/dashboard/follows">关注</a>
+      <a href="/dashboard/novels">小说</a>
+      <a href="/dashboard/settings">设置</a>
+      <a href="/token-login">Token 登录</a>
+    </div>
+    <h1>Pixiv 小说同步 Dashboard</h1>
+    <p class="muted">首版以风控优先：默认只允许你手工触发，同步范围与节流参数可在设置页调整。</p>
+    <div class="actions">
+      <button id="startSyncBtn">开始手工同步</button>
+      <span id="actionMessage" class="muted"></span>
+    </div>
+    <div class="grid" id="statsGrid"></div>
+    <div class="card status">
+      <h2>最近同步任务</h2>
+      <div id="jobStatus" class="muted">暂无任务</div>
+    </div>
+  </div>
+  <script>
+    let latestJobId = null;
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, function (ch) {
+        switch (ch) {
+          case '&': return '&';
+          case '<': return '<';
+          case '>': return '>';
+          case '"': return '"';
+          case "'": return ''';
+          default: return ch;
+        }
+      });
+    }
+
+    async function loadStatus() {
+      const resp = await fetch('/api/dashboard/status');
+      const data = await resp.json();
+      const stats = data.stats || {};
+      const cards = [
+        ['当前账号', data.user_id || '未绑定'],
+        ['自动同步', data.sync_enabled ? '开启' : '关闭'],
+        ['首次仅手工', data.initial_manual_only ? '是' : '否'],
+        ['已归档作者数', stats.users_count || 0],
+        ['已归档小说数', stats.novels_count || 0],
+        ['单次最大条数', data.max_items_per_run ?? '不限'],
+        ['单次最大页数', data.max_pages_per_run ?? '不限'],
+        ['同步范围', (data.bookmark_restricts || []).join(', ') || '无'],
+      ];
+      document.getElementById('statsGrid').innerHTML = cards.map(([title, value]) => `
+        <div class="card">
+          <div class="title">${escapeHtml(title)}</div>
+          <div class="value">${escapeHtml(value)}</div>
+        </div>
+      `).join('');
+
+      latestJobId = data.latest_job?.job_id || latestJobId;
+      renderJob(data.latest_job || null);
+      const running = data.latest_job && data.latest_job.status === 'running';
+      document.getElementById('startSyncBtn').disabled = !!running;
+    }
+
+    function renderJob(job) {
+      const container = document.getElementById('jobStatus');
+      if (!job) {
+        container.innerHTML = '暂无任务';
+        return;
+      }
+      const stats = job.stats ? `<div>结果：${escapeHtml(JSON.stringify(job.stats))}</div>` : '';
+      const error = job.error ? `<div class="bad">错误：${escapeHtml(job.error)}</div>` : '';
+      const css = job.status === 'succeeded' ? 'ok' : (job.status === 'failed' ? 'bad' : 'muted');
+      container.innerHTML = `
+        <div>任务 ID：${escapeHtml(job.job_id)}</div>
+        <div class="${css}">状态：${escapeHtml(job.status)} / ${escapeHtml(job.message || '')}</div>
+        ${stats}
+        ${error}
+      `;
+    }
+
+    async function pollJobStatus() {
+      const url = latestJobId ? `/api/dashboard/sync/status?job_id=${encodeURIComponent(latestJobId)}` : '/api/dashboard/sync/status';
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (data.job) {
+        latestJobId = data.job.job_id;
+        renderJob(data.job);
+        document.getElementById('startSyncBtn').disabled = data.job.status === 'running';
+      }
+    }
+
+    async function startSync() {
+      const btn = document.getElementById('startSyncBtn');
+      const msg = document.getElementById('actionMessage');
+      btn.disabled = true;
+      msg.textContent = '正在启动同步任务...';
+      const resp = await fetch('/api/dashboard/sync/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        msg.textContent = data.error || '启动失败';
+        btn.disabled = false;
+        return;
+      }
+      latestJobId = data.job?.job_id || null;
+      msg.textContent = data.message || '任务已启动';
+      await loadStatus();
+    }
+
+    document.getElementById('startSyncBtn').addEventListener('click', startSync);
+    loadStatus();
+    setInterval(pollJobStatus, 3000);
+  </script>
+</body>
+</html>

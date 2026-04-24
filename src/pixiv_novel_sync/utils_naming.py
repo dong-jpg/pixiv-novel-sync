@@ -11,7 +11,7 @@ WHITESPACE = re.compile(r"\s+")
 def safe_name(value: str, fallback: str = "untitled") -> str:
     cleaned = INVALID_CHARS.sub("_", value).strip()
     cleaned = WHITESPACE.sub(" ", cleaned)
-    return cleaned[:120] or fallback
+    return cleaned[:64] or fallback
 
 
 def ensure_parent(path: Path) -> None:

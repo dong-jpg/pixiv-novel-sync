@@ -12,7 +12,7 @@ from ..sync_engine import BookmarkNovelSyncService
 logger = logging.getLogger(__name__)
 
 
-def run_bookmark_sync(settings: Settings) -> None:
+def run_bookmark_sync(settings: Settings) -> dict[str, int]:
     auth = PixivAuthManager(settings.pixiv)
     api, auth_result = auth.login()
     if auth_result.user_id is None:
@@ -34,5 +34,6 @@ def run_bookmark_sync(settings: Settings) -> None:
         )
         logger.info("Bookmark sync finished: %s", json.dumps(stats, ensure_ascii=False))
         print(json.dumps(stats, ensure_ascii=False, indent=2))
+        return stats
     finally:
         db.close()
