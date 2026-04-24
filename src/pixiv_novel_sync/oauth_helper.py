@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 
@@ -79,7 +79,7 @@ class OAuthManager:
             "code_verifier": task.code_verifier,
             "grant_type": "authorization_code",
             "include_policy": "true",
-            "redirect_uri": task.callback_url,
+            "redirect_uri": PIXIV_REDIRECT_URI,
         }
         response = requests.post(PIXIV_TOKEN_ENDPOINT, data=data, headers=headers, timeout=30)
         response.raise_for_status()
@@ -96,6 +96,17 @@ class OAuthManager:
         task.status = "done"
         task.message = "Pixiv token 获取成功"
         return task
+
+    def exchange_callback_url(self, task: OAuthTask, callback_url: str) -> OAuthTask:
+        parsed = urlparse(callback_url.strip())
+        query = parse_qs(parsed.query)
+        state = (query.get("state") or [""])[0]
+        code = (query.get("code") or [""])[0]
+        if not state or not code:
+            raise ValueError("callback URL 中缺少 state 或 code")
+        if state != task.state:
+            raise ValueError("state 不匹配，请重新发起一次登录任务")
+        return self.exchange_code(task, code)
 
     def save_to_env(self, refresh_token: str, user_id: int | None = None) -> None:
         env_path = Path(".env")

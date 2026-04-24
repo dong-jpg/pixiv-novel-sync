@@ -113,6 +113,23 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
         return render_template("oauth_callback.html", ok=True, message="Pixiv 登录成功，请返回原页面查看 token 结果")
 
+    @app.post("/oauth/exchange/<task_id>")
+    def oauth_exchange(task_id: str):
+        task = oauth_manager.get_task(task_id)
+        if task is None:
+            return jsonify({"error": "task not found"}), 404
+        payload = request.get_json(silent=True) or {}
+        callback_url = str(payload.get("callback_url") or "").strip()
+        if not callback_url:
+            return jsonify({"error": "missing callback_url"}), 400
+        try:
+            oauth_manager.exchange_callback_url(task, callback_url)
+        except Exception as exc:
+            task.status = "failed"
+            task.message = f"token 交换失败：{exc}"
+            return jsonify({"error": task.message}), 400
+        return jsonify({"ok": True, "message": task.message, "user_id": task.user_id})
+
     @app.post("/oauth/save/<task_id>")
     def oauth_save(task_id: str):
         task = oauth_manager.get_task(task_id)
