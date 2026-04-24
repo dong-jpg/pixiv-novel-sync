@@ -35,6 +35,8 @@ class OAuthTask:
     access_token: str | None = None
     user_id: int | None = None
     raw: dict[str, Any] | None = None
+    pixiv_callback_url: str | None = None
+    pixiv_callback_url: str | None = None
 
 
 class OAuthManager:
@@ -129,6 +131,20 @@ class OAuthManager:
                 result.append(f"{key}={value}")
         env_path.write_text("\n".join(result) + "\n", encoding="utf-8")
 
+    def sync_state_from_callback_url(self, task: OAuthTask, callback_url: str) -> OAuthTask:
+        parsed = urlparse(callback_url.strip())
+        query = parse_qs(parsed.query)
+        state = (query.get("state") or [""])[0]
+        code = (query.get("code") or [""])[0]
+        if not code:
+            raise ValueError("callback URL 中缺少 code")
+        if not state:
+            raise ValueError("callback URL 中缺少 state")
+        task.state = state
+        task.pixiv_callback_url = callback_url.strip()
+        task.message = "已根据 Pixiv callback URL 同步 state，可继续兑换 token"
+        return task
+
     def _build_login_url(self, state: str, code_challenge: str, callback_url: str) -> str:
         params = {
             "code_challenge": code_challenge,
@@ -139,6 +155,20 @@ class OAuthManager:
             "state": state,
         }
         return f"{PIXIV_AUTH_BASE}?{urlencode(params)}"
+
+    def sync_state_from_callback_url(self, task: OAuthTask, callback_url: str) -> OAuthTask:
+        parsed = urlparse(callback_url.strip())
+        query = parse_qs(parsed.query)
+        state = (query.get("state") or [""])[0]
+        code = (query.get("code") or [""])[0]
+        if not code:
+            raise ValueError("callback URL 中缺少 code")
+        if not state:
+            raise ValueError("callback URL 中缺少 state")
+        task.state = state
+        task.pixiv_callback_url = callback_url.strip()
+        task.message = "已根据 Pixiv callback URL 同步 state，可继续兑换 token"
+        return task
 
     def _cleanup(self) -> None:
         now = time.time()

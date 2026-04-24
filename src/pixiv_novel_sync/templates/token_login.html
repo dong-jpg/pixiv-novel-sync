@@ -42,7 +42,8 @@
       <div class="row">
         <label>手动粘贴 callback URL（推荐）</label>
         <textarea id="oauthCallbackUrl" rows="4" placeholder="如果登录成功后没有自动跳回本站，请按 F12 -> Network -> 搜索 callback?，把 https://app-api.pixiv.net/web/v1/users/auth/pixiv/callback?state=...&code=... 整条地址粘贴到这里"></textarea>
-        <button id="oauthExchangeBtn" class="secondary">使用 callback URL 手动兑换 token</button>
+        <button id="oauthSyncBtn" class="secondary">先用 callback URL 同步 state</button>
+        <button id="oauthExchangeBtn" class="secondary">再使用 callback URL 手动兑换 token</button>
       </div>
       <div class="row">
         <label>任务结果</label>
@@ -82,6 +83,7 @@
     const oauthSaveBtn = document.getElementById('oauthSaveBtn');
     const oauthSaveResultEl = document.getElementById('oauthSaveResult');
     const oauthCallbackUrlEl = document.getElementById('oauthCallbackUrl');
+    const oauthSyncBtn = document.getElementById('oauthSyncBtn');
     const oauthExchangeBtn = document.getElementById('oauthExchangeBtn');
 
     const fallbackStatusEl = document.getElementById('fallbackStatus');
@@ -104,6 +106,29 @@
       oauthSaveBtn.classList.add('hidden');
       if (oauthTimer) clearInterval(oauthTimer);
       oauthTimer = setInterval(pollOauthTask, 2000);
+      await pollOauthTask();
+    });
+
+    oauthSyncBtn.addEventListener('click', async () => {
+      if (!oauthTaskId) {
+        oauthSaveResultEl.textContent = '请先点击“开始 Pixiv 浏览器登录”生成一次性任务';
+        oauthSaveResultEl.className = 'error';
+        return;
+      }
+      const callback_url = oauthCallbackUrlEl.value.trim();
+      if (!callback_url) {
+        oauthSaveResultEl.textContent = '请先粘贴 callback URL';
+        oauthSaveResultEl.className = 'error';
+        return;
+      }
+      const resp = await fetch(`/oauth/sync-callback/${oauthTaskId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ callback_url })
+      });
+      const data = await resp.json();
+      oauthSaveResultEl.textContent = data.message || data.error || '';
+      oauthSaveResultEl.className = resp.ok ? 'success' : 'error';
       await pollOauthTask();
     });
 
