@@ -7,7 +7,7 @@ name = "pixiv-novel-sync"
 version = "0.1.0"
 description = "Sync and archive Pixiv novels with metadata, text, and assets"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 authors = [
   { name = "ToCodex AI" }
 ]
