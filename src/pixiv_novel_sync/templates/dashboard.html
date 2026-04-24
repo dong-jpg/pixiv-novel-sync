@@ -15,6 +15,10 @@
     .value { font-size: 28px; font-weight: bold; word-break: break-word; }
     .muted { color: #94a3b8; }
     .actions { display: flex; gap: 12px; margin: 20px 0; flex-wrap: wrap; align-items: center; }
+    .profile { display: flex; align-items: center; gap: 14px; }
+    .avatar { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; border: 1px solid #475569; background: #0b1220; }
+    .profile-name { font-size: 18px; font-weight: bold; }
+    .profile-sub { color: #94a3b8; margin-top: 4px; }
     button { background: #2563eb; color: #fff; border: 0; padding: 10px 14px; border-radius: 8px; cursor: pointer; }
     button:disabled { opacity: 0.6; cursor: not-allowed; }
     .status { margin-top: 18px; line-height: 1.7; }
@@ -67,24 +71,43 @@
       }
     }
 
+    function renderCurrentUser(user) {
+      if (!user) {
+        return '<div class="value">未绑定</div>';
+      }
+      const avatar = user.avatar_url
+        ? `<img class="avatar" src="${escapeHtml(user.avatar_url)}" alt="avatar">`
+        : '<div class="avatar"></div>';
+      const account = user.account ? `@${escapeHtml(user.account)}` : `ID ${escapeHtml(user.user_id)}`;
+      return `
+        <div class="profile">
+          ${avatar}
+          <div>
+            <div class="profile-name">${escapeHtml(user.name || '未命名用户')}</div>
+            <div class="profile-sub">${account}</div>
+          </div>
+        </div>
+      `;
+    }
+
     async function loadStatus() {
       const resp = await fetch('/api/dashboard/status');
       const data = await safeJson(resp);
       const stats = data.stats || {};
       const cards = [
-        ['当前账号', data.user_id || '未绑定'],
+        ['当前账号', renderCurrentUser(data.current_user || null), true],
         ['自动同步', data.sync_enabled ? '开启' : '关闭'],
         ['首次仅手工', data.initial_manual_only ? '是' : '否'],
         ['已归档作者数', stats.users_count || 0],
         ['已归档小说数', stats.novels_count || 0],
         ['单次最大条数', data.max_items_per_run ?? '不限'],
         ['单次最大页数', data.max_pages_per_run ?? '不限'],
-        ['同步范围', (data.bookmark_restricts || []).join(', ') || '无'],
+        ['同步范围', data.bookmark_restricts_label || '无'],
       ];
-      document.getElementById('statsGrid').innerHTML = cards.map(([title, value]) => `
+      document.getElementById('statsGrid').innerHTML = cards.map(([title, value, rawHtml]) => `
         <div class="card">
           <div class="title">${escapeHtml(title)}</div>
-          <div class="value">${escapeHtml(value)}</div>
+          <div class="value">${rawHtml ? value : escapeHtml(value)}</div>
         </div>
       `).join('');
 

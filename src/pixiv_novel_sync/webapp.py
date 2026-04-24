@@ -303,15 +303,18 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         db.init_schema()
         try:
             stats = json.loads(db.export_stats())
+            current_user = db.get_user_summary(current_settings.pixiv.user_id)
         finally:
             db.close()
         latest_job = sync_job_manager.latest_job()
         return jsonify(
             {
                 "user_id": current_settings.pixiv.user_id,
+                "current_user": current_user,
                 "sync_enabled": current_settings.sync.enabled,
                 "initial_manual_only": current_settings.sync.initial_manual_only,
                 "bookmark_restricts": current_settings.sync.bookmark_restricts,
+                "bookmark_restricts_label": _restricts_to_label(current_settings.sync.bookmark_restricts),
                 "max_items_per_run": current_settings.sync.max_items_per_run,
                 "max_pages_per_run": current_settings.sync.max_pages_per_run,
                 "delay_seconds_between_items": current_settings.sync.delay_seconds_between_items,
@@ -320,6 +323,28 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                 "latest_job": _job_to_dict(latest_job),
             }
         )
+
+    @app.get("/api/dashboard/follows")
+    def dashboard_follows():
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            follows = db.list_followed_users(limit=100)
+        finally:
+            db.close()
+        return jsonify({"items": follows})
+
+    @app.get("/api/dashboard/novels")
+    def dashboard_novels():
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            novels = db.list_recent_novels(limit=100)
+        finally:
+            db.close()
+        return jsonify({"items": novels})
 
     @app.get("/api/dashboard/settings")
     def dashboard_settings():
@@ -410,6 +435,12 @@ def _normalize_float(value: Any, min_value: float = 0.0) -> float:
     if result < min_value:
         raise ValueError(f"数值不能小于 {min_value}")
     return result
+
+
+def _restricts_to_label(restricts: list[str]) -> str:
+    mapping = {"public": "公开收藏", "private": "私密收藏"}
+    labels = [mapping[item] for item in restricts if item in mapping]
+    return " / ".join(labels) if labels else "无"
 
 
 def _external_base_url(req) -> str:

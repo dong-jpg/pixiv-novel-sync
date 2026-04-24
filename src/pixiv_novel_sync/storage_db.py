@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from .models import NovelRecord, NovelTextRecord, SourceRecord, UserRecord
 
@@ -206,3 +207,115 @@ class Database:
             "SELECT (SELECT COUNT(*) FROM users) AS users_count, (SELECT COUNT(*) FROM novels) AS novels_count"
         ).fetchone()
         return json.dumps(dict(row), ensure_ascii=False)
+
+    def get_user_summary(self, user_id: int | None) -> dict[str, Any] | None:
+        if not user_id:
+            return None
+        row = self.conn.execute(
+            "SELECT user_id, name, account, raw_json, updated_at FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        raw = self._load_raw_json(row["raw_json"])
+        return {
+            "user_id": row["user_id"],
+            "name": row["name"],
+            "account": row["account"],
+            "avatar_url": self._extract_user_avatar(raw),
+            "updated_at": row["updated_at"],
+        }
+
+    def list_followed_users(self, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT user_id, name, account, raw_json, updated_at
+            FROM users
+            ORDER BY updated_at DESC, user_id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "user_id": row["user_id"],
+                "name": row["name"],
+                "account": row["account"],
+                "avatar_url": self._extract_user_avatar(self._load_raw_json(row["raw_json"])),
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def list_recent_novels(self, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT
+                n.novel_id,
+                n.title,
+                n.user_id,
+                u.name AS author_name,
+                n.cover_url,
+                n.restrict_value,
+                n.total_bookmarks,
+                n.total_views,
+                n.last_seen_at
+            FROM novels AS n
+            LEFT JOIN users AS u ON u.user_id = n.user_id
+            ORDER BY n.last_seen_at DESC, n.novel_id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _load_raw_json(raw_json: str) -> dict[str, Any]:
+        try:
+            data = json.loads(raw_json)
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @classmethod
+    def _extract_user_avatar(cls, raw: dict[str, Any]) -> str | None:
+        for key in (
+            "profile_image_urls",
+            "image_urls",
+            "profile_image_url",
+            "profile_image",
+            "avatar",
+        ):
+            value = raw.get(key)
+            url = cls._pick_image_url(value)
+            if url:
+                return url
+
+        user_block = raw.get("user")
+        if isinstance(user_block, dict):
+            for key in (
+                "profile_image_urls",
+                "image_urls",
+                "profile_image_url",
+                "profile_image",
+                "avatar",
+            ):
+                url = cls._pick_image_url(user_block.get(key))
+                if url:
+                    return url
+        return None
+
+    @classmethod
+    def _pick_image_url(cls, value: Any) -> str | None:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            for key in ("medium", "main", "large", "px_170x170", "px_50x50", "square_medium"):
+                item = value.get(key)
+                if isinstance(item, str) and item.strip():
+                    return item.strip()
+            for item in value.values():
+                nested = cls._pick_image_url(item)
+                if nested:
+                    return nested
+        return None

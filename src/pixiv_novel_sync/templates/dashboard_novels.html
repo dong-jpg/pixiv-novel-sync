@@ -6,11 +6,16 @@
   <title>Pixiv Dashboard Novels</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-    .wrap { max-width: 920px; margin: 32px auto; padding: 24px; }
+    .wrap { max-width: 1100px; margin: 32px auto; padding: 24px; }
     .nav { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
     .nav a { color: white; text-decoration: none; background: #1d4ed8; padding: 10px 14px; border-radius: 8px; }
     .card { background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 20px; }
     .muted { color: #94a3b8; }
+    .list { display: grid; gap: 14px; margin-top: 18px; }
+    .item { display: grid; grid-template-columns: 92px 1fr; gap: 14px; background: #0b1220; border: 1px solid #334155; border-radius: 12px; padding: 14px; }
+    .cover { width: 92px; height: 124px; border-radius: 10px; object-fit: cover; border: 1px solid #475569; background: #111827; }
+    .title { font-size: 18px; font-weight: bold; margin-bottom: 6px; }
+    .meta { color: #94a3b8; line-height: 1.7; }
   </style>
 </head>
 <body>
@@ -24,8 +29,63 @@
     </div>
     <div class="card">
       <h1>小说页面</h1>
-      <p class="muted">当前版本先完成页面骨架。后续会接入已归档小说列表、最近新增、失败记录与检索入口。</p>
+      <p class="muted">展示最近同步到本地数据库的小说列表。</p>
+      <div id="summary" class="muted">正在加载...</div>
+      <div id="list" class="list"></div>
     </div>
   </div>
+  <script>
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, function (ch) {
+        switch (ch) {
+          case '&': return '&';
+          case '<': return '<';
+          case '>': return '>';
+          case '"': return '"';
+          case "'": return String.fromCharCode(39);
+          default: return ch;
+        }
+      });
+    }
+
+    function restrictLabel(value) {
+      if (value === 'public') return '公开收藏';
+      if (value === 'private') return '私密收藏';
+      return value || '未知';
+    }
+
+    async function loadNovels() {
+      const resp = await fetch('/api/dashboard/novels');
+      const data = await resp.json();
+      const items = data.items || [];
+      document.getElementById('summary').textContent = `共 ${items.length} 本小说`;
+      const list = document.getElementById('list');
+      if (!items.length) {
+        list.innerHTML = '<div class="muted">暂无数据，先执行一次手工同步后再查看。</div>';
+        return;
+      }
+      list.innerHTML = items.map((item) => {
+        const cover = item.cover_url
+          ? `<img class="cover" src="${escapeHtml(item.cover_url)}" alt="cover">`
+          : '<div class="cover"></div>';
+        return `
+          <div class="item">
+            ${cover}
+            <div>
+              <div class="title">${escapeHtml(item.title || '未命名小说')}</div>
+              <div class="meta">作者：${escapeHtml(item.author_name || `用户 ${item.user_id}`)}</div>
+              <div class="meta">范围：${escapeHtml(restrictLabel(item.restrict_value))}</div>
+              <div class="meta">收藏：${escapeHtml(item.total_bookmarks || 0)} / 浏览：${escapeHtml(item.total_views || 0)}</div>
+              <div class="meta">最近更新：${escapeHtml(item.last_seen_at || '-')}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    loadNovels().catch(function () {
+      document.getElementById('summary').textContent = '加载失败';
+    });
+  </script>
 </body>
 </html>
