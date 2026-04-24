@@ -15,7 +15,7 @@ import requests
 PIXIV_AUTH_BASE = "https://app-api.pixiv.net/web/v1/login"
 PIXIV_TOKEN_ENDPOINT = "https://oauth.secure.pixiv.net/auth/token"
 PIXIV_CLIENT_ID = "MOBrBDS8blbauoSck0ZfDbtuzpyT"
-PIXIV_CLIENT_SECRET = "lsACyCD0FhDUtgtSjBFN2PZwgFNJ"
+PIXIV_CLIENT_SECRET = "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj"
 PIXIV_REDIRECT_URI = "https://app-api.pixiv.net/web/v1/users/auth/pixiv/callback"
 PIXIV_HASH_SECRET = "28c1fdd17047486203c2ad2b1db66c8c"
 TASK_TTL_SECONDS = 900
@@ -35,7 +35,6 @@ class OAuthTask:
     access_token: str | None = None
     user_id: int | None = None
     raw: dict[str, Any] | None = None
-    pixiv_callback_url: str | None = None
     pixiv_callback_url: str | None = None
 
 
@@ -84,7 +83,11 @@ class OAuthManager:
             "redirect_uri": PIXIV_REDIRECT_URI,
         }
         response = requests.post(PIXIV_TOKEN_ENDPOINT, data=data, headers=headers, timeout=30)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            detail = response.text.strip()
+            raise RuntimeError(f"Pixiv token 接口返回 {response.status_code}: {detail}") from exc
         payload = response.json()
         response_data = payload.get("response", payload)
         task.access_token = response_data.get("access_token")
@@ -155,20 +158,6 @@ class OAuthManager:
             "state": state,
         }
         return f"{PIXIV_AUTH_BASE}?{urlencode(params)}"
-
-    def sync_state_from_callback_url(self, task: OAuthTask, callback_url: str) -> OAuthTask:
-        parsed = urlparse(callback_url.strip())
-        query = parse_qs(parsed.query)
-        state = (query.get("state") or [""])[0]
-        code = (query.get("code") or [""])[0]
-        if not code:
-            raise ValueError("callback URL 中缺少 code")
-        if not state:
-            raise ValueError("callback URL 中缺少 state")
-        task.state = state
-        task.pixiv_callback_url = callback_url.strip()
-        task.message = "已根据 Pixiv callback URL 同步 state，可继续兑换 token"
-        return task
 
     def _cleanup(self) -> None:
         now = time.time()
