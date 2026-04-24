@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pixiv 授权回调</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    .wrap { max-width: 720px; margin: 60px auto; padding: 24px; }
+    .card { background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 24px; }
+    .ok { color: #22c55e; }
+    .error { color: #ef4444; }
+    a { color: #60a5fa; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      {% if ok %}
+      <h1 class="ok">授权成功</h1>
+      {% else %}
+      <h1 class="error">授权失败</h1>
+      {% endif %}
+      <p>{{ message }}</p>
+      <p>你可以关闭这个页面，返回原来的 token 登录页继续后续操作。</p>
+    </div>
+  </div>
+</body>
+</html>

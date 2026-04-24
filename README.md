@@ -11,6 +11,8 @@
 - 提供命令行入口
 - 提供 Ubuntu `systemd` 部署模板
 - 提供一个受控本地/内网页面用于辅助获取 Pixiv `refresh_token`
+- 支持“本地 PC 浏览器授权 + 服务器回调接收 token”主流程
+- 保留 `gppt` 作为 fallback
 
 详细设计见 [`pixiv-novel-sync-plan.md`](../.tocodex/plans/pixiv-novel-sync-plan.md:1)。
 
@@ -22,10 +24,12 @@
 - [`src/pixiv_novel_sync/storage_db.py`](src/pixiv_novel_sync/storage_db.py:1)：SQLite schema 与状态存储
 - [`src/pixiv_novel_sync/storage_files.py`](src/pixiv_novel_sync/storage_files.py:1)：文件落盘与资源下载
 - [`src/pixiv_novel_sync/sync_engine.py`](src/pixiv_novel_sync/sync_engine.py:1)：收藏小说同步逻辑
-- [`src/pixiv_novel_sync/jobs/quick_sync.py`](src/pixiv_novel_sync/jobs/quick_sync.py:1)：MVP 同步任务入口
-- [`src/pixiv_novel_sync/token_helper.py`](src/pixiv_novel_sync/token_helper.py:1)：封装 `gppt` token 获取流程
+- [`src/pixiv_novel_sync/jobs/quick_sync.py`](src/pixiv-novel-sync/src/pixiv_novel_sync/jobs/quick_sync.py:1)：MVP 同步任务入口
+- [`src/pixiv_novel_sync/oauth_helper.py`](src/pixiv_novel_sync/oauth_helper.py:1)：OAuth 任务生成、PKCE 与 token 交换
+- [`src/pixiv_novel_sync/token_helper.py`](src/pixiv_novel_sync/token_helper.py:1)：`gppt` fallback
 - [`src/pixiv_novel_sync/webapp.py`](src/pixiv_novel_sync/webapp.py:1)：Web token 获取入口
-- [`src/pixiv_novel_sync/templates/token_login.html`](src/pixiv_novel_sync/templates/token_login.html:1)：前台登录引导页
+- [`src/pixiv_novel_sync/templates/token_login.html`](src/pixiv_novel_sync/templates/token_login.html:1)：前台登录页
+- [`src/pixiv_novel_sync/templates/oauth_callback.html`](src/pixiv_novel_sync/templates/oauth_callback.html:1)：授权回调页
 - [`deploy/systemd/pixiv-novel-sync.service`](deploy/systemd/pixiv-novel-sync.service:1)：systemd 服务模板
 - [`deploy/systemd/pixiv-novel-sync.timer`](deploy/systemd/pixiv-novel-sync.timer:1)：定时器模板
 
@@ -75,20 +79,42 @@ pixiv-novel-sync --config config/config.yaml web-token-ui --host 127.0.0.1 --por
 然后打开：
 
 ```text
-http://127.0.0.1:5010
+http://127.0.0.1:5010/token-login
 ```
 
-页面功能：
-- 点击“开始获取 Token”后，后端启动 `gppt get`
-- 页面轮询显示任务输出
-- 成功后展示 `refresh_token`
-- 可点击“写入服务器 .env”直接保存
+## 推荐方式：本地 PC 浏览器授权
+
+页面中点击“开始 Pixiv 浏览器登录”后：
+- 后端创建一次性 OAuth 任务
+- 页面显示 Pixiv 登录链接
+- 你在本地 PC 浏览器中完成登录
+- Pixiv 回调到服务器 [`/oauth/callback`](src/pixiv_novel_sync/webapp.py:1)
+- 服务器交换 `refresh_token`
+- 页面轮询显示结果
+- 点击按钮可直接写入服务器 [`.env`](.env.example:1)
+
+### 部署要求
+
+这个方案要求：
+- 你的服务器地址或域名能被本地浏览器访问
+- 回调地址与页面访问地址一致
+- 推荐放在反向代理后并启用 HTTPS
 
 ### 安全说明
 
-- 默认只监听 `127.0.0.1`
-- 不要直接把这个页面裸露到公网
-- 如果要通过外网访问，必须额外加反向代理鉴权或 IP 白名单
+- 不要把这个页面裸露到完全无保护的公网
+- 建议至少加 IP 白名单、基础认证或临时内网访问控制
+- `refresh_token` 属于高敏感凭据，不应写入前端持久存储
+
+## fallback：gppt 模式
+
+如果 OAuth 主流程因为 Pixiv 风控或回调链路变化而失败，可以在页面中点击“使用旧版 gppt fallback”。
+
+该模式会：
+- 调用 [`gppt login`](src/pixiv_novel_sync/token_helper.py:1)
+- 展示输出日志
+- 成功后展示 `refresh_token`
+- 允许一键写入 `.env`
 
 ## 输出说明
 
@@ -122,14 +148,21 @@ bash scripts/install_server.sh
 ```bash
 cd /opt/pixiv-novel-sync/app
 . .venv/bin/activate
-pixiv-novel-sync --config config/config.yaml web-token-ui --host 127.0.0.1 --port 5010
+pixiv-novel-sync --config config/config.yaml web-token-ui --host 0.0.0.0 --port 5010
 ```
 
-### 4. 填写服务器上的 `.env` 或通过页面一键写入
+### 4. 打开页面
 
-如果页面已写入，可以直接进行认证测试。
+```text
+http://你的服务器地址:5010/token-login
+```
 
-### 5. 试运行一次
+### 5. 获取并写入 token
+
+优先使用“本地 PC 浏览器授权”主流程。
+如果失败，再使用 `gppt` fallback。
+
+### 6. 认证测试与首次同步
 
 ```bash
 . .venv/bin/activate
@@ -137,7 +170,7 @@ pixiv-novel-sync --config config/config.yaml auth-check
 pixiv-novel-sync --config config/config.yaml sync-bookmarks
 ```
 
-### 6. 查看定时器状态
+### 7. 查看定时器状态
 
 ```bash
 systemctl status pixiv-novel-sync.timer
@@ -151,4 +184,4 @@ journalctl -u pixiv-novel-sync.service -n 100 --no-pager
 - 资源下载目前通过通用 HTTP 下载，后续可切换为更贴合 Pixiv 请求头的下载方式
 - `webview_novel()` 返回结构在不同版本库中可能略有差异，后续应补充兼容层与测试
 - 当前正文更新会直接覆盖文件，尚未保留历史版本快照
-- Web token 页面本质上是对 `gppt` 的受控包装，不是官方 OAuth 登录实现
+- Pixiv 授权链路并非官方开放平台集成方案，未来可能因风控变化需要调整

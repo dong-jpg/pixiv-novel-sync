@@ -3,104 +3,165 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pixiv Token 获取</title>
+  <title>Pixiv Token 登录</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-    .wrap { max-width: 900px; margin: 40px auto; padding: 24px; }
+    .wrap { max-width: 960px; margin: 40px auto; padding: 24px; }
     .card { background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 20px; margin-bottom: 16px; }
-    h1 { margin-top: 0; }
-    button { background: #2563eb; color: white; border: 0; padding: 10px 16px; border-radius: 8px; cursor: pointer; }
-    button.secondary { background: #475569; }
-    input { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #475569; background: #0b1220; color: #e2e8f0; }
-    pre { background: #020617; padding: 12px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; }
+    h1, h2 { margin-top: 0; }
+    button, a.button { background: #2563eb; color: white; border: 0; padding: 10px 16px; border-radius: 8px; cursor: pointer; text-decoration: none; display: inline-block; }
+    button.secondary, a.secondary { background: #475569; }
+    input, textarea { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #475569; background: #0b1220; color: #e2e8f0; }
+    pre { background: #020617; padding: 12px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; }
     .muted { color: #94a3b8; }
     .row { display: grid; gap: 12px; margin-top: 12px; }
     .success { color: #22c55e; }
     .error { color: #ef4444; }
+    .hidden { display: none; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
-      <h1>Pixiv Token 获取页</h1>
-      <p class="muted">这是一个受控本地/内网页面。点击后，后端会启动 <code>gppt get</code> 流程。请在服务器终端中按提示完成 Pixiv 登录。</p>
-      <button id="startBtn">开始获取 Token</button>
-    </div>
-
-    <div class="card">
-      <h2>任务状态</h2>
-      <div id="status">尚未开始</div>
-      <pre id="output"></pre>
-    </div>
-
-    <div class="card">
-      <h2>结果</h2>
-      <label>refresh_token</label>
-      <input id="refreshToken" readonly>
+      <h1>Pixiv Token 登录页</h1>
+      <p class="muted">推荐方式：点击按钮后，在你的本地 PC 浏览器中完成 Pixiv 登录，服务器只负责回调接收并交换 token。</p>
       <div class="row">
+        <button id="startOauthBtn">开始 Pixiv 浏览器登录</button>
+        <button id="startFallbackBtn" class="secondary">使用旧版 gppt fallback</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>OAuth 浏览器登录</h2>
+      <div id="oauthStatus">尚未开始</div>
+      <div class="row">
+        <label>Pixiv 登录链接</label>
+        <input id="oauthLoginUrl" readonly>
+        <a id="oauthOpenLink" class="button hidden" target="_blank" rel="noopener noreferrer">打开 Pixiv 登录页</a>
+      </div>
+      <div class="row">
+        <label>任务结果</label>
+        <input id="oauthRefreshToken" readonly>
+        <input id="oauthUserId" readonly placeholder="user_id">
+        <button id="oauthSaveBtn" class="secondary hidden">将 OAuth token 写入服务器 .env</button>
+      </div>
+      <div id="oauthSaveResult" class="muted"></div>
+    </div>
+
+    <div class="card">
+      <h2>gppt fallback</h2>
+      <div id="fallbackStatus">尚未开始</div>
+      <pre id="fallbackOutput"></pre>
+      <div class="row">
+        <label>refresh_token</label>
+        <input id="fallbackRefreshToken" readonly>
         <label>user_id</label>
-        <input id="userId" placeholder="可留空，后续也可手填">
+        <input id="fallbackUserId" placeholder="可留空，后续也可手填">
+        <button id="fallbackSaveBtn" class="secondary">将 fallback token 写入服务器 .env</button>
       </div>
-      <div class="row">
-        <button id="saveBtn" class="secondary">写入服务器 .env</button>
-      </div>
-      <div id="saveResult" class="muted"></div>
+      <div id="fallbackSaveResult" class="muted"></div>
     </div>
   </div>
 
   <script>
-    let jobId = null;
-    let timer = null;
+    let oauthTaskId = null;
+    let oauthTimer = null;
+    let fallbackJobId = null;
+    let fallbackTimer = null;
 
-    const statusEl = document.getElementById('status');
-    const outputEl = document.getElementById('output');
-    const refreshTokenEl = document.getElementById('refreshToken');
-    const userIdEl = document.getElementById('userId');
-    const saveResultEl = document.getElementById('saveResult');
+    const oauthStatusEl = document.getElementById('oauthStatus');
+    const oauthLoginUrlEl = document.getElementById('oauthLoginUrl');
+    const oauthOpenLinkEl = document.getElementById('oauthOpenLink');
+    const oauthRefreshTokenEl = document.getElementById('oauthRefreshToken');
+    const oauthUserIdEl = document.getElementById('oauthUserId');
+    const oauthSaveBtn = document.getElementById('oauthSaveBtn');
+    const oauthSaveResultEl = document.getElementById('oauthSaveResult');
 
-    document.getElementById('startBtn').addEventListener('click', async () => {
-      saveResultEl.textContent = '';
-      const resp = await fetch('/api/token-jobs', { method: 'POST' });
+    const fallbackStatusEl = document.getElementById('fallbackStatus');
+    const fallbackOutputEl = document.getElementById('fallbackOutput');
+    const fallbackRefreshTokenEl = document.getElementById('fallbackRefreshToken');
+    const fallbackUserIdEl = document.getElementById('fallbackUserId');
+    const fallbackSaveResultEl = document.getElementById('fallbackSaveResult');
+
+    document.getElementById('startOauthBtn').addEventListener('click', async () => {
+      oauthSaveResultEl.textContent = '';
+      const resp = await fetch('/oauth/start', { method: 'POST' });
       const data = await resp.json();
-      jobId = data.job_id;
-      statusEl.textContent = data.message || data.status;
-      outputEl.textContent = '';
-      refreshTokenEl.value = '';
-      userIdEl.value = '';
-      if (timer) clearInterval(timer);
-      timer = setInterval(pollJob, 2000);
-      await pollJob();
+      oauthTaskId = data.task_id;
+      oauthStatusEl.textContent = data.message || data.status;
+      oauthLoginUrlEl.value = data.login_url || '';
+      oauthOpenLinkEl.href = data.login_url || '#';
+      oauthOpenLinkEl.classList.toggle('hidden', !data.login_url);
+      oauthRefreshTokenEl.value = '';
+      oauthUserIdEl.value = '';
+      oauthSaveBtn.classList.add('hidden');
+      if (oauthTimer) clearInterval(oauthTimer);
+      oauthTimer = setInterval(pollOauthTask, 2000);
+      await pollOauthTask();
     });
 
-    document.getElementById('saveBtn').addEventListener('click', async () => {
-      const refresh_token = refreshTokenEl.value.trim();
-      const user_id = userIdEl.value.trim();
+    oauthSaveBtn.addEventListener('click', async () => {
+      if (!oauthTaskId) return;
+      const resp = await fetch(`/oauth/save/${oauthTaskId}`, { method: 'POST' });
+      const data = await resp.json();
+      oauthSaveResultEl.textContent = data.message || data.error || '';
+      oauthSaveResultEl.className = resp.ok ? 'success' : 'error';
+    });
+
+    document.getElementById('startFallbackBtn').addEventListener('click', async () => {
+      fallbackSaveResultEl.textContent = '';
+      const resp = await fetch('/api/token-jobs', { method: 'POST' });
+      const data = await resp.json();
+      fallbackJobId = data.job_id;
+      fallbackStatusEl.textContent = data.message || data.status;
+      fallbackOutputEl.textContent = '';
+      fallbackRefreshTokenEl.value = '';
+      fallbackUserIdEl.value = '';
+      if (fallbackTimer) clearInterval(fallbackTimer);
+      fallbackTimer = setInterval(pollFallbackJob, 2000);
+      await pollFallbackJob();
+    });
+
+    document.getElementById('fallbackSaveBtn').addEventListener('click', async () => {
+      const refresh_token = fallbackRefreshTokenEl.value.trim();
+      const user_id = fallbackUserIdEl.value.trim();
       const resp = await fetch('/api/save-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refresh_token, user_id })
       });
       const data = await resp.json();
-      if (resp.ok) {
-        saveResultEl.textContent = data.message || '已写入';
-        saveResultEl.className = 'success';
-      } else {
-        saveResultEl.textContent = data.error || '写入失败';
-        saveResultEl.className = 'error';
-      }
+      fallbackSaveResultEl.textContent = data.message || data.error || '';
+      fallbackSaveResultEl.className = resp.ok ? 'success' : 'error';
     });
 
-    async function pollJob() {
-      if (!jobId) return;
-      const resp = await fetch(`/api/token-jobs/${jobId}`);
+    async function pollOauthTask() {
+      if (!oauthTaskId) return;
+      const resp = await fetch(`/oauth/task/${oauthTaskId}`);
       const data = await resp.json();
-      statusEl.textContent = `${data.status} - ${data.message || ''}`;
-      outputEl.textContent = (data.output || []).join('\n');
-      if (data.refresh_token) refreshTokenEl.value = data.refresh_token;
-      if (data.user_id) userIdEl.value = data.user_id;
+      oauthStatusEl.textContent = `${data.status} - ${data.message || ''}`;
+      if (data.refresh_token) {
+        oauthRefreshTokenEl.value = data.refresh_token;
+        oauthSaveBtn.classList.remove('hidden');
+      }
+      if (data.user_id) oauthUserIdEl.value = data.user_id;
       if (data.status === 'done' || data.status === 'failed') {
-        clearInterval(timer);
-        timer = null;
+        clearInterval(oauthTimer);
+        oauthTimer = null;
+      }
+    }
+
+    async function pollFallbackJob() {
+      if (!fallbackJobId) return;
+      const resp = await fetch(`/api/token-jobs/${fallbackJobId}`);
+      const data = await resp.json();
+      fallbackStatusEl.textContent = `${data.status} - ${data.message || ''}`;
+      fallbackOutputEl.textContent = (data.output || []).join('\n');
+      if (data.refresh_token) fallbackRefreshTokenEl.value = data.refresh_token;
+      if (data.user_id) fallbackUserIdEl.value = data.user_id;
+      if (data.status === 'done' || data.status === 'failed') {
+        clearInterval(fallbackTimer);
+        fallbackTimer = null;
       }
     }
   </script>
