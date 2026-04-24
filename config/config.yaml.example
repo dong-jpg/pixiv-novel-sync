@@ -1,0 +1,15 @@
+pixiv:
+  timeout: 30
+  verify_ssl: true
+  proxy: null
+sync:
+  download_assets: true
+  write_markdown: true
+  write_raw_text: true
+  bookmark_restricts:
+    - public
+    - private
+storage:
+  public_dir: ./data/library/public
+  private_dir: ./data/library/private
+  db_path: ./data/state/pixiv_sync.db

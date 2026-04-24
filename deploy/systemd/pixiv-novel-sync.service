@@ -1,0 +1,16 @@
+[Unit]
+Description=Pixiv Novel Bookmark Sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pixivsync
+Group=pixivsync
+WorkingDirectory=/opt/pixiv-novel-sync/app
+EnvironmentFile=/opt/pixiv-novel-sync/app/.env
+ExecStart=/opt/pixiv-novel-sync/app/.venv/bin/pixiv-novel-sync --config /opt/pixiv-novel-sync/app/config/config.yaml sync-bookmarks
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

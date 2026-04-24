@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pixiv-novel-sync"
+version = "0.1.0"
+description = "Sync and archive Pixiv novels with metadata, text, and assets"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "ToCodex AI" }
+]
+dependencies = [
+  "pixivpy3>=3.7.5",
+  "python-dotenv>=1.0.1",
+  "PyYAML>=6.0.2",
+  "requests>=2.32.3",
+]
+
+[project.scripts]
+pixiv-novel-sync = "pixiv_novel_sync.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
