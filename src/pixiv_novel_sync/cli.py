@@ -19,6 +19,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("auth-check", help="Validate Pixiv auth settings")
     subparsers.add_parser("sync-bookmarks", help="Sync bookmarked novels")
     subparsers.add_parser("db-stats", help="Show database statistics")
+
+    web_parser = subparsers.add_parser("web-token-ui", help="Start local web UI for acquiring Pixiv refresh_token")
+    web_parser.add_argument("--host", default="127.0.0.1", help="Bind host for token UI")
+    web_parser.add_argument("--port", default=5010, type=int, help="Bind port for token UI")
     return parser
 
 
@@ -44,6 +48,11 @@ def main() -> None:
             print(db.export_stats())
         finally:
             db.close()
+    elif args.command == "web-token-ui":
+        from .webapp import create_app
+
+        app = create_app()
+        app.run(host=args.host, port=args.port, debug=False)
     else:
         parser.error(f"Unsupported command: {args.command}")
 

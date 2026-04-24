@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pixiv Token 获取</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    .wrap { max-width: 900px; margin: 40px auto; padding: 24px; }
+    .card { background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 20px; margin-bottom: 16px; }
+    h1 { margin-top: 0; }
+    button { background: #2563eb; color: white; border: 0; padding: 10px 16px; border-radius: 8px; cursor: pointer; }
+    button.secondary { background: #475569; }
+    input { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #475569; background: #0b1220; color: #e2e8f0; }
+    pre { background: #020617; padding: 12px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; }
+    .muted { color: #94a3b8; }
+    .row { display: grid; gap: 12px; margin-top: 12px; }
+    .success { color: #22c55e; }
+    .error { color: #ef4444; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Pixiv Token 获取页</h1>
+      <p class="muted">这是一个受控本地/内网页面。点击后，后端会启动 <code>gppt get</code> 流程。请在服务器终端中按提示完成 Pixiv 登录。</p>
+      <button id="startBtn">开始获取 Token</button>
+    </div>
+
+    <div class="card">
+      <h2>任务状态</h2>
+      <div id="status">尚未开始</div>
+      <pre id="output"></pre>
+    </div>
+
+    <div class="card">
+      <h2>结果</h2>
+      <label>refresh_token</label>
+      <input id="refreshToken" readonly>
+      <div class="row">
+        <label>user_id</label>
+        <input id="userId" placeholder="可留空，后续也可手填">
+      </div>
+      <div class="row">
+        <button id="saveBtn" class="secondary">写入服务器 .env</button>
+      </div>
+      <div id="saveResult" class="muted"></div>
+    </div>
+  </div>
+
+  <script>
+    let jobId = null;
+    let timer = null;
+
+    const statusEl = document.getElementById('status');
+    const outputEl = document.getElementById('output');
+    const refreshTokenEl = document.getElementById('refreshToken');
+    const userIdEl = document.getElementById('userId');
+    const saveResultEl = document.getElementById('saveResult');
+
+    document.getElementById('startBtn').addEventListener('click', async () => {
+      saveResultEl.textContent = '';
+      const resp = await fetch('/api/token-jobs', { method: 'POST' });
+      const data = await resp.json();
+      jobId = data.job_id;
+      statusEl.textContent = data.message || data.status;
+      outputEl.textContent = '';
+      refreshTokenEl.value = '';
+      userIdEl.value = '';
+      if (timer) clearInterval(timer);
+      timer = setInterval(pollJob, 2000);
+      await pollJob();
+    });
+
+    document.getElementById('saveBtn').addEventListener('click', async () => {
+      const refresh_token = refreshTokenEl.value.trim();
+      const user_id = userIdEl.value.trim();
+      const resp = await fetch('/api/save-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token, user_id })
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        saveResultEl.textContent = data.message || '已写入';
+        saveResultEl.className = 'success';
+      } else {
+        saveResultEl.textContent = data.error || '写入失败';
+        saveResultEl.className = 'error';
+      }
+    });
+
+    async function pollJob() {
+      if (!jobId) return;
+      const resp = await fetch(`/api/token-jobs/${jobId}`);
+      const data = await resp.json();
+      statusEl.textContent = `${data.status} - ${data.message || ''}`;
+      outputEl.textContent = (data.output || []).join('\n');
+      if (data.refresh_token) refreshTokenEl.value = data.refresh_token;
+      if (data.user_id) userIdEl.value = data.user_id;
+      if (data.status === 'done' || data.status === 'failed') {
+        clearInterval(timer);
+        timer = null;
+      }
+    }
+  </script>
+</body>
+</html>

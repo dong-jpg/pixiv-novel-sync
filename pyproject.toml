@@ -16,6 +16,8 @@ dependencies = [
   "python-dotenv>=1.0.1",
   "PyYAML>=6.0.2",
   "requests>=2.32.3",
+  "Flask>=3.0.3",
+  "gppt>=4.3.0",
 ]
 
 [project.scripts]
@@ -23,6 +25,10 @@ pixiv-novel-sync = "pixiv_novel_sync.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+pixiv_novel_sync = ["templates/*.html"]
