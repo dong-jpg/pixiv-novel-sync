@@ -5,18 +5,15 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .models import NovelRecord, NovelTextRecord, SourceRecord, UserRecord
+from .models import AssetRecord, NovelRecord, NovelTextRecord, SourceRecord, UserRecord
 
 
 class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path)
+        self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
-
-    def close(self) -> None:
-        self.conn.close()
 
     def init_schema(self) -> None:
         self.conn.executescript(
@@ -60,22 +57,23 @@ class Database:
                 fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
-            CREATE TABLE IF NOT EXISTS sources (
-                novel_id INTEGER NOT NULL,
-                source_type TEXT NOT NULL,
-                source_key TEXT NOT NULL,
-                discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (novel_id, source_type, source_key)
-            );
-
             CREATE TABLE IF NOT EXISTS assets (
+                asset_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 novel_id INTEGER NOT NULL,
                 asset_type TEXT NOT NULL,
                 remote_url TEXT NOT NULL,
                 local_path TEXT NOT NULL,
                 file_hash TEXT,
                 downloaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (novel_id, asset_type, remote_url)
+                UNIQUE(novel_id, asset_type, remote_url)
+            );
+
+            CREATE TABLE IF NOT EXISTS sources (
+                novel_id INTEGER NOT NULL,
+                source_type TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (novel_id, source_type, source_key)
             );
 
             CREATE VIRTUAL TABLE IF NOT EXISTS novel_fts USING fts5(
@@ -92,8 +90,8 @@ class Database:
     def upsert_user(self, record: UserRecord) -> None:
         self.conn.execute(
             """
-            INSERT INTO users (user_id, name, account, raw_json, updated_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO users (user_id, name, account, raw_json)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
               name = excluded.name,
               account = excluded.account,
@@ -209,34 +207,60 @@ class Database:
         return json.dumps(dict(row), ensure_ascii=False)
 
     def get_user_summary(self, user_id: int | None) -> dict[str, Any] | None:
-        if not user_id:
-            return None
-        row = self.conn.execute(
-            "SELECT user_id, name, account, raw_json, updated_at FROM users WHERE user_id = ?",
-            (user_id,),
+        if user_id:
+            row = self.conn.execute(
+                "SELECT user_id, name, account, raw_json, updated_at FROM users WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            if row is not None:
+                raw = self._load_raw_json(row["raw_json"])
+                return {
+                    "user_id": row["user_id"],
+                    "name": row["name"],
+                    "account": row["account"],
+                    "avatar_url": self._extract_user_avatar(raw),
+                    "updated_at": row["updated_at"],
+                    "is_fallback": False,
+                }
+
+        fallback = self.conn.execute(
+            """
+            SELECT user_id, name, account, raw_json, updated_at
+            FROM users
+            ORDER BY updated_at DESC, user_id DESC
+            LIMIT 1
+            """
         ).fetchone()
-        if row is None:
+        if fallback is None:
             return None
-        raw = self._load_raw_json(row["raw_json"])
+        raw = self._load_raw_json(fallback["raw_json"])
         return {
-            "user_id": row["user_id"],
-            "name": row["name"],
-            "account": row["account"],
+            "user_id": user_id or fallback["user_id"],
+            "resolved_user_id": fallback["user_id"],
+            "name": fallback["name"],
+            "account": fallback["account"],
             "avatar_url": self._extract_user_avatar(raw),
-            "updated_at": row["updated_at"],
+            "updated_at": fallback["updated_at"],
+            "is_fallback": True,
         }
 
-    def list_followed_users(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_followed_users(self, page: int = 1, page_size: int = 10) -> dict[str, Any]:
+        page = max(page, 1)
+        page_size = max(page_size, 1)
+        total = int(self.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+        total_pages = max((total + page_size - 1) // page_size, 1)
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
         rows = self.conn.execute(
             """
             SELECT user_id, name, account, raw_json, updated_at
             FROM users
             ORDER BY updated_at DESC, user_id DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            (limit,),
+            (page_size, offset),
         ).fetchall()
-        return [
+        items = [
             {
                 "user_id": row["user_id"],
                 "name": row["name"],
@@ -246,28 +270,111 @@ class Database:
             }
             for row in rows
         ]
+        return {
+            "items": items,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+        }
 
-    def list_recent_novels(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_recent_novels(self, page: int = 1, page_size: int = 10, category: str = "all") -> dict[str, Any]:
+        page = max(page, 1)
+        page_size = max(page_size, 1)
+
+        where_clauses: list[str] = []
+        params: list[Any] = []
+        empty_message = None
+
+        if category == "series":
+            where_clauses.append("n.series_id IS NOT NULL")
+        elif category == "single":
+            where_clauses.append("n.series_id IS NULL")
+        elif category == "following":
+            where_clauses.append("EXISTS (SELECT 1 FROM sources s WHERE s.novel_id = n.novel_id AND (s.source_type = 'following_user_scan' OR s.source_type LIKE 'follow_feed_%'))")
+            empty_message = "当前还没有“关注用户小说列表”数据，请后续开启关注用户小说同步链路后再查看。"
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        total = int(
+            self.conn.execute(
+                f"SELECT COUNT(*) FROM novels n {where_sql}",
+                params,
+            ).fetchone()[0]
+        )
+        total_pages = max((total + page_size - 1) // page_size, 1)
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
+
         rows = self.conn.execute(
-            """
+            f"""
             SELECT
                 n.novel_id,
                 n.title,
                 n.user_id,
+                n.series_id,
                 u.name AS author_name,
                 n.cover_url,
                 n.restrict_value,
                 n.total_bookmarks,
                 n.total_views,
-                n.last_seen_at
+                n.last_seen_at,
+                n.first_seen_at,
+                CASE WHEN n.series_id IS NULL THEN 'single' ELSE 'series' END AS novel_kind
             FROM novels AS n
             LEFT JOIN users AS u ON u.user_id = n.user_id
+            {where_sql}
             ORDER BY n.last_seen_at DESC, n.novel_id DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            (limit,),
+            [*params, page_size, offset],
         ).fetchall()
-        return [dict(row) for row in rows]
+        items = [dict(row) for row in rows]
+        return {
+            "items": items,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+            "category": category,
+            "empty_message": empty_message,
+        }
+
+    def get_novel_detail(self, novel_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT
+                n.novel_id,
+                n.title,
+                n.caption,
+                n.user_id,
+                n.series_id,
+                u.name AS author_name,
+                u.account AS author_account,
+                n.cover_url,
+                n.restrict_value,
+                n.total_bookmarks,
+                n.total_views,
+                n.text_length,
+                n.create_date,
+                n.first_seen_at,
+                n.last_seen_at,
+                nt.text_raw,
+                nt.text_markdown,
+                n.raw_json
+            FROM novels AS n
+            LEFT JOIN users AS u ON u.user_id = n.user_id
+            LEFT JOIN novel_texts AS nt ON nt.novel_id = n.novel_id
+            WHERE n.novel_id = ?
+            """,
+            (novel_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        data = dict(row)
+        data["novel_kind"] = "single" if data.get("series_id") is None else "series"
+        data["raw_json"] = self._load_raw_json(str(data.get("raw_json") or "{}"))
+        return data
 
     @staticmethod
     def _load_raw_json(raw_json: str) -> dict[str, Any]:
@@ -318,4 +425,12 @@ class Database:
                 nested = cls._pick_image_url(item)
                 if nested:
                     return nested
+        if isinstance(value, list):
+            for item in value:
+                nested = cls._pick_image_url(item)
+                if nested:
+                    return nested
         return None
+
+    def close(self) -> None:
+        self.conn.close()

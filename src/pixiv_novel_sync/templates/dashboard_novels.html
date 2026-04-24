@@ -5,46 +5,110 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pixiv Dashboard Novels</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-    .wrap { max-width: 1100px; margin: 32px auto; padding: 24px; }
-    .nav { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
-    .nav a { color: white; text-decoration: none; background: #1d4ed8; padding: 10px 14px; border-radius: 8px; }
-    .card { background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 20px; }
-    .muted { color: #94a3b8; }
+    :root {
+      --bg: #0b1120;
+      --panel: #ffffff;
+      --panel-soft: #f8fafc;
+      --text: #0f172a;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --brand: #2563eb;
+      --brand-soft: #dbeafe;
+      --shadow: 0 18px 50px rgba(15, 23, 42, 0.12);
+      --radius: 22px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; background: linear-gradient(180deg, #0b1120 0, #172554 180px, #eef2ff 180px, #f8fafc 100%); color: var(--text); }
+    .topbar { background: rgba(11, 17, 32, .92); border-bottom: 1px solid rgba(148, 163, 184, .16); }
+    .topbar-inner { max-width: 1180px; margin: 0 auto; padding: 18px 24px; display: flex; justify-content: space-between; gap: 18px; align-items: center; }
+    .brand { color: #fff; font-size: 18px; font-weight: 700; }
+    .nav { display: flex; gap: 10px; flex-wrap: wrap; }
+    .nav a { color: #cbd5e1; text-decoration: none; padding: 10px 14px; border-radius: 999px; }
+    .nav a.active, .nav a:hover { background: rgba(37, 99, 235, .22); color: #fff; }
+    .page { max-width: 1180px; margin: 0 auto; padding: 28px 24px 48px; }
+    .hero, .card { background: var(--panel); border: 1px solid var(--line); border-radius: 24px; box-shadow: var(--shadow); }
+    .hero { padding: 24px 28px; }
+    .hero h1 { margin: 0 0 8px; font-size: 28px; }
+    .hero p, .muted { color: var(--muted); }
+    .card { margin-top: 20px; padding: 22px; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .tabs { display: flex; gap: 10px; flex-wrap: wrap; }
+    .tab { border: 1px solid var(--line); background: #fff; color: var(--text); border-radius: 999px; padding: 10px 16px; cursor: pointer; font-weight: 600; }
+    .tab.active { background: var(--brand); color: #fff; border-color: var(--brand); }
+    .summary { color: var(--muted); }
     .list { display: grid; gap: 14px; margin-top: 18px; }
-    .item { display: grid; grid-template-columns: 92px 1fr; gap: 14px; background: #0b1220; border: 1px solid #334155; border-radius: 12px; padding: 14px; }
-    .cover { width: 92px; height: 124px; border-radius: 10px; object-fit: cover; border: 1px solid #475569; background: #111827; }
-    .title { font-size: 18px; font-weight: bold; margin-bottom: 6px; }
-    .meta { color: #94a3b8; line-height: 1.7; }
+    .item { display: grid; grid-template-columns: 96px 1fr; gap: 16px; background: var(--panel-soft); border: 1px solid var(--line); border-radius: 18px; padding: 16px; }
+    .cover { width: 96px; height: 132px; border-radius: 14px; object-fit: cover; background: #dbeafe; border: 1px solid #bfdbfe; }
+    .empty-cover { width: 96px; height: 132px; border-radius: 14px; background: #e2e8f0; border: 1px solid #cbd5e1; }
+    .title-link { color: #0f172a; text-decoration: none; font-size: 19px; font-weight: 700; }
+    .title-link:hover { color: var(--brand); }
+    .meta { color: var(--muted); margin-top: 6px; line-height: 1.7; }
+    .badge { display: inline-flex; align-items: center; padding: 5px 10px; border-radius: 999px; background: var(--brand-soft); color: #1d4ed8; font-size: 12px; font-weight: 700; margin-right: 8px; }
+    .pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 20px; flex-wrap: wrap; }
+    .btn { border: 1px solid var(--line); background: #fff; color: var(--text); border-radius: 12px; padding: 10px 16px; cursor: pointer; font-weight: 600; }
+    .btn:disabled { opacity: .55; cursor: not-allowed; }
+    .empty { padding: 18px; border-radius: 16px; background: #f8fafc; border: 1px dashed #cbd5e1; color: var(--muted); }
+    @media (max-width: 760px) {
+      .topbar-inner { flex-direction: column; align-items: flex-start; }
+      .item { grid-template-columns: 1fr; }
+      .cover, .empty-cover { width: 100%; height: 200px; }
+    }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="nav">
-      <a href="/dashboard">首页</a>
-      <a href="/dashboard/follows">关注</a>
-      <a href="/dashboard/novels">小说</a>
-      <a href="/dashboard/settings">设置</a>
-      <a href="/token-login">Token 登录</a>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">Pixiv 小说同步器</div>
+      <nav class="nav">
+        <a href="/dashboard">首页</a>
+        <a href="/dashboard/follows">关注</a>
+        <a class="active" href="/dashboard/novels">小说</a>
+        <a href="/dashboard/settings">设置</a>
+        <a href="/token-login">Token 登录</a>
+      </nav>
     </div>
-    <div class="card">
-      <h1>小说页面</h1>
-      <p class="muted">展示最近同步到本地数据库的小说列表。</p>
-      <div id="summary" class="muted">正在加载...</div>
+  </header>
+
+  <main class="page">
+    <section class="hero">
+      <h1>小说归档</h1>
+      <p>小说列表已改为分页模式，每页固定 10 条，并提供“全部 / 系列小说 / 单本小说 / 关注用户小说”分类。标题现在可点击进入详情页。</p>
+    </section>
+
+    <section class="card">
+      <div class="toolbar">
+        <div class="tabs" id="tabs">
+          <button class="tab active" data-category="all">全部</button>
+          <button class="tab" data-category="series">系列小说</button>
+          <button class="tab" data-category="single">单本小说</button>
+          <button class="tab" data-category="following">关注用户小说</button>
+        </div>
+        <div>
+          <div id="summary" class="summary">正在加载...</div>
+          <div id="pageInfo" class="summary"></div>
+        </div>
+      </div>
       <div id="list" class="list"></div>
-    </div>
-  </div>
+      <div class="pager">
+        <button id="prevBtn" class="btn">上一页</button>
+        <div id="pagerText" class="summary"></div>
+        <button id="nextBtn" class="btn">下一页</button>
+      </div>
+    </section>
+  </main>
+
   <script>
+    let currentPage = 1;
+    let totalPages = 1;
+    let currentCategory = 'all';
+
     function escapeHtml(value) {
-      return String(value ?? '').replace(/[&<>"']/g, function (ch) {
-        switch (ch) {
-          case '&': return '&';
-          case '<': return '<';
-          case '>': return '>';
-          case '"': return '"';
-          case "'": return String.fromCharCode(39);
-          default: return ch;
-        }
+      return String(value ?? '').replace(/[&<>"]/g, function (ch) {
+        if (ch === '&') return '&';
+        if (ch === '<') return '<';
+        if (ch === '>') return '>';
+        if (ch === '"') return '"';
+        return ch;
       });
     }
 
@@ -54,36 +118,71 @@
       return value || '未知';
     }
 
-    async function loadNovels() {
-      const resp = await fetch('/api/dashboard/novels');
+    function kindLabel(value) {
+      if (value === 'series') return '系列小说';
+      if (value === 'single') return '单本小说';
+      return '未知';
+    }
+
+    async function loadNovels(page, category) {
+      const resp = await fetch(`/api/dashboard/novels?page=${page}&category=${encodeURIComponent(category)}`);
       const data = await resp.json();
       const items = data.items || [];
-      document.getElementById('summary').textContent = `共 ${items.length} 本小说`;
+      currentPage = data.page || 1;
+      totalPages = data.total_pages || 1;
+      currentCategory = data.category || category;
+      document.getElementById('summary').textContent = `共 ${data.total || 0} 本小说`;
+      document.getElementById('pageInfo').textContent = '每页 10 条';
+      document.getElementById('pagerText').textContent = `第 ${currentPage} / ${totalPages} 页`;
+      document.getElementById('prevBtn').disabled = currentPage <= 1;
+      document.getElementById('nextBtn').disabled = currentPage >= totalPages;
+      setActiveTab(currentCategory);
       const list = document.getElementById('list');
       if (!items.length) {
-        list.innerHTML = '<div class="muted">暂无数据，先执行一次手工同步后再查看。</div>';
+        list.innerHTML = `<div class="empty">${escapeHtml(data.empty_message || '暂无数据，先执行一次手工同步后再查看。')}</div>`;
         return;
       }
-      list.innerHTML = items.map((item) => {
+      list.innerHTML = items.map(function (item) {
         const cover = item.cover_url
           ? `<img class="cover" src="${escapeHtml(item.cover_url)}" alt="cover">`
-          : '<div class="cover"></div>';
+          : '<div class="empty-cover"></div>';
         return `
-          <div class="item">
+          <article class="item">
             ${cover}
             <div>
-              <div class="title">${escapeHtml(item.title || '未命名小说')}</div>
+              <a class="title-link" href="/dashboard/novels/${encodeURIComponent(item.novel_id)}">${escapeHtml(item.title || '未命名小说')}</a>
+              <div class="meta">
+                <span class="badge">${escapeHtml(kindLabel(item.novel_kind))}</span>
+                <span class="badge">${escapeHtml(restrictLabel(item.restrict_value))}</span>
+              </div>
               <div class="meta">作者：${escapeHtml(item.author_name || `用户 ${item.user_id}`)}</div>
-              <div class="meta">范围：${escapeHtml(restrictLabel(item.restrict_value))}</div>
               <div class="meta">收藏：${escapeHtml(item.total_bookmarks || 0)} / 浏览：${escapeHtml(item.total_views || 0)}</div>
               <div class="meta">最近更新：${escapeHtml(item.last_seen_at || '-')}</div>
             </div>
-          </div>
+          </article>
         `;
       }).join('');
     }
 
-    loadNovels().catch(function () {
+    function setActiveTab(category) {
+      document.querySelectorAll('.tab').forEach(function (btn) {
+        btn.classList.toggle('active', btn.dataset.category === category);
+      });
+    }
+
+    document.getElementById('tabs').addEventListener('click', function (event) {
+      const btn = event.target.closest('.tab');
+      if (!btn) return;
+      loadNovels(1, btn.dataset.category);
+    });
+    document.getElementById('prevBtn').addEventListener('click', function () {
+      if (currentPage > 1) loadNovels(currentPage - 1, currentCategory);
+    });
+    document.getElementById('nextBtn').addEventListener('click', function () {
+      if (currentPage < totalPages) loadNovels(currentPage + 1, currentCategory);
+    });
+
+    loadNovels(1, 'all').catch(function () {
       document.getElementById('summary').textContent = '加载失败';
     });
   </script>

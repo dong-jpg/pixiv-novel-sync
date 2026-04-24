@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>小说详情</title>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --panel: #ffffff;
+      --panel-soft: #f8fafc;
+      --text: #0f172a;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --brand: #2563eb;
+      --brand-soft: #dbeafe;
+      --shadow: 0 18px 50px rgba(15, 23, 42, 0.12);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; background: linear-gradient(180deg, #0b1120 0, #172554 180px, #eef2ff 180px, #f8fafc 100%); color: var(--text); }
+    .topbar { background: rgba(11, 17, 32, .92); border-bottom: 1px solid rgba(148, 163, 184, .16); }
+    .topbar-inner { max-width: 1180px; margin: 0 auto; padding: 18px 24px; display: flex; justify-content: space-between; gap: 18px; align-items: center; }
+    .brand { color: #fff; font-size: 18px; font-weight: 700; }
+    .nav { display: flex; gap: 10px; flex-wrap: wrap; }
+    .nav a { color: #cbd5e1; text-decoration: none; padding: 10px 14px; border-radius: 999px; }
+    .nav a.active, .nav a:hover { background: rgba(37, 99, 235, .22); color: #fff; }
+    .page { max-width: 1180px; margin: 0 auto; padding: 28px 24px 48px; }
+    .hero, .card { background: var(--panel); border: 1px solid var(--line); border-radius: 24px; box-shadow: var(--shadow); }
+    .hero { padding: 24px 28px; display: grid; grid-template-columns: 220px 1fr; gap: 22px; }
+    .cover { width: 220px; height: 300px; border-radius: 18px; object-fit: cover; background: #dbeafe; border: 1px solid #bfdbfe; }
+    .empty-cover { width: 220px; height: 300px; border-radius: 18px; background: #e2e8f0; border: 1px solid #cbd5e1; }
+    h1 { margin: 0 0 12px; font-size: 30px; }
+    .meta { color: var(--muted); line-height: 1.8; }
+    .badge { display: inline-flex; align-items: center; padding: 5px 10px; border-radius: 999px; background: var(--brand-soft); color: #1d4ed8; font-size: 12px; font-weight: 700; margin-right: 8px; }
+    .card { margin-top: 20px; padding: 22px; }
+    pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: Consolas, "Courier New", monospace; line-height: 1.8; color: #1e293b; }
+    .muted { color: var(--muted); }
+    @media (max-width: 860px) {
+      .topbar-inner { flex-direction: column; align-items: flex-start; }
+      .hero { grid-template-columns: 1fr; }
+      .cover, .empty-cover { width: 100%; height: 280px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">Pixiv 小说同步器</div>
+      <nav class="nav">
+        <a href="/dashboard">首页</a>
+        <a href="/dashboard/follows">关注</a>
+        <a class="active" href="/dashboard/novels">小说</a>
+        <a href="/dashboard/settings">设置</a>
+        <a href="/token-login">Token 登录</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="page">
+    <section id="hero" class="hero">
+      <div class="empty-cover"></div>
+      <div>
+        <h1>正在加载...</h1>
+        <div class="meta">请稍候</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>正文预览</h2>
+      <div id="content" class="muted">正在加载正文...</div>
+    </section>
+  </main>
+
+  <script>
+    const pathParts = window.location.pathname.split('/');
+    const novelId = Number(pathParts[pathParts.length - 1] || 0);
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"]/g, function (ch) {
+        if (ch === '&') return '&';
+        if (ch === '<') return '<';
+        if (ch === '>') return '>';
+        if (ch === '"') return '"';
+        return ch;
+      });
+    }
+
+    function restrictLabel(value) {
+      if (value === 'public') return '公开收藏';
+      if (value === 'private') return '私密收藏';
+      return value || '未知';
+    }
+
+    function kindLabel(value) {
+      if (value === 'series') return '系列小说';
+      if (value === 'single') return '单本小说';
+      return '未知';
+    }
+
+    async function loadDetail() {
+      const resp = await fetch(`/api/dashboard/novels/${encodeURIComponent(novelId)}`);
+      const data = await resp.json();
+      if (!resp.ok) {
+        document.getElementById('hero').innerHTML = '<div><h1>加载失败</h1><div class="meta">未找到这本小说。</div></div>';
+        document.getElementById('content').textContent = data.error || '未找到小说';
+        return;
+      }
+      const cover = data.cover_url
+        ? `<img class="cover" src="${escapeHtml(data.cover_url)}" alt="cover">`
+        : '<div class="empty-cover"></div>';
+      document.getElementById('hero').innerHTML = `
+        ${cover}
+        <div>
+          <h1>${escapeHtml(data.title || '未命名小说')}</h1>
+          <div class="meta">
+            <span class="badge">${escapeHtml(kindLabel(data.novel_kind))}</span>
+            <span class="badge">${escapeHtml(restrictLabel(data.restrict_value))}</span>
+          </div>
+          <div class="meta">作者：${escapeHtml(data.author_name || `用户 ${data.user_id}`)} ${data.author_account ? `(@${escapeHtml(data.author_account)})` : ''}</div>
+          <div class="meta">收藏：${escapeHtml(data.total_bookmarks || 0)} / 浏览：${escapeHtml(data.total_views || 0)}</div>
+          <div class="meta">字数：${escapeHtml(data.text_length || 0)}</div>
+          <div class="meta">创建时间：${escapeHtml(data.create_date || '-')}</div>
+          <div class="meta">最近更新：${escapeHtml(data.last_seen_at || '-')}</div>
+        </div>
+      `;
+      const content = data.text_markdown || data.text_raw || '当前未找到本地正文预览内容。';
+      document.getElementById('content').innerHTML = `<pre>${escapeHtml(content)}</pre>`;
+    }
+
+    loadDetail().catch(function () {
+      document.getElementById('content').textContent = '加载失败';
+    });
+  </script>
+</body>
+</html>

@@ -5,78 +5,138 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pixiv Dashboard Follows</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-    .wrap { max-width: 1000px; margin: 32px auto; padding: 24px; }
-    .nav { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
-    .nav a { color: white; text-decoration: none; background: #1d4ed8; padding: 10px 14px; border-radius: 8px; }
-    .card { background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 20px; }
-    .muted { color: #94a3b8; }
-    .list { display: grid; gap: 12px; margin-top: 18px; }
-    .item { display: flex; gap: 14px; align-items: center; background: #0b1220; border: 1px solid #334155; border-radius: 12px; padding: 14px; }
-    .avatar { width: 52px; height: 52px; border-radius: 50%; object-fit: cover; border: 1px solid #475569; background: #111827; }
-    .name { font-size: 18px; font-weight: bold; }
-    .sub { color: #94a3b8; margin-top: 4px; }
+    :root {
+      --bg: #0b1120;
+      --panel: #ffffff;
+      --panel-soft: #f8fafc;
+      --text: #0f172a;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --brand: #2563eb;
+      --shadow: 0 18px 50px rgba(15, 23, 42, 0.12);
+      --radius: 22px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; background: linear-gradient(180deg, #0b1120 0, #172554 180px, #eef2ff 180px, #f8fafc 100%); color: var(--text); }
+    .topbar { background: rgba(11, 17, 32, .92); border-bottom: 1px solid rgba(148, 163, 184, .16); }
+    .topbar-inner { max-width: 1180px; margin: 0 auto; padding: 18px 24px; display: flex; justify-content: space-between; gap: 18px; align-items: center; }
+    .brand { color: #fff; font-size: 18px; font-weight: 700; }
+    .nav { display: flex; gap: 10px; flex-wrap: wrap; }
+    .nav a { color: #cbd5e1; text-decoration: none; padding: 10px 14px; border-radius: 999px; }
+    .nav a.active, .nav a:hover { background: rgba(37, 99, 235, .22); color: #fff; }
+    .page { max-width: 1180px; margin: 0 auto; padding: 28px 24px 48px; }
+    .hero, .card { background: var(--panel); border: 1px solid var(--line); border-radius: 24px; box-shadow: var(--shadow); }
+    .hero { padding: 24px 28px; }
+    .hero h1 { margin: 0 0 8px; font-size: 28px; }
+    .hero p, .muted { color: var(--muted); }
+    .card { margin-top: 20px; padding: 22px; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .summary { color: var(--muted); }
+    .list { display: grid; gap: 14px; margin-top: 18px; }
+    .item { display: flex; gap: 16px; align-items: center; background: var(--panel-soft); border: 1px solid var(--line); border-radius: 18px; padding: 16px; }
+    .avatar { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; background: #dbeafe; border: 1px solid #bfdbfe; }
+    .empty-avatar { width: 56px; height: 56px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: #e2e8f0; color: var(--muted); font-weight: 700; }
+    .name { font-size: 18px; font-weight: 700; }
+    .sub { color: var(--muted); margin-top: 4px; }
+    .pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 20px; flex-wrap: wrap; }
+    .btn { border: 1px solid var(--line); background: #fff; color: var(--text); border-radius: 12px; padding: 10px 16px; cursor: pointer; font-weight: 600; }
+    .btn:disabled { opacity: .55; cursor: not-allowed; }
+    @media (max-width: 720px) {
+      .topbar-inner { flex-direction: column; align-items: flex-start; }
+      .toolbar { align-items: flex-start; }
+    }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="nav">
-      <a href="/dashboard">首页</a>
-      <a href="/dashboard/follows">关注</a>
-      <a href="/dashboard/novels">小说</a>
-      <a href="/dashboard/settings">设置</a>
-      <a href="/token-login">Token 登录</a>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">Pixiv 小说同步器</div>
+      <nav class="nav">
+        <a href="/dashboard">首页</a>
+        <a class="active" href="/dashboard/follows">关注</a>
+        <a href="/dashboard/novels">小说</a>
+        <a href="/dashboard/settings">设置</a>
+        <a href="/token-login">Token 登录</a>
+      </nav>
     </div>
-    <div class="card">
-      <h1>关注页面</h1>
-      <p class="muted">展示最近同步到本地数据库的作者列表。</p>
-      <div id="summary" class="muted">正在加载...</div>
+  </header>
+
+  <main class="page">
+    <section class="hero">
+      <h1>关注作者</h1>
+      <p>这里展示最近同步进数据库的作者列表。已改为分页加载，每页 10 条，避免一次渲染过多导致页面卡顿。</p>
+    </section>
+
+    <section class="card">
+      <div class="toolbar">
+        <div id="summary" class="summary">正在加载...</div>
+        <div id="pageInfo" class="summary"></div>
+      </div>
       <div id="list" class="list"></div>
-    </div>
-  </div>
+      <div class="pager">
+        <button id="prevBtn" class="btn">上一页</button>
+        <div id="pagerText" class="summary"></div>
+        <button id="nextBtn" class="btn">下一页</button>
+      </div>
+    </section>
+  </main>
+
   <script>
+    let currentPage = 1;
+    let totalPages = 1;
+
     function escapeHtml(value) {
-      return String(value ?? '').replace(/[&<>"']/g, function (ch) {
-        switch (ch) {
-          case '&': return '&';
-          case '<': return '<';
-          case '>': return '>';
-          case '"': return '"';
-          case "'": return String.fromCharCode(39);
-          default: return ch;
-        }
+      return String(value ?? '').replace(/[&<>"]/g, function (ch) {
+        if (ch === '&') return '&';
+        if (ch === '<') return '<';
+        if (ch === '>') return '>';
+        if (ch === '"') return '"';
+        return ch;
       });
     }
 
-    async function loadFollows() {
-      const resp = await fetch('/api/dashboard/follows');
+    async function loadFollows(page) {
+      const resp = await fetch(`/api/dashboard/follows?page=${page}`);
       const data = await resp.json();
       const items = data.items || [];
-      document.getElementById('summary').textContent = `共 ${items.length} 位作者`;
+      currentPage = data.page || 1;
+      totalPages = data.total_pages || 1;
+      document.getElementById('summary').textContent = `共 ${data.total || 0} 位作者`;
+      document.getElementById('pageInfo').textContent = '每页 10 条';
+      document.getElementById('pagerText').textContent = `第 ${currentPage} / ${totalPages} 页`;
+      document.getElementById('prevBtn').disabled = currentPage <= 1;
+      document.getElementById('nextBtn').disabled = currentPage >= totalPages;
       const list = document.getElementById('list');
       if (!items.length) {
-        list.innerHTML = '<div class="muted">暂无数据，先执行一次手工同步后再查看。</div>';
+        list.innerHTML = '<div class="summary">暂无数据，先执行一次手工同步后再查看。</div>';
         return;
       }
-      list.innerHTML = items.map((item) => {
+      list.innerHTML = items.map(function (item) {
         const avatar = item.avatar_url
           ? `<img class="avatar" src="${escapeHtml(item.avatar_url)}" alt="avatar">`
-          : '<div class="avatar"></div>';
+          : `<div class="empty-avatar">${escapeHtml((item.name || 'U').slice(0, 1))}</div>`;
         const account = item.account ? `@${escapeHtml(item.account)}` : `ID ${escapeHtml(item.user_id)}`;
         return `
-          <div class="item">
+          <article class="item">
             ${avatar}
             <div>
               <div class="name">${escapeHtml(item.name || '未命名用户')}</div>
               <div class="sub">${account}</div>
               <div class="sub">最近更新：${escapeHtml(item.updated_at || '-')}</div>
             </div>
-          </div>
+          </article>
         `;
       }).join('');
     }
 
-    loadFollows().catch(function () {
+    document.getElementById('prevBtn').addEventListener('click', function () {
+      if (currentPage > 1) loadFollows(currentPage - 1);
+    });
+    document.getElementById('nextBtn').addEventListener('click', function () {
+      if (currentPage < totalPages) loadFollows(currentPage + 1);
+    });
+
+    loadFollows(1).catch(function () {
       document.getElementById('summary').textContent = '加载失败';
     });
   </script>

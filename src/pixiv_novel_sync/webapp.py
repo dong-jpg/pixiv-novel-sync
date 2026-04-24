@@ -3,21 +3,18 @@ from __future__ import annotations
 import json
 import threading
 import time
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 from flask import Flask, jsonify, redirect, render_template, request
-from urllib.parse import urlparse
 
-from .auth import PixivAuthManager
 from .jobs.quick_sync import run_bookmark_sync
 from .oauth_helper import OAuthManager
-from .settings import DEFAULT_CONFIG_PATH, Settings, load_settings
+from .settings import Settings, load_settings
 from .storage_db import Database
-from .token_helper import TokenUiManager
 
 
 @dataclass(slots=True)
@@ -40,14 +37,13 @@ class SyncJobManager:
 
     def start_job(self) -> SyncJobState:
         with self._lock:
-            running_job = next((job for job in self._jobs.values() if job.status == "running"), None)
-            if running_job is not None:
-                raise RuntimeError("已有同步任务正在运行，请等待当前任务完成")
-
-            job = SyncJobState(job_id=uuid.uuid4().hex, status="running", message="同步任务已启动", started_at=time.time())
-            self._jobs[job.job_id] = job
-
-        thread = threading.Thread(target=self._run_job, args=(job.job_id,), daemon=True)
+            running = [job for job in self._jobs.values() if job.status == "running"]
+            if running:
+                raise RuntimeError("已有同步任务正在运行，请稍后再试")
+            job_id = str(int(time.time() * 1000))
+            job = SyncJobState(job_id=job_id, status="running", message="同步任务已启动", started_at=time.time())
+            self._jobs[job_id] = job
+        thread = threading.Thread(target=self._run_job, args=(job_id,), daemon=True)
         thread.start()
         return job
 
@@ -59,91 +55,82 @@ class SyncJobManager:
         with self._lock:
             if not self._jobs:
                 return None
-            return sorted(
-                self._jobs.values(),
-                key=lambda item: item.started_at or 0,
-                reverse=True,
-            )[0]
+            latest_key = sorted(self._jobs.keys())[-1]
+            return self._jobs[latest_key]
 
     def _run_job(self, job_id: str) -> None:
         job = self.get_job(job_id)
         if job is None:
             return
-
         try:
-            settings = load_settings(config_path=self.config_path, env_path=self.env_path)
-            job.message = "正在执行收藏同步"
+            settings = load_settings(self.config_path, self.env_path)
+            job.message = "正在同步收藏小说..."
             stats = run_bookmark_sync(settings)
-            job.stats = stats
             job.status = "succeeded"
             job.message = "同步完成"
+            job.stats = stats
         except Exception as exc:
             job.status = "failed"
+            job.message = "同步失败"
             job.error = str(exc)
-            job.message = f"同步失败：{exc}"
         finally:
             job.finished_at = time.time()
 
 
 class SettingsManager:
     def __init__(self, config_path: str | None) -> None:
-        self._config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
-
-    @property
-    def config_path(self) -> Path:
-        return self._config_path
+        self.config_path = config_path
 
     def load(self, env_path: str | None = None) -> Settings:
-        return load_settings(config_path=str(self._config_path), env_path=env_path)
+        return load_settings(self.config_path, env_path)
 
     def save_sync_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
-        raw = _load_yaml_file(self._config_path)
-        sync_raw = raw.get("sync", {})
-        if not isinstance(sync_raw, dict):
-            sync_raw = {}
+        if not self.config_path:
+            raise ValueError("缺少 config_path，无法保存设置")
 
-        restricts = payload.get("bookmark_restricts", ["public", "private"])
-        if not isinstance(restricts, list):
-            raise ValueError("bookmark_restricts 必须是数组")
-        normalized_restricts = [str(item).strip() for item in restricts if str(item).strip() in {"public", "private"}]
-        if not normalized_restricts:
-            raise ValueError("至少选择一个同步范围")
+        config_path = Path(self.config_path)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_data = _load_yaml_file(config_path)
+        sync_data = config_data.setdefault("sync", {})
 
-        sync_raw.update(
-            {
-                "enabled": bool(payload.get("enabled", False)),
-                "initial_manual_only": bool(payload.get("initial_manual_only", True)),
-                "download_assets": bool(payload.get("download_assets", True)),
-                "write_markdown": bool(payload.get("write_markdown", True)),
-                "write_raw_text": bool(payload.get("write_raw_text", True)),
-                "bookmark_restricts": normalized_restricts,
-                "max_items_per_run": _normalize_optional_int(payload.get("max_items_per_run")),
-                "max_pages_per_run": _normalize_optional_int(payload.get("max_pages_per_run")),
-                "delay_seconds_between_items": _normalize_float(payload.get("delay_seconds_between_items"), min_value=0.0),
-                "delay_seconds_between_pages": _normalize_float(payload.get("delay_seconds_between_pages"), min_value=0.0),
-            }
+        sync_data["enabled"] = bool(payload.get("enabled", sync_data.get("enabled", False)))
+        sync_data["initial_manual_only"] = bool(payload.get("initial_manual_only", sync_data.get("initial_manual_only", True)))
+        sync_data["download_assets"] = bool(payload.get("download_assets", sync_data.get("download_assets", True)))
+        sync_data["write_markdown"] = bool(payload.get("write_markdown", sync_data.get("write_markdown", True)))
+        sync_data["write_raw_text"] = bool(payload.get("write_raw_text", sync_data.get("write_raw_text", True)))
+
+        bookmark_restricts = payload.get("bookmark_restricts", sync_data.get("bookmark_restricts", ["public", "private"]))
+        if not isinstance(bookmark_restricts, list) or not bookmark_restricts:
+            raise ValueError("bookmark_restricts 必须为非空数组")
+        sync_data["bookmark_restricts"] = [str(item) for item in bookmark_restricts]
+
+        sync_data["max_items_per_run"] = _normalize_optional_int(payload.get("max_items_per_run", sync_data.get("max_items_per_run")))
+        sync_data["max_pages_per_run"] = _normalize_optional_int(payload.get("max_pages_per_run", sync_data.get("max_pages_per_run")))
+        sync_data["delay_seconds_between_items"] = _normalize_float(
+            payload.get("delay_seconds_between_items", sync_data.get("delay_seconds_between_items", 1.0))
         )
-        raw["sync"] = sync_raw
-        self._config_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._config_path.open("w", encoding="utf-8") as file:
-            yaml.safe_dump(raw, file, allow_unicode=True, sort_keys=False)
-        return sync_raw
+        sync_data["delay_seconds_between_pages"] = _normalize_float(
+            payload.get("delay_seconds_between_pages", sync_data.get("delay_seconds_between_pages", 1.0))
+        )
+
+        with config_path.open("w", encoding="utf-8") as file:
+            yaml.safe_dump(config_data, file, allow_unicode=True, sort_keys=False)
+
+        return _settings_to_dict(load_settings(config_path, None))
 
 
 def create_app(config_path: str | None = None, env_path: str | None = None) -> Flask:
     app = Flask(__name__, template_folder="templates")
     settings_manager = SettingsManager(config_path)
-    settings = settings_manager.load(env_path=env_path)
-    manager = TokenUiManager(settings)
-    oauth_manager = OAuthManager()
     sync_job_manager = SyncJobManager(config_path=config_path, env_path=env_path)
+    oauth_manager = OAuthManager()
 
     @app.get("/")
     def index():
         return redirect("/dashboard")
 
     @app.get("/token-login")
-    def token_login_page():
+    def token_login():
         return render_template("token_login.html")
 
     @app.get("/dashboard")
@@ -158,41 +145,55 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     def dashboard_novels_page():
         return render_template("dashboard_novels.html")
 
+    @app.get("/dashboard/novels/<int:novel_id>")
+    def dashboard_novel_detail_page(novel_id: int):
+        return render_template("dashboard_novel_detail.html", novel_id=novel_id)
+
     @app.get("/dashboard/settings")
     def dashboard_settings_page():
         return render_template("dashboard_settings.html")
 
     @app.post("/api/token-jobs")
     def create_token_job():
-        job = manager.create_job()
-        return jsonify({"job_id": job.job_id, "status": job.status, "message": job.message, "mode": "fallback"})
+        task = oauth_manager.create_task(_external_base_url(request))
+        return jsonify(
+            {
+                "task_id": task.task_id,
+                "status": task.status,
+                "message": task.message,
+                "login_url": task.login_url,
+                "callback_url": task.callback_url,
+                "mode": "oauth",
+            }
+        )
 
     @app.get("/api/token-jobs/<job_id>")
     def get_token_job(job_id: str):
-        job = manager.get_job(job_id)
-        if job is None:
-            return jsonify({"error": "job not found"}), 404
+        task = oauth_manager.get_task(job_id)
+        if task is None:
+            return jsonify({"error": "task not found"}), 404
         return jsonify(
             {
-                "job_id": job.job_id,
-                "status": job.status,
-                "message": job.message,
-                "refresh_token": job.refresh_token,
-                "user_id": job.user_id,
-                "output": job.output[-30:],
-                "mode": "fallback",
+                "task_id": task.task_id,
+                "status": task.status,
+                "message": task.message,
+                "refresh_token": task.refresh_token,
+                "access_token": task.access_token,
+                "user_id": task.user_id,
+                "mode": "oauth",
             }
         )
 
     @app.post("/api/save-token")
     def save_token():
+        manager = oauth_manager
         payload = request.get_json(silent=True) or {}
         refresh_token = str(payload.get("refresh_token") or "").strip()
         user_id_raw = payload.get("user_id")
         user_id = int(user_id_raw) if user_id_raw not in (None, "") else None
         if not refresh_token:
             return jsonify({"error": "missing refresh_token"}), 400
-        manager.save_token_to_env(refresh_token, user_id)
+        manager.save_to_env(refresh_token, user_id)
         return jsonify({"ok": True, "message": "已写入 .env"})
 
     @app.post("/oauth/start")
@@ -327,24 +328,44 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.get("/api/dashboard/follows")
     def dashboard_follows():
         current_settings = settings_manager.load(env_path=env_path)
+        page = max(int(request.args.get("page", 1) or 1), 1)
+        page_size = 10
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         try:
-            follows = db.list_followed_users(limit=100)
+            payload = db.list_followed_users(page=page, page_size=page_size)
         finally:
             db.close()
-        return jsonify({"items": follows})
+        return jsonify(payload)
 
     @app.get("/api/dashboard/novels")
     def dashboard_novels():
         current_settings = settings_manager.load(env_path=env_path)
+        page = max(int(request.args.get("page", 1) or 1), 1)
+        page_size = 10
+        category = str(request.args.get("category", "all") or "all").strip().lower()
+        if category not in {"all", "series", "single", "following"}:
+            category = "all"
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         try:
-            novels = db.list_recent_novels(limit=100)
+            payload = db.list_recent_novels(page=page, page_size=page_size, category=category)
         finally:
             db.close()
-        return jsonify({"items": novels})
+        return jsonify(payload)
+
+    @app.get("/api/dashboard/novels/<int:novel_id>")
+    def dashboard_novel_detail(novel_id: int):
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            payload = db.get_novel_detail(novel_id)
+        finally:
+            db.close()
+        if payload is None:
+            return jsonify({"error": "novel not found"}), 404
+        return jsonify(payload)
 
     @app.get("/api/dashboard/settings")
     def dashboard_settings():
