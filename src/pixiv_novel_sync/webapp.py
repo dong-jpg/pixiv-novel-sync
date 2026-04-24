@@ -140,7 +140,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
     @app.get("/")
     def index():
-        return redirect("/token-login")
+        return redirect("/dashboard")
 
     @app.get("/token-login")
     def token_login_page():
