@@ -14,7 +14,7 @@
     .title { margin: 0 0 8px; font-size: 14px; color: #94a3b8; }
     .value { font-size: 28px; font-weight: bold; word-break: break-word; }
     .muted { color: #94a3b8; }
-    .actions { display: flex; gap: 12px; margin: 20px 0; flex-wrap: wrap; }
+    .actions { display: flex; gap: 12px; margin: 20px 0; flex-wrap: wrap; align-items: center; }
     button { background: #2563eb; color: #fff; border: 0; padding: 10px 14px; border-radius: 8px; cursor: pointer; }
     button:disabled { opacity: 0.6; cursor: not-allowed; }
     .status { margin-top: 18px; line-height: 1.7; }
@@ -53,15 +53,23 @@
           case '<': return '<';
           case '>': return '>';
           case '"': return '"';
-          case "'": return ''';
+          case "'": return String.fromCharCode(39);
           default: return ch;
         }
       });
     }
 
+    async function safeJson(resp) {
+      try {
+        return await resp.json();
+      } catch (err) {
+        return {};
+      }
+    }
+
     async function loadStatus() {
       const resp = await fetch('/api/dashboard/status');
-      const data = await resp.json();
+      const data = await safeJson(resp);
       const stats = data.stats || {};
       const cards = [
         ['当前账号', data.user_id || '未绑定'],
@@ -104,13 +112,17 @@
     }
 
     async function pollJobStatus() {
-      const url = latestJobId ? `/api/dashboard/sync/status?job_id=${encodeURIComponent(latestJobId)}` : '/api/dashboard/sync/status';
-      const resp = await fetch(url);
-      const data = await resp.json();
-      if (data.job) {
-        latestJobId = data.job.job_id;
-        renderJob(data.job);
-        document.getElementById('startSyncBtn').disabled = data.job.status === 'running';
+      try {
+        const url = latestJobId ? `/api/dashboard/sync/status?job_id=${encodeURIComponent(latestJobId)}` : '/api/dashboard/sync/status';
+        const resp = await fetch(url);
+        const data = await safeJson(resp);
+        if (data.job) {
+          latestJobId = data.job.job_id;
+          renderJob(data.job);
+          document.getElementById('startSyncBtn').disabled = data.job.status === 'running';
+        }
+      } catch (err) {
+        console.error('pollJobStatus failed', err);
       }
     }
 
@@ -119,24 +131,33 @@
       const msg = document.getElementById('actionMessage');
       btn.disabled = true;
       msg.textContent = '正在启动同步任务...';
-      const resp = await fetch('/api/dashboard/sync/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}',
-      });
-      const data = await resp.json();
-      if (!resp.ok) {
-        msg.textContent = data.error || '启动失败';
+      try {
+        const resp = await fetch('/api/dashboard/sync/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        const data = await safeJson(resp);
+        if (!resp.ok) {
+          msg.textContent = data.error || '启动失败';
+          btn.disabled = false;
+          return;
+        }
+        latestJobId = data.job?.job_id || null;
+        msg.textContent = data.message || '任务已启动';
+        await loadStatus();
+      } catch (err) {
+        console.error('startSync failed', err);
+        msg.textContent = '启动失败，请查看浏览器控制台或稍后重试';
         btn.disabled = false;
-        return;
       }
-      latestJobId = data.job?.job_id || null;
-      msg.textContent = data.message || '任务已启动';
-      await loadStatus();
     }
 
     document.getElementById('startSyncBtn').addEventListener('click', startSync);
-    loadStatus();
+    loadStatus().catch(function (err) {
+      console.error('loadStatus failed', err);
+      document.getElementById('actionMessage').textContent = '页面初始化失败，请刷新后重试';
+    });
     setInterval(pollJobStatus, 3000);
   </script>
 </body>
