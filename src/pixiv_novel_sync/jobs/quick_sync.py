@@ -25,15 +25,29 @@ def run_bookmark_sync(settings: Settings) -> dict[str, int]:
 
     try:
         service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
-        stats = service.sync(
+        bookmark_stats = service.sync(
             user_id=auth_result.user_id,
             restricts=settings.sync.bookmark_restricts,
             download_assets=settings.sync.download_assets,
             write_markdown=settings.sync.write_markdown,
             write_raw_text=settings.sync.write_raw_text,
         )
-        logger.info("Bookmark sync finished: %s", json.dumps(stats, ensure_ascii=False))
+        following_stats = service.sync_following_novels(
+            download_assets=settings.sync.download_assets,
+            write_markdown=settings.sync.write_markdown,
+            write_raw_text=settings.sync.write_raw_text,
+        )
+        stats = _merge_stats(bookmark_stats, following_stats)
+        logger.info("Bookmark + following sync finished: %s", json.dumps(stats, ensure_ascii=False))
         print(json.dumps(stats, ensure_ascii=False, indent=2))
         return stats
     finally:
         db.close()
+
+
+def _merge_stats(*items: dict[str, int]) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for item in items:
+        for key, value in item.items():
+            merged[key] = merged.get(key, 0) + value
+    return merged
