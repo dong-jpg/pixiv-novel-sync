@@ -3,60 +3,139 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pixiv Dashboard Settings</title>
+  <title>同步设置 - Pixiv 小说同步器</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-    .wrap { max-width: 920px; margin: 32px auto; padding: 24px; }
-    .nav { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
-    .nav a { color: white; text-decoration: none; background: #1d4ed8; padding: 10px 14px; border-radius: 8px; }
-    .card { background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 20px; }
-    .row { display: grid; gap: 12px; margin-top: 12px; }
-    label { color: #94a3b8; }
-    input[type="text"], input[type="number"] { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #475569; background: #0b1220; color: #e2e8f0; box-sizing: border-box; }
-    .checks { display: grid; gap: 8px; }
-    .checks label { color: #e2e8f0; }
-    .muted { color: #94a3b8; }
-    button { background: #2563eb; color: #fff; border: 0; padding: 10px 14px; border-radius: 8px; cursor: pointer; margin-top: 16px; }
-    .message { margin-top: 12px; min-height: 24px; }
-    .ok { color: #22c55e; }
-    .bad { color: #f87171; }
+    :root {
+      --bg: #ffffff;
+      --bg-soft: #f5f5f7;
+      --text: #1d1d1f;
+      --text-secondary: #86868b;
+      --line: #d2d2d7;
+      --brand-start: #007aff;
+      --brand-end: #5856d6;
+      --success: #34c759;
+      --danger: #ff3b30;
+      --card-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      --radius: 16px;
+      --radius-lg: 20px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; background: var(--bg-soft); color: var(--text); -webkit-font-smoothing: antialiased; }
+    .topbar { background: #fff; border-bottom: 2px solid transparent; background-image: linear-gradient(#fff, #fff), linear-gradient(90deg, var(--brand-start), var(--brand-end)); background-origin: padding-box, border-box; background-clip: padding-box, border-box; }
+    .topbar-inner { max-width: 1080px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; }
+    .brand { font-size: 17px; font-weight: 600; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .nav { display: flex; gap: 4px; }
+    .nav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 8px 14px; border-radius: 8px; transition: all 0.2s; position: relative; }
+    .nav a:hover { color: var(--text); background: rgba(0,122,255,0.06); }
+    .nav a.active { color: var(--brand-start); font-weight: 600; }
+    .nav a.active::after { content: ''; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); width: 20px; height: 2px; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); border-radius: 1px; }
+    .page { max-width: 800px; margin: 0 auto; padding: 32px 24px 56px; }
+    .page-title { font-size: 28px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.02em; }
+    .page-desc { color: var(--text-secondary); margin: 0 0 24px; font-size: 15px; }
+    .card { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 28px 32px; }
+    .section { margin-bottom: 28px; }
+    .section:last-child { margin-bottom: 0; }
+    .section-title { font-size: 14px; font-weight: 700; color: var(--text); margin: 0 0 14px; }
+    .checks { display: grid; gap: 14px; }
+    .check-item { display: flex; align-items: center; gap: 12px; cursor: pointer; }
+    .check-item input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--brand-start); cursor: pointer; }
+    .check-item label { font-size: 14px; cursor: pointer; }
+    .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .field label { font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.03em; }
+    .field input { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 14px; font-family: inherit; transition: border-color 0.2s; }
+    .field input:focus { outline: none; border-color: var(--brand-start); }
+    .btn { border: none; border-radius: 10px; padding: 12px 24px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); color: #fff; }
+    .btn:hover { opacity: 0.9; transform: translateY(-1px); }
+    .message { margin-top: 16px; font-size: 13px; min-height: 20px; }
+    .message.ok { color: var(--success); }
+    .message.bad { color: var(--danger); }
+    @media (max-width: 720px) {
+      .topbar-inner { flex-direction: column; height: auto; padding: 12px 16px; gap: 8px; }
+      .card { padding: 20px; }
+    }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="nav">
-      <a href="/dashboard">首页</a>
-      <a href="/dashboard/follows">关注</a>
-      <a href="/dashboard/novels">小说</a>
-      <a href="/dashboard/settings">设置</a>
-      <a href="/token-login">Token 登录</a>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">Pixiv 小说同步器</div>
+      <nav class="nav">
+        <a href="/dashboard">首页</a>
+        <a href="/dashboard/follows">关注</a>
+        <a href="/dashboard/novels">小说</a>
+        <a class="active" href="/dashboard/settings">设置</a>
+        <a href="/token-login">登录</a>
+      </nav>
     </div>
-    <div class="card">
-      <h1>同步设置</h1>
-      <p class="muted">此页会直接保存到服务器配置文件。建议首次保持“自动同步关闭 + 首次仅手工开启”。</p>
-      <div class="row">
+  </header>
+
+  <main class="page">
+    <h1 class="page-title">同步设置</h1>
+    <p class="page-desc">配置同步参数，建议首次保持自动同步关闭。</p>
+
+    <section class="card">
+      <div class="section">
+        <div class="section-title">同步选项</div>
         <div class="checks">
-          <label><input type="checkbox" id="enabled"> 启用自动同步</label>
-          <label><input type="checkbox" id="initialManualOnly"> 首次仅允许手工触发</label>
-          <label><input type="checkbox" id="downloadAssets"> 下载封面与插图资源</label>
-          <label><input type="checkbox" id="writeMarkdown"> 输出 Markdown</label>
-          <label><input type="checkbox" id="writeRawText"> 输出原始文本</label>
-          <label><input type="checkbox" id="restrictPublic"> 同步公开收藏</label>
-          <label><input type="checkbox" id="restrictPrivate"> 同步私密收藏</label>
+          <div class="check-item">
+            <input type="checkbox" id="enabled">
+            <label for="enabled">启用自动同步</label>
+          </div>
+          <div class="check-item">
+            <input type="checkbox" id="initialManualOnly">
+            <label for="initialManualOnly">首次仅允许手工触发</label>
+          </div>
+          <div class="check-item">
+            <input type="checkbox" id="downloadAssets">
+            <label for="downloadAssets">下载封面与插图资源</label>
+          </div>
+          <div class="check-item">
+            <input type="checkbox" id="writeMarkdown">
+            <label for="writeMarkdown">输出 Markdown 文件</label>
+          </div>
+          <div class="check-item">
+            <input type="checkbox" id="writeRawText">
+            <label for="writeRawText">输出原始文本文件</label>
+          </div>
+          <div class="check-item">
+            <input type="checkbox" id="restrictPublic">
+            <label for="restrictPublic">同步公开收藏</label>
+          </div>
+          <div class="check-item">
+            <input type="checkbox" id="restrictPrivate">
+            <label for="restrictPrivate">同步私密收藏</label>
+          </div>
         </div>
-        <label>单次最大同步条数（留空表示不限）</label>
-        <input id="maxItems" type="number" min="1">
-        <label>单次最大翻页数（留空表示不限）</label>
-        <input id="maxPages" type="number" min="1">
-        <label>每本之间延迟（秒）</label>
-        <input id="itemDelay" type="number" min="0" step="0.1">
-        <label>每页之间延迟（秒）</label>
-        <input id="pageDelay" type="number" min="0" step="0.1">
       </div>
-      <button id="saveBtn">保存设置</button>
-      <div id="message" class="message muted"></div>
-    </div>
-  </div>
+
+      <div class="section">
+        <div class="section-title">限速参数</div>
+        <div class="fields">
+          <div class="field">
+            <label>单次最大条数</label>
+            <input id="maxItems" type="number" min="1" placeholder="留空表示不限">
+          </div>
+          <div class="field">
+            <label>单次最大页数</label>
+            <input id="maxPages" type="number" min="1" placeholder="留空表示不限">
+          </div>
+          <div class="field">
+            <label>每本之间延迟（秒）</label>
+            <input id="itemDelay" type="number" min="0" step="0.1" placeholder="0">
+          </div>
+          <div class="field">
+            <label>每页之间延迟（秒）</label>
+            <input id="pageDelay" type="number" min="0" step="0.1" placeholder="0">
+          </div>
+        </div>
+      </div>
+
+      <button id="saveBtn" class="btn">保存设置</button>
+      <div id="message" class="message"></div>
+    </section>
+  </main>
+
   <script>
     function checked(id, value) {
       document.getElementById(id).checked = !!value;
@@ -102,7 +181,7 @@
 
     async function saveSettings() {
       const msg = document.getElementById('message');
-      msg.className = 'message muted';
+      msg.className = 'message';
       msg.textContent = '正在保存...';
       const resp = await fetch('/api/dashboard/settings', {
         method: 'POST',
@@ -116,7 +195,7 @@
         return;
       }
       msg.className = 'message ok';
-      msg.textContent = data.message || '设置已保存';
+      msg.textContent = '设置已保存';
       await loadSettings();
     }
 

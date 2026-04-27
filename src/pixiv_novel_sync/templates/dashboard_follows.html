@@ -3,47 +3,52 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pixiv Dashboard Follows</title>
+  <title>关注作者 - Pixiv 小说同步器</title>
   <style>
     :root {
-      --bg: #0b1120;
-      --panel: #ffffff;
-      --panel-soft: #f8fafc;
-      --text: #0f172a;
-      --muted: #64748b;
-      --line: #e2e8f0;
-      --brand: #2563eb;
-      --shadow: 0 18px 50px rgba(15, 23, 42, 0.12);
-      --radius: 22px;
+      --bg: #ffffff;
+      --bg-soft: #f5f5f7;
+      --text: #1d1d1f;
+      --text-secondary: #86868b;
+      --line: #d2d2d7;
+      --brand-start: #007aff;
+      --brand-end: #5856d6;
+      --card-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      --radius: 16px;
+      --radius-lg: 20px;
     }
     * { box-sizing: border-box; }
-    body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; background: linear-gradient(180deg, #0b1120 0, #172554 180px, #eef2ff 180px, #f8fafc 100%); color: var(--text); }
-    .topbar { background: rgba(11, 17, 32, .92); border-bottom: 1px solid rgba(148, 163, 184, .16); }
-    .topbar-inner { max-width: 1180px; margin: 0 auto; padding: 18px 24px; display: flex; justify-content: space-between; gap: 18px; align-items: center; }
-    .brand { color: #fff; font-size: 18px; font-weight: 700; }
-    .nav { display: flex; gap: 10px; flex-wrap: wrap; }
-    .nav a { color: #cbd5e1; text-decoration: none; padding: 10px 14px; border-radius: 999px; }
-    .nav a.active, .nav a:hover { background: rgba(37, 99, 235, .22); color: #fff; }
-    .page { max-width: 1180px; margin: 0 auto; padding: 28px 24px 48px; }
-    .hero, .card { background: var(--panel); border: 1px solid var(--line); border-radius: 24px; box-shadow: var(--shadow); }
-    .hero { padding: 24px 28px; }
-    .hero h1 { margin: 0 0 8px; font-size: 28px; }
-    .hero p, .muted { color: var(--muted); }
-    .card { margin-top: 20px; padding: 22px; }
-    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; }
-    .summary { color: var(--muted); }
-    .list { display: grid; gap: 14px; margin-top: 18px; }
-    .item { display: flex; gap: 16px; align-items: center; background: var(--panel-soft); border: 1px solid var(--line); border-radius: 18px; padding: 16px; }
-    .avatar { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; background: #dbeafe; border: 1px solid #bfdbfe; }
-    .empty-avatar { width: 56px; height: 56px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: #e2e8f0; color: var(--muted); font-weight: 700; }
-    .name { font-size: 18px; font-weight: 700; }
-    .sub { color: var(--muted); margin-top: 4px; }
-    .pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 20px; flex-wrap: wrap; }
-    .btn { border: 1px solid var(--line); background: #fff; color: var(--text); border-radius: 12px; padding: 10px 16px; cursor: pointer; font-weight: 600; }
-    .btn:disabled { opacity: .55; cursor: not-allowed; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; background: var(--bg-soft); color: var(--text); -webkit-font-smoothing: antialiased; }
+    .topbar { background: #fff; border-bottom: 2px solid transparent; background-image: linear-gradient(#fff, #fff), linear-gradient(90deg, var(--brand-start), var(--brand-end)); background-origin: padding-box, border-box; background-clip: padding-box, border-box; }
+    .topbar-inner { max-width: 1080px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; }
+    .brand { font-size: 17px; font-weight: 600; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .nav { display: flex; gap: 4px; }
+    .nav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 8px 14px; border-radius: 8px; transition: all 0.2s; position: relative; }
+    .nav a:hover { color: var(--text); background: rgba(0,122,255,0.06); }
+    .nav a.active { color: var(--brand-start); font-weight: 600; }
+    .nav a.active::after { content: ''; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); width: 20px; height: 2px; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); border-radius: 1px; }
+    .page { max-width: 1080px; margin: 0 auto; padding: 32px 24px 56px; }
+    .page-title { font-size: 28px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.02em; }
+    .page-desc { color: var(--text-secondary); margin: 0 0 24px; font-size: 15px; }
+    .card { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 24px; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+    .summary { color: var(--text-secondary); font-size: 13px; }
+    .list { display: grid; gap: 12px; }
+    .item { display: flex; gap: 16px; align-items: center; background: var(--bg-soft); border-radius: var(--radius); padding: 16px 20px; transition: all 0.2s; }
+    .item:hover { background: #ebebed; }
+    .avatar { width: 52px; height: 52px; border-radius: 50%; object-fit: cover; background: linear-gradient(135deg, var(--brand-start), var(--brand-end)); flex-shrink: 0; }
+    .empty-avatar { width: 52px; height: 52px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--line); color: var(--text-secondary); font-weight: 600; font-size: 18px; flex-shrink: 0; }
+    .info { flex: 1; min-width: 0; }
+    .name { font-size: 16px; font-weight: 600; }
+    .sub { color: var(--text-secondary); font-size: 13px; margin-top: 3px; }
+    .pager { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 24px; }
+    .btn { border: none; border-radius: 10px; padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: var(--bg-soft); color: var(--text); }
+    .btn:hover:not(:disabled) { background: #e8e8ed; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .empty-state { text-align: center; padding: 48px 24px; color: var(--text-secondary); }
     @media (max-width: 720px) {
-      .topbar-inner { flex-direction: column; align-items: flex-start; }
-      .toolbar { align-items: flex-start; }
+      .topbar-inner { flex-direction: column; height: auto; padding: 12px 16px; gap: 8px; }
+      .toolbar { flex-direction: column; align-items: flex-start; }
     }
   </style>
 </head>
@@ -56,26 +61,24 @@
         <a class="active" href="/dashboard/follows">关注</a>
         <a href="/dashboard/novels">小说</a>
         <a href="/dashboard/settings">设置</a>
-        <a href="/token-login">Token 登录</a>
+        <a href="/token-login">登录</a>
       </nav>
     </div>
   </header>
 
   <main class="page">
-    <section class="hero">
-      <h1>关注作者</h1>
-      <p>这里展示最近同步进数据库的作者列表。已改为分页加载，每页 10 条，避免一次渲染过多导致页面卡顿。</p>
-    </section>
+    <h1 class="page-title">关注作者</h1>
+    <p class="page-desc">展示已同步到本地的关注作者列表，分页加载每页 10 条。</p>
 
     <section class="card">
       <div class="toolbar">
-        <div id="summary" class="summary">正在加载...</div>
+        <div id="summary" class="summary">加载中...</div>
         <div id="pageInfo" class="summary"></div>
       </div>
       <div id="list" class="list"></div>
       <div class="pager">
         <button id="prevBtn" class="btn">上一页</button>
-        <div id="pagerText" class="summary"></div>
+        <span id="pagerText" class="summary"></span>
         <button id="nextBtn" class="btn">下一页</button>
       </div>
     </section>
@@ -103,12 +106,12 @@
       totalPages = data.total_pages || 1;
       document.getElementById('summary').textContent = `共 ${data.total || 0} 位作者`;
       document.getElementById('pageInfo').textContent = '每页 10 条';
-      document.getElementById('pagerText').textContent = `第 ${currentPage} / ${totalPages} 页`;
+      document.getElementById('pagerText').textContent = `${currentPage} / ${totalPages}`;
       document.getElementById('prevBtn').disabled = currentPage <= 1;
       document.getElementById('nextBtn').disabled = currentPage >= totalPages;
       const list = document.getElementById('list');
       if (!items.length) {
-        list.innerHTML = '<div class="summary">暂无数据，先执行一次手工同步后再查看。</div>';
+        list.innerHTML = '<div class="empty-state">暂无数据，请先执行一次手工同步</div>';
         return;
       }
       list.innerHTML = items.map(function (item) {
@@ -119,11 +122,11 @@
         return `
           <article class="item">
             ${avatar}
-            <div>
+            <div class="info">
               <div class="name">${escapeHtml(item.name || '未命名用户')}</div>
               <div class="sub">${account}</div>
-              <div class="sub">最近更新：${escapeHtml(item.updated_at || '-')}</div>
             </div>
+            <div class="sub" style="flex-shrink:0;">更新于 ${escapeHtml(item.updated_at || '-')}</div>
           </article>
         `;
       }).join('');

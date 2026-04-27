@@ -3,62 +3,61 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pixiv Dashboard</title>
+  <title>Pixiv 小说同步器</title>
   <style>
     :root {
-      --bg: #0b1120;
-      --bg-soft: #111827;
-      --panel: #ffffff;
-      --panel-soft: #f8fafc;
-      --text: #0f172a;
-      --muted: #64748b;
-      --line: #e2e8f0;
-      --brand: #2563eb;
-      --brand-dark: #1d4ed8;
-      --success: #16a34a;
-      --danger: #dc2626;
-      --shadow: 0 18px 50px rgba(15, 23, 42, 0.12);
-      --radius: 22px;
+      --bg: #ffffff;
+      --bg-soft: #f5f5f7;
+      --text: #1d1d1f;
+      --text-secondary: #86868b;
+      --line: #d2d2d7;
+      --brand-start: #007aff;
+      --brand-end: #5856d6;
+      --success: #34c759;
+      --danger: #ff3b30;
+      --card-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      --radius: 16px;
+      --radius-lg: 20px;
     }
     * { box-sizing: border-box; }
-    body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; background: linear-gradient(180deg, var(--bg) 0, #172554 220px, #eef2ff 220px, #f8fafc 100%); color: var(--text); }
-    .topbar { background: rgba(11, 17, 32, 0.92); backdrop-filter: blur(12px); border-bottom: 1px solid rgba(148, 163, 184, 0.16); }
-    .topbar-inner { max-width: 1180px; margin: 0 auto; padding: 18px 24px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
-    .brand { color: #fff; font-size: 18px; font-weight: 700; letter-spacing: 0.02em; }
-    .nav { display: flex; gap: 10px; flex-wrap: wrap; }
-    .nav a { color: #cbd5e1; text-decoration: none; padding: 10px 14px; border-radius: 999px; transition: .2s ease; }
-    .nav a.active, .nav a:hover { color: #fff; background: rgba(37, 99, 235, 0.24); }
-    .page { max-width: 1180px; margin: 0 auto; padding: 28px 24px 48px; }
-    .hero { padding: 28px; border-radius: 28px; background: linear-gradient(135deg, rgba(37, 99, 235, 0.20), rgba(59, 130, 246, 0.10)); color: #fff; border: 1px solid rgba(191, 219, 254, 0.18); box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
-    .hero h1 { margin: 0 0 10px; font-size: 32px; }
-    .hero p { margin: 0; color: #dbeafe; max-width: 760px; line-height: 1.7; }
-    .toolbar { display: flex; gap: 12px; align-items: center; margin: 22px 0 0; flex-wrap: wrap; }
-    .btn { border: 0; border-radius: 14px; padding: 12px 18px; font-size: 14px; font-weight: 600; cursor: pointer; transition: .2s ease; }
-    .btn-primary { background: #fff; color: var(--brand-dark); }
-    .btn-primary:hover { transform: translateY(-1px); }
-    .btn-primary:disabled { opacity: .6; cursor: not-allowed; transform: none; }
-    .hero .hint { color: #bfdbfe; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; margin-top: 24px; }
-    .card { background: var(--panel); border: 1px solid rgba(226, 232, 240, 0.9); border-radius: var(--radius); box-shadow: var(--shadow); padding: 22px; }
-    .card h2 { margin: 0 0 12px; font-size: 18px; }
-    .kicker { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
-    .stat-title { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
-    .stat-value { font-size: 32px; font-weight: 700; line-height: 1.2; word-break: break-word; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; background: var(--bg-soft); color: var(--text); -webkit-font-smoothing: antialiased; }
+    .topbar { background: #fff; border-bottom: 1px solid transparent; background-image: linear-gradient(#fff, #fff), linear-gradient(90deg, var(--brand-start), var(--brand-end)); background-origin: padding-box, border-box; background-clip: padding-box, border-box; border-bottom: 2px solid transparent; }
+    .topbar-inner { max-width: 1080px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; }
+    .brand { font-size: 17px; font-weight: 600; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .nav { display: flex; gap: 4px; }
+    .nav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 8px 14px; border-radius: 8px; transition: all 0.2s; position: relative; }
+    .nav a:hover { color: var(--text); background: rgba(0,122,255,0.06); }
+    .nav a.active { color: var(--brand-start); font-weight: 600; }
+    .nav a.active::after { content: ''; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); width: 20px; height: 2px; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); border-radius: 1px; }
+    .page { max-width: 1080px; margin: 0 auto; padding: 32px 24px 56px; }
+    .hero { border-radius: var(--radius-lg); background: linear-gradient(135deg, var(--brand-start), var(--brand-end)); padding: 32px 36px; color: #fff; box-shadow: var(--card-shadow); }
+    .hero h1 { margin: 0 0 10px; font-size: 26px; font-weight: 600; }
+    .hero p { margin: 0; opacity: 0.9; max-width: 640px; line-height: 1.6; font-size: 15px; }
+    .toolbar { display: flex; gap: 12px; align-items: center; margin-top: 20px; }
+    .btn { border: none; border-radius: 10px; padding: 11px 20px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+    .btn-primary { background: #fff; color: var(--brand-start); }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+    .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+    .hint { color: rgba(255,255,255,0.8); font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 24px; }
+    .card { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 22px 24px; }
+    .card-title { color: var(--text-secondary); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 10px; }
+    .stat-value { font-size: 30px; font-weight: 700; line-height: 1.2; letter-spacing: -0.02em; }
     .profile { display: flex; align-items: center; gap: 14px; }
-    .avatar { width: 60px; height: 60px; border-radius: 50%; object-fit: cover; background: #dbeafe; border: 1px solid #bfdbfe; }
-    .profile-name { font-size: 18px; font-weight: 700; }
-    .profile-sub { margin-top: 4px; color: var(--muted); }
-    .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; border-radius: 999px; padding: 6px 10px; background: #eff6ff; color: var(--brand-dark); }
-    .job { line-height: 1.8; color: #1e293b; }
+    .avatar { width: 52px; height: 52px; border-radius: 50%; object-fit: cover; background: linear-gradient(135deg, var(--brand-start), var(--brand-end)); }
+    .profile-name { font-size: 17px; font-weight: 600; }
+    .profile-sub { margin-top: 2px; color: var(--text-secondary); font-size: 13px; }
+    .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; border-radius: 6px; padding: 4px 8px; background: rgba(0,122,255,0.1); color: var(--brand-start); font-weight: 600; }
+    .job { line-height: 1.7; color: var(--text-secondary); font-size: 14px; }
     .job .ok { color: var(--success); font-weight: 600; }
     .job .bad { color: var(--danger); font-weight: 600; }
-    .job .muted { color: var(--muted); }
-    .empty-avatar { display: inline-flex; align-items: center; justify-content: center; width: 60px; height: 60px; border-radius: 50%; background: #e2e8f0; color: var(--muted); font-weight: 700; }
+    .job .running { color: var(--brand-start); font-weight: 600; }
+    .section-title { font-size: 18px; font-weight: 600; margin: 28px 0 16px; padding-left: 4px; }
     @media (max-width: 720px) {
-      .topbar-inner { align-items: flex-start; flex-direction: column; }
-      .hero { padding: 22px; }
-      .hero h1 { font-size: 26px; }
-      .stat-value { font-size: 26px; }
+      .topbar-inner { flex-direction: column; height: auto; padding: 12px 16px; gap: 8px; }
+      .hero { padding: 24px; }
+      .hero h1 { font-size: 22px; }
+      .stat-value { font-size: 24px; }
     }
   </style>
 </head>
@@ -71,7 +70,7 @@
         <a href="/dashboard/follows">关注</a>
         <a href="/dashboard/novels">小说</a>
         <a href="/dashboard/settings">设置</a>
-        <a href="/token-login">Token 登录</a>
+        <a href="/token-login">登录</a>
       </nav>
     </div>
   </header>
@@ -79,19 +78,20 @@
   <main class="page">
     <section class="hero">
       <h1>控制台首页</h1>
-      <p>这里集中展示当前账号、归档规模与最近任务状态。首页仍然保留“手工同步优先”的低风险模式，避免第一次直接全量拉取导致卡顿或风控。</p>
+      <p>集中展示当前账号、归档规模与最近任务状态。默认使用手工同步模式，避免首次全量拉取导致风控。</p>
       <div class="toolbar">
         <button id="startSyncBtn" class="btn btn-primary">开始手工同步</button>
-        <span id="actionMessage" class="hint">可在设置页调整单次同步上限与节流参数。</span>
+        <span id="actionMessage" class="hint">可在设置页调整同步参数</span>
       </div>
     </section>
 
+    <div class="section-title">数据概览</div>
     <section class="grid" id="statsGrid"></section>
 
-    <section class="card" style="margin-top: 22px;">
-      <div class="kicker">任务状态</div>
-      <h2>最近同步任务</h2>
-      <div id="jobStatus" class="job muted">暂无任务</div>
+    <div class="section-title">任务状态</div>
+    <section class="card">
+      <div class="card-title">最近同步任务</div>
+      <div id="jobStatus" class="job muted">暂无任务记录</div>
     </section>
   </main>
 
@@ -118,13 +118,13 @@
 
     function renderCurrentUser(user) {
       if (!user) {
-        return '<div class="stat-value">未绑定</div><div class="profile-sub">当前数据库里还没有可回退的账号信息。</div>';
+        return '<div class="stat-value" style="color:var(--text-secondary)">未绑定</div><div class="profile-sub">当前数据库里还没有账号信息</div>';
       }
       const avatar = user.avatar_url
         ? `<img class="avatar" src="${escapeHtml(user.avatar_url)}" alt="avatar">`
-        : `<div class="empty-avatar">${escapeHtml((user.name || 'U').slice(0, 1))}</div>`;
+        : `<div class="avatar" style="display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:20px;">${escapeHtml((user.name || 'U').slice(0, 1))}</div>`;
       const account = user.account ? `@${escapeHtml(user.account)}` : `ID ${escapeHtml(user.user_id)}`;
-      const fallback = user.is_fallback ? '<div class="badge">回退展示 · 当前登录账号资料尚未单独入库</div>' : '';
+      const fallback = user.is_fallback ? '<div class="badge" style="margin-top:8px;">回退展示</div>' : '';
       return `
         <div class="profile">
           ${avatar}
@@ -140,7 +140,7 @@
     function renderStatCard(title, value, rawHtml) {
       return `
         <article class="card">
-          <div class="stat-title">${escapeHtml(title)}</div>
+          <div class="card-title">${escapeHtml(title)}</div>
           <div class="stat-value">${rawHtml ? value : escapeHtml(value)}</div>
         </article>
       `;
@@ -152,12 +152,9 @@
       const stats = data.stats || {};
       const cards = [
         ['当前账号', renderCurrentUser(data.current_user || null), true],
+        ['已归档作者', stats.users_count || 0],
+        ['已归档小说', stats.novels_count || 0],
         ['自动同步', data.sync_enabled ? '开启' : '关闭'],
-        ['首次仅手工', data.initial_manual_only ? '是' : '否'],
-        ['已归档作者数', stats.users_count || 0],
-        ['已归档小说数', stats.novels_count || 0],
-        ['单次最大条数', data.max_items_per_run ?? '不限'],
-        ['单次最大页数', data.max_pages_per_run ?? '不限'],
         ['同步范围', data.bookmark_restricts_label || '无'],
       ];
       document.getElementById('statsGrid').innerHTML = cards.map(function (entry) {
@@ -172,15 +169,16 @@
     function renderJob(job) {
       const container = document.getElementById('jobStatus');
       if (!job) {
-        container.innerHTML = '暂无任务';
+        container.innerHTML = '<span style="color:var(--text-secondary)">暂无任务记录</span>';
         return;
       }
-      const stats = job.stats ? `<div>结果：${escapeHtml(JSON.stringify(job.stats))}</div>` : '';
-      const error = job.error ? `<div class="bad">错误：${escapeHtml(job.error)}</div>` : '';
-      const statusClass = job.status === 'succeeded' ? 'ok' : (job.status === 'failed' ? 'bad' : 'muted');
+      const statusClass = job.status === 'succeeded' ? 'ok' : (job.status === 'failed' ? 'bad' : (job.status === 'running' ? 'running' : ''));
+      const statusText = job.status === 'succeeded' ? '成功' : (job.status === 'failed' ? '失败' : (job.status === 'running' ? '运行中' : job.status));
+      const stats = job.stats ? `<div style="margin-top:8px;">结果：${escapeHtml(JSON.stringify(job.stats))}</div>` : '';
+      const error = job.error ? `<div class="bad" style="margin-top:8px;">错误：${escapeHtml(job.error)}</div>` : '';
       container.innerHTML = `
         <div>任务 ID：${escapeHtml(job.job_id)}</div>
-        <div class="${statusClass}">状态：${escapeHtml(job.status)} / ${escapeHtml(job.message || '')}</div>
+        <div class="${statusClass}">状态：${statusText} ${escapeHtml(job.message || '')}</div>
         ${stats}
         ${error}
       `;
@@ -223,7 +221,7 @@
         await loadStatus();
       } catch (err) {
         console.error('startSync failed', err);
-        msg.textContent = '启动失败，请查看浏览器控制台或稍后重试';
+        msg.textContent = '启动失败，请查看浏览器控制台';
         btn.disabled = false;
       }
     }
