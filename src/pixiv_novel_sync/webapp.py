@@ -398,6 +398,40 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         job = sync_job_manager.get_job(job_id) if job_id else sync_job_manager.latest_job()
         return jsonify({"job": _job_to_dict(job)})
 
+    @app.post("/api/dashboard/sync/following")
+    def dashboard_sync_following():
+        current_settings = settings_manager.load(env_path=env_path)
+        auth = PixivAuthManager(current_settings.pixiv)
+        api, auth_result = auth.login()
+        if auth_result.user_id is None:
+            return jsonify({"error": "Unable to determine user ID"}), 400
+
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        storage = FileStorage(current_settings)
+        storage.ensure_dirs([
+            current_settings.storage.public_dir,
+            current_settings.storage.private_dir,
+            current_settings.storage.db_path.parent
+        ])
+
+        try:
+            service = BookmarkNovelSyncService(
+                api=api, db=db, storage=storage, settings=current_settings
+            )
+            stats = service.sync_following_novels(
+                download_assets=current_settings.sync.download_assets,
+                write_markdown=current_settings.sync.write_markdown,
+                write_raw_text=current_settings.sync.write_raw_text,
+            )
+            logger.info("Following novels sync finished: %s", json.dumps(stats, ensure_ascii=False))
+            return jsonify({"ok": True, "stats": stats})
+        except Exception as exc:
+            logger.exception("Following novels sync failed")
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            db.close()
+
     return app
 
 

@@ -32,15 +32,9 @@ def run_bookmark_sync(settings: Settings) -> dict[str, int]:
             write_markdown=settings.sync.write_markdown,
             write_raw_text=settings.sync.write_raw_text,
         )
-        following_stats = service.sync_following_novels(
-            download_assets=settings.sync.download_assets,
-            write_markdown=settings.sync.write_markdown,
-            write_raw_text=settings.sync.write_raw_text,
-        )
-        stats = _merge_stats(bookmark_stats, following_stats)
-        logger.info("Bookmark + following sync finished: %s", json.dumps(stats, ensure_ascii=False))
-        print(json.dumps(stats, ensure_ascii=False, indent=2))
-        return stats
+        logger.info("Bookmark sync finished: %s", json.dumps(bookmark_stats, ensure_ascii=False))
+        print(json.dumps(bookmark_stats, ensure_ascii=False, indent=2))
+        return bookmark_stats
     finally:
         db.close()
 
