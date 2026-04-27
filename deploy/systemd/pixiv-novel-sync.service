@@ -5,11 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=pixivsync
-Group=pixivsync
-WorkingDirectory=/opt/pixiv-novel-sync/app
-EnvironmentFile=/opt/pixiv-novel-sync/app/.env
-ExecStart=/opt/pixiv-novel-sync/app/.venv/bin/pixiv-novel-sync --config /opt/pixiv-novel-sync/app/config/config.yaml sync-bookmarks
+User=ubuntu
+WorkingDirectory=/opt/pixiv-novel-sync/app-redeploy
+EnvironmentFile=/opt/pixiv-novel-sync/app-redeploy/.env
+ExecStart=/opt/pixiv-novel-sync/app-redeploy/.venv/bin/pixiv-novel-sync --config /opt/pixiv-novel-sync/app-redeploy/config/config.yaml sync-bookmarks
 Nice=10
 
 [Install]
