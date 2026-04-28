@@ -131,7 +131,10 @@ def _parse_optional_int(value: str | None) -> int | None:
 def _coerce_optional_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
-    return int(value)
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
 
 
 
