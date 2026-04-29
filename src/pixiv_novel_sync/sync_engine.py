@@ -108,7 +108,10 @@ class BookmarkNovelSyncService:
         processed_items = 0
 
         logger.info("Syncing novels from followed users")
-        next_following_query: dict[str, Any] | None = {"restrict": "public"}
+        current_user_id = self.settings.pixiv.user_id
+        if not current_user_id:
+            raise RuntimeError("PIXIV_USER_ID is required to fetch following list")
+        next_following_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
         following_page_count = 0
 
         while next_following_query:
