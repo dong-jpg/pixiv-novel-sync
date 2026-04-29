@@ -157,6 +157,19 @@
       <button id="saveBtn" class="btn">保存设置</button>
       <div id="message" class="message"></div>
     </section>
+
+    <section class="card" style="margin-top: 24px;">
+      <div class="section">
+        <div class="section-title">图片缓存管理</div>
+        <p style="font-size:13px;color:var(--text-secondary);margin:0 0 14px;">Nginx 图片缓存，减少对 Pixiv CDN 的请求</p>
+        <div id="cacheInfo" style="font-size:14px;color:var(--text-secondary);margin-bottom:16px;">
+          加载中...
+        </div>
+        <button id="refreshCacheBtn" class="btn" style="background: linear-gradient(90deg, #5856d6, #af52de); margin-right: 8px;">刷新状态</button>
+        <button id="clearCacheBtn" class="btn" style="background: linear-gradient(90deg, #ff3b30, #ff6b6b);">清空缓存</button>
+        <div id="cacheMessage" class="message"></div>
+      </div>
+    </section>
   </main>
 
   <script>
@@ -232,6 +245,47 @@
 
     document.getElementById('saveBtn').addEventListener('click', saveSettings);
     loadSettings();
+
+    async function loadCacheStatus() {
+      const info = document.getElementById('cacheInfo');
+      try {
+        const resp = await fetch('/api/cache/status');
+        const data = await resp.json();
+        if (data.exists) {
+          info.innerHTML = `缓存大小: <strong>${data.size_human}</strong> | 文件数量: <strong>${data.file_count}</strong>`;
+        } else {
+          info.textContent = '缓存目录不存在';
+        }
+      } catch (e) {
+        info.textContent = '获取缓存状态失败';
+      }
+    }
+
+    async function clearCache() {
+      const msg = document.getElementById('cacheMessage');
+      if (!confirm('确认清空图片缓存？清空后首次访问图片会较慢。')) return;
+      msg.className = 'message';
+      msg.textContent = '正在清空...';
+      try {
+        const resp = await fetch('/api/cache/clear', { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+          msg.className = 'message ok';
+          msg.textContent = '缓存已清空';
+          await loadCacheStatus();
+        } else {
+          msg.className = 'message bad';
+          msg.textContent = data.error || '清空失败';
+        }
+      } catch (e) {
+        msg.className = 'message bad';
+        msg.textContent = '请求失败';
+      }
+    }
+
+    document.getElementById('refreshCacheBtn').addEventListener('click', loadCacheStatus);
+    document.getElementById('clearCacheBtn').addEventListener('click', clearCache);
+    loadCacheStatus();
   </script>
 </body>
 </html>

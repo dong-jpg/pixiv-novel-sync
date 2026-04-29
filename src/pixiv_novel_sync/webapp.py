@@ -614,6 +614,47 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         finally:
             db.close()
 
+    @app.get("/api/cache/status")
+    def cache_status():
+        import shutil
+        cache_dir = Path("/var/cache/nginx/pixiv_img")
+        if not cache_dir.exists():
+            return jsonify({"exists": False, "size_bytes": 0, "size_human": "0B"})
+        total_size = 0
+        file_count = 0
+        for f in cache_dir.rglob("*"):
+            if f.is_file():
+                total_size += f.stat().st_size
+                file_count += 1
+        def human_size(size):
+            for unit in ['B', 'KB', 'MB', 'GB']:
+                if size < 1024:
+                    return f"{size:.1f}{unit}"
+                size /= 1024
+            return f"{size:.1f}TB"
+        return jsonify({
+            "exists": True,
+            "size_bytes": total_size,
+            "size_human": human_size(total_size),
+            "file_count": file_count
+        })
+
+    @app.post("/api/cache/clear")
+    def cache_clear():
+        import shutil
+        cache_dir = Path("/var/cache/nginx/pixiv_img")
+        if not cache_dir.exists():
+            return jsonify({"ok": True, "message": "缓存目录不存在"})
+        try:
+            for item in cache_dir.iterdir():
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+            return jsonify({"ok": True, "message": "缓存已清空"})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
     return app
 
 
