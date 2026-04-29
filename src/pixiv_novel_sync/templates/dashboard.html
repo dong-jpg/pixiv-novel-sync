@@ -173,7 +173,6 @@
         ['已归档作者', stats.users_count || 0],
         ['已归档小说', stats.novels_count || 0],
         ['自动同步', data.sync_enabled ? '开启' : '关闭'],
-        ['同步范围', data.bookmark_restricts_label || '无'],
       ];
       document.getElementById('statsGrid').innerHTML = cards.map(function (entry) {
         return renderStatCard(entry[0], entry[1], entry[2]);
