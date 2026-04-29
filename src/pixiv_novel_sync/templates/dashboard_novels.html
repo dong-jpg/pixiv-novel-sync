@@ -147,14 +147,15 @@
       }
       list.innerHTML = items.map(function (item) {
         const cover = item.cover_url
-          ? `<img class="cover" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover">`
-          : '<div class="empty-cover"></div>';
+          ? `<img class="cover" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+          : '';
+        const fallbackCover = `<div class="empty-cover" style="display:${item.cover_url ? 'none' : 'flex'};align-items:center;justify-content:center;color:var(--text-secondary);font-size:12px;text-align:center;padding:8px;">${escapeHtml((item.title || '').slice(0, 4))}</div>`;
         const badges = [kindLabel(item.novel_kind), restrictLabel(item.restrict_value)].filter(Boolean).map(function(b) {
           return '<span class="badge">' + escapeHtml(b) + '</span>';
         }).join('');
         return `
           <article class="item">
-            ${cover}
+            ${cover}${fallbackCover}
             <div class="content">
               <a class="title-link" href="/dashboard/novels/${encodeURIComponent(item.novel_id)}">${escapeHtml(item.title || '未命名小说')}</a>
               <div class="meta">${badges}作者：${escapeHtml(item.author_name || '未知')}</div>
