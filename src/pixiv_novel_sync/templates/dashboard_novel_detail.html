@@ -126,7 +126,7 @@
         return;
       }
       const cover = data.cover_url
-        ? `<img class="cover" src="${escapeHtml(data.cover_url)}" alt="cover">`
+        ? `<img class="cover" src="/proxy/image?url=${encodeURIComponent(data.cover_url)}" alt="cover">`
         : '<div class="empty-cover"></div>';
       const badges = [kindLabel(data.novel_kind), restrictLabel(data.restrict_value)].map(function(b) {
         return '<span class="badge">' + escapeHtml(b) + '</span>';

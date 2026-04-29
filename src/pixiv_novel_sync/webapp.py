@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import requests as http_requests
 import yaml
-from flask import Flask, jsonify, redirect, render_template, request
+from flask import Flask, Response, jsonify, redirect, render_template, request
 
 from .jobs.quick_sync import run_bookmark_sync
 from .oauth_helper import OAuthManager
@@ -124,6 +125,26 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     settings_manager = SettingsManager(config_path)
     sync_job_manager = SyncJobManager(config_path=config_path, env_path=env_path)
     oauth_manager = OAuthManager()
+
+    @app.get("/proxy/image")
+    def proxy_image():
+        url = request.args.get("url", "").strip()
+        if not url:
+            return Response("Missing url parameter", status=400)
+        if "pximg.net" not in url:
+            return Response("Only pixiv images are allowed", status=403)
+        try:
+            headers = {
+                "Referer": "https://www.pixiv.net/",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            }
+            current_settings = settings_manager.load(env_path=env_path)
+            proxies = {"http": current_settings.pixiv.proxy, "https": current_settings.pixiv.proxy} if current_settings.pixiv.proxy else None
+            resp = http_requests.get(url, headers=headers, timeout=15, verify=current_settings.pixiv.verify_ssl, proxies=proxies)
+            resp.raise_for_status()
+            return Response(resp.content, content_type=resp.headers.get("Content-Type", "image/jpeg"))
+        except Exception as exc:
+            return Response(f"Failed to fetch image: {exc}", status=502)
 
     @app.get("/")
     def index():

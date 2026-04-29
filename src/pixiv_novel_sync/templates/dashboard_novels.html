@@ -147,7 +147,7 @@
       }
       list.innerHTML = items.map(function (item) {
         const cover = item.cover_url
-          ? `<img class="cover" src="${escapeHtml(item.cover_url)}" alt="cover">`
+          ? `<img class="cover" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover">`
           : '<div class="empty-cover"></div>';
         const badges = [kindLabel(item.novel_kind), restrictLabel(item.restrict_value)].filter(Boolean).map(function(b) {
           return '<span class="badge">' + escapeHtml(b) + '</span>';

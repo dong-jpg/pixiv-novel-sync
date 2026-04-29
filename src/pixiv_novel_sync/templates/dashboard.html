@@ -121,7 +121,7 @@
         return '<div class="stat-value" style="color:var(--text-secondary)">未绑定</div><div class="profile-sub">当前数据库里还没有账号信息</div>';
       }
       const avatar = user.avatar_url
-        ? `<img class="avatar" src="${escapeHtml(user.avatar_url)}" alt="avatar">`
+        ? `<img class="avatar" src="/proxy/image?url=${encodeURIComponent(user.avatar_url)}" alt="avatar">`
         : `<div class="avatar" style="display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:20px;">${escapeHtml((user.name || 'U').slice(0, 1))}</div>`;
       const account = user.account ? `@${escapeHtml(user.account)}` : `ID ${escapeHtml(user.user_id)}`;
       const fallback = user.is_fallback ? '<div class="badge" style="margin-top:8px;">回退展示</div>' : '';

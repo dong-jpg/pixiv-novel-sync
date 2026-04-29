@@ -116,7 +116,7 @@
       }
       list.innerHTML = items.map(function (item) {
         const avatar = item.avatar_url
-          ? `<img class="avatar" src="${escapeHtml(item.avatar_url)}" alt="avatar">`
+          ? `<img class="avatar" src="/proxy/image?url=${encodeURIComponent(item.avatar_url)}" alt="avatar">`
           : `<div class="empty-avatar">${escapeHtml((item.name || 'U').slice(0, 1))}</div>`;
         const account = item.account ? `@${escapeHtml(item.account)}` : `ID ${escapeHtml(item.user_id)}`;
         return `
