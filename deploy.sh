@@ -88,6 +88,14 @@ echo -e "${GREEN}[6/8] 配置 Nginx 缓存...${NC}"
 # 创建缓存目录
 sudo mkdir -p /var/cache/nginx/pixiv_img
 sudo chown -R www-data:www-data /var/cache/nginx/pixiv_img
+sudo chmod -R 775 /var/cache/nginx/pixiv_img
+# 设置 setgid 位，新创建的目录继承组权限
+sudo chmod g+s /var/cache/nginx/pixiv_img
+# 将当前用户加入 www-data 组
+sudo usermod -a -G www-data $(whoami)
+# 设置 ACL，让 www-data 和当前用户都有读写权限
+sudo setfacl -d -m g::rwx /var/cache/nginx/pixiv_img
+sudo setfacl -m g::rwx /var/cache/nginx/pixiv_img
 
 # 复制 Nginx 配置
 sudo cp -f config/nginx/pixiv-novel-sync.conf /etc/nginx/sites-available/pixiv-novel-sync

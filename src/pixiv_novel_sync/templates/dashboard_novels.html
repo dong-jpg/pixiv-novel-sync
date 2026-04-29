@@ -85,9 +85,12 @@
           <button class="tab" data-category="bookmark">收藏</button>
           <button class="tab" data-category="following">追更</button>
         </div>
-        <div>
-          <div id="summary" class="summary">加载中...</div>
-          <div id="pageInfo" class="summary"></div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <div>
+            <div id="summary" class="summary">加载中...</div>
+            <div id="pageInfo" class="summary"></div>
+          </div>
+          <button id="syncSubscribedBtn" class="btn" style="display:none;background:linear-gradient(90deg,#ff9500,#ff6b00);color:#fff;padding:8px 16px;font-size:12px;">同步订阅</button>
         </div>
       </div>
       <div id="list" class="list"></div>
@@ -141,7 +144,7 @@
       setActiveTab(currentCategory);
       const list = document.getElementById('list');
       if (!items.length) {
-        const emptyMsg = currentCategory === 'following' ? '暂无追更系列，请先同步关注用户的小说' : '暂无数据，请先执行一次手工同步';
+        const emptyMsg = currentCategory === 'following' ? '暂无订阅系列，点击"同步订阅"按钮获取' : '暂无数据，请先执行一次手工同步';
         list.innerHTML = `<div class="empty-state">${escapeHtml(emptyMsg)}</div>`;
         return;
       }
@@ -192,7 +195,37 @@
       document.querySelectorAll('.tab').forEach(function (btn) {
         btn.classList.toggle('active', btn.dataset.category === category);
       });
+      // 显示/隐藏同步按钮
+      const syncBtn = document.getElementById('syncSubscribedBtn');
+      if (syncBtn) {
+        syncBtn.style.display = category === 'following' ? 'block' : 'none';
+      }
     }
+
+    // 同步订阅系列
+    async function syncSubscribedSeries() {
+      const btn = document.getElementById('syncSubscribedBtn');
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '同步中...';
+      try {
+        const resp = await fetch('/api/dashboard/sync/subscribed-series', { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+          alert(`同步完成，共 ${data.stats.series_synced} 个系列`);
+          loadNovels(1, 'following');
+        } else {
+          alert('同步失败: ' + (data.error || '未知错误'));
+        }
+      } catch (e) {
+        alert('同步请求失败');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    }
+
+    document.getElementById('syncSubscribedBtn').addEventListener('click', syncSubscribedSeries);
 
     document.getElementById('tabs').addEventListener('click', function (event) {
       const btn = event.target.closest('.tab');

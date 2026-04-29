@@ -614,6 +614,36 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         finally:
             db.close()
 
+    @app.post("/api/dashboard/sync/subscribed-series")
+    def dashboard_sync_subscribed_series():
+        current_settings = settings_manager.load(env_path=env_path)
+        auth = PixivAuthManager(current_settings.pixiv)
+        api, auth_result = auth.login()
+        if auth_result.user_id is None:
+            return jsonify({"error": "Unable to determine user ID"}), 400
+
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        storage = FileStorage(current_settings)
+        storage.ensure_dirs([
+            current_settings.storage.public_dir,
+            current_settings.storage.private_dir,
+            current_settings.storage.db_path.parent
+        ])
+
+        try:
+            service = BookmarkNovelSyncService(
+                api=api, db=db, storage=storage, settings=current_settings
+            )
+            stats = service.sync_subscribed_series()
+            logger.info("Subscribed series sync finished: %s", json.dumps(stats, ensure_ascii=False))
+            return jsonify({"ok": True, "stats": stats})
+        except Exception as exc:
+            logger.exception("Subscribed series sync failed")
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            db.close()
+
     @app.get("/api/cache/status")
     def cache_status():
         import shutil

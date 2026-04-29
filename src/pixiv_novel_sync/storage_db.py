@@ -100,6 +100,8 @@ class Database:
         )
         # 迁移：为旧版 users 表添加 status 和 last_checked_at 字段
         self._migrate_users_table()
+        # 迁移：为 series 表添加 is_subscribed 字段
+        self._migrate_series_table()
         self.conn.commit()
 
     def upsert_user(self, record: UserRecord) -> None:
@@ -459,6 +461,13 @@ class Database:
         if "last_checked_at" not in columns:
             self.conn.execute("ALTER TABLE users ADD COLUMN last_checked_at TEXT")
 
+    def _migrate_series_table(self) -> None:
+        """为 series 表添加 is_subscribed 字段"""
+        cursor = self.conn.execute("PRAGMA table_info(series)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "is_subscribed" not in columns:
+            self.conn.execute("ALTER TABLE series ADD COLUMN is_subscribed INTEGER NOT NULL DEFAULT 0")
+
     def upsert_user_status(self, user_id: int, status: str) -> None:
         self.conn.execute(
             "UPDATE users SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE user_id = ?",
@@ -480,6 +489,28 @@ class Database:
             """,
             (series_id, title, description, user_id, cover_url, series_id),
         )
+        self.conn.commit()
+
+    def upsert_subscribed_series(self, series_id: int, title: str, description: str, user_id: int, cover_url: str | None, total_novels: int = 0) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO series (series_id, title, description, user_id, cover_url, total_novels, is_subscribed, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+            ON CONFLICT(series_id) DO UPDATE SET
+                title = excluded.title,
+                description = excluded.description,
+                cover_url = COALESCE(excluded.cover_url, series.cover_url),
+                total_novels = excluded.total_novels,
+                is_subscribed = 1,
+                last_seen_at = CURRENT_TIMESTAMP
+            """,
+            (series_id, title, description, user_id, cover_url, total_novels),
+        )
+        self.conn.commit()
+
+    def clear_subscribed_series(self) -> None:
+        """清除所有订阅标记"""
+        self.conn.execute("UPDATE series SET is_subscribed = 0")
         self.conn.commit()
 
     def list_bookmark_novels(self, page: int = 1, page_size: int = 10) -> dict[str, Any]:
@@ -517,13 +548,13 @@ class Database:
         }
 
     def list_following_series(self, page: int = 1, page_size: int = 10) -> dict[str, Any]:
+        """获取订阅的系列列表"""
         page = max(page, 1)
         page_size = max(page_size, 1)
         total = int(
             self.conn.execute(
                 """
-                SELECT COUNT(DISTINCT n.series_id) FROM novels n
-                WHERE n.series_id IS NOT NULL
+                SELECT COUNT(*) FROM series WHERE is_subscribed = 1
                 """
             ).fetchone()[0]
         )
@@ -533,39 +564,27 @@ class Database:
         rows = self.conn.execute(
             """
             SELECT
-                n.series_id,
-                COALESCE(se.title, MIN(n.title)) AS series_title,
+                se.series_id,
+                se.title AS series_title,
                 se.description AS series_description,
-                n.user_id,
+                se.user_id,
                 u.name AS author_name,
                 se.cover_url,
-                COUNT(*) AS chapter_count,
-                MAX(n.last_seen_at) AS last_updated,
-                GROUP_CONCAT(DISTINCT s.source_type) AS source_types
-            FROM novels n
-            LEFT JOIN users AS u ON u.user_id = n.user_id
-            LEFT JOIN sources AS s ON s.novel_id = n.novel_id
-            LEFT JOIN series AS se ON se.series_id = n.series_id
-            WHERE n.series_id IS NOT NULL
-            GROUP BY n.series_id
-            ORDER BY last_updated DESC
+                se.total_novels AS chapter_count,
+                se.last_seen_at AS last_updated
+            FROM series se
+            LEFT JOIN users AS u ON u.user_id = se.user_id
+            WHERE se.is_subscribed = 1
+            ORDER BY se.last_seen_at DESC
             LIMIT ? OFFSET ?
             """,
             [page_size, offset],
         ).fetchall()
-        items = []
-        for row in rows:
-            item = dict(row)
-            source_types = item.get("source_types", "") or ""
-            if "following_user_scan" in source_types or "follow_feed_" in source_types:
-                item["source_label"] = "关注用户"
-            else:
-                item["source_label"] = "收藏"
-            items.append(item)
+        items = [dict(row) for row in rows]
         return {
             "items": items,
             "page": page, "page_size": page_size,
-            "total": total, "total_pages": total_pages,
+            "total": total, "total_pages": total_pages, "category": "following",
         }
 
     def get_series_detail(self, series_id: int) -> dict[str, Any] | None:

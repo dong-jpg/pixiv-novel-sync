@@ -216,6 +216,79 @@ class BookmarkNovelSyncService:
                 time.sleep(page_delay)
         return stats
 
+    def sync_subscribed_series(self, progress_callback: Any = None) -> dict[str, int]:
+        """获取用户订阅的系列列表"""
+        stats = {"series_synced": 0}
+        
+        logger.info("Fetching subscribed series list")
+        if progress_callback:
+            progress_callback("phase", {"phase": "获取订阅系列"})
+        
+        # 使用 Pixiv Web API 获取订阅的系列
+        # 由于 pixivpy3 没有封装这个 API，我们需要直接使用 requests
+        import requests
+        
+        # 获取 access_token
+        access_token = getattr(self.api, 'access_token', None)
+        if not access_token:
+            logger.error("No access_token available")
+            return stats
+        
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "User-Agent": "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)",
+            "Accept-Language": "zh_CN",
+        }
+        
+        # 清除旧的订阅标记
+        self.db.clear_subscribed_series()
+        
+        # 获取订阅的系列列表
+        # Pixiv API: /v1/user/bookmarks/novel-series
+        url = "https://app-api.pixiv.net/v1/user/bookmarks/novel-series"
+        params = {"user_id": self.settings.pixiv.user_id}
+        
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            
+            series_list = data.get("novel_series_collections", [])
+            logger.info("Found %d subscribed series", len(series_list))
+            
+            for series_info in series_list:
+                series_id = series_info.get("id")
+                if not series_id:
+                    continue
+                
+                title = series_info.get("title", "")
+                description = series_info.get("description", "")
+                user_info = series_info.get("user", {})
+                user_id = user_info.get("id", 0)
+                cover_url = series_info.get("cover_image_urls", {}).get("medium", "")
+                total_novels = series_info.get("total", 0)
+                
+                self.db.upsert_subscribed_series(
+                    series_id=series_id,
+                    title=title,
+                    description=description,
+                    user_id=user_id,
+                    cover_url=cover_url,
+                    total_novels=total_novels,
+                )
+                stats["series_synced"] += 1
+                
+                if progress_callback:
+                    progress_callback("progress", {"message": f"已同步: {title}"})
+            
+            logger.info("Subscribed series sync completed: %d series", stats["series_synced"])
+            
+        except Exception as e:
+            logger.error("Failed to fetch subscribed series: %s", str(e))
+            raise
+        
+        return stats
+
     def _sync_novel(
         self,
         novel: Any,

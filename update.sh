@@ -49,6 +49,12 @@ fi
 # 更新 Nginx 配置
 echo -e "${GREEN}[5.5/6] 更新 Nginx 配置...${NC}"
 sudo cp -f config/nginx/pixiv-novel-sync.conf /etc/nginx/sites-available/pixiv-novel-sync
+
+# 确保缓存目录权限正确
+sudo chmod -R 775 /var/cache/nginx/pixiv_img 2>/dev/null || true
+sudo chmod g+s /var/cache/nginx/pixiv_img 2>/dev/null || true
+sudo setfacl -d -m g::rwx /var/cache/nginx/pixiv_img 2>/dev/null || true
+
 sudo nginx -t && sudo systemctl reload nginx
 echo "  Nginx 配置已更新"
 
