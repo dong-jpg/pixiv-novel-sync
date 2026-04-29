@@ -145,6 +145,11 @@ class SettingsManager:
             payload.get("delay_seconds_between_pages", sync_data.get("delay_seconds_between_pages", 1.0))
         )
 
+        sync_data["sync_bookmarks"] = bool(payload.get("sync_bookmarks", sync_data.get("sync_bookmarks", True)))
+        sync_data["sync_following_series"] = bool(payload.get("sync_following_series", sync_data.get("sync_following_series", True)))
+        sync_data["sync_following_users"] = bool(payload.get("sync_following_users", sync_data.get("sync_following_users", True)))
+        sync_data["sync_following_novels"] = bool(payload.get("sync_following_novels", sync_data.get("sync_following_novels", True)))
+
         with config_path.open("w", encoding="utf-8") as file:
             yaml.safe_dump(config_data, file, allow_unicode=True, sort_keys=False)
 
@@ -624,6 +629,10 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "max_pages_per_run": settings.sync.max_pages_per_run,
         "delay_seconds_between_items": settings.sync.delay_seconds_between_items,
         "delay_seconds_between_pages": settings.sync.delay_seconds_between_pages,
+        "sync_bookmarks": settings.sync.sync_bookmarks,
+        "sync_following_series": settings.sync.sync_following_series,
+        "sync_following_users": settings.sync.sync_following_users,
+        "sync_following_novels": settings.sync.sync_following_novels,
     }
 
 

@@ -31,6 +31,10 @@ class SyncSettings:
     max_pages_per_run: int | None
     delay_seconds_between_items: float
     delay_seconds_between_pages: float
+    sync_bookmarks: bool = True
+    sync_following_series: bool = True
+    sync_following_users: bool = True
+    sync_following_novels: bool = True
 
 
 @dataclass(slots=True)
@@ -96,6 +100,10 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             max_pages_per_run=_coerce_optional_int(sync_raw.get("max_pages_per_run")),
             delay_seconds_between_items=_coerce_float(sync_raw.get("delay_seconds_between_items"), 0.0),
             delay_seconds_between_pages=_coerce_float(sync_raw.get("delay_seconds_between_pages"), 0.0),
+            sync_bookmarks=bool(sync_raw.get("sync_bookmarks", True)),
+            sync_following_series=bool(sync_raw.get("sync_following_series", True)),
+            sync_following_users=bool(sync_raw.get("sync_following_users", True)),
+            sync_following_novels=bool(sync_raw.get("sync_following_novels", True)),
         ),
         storage=StorageSettings(
             public_dir=public_dir,

@@ -26,7 +26,7 @@ class BookmarkNovelSyncService:
         self.storage = storage
         self.settings = settings
 
-    def sync(self, user_id: int, restricts: Iterable[str], download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None) -> dict[str, int]:
+    def sync(self, user_id: int, restricts: Iterable[str], download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None, phase_name: str = "同步中") -> dict[str, int]:
         stats = self._empty_stats()
         max_items = self.settings.sync.max_items_per_run
         max_pages = self.settings.sync.max_pages_per_run
@@ -66,6 +66,7 @@ class BookmarkNovelSyncService:
                             "novel_id": novel_id,
                             "title": title,
                             "author": author_name,
+                            "phase": phase_name,
                         })
                     
                     counters = self._sync_novel(
@@ -98,7 +99,7 @@ class BookmarkNovelSyncService:
                     time.sleep(page_delay)
         return stats
 
-    def sync_following_novels(self, download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True) -> dict[str, int]:
+    def sync_following_novels(self, download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None, novels_only: bool = False) -> dict[str, int]:
         stats = self._empty_stats()
         max_items = self.settings.sync.max_items_per_run
         max_pages = self.settings.sync.max_pages_per_run
@@ -117,6 +118,8 @@ class BookmarkNovelSyncService:
 
             following_result = self.api.user_following(**next_following_query)
             following_page_count += 1
+            if progress_callback:
+                progress_callback("page", {"page": following_page_count})
             users = getattr(following_result, "user_previews", []) or []
 
             for user_preview in users:
@@ -127,6 +130,20 @@ class BookmarkNovelSyncService:
                 author_id = int(author_id)
                 author_name = getattr(user, "name", str(author_id))
                 stats["following_users_scanned"] = stats.get("following_users_scanned", 0) + 1
+                
+                # 保存用户信息
+                if not novels_only:
+                    from .models import UserRecord
+                    from .utils_hashing import stable_json_dumps
+                    account = getattr(user, "account", None)
+                    self.db.upsert_user(UserRecord(
+                        user_id=author_id,
+                        name=author_name,
+                        account=account,
+                        raw_json=stable_json_dumps(_to_plain(user)),
+                    ))
+                    stats["users"] = stats.get("users", 0) + 1
+
                 logger.info("Syncing followed user novels for user_id=%s name=%s", author_id, author_name)
 
                 next_novel_query: dict[str, Any] | None = {"user_id": author_id}
@@ -144,6 +161,20 @@ class BookmarkNovelSyncService:
                         if max_items is not None and processed_items >= max_items:
                             logger.info("Reached max_items_per_run=%s during followed user scan", max_items)
                             return stats
+                        processed_items += 1
+                        novel_id = int(novel.id)
+                        title = getattr(novel, "title", f"novel_{novel_id}")
+                        
+                        if progress_callback:
+                            progress_callback("novel_start", {
+                                "current": processed_items,
+                                "total": max_items or 50,
+                                "novel_id": novel_id,
+                                "title": title,
+                                "author": author_name,
+                                "phase": "同步用户小说",
+                            })
+                        
                         counters = self._sync_novel(
                             novel,
                             getattr(novel, "restrict", "public") or "public",
@@ -153,17 +184,32 @@ class BookmarkNovelSyncService:
                             source_type="following_user_scan",
                             source_key=str(author_id),
                         )
-                        processed_items += 1
                         self._merge_stats(stats, counters)
+                        
+                        if progress_callback:
+                            progress_callback("novel_done", {
+                                "novel_id": novel_id,
+                                "title": title,
+                                "bookmarks": counters.get("bookmarks", 0),
+                                "views": counters.get("views", 0),
+                                "assets": counters.get("assets_downloaded", 0),
+                            })
+                        
                         if item_delay > 0:
+                            if progress_callback:
+                                progress_callback("rate_limit", {"seconds": item_delay})
                             time.sleep(item_delay)
 
                     next_novel_query = self.api.parse_qs(getattr(novels_result, "next_url", None))
                     if next_novel_query and page_delay > 0:
+                        if progress_callback:
+                            progress_callback("rate_limit", {"seconds": page_delay})
                         time.sleep(page_delay)
 
             next_following_query = self.api.parse_qs(getattr(following_result, "next_url", None))
             if next_following_query and page_delay > 0:
+                if progress_callback:
+                    progress_callback("rate_limit", {"seconds": page_delay})
                 time.sleep(page_delay)
         return stats
 

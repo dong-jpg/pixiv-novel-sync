@@ -76,6 +76,29 @@
 
     <section class="card">
       <div class="section">
+        <div class="section-title">同步内容</div>
+        <p style="font-size:13px;color:var(--text-secondary);margin:0 0 14px;">分批同步可降低风控风险，建议每次只开启一项</p>
+        <div class="checks">
+          <div class="check-item">
+            <input type="checkbox" id="syncBookmarks">
+            <label for="syncBookmarks">同步收藏小说</label>
+          </div>
+          <div class="check-item">
+            <input type="checkbox" id="syncFollowingSeries">
+            <label for="syncFollowingSeries">同步关注用户的系列</label>
+          </div>
+          <div class="check-item">
+            <input type="checkbox" id="syncFollowingUsers">
+            <label for="syncFollowingUsers">同步关注用户列表</label>
+          </div>
+          <div class="check-item">
+            <input type="checkbox" id="syncFollowingNovels">
+            <label for="syncFollowingNovels">同步关注用户的小说</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
         <div class="section-title">同步选项</div>
         <div class="checks">
           <div class="check-item">
@@ -148,6 +171,10 @@
     async function loadSettings() {
       const resp = await fetch('/api/dashboard/settings');
       const data = await resp.json();
+      checked('syncBookmarks', data.sync_bookmarks);
+      checked('syncFollowingSeries', data.sync_following_series);
+      checked('syncFollowingUsers', data.sync_following_users);
+      checked('syncFollowingNovels', data.sync_following_novels);
       checked('enabled', data.enabled);
       checked('initialManualOnly', data.initial_manual_only);
       checked('downloadAssets', data.download_assets);
@@ -166,6 +193,10 @@
       if (document.getElementById('restrictPublic').checked) restricts.push('public');
       if (document.getElementById('restrictPrivate').checked) restricts.push('private');
       return {
+        sync_bookmarks: document.getElementById('syncBookmarks').checked,
+        sync_following_series: document.getElementById('syncFollowingSeries').checked,
+        sync_following_users: document.getElementById('syncFollowingUsers').checked,
+        sync_following_novels: document.getElementById('syncFollowingNovels').checked,
         enabled: document.getElementById('enabled').checked,
         initial_manual_only: document.getElementById('initialManualOnly').checked,
         download_assets: document.getElementById('downloadAssets').checked,
