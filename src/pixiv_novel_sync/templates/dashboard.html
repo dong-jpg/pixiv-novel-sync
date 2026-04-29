@@ -92,6 +92,23 @@
     <section class="card">
       <div class="card-title">最近同步任务</div>
       <div id="jobStatus" class="job muted">暂无任务记录</div>
+      <div id="progressBar" style="display:none; margin-top:16px;">
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+          <span id="progressPhase" style="font-size:13px;color:var(--text-secondary);">准备中</span>
+          <span id="progressCount" style="font-size:13px;color:var(--text-secondary);">0/0</span>
+        </div>
+        <div style="height:8px;background:var(--bg-soft);border-radius:4px;overflow:hidden;">
+          <div id="progressFill" style="height:100%;width:0%;background:linear-gradient(90deg,var(--brand-start),var(--brand-end));transition:width 0.3s;"></div>
+        </div>
+        <div id="progressNovel" style="font-size:12px;color:var(--text-secondary);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
+      </div>
+      <div id="logContainer" style="display:none; margin-top:16px; border-top:1px solid var(--line); padding-top:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <span style="font-size:13px;font-weight:600;color:var(--text-secondary);">同步日志</span>
+          <span id="logCount" style="font-size:11px;color:var(--text-secondary);">0 条</span>
+        </div>
+        <div id="logList" style="max-height:280px;overflow-y:auto;font-family:monospace;font-size:12px;line-height:1.8;background:var(--bg-soft);border-radius:8px;padding:12px;"></div>
+      </div>
     </section>
   </main>
 
@@ -168,20 +185,62 @@
 
     function renderJob(job) {
       const container = document.getElementById('jobStatus');
+      const progressBar = document.getElementById('progressBar');
+      const logContainer = document.getElementById('logContainer');
+      
       if (!job) {
         container.innerHTML = '<span style="color:var(--text-secondary)">暂无任务记录</span>';
+        progressBar.style.display = 'none';
+        logContainer.style.display = 'none';
         return;
       }
+      
       const statusClass = job.status === 'succeeded' ? 'ok' : (job.status === 'failed' ? 'bad' : (job.status === 'running' ? 'running' : ''));
       const statusText = job.status === 'succeeded' ? '成功' : (job.status === 'failed' ? '失败' : (job.status === 'running' ? '运行中' : job.status));
-      const stats = job.stats ? `<div style="margin-top:8px;">结果：${escapeHtml(JSON.stringify(job.stats))}</div>` : '';
+      const elapsed = job.elapsed ? `耗时 ${job.elapsed}秒` : '';
+      const stats = job.stats ? `<div style="margin-top:8px;font-size:13px;">结果：小说 ${job.stats.novels || 0} 本，资源 ${job.stats.assets_downloaded || 0} 个</div>` : '';
       const error = job.error ? `<div class="bad" style="margin-top:8px;">错误：${escapeHtml(job.error)}</div>` : '';
       container.innerHTML = `
         <div>任务 ID：${escapeHtml(job.job_id)}</div>
-        <div class="${statusClass}">状态：${statusText} ${escapeHtml(job.message || '')}</div>
+        <div class="${statusClass}">状态：${statusText} ${escapeHtml(job.message || '')} ${elapsed}</div>
         ${stats}
         ${error}
       `;
+      
+      // 进度条
+      if (job.status === 'running' && job.progress) {
+        progressBar.style.display = 'block';
+        const current = job.progress.current || 0;
+        const total = job.progress.total || 50;
+        const percent = Math.min(Math.round((current / total) * 100), 100);
+        document.getElementById('progressPhase').textContent = job.progress.phase || '同步中';
+        document.getElementById('progressCount').textContent = `${current}/${total}`;
+        document.getElementById('progressFill').style.width = percent + '%';
+        document.getElementById('progressNovel').textContent = job.progress.current_novel 
+          ? `当前: ${job.progress.current_novel}${job.progress.author ? ' - ' + job.progress.author : ''}`
+          : '';
+      } else {
+        progressBar.style.display = 'none';
+      }
+      
+      // 日志
+      if (job.logs && job.logs.length > 0) {
+        logContainer.style.display = 'block';
+        document.getElementById('logCount').textContent = `${job.logs.length} 条`;
+        const logList = document.getElementById('logList');
+        logList.innerHTML = job.logs.map(function(log) {
+          const levelColor = log.level === 'error' ? 'var(--danger)' : 
+                            (log.level === 'success' ? 'var(--success)' : 
+                            (log.level === 'warning' ? '#ff9500' : 'var(--text-secondary)'));
+          const levelIcon = log.level === 'error' ? '✗' : 
+                           (log.level === 'success' ? '✓' : 
+                           (log.level === 'warning' ? '⚠' : '›'));
+          return `<div style="color:${levelColor};"><span style="opacity:0.6;">${log.time}</span> ${levelIcon} ${escapeHtml(log.message)}</div>`;
+        }).join('');
+        logList.scrollTop = logList.scrollHeight;
+      } else {
+        logContainer.style.display = 'none';
+      }
     }
 
     async function pollJobStatus() {

@@ -26,7 +26,7 @@ class BookmarkNovelSyncService:
         self.storage = storage
         self.settings = settings
 
-    def sync(self, user_id: int, restricts: Iterable[str], download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True) -> dict[str, int]:
+    def sync(self, user_id: int, restricts: Iterable[str], download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None) -> dict[str, int]:
         stats = self._empty_stats()
         max_items = self.settings.sync.max_items_per_run
         max_pages = self.settings.sync.max_pages_per_run
@@ -36,6 +36,8 @@ class BookmarkNovelSyncService:
 
         for restrict in restricts:
             logger.info("Syncing bookmarked novels for restrict=%s", restrict)
+            if progress_callback:
+                progress_callback("page", {"page": 1, "restrict": restrict})
             next_query: dict[str, Any] | None = {"user_id": user_id, "restrict": restrict}
             page_count = 0
             while next_query:
@@ -44,11 +46,28 @@ class BookmarkNovelSyncService:
                     return stats
                 result = self.api.user_bookmarks_novel(**next_query)
                 page_count += 1
+                if progress_callback:
+                    progress_callback("page", {"page": page_count, "restrict": restrict})
                 novels = getattr(result, "novels", []) or []
                 for novel in novels:
                     if max_items is not None and processed_items >= max_items:
                         logger.info("Reached max_items_per_run=%s, stopping sync", max_items)
                         return stats
+                    processed_items += 1
+                    novel_id = int(novel.id)
+                    title = getattr(novel, "title", f"novel_{novel_id}")
+                    user = getattr(novel, "user", None)
+                    author_name = getattr(user, "name", "未知") if user else "未知"
+                    
+                    if progress_callback:
+                        progress_callback("novel_start", {
+                            "current": processed_items,
+                            "total": max_items or 50,
+                            "novel_id": novel_id,
+                            "title": title,
+                            "author": author_name,
+                        })
+                    
                     counters = self._sync_novel(
                         novel,
                         restrict,
@@ -57,12 +76,25 @@ class BookmarkNovelSyncService:
                         write_raw_text,
                         source_type=f"bookmark_{restrict}",
                     )
-                    processed_items += 1
                     self._merge_stats(stats, counters)
+                    
+                    if progress_callback:
+                        progress_callback("novel_done", {
+                            "novel_id": novel_id,
+                            "title": title,
+                            "bookmarks": counters.get("bookmarks", 0),
+                            "views": counters.get("views", 0),
+                            "assets": counters.get("assets_downloaded", 0),
+                        })
+                    
                     if item_delay > 0:
+                        if progress_callback:
+                            progress_callback("rate_limit", {"seconds": item_delay})
                         time.sleep(item_delay)
                 next_query = self.api.parse_qs(getattr(result, "next_url", None))
                 if next_query and page_delay > 0:
+                    if progress_callback:
+                        progress_callback("rate_limit", {"seconds": page_delay})
                     time.sleep(page_delay)
         return stats
 
@@ -236,6 +268,8 @@ class BookmarkNovelSyncService:
             "novels": 1,
             "texts_updated": 1,
             "assets_downloaded": assets_downloaded,
+            "bookmarks": int(getattr(detail_novel, "total_bookmarks", 0) or 0),
+            "views": int(getattr(detail_novel, "total_view", 0) or 0),
         }
 
     @staticmethod

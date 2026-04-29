@@ -27,6 +27,8 @@ class SyncJobState:
     finished_at: float | None = None
     stats: dict[str, Any] | None = None
     error: str | None = None
+    progress: dict[str, Any] = field(default_factory=dict)
+    logs: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -35,6 +37,7 @@ class SyncJobManager:
     env_path: str | None
     _jobs: dict[str, SyncJobState] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    MAX_LOGS: int = 30
 
     def start_job(self) -> SyncJobState:
         with self._lock:
@@ -59,21 +62,49 @@ class SyncJobManager:
             latest_key = sorted(self._jobs.keys())[-1]
             return self._jobs[latest_key]
 
+    def add_log(self, job_id: str, level: str, message: str) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            log_entry = {
+                "time": time.strftime("%H:%M:%S"),
+                "level": level,
+                "message": message,
+            }
+            job.logs.append(log_entry)
+            if len(job.logs) > self.MAX_LOGS:
+                job.logs = job.logs[-self.MAX_LOGS:]
+
+    def update_progress(self, job_id: str, **kwargs: Any) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            job.progress.update(kwargs)
+            job.message = kwargs.get("message", job.message)
+
     def _run_job(self, job_id: str) -> None:
         job = self.get_job(job_id)
         if job is None:
             return
         try:
             settings = load_settings(self.config_path, self.env_path)
-            job.message = "正在同步收藏小说..."
-            stats = run_bookmark_sync(settings)
+            self.add_log(job_id, "info", "加载配置完成")
+            self.update_progress(job_id, phase="准备中", message="正在初始化同步...")
+            
+            from .jobs.quick_sync import run_bookmark_sync_with_progress
+            stats = run_bookmark_sync_with_progress(settings, self, job_id)
+            
             job.status = "succeeded"
             job.message = "同步完成"
             job.stats = stats
+            self.add_log(job_id, "success", f"同步完成: {stats.get('novels', 0)} 本小说, {stats.get('assets_downloaded', 0)} 个资源")
         except Exception as exc:
             job.status = "failed"
             job.message = "同步失败"
             job.error = str(exc)
+            self.add_log(job_id, "error", f"同步失败: {exc}")
         finally:
             job.finished_at = time.time()
 
@@ -474,14 +505,21 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
 def _job_to_dict(job: SyncJobState | None) -> dict[str, Any] | None:
     if job is None:
         return None
+    elapsed = None
+    if job.started_at:
+        end = job.finished_at or time.time()
+        elapsed = round(end - job.started_at, 1)
     return {
         "job_id": job.job_id,
         "status": job.status,
         "message": job.message,
         "started_at": job.started_at,
         "finished_at": job.finished_at,
+        "elapsed": elapsed,
         "stats": job.stats,
         "error": job.error,
+        "progress": job.progress,
+        "logs": job.logs,
     }
 
 
