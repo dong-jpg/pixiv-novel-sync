@@ -523,8 +523,7 @@ class Database:
             self.conn.execute(
                 """
                 SELECT COUNT(DISTINCT n.series_id) FROM novels n
-                LEFT JOIN sources s ON s.novel_id = n.novel_id
-                WHERE n.series_id IS NOT NULL AND (s.source_type = 'following_user_scan' OR s.source_type LIKE 'follow_feed_%')
+                WHERE n.series_id IS NOT NULL
                 """
             ).fetchone()[0]
         )
@@ -541,20 +540,30 @@ class Database:
                 u.name AS author_name,
                 se.cover_url,
                 COUNT(*) AS chapter_count,
-                MAX(n.last_seen_at) AS last_updated
+                MAX(n.last_seen_at) AS last_updated,
+                GROUP_CONCAT(DISTINCT s.source_type) AS source_types
             FROM novels n
             LEFT JOIN users AS u ON u.user_id = n.user_id
             LEFT JOIN sources AS s ON s.novel_id = n.novel_id
             LEFT JOIN series AS se ON se.series_id = n.series_id
-            WHERE n.series_id IS NOT NULL AND (s.source_type = 'following_user_scan' OR s.source_type LIKE 'follow_feed_%')
+            WHERE n.series_id IS NOT NULL
             GROUP BY n.series_id
             ORDER BY last_updated DESC
             LIMIT ? OFFSET ?
             """,
             [page_size, offset],
         ).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            source_types = item.get("source_types", "") or ""
+            if "following_user_scan" in source_types or "follow_feed_" in source_types:
+                item["source_label"] = "关注用户"
+            else:
+                item["source_label"] = "收藏"
+            items.append(item)
         return {
-            "items": [dict(row) for row in rows],
+            "items": items,
             "page": page, "page_size": page_size,
             "total": total, "total_pages": total_pages,
         }
