@@ -99,7 +99,7 @@
     }
 
     async function loadFollows(page) {
-      const resp = await fetch(`/api/dashboard/follows?page=${page}`);
+      const resp = await fetch(`/api/dashboard/users?page=${page}`);
       const data = await resp.json();
       const items = data.items || [];
       currentPage = data.page || 1;
@@ -120,14 +120,19 @@
           : '';
         const fallbackAvatar = `<div class="empty-avatar" style="display:${item.avatar_url ? 'none' : 'flex'};">${escapeHtml((item.name || 'U').slice(0, 2))}</div>`;
         const account = item.account ? `@${escapeHtml(item.account)}` : `ID ${escapeHtml(item.user_id)}`;
+        const statusMap = {normal: {label: '正常', color: 'var(--success)'}, suspended: {label: '封号', color: 'var(--danger)'}, cleared: {label: '资源清空', color: '#ff9500'}, unknown: {label: '未知', color: 'var(--text-secondary)'}};
+        const status = statusMap[item.status] || statusMap.unknown;
         return `
           <article class="item">
             ${avatar}${fallbackAvatar}
             <div class="info">
-              <div class="name">${escapeHtml(item.name || '未命名用户')}</div>
-              <div class="sub">${account}</div>
+              <div class="name"><a href="/dashboard/users/${encodeURIComponent(item.user_id)}" style="color:inherit;text-decoration:none;">${escapeHtml(item.name || '未命名用户')}</a></div>
+              <div class="sub">${account} · 小说 ${item.novel_count || 0} 篇</div>
             </div>
-            <div class="sub" style="flex-shrink:0;">更新于 ${escapeHtml(item.updated_at || '-')}</div>
+            <div style="display:flex;align-items:center;gap:12px;flex-shrink:0;">
+              <span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;padding:4px 8px;border-radius:6px;background:${status.color}20;color:${status.color};font-weight:600;">● ${status.label}</span>
+              <div class="sub">${escapeHtml(item.updated_at || '-')}</div>
+            </div>
           </article>
         `;
       }).join('');

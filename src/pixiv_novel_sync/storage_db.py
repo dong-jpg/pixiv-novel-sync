@@ -25,6 +25,8 @@ class Database:
                 name TEXT NOT NULL,
                 account TEXT,
                 raw_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'unknown',
+                last_checked_at TEXT,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -76,6 +78,17 @@ class Database:
                 PRIMARY KEY (novel_id, source_type, source_key)
             );
 
+            CREATE TABLE IF NOT EXISTS series (
+                series_id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT,
+                user_id INTEGER NOT NULL,
+                cover_url TEXT,
+                total_novels INTEGER DEFAULT 0,
+                first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE VIRTUAL TABLE IF NOT EXISTS novel_fts USING fts5(
                 novel_id UNINDEXED,
                 title,
@@ -85,6 +98,8 @@ class Database:
             );
             """
         )
+        # 迁移：为旧版 users 表添加 status 和 last_checked_at 字段
+        self._migrate_users_table()
         self.conn.commit()
 
     def upsert_user(self, record: UserRecord) -> None:
@@ -434,3 +449,245 @@ class Database:
 
     def close(self) -> None:
         self.conn.close()
+
+    def _migrate_users_table(self) -> None:
+        """为旧版 users 表添加 status 和 last_checked_at 字段"""
+        cursor = self.conn.execute("PRAGMA table_info(users)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "status" not in columns:
+            self.conn.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'")
+        if "last_checked_at" not in columns:
+            self.conn.execute("ALTER TABLE users ADD COLUMN last_checked_at TEXT")
+
+    def upsert_user_status(self, user_id: int, status: str) -> None:
+        self.conn.execute(
+            "UPDATE users SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+            (status, user_id),
+        )
+        self.conn.commit()
+
+    def upsert_series(self, series_id: int, title: str, description: str, user_id: int, cover_url: str | None) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO series (series_id, title, description, user_id, cover_url, total_novels, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+            ON CONFLICT(series_id) DO UPDATE SET
+                title = excluded.title,
+                description = excluded.description,
+                cover_url = COALESCE(excluded.cover_url, series.cover_url),
+                total_novels = (SELECT COUNT(*) FROM novels WHERE series_id = ?),
+                last_seen_at = CURRENT_TIMESTAMP
+            """,
+            (series_id, title, description, user_id, cover_url, series_id),
+        )
+        self.conn.commit()
+
+    def list_bookmark_novels(self, page: int = 1, page_size: int = 10) -> dict[str, Any]:
+        page = max(page, 1)
+        page_size = max(page_size, 1)
+        where_sql = "WHERE s.source_type LIKE 'bookmark_%'"
+        total = int(
+            self.conn.execute(
+                f"SELECT COUNT(DISTINCT n.novel_id) FROM novels n LEFT JOIN sources s ON s.novel_id = n.novel_id {where_sql}"
+            ).fetchone()[0]
+        )
+        total_pages = max((total + page_size - 1) // page_size, 1)
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
+        rows = self.conn.execute(
+            f"""
+            SELECT DISTINCT
+                n.novel_id, n.title, n.user_id, n.series_id,
+                u.name AS author_name, n.cover_url, n.restrict_value,
+                n.total_bookmarks, n.total_views, n.last_seen_at, n.first_seen_at,
+                CASE WHEN n.series_id IS NULL THEN 'single' ELSE 'series' END AS novel_kind
+            FROM novels AS n
+            LEFT JOIN users AS u ON u.user_id = n.user_id
+            LEFT JOIN sources AS s ON s.novel_id = n.novel_id
+            {where_sql}
+            ORDER BY n.last_seen_at DESC, n.novel_id DESC
+            LIMIT ? OFFSET ?
+            """,
+            [page_size, offset],
+        ).fetchall()
+        return {
+            "items": [dict(row) for row in rows],
+            "page": page, "page_size": page_size,
+            "total": total, "total_pages": total_pages, "category": "bookmark",
+        }
+
+    def list_following_series(self, page: int = 1, page_size: int = 10) -> dict[str, Any]:
+        page = max(page, 1)
+        page_size = max(page_size, 1)
+        total = int(
+            self.conn.execute(
+                """
+                SELECT COUNT(DISTINCT n.series_id) FROM novels n
+                LEFT JOIN sources s ON s.novel_id = n.novel_id
+                WHERE n.series_id IS NOT NULL AND (s.source_type = 'following_user_scan' OR s.source_type LIKE 'follow_feed_%')
+                """
+            ).fetchone()[0]
+        )
+        total_pages = max((total + page_size - 1) // page_size, 1)
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
+        rows = self.conn.execute(
+            """
+            SELECT
+                n.series_id,
+                COALESCE(se.title, MIN(n.title)) AS series_title,
+                se.description AS series_description,
+                n.user_id,
+                u.name AS author_name,
+                se.cover_url,
+                COUNT(*) AS chapter_count,
+                MAX(n.last_seen_at) AS last_updated
+            FROM novels n
+            LEFT JOIN users AS u ON u.user_id = n.user_id
+            LEFT JOIN sources AS s ON s.novel_id = n.novel_id
+            LEFT JOIN series AS se ON se.series_id = n.series_id
+            WHERE n.series_id IS NOT NULL AND (s.source_type = 'following_user_scan' OR s.source_type LIKE 'follow_feed_%')
+            GROUP BY n.series_id
+            ORDER BY last_updated DESC
+            LIMIT ? OFFSET ?
+            """,
+            [page_size, offset],
+        ).fetchall()
+        return {
+            "items": [dict(row) for row in rows],
+            "page": page, "page_size": page_size,
+            "total": total, "total_pages": total_pages,
+        }
+
+    def get_series_detail(self, series_id: int) -> dict[str, Any] | None:
+        series_row = self.conn.execute(
+            "SELECT * FROM series WHERE series_id = ?", (series_id,)
+        ).fetchone()
+        if series_row is None:
+            novels = self.conn.execute(
+                """
+                SELECT n.*, u.name AS author_name FROM novels n
+                LEFT JOIN users u ON u.user_id = n.user_id
+                WHERE n.series_id = ?
+                ORDER BY n.create_date ASC
+                """,
+                (series_id,),
+            ).fetchall()
+            if not novels:
+                return None
+            first = dict(novels[0])
+            series_info = {
+                "series_id": series_id,
+                "title": first.get("title", f"系列 {series_id}"),
+                "description": "",
+                "user_id": first.get("user_id"),
+                "author_name": first.get("author_name", "未知"),
+                "cover_url": first.get("cover_url"),
+                "total_novels": len(novels),
+            }
+        else:
+            series_info = dict(series_row)
+            novels = self.conn.execute(
+                """
+                SELECT n.*, u.name AS author_name FROM novels n
+                LEFT JOIN users u ON u.user_id = n.user_id
+                WHERE n.series_id = ?
+                ORDER BY n.create_date ASC
+                """,
+                (series_id,),
+            ).fetchall()
+        series_info["novels"] = [dict(row) for row in novels]
+        return series_info
+
+    def list_users(self, page: int = 1, page_size: int = 10, status: str = "all") -> dict[str, Any]:
+        page = max(page, 1)
+        page_size = max(page_size, 1)
+        where_clause = ""
+        params: list[Any] = []
+        if status != "all":
+            where_clause = "WHERE u.status = ?"
+            params.append(status)
+        total = int(
+            self.conn.execute(
+                f"SELECT COUNT(*) FROM users u {where_clause}", params
+            ).fetchone()[0]
+        )
+        total_pages = max((total + page_size - 1) // page_size, 1)
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
+        rows = self.conn.execute(
+            f"""
+            SELECT u.user_id, u.name, u.account, u.raw_json, u.status, u.last_checked_at, u.updated_at,
+                   (SELECT COUNT(*) FROM novels n WHERE n.user_id = u.user_id) AS novel_count
+            FROM users u
+            {where_clause}
+            ORDER BY u.updated_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            [*params, page_size, offset],
+        ).fetchall()
+        items = []
+        for row in rows:
+            raw = self._load_raw_json(row["raw_json"])
+            items.append({
+                "user_id": row["user_id"],
+                "name": row["name"],
+                "account": row["account"],
+                "avatar_url": self._extract_user_avatar(raw),
+                "status": row["status"] or "unknown",
+                "last_checked_at": row["last_checked_at"],
+                "updated_at": row["updated_at"],
+                "novel_count": row["novel_count"],
+            })
+        return {
+            "items": items,
+            "page": page, "page_size": page_size,
+            "total": total, "total_pages": total_pages,
+        }
+
+    def get_user_detail(self, user_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        raw = self._load_raw_json(row["raw_json"])
+        novel_count = int(
+            self.conn.execute("SELECT COUNT(*) FROM novels WHERE user_id = ?", (user_id,)).fetchone()[0]
+        )
+        return {
+            "user_id": row["user_id"],
+            "name": row["name"],
+            "account": row["account"],
+            "avatar_url": self._extract_user_avatar(raw),
+            "status": row["status"] or "unknown",
+            "last_checked_at": row["last_checked_at"],
+            "updated_at": row["updated_at"],
+            "novel_count": novel_count,
+        }
+
+    def list_user_novels(self, user_id: int, page: int = 1, page_size: int = 10) -> dict[str, Any]:
+        page = max(page, 1)
+        page_size = max(page_size, 1)
+        total = int(
+            self.conn.execute("SELECT COUNT(*) FROM novels WHERE user_id = ?", (user_id,)).fetchone()[0]
+        )
+        total_pages = max((total + page_size - 1) // page_size, 1)
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
+        rows = self.conn.execute(
+            """
+            SELECT n.novel_id, n.title, n.series_id, n.cover_url, n.restrict_value,
+                   n.total_bookmarks, n.total_views, n.last_seen_at,
+                   CASE WHEN n.series_id IS NULL THEN 'single' ELSE 'series' END AS novel_kind
+            FROM novels n WHERE n.user_id = ?
+            ORDER BY n.last_seen_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            [user_id, page_size, offset],
+        ).fetchall()
+        return {
+            "items": [dict(row) for row in rows],
+            "page": page, "page_size": page_size,
+            "total": total, "total_pages": total_pages,
+        }

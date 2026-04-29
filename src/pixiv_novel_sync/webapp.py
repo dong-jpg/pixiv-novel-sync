@@ -396,12 +396,17 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         page = max(int(request.args.get("page", 1) or 1), 1)
         page_size = 10
         category = str(request.args.get("category", "all") or "all").strip().lower()
-        if category not in {"all", "series", "single", "following"}:
+        if category not in {"all", "bookmark", "following"}:
             category = "all"
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         try:
-            payload = db.list_recent_novels(page=page, page_size=page_size, category=category)
+            if category == "bookmark":
+                payload = db.list_bookmark_novels(page=page, page_size=page_size)
+            elif category == "following":
+                payload = db.list_following_series(page=page, page_size=page_size)
+            else:
+                payload = db.list_recent_novels(page=page, page_size=page_size, category="all")
         finally:
             db.close()
         return jsonify(payload)
@@ -418,6 +423,126 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         if payload is None:
             return jsonify({"error": "novel not found"}), 404
         return jsonify(payload)
+
+    @app.get("/api/dashboard/series/<int:series_id>")
+    def dashboard_series_detail(series_id: int):
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            payload = db.get_series_detail(series_id)
+        finally:
+            db.close()
+        if payload is None:
+            return jsonify({"error": "series not found"}), 404
+        return jsonify(payload)
+
+    @app.get("/dashboard/series/<int:series_id>")
+    def dashboard_series_detail_page(series_id: int):
+        return render_template("dashboard_series_detail.html", series_id=series_id)
+
+    @app.get("/api/dashboard/users")
+    def dashboard_users():
+        current_settings = settings_manager.load(env_path=env_path)
+        page = max(int(request.args.get("page", 1) or 1), 1)
+        page_size = 10
+        status = str(request.args.get("status", "all") or "all").strip().lower()
+        if status not in {"all", "normal", "suspended", "cleared", "unknown"}:
+            status = "all"
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            payload = db.list_users(page=page, page_size=page_size, status=status)
+        finally:
+            db.close()
+        return jsonify(payload)
+
+    @app.get("/api/dashboard/users/<int:user_id>")
+    def dashboard_user_detail(user_id: int):
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            payload = db.get_user_detail(user_id)
+        finally:
+            db.close()
+        if payload is None:
+            return jsonify({"error": "user not found"}), 404
+        return jsonify(payload)
+
+    @app.get("/dashboard/users/<int:user_id>")
+    def dashboard_user_detail_page(user_id: int):
+        return render_template("dashboard_user_detail.html", user_id=user_id)
+
+    @app.get("/api/dashboard/users/<int:user_id>/novels")
+    def dashboard_user_novels(user_id: int):
+        current_settings = settings_manager.load(env_path=env_path)
+        page = max(int(request.args.get("page", 1) or 1), 1)
+        page_size = 10
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            payload = db.list_user_novels(user_id, page=page, page_size=page_size)
+        finally:
+            db.close()
+        return jsonify(payload)
+
+    @app.post("/api/dashboard/users/<int:user_id>/check")
+    def check_user_status(user_id: int):
+        current_settings = settings_manager.load(env_path=env_path)
+        from .auth import PixivAuthManager
+        auth = PixivAuthManager(current_settings.pixiv)
+        api, _ = auth.login()
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            status = _check_pixiv_user_status(api, user_id)
+            db.upsert_user_status(user_id, status)
+            return jsonify({"ok": True, "status": status})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            db.close()
+
+    @app.post("/api/dashboard/users/<int:user_id>/sync")
+    def sync_user_novels(user_id: int):
+        current_settings = settings_manager.load(env_path=env_path)
+        from .auth import PixivAuthManager
+        auth = PixivAuthManager(current_settings.pixiv)
+        api, _ = auth.login()
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        storage = FileStorage(current_settings)
+        storage.ensure_dirs([
+            current_settings.storage.public_dir,
+            current_settings.storage.private_dir,
+            current_settings.storage.db_path.parent
+        ])
+        try:
+            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=current_settings)
+            stats = {"users": 0, "novels": 0, "assets_downloaded": 0}
+            from pixivpy3 import AppPixivAPI
+            next_query: dict[str, Any] | None = {"user_id": user_id}
+            while next_query:
+                result = api.user_novels(**next_query)
+                novels = getattr(result, "novels", []) or []
+                for novel in novels:
+                    counters = service._sync_novel(
+                        novel, "public",
+                        current_settings.sync.download_assets,
+                        current_settings.sync.write_markdown,
+                        current_settings.sync.write_raw_text,
+                        source_type="user_backup",
+                        source_key=str(user_id),
+                    )
+                    for key in ["users", "novels", "assets_downloaded"]:
+                        stats[key] = stats.get(key, 0) + counters.get(key, 0)
+                next_query = api.parse_qs(getattr(result, "next_url", None))
+            return jsonify({"ok": True, "stats": stats})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            db.close()
 
     @app.get("/api/dashboard/settings")
     def dashboard_settings():
@@ -565,3 +690,22 @@ def _external_base_url(req) -> str:
 
     parsed = urlparse(req.base_url)
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _check_pixiv_user_status(api: Any, user_id: int) -> str:
+    """检查 Pixiv 用户状态"""
+    try:
+        result = api.user_detail(user_id)
+        if result is None:
+            return "suspended"
+        user = getattr(result, "user", None)
+        if user is None:
+            return "suspended"
+        profile = getattr(result, "profile", None)
+        if profile:
+            total_novels = getattr(profile, "total_novels", 0) or 0
+            if total_novels == 0:
+                return "cleared"
+        return "normal"
+    except Exception:
+        return "unknown"

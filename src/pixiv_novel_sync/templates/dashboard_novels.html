@@ -82,9 +82,8 @@
       <div class="toolbar">
         <div class="tabs" id="tabs">
           <button class="tab active" data-category="all">全部</button>
-          <button class="tab" data-category="series">系列</button>
-          <button class="tab" data-category="single">单本</button>
-          <button class="tab" data-category="following">关注</button>
+          <button class="tab" data-category="bookmark">收藏</button>
+          <button class="tab" data-category="following">追更</button>
         </div>
         <div>
           <div id="summary" class="summary">加载中...</div>
@@ -134,7 +133,7 @@
       currentPage = data.page || 1;
       totalPages = data.total_pages || 1;
       currentCategory = data.category || category;
-      document.getElementById('summary').textContent = `共 ${data.total || 0} 本`;
+      document.getElementById('summary').textContent = `共 ${data.total || 0} ${currentCategory === 'following' ? '个系列' : '本'}`;
       document.getElementById('pageInfo').textContent = '每页 10 条';
       document.getElementById('pagerText').textContent = `${currentPage} / ${totalPages}`;
       document.getElementById('prevBtn').disabled = currentPage <= 1;
@@ -142,29 +141,50 @@
       setActiveTab(currentCategory);
       const list = document.getElementById('list');
       if (!items.length) {
-        list.innerHTML = '<div class="empty-state">暂无数据，请先执行一次手工同步</div>';
+        const emptyMsg = currentCategory === 'following' ? '暂无追更系列，请先同步关注用户的小说' : '暂无数据，请先执行一次手工同步';
+        list.innerHTML = `<div class="empty-state">${escapeHtml(emptyMsg)}</div>`;
         return;
       }
-      list.innerHTML = items.map(function (item) {
-        const cover = item.cover_url
-          ? `<img class="cover" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
-          : '';
-        const fallbackCover = `<div class="empty-cover" style="display:${item.cover_url ? 'none' : 'flex'};align-items:center;justify-content:center;color:var(--text-secondary);font-size:12px;text-align:center;padding:8px;">${escapeHtml((item.title || '').slice(0, 4))}</div>`;
-        const badges = [kindLabel(item.novel_kind), restrictLabel(item.restrict_value)].filter(Boolean).map(function(b) {
-          return '<span class="badge">' + escapeHtml(b) + '</span>';
+      if (currentCategory === 'following') {
+        list.innerHTML = items.map(function (item) {
+          const cover = item.cover_url
+            ? `<img class="cover" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+            : '';
+          const fallbackCover = `<div class="empty-cover" style="display:${item.cover_url ? 'none' : 'flex'};align-items:center;justify-content:center;color:var(--text-secondary);font-size:12px;text-align:center;padding:8px;">${escapeHtml((item.series_title || '').slice(0, 4))}</div>`;
+          return `
+            <article class="item">
+              ${cover}${fallbackCover}
+              <div class="content">
+                <a class="title-link" href="/dashboard/series/${encodeURIComponent(item.series_id)}">${escapeHtml(item.series_title || '未命名系列')}</a>
+                <div class="meta">作者：${escapeHtml(item.author_name || '未知')}</div>
+                <div class="meta">章节：${escapeHtml(item.chapter_count || 0)} 章</div>
+                <div class="meta">更新于 ${escapeHtml(item.last_updated || '-')}</div>
+              </div>
+            </article>
+          `;
         }).join('');
-        return `
-          <article class="item">
-            ${cover}${fallbackCover}
-            <div class="content">
-              <a class="title-link" href="/dashboard/novels/${encodeURIComponent(item.novel_id)}">${escapeHtml(item.title || '未命名小说')}</a>
-              <div class="meta">${badges}作者：${escapeHtml(item.author_name || '未知')}</div>
-              <div class="meta">收藏 ${escapeHtml(item.total_bookmarks || 0)} / 浏览 ${escapeHtml(item.total_views || 0)}</div>
-              <div class="meta">更新于 ${escapeHtml(item.last_seen_at || '-')}</div>
-            </div>
-          </article>
-        `;
-      }).join('');
+      } else {
+        list.innerHTML = items.map(function (item) {
+          const cover = item.cover_url
+            ? `<img class="cover" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+            : '';
+          const fallbackCover = `<div class="empty-cover" style="display:${item.cover_url ? 'none' : 'flex'};align-items:center;justify-content:center;color:var(--text-secondary);font-size:12px;text-align:center;padding:8px;">${escapeHtml((item.title || '').slice(0, 4))}</div>`;
+          const badges = [kindLabel(item.novel_kind), restrictLabel(item.restrict_value)].filter(Boolean).map(function(b) {
+            return '<span class="badge">' + escapeHtml(b) + '</span>';
+          }).join('');
+          return `
+            <article class="item">
+              ${cover}${fallbackCover}
+              <div class="content">
+                <a class="title-link" href="/dashboard/novels/${encodeURIComponent(item.novel_id)}">${escapeHtml(item.title || '未命名小说')}</a>
+                <div class="meta">${badges}作者：${escapeHtml(item.author_name || '未知')}</div>
+                <div class="meta">收藏 ${escapeHtml(item.total_bookmarks || 0)} / 浏览 ${escapeHtml(item.total_views || 0)}</div>
+                <div class="meta">更新于 ${escapeHtml(item.last_seen_at || '-')}</div>
+              </div>
+            </article>
+          `;
+        }).join('');
+      }
     }
 
     function setActiveTab(category) {

@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>用户详情 - Pixiv 小说同步器</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-soft: #f5f5f7;
+      --text: #1d1d1f;
+      --text-secondary: #86868b;
+      --line: #d2d2d7;
+      --brand-start: #007aff;
+      --brand-end: #5856d6;
+      --success: #34c759;
+      --danger: #ff3b30;
+      --card-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      --radius: 16px;
+      --radius-lg: 20px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; background: var(--bg-soft); color: var(--text); -webkit-font-smoothing: antialiased; }
+    .topbar { background: #fff; border-bottom: 2px solid transparent; background-image: linear-gradient(#fff, #fff), linear-gradient(90deg, var(--brand-start), var(--brand-end)); background-origin: padding-box, border-box; background-clip: padding-box, border-box; }
+    .topbar-inner { max-width: 1080px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; }
+    .brand { font-size: 17px; font-weight: 600; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .nav { display: flex; gap: 4px; }
+    .nav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 8px 14px; border-radius: 8px; transition: all 0.2s; position: relative; }
+    .nav a:hover { color: var(--text); background: rgba(0,122,255,0.06); }
+    .nav a.active { color: var(--brand-start); font-weight: 600; }
+    .nav a.active::after { content: ''; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); width: 20px; height: 2px; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); border-radius: 1px; }
+    .page { max-width: 1080px; margin: 0 auto; padding: 32px 24px 56px; }
+    .back-link { display: inline-flex; align-items: center; gap: 6px; color: var(--brand-start); text-decoration: none; font-size: 14px; font-weight: 600; margin-bottom: 20px; }
+    .back-link:hover { text-decoration: underline; }
+    .hero { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 32px; display: flex; align-items: center; gap: 28px; }
+    .avatar { width: 80px; height: 80px; border-radius: 50%; object-fit: cover; background: linear-gradient(135deg, var(--brand-start), var(--brand-end)); flex-shrink: 0; }
+    .empty-avatar { width: 80px; height: 80px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--line); color: var(--text-secondary); font-weight: 700; font-size: 28px; flex-shrink: 0; }
+    .user-info { flex: 1; }
+    .user-name { font-size: 24px; font-weight: 700; margin: 0 0 8px; }
+    .user-meta { color: var(--text-secondary); font-size: 14px; line-height: 1.8; }
+    .status-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 6px 12px; border-radius: 8px; font-weight: 600; }
+    .actions { display: flex; gap: 12px; margin-top: 16px; }
+    .btn { border: none; border-radius: 10px; padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+    .btn-primary { background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); color: #fff; }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,122,255,0.3); }
+    .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+    .btn-secondary { background: var(--bg-soft); color: var(--text); }
+    .btn-secondary:hover { background: #e8e8ed; }
+    .card { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 28px; margin-top: 20px; }
+    .card-title { font-size: 16px; font-weight: 700; margin: 0 0 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+    .novel-list { display: grid; gap: 12px; }
+    .novel-item { display: grid; grid-template-columns: 64px 1fr; gap: 12px; background: var(--bg-soft); border-radius: var(--radius); padding: 12px; transition: all 0.2s; text-decoration: none; color: var(--text); }
+    .novel-item:hover { background: #ebebed; }
+    .novel-cover { width: 64px; height: 88px; border-radius: 8px; object-fit: cover; background: var(--line); flex-shrink: 0; }
+    .novel-info { display: flex; flex-direction: column; justify-content: center; }
+    .novel-title { font-size: 14px; font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .novel-meta { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+    .pager { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 20px; }
+    .pager-btn { border: none; border-radius: 8px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: var(--bg-soft); color: var(--text); }
+    .pager-btn:hover:not(:disabled) { background: #e8e8ed; }
+    .pager-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .loading { text-align: center; padding: 48px; color: var(--text-secondary); }
+    .empty { text-align: center; padding: 48px; color: var(--text-secondary); }
+    .toast { position: fixed; bottom: 24px; right: 24px; background: #333; color: #fff; padding: 12px 20px; border-radius: 8px; font-size: 14px; z-index: 1000; display: none; }
+    @media (max-width: 720px) {
+      .topbar-inner { flex-direction: column; height: auto; padding: 12px 16px; gap: 8px; }
+      .hero { flex-direction: column; text-align: center; }
+      .actions { justify-content: center; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">Pixiv 小说同步器</div>
+      <nav class="nav">
+        <a href="/dashboard">首页</a>
+        <a class="active" href="/dashboard/follows">关注</a>
+        <a href="/dashboard/novels">小说</a>
+        <a href="/dashboard/settings">设置</a>
+        <a href="/token-login">登录</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="page">
+    <a class="back-link" href="/dashboard/follows">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      返回关注列表
+    </a>
+
+    <section id="hero" class="hero">
+      <div class="empty-avatar">...</div>
+      <div class="user-info">
+        <h1 class="user-name">加载中...</h1>
+        <div class="user-meta">请稍候</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-title">
+        <span>小说列表</span>
+        <span id="novelCount" style="font-size:13px;color:var(--text-secondary);font-weight:400;"></span>
+      </div>
+      <div id="novels" class="loading">正在加载小说...</div>
+      <div class="pager" id="pager" style="display:none;">
+        <button id="prevBtn" class="pager-btn">上一页</button>
+        <span id="pagerText" style="font-size:13px;color:var(--text-secondary);"></span>
+        <button id="nextBtn" class="pager-btn">下一页</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const pathParts = window.location.pathname.split('/');
+    const userId = Number(pathParts[pathParts.length - 1] || 0);
+    let currentPage = 1;
+    let totalPages = 1;
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"]/g, function (ch) {
+        if (ch === '&') return '&';
+        if (ch === '<') return '<';
+        if (ch === '>') return '>';
+        if (ch === '"') return '"';
+        return ch;
+      });
+    }
+
+    function showToast(message, duration) {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.style.display = 'block';
+      setTimeout(function () { toast.style.display = 'none'; }, duration || 3000);
+    }
+
+    const statusMap = {
+      normal: {label: '正常', color: 'var(--success)'},
+      suspended: {label: '封号', color: 'var(--danger)'},
+      cleared: {label: '资源清空', color: '#ff9500'},
+      unknown: {label: '未知', color: 'var(--text-secondary)'}
+    };
+
+    async function loadUser() {
+      const resp = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}`);
+      const data = await resp.json();
+      if (!resp.ok) {
+        document.getElementById('hero').innerHTML = '<div class="user-info"><h1 class="user-name">加载失败</h1><div class="user-meta">未找到该用户</div></div>';
+        return;
+      }
+      const avatar = data.avatar_url
+        ? `<img class="avatar" src="/proxy/image?url=${encodeURIComponent(data.avatar_url)}" alt="avatar" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+        : '';
+      const fallbackAvatar = `<div class="empty-avatar" style="display:${data.avatar_url ? 'none' : 'flex'};">${escapeHtml((data.name || 'U').slice(0, 2))}</div>`;
+      const account = data.account ? `@${escapeHtml(data.account)}` : `ID ${escapeHtml(data.user_id)}`;
+      const status = statusMap[data.status] || statusMap.unknown;
+      document.getElementById('hero').innerHTML = `
+        ${avatar}${fallbackAvatar}
+        <div class="user-info">
+          <h1 class="user-name">${escapeHtml(data.name || '未命名用户')}</h1>
+          <div class="user-meta">
+            ${account} · 小说 ${data.novel_count || 0} 篇
+            ${data.last_checked_at ? ' · 最后检查: ' + escapeHtml(data.last_checked_at) : ''}
+          </div>
+          <div style="margin-top:12px;">
+            <span class="status-badge" style="background:${status.color}20;color:${status.color};">● ${status.label}</span>
+          </div>
+          <div class="actions">
+            <button class="btn btn-secondary" onclick="checkStatus()">检查状态</button>
+            <button class="btn btn-primary" onclick="syncAll()">备份全部小说</button>
+          </div>
+        </div>
+      `;
+    }
+
+    async function loadNovels(page) {
+      const resp = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}/novels?page=${page}`);
+      const data = await resp.json();
+      const items = data.items || [];
+      currentPage = data.page || 1;
+      totalPages = data.total_pages || 1;
+      document.getElementById('novelCount').textContent = `共 ${data.total || 0} 篇`;
+      const novels = document.getElementById('novels');
+      if (!items.length) {
+        novels.innerHTML = '<div class="empty">暂无小说</div>';
+        document.getElementById('pager').style.display = 'none';
+        return;
+      }
+      novels.innerHTML = '<div class="novel-list">' + items.map(function (item) {
+        const cover = item.cover_url
+          ? `<img class="novel-cover" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.background='var(--line)';">`
+          : '<div class="novel-cover"></div>';
+        return `
+          <a class="novel-item" href="/dashboard/novels/${encodeURIComponent(item.novel_id)}">
+            ${cover}
+            <div class="novel-info">
+              <div class="novel-title">${escapeHtml(item.title || '未命名小说')}</div>
+              <div class="novel-meta">收藏 ${escapeHtml(item.total_bookmarks || 0)} / 浏览 ${escapeHtml(item.total_views || 0)}</div>
+            </div>
+          </a>
+        `;
+      }).join('') + '</div>';
+      document.getElementById('pager').style.display = 'flex';
+      document.getElementById('pagerText').textContent = `${currentPage} / ${totalPages}`;
+      document.getElementById('prevBtn').disabled = currentPage <= 1;
+      document.getElementById('nextBtn').disabled = currentPage >= totalPages;
+    }
+
+    async function checkStatus() {
+      showToast('正在检查用户状态...');
+      try {
+        const resp = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}/check`, {method: 'POST'});
+        const data = await resp.json();
+        if (data.ok) {
+          const status = statusMap[data.status] || statusMap.unknown;
+          showToast('状态: ' + status.label);
+          loadUser();
+        } else {
+          showToast('检查失败: ' + (data.error || '未知错误'));
+        }
+      } catch (err) {
+        showToast('检查失败');
+      }
+    }
+
+    async function syncAll() {
+      if (!confirm('确定要备份该用户的全部小说吗？')) return;
+      showToast('开始同步...');
+      try {
+        const resp = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}/sync`, {method: 'POST'});
+        const data = await resp.json();
+        if (data.ok) {
+          showToast(`同步完成: ${data.stats.novels || 0} 篇小说`);
+          loadUser();
+          loadNovels(1);
+        } else {
+          showToast('同步失败: ' + (data.error || '未知错误'));
+        }
+      } catch (err) {
+        showToast('同步失败');
+      }
+    }
+
+    document.getElementById('prevBtn').addEventListener('click', function () {
+      if (currentPage > 1) loadNovels(currentPage - 1);
+    });
+    document.getElementById('nextBtn').addEventListener('click', function () {
+      if (currentPage < totalPages) loadNovels(currentPage + 1);
+    });
+
+    loadUser().then(function () { loadNovels(1); }).catch(function () {
+      document.getElementById('novels').innerHTML = '<div class="empty">加载失败</div>';
+    });
+  </script>
+</body>
+</html>

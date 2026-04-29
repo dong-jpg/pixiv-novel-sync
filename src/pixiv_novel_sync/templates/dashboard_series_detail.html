@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>系列详情 - Pixiv 小说同步器</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-soft: #f5f5f7;
+      --text: #1d1d1f;
+      --text-secondary: #86868b;
+      --line: #d2d2d7;
+      --brand-start: #007aff;
+      --brand-end: #5856d6;
+      --card-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      --radius: 16px;
+      --radius-lg: 20px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; background: var(--bg-soft); color: var(--text); -webkit-font-smoothing: antialiased; }
+    .topbar { background: #fff; border-bottom: 2px solid transparent; background-image: linear-gradient(#fff, #fff), linear-gradient(90deg, var(--brand-start), var(--brand-end)); background-origin: padding-box, border-box; background-clip: padding-box, border-box; }
+    .topbar-inner { max-width: 1080px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; }
+    .brand { font-size: 17px; font-weight: 600; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .nav { display: flex; gap: 4px; }
+    .nav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 8px 14px; border-radius: 8px; transition: all 0.2s; position: relative; }
+    .nav a:hover { color: var(--text); background: rgba(0,122,255,0.06); }
+    .nav a.active { color: var(--brand-start); font-weight: 600; }
+    .nav a.active::after { content: ''; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); width: 20px; height: 2px; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); border-radius: 1px; }
+    .page { max-width: 1080px; margin: 0 auto; padding: 32px 24px 56px; }
+    .back-link { display: inline-flex; align-items: center; gap: 6px; color: var(--brand-start); text-decoration: none; font-size: 14px; font-weight: 600; margin-bottom: 20px; }
+    .back-link:hover { text-decoration: underline; }
+    .hero { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 32px; display: grid; grid-template-columns: 180px 1fr; gap: 28px; }
+    .cover { width: 180px; height: 250px; border-radius: 14px; object-fit: cover; background: linear-gradient(135deg, var(--brand-start), var(--brand-end)); flex-shrink: 0; }
+    .empty-cover { width: 180px; height: 250px; border-radius: 14px; background: var(--line); display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 18px; text-align: center; padding: 16px; flex-shrink: 0; }
+    .info { display: flex; flex-direction: column; justify-content: center; }
+    .title { font-size: 24px; font-weight: 700; margin: 0 0 12px; letter-spacing: -0.02em; line-height: 1.3; }
+    .meta { color: var(--text-secondary); font-size: 13px; line-height: 1.8; }
+    .meta strong { color: var(--text); font-weight: 600; }
+    .card { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 28px; margin-top: 20px; }
+    .card-title { font-size: 16px; font-weight: 700; margin: 0 0 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+    .chapter-list { display: grid; gap: 12px; }
+    .chapter-item { display: flex; align-items: center; gap: 16px; background: var(--bg-soft); border-radius: var(--radius); padding: 16px; transition: all 0.2s; text-decoration: none; color: var(--text); }
+    .chapter-item:hover { background: #ebebed; }
+    .chapter-num { width: 36px; height: 36px; border-radius: 8px; background: linear-gradient(135deg, var(--brand-start), var(--brand-end)); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; }
+    .chapter-info { flex: 1; min-width: 0; }
+    .chapter-title { font-size: 15px; font-weight: 600; }
+    .chapter-meta { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+    .loading { text-align: center; padding: 48px; color: var(--text-secondary); }
+    .empty { text-align: center; padding: 48px; color: var(--text-secondary); }
+    @media (max-width: 860px) {
+      .topbar-inner { flex-direction: column; height: auto; padding: 12px 16px; gap: 8px; }
+      .hero { grid-template-columns: 1fr; }
+      .cover, .empty-cover { width: 100%; height: 260px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">Pixiv 小说同步器</div>
+      <nav class="nav">
+        <a href="/dashboard">首页</a>
+        <a href="/dashboard/follows">关注</a>
+        <a class="active" href="/dashboard/novels">小说</a>
+        <a href="/dashboard/settings">设置</a>
+        <a href="/token-login">登录</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="page">
+    <a class="back-link" href="/dashboard/novels?category=following">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      返回追更列表
+    </a>
+
+    <section id="hero" class="hero">
+      <div class="empty-cover">加载中...</div>
+      <div class="info">
+        <h1 class="title">加载中...</h1>
+        <div class="meta">请稍候</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 class="card-title">章节列表</h2>
+      <div id="chapters" class="loading">正在加载章节...</div>
+    </section>
+  </main>
+
+  <script>
+    const pathParts = window.location.pathname.split('/');
+    const seriesId = Number(pathParts[pathParts.length - 1] || 0);
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"]/g, function (ch) {
+        if (ch === '&') return '&';
+        if (ch === '<') return '<';
+        if (ch === '>') return '>';
+        if (ch === '"') return '"';
+        return ch;
+      });
+    }
+
+    async function loadDetail() {
+      const resp = await fetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`);
+      const data = await resp.json();
+      if (!resp.ok) {
+        document.getElementById('hero').innerHTML = `
+          <div class="info">
+            <h1 class="title">加载失败</h1>
+            <div class="meta">未找到该系列</div>
+          </div>
+        `;
+        document.getElementById('chapters').innerHTML = '<div class="empty">' + escapeHtml(data.error || '未找到系列') + '</div>';
+        return;
+      }
+      const cover = data.cover_url
+        ? `<img class="cover" src="/proxy/image?url=${encodeURIComponent(data.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+        : '';
+      const fallbackCover = `<div class="empty-cover" style="display:${data.cover_url ? 'none' : 'flex'};">${escapeHtml((data.title || '').slice(0, 6))}</div>`;
+      document.getElementById('hero').innerHTML = `
+        ${cover}${fallbackCover}
+        <div class="info">
+          <h1 class="title">${escapeHtml(data.title || '未命名系列')}</h1>
+          <div class="meta">
+            <strong>作者：</strong>${escapeHtml(data.author_name || '未知')}<br>
+            <strong>章节：</strong>${escapeHtml(data.total_novels || 0)} 章
+            ${data.description ? '<br><strong>简介：</strong>' + escapeHtml(data.description) : ''}
+          </div>
+        </div>
+      `;
+      const novels = data.novels || [];
+      const chapters = document.getElementById('chapters');
+      if (!novels.length) {
+        chapters.innerHTML = '<div class="empty">暂无章节</div>';
+        return;
+      }
+      chapters.innerHTML = '<div class="chapter-list">' + novels.map(function (novel, index) {
+        return `
+          <a class="chapter-item" href="/dashboard/novels/${encodeURIComponent(novel.novel_id)}">
+            <div class="chapter-num">${index + 1}</div>
+            <div class="chapter-info">
+              <div class="chapter-title">${escapeHtml(novel.title || '未命名章节')}</div>
+              <div class="chapter-meta">收藏 ${escapeHtml(novel.total_bookmarks || 0)} / 浏览 ${escapeHtml(novel.total_views || 0)}</div>
+            </div>
+          </a>
+        `;
+      }).join('') + '</div>';
+    }
+
+    loadDetail().catch(function () {
+      document.getElementById('chapters').innerHTML = '<div class="empty">加载失败</div>';
+    });
+  </script>
+</body>
+</html>
