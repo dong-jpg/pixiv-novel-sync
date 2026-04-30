@@ -273,11 +273,16 @@ class BookmarkNovelSyncService:
                             watched_ids = page_info.get("watchedSeriesIds", [])
                             logger.info("page.total=%s, page.maxPage=%s, watchedSeriesIds count=%d",
                                        page_info.get("total"), page_info.get("maxPage"), len(watched_ids))
-                            if novel_series_thumbs:
-                                first_key = list(novel_series_thumbs.keys())[0] if novel_series_thumbs else None
+                            # novelSeries 可能是 dict {id: url} 也可能是 list
+                            if isinstance(novel_series_thumbs, list):
+                                logger.info("thumbnails.novelSeries is list with %d items", len(novel_series_thumbs))
+                                # list 格式无法直接映射，后续用 App API 获取封面
+                                novel_series_thumbs = {}
+                            elif isinstance(novel_series_thumbs, dict) and novel_series_thumbs:
+                                first_key = list(novel_series_thumbs.keys())[0]
                                 logger.info("thumbnails.novelSeries: %d items, first key=%s, val=%s",
                                            len(novel_series_thumbs), first_key,
-                                           str(novel_series_thumbs.get(first_key, ""))[:200] if first_key else "N/A")
+                                           str(novel_series_thumbs.get(first_key, ""))[:200])
                             if watched_ids:
                                 logger.info("watchedSeriesIds sample: %s", watched_ids[:5])
                             
@@ -342,7 +347,12 @@ class BookmarkNovelSyncService:
                             series_id=int(sid), title=title, description=desc,
                             user_id=user_id, cover_url=cover, total_novels=total,
                         )
-                        self.db.upsert_user(user_id=user_id, name=getattr(user, "name", "unknown"))
+                        self.db.upsert_user(UserRecord(
+                            user_id=user_id,
+                            name=getattr(user, "name", "unknown"),
+                            account=getattr(user, "account", None),
+                            raw_json="{}",
+                        ))
                         stats["series_synced"] += 1
                         logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
                     else:
