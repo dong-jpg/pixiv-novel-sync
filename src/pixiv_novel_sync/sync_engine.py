@@ -402,6 +402,74 @@ class BookmarkNovelSyncService:
                                 ))
                             stats["series_synced"] += 1
                             logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
+                            
+                            # 同步系列中的所有章节
+                            if isinstance(series_data, dict):
+                                novels_in_series = series_data.get("novels", [])
+                                chapter_count = 0
+                                for novel_item in novels_in_series:
+                                    if isinstance(novel_item, dict):
+                                        novel_id = int(novel_item.get("id", 0))
+                                        novel_title = novel_item.get("title", "")
+                                        novel_cover = novel_item.get("url", "") or (novel_item.get("image_urls", {}).get("large", "") if isinstance(novel_item.get("image_urls"), dict) else "")
+                                        if novel_id:
+                                            self.db.upsert_novel(NovelRecord(
+                                                novel_id=novel_id,
+                                                user_id=user_id,
+                                                series_id=int(sid),
+                                                title=novel_title,
+                                                caption="",
+                                                visible=True,
+                                                restrict="public",
+                                                x_restrict=0,
+                                                text_length=0,
+                                                total_bookmarks=0,
+                                                total_views=0,
+                                                cover_url=novel_cover,
+                                                tags_json="[]",
+                                                create_date=novel_item.get("create_date"),
+                                                raw_json="{}",
+                                                meta_hash="",
+                                            ))
+                                            chapter_count += 1
+                                if chapter_count:
+                                    logger.info("  Synced %d chapters for series %s", chapter_count, sid)
+                                
+                                # 处理分页: 如果有 next_url，继续获取更多章节
+                                next_url = series_data.get("next_url")
+                                while next_url:
+                                    try:
+                                        # pixivpy3 的 next_url 需要用 auth_request_call
+                                        next_resp = self.api.auth_request_call("GET", next_url)
+                                        if next_resp and next_resp.status_code == 200:
+                                            next_data = self.api.parse_result(next_resp)
+                                            if isinstance(next_data, dict):
+                                                more_novels = next_data.get("novels", [])
+                                                for novel_item in more_novels:
+                                                    if isinstance(novel_item, dict):
+                                                        novel_id = int(novel_item.get("id", 0))
+                                                        novel_title = novel_item.get("title", "")
+                                                        novel_cover = novel_item.get("url", "") or (novel_item.get("image_urls", {}).get("large", "") if isinstance(novel_item.get("image_urls"), dict) else "")
+                                                        if novel_id:
+                                                            self.db.upsert_novel(NovelRecord(
+                                                                novel_id=novel_id, user_id=user_id, series_id=int(sid),
+                                                                title=novel_title, caption="", visible=True, restrict="public",
+                                                                x_restrict=0, text_length=0, total_bookmarks=0, total_views=0,
+                                                                cover_url=novel_cover, tags_json="[]",
+                                                                create_date=novel_item.get("create_date"),
+                                                                raw_json="{}", meta_hash="",
+                                                            ))
+                                                            chapter_count += 1
+                                                next_url = next_data.get("next_url")
+                                            else:
+                                                break
+                                        else:
+                                            break
+                                    except Exception as e:
+                                        logger.warning("Failed to fetch next page for series %s: %s", sid, e)
+                                        break
+                                if chapter_count:
+                                    logger.info("  Total chapters synced for series %s: %d", sid, chapter_count)
                         else:
                             logger.warning("No detail found for series %s, keys: %s", sid, list(series_data.keys()) if isinstance(series_data, dict) else "N/A")
                             self.db.upsert_subscribed_series(
