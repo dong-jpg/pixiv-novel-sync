@@ -229,46 +229,60 @@ class BookmarkNovelSyncService:
         
         series_list = []
         
-        # 方式1: 使用 pixivpy3 内部请求方法调用 watchlist API
-        try:
-            # 使用 no_auth_requests_call 或 requests_call 调用自定义端点
-            url = "/v1/user/bookmarks/novel-series"
-            params = {"user_id": self.settings.pixiv.user_id}
-            
-            logger.info("Trying App API: %s with user_id=%s", url, self.settings.pixiv.user_id)
-            result = self.api.requests_call("GET", url, params=params, req_auth=True)
-            
-            if result and isinstance(result, dict):
-                series_list = result.get("novel_series_collections", [])
-                logger.info("Found %d subscribed series from App API", len(series_list))
-            elif result and hasattr(result, "novel_series_collections"):
-                series_list = result.novel_series_collections or []
-                logger.info("Found %d subscribed series from App API", len(series_list))
-            else:
-                logger.info("App API result: %s", str(result)[:300] if result else "None")
-        except Exception as e:
-            logger.warning("App API /v1/user/bookmarks/novel-series failed: %s", str(e))
+        # 方式1: 使用 Pixiv Web Cookie 调用 Web API
+        web_cookie = self.settings.pixiv.web_cookie
+        if web_cookie:
+            try:
+                import requests as http_requests
+                
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "application/json",
+                    "Accept-Language": "zh_CN",
+                    "Referer": "https://www.pixiv.net/following/watchlist/novels",
+                    "Cookie": web_cookie,
+                }
+                
+                proxies = {"http": self.settings.pixiv.proxy, "https": self.settings.pixiv.proxy} if self.settings.pixiv.proxy else None
+                
+                # 尝试多个可能的 API 端点
+                api_endpoints = [
+                    "https://www.pixiv.net/ajax/watchlist/novel/series",
+                    "https://www.pixiv.net/ajax/novel/watchlist/series",
+                ]
+                
+                for endpoint in api_endpoints:
+                    try:
+                        logger.info("Trying Web API: %s", endpoint)
+                        response = http_requests.get(
+                            endpoint, headers=headers, proxies=proxies,
+                            timeout=self.settings.pixiv.timeout,
+                            verify=self.settings.pixiv.verify_ssl,
+                        )
+                        logger.info("Web API %s returned status: %s", endpoint, response.status_code)
+                        if response.status_code == 200:
+                            data = response.json()
+                            body = data.get("body", {})
+                            if isinstance(body, dict):
+                                series_list = body.get("seriesList", body.get("novel_series_list", []))
+                            elif isinstance(body, list):
+                                series_list = body
+                            if series_list:
+                                logger.info("Found %d subscribed series from %s", len(series_list), endpoint)
+                                break
+                            else:
+                                logger.info("Response body: %s", str(data)[:500])
+                    except Exception as e:
+                        logger.warning("Web API %s failed: %s", endpoint, str(e))
+                
+            except Exception as e:
+                logger.warning("Web API failed: %s", str(e))
+        else:
+            logger.info("No PIXIV_WEB_COOKIE configured, skipping Web API")
         
-        # 方式2: 尝试其他可能的端点
+        # 方式2: 从已同步的小说中提取系列
         if not series_list:
-            alt_endpoints = [
-                ("/v2/novel/following", {}),
-                ("/v1/novel/following", {}),
-                ("/v1/user/bookmarks/novel", {"user_id": self.settings.pixiv.user_id, "restrict": "public"}),
-            ]
-            for endpoint, params in alt_endpoints:
-                try:
-                    logger.info("Trying: %s", endpoint)
-                    result = self.api.requests_call("GET", endpoint, params=params, req_auth=True)
-                    if result:
-                        logger.info("Got response from %s: %s", endpoint, str(result)[:300])
-                        break
-                except Exception as e:
-                    logger.warning("%s failed: %s", endpoint, str(e))
-        
-        # 方式3: 从已同步的小说中提取系列（所有有 series_id 的小说）
-        if not series_list:
-            logger.info("No subscribed series found via API, extracting from synced novels")
+            logger.info("Extracting series from synced novels")
             try:
                 rows = self.db.conn.execute(
                     """
