@@ -35,6 +35,11 @@ class SyncSettings:
     sync_following_series: bool = True
     sync_following_users: bool = True
     sync_following_novels: bool = True
+    # 定时任务配置
+    auto_sync_enabled: bool = False
+    auto_sync_interval_hours: int = 6  # 每隔多少小时执行一次
+    auto_sync_bookmarks_enabled: bool = True
+    auto_sync_following_enabled: bool = True
 
 
 @dataclass(slots=True)
@@ -104,6 +109,11 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             sync_following_series=bool(sync_raw.get("sync_following_series", True)),
             sync_following_users=bool(sync_raw.get("sync_following_users", True)),
             sync_following_novels=bool(sync_raw.get("sync_following_novels", True)),
+            # 定时任务配置
+            auto_sync_enabled=bool(sync_raw.get("auto_sync_enabled", False)),
+            auto_sync_interval_hours=int(sync_raw.get("auto_sync_interval_hours", 6)),
+            auto_sync_bookmarks_enabled=bool(sync_raw.get("auto_sync_bookmarks_enabled", True)),
+            auto_sync_following_enabled=bool(sync_raw.get("auto_sync_following_enabled", True)),
         ),
         storage=StorageSettings(
             public_dir=public_dir,

@@ -154,8 +154,46 @@
         </div>
       </div>
 
+      <div class="section">
+        <div class="section-title">定时同步</div>
+        <p style="font-size:13px;color:var(--text-secondary);margin:0 0 14px;">自动定时同步，分散执行时间降低风控风险</p>
+        <div class="checks">
+          <div class="check-item">
+            <input type="checkbox" id="autoSyncEnabled">
+            <label for="autoSyncEnabled">启用定时同步</label>
+          </div>
+          <div class="check-item">
+            <input type="checkbox" id="autoSyncBookmarks">
+            <label for="autoSyncBookmarks">定时同步收藏</label>
+          </div>
+          <div class="check-item">
+            <input type="checkbox" id="autoSyncFollowing">
+            <label for="autoSyncFollowing">定时同步关注用户</label>
+          </div>
+        </div>
+        <div class="fields" style="margin-top: 12px;">
+          <div class="field">
+            <label>同步间隔（小时）</label>
+            <input id="autoSyncInterval" type="number" min="1" max="24" placeholder="6">
+          </div>
+        </div>
+        <div id="autoSyncStatusText" style="font-size:12px;color:var(--text-secondary);margin-top:8px;">加载中...</div>
+      </div>
+
       <button id="saveBtn" class="btn">保存设置</button>
       <div id="message" class="message"></div>
+    </section>
+
+    <section class="card" style="margin-top: 24px;">
+      <div class="section">
+        <div class="section-title">同步操作</div>
+        <p style="font-size:13px;color:var(--text-secondary);margin:0 0 14px;">手动触发同步任务，同步订阅的系列和关注用户的最新小说</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button id="syncSubscribedBtn" class="btn" style="background:linear-gradient(90deg,#ff9500,#ff6b00);">同步订阅系列</button>
+          <button id="syncFollowingBtn" class="btn" style="background:linear-gradient(90deg,#34c759,#30d158);">同步关注用户</button>
+        </div>
+        <div id="syncMessage" class="message"></div>
+      </div>
     </section>
 
     <section class="card" style="margin-top: 24px;">
@@ -199,6 +237,14 @@
       valueOf('maxPages', data.max_pages_per_run);
       valueOf('itemDelay', data.delay_seconds_between_items ?? 0);
       valueOf('pageDelay', data.delay_seconds_between_pages ?? 0);
+      // 定时同步设置
+      checked('autoSyncEnabled', data.auto_sync_enabled);
+      checked('autoSyncBookmarks', data.auto_sync_bookmarks_enabled);
+      checked('autoSyncFollowing', data.auto_sync_following_enabled);
+      valueOf('autoSyncInterval', data.auto_sync_interval_hours ?? 6);
+      
+      // 更新定时同步状态显示
+      await loadAutoSyncStatus();
     }
 
     function buildPayload() {
@@ -220,6 +266,11 @@
         max_pages_per_run: document.getElementById('maxPages').value.trim(),
         delay_seconds_between_items: document.getElementById('itemDelay').value.trim(),
         delay_seconds_between_pages: document.getElementById('pageDelay').value.trim(),
+        // 定时同步设置
+        auto_sync_enabled: document.getElementById('autoSyncEnabled').checked,
+        auto_sync_bookmarks_enabled: document.getElementById('autoSyncBookmarks').checked,
+        auto_sync_following_enabled: document.getElementById('autoSyncFollowing').checked,
+        auto_sync_interval_hours: document.getElementById('autoSyncInterval').value.trim(),
       };
     }
 
@@ -245,6 +296,86 @@
 
     document.getElementById('saveBtn').addEventListener('click', saveSettings);
     loadSettings();
+
+    // 定时同步状态
+    async function loadAutoSyncStatus() {
+      try {
+        const resp = await fetch('/api/dashboard/auto-sync/status');
+        const data = await resp.json();
+        const statusText = document.getElementById('autoSyncStatusText');
+        if (statusText) {
+          if (data.running) {
+            const nextRun = data.next_run_time ? new Date(data.next_run_time * 1000).toLocaleTimeString() : '待计算';
+            statusText.textContent = `调度器运行中，下次执行: ${nextRun}`;
+            statusText.style.color = 'var(--success)';
+          } else {
+            statusText.textContent = '调度器未运行';
+            statusText.style.color = 'var(--text-secondary)';
+          }
+        }
+      } catch (e) {
+        // 忽略错误
+      }
+    }
+
+    // 同步订阅系列
+    async function syncSubscribedSeries() {
+      const btn = document.getElementById('syncSubscribedBtn');
+      const msg = document.getElementById('syncMessage');
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '同步中...';
+      msg.className = 'message';
+      msg.textContent = '正在同步订阅系列...';
+      try {
+        const resp = await fetch('/api/dashboard/sync/subscribed-series', { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+          msg.className = 'message ok';
+          msg.textContent = `同步完成，共 ${data.stats.series_synced} 个系列`;
+        } else {
+          msg.className = 'message bad';
+          msg.textContent = '同步失败: ' + (data.error || '未知错误');
+        }
+      } catch (e) {
+        msg.className = 'message bad';
+        msg.textContent = '同步请求失败';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    }
+
+    // 同步关注用户
+    async function syncFollowing() {
+      const btn = document.getElementById('syncFollowingBtn');
+      const msg = document.getElementById('syncMessage');
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '同步中...';
+      msg.className = 'message';
+      msg.textContent = '正在同步关注用户...';
+      try {
+        const resp = await fetch('/api/dashboard/sync/start', { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+          msg.className = 'message ok';
+          msg.textContent = '同步任务已启动，请查看首页进度';
+        } else {
+          msg.className = 'message bad';
+          msg.textContent = '同步失败: ' + (data.error || '未知错误');
+        }
+      } catch (e) {
+        msg.className = 'message bad';
+        msg.textContent = '同步请求失败';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    }
+
+    document.getElementById('syncSubscribedBtn').addEventListener('click', syncSubscribedSeries);
+    document.getElementById('syncFollowingBtn').addEventListener('click', syncFollowing);
 
     async function loadCacheStatus() {
       const info = document.getElementById('cacheInfo');

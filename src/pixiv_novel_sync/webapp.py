@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -17,6 +19,8 @@ from .oauth_helper import OAuthManager
 from .settings import Settings, load_settings
 from .storage_db import Database
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(slots=True)
 class SyncJobState:
@@ -29,6 +33,134 @@ class SyncJobState:
     error: str | None = None
     progress: dict[str, Any] = field(default_factory=dict)
     logs: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class AutoSyncScheduler:
+    """定时同步调度器"""
+    config_path: str | None
+    env_path: str | None
+    _running: bool = False
+    _thread: threading.Thread | None = None
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _last_run_time: float | None = None
+    _next_run_time: float | None = None
+    
+    def start(self) -> None:
+        """启动定时调度器"""
+        with self._lock:
+            if self._running:
+                return
+            self._running = True
+            self._thread = threading.Thread(target=self._run_scheduler, daemon=True)
+            self._thread.start()
+            logger.info("Auto sync scheduler started")
+    
+    def stop(self) -> None:
+        """停止定时调度器"""
+        with self._lock:
+            self._running = False
+            logger.info("Auto sync scheduler stopped")
+    
+    def is_running(self) -> bool:
+        return self._running
+    
+    def get_status(self) -> dict[str, Any]:
+        """获取调度器状态"""
+        return {
+            "running": self._running,
+            "last_run_time": self._last_run_time,
+            "next_run_time": self._next_run_time,
+        }
+    
+    def _run_scheduler(self) -> None:
+        """调度器主循环"""
+        while self._running:
+            try:
+                settings = load_settings(self.config_path, self.env_path)
+                
+                # 检查是否启用自动同步
+                if not settings.sync.auto_sync_enabled:
+                    time.sleep(60)  # 每分钟检查一次设置
+                    continue
+                
+                # 计算下次运行时间
+                interval_hours = settings.sync.auto_sync_interval_hours
+                if self._last_run_time is None:
+                    # 首次运行，立即执行
+                    self._run_auto_sync(settings)
+                else:
+                    # 检查是否到达运行时间
+                    next_run = self._last_run_time + (interval_hours * 3600)
+                    self._next_run_time = next_run
+                    if time.time() >= next_run:
+                        self._run_auto_sync(settings)
+                    else:
+                        # 等待到下次运行时间，但每分钟检查一次设置
+                        time.sleep(60)
+            except Exception as e:
+                logger.error("Scheduler error: %s", str(e))
+                time.sleep(60)
+    
+    def _run_auto_sync(self, settings: Settings) -> None:
+        """执行自动同步"""
+        logger.info("Starting auto sync")
+        self._last_run_time = time.time()
+        self._next_run_time = None
+        
+        try:
+            from .auth import PixivAuthManager
+            from .sync_engine import BookmarkNovelSyncService
+            from .storage_files import FileStorage
+            
+            auth = PixivAuthManager(settings.pixiv)
+            api, auth_result = auth.login()
+            if auth_result.user_id is None:
+                logger.error("Auto sync failed: Unable to determine user ID")
+                return
+            
+            db = Database(settings.storage.db_path)
+            db.init_schema()
+            storage = FileStorage(settings)
+            storage.ensure_dirs([
+                settings.storage.public_dir,
+                settings.storage.private_dir,
+                settings.storage.db_path.parent
+            ])
+            
+            try:
+                service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+                
+                # 同步收藏
+                if settings.sync.sync_bookmarks and settings.sync.auto_sync_bookmarks_enabled:
+                    logger.info("Auto sync: bookmarks")
+                    for restrict in settings.sync.bookmark_restricts:
+                        service.sync(
+                            user_id=auth_result.user_id,
+                            restricts=[restrict],
+                            download_assets=settings.sync.download_assets,
+                            write_markdown=settings.sync.write_markdown,
+                            write_raw_text=settings.sync.write_raw_text,
+                        )
+                        time.sleep(settings.sync.delay_seconds_between_pages)
+                
+                # 同步关注用户的系列和小说
+                if settings.sync.sync_following_series and settings.sync.auto_sync_following_enabled:
+                    logger.info("Auto sync: following series and novels")
+                    service.sync_following_novels(
+                        download_assets=settings.sync.download_assets,
+                        write_markdown=settings.sync.write_markdown,
+                        write_raw_text=settings.sync.write_raw_text,
+                        novels_only=False,
+                    )
+                
+                logger.info("Auto sync completed")
+                
+            finally:
+                db.close()
+                
+        except Exception as e:
+            logger.error("Auto sync failed: %s", str(e))
 
 
 @dataclass(slots=True)
@@ -149,6 +281,12 @@ class SettingsManager:
         sync_data["sync_following_series"] = bool(payload.get("sync_following_series", sync_data.get("sync_following_series", True)))
         sync_data["sync_following_users"] = bool(payload.get("sync_following_users", sync_data.get("sync_following_users", True)))
         sync_data["sync_following_novels"] = bool(payload.get("sync_following_novels", sync_data.get("sync_following_novels", True)))
+        
+        # 定时同步设置
+        sync_data["auto_sync_enabled"] = bool(payload.get("auto_sync_enabled", sync_data.get("auto_sync_enabled", False)))
+        sync_data["auto_sync_interval_hours"] = int(payload.get("auto_sync_interval_hours", sync_data.get("auto_sync_interval_hours", 6)))
+        sync_data["auto_sync_bookmarks_enabled"] = bool(payload.get("auto_sync_bookmarks_enabled", sync_data.get("auto_sync_bookmarks_enabled", True)))
+        sync_data["auto_sync_following_enabled"] = bool(payload.get("auto_sync_following_enabled", sync_data.get("auto_sync_following_enabled", True)))
 
         with config_path.open("w", encoding="utf-8") as file:
             yaml.safe_dump(config_data, file, allow_unicode=True, sort_keys=False)
@@ -161,6 +299,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     settings_manager = SettingsManager(config_path)
     sync_job_manager = SyncJobManager(config_path=config_path, env_path=env_path)
     oauth_manager = OAuthManager()
+    auto_sync_scheduler = AutoSyncScheduler(config_path=config_path, env_path=env_path)
+    
+    # 启动定时同步调度器
+    auto_sync_scheduler.start()
 
     @app.get("/proxy/image")
     def proxy_image():
@@ -644,6 +786,37 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         finally:
             db.close()
 
+    @app.get("/api/dashboard/auto-sync/status")
+    def auto_sync_status():
+        """获取定时同步状态"""
+        return jsonify(auto_sync_scheduler.get_status())
+
+    @app.post("/api/dashboard/auto-sync/toggle")
+    def auto_sync_toggle():
+        """切换定时同步开关"""
+        data = request.get_json(silent=True) or {}
+        enabled = data.get("enabled")
+        if enabled is None:
+            return jsonify({"error": "missing enabled parameter"}), 400
+        
+        # 更新配置文件
+        if config_path:
+            config_path_obj = Path(config_path)
+            if config_path_obj.exists():
+                with config_path_obj.open("r", encoding="utf-8") as f:
+                    config_data = yaml.safe_load(f) or {}
+                sync_data = config_data.setdefault("sync", {})
+                sync_data["auto_sync_enabled"] = bool(enabled)
+                with config_path_obj.open("w", encoding="utf-8") as f:
+                    yaml.dump(config_data, f, allow_unicode=True, default_flow_style=False)
+        
+        if enabled:
+            auto_sync_scheduler.start()
+        else:
+            auto_sync_scheduler.stop()
+        
+        return jsonify({"ok": True, "enabled": enabled})
+
     @app.get("/api/cache/status")
     def cache_status():
         import shutil
@@ -704,6 +877,10 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "sync_following_series": settings.sync.sync_following_series,
         "sync_following_users": settings.sync.sync_following_users,
         "sync_following_novels": settings.sync.sync_following_novels,
+        "auto_sync_enabled": settings.sync.auto_sync_enabled,
+        "auto_sync_interval_hours": settings.sync.auto_sync_interval_hours,
+        "auto_sync_bookmarks_enabled": settings.sync.auto_sync_bookmarks_enabled,
+        "auto_sync_following_enabled": settings.sync.auto_sync_following_enabled,
     }
 
 
