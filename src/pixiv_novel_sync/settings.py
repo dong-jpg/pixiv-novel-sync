@@ -36,6 +36,7 @@ class SyncSettings:
     sync_following_series: bool = True
     sync_following_users: bool = True
     sync_following_novels: bool = True
+    sync_subscribed_series: bool = True
     series_sync_limit: int = 0  # 0=全部，>0=限制数量
     delay_seconds_between_series: float = 3.0  # 每个系列之间的间隔
     delay_seconds_between_chapters: float = 1.0  # 系列下每章节间隔

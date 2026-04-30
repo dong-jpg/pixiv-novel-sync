@@ -293,6 +293,13 @@ class SettingsManager:
         sync_data["sync_following_novels"] = bool(payload.get("sync_following_novels", sync_data.get("sync_following_novels", True)))
         sync_data["sync_subscribed_series"] = bool(payload.get("sync_subscribed_series", sync_data.get("sync_subscribed_series", True)))
         
+        # 系列同步限制
+        series_limit_raw = payload.get("series_sync_limit", sync_data.get("series_sync_limit", 0))
+        if series_limit_raw in (None, ""):
+            sync_data["series_sync_limit"] = 0
+        else:
+            sync_data["series_sync_limit"] = int(series_limit_raw)
+        
         # 系列限速设置
         sync_data["delay_seconds_between_series"] = _normalize_float(
             payload.get("delay_seconds_between_series", sync_data.get("delay_seconds_between_series", 3.0))
@@ -903,6 +910,7 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "sync_following_users": settings.sync.sync_following_users,
         "sync_following_novels": settings.sync.sync_following_novels,
         "sync_subscribed_series": settings.sync.sync_subscribed_series,
+        "series_sync_limit": settings.sync.series_sync_limit,
         "delay_seconds_between_series": settings.sync.delay_seconds_between_series,
         "delay_seconds_between_chapters": settings.sync.delay_seconds_between_chapters,
         "auto_sync_enabled": settings.sync.auto_sync_enabled,
