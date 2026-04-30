@@ -415,7 +415,7 @@ class BookmarkNovelSyncService:
                             logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
                             
                             # 同步系列中的所有章节（含正文）
-                            item_delay = self.settings.sync.delay_seconds_between_items
+                            chapter_delay = self.settings.sync.delay_seconds_between_chapters
                             download_assets = self.settings.sync.download_assets
                             write_markdown = self.settings.sync.write_markdown
                             write_raw_text = self.settings.sync.write_raw_text
@@ -508,8 +508,8 @@ class BookmarkNovelSyncService:
                                             self.storage.write_text(novel_dir / "text.md", markdown_text)
                                         
                                         chapter_count += 1
-                                        if idx < len(all_novel_items) - 1 and item_delay > 0:
-                                            time.sleep(item_delay)
+                                        if idx < len(all_novel_items) - 1 and chapter_delay > 0:
+                                            time.sleep(chapter_delay)
                                     except Exception as e:
                                         logger.warning("Failed to sync chapter %d: %s", novel_id, e)
                                 
@@ -529,6 +529,11 @@ class BookmarkNovelSyncService:
                         user_id=0, cover_url=cover_from_web, total_novels=0,
                     )
                     stats["series_synced"] += 1
+                
+                # 系列之间的延迟
+                series_delay = self.settings.sync.delay_seconds_between_series
+                if series_delay > 0 and idx < len(series_list) - 1:
+                    time.sleep(series_delay)
             logger.info("Subscribed series sync completed: %d series", stats["series_synced"])
             return stats
         

@@ -95,6 +95,10 @@
             <input type="checkbox" id="syncFollowingNovels">
             <label for="syncFollowingNovels">同步关注用户的小说</label>
           </div>
+          <div class="check-item">
+            <input type="checkbox" id="syncSubscribedSeries">
+            <label for="syncSubscribedSeries">同步追更系列</label>
+          </div>
         </div>
       </div>
 
@@ -151,6 +155,14 @@
             <label>每页之间延迟（秒）</label>
             <input id="pageDelay" type="number" min="0" step="0.1" placeholder="0">
           </div>
+          <div class="field">
+            <label>每个系列之间延迟（秒）</label>
+            <input id="seriesDelay" type="number" min="0" step="0.1" placeholder="3">
+          </div>
+          <div class="field">
+            <label>系列内每章之间延迟（秒）</label>
+            <input id="chapterDelay" type="number" min="0" step="0.1" placeholder="1">
+          </div>
         </div>
       </div>
 
@@ -169,6 +181,14 @@
           <div class="check-item">
             <input type="checkbox" id="autoSyncFollowing">
             <label for="autoSyncFollowing">定时同步关注用户</label>
+          </div>
+          <div class="check-item">
+            <input type="checkbox" id="autoSyncUserStatus">
+            <label for="autoSyncUserStatus">关注用户的用户状态更新</label>
+          </div>
+          <div class="check-item">
+            <input type="checkbox" id="autoSyncSubscribedSeries">
+            <label for="autoSyncSubscribedSeries">我的追更系列</label>
           </div>
         </div>
         <div class="fields" style="margin-top: 12px;">
@@ -231,6 +251,7 @@
       checked('syncFollowingSeries', data.sync_following_series);
       checked('syncFollowingUsers', data.sync_following_users);
       checked('syncFollowingNovels', data.sync_following_novels);
+      checked('syncSubscribedSeries', data.sync_subscribed_series);
       checked('enabled', data.enabled);
       checked('initialManualOnly', data.initial_manual_only);
       checked('downloadAssets', data.download_assets);
@@ -242,10 +263,14 @@
       valueOf('maxPages', data.max_pages_per_run);
       valueOf('itemDelay', data.delay_seconds_between_items ?? 0);
       valueOf('pageDelay', data.delay_seconds_between_pages ?? 0);
+      valueOf('seriesDelay', data.delay_seconds_between_series ?? 3);
+      valueOf('chapterDelay', data.delay_seconds_between_chapters ?? 1);
       // 定时同步设置
       checked('autoSyncEnabled', data.auto_sync_enabled);
       checked('autoSyncBookmarks', data.auto_sync_bookmarks_enabled);
       checked('autoSyncFollowing', data.auto_sync_following_enabled);
+      checked('autoSyncUserStatus', data.auto_sync_user_status_enabled);
+      checked('autoSyncSubscribedSeries', data.auto_sync_subscribed_series_enabled);
       valueOf('autoSyncInterval', data.auto_sync_interval_hours ?? 6);
       
       // 更新定时同步状态显示
@@ -261,6 +286,7 @@
         sync_following_series: document.getElementById('syncFollowingSeries').checked,
         sync_following_users: document.getElementById('syncFollowingUsers').checked,
         sync_following_novels: document.getElementById('syncFollowingNovels').checked,
+        sync_subscribed_series: document.getElementById('syncSubscribedSeries').checked,
         enabled: document.getElementById('enabled').checked,
         initial_manual_only: document.getElementById('initialManualOnly').checked,
         download_assets: document.getElementById('downloadAssets').checked,
@@ -271,10 +297,14 @@
         max_pages_per_run: document.getElementById('maxPages').value.trim(),
         delay_seconds_between_items: document.getElementById('itemDelay').value.trim(),
         delay_seconds_between_pages: document.getElementById('pageDelay').value.trim(),
+        delay_seconds_between_series: document.getElementById('seriesDelay').value.trim(),
+        delay_seconds_between_chapters: document.getElementById('chapterDelay').value.trim(),
         // 定时同步设置
         auto_sync_enabled: document.getElementById('autoSyncEnabled').checked,
         auto_sync_bookmarks_enabled: document.getElementById('autoSyncBookmarks').checked,
         auto_sync_following_enabled: document.getElementById('autoSyncFollowing').checked,
+        auto_sync_user_status_enabled: document.getElementById('autoSyncUserStatus').checked,
+        auto_sync_subscribed_series_enabled: document.getElementById('autoSyncSubscribedSeries').checked,
         auto_sync_interval_hours: document.getElementById('autoSyncInterval').value.trim(),
       };
     }
