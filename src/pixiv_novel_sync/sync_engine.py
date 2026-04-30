@@ -224,148 +224,87 @@ class BookmarkNovelSyncService:
         if progress_callback:
             progress_callback("phase", {"phase": "获取订阅系列"})
         
-        # 使用 Pixiv Web API 获取订阅的系列
-        import requests
-        
-        # 获取 access_token 和 cookies
-        access_token = getattr(self.api, 'access_token', None)
-        if not access_token:
-            logger.error("No access_token available")
-            return stats
-        
         # 清除旧的订阅标记
         self.db.clear_subscribed_series()
         
-        # 尝试使用 Pixiv Web API 获取订阅的系列
         series_list = []
         
-        # 使用 Pixiv Web API: /ajax/watchlist/novel/series
+        # 方式1: 使用 pixivpy3 内部请求方法调用 watchlist API
         try:
-            # 构建请求头
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "application/json",
-                "Accept-Language": "zh_CN",
-                "Referer": "https://www.pixiv.net/following/watchlist/novels",
-            }
+            # 使用 no_auth_requests_call 或 requests_call 调用自定义端点
+            url = "/v1/user/bookmarks/novel-series"
+            params = {"user_id": self.settings.pixiv.user_id}
             
-            # 设置 cookies（包含 access_token）
-            cookies = {
-                "PHPSESSID": access_token,  # 使用 access_token 作为 session
-            }
+            logger.info("Trying App API: %s with user_id=%s", url, self.settings.pixiv.user_id)
+            result = self.api.requests_call("GET", url, params=params, req_auth=True)
             
-            # 尝试多个可能的 API 端点
-            api_endpoints = [
-                "https://www.pixiv.net/ajax/watchlist/novel/series",
-                "https://www.pixiv.net/ajax/novel/series/purchased",
-                "https://www.pixiv.net/ajax/user/self/novels/series",
-            ]
-            
-            for endpoint in api_endpoints:
-                try:
-                    logger.info("Trying API endpoint: %s", endpoint)
-                    response = requests.get(endpoint, headers=headers, cookies=cookies, timeout=30)
-                    if response.status_code == 200:
-                        data = response.json()
-                        if "body" in data:
-                            body = data["body"]
-                            # 尝试不同的数据结构
-                            if isinstance(body, list):
-                                series_list = body
-                            elif isinstance(body, dict):
-                                series_list = body.get("seriesList", body.get("novel_series_collections", []))
-                            if series_list:
-                                logger.info("Found %d subscribed series from %s", len(series_list), endpoint)
-                                break
-                except Exception as e:
-                    logger.warning("API endpoint %s failed: %s", endpoint, str(e))
-                    continue
-            
-            # 如果 Web API 失败，尝试使用 App API
-            if not series_list:
-                logger.info("Web API failed, trying App API")
-                # 使用 App API 获取用户的系列
-                user_id = self.settings.pixiv.user_id
-                if user_id:
-                    try:
-                        # 获取用户的小说
-                        result = self.api.user_novels(user_id)
-                        novels = getattr(result, "novels", []) or []
-                        
-                        # 从用户的小说中提取系列信息
-                        series_ids = set()
-                        for novel in novels:
-                            series_id = getattr(novel, "series_id", None)
-                            if series_id and series_id not in series_ids:
-                                series_ids.add(series_id)
-                                
-                                # 获取系列详情
-                                series_detail = self.api.novel_series(series_id)
-                                if series_detail:
-                                    series_info = getattr(series_detail, "novel_series_detail", series_detail)
-                                    series_list.append(series_info)
-                                    logger.info("Found series: %s (ID: %s)", getattr(series_info, "title", ""), series_id)
-                    except Exception as e:
-                        logger.warning("App API failed: %s", str(e))
-            
-            logger.info("Found %d subscribed series", len(series_list))
-            
-            for series_info in series_list:
-                series_id = getattr(series_info, "id", None)
-                if not series_id:
-                    # 尝试从字典获取
-                    if isinstance(series_info, dict):
-                        series_id = series_info.get("id")
-                
-                if not series_id:
-                    continue
-                
-                title = getattr(series_info, "title", "")
-                if not title and isinstance(series_info, dict):
-                    title = series_info.get("title", "")
-                
-                description = getattr(series_info, "description", "")
-                if not description and isinstance(series_info, dict):
-                    description = series_info.get("description", "")
-                
-                user_info = getattr(series_info, "user", None)
-                user_id = getattr(user_info, "id", 0) if user_info else 0
-                if not user_id and isinstance(series_info, dict):
-                    user_dict = series_info.get("user", {})
-                    user_id = user_dict.get("id", 0) if isinstance(user_dict, dict) else 0
-                
-                cover_url = None
-                cover_urls = getattr(series_info, "cover_image_urls", None)
-                if cover_urls:
-                    cover_url = getattr(cover_urls, "medium", None) or getattr(cover_urls, "large", None)
-                if not cover_url and isinstance(series_info, dict):
-                    cover_urls_dict = series_info.get("cover_image_urls", {})
-                    if isinstance(cover_urls_dict, dict):
-                        cover_url = cover_urls_dict.get("medium") or cover_urls_dict.get("large")
-                
-                total_novels = getattr(series_info, "total", 0)
-                if not total_novels and isinstance(series_info, dict):
-                    total_novels = series_info.get("total", 0)
-                
-                self.db.upsert_subscribed_series(
-                    series_id=series_id,
-                    title=title,
-                    description=description,
-                    user_id=user_id,
-                    cover_url=cover_url,
-                    total_novels=total_novels,
-                )
-                stats["series_synced"] += 1
-                
-                if progress_callback:
-                    progress_callback("progress", {"message": f"已同步: {title}"})
-            
-            logger.info("Subscribed series sync completed: %d series", stats["series_synced"])
-            
+            if result and isinstance(result, dict):
+                series_list = result.get("novel_series_collections", [])
+                logger.info("Found %d subscribed series from App API", len(series_list))
+            elif result and hasattr(result, "novel_series_collections"):
+                series_list = result.novel_series_collections or []
+                logger.info("Found %d subscribed series from App API", len(series_list))
+            else:
+                logger.info("App API result: %s", str(result)[:300] if result else "None")
         except Exception as e:
-            logger.error("Failed to fetch subscribed series: %s", str(e))
-            raise
+            logger.warning("App API /v1/user/bookmarks/novel-series failed: %s", str(e))
         
+        # 方式2: 尝试其他可能的端点
+        if not series_list:
+            alt_endpoints = [
+                ("/v2/novel/following", {}),
+                ("/v1/novel/following", {}),
+                ("/v1/user/bookmarks/novel", {"user_id": self.settings.pixiv.user_id, "restrict": "public"}),
+            ]
+            for endpoint, params in alt_endpoints:
+                try:
+                    logger.info("Trying: %s", endpoint)
+                    result = self.api.requests_call("GET", endpoint, params=params, req_auth=True)
+                    if result:
+                        logger.info("Got response from %s: %s", endpoint, str(result)[:300])
+                        break
+                except Exception as e:
+                    logger.warning("%s failed: %s", endpoint, str(e))
+        
+        # 方式3: 从已同步的小说中提取系列（所有有 series_id 的小说）
+        if not series_list:
+            logger.info("No subscribed series found via API, extracting from synced novels")
+            try:
+                rows = self.db.conn.execute(
+                    """
+                    SELECT DISTINCT n.series_id, 
+                           COALESCE(se.title, MIN(n.title)) as title,
+                           se.description,
+                           n.user_id,
+                           u.name as author_name,
+                           se.cover_url,
+                           COUNT(*) as total_novels
+                    FROM novels n
+                    LEFT JOIN series se ON se.series_id = n.series_id
+                    LEFT JOIN users u ON u.user_id = n.user_id
+                    WHERE n.series_id IS NOT NULL
+                    GROUP BY n.series_id
+                    ORDER BY MAX(n.last_seen_at) DESC
+                    """
+                ).fetchall()
+                
+                for row in rows:
+                    series_id = row[0]
+                    self.db.upsert_subscribed_series(
+                        series_id=series_id,
+                        title=row[1] or "",
+                        description=row[2] or "",
+                        user_id=row[3] or 0,
+                        cover_url=row[5],
+                        total_novels=row[6] or 0,
+                    )
+                    stats["series_synced"] += 1
+                    logger.info("Synced series from DB: %s (ID: %s)", row[1], series_id)
+                
+            except Exception as e:
+                logger.warning("Failed to extract series from DB: %s", str(e))
+        
+        logger.info("Subscribed series sync completed: %d series", stats["series_synced"])
         return stats
 
     def _sync_novel(
