@@ -266,46 +266,54 @@ class BookmarkNovelSyncService:
                                 logger.warning("Web API returned error: %s", data.get("message", "unknown"))
                                 continue
                             body = data.get("body", {})
-                            # 记录完整 body 结构以便调试
-                            logger.info("Response body type: %s, keys: %s", type(body).__name__, list(body.keys()) if isinstance(body, dict) else "N/A")
-                            if isinstance(body, dict):
-                                for k, v in body.items():
-                                    if isinstance(v, list):
-                                        logger.info("  key='%s' type=list len=%d sample=%s", k, len(v), str(v[0])[:300] if v else "empty")
-                                    elif isinstance(v, dict):
-                                        logger.info("  key='%s' type=dict keys=%s", k, list(v.keys())[:10])
-                                    else:
-                                        logger.info("  key='%s' type=%s val=%s", k, type(v).__name__, str(v)[:200])
+                            # 记录关键字段结构
+                            page_info = body.get("page", {})
+                            thumbnails = body.get("thumbnails", {})
+                            novel_series_thumbs = thumbnails.get("novelSeries", {})
+                            watched_ids = page_info.get("watchedSeriesIds", [])
+                            logger.info("page.total=%s, page.maxPage=%s, watchedSeriesIds count=%d",
+                                       page_info.get("total"), page_info.get("maxPage"), len(watched_ids))
+                            if novel_series_thumbs:
+                                first_key = list(novel_series_thumbs.keys())[0] if novel_series_thumbs else None
+                                logger.info("thumbnails.novelSeries: %d items, first key=%s, val=%s",
+                                           len(novel_series_thumbs), first_key,
+                                           str(novel_series_thumbs.get(first_key, ""))[:200] if first_key else "N/A")
+                            if watched_ids:
+                                logger.info("watchedSeriesIds sample: %s", watched_ids[:5])
                             
-                            # 尝试多种数据结构
-                            if isinstance(body, dict):
-                                # 先查找已知 key
-                                for candidate_key in ["seriesList", "novel_series_list", "watchList", "series", "works"]:
-                                    if candidate_key in body and isinstance(body[candidate_key], list) and body[candidate_key]:
-                                        series_list = body[candidate_key]
-                                        logger.info("Found series list under key '%s' (%d items)", candidate_key, len(series_list))
-                                        break
-                                # 遍历所有 list 类型的 key
-                                if not series_list:
-                                    for key, val in body.items():
-                                        if isinstance(val, list) and len(val) > 0:
-                                            series_list = val
-                                            logger.info("Found series list under key '%s' (%d items)", key, len(series_list))
-                                            break
-                            elif isinstance(body, list):
-                                series_list = body
-                            if series_list:
-                                logger.info("Found %d subscribed series from %s", len(series_list), endpoint)
-                                # 记录第一条数据的结构
-                                if series_list:
-                                    first = series_list[0]
-                                    logger.info("First series item type: %s", type(first).__name__)
-                                    if isinstance(first, dict):
-                                        logger.info("First series item keys: %s", list(first.keys()))
-                                        logger.info("First series item sample: %s", str(first)[:500])
+                            # 整理数据: watchedSeriesIds 是有序的系列 ID 列表
+                            # thumbnails.novelSeries 是 {seriesId: thumbnailUrl} 的映射
+                            if watched_ids:
+                                # 处理分页
+                                max_page = page_info.get("maxPage", 1)
+                                all_watched_ids = list(watched_ids)
+                                if max_page > 1:
+                                    for page_num in range(2, max_page + 1):
+                                        try:
+                                            paged_url = endpoint.replace("p=1", f"p={page_num}")
+                                            logger.info("Fetching page %d/%d: %s", page_num, max_page, paged_url)
+                                            paged_resp = http_requests.get(
+                                                paged_url, headers=headers, proxies=proxies,
+                                                timeout=self.settings.pixiv.timeout,
+                                                verify=self.settings.pixiv.verify_ssl,
+                                            )
+                                            if paged_resp.status_code == 200:
+                                                paged_data = paged_resp.json()
+                                                paged_body = paged_data.get("body", {})
+                                                paged_thumbs = paged_body.get("thumbnails", {}).get("novelSeries", {})
+                                                paged_ids = paged_body.get("page", {}).get("watchedSeriesIds", [])
+                                                all_watched_ids.extend(paged_ids)
+                                                novel_series_thumbs.update(paged_thumbs)
+                                        except Exception as e:
+                                            logger.warning("Failed to fetch page %d: %s", page_num, e)
+                                
+                                for sid in all_watched_ids:
+                                    series_list.append({
+                                        "series_id": str(sid),
+                                        "cover_url": novel_series_thumbs.get(str(sid), ""),
+                                    })
+                                logger.info("Found %d subscribed series from watchlist (all pages)", len(series_list))
                                 break
-                            else:
-                                logger.info("Could not locate series list in response body")
                     except Exception as e:
                         logger.warning("Web API %s failed: %s", endpoint, str(e))
                 
@@ -313,6 +321,46 @@ class BookmarkNovelSyncService:
                 logger.warning("Web API failed: %s", str(e))
         else:
             logger.info("No PIXIV_WEB_COOKIE configured, skipping Web API")
+        
+        # 方式1.5: 从 Web API 获取的 series_list 中，调用 App API 获取系列详情
+        if series_list:
+            logger.info("Fetching details for %d series via App API", len(series_list))
+            for item in series_list:
+                sid = item.get("series_id")
+                cover_from_web = item.get("cover_url", "")
+                try:
+                    series_data = self.api.novel_series(int(sid))
+                    if series_data and hasattr(series_data, "novel_series_detail"):
+                        detail = series_data.novel_series_detail
+                        title = getattr(detail, "title", "")
+                        desc = getattr(detail, "caption", "")
+                        user = getattr(detail, "user", None)
+                        user_id = int(user.id) if user else 0
+                        total = getattr(detail, "total", 0)
+                        cover = getattr(detail, "cover_image_url", "") or cover_from_web
+                        self.db.upsert_subscribed_series(
+                            series_id=int(sid), title=title, description=desc,
+                            user_id=user_id, cover_url=cover, total_novels=total,
+                        )
+                        self.db.upsert_user(user_id=user_id, name=getattr(user, "name", "unknown"))
+                        stats["series_synced"] += 1
+                        logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
+                    else:
+                        logger.warning("No detail for series %s, using web data", sid)
+                        self.db.upsert_subscribed_series(
+                            series_id=int(sid), title="", description="",
+                            user_id=0, cover_url=cover_from_web, total_novels=0,
+                        )
+                        stats["series_synced"] += 1
+                except Exception as e:
+                    logger.warning("Failed to fetch series %s: %s", sid, str(e))
+                    self.db.upsert_subscribed_series(
+                        series_id=int(sid), title="", description="",
+                        user_id=0, cover_url=cover_from_web, total_novels=0,
+                    )
+                    stats["series_synced"] += 1
+            logger.info("Subscribed series sync completed: %d series", stats["series_synced"])
+            return stats
         
         # 方式2: 从已同步的小说中提取系列
         if not series_list:
