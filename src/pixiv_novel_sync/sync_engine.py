@@ -308,14 +308,18 @@ class BookmarkNovelSyncService:
                                                 paged_thumbs = paged_body.get("thumbnails", {}).get("novelSeries", {})
                                                 paged_ids = paged_body.get("page", {}).get("watchedSeriesIds", [])
                                                 all_watched_ids.extend(paged_ids)
-                                                novel_series_thumbs.update(paged_thumbs)
+                                                if isinstance(novel_series_thumbs, dict) and isinstance(paged_thumbs, dict):
+                                                    novel_series_thumbs.update(paged_thumbs)
                                         except Exception as e:
                                             logger.warning("Failed to fetch page %d: %s", page_num, e)
                                 
                                 for sid in all_watched_ids:
+                                    cover = ""
+                                    if isinstance(novel_series_thumbs, dict):
+                                        cover = novel_series_thumbs.get(str(sid), "")
                                     series_list.append({
                                         "series_id": str(sid),
-                                        "cover_url": novel_series_thumbs.get(str(sid), ""),
+                                        "cover_url": cover,
                                     })
                                 logger.info("Found %d subscribed series from watchlist (all pages)", len(series_list))
                                 break
@@ -335,26 +339,41 @@ class BookmarkNovelSyncService:
                 cover_from_web = item.get("cover_url", "")
                 try:
                     series_data = self.api.novel_series(int(sid))
-                    if series_data and hasattr(series_data, "novel_series_detail"):
-                        detail = series_data.novel_series_detail
-                        title = getattr(detail, "title", "")
-                        desc = getattr(detail, "caption", "")
-                        user = getattr(detail, "user", None)
-                        user_id = int(user.id) if user else 0
-                        total = getattr(detail, "total", 0)
-                        cover = getattr(detail, "cover_image_url", "") or cover_from_web
-                        self.db.upsert_subscribed_series(
-                            series_id=int(sid), title=title, description=desc,
-                            user_id=user_id, cover_url=cover, total_novels=total,
-                        )
-                        self.db.upsert_user(UserRecord(
-                            user_id=user_id,
-                            name=getattr(user, "name", "unknown"),
-                            account=getattr(user, "account", None),
-                            raw_json="{}",
-                        ))
-                        stats["series_synced"] += 1
-                        logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
+                    if series_data:
+                        # 调试: 记录响应结构
+                        if not hasattr(series_data, "_logged"):
+                            logger.info("novel_series response keys: %s", list(series_data.keys()) if isinstance(series_data, dict) else dir(series_data))
+                            if isinstance(series_data, dict):
+                                for k, v in series_data.items():
+                                    if isinstance(v, dict):
+                                        logger.info("  key='%s' type=dict keys=%s", k, list(v.keys())[:10])
+                                    elif isinstance(v, list):
+                                        logger.info("  key='%s' type=list len=%d", k, len(v))
+                                    else:
+                                        logger.info("  key='%s' type=%s val=%s", k, type(v).__name__, str(v)[:200])
+                            series_data._logged = True
+                        detail = getattr(series_data, "novel_series_detail", None)
+                        if not detail and isinstance(series_data, dict):
+                            detail = series_data.get("novel_series_detail")
+                        if detail:
+                            title = getattr(detail, "title", "")
+                            desc = getattr(detail, "caption", "")
+                            user = getattr(detail, "user", None)
+                            user_id = int(user.id) if user else 0
+                            total = getattr(detail, "total", 0)
+                            cover = getattr(detail, "cover_image_url", "") or cover_from_web
+                            self.db.upsert_subscribed_series(
+                                series_id=int(sid), title=title, description=desc,
+                                user_id=user_id, cover_url=cover, total_novels=total,
+                            )
+                            self.db.upsert_user(UserRecord(
+                                user_id=user_id,
+                                name=getattr(user, "name", "unknown"),
+                                account=getattr(user, "account", None),
+                                raw_json="{}",
+                            ))
+                            stats["series_synced"] += 1
+                            logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
                     else:
                         logger.warning("No detail for series %s, using web data", sid)
                         self.db.upsert_subscribed_series(
