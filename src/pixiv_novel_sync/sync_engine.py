@@ -334,53 +334,66 @@ class BookmarkNovelSyncService:
         # 方式1.5: 从 Web API 获取的 series_list 中，调用 App API 获取系列详情
         if series_list:
             logger.info("Fetching details for %d series via App API", len(series_list))
+            _first_logged = False
             for item in series_list:
                 sid = item.get("series_id")
                 cover_from_web = item.get("cover_url", "")
                 try:
                     series_data = self.api.novel_series(int(sid))
+                    if series_data and not _first_logged:
+                        _first_logged = True
+                        logger.info("novel_series response type: %s, keys: %s", type(series_data).__name__, list(series_data.keys()) if isinstance(series_data, dict) else dir(series_data))
                     if series_data:
-                        # 调试: 记录响应结构
-                        if not hasattr(series_data, "_logged"):
-                            logger.info("novel_series response keys: %s", list(series_data.keys()) if isinstance(series_data, dict) else dir(series_data))
-                            if isinstance(series_data, dict):
-                                for k, v in series_data.items():
-                                    if isinstance(v, dict):
-                                        logger.info("  key='%s' type=dict keys=%s", k, list(v.keys())[:10])
-                                    elif isinstance(v, list):
-                                        logger.info("  key='%s' type=list len=%d", k, len(v))
-                                    else:
-                                        logger.info("  key='%s' type=%s val=%s", k, type(v).__name__, str(v)[:200])
-                            series_data._logged = True
-                        detail = getattr(series_data, "novel_series_detail", None)
-                        if not detail and isinstance(series_data, dict):
-                            detail = series_data.get("novel_series_detail")
+                        # novel_series 返回 dict，用 .get() 取值
+                        detail = series_data.get("novel_series_detail") if isinstance(series_data, dict) else None
+                        if not detail:
+                            detail = getattr(series_data, "novel_series_detail", None)
                         if detail:
-                            title = getattr(detail, "title", "")
-                            desc = getattr(detail, "caption", "")
-                            user = getattr(detail, "user", None)
-                            user_id = int(user.id) if user else 0
-                            total = getattr(detail, "total", 0)
-                            cover = getattr(detail, "cover_image_url", "") or cover_from_web
+                            # detail 可能是 dict 或对象
+                            if isinstance(detail, dict):
+                                title = detail.get("title", "")
+                                desc = detail.get("caption", "")
+                                user = detail.get("user")
+                                total = detail.get("total", 0)
+                                cover = detail.get("cover_image_url", "") or detail.get("url", "") or cover_from_web
+                            else:
+                                title = getattr(detail, "title", "")
+                                desc = getattr(detail, "caption", "")
+                                user = getattr(detail, "user", None)
+                                total = getattr(detail, "total", 0)
+                                cover = getattr(detail, "cover_image_url", "") or cover_from_web
+                            
+                            if isinstance(user, dict):
+                                user_id = int(user.get("id", 0))
+                                user_name = user.get("name", "unknown")
+                                user_account = user.get("account")
+                            elif user:
+                                user_id = int(user.id)
+                                user_name = getattr(user, "name", "unknown")
+                                user_account = getattr(user, "account", None)
+                            else:
+                                user_id = 0
+                                user_name = "unknown"
+                                user_account = None
+                            
                             self.db.upsert_subscribed_series(
                                 series_id=int(sid), title=title, description=desc,
-                                user_id=user_id, cover_url=cover, total_novels=total,
+                                user_id=user_id, cover_url=cover, total_novels=total or 0,
                             )
-                            self.db.upsert_user(UserRecord(
-                                user_id=user_id,
-                                name=getattr(user, "name", "unknown"),
-                                account=getattr(user, "account", None),
-                                raw_json="{}",
-                            ))
+                            if user_id:
+                                self.db.upsert_user(UserRecord(
+                                    user_id=user_id, name=user_name,
+                                    account=user_account, raw_json="{}",
+                                ))
                             stats["series_synced"] += 1
                             logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
-                    else:
-                        logger.warning("No detail for series %s, using web data", sid)
-                        self.db.upsert_subscribed_series(
-                            series_id=int(sid), title="", description="",
-                            user_id=0, cover_url=cover_from_web, total_novels=0,
-                        )
-                        stats["series_synced"] += 1
+                        else:
+                            logger.warning("No detail found for series %s, keys: %s", sid, list(series_data.keys()) if isinstance(series_data, dict) else "N/A")
+                            self.db.upsert_subscribed_series(
+                                series_id=int(sid), title="", description="",
+                                user_id=0, cover_url=cover_from_web, total_novels=0,
+                            )
+                            stats["series_synced"] += 1
                 except Exception as e:
                     logger.warning("Failed to fetch series %s: %s", sid, str(e))
                     self.db.upsert_subscribed_series(
