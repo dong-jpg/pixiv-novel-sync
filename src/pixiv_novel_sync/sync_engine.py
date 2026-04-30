@@ -345,11 +345,10 @@ class BookmarkNovelSyncService:
                     series_data = self.api.novel_series(int(sid))
                     if series_data and not _first_logged:
                         _first_logged = True
-                        logger.info("novel_series response type: %s, keys: %s", type(series_data).__name__, list(series_data.keys()) if isinstance(series_data, dict) else dir(series_data))
+                        logger.info("novel_series response keys: %s", list(series_data.keys()) if isinstance(series_data, dict) else "N/A")
                         _detail = series_data.get("novel_series_detail") if isinstance(series_data, dict) else None
                         if _detail and isinstance(_detail, dict):
                             logger.info("novel_series_detail keys: %s", list(_detail.keys()))
-                            logger.info("novel_series_detail sample: %s", str(_detail)[:600])
                     if series_data:
                         # novel_series 返回 dict，用 .get() 取值
                         detail = series_data.get("novel_series_detail") if isinstance(series_data, dict) else None
@@ -361,14 +360,23 @@ class BookmarkNovelSyncService:
                                 title = detail.get("title", "")
                                 desc = detail.get("caption", "")
                                 user = detail.get("user")
-                                total = detail.get("total", 0)
-                                cover = detail.get("cover_image_url", "") or detail.get("url", "") or cover_from_web
+                                total = detail.get("content_count", 0)
                             else:
                                 title = getattr(detail, "title", "")
                                 desc = getattr(detail, "caption", "")
                                 user = getattr(detail, "user", None)
-                                total = getattr(detail, "total", 0)
-                                cover = getattr(detail, "cover_image_url", "") or cover_from_web
+                                total = getattr(detail, "content_count", 0)
+                            
+                            # 封面图: 从 first_novel 或 novels[0] 获取
+                            cover = cover_from_web
+                            if isinstance(series_data, dict):
+                                first_novel = series_data.get("novel_series_first_novel")
+                                if first_novel and isinstance(first_novel, dict):
+                                    cover = first_novel.get("url", "") or first_novel.get("image_urls", {}).get("large", "") or cover
+                                if not cover:
+                                    novels_list = series_data.get("novels", [])
+                                    if novels_list and isinstance(novels_list[0], dict):
+                                        cover = novels_list[0].get("url", "") or novels_list[0].get("image_urls", {}).get("large", "") or cover
                             
                             if isinstance(user, dict):
                                 user_id = int(user.get("id", 0))
