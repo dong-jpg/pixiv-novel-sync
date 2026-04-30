@@ -224,8 +224,8 @@ class BookmarkNovelSyncService:
         if progress_callback:
             progress_callback("phase", {"phase": "获取订阅系列"})
         
-        # 清除旧的订阅标记
-        self.db.clear_subscribed_series()
+        # 不再清除旧的订阅标记，而是在最后统一更新
+        # self.db.clear_subscribed_series()
         
         series_list = []
         
@@ -322,6 +322,17 @@ class BookmarkNovelSyncService:
                                         "cover_url": cover,
                                     })
                                 logger.info("Found %d subscribed series from watchlist (all pages)", len(series_list))
+                                
+                                # 标记所有系列为订阅状态（即使不获取详情）
+                                for s in series_list:
+                                    try:
+                                        self.db.upsert_subscribed_series(
+                                            series_id=int(s["series_id"]), title="", description="",
+                                            user_id=0, cover_url=s.get("cover_url", ""), total_novels=0,
+                                        )
+                                    except Exception:
+                                        pass
+                                
                                 break
                     except Exception as e:
                         logger.warning("Web API %s failed: %s", endpoint, str(e))
