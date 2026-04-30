@@ -19,6 +19,7 @@ from .auth import PixivAuthManager
 from .oauth_helper import OAuthManager
 from .settings import Settings, load_settings
 from .storage_db import Database
+from .storage_files import FileStorage
 
 logger = logging.getLogger(__name__)
 
