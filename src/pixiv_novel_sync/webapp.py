@@ -15,6 +15,7 @@ import yaml
 from flask import Flask, Response, jsonify, redirect, render_template, request
 
 from .jobs.quick_sync import run_bookmark_sync
+from .auth import PixivAuthManager
 from .oauth_helper import OAuthManager
 from .settings import Settings, load_settings
 from .storage_db import Database
