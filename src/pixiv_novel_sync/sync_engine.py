@@ -247,8 +247,8 @@ class BookmarkNovelSyncService:
                 
                 # 尝试多个可能的 API 端点
                 api_endpoints = [
-                    "https://www.pixiv.net/ajax/watchlist/novel/series",
-                    "https://www.pixiv.net/ajax/novel/watchlist/series",
+                    "https://www.pixiv.net/ajax/watch_list/novel?p=1&new=1&lang=zh",
+                    "https://www.pixiv.net/ajax/watch_list/novel?p=1&lang=zh",
                 ]
                 
                 for endpoint in api_endpoints:
@@ -262,16 +262,28 @@ class BookmarkNovelSyncService:
                         logger.info("Web API %s returned status: %s", endpoint, response.status_code)
                         if response.status_code == 200:
                             data = response.json()
+                            if data.get("error"):
+                                logger.warning("Web API returned error: %s", data.get("message", "unknown"))
+                                continue
                             body = data.get("body", {})
+                            # 尝试多种数据结构
                             if isinstance(body, dict):
-                                series_list = body.get("seriesList", body.get("novel_series_list", []))
+                                series_list = body.get("seriesList", body.get("novel_series_list", body.get("watchList", [])))
+                                # 如果 body 本身就是列表的容器
+                                if not series_list:
+                                    for key, val in body.items():
+                                        if isinstance(val, list) and len(val) > 0:
+                                            series_list = val
+                                            logger.info("Found series list under key '%s'", key)
+                                            break
                             elif isinstance(body, list):
                                 series_list = body
                             if series_list:
                                 logger.info("Found %d subscribed series from %s", len(series_list), endpoint)
                                 break
                             else:
-                                logger.info("Response body: %s", str(data)[:500])
+                                logger.info("Response body keys: %s", list(body.keys()) if isinstance(body, dict) else type(body).__name__)
+                                logger.info("Response body preview: %s", str(data)[:800])
                     except Exception as e:
                         logger.warning("Web API %s failed: %s", endpoint, str(e))
                 
