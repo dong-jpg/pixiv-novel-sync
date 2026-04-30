@@ -343,6 +343,10 @@ class BookmarkNovelSyncService:
                     if series_data and not _first_logged:
                         _first_logged = True
                         logger.info("novel_series response type: %s, keys: %s", type(series_data).__name__, list(series_data.keys()) if isinstance(series_data, dict) else dir(series_data))
+                        _detail = series_data.get("novel_series_detail") if isinstance(series_data, dict) else None
+                        if _detail and isinstance(_detail, dict):
+                            logger.info("novel_series_detail keys: %s", list(_detail.keys()))
+                            logger.info("novel_series_detail sample: %s", str(_detail)[:600])
                     if series_data:
                         # novel_series 返回 dict，用 .get() 取值
                         detail = series_data.get("novel_series_detail") if isinstance(series_data, dict) else None
