@@ -266,24 +266,46 @@ class BookmarkNovelSyncService:
                                 logger.warning("Web API returned error: %s", data.get("message", "unknown"))
                                 continue
                             body = data.get("body", {})
+                            # 记录完整 body 结构以便调试
+                            logger.info("Response body type: %s, keys: %s", type(body).__name__, list(body.keys()) if isinstance(body, dict) else "N/A")
+                            if isinstance(body, dict):
+                                for k, v in body.items():
+                                    if isinstance(v, list):
+                                        logger.info("  key='%s' type=list len=%d sample=%s", k, len(v), str(v[0])[:300] if v else "empty")
+                                    elif isinstance(v, dict):
+                                        logger.info("  key='%s' type=dict keys=%s", k, list(v.keys())[:10])
+                                    else:
+                                        logger.info("  key='%s' type=%s val=%s", k, type(v).__name__, str(v)[:200])
+                            
                             # 尝试多种数据结构
                             if isinstance(body, dict):
-                                series_list = body.get("seriesList", body.get("novel_series_list", body.get("watchList", [])))
-                                # 如果 body 本身就是列表的容器
+                                # 先查找已知 key
+                                for candidate_key in ["seriesList", "novel_series_list", "watchList", "series", "works"]:
+                                    if candidate_key in body and isinstance(body[candidate_key], list) and body[candidate_key]:
+                                        series_list = body[candidate_key]
+                                        logger.info("Found series list under key '%s' (%d items)", candidate_key, len(series_list))
+                                        break
+                                # 遍历所有 list 类型的 key
                                 if not series_list:
                                     for key, val in body.items():
                                         if isinstance(val, list) and len(val) > 0:
                                             series_list = val
-                                            logger.info("Found series list under key '%s'", key)
+                                            logger.info("Found series list under key '%s' (%d items)", key, len(series_list))
                                             break
                             elif isinstance(body, list):
                                 series_list = body
                             if series_list:
                                 logger.info("Found %d subscribed series from %s", len(series_list), endpoint)
+                                # 记录第一条数据的结构
+                                if series_list:
+                                    first = series_list[0]
+                                    logger.info("First series item type: %s", type(first).__name__)
+                                    if isinstance(first, dict):
+                                        logger.info("First series item keys: %s", list(first.keys()))
+                                        logger.info("First series item sample: %s", str(first)[:500])
                                 break
                             else:
-                                logger.info("Response body keys: %s", list(body.keys()) if isinstance(body, dict) else type(body).__name__)
-                                logger.info("Response body preview: %s", str(data)[:800])
+                                logger.info("Could not locate series list in response body")
                     except Exception as e:
                         logger.warning("Web API %s failed: %s", endpoint, str(e))
                 
