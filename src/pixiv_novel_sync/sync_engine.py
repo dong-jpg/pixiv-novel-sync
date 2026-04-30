@@ -403,63 +403,23 @@ class BookmarkNovelSyncService:
                             stats["series_synced"] += 1
                             logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
                             
-                            # 同步系列中的所有章节
+                            # 同步系列中的所有章节（含正文）
+                            item_delay = self.settings.sync.delay_seconds_between_items
+                            download_assets = self.settings.sync.download_assets
+                            write_markdown = self.settings.sync.write_markdown
+                            write_raw_text = self.settings.sync.write_raw_text
+                            
                             if isinstance(series_data, dict):
-                                novels_in_series = series_data.get("novels", [])
-                                chapter_count = 0
-                                for novel_item in novels_in_series:
-                                    if isinstance(novel_item, dict):
-                                        novel_id = int(novel_item.get("id", 0))
-                                        novel_title = novel_item.get("title", "")
-                                        novel_cover = novel_item.get("url", "") or (novel_item.get("image_urls", {}).get("large", "") if isinstance(novel_item.get("image_urls"), dict) else "")
-                                        if novel_id:
-                                            self.db.upsert_novel(NovelRecord(
-                                                novel_id=novel_id,
-                                                user_id=user_id,
-                                                series_id=int(sid),
-                                                title=novel_title,
-                                                caption="",
-                                                visible=True,
-                                                restrict="public",
-                                                x_restrict=0,
-                                                text_length=0,
-                                                total_bookmarks=0,
-                                                total_views=0,
-                                                cover_url=novel_cover,
-                                                tags_json="[]",
-                                                create_date=novel_item.get("create_date"),
-                                                raw_json="{}",
-                                                meta_hash="",
-                                            ))
-                                            chapter_count += 1
-                                if chapter_count:
-                                    logger.info("  Synced %d chapters for series %s", chapter_count, sid)
-                                
-                                # 处理分页: 如果有 next_url，继续获取更多章节
+                                all_novel_items = list(series_data.get("novels", []))
+                                # 处理分页
                                 next_url = series_data.get("next_url")
                                 while next_url:
                                     try:
-                                        # pixivpy3 的 next_url 需要用 auth_request_call
                                         next_resp = self.api.auth_request_call("GET", next_url)
                                         if next_resp and next_resp.status_code == 200:
                                             next_data = self.api.parse_result(next_resp)
                                             if isinstance(next_data, dict):
-                                                more_novels = next_data.get("novels", [])
-                                                for novel_item in more_novels:
-                                                    if isinstance(novel_item, dict):
-                                                        novel_id = int(novel_item.get("id", 0))
-                                                        novel_title = novel_item.get("title", "")
-                                                        novel_cover = novel_item.get("url", "") or (novel_item.get("image_urls", {}).get("large", "") if isinstance(novel_item.get("image_urls"), dict) else "")
-                                                        if novel_id:
-                                                            self.db.upsert_novel(NovelRecord(
-                                                                novel_id=novel_id, user_id=user_id, series_id=int(sid),
-                                                                title=novel_title, caption="", visible=True, restrict="public",
-                                                                x_restrict=0, text_length=0, total_bookmarks=0, total_views=0,
-                                                                cover_url=novel_cover, tags_json="[]",
-                                                                create_date=novel_item.get("create_date"),
-                                                                raw_json="{}", meta_hash="",
-                                                            ))
-                                                            chapter_count += 1
+                                                all_novel_items.extend(next_data.get("novels", []))
                                                 next_url = next_data.get("next_url")
                                             else:
                                                 break
@@ -468,8 +428,82 @@ class BookmarkNovelSyncService:
                                     except Exception as e:
                                         logger.warning("Failed to fetch next page for series %s: %s", sid, e)
                                         break
+                                
+                                chapter_count = 0
+                                for idx, novel_item in enumerate(all_novel_items):
+                                    if not isinstance(novel_item, dict):
+                                        continue
+                                    novel_id = int(novel_item.get("id", 0))
+                                    if not novel_id:
+                                        continue
+                                    try:
+                                        # 获取小说详情
+                                        detail = self.api.novel_detail(novel_id)
+                                        detail_novel = getattr(detail, "novel", None)
+                                        if detail_novel is None and isinstance(detail, dict):
+                                            detail_novel = detail.get("novel", detail)
+                                        
+                                        n_user = detail_novel.get("user") if isinstance(detail_novel, dict) else getattr(detail_novel, "user", None)
+                                        n_user_id = int(n_user.get("id", 0) if isinstance(n_user, dict) else n_user.id) if n_user else user_id
+                                        n_user_name = (n_user.get("name") if isinstance(n_user, dict) else getattr(n_user, "name", "unknown")) if n_user else user_name
+                                        n_account = (n_user.get("account") if isinstance(n_user, dict) else getattr(n_user, "account", None)) if n_user else None
+                                        
+                                        if n_user_id:
+                                            self.db.upsert_user(UserRecord(
+                                                user_id=n_user_id, name=n_user_name,
+                                                account=n_account, raw_json="{}",
+                                            ))
+                                        
+                                        def _g(obj, key, default=None):
+                                            if isinstance(obj, dict):
+                                                return obj.get(key, default)
+                                            return getattr(obj, key, default)
+                                        
+                                        caption = clean_caption(_g(detail_novel, "caption", ""))
+                                        cover_url = _extract_cover_url(detail_novel) if hasattr(self, '_extract_cover_url') else _g(detail_novel, "cover_url", "")
+                                        if not cover_url:
+                                            cover_url = _g(detail_novel, "url", "")
+                                        
+                                        self.db.upsert_novel(NovelRecord(
+                                            novel_id=novel_id, user_id=n_user_id or user_id,
+                                            series_id=int(sid), title=_g(detail_novel, "title", f"novel_{novel_id}"),
+                                            caption=caption, visible=bool(_g(detail_novel, "visible", True)),
+                                            restrict="public", x_restrict=int(_g(detail_novel, "x_restrict", 0) or 0),
+                                            text_length=int(_g(detail_novel, "text_length", 0) or 0),
+                                            total_bookmarks=int(_g(detail_novel, "total_bookmarks", 0) or 0),
+                                            total_views=int(_g(detail_novel, "total_view", 0) or 0),
+                                            cover_url=cover_url, tags_json="[]",
+                                            create_date=_g(detail_novel, "create_date"),
+                                            raw_json="{}", meta_hash="",
+                                        ))
+                                        
+                                        # 获取正文
+                                        webview = self.api.webview_novel(novel_id)
+                                        body = normalize_text(_extract_novel_text(webview))
+                                        text_hash = sha256_text(body)
+                                        markdown_text = to_markdown(_g(detail_novel, "title", ""), n_user_name, caption, body) if write_markdown else None
+                                        
+                                        self.db.upsert_novel_text(NovelTextRecord(
+                                            novel_id=novel_id, text_raw=body,
+                                            text_markdown=markdown_text, text_hash=text_hash,
+                                        ))
+                                        self.db.replace_fts(novel_id, _g(detail_novel, "title", ""), caption, n_user_name, body)
+                                        
+                                        # 写入文件
+                                        novel_dir = self.storage.novel_dir("public", n_user_id or user_id, n_user_name, novel_id, _g(detail_novel, "title", ""))
+                                        if write_raw_text:
+                                            self.storage.write_text(novel_dir / "text.txt", body)
+                                        if write_markdown and markdown_text:
+                                            self.storage.write_text(novel_dir / "text.md", markdown_text)
+                                        
+                                        chapter_count += 1
+                                        if idx < len(all_novel_items) - 1 and item_delay > 0:
+                                            time.sleep(item_delay)
+                                    except Exception as e:
+                                        logger.warning("Failed to sync chapter %d: %s", novel_id, e)
+                                
                                 if chapter_count:
-                                    logger.info("  Total chapters synced for series %s: %d", sid, chapter_count)
+                                    logger.info("  Synced %d chapters with text for series %s", chapter_count, sid)
                         else:
                             logger.warning("No detail found for series %s, keys: %s", sid, list(series_data.keys()) if isinstance(series_data, dict) else "N/A")
                             self.db.upsert_subscribed_series(
