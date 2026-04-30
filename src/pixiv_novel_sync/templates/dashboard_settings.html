@@ -188,6 +188,11 @@
       <div class="section">
         <div class="section-title">同步操作</div>
         <p style="font-size:13px;color:var(--text-secondary);margin:0 0 14px;">手动触发同步任务，同步订阅的系列和关注用户的最新小说</p>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+          <label style="font-size:14px;color:var(--text-secondary);">同步数量限制：</label>
+          <input type="number" id="seriesSyncLimit" min="0" value="0" style="width:80px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:14px;">
+          <span style="font-size:12px;color:var(--text-tertiary);">0 = 全部系列</span>
+        </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button id="syncSubscribedBtn" class="btn" style="background:linear-gradient(90deg,#ff9500,#ff6b00);">同步订阅系列</button>
           <button id="syncFollowingBtn" class="btn" style="background:linear-gradient(90deg,#34c759,#30d158);">同步关注用户</button>
@@ -322,13 +327,19 @@
     async function syncSubscribedSeries() {
       const btn = document.getElementById('syncSubscribedBtn');
       const msg = document.getElementById('syncMessage');
+      const limitInput = document.getElementById('seriesSyncLimit');
+      const limit = parseInt(limitInput.value) || 0;
       const originalText = btn.textContent;
       btn.disabled = true;
       btn.textContent = '同步中...';
       msg.className = 'message';
       msg.textContent = '正在同步订阅系列...';
       try {
-        const resp = await fetch('/api/dashboard/sync/subscribed-series', { method: 'POST' });
+        const resp = await fetch('/api/dashboard/sync/subscribed-series', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ limit: limit }),
+        });
         const data = await resp.json();
         if (resp.ok) {
           msg.className = 'message ok';

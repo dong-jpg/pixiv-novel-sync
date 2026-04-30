@@ -216,11 +216,11 @@ class BookmarkNovelSyncService:
                 time.sleep(page_delay)
         return stats
 
-    def sync_subscribed_series(self, progress_callback: Any = None) -> dict[str, int]:
+    def sync_subscribed_series(self, progress_callback: Any = None, limit: int = 0) -> dict[str, int]:
         """获取用户订阅的系列列表（从 watchlist 页面）"""
         stats = {"series_synced": 0}
         
-        logger.info("Fetching subscribed series list")
+        logger.info("Fetching subscribed series list (limit=%d)", limit)
         if progress_callback:
             progress_callback("phase", {"phase": "获取订阅系列"})
         
@@ -333,6 +333,9 @@ class BookmarkNovelSyncService:
         
         # 方式1.5: 从 Web API 获取的 series_list 中，调用 App API 获取系列详情
         if series_list:
+            if limit > 0:
+                series_list = series_list[:limit]
+                logger.info("Limiting to first %d series", limit)
             logger.info("Fetching details for %d series via App API", len(series_list))
             _first_logged = False
             for item in series_list:

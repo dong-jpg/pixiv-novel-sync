@@ -767,6 +767,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         if auth_result.user_id is None:
             return jsonify({"error": "Unable to determine user ID"}), 400
 
+        # 从请求体获取 limit 参数
+        req_data = request.get_json(silent=True) or {}
+        limit = int(req_data.get("limit", 0) or 0)
+
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         storage = FileStorage(current_settings)
@@ -780,7 +784,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             service = BookmarkNovelSyncService(
                 api=api, db=db, storage=storage, settings=current_settings
             )
-            stats = service.sync_subscribed_series()
+            stats = service.sync_subscribed_series(limit=limit)
             logger.info("Subscribed series sync finished: %s", json.dumps(stats, ensure_ascii=False))
             return jsonify({"ok": True, "stats": stats})
         except Exception as exc:
