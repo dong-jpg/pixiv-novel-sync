@@ -157,6 +157,13 @@ class AutoSyncScheduler:
                         novels_only=False,
                     )
                 
+                # 同步追更系列
+                if settings.sync.sync_subscribed_series and settings.sync.auto_sync_subscribed_series_enabled:
+                    logger.info("Auto sync: subscribed series")
+                    service.sync_subscribed_series(
+                        limit=settings.sync.series_sync_limit,
+                    )
+                
                 logger.info("Auto sync completed")
                 
             finally:
@@ -284,12 +291,23 @@ class SettingsManager:
         sync_data["sync_following_series"] = bool(payload.get("sync_following_series", sync_data.get("sync_following_series", True)))
         sync_data["sync_following_users"] = bool(payload.get("sync_following_users", sync_data.get("sync_following_users", True)))
         sync_data["sync_following_novels"] = bool(payload.get("sync_following_novels", sync_data.get("sync_following_novels", True)))
+        sync_data["sync_subscribed_series"] = bool(payload.get("sync_subscribed_series", sync_data.get("sync_subscribed_series", True)))
+        
+        # 系列限速设置
+        sync_data["delay_seconds_between_series"] = _normalize_float(
+            payload.get("delay_seconds_between_series", sync_data.get("delay_seconds_between_series", 3.0))
+        )
+        sync_data["delay_seconds_between_chapters"] = _normalize_float(
+            payload.get("delay_seconds_between_chapters", sync_data.get("delay_seconds_between_chapters", 1.0))
+        )
         
         # 定时同步设置
         sync_data["auto_sync_enabled"] = bool(payload.get("auto_sync_enabled", sync_data.get("auto_sync_enabled", False)))
         sync_data["auto_sync_interval_hours"] = int(payload.get("auto_sync_interval_hours", sync_data.get("auto_sync_interval_hours", 6)))
         sync_data["auto_sync_bookmarks_enabled"] = bool(payload.get("auto_sync_bookmarks_enabled", sync_data.get("auto_sync_bookmarks_enabled", True)))
         sync_data["auto_sync_following_enabled"] = bool(payload.get("auto_sync_following_enabled", sync_data.get("auto_sync_following_enabled", True)))
+        sync_data["auto_sync_user_status_enabled"] = bool(payload.get("auto_sync_user_status_enabled", sync_data.get("auto_sync_user_status_enabled", True)))
+        sync_data["auto_sync_subscribed_series_enabled"] = bool(payload.get("auto_sync_subscribed_series_enabled", sync_data.get("auto_sync_subscribed_series_enabled", True)))
 
         with config_path.open("w", encoding="utf-8") as file:
             yaml.safe_dump(config_data, file, allow_unicode=True, sort_keys=False)
@@ -884,10 +902,15 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "sync_following_series": settings.sync.sync_following_series,
         "sync_following_users": settings.sync.sync_following_users,
         "sync_following_novels": settings.sync.sync_following_novels,
+        "sync_subscribed_series": settings.sync.sync_subscribed_series,
+        "delay_seconds_between_series": settings.sync.delay_seconds_between_series,
+        "delay_seconds_between_chapters": settings.sync.delay_seconds_between_chapters,
         "auto_sync_enabled": settings.sync.auto_sync_enabled,
         "auto_sync_interval_hours": settings.sync.auto_sync_interval_hours,
         "auto_sync_bookmarks_enabled": settings.sync.auto_sync_bookmarks_enabled,
         "auto_sync_following_enabled": settings.sync.auto_sync_following_enabled,
+        "auto_sync_user_status_enabled": settings.sync.auto_sync_user_status_enabled,
+        "auto_sync_subscribed_series_enabled": settings.sync.auto_sync_subscribed_series_enabled,
     }
 
 
