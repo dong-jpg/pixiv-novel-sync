@@ -20,6 +20,7 @@ from .oauth_helper import OAuthManager
 from .settings import Settings, load_settings
 from .storage_db import Database
 from .storage_files import FileStorage
+from .sync_engine import BookmarkNovelSyncService
 
 logger = logging.getLogger(__name__)
 
