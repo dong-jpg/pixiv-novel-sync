@@ -1232,11 +1232,13 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "delay_seconds_between_series": settings.sync.delay_seconds_between_series,
         "delay_seconds_between_chapters": settings.sync.delay_seconds_between_chapters,
         "auto_sync_enabled": settings.sync.auto_sync_enabled,
-        "auto_sync_interval_hours": settings.sync.auto_sync_interval_hours,
         "auto_sync_bookmarks_enabled": settings.sync.auto_sync_bookmarks_enabled,
+        "auto_sync_bookmarks_interval_hours": settings.sync.auto_sync_bookmarks_interval_hours,
         "auto_sync_following_enabled": settings.sync.auto_sync_following_enabled,
+        "auto_sync_following_interval_hours": settings.sync.auto_sync_following_interval_hours,
         "auto_sync_user_status_enabled": settings.sync.auto_sync_user_status_enabled,
         "auto_sync_subscribed_series_enabled": settings.sync.auto_sync_subscribed_series_enabled,
+        "auto_sync_subscribed_series_interval_hours": settings.sync.auto_sync_subscribed_series_interval_hours,
     }
 
 
