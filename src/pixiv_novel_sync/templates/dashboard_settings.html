@@ -95,10 +95,6 @@
             <input type="checkbox" id="syncFollowingNovels">
             <label for="syncFollowingNovels">同步关注用户的小说</label>
           </div>
-          <div class="check-item">
-            <input type="checkbox" id="syncSubscribedSeries">
-            <label for="syncSubscribedSeries">同步追更系列</label>
-          </div>
         </div>
       </div>
 
@@ -251,7 +247,6 @@
       checked('syncFollowingSeries', data.sync_following_series);
       checked('syncFollowingUsers', data.sync_following_users);
       checked('syncFollowingNovels', data.sync_following_novels);
-      checked('syncSubscribedSeries', data.sync_subscribed_series);
       checked('enabled', data.enabled);
       checked('initialManualOnly', data.initial_manual_only);
       checked('downloadAssets', data.download_assets);
@@ -286,7 +281,6 @@
         sync_following_series: document.getElementById('syncFollowingSeries').checked,
         sync_following_users: document.getElementById('syncFollowingUsers').checked,
         sync_following_novels: document.getElementById('syncFollowingNovels').checked,
-        sync_subscribed_series: document.getElementById('syncSubscribedSeries').checked,
         enabled: document.getElementById('enabled').checked,
         initial_manual_only: document.getElementById('initialManualOnly').checked,
         download_assets: document.getElementById('downloadAssets').checked,
