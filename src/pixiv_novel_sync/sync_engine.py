@@ -406,6 +406,7 @@ class BookmarkNovelSyncService:
         item_delay = self.settings.sync.delay_seconds_between_items
         page_delay = self.settings.sync.delay_seconds_between_pages
         processed_items = 0
+        synced_items = 0  # 实际同步的数量（不包括跳过的）
 
         logger.info("Syncing novels from followed users")
         current_user_id = self.settings.pixiv.user_id
@@ -413,6 +414,10 @@ class BookmarkNovelSyncService:
             raise RuntimeError("PIXIV_USER_ID is required to fetch following list")
         next_following_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
         following_page_count = 0
+
+        # 获取预检查结果
+        check_list = self.db.get_sync_check_list()
+        use_check_list = len(check_list) > 0
 
         while next_following_query:
             if max_pages is not None and following_page_count >= max_pages:
@@ -461,8 +466,9 @@ class BookmarkNovelSyncService:
                     novels = getattr(novels_result, "novels", []) or []
 
                     for novel in novels:
-                        if max_items is not None and processed_items >= max_items:
-                            logger.info("Reached max_items_per_run=%s during followed user scan", max_items)
+                        # 检查是否达到实际同步数量限制（顺延逻辑）
+                        if max_items is not None and synced_items >= max_items:
+                            logger.info("Reached max_items_per_run=%s (synced), stopping sync", max_items)
                             return stats
                         processed_items += 1
                         novel_id = int(novel.id)
@@ -478,16 +484,39 @@ class BookmarkNovelSyncService:
                                 "phase": "同步用户小说",
                             })
                         
-                        counters = self._sync_novel(
-                            novel,
-                            getattr(novel, "restrict", "public") or "public",
-                            download_assets,
-                            write_markdown,
-                            write_raw_text,
-                            source_type="following_user_scan",
-                            source_key=str(author_id),
-                        )
+                        # 使用预检查结果判断是否跳过
+                        should_skip = False
+                        if use_check_list and novel_id in check_list:
+                            should_skip = check_list[novel_id]
+                        
+                        if should_skip:
+                            # 已存在，跳过
+                            counters = {"skipped": 1, "bookmarks": 0, "views": 0, "assets_downloaded": 0}
+                            # 跳过时使用跳过间隔
+                            skip_delay = self.settings.sync.delay_seconds_between_skips
+                            if skip_delay > 0:
+                                if progress_callback:
+                                    progress_callback("rate_limit", {"seconds": skip_delay})
+                                time.sleep(skip_delay)
+                        else:
+                            counters = self._sync_novel(
+                                novel,
+                                getattr(novel, "restrict", "public") or "public",
+                                download_assets,
+                                write_markdown,
+                                write_raw_text,
+                                source_type="following_user_scan",
+                                source_key=str(author_id),
+                            )
+                            # 同步成功后更新检查列表
+                            if use_check_list:
+                                self.db.upsert_sync_check_item(novel_id, True)
+                        
                         self._merge_stats(stats, counters)
+                        
+                        # 只有实际同步（非跳过）才计入 synced_items
+                        if not counters.get("skipped"):
+                            synced_items += 1
                         
                         if progress_callback:
                             progress_callback("novel_done", {
@@ -496,9 +525,11 @@ class BookmarkNovelSyncService:
                                 "bookmarks": counters.get("bookmarks", 0),
                                 "views": counters.get("views", 0),
                                 "assets": counters.get("assets_downloaded", 0),
+                                "skipped": counters.get("skipped", 0),
                             })
                         
-                        if item_delay > 0:
+                        # 只有非跳过时才使用 item_delay
+                        if not counters.get("skipped") and item_delay > 0:
                             if progress_callback:
                                 progress_callback("rate_limit", {"seconds": item_delay})
                             time.sleep(item_delay)

@@ -100,9 +100,10 @@ class AutoSyncScheduler:
         """调度器主循环 - 每个任务独立检查和执行"""
         # 任务定义
         task_configs = [
-            {"name": "bookmarks", "setting_check": "auto_sync_bookmarks_enabled", "sync_func": "_sync_bookmarks", "interval_setting": "auto_sync_bookmarks_interval_hours"},
-            {"name": "following", "setting_check": "auto_sync_following_enabled", "sync_func": "_sync_following", "interval_setting": "auto_sync_following_interval_hours"},
-            {"name": "subscribed_series", "setting_check": "auto_sync_subscribed_series_enabled", "sync_func": "_sync_subscribed_series", "interval_setting": "auto_sync_subscribed_series_interval_hours"},
+            {"name": "bookmarks", "setting_check": "auto_sync_bookmarks_enabled", "sync_func": "_sync_bookmarks", "interval_setting": "auto_sync_bookmarks_interval_hours", "cron_setting": "auto_sync_bookmarks_cron"},
+            {"name": "following", "setting_check": "auto_sync_following_enabled", "sync_func": "_sync_following", "interval_setting": "auto_sync_following_interval_hours", "cron_setting": "auto_sync_following_cron"},
+            {"name": "subscribed_series", "setting_check": "auto_sync_subscribed_series_enabled", "sync_func": "_sync_subscribed_series", "interval_setting": "auto_sync_subscribed_series_interval_hours", "cron_setting": "auto_sync_subscribed_series_cron"},
+            {"name": "user_status", "setting_check": "auto_sync_user_status_enabled", "sync_func": "_sync_user_status", "interval_setting": "auto_sync_following_interval_hours", "cron_setting": "auto_sync_user_status_cron"},
         ]
         
         while self._running:
@@ -125,7 +126,8 @@ class AutoSyncScheduler:
                     if not getattr(settings.sync, task_config["setting_check"], False):
                         continue
                     
-                    # 获取该任务的单独间隔
+                    # 获取cron表达式或间隔时间
+                    cron_expr = getattr(settings.sync, task_config["cron_setting"], "")
                     task_interval_hours = getattr(settings.sync, task_config["interval_setting"], 6)
                     task_interval_seconds = task_interval_hours * 3600
                     
@@ -134,7 +136,16 @@ class AutoSyncScheduler:
                     
                     # 计算该任务的下次运行时间
                     last_run = self._task_last_run.get(task_name, 0)
-                    next_run = self._task_next_run.get(task_name, last_run + task_interval_seconds)
+                    
+                    # 如果有cron表达式，使用cron计算下次运行时间
+                    if cron_expr:
+                        from .settings import cron_to_next_run
+                        next_run = cron_to_next_run(cron_expr, last_run if last_run > 0 else now)
+                        if next_run is None:
+                            # cron表达式解析失败，回退到间隔时间
+                            next_run = last_run + task_interval_seconds
+                    else:
+                        next_run = self._task_next_run.get(task_name, last_run + task_interval_seconds)
                     
                     # 如果是首次运行，设置为立即执行（但间隔30秒避免同时启动）
                     if last_run == 0:
@@ -149,7 +160,11 @@ class AutoSyncScheduler:
                             if self._current_task_job_id is not None:
                                 logger.info("Task %s skipped: another task is running (%s)", task_name, self._current_task_job_id)
                                 # 延迟到下一个周期
-                                self._task_next_run[task_name] = now + task_interval_seconds
+                                if cron_expr:
+                                    from .settings import cron_to_next_run
+                                    self._task_next_run[task_name] = cron_to_next_run(cron_expr, now) or (now + task_interval_seconds)
+                                else:
+                                    self._task_next_run[task_name] = now + task_interval_seconds
                                 continue
                         
                         # 执行任务
@@ -157,7 +172,11 @@ class AutoSyncScheduler:
                         
                         # 更新下次运行时间
                         self._task_last_run[task_name] = time.time()
-                        self._task_next_run[task_name] = time.time() + task_interval_seconds
+                        if cron_expr:
+                            from .settings import cron_to_next_run
+                            self._task_next_run[task_name] = cron_to_next_run(cron_expr, time.time()) or (time.time() + task_interval_seconds)
+                        else:
+                            self._task_next_run[task_name] = time.time() + task_interval_seconds
                 
                 # 短暂休眠后继续检查
                 time.sleep(30)
@@ -346,6 +365,59 @@ class AutoSyncScheduler:
                 self.sync_job_manager.add_log(job_id, "success", "追更系列同步完成")
         finally:
             db.close()
+    
+    def _sync_user_status(self, settings: Settings, job_id: str | None) -> None:
+        """同步关注用户的存续状态"""
+        from .auth import PixivAuthManager
+        
+        if job_id and self.sync_job_manager:
+            self.sync_job_manager.add_log(job_id, "info", "开始检查用户状态")
+        
+        auth = PixivAuthManager(settings.pixiv)
+        api, auth_result = auth.login()
+        if auth_result.user_id is None:
+            raise RuntimeError("Unable to determine user ID")
+        
+        if self._check_stop():
+            return
+        
+        db = Database(settings.storage.db_path)
+        db.init_schema()
+        
+        try:
+            # 获取所有关注的用户
+            users = db.list_users(page=1, page_size=1000)
+            user_list = users.get("items", [])
+            
+            if job_id and self.sync_job_manager:
+                self.sync_job_manager.add_log(job_id, "info", f"共 {len(user_list)} 个用户需要检查")
+            
+            checked_count = 0
+            for user in user_list:
+                if self._check_stop():
+                    return
+                
+                user_id = user.get("user_id")
+                if not user_id:
+                    continue
+                
+                try:
+                    status = _check_pixiv_user_status(api, user_id)
+                    db.upsert_user_status(user_id, status)
+                    checked_count += 1
+                    
+                    if job_id and self.sync_job_manager:
+                        self.sync_job_manager.add_log(job_id, "info", f"[{checked_count}/{len(user_list)}] 用户 {user.get('name', user_id)}: {status}")
+                    
+                    # 限速
+                    time.sleep(settings.sync.delay_seconds_between_skips)
+                except Exception as e:
+                    logger.warning("Failed to check user %s status: %s", user_id, e)
+            
+            if job_id and self.sync_job_manager:
+                self.sync_job_manager.add_log(job_id, "success", f"用户状态检查完成: {checked_count} 个用户")
+        finally:
+            db.close()
 
 
 @dataclass(slots=True)
@@ -527,11 +599,15 @@ class SettingsManager:
         sync_data["auto_sync_enabled"] = bool(payload.get("auto_sync_enabled", sync_data.get("auto_sync_enabled", False)))
         sync_data["auto_sync_bookmarks_enabled"] = bool(payload.get("auto_sync_bookmarks_enabled", sync_data.get("auto_sync_bookmarks_enabled", True)))
         sync_data["auto_sync_bookmarks_interval_hours"] = int(payload.get("auto_sync_bookmarks_interval_hours", sync_data.get("auto_sync_bookmarks_interval_hours", 6)))
+        sync_data["auto_sync_bookmarks_cron"] = str(payload.get("auto_sync_bookmarks_cron", sync_data.get("auto_sync_bookmarks_cron", "")))
         sync_data["auto_sync_following_enabled"] = bool(payload.get("auto_sync_following_enabled", sync_data.get("auto_sync_following_enabled", True)))
         sync_data["auto_sync_following_interval_hours"] = int(payload.get("auto_sync_following_interval_hours", sync_data.get("auto_sync_following_interval_hours", 6)))
+        sync_data["auto_sync_following_cron"] = str(payload.get("auto_sync_following_cron", sync_data.get("auto_sync_following_cron", "")))
         sync_data["auto_sync_user_status_enabled"] = bool(payload.get("auto_sync_user_status_enabled", sync_data.get("auto_sync_user_status_enabled", True)))
+        sync_data["auto_sync_user_status_cron"] = str(payload.get("auto_sync_user_status_cron", sync_data.get("auto_sync_user_status_cron", "")))
         sync_data["auto_sync_subscribed_series_enabled"] = bool(payload.get("auto_sync_subscribed_series_enabled", sync_data.get("auto_sync_subscribed_series_enabled", True)))
         sync_data["auto_sync_subscribed_series_interval_hours"] = int(payload.get("auto_sync_subscribed_series_interval_hours", sync_data.get("auto_sync_subscribed_series_interval_hours", 6)))
+        sync_data["auto_sync_subscribed_series_cron"] = str(payload.get("auto_sync_subscribed_series_cron", sync_data.get("auto_sync_subscribed_series_cron", "")))
 
         with config_path.open("w", encoding="utf-8") as file:
             yaml.safe_dump(config_data, file, allow_unicode=True, sort_keys=False)
@@ -1253,11 +1329,15 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "auto_sync_enabled": settings.sync.auto_sync_enabled,
         "auto_sync_bookmarks_enabled": settings.sync.auto_sync_bookmarks_enabled,
         "auto_sync_bookmarks_interval_hours": settings.sync.auto_sync_bookmarks_interval_hours,
+        "auto_sync_bookmarks_cron": settings.sync.auto_sync_bookmarks_cron,
         "auto_sync_following_enabled": settings.sync.auto_sync_following_enabled,
         "auto_sync_following_interval_hours": settings.sync.auto_sync_following_interval_hours,
+        "auto_sync_following_cron": settings.sync.auto_sync_following_cron,
         "auto_sync_user_status_enabled": settings.sync.auto_sync_user_status_enabled,
+        "auto_sync_user_status_cron": settings.sync.auto_sync_user_status_cron,
         "auto_sync_subscribed_series_enabled": settings.sync.auto_sync_subscribed_series_enabled,
         "auto_sync_subscribed_series_interval_hours": settings.sync.auto_sync_subscribed_series_interval_hours,
+        "auto_sync_subscribed_series_cron": settings.sync.auto_sync_subscribed_series_cron,
     }
 
 
