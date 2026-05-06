@@ -96,6 +96,7 @@
       <div class="toolbar">
         <button id="startSyncBtn" class="btn btn-primary">开始手工同步</button>
         <button id="syncSeriesBtn" class="btn btn-orange">同步追更系列</button>
+        <button id="checkBookmarksBtn" class="btn btn-purple">预检查收藏列表</button>
         <span id="actionMessage" class="hint">可在设置页调整同步参数</span>
       </div>
       <div style="margin-top:16px;display:flex;align-items:center;gap:12px;">
@@ -234,6 +235,7 @@
       renderJob(data.latest_job || null);
       document.getElementById('startSyncBtn').disabled = !!(data.latest_job && data.latest_job.status === 'running');
       document.getElementById('syncSeriesBtn').disabled = !!(data.latest_job && data.latest_job.status === 'running');
+      document.getElementById('checkBookmarksBtn').disabled = !!(data.latest_job && data.latest_job.status === 'running');
       
       // 加载系列同步限制设置
       if (data.series_sync_limit !== undefined) {
@@ -566,8 +568,37 @@
       }
     }
 
+    async function checkBookmarks() {
+      const btn = document.getElementById('checkBookmarksBtn');
+      const msg = document.getElementById('actionMessage');
+      
+      btn.disabled = true;
+      msg.textContent = '正在预检查收藏列表...';
+      
+      try {
+        const resp = await fetch('/api/dashboard/check-bookmarks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        const data = await safeJson(resp);
+        if (!resp.ok) {
+          msg.textContent = data.error || '预检查失败';
+          btn.disabled = false;
+          return;
+        }
+        msg.textContent = '预检查任务已启动，请查看任务日志';
+        await loadStatus();
+      } catch (err) {
+        console.error('checkBookmarks failed', err);
+        msg.textContent = '预检查失败，请查看浏览器控制台';
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     document.getElementById('startSyncBtn').addEventListener('click', startSync);
     document.getElementById('syncSeriesBtn').addEventListener('click', syncSeries);
+    document.getElementById('checkBookmarksBtn').addEventListener('click', checkBookmarks);
     document.getElementById('toggleAutoSyncBtn').addEventListener('click', toggleAutoSync);
     document.getElementById('stopAutoTaskBtn').addEventListener('click', stopAutoTask);
     

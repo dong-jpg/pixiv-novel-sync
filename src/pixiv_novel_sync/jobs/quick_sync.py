@@ -207,3 +207,48 @@ def _merge_stats(*items: dict[str, int]) -> dict[str, int]:
         for key, value in item.items():
             merged[key] = merged.get(key, 0) + value
     return merged
+
+
+def run_check_bookmarks_task(settings: Settings, job_manager: Any, job_id: str) -> None:
+    """独立的预检查任务：扫描收藏列表，标记哪些已存在"""
+    auth = PixivAuthManager(settings.pixiv)
+    job_manager.add_log(job_id, "info", "正在登录 Pixiv...")
+    job_manager.update_progress(job_id, phase="登录", message="正在登录 Pixiv...")
+    
+    api, auth_result = auth.login()
+    if auth_result.user_id is None:
+        raise RuntimeError("Unable to determine PIXIV_USER_ID. Set PIXIV_USER_ID in .env.")
+    
+    job_manager.add_log(job_id, "success", f"登录成功, 用户ID: {auth_result.user_id}")
+
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    storage = FileStorage(settings)
+    storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
+
+    try:
+        service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+        
+        def on_progress(event_type: str, data: dict[str, Any]) -> None:
+            if event_type == "phase":
+                job_manager.add_log(job_id, "info", data.get("phase", ""))
+            elif event_type == "page":
+                job_manager.add_log(job_id, "info", f"正在获取第 {data.get('page', '?')} 页...")
+
+        job_manager.add_log(job_id, "info", "=== 预检查：扫描收藏列表 ===")
+        job_manager.update_progress(job_id, phase="预检查", message="正在扫描收藏列表...")
+        
+        check_stats = service.check_bookmarks_existence(
+            user_id=auth_result.user_id,
+            restricts=settings.sync.bookmark_restricts,
+            progress_callback=on_progress,
+        )
+        
+        job_manager.add_log(job_id, "success", f"预检查完成: {check_stats['total_checked']} 本小说")
+        job_manager.add_log(job_id, "success", f"  新小说: {check_stats['new']} 本")
+        job_manager.add_log(job_id, "success", f"  已存在: {check_stats['existing']} 本")
+        job_manager.add_log(job_id, "info", "预检查结果已保存，后续同步将自动跳过已存在的小说")
+        
+        return check_stats
+    finally:
+        db.close()

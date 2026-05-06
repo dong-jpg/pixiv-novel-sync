@@ -937,29 +937,51 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             return jsonify({"error": f"保存设置失败：{exc}"}), 400
         return jsonify({"ok": True, "message": "设置已保存", "sync": saved})
 
-    @app.post("/api/dashboard/sync/start")
-    def dashboard_sync_start():
-        current_settings = settings_manager.load(env_path=env_path)
-        if current_settings.sync.initial_manual_only is False and current_settings.sync.enabled is False:
-            pass
-        
-        # 构建任务列表
-        task_list = []
-        if current_settings.sync.sync_bookmarks:
-            task_list.append("预检查收藏列表")
-            task_list.append("同步收藏小说")
-        if current_settings.sync.sync_following_series:
-            task_list.append("同步关注用户系列")
-        if current_settings.sync.sync_following_users:
-            task_list.append("同步关注用户列表")
-        if current_settings.sync.sync_following_novels:
-            task_list.append("同步关注用户小说")
-        
-        try:
-            job = sync_job_manager.start_job(task_list)
-        except Exception as exc:
-            return jsonify({"error": str(exc)}), 400
-        return jsonify({"ok": True, "message": job.message, "job": _job_to_dict(job)})
+@app.post("/api/dashboard/sync/start")
+def dashboard_sync_start():
+    current_settings = settings_manager.load(env_path=env_path)
+    if current_settings.sync.initial_manual_only is False and current_settings.sync.enabled is False:
+        pass
+    
+    # 构建任务列表
+    task_list = []
+    if current_settings.sync.sync_bookmarks:
+        task_list.append("同步收藏小说")
+    if current_settings.sync.sync_following_series:
+        task_list.append("同步关注用户系列")
+    if current_settings.sync.sync_following_users:
+        task_list.append("同步关注用户列表")
+    if current_settings.sync.sync_following_novels:
+        task_list.append("同步关注用户小说")
+    
+    try:
+        job = sync_job_manager.start_job(task_list)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"ok": True, "message": job.message, "job": _job_to_dict(job)})
+
+
+@app.post("/api/dashboard/check-bookmarks")
+def dashboard_check_bookmarks():
+    """预检查：扫描收藏列表，标记哪些已存在"""
+    current_settings = settings_manager.load(env_path=env_path)
+    
+    if not current_settings.sync.sync_bookmarks:
+        return jsonify({"error": "收藏同步未启用"}), 400
+    
+    # 创建一个专门的预检查任务
+    job = sync_job_manager.start_job(["预检查收藏列表"])
+    
+    # 启动后台任务
+    import threading
+    thread = threading.Thread(
+        target=run_check_bookmarks_task,
+        args=(current_settings, sync_job_manager, job.job_id),
+        daemon=True,
+    )
+    thread.start()
+    
+    return jsonify({"ok": True, "message": "预检查任务已启动", "job": _job_to_dict(job)})
 
     @app.get("/api/dashboard/sync/status")
     def dashboard_sync_status():
