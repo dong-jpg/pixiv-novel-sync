@@ -42,11 +42,14 @@ class SyncSettings:
     delay_seconds_between_chapters: float = 1.0  # 系列下每章节间隔
     # 定时任务配置
     auto_sync_enabled: bool = False
-    auto_sync_interval_hours: int = 6  # 每隔多少小时执行一次
+    auto_sync_interval_hours: int = 6  # 每隔多少小时执行一次（默认间隔）
     auto_sync_bookmarks_enabled: bool = True
+    auto_sync_bookmarks_interval_hours: int = 6  # 收藏同步间隔（小时）
     auto_sync_following_enabled: bool = True
+    auto_sync_following_interval_hours: int = 6  # 关注用户间隔（小时）
     auto_sync_user_status_enabled: bool = True  # 关注用户的用户状态更新
     auto_sync_subscribed_series_enabled: bool = True  # 我的追更系列
+    auto_sync_subscribed_series_interval_hours: int = 6  # 追更系列间隔（小时）
 
 
 @dataclass(slots=True)
@@ -125,9 +128,12 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             auto_sync_enabled=bool(sync_raw.get("auto_sync_enabled", False)),
             auto_sync_interval_hours=int(sync_raw.get("auto_sync_interval_hours", 6)),
             auto_sync_bookmarks_enabled=bool(sync_raw.get("auto_sync_bookmarks_enabled", True)),
+            auto_sync_bookmarks_interval_hours=int(sync_raw.get("auto_sync_bookmarks_interval_hours", sync_raw.get("auto_sync_interval_hours", 6))),
             auto_sync_following_enabled=bool(sync_raw.get("auto_sync_following_enabled", True)),
+            auto_sync_following_interval_hours=int(sync_raw.get("auto_sync_following_interval_hours", sync_raw.get("auto_sync_interval_hours", 6))),
             auto_sync_user_status_enabled=bool(sync_raw.get("auto_sync_user_status_enabled", True)),
             auto_sync_subscribed_series_enabled=bool(sync_raw.get("auto_sync_subscribed_series_enabled", True)),
+            auto_sync_subscribed_series_interval_hours=int(sync_raw.get("auto_sync_subscribed_series_interval_hours", sync_raw.get("auto_sync_interval_hours", 6))),
         ),
         storage=StorageSettings(
             public_dir=public_dir,

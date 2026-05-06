@@ -52,6 +52,7 @@ class AutoSyncScheduler:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _task_last_run: dict[str, float] = field(default_factory=dict)  # 每个任务的上次运行时间
     _task_next_run: dict[str, float] = field(default_factory=dict)  # 每个任务的下次运行时间
+    _task_intervals: dict[str, int] = field(default_factory=dict)  # 每个任务的间隔（小时）
     _current_task_job_id: str | None = None  # 当前正在执行的定时任务 job_id
     _stop_current_task: bool = False  # 停止当前任务的标志
     
@@ -92,15 +93,16 @@ class AutoSyncScheduler:
                 "current_task_job_id": self._current_task_job_id,
                 "task_next_run": dict(self._task_next_run),
                 "task_last_run": dict(self._task_last_run),
+                "task_intervals": dict(self._task_intervals),
             }
     
     def _run_scheduler(self) -> None:
         """调度器主循环 - 每个任务独立检查和执行"""
         # 任务定义
         task_configs = [
-            {"name": "bookmarks", "setting_check": "auto_sync_bookmarks_enabled", "sync_func": "_sync_bookmarks"},
-            {"name": "following", "setting_check": "auto_sync_following_enabled", "sync_func": "_sync_following"},
-            {"name": "subscribed_series", "setting_check": "auto_sync_subscribed_series_enabled", "sync_func": "_sync_subscribed_series"},
+            {"name": "bookmarks", "setting_check": "auto_sync_bookmarks_enabled", "sync_func": "_sync_bookmarks", "interval_setting": "auto_sync_bookmarks_interval_hours"},
+            {"name": "following", "setting_check": "auto_sync_following_enabled", "sync_func": "_sync_following", "interval_setting": "auto_sync_following_interval_hours"},
+            {"name": "subscribed_series", "setting_check": "auto_sync_subscribed_series_enabled", "sync_func": "_sync_subscribed_series", "interval_setting": "auto_sync_subscribed_series_interval_hours"},
         ]
         
         while self._running:
@@ -124,9 +126,16 @@ class AutoSyncScheduler:
                     if not getattr(settings.sync, task_config["setting_check"], False):
                         continue
                     
+                    # 获取该任务的单独间隔，如果没有设置则使用默认间隔
+                    task_interval_hours = getattr(settings.sync, task_config["interval_setting"], settings.sync.auto_sync_interval_hours)
+                    task_interval_seconds = task_interval_hours * 3600
+                    
+                    # 更新任务间隔记录
+                    self._task_intervals[task_name] = task_interval_hours
+                    
                     # 计算该任务的下次运行时间
                     last_run = self._task_last_run.get(task_name, 0)
-                    next_run = self._task_next_run.get(task_name, last_run + interval_seconds)
+                    next_run = self._task_next_run.get(task_name, last_run + task_interval_seconds)
                     
                     # 如果是首次运行，设置为立即执行（但间隔30秒避免同时启动）
                     if last_run == 0:
@@ -141,7 +150,7 @@ class AutoSyncScheduler:
                             if self._current_task_job_id is not None:
                                 logger.info("Task %s skipped: another task is running (%s)", task_name, self._current_task_job_id)
                                 # 延迟到下一个周期
-                                self._task_next_run[task_name] = now + interval_seconds
+                                self._task_next_run[task_name] = now + task_interval_seconds
                                 continue
                         
                         # 执行任务
@@ -149,7 +158,7 @@ class AutoSyncScheduler:
                         
                         # 更新下次运行时间
                         self._task_last_run[task_name] = time.time()
-                        self._task_next_run[task_name] = time.time() + interval_seconds
+                        self._task_next_run[task_name] = time.time() + task_interval_seconds
                 
                 # 短暂休眠后继续检查
                 time.sleep(30)
