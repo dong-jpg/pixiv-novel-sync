@@ -73,7 +73,11 @@ def run_bookmark_sync_with_progress(settings: Settings, job_manager: Any, job_id
                     author=data.get("author", ""),
                 )
             elif event_type == "novel_done":
-                job_manager.add_log(job_id, "info", f"  完成: 收藏{data.get('bookmarks', 0)} 浏览{data.get('views', 0)}")
+                skipped = data.get('skipped', 0)
+                if skipped:
+                    job_manager.add_log(job_id, "info", f"  跳过（已存在）")
+                else:
+                    job_manager.add_log(job_id, "info", f"  完成: 收藏{data.get('bookmarks', 0)} 浏览{data.get('views', 0)}")
             elif event_type == "page":
                 job_manager.add_log(job_id, "info", f"正在获取第 {data.get('page', '?')} 页...")
             elif event_type == "rate_limit":

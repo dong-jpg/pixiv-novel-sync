@@ -203,6 +203,19 @@ class Database:
         row = self.conn.execute("SELECT text_hash FROM novel_texts WHERE novel_id = ?", (novel_id,)).fetchone()
         return str(row[0]) if row else None
 
+    def get_novel_meta_hash(self, novel_id: int) -> str | None:
+        """获取小说的 meta_hash，用于增量同步判断"""
+        row = self.conn.execute("SELECT meta_hash FROM novels WHERE novel_id = ?", (novel_id,)).fetchone()
+        return str(row[0]) if row else None
+
+    def touch_novel(self, novel_id: int) -> None:
+        """更新小说的 last_seen_at 时间戳"""
+        self.conn.execute(
+            "UPDATE novels SET last_seen_at = CURRENT_TIMESTAMP WHERE novel_id = ?",
+            (novel_id,),
+        )
+        self.conn.commit()
+
     def record_asset(self, novel_id: int, asset_type: str, remote_url: str, local_path: str, file_hash: str | None) -> None:
         self.conn.execute(
             """

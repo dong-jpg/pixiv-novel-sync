@@ -86,6 +86,7 @@ class BookmarkNovelSyncService:
                             "bookmarks": counters.get("bookmarks", 0),
                             "views": counters.get("views", 0),
                             "assets": counters.get("assets_downloaded", 0),
+                            "skipped": counters.get("skipped", 0),
                         })
                     
                     if item_delay > 0:
@@ -587,8 +588,26 @@ class BookmarkNovelSyncService:
         write_raw_text: bool,
         source_type: str,
         source_key: str | None = None,
+        force_full: bool = False,
     ) -> dict[str, int]:
         novel_id = int(novel.id)
+        
+        # 增量同步：检查本地是否已有该小说
+        existing_hash = self.db.get_novel_meta_hash(novel_id)
+        if existing_hash and not force_full:
+            # 已存在，只更新统计信息和来源
+            self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(getattr(novel, 'user_id', 0) or 0)))
+            self.db.touch_novel(novel_id)  # 更新 last_seen_at
+            return {
+                "users": 0,
+                "novels": 0,  # 不计入新增
+                "texts_updated": 0,
+                "assets_downloaded": 0,
+                "skipped": 1,
+                "bookmarks": 0,
+                "views": 0,
+            }
+        
         detail = self.api.novel_detail(novel_id)
         detail_novel = getattr(detail, "novel", novel)
         user = getattr(detail_novel, "user", None)
