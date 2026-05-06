@@ -598,8 +598,7 @@ class SettingsManager:
             payload.get("delay_seconds_between_skips", sync_data.get("delay_seconds_between_skips", 0.1))
         )
         
-        # 定时同步设置
-        sync_data["auto_sync_enabled"] = bool(payload.get("auto_sync_enabled", sync_data.get("auto_sync_enabled", False)))
+        # 定时同步设置（auto_sync_enabled 由首页按钮单独控制）
         sync_data["auto_sync_bookmarks_enabled"] = bool(payload.get("auto_sync_bookmarks_enabled", sync_data.get("auto_sync_bookmarks_enabled", True)))
         sync_data["auto_sync_bookmarks_interval_hours"] = int(payload.get("auto_sync_bookmarks_interval_hours", sync_data.get("auto_sync_bookmarks_interval_hours", 6)))
         sync_data["auto_sync_bookmarks_cron"] = str(payload.get("auto_sync_bookmarks_cron", sync_data.get("auto_sync_bookmarks_cron", "")))

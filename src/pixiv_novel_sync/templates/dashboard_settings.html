@@ -168,12 +168,8 @@
 
       <div class="section">
         <div class="section-title">定时同步</div>
-        <p style="font-size:13px;color:var(--text-secondary);margin:0 0 14px;">自动定时同步，分散执行时间降低风控风险</p>
+        <p style="font-size:13px;color:var(--text-secondary);margin:0 0 14px;">自动定时同步，分散执行时间降低风控风险。请在首页启用/禁用定时同步。</p>
         <div class="checks">
-          <div class="check-item">
-            <input type="checkbox" id="autoSyncEnabled">
-            <label for="autoSyncEnabled">启用定时同步</label>
-          </div>
           <div class="check-item">
             <input type="checkbox" id="autoSyncBookmarks">
             <label for="autoSyncBookmarks">定时同步收藏</label>
@@ -296,7 +292,6 @@
       valueOf('chapterDelay', data.delay_seconds_between_chapters ?? 1);
       valueOf('skipDelay', data.delay_seconds_between_skips ?? 0.1);
       // 定时同步设置
-      checked('autoSyncEnabled', data.auto_sync_enabled);
       checked('autoSyncBookmarks', data.auto_sync_bookmarks_enabled);
       checked('autoSyncFollowing', data.auto_sync_following_enabled);
       checked('autoSyncUserStatus', data.auto_sync_user_status_enabled);
@@ -336,7 +331,6 @@
         delay_seconds_between_chapters: document.getElementById('chapterDelay').value.trim(),
         delay_seconds_between_skips: document.getElementById('skipDelay').value.trim(),
         // 定时同步设置
-        auto_sync_enabled: document.getElementById('autoSyncEnabled').checked,
         auto_sync_bookmarks_enabled: document.getElementById('autoSyncBookmarks').checked,
         auto_sync_following_enabled: document.getElementById('autoSyncFollowing').checked,
         auto_sync_user_status_enabled: document.getElementById('autoSyncUserStatus').checked,
