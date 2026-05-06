@@ -190,8 +190,12 @@
             <label for="autoSyncBookmarks">定时同步收藏</label>
           </div>
           <div class="check-item">
-            <input type="checkbox" id="autoSyncFollowing">
-            <label for="autoSyncFollowing">定时同步关注用户</label>
+            <input type="checkbox" id="autoSyncFollowingList">
+            <label for="autoSyncFollowingList">同步关注用户列表</label>
+          </div>
+          <div class="check-item">
+            <input type="checkbox" id="autoSyncFollowingNovels">
+            <label for="autoSyncFollowingNovels">同步关注用户小说</label>
           </div>
           <div class="check-item">
             <input type="checkbox" id="autoSyncUserStatus">
@@ -208,12 +212,21 @@
             <input id="autoSyncBookmarksInterval" type="number" min="1" max="24" placeholder="6">
           </div>
           <div class="field">
-            <label>关注间隔（小时）</label>
-            <input id="autoSyncFollowingInterval" type="number" min="1" max="24" placeholder="6">
+            <label>关注列表间隔（小时）</label>
+            <input id="autoSyncFollowingListInterval" type="number" min="1" max="168" placeholder="24">
+          </div>
+          <div class="field">
+            <label>关注小说间隔（小时）</label>
+            <input id="autoSyncFollowingNovelsInterval" type="number" min="1" max="24" placeholder="6">
           </div>
           <div class="field">
             <label>追更间隔（小时）</label>
             <input id="autoSyncSubscribedSeriesInterval" type="number" min="1" max="24" placeholder="6">
+          </div>
+          <div class="field">
+            <label>每轮同步用户数</label>
+            <input id="autoSyncFollowingNovelsUsersLimit" type="number" min="0" placeholder="0">
+            <span style="font-size:11px;color:var(--text-tertiary);">0 = 全部用户</span>
           </div>
         </div>
         <div style="margin-top: 16px;">
@@ -225,16 +238,20 @@
               <input id="autoSyncBookmarksCron" type="text" placeholder="0 3 * * *">
             </div>
             <div class="field">
-              <label>关注同步 Cron</label>
-              <input id="autoSyncFollowingCron" type="text" placeholder="0 4 * * *">
+              <label>关注列表 Cron</label>
+              <input id="autoSyncFollowingListCron" type="text" placeholder="0 4 * * *">
+            </div>
+            <div class="field">
+              <label>关注小说 Cron</label>
+              <input id="autoSyncFollowingNovelsCron" type="text" placeholder="0 5 * * *">
             </div>
             <div class="field">
               <label>用户状态检查 Cron</label>
-              <input id="autoSyncUserStatusCron" type="text" placeholder="0 5 * * *">
+              <input id="autoSyncUserStatusCron" type="text" placeholder="0 6 * * *">
             </div>
             <div class="field">
               <label>追更系列 Cron</label>
-              <input id="autoSyncSubscribedSeriesCron" type="text" placeholder="0 6 * * *">
+              <input id="autoSyncSubscribedSeriesCron" type="text" placeholder="0 7 * * *">
             </div>
           </div>
         </div>
@@ -309,14 +326,18 @@
       // 定时同步设置
       document.getElementById('autoSyncTimezone').value = data.auto_sync_timezone || 'UTC';
       checked('autoSyncBookmarks', data.auto_sync_bookmarks_enabled);
-      checked('autoSyncFollowing', data.auto_sync_following_enabled);
+      checked('autoSyncFollowingList', data.auto_sync_following_list_enabled);
+      checked('autoSyncFollowingNovels', data.auto_sync_following_novels_enabled);
       checked('autoSyncUserStatus', data.auto_sync_user_status_enabled);
       checked('autoSyncSubscribedSeries', data.auto_sync_subscribed_series_enabled);
       valueOf('autoSyncBookmarksInterval', data.auto_sync_bookmarks_interval_hours ?? 6);
-      valueOf('autoSyncFollowingInterval', data.auto_sync_following_interval_hours ?? 6);
+      valueOf('autoSyncFollowingListInterval', data.auto_sync_following_list_interval_hours ?? 24);
+      valueOf('autoSyncFollowingNovelsInterval', data.auto_sync_following_novels_interval_hours ?? 6);
       valueOf('autoSyncSubscribedSeriesInterval', data.auto_sync_subscribed_series_interval_hours ?? 6);
+      valueOf('autoSyncFollowingNovelsUsersLimit', data.auto_sync_following_novels_users_limit ?? 0);
       valueOf('autoSyncBookmarksCron', data.auto_sync_bookmarks_cron ?? '');
-      valueOf('autoSyncFollowingCron', data.auto_sync_following_cron ?? '');
+      valueOf('autoSyncFollowingListCron', data.auto_sync_following_list_cron ?? '');
+      valueOf('autoSyncFollowingNovelsCron', data.auto_sync_following_novels_cron ?? '');
       valueOf('autoSyncUserStatusCron', data.auto_sync_user_status_cron ?? '');
       valueOf('autoSyncSubscribedSeriesCron', data.auto_sync_subscribed_series_cron ?? '');
       
@@ -349,13 +370,17 @@
         // 定时同步设置
         auto_sync_timezone: document.getElementById('autoSyncTimezone').value,
         auto_sync_bookmarks_enabled: document.getElementById('autoSyncBookmarks').checked,
-        auto_sync_following_enabled: document.getElementById('autoSyncFollowing').checked,
+        auto_sync_following_list_enabled: document.getElementById('autoSyncFollowingList').checked,
+        auto_sync_following_novels_enabled: document.getElementById('autoSyncFollowingNovels').checked,
         auto_sync_user_status_enabled: document.getElementById('autoSyncUserStatus').checked,
         auto_sync_subscribed_series_enabled: document.getElementById('autoSyncSubscribedSeries').checked,
         auto_sync_bookmarks_interval_hours: document.getElementById('autoSyncBookmarksInterval').value.trim(),
         auto_sync_bookmarks_cron: document.getElementById('autoSyncBookmarksCron').value.trim(),
-        auto_sync_following_interval_hours: document.getElementById('autoSyncFollowingInterval').value.trim(),
-        auto_sync_following_cron: document.getElementById('autoSyncFollowingCron').value.trim(),
+        auto_sync_following_list_interval_hours: document.getElementById('autoSyncFollowingListInterval').value.trim(),
+        auto_sync_following_list_cron: document.getElementById('autoSyncFollowingListCron').value.trim(),
+        auto_sync_following_novels_interval_hours: document.getElementById('autoSyncFollowingNovelsInterval').value.trim(),
+        auto_sync_following_novels_cron: document.getElementById('autoSyncFollowingNovelsCron').value.trim(),
+        auto_sync_following_novels_users_limit: document.getElementById('autoSyncFollowingNovelsUsersLimit').value.trim(),
         auto_sync_user_status_cron: document.getElementById('autoSyncUserStatusCron').value.trim(),
         auto_sync_subscribed_series_interval_hours: document.getElementById('autoSyncSubscribedSeriesInterval').value.trim(),
         auto_sync_subscribed_series_cron: document.getElementById('autoSyncSubscribedSeriesCron').value.trim(),

@@ -103,7 +103,8 @@ class AutoSyncScheduler:
         # 任务定义
         task_configs = [
             {"name": "bookmarks", "setting_check": "auto_sync_bookmarks_enabled", "sync_func": "_sync_bookmarks", "interval_setting": "auto_sync_bookmarks_interval_hours", "cron_setting": "auto_sync_bookmarks_cron"},
-            {"name": "following", "setting_check": "auto_sync_following_enabled", "sync_func": "_sync_following", "interval_setting": "auto_sync_following_interval_hours", "cron_setting": "auto_sync_following_cron"},
+            {"name": "following_list", "setting_check": "auto_sync_following_list_enabled", "sync_func": "_sync_following_list", "interval_setting": "auto_sync_following_list_interval_hours", "cron_setting": "auto_sync_following_list_cron"},
+            {"name": "following_novels", "setting_check": "auto_sync_following_novels_enabled", "sync_func": "_sync_following_novels", "interval_setting": "auto_sync_following_novels_interval_hours", "cron_setting": "auto_sync_following_novels_cron"},
             {"name": "subscribed_series", "setting_check": "auto_sync_subscribed_series_enabled", "sync_func": "_sync_subscribed_series", "interval_setting": "auto_sync_subscribed_series_interval_hours", "cron_setting": "auto_sync_subscribed_series_cron"},
             {"name": "user_status", "setting_check": "auto_sync_user_status_enabled", "sync_func": "_sync_user_status", "interval_setting": "auto_sync_following_interval_hours", "cron_setting": "auto_sync_user_status_cron"},
         ]
@@ -189,8 +190,10 @@ class AutoSyncScheduler:
         if self.sync_job_manager:
             task_labels = {
                 "bookmarks": "同步收藏小说",
-                "following": "同步关注用户",
+                "following_list": "同步关注用户列表",
+                "following_novels": "同步关注用户小说",
                 "subscribed_series": "同步追更系列",
+                "user_status": "检查用户状态",
             }
             job = self.sync_job_manager.start_auto_job(task_name, task_labels.get(task_name, task_name))
             self._current_task_job_id = job.job_id
@@ -295,13 +298,13 @@ class AutoSyncScheduler:
         finally:
             db.close()
     
-    def _sync_following(self, settings: Settings, job_id: str | None) -> None:
-        """同步关注用户"""
+    def _sync_following_list(self, settings: Settings, job_id: str | None) -> None:
+        """同步关注用户列表"""
         from .auth import PixivAuthManager
         from .sync_engine import BookmarkNovelSyncService
         
         if job_id and self.sync_job_manager:
-            self.sync_job_manager.add_log(job_id, "info", "=== 开始同步关注用户 ===")
+            self.sync_job_manager.add_log(job_id, "info", "=== 开始同步关注用户列表 ===")
         
         auth = PixivAuthManager(settings.pixiv)
         api, auth_result = auth.login()
@@ -321,6 +324,62 @@ class AutoSyncScheduler:
         
         try:
             service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+            
+            def on_progress(event_type: str, data: dict[str, Any]) -> None:
+                if self._check_stop():
+                    raise InterruptedError("Task stopped by user")
+                if job_id and self.sync_job_manager:
+                    if event_type == "user_synced":
+                        self.sync_job_manager.add_log(job_id, "info", f"[{data.get('total', '?')}] {data.get('name', '')}")
+                        self.sync_job_manager.update_progress(
+                            job_id,
+                            phase="同步关注用户列表",
+                            current=data.get('total', 0),
+                            total=0,
+                        )
+                    elif event_type == "page":
+                        self.sync_job_manager.add_log(job_id, "info", f"正在获取第 {data.get('page', '?')} 页...")
+                    elif event_type == "rate_limit":
+                        self.sync_job_manager.add_log(job_id, "warning", f"等待 {data.get('seconds', 1)} 秒")
+            
+            if self._check_stop():
+                return
+            
+            stats = service.sync_following_list(progress_callback=on_progress)
+            
+            if job_id and self.sync_job_manager:
+                self.sync_job_manager.add_log(job_id, "success", f"关注用户列表同步完成: 更新 {stats.get('users', 0)} 位用户")
+        finally:
+            db.close()
+    
+    def _sync_following_novels(self, settings: Settings, job_id: str | None) -> None:
+        """同步关注用户小说"""
+        from .auth import PixivAuthManager
+        from .sync_engine import BookmarkNovelSyncService
+        
+        if job_id and self.sync_job_manager:
+            self.sync_job_manager.add_log(job_id, "info", "=== 开始同步关注用户小说 ===")
+        
+        auth = PixivAuthManager(settings.pixiv)
+        api, auth_result = auth.login()
+        if auth_result.user_id is None:
+            raise RuntimeError("Unable to determine user ID")
+        
+        if job_id and self.sync_job_manager:
+            self.sync_job_manager.add_log(job_id, "success", f"登录成功, 用户ID: {auth_result.user_id}")
+        
+        if self._check_stop():
+            return
+        
+        db = Database(settings.storage.db_path)
+        db.init_schema()
+        storage = FileStorage(settings)
+        storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
+        
+        try:
+            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+            
+            users_limit = settings.sync.auto_sync_following_novels_users_limit
             
             def on_progress(event_type: str, data: dict[str, Any]) -> None:
                 if self._check_stop():
@@ -351,18 +410,19 @@ class AutoSyncScheduler:
                 return
             
             if job_id and self.sync_job_manager:
-                self.sync_job_manager.add_log(job_id, "info", "开始扫描关注用户的小说...")
+                limit_text = f"限制 {users_limit} 位用户" if users_limit > 0 else "全部用户"
+                self.sync_job_manager.add_log(job_id, "info", f"开始扫描关注用户的小说 ({limit_text})...")
             
             stats = service.sync_following_novels(
                 download_assets=settings.sync.download_assets,
                 write_markdown=settings.sync.write_markdown,
                 write_raw_text=settings.sync.write_raw_text,
                 progress_callback=on_progress,
-                novels_only=False,
+                users_limit=users_limit,
             )
             
             if job_id and self.sync_job_manager:
-                self.sync_job_manager.add_log(job_id, "success", f"关注用户同步完成: 同步 {stats.get('novels', 0)} 本, 跳过 {stats.get('skipped', 0)} 本, 用户 {stats.get('users', 0)} 人")
+                self.sync_job_manager.add_log(job_id, "success", f"关注用户小说同步完成: 同步 {stats.get('novels', 0)} 本, 跳过 {stats.get('skipped', 0)} 本, 用户 {stats.get('following_users_scanned', 0)} 人")
         finally:
             db.close()
     
@@ -662,9 +722,13 @@ class SettingsManager:
         sync_data["auto_sync_bookmarks_enabled"] = bool(payload.get("auto_sync_bookmarks_enabled", sync_data.get("auto_sync_bookmarks_enabled", True)))
         sync_data["auto_sync_bookmarks_interval_hours"] = int(payload.get("auto_sync_bookmarks_interval_hours", sync_data.get("auto_sync_bookmarks_interval_hours", 6)))
         sync_data["auto_sync_bookmarks_cron"] = str(payload.get("auto_sync_bookmarks_cron", sync_data.get("auto_sync_bookmarks_cron", "")))
-        sync_data["auto_sync_following_enabled"] = bool(payload.get("auto_sync_following_enabled", sync_data.get("auto_sync_following_enabled", True)))
-        sync_data["auto_sync_following_interval_hours"] = int(payload.get("auto_sync_following_interval_hours", sync_data.get("auto_sync_following_interval_hours", 6)))
-        sync_data["auto_sync_following_cron"] = str(payload.get("auto_sync_following_cron", sync_data.get("auto_sync_following_cron", "")))
+        sync_data["auto_sync_following_list_enabled"] = bool(payload.get("auto_sync_following_list_enabled", sync_data.get("auto_sync_following_list_enabled", True)))
+        sync_data["auto_sync_following_list_interval_hours"] = int(payload.get("auto_sync_following_list_interval_hours", sync_data.get("auto_sync_following_list_interval_hours", 24)))
+        sync_data["auto_sync_following_list_cron"] = str(payload.get("auto_sync_following_list_cron", sync_data.get("auto_sync_following_list_cron", "")))
+        sync_data["auto_sync_following_novels_enabled"] = bool(payload.get("auto_sync_following_novels_enabled", sync_data.get("auto_sync_following_novels_enabled", True)))
+        sync_data["auto_sync_following_novels_interval_hours"] = int(payload.get("auto_sync_following_novels_interval_hours", sync_data.get("auto_sync_following_novels_interval_hours", 6)))
+        sync_data["auto_sync_following_novels_cron"] = str(payload.get("auto_sync_following_novels_cron", sync_data.get("auto_sync_following_novels_cron", "")))
+        sync_data["auto_sync_following_novels_users_limit"] = int(payload.get("auto_sync_following_novels_users_limit", sync_data.get("auto_sync_following_novels_users_limit", 0)))
         sync_data["auto_sync_user_status_enabled"] = bool(payload.get("auto_sync_user_status_enabled", sync_data.get("auto_sync_user_status_enabled", True)))
         sync_data["auto_sync_user_status_cron"] = str(payload.get("auto_sync_user_status_cron", sync_data.get("auto_sync_user_status_cron", "")))
         sync_data["auto_sync_subscribed_series_enabled"] = bool(payload.get("auto_sync_subscribed_series_enabled", sync_data.get("auto_sync_subscribed_series_enabled", True)))
@@ -1393,9 +1457,13 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "auto_sync_bookmarks_enabled": settings.sync.auto_sync_bookmarks_enabled,
         "auto_sync_bookmarks_interval_hours": settings.sync.auto_sync_bookmarks_interval_hours,
         "auto_sync_bookmarks_cron": settings.sync.auto_sync_bookmarks_cron,
-        "auto_sync_following_enabled": settings.sync.auto_sync_following_enabled,
-        "auto_sync_following_interval_hours": settings.sync.auto_sync_following_interval_hours,
-        "auto_sync_following_cron": settings.sync.auto_sync_following_cron,
+        "auto_sync_following_list_enabled": settings.sync.auto_sync_following_list_enabled,
+        "auto_sync_following_list_interval_hours": settings.sync.auto_sync_following_list_interval_hours,
+        "auto_sync_following_list_cron": settings.sync.auto_sync_following_list_cron,
+        "auto_sync_following_novels_enabled": settings.sync.auto_sync_following_novels_enabled,
+        "auto_sync_following_novels_interval_hours": settings.sync.auto_sync_following_novels_interval_hours,
+        "auto_sync_following_novels_cron": settings.sync.auto_sync_following_novels_cron,
+        "auto_sync_following_novels_users_limit": settings.sync.auto_sync_following_novels_users_limit,
         "auto_sync_user_status_enabled": settings.sync.auto_sync_user_status_enabled,
         "auto_sync_user_status_cron": settings.sync.auto_sync_user_status_cron,
         "auto_sync_subscribed_series_enabled": settings.sync.auto_sync_subscribed_series_enabled,

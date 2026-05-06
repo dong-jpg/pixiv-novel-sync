@@ -399,7 +399,62 @@ class BookmarkNovelSyncService:
                     time.sleep(page_delay)
         return stats
 
-    def sync_following_novels(self, download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None, novels_only: bool = False) -> dict[str, int]:
+    def sync_following_list(self, progress_callback: Any = None) -> dict[str, int]:
+        """同步关注用户列表（只更新用户信息，不同步小说）"""
+        stats = {"users": 0, "following_users_scanned": 0}
+        page_delay = self.settings.sync.delay_seconds_between_pages
+        
+        logger.info("Syncing following user list")
+        current_user_id = self.settings.pixiv.user_id
+        if not current_user_id:
+            raise RuntimeError("PIXIV_USER_ID is required to fetch following list")
+        
+        next_following_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
+        following_page_count = 0
+        
+        while next_following_query:
+            following_result = self.api.user_following(**next_following_query)
+            following_page_count += 1
+            if progress_callback:
+                progress_callback("page", {"page": following_page_count})
+            
+            users = getattr(following_result, "user_previews", []) or []
+            for user_preview in users:
+                user = getattr(user_preview, "user", user_preview)
+                author_id = getattr(user, "id", None)
+                if author_id is None:
+                    continue
+                author_id = int(author_id)
+                author_name = getattr(user, "name", str(author_id))
+                stats["following_users_scanned"] += 1
+                
+                from .models import UserRecord
+                from .utils_hashing import stable_json_dumps
+                account = getattr(user, "account", None)
+                self.db.upsert_user(UserRecord(
+                    user_id=author_id,
+                    name=author_name,
+                    account=account,
+                    raw_json=stable_json_dumps(_to_plain(user)),
+                ))
+                stats["users"] += 1
+                
+                if progress_callback:
+                    progress_callback("user_synced", {
+                        "user_id": author_id,
+                        "name": author_name,
+                        "total": stats["users"],
+                    })
+            
+            next_following_query = self.api.parse_qs(getattr(following_result, "next_url", None))
+            if next_following_query and page_delay > 0:
+                if progress_callback:
+                    progress_callback("rate_limit", {"seconds": page_delay})
+                time.sleep(page_delay)
+        
+        return stats
+
+    def sync_following_novels(self, download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None, users_limit: int = 0) -> dict[str, int]:
         stats = self._empty_stats()
         max_items = self.settings.sync.max_items_per_run
         max_pages = self.settings.sync.max_pages_per_run
@@ -407,8 +462,9 @@ class BookmarkNovelSyncService:
         page_delay = self.settings.sync.delay_seconds_between_pages
         processed_items = 0
         synced_items = 0  # 实际同步的数量（不包括跳过的）
+        users_processed = 0  # 已处理的用户数
 
-        logger.info("Syncing novels from followed users")
+        logger.info("Syncing novels from followed users (users_limit=%d)", users_limit)
         current_user_id = self.settings.pixiv.user_id
         if not current_user_id:
             raise RuntimeError("PIXIV_USER_ID is required to fetch following list")
@@ -431,6 +487,11 @@ class BookmarkNovelSyncService:
             users = getattr(following_result, "user_previews", []) or []
 
             for user_preview in users:
+                # 检查是否达到用户数限制
+                if users_limit > 0 and users_processed >= users_limit:
+                    logger.info("Reached users_limit=%d, stopping sync", users_limit)
+                    return stats
+                
                 user = getattr(user_preview, "user", user_preview)
                 author_id = getattr(user, "id", None)
                 if author_id is None:
@@ -438,19 +499,7 @@ class BookmarkNovelSyncService:
                 author_id = int(author_id)
                 author_name = getattr(user, "name", str(author_id))
                 stats["following_users_scanned"] = stats.get("following_users_scanned", 0) + 1
-                
-                # 保存用户信息
-                if not novels_only:
-                    from .models import UserRecord
-                    from .utils_hashing import stable_json_dumps
-                    account = getattr(user, "account", None)
-                    self.db.upsert_user(UserRecord(
-                        user_id=author_id,
-                        name=author_name,
-                        account=account,
-                        raw_json=stable_json_dumps(_to_plain(user)),
-                    ))
-                    stats["users"] = stats.get("users", 0) + 1
+                users_processed += 1
 
                 logger.info("Syncing followed user novels for user_id=%s name=%s", author_id, author_name)
 
