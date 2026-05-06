@@ -455,21 +455,6 @@
           if (isRunning) {
             statusText = '执行中';
             statusColor = 'var(--brand-start)';
-          } else if (nextRun) {
-            const nextDate = new Date(nextRun * 1000);
-            const timeStr = nextDate.toLocaleTimeString();
-            const dateStr = nextDate.toLocaleDateString();
-            const today = new Date().toLocaleDateString();
-            if (dateStr === today) {
-              statusText = `今天 ${timeStr}`;
-            } else {
-              statusText = `${dateStr} ${timeStr}`;
-            }
-            if (cronExpr) {
-              statusText += ` (${cronExpr})`;
-            } else {
-              statusText += ` (每${intervalHours}h)`;
-            }
           } else {
             if (cronExpr) {
               statusText = cronExpr;
