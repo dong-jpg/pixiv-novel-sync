@@ -113,25 +113,15 @@ class AutoSyncScheduler:
                 settings = load_settings(self.config_path, self.env_path)
                 
                 now = time.time()
+                timezone = settings.sync.auto_sync_timezone
                 
-                # 始终更新所有任务的配置信息（用于前端显示）
+                # 更新所有任务的配置信息（用于前端显示）
                 for task_config in task_configs:
                     task_name = task_config["name"]
                     cron_expr = getattr(settings.sync, task_config["cron_setting"], "")
                     task_interval_hours = getattr(settings.sync, task_config["interval_setting"], 6)
-                    task_interval_seconds = task_interval_hours * 3600
                     self._task_intervals[task_name] = task_interval_hours
                     self._task_crons[task_name] = cron_expr
-                    
-                    # 即使定时同步未启用，也计算下次运行时间
-                    if task_name not in self._task_next_run:
-                        if cron_expr:
-                            from .settings import cron_to_next_run
-                            next_run = cron_to_next_run(cron_expr, now)
-                            if next_run:
-                                self._task_next_run[task_name] = next_run
-                        else:
-                            self._task_next_run[task_name] = now + task_interval_seconds
                 
                 if not settings.sync.auto_sync_enabled:
                     time.sleep(60)
@@ -143,60 +133,48 @@ class AutoSyncScheduler:
                     
                     task_name = task_config["name"]
                     
-                    # 检查该任务是否启用
                     if not getattr(settings.sync, task_config["setting_check"], False):
                         continue
                     
-                    # 获取cron表达式或间隔时间
                     cron_expr = getattr(settings.sync, task_config["cron_setting"], "")
                     task_interval_hours = getattr(settings.sync, task_config["interval_setting"], 6)
                     task_interval_seconds = task_interval_hours * 3600
                     
-                    # 计算该任务的下次运行时间
-                    last_run = self._task_last_run.get(task_name, 0)
+                    # 如果该任务还没有计算过下次运行时间，现在计算
+                    if task_name not in self._task_next_run:
+                        if cron_expr:
+                            from .settings import cron_to_next_run
+                            self._task_next_run[task_name] = cron_to_next_run(cron_expr, now, timezone) or (now + task_interval_seconds)
+                        else:
+                            self._task_next_run[task_name] = now + task_interval_seconds
+                        logger.info("Task %s scheduled, next run: %s", task_name, 
+                                    datetime.fromtimestamp(self._task_next_run[task_name]).strftime('%Y-%m-%d %H:%M:%S'))
                     
-                    # 如果有cron表达式，使用cron计算下次运行时间
-                    if cron_expr:
-                        from .settings import cron_to_next_run
-                        next_run = cron_to_next_run(cron_expr, last_run if last_run > 0 else now)
-                        if next_run is None:
-                            # cron表达式解析失败，回退到间隔时间
-                            next_run = last_run + task_interval_seconds
-                    else:
-                        next_run = self._task_next_run.get(task_name, last_run + task_interval_seconds)
+                    next_run = self._task_next_run[task_name]
                     
-                    # 如果是首次运行，设置为立即执行（但间隔30秒避免同时启动）
-                    if last_run == 0:
-                        task_index = task_configs.index(task_config)
-                        next_run = now + (task_index * 30)
-                        self._task_next_run[task_name] = next_run
-                    
-                    # 检查是否到达运行时间
                     if now >= next_run:
-                        # 检查是否有其他任务正在执行
                         with self._lock:
                             if self._current_task_job_id is not None:
                                 logger.info("Task %s skipped: another task is running (%s)", task_name, self._current_task_job_id)
-                                # 延迟到下一个周期
                                 if cron_expr:
                                     from .settings import cron_to_next_run
-                                    self._task_next_run[task_name] = cron_to_next_run(cron_expr, now) or (now + task_interval_seconds)
+                                    self._task_next_run[task_name] = cron_to_next_run(cron_expr, now, timezone) or (now + task_interval_seconds)
                                 else:
                                     self._task_next_run[task_name] = now + task_interval_seconds
                                 continue
                         
-                        # 执行任务
                         self._run_single_task(settings, task_name, task_config["sync_func"])
                         
-                        # 更新下次运行时间
                         self._task_last_run[task_name] = time.time()
                         if cron_expr:
                             from .settings import cron_to_next_run
-                            self._task_next_run[task_name] = cron_to_next_run(cron_expr, time.time()) or (time.time() + task_interval_seconds)
+                            self._task_next_run[task_name] = cron_to_next_run(cron_expr, time.time(), timezone) or (time.time() + task_interval_seconds)
                         else:
                             self._task_next_run[task_name] = time.time() + task_interval_seconds
+                        
+                        logger.info("Task %s completed, next run: %s", task_name,
+                                    datetime.fromtimestamp(self._task_next_run[task_name]).strftime('%Y-%m-%d %H:%M:%S'))
                 
-                # 短暂休眠后继续检查
                 time.sleep(30)
                 
             except Exception as e:
@@ -680,6 +658,7 @@ class SettingsManager:
         )
         
         # 定时同步设置（auto_sync_enabled 由首页按钮单独控制）
+        sync_data["auto_sync_timezone"] = str(payload.get("auto_sync_timezone", sync_data.get("auto_sync_timezone", "UTC")))
         sync_data["auto_sync_bookmarks_enabled"] = bool(payload.get("auto_sync_bookmarks_enabled", sync_data.get("auto_sync_bookmarks_enabled", True)))
         sync_data["auto_sync_bookmarks_interval_hours"] = int(payload.get("auto_sync_bookmarks_interval_hours", sync_data.get("auto_sync_bookmarks_interval_hours", 6)))
         sync_data["auto_sync_bookmarks_cron"] = str(payload.get("auto_sync_bookmarks_cron", sync_data.get("auto_sync_bookmarks_cron", "")))
@@ -1410,6 +1389,7 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "delay_seconds_between_chapters": settings.sync.delay_seconds_between_chapters,
         "delay_seconds_between_skips": settings.sync.delay_seconds_between_skips,
         "auto_sync_enabled": settings.sync.auto_sync_enabled,
+        "auto_sync_timezone": settings.sync.auto_sync_timezone,
         "auto_sync_bookmarks_enabled": settings.sync.auto_sync_bookmarks_enabled,
         "auto_sync_bookmarks_interval_hours": settings.sync.auto_sync_bookmarks_interval_hours,
         "auto_sync_bookmarks_cron": settings.sync.auto_sync_bookmarks_cron,

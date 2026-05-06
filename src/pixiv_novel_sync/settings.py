@@ -44,6 +44,7 @@ class SyncSettings:
     delay_seconds_between_skips: float = 0.1  # 跳过内容时的间隔
     # 定时任务配置
     auto_sync_enabled: bool = False
+    auto_sync_timezone: str = "UTC"  # 时区，如 "Asia/Seoul", "UTC", "Asia/Shanghai"
     auto_sync_bookmarks_enabled: bool = True
     auto_sync_bookmarks_interval_hours: int = 6  # 收藏同步间隔（小时）
     auto_sync_bookmarks_cron: str = ""  # 收藏同步cron表达式，优先于interval_hours
@@ -246,12 +247,13 @@ def parse_cron_expression(cron_expr: str) -> dict[str, Any] | None:
         return None
 
 
-def cron_to_next_run(cron_expr: str, base_time: float | None = None) -> float | None:
+def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: str = "UTC") -> float | None:
     """计算cron表达式的下次运行时间
     
     Args:
         cron_expr: cron表达式
         base_time: 基础时间戳，默认为当前时间
+        timezone: 时区，如 "Asia/Seoul", "UTC", "Asia/Shanghai"
         
     Returns:
         float: 下次运行的时间戳，或None如果解析失败
@@ -266,7 +268,20 @@ def cron_to_next_run(cron_expr: str, base_time: float | None = None) -> float | 
     if base_time is None:
         base_time = time.time()
     
-    base_dt = datetime.fromtimestamp(base_time)
+    # 尝试导入时区库
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(timezone)
+        base_dt = datetime.fromtimestamp(base_time, tz=tz)
+    except ImportError:
+        # Python < 3.9 或没有zoneinfo，尝试使用pytz
+        try:
+            import pytz
+            tz = pytz.timezone(timezone)
+            base_dt = datetime.fromtimestamp(base_time, tz=tz)
+        except ImportError:
+            # 没有时区库，使用本地时间（不推荐）
+            base_dt = datetime.fromtimestamp(base_time)
     
     # 简单实现：查找下一个匹配的时间
     # 这里使用简化的实现，实际项目中建议使用croniter库
