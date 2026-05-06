@@ -53,6 +53,7 @@ class AutoSyncScheduler:
     _task_last_run: dict[str, float] = field(default_factory=dict)  # 每个任务的上次运行时间
     _task_next_run: dict[str, float] = field(default_factory=dict)  # 每个任务的下次运行时间
     _task_intervals: dict[str, int] = field(default_factory=dict)  # 每个任务的间隔（小时）
+    _task_crons: dict[str, str] = field(default_factory=dict)  # 每个任务的cron表达式
     _current_task_job_id: str | None = None  # 当前正在执行的定时任务 job_id
     _stop_current_task: bool = False  # 停止当前任务的标志
     
@@ -94,6 +95,7 @@ class AutoSyncScheduler:
                 "task_next_run": dict(self._task_next_run),
                 "task_last_run": dict(self._task_last_run),
                 "task_intervals": dict(self._task_intervals),
+                "task_crons": dict(self._task_crons),
             }
     
     def _run_scheduler(self) -> None:
@@ -131,8 +133,9 @@ class AutoSyncScheduler:
                     task_interval_hours = getattr(settings.sync, task_config["interval_setting"], 6)
                     task_interval_seconds = task_interval_hours * 3600
                     
-                    # 更新任务间隔记录
+                    # 更新任务间隔和cron记录
                     self._task_intervals[task_name] = task_interval_hours
+                    self._task_crons[task_name] = cron_expr
                     
                     # 计算该任务的下次运行时间
                     last_run = self._task_last_run.get(task_name, 0)

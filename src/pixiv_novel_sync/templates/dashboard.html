@@ -445,9 +445,10 @@
         
         // 渲染任务状态
         const tasks = [
-          { name: '同步收藏小说', key: 'bookmarks', setting: 'auto_sync_bookmarks_enabled', interval_setting: 'auto_sync_bookmarks_interval_hours' },
-          { name: '同步关注用户', key: 'following', setting: 'auto_sync_following_enabled', interval_setting: 'auto_sync_following_interval_hours' },
-          { name: '同步追更系列', key: 'subscribed_series', setting: 'auto_sync_subscribed_series_enabled', interval_setting: 'auto_sync_subscribed_series_interval_hours' },
+          { name: '同步收藏小说', key: 'bookmarks', setting: 'auto_sync_bookmarks_enabled', interval_setting: 'auto_sync_bookmarks_interval_hours', cron_setting: 'auto_sync_bookmarks_cron' },
+          { name: '同步关注用户', key: 'following', setting: 'auto_sync_following_enabled', interval_setting: 'auto_sync_following_interval_hours', cron_setting: 'auto_sync_following_cron' },
+          { name: '同步追更系列', key: 'subscribed_series', setting: 'auto_sync_subscribed_series_enabled', interval_setting: 'auto_sync_subscribed_series_interval_hours', cron_setting: 'auto_sync_subscribed_series_cron' },
+          { name: '检查用户状态', key: 'user_status', setting: 'auto_sync_user_status_enabled', interval_setting: 'auto_sync_following_interval_hours', cron_setting: 'auto_sync_user_status_cron' },
         ];
         
         let taskHtml = '';
@@ -456,6 +457,7 @@
           const nextRun = data.task_next_run?.[task.key];
           const isRunning = data.current_task_job_id?.includes(task.key);
           const intervalHours = data.task_intervals?.[task.key] || 6;
+          const cronExpr = data.task_crons?.[task.key] || '';
           
           let statusText = '等待中';
           let statusColor = 'var(--text-secondary)';
@@ -464,9 +466,25 @@
             statusColor = 'var(--brand-start)';
           } else if (nextRun) {
             const nextDate = new Date(nextRun * 1000);
-            statusText = `下次: ${nextDate.toLocaleTimeString()} (每${intervalHours}h)`;
+            const timeStr = nextDate.toLocaleTimeString();
+            const dateStr = nextDate.toLocaleDateString();
+            const today = new Date().toLocaleDateString();
+            if (dateStr === today) {
+              statusText = `今天 ${timeStr}`;
+            } else {
+              statusText = `${dateStr} ${timeStr}`;
+            }
+            if (cronExpr) {
+              statusText += ` (${cronExpr})`;
+            } else {
+              statusText += ` (每${intervalHours}h)`;
+            }
           } else {
-            statusText = `每${intervalHours}小时`;
+            if (cronExpr) {
+              statusText = cronExpr;
+            } else {
+              statusText = `每${intervalHours}小时`;
+            }
           }
           
           taskHtml += `<div class="auto-task-status">
