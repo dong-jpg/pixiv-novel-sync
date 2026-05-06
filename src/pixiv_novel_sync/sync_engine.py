@@ -33,6 +33,7 @@ class BookmarkNovelSyncService:
         item_delay = self.settings.sync.delay_seconds_between_items
         page_delay = self.settings.sync.delay_seconds_between_pages
         processed_items = 0
+        synced_items = 0  # 实际同步的数量（不包括跳过的）
 
         for restrict in restricts:
             logger.info("Syncing bookmarked novels for restrict=%s", restrict)
@@ -50,8 +51,9 @@ class BookmarkNovelSyncService:
                     progress_callback("page", {"page": page_count, "restrict": restrict})
                 novels = getattr(result, "novels", []) or []
                 for novel in novels:
-                    if max_items is not None and processed_items >= max_items:
-                        logger.info("Reached max_items_per_run=%s, stopping sync", max_items)
+                    # 检查是否达到实际同步数量限制
+                    if max_items is not None and synced_items >= max_items:
+                        logger.info("Reached max_items_per_run=%s (synced), stopping sync", max_items)
                         return stats
                     processed_items += 1
                     novel_id = int(novel.id)
@@ -78,6 +80,10 @@ class BookmarkNovelSyncService:
                         source_type=f"bookmark_{restrict}",
                     )
                     self._merge_stats(stats, counters)
+                    
+                    # 只有实际同步（非跳过）才计入 synced_items
+                    if not counters.get("skipped"):
+                        synced_items += 1
                     
                     if progress_callback:
                         progress_callback("novel_done", {
