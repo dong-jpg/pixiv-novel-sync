@@ -133,6 +133,7 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             delay_seconds_between_skips=_coerce_float(sync_raw.get("delay_seconds_between_skips"), 0.1),
             # 定时任务配置
             auto_sync_enabled=bool(sync_raw.get("auto_sync_enabled", False)),
+            auto_sync_timezone=str(sync_raw.get("auto_sync_timezone", "UTC")),
             auto_sync_bookmarks_enabled=bool(sync_raw.get("auto_sync_bookmarks_enabled", True)),
             auto_sync_bookmarks_interval_hours=int(sync_raw.get("auto_sync_bookmarks_interval_hours", 6)),
             auto_sync_bookmarks_cron=str(sync_raw.get("auto_sync_bookmarks_cron", "")),
