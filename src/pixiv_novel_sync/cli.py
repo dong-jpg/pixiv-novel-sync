@@ -54,7 +54,7 @@ def main() -> None:
         from .webapp import create_app
  
         app = create_app(config_path=args.config, env_path=args.env_file)
-        app.run(host=args.host, port=args.port, debug=False)
+        app.run(host=args.host, port=args.port, debug=False, threaded=True)
     else:
         parser.error(f"Unsupported command: {args.command}")
 
