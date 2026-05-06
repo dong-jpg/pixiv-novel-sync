@@ -151,15 +151,6 @@
       </div>
       <div id="autoSyncStatus" style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">加载中...</div>
       <div id="autoTaskList"></div>
-      <!-- 定时任务日志 -->
-      <div id="autoJobLogContainer" style="display:none; margin-top:16px; border-top:1px solid var(--line); padding-top:12px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-          <span style="font-size:13px;font-weight:600;color:var(--text-secondary);">定时任务日志</span>
-          <span id="autoJobElapsed" style="font-size:12px;color:var(--text-secondary);"></span>
-        </div>
-        <div id="autoJobTaskList" class="task-list" style="display:none;"></div>
-        <div id="autoJobLogList" style="max-height:200px;overflow-y:auto;font-family:monospace;font-size:12px;line-height:1.8;background:var(--bg-soft);border-radius:8px;padding:12px;"></div>
-      </div>
     </section>
   </main>
 
@@ -495,55 +486,8 @@
         });
         taskListEl.innerHTML = taskHtml;
         
-        // 如果有正在执行的定时任务，显示其日志
-        if (data.current_job) {
-          renderAutoJobLog(data.current_job);
-        } else {
-          document.getElementById('autoJobLogContainer').style.display = 'none';
-        }
-        
       } catch (err) {
         console.error('loadAutoSyncStatus failed', err);
-      }
-    }
-
-    function renderAutoJobLog(job) {
-      const container = document.getElementById('autoJobLogContainer');
-      container.style.display = 'block';
-      
-      // 耗时
-      const elapsedEl = document.getElementById('autoJobElapsed');
-      if (job.elapsed) {
-        elapsedEl.textContent = `耗时 ${job.elapsed}秒`;
-      }
-      
-      // 任务列表
-      if (job.task_list && job.task_list.length > 0) {
-        const taskListEl = document.getElementById('autoJobTaskList');
-        taskListEl.style.display = 'block';
-        taskListEl.innerHTML = job.task_list.map(function(task, index) {
-          const statusClass = index < job.current_task_index ? 'completed' : (index === job.current_task_index ? 'running' : 'pending');
-          const statusIcon = index < job.current_task_index ? '✓' : (index === job.current_task_index ? '●' : '○');
-          return `<div class="task-item ${statusClass}">
-            <span class="status-icon">${statusIcon}</span>
-            <span>${task}</span>
-          </div>`;
-        }).join('');
-      }
-      
-      // 日志
-      if (job.logs && job.logs.length > 0) {
-        const logListEl = document.getElementById('autoJobLogList');
-        logListEl.innerHTML = job.logs.map(function(log) {
-          const levelColor = log.level === 'error' ? 'var(--danger)' : 
-                            (log.level === 'success' ? 'var(--success)' : 
-                            (log.level === 'warning' ? '#ff9500' : 'var(--text-secondary)'));
-          const levelIcon = log.level === 'error' ? '✗' : 
-                           (log.level === 'success' ? '✓' : 
-                           (log.level === 'warning' ? '⚠' : '›'));
-          return `<div style="color:${levelColor};"><span style="opacity:0.6;">${log.time}</span> ${levelIcon} ${escapeHtml(log.message)}</div>`;
-        }).join('');
-        logListEl.scrollTop = logListEl.scrollHeight;
       }
     }
 
