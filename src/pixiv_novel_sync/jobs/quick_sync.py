@@ -85,9 +85,9 @@ def run_bookmark_sync_with_progress(settings: Settings, job_manager: Any, job_id
         if settings.sync.sync_bookmarks:
             job_manager.add_log(job_id, "info", "=== 开始同步收藏小说 ===")
             job_manager.update_progress(job_id, phase="同步收藏", message="正在同步收藏小说...")
+            on_progress("phase_start", {"name": "收藏"})
             restricts = settings.sync.bookmark_restricts
             for restrict in restricts:
-                on_progress("phase_start", {"name": f"收藏 ({restrict})"})
                 bookmark_stats = service.sync(
                     user_id=auth_result.user_id,
                     restricts=[restrict],
@@ -165,6 +165,18 @@ def run_bookmark_sync_with_progress(settings: Settings, job_manager: Any, job_id
             for key in total_stats:
                 total_stats[key] = total_stats.get(key, 0) + following_novels_stats.get(key, 0)
             job_manager.add_log(job_id, "success", "关注用户小说同步完成")
+
+        # 同步追更系列
+        if settings.sync.sync_subscribed_series:
+            job_manager.add_log(job_id, "info", "=== 开始同步追更系列 ===")
+            job_manager.update_progress(job_id, phase="同步追更", message="正在同步追更系列...")
+            on_progress("phase_start", {"name": "追更系列"})
+            subscribed_stats = service.sync_subscribed_series(
+                limit=settings.sync.series_sync_limit,
+                progress_callback=on_progress,
+            )
+            total_stats["series_synced"] = subscribed_stats.get("series_synced", 0)
+            job_manager.add_log(job_id, "success", f"追更系列同步完成: {subscribed_stats.get('series_synced', 0)} 个系列")
 
         job_manager.add_log(job_id, "success", "全部同步完成")
         return total_stats

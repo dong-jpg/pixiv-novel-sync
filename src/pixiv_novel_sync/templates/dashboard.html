@@ -53,6 +53,20 @@
     .job .bad { color: var(--danger); font-weight: 600; }
     .job .running { color: var(--brand-start); font-weight: 600; }
     .section-title { font-size: 18px; font-weight: 600; margin: 28px 0 16px; padding-left: 4px; }
+    .btn-orange { background: linear-gradient(90deg, #ff9500, #ff6b00); color: #fff; }
+    .btn-green { background: linear-gradient(90deg, #34c759, #30d158); color: #fff; }
+    .btn-red { background: linear-gradient(90deg, #ff3b30, #ff6b6b); color: #fff; }
+    .btn-purple { background: linear-gradient(90deg, #5856d6, #af52de); color: #fff; }
+    .task-list { margin: 12px 0; padding: 12px; background: var(--bg-soft); border-radius: 8px; }
+    .task-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px; }
+    .task-item .status-icon { width: 16px; text-align: center; }
+    .task-item.pending { color: var(--text-secondary); }
+    .task-item.running { color: var(--brand-start); font-weight: 600; }
+    .task-item.completed { color: var(--success); }
+    .auto-sync-card { background: linear-gradient(135deg, #f5f5f7, #e8e8ed); border: 1px solid var(--line); }
+    .auto-task-status { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #fff; border-radius: 8px; margin-bottom: 8px; }
+    .auto-task-status .task-name { flex: 1; font-size: 13px; }
+    .auto-task-status .next-run { font-size: 11px; color: var(--text-secondary); }
     @media (max-width: 720px) {
       .topbar-inner { flex-direction: column; height: auto; padding: 12px 16px; gap: 8px; }
       .hero { padding: 24px; }
@@ -81,7 +95,13 @@
       <p>集中展示当前账号、归档规模与最近任务状态。默认使用手工同步模式，避免首次全量拉取导致风控。</p>
       <div class="toolbar">
         <button id="startSyncBtn" class="btn btn-primary">开始手工同步</button>
+        <button id="syncSeriesBtn" class="btn btn-orange">同步追更系列</button>
         <span id="actionMessage" class="hint">可在设置页调整同步参数</span>
+      </div>
+      <div style="margin-top:16px;display:flex;align-items:center;gap:12px;">
+        <label style="font-size:13px;color:rgba(255,255,255,0.8);">系列同步数量限制：</label>
+        <input type="number" id="seriesSyncLimit" min="0" value="0" style="width:80px;padding:6px 10px;border:1px solid rgba(255,255,255,0.3);border-radius:6px;background:rgba(255,255,255,0.2);color:#fff;font-size:13px;">
+        <span style="font-size:12px;color:rgba(255,255,255,0.6);">0 = 全部系列</span>
       </div>
     </section>
 
@@ -92,6 +112,12 @@
     <section class="card">
       <div class="card-title">最近同步任务</div>
       <div id="jobStatus" class="job muted">暂无任务记录</div>
+      <!-- 任务列表 -->
+      <div id="taskListContainer" style="display:none; margin-top:12px;">
+        <div style="font-size:13px;font-weight:600;color:var(--text-secondary);margin-bottom:8px;">任务列表</div>
+        <div id="taskList" class="task-list"></div>
+      </div>
+      <!-- 进度条 -->
       <div id="progressBar" style="display:none; margin-top:16px;">
         <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
           <span id="progressPhase" style="font-size:13px;color:var(--text-secondary);">准备中</span>
@@ -102,6 +128,7 @@
         </div>
         <div id="progressNovel" style="font-size:12px;color:var(--text-secondary);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
       </div>
+      <!-- 日志 -->
       <div id="logContainer" style="display:none; margin-top:16px; border-top:1px solid var(--line); padding-top:12px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <span style="font-size:13px;font-weight:600;color:var(--text-secondary);">同步日志</span>
@@ -110,10 +137,35 @@
         <div id="logList" style="max-height:280px;overflow-y:auto;font-family:monospace;font-size:12px;line-height:1.8;background:var(--bg-soft);border-radius:8px;padding:12px;"></div>
       </div>
     </section>
+
+    <!-- 定时同步状态 -->
+    <div class="section-title">定时同步状态</div>
+    <section class="card auto-sync-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <div class="card-title" style="margin-bottom:0;">定时任务管理</div>
+        <div style="display:flex;gap:8px;">
+          <button id="toggleAutoSyncBtn" class="btn btn-purple" style="padding:8px 16px;font-size:13px;">启用定时同步</button>
+          <button id="stopAutoTaskBtn" class="btn btn-red" style="padding:8px 16px;font-size:13px;display:none;">停止当前任务</button>
+        </div>
+      </div>
+      <div id="autoSyncStatus" style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">加载中...</div>
+      <div id="autoTaskList"></div>
+      <!-- 定时任务日志 -->
+      <div id="autoJobLogContainer" style="display:none; margin-top:16px; border-top:1px solid var(--line); padding-top:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <span style="font-size:13px;font-weight:600;color:var(--text-secondary);">定时任务日志</span>
+          <span id="autoJobElapsed" style="font-size:12px;color:var(--text-secondary);"></span>
+        </div>
+        <div id="autoJobTaskList" class="task-list" style="display:none;"></div>
+        <div id="autoJobLogList" style="max-height:200px;overflow-y:auto;font-family:monospace;font-size:12px;line-height:1.8;background:var(--bg-soft);border-radius:8px;padding:12px;"></div>
+      </div>
+    </section>
   </main>
 
   <script>
     let latestJobId = null;
+    let autoSyncEnabled = false;
+    let autoSyncStatusInterval = null;
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>"]/g, function (ch) {
@@ -181,6 +233,47 @@
       latestJobId = data.latest_job && data.latest_job.job_id ? data.latest_job.job_id : latestJobId;
       renderJob(data.latest_job || null);
       document.getElementById('startSyncBtn').disabled = !!(data.latest_job && data.latest_job.status === 'running');
+      document.getElementById('syncSeriesBtn').disabled = !!(data.latest_job && data.latest_job.status === 'running');
+      
+      // 加载系列同步限制设置
+      if (data.series_sync_limit !== undefined) {
+        document.getElementById('seriesSyncLimit').value = data.series_sync_limit || 0;
+      }
+    }
+
+    function renderTaskList(taskList, currentIndex, status) {
+      const container = document.getElementById('taskListContainer');
+      const taskListEl = document.getElementById('taskList');
+      
+      if (!taskList || taskList.length === 0) {
+        container.style.display = 'none';
+        return;
+      }
+      
+      container.style.display = 'block';
+      const html = taskList.map(function(task, index) {
+        let statusClass = 'pending';
+        let statusIcon = '○';
+        
+        if (status === 'running') {
+          if (index < currentIndex) {
+            statusClass = 'completed';
+            statusIcon = '✓';
+          } else if (index === currentIndex) {
+            statusClass = 'running';
+            statusIcon = '●';
+          }
+        } else if (status === 'succeeded') {
+          statusClass = 'completed';
+          statusIcon = '✓';
+        }
+        
+        return `<div class="task-item ${statusClass}">
+          <span class="status-icon">${statusIcon}</span>
+          <span>${index + 1}. ${escapeHtml(task)}</span>
+        </div>`;
+      }).join('');
+      taskListEl.innerHTML = html;
     }
 
     function renderJob(job) {
@@ -192,6 +285,7 @@
         container.innerHTML = '<span style="color:var(--text-secondary)">暂无任务记录</span>';
         progressBar.style.display = 'none';
         logContainer.style.display = 'none';
+        document.getElementById('taskListContainer').style.display = 'none';
         return;
       }
       
@@ -200,12 +294,16 @@
       const elapsed = job.elapsed ? `耗时 ${job.elapsed}秒` : '';
       const stats = job.stats ? `<div style="margin-top:8px;font-size:13px;">结果：小说 ${job.stats.novels || 0} 本，资源 ${job.stats.assets_downloaded || 0} 个</div>` : '';
       const error = job.error ? `<div class="bad" style="margin-top:8px;">错误：${escapeHtml(job.error)}</div>` : '';
+      const jobType = job.is_auto_sync ? '定时任务' : '手工任务';
       container.innerHTML = `
-        <div>任务 ID：${escapeHtml(job.job_id)}</div>
+        <div>${jobType} ID：${escapeHtml(job.job_id)}</div>
         <div class="${statusClass}">状态：${statusText} ${escapeHtml(job.message || '')} ${elapsed}</div>
         ${stats}
         ${error}
       `;
+      
+      // 任务列表
+      renderTaskList(job.task_list, job.current_task_index, job.status);
       
       // 进度条
       if (job.status === 'running' && job.progress) {
@@ -252,6 +350,7 @@
           latestJobId = data.job.job_id;
           renderJob(data.job);
           document.getElementById('startSyncBtn').disabled = data.job.status === 'running';
+          document.getElementById('syncSeriesBtn').disabled = data.job.status === 'running';
         }
       } catch (err) {
         console.error('pollJobStatus failed', err);
@@ -285,12 +384,201 @@
       }
     }
 
+    async function syncSeries() {
+      const btn = document.getElementById('syncSeriesBtn');
+      const msg = document.getElementById('actionMessage');
+      const limitInput = document.getElementById('seriesSyncLimit');
+      const limit = parseInt(limitInput.value) || 0;
+      
+      btn.disabled = true;
+      msg.textContent = '正在同步追更系列...';
+      
+      try {
+        const resp = await fetch('/api/dashboard/sync/subscribed-series', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ limit: limit }),
+        });
+        const data = await safeJson(resp);
+        if (!resp.ok) {
+          msg.textContent = data.error || '同步失败';
+          btn.disabled = false;
+          return;
+        }
+        msg.textContent = `同步完成，共 ${data.stats?.series_synced || 0} 个系列`;
+        await loadStatus();
+      } catch (err) {
+        console.error('syncSeries failed', err);
+        msg.textContent = '同步失败，请查看浏览器控制台';
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // 定时同步相关函数
+    async function loadAutoSyncStatus() {
+      try {
+        const resp = await fetch('/api/dashboard/auto-sync/status');
+        const data = await safeJson(resp);
+        
+        autoSyncEnabled = data.running;
+        const statusEl = document.getElementById('autoSyncStatus');
+        const toggleBtn = document.getElementById('toggleAutoSyncBtn');
+        const stopBtn = document.getElementById('stopAutoTaskBtn');
+        const taskListEl = document.getElementById('autoTaskList');
+        
+        // 更新按钮状态
+        toggleBtn.textContent = autoSyncEnabled ? '禁用定时同步' : '启用定时同步';
+        toggleBtn.className = autoSyncEnabled ? 'btn btn-red' : 'btn btn-purple';
+        
+        // 显示/隐藏停止按钮
+        stopBtn.style.display = data.current_task_job_id ? 'block' : 'none';
+        
+        // 状态文字
+        if (autoSyncEnabled) {
+          statusEl.innerHTML = '<span style="color:var(--success);">定时同步已启用</span>';
+        } else {
+          statusEl.textContent = '定时同步未启用';
+        }
+        
+        // 渲染任务状态
+        const tasks = [
+          { name: '同步收藏小说', key: 'bookmarks', setting: 'auto_sync_bookmarks_enabled' },
+          { name: '同步关注用户', key: 'following', setting: 'auto_sync_following_enabled' },
+          { name: '同步追更系列', key: 'subscribed_series', setting: 'auto_sync_subscribed_series_enabled' },
+        ];
+        
+        let taskHtml = '';
+        tasks.forEach(function(task) {
+          const lastRun = data.task_last_run?.[task.key];
+          const nextRun = data.task_next_run?.[task.key];
+          const isRunning = data.current_task_job_id?.includes(task.key);
+          
+          let statusText = '等待中';
+          let statusColor = 'var(--text-secondary)';
+          if (isRunning) {
+            statusText = '执行中';
+            statusColor = 'var(--brand-start)';
+          } else if (nextRun) {
+            const nextDate = new Date(nextRun * 1000);
+            statusText = `下次: ${nextDate.toLocaleTimeString()}`;
+          }
+          
+          taskHtml += `<div class="auto-task-status">
+            <span style="color:${statusColor};font-size:12px;">●</span>
+            <span class="task-name">${task.name}</span>
+            <span class="next-run">${statusText}</span>
+          </div>`;
+        });
+        taskListEl.innerHTML = taskHtml;
+        
+        // 如果有正在执行的定时任务，显示其日志
+        if (data.current_job) {
+          renderAutoJobLog(data.current_job);
+        } else {
+          document.getElementById('autoJobLogContainer').style.display = 'none';
+        }
+        
+      } catch (err) {
+        console.error('loadAutoSyncStatus failed', err);
+      }
+    }
+
+    function renderAutoJobLog(job) {
+      const container = document.getElementById('autoJobLogContainer');
+      container.style.display = 'block';
+      
+      // 耗时
+      const elapsedEl = document.getElementById('autoJobElapsed');
+      if (job.elapsed) {
+        elapsedEl.textContent = `耗时 ${job.elapsed}秒`;
+      }
+      
+      // 任务列表
+      if (job.task_list && job.task_list.length > 0) {
+        const taskListEl = document.getElementById('autoJobTaskList');
+        taskListEl.style.display = 'block';
+        taskListEl.innerHTML = job.task_list.map(function(task, index) {
+          const statusClass = index < job.current_task_index ? 'completed' : (index === job.current_task_index ? 'running' : 'pending');
+          const statusIcon = index < job.current_task_index ? '✓' : (index === job.current_task_index ? '●' : '○');
+          return `<div class="task-item ${statusClass}">
+            <span class="status-icon">${statusIcon}</span>
+            <span>${task}</span>
+          </div>`;
+        }).join('');
+      }
+      
+      // 日志
+      if (job.logs && job.logs.length > 0) {
+        const logListEl = document.getElementById('autoJobLogList');
+        logListEl.innerHTML = job.logs.map(function(log) {
+          const levelColor = log.level === 'error' ? 'var(--danger)' : 
+                            (log.level === 'success' ? 'var(--success)' : 
+                            (log.level === 'warning' ? '#ff9500' : 'var(--text-secondary)'));
+          const levelIcon = log.level === 'error' ? '✗' : 
+                           (log.level === 'success' ? '✓' : 
+                           (log.level === 'warning' ? '⚠' : '›'));
+          return `<div style="color:${levelColor};"><span style="opacity:0.6;">${log.time}</span> ${levelIcon} ${escapeHtml(log.message)}</div>`;
+        }).join('');
+        logListEl.scrollTop = logListEl.scrollHeight;
+      }
+    }
+
+    async function toggleAutoSync() {
+      const btn = document.getElementById('toggleAutoSyncBtn');
+      const newState = !autoSyncEnabled;
+      btn.disabled = true;
+      
+      try {
+        const resp = await fetch('/api/dashboard/auto-sync/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: newState }),
+        });
+        const data = await safeJson(resp);
+        if (resp.ok) {
+          autoSyncEnabled = newState;
+          await loadAutoSyncStatus();
+        }
+      } catch (err) {
+        console.error('toggleAutoSync failed', err);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function stopAutoTask() {
+      const btn = document.getElementById('stopAutoTaskBtn');
+      btn.disabled = true;
+      
+      try {
+        const resp = await fetch('/api/dashboard/auto-sync/stop-task', {
+          method: 'POST',
+        });
+        const data = await safeJson(resp);
+        if (resp.ok) {
+          setTimeout(loadAutoSyncStatus, 1000);
+        }
+      } catch (err) {
+        console.error('stopAutoTask failed', err);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     document.getElementById('startSyncBtn').addEventListener('click', startSync);
+    document.getElementById('syncSeriesBtn').addEventListener('click', syncSeries);
+    document.getElementById('toggleAutoSyncBtn').addEventListener('click', toggleAutoSync);
+    document.getElementById('stopAutoTaskBtn').addEventListener('click', stopAutoTask);
+    
     loadStatus().catch(function (err) {
       console.error('loadStatus failed', err);
       document.getElementById('actionMessage').textContent = '页面初始化失败，请刷新后重试';
     });
+    loadAutoSyncStatus();
+    
     setInterval(pollJobStatus, 3000);
+    setInterval(loadAutoSyncStatus, 10000);
   </script>
 </body>
 </html>

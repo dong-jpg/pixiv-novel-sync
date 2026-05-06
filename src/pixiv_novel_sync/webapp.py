@@ -36,18 +36,24 @@ class SyncJobState:
     error: str | None = None
     progress: dict[str, Any] = field(default_factory=dict)
     logs: list[dict[str, Any]] = field(default_factory=list)
+    task_list: list[str] = field(default_factory=list)  # 任务列表
+    current_task_index: int = 0  # 当前执行的任务索引
+    is_auto_sync: bool = False  # 是否是定时任务
 
 
 @dataclass(slots=True)
 class AutoSyncScheduler:
-    """定时同步调度器"""
+    """定时同步调度器 - 每个任务独立运行"""
     config_path: str | None
     env_path: str | None
+    sync_job_manager: Any = None  # SyncJobManager 引用
     _running: bool = False
     _thread: threading.Thread | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
-    _last_run_time: float | None = None
-    _next_run_time: float | None = None
+    _task_last_run: dict[str, float] = field(default_factory=dict)  # 每个任务的上次运行时间
+    _task_next_run: dict[str, float] = field(default_factory=dict)  # 每个任务的下次运行时间
+    _current_task_job_id: str | None = None  # 当前正在执行的定时任务 job_id
+    _stop_current_task: bool = False  # 停止当前任务的标志
     
     def start(self) -> None:
         """启动定时调度器"""
@@ -63,114 +69,275 @@ class AutoSyncScheduler:
         """停止定时调度器"""
         with self._lock:
             self._running = False
+            self._stop_current_task = True
             logger.info("Auto sync scheduler stopped")
+    
+    def stop_current_task(self) -> bool:
+        """停止当前正在执行的定时任务"""
+        with self._lock:
+            if self._current_task_job_id:
+                self._stop_current_task = True
+                logger.info("Stopping current auto sync task: %s", self._current_task_job_id)
+                return True
+            return False
     
     def is_running(self) -> bool:
         return self._running
     
     def get_status(self) -> dict[str, Any]:
         """获取调度器状态"""
-        return {
-            "running": self._running,
-            "last_run_time": self._last_run_time,
-            "next_run_time": self._next_run_time,
-        }
+        with self._lock:
+            return {
+                "running": self._running,
+                "current_task_job_id": self._current_task_job_id,
+                "task_next_run": dict(self._task_next_run),
+                "task_last_run": dict(self._task_last_run),
+            }
     
     def _run_scheduler(self) -> None:
-        """调度器主循环"""
+        """调度器主循环 - 每个任务独立检查和执行"""
+        # 任务定义
+        task_configs = [
+            {"name": "bookmarks", "setting_check": "auto_sync_bookmarks_enabled", "sync_func": "_sync_bookmarks"},
+            {"name": "following", "setting_check": "auto_sync_following_enabled", "sync_func": "_sync_following"},
+            {"name": "subscribed_series", "setting_check": "auto_sync_subscribed_series_enabled", "sync_func": "_sync_subscribed_series"},
+        ]
+        
         while self._running:
             try:
                 settings = load_settings(self.config_path, self.env_path)
                 
-                # 检查是否启用自动同步
                 if not settings.sync.auto_sync_enabled:
-                    time.sleep(60)  # 每分钟检查一次设置
+                    time.sleep(60)
                     continue
                 
-                # 计算下次运行时间
-                interval_hours = settings.sync.auto_sync_interval_hours
-                if self._last_run_time is None:
-                    # 首次运行，立即执行
-                    self._run_auto_sync(settings)
-                else:
+                interval_seconds = settings.sync.auto_sync_interval_hours * 3600
+                now = time.time()
+                
+                for task_config in task_configs:
+                    if not self._running:
+                        break
+                    
+                    task_name = task_config["name"]
+                    
+                    # 检查该任务是否启用
+                    if not getattr(settings.sync, task_config["setting_check"], False):
+                        continue
+                    
+                    # 计算该任务的下次运行时间
+                    last_run = self._task_last_run.get(task_name, 0)
+                    next_run = self._task_next_run.get(task_name, last_run + interval_seconds)
+                    
+                    # 如果是首次运行，设置为立即执行（但间隔30秒避免同时启动）
+                    if last_run == 0:
+                        task_index = task_configs.index(task_config)
+                        next_run = now + (task_index * 30)
+                        self._task_next_run[task_name] = next_run
+                    
                     # 检查是否到达运行时间
-                    next_run = self._last_run_time + (interval_hours * 3600)
-                    self._next_run_time = next_run
-                    if time.time() >= next_run:
-                        self._run_auto_sync(settings)
-                    else:
-                        # 等待到下次运行时间，但每分钟检查一次设置
-                        time.sleep(60)
+                    if now >= next_run:
+                        # 检查是否有其他任务正在执行
+                        with self._lock:
+                            if self._current_task_job_id is not None:
+                                logger.info("Task %s skipped: another task is running (%s)", task_name, self._current_task_job_id)
+                                # 延迟到下一个周期
+                                self._task_next_run[task_name] = now + interval_seconds
+                                continue
+                        
+                        # 执行任务
+                        self._run_single_task(settings, task_name, task_config["sync_func"])
+                        
+                        # 更新下次运行时间
+                        self._task_last_run[task_name] = time.time()
+                        self._task_next_run[task_name] = time.time() + interval_seconds
+                
+                # 短暂休眠后继续检查
+                time.sleep(30)
+                
             except Exception as e:
                 logger.error("Scheduler error: %s", str(e))
                 time.sleep(60)
     
-    def _run_auto_sync(self, settings: Settings) -> None:
-        """执行自动同步"""
-        logger.info("Starting auto sync")
-        self._last_run_time = time.time()
-        self._next_run_time = None
+    def _run_single_task(self, settings: Settings, task_name: str, sync_func_name: str) -> None:
+        """执行单个定时任务"""
+        logger.info("Starting auto sync task: %s", task_name)
         
-        try:
-            from .auth import PixivAuthManager
-            from .sync_engine import BookmarkNovelSyncService
-            from .storage_files import FileStorage
-            
-            auth = PixivAuthManager(settings.pixiv)
-            api, auth_result = auth.login()
-            if auth_result.user_id is None:
-                logger.error("Auto sync failed: Unable to determine user ID")
-                return
-            
-            db = Database(settings.storage.db_path)
-            db.init_schema()
-            storage = FileStorage(settings)
-            storage.ensure_dirs([
-                settings.storage.public_dir,
-                settings.storage.private_dir,
-                settings.storage.db_path.parent
-            ])
+        # 创建任务记录
+        if self.sync_job_manager:
+            task_labels = {
+                "bookmarks": "同步收藏小说",
+                "following": "同步关注用户",
+                "subscribed_series": "同步追更系列",
+            }
+            job = self.sync_job_manager.start_auto_job(task_name, task_labels.get(task_name, task_name))
+            self._current_task_job_id = job.job_id
             
             try:
-                service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
-                
-                # 同步收藏
-                if settings.sync.sync_bookmarks and settings.sync.auto_sync_bookmarks_enabled:
-                    logger.info("Auto sync: bookmarks")
-                    for restrict in settings.sync.bookmark_restricts:
-                        service.sync(
-                            user_id=auth_result.user_id,
-                            restricts=[restrict],
-                            download_assets=settings.sync.download_assets,
-                            write_markdown=settings.sync.write_markdown,
-                            write_raw_text=settings.sync.write_raw_text,
-                        )
-                        time.sleep(settings.sync.delay_seconds_between_pages)
-                
-                # 同步关注用户的系列和小说
-                if settings.sync.sync_following_series and settings.sync.auto_sync_following_enabled:
-                    logger.info("Auto sync: following series and novels")
-                    service.sync_following_novels(
-                        download_assets=settings.sync.download_assets,
-                        write_markdown=settings.sync.write_markdown,
-                        write_raw_text=settings.sync.write_raw_text,
-                        novels_only=False,
-                    )
-                
-                # 同步追更系列
-                if settings.sync.sync_subscribed_series and settings.sync.auto_sync_subscribed_series_enabled:
-                    logger.info("Auto sync: subscribed series")
-                    service.sync_subscribed_series(
-                        limit=settings.sync.series_sync_limit,
-                    )
-                
-                logger.info("Auto sync completed")
-                
+                # 执行对应的同步函数
+                func = getattr(self, sync_func_name)
+                func(settings, job.job_id)
+                job.status = "succeeded"
+                job.message = f"{task_labels.get(task_name, task_name)}完成"
+            except Exception as e:
+                job.status = "failed"
+                job.message = f"任务失败: {str(e)}"
+                job.error = str(e)
+                logger.error("Auto sync task %s failed: %s", task_name, str(e))
             finally:
-                db.close()
-                
-        except Exception as e:
-            logger.error("Auto sync failed: %s", str(e))
+                job.finished_at = time.time()
+                with self._lock:
+                    self._current_task_job_id = None
+                    self._stop_current_task = False
+        else:
+            # 没有 job_manager，直接执行
+            func = getattr(self, sync_func_name, None)
+            if func:
+                func(settings, None)
+    
+    def _check_stop(self) -> bool:
+        """检查是否需要停止"""
+        return self._stop_current_task or not self._running
+    
+    def _sync_bookmarks(self, settings: Settings, job_id: str | None) -> None:
+        """同步收藏"""
+        from .auth import PixivAuthManager
+        from .sync_engine import BookmarkNovelSyncService
+        
+        if job_id and self.sync_job_manager:
+            self.sync_job_manager.add_log(job_id, "info", "开始同步收藏小说")
+        
+        auth = PixivAuthManager(settings.pixiv)
+        api, auth_result = auth.login()
+        if auth_result.user_id is None:
+            raise RuntimeError("Unable to determine user ID")
+        
+        if self._check_stop():
+            return
+        
+        db = Database(settings.storage.db_path)
+        db.init_schema()
+        storage = FileStorage(settings)
+        storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
+        
+        try:
+            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+            
+            def on_progress(event_type: str, data: dict[str, Any]) -> None:
+                if self._check_stop():
+                    raise InterruptedError("Task stopped by user")
+                if job_id and self.sync_job_manager:
+                    if event_type == "novel_start":
+                        self.sync_job_manager.add_log(job_id, "info", f"[{data.get('current', '?')}/{data.get('total', '?')}] {data.get('title', '')[:30]}")
+                        self.sync_job_manager.update_progress(job_id, phase="同步收藏", current=data.get('current', 0), total=data.get('total', 50))
+            
+            for restrict in settings.sync.bookmark_restricts:
+                if self._check_stop():
+                    return
+                service.sync(
+                    user_id=auth_result.user_id,
+                    restricts=[restrict],
+                    download_assets=settings.sync.download_assets,
+                    write_markdown=settings.sync.write_markdown,
+                    write_raw_text=settings.sync.write_raw_text,
+                    progress_callback=on_progress,
+                )
+                time.sleep(settings.sync.delay_seconds_between_pages)
+            
+            if job_id and self.sync_job_manager:
+                self.sync_job_manager.add_log(job_id, "success", "收藏同步完成")
+        finally:
+            db.close()
+    
+    def _sync_following(self, settings: Settings, job_id: str | None) -> None:
+        """同步关注用户"""
+        from .auth import PixivAuthManager
+        from .sync_engine import BookmarkNovelSyncService
+        
+        if job_id and self.sync_job_manager:
+            self.sync_job_manager.add_log(job_id, "info", "开始同步关注用户")
+        
+        auth = PixivAuthManager(settings.pixiv)
+        api, auth_result = auth.login()
+        if auth_result.user_id is None:
+            raise RuntimeError("Unable to determine user ID")
+        
+        if self._check_stop():
+            return
+        
+        db = Database(settings.storage.db_path)
+        db.init_schema()
+        storage = FileStorage(settings)
+        storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
+        
+        try:
+            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+            
+            def on_progress(event_type: str, data: dict[str, Any]) -> None:
+                if self._check_stop():
+                    raise InterruptedError("Task stopped by user")
+                if job_id and self.sync_job_manager:
+                    if event_type == "novel_start":
+                        self.sync_job_manager.add_log(job_id, "info", f"[{data.get('current', '?')}/{data.get('total', '?')}] {data.get('title', '')[:30]}")
+            
+            if self._check_stop():
+                return
+            
+            service.sync_following_novels(
+                download_assets=settings.sync.download_assets,
+                write_markdown=settings.sync.write_markdown,
+                write_raw_text=settings.sync.write_raw_text,
+                progress_callback=on_progress,
+                novels_only=False,
+            )
+            
+            if job_id and self.sync_job_manager:
+                self.sync_job_manager.add_log(job_id, "success", "关注用户同步完成")
+        finally:
+            db.close()
+    
+    def _sync_subscribed_series(self, settings: Settings, job_id: str | None) -> None:
+        """同步追更系列"""
+        from .auth import PixivAuthManager
+        from .sync_engine import BookmarkNovelSyncService
+        
+        if job_id and self.sync_job_manager:
+            self.sync_job_manager.add_log(job_id, "info", "开始同步追更系列")
+        
+        auth = PixivAuthManager(settings.pixiv)
+        api, auth_result = auth.login()
+        if auth_result.user_id is None:
+            raise RuntimeError("Unable to determine user ID")
+        
+        if self._check_stop():
+            return
+        
+        db = Database(settings.storage.db_path)
+        db.init_schema()
+        storage = FileStorage(settings)
+        storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
+        
+        try:
+            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+            
+            def on_progress(event_type: str, data: dict[str, Any]) -> None:
+                if self._check_stop():
+                    raise InterruptedError("Task stopped by user")
+                if job_id and self.sync_job_manager:
+                    if event_type == "phase":
+                        self.sync_job_manager.add_log(job_id, "info", data.get("phase", ""))
+            
+            if self._check_stop():
+                return
+            
+            service.sync_subscribed_series(
+                limit=settings.sync.series_sync_limit,
+                progress_callback=on_progress,
+            )
+            
+            if job_id and self.sync_job_manager:
+                self.sync_job_manager.add_log(job_id, "success", "追更系列同步完成")
+        finally:
+            db.close()
 
 
 @dataclass(slots=True)
@@ -179,19 +346,40 @@ class SyncJobManager:
     env_path: str | None
     _jobs: dict[str, SyncJobState] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
-    MAX_LOGS: int = 30
+    MAX_LOGS: int = 50
 
-    def start_job(self) -> SyncJobState:
+    def start_job(self, task_list: list[str] | None = None) -> SyncJobState:
         with self._lock:
             running = [job for job in self._jobs.values() if job.status == "running"]
             if running:
                 raise RuntimeError("已有同步任务正在运行，请稍后再试")
             job_id = str(int(time.time() * 1000))
-            job = SyncJobState(job_id=job_id, status="running", message="同步任务已启动", started_at=time.time())
+            job = SyncJobState(
+                job_id=job_id, 
+                status="running", 
+                message="同步任务已启动", 
+                started_at=time.time(),
+                task_list=task_list or [],
+            )
             self._jobs[job_id] = job
         thread = threading.Thread(target=self._run_job, args=(job_id,), daemon=True)
         thread.start()
         return job
+    
+    def start_auto_job(self, task_name: str, task_label: str) -> SyncJobState:
+        """启动定时任务"""
+        with self._lock:
+            job_id = f"auto_{task_name}_{int(time.time() * 1000)}"
+            job = SyncJobState(
+                job_id=job_id,
+                status="running",
+                message=f"定时任务: {task_label}",
+                started_at=time.time(),
+                task_list=[task_label],
+                is_auto_sync=True,
+            )
+            self._jobs[job_id] = job
+            return job
 
     def get_job(self, job_id: str) -> SyncJobState | None:
         with self._lock:
@@ -234,6 +422,21 @@ class SyncJobManager:
             settings = load_settings(self.config_path, self.env_path)
             self.add_log(job_id, "info", "加载配置完成")
             self.update_progress(job_id, phase="准备中", message="正在初始化同步...")
+            
+            # 构建任务列表
+            task_list = []
+            if settings.sync.sync_bookmarks:
+                task_list.append("同步收藏小说")
+            if settings.sync.sync_following_series:
+                task_list.append("同步关注用户系列")
+            if settings.sync.sync_following_users:
+                task_list.append("同步关注用户列表")
+            if settings.sync.sync_following_novels:
+                task_list.append("同步关注用户小说")
+            if settings.sync.sync_subscribed_series:
+                task_list.append("同步追更系列")
+            job.task_list = task_list
+            job.current_task_index = 0
             
             from .jobs.quick_sync import run_bookmark_sync_with_progress
             stats = run_bookmark_sync_with_progress(settings, self, job_id)
@@ -327,7 +530,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     settings_manager = SettingsManager(config_path)
     sync_job_manager = SyncJobManager(config_path=config_path, env_path=env_path)
     oauth_manager = OAuthManager()
-    auto_sync_scheduler = AutoSyncScheduler(config_path=config_path, env_path=env_path)
+    auto_sync_scheduler = AutoSyncScheduler(config_path=config_path, env_path=env_path, sync_job_manager=sync_job_manager)
     
     # 启动定时同步调度器
     auto_sync_scheduler.start()
@@ -547,6 +750,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                 "max_pages_per_run": current_settings.sync.max_pages_per_run,
                 "delay_seconds_between_items": current_settings.sync.delay_seconds_between_items,
                 "delay_seconds_between_pages": current_settings.sync.delay_seconds_between_pages,
+                "series_sync_limit": current_settings.sync.series_sync_limit,
                 "stats": stats,
                 "latest_job": _job_to_dict(latest_job),
             }
@@ -738,8 +942,22 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         current_settings = settings_manager.load(env_path=env_path)
         if current_settings.sync.initial_manual_only is False and current_settings.sync.enabled is False:
             pass
+        
+        # 构建任务列表
+        task_list = []
+        if current_settings.sync.sync_bookmarks:
+            task_list.append("同步收藏小说")
+        if current_settings.sync.sync_following_series:
+            task_list.append("同步关注用户系列")
+        if current_settings.sync.sync_following_users:
+            task_list.append("同步关注用户列表")
+        if current_settings.sync.sync_following_novels:
+            task_list.append("同步关注用户小说")
+        if current_settings.sync.sync_subscribed_series:
+            task_list.append("同步追更系列")
+        
         try:
-            job = sync_job_manager.start_job()
+            job = sync_job_manager.start_job(task_list)
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
         return jsonify({"ok": True, "message": job.message, "job": _job_to_dict(job)})
@@ -821,7 +1039,13 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.get("/api/dashboard/auto-sync/status")
     def auto_sync_status():
         """获取定时同步状态"""
-        return jsonify(auto_sync_scheduler.get_status())
+        status = auto_sync_scheduler.get_status()
+        # 如果有当前正在执行的任务，获取任务详情
+        if status.get("current_task_job_id"):
+            job = sync_job_manager.get_job(status["current_task_job_id"])
+            if job:
+                status["current_job"] = _job_to_dict(job)
+        return jsonify(status)
 
     @app.post("/api/dashboard/auto-sync/toggle")
     def auto_sync_toggle():
@@ -848,6 +1072,13 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             auto_sync_scheduler.stop()
         
         return jsonify({"ok": True, "enabled": enabled})
+    
+    @app.post("/api/dashboard/auto-sync/stop-task")
+    def auto_sync_stop_task():
+        """停止当前正在执行的定时任务"""
+        if auto_sync_scheduler.stop_current_task():
+            return jsonify({"ok": True, "message": "正在停止当前任务"})
+        return jsonify({"ok": False, "message": "当前没有正在执行的定时任务"})
 
     @app.get("/api/cache/status")
     def cache_status():
@@ -889,6 +1120,63 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             return jsonify({"ok": True, "message": "缓存已清空"})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
+    
+    # 数据删除 API
+    @app.delete("/api/dashboard/novels/<int:novel_id>")
+    def delete_novel(novel_id: int):
+        """删除小说"""
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            db.delete_novel(novel_id)
+            return jsonify({"ok": True, "message": "小说已删除"})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            db.close()
+    
+    @app.delete("/api/dashboard/users/<int:user_id>")
+    def delete_user(user_id: int):
+        """删除用户及其所有小说"""
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            db.delete_user(user_id)
+            return jsonify({"ok": True, "message": "用户及其相关数据已删除"})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            db.close()
+    
+    @app.delete("/api/dashboard/series/<int:series_id>")
+    def delete_series(series_id: int):
+        """删除系列"""
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            db.delete_series(series_id)
+            return jsonify({"ok": True, "message": "系列已删除"})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            db.close()
+    
+    @app.delete("/api/dashboard/bookmarks/<int:novel_id>")
+    def delete_bookmark(novel_id: int):
+        """删除收藏记录"""
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            db.delete_bookmark(novel_id)
+            return jsonify({"ok": True, "message": "收藏记录已删除"})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            db.close()
 
     return app
 
@@ -940,6 +1228,9 @@ def _job_to_dict(job: SyncJobState | None) -> dict[str, Any] | None:
         "error": job.error,
         "progress": job.progress,
         "logs": job.logs,
+        "task_list": job.task_list,
+        "current_task_index": job.current_task_index,
+        "is_auto_sync": job.is_auto_sync,
     }
 
 

@@ -48,6 +48,10 @@
     .chapter-meta { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
     .loading { text-align: center; padding: 48px; color: var(--text-secondary); }
     .empty { text-align: center; padding: 48px; color: var(--text-secondary); }
+    .btn { border: none; border-radius: 10px; padding: 11px 20px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+    .btn-danger { background: linear-gradient(90deg, #ff3b30, #ff6b6b); color: #fff; }
+    .btn-danger:hover { opacity: 0.9; transform: translateY(-1px); }
+    .actions { display: flex; gap: 8px; margin-top: 16px; }
     @media (max-width: 860px) {
       .topbar-inner { flex-direction: column; height: auto; padding: 12px 16px; gap: 8px; }
       .hero { grid-template-columns: 1fr; }
@@ -86,6 +90,9 @@
     <section class="card">
       <h2 class="card-title">章节列表</h2>
       <div id="chapters" class="loading">正在加载章节...</div>
+      <div class="actions">
+        <button id="deleteBtn" class="btn btn-danger" onclick="deleteSeries()">删除此系列</button>
+      </div>
     </section>
   </main>
 
@@ -153,6 +160,27 @@
     loadDetail().catch(function () {
       document.getElementById('chapters').innerHTML = '<div class="empty">加载失败</div>';
     });
+
+    async function deleteSeries() {
+      if (!confirm('确定要删除这个系列吗？系列下的小说不会被删除，只会解除关联。此操作不可撤销。')) {
+        return;
+      }
+      
+      try {
+        const resp = await fetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`, {
+          method: 'DELETE',
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+          alert('系列已删除');
+          window.location.href = '/dashboard/novels?category=following';
+        } else {
+          alert('删除失败: ' + (data.error || '未知错误'));
+        }
+      } catch (err) {
+        alert('删除失败: ' + err.message);
+      }
+    }
   </script>
 </body>
 </html>

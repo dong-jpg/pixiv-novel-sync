@@ -719,3 +719,36 @@ class Database:
             "page": page, "page_size": page_size,
             "total": total, "total_pages": total_pages,
         }
+
+    def delete_novel(self, novel_id: int) -> None:
+        """删除小说及其相关数据"""
+        self.conn.execute("DELETE FROM novel_texts WHERE novel_id = ?", (novel_id,))
+        self.conn.execute("DELETE FROM assets WHERE novel_id = ?", (novel_id,))
+        self.conn.execute("DELETE FROM sources WHERE novel_id = ?", (novel_id,))
+        self.conn.execute("DELETE FROM novel_fts WHERE novel_id = ?", (novel_id,))
+        self.conn.execute("DELETE FROM novels WHERE novel_id = ?", (novel_id,))
+        self.conn.commit()
+
+    def delete_user(self, user_id: int) -> None:
+        """删除用户及其所有小说"""
+        # 先删除用户的所有小说
+        novel_rows = self.conn.execute("SELECT novel_id FROM novels WHERE user_id = ?", (user_id,)).fetchall()
+        for row in novel_rows:
+            self.delete_novel(row[0])
+        # 删除用户
+        self.conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        self.conn.commit()
+
+    def delete_series(self, series_id: int) -> None:
+        """删除系列（不删除小说，只解除关联）"""
+        self.conn.execute("UPDATE novels SET series_id = NULL WHERE series_id = ?", (series_id,))
+        self.conn.execute("DELETE FROM series WHERE series_id = ?", (series_id,))
+        self.conn.commit()
+
+    def delete_bookmark(self, novel_id: int) -> None:
+        """删除收藏记录"""
+        self.conn.execute(
+            "DELETE FROM sources WHERE novel_id = ? AND source_type LIKE 'bookmark_%'",
+            (novel_id,),
+        )
+        self.conn.commit()
