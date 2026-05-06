@@ -210,7 +210,7 @@ def _merge_stats(*items: dict[str, int]) -> dict[str, int]:
 
 
 def run_check_bookmarks_task(settings: Settings, job_manager: Any, job_id: str) -> None:
-    """独立的预检查任务：扫描收藏列表，标记哪些已存在"""
+    """独立的预检查任务：扫描所有需要同步的内容，标记哪些已存在"""
     auth = PixivAuthManager(settings.pixiv)
     job_manager.add_log(job_id, "info", "正在登录 Pixiv...")
     job_manager.update_progress(job_id, phase="登录", message="正在登录 Pixiv...")
@@ -235,10 +235,10 @@ def run_check_bookmarks_task(settings: Settings, job_manager: Any, job_id: str) 
             elif event_type == "page":
                 job_manager.add_log(job_id, "info", f"正在获取第 {data.get('page', '?')} 页...")
 
-        job_manager.add_log(job_id, "info", "=== 预检查：扫描收藏列表 ===")
-        job_manager.update_progress(job_id, phase="预检查", message="正在扫描收藏列表...")
+        job_manager.add_log(job_id, "info", "=== 预检查：扫描所有需要同步的内容 ===")
+        job_manager.update_progress(job_id, phase="预检查", message="正在扫描所有内容...")
         
-        check_stats = service.check_bookmarks_existence(
+        check_stats = service.check_all_existence(
             user_id=auth_result.user_id,
             restricts=settings.sync.bookmark_restricts,
             progress_callback=on_progress,
@@ -247,6 +247,14 @@ def run_check_bookmarks_task(settings: Settings, job_manager: Any, job_id: str) 
         job_manager.add_log(job_id, "success", f"预检查完成: {check_stats['total_checked']} 本小说")
         job_manager.add_log(job_id, "success", f"  新小说: {check_stats['new']} 本")
         job_manager.add_log(job_id, "success", f"  已存在: {check_stats['existing']} 本")
+        
+        if settings.sync.sync_bookmarks:
+            job_manager.add_log(job_id, "info", f"  收藏: {check_stats['bookmarks']['total']} 本 (新 {check_stats['bookmarks']['new']}, 已存在 {check_stats['bookmarks']['existing']})")
+        if settings.sync.sync_following_novels:
+            job_manager.add_log(job_id, "info", f"  关注用户: {check_stats['following_novels']['total']} 本 (新 {check_stats['following_novels']['new']}, 已存在 {check_stats['following_novels']['existing']})")
+        if settings.sync.sync_subscribed_series:
+            job_manager.add_log(job_id, "info", f"  追更系列: {check_stats['subscribed_series']['total']} 个 (新 {check_stats['subscribed_series']['new']}, 已存在 {check_stats['subscribed_series']['existing']})")
+        
         job_manager.add_log(job_id, "info", "预检查结果已保存，后续同步将自动跳过已存在的小说")
         
         return check_stats

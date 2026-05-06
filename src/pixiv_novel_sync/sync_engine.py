@@ -87,6 +87,211 @@ class BookmarkNovelSyncService:
         
         return stats
 
+    def check_all_existence(self, user_id: int, restricts: Iterable[str], progress_callback: Any = None) -> dict[str, Any]:
+        """预检查：获取所有需要同步的内容，标记哪些已存在本地"""
+        stats = {
+            "total_checked": 0, 
+            "existing": 0, 
+            "new": 0,
+            "bookmarks": {"total": 0, "existing": 0, "new": 0},
+            "following_novels": {"total": 0, "existing": 0, "new": 0},
+            "subscribed_series": {"total": 0, "existing": 0, "new": 0},
+        }
+        
+        # 初始化检查表
+        self.db.init_sync_check_table()
+        self.db.clear_sync_check_list()
+        
+        all_novel_ids = []
+        
+        # 1. 检查收藏列表
+        if self.settings.sync.sync_bookmarks:
+            if progress_callback:
+                progress_callback("phase", {"phase": "检查收藏列表"})
+            
+            bookmark_ids = []
+            for restrict in restricts:
+                if progress_callback:
+                    progress_callback("page", {"page": 1, "restrict": restrict})
+                
+                next_query: dict[str, Any] | None = {"user_id": user_id, "restrict": restrict}
+                page_count = 0
+                
+                while next_query:
+                    result = self.api.user_bookmarks_novel(**next_query)
+                    page_count += 1
+                    
+                    if progress_callback:
+                        progress_callback("page", {"page": page_count, "restrict": restrict})
+                    
+                    novels = getattr(result, "novels", []) or []
+                    for novel in novels:
+                        novel_id = int(novel.id)
+                        bookmark_ids.append(novel_id)
+                        all_novel_ids.append(novel_id)
+                    
+                    next_query = self.api.parse_qs(getattr(result, "next_url", None))
+                    if next_query:
+                        time.sleep(self.settings.sync.delay_seconds_between_pages)
+            
+            stats["bookmarks"]["total"] = len(bookmark_ids)
+            if progress_callback:
+                progress_callback("phase", {"phase": f"收藏: {len(bookmark_ids)} 本"})
+        
+        # 2. 检查关注用户的小说
+        if self.settings.sync.sync_following_novels:
+            if progress_callback:
+                progress_callback("phase", {"phase": "检查关注用户小说"})
+            
+            following_ids = []
+            current_user_id = self.settings.pixiv.user_id
+            if current_user_id:
+                next_following_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
+                following_page_count = 0
+                
+                while next_following_query:
+                    following_result = self.api.user_following(**next_following_query)
+                    following_page_count += 1
+                    
+                    if progress_callback:
+                        progress_callback("page", {"page": following_page_count})
+                    
+                    users = getattr(following_result, "user_previews", []) or []
+                    
+                    for user_preview in users:
+                        user = getattr(user_preview, "user", user_preview)
+                        author_id = getattr(user, "id", None)
+                        if author_id is None:
+                            continue
+                        author_id = int(author_id)
+                        
+                        # 获取该用户的小说
+                        next_novel_query: dict[str, Any] | None = {"user_id": author_id}
+                        while next_novel_query:
+                            novels_result = self.api.user_novels(**next_novel_query)
+                            novels = getattr(novels_result, "novels", []) or []
+                            
+                            for novel in novels:
+                                novel_id = int(novel.id)
+                                following_ids.append(novel_id)
+                                all_novel_ids.append(novel_id)
+                            
+                            next_novel_query = self.api.parse_qs(getattr(novels_result, "next_url", None))
+                            if next_novel_query:
+                                time.sleep(self.settings.sync.delay_seconds_between_pages)
+                    
+                    next_following_query = self.api.parse_qs(getattr(following_result, "next_url", None))
+                    if next_following_query:
+                        time.sleep(self.settings.sync.delay_seconds_between_pages)
+            
+            stats["following_novels"]["total"] = len(following_ids)
+            if progress_callback:
+                progress_callback("phase", {"phase": f"关注用户: {len(following_ids)} 本"})
+        
+        # 3. 检查追更系列
+        if self.settings.sync.sync_subscribed_series:
+            if progress_callback:
+                progress_callback("phase", {"phase": "检查追更系列"})
+            
+            series_ids = []
+            web_cookie = self.settings.pixiv.web_cookie
+            if web_cookie:
+                try:
+                    import requests as http_requests
+                    
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "application/json",
+                        "Accept-Language": "zh_CN",
+                        "Referer": "https://www.pixiv.net/following/watchlist/novels",
+                        "Cookie": web_cookie,
+                    }
+                    
+                    proxies = {"http": self.settings.pixiv.proxy, "https": self.settings.pixiv.proxy} if self.settings.pixiv.proxy else None
+                    
+                    # 获取追更系列列表
+                    endpoint = "https://www.pixiv.net/ajax/watch_list/novel?p=1&new=1&lang=zh"
+                    response = http_requests.get(
+                        endpoint, headers=headers, proxies=proxies,
+                        timeout=self.settings.pixiv.timeout,
+                        verify=self.settings.pixiv.verify_ssl,
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        body = data.get("body", {})
+                        page_info = body.get("page", {})
+                        watched_ids = page_info.get("watchedSeriesIds", [])
+                        
+                        # 获取每个系列的小说
+                        for series_id in watched_ids:
+                            series_detail = self.api.novel_series_detail(series_id)
+                            if hasattr(series_detail, "novel_series"):
+                                series = series_detail.novel_series
+                                # 系列中的小说会在同步时获取
+                                # 这里只记录系列 ID
+                                series_ids.append(series_id)
+                        
+                        # 处理分页
+                        max_page = page_info.get("maxPage", 1)
+                        if max_page > 1:
+                            for page_num in range(2, max_page + 1):
+                                try:
+                                    paged_url = endpoint.replace("p=1", f"p={page_num}")
+                                    paged_response = http_requests.get(
+                                        paged_url, headers=headers, proxies=proxies,
+                                        timeout=self.settings.pixiv.timeout,
+                                        verify=self.settings.pixiv.verify_ssl,
+                                    )
+                                    if paged_response.status_code == 200:
+                                        paged_data = paged_response.json()
+                                        paged_body = paged_data.get("body", {})
+                                        paged_page_info = paged_body.get("page", {})
+                                        paged_watched_ids = paged_page_info.get("watchedSeriesIds", [])
+                                        series_ids.extend(paged_watched_ids)
+                                except Exception as e:
+                                    logger.warning("Failed to fetch watchlist page %d: %s", page_num, e)
+                except Exception as e:
+                    logger.warning("Failed to fetch subscribed series: %s", e)
+            
+            stats["subscribed_series"]["total"] = len(series_ids)
+            if progress_callback:
+                progress_callback("phase", {"phase": f"追更系列: {len(series_ids)} 个"})
+        
+        # 批量检查哪些已存在
+        if progress_callback:
+            progress_callback("phase", {"phase": f"检查 {len(all_novel_ids)} 本小说"})
+        
+        existing_ids = self.db.get_existing_novel_ids(all_novel_ids)
+        
+        # 标记并保存结果
+        for novel_id in all_novel_ids:
+            exists = novel_id in existing_ids
+            self.db.upsert_sync_check_item(novel_id, exists)
+            stats["total_checked"] += 1
+            if exists:
+                stats["existing"] += 1
+            else:
+                stats["new"] += 1
+        
+        # 更新各分类统计
+        stats["bookmarks"]["existing"] = len([id for id in range(stats["bookmarks"]["total"]) if id in existing_ids])
+        stats["bookmarks"]["new"] = stats["bookmarks"]["total"] - stats["bookmarks"]["existing"]
+        
+        stats["following_novels"]["existing"] = len([id for id in range(stats["following_novels"]["total"]) if id in existing_ids])
+        stats["following_novels"]["new"] = stats["following_novels"]["total"] - stats["following_novels"]["existing"]
+        
+        stats["subscribed_series"]["existing"] = len([id for id in range(stats["subscribed_series"]["total"]) if id in existing_ids])
+        stats["subscribed_series"]["new"] = stats["subscribed_series"]["total"] - stats["subscribed_series"]["existing"]
+        
+        if progress_callback:
+            progress_callback("phase", {"phase": f"检查完成: {stats['new']} 本新小说, {stats['existing']} 本已存在"})
+        
+        logger.info("Sync check completed: %d total, %d existing, %d new", 
+                    stats["total_checked"], stats["existing"], stats["new"])
+        
+        return stats
+
     def sync(self, user_id: int, restricts: Iterable[str], download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None, phase_name: str = "同步中") -> dict[str, int]:
         stats = self._empty_stats()
         max_items = self.settings.sync.max_items_per_run
