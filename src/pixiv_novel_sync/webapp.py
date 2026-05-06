@@ -249,12 +249,15 @@ class AutoSyncScheduler:
         from .sync_engine import BookmarkNovelSyncService
         
         if job_id and self.sync_job_manager:
-            self.sync_job_manager.add_log(job_id, "info", "开始同步收藏小说")
+            self.sync_job_manager.add_log(job_id, "info", "=== 开始同步收藏小说 ===")
         
         auth = PixivAuthManager(settings.pixiv)
         api, auth_result = auth.login()
         if auth_result.user_id is None:
             raise RuntimeError("Unable to determine user ID")
+        
+        if job_id and self.sync_job_manager:
+            self.sync_job_manager.add_log(job_id, "success", f"登录成功, 用户ID: {auth_result.user_id}")
         
         if self._check_stop():
             return
@@ -273,12 +276,31 @@ class AutoSyncScheduler:
                 if job_id and self.sync_job_manager:
                     if event_type == "novel_start":
                         self.sync_job_manager.add_log(job_id, "info", f"[{data.get('current', '?')}/{data.get('total', '?')}] {data.get('title', '')[:30]}")
-                        self.sync_job_manager.update_progress(job_id, phase="同步收藏", current=data.get('current', 0), total=data.get('total', 50))
+                        self.sync_job_manager.update_progress(
+                            job_id, 
+                            phase=data.get("phase", "同步收藏"), 
+                            current=data.get('current', 0), 
+                            total=data.get('total', 50),
+                            current_novel=data.get('title', '')[:40],
+                            author=data.get('author', ''),
+                        )
+                    elif event_type == "novel_done":
+                        skipped = data.get('skipped', 0)
+                        if skipped:
+                            self.sync_job_manager.add_log(job_id, "info", "  跳过（已存在）")
+                        else:
+                            self.sync_job_manager.add_log(job_id, "info", f"  完成: 收藏{data.get('bookmarks', 0)} 浏览{data.get('views', 0)}")
+                    elif event_type == "page":
+                        self.sync_job_manager.add_log(job_id, "info", f"正在获取第 {data.get('page', '?')} 页...")
+                    elif event_type == "rate_limit":
+                        self.sync_job_manager.add_log(job_id, "warning", f"等待 {data.get('seconds', 1)} 秒")
             
             for restrict in settings.sync.bookmark_restricts:
                 if self._check_stop():
                     return
-                service.sync(
+                if job_id and self.sync_job_manager:
+                    self.sync_job_manager.add_log(job_id, "info", f"同步{restrict}收藏...")
+                stats = service.sync(
                     user_id=auth_result.user_id,
                     restricts=[restrict],
                     download_assets=settings.sync.download_assets,
@@ -286,6 +308,8 @@ class AutoSyncScheduler:
                     write_raw_text=settings.sync.write_raw_text,
                     progress_callback=on_progress,
                 )
+                if job_id and self.sync_job_manager:
+                    self.sync_job_manager.add_log(job_id, "success", f"{restrict}收藏同步完成: 新增 {stats.get('novels', 0)} 本, 跳过 {stats.get('skipped', 0)} 本")
                 time.sleep(settings.sync.delay_seconds_between_pages)
             
             if job_id and self.sync_job_manager:
@@ -299,12 +323,15 @@ class AutoSyncScheduler:
         from .sync_engine import BookmarkNovelSyncService
         
         if job_id and self.sync_job_manager:
-            self.sync_job_manager.add_log(job_id, "info", "开始同步关注用户")
+            self.sync_job_manager.add_log(job_id, "info", "=== 开始同步关注用户 ===")
         
         auth = PixivAuthManager(settings.pixiv)
         api, auth_result = auth.login()
         if auth_result.user_id is None:
             raise RuntimeError("Unable to determine user ID")
+        
+        if job_id and self.sync_job_manager:
+            self.sync_job_manager.add_log(job_id, "success", f"登录成功, 用户ID: {auth_result.user_id}")
         
         if self._check_stop():
             return
@@ -323,11 +350,32 @@ class AutoSyncScheduler:
                 if job_id and self.sync_job_manager:
                     if event_type == "novel_start":
                         self.sync_job_manager.add_log(job_id, "info", f"[{data.get('current', '?')}/{data.get('total', '?')}] {data.get('title', '')[:30]}")
+                        self.sync_job_manager.update_progress(
+                            job_id,
+                            phase=data.get("phase", "同步用户小说"),
+                            current=data.get('current', 0),
+                            total=data.get('total', 50),
+                            current_novel=data.get('title', '')[:40],
+                            author=data.get('author', ''),
+                        )
+                    elif event_type == "novel_done":
+                        skipped = data.get('skipped', 0)
+                        if skipped:
+                            self.sync_job_manager.add_log(job_id, "info", "  跳过（已存在）")
+                        else:
+                            self.sync_job_manager.add_log(job_id, "info", f"  完成: 收藏{data.get('bookmarks', 0)} 浏览{data.get('views', 0)}")
+                    elif event_type == "page":
+                        self.sync_job_manager.add_log(job_id, "info", f"正在获取第 {data.get('page', '?')} 页...")
+                    elif event_type == "rate_limit":
+                        self.sync_job_manager.add_log(job_id, "warning", f"等待 {data.get('seconds', 1)} 秒")
             
             if self._check_stop():
                 return
             
-            service.sync_following_novels(
+            if job_id and self.sync_job_manager:
+                self.sync_job_manager.add_log(job_id, "info", "开始扫描关注用户的小说...")
+            
+            stats = service.sync_following_novels(
                 download_assets=settings.sync.download_assets,
                 write_markdown=settings.sync.write_markdown,
                 write_raw_text=settings.sync.write_raw_text,
@@ -336,7 +384,7 @@ class AutoSyncScheduler:
             )
             
             if job_id and self.sync_job_manager:
-                self.sync_job_manager.add_log(job_id, "success", "关注用户同步完成")
+                self.sync_job_manager.add_log(job_id, "success", f"关注用户同步完成: 同步 {stats.get('novels', 0)} 本, 跳过 {stats.get('skipped', 0)} 本, 用户 {stats.get('users', 0)} 人")
         finally:
             db.close()
     
@@ -346,12 +394,15 @@ class AutoSyncScheduler:
         from .sync_engine import BookmarkNovelSyncService
         
         if job_id and self.sync_job_manager:
-            self.sync_job_manager.add_log(job_id, "info", "开始同步追更系列")
+            self.sync_job_manager.add_log(job_id, "info", "=== 开始同步追更系列 ===")
         
         auth = PixivAuthManager(settings.pixiv)
         api, auth_result = auth.login()
         if auth_result.user_id is None:
             raise RuntimeError("Unable to determine user ID")
+        
+        if job_id and self.sync_job_manager:
+            self.sync_job_manager.add_log(job_id, "success", f"登录成功, 用户ID: {auth_result.user_id}")
         
         if self._check_stop():
             return
@@ -370,17 +421,32 @@ class AutoSyncScheduler:
                 if job_id and self.sync_job_manager:
                     if event_type == "phase":
                         self.sync_job_manager.add_log(job_id, "info", data.get("phase", ""))
+                    elif event_type == "series_start":
+                        self.sync_job_manager.add_log(job_id, "info", f"[{data.get('current', '?')}/{data.get('total', '?')}] {data.get('title', '')[:30]}")
+                        self.sync_job_manager.update_progress(
+                            job_id,
+                            phase="同步追更系列",
+                            current=data.get('current', 0),
+                            total=data.get('total', 0),
+                            current_novel=data.get('title', '')[:40],
+                        )
+                    elif event_type == "rate_limit":
+                        self.sync_job_manager.add_log(job_id, "warning", f"等待 {data.get('seconds', 1)} 秒")
             
             if self._check_stop():
                 return
             
-            service.sync_subscribed_series(
-                limit=settings.sync.series_sync_limit,
+            limit = settings.sync.series_sync_limit
+            if job_id and self.sync_job_manager:
+                self.sync_job_manager.add_log(job_id, "info", f"获取订阅系列列表 (限制: {limit or '全部'})...")
+            
+            stats = service.sync_subscribed_series(
+                limit=limit,
                 progress_callback=on_progress,
             )
             
             if job_id and self.sync_job_manager:
-                self.sync_job_manager.add_log(job_id, "success", "追更系列同步完成")
+                self.sync_job_manager.add_log(job_id, "success", f"追更系列同步完成: {stats.get('series_synced', 0)} 个系列")
         finally:
             db.close()
     
