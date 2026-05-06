@@ -946,6 +946,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         # 构建任务列表
         task_list = []
         if current_settings.sync.sync_bookmarks:
+            task_list.append("预检查收藏列表")
             task_list.append("同步收藏小说")
         if current_settings.sync.sync_following_series:
             task_list.append("同步关注用户系列")
@@ -953,8 +954,6 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             task_list.append("同步关注用户列表")
         if current_settings.sync.sync_following_novels:
             task_list.append("同步关注用户小说")
-        if current_settings.sync.sync_subscribed_series:
-            task_list.append("同步追更系列")
         
         try:
             job = sync_job_manager.start_job(task_list)

@@ -765,3 +765,51 @@ class Database:
             (novel_id,),
         )
         self.conn.commit()
+
+    def init_sync_check_table(self) -> None:
+        """初始化同步检查表"""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS sync_check_list (
+                novel_id INTEGER PRIMARY KEY,
+                exists_local INTEGER NOT NULL DEFAULT 0,
+                checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        self.conn.commit()
+
+    def clear_sync_check_list(self) -> None:
+        """清空同步检查列表"""
+        self.conn.execute("DELETE FROM sync_check_list")
+        self.conn.commit()
+
+    def upsert_sync_check_item(self, novel_id: int, exists_local: bool) -> None:
+        """更新同步检查项"""
+        self.conn.execute(
+            """
+            INSERT INTO sync_check_list (novel_id, exists_local, checked_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(novel_id) DO UPDATE SET
+                exists_local = excluded.exists_local,
+                checked_at = CURRENT_TIMESTAMP
+            """,
+            (novel_id, 1 if exists_local else 0),
+        )
+        self.conn.commit()
+
+    def get_sync_check_list(self) -> dict[int, bool]:
+        """获取同步检查列表，返回 {novel_id: exists_local}"""
+        rows = self.conn.execute("SELECT novel_id, exists_local FROM sync_check_list").fetchall()
+        return {row[0]: bool(row[1]) for row in rows}
+
+    def get_existing_novel_ids(self, novel_ids: list[int]) -> set[int]:
+        """批量检查小说是否已存在，返回已存在的 ID 集合"""
+        if not novel_ids:
+            return set()
+        placeholders = ",".join(["?"] * len(novel_ids))
+        rows = self.conn.execute(
+            f"SELECT novel_id FROM novels WHERE novel_id IN ({placeholders})",
+            novel_ids,
+        ).fetchall()
+        return {row[0] for row in rows}

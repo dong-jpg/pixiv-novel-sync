@@ -59,7 +59,7 @@ def run_bookmark_sync_with_progress(settings: Settings, job_manager: Any, job_id
 
     try:
         service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
-        total_stats = {"users": 0, "novels": 0, "texts_updated": 0, "assets_downloaded": 0}
+        total_stats = {"users": 0, "novels": 0, "texts_updated": 0, "assets_downloaded": 0, "skipped": 0}
         
         def on_progress(event_type: str, data: dict[str, Any]) -> None:
             if event_type == "novel_start":
@@ -84,6 +84,19 @@ def run_bookmark_sync_with_progress(settings: Settings, job_manager: Any, job_id
                 job_manager.add_log(job_id, "warning", f"等待 {data.get('seconds', 1)} 秒")
             elif event_type == "phase_start":
                 job_manager.add_log(job_id, "info", f"开始: {data.get('name', '')}")
+            elif event_type == "phase":
+                job_manager.add_log(job_id, "info", data.get("phase", ""))
+
+        # 预检查：获取全部收藏列表，标记哪些已存在
+        if settings.sync.sync_bookmarks:
+            job_manager.add_log(job_id, "info", "=== 预检查：扫描收藏列表 ===")
+            job_manager.update_progress(job_id, phase="预检查", message="正在扫描收藏列表...")
+            check_stats = service.check_bookmarks_existence(
+                user_id=auth_result.user_id,
+                restricts=settings.sync.bookmark_restricts,
+                progress_callback=on_progress,
+            )
+            job_manager.add_log(job_id, "success", f"预检查完成: {check_stats['new']} 本新小说, {check_stats['existing']} 本已存在")
 
         # 同步收藏
         if settings.sync.sync_bookmarks:
@@ -103,7 +116,7 @@ def run_bookmark_sync_with_progress(settings: Settings, job_manager: Any, job_id
                 )
                 for key in total_stats:
                     total_stats[key] = total_stats.get(key, 0) + bookmark_stats.get(key, 0)
-            job_manager.add_log(job_id, "success", "收藏同步完成")
+            job_manager.add_log(job_id, "success", f"收藏同步完成: 新增 {bookmark_stats.get('novels', 0)} 本, 跳过 {bookmark_stats.get('skipped', 0)} 本")
 
         # 同步关注用户的系列
         if settings.sync.sync_following_series:

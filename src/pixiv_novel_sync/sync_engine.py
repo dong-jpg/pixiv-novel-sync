@@ -26,6 +26,67 @@ class BookmarkNovelSyncService:
         self.storage = storage
         self.settings = settings
 
+    def check_bookmarks_existence(self, user_id: int, restricts: Iterable[str], progress_callback: Any = None) -> dict[str, int]:
+        """预检查：获取全部收藏列表，标记哪些已存在本地"""
+        stats = {"total_checked": 0, "existing": 0, "new": 0}
+        
+        # 初始化检查表
+        self.db.init_sync_check_table()
+        self.db.clear_sync_check_list()
+        
+        if progress_callback:
+            progress_callback("phase", {"phase": "检查收藏列表"})
+        
+        all_novel_ids = []
+        
+        # 第一步：获取全部收藏列表
+        for restrict in restricts:
+            if progress_callback:
+                progress_callback("page", {"page": 1, "restrict": restrict})
+            
+            next_query: dict[str, Any] | None = {"user_id": user_id, "restrict": restrict}
+            page_count = 0
+            
+            while next_query:
+                result = self.api.user_bookmarks_novel(**next_query)
+                page_count += 1
+                
+                if progress_callback:
+                    progress_callback("page", {"page": page_count, "restrict": restrict})
+                
+                novels = getattr(result, "novels", []) or []
+                for novel in novels:
+                    novel_id = int(novel.id)
+                    all_novel_ids.append(novel_id)
+                
+                next_query = self.api.parse_qs(getattr(result, "next_url", None))
+                if next_query:
+                    time.sleep(self.settings.sync.delay_seconds_between_pages)
+        
+        if progress_callback:
+            progress_callback("phase", {"phase": f"检查 {len(all_novel_ids)} 本小说"})
+        
+        # 第二步：批量检查哪些已存在
+        existing_ids = self.db.get_existing_novel_ids(all_novel_ids)
+        
+        # 第三步：标记并保存结果
+        for novel_id in all_novel_ids:
+            exists = novel_id in existing_ids
+            self.db.upsert_sync_check_item(novel_id, exists)
+            stats["total_checked"] += 1
+            if exists:
+                stats["existing"] += 1
+            else:
+                stats["new"] += 1
+        
+        if progress_callback:
+            progress_callback("phase", {"phase": f"检查完成: {stats['new']} 本新小说, {stats['existing']} 本已存在"})
+        
+        logger.info("Sync check completed: %d total, %d existing, %d new", 
+                    stats["total_checked"], stats["existing"], stats["new"])
+        
+        return stats
+
     def sync(self, user_id: int, restricts: Iterable[str], download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None, phase_name: str = "同步中") -> dict[str, int]:
         stats = self._empty_stats()
         max_items = self.settings.sync.max_items_per_run
@@ -34,6 +95,10 @@ class BookmarkNovelSyncService:
         page_delay = self.settings.sync.delay_seconds_between_pages
         processed_items = 0
         synced_items = 0  # 实际同步的数量（不包括跳过的）
+        
+        # 获取预检查结果
+        check_list = self.db.get_sync_check_list()
+        use_check_list = len(check_list) > 0
 
         for restrict in restricts:
             logger.info("Syncing bookmarked novels for restrict=%s", restrict)
@@ -71,14 +136,30 @@ class BookmarkNovelSyncService:
                             "phase": phase_name,
                         })
                     
-                    counters = self._sync_novel(
-                        novel,
-                        restrict,
-                        download_assets,
-                        write_markdown,
-                        write_raw_text,
-                        source_type=f"bookmark_{restrict}",
-                    )
+                    # 使用预检查结果判断是否跳过
+                    should_skip = False
+                    if use_check_list and novel_id in check_list:
+                        should_skip = check_list[novel_id]
+                    
+                    if should_skip:
+                        # 已存在，跳过
+                        self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=f"bookmark_{restrict}", source_key=str(user_id)))
+                        self.db.touch_novel(novel_id)
+                        counters = {"skipped": 1, "bookmarks": 0, "views": 0, "assets_downloaded": 0}
+                    else:
+                        # 不存在或无预检查结果，执行完整同步
+                        counters = self._sync_novel(
+                            novel,
+                            restrict,
+                            download_assets,
+                            write_markdown,
+                            write_raw_text,
+                            source_type=f"bookmark_{restrict}",
+                        )
+                        # 同步成功后更新检查列表
+                        if use_check_list:
+                            self.db.upsert_sync_check_item(novel_id, True)
+                    
                     self._merge_stats(stats, counters)
                     
                     # 只有实际同步（非跳过）才计入 synced_items
@@ -594,25 +675,8 @@ class BookmarkNovelSyncService:
         write_raw_text: bool,
         source_type: str,
         source_key: str | None = None,
-        force_full: bool = False,
     ) -> dict[str, int]:
         novel_id = int(novel.id)
-        
-        # 增量同步：检查本地是否已有该小说
-        existing_hash = self.db.get_novel_meta_hash(novel_id)
-        if existing_hash and not force_full:
-            # 已存在，只更新统计信息和来源
-            self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(getattr(novel, 'user_id', 0) or 0)))
-            self.db.touch_novel(novel_id)  # 更新 last_seen_at
-            return {
-                "users": 0,
-                "novels": 0,  # 不计入新增
-                "texts_updated": 0,
-                "assets_downloaded": 0,
-                "skipped": 1,
-                "bookmarks": 0,
-                "views": 0,
-            }
         
         detail = self.api.novel_detail(novel_id)
         detail_novel = getattr(detail, "novel", novel)
