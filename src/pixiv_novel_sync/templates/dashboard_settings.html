@@ -159,6 +159,10 @@
             <label>系列内每章之间延迟（秒）</label>
             <input id="chapterDelay" type="number" min="0" step="0.1" placeholder="1">
           </div>
+          <div class="field">
+            <label>跳过内容时延迟（秒）</label>
+            <input id="skipDelay" type="number" min="0" step="0.1" placeholder="0.1">
+          </div>
         </div>
       </div>
 
@@ -268,6 +272,7 @@
       valueOf('pageDelay', data.delay_seconds_between_pages ?? 0);
       valueOf('seriesDelay', data.delay_seconds_between_series ?? 3);
       valueOf('chapterDelay', data.delay_seconds_between_chapters ?? 1);
+      valueOf('skipDelay', data.delay_seconds_between_skips ?? 0.1);
       // 定时同步设置
       checked('autoSyncEnabled', data.auto_sync_enabled);
       checked('autoSyncBookmarks', data.auto_sync_bookmarks_enabled);
@@ -303,6 +308,7 @@
         delay_seconds_between_pages: document.getElementById('pageDelay').value.trim(),
         delay_seconds_between_series: document.getElementById('seriesDelay').value.trim(),
         delay_seconds_between_chapters: document.getElementById('chapterDelay').value.trim(),
+        delay_seconds_between_skips: document.getElementById('skipDelay').value.trim(),
         // 定时同步设置
         auto_sync_enabled: document.getElementById('autoSyncEnabled').checked,
         auto_sync_bookmarks_enabled: document.getElementById('autoSyncBookmarks').checked,

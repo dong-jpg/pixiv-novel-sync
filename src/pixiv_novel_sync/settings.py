@@ -40,6 +40,7 @@ class SyncSettings:
     series_sync_limit: int = 0  # 0=全部，>0=限制数量
     delay_seconds_between_series: float = 3.0  # 每个系列之间的间隔
     delay_seconds_between_chapters: float = 1.0  # 系列下每章节间隔
+    delay_seconds_between_skips: float = 0.1  # 跳过内容时的间隔
     # 定时任务配置
     auto_sync_enabled: bool = False
     auto_sync_bookmarks_enabled: bool = True
@@ -123,6 +124,7 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             series_sync_limit=int(sync_raw.get("series_sync_limit", 0)),
             delay_seconds_between_series=_coerce_float(sync_raw.get("delay_seconds_between_series"), 3.0),
             delay_seconds_between_chapters=_coerce_float(sync_raw.get("delay_seconds_between_chapters"), 1.0),
+            delay_seconds_between_skips=_coerce_float(sync_raw.get("delay_seconds_between_skips"), 0.1),
             # 定时任务配置
             auto_sync_enabled=bool(sync_raw.get("auto_sync_enabled", False)),
             auto_sync_bookmarks_enabled=bool(sync_raw.get("auto_sync_bookmarks_enabled", True)),

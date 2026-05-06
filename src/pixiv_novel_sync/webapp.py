@@ -431,19 +431,20 @@ class SyncJobManager:
             self.add_log(job_id, "info", "加载配置完成")
             self.update_progress(job_id, phase="准备中", message="正在初始化同步...")
             
-            # 构建任务列表
-            task_list = []
-            if settings.sync.sync_bookmarks:
-                task_list.append("同步收藏小说")
-            if settings.sync.sync_following_series:
-                task_list.append("同步关注用户系列")
-            if settings.sync.sync_following_users:
-                task_list.append("同步关注用户列表")
-            if settings.sync.sync_following_novels:
-                task_list.append("同步关注用户小说")
-            if settings.sync.sync_subscribed_series:
-                task_list.append("同步追更系列")
-            job.task_list = task_list
+            # 如果任务列表为空，则根据设置构建
+            if not job.task_list:
+                task_list = []
+                if settings.sync.sync_bookmarks:
+                    task_list.append("同步收藏小说")
+                if settings.sync.sync_following_series:
+                    task_list.append("同步关注用户系列")
+                if settings.sync.sync_following_users:
+                    task_list.append("同步关注用户列表")
+                if settings.sync.sync_following_novels:
+                    task_list.append("同步关注用户小说")
+                if settings.sync.sync_subscribed_series:
+                    task_list.append("同步追更系列")
+                job.task_list = task_list
             job.current_task_index = 0
             
             from .jobs.quick_sync import run_bookmark_sync_with_progress
@@ -517,6 +518,9 @@ class SettingsManager:
         )
         sync_data["delay_seconds_between_chapters"] = _normalize_float(
             payload.get("delay_seconds_between_chapters", sync_data.get("delay_seconds_between_chapters", 1.0))
+        )
+        sync_data["delay_seconds_between_skips"] = _normalize_float(
+            payload.get("delay_seconds_between_skips", sync_data.get("delay_seconds_between_skips", 0.1))
         )
         
         # 定时同步设置
@@ -963,6 +967,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             task_list.append("同步关注用户列表")
         if current_settings.sync.sync_following_novels:
             task_list.append("同步关注用户小说")
+        if current_settings.sync.sync_subscribed_series:
+            task_list.append("同步追更系列")
         
         try:
             job = sync_job_manager.start_job(task_list)
@@ -972,20 +978,32 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
     @app.post("/api/dashboard/check-bookmarks")
     def dashboard_check_bookmarks():
-        """预检查：扫描收藏列表，标记哪些已存在"""
+        """预检查：扫描所有需要同步的内容，标记哪些已存在"""
         current_settings = settings_manager.load(env_path=env_path)
         
-        if not current_settings.sync.sync_bookmarks:
-            return jsonify({"error": "收藏同步未启用"}), 400
+        # 检查是否有任务正在运行
+        with sync_job_manager._lock:
+            running = [job for job in sync_job_manager._jobs.values() if job.status == "running"]
+            if running:
+                return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
         
-        # 创建一个专门的预检查任务
-        job = sync_job_manager.start_job(["预检查收藏列表"])
+        # 创建一个专门的预检查任务（不通过 start_job，避免触发同步）
+        job_id = f"check_{int(time.time() * 1000)}"
+        job = SyncJobState(
+            job_id=job_id,
+            status="running",
+            message="预检查任务已启动",
+            started_at=time.time(),
+            task_list=["预检查所有内容"],
+        )
+        with sync_job_manager._lock:
+            sync_job_manager._jobs[job_id] = job
         
         # 启动后台任务
         import threading
         thread = threading.Thread(
             target=run_check_bookmarks_task,
-            args=(current_settings, sync_job_manager, job.job_id),
+            args=(current_settings, sync_job_manager, job_id),
             daemon=True,
         )
         thread.start()
@@ -1231,6 +1249,7 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "series_sync_limit": settings.sync.series_sync_limit,
         "delay_seconds_between_series": settings.sync.delay_seconds_between_series,
         "delay_seconds_between_chapters": settings.sync.delay_seconds_between_chapters,
+        "delay_seconds_between_skips": settings.sync.delay_seconds_between_skips,
         "auto_sync_enabled": settings.sync.auto_sync_enabled,
         "auto_sync_bookmarks_enabled": settings.sync.auto_sync_bookmarks_enabled,
         "auto_sync_bookmarks_interval_hours": settings.sync.auto_sync_bookmarks_interval_hours,

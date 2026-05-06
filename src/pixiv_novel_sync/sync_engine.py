@@ -351,6 +351,12 @@ class BookmarkNovelSyncService:
                         self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=f"bookmark_{restrict}", source_key=str(user_id)))
                         self.db.touch_novel(novel_id)
                         counters = {"skipped": 1, "bookmarks": 0, "views": 0, "assets_downloaded": 0}
+                        # 跳过时使用跳过间隔
+                        skip_delay = self.settings.sync.delay_seconds_between_skips
+                        if skip_delay > 0:
+                            if progress_callback:
+                                progress_callback("rate_limit", {"seconds": skip_delay})
+                            time.sleep(skip_delay)
                     else:
                         # 不存在或无预检查结果，执行完整同步
                         counters = self._sync_novel(
@@ -381,7 +387,8 @@ class BookmarkNovelSyncService:
                             "skipped": counters.get("skipped", 0),
                         })
                     
-                    if item_delay > 0:
+                    # 只有非跳过时才使用 item_delay
+                    if not counters.get("skipped") and item_delay > 0:
                         if progress_callback:
                             progress_callback("rate_limit", {"seconds": item_delay})
                         time.sleep(item_delay)
