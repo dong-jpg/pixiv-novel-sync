@@ -187,13 +187,7 @@
             <label for="autoSyncSubscribedSeries">我的追更系列</label>
           </div>
         </div>
-        <div class="fields" style="margin-top: 12px;">
-          <div class="field">
-            <label>默认同步间隔（小时）</label>
-            <input id="autoSyncInterval" type="number" min="1" max="24" placeholder="6">
-          </div>
-        </div>
-        <div class="fields" style="margin-top: 8px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;">
+        <div class="fields" style="margin-top: 12px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;">
           <div class="field">
             <label>收藏间隔（小时）</label>
             <input id="autoSyncBookmarksInterval" type="number" min="1" max="24" placeholder="6">
@@ -280,10 +274,9 @@
       checked('autoSyncFollowing', data.auto_sync_following_enabled);
       checked('autoSyncUserStatus', data.auto_sync_user_status_enabled);
       checked('autoSyncSubscribedSeries', data.auto_sync_subscribed_series_enabled);
-      valueOf('autoSyncInterval', data.auto_sync_interval_hours ?? 6);
-      valueOf('autoSyncBookmarksInterval', data.auto_sync_bookmarks_interval_hours ?? data.auto_sync_interval_hours ?? 6);
-      valueOf('autoSyncFollowingInterval', data.auto_sync_following_interval_hours ?? data.auto_sync_interval_hours ?? 6);
-      valueOf('autoSyncSubscribedSeriesInterval', data.auto_sync_subscribed_series_interval_hours ?? data.auto_sync_interval_hours ?? 6);
+      valueOf('autoSyncBookmarksInterval', data.auto_sync_bookmarks_interval_hours ?? 6);
+      valueOf('autoSyncFollowingInterval', data.auto_sync_following_interval_hours ?? 6);
+      valueOf('autoSyncSubscribedSeriesInterval', data.auto_sync_subscribed_series_interval_hours ?? 6);
       
       // 更新定时同步状态显示
       await loadAutoSyncStatus();
@@ -316,7 +309,6 @@
         auto_sync_following_enabled: document.getElementById('autoSyncFollowing').checked,
         auto_sync_user_status_enabled: document.getElementById('autoSyncUserStatus').checked,
         auto_sync_subscribed_series_enabled: document.getElementById('autoSyncSubscribedSeries').checked,
-        auto_sync_interval_hours: document.getElementById('autoSyncInterval').value.trim(),
         auto_sync_bookmarks_interval_hours: document.getElementById('autoSyncBookmarksInterval').value.trim(),
         auto_sync_following_interval_hours: document.getElementById('autoSyncFollowingInterval').value.trim(),
         auto_sync_subscribed_series_interval_hours: document.getElementById('autoSyncSubscribedSeriesInterval').value.trim(),

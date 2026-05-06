@@ -113,7 +113,6 @@ class AutoSyncScheduler:
                     time.sleep(60)
                     continue
                 
-                interval_seconds = settings.sync.auto_sync_interval_hours * 3600
                 now = time.time()
                 
                 for task_config in task_configs:
@@ -126,8 +125,8 @@ class AutoSyncScheduler:
                     if not getattr(settings.sync, task_config["setting_check"], False):
                         continue
                     
-                    # 获取该任务的单独间隔，如果没有设置则使用默认间隔
-                    task_interval_hours = getattr(settings.sync, task_config["interval_setting"], settings.sync.auto_sync_interval_hours)
+                    # 获取该任务的单独间隔
+                    task_interval_hours = getattr(settings.sync, task_config["interval_setting"], 6)
                     task_interval_seconds = task_interval_hours * 3600
                     
                     # 更新任务间隔记录
@@ -522,14 +521,13 @@ class SettingsManager:
         
         # 定时同步设置
         sync_data["auto_sync_enabled"] = bool(payload.get("auto_sync_enabled", sync_data.get("auto_sync_enabled", False)))
-        sync_data["auto_sync_interval_hours"] = int(payload.get("auto_sync_interval_hours", sync_data.get("auto_sync_interval_hours", 6)))
         sync_data["auto_sync_bookmarks_enabled"] = bool(payload.get("auto_sync_bookmarks_enabled", sync_data.get("auto_sync_bookmarks_enabled", True)))
-        sync_data["auto_sync_bookmarks_interval_hours"] = int(payload.get("auto_sync_bookmarks_interval_hours", sync_data.get("auto_sync_bookmarks_interval_hours", sync_data.get("auto_sync_interval_hours", 6))))
+        sync_data["auto_sync_bookmarks_interval_hours"] = int(payload.get("auto_sync_bookmarks_interval_hours", sync_data.get("auto_sync_bookmarks_interval_hours", 6)))
         sync_data["auto_sync_following_enabled"] = bool(payload.get("auto_sync_following_enabled", sync_data.get("auto_sync_following_enabled", True)))
-        sync_data["auto_sync_following_interval_hours"] = int(payload.get("auto_sync_following_interval_hours", sync_data.get("auto_sync_following_interval_hours", sync_data.get("auto_sync_interval_hours", 6))))
+        sync_data["auto_sync_following_interval_hours"] = int(payload.get("auto_sync_following_interval_hours", sync_data.get("auto_sync_following_interval_hours", 6)))
         sync_data["auto_sync_user_status_enabled"] = bool(payload.get("auto_sync_user_status_enabled", sync_data.get("auto_sync_user_status_enabled", True)))
         sync_data["auto_sync_subscribed_series_enabled"] = bool(payload.get("auto_sync_subscribed_series_enabled", sync_data.get("auto_sync_subscribed_series_enabled", True)))
-        sync_data["auto_sync_subscribed_series_interval_hours"] = int(payload.get("auto_sync_subscribed_series_interval_hours", sync_data.get("auto_sync_subscribed_series_interval_hours", sync_data.get("auto_sync_interval_hours", 6))))
+        sync_data["auto_sync_subscribed_series_interval_hours"] = int(payload.get("auto_sync_subscribed_series_interval_hours", sync_data.get("auto_sync_subscribed_series_interval_hours", 6)))
 
         with config_path.open("w", encoding="utf-8") as file:
             yaml.safe_dump(config_data, file, allow_unicode=True, sort_keys=False)
