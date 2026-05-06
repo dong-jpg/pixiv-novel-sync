@@ -112,11 +112,30 @@ class AutoSyncScheduler:
             try:
                 settings = load_settings(self.config_path, self.env_path)
                 
+                now = time.time()
+                
+                # 始终更新所有任务的配置信息（用于前端显示）
+                for task_config in task_configs:
+                    task_name = task_config["name"]
+                    cron_expr = getattr(settings.sync, task_config["cron_setting"], "")
+                    task_interval_hours = getattr(settings.sync, task_config["interval_setting"], 6)
+                    task_interval_seconds = task_interval_hours * 3600
+                    self._task_intervals[task_name] = task_interval_hours
+                    self._task_crons[task_name] = cron_expr
+                    
+                    # 即使定时同步未启用，也计算下次运行时间
+                    if task_name not in self._task_next_run:
+                        if cron_expr:
+                            from .settings import cron_to_next_run
+                            next_run = cron_to_next_run(cron_expr, now)
+                            if next_run:
+                                self._task_next_run[task_name] = next_run
+                        else:
+                            self._task_next_run[task_name] = now + task_interval_seconds
+                
                 if not settings.sync.auto_sync_enabled:
                     time.sleep(60)
                     continue
-                
-                now = time.time()
                 
                 for task_config in task_configs:
                     if not self._running:
@@ -132,10 +151,6 @@ class AutoSyncScheduler:
                     cron_expr = getattr(settings.sync, task_config["cron_setting"], "")
                     task_interval_hours = getattr(settings.sync, task_config["interval_setting"], 6)
                     task_interval_seconds = task_interval_hours * 3600
-                    
-                    # 更新任务间隔和cron记录
-                    self._task_intervals[task_name] = task_interval_hours
-                    self._task_crons[task_name] = cron_expr
                     
                     # 计算该任务的下次运行时间
                     last_run = self._task_last_run.get(task_name, 0)

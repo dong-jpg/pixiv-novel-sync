@@ -376,11 +376,22 @@
         const statusText = document.getElementById('autoSyncStatusText');
         if (statusText) {
           if (data.running) {
-            const nextRun = data.next_run_time ? new Date(data.next_run_time * 1000).toLocaleTimeString() : '待计算';
-            statusText.textContent = `调度器运行中，下次执行: ${nextRun}`;
+            // 找出最近的下次运行时间
+            const nextRuns = Object.values(data.task_next_run || {}).filter(t => t > 0);
+            if (nextRuns.length > 0) {
+              const earliest = Math.min(...nextRuns);
+              const nextDate = new Date(earliest * 1000);
+              const today = new Date().toLocaleDateString();
+              const dateStr = nextDate.toLocaleDateString();
+              const timeStr = nextDate.toLocaleTimeString();
+              const displayDate = dateStr === today ? `今天 ${timeStr}` : `${dateStr} ${timeStr}`;
+              statusText.textContent = `调度器运行中，下次执行: ${displayDate}`;
+            } else {
+              statusText.textContent = '调度器运行中，等待任务配置';
+            }
             statusText.style.color = 'var(--success)';
           } else {
-            statusText.textContent = '调度器未运行';
+            statusText.textContent = '调度器未运行（请在首页启用）';
             statusText.style.color = 'var(--text-secondary)';
           }
         }
