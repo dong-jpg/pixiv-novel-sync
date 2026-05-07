@@ -32,25 +32,28 @@
     .page { max-width: 800px; margin: 0 auto; padding: 32px 24px 56px; }
     .page-title { font-size: 28px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.02em; }
     .page-desc { color: var(--text-secondary); margin: 0 0 24px; font-size: 15px; }
-    .card { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 28px 32px; }
-    .section { margin-bottom: 28px; }
+    .card-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+    .card { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 24px; }
+    .card.full-width { grid-column: 1 / -1; }
+    .section { margin-bottom: 20px; }
     .section:last-child { margin-bottom: 0; }
-    .section-title { font-size: 14px; font-weight: 700; color: var(--text); margin: 0 0 14px; }
-    .checks { display: grid; gap: 14px; }
-    .check-item { display: flex; align-items: center; gap: 12px; cursor: pointer; }
-    .check-item input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--brand-start); cursor: pointer; }
-    .check-item label { font-size: 14px; cursor: pointer; }
-    .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+    .section-title { font-size: 13px; font-weight: 700; color: var(--text); margin: 0 0 12px; }
+    .checks { display: grid; gap: 12px; }
+    .check-item { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+    .check-item input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--brand-start); cursor: pointer; }
+    .check-item label { font-size: 13px; cursor: pointer; }
+    .fields { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
     .field { display: flex; flex-direction: column; gap: 6px; }
-    .field label { font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.03em; }
-    .field input { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 14px; font-family: inherit; transition: border-color 0.2s; }
-    .field input:focus { outline: none; border-color: var(--brand-start); }
+    .field label { font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.03em; }
+    .field input, .field select { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; font-family: inherit; transition: border-color 0.2s; }
+    .field input:focus, .field select:focus { outline: none; border-color: var(--brand-start); }
     .btn { border: none; border-radius: 10px; padding: 12px 24px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); color: #fff; }
     .btn:hover { opacity: 0.9; transform: translateY(-1px); }
     .message { margin-top: 16px; font-size: 13px; min-height: 20px; }
     .message.ok { color: var(--success); }
     .message.bad { color: var(--danger); }
-    @media (max-width: 720px) {
+    @media (max-width: 900px) {
+      .card-grid { grid-template-columns: 1fr; }
       .topbar-inner { flex-direction: column; height: auto; padding: 12px 16px; gap: 8px; }
       .card { padding: 20px; }
     }
@@ -74,14 +77,171 @@
     <h1 class="page-title">同步设置</h1>
     <p class="page-desc">配置同步参数，建议首次保持自动同步关闭。</p>
 
-    <section class="card">
-      <div class="section">
-        <div class="section-title">同步内容</div>
-        <p style="font-size:13px;color:var(--text-secondary);margin:0 0 14px;">分批同步可降低风控风险，建议每次只开启一项</p>
-        <div class="checks">
-          <div class="check-item">
-            <input type="checkbox" id="syncBookmarks">
-            <label for="syncBookmarks">同步收藏小说</label>
+    <div class="card-grid">
+      <section class="card">
+        <div class="section">
+          <div class="section-title">同步内容</div>
+          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;">分批同步可降低风控风险</p>
+          <div class="checks">
+            <div class="check-item">
+              <input type="checkbox" id="syncBookmarks">
+              <label for="syncBookmarks">同步收藏小说</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="syncFollowingSeries">
+              <label for="syncFollowingSeries">同步关注的系列</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="syncFollowingUsers">
+              <label for="syncFollowingUsers">同步关注用户列表</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="syncFollowingNovels">
+              <label for="syncFollowingNovels">同步关注的小说</label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section">
+          <div class="section-title">同步选项</div>
+          <div class="checks">
+            <div class="check-item">
+              <input type="checkbox" id="enabled">
+              <label for="enabled">启用自动同步</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="initialManualOnly">
+              <label for="initialManualOnly">首次仅手工触发</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="downloadAssets">
+              <label for="downloadAssets">下载封面插图</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="writeMarkdown">
+              <label for="writeMarkdown">输出 Markdown</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="writeRawText">
+              <label for="writeRawText">输出 TXT</label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section">
+          <div class="section-title">收藏可见性</div>
+          <div class="checks">
+            <div class="check-item">
+              <input type="checkbox" id="restrictPublic">
+              <label for="restrictPublic">公开收藏</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="restrictPrivate">
+              <label for="restrictPrivate">非公开收藏</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="section" style="margin-top:16px;">
+          <div class="section-title">数量限制</div>
+          <div class="fields">
+            <div class="field">
+              <label>单次最大小说数</label>
+              <input id="maxItems" type="number" min="1" placeholder="50">
+            </div>
+            <div class="field">
+              <label>单次最大页数</label>
+              <input id="maxPages" type="number" min="1" placeholder="5">
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section">
+          <div class="section-title">请求间隔（秒）</div>
+          <div class="fields">
+            <div class="field">
+              <label>每本小说</label>
+              <input id="itemDelay" type="number" min="0" step="0.1" placeholder="1.0">
+            </div>
+            <div class="field">
+              <label>每页</label>
+              <input id="pageDelay" type="number" min="0" step="0.1" placeholder="1.0">
+            </div>
+            <div class="field">
+              <label>每个系列</label>
+              <input id="seriesDelay" type="number" min="0" step="0.1" placeholder="3.0">
+            </div>
+            <div class="field">
+              <label>系列内每章</label>
+              <input id="chapterDelay" type="number" min="0" step="0.1" placeholder="1.0">
+            </div>
+            <div class="field">
+              <label>跳过时</label>
+              <input id="skipDelay" type="number" min="0" step="0.1" placeholder="0.1">
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card full-width">
+        <div class="section">
+          <div class="section-title">追更系列设置</div>
+          <div class="fields">
+            <div class="field">
+              <label>系列同步限制</label>
+              <input id="seriesSyncLimit" type="number" min="0" placeholder="0">
+              <span style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">0 = 全部系列</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card full-width">
+        <div class="section">
+          <div class="section-title">定时同步</div>
+          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;">自动定时同步，分散执行时间降低风控风险。请在首页启用/禁用定时同步。</p>
+          <div class="fields" style="margin-bottom: 12px;">
+            <div class="field">
+              <label>时区</label>
+              <select id="autoSyncTimezone" style="width:100%;">
+                <option value="UTC">UTC</option>
+                <option value="Asia/Seoul">Asia/Seoul (韩国首尔，UTC+9)</option>
+                <option value="Asia/Shanghai">Asia/Shanghai (中国上海，UTC+8)</option>
+                <option value="Asia/Tokyo">Asia/Tokyo (日本东京，UTC+9)</option>
+                <option value="America/New_York">America/New_York (美国东部，UTC-5)</option>
+                <option value="America/Los_Angeles">America/Los_Angeles (美国西部，UTC-8)</option>
+                <option value="Europe/London">Europe/London (英国伦敦，UTC+0)</option>
+                <option value="Europe/Berlin">Europe/Berlin (德国柏林，UTC+1)</option>
+              </select>
+            </div>
+          </div>
+          <div class="checks">
+            <div class="check-item">
+              <input type="checkbox" id="autoSyncBookmarks">
+              <label for="autoSyncBookmarks">定时同步收藏</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="autoSyncFollowingList">
+              <label for="autoSyncFollowingList">同步关注用户列表</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="autoSyncFollowingNovels">
+              <label for="autoSyncFollowingNovels">同步关注用户小说</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="autoSyncUserStatus">
+              <label for="autoSyncUserStatus">用户状态更新</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="autoSyncSubscribedSeries">
+              <label for="autoSyncSubscribedSeries">追更系列</label>
+            </div>
           </div>
           <div class="check-item">
             <input type="checkbox" id="syncFollowingSeries">
@@ -206,88 +366,90 @@
             <label for="autoSyncSubscribedSeries">我的追更系列</label>
           </div>
         </div>
-        <div class="fields" style="margin-top: 12px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;">
-          <div class="field">
-            <label>收藏间隔（小时）</label>
-            <input id="autoSyncBookmarksInterval" type="number" min="1" max="24" placeholder="6">
+          <div class="fields" style="margin-top:16px; grid-template-columns: repeat(3, 1fr);">
+            <div class="field">
+              <label>收藏间隔（小时）</label>
+              <input id="autoSyncBookmarksInterval" type="number" min="1" max="24" placeholder="6">
+            </div>
+            <div class="field">
+              <label>关注列表间隔（小时）</label>
+              <input id="autoSyncFollowingListInterval" type="number" min="1" max="168" placeholder="24">
+            </div>
+            <div class="field">
+              <label>关注小说间隔（小时）</label>
+              <input id="autoSyncFollowingNovelsInterval" type="number" min="1" max="24" placeholder="6">
+            </div>
+            <div class="field">
+              <label>追更间隔（小时）</label>
+              <input id="autoSyncSubscribedSeriesInterval" type="number" min="1" max="24" placeholder="6">
+            </div>
+            <div class="field">
+              <label>每轮同步用户数</label>
+              <input id="autoSyncFollowingNovelsUsersLimit" type="number" min="0" placeholder="0">
+              <span style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">0=全部用户</span>
+            </div>
           </div>
-          <div class="field">
-            <label>关注列表间隔（小时）</label>
-            <input id="autoSyncFollowingListInterval" type="number" min="1" max="168" placeholder="24">
-          </div>
-          <div class="field">
-            <label>关注小说间隔（小时）</label>
-            <input id="autoSyncFollowingNovelsInterval" type="number" min="1" max="24" placeholder="6">
-          </div>
-          <div class="field">
-            <label>追更间隔（小时）</label>
-            <input id="autoSyncSubscribedSeriesInterval" type="number" min="1" max="24" placeholder="6">
-          </div>
-          <div class="field">
-            <label>每轮同步用户数</label>
-            <input id="autoSyncFollowingNovelsUsersLimit" type="number" min="0" placeholder="0">
-            <span style="font-size:11px;color:var(--text-tertiary);">0 = 全部用户</span>
+          <div style="margin-top:16px;">
+            <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:10px;">Cron 表达式（可选）</div>
+            <div class="fields" style="grid-template-columns: repeat(3, 1fr);">
+              <div class="field">
+                <label>收藏 Cron</label>
+                <input id="autoSyncBookmarksCron" type="text" placeholder="0 3 * * *">
+              </div>
+              <div class="field">
+                <label>关注列表 Cron</label>
+                <input id="autoSyncFollowingListCron" type="text" placeholder="0 4 * * *">
+              </div>
+              <div class="field">
+                <label>关注小说 Cron</label>
+                <input id="autoSyncFollowingNovelsCron" type="text" placeholder="0 5 * * *">
+              </div>
+              <div class="field">
+                <label>用户状态 Cron</label>
+                <input id="autoSyncUserStatusCron" type="text" placeholder="0 6 * * *">
+              </div>
+              <div class="field">
+                <label>追更系列 Cron</label>
+                <input id="autoSyncSubscribedSeriesCron" type="text" placeholder="0 7 * * *">
+              </div>
+            </div>
+            <p style="font-size:11px;color:var(--text-tertiary);margin:8px 0 0;">格式：分 时 日 月 周</p>
           </div>
         </div>
-        <div style="margin-top: 16px;">
-          <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:10px;">Cron 表达式（可选，优先于间隔小时）</div>
-          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;">格式：分 时 日 月 周（如 "0 3 * * *" 表示每天凌晨3点）</p>
-          <div class="fields" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
-            <div class="field">
-              <label>收藏同步 Cron</label>
-              <input id="autoSyncBookmarksCron" type="text" placeholder="0 3 * * *">
-            </div>
-            <div class="field">
-              <label>关注列表 Cron</label>
-              <input id="autoSyncFollowingListCron" type="text" placeholder="0 4 * * *">
-            </div>
-            <div class="field">
-              <label>关注小说 Cron</label>
-              <input id="autoSyncFollowingNovelsCron" type="text" placeholder="0 5 * * *">
-            </div>
-            <div class="field">
-              <label>用户状态检查 Cron</label>
-              <input id="autoSyncUserStatusCron" type="text" placeholder="0 6 * * *">
-            </div>
-            <div class="field">
-              <label>追更系列 Cron</label>
-              <input id="autoSyncSubscribedSeriesCron" type="text" placeholder="0 7 * * *">
-            </div>
-          </div>
-        </div>
-        <div id="autoSyncStatusText" style="font-size:12px;color:var(--text-secondary);margin-top:8px;">加载中...</div>
-      </div>
+      </section>
+    </div>
 
+    <div style="display:flex;justify-content:center;margin-top:24px;">
       <button id="saveBtn" class="btn">保存设置</button>
-      <div id="message" class="message"></div>
-    </section>
+    </div>
+    <div id="message" class="message" style="text-align:center;"></div>
 
-    <section class="card" style="margin-top: 24px;">
+    <section class="card full-width" style="margin-top:24px;">
       <div class="section">
         <div class="section-title">同步操作</div>
-        <p style="font-size:13px;color:var(--text-secondary);margin:0 0 14px;">手动触发同步任务，同步订阅的系列和关注用户的最新小说</p>
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
-          <label style="font-size:14px;color:var(--text-secondary);">同步数量限制：</label>
-          <input type="number" id="seriesSyncLimit" min="0" value="0" style="width:80px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:14px;">
-          <span style="font-size:12px;color:var(--text-tertiary);">0 = 全部系列</span>
+        <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;">手动触发同步任务</p>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+          <label style="font-size:13px;color:var(--text-secondary);">系列限制：</label>
+          <input type="number" id="seriesSyncLimit" min="0" value="0" style="width:80px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg-soft);color:var(--text);font-size:13px;">
+          <span style="font-size:11px;color:var(--text-tertiary);">0=全部</span>
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button id="syncSubscribedBtn" class="btn" style="background:linear-gradient(90deg,#ff9500,#ff6b00);">同步订阅系列</button>
-          <button id="syncFollowingBtn" class="btn" style="background:linear-gradient(90deg,#34c759,#30d158);">同步关注用户</button>
+        <div style="display:flex;gap:8px;">
+          <button id="syncSubscribedBtn" class="btn" style="background:linear-gradient(90deg,#ff9500,#ff6b00);font-size:13px;padding:10px 16px;">同步订阅系列</button>
+          <button id="syncFollowingBtn" class="btn" style="background:linear-gradient(90deg,#34c759,#30d158);font-size:13px;padding:10px 16px;">同步关注用户</button>
         </div>
         <div id="syncMessage" class="message"></div>
       </div>
     </section>
 
-    <section class="card" style="margin-top: 24px;">
+    <section class="card full-width" style="margin-top:24px;">
       <div class="section">
         <div class="section-title">图片缓存管理</div>
-        <p style="font-size:13px;color:var(--text-secondary);margin:0 0 14px;">Nginx 图片缓存，减少对 Pixiv CDN 的请求</p>
-        <div id="cacheInfo" style="font-size:14px;color:var(--text-secondary);margin-bottom:16px;">
+        <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;">Nginx 图片缓存，减少对 Pixiv CDN 的请求</p>
+        <div id="cacheInfo" style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">
           加载中...
         </div>
-        <button id="refreshCacheBtn" class="btn" style="background: linear-gradient(90deg, #5856d6, #af52de); margin-right: 8px;">刷新状态</button>
-        <button id="clearCacheBtn" class="btn" style="background: linear-gradient(90deg, #ff3b30, #ff6b6b);">清空缓存</button>
+        <button id="refreshCacheBtn" class="btn" style="background:linear-gradient(90deg,#5856d6,#af52de);font-size:13px;padding:10px 16px;margin-right:8px;">刷新状态</button>
+        <button id="clearCacheBtn" class="btn" style="background:linear-gradient(90deg,#ff3b30,#ff6b6b);font-size:13px;padding:10px 16px;">清空缓存</button>
         <div id="cacheMessage" class="message"></div>
       </div>
     </section>
@@ -340,9 +502,6 @@
       valueOf('autoSyncFollowingNovelsCron', data.auto_sync_following_novels_cron ?? '');
       valueOf('autoSyncUserStatusCron', data.auto_sync_user_status_cron ?? '');
       valueOf('autoSyncSubscribedSeriesCron', data.auto_sync_subscribed_series_cron ?? '');
-      
-      // 更新定时同步状态显示
-      await loadAutoSyncStatus();
     }
 
     function buildPayload() {
@@ -409,28 +568,6 @@
 
     document.getElementById('saveBtn').addEventListener('click', saveSettings);
     loadSettings();
-
-    // 定时同步状态
-    async function loadAutoSyncStatus() {
-      try {
-        const resp = await fetch('/api/dashboard/auto-sync/status');
-        const data = await resp.json();
-        const statusText = document.getElementById('autoSyncStatusText');
-        if (statusText) {
-          if (data.running) {
-            // 找出最近的下次运行时间
-            const nextRuns = Object.values(data.task_next_run || {}).filter(t => t > 0);
-            if (nextRuns.length > 0) {
-              const earliest = Math.min(...nextRuns);
-              const nextDate = new Date(earliest * 1000);
-              const today = new Date().toLocaleDateString();
-              const dateStr = nextDate.toLocaleDateString();
-              const timeStr = nextDate.toLocaleTimeString();
-              const displayDate = dateStr === today ? `今天 ${timeStr}` : `${dateStr} ${timeStr}`;
-              statusText.textContent = `调度器运行中，下次执行: ${displayDate}`;
-            } else {
-              statusText.textContent = '调度器运行中，等待任务配置';
-            }
             statusText.style.color = 'var(--success)';
           } else {
             statusText.textContent = '调度器未运行（请在首页启用）';
