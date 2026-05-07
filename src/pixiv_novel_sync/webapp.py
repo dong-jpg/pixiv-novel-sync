@@ -1410,14 +1410,17 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             task_type = request.args.get("task_type")
             is_auto = request.args.get("is_auto")
             days = request.args.get("days", 3, type=int)
-            
+
             is_auto_sync = None
             if is_auto == "true":
                 is_auto_sync = True
             elif is_auto == "false":
                 is_auto_sync = False
-            
-            with db_manager.get_db() as db:
+
+            current_settings = settings_manager.load(env_path=env_path)
+            db = Database(current_settings.storage.db_path)
+            db.init_schema()
+            try:
                 result = db.get_task_logs(
                     page=page,
                     page_size=page_size,
@@ -1425,6 +1428,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                     is_auto_sync=is_auto_sync,
                     days=days
                 )
+            finally:
+                db.close()
             return jsonify(result)
         except Exception as e:
             logger.error("获取日志失败：%s", e)

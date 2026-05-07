@@ -123,17 +123,17 @@
           </span>
           关注追更
         </a>
-        <a class="menu-item" href="#scheduler" data-section="scheduler">
-          <span class="menu-icon">
-            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-          </span>
-          定时同步
-        </a>
         <a class="menu-item" href="#manual" data-section="manual">
           <span class="menu-icon">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122"/></svg>
           </span>
           手动操作
+        </a>
+        <a class="menu-item" href="#cache" data-section="cache">
+          <span class="menu-icon">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
+          </span>
+          缓存管理
         </a>
       </nav>
     </aside>
@@ -367,7 +367,7 @@
         <div class="message" id="msgScheduler"></div>
       </section>
 
-      <section id="scheduler" class="page-section card">
+      <section id="manual" class="page-section card">
         <h2 class="settings-title" style="margin-bottom:8px;">同步操作</h2>
         <p class="settings-desc">手动触发同步任务，同步订阅的系列和关注用户的最新小说</p>
         
@@ -385,7 +385,7 @@
         <div id="manualLog" style="background:var(--bg-soft);border-radius:10px;padding:16px;font-family:monospace;font-size:12px;max-height:200px;overflow-y:auto;margin-top:16px;"></div>
       </section>
 
-      <section id="manual" class="page-section card">
+      <section id="cache" class="page-section card">
         <h2 class="settings-title" style="margin-bottom:8px;">图片缓存管理</h2>
         <p class="settings-desc">Nginx 图片缓存，减少对 Pixiv CDN 的请求</p>
         
@@ -646,7 +646,7 @@
         try {
           const res = await fetch("/api/dashboard/sync/" + task, { method: "POST" });
           const data = await res.json();
-          if (data.success) {
+          if (data.ok) {
             logToPanel("任务已加入队列");
           } else {
             logToPanel("任务失败：" + (data.message || "未知错误"));

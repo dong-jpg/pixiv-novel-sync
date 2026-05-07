@@ -892,7 +892,6 @@ class Database:
         )
         self.conn.commit()
         return cursor.rowcount
-        self.conn.commit()
 
     def clear_sync_check_list(self) -> None:
         """清空同步检查列表"""
