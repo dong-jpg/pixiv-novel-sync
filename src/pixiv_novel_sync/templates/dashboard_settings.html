@@ -140,10 +140,11 @@
     <div class="content-area">
       <section id="basic" class="page-section active card">
         <h2 class="settings-title" style="margin-bottom:8px;">基础设置</h2>
-        <p class="settings-desc">配置同步内容和时区</p>
+        <p class="settings-desc">配置同步内容和同步选项</p>
         
         <div class="section">
           <div class="section-title">同步内容</div>
+          <p style="font-size:13px;color:var(--text-secondary);margin:0 0 14px;">分批同步可降低风控风险，建议每次只开启一项</p>
           <div class="checks">
             <div class="check-item">
               <input type="checkbox" id="syncBookmarks">
@@ -151,7 +152,7 @@
             </div>
             <div class="check-item">
               <input type="checkbox" id="syncFollowingSeries">
-              <label for="syncFollowingSeries">同步关注的系列</label>
+              <label for="syncFollowingSeries">同步关注用户的系列</label>
             </div>
             <div class="check-item">
               <input type="checkbox" id="syncFollowingUsers">
@@ -159,27 +160,41 @@
             </div>
             <div class="check-item">
               <input type="checkbox" id="syncFollowingNovels">
-              <label for="syncFollowingNovels">同步关注的小说</label>
+              <label for="syncFollowingNovels">同步关注用户的小说</label>
             </div>
           </div>
         </div>
-        
+
         <div class="section">
-          <div class="section-title">时区设置</div>
-          <div class="fields">
-            <div class="field" style="grid-column:1/-1;">
-              <label for="timezone">定时任务时区</label>
-              <select id="timezone">
-                <option value="UTC" data-offset="UTC+0">UTC (协调世界时)</option>
-                <option value="Asia/Shanghai" data-offset="UTC+8">Asia/Shanghai (北京时间)</option>
-                <option value="Asia/Hong_Kong" data-offset="UTC+8">Asia/Hong_Kong (香港时间)</option>
-                <option value="Asia/Taipei" data-offset="UTC+8">Asia/Taipei (台北时间)</option>
-                <option value="Asia/Seoul" data-offset="UTC+9">Asia/Seoul (韩国首尔)</option>
-                <option value="Asia/Tokyo" data-offset="UTC+9">Asia/Tokyo (日本东京)</option>
-                <option value="Asia/Bangkok" data-offset="UTC+7">Asia/Bangkok (泰国曼谷)</option>
-                <option value="Asia/Singapore" data-offset="UTC+8">Asia/Singapore (新加坡)</option>
-              </select>
-              <div class="hint">定时任务将按照此时区执行，服务器当前时区：<span id="serverTimezone">--</span></div>
+          <div class="section-title">同步选项</div>
+          <div class="checks">
+            <div class="check-item">
+              <input type="checkbox" id="enabled">
+              <label for="enabled">启用自动同步</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="initialManualOnly">
+              <label for="initialManualOnly">首次仅允许手工触发</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="downloadAssets">
+              <label for="downloadAssets">下载封面与插图资源</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="writeMarkdown">
+              <label for="writeMarkdown">输出 Markdown 文件</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="writeRawText">
+              <label for="writeRawText">输出原始文本文件</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="restrictPublic">
+              <label for="restrictPublic">同步公开收藏</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="restrictPrivate">
+              <label for="restrictPrivate">同步私密收藏</label>
             </div>
           </div>
         </div>
@@ -190,40 +205,44 @@
 
       <section id="limits" class="page-section card">
         <h2 class="settings-title" style="margin-bottom:8px;">限速参数</h2>
-        <p class="settings-desc">控制单次同步的数据量，降低风控风险</p>
+        <p class="settings-desc">控制单次同步的数据量和延迟，降低风控风险</p>
         
         <div class="section">
-          <div class="section-title">收藏同步限速</div>
+          <div class="section-title">基本限速</div>
           <div class="fields">
             <div class="field">
-              <label for="bookmarksMaxItems">单次最大小说数</label>
-              <input type="number" id="bookmarksMaxItems" min="0" value="100">
-              <div class="hint">0 = 同步全部</div>
+              <label for="maxItems">单次最大条数</label>
+              <input type="number" id="maxItems" min="1" placeholder="留空表示不限">
             </div>
             <div class="field">
-              <label for="bookmarksMaxPages">单次最大页数</label>
-              <input type="number" id="bookmarksMaxPages" min="1" value="5">
+              <label for="maxPages">单次最大页数</label>
+              <input type="number" id="maxPages" min="1" placeholder="留空表示不限">
             </div>
           </div>
         </div>
         
         <div class="section">
-          <div class="section-title">关注小说同步限速</div>
+          <div class="section-title">延迟设置（秒）</div>
           <div class="fields">
             <div class="field">
-              <label for="followingNovelsUsersLimit">单轮同步用户数</label>
-              <input type="number" id="followingNovelsUsersLimit" min="0" value="50">
-              <div class="hint">0 = 同步全部关注用户的小说</div>
+              <label for="itemDelay">每本之间延迟</label>
+              <input type="number" id="itemDelay" min="0" step="0.1" placeholder="0">
             </div>
             <div class="field">
-              <label for="requestDelay">请求间隔（毫秒）</label>
-              <input type="number" id="requestDelay" min="0" value="500">
-              <div class="hint">0 = 无延迟，建议保持 300-1000ms</div>
+              <label for="pageDelay">每页之间延迟</label>
+              <input type="number" id="pageDelay" min="0" step="0.1" placeholder="0">
             </div>
             <div class="field">
-              <label for="concurrentTasks">并发任务数</label>
-              <input type="number" id="concurrentTasks" min="1" max="10" value="3">
-              <div class="hint">同时运行的同步任务数</div>
+              <label for="seriesDelay">每个系列之间延迟</label>
+              <input type="number" id="seriesDelay" min="0" step="0.1" placeholder="3">
+            </div>
+            <div class="field">
+              <label for="chapterDelay">系列内每章之间延迟</label>
+              <input type="number" id="chapterDelay" min="0" step="0.1" placeholder="1">
+            </div>
+            <div class="field">
+              <label for="skipDelay">跳过内容时延迟</label>
+              <input type="number" id="skipDelay" min="0" step="0.1" placeholder="0.1">
             </div>
           </div>
         </div>
@@ -233,85 +252,117 @@
       </section>
 
       <section id="following" class="page-section card">
-        <h2 class="settings-title" style="margin-bottom:8px;">关注追更</h2>
-        <p class="settings-desc">关注用户和小说的同步配置</p>
-        
-        <div class="section">
-          <div class="section-title">关注列表同步</div>
-          <div class="fields">
-            <div class="field">
-              <label for="followingListInterval">同步间隔（小时）</label>
-              <input type="number" id="followingListInterval" min="1" value="24">
-              <div class="hint">仅更新用户信息，不同步小说</div>
-            </div>
-            <div class="field">
-              <label for="followingListCron">Cron 表达式</label>
-              <input type="text" id="followingListCron" placeholder="0 3 * * *">
-              <div class="hint">格式：分 时 日 月 周</div>
-            </div>
-          </div>
-        </div>
-        
-        <div class="section">
-          <div class="section-title">关注小说同步</div>
-          <div class="fields">
-            <div class="field">
-              <label for="followingNovelsInterval">同步间隔（小时）</label>
-              <input type="number" id="followingNovelsInterval" min="1" value="6">
-              <div class="hint">同步关注用戶的最新小说</div>
-            </div>
-            <div class="field">
-              <label for="followingNovelsCron">Cron 表达式</label>
-              <input type="text" id="followingNovelsCron" placeholder="0 */6 * * *">
-            </div>
-            <div class="field">
-              <label for="followingNovelsUsersLimit2">单轮同步用户数</label>
-              <input type="number" id="followingNovelsUsersLimit2" min="0" value="50">
-              <div class="hint">0 表示同步全部</div>
-            </div>
-          </div>
-        </div>
-        
-        <button class="btn" id="saveFollowing">保存关注设置</button>
-        <div class="message" id="msgFollowing"></div>
-      </section>
-
-      <section id="scheduler" class="page-section card">
         <h2 class="settings-title" style="margin-bottom:8px;">定时同步</h2>
-        <p class="settings-desc">定时任务调度配置</p>
+        <p class="settings-desc">配置定时任务，分散执行时间降低风控风险</p>
         
+        <div class="section">
+          <div class="section-title">时区设置</div>
+          <div class="fields">
+            <div class="field" style="grid-column:1/-1;">
+              <label for="autoSyncTimezone">定时任务时区</label>
+              <select id="autoSyncTimezone">
+                <option value="UTC">UTC (协调世界时)</option>
+                <option value="Asia/Shanghai">Asia/Shanghai (中国上海, UTC+8)</option>
+                <option value="Asia/Tokyo">Asia/Tokyo (日本东京, UTC+9)</option>
+                <option value="Asia/Seoul">Asia/Seoul (韩国首尔, UTC+9)</option>
+                <option value="America/New_York">America/New_York (美国东部, UTC-5)</option>
+                <option value="America/Los_Angeles">America/Los_Angeles (美国西部, UTC-8)</option>
+                <option value="Europe/London">Europe/London (英国伦敦, UTC+0)</option>
+                <option value="Europe/Berlin">Europe/Berlin (德国柏林, UTC+1)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
         <div class="section">
           <div class="section-title">定时任务开关</div>
           <div class="checks">
             <div class="check-item">
-              <input type="checkbox" id="autoSyncEnabled">
-              <label for="autoSyncEnabled">启用定时同步</label>
+              <input type="checkbox" id="autoSyncBookmarks">
+              <label for="autoSyncBookmarks">定时同步收藏</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="autoSyncFollowingList">
+              <label for="autoSyncFollowingList">同步关注用户列表</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="autoSyncFollowingNovels">
+              <label for="autoSyncFollowingNovels">同步关注用户小说</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="autoSyncUserStatus">
+              <label for="autoSyncUserStatus">关注用户的用户状态更新</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="autoSyncSubscribedSeries">
+              <label for="autoSyncSubscribedSeries">我的追更系列</label>
             </div>
           </div>
         </div>
         
         <div class="section">
-          <div class="section-title">收藏同步配置</div>
+          <div class="section-title">同步间隔（小时）</div>
           <div class="fields">
             <div class="field">
-              <label for="bookmarksInterval">同步间隔（小时）</label>
-              <input type="number" id="bookmarksInterval" min="1" value="6">
+              <label for="autoSyncBookmarksInterval">收藏间隔</label>
+              <input type="number" id="autoSyncBookmarksInterval" min="1" max="24" placeholder="6">
             </div>
             <div class="field">
-              <label for="bookmarksCron">Cron 表达式</label>
-              <input type="text" id="bookmarksCron" placeholder="0 */6 * * *">
+              <label for="autoSyncFollowingListInterval">关注列表间隔</label>
+              <input type="number" id="autoSyncFollowingListInterval" min="1" max="168" placeholder="24">
+            </div>
+            <div class="field">
+              <label for="autoSyncFollowingNovelsInterval">关注小说间隔</label>
+              <input type="number" id="autoSyncFollowingNovelsInterval" min="1" max="24" placeholder="6">
+            </div>
+            <div class="field">
+              <label for="autoSyncSubscribedSeriesInterval">追更间隔</label>
+              <input type="number" id="autoSyncSubscribedSeriesInterval" min="1" max="24" placeholder="6">
+            </div>
+            <div class="field">
+              <label for="autoSyncFollowingNovelsUsersLimit">每轮同步用户数</label>
+              <input type="number" id="autoSyncFollowingNovelsUsersLimit" min="0" placeholder="0">
+              <div class="hint">0 = 全部用户</div>
             </div>
           </div>
-          <div class="time-preview" id="bookmarksNextRun">下次运行时间：<span>--</span></div>
         </div>
+
+        <div class="section">
+          <div class="section-title">Cron 表达式（可选，优先于间隔小时）</div>
+          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;">格式：分 时 日 月 周（如 "0 3 * * *" 表示每天凌晨 3 点）</p>
+          <div class="fields">
+            <div class="field">
+              <label for="autoSyncBookmarksCron">收藏同步 Cron</label>
+              <input type="text" id="autoSyncBookmarksCron" placeholder="0 3 * * *">
+            </div>
+            <div class="field">
+              <label for="autoSyncFollowingListCron">关注列表 Cron</label>
+              <input type="text" id="autoSyncFollowingListCron" placeholder="0 4 * * *">
+            </div>
+            <div class="field">
+              <label for="autoSyncFollowingNovelsCron">关注小说 Cron</label>
+              <input type="text" id="autoSyncFollowingNovelsCron" placeholder="0 5 * * *">
+            </div>
+            <div class="field">
+              <label for="autoSyncUserStatusCron">用户状态检查 Cron</label>
+              <input type="text" id="autoSyncUserStatusCron" placeholder="0 6 * * *">
+            </div>
+            <div class="field">
+              <label for="autoSyncSubscribedSeriesCron">追更系列 Cron</label>
+              <input type="text" id="autoSyncSubscribedSeriesCron" placeholder="0 7 * * *">
+            </div>
+          </div>
+        </div>
+
+        <div id="autoSyncStatusText" class="hint" style="margin-top:16px;">加载中...</div>
         
-        <button class="btn" id="saveScheduler">保存调度设置</button>
+        <button class="btn" id="saveScheduler">保存定时同步设置</button>
         <div class="message" id="msgScheduler"></div>
       </section>
 
-      <section id="manual" class="page-section card">
-        <h2 class="settings-title" style="margin-bottom:8px;">手动操作</h2>
-        <p class="settings-desc">手动触发同步任务</p>
+      <section id="scheduler" class="page-section card">
+        <h2 class="settings-title" style="margin-bottom:8px;">同步操作</h2>
+        <p class="settings-desc">手动触发同步任务，同步订阅的系列和关注用户的最新小说</p>
         
         <div class="section">
           <div class="section-title">手动同步</div>
@@ -323,10 +374,22 @@
           </div>
           <div class="hint" style="margin-top:12px;">手动同步不受定时开关控制，点击后立即执行</div>
         </div>
+
+        <div id="manualLog" style="background:var(--bg-soft);border-radius:10px;padding:16px;font-family:monospace;font-size:12px;max-height:200px;overflow-y:auto;margin-top:16px;"></div>
+      </section>
+
+      <section id="manual" class="page-section card">
+        <h2 class="settings-title" style="margin-bottom:8px;">图片缓存管理</h2>
+        <p class="settings-desc">Nginx 图片缓存，减少对 Pixiv CDN 的请求</p>
         
         <div class="section">
-          <div class="section-title">操作日志</div>
-          <div id="manualLog" style="background:var(--bg-soft);border-radius:10px;padding:16px;font-family:monospace;font-size:12px;max-height:200px;overflow-y:auto;"></div>
+          <div class="section-title">缓存状态</div>
+          <div id="cacheInfo" style="font-size:14px;color:var(--text-secondary);margin-bottom:16px;">
+            加载中...
+          </div>
+          <button class="btn" id="refreshCacheBtn" style="background: linear-gradient(90deg, #5856d6, #af52de); margin-right: 8px;">刷新状态</button>
+          <button class="btn" id="clearCacheBtn" style="background: linear-gradient(90deg, #ff3b30, #ff6b6b);">清空缓存</button>
+          <div id="cacheMessage" class="message" style="margin-top:16px;"></div>
         </div>
       </section>
     </div>
@@ -367,33 +430,68 @@
         if (target) target.click();
       }
 
+      function checked(id, value) {
+        const el = $(id);
+        if (el) el.checked = !!value;
+      }
+
+      function valueOf(id, value) {
+        const el = $(id);
+        if (el) el.value = value ?? '';
+      }
+
       async function loadSettings() {
-        const res = await fetch("/api/dashboard/sync/settings");
+        const res = await fetch("/api/dashboard/settings");
         const data = await res.json();
-        state.settings = data.settings || data;
-        populateSettings(state.settings);
+        state.settings = data;
+        populateSettings(data);
       }
 
       function populateSettings(s) {
-        $("#syncBookmarks").checked = !!s.auto_sync_bookmarks_enabled;
-        $("#syncFollowingSeries").checked = !!s.auto_sync_following_series_enabled;
-        $("#syncFollowingUsers").checked = !!s.auto_sync_following_users_enabled;
-        $("#syncFollowingNovels").checked = !!s.auto_sync_following_novels_enabled;
-        $("#timezone").value = s.auto_sync_timezone || "UTC";
-        $("#bookmarksMaxItems").value = s.auto_sync_bookmarks_max_items || 100;
-        $("#bookmarksMaxPages").value = s.auto_sync_bookmarks_max_pages || 5;
-        $("#followingNovelsUsersLimit").value = s.auto_sync_following_novels_users_limit || 50;
-        $("#followingNovelsUsersLimit2").value = s.auto_sync_following_novels_users_limit || 50;
-        $("#requestDelay").value = s.auto_sync_request_delay_ms || 500;
-        $("#concurrentTasks").value = s.auto_sync_concurrent_tasks || 3;
-        $("#followingListInterval").value = s.auto_sync_following_users_interval_hours || 24;
-        $("#followingListCron").value = s.auto_sync_following_users_cron || "";
-        $("#followingNovelsInterval").value = s.auto_sync_following_novels_interval_hours || 6;
-        $("#followingNovelsCron").value = s.auto_sync_following_novels_cron || "";
-        $("#autoSyncEnabled").checked = !!s.auto_sync_scheduler_enabled;
-        $("#bookmarksInterval").value = s.auto_sync_bookmarks_interval_hours || 6;
-        $("#bookmarksCron").value = s.auto_sync_bookmarks_cron || "";
-        $("#serverTimezone").textContent = s.server_timezone || "UTC";
+        // 基础设置 - 同步内容
+        checked("#syncBookmarks", s.sync_bookmarks);
+        checked("#syncFollowingSeries", s.sync_following_series);
+        checked("#syncFollowingUsers", s.sync_following_users);
+        checked("#syncFollowingNovels", s.sync_following_novels);
+        
+        // 基础设置 - 同步选项
+        checked("#enabled", s.enabled);
+        checked("#initialManualOnly", s.initial_manual_only);
+        checked("#downloadAssets", s.download_assets);
+        checked("#writeMarkdown", s.write_markdown);
+        checked("#writeRawText", s.write_raw_text);
+        checked("#restrictPublic", (s.bookmark_restricts || []).includes('public'));
+        checked("#restrictPrivate", (s.bookmark_restricts || []).includes('private'));
+        
+        // 限速参数
+        valueOf("#maxItems", s.max_items_per_run);
+        valueOf("#maxPages", s.max_pages_per_run);
+        valueOf("#itemDelay", s.delay_seconds_between_items ?? 0);
+        valueOf("#pageDelay", s.delay_seconds_between_pages ?? 0);
+        valueOf("#seriesDelay", s.delay_seconds_between_series ?? 3);
+        valueOf("#chapterDelay", s.delay_seconds_between_chapters ?? 1);
+        valueOf("#skipDelay", s.delay_seconds_between_skips ?? 0.1);
+        
+        // 定时同步
+        valueOf("#autoSyncTimezone", s.auto_sync_timezone || 'UTC');
+        checked("#autoSyncBookmarks", s.auto_sync_bookmarks_enabled);
+        checked("#autoSyncFollowingList", s.auto_sync_following_list_enabled);
+        checked("#autoSyncFollowingNovels", s.auto_sync_following_novels_enabled);
+        checked("#autoSyncUserStatus", s.auto_sync_user_status_enabled);
+        checked("#autoSyncSubscribedSeries", s.auto_sync_subscribed_series_enabled);
+        valueOf("#autoSyncBookmarksInterval", s.auto_sync_bookmarks_interval_hours ?? 6);
+        valueOf("#autoSyncFollowingListInterval", s.auto_sync_following_list_interval_hours ?? 24);
+        valueOf("#autoSyncFollowingNovelsInterval", s.auto_sync_following_novels_interval_hours ?? 6);
+        valueOf("#autoSyncSubscribedSeriesInterval", s.auto_sync_subscribed_series_interval_hours ?? 6);
+        valueOf("#autoSyncFollowingNovelsUsersLimit", s.auto_sync_following_novels_users_limit ?? 0);
+        valueOf("#autoSyncBookmarksCron", s.auto_sync_bookmarks_cron ?? '');
+        valueOf("#autoSyncFollowingListCron", s.auto_sync_following_list_cron ?? '');
+        valueOf("#autoSyncFollowingNovelsCron", s.auto_sync_following_novels_cron ?? '');
+        valueOf("#autoSyncUserStatusCron", s.auto_sync_user_status_cron ?? '');
+        valueOf("#autoSyncSubscribedSeriesCron", s.auto_sync_subscribed_series_cron ?? '');
+        
+        // 更新定时同步状态
+        loadAutoSyncStatus();
       }
 
       function showMessage(el, text, ok) {
@@ -402,43 +500,65 @@
         setTimeout(() => { el.textContent = ""; el.className = "message"; }, 4000);
       }
 
-      function buildPayload() {
+      function buildBasicPayload() {
+        const restricts = [];
+        if ($("#restrictPublic").checked) restricts.push('public');
+        if ($("#restrictPrivate").checked) restricts.push('private');
         return {
-          auto_sync_bookmarks_enabled: $("#syncBookmarks").checked,
-          auto_sync_following_series_enabled: $("#syncFollowingSeries").checked,
-          auto_sync_following_users_enabled: $("#syncFollowingUsers").checked,
-          auto_sync_following_novels_enabled: $("#syncFollowingNovels").checked,
-          auto_sync_timezone: $("#timezone").value,
-          auto_sync_bookmarks_max_items: parseInt($("#bookmarksMaxItems").value) || 100,
-          auto_sync_bookmarks_max_pages: parseInt($("#bookmarksMaxPages").value) || 5,
-          auto_sync_following_novels_users_limit: parseInt($("#followingNovelsUsersLimit").value) || 50,
-          auto_sync_request_delay_ms: parseInt($("#requestDelay").value) || 500,
-          auto_sync_concurrent_tasks: parseInt($("#concurrentTasks").value) || 3,
-          auto_sync_following_users_interval_hours: parseInt($("#followingListInterval").value) || 24,
-          auto_sync_following_users_cron: $("#followingListCron").value.trim(),
-          auto_sync_following_novels_interval_hours: parseInt($("#followingNovelsInterval").value) || 6,
-          auto_sync_following_novels_cron: $("#followingNovelsCron").value.trim(),
-          auto_sync_scheduler_enabled: $("#autoSyncEnabled").checked,
-          auto_sync_bookmarks_interval_hours: parseInt($("#bookmarksInterval").value) || 6,
-          auto_sync_bookmarks_cron: $("#bookmarksCron").value.trim(),
+          sync_bookmarks: $("#syncBookmarks").checked,
+          sync_following_series: $("#syncFollowingSeries").checked,
+          sync_following_users: $("#syncFollowingUsers").checked,
+          sync_following_novels: $("#syncFollowingNovels").checked,
+          enabled: $("#enabled").checked,
+          initial_manual_only: $("#initialManualOnly").checked,
+          download_assets: $("#downloadAssets").checked,
+          write_markdown: $("#writeMarkdown").checked,
+          write_raw_text: $("#writeRawText").checked,
+          bookmark_restricts: restricts,
+        };
+      }
+
+      function buildLimitsPayload() {
+        return {
+          max_items_per_run: $("#maxItems").value.trim(),
+          max_pages_per_run: $("#maxPages").value.trim(),
+          delay_seconds_between_items: $("#itemDelay").value.trim(),
+          delay_seconds_between_pages: $("#pageDelay").value.trim(),
+          delay_seconds_between_series: $("#seriesDelay").value.trim(),
+          delay_seconds_between_chapters: $("#chapterDelay").value.trim(),
+          delay_seconds_between_skips: $("#skipDelay").value.trim(),
+        };
+      }
+
+      function buildSchedulerPayload() {
+        return {
+          auto_sync_timezone: $("#autoSyncTimezone").value,
+          auto_sync_bookmarks_enabled: $("#autoSyncBookmarks").checked,
+          auto_sync_following_list_enabled: $("#autoSyncFollowingList").checked,
+          auto_sync_following_novels_enabled: $("#autoSyncFollowingNovels").checked,
+          auto_sync_user_status_enabled: $("#autoSyncUserStatus").checked,
+          auto_sync_subscribed_series_enabled: $("#autoSyncSubscribedSeries").checked,
+          auto_sync_bookmarks_interval_hours: $("#autoSyncBookmarksInterval").value.trim(),
+          auto_sync_bookmarks_cron: $("#autoSyncBookmarksCron").value.trim(),
+          auto_sync_following_list_interval_hours: $("#autoSyncFollowingListInterval").value.trim(),
+          auto_sync_following_list_cron: $("#autoSyncFollowingListCron").value.trim(),
+          auto_sync_following_novels_interval_hours: $("#autoSyncFollowingNovelsInterval").value.trim(),
+          auto_sync_following_novels_cron: $("#autoSyncFollowingNovelsCron").value.trim(),
+          auto_sync_following_novels_users_limit: $("#autoSyncFollowingNovelsUsersLimit").value.trim(),
+          auto_sync_user_status_cron: $("#autoSyncUserStatusCron").value.trim(),
+          auto_sync_subscribed_series_interval_hours: $("#autoSyncSubscribedSeriesInterval").value.trim(),
+          auto_sync_subscribed_series_cron: $("#autoSyncSubscribedSeriesCron").value.trim(),
         };
       }
 
       $("#saveBasic").addEventListener("click", async () => {
         const btn = $("#saveBasic");
         btn.disabled = true;
-        const payload = {
-          auto_sync_bookmarks_enabled: $("#syncBookmarks").checked,
-          auto_sync_following_series_enabled: $("#syncFollowingSeries").checked,
-          auto_sync_following_users_enabled: $("#syncFollowingUsers").checked,
-          auto_sync_following_novels_enabled: $("#syncFollowingNovels").checked,
-          auto_sync_timezone: $("#timezone").value
-        };
         try {
-          const res = await fetch("/api/dashboard/sync/settings", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+          const res = await fetch("/api/dashboard/settings", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(buildBasicPayload()) });
           const data = await res.json();
-          showMessage($("#msgBasic"), data.message || "保存成功", data.success);
-          if (data.success) loadSettings();
+          showMessage($("#msgBasic"), data.message || "设置已保存", res.ok);
+          if (res.ok) loadSettings();
         } catch(e) {
           showMessage($("#msgBasic"), "保存失败：" + e.message, false);
         } finally {
@@ -449,42 +569,12 @@
       $("#saveLimits").addEventListener("click", async () => {
         const btn = $("#saveLimits");
         btn.disabled = true;
-        const payload = {
-          auto_sync_bookmarks_max_items: parseInt($("#bookmarksMaxItems").value) || 100,
-          auto_sync_bookmarks_max_pages: parseInt($("#bookmarksMaxPages").value) || 5,
-          auto_sync_following_novels_users_limit: parseInt($("#followingNovelsUsersLimit").value) || 50,
-          auto_sync_request_delay_ms: parseInt($("#requestDelay").value) || 500,
-          auto_sync_concurrent_tasks: parseInt($("#concurrentTasks").value) || 3
-        };
         try {
-          const res = await fetch("/api/dashboard/sync/settings", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+          const res = await fetch("/api/dashboard/settings", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(buildLimitsPayload()) });
           const data = await res.json();
-          showMessage($("#msgLimits"), data.message || "保存成功", data.success);
+          showMessage($("#msgLimits"), data.message || "设置已保存", res.ok);
         } catch(e) {
           showMessage($("#msgLimits"), "保存失败：" + e.message, false);
-        } finally {
-          btn.disabled = false;
-        }
-      });
-
-      $("#saveFollowing").addEventListener("click", async () => {
-        const btn = $("#saveFollowing");
-        btn.disabled = true;
-        const payload = {
-          auto_sync_following_users_enabled: $("#syncFollowingUsers").checked,
-          auto_sync_following_novels_enabled: $("#syncFollowingNovels").checked,
-          auto_sync_following_users_interval_hours: parseInt($("#followingListInterval").value) || 24,
-          auto_sync_following_users_cron: $("#followingListCron").value.trim(),
-          auto_sync_following_novels_interval_hours: parseInt($("#followingNovelsInterval").value) || 6,
-          auto_sync_following_novels_cron: $("#followingNovelsCron").value.trim(),
-          auto_sync_following_novels_users_limit: parseInt($("#followingNovelsUsersLimit2").value) || 50
-        };
-        try {
-          const res = await fetch("/api/dashboard/sync/settings", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
-          const data = await res.json();
-          showMessage($("#msgFollowing"), data.message || "保存成功", data.success);
-        } catch(e) {
-          showMessage($("#msgFollowing"), "保存失败：" + e.message, false);
         } finally {
           btn.disabled = false;
         }
@@ -493,16 +583,11 @@
       $("#saveScheduler").addEventListener("click", async () => {
         const btn = $("#saveScheduler");
         btn.disabled = true;
-        const payload = {
-          auto_sync_scheduler_enabled: $("#autoSyncEnabled").checked,
-          auto_sync_bookmarks_interval_hours: parseInt($("#bookmarksInterval").value) || 6,
-          auto_sync_bookmarks_cron: $("#bookmarksCron").value.trim()
-        };
         try {
-          const res = await fetch("/api/dashboard/sync/settings", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+          const res = await fetch("/api/dashboard/settings", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(buildSchedulerPayload()) });
           const data = await res.json();
-          showMessage($("#msgScheduler"), data.message || "保存成功", data.success);
-          if (data.success) loadSettings();
+          showMessage($("#msgScheduler"), data.message || "设置已保存", res.ok);
+          if (res.ok) loadSettings();
         } catch(e) {
           showMessage($("#msgScheduler"), "保存失败：" + e.message, false);
         } finally {
@@ -510,6 +595,37 @@
         }
       });
 
+      async function loadAutoSyncStatus() {
+        try {
+          const resp = await fetch('/api/dashboard/auto-sync/status');
+          const data = await resp.json();
+          const statusText = $("#autoSyncStatusText");
+          if (statusText) {
+            if (data.running) {
+              const nextRuns = Object.values(data.task_next_run || {}).filter(t => t > 0);
+              if (nextRuns.length > 0) {
+                const earliest = Math.min(...nextRuns);
+                const nextDate = new Date(earliest * 1000);
+                const today = new Date().toLocaleDateString();
+                const dateStr = nextDate.toLocaleDateString();
+                const timeStr = nextDate.toLocaleTimeString();
+                const displayDate = dateStr === today ? `今天 ${timeStr}` : `${dateStr} ${timeStr}`;
+                statusText.textContent = `调度器运行中，下次执行：${displayDate}`;
+              } else {
+                statusText.textContent = '调度器运行中，等待任务配置';
+              }
+              statusText.style.color = 'var(--success)';
+            } else {
+              statusText.textContent = '调度器未运行（请在首页启用）';
+              statusText.style.color = 'var(--text-secondary)';
+            }
+          }
+        } catch (e) {
+          // 忽略错误
+        }
+      }
+
+      // 手动同步操作
       $("#manualBookmarks").addEventListener("click", () => triggerSync("bookmark", $("#manualBookmarks")));
       $("#manualFollowingUsers").addEventListener("click", () => triggerSync("following_users", $("#manualFollowingUsers")));
       $("#manualFollowingNovels").addEventListener("click", () => triggerSync("following_novels", $("#manualFollowingNovels")));
@@ -536,19 +652,49 @@
         }
       }
 
-      async function updateNextRun() {
+      // 缓存管理
+      async function loadCacheStatus() {
+        const info = $("#cacheInfo");
         try {
-          const res = await fetch("/api/dashboard/sync/status");
-          const data = await res.json();
-          if (data.bookmarks && data.bookmarks.next_run) {
-            $("#bookmarksNextRun").innerHTML = "下次运行时间：<strong>" + data.bookmarks.next_run.replace(" ", "&nbsp;") + "</strong>";
+          const resp = await fetch('/api/cache/status');
+          const data = await resp.json();
+          if (data.exists) {
+            info.innerHTML = `缓存大小：<strong>${data.size_human}</strong> | 文件数量：<strong>${data.file_count}</strong>`;
+          } else {
+            info.textContent = '缓存目录不存在';
           }
-        } catch(e) {}
+        } catch (e) {
+          info.textContent = '获取缓存状态失败';
+        }
       }
 
+      async function clearCache() {
+        const msg = $("#cacheMessage");
+        if (!confirm('确认清空图片缓存？清空后首次访问图片会较慢。')) return;
+        msg.className = 'message';
+        msg.textContent = '正在清空...';
+        try {
+          const resp = await fetch('/api/cache/clear', { method: 'POST' });
+          const data = await resp.json();
+          if (resp.ok) {
+            msg.className = 'message ok';
+            msg.textContent = '缓存已清空';
+            await loadCacheStatus();
+          } else {
+            msg.className = 'message bad';
+            msg.textContent = data.error || '清空失败';
+          }
+        } catch (e) {
+          msg.className = 'message bad';
+          msg.textContent = '请求失败';
+        }
+      }
+
+      $("#refreshCacheBtn").addEventListener("click", loadCacheStatus);
+      $("#clearCacheBtn").addEventListener("click", clearCache);
+
       loadSettings();
-      updateNextRun();
-      setInterval(updateNextRun, 60000);
+      loadCacheStatus();
     })();
   </script>
 </body>
