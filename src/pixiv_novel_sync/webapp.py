@@ -1430,7 +1430,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             logger.error("获取日志失败：%s", e)
             return jsonify({"error": str(e)}), 500
 
-    @app.get("/api/dashboard/cache/status")
+    @app.get("/api/cache/status")
     def cache_status():
         import shutil
         cache_dir = Path("/var/cache/nginx/pixiv_img")
