@@ -626,24 +626,31 @@ class SyncJobManager:
             self.add_log(job_id, "info", "加载配置完成")
             self.update_progress(job_id, phase="准备中", message="正在初始化同步...")
             
-            # 如果任务列表为空，则根据设置构建
+            # 如果任务列表为空，则根据设置构建（全量同步）
             if not job.task_list:
                 task_list = []
                 if settings.sync.sync_bookmarks:
-                    task_list.append("同步收藏小说")
+                    task_list.append("bookmark")
                 if settings.sync.sync_following_series:
-                    task_list.append("同步关注用户系列")
+                    task_list.append("following_series")
                 if settings.sync.sync_following_users:
-                    task_list.append("同步关注用户列表")
+                    task_list.append("following_users")
                 if settings.sync.sync_following_novels:
-                    task_list.append("同步关注用户小说")
+                    task_list.append("following_novels")
                 if settings.sync.sync_subscribed_series:
-                    task_list.append("同步追更系列")
+                    task_list.append("subscribed_series")
                 job.task_list = task_list
             job.current_task_index = 0
-            
-            from .jobs.quick_sync import run_bookmark_sync_with_progress
-            stats = run_bookmark_sync_with_progress(settings, self, job_id)
+
+            # 根据 task_list 分发到对应的同步函数
+            total_stats: dict[str, Any] = {}
+            for task_type in job.task_list:
+                self.update_progress(job_id, phase=task_type, message=f"正在执行: {task_type}")
+                task_stats = self._run_single_sync(settings, task_type, job_id)
+                if task_stats:
+                    for key, val in task_stats.items():
+                        total_stats[key] = total_stats.get(key, 0) + val
+            stats = total_stats
             
             job.status = "succeeded"
             job.message = "同步完成"
@@ -677,6 +684,132 @@ class SyncJobManager:
                     logger.error("更新任务日志失败：%s", e)
         finally:
             job.finished_at = time.time()
+
+    def _run_single_sync(self, settings: Settings, task_type: str, job_id: str) -> dict[str, Any]:
+        """根据 task_type 执行单个同步任务"""
+        from .auth import PixivAuthManager
+        from .sync_engine import BookmarkNovelSyncService
+
+        auth = PixivAuthManager(settings.pixiv)
+        self.add_log(job_id, "info", "正在登录 Pixiv...")
+        api, auth_result = auth.login()
+        if auth_result.user_id is None:
+            raise RuntimeError("Unable to determine PIXIV_USER_ID")
+        self.add_log(job_id, "success", f"登录成功, 用户ID: {auth_result.user_id}")
+
+        db = Database(settings.storage.db_path)
+        db.init_schema()
+        storage = FileStorage(settings)
+        storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
+
+        try:
+            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+
+            def on_progress(event_type: str, data: dict[str, Any]) -> None:
+                if event_type == "novel_start":
+                    self.add_log(job_id, "info", f"[{data.get('current', '?')}/{data.get('total', '?')}] {data.get('title', '')[:30]}")
+                    self.update_progress(job_id, phase=data.get("phase", task_type), current=data.get('current', 0), total=data.get('total', 50))
+                elif event_type == "novel_done":
+                    if data.get('skipped'):
+                        self.add_log(job_id, "info", "  跳过（已存在）")
+                    else:
+                        self.add_log(job_id, "info", f"  完成: 收藏{data.get('bookmarks', 0)} 浏览{data.get('views', 0)}")
+                elif event_type == "page":
+                    self.add_log(job_id, "info", f"正在获取第 {data.get('page', '?')} 页...")
+                elif event_type == "rate_limit":
+                    self.add_log(job_id, "warning", f"等待 {data.get('seconds', 1)} 秒")
+                elif event_type == "phase":
+                    self.add_log(job_id, "info", data.get("phase", ""))
+                elif event_type == "phase_start":
+                    self.add_log(job_id, "info", f"开始: {data.get('name', '')}")
+
+            if task_type == "bookmark":
+                self.add_log(job_id, "info", "=== 开始同步收藏小说 ===")
+                total_stats: dict[str, Any] = {}
+                for restrict in settings.sync.bookmark_restricts:
+                    stats = service.sync(
+                        user_id=auth_result.user_id,
+                        restricts=[restrict],
+                        download_assets=settings.sync.download_assets,
+                        write_markdown=settings.sync.write_markdown,
+                        write_raw_text=settings.sync.write_raw_text,
+                        progress_callback=on_progress,
+                    )
+                    for key, val in stats.items():
+                        total_stats[key] = total_stats.get(key, 0) + val
+                self.add_log(job_id, "success", f"收藏同步完成: 新增 {total_stats.get('novels', 0)} 本, 跳过 {total_stats.get('skipped', 0)} 本")
+                return total_stats
+
+            elif task_type == "following_series":
+                self.add_log(job_id, "info", "=== 开始同步关注用户系列 ===")
+                stats = service.sync_following_novels(
+                    download_assets=settings.sync.download_assets,
+                    write_markdown=settings.sync.write_markdown,
+                    write_raw_text=settings.sync.write_raw_text,
+                    progress_callback=on_progress,
+                    novels_only=False,
+                )
+                self.add_log(job_id, "success", "关注用户系列同步完成")
+                return stats
+
+            elif task_type == "following_users":
+                self.add_log(job_id, "info", "=== 开始同步关注用户列表 ===")
+                next_query: dict[str, Any] | None = {"restrict": "public"}
+                page_count = 0
+                users_count = 0
+                while next_query:
+                    result = api.user_following(**next_query)
+                    page_count += 1
+                    self.add_log(job_id, "info", f"获取关注列表第 {page_count} 页...")
+                    for preview in (getattr(result, "user_previews", []) or []):
+                        user = getattr(preview, "user", preview)
+                        uid = int(getattr(user, "id", 0))
+                        if uid:
+                            from .models import UserRecord
+                            from .utils_hashing import stable_json_dumps
+                            from .sync_engine import _to_plain
+                            db.upsert_user(UserRecord(
+                                user_id=uid,
+                                name=getattr(user, "name", str(uid)),
+                                account=getattr(user, "account", None),
+                                raw_json=stable_json_dumps(_to_plain(user)),
+                            ))
+                            users_count += 1
+                    next_query = api.parse_qs(getattr(result, "next_url", None))
+                    if next_query:
+                        time.sleep(settings.sync.delay_seconds_between_pages)
+                self.add_log(job_id, "success", f"关注用户列表同步完成: 更新 {users_count} 位用户")
+                return {"users": users_count}
+
+            elif task_type == "following_novels":
+                self.add_log(job_id, "info", "=== 开始同步关注用户小说 ===")
+                users_limit = settings.sync.auto_sync_following_novels_users_limit
+                limit_text = f"限制 {users_limit} 位用户" if users_limit > 0 else "全部用户"
+                self.add_log(job_id, "info", f"开始扫描关注用户的小说 ({limit_text})...")
+                stats = service.sync_following_novels(
+                    download_assets=settings.sync.download_assets,
+                    write_markdown=settings.sync.write_markdown,
+                    write_raw_text=settings.sync.write_raw_text,
+                    progress_callback=on_progress,
+                    users_limit=users_limit,
+                )
+                self.add_log(job_id, "success", f"关注用户小说同步完成: 同步 {stats.get('novels', 0)} 本, 跳过 {stats.get('skipped', 0)} 本")
+                return stats
+
+            elif task_type == "subscribed_series":
+                self.add_log(job_id, "info", "=== 开始同步追更系列 ===")
+                stats = service.sync_subscribed_series(
+                    limit=settings.sync.series_sync_limit,
+                    progress_callback=on_progress,
+                )
+                self.add_log(job_id, "success", f"追更系列同步完成: {stats.get('series_synced', 0)} 个系列")
+                return stats
+
+            else:
+                self.add_log(job_id, "error", f"未知任务类型: {task_type}")
+                return {}
+        finally:
+            db.close()
 
 
 class SettingsManager:
@@ -1276,7 +1409,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             # 创建任务日志
             db = Database(current_settings.storage.db_path)
             db.init_schema()
-            job = sync_job_manager.start_job([task_name])
+            job = sync_job_manager.start_job([internal_type])
             log_id = db.create_task_log(
                 task_type=internal_type,
                 task_name=task_name,
