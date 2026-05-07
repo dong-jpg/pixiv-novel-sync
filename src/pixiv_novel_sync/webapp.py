@@ -39,6 +39,7 @@ class SyncJobState:
     task_list: list[str] = field(default_factory=list)  # 任务列表
     current_task_index: int = 0  # 当前执行的任务索引
     is_auto_sync: bool = False  # 是否是定时任务
+    log_id: int | None = None  # 关联的日志 ID
 
 
 @dataclass(slots=True)
@@ -647,12 +648,33 @@ class SyncJobManager:
             job.status = "succeeded"
             job.message = "同步完成"
             job.stats = stats
-            self.add_log(job_id, "success", f"同步完成: {stats.get('novels', 0)} 本小说, {stats.get('assets_downloaded', 0)} 个资源")
+            self.add_log(job_id, "success", f"同步完成：{stats.get('novels', 0)} 本小说，{stats.get('assets_downloaded', 0)} 个资源")
+            
+            # 更新任务日志
+            if job.log_id:
+                try:
+                    db = Database(settings.storage.db_path)
+                    db.init_schema()
+                    db.update_task_log(job.log_id, "completed", stats=stats, logs=job.logs)
+                    db.close()
+                except Exception as e:
+                    logger.error("更新任务日志失败：%s", e)
         except Exception as exc:
             job.status = "failed"
             job.message = "同步失败"
             job.error = str(exc)
-            self.add_log(job_id, "error", f"同步失败: {exc}")
+            self.add_log(job_id, "error", f"同步失败：{exc}")
+            
+            # 更新任务日志（失败）
+            if job.log_id:
+                try:
+                    settings = load_settings(self.config_path, self.env_path)
+                    db = Database(settings.storage.db_path)
+                    db.init_schema()
+                    db.update_task_log(job.log_id, "failed", error_message=str(exc), logs=job.logs)
+                    db.close()
+                except Exception as e:
+                    logger.error("更新任务日志失败：%s", e)
         finally:
             job.finished_at = time.time()
 
@@ -798,6 +820,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.get("/dashboard/settings")
     def dashboard_settings_page():
         return render_template("dashboard_settings.html")
+
+    @app.get("/dashboard/logs")
+    def dashboard_logs_page():
+        return render_template("dashboard_logs.html")
 
     @app.post("/api/token-jobs")
     def create_token_job():
@@ -1173,7 +1199,19 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             task_list.append("同步追更系列")
         
         try:
+            # 创建任务日志
+            db = Database(current_settings.storage.db_path)
+            db.init_schema()
             job = sync_job_manager.start_job(task_list)
+            # 记录任务开始（在 job 启动后）
+            log_id = db.create_task_log(
+                task_type="manual",
+                task_name=task_list[0] if task_list else "手动同步",
+                job_id=job.job_id,
+                is_auto_sync=False
+            )
+            job.log_id = log_id
+            db.close()
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
         return jsonify({"ok": True, "message": job.message, "job": _job_to_dict(job)})
@@ -1217,6 +1255,39 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         job_id = request.args.get("job_id", "").strip()
         job = sync_job_manager.get_job(job_id) if job_id else sync_job_manager.latest_job()
         return jsonify({"job": _job_to_dict(job)})
+
+    @app.post("/api/dashboard/sync/<task_type>")
+    def dashboard_sync_single(task_type: str):
+        """手动触发单个同步任务"""
+        task_map = {
+            "bookmark": ("bookmark", "同步收藏"),
+            "following_users": ("following_users", "同步关注用户"),
+            "following_novels": ("following_novels", "同步关注小说"),
+            "following_series": ("following_series", "同步关注系列"),
+        }
+        
+        if task_type not in task_map:
+            return jsonify({"error": "不支持的任务类型"}), 400
+        
+        internal_type, task_name = task_map[task_type]
+        current_settings = settings_manager.load(env_path=env_path)
+        
+        try:
+            # 创建任务日志
+            db = Database(current_settings.storage.db_path)
+            db.init_schema()
+            job = sync_job_manager.start_job([task_name])
+            log_id = db.create_task_log(
+                task_type=internal_type,
+                task_name=task_name,
+                job_id=job.job_id,
+                is_auto_sync=False
+            )
+            job.log_id = log_id
+            db.close()
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"ok": True, "message": "任务已启动", "job": _job_to_dict(job)})
 
     @app.post("/api/dashboard/sync/following")
     def dashboard_sync_following():
@@ -1330,7 +1401,36 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             return jsonify({"ok": True, "message": "正在停止当前任务"})
         return jsonify({"ok": False, "message": "当前没有正在执行的定时任务"})
 
-    @app.get("/api/cache/status")
+    @app.get("/api/dashboard/logs")
+    def get_logs():
+        """获取任务日志列表"""
+        try:
+            page = request.args.get("page", 1, type=int)
+            page_size = request.args.get("page_size", 20, type=int)
+            task_type = request.args.get("task_type")
+            is_auto = request.args.get("is_auto")
+            days = request.args.get("days", 3, type=int)
+            
+            is_auto_sync = None
+            if is_auto == "true":
+                is_auto_sync = True
+            elif is_auto == "false":
+                is_auto_sync = False
+            
+            with db_manager.get_db() as db:
+                result = db.get_task_logs(
+                    page=page,
+                    page_size=page_size,
+                    task_type=task_type,
+                    is_auto_sync=is_auto_sync,
+                    days=days
+                )
+            return jsonify(result)
+        except Exception as e:
+            logger.error("获取日志失败：%s", e)
+            return jsonify({"error": str(e)}), 500
+
+    @app.get("/api/dashboard/cache/status")
     def cache_status():
         import shutil
         cache_dir = Path("/var/cache/nginx/pixiv_img")

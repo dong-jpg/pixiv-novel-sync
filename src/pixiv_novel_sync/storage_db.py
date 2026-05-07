@@ -96,6 +96,26 @@ class Database:
                 author_name,
                 body
             );
+
+            CREATE TABLE IF NOT EXISTS task_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_type TEXT NOT NULL,
+                task_name TEXT NOT NULL,
+                job_id TEXT,
+                status TEXT NOT NULL DEFAULT 'running',
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                duration_seconds REAL,
+                stats_json TEXT,
+                error_message TEXT,
+                logs_json TEXT,
+                is_auto_sync INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_task_logs_type ON task_logs(task_type);
+            CREATE INDEX IF NOT EXISTS idx_task_logs_started_at ON task_logs(started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_task_logs_auto_sync ON task_logs(is_auto_sync);
             """
         )
         # 迁移：为旧版 users 表添加 status 和 last_checked_at 字段
@@ -777,6 +797,101 @@ class Database:
             );
             """
         )
+        self.conn.commit()
+
+    def create_task_log(self, task_type: str, task_name: str, job_id: str | None = None, is_auto_sync: bool = False) -> int:
+        """创建任务日志记录"""
+        cursor = self.conn.execute(
+            """
+            INSERT INTO task_logs (task_type, task_name, job_id, status, started_at, is_auto_sync)
+            VALUES (?, ?, ?, 'running', datetime('now'), ?)
+            """,
+            (task_type, task_name, job_id, 1 if is_auto_sync else 0)
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def update_task_log(self, log_id: int, status: str, stats: dict[str, Any] | None = None,
+                       error_message: str | None = None, logs: list[dict[str, Any]] | None = None) -> None:
+        """更新任务日志"""
+        self.conn.execute(
+            """
+            UPDATE task_logs
+            SET status = ?,
+                finished_at = datetime('now'),
+                duration_seconds = (julianday(datetime('now')) - julianday(started_at)) * 86400,
+                stats_json = ?,
+                error_message = ?,
+                logs_json = ?
+            WHERE id = ?
+            """,
+            (status, json.dumps(stats) if stats else None, error_message, json.dumps(logs) if logs else None, log_id)
+        )
+        self.conn.commit()
+
+    def get_task_logs(self, page: int = 1, page_size: int = 20,
+                     task_type: str | None = None, is_auto_sync: bool | None = None,
+                     days: int = 3) -> dict[str, Any]:
+        """获取任务日志列表"""
+        offset = (page - 1) * page_size
+        
+        conditions = ["started_at >= datetime('now', ? || ' days')"]
+        params: list[Any] = [f"-{days}"]
+        
+        if task_type:
+            conditions.append("task_type = ?")
+            params.append(task_type)
+        
+        if is_auto_sync is not None:
+            conditions.append("is_auto_sync = ?")
+            params.append(1 if is_auto_sync else 0)
+        
+        where_clause = " AND ".join(conditions)
+        
+        # 获取总数
+        total = self.conn.execute(
+            f"SELECT COUNT(*) FROM task_logs WHERE {where_clause}", params
+        ).fetchone()[0]
+        
+        # 获取数据
+        rows = self.conn.execute(
+            f"""
+            SELECT * FROM task_logs
+            WHERE {where_clause}
+            ORDER BY started_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            params + [page_size, offset]
+        ).fetchall()
+        
+        total_pages = (total + page_size - 1) // page_size
+        
+        result = []
+        for row in rows:
+            item = dict(row)
+            if item.get("stats_json"):
+                item["stats"] = json.loads(item["stats_json"])
+            if item.get("logs_json"):
+                item["logs"] = json.loads(item["logs_json"])
+            item["is_auto_sync"] = bool(item["is_auto_sync"])
+            result.append(item)
+        
+        return {
+            "items": result,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+        }
+
+    def cleanup_old_task_logs(self, days: int = 3) -> int:
+        """清理旧的任务日志"""
+        cursor = self.conn.execute(
+            "DELETE FROM task_logs WHERE started_at < datetime('now', ? || ' days')",
+            (f"-{days}",)
+        )
+        self.conn.commit()
+        return cursor.rowcount
         self.conn.commit()
 
     def clear_sync_check_list(self) -> None:
