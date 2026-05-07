@@ -797,8 +797,11 @@ class SyncJobManager:
 
             elif task_type == "subscribed_series":
                 self.add_log(job_id, "info", "=== 开始同步追更系列 ===")
+                # 优先使用前端传入的 limit，否则使用设置中的默认值
+                job = self.get_job(job_id)
+                limit = (job.progress.get("series_limit") if job else None) or settings.sync.series_sync_limit
                 stats = service.sync_subscribed_series(
-                    limit=settings.sync.series_sync_limit,
+                    limit=limit,
                     progress_callback=on_progress,
                 )
                 self.add_log(job_id, "success", f"追更系列同步完成: {stats.get('series_synced', 0)} 个系列")
@@ -1458,36 +1461,36 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.post("/api/dashboard/sync/subscribed-series")
     def dashboard_sync_subscribed_series():
         current_settings = settings_manager.load(env_path=env_path)
-        auth = PixivAuthManager(current_settings.pixiv)
-        api, auth_result = auth.login()
-        if auth_result.user_id is None:
-            return jsonify({"error": "Unable to determine user ID"}), 400
 
         # 从请求体获取 limit 参数
         req_data = request.get_json(silent=True) or {}
         limit = int(req_data.get("limit", 0) or 0)
 
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
-        storage = FileStorage(current_settings)
-        storage.ensure_dirs([
-            current_settings.storage.public_dir,
-            current_settings.storage.private_dir,
-            current_settings.storage.db_path.parent
-        ])
+        # 检查是否有任务正在运行
+        with sync_job_manager._lock:
+            running = [job for job in sync_job_manager._jobs.values() if job.status == "running"]
+            if running:
+                return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
 
         try:
-            service = BookmarkNovelSyncService(
-                api=api, db=db, storage=storage, settings=current_settings
+            job = sync_job_manager.start_job(["subscribed_series"])
+            # 将 limit 存入 job 的 progress 中，供 _run_single_sync 使用
+            job.progress["series_limit"] = limit
+
+            # 创建任务日志
+            db = Database(current_settings.storage.db_path)
+            db.init_schema()
+            log_id = db.create_task_log(
+                task_type="subscribed_series",
+                task_name="同步追更系列",
+                job_id=job.job_id,
+                is_auto_sync=False
             )
-            stats = service.sync_subscribed_series(limit=limit)
-            logger.info("Subscribed series sync finished: %s", json.dumps(stats, ensure_ascii=False))
-            return jsonify({"ok": True, "stats": stats})
-        except Exception as exc:
-            logger.exception("Subscribed series sync failed")
-            return jsonify({"error": str(exc)}), 500
-        finally:
+            job.log_id = log_id
             db.close()
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"ok": True, "message": "任务已启动", "job": _job_to_dict(job)})
 
     @app.get("/api/dashboard/auto-sync/status")
     def auto_sync_status():
