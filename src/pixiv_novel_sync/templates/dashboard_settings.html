@@ -247,6 +247,17 @@
             </div>
           </div>
         </div>
+
+        <div class="section">
+          <div class="section-title">用户同步限制</div>
+          <div class="fields">
+            <div class="field">
+              <label for="followingNovelsUsersLimit">每轮同步用户数</label>
+              <input type="number" id="followingNovelsUsersLimit" min="0" placeholder="0">
+              <div class="hint">0 = 全部用户</div>
+            </div>
+          </div>
+        </div>
         
         <button class="btn" id="saveLimits">保存限速设置</button>
         <div class="message" id="msgLimits"></div>
@@ -319,11 +330,6 @@
             <div class="field">
               <label for="autoSyncSubscribedSeriesInterval">追更间隔</label>
               <input type="number" id="autoSyncSubscribedSeriesInterval" min="1" max="24" placeholder="6">
-            </div>
-            <div class="field">
-              <label for="autoSyncFollowingNovelsUsersLimit">每轮同步用户数</label>
-              <input type="number" id="autoSyncFollowingNovelsUsersLimit" min="0" placeholder="0">
-              <div class="hint">0 = 全部用户</div>
             </div>
           </div>
         </div>
@@ -472,6 +478,7 @@
         valueOf("#seriesDelay", s.delay_seconds_between_series ?? 3);
         valueOf("#chapterDelay", s.delay_seconds_between_chapters ?? 1);
         valueOf("#skipDelay", s.delay_seconds_between_skips ?? 0.1);
+        valueOf("#followingNovelsUsersLimit", s.auto_sync_following_novels_users_limit ?? 0);
         
         // 定时同步
         valueOf("#autoSyncTimezone", s.auto_sync_timezone || 'UTC');
@@ -484,7 +491,6 @@
         valueOf("#autoSyncFollowingListInterval", s.auto_sync_following_list_interval_hours ?? 24);
         valueOf("#autoSyncFollowingNovelsInterval", s.auto_sync_following_novels_interval_hours ?? 6);
         valueOf("#autoSyncSubscribedSeriesInterval", s.auto_sync_subscribed_series_interval_hours ?? 6);
-        valueOf("#autoSyncFollowingNovelsUsersLimit", s.auto_sync_following_novels_users_limit ?? 0);
         valueOf("#autoSyncBookmarksCron", s.auto_sync_bookmarks_cron ?? '');
         valueOf("#autoSyncFollowingListCron", s.auto_sync_following_list_cron ?? '');
         valueOf("#autoSyncFollowingNovelsCron", s.auto_sync_following_novels_cron ?? '');
@@ -528,6 +534,7 @@
           delay_seconds_between_series: $("#seriesDelay").value.trim(),
           delay_seconds_between_chapters: $("#chapterDelay").value.trim(),
           delay_seconds_between_skips: $("#skipDelay").value.trim(),
+          auto_sync_following_novels_users_limit: $("#followingNovelsUsersLimit").value.trim(),
         };
       }
 
@@ -545,7 +552,6 @@
           auto_sync_following_list_cron: $("#autoSyncFollowingListCron").value.trim(),
           auto_sync_following_novels_interval_hours: $("#autoSyncFollowingNovelsInterval").value.trim(),
           auto_sync_following_novels_cron: $("#autoSyncFollowingNovelsCron").value.trim(),
-          auto_sync_following_novels_users_limit: $("#autoSyncFollowingNovelsUsersLimit").value.trim(),
           auto_sync_user_status_cron: $("#autoSyncUserStatusCron").value.trim(),
           auto_sync_subscribed_series_interval_hours: $("#autoSyncSubscribedSeriesInterval").value.trim(),
           auto_sync_subscribed_series_cron: $("#autoSyncSubscribedSeriesCron").value.trim(),
