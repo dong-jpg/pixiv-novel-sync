@@ -747,7 +747,6 @@ class SyncJobManager:
                     write_markdown=settings.sync.write_markdown,
                     write_raw_text=settings.sync.write_raw_text,
                     progress_callback=on_progress,
-                    novels_only=False,
                 )
                 self.add_log(job_id, "success", "关注用户系列同步完成")
                 return stats
