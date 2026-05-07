@@ -103,13 +103,14 @@ class BookmarkNovelSyncService:
         self.db.clear_sync_check_list()
         
         all_novel_ids = []
-        
+        bookmark_ids: list[int] = []
+        following_ids: list[int] = []
+
         # 1. 检查收藏列表
         if self.settings.sync.sync_bookmarks:
             if progress_callback:
                 progress_callback("phase", {"phase": "检查收藏列表"})
             
-            bookmark_ids = []
             for restrict in restricts:
                 if progress_callback:
                     progress_callback("page", {"page": 1, "restrict": restrict})
@@ -143,7 +144,6 @@ class BookmarkNovelSyncService:
             if progress_callback:
                 progress_callback("phase", {"phase": "检查关注用户小说"})
             
-            following_ids = []
             current_user_id = self.settings.pixiv.user_id
             if current_user_id:
                 next_following_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
@@ -275,14 +275,11 @@ class BookmarkNovelSyncService:
                 stats["new"] += 1
         
         # 更新各分类统计
-        stats["bookmarks"]["existing"] = len([id for id in range(stats["bookmarks"]["total"]) if id in existing_ids])
+        stats["bookmarks"]["existing"] = len([nid for nid in bookmark_ids if nid in existing_ids])
         stats["bookmarks"]["new"] = stats["bookmarks"]["total"] - stats["bookmarks"]["existing"]
-        
-        stats["following_novels"]["existing"] = len([id for id in range(stats["following_novels"]["total"]) if id in existing_ids])
+
+        stats["following_novels"]["existing"] = len([nid for nid in following_ids if nid in existing_ids])
         stats["following_novels"]["new"] = stats["following_novels"]["total"] - stats["following_novels"]["existing"]
-        
-        stats["subscribed_series"]["existing"] = len([id for id in range(stats["subscribed_series"]["total"]) if id in existing_ids])
-        stats["subscribed_series"]["new"] = stats["subscribed_series"]["total"] - stats["subscribed_series"]["existing"]
         
         if progress_callback:
             progress_callback("phase", {"phase": f"检查完成: {stats['new']} 本新小说, {stats['existing']} 本已存在"})

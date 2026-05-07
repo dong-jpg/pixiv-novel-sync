@@ -211,22 +211,22 @@ def _merge_stats(*items: dict[str, int]) -> dict[str, int]:
 
 def run_check_bookmarks_task(settings: Settings, job_manager: Any, job_id: str) -> None:
     """独立的预检查任务：扫描所有需要同步的内容，标记哪些已存在"""
-    auth = PixivAuthManager(settings.pixiv)
-    job_manager.add_log(job_id, "info", "正在登录 Pixiv...")
-    job_manager.update_progress(job_id, phase="登录", message="正在登录 Pixiv...")
-    
-    api, auth_result = auth.login()
-    if auth_result.user_id is None:
-        raise RuntimeError("Unable to determine PIXIV_USER_ID. Set PIXIV_USER_ID in .env.")
-    
-    job_manager.add_log(job_id, "success", f"登录成功, 用户ID: {auth_result.user_id}")
-
-    db = Database(settings.storage.db_path)
-    db.init_schema()
-    storage = FileStorage(settings)
-    storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
-
+    db = None
     try:
+        auth = PixivAuthManager(settings.pixiv)
+        job_manager.add_log(job_id, "info", "正在登录 Pixiv...")
+        job_manager.update_progress(job_id, phase="登录", message="正在登录 Pixiv...")
+
+        api, auth_result = auth.login()
+        if auth_result.user_id is None:
+            raise RuntimeError("Unable to determine PIXIV_USER_ID. Set PIXIV_USER_ID in .env.")
+
+        job_manager.add_log(job_id, "success", f"登录成功, 用户ID: {auth_result.user_id}")
+
+        db = Database(settings.storage.db_path)
+        db.init_schema()
+        storage = FileStorage(settings)
+        storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
         service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
         
         def on_progress(event_type: str, data: dict[str, Any]) -> None:
@@ -256,7 +256,23 @@ def run_check_bookmarks_task(settings: Settings, job_manager: Any, job_id: str) 
             job_manager.add_log(job_id, "info", f"  追更系列: {check_stats['subscribed_series']['total']} 个 (新 {check_stats['subscribed_series']['new']}, 已存在 {check_stats['subscribed_series']['existing']})")
         
         job_manager.add_log(job_id, "info", "预检查结果已保存，后续同步将自动跳过已存在的小说")
-        
+
+        # 标记任务完成
+        job = job_manager.get_job(job_id)
+        if job:
+            job.status = "succeeded"
+            job.message = "预检查完成"
+            job.stats = check_stats
+            job.finished_at = time.time()
+
         return check_stats
+    except Exception as exc:
+        job_manager.add_log(job_id, "error", f"预检查失败: {exc}")
+        job = job_manager.get_job(job_id)
+        if job:
+            job.status = "failed"
+            job.message = f"预检查失败: {exc}"
+            job.finished_at = time.time()
     finally:
-        db.close()
+        if db:
+            db.close()
