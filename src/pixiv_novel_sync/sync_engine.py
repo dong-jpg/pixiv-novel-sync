@@ -716,10 +716,14 @@ class BookmarkNovelSyncService:
                 series_list = series_list[:limit]
                 logger.info("Limiting to first %d series", limit)
             logger.info("Fetching details for %d series via App API", len(series_list))
+            series_delay = self.settings.sync.delay_seconds_between_series
             _first_logged = False
-            for item in series_list:
+            for series_idx, item in enumerate(series_list):
                 sid = item.get("series_id")
                 cover_from_web = item.get("cover_url", "")
+
+                if progress_callback:
+                    progress_callback("phase", {"phase": f"同步系列 {series_idx + 1}/{len(series_list)} (ID: {sid})"})
                 try:
                     series_data = self.api.novel_series(int(sid))
                     if series_data and not _first_logged:
@@ -792,6 +796,8 @@ class BookmarkNovelSyncService:
                                 all_novel_items = list(series_data.get("novels", []))
                                 # 处理分页
                                 next_url = series_data.get("next_url")
+                                if progress_callback:
+                                    progress_callback("phase", {"phase": f"系列 {title or sid}: 共 {len(all_novel_items)} 章"})
                                 while next_url:
                                     try:
                                         next_resp = self.api.auth_request_call("GET", next_url)
@@ -883,6 +889,8 @@ class BookmarkNovelSyncService:
                                 
                                 if chapter_count:
                                     logger.info("  Synced %d chapters with text for series %s", chapter_count, sid)
+                                    if progress_callback:
+                                        progress_callback("phase", {"phase": f"系列 {title or sid}: 完成 {chapter_count} 章"})
                         else:
                             logger.warning("No detail found for series %s, keys: %s", sid, list(series_data.keys()) if isinstance(series_data, dict) else "N/A")
                             self.db.upsert_subscribed_series(
@@ -899,8 +907,7 @@ class BookmarkNovelSyncService:
                     stats["series_synced"] += 1
                 
                 # 系列之间的延迟
-                series_delay = self.settings.sync.delay_seconds_between_series
-                if series_delay > 0 and idx < len(series_list) - 1:
+                if series_delay > 0 and series_idx < len(series_list) - 1:
                     time.sleep(series_delay)
             logger.info("Subscribed series sync completed: %d series", stats["series_synced"])
             return stats
