@@ -717,13 +717,24 @@ class BookmarkNovelSyncService:
                 logger.info("Limiting to first %d series", limit)
             logger.info("Fetching details for %d series via App API", len(series_list))
             series_delay = self.settings.sync.delay_seconds_between_series
+            skip_delay = self.settings.sync.delay_seconds_between_skips
             _first_logged = False
-            for series_idx, item in enumerate(series_list):
+            synced_series_count = 0  # 实际有新内容的系列数（跳过的不算）
+            series_idx = 0
+            # 使用 while 循环以支持顺延：当 limit > 0 时，全部跳过的系列不计入 limit
+            series_queue = list(series_list)
+            queue_idx = 0
+            while queue_idx < len(series_queue):
+                if limit > 0 and synced_series_count >= limit:
+                    break
+                item = series_queue[queue_idx]
+                queue_idx += 1
+                series_idx += 1
                 sid = item.get("series_id")
                 cover_from_web = item.get("cover_url", "")
 
                 if progress_callback:
-                    progress_callback("phase", {"phase": f"同步系列 {series_idx + 1}/{len(series_list)} (ID: {sid})"})
+                    progress_callback("phase", {"phase": f"同步系列 {series_idx} (已同步 {synced_series_count}{f'/{limit}' if limit > 0 else ''}) (ID: {sid})"})
                 try:
                     series_data = self.api.novel_series(int(sid))
                     if series_data and not _first_logged:
@@ -783,7 +794,6 @@ class BookmarkNovelSyncService:
                                     user_id=user_id, name=user_name,
                                     account=user_account, raw_json="{}",
                                 ))
-                            stats["series_synced"] += 1
                             logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
                             
                             # 同步系列中的所有章节（含正文）
@@ -828,6 +838,8 @@ class BookmarkNovelSyncService:
                                         skipped_count += 1
                                         if progress_callback:
                                             progress_callback("phase", {"phase": f"  [{idx+1}/{len(all_novel_items)}] 跳过已存在: {novel_id}"})
+                                        if skip_delay > 0:
+                                            time.sleep(skip_delay)
                                         continue
 
                                     try:
@@ -902,25 +914,27 @@ class BookmarkNovelSyncService:
                                     logger.info("  Synced %d chapters, skipped %d for series %s", chapter_count, skipped_count, sid)
                                     if progress_callback:
                                         progress_callback("phase", {"phase": f"系列 {title or sid}: 同步 {chapter_count} 章, 跳过 {skipped_count} 章"})
+                                # 只有实际同步了新章节的系列才计入 synced_series_count（顺延机制）
+                                if chapter_count > 0:
+                                    synced_series_count += 1
                         else:
                             logger.warning("No detail found for series %s, keys: %s", sid, list(series_data.keys()) if isinstance(series_data, dict) else "N/A")
                             self.db.upsert_subscribed_series(
                                 series_id=int(sid), title="", description="",
                                 user_id=0, cover_url=cover_from_web, total_novels=0,
                             )
-                            stats["series_synced"] += 1
                 except Exception as e:
                     logger.warning("Failed to fetch series %s: %s", sid, str(e))
                     self.db.upsert_subscribed_series(
                         series_id=int(sid), title="", description="",
                         user_id=0, cover_url=cover_from_web, total_novels=0,
                     )
-                    stats["series_synced"] += 1
-                
+
                 # 系列之间的延迟
-                if series_delay > 0 and series_idx < len(series_list) - 1:
+                if series_delay > 0 and queue_idx < len(series_queue):
                     time.sleep(series_delay)
-            logger.info("Subscribed series sync completed: %d series", stats["series_synced"])
+            stats["series_synced"] = synced_series_count
+            logger.info("Subscribed series sync completed: %d series with new content", synced_series_count)
             return stats
         
         # 方式2: 从已同步的小说中提取系列
