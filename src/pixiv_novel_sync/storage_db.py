@@ -530,10 +530,11 @@ class Database:
             INSERT INTO series (series_id, title, description, user_id, cover_url, total_novels, is_subscribed, last_seen_at)
             VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
             ON CONFLICT(series_id) DO UPDATE SET
-                title = excluded.title,
-                description = excluded.description,
+                title = CASE WHEN excluded.title != '' THEN excluded.title ELSE series.title END,
+                description = CASE WHEN excluded.description != '' THEN excluded.description ELSE series.description END,
+                user_id = CASE WHEN excluded.user_id != 0 THEN excluded.user_id ELSE series.user_id END,
                 cover_url = COALESCE(excluded.cover_url, series.cover_url),
-                total_novels = excluded.total_novels,
+                total_novels = CASE WHEN excluded.total_novels > 0 THEN excluded.total_novels ELSE series.total_novels END,
                 is_subscribed = 1,
                 last_seen_at = CURRENT_TIMESTAMP
             """,
