@@ -222,7 +222,20 @@
         second: '2-digit'
       });
     }
-    
+
+    function formatTime(dateStr) {
+      if (!dateStr) return '-';
+      // 兼容旧格式 "HH:MM:SS" 和新格式 ISO "YYYY-MM-DDTHH:MM:SS"
+      if (/^\d{2}:\d{2}:\d{2}$/.test(dateStr)) return dateStr;
+      const date = new Date(dateStr);
+      if (isNaN(date)) return dateStr;
+      return date.toLocaleTimeString('zh-CN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+    }
+
     function formatDuration(seconds) {
       if (seconds === null || seconds === undefined) return '-';
       if (seconds < 60) return `${Math.round(seconds)}秒`;
@@ -387,7 +400,7 @@
           <div class="log-list">
             ${log.logs.map(entry => `
               <div class="log-item">
-                <span class="log-time">[${formatDate(entry.time)}]</span>
+                <span class="log-time">[${formatTime(entry.time)}]</span>
                 <span class="${entry.level === 'ERROR' ? 'log-error' : ''}">${entry.message}</span>
               </div>
             `).join('')}

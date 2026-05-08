@@ -634,7 +634,7 @@ class SyncJobManager:
             if job is None:
                 return
             log_entry = {
-                "time": time.strftime("%H:%M:%S"),
+                "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "level": level,
                 "message": message,
             }
