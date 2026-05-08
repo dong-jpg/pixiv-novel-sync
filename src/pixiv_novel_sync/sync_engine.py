@@ -712,9 +712,6 @@ class BookmarkNovelSyncService:
         
         # 方式1.5: 从 Web API 获取的 series_list 中，调用 App API 获取系列详情
         if series_list:
-            if limit > 0:
-                series_list = series_list[:limit]
-                logger.info("Limiting to first %d series", limit)
             logger.info("Fetching details for %d series via App API", len(series_list))
             series_delay = self.settings.sync.delay_seconds_between_series
             skip_delay = self.settings.sync.delay_seconds_between_skips
