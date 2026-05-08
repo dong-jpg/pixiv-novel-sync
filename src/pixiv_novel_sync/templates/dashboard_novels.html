@@ -126,6 +126,12 @@
       return '';
     }
 
+    function formatTextLength(chars) {
+      if (!chars || chars <= 0) return '0 字';
+      if (chars >= 10000) return (chars / 10000).toFixed(1) + ' 万字';
+      return chars.toLocaleString('zh-CN') + ' 字';
+    }
+
     async function loadNovels(page, category) {
       const resp = await fetch(`/api/dashboard/novels?page=${page}&category=${encodeURIComponent(category)}`);
       const data = await resp.json();
@@ -158,7 +164,7 @@
               <div class="content">
                 <a class="title-link" href="/dashboard/series/${encodeURIComponent(item.series_id)}">${escapeHtml(item.series_title || '未命名系列')}</a>
                 <div class="meta">${sourceBadge}作者：${escapeHtml(item.author_name || '未知')}</div>
-                <div class="meta">章节：${escapeHtml(item.chapter_count || 0)} 章</div>
+                <div class="meta">章节：${escapeHtml(item.chapter_count || 0)} 章 · ${formatTextLength(item.total_text_length || 0)}</div>
                 <div class="meta">更新于 ${escapeHtml(item.last_updated || '-')}</div>
               </div>
             </article>

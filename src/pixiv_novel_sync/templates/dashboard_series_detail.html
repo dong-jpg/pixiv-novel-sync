@@ -110,6 +110,12 @@
       });
     }
 
+    function formatTextLength(chars) {
+      if (!chars || chars <= 0) return '0 字';
+      if (chars >= 10000) return (chars / 10000).toFixed(1) + ' 万字';
+      return chars.toLocaleString('zh-CN') + ' 字';
+    }
+
     async function loadDetail() {
       const resp = await fetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`);
       const data = await resp.json();
@@ -133,7 +139,8 @@
           <h1 class="title">${escapeHtml(data.title || '未命名系列')}</h1>
           <div class="meta">
             <strong>作者：</strong>${escapeHtml(data.author_name || '未知')}<br>
-            <strong>章节：</strong>${escapeHtml(data.total_novels || 0)} 章
+            <strong>章节：</strong>${escapeHtml(data.total_novels || 0)} 章<br>
+            <strong>总字数：</strong>${formatTextLength(data.total_text_length || 0)}
             ${data.description ? '<br><strong>简介：</strong>' + escapeHtml(data.description) : ''}
           </div>
         </div>

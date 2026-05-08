@@ -610,7 +610,8 @@ class Database:
                 u.name AS author_name,
                 se.cover_url,
                 se.total_novels AS chapter_count,
-                se.last_seen_at AS last_updated
+                se.last_seen_at AS last_updated,
+                COALESCE((SELECT SUM(n.text_length) FROM novels n WHERE n.series_id = se.series_id), 0) AS total_text_length
             FROM series se
             LEFT JOIN users AS u ON u.user_id = se.user_id
             WHERE se.is_subscribed = 1
@@ -664,6 +665,9 @@ class Database:
                 (series_id,),
             ).fetchall()
         series_info["novels"] = [dict(row) for row in novels]
+        # 计算系列总字数
+        total_text_length = sum(row.get("text_length", 0) or 0 for row in series_info["novels"])
+        series_info["total_text_length"] = total_text_length
         return series_info
 
     def list_users(self, page: int = 1, page_size: int = 10, status: str = "all") -> dict[str, Any]:
