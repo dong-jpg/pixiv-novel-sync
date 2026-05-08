@@ -195,7 +195,7 @@ class AutoSyncScheduler:
     def _run_single_task(self, settings: Settings, task_name: str, sync_func_name: str) -> None:
         """执行单个定时任务"""
         logger.info("Starting auto sync task: %s", task_name)
-        
+
         # 创建任务记录
         if self.sync_job_manager:
             task_labels = {
@@ -207,7 +207,22 @@ class AutoSyncScheduler:
             }
             job = self.sync_job_manager.start_auto_job(task_name, task_labels.get(task_name, task_name))
             self._current_task_job_id = job.job_id
-            
+
+            # 创建数据库日志记录
+            try:
+                db = Database(settings.storage.db_path)
+                db.init_schema()
+                log_id = db.create_task_log(
+                    task_type=task_name,
+                    task_name=task_labels.get(task_name, task_name),
+                    job_id=job.job_id,
+                    is_auto_sync=True
+                )
+                job.log_id = log_id
+                db.close()
+            except Exception as e:
+                logger.warning("Failed to create task log for %s: %s", task_name, e)
+
             try:
                 # 执行对应的同步函数
                 func = getattr(self, sync_func_name)
@@ -221,6 +236,15 @@ class AutoSyncScheduler:
                 logger.error("Auto sync task %s failed: %s", task_name, str(e))
             finally:
                 job.finished_at = time.time()
+                # 更新数据库日志
+                if job.log_id:
+                    try:
+                        db = Database(settings.storage.db_path)
+                        db.init_schema()
+                        db.update_task_log(job.log_id, job.status, stats=job.stats, logs=job.logs)
+                        db.close()
+                    except Exception as e:
+                        logger.warning("Failed to update task log: %s", e)
                 with self._lock:
                     self._current_task_job_id = None
                     self._stop_current_task = False
