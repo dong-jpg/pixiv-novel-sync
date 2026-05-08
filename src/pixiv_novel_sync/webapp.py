@@ -114,6 +114,15 @@ class AutoSyncScheduler:
             try:
                 settings = load_settings(self.config_path, self.env_path)
                 
+                # 清理超过3天的任务日志
+                try:
+                    db = Database(settings.storage.db_path)
+                    db.init_schema()
+                    db.cleanup_old_task_logs(days=3)
+                    db.close()
+                except Exception as e:
+                    logger.warning("Failed to cleanup old task logs: %s", e)
+
                 now = time.time()
                 timezone = settings.sync.auto_sync_timezone
                 
@@ -631,8 +640,6 @@ class SyncJobManager:
                 task_list = []
                 if settings.sync.sync_bookmarks:
                     task_list.append("bookmark")
-                if settings.sync.sync_following_series:
-                    task_list.append("following_series")
                 if settings.sync.sync_following_users:
                     task_list.append("following_users")
                 if settings.sync.sync_following_novels:
@@ -740,17 +747,6 @@ class SyncJobManager:
                 self.add_log(job_id, "success", f"收藏同步完成: 新增 {total_stats.get('novels', 0)} 本, 跳过 {total_stats.get('skipped', 0)} 本")
                 return total_stats
 
-            elif task_type == "following_series":
-                self.add_log(job_id, "info", "=== 开始同步关注用户系列 ===")
-                stats = service.sync_following_novels(
-                    download_assets=settings.sync.download_assets,
-                    write_markdown=settings.sync.write_markdown,
-                    write_raw_text=settings.sync.write_raw_text,
-                    progress_callback=on_progress,
-                )
-                self.add_log(job_id, "success", "关注用户系列同步完成")
-                return stats
-
             elif task_type == "following_users":
                 self.add_log(job_id, "info", "=== 开始同步关注用户列表 ===")
                 next_query: dict[str, Any] | None = {"restrict": "public"}
@@ -806,6 +802,27 @@ class SyncJobManager:
                 )
                 self.add_log(job_id, "success", f"追更系列同步完成: {stats.get('series_synced', 0)} 个系列")
                 return stats
+
+            elif task_type == "user_status":
+                self.add_log(job_id, "info", "=== 开始检查用户状态 ===")
+                users = db.list_users(page=1, page_size=1000)
+                user_list = users.get("items", [])
+                self.add_log(job_id, "info", f"共 {len(user_list)} 个用户需要检查")
+                checked_count = 0
+                for user in user_list:
+                    uid = user.get("user_id")
+                    if not uid:
+                        continue
+                    try:
+                        status = _check_pixiv_user_status(api, uid)
+                        db.upsert_user_status(uid, status)
+                        checked_count += 1
+                        self.add_log(job_id, "info", f"[{checked_count}/{len(user_list)}] {user.get('name', uid)}: {status}")
+                        time.sleep(settings.sync.delay_seconds_between_skips)
+                    except Exception as e:
+                        self.add_log(job_id, "warning", f"检查用户 {uid} 失败: {e}")
+                self.add_log(job_id, "success", f"用户状态检查完成: {checked_count} 个用户")
+                return {"users_checked": checked_count}
 
             else:
                 self.add_log(job_id, "error", f"未知任务类型: {task_type}")
@@ -1398,7 +1415,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             "bookmark": ("bookmark", "同步收藏"),
             "following_users": ("following_users", "同步关注用户"),
             "following_novels": ("following_novels", "同步关注小说"),
-            "following_series": ("following_series", "同步关注系列"),
+            "user_status": ("user_status", "检查用户状态"),
         }
         
         if task_type not in task_map:

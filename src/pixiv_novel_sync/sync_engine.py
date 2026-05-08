@@ -453,9 +453,12 @@ class BookmarkNovelSyncService:
 
     def sync_following_novels(self, download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None, users_limit: int = 0) -> dict[str, int]:
         stats = self._empty_stats()
+        max_items = self.settings.sync.max_items_per_run
+        max_pages = self.settings.sync.max_pages_per_run
         item_delay = self.settings.sync.delay_seconds_between_items
         page_delay = self.settings.sync.delay_seconds_between_pages
         users_processed = 0  # 已处理的用户数
+        synced_items = 0  # 实际同步的数量（不包括跳过的）
 
         logger.info("Syncing novels from followed users (users_limit=%d)", users_limit)
         current_user_id = self.settings.pixiv.user_id
@@ -469,6 +472,10 @@ class BookmarkNovelSyncService:
         use_check_list = len(check_list) > 0
 
         while next_following_query:
+            # 检查是否达到最大页数限制
+            if max_pages is not None and following_page_count >= max_pages:
+                logger.info("Reached max_pages_per_run=%s, stopping pagination", max_pages)
+                return stats
             following_result = self.api.user_following(**next_following_query)
             following_page_count += 1
             if progress_callback:
@@ -479,6 +486,10 @@ class BookmarkNovelSyncService:
                 # 检查是否达到用户数限制
                 if users_limit > 0 and users_processed >= users_limit:
                     logger.info("Reached users_limit=%d, stopping sync", users_limit)
+                    return stats
+                # 检查是否达到实际同步数量限制
+                if max_items is not None and synced_items >= max_items:
+                    logger.info("Reached max_items_per_run=%s (synced), stopping sync", max_items)
                     return stats
                 
                 user = getattr(user_preview, "user", user_preview)
@@ -540,6 +551,10 @@ class BookmarkNovelSyncService:
                                 self.db.upsert_sync_check_item(novel_id, True)
                         
                         self._merge_stats(stats, counters)
+
+                        # 只有实际同步（非跳过）才计入 synced_items
+                        if not counters.get("skipped"):
+                            synced_items += 1
                         
                         if progress_callback:
                             progress_callback("novel_done", {
