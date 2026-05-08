@@ -815,13 +815,24 @@ class BookmarkNovelSyncService:
                                         break
                                 
                                 chapter_count = 0
+                                skipped_count = 0
                                 for idx, novel_item in enumerate(all_novel_items):
                                     if not isinstance(novel_item, dict):
                                         continue
                                     novel_id = int(novel_item.get("id", 0))
                                     if not novel_id:
                                         continue
+
+                                    # 检查是否已存在（跳过机制）
+                                    if self.db.novel_exists(novel_id):
+                                        skipped_count += 1
+                                        if progress_callback:
+                                            progress_callback("phase", {"phase": f"  [{idx+1}/{len(all_novel_items)}] 跳过已存在: {novel_id}"})
+                                        continue
+
                                     try:
+                                        if progress_callback:
+                                            progress_callback("phase", {"phase": f"  [{idx+1}/{len(all_novel_items)}] 同步章节: {novel_id}"})
                                         # 获取小说详情
                                         detail = self.api.novel_detail(novel_id)
                                         detail_novel = getattr(detail, "novel", None)
@@ -888,9 +899,9 @@ class BookmarkNovelSyncService:
                                         logger.warning("Failed to sync chapter %d: %s", novel_id, e)
                                 
                                 if chapter_count:
-                                    logger.info("  Synced %d chapters with text for series %s", chapter_count, sid)
+                                    logger.info("  Synced %d chapters, skipped %d for series %s", chapter_count, skipped_count, sid)
                                     if progress_callback:
-                                        progress_callback("phase", {"phase": f"系列 {title or sid}: 完成 {chapter_count} 章"})
+                                        progress_callback("phase", {"phase": f"系列 {title or sid}: 同步 {chapter_count} 章, 跳过 {skipped_count} 章"})
                         else:
                             logger.warning("No detail found for series %s, keys: %s", sid, list(series_data.keys()) if isinstance(series_data, dict) else "N/A")
                             self.db.upsert_subscribed_series(
