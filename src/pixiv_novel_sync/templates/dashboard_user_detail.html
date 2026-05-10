@@ -80,6 +80,7 @@
         <a href="/dashboard">首页</a>
         <a class="active" href="/dashboard/follows">关注</a>
         <a href="/dashboard/novels">小说</a>
+        <a href="/dashboard/logs">日志</a>
         <a href="/dashboard/settings">设置</a>
         <a href="/token-login">登录</a>
       </nav>
@@ -103,8 +104,7 @@
     <section class="card">
       <div class="card-title">
         <div class="tabs" style="display:flex;gap:4px;margin-bottom:0;border-bottom:none;padding-bottom:0;">
-          <button class="tab active" data-category="all" onclick="switchTab('all')">全部</button>
-          <button class="tab" data-category="single" onclick="switchTab('single')">单本</button>
+          <button class="tab active" data-category="single" onclick="switchTab('single')">单本</button>
           <button class="tab" data-category="series" onclick="switchTab('series')">系列</button>
         </div>
         <span id="novelCount" style="font-size:13px;color:var(--text-secondary);font-weight:400;"></span>
@@ -125,7 +125,7 @@
     const userId = Number(pathParts[pathParts.length - 1] || 0);
     let currentPage = 1;
     let totalPages = 1;
-    let currentCategory = 'all';
+    let currentCategory = 'single';
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>"]/g, function (ch) {
@@ -207,6 +207,7 @@
               ${cover}
               <div class="novel-info">
                 <div class="novel-title">${escapeHtml(item.series_title || '未命名系列')}</div>
+                <div class="novel-meta">作者：${escapeHtml(item.author_name || '未知')}</div>
                 <div class="novel-meta">${escapeHtml(item.chapter_count || 0)} 章${wordCount ? ' · ' + wordCount : ''}</div>
                 <div class="novel-meta">更新于 ${escapeHtml(item.last_updated || '-')}</div>
               </div>

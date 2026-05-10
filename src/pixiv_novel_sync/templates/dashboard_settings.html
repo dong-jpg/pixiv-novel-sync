@@ -249,12 +249,17 @@
         </div>
 
         <div class="section">
-          <div class="section-title">用户同步限制</div>
+          <div class="section-title">同步数量限制</div>
           <div class="fields">
             <div class="field">
               <label for="followingNovelsUsersLimit">每轮同步用户数</label>
               <input type="number" id="followingNovelsUsersLimit" min="0" placeholder="0">
               <div class="hint">0 = 全部用户</div>
+            </div>
+            <div class="field">
+              <label for="seriesSyncLimit">每次同步追更系列数</label>
+              <input type="number" id="seriesSyncLimit" min="0" placeholder="0">
+              <div class="hint">0 = 全部系列</div>
             </div>
           </div>
         </div>
@@ -491,6 +496,7 @@
         valueOf("#chapterDelay", s.delay_seconds_between_chapters ?? 1);
         valueOf("#skipDelay", s.delay_seconds_between_skips ?? 0.1);
         valueOf("#followingNovelsUsersLimit", s.auto_sync_following_novels_users_limit ?? 0);
+        valueOf("#seriesSyncLimit", s.series_sync_limit ?? 0);
         
         // 定时同步
         valueOf("#autoSyncTimezone", s.auto_sync_timezone || 'UTC');
@@ -547,6 +553,7 @@
           delay_seconds_between_chapters: $("#chapterDelay").value.trim(),
           delay_seconds_between_skips: $("#skipDelay").value.trim(),
           auto_sync_following_novels_users_limit: $("#followingNovelsUsersLimit").value.trim(),
+          series_sync_limit: $("#seriesSyncLimit").value.trim(),
         };
       }
 

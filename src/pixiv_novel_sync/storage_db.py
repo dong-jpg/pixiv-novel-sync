@@ -811,9 +811,11 @@ class Database:
                 END AS cover_url,
                 COUNT(n.novel_id) AS chapter_count,
                 COALESCE(SUM(n.text_length), 0) AS total_text_length,
-                MAX(n.last_seen_at) AS last_updated
+                MAX(n.last_seen_at) AS last_updated,
+                u.name AS author_name
             FROM novels n
             LEFT JOIN series se ON se.series_id = n.series_id
+            LEFT JOIN users u ON u.user_id = n.user_id
             WHERE n.user_id = ? AND n.series_id IS NOT NULL
             GROUP BY n.series_id
             ORDER BY last_updated DESC
