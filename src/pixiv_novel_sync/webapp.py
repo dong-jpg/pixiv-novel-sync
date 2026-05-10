@@ -693,7 +693,7 @@ class SyncJobManager:
                 try:
                     db = Database(settings.storage.db_path)
                     db.init_schema()
-                    db.update_task_log(job.log_id, "completed", stats=stats, logs=job.logs)
+                    db.update_task_log(job.log_id, "succeeded", stats=stats, logs=job.logs)
                     db.close()
                 except Exception as e:
                     logger.error("更新任务日志失败：%s", e)
@@ -1365,35 +1365,32 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         if current_settings.sync.initial_manual_only is False and current_settings.sync.enabled is False:
             pass
         
-        # 构建任务列表
+        # 构建任务列表（使用内部类型名，与 _run_single_sync 分发匹配）
         task_list = []
         if current_settings.sync.sync_bookmarks:
-            task_list.append("同步收藏小说")
-        if current_settings.sync.sync_following_series:
-            task_list.append("同步关注用户系列")
+            task_list.append("bookmark")
         if current_settings.sync.sync_following_users:
-            task_list.append("同步关注用户列表")
+            task_list.append("following_users")
         if current_settings.sync.sync_following_novels:
-            task_list.append("同步关注用户小说")
+            task_list.append("following_novels")
         if current_settings.sync.sync_subscribed_series:
-            task_list.append("同步追更系列")
+            task_list.append("subscribed_series")
         
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
         try:
-            # 创建任务日志
-            db = Database(current_settings.storage.db_path)
-            db.init_schema()
             job = sync_job_manager.start_job(task_list)
-            # 记录任务开始（在 job 启动后）
             log_id = db.create_task_log(
                 task_type="manual",
-                task_name=task_list[0] if task_list else "手动同步",
+                task_name="全量手动同步",
                 job_id=job.job_id,
                 is_auto_sync=False
             )
             job.log_id = log_id
-            db.close()
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
+        finally:
+            db.close()
         return jsonify({"ok": True, "message": job.message, "job": _job_to_dict(job)})
 
     @app.post("/api/dashboard/check-bookmarks")
@@ -1452,10 +1449,9 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         internal_type, task_name = task_map[task_type]
         current_settings = settings_manager.load(env_path=env_path)
         
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
         try:
-            # 创建任务日志
-            db = Database(current_settings.storage.db_path)
-            db.init_schema()
             job = sync_job_manager.start_job([internal_type])
             log_id = db.create_task_log(
                 task_type=internal_type,
@@ -1464,9 +1460,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                 is_auto_sync=False
             )
             job.log_id = log_id
-            db.close()
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
+        finally:
+            db.close()
         return jsonify({"ok": True, "message": "任务已启动", "job": _job_to_dict(job)})
 
     @app.post("/api/dashboard/sync/following")
@@ -1517,14 +1514,11 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             if running:
                 return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
 
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
         try:
             job = sync_job_manager.start_job(["subscribed_series"])
-            # 将 limit 存入 job 的 progress 中，供 _run_single_sync 使用
             job.progress["series_limit"] = limit
-
-            # 创建任务日志
-            db = Database(current_settings.storage.db_path)
-            db.init_schema()
             log_id = db.create_task_log(
                 task_type="subscribed_series",
                 task_name="同步追更系列",
@@ -1532,9 +1526,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                 is_auto_sync=False
             )
             job.log_id = log_id
-            db.close()
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
+        finally:
+            db.close()
         return jsonify({"ok": True, "message": "任务已启动", "job": _job_to_dict(job)})
 
     @app.get("/api/dashboard/auto-sync/status")

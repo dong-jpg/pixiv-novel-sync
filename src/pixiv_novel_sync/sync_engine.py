@@ -865,7 +865,7 @@ class BookmarkNovelSyncService:
                                             return getattr(obj, key, default)
                                         
                                         caption = clean_caption(_g(detail_novel, "caption", ""))
-                                        cover_url = _extract_cover_url(detail_novel) if hasattr(self, '_extract_cover_url') else _g(detail_novel, "cover_url", "")
+                                        cover_url = _extract_cover_url(detail_novel)
                                         if not cover_url:
                                             cover_url = _g(detail_novel, "url", "")
                                         
@@ -990,18 +990,24 @@ class BookmarkNovelSyncService:
         detail = self.api.novel_detail(novel_id)
         detail_novel = getattr(detail, "novel", novel)
         user = getattr(detail_novel, "user", None)
-        user_id = int(user.id)
-        user_name = getattr(user, "name", "unknown")
-        account = getattr(user, "account", None)
+        if user is None:
+            user_id = getattr(novel, "user_id", 0) or 0
+            user_name = "unknown"
+            account = None
+        else:
+            user_id = int(getattr(user, "id", 0) or 0)
+            user_name = getattr(user, "name", "unknown")
+            account = getattr(user, "account", None)
 
-        self.db.upsert_user(
-            UserRecord(
-                user_id=user_id,
-                name=user_name,
-                account=account,
-                raw_json=stable_json_dumps(_to_plain(user)),
+        if user_id:
+            self.db.upsert_user(
+                UserRecord(
+                    user_id=user_id,
+                    name=user_name,
+                    account=account,
+                    raw_json=stable_json_dumps(_to_plain(user) if user else "{}"),
+                )
             )
-        )
 
         caption = clean_caption(getattr(detail_novel, "caption", None))
         tags_json = stable_json_dumps(_extract_tags(getattr(detail_novel, "tags", [])))

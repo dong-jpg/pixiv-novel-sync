@@ -243,14 +243,26 @@
       return `${(seconds / 3600).toFixed(1)}小时`;
     }
     
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"]/g, function (ch) {
+        if (ch === '&') return '&amp;';
+        if (ch === '<') return '&lt;';
+        if (ch === '>') return '&gt;';
+        if (ch === '"') return '&quot;';
+        return ch;
+      });
+    }
+
     function getStatusBadge(status) {
       const statusMap = {
         'running': '运行中',
         'completed': '完成',
+        'succeeded': '完成',
         'failed': '失败',
         'stopped': '停止'
       };
-      return `<span class="status-badge ${status}">${statusMap[status] || status}</span>`;
+      const safeStatus = ['running', 'completed', 'succeeded', 'failed', 'stopped'].includes(status) ? status : '';
+      return `<span class="status-badge ${safeStatus}">${escapeHtml(statusMap[status] || status)}</span>`;
     }
     
     function getTaskTypeName(type) {
@@ -284,8 +296,8 @@
         if (data.items && data.items.length > 0) {
           tbody.innerHTML = data.items.map(log => `
             <tr>
-              <td><span class="type-tag">${getTaskTypeName(log.task_type)}</span></td>
-              <td>${log.task_name}</td>
+              <td><span class="type-tag">${escapeHtml(getTaskTypeName(log.task_type))}</span></td>
+              <td>${escapeHtml(log.task_name)}</td>
               <td>${log.is_auto_sync ? '<span style="color:var(--brand-start);">定时任务</span>' : '<span style="color:var(--text-secondary);">手工任务</span>'}</td>
               <td>${getStatusBadge(log.status)}</td>
               <td>${formatDate(log.started_at)}</td>
@@ -313,7 +325,7 @@
     function formatResult(log) {
       if (log.status === 'running') return '-';
       if (log.status === 'failed') {
-        const errorMsg = log.error_message || '未知错误';
+        const errorMsg = escapeHtml(log.error_message || '未知错误');
         return `<span style="color:var(--danger);">失败：${errorMsg.substring(0, 30)}${errorMsg.length > 30 ? '...' : ''}</span>`;
       }
       if (log.stats) {
@@ -358,7 +370,7 @@
           <div class="detail-value">
             <div><strong>任务 ID:</strong> ${log.id}</div>
             <div><strong>任务类型:</strong> ${getTaskTypeName(log.task_type)}</div>
-            <div><strong>任务名称:</strong> ${log.task_name}</div>
+            <div><strong>任务名称:</strong> ${escapeHtml(log.task_name)}</div>
             <div><strong>来源:</strong> ${log.is_auto_sync ? '定时任务' : '手工任务'}</div>
             <div><strong>状态:</strong> ${getStatusBadge(log.status)}</div>
           </div>
@@ -390,7 +402,7 @@
         ${log.error_message ? `
         <div class="detail-section">
           <div class="detail-label">错误信息</div>
-          <div class="detail-value" style="color:var(--danger);">${log.error_message}</div>
+          <div class="detail-value" style="color:var(--danger);">${escapeHtml(log.error_message)}</div>
         </div>
         ` : ''}
         
@@ -401,7 +413,7 @@
             ${log.logs.map(entry => `
               <div class="log-item">
                 <span class="log-time">[${formatTime(entry.time)}]</span>
-                <span class="${entry.level === 'ERROR' ? 'log-error' : ''}">${entry.message}</span>
+                <span class="${entry.level === 'ERROR' ? 'log-error' : ''}">${escapeHtml(entry.message)}</span>
               </div>
             `).join('')}
           </div>
