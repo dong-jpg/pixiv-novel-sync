@@ -519,9 +519,10 @@ class Database:
             INSERT INTO series (series_id, title, description, user_id, cover_url, total_novels, last_seen_at)
             VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
             ON CONFLICT(series_id) DO UPDATE SET
-                title = excluded.title,
-                description = excluded.description,
-                cover_url = COALESCE(excluded.cover_url, series.cover_url),
+                title = CASE WHEN excluded.title != '' THEN excluded.title ELSE series.title END,
+                description = CASE WHEN excluded.description != '' THEN excluded.description ELSE series.description END,
+                cover_url = CASE WHEN excluded.cover_url IS NOT NULL AND excluded.cover_url != '' THEN excluded.cover_url ELSE series.cover_url END,
+                user_id = CASE WHEN excluded.user_id != 0 THEN excluded.user_id ELSE series.user_id END,
                 total_novels = (SELECT COUNT(*) FROM novels WHERE series_id = ?),
                 last_seen_at = CURRENT_TIMESTAMP
             """,
@@ -604,11 +605,15 @@ class Database:
             """
             SELECT
                 se.series_id,
-                se.title AS series_title,
+                CASE WHEN se.title IS NOT NULL AND se.title != '' THEN se.title
+                     ELSE (SELECT MIN(n.title) FROM novels n WHERE n.series_id = se.series_id)
+                END AS series_title,
                 se.description AS series_description,
                 se.user_id,
                 u.name AS author_name,
-                se.cover_url,
+                CASE WHEN se.cover_url IS NOT NULL AND se.cover_url != '' THEN se.cover_url
+                     ELSE (SELECT n2.cover_url FROM novels n2 WHERE n2.series_id = se.series_id AND n2.cover_url IS NOT NULL AND n2.cover_url != '' LIMIT 1)
+                END AS cover_url,
                 se.total_novels AS chapter_count,
                 se.last_seen_at AS last_updated,
                 COALESCE((SELECT SUM(n.text_length) FROM novels n WHERE n.series_id = se.series_id), 0) AS total_text_length
@@ -655,6 +660,7 @@ class Database:
             }
         else:
             series_info = dict(series_row)
+            # 回退空标题和空封面到第一本小说的数据
             novels = self.conn.execute(
                 """
                 SELECT n.*, u.name AS author_name FROM novels n
@@ -664,6 +670,14 @@ class Database:
                 """,
                 (series_id,),
             ).fetchall()
+            if not series_info.get("title") and novels:
+                series_info["title"] = dict(novels[0]).get("title", "")
+            if not series_info.get("cover_url") and novels:
+                for n in novels:
+                    cu = dict(n).get("cover_url")
+                    if cu:
+                        series_info["cover_url"] = cu
+                        break
         series_info["novels"] = [dict(row) for row in novels]
         # 计算系列总字数
         total_text_length = sum(row.get("text_length", 0) or 0 for row in series_info["novels"])
@@ -790,9 +804,11 @@ class Database:
             """
             SELECT
                 n.series_id,
-                COALESCE(se.title, MIN(n.title)) AS series_title,
+                CASE WHEN se.title IS NOT NULL AND se.title != '' THEN se.title ELSE MIN(n.title) END AS series_title,
                 se.description AS series_description,
-                se.cover_url,
+                CASE WHEN se.cover_url IS NOT NULL AND se.cover_url != '' THEN se.cover_url
+                     ELSE (SELECT n2.cover_url FROM novels n2 WHERE n2.series_id = n.series_id AND n2.cover_url IS NOT NULL AND n2.cover_url != '' LIMIT 1)
+                END AS cover_url,
                 COUNT(n.novel_id) AS chapter_count,
                 COALESCE(SUM(n.text_length), 0) AS total_text_length,
                 MAX(n.last_seen_at) AS last_updated
