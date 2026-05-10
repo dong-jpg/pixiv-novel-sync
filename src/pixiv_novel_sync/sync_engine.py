@@ -425,8 +425,6 @@ class BookmarkNovelSyncService:
                 author_name = getattr(user, "name", str(author_id))
                 stats["following_users_scanned"] += 1
                 
-                from .models import UserRecord
-                from .utils_hashing import stable_json_dumps
                 account = getattr(user, "account", None)
                 self.db.upsert_user(UserRecord(
                     user_id=author_id,
@@ -717,7 +715,6 @@ class BookmarkNovelSyncService:
             skip_delay = self.settings.sync.delay_seconds_between_skips
             _first_logged = False
             synced_series_count = 0  # 实际有新内容的系列数（跳过的不算）
-            series_idx = 0
             # 使用 while 循环以支持顺延：当 limit > 0 时，全部跳过的系列不计入 limit
             series_queue = list(series_list)
             queue_idx = 0
@@ -726,7 +723,7 @@ class BookmarkNovelSyncService:
                     break
                 item = series_queue[queue_idx]
                 queue_idx += 1
-                series_idx += 1
+                series_idx = queue_idx
                 sid = item.get("series_id")
                 cover_from_web = item.get("cover_url", "")
 

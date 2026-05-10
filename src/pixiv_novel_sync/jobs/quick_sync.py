@@ -201,14 +201,6 @@ def run_bookmark_sync_with_progress(settings: Settings, job_manager: Any, job_id
         db.close()
 
 
-def _merge_stats(*items: dict[str, int]) -> dict[str, int]:
-    merged: dict[str, int] = {}
-    for item in items:
-        for key, value in item.items():
-            merged[key] = merged.get(key, 0) + value
-    return merged
-
-
 def run_check_bookmarks_task(settings: Settings, job_manager: Any, job_id: str) -> None:
     """独立的预检查任务：扫描所有需要同步的内容，标记哪些已存在"""
     db = None

@@ -55,8 +55,9 @@ class AutoSyncScheduler:
     _task_next_run: dict[str, float] = field(default_factory=dict)  # 每个任务的下次运行时间
     _task_intervals: dict[str, int] = field(default_factory=dict)  # 每个任务的间隔（小时）
     _task_crons: dict[str, str] = field(default_factory=dict)  # 每个任务的cron表达式
-    _current_task_job_id: str | None = None  # 当前正在执行的定时任务 job_id
+    _current_task_job_id: str | None = None  # 当前正在执行的定时任务 job id
     _stop_current_task: bool = False  # 停止当前任务的标志
+    _last_cleanup_time: float = 0.0  # 上次清理日志的时间
     
     def start(self) -> None:
         """启动定时调度器"""
@@ -114,14 +115,17 @@ class AutoSyncScheduler:
             try:
                 settings = load_settings(self.config_path, self.env_path)
                 
-                # 清理超过3天的任务日志
-                try:
-                    db = Database(settings.storage.db_path)
-                    db.init_schema()
-                    db.cleanup_old_task_logs(days=3)
-                    db.close()
-                except Exception as e:
-                    logger.warning("Failed to cleanup old task logs: %s", e)
+                # 清理超过3天的任务日志（每小时执行一次）
+                now_ts = time.time()
+                if now_ts - self._last_cleanup_time > 3600:
+                    try:
+                        db = Database(settings.storage.db_path)
+                        db.init_schema()
+                        db.cleanup_old_task_logs(days=3)
+                        db.close()
+                        self._last_cleanup_time = now_ts
+                    except Exception as e:
+                        logger.warning("Failed to cleanup old task logs: %s", e)
 
                 now = time.time()
                 timezone = settings.sync.auto_sync_timezone
@@ -589,7 +593,8 @@ class SyncJobManager:
             running = [job for job in self._jobs.values() if job.status == "running"]
             if running:
                 raise RuntimeError("已有同步任务正在运行，请稍后再试")
-            job_id = str(int(time.time() * 1000))
+            import uuid
+            job_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
             job = SyncJobState(
                 job_id=job_id, 
                 status="running", 
@@ -675,7 +680,8 @@ class SyncJobManager:
 
             # 根据 task_list 分发到对应的同步函数
             total_stats: dict[str, Any] = {}
-            for task_type in job.task_list:
+            for idx, task_type in enumerate(job.task_list):
+                job.current_task_index = idx
                 self.update_progress(job_id, phase=task_type, message=f"正在执行: {task_type}")
                 task_stats = self._run_single_sync(settings, task_type, job_id)
                 if task_stats:
@@ -964,7 +970,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         url = request.args.get("url", "").strip()
         if not url:
             return Response("Missing url parameter", status=400)
-        if "pximg.net" not in url:
+        hostname = urlparse(url).hostname or ""
+        if not (hostname == "pximg.net" or hostname.endswith(".pximg.net")):
             return Response("Only pixiv images are allowed", status=403)
         try:
             headers = {
@@ -1372,9 +1379,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.post("/api/dashboard/sync/start")
     def dashboard_sync_start():
         current_settings = settings_manager.load(env_path=env_path)
-        if current_settings.sync.initial_manual_only is False and current_settings.sync.enabled is False:
-            pass
-        
+
         # 构建任务列表（使用内部类型名，与 _run_single_sync 分发匹配）
         task_list = []
         if current_settings.sync.sync_bookmarks:
