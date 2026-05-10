@@ -625,8 +625,8 @@ class SyncJobManager:
         with self._lock:
             if not self._jobs:
                 return None
-            latest_key = sorted(self._jobs.keys())[-1]
-            return self._jobs[latest_key]
+            # 按 started_at 排序，而非字符串排序
+            return max(self._jobs.values(), key=lambda j: j.started_at or 0)
 
     def add_log(self, job_id: str, level: str, message: str) -> None:
         with self._lock:
@@ -715,6 +715,16 @@ class SyncJobManager:
                     logger.error("更新任务日志失败：%s", e)
         finally:
             job.finished_at = time.time()
+            # 清理旧任务，只保留最近 20 个
+            self._cleanup_old_jobs()
+
+    def _cleanup_old_jobs(self, keep: int = 20) -> None:
+        with self._lock:
+            if len(self._jobs) <= keep:
+                return
+            sorted_jobs = sorted(self._jobs.items(), key=lambda kv: kv[1].finished_at or 0, reverse=True)
+            for job_id, _ in sorted_jobs[keep:]:
+                del self._jobs[job_id]
 
     def _run_single_sync(self, settings: Settings, task_type: str, job_id: str) -> dict[str, Any]:
         """根据 task_type 执行单个同步任务"""
@@ -1835,5 +1845,6 @@ def _check_pixiv_user_status(api: Any, user_id: int) -> str:
             if total_novels == 0:
                 return "cleared"
         return "normal"
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to check user %s status: %s", user_id, e)
         return "unknown"

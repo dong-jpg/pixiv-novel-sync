@@ -823,6 +823,12 @@ class BookmarkNovelSyncService:
                                 
                                 chapter_count = 0
                                 skipped_count = 0
+
+                                def _g(obj, key, default=None):
+                                    if isinstance(obj, dict):
+                                        return obj.get(key, default)
+                                    return getattr(obj, key, default)
+
                                 for idx, novel_item in enumerate(all_novel_items):
                                     if not isinstance(novel_item, dict):
                                         continue
@@ -843,15 +849,20 @@ class BookmarkNovelSyncService:
                                         if progress_callback:
                                             progress_callback("phase", {"phase": f"  [{idx+1}/{len(all_novel_items)}] 同步章节: {novel_id}"})
                                         # 获取小说详情
-                                        detail = self.api.novel_detail(novel_id)
-                                        detail_novel = getattr(detail, "novel", None)
-                                        if detail_novel is None and isinstance(detail, dict):
-                                            detail_novel = detail.get("novel", detail)
-                                        
+                                        novel_detail_result = self.api.novel_detail(novel_id)
+                                        detail_novel = getattr(novel_detail_result, "novel", None)
+                                        if detail_novel is None and isinstance(novel_detail_result, dict):
+                                            detail_novel = novel_detail_result.get("novel", novel_detail_result)
+                                        if detail_novel is None:
+                                            logger.warning("novel_detail returned None for %d, skipping", novel_id)
+                                            continue
+
                                         n_user = detail_novel.get("user") if isinstance(detail_novel, dict) else getattr(detail_novel, "user", None)
-                                        n_user_id = int(n_user.get("id", 0) if isinstance(n_user, dict) else n_user.id) if n_user else user_id
+                                        n_user_id = int(n_user.get("id", 0) or 0) if isinstance(n_user, dict) else (int(getattr(n_user, "id", 0) or 0) if n_user else 0)
                                         n_user_name = (n_user.get("name") if isinstance(n_user, dict) else getattr(n_user, "name", "unknown")) if n_user else user_name
                                         n_account = (n_user.get("account") if isinstance(n_user, dict) else getattr(n_user, "account", None)) if n_user else None
+                                        if not n_user_id:
+                                            n_user_id = user_id
                                         
                                         if n_user_id:
                                             self.db.upsert_user(UserRecord(
@@ -859,11 +870,7 @@ class BookmarkNovelSyncService:
                                                 account=n_account, raw_json="{}",
                                             ))
                                         
-                                        def _g(obj, key, default=None):
-                                            if isinstance(obj, dict):
-                                                return obj.get(key, default)
-                                            return getattr(obj, key, default)
-                                        
+
                                         caption = clean_caption(_g(detail_novel, "caption", ""))
                                         cover_url = _extract_cover_url(detail_novel)
                                         if not cover_url:

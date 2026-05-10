@@ -96,7 +96,10 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
     refresh_token = os.getenv("PIXIV_REFRESH_TOKEN", "").strip()
     access_token = os.getenv("PIXIV_ACCESS_TOKEN", "").strip() or None
     proxy = os.getenv("PIXIV_PROXY") or pixiv_raw.get("proxy")
-    timeout = int(os.getenv("PIXIV_TIMEOUT", pixiv_raw.get("timeout", 30)))
+    try:
+        timeout = int(os.getenv("PIXIV_TIMEOUT", pixiv_raw.get("timeout", 30)))
+    except (ValueError, TypeError):
+        timeout = 30
     verify_ssl = _parse_bool(os.getenv("PIXIV_VERIFY_SSL"), default=pixiv_raw.get("verify_ssl", True))
     user_id = _parse_optional_int(os.getenv("PIXIV_USER_ID"))
     web_cookie = os.getenv("PIXIV_WEB_COOKIE") or pixiv_raw.get("web_cookie")
@@ -131,7 +134,7 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             sync_following_series=bool(sync_raw.get("sync_following_series", True)),
             sync_following_users=bool(sync_raw.get("sync_following_users", True)),
             sync_following_novels=bool(sync_raw.get("sync_following_novels", True)),
-            series_sync_limit=int(sync_raw.get("series_sync_limit", 0)),
+            series_sync_limit=_coerce_int(sync_raw.get("series_sync_limit"), 0),
             delay_seconds_between_series=_coerce_float(sync_raw.get("delay_seconds_between_series"), 3.0),
             delay_seconds_between_chapters=_coerce_float(sync_raw.get("delay_seconds_between_chapters"), 1.0),
             delay_seconds_between_skips=_coerce_float(sync_raw.get("delay_seconds_between_skips"), 0.1),
@@ -139,19 +142,19 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             auto_sync_enabled=bool(sync_raw.get("auto_sync_enabled", False)),
             auto_sync_timezone=str(sync_raw.get("auto_sync_timezone", "UTC")),
             auto_sync_bookmarks_enabled=bool(sync_raw.get("auto_sync_bookmarks_enabled", True)),
-            auto_sync_bookmarks_interval_hours=int(sync_raw.get("auto_sync_bookmarks_interval_hours", 6)),
+            auto_sync_bookmarks_interval_hours=_coerce_int(sync_raw.get("auto_sync_bookmarks_interval_hours"), 6),
             auto_sync_bookmarks_cron=str(sync_raw.get("auto_sync_bookmarks_cron", "")),
             auto_sync_following_list_enabled=bool(sync_raw.get("auto_sync_following_list_enabled", True)),
-            auto_sync_following_list_interval_hours=int(sync_raw.get("auto_sync_following_list_interval_hours", 24)),
+            auto_sync_following_list_interval_hours=_coerce_int(sync_raw.get("auto_sync_following_list_interval_hours"), 24),
             auto_sync_following_list_cron=str(sync_raw.get("auto_sync_following_list_cron", "")),
             auto_sync_following_novels_enabled=bool(sync_raw.get("auto_sync_following_novels_enabled", True)),
-            auto_sync_following_novels_interval_hours=int(sync_raw.get("auto_sync_following_novels_interval_hours", 6)),
+            auto_sync_following_novels_interval_hours=_coerce_int(sync_raw.get("auto_sync_following_novels_interval_hours"), 6),
             auto_sync_following_novels_cron=str(sync_raw.get("auto_sync_following_novels_cron", "")),
-            auto_sync_following_novels_users_limit=int(sync_raw.get("auto_sync_following_novels_users_limit", 0)),
+            auto_sync_following_novels_users_limit=_coerce_int(sync_raw.get("auto_sync_following_novels_users_limit"), 0),
             auto_sync_user_status_enabled=bool(sync_raw.get("auto_sync_user_status_enabled", True)),
             auto_sync_user_status_cron=str(sync_raw.get("auto_sync_user_status_cron", "")),
             auto_sync_subscribed_series_enabled=bool(sync_raw.get("auto_sync_subscribed_series_enabled", True)),
-            auto_sync_subscribed_series_interval_hours=int(sync_raw.get("auto_sync_subscribed_series_interval_hours", 6)),
+            auto_sync_subscribed_series_interval_hours=_coerce_int(sync_raw.get("auto_sync_subscribed_series_interval_hours"), 6),
             auto_sync_subscribed_series_cron=str(sync_raw.get("auto_sync_subscribed_series_cron", "")),
         ),
         storage=StorageSettings(
@@ -181,7 +184,10 @@ def _parse_bool(value: str | None, default: bool) -> bool:
 def _parse_optional_int(value: str | None) -> int | None:
     if value is None or not value.strip():
         return None
-    return int(value)
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
 
 
 
@@ -198,7 +204,19 @@ def _coerce_optional_int(value: Any) -> int | None:
 def _coerce_float(value: Any, default: float) -> float:
     if value in (None, ""):
         return float(default)
-    return float(value)
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return float(default)
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
 
 
 def parse_cron_expression(cron_expr: str) -> dict[str, Any] | None:

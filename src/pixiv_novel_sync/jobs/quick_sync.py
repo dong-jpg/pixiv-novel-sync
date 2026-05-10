@@ -273,6 +273,7 @@ def run_check_bookmarks_task(settings: Settings, job_manager: Any, job_id: str) 
             job.status = "failed"
             job.message = f"预检查失败: {exc}"
             job.finished_at = time.time()
+        return None
     finally:
         if db:
             db.close()

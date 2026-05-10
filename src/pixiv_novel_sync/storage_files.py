@@ -46,7 +46,9 @@ class FileStorage:
             return None
 
     def asset_path(self, novel_dir: Path, asset_type: str, filename: str) -> Path:
-        return novel_dir / "assets" / asset_type / filename
+        # 防止路径穿越
+        safe_filename = Path(filename).name
+        return novel_dir / "assets" / asset_type / safe_filename
 
     def ensure_dirs(self, paths: Iterable[Path]) -> None:
         for path in paths:
