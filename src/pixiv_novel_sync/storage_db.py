@@ -737,21 +737,31 @@ class Database:
             "novel_count": novel_count,
         }
 
-    def list_user_novels(self, user_id: int, page: int = 1, page_size: int = 10) -> dict[str, Any]:
+    def list_user_novels(self, user_id: int, page: int = 1, page_size: int = 10, category: str = "all") -> dict[str, Any]:
         page = max(page, 1)
         page_size = max(page_size, 1)
+
+        where_extra = ""
+        if category == "single":
+            where_extra = " AND n.series_id IS NULL"
+        elif category == "series":
+            where_extra = " AND n.series_id IS NOT NULL"
+
         total = int(
-            self.conn.execute("SELECT COUNT(*) FROM novels WHERE user_id = ?", (user_id,)).fetchone()[0]
+            self.conn.execute(f"SELECT COUNT(*) FROM novels n WHERE n.user_id = ?{where_extra}", (user_id,)).fetchone()[0]
         )
         total_pages = max((total + page_size - 1) // page_size, 1)
         page = min(page, total_pages)
         offset = (page - 1) * page_size
         rows = self.conn.execute(
-            """
+            f"""
             SELECT n.novel_id, n.title, n.series_id, n.cover_url, n.restrict_value,
-                   n.total_bookmarks, n.total_views, n.last_seen_at,
-                   CASE WHEN n.series_id IS NULL THEN 'single' ELSE 'series' END AS novel_kind
-            FROM novels n WHERE n.user_id = ?
+                   n.total_bookmarks, n.total_views, n.last_seen_at, n.text_length,
+                   CASE WHEN n.series_id IS NULL THEN 'single' ELSE 'series' END AS novel_kind,
+                   se.title AS series_title
+            FROM novels n
+            LEFT JOIN series se ON se.series_id = n.series_id
+            WHERE n.user_id = ?{where_extra}
             ORDER BY n.last_seen_at DESC
             LIMIT ? OFFSET ?
             """,

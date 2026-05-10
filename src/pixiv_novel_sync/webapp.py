@@ -1276,10 +1276,11 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         current_settings = settings_manager.load(env_path=env_path)
         page = max(int(request.args.get("page", 1) or 1), 1)
         page_size = 10
+        category = request.args.get("category", "all")
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         try:
-            payload = db.list_user_novels(user_id, page=page, page_size=page_size)
+            payload = db.list_user_novels(user_id, page=page, page_size=page_size, category=category)
         finally:
             db.close()
         return jsonify(payload)

@@ -61,6 +61,9 @@
     .pager-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     .loading { text-align: center; padding: 48px; color: var(--text-secondary); }
     .empty { text-align: center; padding: 48px; color: var(--text-secondary); }
+    .tab { border: none; background: none; padding: 8px 16px; font-size: 14px; font-weight: 600; color: var(--text-secondary); cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--brand-start); border-bottom-color: var(--brand-start); }
     .toast { position: fixed; bottom: 24px; right: 24px; background: #333; color: #fff; padding: 12px 20px; border-radius: 8px; font-size: 14px; z-index: 1000; display: none; }
     @media (max-width: 720px) {
       .topbar-inner { flex-direction: column; height: auto; padding: 12px 16px; gap: 8px; }
@@ -99,7 +102,11 @@
 
     <section class="card">
       <div class="card-title">
-        <span>小说列表</span>
+        <div class="tabs" style="display:flex;gap:4px;margin-bottom:0;border-bottom:none;padding-bottom:0;">
+          <button class="tab active" data-category="all" onclick="switchTab('all')">全部</button>
+          <button class="tab" data-category="single" onclick="switchTab('single')">单本</button>
+          <button class="tab" data-category="series" onclick="switchTab('series')">系列</button>
+        </div>
         <span id="novelCount" style="font-size:13px;color:var(--text-secondary);font-weight:400;"></span>
       </div>
       <div id="novels" class="loading">正在加载小说...</div>
@@ -118,6 +125,7 @@
     const userId = Number(pathParts[pathParts.length - 1] || 0);
     let currentPage = 1;
     let totalPages = 1;
+    let currentCategory = 'all';
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>"]/g, function (ch) {
@@ -176,7 +184,7 @@
     }
 
     async function loadNovels(page) {
-      const resp = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}/novels?page=${page}`);
+      const resp = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}/novels?page=${page}&category=${currentCategory}`);
       const data = await resp.json();
       const items = data.items || [];
       currentPage = data.page || 1;
@@ -192,12 +200,14 @@
         const cover = item.cover_url
           ? `<img class="novel-cover" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.background='var(--line)';">`
           : '<div class="novel-cover"></div>';
+        const seriesTag = item.series_title ? `<span style="font-size:11px;color:var(--brand-start);background:rgba(99,102,241,0.1);padding:1px 6px;border-radius:4px;margin-left:6px;">${escapeHtml(item.series_title)}</span>` : '';
+        const wordCount = item.text_length ? `${Math.round(item.text_length / 10000)}万字` : '';
         return `
           <a class="novel-item" href="/dashboard/novels/${encodeURIComponent(item.novel_id)}">
             ${cover}
             <div class="novel-info">
-              <div class="novel-title">${escapeHtml(item.title || '未命名小说')}</div>
-              <div class="novel-meta">收藏 ${escapeHtml(item.total_bookmarks || 0)} / 浏览 ${escapeHtml(item.total_views || 0)}</div>
+              <div class="novel-title">${escapeHtml(item.title || '未命名小说')}${seriesTag}</div>
+              <div class="novel-meta">${wordCount ? wordCount + ' · ' : ''}收藏 ${escapeHtml(item.total_bookmarks || 0)} / 浏览 ${escapeHtml(item.total_views || 0)}</div>
             </div>
           </a>
         `;
@@ -206,6 +216,14 @@
       document.getElementById('pagerText').textContent = `${currentPage} / ${totalPages}`;
       document.getElementById('prevBtn').disabled = currentPage <= 1;
       document.getElementById('nextBtn').disabled = currentPage >= totalPages;
+    }
+
+    function switchTab(category) {
+      currentCategory = category;
+      document.querySelectorAll('.tab').forEach(function(t) {
+        t.classList.toggle('active', t.dataset.category === category);
+      });
+      loadNovels(1);
     }
 
     async function checkStatus() {
