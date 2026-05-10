@@ -1280,7 +1280,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         try:
-            payload = db.list_user_novels(user_id, page=page, page_size=page_size, category=category)
+            if category == "series":
+                payload = db.list_user_series(user_id, page=page, page_size=page_size)
+            else:
+                payload = db.list_user_novels(user_id, page=page, page_size=page_size, category=category)
         finally:
             db.close()
         return jsonify(payload)

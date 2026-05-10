@@ -773,6 +773,45 @@ class Database:
             "total": total, "total_pages": total_pages,
         }
 
+    def list_user_series(self, user_id: int, page: int = 1, page_size: int = 10) -> dict[str, Any]:
+        """获取某个用户的所有系列"""
+        page = max(page, 1)
+        page_size = max(page_size, 1)
+        total = int(
+            self.conn.execute(
+                "SELECT COUNT(DISTINCT series_id) FROM novels WHERE user_id = ? AND series_id IS NOT NULL",
+                (user_id,),
+            ).fetchone()[0]
+        )
+        total_pages = max((total + page_size - 1) // page_size, 1)
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
+        rows = self.conn.execute(
+            """
+            SELECT
+                n.series_id,
+                COALESCE(se.title, MIN(n.title)) AS series_title,
+                se.description AS series_description,
+                se.cover_url,
+                COUNT(n.novel_id) AS chapter_count,
+                COALESCE(SUM(n.text_length), 0) AS total_text_length,
+                MAX(n.last_seen_at) AS last_updated
+            FROM novels n
+            LEFT JOIN series se ON se.series_id = n.series_id
+            WHERE n.user_id = ? AND n.series_id IS NOT NULL
+            GROUP BY n.series_id
+            ORDER BY last_updated DESC
+            LIMIT ? OFFSET ?
+            """,
+            [user_id, page_size, offset],
+        ).fetchall()
+        items = [dict(row) for row in rows]
+        return {
+            "items": items,
+            "page": page, "page_size": page_size,
+            "total": total, "total_pages": total_pages,
+        }
+
     def delete_novel(self, novel_id: int) -> None:
         """删除小说及其相关数据"""
         self.conn.execute("DELETE FROM novel_texts WHERE novel_id = ?", (novel_id,))
