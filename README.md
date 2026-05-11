@@ -1,187 +1,194 @@
 # Pixiv Novel Sync
 
-面向 Pixiv 小说的服务器端增量归档工具。目标是只同步小说，不同步插画和漫画；但会保留小说附属封面与正文插图资源。
+Pixiv 小说增量归档工具。自动同步收藏小说、关注用户作品、追更系列，提供 Web 管理界面，支持定时任务和状态监控。
 
-## MVP 范围
+## 功能概览
 
-- 使用 `refresh_token` 登录 Pixiv
-- 同步当前账号收藏的小说（公开 + 私密）
-- 保存小说元数据、正文、封面与正文附图
-- 使用 SQLite 维护同步状态
-- 提供命令行入口
-- 提供 Ubuntu `systemd` 部署模板
-- 提供一个受控本地/内网页面用于辅助获取 Pixiv `refresh_token`
-- 支持“本地 PC 浏览器授权 + 服务器回调接收 token”主流程
-- 保留 `gppt` 作为 fallback
+### 同步能力
 
-详细设计见 [`pixiv-novel-sync-plan.md`](../.tocodex/plans/pixiv-novel-sync-plan.md:1)。
+| 任务 | 手动 | 自动 | 说明 |
+|------|------|------|------|
+| 同步收藏小说 | ✅ | ✅ | 公开 + 私密收藏，支持限速和顺延 |
+| 同步关注用户列表 | ✅ | ✅ | 获取关注用户信息并入库 |
+| 同步关注用户小说 | ✅ | ✅ | 同步所有关注用户的单本和系列小说 |
+| 同步追更系列 | ✅ | ✅ | 同步订阅系列的封面、章节和正文 |
+| 检查用户状态 | ✅ | ✅ | 检测关注用户是否封号/无小说 |
+| 检查小说状态 | ✅ | ✅ | 检测小说是否被删除/受限 |
+| 检查系列状态 | ✅ | ✅ | 检测系列是否被删除 |
 
-## 当前实现结构
+### 同步内容
 
-- [`pyproject.toml`](pyproject.toml:1)：项目依赖与 CLI 入口
-- [`src/pixiv_novel_sync/settings.py`](src/pixiv_novel_sync/settings.py:1)：配置加载
-- [`src/pixiv_novel_sync/auth.py`](src/pixiv_novel_sync/auth.py:1)：Pixiv 认证管理
-- [`src/pixiv_novel_sync/storage_db.py`](src/pixiv_novel_sync/storage_db.py:1)：SQLite schema 与状态存储
-- [`src/pixiv_novel_sync/storage_files.py`](src/pixiv_novel_sync/storage_files.py:1)：文件落盘与资源下载
-- [`src/pixiv_novel_sync/sync_engine.py`](src/pixiv_novel_sync/sync_engine.py:1)：收藏小说同步逻辑
-- [`src/pixiv_novel_sync/jobs/quick_sync.py`](src/pixiv-novel-sync/src/pixiv_novel_sync/jobs/quick_sync.py:1)：MVP 同步任务入口
-- [`src/pixiv_novel_sync/oauth_helper.py`](src/pixiv_novel_sync/oauth_helper.py:1)：OAuth 任务生成、PKCE 与 token 交换
-- [`src/pixiv_novel_sync/token_helper.py`](src/pixiv_novel_sync/token_helper.py:1)：`gppt` fallback
-- [`src/pixiv_novel_sync/webapp.py`](src/pixiv_novel_sync/webapp.py:1)：Web token 获取入口
-- [`src/pixiv_novel_sync/templates/token_login.html`](src/pixiv_novel_sync/templates/token_login.html:1)：前台登录页
-- [`src/pixiv_novel_sync/templates/oauth_callback.html`](src/pixiv_novel_sync/templates/oauth_callback.html:1)：授权回调页
-- [`deploy/systemd/pixiv-novel-sync.service`](deploy/systemd/pixiv-novel-sync.service:1)：systemd 服务模板
-- [`deploy/systemd/pixiv-novel-sync.timer`](deploy/systemd/pixiv-novel-sync.timer:1)：定时器模板
+- 小说元数据（标题、简介、标签、收藏数、浏览数）
+- 小说正文（原始文本 + Markdown 格式）
+- 封面与插图资源下载
+- 系列信息（系列名、封面、总字数）
+- 用户信息与存续状态
 
-## 本地使用
+### 限速与顺延
 
-### 1. 安装
+所有同步任务严格遵循设置页面的限速参数：
+- 单次最大条数 / 最大页数
+- 每次请求间隔 / 每页间隔
+- 跳过内容时延迟
+- 追更系列：每章节间隔、每系列间隔
+- 关注用户小说：每轮同步用户数限制
+
+顺延机制：跳过的已存在内容不计入同步配额，确保最终同步数量达标。
+
+### 定时任务
+
+7 个独立定时任务，每个支持：
+- 开关控制
+- Cron 表达式自定义执行时间
+- 间隔小时数（Cron 优先）
+
+### Web 管理界面
+
+| 页面 | 功能 |
+|------|------|
+| 首页 | 系统状态、手动同步、定时同步控制、追更系列同步 |
+| 关注 | 关注用户列表，支持按状态筛选（有小说/无小说/封号） |
+| 小说 | 小说归档，分收藏/追更两个 tab，支持分页 |
+| 日志 | 任务执行记录，支持按类型/来源筛选，保留 3 天 |
+| 设置 | 同步参数、限速参数、定时任务配置、手动操作 |
+
+### 详情页
+
+- **用户详情**：用户信息、状态 badge、小说列表（全部/单本/系列 tab）
+- **小说详情**：元数据、状态 badge、正文预览
+- **系列详情**：封面、章节数、总字数、每章状态 badge
+
+## 技术栈
+
+- **后端**：Python / Flask / SQLite
+- **前端**：原生 HTML/CSS/JS（无框架）
+- **API**：pixivpy3（Pixiv App API）+ Web Cookie（追更列表）
+- **存储**：SQLite（元数据/日志）+ 文件系统（正文/资源）
+
+## 项目结构
+
+```
+src/pixiv_novel_sync/
+├── webapp.py              # Flask 应用、API 路由、定时调度器
+├── sync_engine.py         # 同步引擎（收藏/关注/追更/状态检查）
+├── storage_db.py          # SQLite 数据库操作
+├── storage_files.py       # 文件存储与资源下载
+├── settings.py            # 配置加载与 Cron 解析
+├── auth.py                # Pixiv 认证管理
+├── models.py              # 数据模型（NovelRecord/UserRecord 等）
+├── jobs/quick_sync.py     # 同步任务入口
+├── templates/             # HTML 模板
+│   ├── dashboard.html         # 首页
+│   ├── dashboard_follows.html # 关注列表
+│   ├── dashboard_novels.html  # 小说归档
+│   ├── dashboard_logs.html    # 任务日志
+│   ├── dashboard_settings.html# 设置页
+│   ├── dashboard_user_detail.html   # 用户详情
+│   ├── dashboard_novel_detail.html  # 小说详情
+│   ├── dashboard_series_detail.html # 系列详情
+│   └── token_login.html     # Token 登录页
+└── utils_*.py             # 工具函数（哈希/文本/命名）
+```
+
+## 快速开始
 
 ```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install --upgrade pip
+# 安装
+python -m venv .venv && source .venv/bin/activate
 pip install .
-```
 
-### 2. 初始化配置
-
-```bash
+# 配置
 cp .env.example .env
-cp config/config.yaml.example config/config.yaml
+# 编辑 .env 填入 Pixiv refresh_token
+
+# 启动 Web 服务
+python -m pixiv_novel_sync.webapp
+# 访问 http://localhost:5010/dashboard
 ```
 
-至少填写：
+## 配置说明
 
-- `PIXIV_REFRESH_TOKEN`
-- `PIXIV_USER_ID`，如果自动识别失败时必须手动填写
+配置文件 `config.yaml` + `.env`：
 
-### 3. 验证认证
+```yaml
+sync:
+  download_assets: true      # 下载封面与插图
+  write_markdown: true        # 输出 txt 文件
+  write_raw_text: true        # 输出原始文本文件
+  bookmark_restricts:         # 同步收藏类型
+    - public
+    - private
+  max_items_per_run: 50       # 单次最大条数
+  max_pages_per_run: 5        # 单次最大页数
+  delay_seconds_between_items: 1.0   # 每次请求间隔
+  delay_seconds_between_pages: 1.0   # 每页间隔
+  delay_seconds_between_skips: 0.1   # 跳过内容时延迟
+  delay_seconds_between_series: 3.0  # 每个系列间隔
+  delay_seconds_between_chapters: 1.0 # 每章节间隔
+  series_sync_limit: 0        # 追更系列同步数量限制（0=全部）
+  auto_sync_following_novels_users_limit: 0 # 每轮同步用户数（0=全部）
 
-```bash
-pixiv-novel-sync --config config/config.yaml auth-check
+  # 定时任务（每个任务独立 cron/interval）
+  auto_sync_enabled: false
+  auto_sync_bookmarks_cron: "0 */6 * * *"
+  auto_sync_following_novels_cron: "0 */6 * * *"
+  auto_sync_subscribed_series_cron: "0 */6 * * *"
+  auto_sync_user_status_cron: "0 0 * * *"
+  auto_sync_novel_status_cron: ""
+  auto_sync_series_status_cron: ""
 ```
-
-### 4. 执行收藏同步
-
-```bash
-pixiv-novel-sync --config config/config.yaml sync-bookmarks
-```
-
-## Web 页面获取 Token
-
-### 启动本地 UI
-
-```bash
-pixiv-novel-sync --config config/config.yaml web-token-ui --host 127.0.0.1 --port 5010
-```
-
-然后打开：
-
-```text
-http://127.0.0.1:5010/token-login
-```
-
-## 推荐方式：本地 PC 浏览器授权
-
-页面中点击“开始 Pixiv 浏览器登录”后：
-- 后端创建一次性 OAuth 任务
-- 页面显示 Pixiv 登录链接
-- 你在本地 PC 浏览器中完成登录
-- Pixiv 回调到服务器 [`/oauth/callback`](src/pixiv_novel_sync/webapp.py:1)
-- 服务器交换 `refresh_token`
-- 页面轮询显示结果
-- 点击按钮可直接写入服务器 [`.env`](.env.example:1)
-
-### 部署要求
-
-这个方案要求：
-- 你的服务器地址或域名能被本地浏览器访问
-- 回调地址与页面访问地址一致
-- 推荐放在反向代理后并启用 HTTPS
-
-### 安全说明
-
-- 不要把这个页面裸露到完全无保护的公网
-- 建议至少加 IP 白名单、基础认证或临时内网访问控制
-- `refresh_token` 属于高敏感凭据，不应写入前端持久存储
-
-## fallback：gppt 模式
-
-如果 OAuth 主流程因为 Pixiv 风控或回调链路变化而失败，可以在页面中点击“使用旧版 gppt fallback”。
-
-该模式会：
-- 调用 [`gppt login`](src/pixiv_novel_sync/token_helper.py:1)
-- 展示输出日志
-- 成功后展示 `refresh_token`
-- 允许一键写入 `.env`
 
 ## 输出说明
 
 默认输出目录：
 
-- 公开内容：[`data/library/public`](data/library/public:1)
-- 私密内容：[`data/library/private`](data/library/private:1)
-- 数据库：[`data/state/pixiv_sync.db`](data/state/pixiv_sync.db:1)
+- 公开内容：`data/library/public/`
+- 私密内容：`data/library/private/`
+- 数据库：`data/state/pixiv_sync.db`
 
 每本小说目录包含：
 
-- `meta.json`
-- `text.txt`
-- `text.md`
-- `assets/`
+- `meta.json` — 元数据
+- `text.txt` — 原始文本
+- `text.md` — Markdown 格式
+- `assets/` — 封面与插图
 
-## Ubuntu 服务器部署
+## Web Token 获取
 
-### 1. 上传代码到服务器
+### 方式一：OAuth 浏览器授权（推荐）
 
-建议目标目录：`/opt/pixiv-novel-sync/app`
+1. 启动服务后访问 `http://服务器:5010/token-login`
+2. 点击"开始 Pixiv 浏览器登录"
+3. 在本地浏览器完成 Pixiv 登录
+4. 回调自动获取 `refresh_token` 并写入 `.env`
 
-### 2. 在服务器执行安装脚本
+### 方式二：gppt fallback
 
-```bash
-bash scripts/install_server.sh
-```
+如果 OAuth 失败，点击"使用旧版 gppt fallback"手动获取 token。
 
-### 3. 启动 token 获取页面
+## 后续优化方向
 
-```bash
-cd /opt/pixiv-novel-sync/app
-. .venv/bin/activate
-pixiv-novel-sync --config config/config.yaml web-token-ui --host 0.0.0.0 --port 5010
-```
+### 功能增强
+- [ ] 小说/系列状态检查定时任务默认开启
+- [ ] 支持按作者批量同步指定用户的小说
+- [ ] 支持导出同步统计数据（JSON/CSV）
+- [ ] 小说全文搜索（FTS 已实现，前端搜索 UI 待做）
+- [ ] 支持多账号管理
 
-### 4. 打开页面
+### 性能优化
+- [ ] 批量事务支持（减少 SQLite commit 次数）
+- [ ] Database 类实现上下文管理器协议
+- [ ] 已完成任务的内存清理（`_jobs` 字典无限增长）
+- [ ] 并发同步限制改为信号量
 
-```text
-http://你的服务器地址:5010/token-login
-```
+### 前端改进
+- [ ] 小说列表页支持搜索和排序
+- [ ] 用户详情页支持直接触发同步
+- [ ] 日志页面支持实时刷新（WebSocket 或轮询）
+- [ ] 移动端适配优化
 
-### 5. 获取并写入 token
-
-优先使用“本地 PC 浏览器授权”主流程。
-如果失败，再使用 `gppt` fallback。
-
-### 6. 认证测试与首次同步
-
-```bash
-. .venv/bin/activate
-pixiv-novel-sync --config config/config.yaml auth-check
-pixiv-novel-sync --config config/config.yaml sync-bookmarks
-```
-
-### 7. 查看定时器状态
-
-```bash
-systemctl status pixiv-novel-sync.timer
-systemctl list-timers --all | grep pixiv
-journalctl -u pixiv-novel-sync.service -n 100 --no-pager
-```
-
-## 已知限制
-
-- 当前只实现“收藏小说”同步闭环，关注用户、关注流、系列追更尚未接入
-- 资源下载目前通过通用 HTTP 下载，后续可切换为更贴合 Pixiv 请求头的下载方式
-- `webview_novel()` 返回结构在不同版本库中可能略有差异，后续应补充兼容层与测试
-- 当前正文更新会直接覆盖文件，尚未保留历史版本快照
-- Pixiv 授权链路并非官方开放平台集成方案，未来可能因风控变化需要调整
+### 运维改进
+- [ ] Docker 部署支持
+- [ ] 健康检查 API
+- [ ] 同步任务进度条改进（百分比）
+- [ ] 配置文件热重载
