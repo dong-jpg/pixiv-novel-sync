@@ -57,6 +57,10 @@ class SyncSettings:
     auto_sync_following_novels_users_limit: int = 0  # 每轮同步的用户数限制，0=全部
     auto_sync_user_status_enabled: bool = True  # 关注用户的用户状态更新
     auto_sync_user_status_cron: str = ""  # 用户状态检查cron表达式
+    auto_sync_novel_status_enabled: bool = False  # 小说状态检查
+    auto_sync_novel_status_cron: str = ""  # 小说状态检查cron表达式
+    auto_sync_series_status_enabled: bool = False  # 系列状态检查
+    auto_sync_series_status_cron: str = ""  # 系列状态检查cron表达式
     auto_sync_subscribed_series_enabled: bool = True  # 我的追更系列
     auto_sync_subscribed_series_interval_hours: int = 6  # 追更系列间隔（小时）
     auto_sync_subscribed_series_cron: str = ""  # 追更系列cron表达式，优先于interval_hours

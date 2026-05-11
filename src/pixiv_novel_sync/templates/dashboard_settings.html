@@ -382,7 +382,9 @@
             <button class="btn btn-secondary" id="manualBookmarks">同步收藏</button>
             <button class="btn btn-secondary" id="manualFollowingUsers">同步关注用户</button>
             <button class="btn btn-secondary" id="manualFollowingNovels">同步关注小说</button>
-            <button class="btn btn-secondary" id="manualUserStatus">同步用户状态</button>
+            <button class="btn btn-secondary" id="manualUserStatus">检查用户状态</button>
+            <button class="btn btn-secondary" id="manualNovelStatus">检查小说状态</button>
+            <button class="btn btn-secondary" id="manualSeriesStatus">检查系列状态</button>
           </div>
           <div class="hint" style="margin-top:12px;">手动同步不受定时开关控制，点击后立即执行</div>
         </div>
@@ -656,6 +658,8 @@
       $("#manualFollowingUsers").addEventListener("click", () => triggerSync("following_users", $("#manualFollowingUsers")));
       $("#manualFollowingNovels").addEventListener("click", () => triggerSync("following_novels", $("#manualFollowingNovels")));
       $("#manualUserStatus").addEventListener("click", () => triggerSync("user_status", $("#manualUserStatus")));
+      $("#manualNovelStatus").addEventListener("click", () => triggerSync("novel_status", $("#manualNovelStatus")));
+      $("#manualSeriesStatus").addEventListener("click", () => triggerSync("series_status", $("#manualSeriesStatus")));
 
       async function triggerSync(task, btn) {
         btn.disabled = true;

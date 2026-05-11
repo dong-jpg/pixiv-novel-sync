@@ -122,7 +122,9 @@ class Database:
         self._migrate_users_table()
         # 修复：重置错误标记为 cleared 的用户状态
         self._fix_cleared_status()
-        # 迁移：为 series 表添加 is_subscribed 字段
+        # 迁移：为 novels 表添加 status 和 last_checked_at 字段
+        self._migrate_novels_table()
+        # 迁移：为 series 表添加 is_subscribed、status、last_checked_at 字段
         self._migrate_series_table()
         self.conn.commit()
 
@@ -415,6 +417,8 @@ class Database:
                 n.create_date,
                 n.first_seen_at,
                 n.last_seen_at,
+                n.status,
+                n.last_checked_at,
                 nt.text_raw,
                 nt.text_markdown,
                 n.raw_json
@@ -509,12 +513,25 @@ class Database:
         except Exception:
             pass
 
+    def _migrate_novels_table(self) -> None:
+        """为 novels 表添加 status 和 last_checked_at 字段"""
+        cursor = self.conn.execute("PRAGMA table_info(novels)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "status" not in columns:
+            self.conn.execute("ALTER TABLE novels ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'")
+        if "last_checked_at" not in columns:
+            self.conn.execute("ALTER TABLE novels ADD COLUMN last_checked_at TEXT")
+
     def _migrate_series_table(self) -> None:
-        """为 series 表添加 is_subscribed 字段"""
+        """为 series 表添加 is_subscribed、status、last_checked_at 字段"""
         cursor = self.conn.execute("PRAGMA table_info(series)")
         columns = {row[1] for row in cursor.fetchall()}
         if "is_subscribed" not in columns:
             self.conn.execute("ALTER TABLE series ADD COLUMN is_subscribed INTEGER NOT NULL DEFAULT 0")
+        if "status" not in columns:
+            self.conn.execute("ALTER TABLE series ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'")
+        if "last_checked_at" not in columns:
+            self.conn.execute("ALTER TABLE series ADD COLUMN last_checked_at TEXT")
 
     def upsert_user_status(self, user_id: int, status: str) -> None:
         self.conn.execute(
@@ -522,6 +539,28 @@ class Database:
             (status, user_id),
         )
         self.conn.commit()
+
+    def upsert_novel_status(self, novel_id: int, status: str) -> None:
+        self.conn.execute(
+            "UPDATE novels SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE novel_id = ?",
+            (status, novel_id),
+        )
+        self.conn.commit()
+
+    def upsert_series_status(self, series_id: int, status: str) -> None:
+        self.conn.execute(
+            "UPDATE series SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE series_id = ?",
+            (status, series_id),
+        )
+        self.conn.commit()
+
+    def get_all_novel_ids(self) -> list[int]:
+        rows = self.conn.execute("SELECT novel_id FROM novels ORDER BY novel_id").fetchall()
+        return [row[0] for row in rows]
+
+    def get_all_series_ids(self) -> list[int]:
+        rows = self.conn.execute("SELECT series_id FROM series ORDER BY series_id").fetchall()
+        return [row[0] for row in rows]
 
     def upsert_series(self, series_id: int, title: str, description: str, user_id: int, cover_url: str | None) -> None:
         self.conn.execute(

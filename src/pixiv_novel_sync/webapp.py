@@ -109,6 +109,8 @@ class AutoSyncScheduler:
             {"name": "following_novels", "setting_check": "auto_sync_following_novels_enabled", "sync_func": "_sync_following_novels", "interval_setting": "auto_sync_following_novels_interval_hours", "cron_setting": "auto_sync_following_novels_cron"},
             {"name": "subscribed_series", "setting_check": "auto_sync_subscribed_series_enabled", "sync_func": "_sync_subscribed_series", "interval_setting": "auto_sync_subscribed_series_interval_hours", "cron_setting": "auto_sync_subscribed_series_cron"},
             {"name": "user_status", "setting_check": "auto_sync_user_status_enabled", "sync_func": "_sync_user_status", "interval_setting": "auto_sync_following_interval_hours", "cron_setting": "auto_sync_user_status_cron"},
+            {"name": "novel_status", "setting_check": "auto_sync_novel_status_enabled", "sync_func": "_sync_novel_status", "interval_setting": "auto_sync_following_interval_hours", "cron_setting": "auto_sync_novel_status_cron"},
+            {"name": "series_status", "setting_check": "auto_sync_series_status_enabled", "sync_func": "_sync_series_status", "interval_setting": "auto_sync_following_interval_hours", "cron_setting": "auto_sync_series_status_cron"},
         ]
         
         while self._running:
@@ -208,6 +210,8 @@ class AutoSyncScheduler:
                 "following_novels": "同步关注用户小说",
                 "subscribed_series": "同步追更系列",
                 "user_status": "检查用户状态",
+                "novel_status": "检查小说状态",
+                "series_status": "检查系列状态",
             }
             job = self.sync_job_manager.start_auto_job(task_name, task_labels.get(task_name, task_name))
             self._current_task_job_id = job.job_id
@@ -579,6 +583,108 @@ class AutoSyncScheduler:
         finally:
             db.close()
 
+    def _sync_novel_status(self, settings: Settings, job_id: str | None) -> None:
+        """检查所有小说的存续状态"""
+        from .auth import PixivAuthManager
+
+        if job_id and self.sync_job_manager:
+            self.sync_job_manager.add_log(job_id, "info", "开始检查小说状态")
+
+        auth = PixivAuthManager(settings.pixiv)
+        api, auth_result = auth.login()
+        if auth_result.user_id is None:
+            raise RuntimeError("Unable to determine user ID")
+
+        if self._check_stop():
+            return
+
+        db = Database(settings.storage.db_path)
+        db.init_schema()
+
+        try:
+            novel_ids = db.get_all_novel_ids()
+            if job_id and self.sync_job_manager:
+                self.sync_job_manager.add_log(job_id, "info", f"共 {len(novel_ids)} 本小说需要检查")
+
+            checked_count = 0
+            status_counts: dict[str, int] = {}
+            for novel_id in novel_ids:
+                if self._check_stop():
+                    return
+
+                try:
+                    status = _check_novel_status(api, novel_id)
+                    db.upsert_novel_status(novel_id, status)
+                    checked_count += 1
+                    status_counts[status] = status_counts.get(status, 0) + 1
+
+                    if job_id and self.sync_job_manager:
+                        if status != "normal":
+                            self.sync_job_manager.add_log(job_id, "warning", f"[{checked_count}/{len(novel_ids)}] 小说 {novel_id}: {status}")
+                        elif checked_count % 50 == 0:
+                            self.sync_job_manager.add_log(job_id, "info", f"[{checked_count}/{len(novel_ids)}] 已检查...")
+
+                    time.sleep(settings.sync.delay_seconds_between_skips)
+                except Exception as e:
+                    logger.warning("Failed to check novel %s status: %s", novel_id, e)
+
+            summary = ", ".join(f"{k}: {v}" for k, v in status_counts.items())
+            if job_id and self.sync_job_manager:
+                self.sync_job_manager.add_log(job_id, "success", f"小说状态检查完成: {checked_count} 本 ({summary})")
+        finally:
+            db.close()
+
+    def _sync_series_status(self, settings: Settings, job_id: str | None) -> None:
+        """检查所有系列的存续状态"""
+        from .auth import PixivAuthManager
+
+        if job_id and self.sync_job_manager:
+            self.sync_job_manager.add_log(job_id, "info", "开始检查系列状态")
+
+        auth = PixivAuthManager(settings.pixiv)
+        api, auth_result = auth.login()
+        if auth_result.user_id is None:
+            raise RuntimeError("Unable to determine user ID")
+
+        if self._check_stop():
+            return
+
+        db = Database(settings.storage.db_path)
+        db.init_schema()
+
+        try:
+            series_ids = db.get_all_series_ids()
+            if job_id and self.sync_job_manager:
+                self.sync_job_manager.add_log(job_id, "info", f"共 {len(series_ids)} 个系列需要检查")
+
+            checked_count = 0
+            status_counts: dict[str, int] = {}
+            for series_id in series_ids:
+                if self._check_stop():
+                    return
+
+                try:
+                    status = _check_series_status(api, series_id)
+                    db.upsert_series_status(series_id, status)
+                    checked_count += 1
+                    status_counts[status] = status_counts.get(status, 0) + 1
+
+                    if job_id and self.sync_job_manager:
+                        if status != "normal":
+                            self.sync_job_manager.add_log(job_id, "warning", f"[{checked_count}/{len(series_ids)}] 系列 {series_id}: {status}")
+                        elif checked_count % 20 == 0:
+                            self.sync_job_manager.add_log(job_id, "info", f"[{checked_count}/{len(series_ids)}] 已检查...")
+
+                    time.sleep(settings.sync.delay_seconds_between_skips)
+                except Exception as e:
+                    logger.warning("Failed to check series %s status: %s", series_id, e)
+
+            summary = ", ".join(f"{k}: {v}" for k, v in status_counts.items())
+            if job_id and self.sync_job_manager:
+                self.sync_job_manager.add_log(job_id, "success", f"系列状态检查完成: {checked_count} 个 ({summary})")
+        finally:
+            db.close()
+
 
 @dataclass(slots=True)
 class SyncJobManager:
@@ -864,6 +970,52 @@ class SyncJobManager:
                 self.add_log(job_id, "success", f"用户状态检查完成: {checked_count} 个用户")
                 return {"users_checked": checked_count}
 
+            elif task_type == "novel_status":
+                self.add_log(job_id, "info", "=== 开始检查小说状态 ===")
+                novel_ids = db.get_all_novel_ids()
+                self.add_log(job_id, "info", f"共 {len(novel_ids)} 本小说需要检查")
+                checked = 0
+                status_counts: dict[str, int] = {}
+                for nid in novel_ids:
+                    try:
+                        status = _check_novel_status(api, nid)
+                        db.upsert_novel_status(nid, status)
+                        checked += 1
+                        status_counts[status] = status_counts.get(status, 0) + 1
+                        if status != "normal":
+                            self.add_log(job_id, "warning", f"[{checked}/{len(novel_ids)}] 小说 {nid}: {status}")
+                        elif checked % 50 == 0:
+                            self.add_log(job_id, "info", f"[{checked}/{len(novel_ids)}] 已检查...")
+                        time.sleep(settings.sync.delay_seconds_between_skips)
+                    except Exception as e:
+                        self.add_log(job_id, "warning", f"检查小说 {nid} 失败: {e}")
+                summary = ", ".join(f"{k}: {v}" for k, v in status_counts.items())
+                self.add_log(job_id, "success", f"小说状态检查完成: {checked} 本 ({summary})")
+                return {"novels_checked": checked}
+
+            elif task_type == "series_status":
+                self.add_log(job_id, "info", "=== 开始检查系列状态 ===")
+                series_ids = db.get_all_series_ids()
+                self.add_log(job_id, "info", f"共 {len(series_ids)} 个系列需要检查")
+                checked = 0
+                status_counts: dict[str, int] = {}
+                for sid in series_ids:
+                    try:
+                        status = _check_series_status(api, sid)
+                        db.upsert_series_status(sid, status)
+                        checked += 1
+                        status_counts[status] = status_counts.get(status, 0) + 1
+                        if status != "normal":
+                            self.add_log(job_id, "warning", f"[{checked}/{len(series_ids)}] 系列 {sid}: {status}")
+                        elif checked % 20 == 0:
+                            self.add_log(job_id, "info", f"[{checked}/{len(series_ids)}] 已检查...")
+                        time.sleep(settings.sync.delay_seconds_between_skips)
+                    except Exception as e:
+                        self.add_log(job_id, "warning", f"检查系列 {sid} 失败: {e}")
+                summary = ", ".join(f"{k}: {v}" for k, v in status_counts.items())
+                self.add_log(job_id, "success", f"系列状态检查完成: {checked} 个 ({summary})")
+                return {"series_checked": checked}
+
             else:
                 self.add_log(job_id, "error", f"未知任务类型: {task_type}")
                 return {}
@@ -945,6 +1097,10 @@ class SettingsManager:
         sync_data["auto_sync_following_novels_users_limit"] = int(payload.get("auto_sync_following_novels_users_limit", sync_data.get("auto_sync_following_novels_users_limit", 0)))
         sync_data["auto_sync_user_status_enabled"] = bool(payload.get("auto_sync_user_status_enabled", sync_data.get("auto_sync_user_status_enabled", True)))
         sync_data["auto_sync_user_status_cron"] = str(payload.get("auto_sync_user_status_cron", sync_data.get("auto_sync_user_status_cron", "")))
+        sync_data["auto_sync_novel_status_enabled"] = bool(payload.get("auto_sync_novel_status_enabled", sync_data.get("auto_sync_novel_status_enabled", False)))
+        sync_data["auto_sync_novel_status_cron"] = str(payload.get("auto_sync_novel_status_cron", sync_data.get("auto_sync_novel_status_cron", "")))
+        sync_data["auto_sync_series_status_enabled"] = bool(payload.get("auto_sync_series_status_enabled", sync_data.get("auto_sync_series_status_enabled", False)))
+        sync_data["auto_sync_series_status_cron"] = str(payload.get("auto_sync_series_status_cron", sync_data.get("auto_sync_series_status_cron", "")))
         sync_data["auto_sync_subscribed_series_enabled"] = bool(payload.get("auto_sync_subscribed_series_enabled", sync_data.get("auto_sync_subscribed_series_enabled", True)))
         sync_data["auto_sync_subscribed_series_interval_hours"] = int(payload.get("auto_sync_subscribed_series_interval_hours", sync_data.get("auto_sync_subscribed_series_interval_hours", 6)))
         sync_data["auto_sync_subscribed_series_cron"] = str(payload.get("auto_sync_subscribed_series_cron", sync_data.get("auto_sync_subscribed_series_cron", "")))
@@ -1456,6 +1612,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             "following_users": ("following_users", "同步关注用户"),
             "following_novels": ("following_novels", "同步关注小说"),
             "user_status": ("user_status", "检查用户状态"),
+            "novel_status": ("novel_status", "检查小说状态"),
+            "series_status": ("series_status", "检查系列状态"),
         }
         
         if task_type not in task_map:
@@ -1761,6 +1919,10 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "auto_sync_following_novels_users_limit": settings.sync.auto_sync_following_novels_users_limit,
         "auto_sync_user_status_enabled": settings.sync.auto_sync_user_status_enabled,
         "auto_sync_user_status_cron": settings.sync.auto_sync_user_status_cron,
+        "auto_sync_novel_status_enabled": settings.sync.auto_sync_novel_status_enabled,
+        "auto_sync_novel_status_cron": settings.sync.auto_sync_novel_status_cron,
+        "auto_sync_series_status_enabled": settings.sync.auto_sync_series_status_enabled,
+        "auto_sync_series_status_cron": settings.sync.auto_sync_series_status_cron,
         "auto_sync_subscribed_series_enabled": settings.sync.auto_sync_subscribed_series_enabled,
         "auto_sync_subscribed_series_interval_hours": settings.sync.auto_sync_subscribed_series_interval_hours,
         "auto_sync_subscribed_series_cron": settings.sync.auto_sync_subscribed_series_cron,
@@ -1852,4 +2014,46 @@ def _check_pixiv_user_status(api: Any, user_id: int) -> str:
         return "normal"
     except Exception as e:
         logger.warning("Failed to check user %s status: %s", user_id, e)
+        return "unknown"
+
+
+def _check_novel_status(api: Any, novel_id: int) -> str:
+    """检查小说状态：normal/deleted/restricted"""
+    try:
+        result = api.novel_detail(novel_id)
+        if result is None:
+            return "deleted"
+        novel = getattr(result, "novel", None)
+        if novel is None:
+            if isinstance(result, dict):
+                novel = result.get("novel")
+            if novel is None:
+                return "deleted"
+        visible = getattr(novel, "visible", True)
+        if isinstance(novel, dict):
+            visible = novel.get("visible", True)
+        if not visible:
+            return "restricted"
+        return "normal"
+    except Exception as e:
+        logger.warning("Failed to check novel %s status: %s", novel_id, e)
+        return "unknown"
+
+
+def _check_series_status(api: Any, series_id: int) -> str:
+    """检查系列状态：normal/deleted"""
+    try:
+        result = api.novel_series(series_id)
+        if result is None:
+            return "deleted"
+        detail = None
+        if isinstance(result, dict):
+            detail = result.get("novel_series_detail")
+        if detail is None:
+            detail = getattr(result, "novel_series_detail", None)
+        if detail is None:
+            return "deleted"
+        return "normal"
+    except Exception as e:
+        logger.warning("Failed to check series %s status: %s", series_id, e)
         return "unknown"

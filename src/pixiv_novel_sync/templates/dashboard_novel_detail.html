@@ -139,9 +139,12 @@
         ? `<img class="cover" src="/proxy/image?url=${encodeURIComponent(data.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
         : '';
       const fallbackCover = `<div class="empty-cover" style="display:${data.cover_url ? 'none' : 'flex'};align-items:center;justify-content:center;color:var(--text-secondary);font-size:18px;text-align:center;padding:16px;">${escapeHtml((data.title || '').slice(0, 6))}</div>`;
+      const novelStatusMap = {normal: {label: '正常', color: 'var(--success)'}, deleted: {label: '已删除', color: 'var(--danger)'}, restricted: {label: '受限', color: '#ff9500'}, unknown: {label: '未检查', color: 'var(--text-secondary)'}};
+      const ns = novelStatusMap[data.status] || novelStatusMap.unknown;
+      const statusBadge = `<span class="badge" style="background:${ns.color}20;color:${ns.color};">● ${ns.label}</span>`;
       const badges = [kindLabel(data.novel_kind), restrictLabel(data.restrict_value)].map(function(b) {
         return '<span class="badge">' + escapeHtml(b) + '</span>';
-      }).join('');
+      }).join('') + statusBadge;
       document.getElementById('hero').innerHTML = `
         ${cover}${fallbackCover}
         <div class="info">

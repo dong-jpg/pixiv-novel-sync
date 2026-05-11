@@ -134,10 +134,13 @@
         ? `<img class="cover" src="/proxy/image?url=${encodeURIComponent(data.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
         : '';
       const fallbackCover = `<div class="empty-cover" style="display:${data.cover_url ? 'none' : 'flex'};">${escapeHtml((data.title || '').slice(0, 6))}</div>`;
+      const seriesStatusMap = {normal: {label: '正常', color: 'var(--success)'}, deleted: {label: '已删除', color: 'var(--danger)'}, unknown: {label: '未检查', color: 'var(--text-secondary)'}};
+      const ss = seriesStatusMap[data.status] || seriesStatusMap.unknown;
       document.getElementById('hero').innerHTML = `
         ${cover}${fallbackCover}
         <div class="info">
           <h1 class="title">${escapeHtml(data.title || '未命名系列')}</h1>
+          <div style="margin-bottom:8px;"><span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;padding:4px 8px;border-radius:6px;background:${ss.color}20;color:${ss.color};font-weight:600;">● ${ss.label}</span>${data.last_checked_at ? `<span style="font-size:12px;color:var(--text-secondary);margin-left:8px;">最后检查: ${escapeHtml(data.last_checked_at)}</span>` : ''}</div>
           <div class="meta">
             <strong>作者：</strong>${escapeHtml(data.author_name || '未知')}<br>
             <strong>章节：</strong>${escapeHtml(data.total_novels || 0)} 章<br>
@@ -152,12 +155,15 @@
         chapters.innerHTML = '<div class="empty">暂无章节</div>';
         return;
       }
+      const chapterStatusMap = {normal: {label: '正常', color: 'var(--success)'}, deleted: {label: '已删除', color: 'var(--danger)'}, restricted: {label: '受限', color: '#ff9500'}, unknown: {label: '', color: 'transparent'}};
       chapters.innerHTML = '<div class="chapter-list">' + novels.map(function (novel, index) {
+        const cs = chapterStatusMap[novel.status] || chapterStatusMap.unknown;
+        const statusTag = cs.label ? `<span style="font-size:11px;padding:2px 6px;border-radius:4px;background:${cs.color}20;color:${cs.color};margin-left:6px;">${cs.label}</span>` : '';
         return `
           <a class="chapter-item" href="/dashboard/novels/${encodeURIComponent(novel.novel_id)}">
             <div class="chapter-num">${index + 1}</div>
             <div class="chapter-info">
-              <div class="chapter-title">${escapeHtml(novel.title || '未命名章节')}</div>
+              <div class="chapter-title">${escapeHtml(novel.title || '未命名章节')}${statusTag}</div>
               <div class="chapter-meta">收藏 ${escapeHtml(novel.total_bookmarks || 0)} / 浏览 ${escapeHtml(novel.total_views || 0)}</div>
             </div>
           </a>
