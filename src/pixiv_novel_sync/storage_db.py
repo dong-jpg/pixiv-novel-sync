@@ -126,6 +126,8 @@ class Database:
         self._migrate_novels_table()
         # 迁移：为 series 表添加 is_subscribed、status、last_checked_at 字段
         self._migrate_series_table()
+        # 修复：将进程重启后遗留的 running 状态日志标记为 failed
+        self._fix_stale_running_logs()
         self.conn.commit()
 
     def upsert_user(self, record: UserRecord) -> None:
@@ -509,6 +511,17 @@ class Database:
         """重置错误标记为 cleared 的用户状态为 unknown"""
         try:
             self.conn.execute("UPDATE users SET status = 'unknown' WHERE status = 'cleared'")
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def _fix_stale_running_logs(self) -> None:
+        """将进程重启后遗留的 running 状态日志标记为 failed"""
+        try:
+            self.conn.execute(
+                "UPDATE task_logs SET status = 'failed', error_message = '进程重启，任务中断', "
+                "finished_at = CURRENT_TIMESTAMP WHERE status = 'running'"
+            )
             self.conn.commit()
         except Exception:
             pass
