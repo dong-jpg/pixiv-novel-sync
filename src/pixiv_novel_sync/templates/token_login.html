@@ -64,11 +64,15 @@
         </div>
         <div class="step" id="step2">
           <div class="step-num pending" id="step2Num">2</div>
-          <div class="step-text">登录成功后，复制浏览器地址栏的完整 URL<small>地址格式：https://app-api.pixiv.net/.../callback?code=...&state=...</small></div>
+          <div class="step-text">在 Pixiv 页面输入账号密码登录
+            <small>登录后会经过多次跳转，请耐心等待页面自动跳转到 callback 地址</small>
+          </div>
         </div>
         <div class="step" id="step3">
           <div class="step-num pending" id="step3Num">3</div>
-          <div class="step-text">粘贴到下方输入框，自动完成</div>
+          <div class="step-text">等浏览器地址栏出现 callback?code=...&state=... 后，复制完整 URL 粘贴到下方
+            <small>最终地址格式：https://app-api.pixiv.net/web/v1/users/auth/pixiv/callback?code=xxx&state=yyy</small>
+          </div>
         </div>
       </div>
 
@@ -162,7 +166,7 @@
         return;
       }
       if (!url.includes('code=') || !url.includes('state=')) {
-        showStatus('error', 'URL 格式不对，应该包含 code= 和 state= 参数');
+        showStatus('error', 'URL 中没有找到 code= 和 state= 参数。<br>你粘贴的可能是中间页面的地址。请等待浏览器跳转到 <code>...callback?code=xxx&state=yyy</code> 后再复制。');
         return;
       }
       if (!oauthTaskId) {
