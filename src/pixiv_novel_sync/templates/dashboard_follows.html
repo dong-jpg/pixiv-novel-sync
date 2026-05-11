@@ -32,6 +32,10 @@
     .page-desc { color: var(--text-secondary); margin: 0 0 24px; font-size: 15px; }
     .card { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 24px; }
     .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+    .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+    .tab { border: 1px solid var(--line); background: #fff; color: var(--text-secondary); border-radius: 8px; padding: 8px 16px; cursor: pointer; font-size: 13px; font-weight: 600; transition: all 0.2s; }
+    .tab:hover { border-color: var(--brand-start); color: var(--brand-start); }
+    .tab.active { background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); color: #fff; border-color: transparent; }
     .summary { color: var(--text-secondary); font-size: 13px; }
     .list { display: grid; gap: 12px; }
     .item { display: flex; gap: 16px; align-items: center; background: var(--bg-soft); border-radius: var(--radius); padding: 16px 20px; transition: all 0.2s; }
@@ -69,12 +73,19 @@
 
   <main class="page">
     <h1 class="page-title">关注作者</h1>
-    <p class="page-desc">展示已同步到本地的关注作者列表，分页加载每页 10 条。</p>
+    <p class="page-desc">展示已同步到本地的关注作者列表，支持按状态筛选。</p>
 
     <section class="card">
       <div class="toolbar">
-        <div id="summary" class="summary">加载中...</div>
-        <div id="pageInfo" class="summary"></div>
+        <div class="tabs" id="tabs">
+          <button class="tab active" data-status="all">全部</button>
+          <button class="tab" data-status="normal">有小说</button>
+          <button class="tab" data-status="no_novels">无小说</button>
+          <button class="tab" data-status="suspended">封号</button>
+        </div>
+        <div>
+          <div id="summary" class="summary">加载中...</div>
+        </div>
       </div>
       <div id="list" class="list"></div>
       <div class="pager">
@@ -88,6 +99,7 @@
   <script>
     let currentPage = 1;
     let totalPages = 1;
+    let currentStatus = 'all';
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>"]/g, function (ch) {
@@ -99,20 +111,26 @@
       });
     }
 
+    const statusMap = {
+      normal: {label: '有小说', color: 'var(--success)'},
+      no_novels: {label: '无小说', color: '#ff9500'},
+      suspended: {label: '封号', color: 'var(--danger)'},
+      unknown: {label: '未知', color: 'var(--text-secondary)'}
+    };
+
     async function loadFollows(page) {
-      const resp = await fetch(`/api/dashboard/users?page=${page}`);
+      const resp = await fetch(`/api/dashboard/users?page=${page}&status=${currentStatus}`);
       const data = await resp.json();
       const items = data.items || [];
       currentPage = data.page || 1;
       totalPages = data.total_pages || 1;
-      document.getElementById('summary').textContent = `共 ${data.total || 0} 位作者`;
-      document.getElementById('pageInfo').textContent = '每页 10 条';
+      document.getElementById('summary').textContent = `共 ${data.total || 0} 位作者 · 每页 10 条`;
       document.getElementById('pagerText').textContent = `${currentPage} / ${totalPages}`;
       document.getElementById('prevBtn').disabled = currentPage <= 1;
       document.getElementById('nextBtn').disabled = currentPage >= totalPages;
       const list = document.getElementById('list');
       if (!items.length) {
-        list.innerHTML = '<div class="empty-state">暂无数据，请先执行一次手工同步</div>';
+        list.innerHTML = '<div class="empty-state">暂无数据</div>';
         return;
       }
       list.innerHTML = items.map(function (item) {
@@ -121,7 +139,6 @@
           : '';
         const fallbackAvatar = `<div class="empty-avatar" style="display:${item.avatar_url ? 'none' : 'flex'};">${escapeHtml((item.name || 'U').slice(0, 2))}</div>`;
         const account = item.account ? `@${escapeHtml(item.account)}` : `ID ${escapeHtml(item.user_id)}`;
-        const statusMap = {normal: {label: '正常', color: 'var(--success)'}, suspended: {label: '封号', color: 'var(--danger)'}, cleared: {label: '资源清空', color: '#ff9500'}, unknown: {label: '未知', color: 'var(--text-secondary)'}};
         const status = statusMap[item.status] || statusMap.unknown;
         return `
           <article class="item">
@@ -139,6 +156,13 @@
       }).join('');
     }
 
+    document.getElementById('tabs').addEventListener('click', function (e) {
+      const btn = e.target.closest('.tab');
+      if (!btn) return;
+      currentStatus = btn.dataset.status;
+      document.querySelectorAll('.tab').forEach(function (t) { t.classList.toggle('active', t === btn); });
+      loadFollows(1);
+    });
     document.getElementById('prevBtn').addEventListener('click', function () {
       if (currentPage > 1) loadFollows(currentPage - 1);
     });

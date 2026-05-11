@@ -1261,7 +1261,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         page = max(int(request.args.get("page", 1) or 1), 1)
         page_size = 10
         status = str(request.args.get("status", "all") or "all").strip().lower()
-        if status not in {"all", "normal", "suspended", "cleared", "unknown"}:
+        if status not in {"all", "normal", "suspended", "cleared", "no_novels", "unknown"}:
             status = "all"
         db = Database(current_settings.storage.db_path)
         db.init_schema()
@@ -1844,8 +1844,11 @@ def _check_pixiv_user_status(api: Any, user_id: int) -> str:
         user = getattr(result, "user", None)
         if user is None:
             return "suspended"
-        # 只要 API 能正常返回用户信息就判定为 normal
-        # 不再用 total_novels == 0 判定 cleared，因为 Pixiv 的 total_novels 可能不准确
+        profile = getattr(result, "profile", None)
+        if profile:
+            total_novels = getattr(profile, "total_novels", 0) or 0
+            if total_novels == 0:
+                return "no_novels"
         return "normal"
     except Exception as e:
         logger.warning("Failed to check user %s status: %s", user_id, e)

@@ -716,7 +716,7 @@ class Database:
                    (SELECT COUNT(*) FROM novels n WHERE n.user_id = u.user_id) AS novel_count
             FROM users u
             {where_clause}
-            ORDER BY u.updated_at DESC
+            ORDER BY CASE u.status WHEN 'no_novels' THEN 1 WHEN 'suspended' THEN 2 ELSE 0 END, u.updated_at DESC
             LIMIT ? OFFSET ?
             """,
             [*params, page_size, offset],
