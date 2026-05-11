@@ -24,6 +24,9 @@ from .sync_engine import BookmarkNovelSyncService
 
 logger = logging.getLogger(__name__)
 
+# 记录服务启动时间（用于健康检查 API 计算 uptime）
+_service_start_time: float = time.time()
+
 
 @dataclass(slots=True)
 class SyncJobState:
@@ -692,13 +695,23 @@ class SyncJobManager:
     env_path: str | None
     _jobs: dict[str, SyncJobState] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _semaphore: threading.Semaphore = field(default_factory=lambda: threading.Semaphore(1))
     MAX_LOGS: int = 50
+    MAX_JOBS: int = 100  # 最多保留的任务数
+
+    def _cleanup_old_jobs(self) -> None:
+        """清理已完成的旧任务，保留最近 MAX_JOBS 个"""
+        if len(self._jobs) <= self.MAX_JOBS:
+            return
+        done_jobs = [(jid, j) for jid, j in self._jobs.items() if j.status != "running"]
+        done_jobs.sort(key=lambda x: x[1].finished_at or 0, reverse=True)
+        for jid, _ in done_jobs[self.MAX_JOBS:]:
+            del self._jobs[jid]
 
     def start_job(self, task_list: list[str] | None = None) -> SyncJobState:
+        if not self._semaphore.acquire(blocking=False):
+            raise RuntimeError("已有同步任务正在运行，请稍后再试")
         with self._lock:
-            running = [job for job in self._jobs.values() if job.status == "running"]
-            if running:
-                raise RuntimeError("已有同步任务正在运行，请稍后再试")
             import uuid
             job_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
             job = SyncJobState(
@@ -738,6 +751,10 @@ class SyncJobManager:
                 return None
             # 按 started_at 排序，而非字符串排序
             return max(self._jobs.values(), key=lambda j: j.started_at or 0)
+
+    def has_running_jobs(self) -> bool:
+        with self._lock:
+            return any(j.status == "running" for j in self._jobs.values())
 
     def add_log(self, job_id: str, level: str, message: str) -> None:
         with self._lock:
@@ -827,16 +844,9 @@ class SyncJobManager:
                     logger.error("更新任务日志失败：%s", e)
         finally:
             job.finished_at = time.time()
-            # 清理旧任务，只保留最近 20 个
-            self._cleanup_old_jobs()
-
-    def _cleanup_old_jobs(self, keep: int = 20) -> None:
-        with self._lock:
-            if len(self._jobs) <= keep:
-                return
-            sorted_jobs = sorted(self._jobs.items(), key=lambda kv: kv[1].finished_at or 0, reverse=True)
-            for job_id, _ in sorted_jobs[keep:]:
-                del self._jobs[job_id]
+            self._semaphore.release()
+            with self._lock:
+                self._cleanup_old_jobs()
 
     def _run_single_sync(self, settings: Settings, task_type: str, job_id: str) -> dict[str, Any]:
         """根据 task_type 执行单个同步任务"""
@@ -1097,9 +1107,9 @@ class SettingsManager:
         sync_data["auto_sync_following_novels_users_limit"] = int(payload.get("auto_sync_following_novels_users_limit", sync_data.get("auto_sync_following_novels_users_limit", 0)))
         sync_data["auto_sync_user_status_enabled"] = bool(payload.get("auto_sync_user_status_enabled", sync_data.get("auto_sync_user_status_enabled", True)))
         sync_data["auto_sync_user_status_cron"] = str(payload.get("auto_sync_user_status_cron", sync_data.get("auto_sync_user_status_cron", "")))
-        sync_data["auto_sync_novel_status_enabled"] = bool(payload.get("auto_sync_novel_status_enabled", sync_data.get("auto_sync_novel_status_enabled", False)))
+        sync_data["auto_sync_novel_status_enabled"] = bool(payload.get("auto_sync_novel_status_enabled", sync_data.get("auto_sync_novel_status_enabled", True)))
         sync_data["auto_sync_novel_status_cron"] = str(payload.get("auto_sync_novel_status_cron", sync_data.get("auto_sync_novel_status_cron", "")))
-        sync_data["auto_sync_series_status_enabled"] = bool(payload.get("auto_sync_series_status_enabled", sync_data.get("auto_sync_series_status_enabled", False)))
+        sync_data["auto_sync_series_status_enabled"] = bool(payload.get("auto_sync_series_status_enabled", sync_data.get("auto_sync_series_status_enabled", True)))
         sync_data["auto_sync_series_status_cron"] = str(payload.get("auto_sync_series_status_cron", sync_data.get("auto_sync_series_status_cron", "")))
         sync_data["auto_sync_subscribed_series_enabled"] = bool(payload.get("auto_sync_subscribed_series_enabled", sync_data.get("auto_sync_subscribed_series_enabled", True)))
         sync_data["auto_sync_subscribed_series_interval_hours"] = int(payload.get("auto_sync_subscribed_series_interval_hours", sync_data.get("auto_sync_subscribed_series_interval_hours", 6)))
@@ -1570,13 +1580,14 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         current_settings = settings_manager.load(env_path=env_path)
         
         # 检查是否有任务正在运行
-        with sync_job_manager._lock:
-            running = [job for job in sync_job_manager._jobs.values() if job.status == "running"]
-            if running:
-                return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
+        if sync_job_manager.has_running_jobs():
+            return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
         
         # 创建一个专门的预检查任务（不通过 start_job，避免触发同步）
-        job_id = f"check_{int(time.time() * 1000)}"
+        if not sync_job_manager._semaphore.acquire(blocking=False):
+            return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
+        import uuid
+        job_id = f"check_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
         job = SyncJobState(
             job_id=job_id,
             status="running",
@@ -1682,10 +1693,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         limit = int(req_data.get("limit", 0) or 0)
 
         # 检查是否有任务正在运行
-        with sync_job_manager._lock:
-            running = [job for job in sync_job_manager._jobs.values() if job.status == "running"]
-            if running:
-                return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
+        if sync_job_manager.has_running_jobs():
+            return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
 
         db = Database(current_settings.storage.db_path)
         db.init_schema()
@@ -1880,6 +1889,133 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             return jsonify({"error": str(exc)}), 500
         finally:
             db.close()
+
+    # ------------------------------------------------------------------
+    # 健康检查 API
+    # ------------------------------------------------------------------
+    @app.get("/api/health")
+    def health_check():
+        """返回服务健康状态"""
+        uptime = round(time.time() - _service_start_time, 2)
+
+        # 检查数据库是否可访问
+        db_accessible = False
+        try:
+            current_settings = settings_manager.load(env_path=env_path)
+            db = Database(current_settings.storage.db_path)
+            db.init_schema()
+            db.conn.execute("SELECT 1")
+            db_accessible = True
+            db.close()
+        except Exception:
+            db_accessible = False
+
+        # 当前运行中的任务数
+        running_jobs = sum(
+            1 for j in sync_job_manager._jobs.values() if j.status == "running"
+        )
+
+        return jsonify({
+            "status": "ok",
+            "version": "1.0.0",
+            "uptime_seconds": uptime,
+            "db_accessible": db_accessible,
+            "running_jobs": running_jobs,
+        })
+
+    # ------------------------------------------------------------------
+    # 导出同步统计数据 API
+    # ------------------------------------------------------------------
+    @app.get("/api/dashboard/export/stats")
+    def dashboard_export_stats():
+        """导出同步统计数据"""
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            # 小说总数
+            total_novels = db.conn.execute(
+                "SELECT COUNT(*) FROM novels"
+            ).fetchone()[0]
+
+            # 用户总数
+            total_users = db.conn.execute(
+                "SELECT COUNT(*) FROM users"
+            ).fetchone()[0]
+
+            # 系列总数
+            total_series = db.conn.execute(
+                "SELECT COUNT(*) FROM series"
+            ).fetchone()[0]
+
+            # 按状态分组的小说数
+            novels_by_status = {}
+            for row in db.conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM novels GROUP BY status"
+            ).fetchall():
+                novels_by_status[row[0]] = row[1]
+
+            # 按状态分组的用户数
+            users_by_status = {}
+            for row in db.conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM users GROUP BY status"
+            ).fetchall():
+                users_by_status[row[0]] = row[1]
+
+            # 最近 10 条任务记录
+            recent_tasks = []
+            for row in db.conn.execute(
+                "SELECT id, task_type, task_name, job_id, status, is_auto_sync, "
+                "started_at, finished_at, error_message "
+                "FROM task_logs ORDER BY id DESC LIMIT 10"
+            ).fetchall():
+                recent_tasks.append({
+                    "id": row[0],
+                    "task_type": row[1],
+                    "task_name": row[2],
+                    "job_id": row[3],
+                    "status": row[4],
+                    "is_auto_sync": bool(row[5]),
+                    "started_at": row[6],
+                    "finished_at": row[7],
+                    "error_message": row[8],
+                })
+
+            return jsonify({
+                "total_novels": total_novels,
+                "total_users": total_users,
+                "total_series": total_series,
+                "novels_by_status": novels_by_status,
+                "users_by_status": users_by_status,
+                "recent_tasks": recent_tasks,
+            })
+        except Exception as exc:
+            logger.error("Export stats failed: %s", exc)
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            db.close()
+
+    # ------------------------------------------------------------------
+    # 配置热重载 API
+    # ------------------------------------------------------------------
+    @app.post("/api/dashboard/settings/reload")
+    def dashboard_settings_reload():
+        """重新加载配置文件并返回新配置"""
+        try:
+            new_settings = settings_manager.load(env_path=env_path)
+            new_config = _settings_to_dict(new_settings)
+
+            # 如果定时调度器正在运行，更新其配置缓存
+            if auto_sync_scheduler.is_running():
+                logger.info("Reloading auto sync scheduler config after settings reload")
+                # 清除调度器的下次运行时间缓存，让它在下一轮循环中重新计算
+                with auto_sync_scheduler._lock:
+                    auto_sync_scheduler._task_next_run.clear()
+
+            return jsonify({"ok": True, "message": "配置已重新加载", "settings": new_config})
+        except Exception as exc:
+            logger.error("Settings reload failed: %s", exc)
+            return jsonify({"error": f"配置重载失败：{exc}"}), 500
 
     return app
 
