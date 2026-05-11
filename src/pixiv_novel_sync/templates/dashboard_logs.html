@@ -152,6 +152,9 @@
       
       <button class="btn" id="applyFilter">应用筛选</button>
       <button class="btn btn-secondary" id="refreshLogs">刷新</button>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary);cursor:pointer;">
+        <input type="checkbox" id="autoRefreshToggle" style="accent-color:var(--brand-start);cursor:pointer;">自动刷新 (10s)
+      </label>
     </div>
     
     <div class="card">
@@ -459,6 +462,21 @@
       loadLogs(currentPage);
     });
     
+    // 自动刷新
+    let autoRefreshTimer = null;
+    $('#autoRefreshToggle').addEventListener('change', function () {
+      if (this.checked) {
+        autoRefreshTimer = setInterval(function () {
+          loadLogs(currentPage);
+        }, 10000);
+      } else {
+        if (autoRefreshTimer) {
+          clearInterval(autoRefreshTimer);
+          autoRefreshTimer = null;
+        }
+      }
+    });
+
     // 初始化加载
     loadLogs(currentPage);
   </script>

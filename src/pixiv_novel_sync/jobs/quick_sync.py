@@ -269,3 +269,4 @@ def run_check_bookmarks_task(settings: Settings, job_manager: Any, job_id: str) 
     finally:
         if db:
             db.close()
+        job_manager._semaphore.release()

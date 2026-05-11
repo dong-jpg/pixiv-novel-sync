@@ -1378,15 +1378,19 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         category = str(request.args.get("category", "all") or "all").strip().lower()
         if category not in {"all", "bookmark", "following"}:
             category = "all"
+        search = str(request.args.get("search", "") or "").strip()
+        sort = str(request.args.get("sort", "") or "").strip()
+        if sort not in {"", "updated_desc", "bookmarks_desc", "views_desc"}:
+            sort = ""
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         try:
             if category == "bookmark":
-                payload = db.list_bookmark_novels(page=page, page_size=page_size)
+                payload = db.list_bookmark_novels(page=page, page_size=page_size, search=search, sort=sort)
             elif category == "following":
-                payload = db.list_following_series(page=page, page_size=page_size)
+                payload = db.list_following_series(page=page, page_size=page_size, search=search, sort=sort)
             else:
-                payload = db.list_recent_novels(page=page, page_size=page_size, category="all")
+                payload = db.list_recent_novels(page=page, page_size=page_size, category="all", search=search, sort=sort)
         finally:
             db.close()
         return jsonify(payload)

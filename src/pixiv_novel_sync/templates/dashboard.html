@@ -306,7 +306,7 @@
         const total = job.progress.total || 50;
         const percent = Math.min(Math.round((current / total) * 100), 100);
         document.getElementById('progressPhase').textContent = job.progress.phase || '同步中';
-        document.getElementById('progressCount').textContent = `${current}/${total}`;
+        document.getElementById('progressCount').textContent = `${percent}% (${current}/${total})`;
         document.getElementById('progressFill').style.width = percent + '%';
         document.getElementById('progressNovel').textContent = job.progress.current_novel 
           ? `当前: ${job.progress.current_novel}${job.progress.author ? ' - ' + job.progress.author : ''}`

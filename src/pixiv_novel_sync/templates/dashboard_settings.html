@@ -85,6 +85,9 @@
       .topbar-inner { flex-direction: column; height: auto; padding: 12px 16px; gap: 8px; }
       .fields { grid-template-columns: 1fr; }
     }
+    @media (max-width: 720px) {
+      #manual .section > div[style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+    }
   </style>
 </head>
 <body>

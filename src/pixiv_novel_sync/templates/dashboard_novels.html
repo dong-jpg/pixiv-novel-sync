@@ -47,6 +47,10 @@
     .title-link:hover { color: var(--brand-start); }
     .meta { color: var(--text-secondary); font-size: 12px; margin-top: 6px; line-height: 1.6; }
     .badge { display: inline-flex; align-items: center; padding: 3px 8px; border-radius: 5px; background: rgba(0,122,255,0.1); color: var(--brand-start); font-size: 11px; font-weight: 600; margin-right: 6px; }
+    .search-bar { display: flex; gap: 10px; align-items: center; }
+    .search-bar input, .search-bar select { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-size: 13px; font-family: inherit; background: #fff; }
+    .search-bar input:focus, .search-bar select:focus { outline: none; border-color: var(--brand-start); }
+    .search-bar input { width: 180px; }
     .pager { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 24px; }
     .btn { border: none; border-radius: 10px; padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: var(--bg-soft); color: var(--text); }
     .btn:hover:not(:disabled) { background: #e8e8ed; }
@@ -57,6 +61,8 @@
       .item { grid-template-columns: 1fr; }
       .cover, .empty-cover { width: 100%; height: 180px; }
       .toolbar { flex-direction: column; align-items: flex-start; }
+      .search-bar { width: 100%; }
+      .search-bar input { flex: 1; width: auto; }
     }
   </style>
 </head>
@@ -85,6 +91,15 @@
           <button class="tab active" data-category="bookmark">收藏</button>
           <button class="tab" data-category="following">追更</button>
         </div>
+        <div class="search-bar">
+          <input type="text" id="searchInput" placeholder="搜索标题或作者...">
+          <select id="sortBy">
+            <option value="">默认排序</option>
+            <option value="updated_desc">更新时间倒序</option>
+            <option value="bookmarks_desc">收藏数倒序</option>
+            <option value="views_desc">浏览数倒序</option>
+          </select>
+        </div>
         <div>
           <div id="summary" class="summary">加载中...</div>
           <div id="pageInfo" class="summary"></div>
@@ -103,6 +118,7 @@
     let currentPage = 1;
     let totalPages = 1;
     let currentCategory = 'bookmark';
+    let searchTimer = null;
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>"]/g, function (ch) {
@@ -133,7 +149,12 @@
     }
 
     async function loadNovels(page, category) {
-      const resp = await fetch(`/api/dashboard/novels?page=${page}&category=${encodeURIComponent(category)}`);
+      const search = (document.getElementById('searchInput').value || '').trim();
+      const sort = document.getElementById('sortBy').value || '';
+      let url = `/api/dashboard/novels?page=${page}&category=${encodeURIComponent(category)}`;
+      if (search) url += `&search=${encodeURIComponent(search)}`;
+      if (sort) url += `&sort=${encodeURIComponent(sort)}`;
+      const resp = await fetch(url);
       const data = await resp.json();
       const items = data.items || [];
       currentPage = data.page || 1;
@@ -204,6 +225,15 @@
       const btn = event.target.closest('.tab');
       if (!btn) return;
       loadNovels(1, btn.dataset.category);
+    });
+    document.getElementById('searchInput').addEventListener('input', function () {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(function () {
+        loadNovels(1, currentCategory);
+      }, 400);
+    });
+    document.getElementById('sortBy').addEventListener('change', function () {
+      loadNovels(1, currentCategory);
     });
     document.getElementById('prevBtn').addEventListener('click', function () {
       if (currentPage > 1) loadNovels(currentPage - 1, currentCategory);

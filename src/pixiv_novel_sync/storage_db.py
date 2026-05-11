@@ -339,7 +339,8 @@ class Database:
             "total_pages": total_pages,
         }
 
-    def list_recent_novels(self, page: int = 1, page_size: int = 10, category: str = "all") -> dict[str, Any]:
+    def list_recent_novels(self, page: int = 1, page_size: int = 10, category: str = "all",
+                           search: str = "", sort: str = "") -> dict[str, Any]:
         page = max(page, 1)
         page_size = max(page_size, 1)
 
@@ -353,18 +354,31 @@ class Database:
             where_clauses.append("n.series_id IS NULL")
         elif category == "following":
             where_clauses.append("EXISTS (SELECT 1 FROM sources s WHERE s.novel_id = n.novel_id AND (s.source_type = 'following_user_scan' OR s.source_type LIKE 'follow_feed_%'))")
-            empty_message = "当前还没有“关注用户小说列表”数据，请后续开启关注用户小说同步链路后再查看。"
+            empty_message = '当前还没有"关注用户小说列表"数据，请后续开启关注用户小说同步链路后再查看。'
+
+        if search:
+            where_clauses.append("(n.title LIKE ? OR u.name LIKE ?)")
+            search_pattern = f"%{search}%"
+            params.extend([search_pattern, search_pattern])
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         total = int(
             self.conn.execute(
-                f"SELECT COUNT(*) FROM novels n {where_sql}",
+                f"SELECT COUNT(*) FROM novels n LEFT JOIN users AS u ON u.user_id = n.user_id {where_sql}",
                 params,
             ).fetchone()[0]
         )
         total_pages = max((total + page_size - 1) // page_size, 1)
         page = min(page, total_pages)
         offset = (page - 1) * page_size
+
+        order_sql = "n.last_seen_at DESC, n.novel_id DESC"
+        if sort == "updated_desc":
+            order_sql = "n.last_seen_at DESC"
+        elif sort == "bookmarks_desc":
+            order_sql = "n.total_bookmarks DESC"
+        elif sort == "views_desc":
+            order_sql = "n.total_views DESC"
 
         rows = self.conn.execute(
             f"""
@@ -384,7 +398,7 @@ class Database:
             FROM novels AS n
             LEFT JOIN users AS u ON u.user_id = n.user_id
             {where_sql}
-            ORDER BY n.last_seen_at DESC, n.novel_id DESC
+            ORDER BY {order_sql}
             LIMIT ? OFFSET ?
             """,
             [*params, page_size, offset],
@@ -497,6 +511,13 @@ class Database:
 
     def close(self) -> None:
         self.conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
 
     def _migrate_users_table(self) -> None:
         """为旧版 users 表添加 status 和 last_checked_at 字段"""
@@ -615,18 +636,41 @@ class Database:
         self.conn.execute("UPDATE series SET is_subscribed = 0")
         self.conn.commit()
 
-    def list_bookmark_novels(self, page: int = 1, page_size: int = 10) -> dict[str, Any]:
+    def list_bookmark_novels(self, page: int = 1, page_size: int = 10,
+                            search: str = "", sort: str = "") -> dict[str, Any]:
         page = max(page, 1)
         page_size = max(page_size, 1)
-        where_sql = "WHERE s.source_type LIKE 'bookmark_%'"
+        where_clauses: list[str] = ["s.source_type LIKE 'bookmark_%'"]
+        params_count: list[Any] = []
+        if search:
+            where_clauses.append("(n.title LIKE ? OR u.name LIKE ?)")
+            search_pattern = f"%{search}%"
+            params_count.extend([search_pattern, search_pattern])
+        where_sql = f"WHERE {' AND '.join(where_clauses)}"
         total = int(
             self.conn.execute(
-                f"SELECT COUNT(DISTINCT n.novel_id) FROM novels n LEFT JOIN sources s ON s.novel_id = n.novel_id {where_sql}"
+                f"SELECT COUNT(DISTINCT n.novel_id) FROM novels n LEFT JOIN users AS u ON u.user_id = n.user_id LEFT JOIN sources s ON s.novel_id = n.novel_id {where_sql}",
+                params_count,
             ).fetchone()[0]
         )
         total_pages = max((total + page_size - 1) // page_size, 1)
         page = min(page, total_pages)
         offset = (page - 1) * page_size
+
+        order_sql = "n.last_seen_at DESC, n.novel_id DESC"
+        if sort == "updated_desc":
+            order_sql = "n.last_seen_at DESC"
+        elif sort == "bookmarks_desc":
+            order_sql = "n.total_bookmarks DESC"
+        elif sort == "views_desc":
+            order_sql = "n.total_views DESC"
+
+        params_query: list[Any] = []
+        if search:
+            search_pattern = f"%{search}%"
+            params_query.extend([search_pattern, search_pattern])
+        params_query.extend([page_size, offset])
+
         rows = self.conn.execute(
             f"""
             SELECT DISTINCT
@@ -638,10 +682,10 @@ class Database:
             LEFT JOIN users AS u ON u.user_id = n.user_id
             LEFT JOIN sources AS s ON s.novel_id = n.novel_id
             {where_sql}
-            ORDER BY n.last_seen_at DESC, n.novel_id DESC
+            ORDER BY {order_sql}
             LIMIT ? OFFSET ?
             """,
-            [page_size, offset],
+            params_query,
         ).fetchall()
         return {
             "items": [dict(row) for row in rows],
@@ -649,22 +693,52 @@ class Database:
             "total": total, "total_pages": total_pages, "category": "bookmark",
         }
 
-    def list_following_series(self, page: int = 1, page_size: int = 10) -> dict[str, Any]:
+    def list_following_series(self, page: int = 1, page_size: int = 10,
+                             search: str = "", sort: str = "") -> dict[str, Any]:
         """获取订阅的系列列表"""
         page = max(page, 1)
         page_size = max(page_size, 1)
+
+        where_clauses: list[str] = ["se.is_subscribed = 1"]
+        params_count: list[Any] = []
+        if search:
+            search_pattern = f"%{search}%"
+            where_clauses.append(
+                """(se.title LIKE ? OR (
+                   (se.title IS NULL OR se.title = '') AND EXISTS (
+                     SELECT 1 FROM novels n0 WHERE n0.series_id = se.series_id AND n0.title LIKE ?
+                   )
+                   ) OR u.name LIKE ?)"""
+            )
+            params_count.extend([search_pattern, search_pattern, search_pattern])
+
+        where_sql = " AND ".join(where_clauses)
         total = int(
             self.conn.execute(
-                """
-                SELECT COUNT(*) FROM series WHERE is_subscribed = 1
-                """
+                f"SELECT COUNT(*) FROM series se LEFT JOIN users AS u ON u.user_id = se.user_id WHERE {where_sql}",
+                params_count,
             ).fetchone()[0]
         )
         total_pages = max((total + page_size - 1) // page_size, 1)
         page = min(page, total_pages)
         offset = (page - 1) * page_size
+
+        order_sql = "se.last_seen_at DESC"
+        if sort == "updated_desc":
+            order_sql = "se.last_seen_at DESC"
+        elif sort == "bookmarks_desc":
+            order_sql = """(SELECT COALESCE(SUM(n.total_bookmarks), 0) FROM novels n WHERE n.series_id = se.series_id) DESC"""
+        elif sort == "views_desc":
+            order_sql = """(SELECT COALESCE(SUM(n.total_views), 0) FROM novels n WHERE n.series_id = se.series_id) DESC"""
+
+        params_query: list[Any] = []
+        if search:
+            search_pattern = f"%{search}%"
+            params_query.extend([search_pattern, search_pattern, search_pattern])
+        params_query.extend([page_size, offset])
+
         rows = self.conn.execute(
-            """
+            f"""
             SELECT
                 se.series_id,
                 CASE WHEN se.title IS NOT NULL AND se.title != '' THEN se.title
@@ -681,11 +755,11 @@ class Database:
                 COALESCE((SELECT SUM(n.text_length) FROM novels n WHERE n.series_id = se.series_id), 0) AS total_text_length
             FROM series se
             LEFT JOIN users AS u ON u.user_id = se.user_id
-            WHERE se.is_subscribed = 1
-            ORDER BY se.last_seen_at DESC
+            WHERE {where_sql}
+            ORDER BY {order_sql}
             LIMIT ? OFFSET ?
             """,
-            [page_size, offset],
+            params_query,
         ).fetchall()
         items = [dict(row) for row in rows]
         return {
