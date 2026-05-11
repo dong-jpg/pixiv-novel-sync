@@ -114,9 +114,9 @@ def run_bookmark_sync_with_progress(settings: Settings, job_manager: Any, job_id
                     progress_callback=on_progress,
                     phase_name="同步收藏",
                 )
-                for key in total_stats:
+                for key in bookmark_stats:
                     total_stats[key] = total_stats.get(key, 0) + bookmark_stats.get(key, 0)
-            job_manager.add_log(job_id, "success", f"收藏同步完成: 新增 {bookmark_stats.get('novels', 0)} 本, 跳过 {bookmark_stats.get('skipped', 0)} 本")
+            job_manager.add_log(job_id, "success", f"收藏同步完成: 新增 {total_stats.get('novels', 0)} 本, 跳过 {total_stats.get('skipped', 0)} 本")
 
         # 同步关注用户的系列
         if settings.sync.sync_following_series:

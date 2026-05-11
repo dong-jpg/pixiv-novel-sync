@@ -973,11 +973,9 @@ class Database:
         self.conn.execute("DELETE FROM sources WHERE novel_id = ?", (novel_id,))
         self.conn.execute("DELETE FROM novel_fts WHERE novel_id = ?", (novel_id,))
         self.conn.execute("DELETE FROM novels WHERE novel_id = ?", (novel_id,))
-        self.conn.commit()
 
     def delete_user(self, user_id: int) -> None:
-        """删除用户及其所有小说"""
-        # 先删除用户的所有小说
+        """删除用户及其所有小说（单一事务）"""
         novel_rows = self.conn.execute("SELECT novel_id FROM novels WHERE user_id = ?", (user_id,)).fetchall()
         for row in novel_rows:
             self.delete_novel(row[0])

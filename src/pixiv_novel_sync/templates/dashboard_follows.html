@@ -103,10 +103,10 @@
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>"]/g, function (ch) {
-        if (ch === '&') return '&';
-        if (ch === '<') return '<';
-        if (ch === '>') return '>';
-        if (ch === '"') return '"';
+        if (ch === '&') return '&amp;';
+        if (ch === '<') return '&lt;';
+        if (ch === '>') return '&gt;';
+        if (ch === '"') return '&quot;';
         return ch;
       });
     }

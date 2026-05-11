@@ -123,14 +123,17 @@ class AutoSyncScheduler:
                 # 清理超过3天的任务日志（每小时执行一次）
                 now_ts = time.time()
                 if now_ts - self._last_cleanup_time > 3600:
+                    db = None
                     try:
                         db = Database(settings.storage.db_path)
                         db.init_schema()
                         db.cleanup_old_task_logs(days=3)
-                        db.close()
                         self._last_cleanup_time = now_ts
                     except Exception as e:
                         logger.warning("Failed to cleanup old task logs: %s", e)
+                    finally:
+                        if db:
+                            db.close()
 
                 now = time.time()
                 timezone = settings.sync.auto_sync_timezone
@@ -171,16 +174,17 @@ class AutoSyncScheduler:
                                     datetime.fromtimestamp(self._task_next_run[task_name]).strftime('%Y-%m-%d %H:%M:%S'))
                     
                     next_run = self._task_next_run[task_name]
-                    
-                    if now >= next_run:
+
+                    if time.time() >= next_run:
                         with self._lock:
                             if self._current_task_job_id is not None:
                                 logger.info("Task %s skipped: another task is running (%s)", task_name, self._current_task_job_id)
+                                skip_now = time.time()
                                 if cron_expr:
                                     from .settings import cron_to_next_run
-                                    self._task_next_run[task_name] = cron_to_next_run(cron_expr, now, timezone) or (now + task_interval_seconds)
+                                    self._task_next_run[task_name] = cron_to_next_run(cron_expr, skip_now, timezone) or (skip_now + task_interval_seconds)
                                 else:
-                                    self._task_next_run[task_name] = now + task_interval_seconds
+                                    self._task_next_run[task_name] = skip_now + task_interval_seconds
                                 continue
                         
                         self._run_single_task(settings, task_name, task_config["sync_func"])
@@ -220,6 +224,7 @@ class AutoSyncScheduler:
             self._current_task_job_id = job.job_id
 
             # 创建数据库日志记录
+            db = None
             try:
                 db = Database(settings.storage.db_path)
                 db.init_schema()
@@ -230,9 +235,11 @@ class AutoSyncScheduler:
                     is_auto_sync=True
                 )
                 job.log_id = log_id
-                db.close()
             except Exception as e:
                 logger.warning("Failed to create task log for %s: %s", task_name, e)
+            finally:
+                if db:
+                    db.close()
 
             try:
                 # 执行对应的同步函数
@@ -249,13 +256,16 @@ class AutoSyncScheduler:
                 job.finished_at = time.time()
                 # 更新数据库日志
                 if job.log_id:
+                    db = None
                     try:
                         db = Database(settings.storage.db_path)
                         db.init_schema()
                         db.update_task_log(job.log_id, job.status, stats=job.stats, logs=job.logs)
-                        db.close()
                     except Exception as e:
                         logger.warning("Failed to update task log: %s", e)
+                    finally:
+                        if db:
+                            db.close()
                 with self._lock:
                     self._current_task_job_id = None
                     self._stop_current_task = False
@@ -711,20 +721,24 @@ class SyncJobManager:
     def start_job(self, task_list: list[str] | None = None) -> SyncJobState:
         if not self._semaphore.acquire(blocking=False):
             raise RuntimeError("已有同步任务正在运行，请稍后再试")
-        with self._lock:
-            import uuid
-            job_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
-            job = SyncJobState(
-                job_id=job_id, 
-                status="running", 
-                message="同步任务已启动", 
-                started_at=time.time(),
-                task_list=task_list or [],
-            )
-            self._jobs[job_id] = job
-        thread = threading.Thread(target=self._run_job, args=(job_id,), daemon=True)
-        thread.start()
-        return job
+        try:
+            with self._lock:
+                import uuid
+                job_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+                job = SyncJobState(
+                    job_id=job_id,
+                    status="running",
+                    message="同步任务已启动",
+                    started_at=time.time(),
+                    task_list=task_list or [],
+                )
+                self._jobs[job_id] = job
+            thread = threading.Thread(target=self._run_job, args=(job_id,), daemon=True)
+            thread.start()
+            return job
+        except Exception:
+            self._semaphore.release()
+            raise
     
     def start_auto_job(self, task_name: str, task_label: str) -> SyncJobState:
         """启动定时任务"""
@@ -819,29 +833,35 @@ class SyncJobManager:
             
             # 更新任务日志
             if job.log_id:
+                db = None
                 try:
                     db = Database(settings.storage.db_path)
                     db.init_schema()
                     db.update_task_log(job.log_id, "succeeded", stats=stats, logs=job.logs)
-                    db.close()
                 except Exception as e:
                     logger.error("更新任务日志失败：%s", e)
+                finally:
+                    if db:
+                        db.close()
         except Exception as exc:
             job.status = "failed"
             job.message = "同步失败"
             job.error = str(exc)
             self.add_log(job_id, "error", f"同步失败：{exc}")
-            
+
             # 更新任务日志（失败）
             if job.log_id:
+                db = None
                 try:
                     settings = load_settings(self.config_path, self.env_path)
                     db = Database(settings.storage.db_path)
                     db.init_schema()
                     db.update_task_log(job.log_id, "failed", error_message=str(exc), logs=job.logs)
-                    db.close()
                 except Exception as e:
                     logger.error("更新任务日志失败：%s", e)
+                finally:
+                    if db:
+                        db.close()
         finally:
             job.finished_at = time.time()
             self._semaphore.release()
@@ -1146,7 +1166,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             }
             current_settings = settings_manager.load(env_path=env_path)
             proxies = {"http": current_settings.pixiv.proxy, "https": current_settings.pixiv.proxy} if current_settings.pixiv.proxy else None
-            resp = http_requests.get(url, headers=headers, timeout=15, verify=current_settings.pixiv.verify_ssl, proxies=proxies)
+            resp = http_requests.get(url, headers=headers, timeout=15, verify=current_settings.pixiv.verify_ssl, proxies=proxies, allow_redirects=False)
             resp.raise_for_status()
             return Response(resp.content, content_type=resp.headers.get("Content-Type", "image/jpeg"))
         except Exception as exc:
@@ -1590,26 +1610,30 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         # 创建一个专门的预检查任务（不通过 start_job，避免触发同步）
         if not sync_job_manager._semaphore.acquire(blocking=False):
             return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
-        import uuid
-        job_id = f"check_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
-        job = SyncJobState(
-            job_id=job_id,
-            status="running",
-            message="预检查任务已启动",
-            started_at=time.time(),
-            task_list=["预检查所有内容"],
-        )
-        with sync_job_manager._lock:
-            sync_job_manager._jobs[job_id] = job
-        
-        # 启动后台任务
-        import threading
-        thread = threading.Thread(
-            target=run_check_bookmarks_task,
-            args=(current_settings, sync_job_manager, job_id),
-            daemon=True,
-        )
-        thread.start()
+        try:
+            import uuid
+            job_id = f"check_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+            job = SyncJobState(
+                job_id=job_id,
+                status="running",
+                message="预检查任务已启动",
+                started_at=time.time(),
+                task_list=["预检查所有内容"],
+            )
+            with sync_job_manager._lock:
+                sync_job_manager._jobs[job_id] = job
+
+            # 启动后台任务
+            import threading
+            thread = threading.Thread(
+                target=run_check_bookmarks_task,
+                args=(current_settings, sync_job_manager, job_id),
+                daemon=True,
+            )
+            thread.start()
+        except Exception:
+            sync_job_manager._semaphore.release()
+            raise
         
         return jsonify({"ok": True, "message": "预检查任务已启动", "job": _job_to_dict(job)})
 
@@ -1915,9 +1939,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             db_accessible = False
 
         # 当前运行中的任务数
-        running_jobs = sum(
-            1 for j in sync_job_manager._jobs.values() if j.status == "running"
-        )
+        running_jobs = sum(1 for j in list(sync_job_manager._jobs.values()) if j.status == "running")
 
         return jsonify({
             "status": "ok",
