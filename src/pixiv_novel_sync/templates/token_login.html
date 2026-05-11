@@ -5,67 +5,70 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pixiv Token 登录</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-    .wrap { max-width: 960px; margin: 40px auto; padding: 24px; }
-    .card { background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 20px; margin-bottom: 16px; }
-    h1, h2 { margin-top: 0; }
-    button, a.button { background: #2563eb; color: white; border: 0; padding: 10px 16px; border-radius: 8px; cursor: pointer; text-decoration: none; display: inline-block; }
-    button.secondary, a.secondary { background: #475569; }
-    input, textarea { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #475569; background: #0b1220; color: #e2e8f0; }
-    pre { background: #020617; padding: 12px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; }
-    .muted { color: #94a3b8; }
-    .row { display: grid; gap: 12px; margin-top: 12px; }
-    .success { color: #22c55e; }
-    .error { color: #ef4444; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; margin: 0; background: #f5f5f7; color: #1d1d1f; }
+    .wrap { max-width: 560px; margin: 80px auto; padding: 24px; }
+    .card { background: #fff; border-radius: 16px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); padding: 32px; }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    .desc { color: #86868b; margin: 0 0 24px; font-size: 14px; }
+    .btn { display: block; width: 100%; padding: 14px; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; transition: all 0.2s; margin-bottom: 12px; }
+    .btn-primary { background: linear-gradient(135deg, #007aff, #5856d6); color: #fff; }
+    .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .btn-secondary { background: #f5f5f7; color: #1d1d1f; border: 1px solid #d2d2d7; }
+    .btn-secondary:hover { background: #ebebed; }
+    .status { margin-top: 20px; padding: 16px; border-radius: 12px; font-size: 14px; line-height: 1.6; }
+    .status.pending { background: #f0f9ff; color: #007aff; }
+    .status.success { background: #f0fdf4; color: #16a34a; }
+    .status.error { background: #fef2f2; color: #dc2626; }
+    .status.waiting { background: #fffbeb; color: #d97706; }
+    .result { margin-top: 16px; background: #f5f5f7; border-radius: 12px; padding: 16px; }
+    .result-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #e5e5ea; }
+    .result-row:last-child { border-bottom: none; }
+    .result-label { color: #86868b; font-size: 13px; }
+    .result-value { font-weight: 600; font-size: 14px; word-break: break-all; }
     .hidden { display: none; }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #d2d2d7; border-top-color: #007aff; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .divider { text-align: center; color: #86868b; font-size: 13px; margin: 16px 0; position: relative; }
+    .divider::before, .divider::after { content: ''; position: absolute; top: 50%; width: 40%; height: 1px; background: #d2d2d7; }
+    .divider::before { left: 0; }
+    .divider::after { right: 0; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
-      <h1>Pixiv Token 登录页</h1>
-      <p class="muted">推荐方式：点击按钮后，在你的本地 PC 浏览器中完成 Pixiv 登录，服务器只负责回调接收并交换 token。</p>
-      <div class="row">
-        <button id="startOauthBtn">开始 Pixiv 浏览器登录</button>
-        <button id="startFallbackBtn" class="secondary">使用旧版 gppt fallback</button>
-      </div>
-    </div>
+      <h1>Pixiv 登录</h1>
+      <p class="desc">点击按钮后在浏览器中完成 Pixiv 登录，授权成功后会自动返回此页面并保存 token。</p>
 
-    <div class="card">
-      <h2>OAuth 浏览器登录</h2>
-      <div id="oauthStatus">尚未开始</div>
-      <div class="row">
-        <label>Pixiv 登录链接</label>
-        <input id="oauthLoginUrl" readonly>
-        <a id="oauthOpenLink" class="button hidden" target="_blank" rel="noopener noreferrer">打开 Pixiv 登录页</a>
-      </div>
-      <div class="row">
-        <label>手动粘贴 callback URL（推荐）</label>
-        <textarea id="oauthCallbackUrl" rows="4" placeholder="如果登录成功后没有自动跳回本站，请按 F12 -> Network -> 搜索 callback?，把 https://app-api.pixiv.net/web/v1/users/auth/pixiv/callback?state=...&code=... 整条地址粘贴到这里"></textarea>
-        <button id="oauthSyncBtn" class="secondary">先用 callback URL 同步 state</button>
-        <button id="oauthExchangeBtn" class="secondary">再使用 callback URL 手动兑换 token</button>
-      </div>
-      <div class="row">
-        <label>任务结果</label>
-        <input id="oauthRefreshToken" readonly>
-        <input id="oauthUserId" readonly placeholder="user_id">
-        <button id="oauthSaveBtn" class="secondary hidden">将 OAuth token 写入服务器 .env</button>
-      </div>
-      <div id="oauthSaveResult" class="muted"></div>
-    </div>
+      <button id="loginBtn" class="btn btn-primary">一键 Pixiv 登录</button>
 
-    <div class="card">
-      <h2>gppt fallback</h2>
-      <div id="fallbackStatus">尚未开始</div>
-      <pre id="fallbackOutput"></pre>
-      <div class="row">
-        <label>refresh_token</label>
-        <input id="fallbackRefreshToken" readonly>
-        <label>user_id</label>
-        <input id="fallbackUserId" placeholder="可留空，后续也可手填">
-        <button id="fallbackSaveBtn" class="secondary">将 fallback token 写入服务器 .env</button>
+      <div id="statusBox" class="status hidden"></div>
+
+      <div id="resultBox" class="result hidden">
+        <div class="result-row">
+          <span class="result-label">状态</span>
+          <span class="result-value" id="resultStatus">-</span>
+        </div>
+        <div class="result-row">
+          <span class="result-label">User ID</span>
+          <span class="result-value" id="resultUserId">-</span>
+        </div>
+        <div class="result-row">
+          <span class="result-label">Refresh Token</span>
+          <span class="result-value" id="resultToken" style="font-family:monospace;font-size:12px;">-</span>
+        </div>
+        <div class="result-row">
+          <span class="result-label">写入 .env</span>
+          <span class="result-value" id="resultSaved">-</span>
+        </div>
       </div>
-      <div id="fallbackSaveResult" class="muted"></div>
+
+      <div class="divider">或</div>
+
+      <button id="fallbackBtn" class="btn btn-secondary">使用 gppt 旧版方式</button>
+      <div id="fallbackStatus" class="status hidden"></div>
+      <pre id="fallbackOutput" class="hidden" style="background:#f5f5f7;padding:12px;border-radius:8px;font-size:12px;max-height:200px;overflow:auto;margin-top:12px;"></pre>
     </div>
   </div>
 
@@ -75,148 +78,178 @@
     let fallbackJobId = null;
     let fallbackTimer = null;
 
-    const oauthStatusEl = document.getElementById('oauthStatus');
-    const oauthLoginUrlEl = document.getElementById('oauthLoginUrl');
-    const oauthOpenLinkEl = document.getElementById('oauthOpenLink');
-    const oauthRefreshTokenEl = document.getElementById('oauthRefreshToken');
-    const oauthUserIdEl = document.getElementById('oauthUserId');
-    const oauthSaveBtn = document.getElementById('oauthSaveBtn');
-    const oauthSaveResultEl = document.getElementById('oauthSaveResult');
-    const oauthCallbackUrlEl = document.getElementById('oauthCallbackUrl');
-    const oauthSyncBtn = document.getElementById('oauthSyncBtn');
-    const oauthExchangeBtn = document.getElementById('oauthExchangeBtn');
+    const $ = (id) => document.getElementById(id);
 
-    const fallbackStatusEl = document.getElementById('fallbackStatus');
-    const fallbackOutputEl = document.getElementById('fallbackOutput');
-    const fallbackRefreshTokenEl = document.getElementById('fallbackRefreshToken');
-    const fallbackUserIdEl = document.getElementById('fallbackUserId');
-    const fallbackSaveResultEl = document.getElementById('fallbackSaveResult');
+    function showStatus(boxId, type, html) {
+      const box = $(boxId);
+      box.className = 'status ' + type;
+      box.innerHTML = html;
+      box.classList.remove('hidden');
+    }
 
-    document.getElementById('startOauthBtn').addEventListener('click', async () => {
-      oauthSaveResultEl.textContent = '';
-      const resp = await fetch('/oauth/start', { method: 'POST' });
-      const data = await resp.json();
-      oauthTaskId = data.task_id;
-      oauthStatusEl.textContent = data.message || data.status;
-      oauthLoginUrlEl.value = data.login_url || '';
-      oauthOpenLinkEl.href = data.login_url || '#';
-      oauthOpenLinkEl.classList.toggle('hidden', !data.login_url);
-      oauthRefreshTokenEl.value = '';
-      oauthUserIdEl.value = '';
-      oauthSaveBtn.classList.add('hidden');
-      if (oauthTimer) clearInterval(oauthTimer);
-      oauthTimer = setInterval(pollOauthTask, 2000);
-      await pollOauthTask();
-    });
+    // ========== 一键 OAuth 登录 ==========
+    $('loginBtn').addEventListener('click', async () => {
+      $('loginBtn').disabled = true;
+      $('resultBox').classList.add('hidden');
+      showStatus('statusBox', 'pending', '<span class="spinner"></span>正在创建登录任务...');
 
-    oauthSyncBtn.addEventListener('click', async () => {
-      if (!oauthTaskId) {
-        oauthSaveResultEl.textContent = '请先点击“开始 Pixiv 浏览器登录”生成一次性任务';
-        oauthSaveResultEl.className = 'error';
-        return;
+      try {
+        const resp = await fetch('/oauth/start', { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok || !data.login_url) {
+          showStatus('statusBox', 'error', '创建任务失败：' + (data.error || '未知错误'));
+          $('loginBtn').disabled = false;
+          return;
+        }
+
+        oauthTaskId = data.task_id;
+        showStatus('statusBox', 'waiting', '<span class="spinner"></span>正在打开 Pixiv 登录页...请在弹出的窗口中完成登录');
+
+        // 打开 Pixiv 登录页
+        window.open(data.login_url, '_blank');
+
+        // 开始轮询结果
+        if (oauthTimer) clearInterval(oauthTimer);
+        oauthTimer = setInterval(pollOAuth, 2000);
+        await pollOAuth();
+      } catch (e) {
+        showStatus('statusBox', 'error', '请求失败：' + e.message);
+        $('loginBtn').disabled = false;
       }
-      const callback_url = oauthCallbackUrlEl.value.trim();
-      if (!callback_url) {
-        oauthSaveResultEl.textContent = '请先粘贴 callback URL';
-        oauthSaveResultEl.className = 'error';
-        return;
-      }
-      const resp = await fetch(`/oauth/sync-callback/${oauthTaskId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ callback_url })
-      });
-      const data = await resp.json();
-      oauthSaveResultEl.textContent = data.message || data.error || '';
-      oauthSaveResultEl.className = resp.ok ? 'success' : 'error';
-      await pollOauthTask();
     });
 
-    oauthExchangeBtn.addEventListener('click', async () => {
-      if (!oauthTaskId) {
-        oauthSaveResultEl.textContent = '请先点击“开始 Pixiv 浏览器登录”生成一次性任务';
-        oauthSaveResultEl.className = 'error';
-        return;
-      }
-      const callback_url = oauthCallbackUrlEl.value.trim();
-      if (!callback_url) {
-        oauthSaveResultEl.textContent = '请先粘贴 callback URL';
-        oauthSaveResultEl.className = 'error';
-        return;
-      }
-      const resp = await fetch(`/oauth/exchange/${oauthTaskId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ callback_url })
-      });
-      const data = await resp.json();
-      oauthSaveResultEl.textContent = data.message || data.error || '';
-      oauthSaveResultEl.className = resp.ok ? 'success' : 'error';
-      await pollOauthTask();
-    });
+    // 页面加载时检查是否从回调页跳转回来
+    if (new URLSearchParams(location.search).has('oauth_done')) {
+      // 自动触发登录流程获取最新状态
+      autoCheckOAuth();
+    }
 
-    oauthSaveBtn.addEventListener('click', async () => {
-      if (!oauthTaskId) return;
-      const resp = await fetch(`/oauth/save/${oauthTaskId}`, { method: 'POST' });
-      const data = await resp.json();
-      oauthSaveResultEl.textContent = data.message || data.error || '';
-      oauthSaveResultEl.className = resp.ok ? 'success' : 'error';
-    });
-
-    document.getElementById('startFallbackBtn').addEventListener('click', async () => {
-      fallbackSaveResultEl.textContent = '';
-      const resp = await fetch('/api/token-jobs', { method: 'POST' });
-      const data = await resp.json();
-      fallbackJobId = data.job_id;
-      fallbackStatusEl.textContent = data.message || data.status;
-      fallbackOutputEl.textContent = '';
-      fallbackRefreshTokenEl.value = '';
-      fallbackUserIdEl.value = '';
-      if (fallbackTimer) clearInterval(fallbackTimer);
-      fallbackTimer = setInterval(pollFallbackJob, 2000);
-      await pollFallbackJob();
-    });
-
-    document.getElementById('fallbackSaveBtn').addEventListener('click', async () => {
-      const refresh_token = fallbackRefreshTokenEl.value.trim();
-      const user_id = fallbackUserIdEl.value.trim();
-      const resp = await fetch('/api/save-token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token, user_id })
-      });
-      const data = await resp.json();
-      fallbackSaveResultEl.textContent = data.message || data.error || '';
-      fallbackSaveResultEl.className = resp.ok ? 'success' : 'error';
-    });
-
-    async function pollOauthTask() {
-      if (!oauthTaskId) return;
-      const resp = await fetch(`/oauth/task/${oauthTaskId}`);
-      const data = await resp.json();
-      oauthStatusEl.textContent = `${data.status} - ${data.message || ''}`;
-      if (data.refresh_token) {
-        oauthRefreshTokenEl.value = data.refresh_token;
-        oauthSaveBtn.classList.remove('hidden');
-      }
-      if (data.user_id) oauthUserIdEl.value = data.user_id;
-      if (data.status === 'done' || data.status === 'failed') {
-        clearInterval(oauthTimer);
-        oauthTimer = null;
+    async function autoCheckOAuth() {
+      // 查找最近的已完成任务
+      try {
+        const resp = await fetch('/oauth/recent');
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.task_id && (data.status === 'done' || data.status === 'pending')) {
+            oauthTaskId = data.task_id;
+            if (data.status === 'done') {
+              await showOAuthResult(data);
+              return;
+            }
+            // 还在等待中，开始轮询
+            showStatus('statusBox', 'waiting', '<span class="spinner"></span>检测到进行中的登录任务，等待授权完成...');
+            if (oauthTimer) clearInterval(oauthTimer);
+            oauthTimer = setInterval(pollOAuth, 2000);
+            await pollOAuth();
+          }
+        }
+      } catch (e) {
+        // 静默失败
       }
     }
 
-    async function pollFallbackJob() {
+    async function pollOAuth() {
+      if (!oauthTaskId) return;
+      try {
+        const resp = await fetch(`/oauth/task/${oauthTaskId}`);
+        const data = await resp.json();
+
+        if (data.status === 'done') {
+          if (oauthTimer) { clearInterval(oauthTimer); oauthTimer = null; }
+          await showOAuthResult(data);
+        } else if (data.status === 'failed') {
+          if (oauthTimer) { clearInterval(oauthTimer); oauthTimer = null; }
+          showStatus('statusBox', 'error', '登录失败：' + (data.message || '未知错误'));
+          $('loginBtn').disabled = false;
+        } else {
+          showStatus('statusBox', 'waiting', '<span class="spinner"></span>' + (data.message || '等待授权...'));
+        }
+      } catch (e) {
+        // 网络错误，继续轮询
+      }
+    }
+
+    async function showOAuthResult(data) {
+      $('resultBox').classList.remove('hidden');
+      $('resultStatus').textContent = '授权成功';
+      $('resultStatus').style.color = '#16a34a';
+      $('resultUserId').textContent = data.user_id || '-';
+      $('resultToken').textContent = data.refresh_token || '-';
+      $('loginBtn').disabled = false;
+
+      showStatus('statusBox', 'success', '登录成功！token 已获取。');
+
+      // 自动写入 .env
+      if (data.refresh_token) {
+        $('resultSaved').innerHTML = '<span class="spinner"></span>写入中...';
+        try {
+          const saveResp = await fetch(`/oauth/save/${oauthTaskId}`, { method: 'POST' });
+          const saveData = await saveResp.json();
+          if (saveResp.ok) {
+            $('resultSaved').textContent = '已保存';
+            $('resultSaved').style.color = '#16a34a';
+            showStatus('statusBox', 'success', '登录成功！token 已自动写入 .env 文件，现在可以关闭此页面。');
+          } else {
+            $('resultSaved').textContent = '保存失败：' + (saveData.error || '');
+            $('resultSaved').style.color = '#dc2626';
+          }
+        } catch (e) {
+          $('resultSaved').textContent = '保存失败';
+          $('resultSaved').style.color = '#dc2626';
+        }
+      }
+    }
+
+    // ========== gppt fallback ==========
+    $('fallbackBtn').addEventListener('click', async () => {
+      $('fallbackOutput').classList.add('hidden');
+      showStatus('fallbackStatus', 'pending', '<span class="spinner"></span>正在启动 gppt...');
+
+      try {
+        const resp = await fetch('/api/token-jobs', { method: 'POST' });
+        const data = await resp.json();
+        fallbackJobId = data.job_id;
+        showStatus('fallbackStatus', 'waiting', '<span class="spinner"></span>' + (data.message || '运行中...'));
+        $('fallbackOutput').textContent = '';
+        $('fallbackOutput').classList.remove('hidden');
+        if (fallbackTimer) clearInterval(fallbackTimer);
+        fallbackTimer = setInterval(pollFallback, 2000);
+        await pollFallback();
+      } catch (e) {
+        showStatus('fallbackStatus', 'error', '启动失败：' + e.message);
+      }
+    });
+
+    async function pollFallback() {
       if (!fallbackJobId) return;
-      const resp = await fetch(`/api/token-jobs/${fallbackJobId}`);
-      const data = await resp.json();
-      fallbackStatusEl.textContent = `${data.status} - ${data.message || ''}`;
-      fallbackOutputEl.textContent = (data.output || []).join('\n');
-      if (data.refresh_token) fallbackRefreshTokenEl.value = data.refresh_token;
-      if (data.user_id) fallbackUserIdEl.value = data.user_id;
-      if (data.status === 'done' || data.status === 'failed') {
-        clearInterval(fallbackTimer);
-        fallbackTimer = null;
+      try {
+        const resp = await fetch(`/api/token-jobs/${fallbackJobId}`);
+        const data = await resp.json();
+        $('fallbackOutput').textContent = (data.output || []).join('\n');
+        $('fallbackOutput').scrollTop = $('fallbackOutput').scrollHeight;
+
+        if (data.status === 'done') {
+          if (fallbackTimer) { clearInterval(fallbackTimer); fallbackTimer = null; }
+          if (data.refresh_token) {
+            showStatus('fallbackStatus', 'success', `获取成功！refresh_token: ${data.refresh_token.slice(0, 20)}...`);
+            // 自动保存
+            const saveResp = await fetch('/api/save-token', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ refresh_token: data.refresh_token, user_id: data.user_id || '' })
+            });
+            if (saveResp.ok) {
+              showStatus('fallbackStatus', 'success', 'token 已自动写入 .env，可以关闭此页面。');
+            }
+          } else {
+            showStatus('fallbackStatus', 'error', '未获取到 token，请查看日志');
+          }
+        } else if (data.status === 'failed') {
+          if (fallbackTimer) { clearInterval(fallbackTimer); fallbackTimer = null; }
+          showStatus('fallbackStatus', 'error', '失败：' + (data.message || '未知错误'));
+        }
+      } catch (e) {
+        // 继续轮询
       }
     }
   </script>

@@ -1262,6 +1262,21 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             }
         )
 
+    @app.get("/oauth/recent")
+    def oauth_recent():
+        """返回最近一个 OAuth 任务的状态（用于回调后自动恢复）"""
+        tasks = sorted(oauth_manager._tasks.values(), key=lambda t: t.created_at, reverse=True)
+        if not tasks:
+            return jsonify({"error": "no task"}), 404
+        task = tasks[0]
+        return jsonify({
+            "task_id": task.task_id,
+            "status": task.status,
+            "message": task.message,
+            "refresh_token": task.refresh_token,
+            "user_id": task.user_id,
+        })
+
     @app.get("/oauth/task/<task_id>")
     def oauth_task(task_id: str):
         task = oauth_manager.get_task(task_id)

@@ -7,10 +7,11 @@
   <style>
     body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
     .wrap { max-width: 720px; margin: 60px auto; padding: 24px; }
-    .card { background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 24px; }
+    .card { background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 24px; text-align: center; }
     .ok { color: #22c55e; }
     .error { color: #ef4444; }
-    a { color: #60a5fa; }
+    .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #475569; border-top-color: #60a5fa; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -18,12 +19,22 @@
     <div class="card">
       {% if ok %}
       <h1 class="ok">授权成功</h1>
+      <p>{{ message }}</p>
+      <p><span class="spinner"></span> 正在自动跳转回登录页...</p>
       {% else %}
       <h1 class="error">授权失败</h1>
-      {% endif %}
       <p>{{ message }}</p>
-      <p>你可以关闭这个页面，返回原来的 token 登录页继续后续操作。</p>
+      <p>请返回登录页重试。</p>
+      {% endif %}
     </div>
   </div>
+  <script>
+    // 授权成功后 1.5 秒自动跳转回 token-login 页，带上 task_id 让页面自动轮询结果
+    {% if ok %}
+    setTimeout(function() {
+      window.location.href = '/token-login?oauth_done=1';
+    }, 1500);
+    {% endif %}
+  </script>
 </body>
 </html>
