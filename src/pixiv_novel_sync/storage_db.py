@@ -120,6 +120,8 @@ class Database:
         )
         # 迁移：为旧版 users 表添加 status 和 last_checked_at 字段
         self._migrate_users_table()
+        # 修复：重置错误标记为 cleared 的用户状态
+        self._fix_cleared_status()
         # 迁移：为 series 表添加 is_subscribed 字段
         self._migrate_series_table()
         self.conn.commit()
@@ -498,6 +500,14 @@ class Database:
             self.conn.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'")
         if "last_checked_at" not in columns:
             self.conn.execute("ALTER TABLE users ADD COLUMN last_checked_at TEXT")
+
+    def _fix_cleared_status(self) -> None:
+        """重置错误标记为 cleared 的用户状态为 unknown"""
+        try:
+            self.conn.execute("UPDATE users SET status = 'unknown' WHERE status = 'cleared'")
+            self.conn.commit()
+        except Exception:
+            pass
 
     def _migrate_series_table(self) -> None:
         """为 series 表添加 is_subscribed 字段"""
