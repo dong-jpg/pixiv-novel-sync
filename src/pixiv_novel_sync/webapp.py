@@ -1298,25 +1298,25 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     def oauth_callback():
         error = request.args.get("error")
         if error:
-            return render_template("oauth_callback.html", ok=False, message=f"Pixiv 返回错误：{error}")
+            return redirect(f"/token-login?error={error}")
 
         code = request.args.get("code")
         state = request.args.get("state")
         if not code or not state:
-            return render_template("oauth_callback.html", ok=False, message="回调参数缺失")
+            return redirect("/token-login?error=回调参数缺失")
 
         task = oauth_manager.find_task_by_state(state)
         if task is None:
-            return render_template("oauth_callback.html", ok=False, message="登录任务不存在或已过期")
+            return redirect("/token-login?error=登录任务不存在或已过期")
 
         try:
             oauth_manager.exchange_code(task, code)
         except Exception as exc:
             task.status = "failed"
             task.message = f"token 交换失败：{exc}"
-            return render_template("oauth_callback.html", ok=False, message=task.message)
+            return redirect(f"/token-login?error=token交换失败")
 
-        return render_template("oauth_callback.html", ok=True, message="Pixiv 登录成功，请返回原页面查看 token 结果")
+        return redirect(f"/token-login?oauth_task={task.task_id}")
 
     @app.post("/oauth/sync-callback/<task_id>")
     def oauth_sync_callback(task_id: str):

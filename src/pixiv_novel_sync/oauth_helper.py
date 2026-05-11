@@ -80,7 +80,7 @@ class OAuthManager:
             "code_verifier": task.code_verifier,
             "grant_type": "authorization_code",
             "include_policy": "true",
-            "redirect_uri": PIXIV_REDIRECT_URI,
+            "redirect_uri": task.callback_url,
         }
         response = requests.post(PIXIV_TOKEN_ENDPOINT, data=data, headers=headers, timeout=30)
         try:
@@ -149,12 +149,11 @@ class OAuthManager:
         return task
 
     def _build_login_url(self, state: str, code_challenge: str, callback_url: str) -> str:
-        # redirect_uri 必须是 Pixiv 注册的地址，回调后由前端 JS 拦截并转发回服务器
         params = {
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
             "client": "pixiv-android",
-            "redirect_uri": PIXIV_REDIRECT_URI,
+            "redirect_uri": callback_url,
             "response_type": "code",
             "state": state,
         }
