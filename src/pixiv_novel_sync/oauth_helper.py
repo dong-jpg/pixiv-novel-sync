@@ -149,11 +149,12 @@ class OAuthManager:
         return task
 
     def _build_login_url(self, state: str, code_challenge: str, callback_url: str) -> str:
+        # redirect_uri 必须是 Pixiv 注册的地址，回调后由前端 JS 拦截并转发回服务器
         params = {
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
             "client": "pixiv-android",
-            "redirect_uri": callback_url,
+            "redirect_uri": PIXIV_REDIRECT_URI,
             "response_type": "code",
             "state": state,
         }
