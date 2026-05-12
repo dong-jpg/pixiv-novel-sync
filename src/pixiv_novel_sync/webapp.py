@@ -1151,6 +1151,30 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     # 启动定时同步调度器
     auto_sync_scheduler.start()
 
+    def _auto_login_worker(task, username, password, proxy, timeout):
+        """后台线程：用 Playwright 无头浏览器自动完成 Pixiv OAuth 登录"""
+        from .playwright_login import PlaywrightLoginHelper
+        try:
+            helper = PlaywrightLoginHelper(proxy=proxy, timeout=timeout)
+            result = helper.login(task.login_url, username, password)
+            if result.success and result.callback_url:
+                task.message = "登录成功，正在兑换 token..."
+                oauth_manager.exchange_callback_url(task, result.callback_url)
+                if task.refresh_token:
+                    oauth_manager.save_to_env(task.refresh_token, task.user_id)
+                    task.status = "done"
+                    task.message = "自动登录成功，token 已保存"
+                else:
+                    task.status = "failed"
+                    task.message = "token 兑换失败：未获取到 refresh_token"
+            else:
+                task.status = "failed"
+                task.message = result.error or "自动登录失败"
+        except Exception as exc:
+            task.status = "failed"
+            task.message = f"自动登录异常: {exc}"
+            logger.exception("Playwright 自动登录失败")
+
     @app.get("/proxy/image")
     def proxy_image():
         url = request.args.get("url", "").strip()
@@ -1204,19 +1228,51 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     def dashboard_logs_page():
         return render_template("dashboard_logs.html")
 
+    @app.get("/api/token-config")
+    def get_token_config():
+        """检查是否配置了 Pixiv 账号密码（不泄露实际值）"""
+        current_settings = settings_manager.load(env_path=env_path)
+        has_credentials = bool(
+            current_settings.pixiv.username
+            and current_settings.pixiv.password
+        )
+        return jsonify({"has_credentials": has_credentials})
+
     @app.post("/api/token-jobs")
     def create_token_job():
+        current_settings = settings_manager.load(env_path=env_path)
+        has_credentials = bool(
+            current_settings.pixiv.username
+            and current_settings.pixiv.password
+        )
         task = oauth_manager.create_task(_external_base_url(request))
-        return jsonify(
-            {
+        if has_credentials:
+            # 自动登录模式：启动后台线程用 Playwright 完成登录
+            task.status = "running"
+            task.message = "正在自动登录 Pixiv..."
+            worker = threading.Thread(
+                target=_auto_login_worker,
+                args=(task, current_settings.pixiv.username, current_settings.pixiv.password, current_settings.pixiv.proxy, current_settings.pixiv.timeout),
+                daemon=True,
+            )
+            worker.start()
+            return jsonify({
                 "task_id": task.task_id,
                 "status": task.status,
                 "message": task.message,
                 "login_url": task.login_url,
                 "callback_url": task.callback_url,
-                "mode": "oauth",
-            }
-        )
+                "mode": "auto",
+            })
+        else:
+            return jsonify({
+                "task_id": task.task_id,
+                "status": task.status,
+                "message": task.message,
+                "login_url": task.login_url,
+                "callback_url": task.callback_url,
+                "mode": "manual",
+            })
 
     @app.get("/api/token-jobs/<job_id>")
     def get_token_job(job_id: str):
@@ -1351,7 +1407,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             task.status = "failed"
             task.message = f"token 交换失败：{exc}"
             return jsonify({"error": task.message}), 400
-        return jsonify({"ok": True, "message": task.message, "user_id": task.user_id})
+        return jsonify({"ok": True, "message": task.message, "user_id": task.user_id, "refresh_token": task.refresh_token})
 
     @app.post("/oauth/save/<task_id>")
     def oauth_save(task_id: str):

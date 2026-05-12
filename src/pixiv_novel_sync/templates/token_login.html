@@ -15,12 +15,17 @@
     .btn-primary { background: linear-gradient(135deg, #007aff, #5856d6); color: #fff; }
     .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
     .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .btn-secondary { background: #e5e5ea; color: #1d1d1f; margin-top: 12px; }
+    .btn-secondary:hover { background: #d2d2d7; }
+    .btn-green { background: #16a34a; color: #fff; margin-top: 12px; }
+    .btn-green:hover { opacity: 0.9; }
     .status { margin-top: 16px; padding: 14px; border-radius: 12px; font-size: 14px; line-height: 1.6; display: none; }
     .status.show { display: block; }
     .status.pending { background: #f0f9ff; color: #007aff; }
     .status.success { background: #f0fdf4; color: #16a34a; }
     .status.error { background: #fef2f2; color: #dc2626; }
     .status.waiting { background: #fffbeb; color: #d97706; }
+    .status.info { background: #f0f0f0; color: #6b7280; }
     .result { margin-top: 16px; background: #f5f5f7; border-radius: 12px; padding: 16px; display: none; }
     .result.show { display: block; }
     .result-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #e5e5ea; }
@@ -29,10 +34,8 @@
     .result-value { font-weight: 600; font-size: 14px; word-break: break-all; }
     .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #d2d2d7; border-top-color: #007aff; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    pre { background: #f5f5f7; padding: 12px; border-radius: 8px; font-size: 12px; max-height: 200px; overflow: auto; margin-top: 12px; white-space: pre-wrap; }
     .nav-back { display: inline-block; color: #007aff; text-decoration: none; font-size: 14px; margin-bottom: 16px; }
     .nav-back:hover { text-decoration: underline; }
-    code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
     .steps { margin: 16px 0; }
     .step { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; font-size: 14px; color: #86868b; }
     .step.active { color: #1d1d1f; font-weight: 600; }
@@ -41,17 +44,24 @@
     .step-num.pending { background: #e5e5ea; color: #86868b; }
     .step-num.active { background: #007aff; color: #fff; }
     .step-num.done { background: #16a34a; color: #fff; }
+    .divider { border: none; border-top: 1px solid #e5e5ea; margin: 24px 0; }
+    .input-field { width: 100%; padding: 12px; border: 1px solid #d2d2d7; border-radius: 10px; font-size: 14px; font-family: monospace; box-sizing: border-box; }
+    .input-field:focus { outline: none; border-color: #007aff; box-shadow: 0 0 0 3px rgba(0,122,255,0.1); }
+    .hint { font-size: 12px; color: #86868b; margin-top: 6px; line-height: 1.5; }
+    .toggle-link { color: #007aff; cursor: pointer; font-size: 13px; text-decoration: none; }
+    .toggle-link:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <a class="nav-back" href="/dashboard">&larr; 返回首页</a>
 
-    <div class="card">
+    <!-- 自动登录区域 -->
+    <div class="card" id="autoLoginCard">
       <h1>Pixiv 登录</h1>
-      <p class="desc">点击按钮后系统会自动获取 Pixiv token 并保存到服务器。需要等待 1-2 分钟。</p>
+      <div id="autoLoginDesc" class="desc"></div>
 
-      <button id="loginBtn" class="btn btn-primary">一键登录</button>
+      <button id="loginBtn" class="btn btn-primary" style="display:none;">一键登录</button>
 
       <div class="steps" id="steps" style="display:none;">
         <div class="step" id="step1">
@@ -69,7 +79,6 @@
       </div>
 
       <div id="statusBox" class="status"></div>
-      <pre id="logOutput" style="display:none;"></pre>
 
       <div id="resultBox" class="result">
         <div class="result-row">
@@ -91,20 +100,53 @@
       </div>
     </div>
 
+    <!-- 手动 OAuth 区域（无账号密码时显示） -->
+    <div class="card" id="oauthCard" style="display:none;">
+      <h2>手动 OAuth 登录</h2>
+      <p class="desc">在 Pixiv 授权页面登录后，浏览器会跳转到一个包含 <code>code</code> 参数的地址。请复制浏览器地址栏的完整 URL，粘贴到下方。</p>
+      <button id="oauthBtn" class="btn btn-primary">打开 Pixiv 授权页面</button>
+      <input type="text" id="callbackUrl" class="input-field" placeholder="粘贴回调 URL（包含 code 和 state 参数）" style="margin-top:12px;">
+      <button id="exchangeBtn" class="btn btn-green" style="display:none;">兑换 Token</button>
+      <div id="oauthStatus" class="status"></div>
+      <div id="oauthResult" class="result">
+        <div class="result-row">
+          <span class="result-label">状态</span>
+          <span class="result-value" id="oauthResultStatus">-</span>
+        </div>
+        <div class="result-row">
+          <span class="result-label">User ID</span>
+          <span class="result-value" id="oauthResultUserId">-</span>
+        </div>
+        <div class="result-row">
+          <span class="result-label">Refresh Token</span>
+          <span class="result-value" id="oauthResultToken" style="font-family:monospace;font-size:12px;">-</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 手动输入 Token（始终显示） -->
     <div class="card">
       <h2>手动输入 Token</h2>
       <p class="desc">如果你已经有 refresh_token，可以直接粘贴到下方保存。</p>
-      <input type="text" id="manualToken" placeholder="粘贴 refresh_token" style="width:100%;padding:12px;border:1px solid #d2d2d7;border-radius:10px;font-size:14px;font-family:monospace;box-sizing:border-box;">
-      <input type="text" id="manualUserId" placeholder="PIXIV_USER_ID（可选）" style="width:100%;padding:12px;border:1px solid #d2d2d7;border-radius:10px;font-size:14px;margin-top:8px;box-sizing:border-box;">
-      <button id="manualSaveBtn" class="btn btn-primary" style="margin-top:12px;background:#16a34a;">保存 Token</button>
+      <input type="text" id="manualToken" class="input-field" placeholder="粘贴 refresh_token">
+      <input type="text" id="manualUserId" class="input-field" placeholder="PIXIV_USER_ID（可选）" style="margin-top:8px;">
+      <button id="manualSaveBtn" class="btn btn-green">保存 Token</button>
       <div id="manualStatus" class="status"></div>
     </div>
   </div>
 
   <script>
     const $ = (id) => document.getElementById(id);
-    let jobId = null;
+    let taskId = null;
     let pollTimer = null;
+    let hasCredentials = false;
+    let oauthTaskId = null;
+
+    function escapeHtml(text) {
+      const d = document.createElement('div');
+      d.textContent = text;
+      return d.innerHTML;
+    }
 
     function showStatus(box, type, html) {
       box.className = 'status show ' + type;
@@ -115,47 +157,48 @@
       const num = $(`step${n}Num`);
       const step = $(`step${n}`);
       num.className = 'step-num ' + state;
-      if (state === 'done') num.textContent = '✓';
+      if (state === 'done') num.textContent = '\u2713';
       step.className = 'step ' + state;
     }
 
-    // 一键登录（gppt）
+    function showAutoResult(data) {
+      $('resultBox').classList.add('show');
+      $('resultStatus').textContent = data.status === 'done' ? '获取成功' : data.status;
+      $('resultStatus').style.color = data.status === 'done' ? '#16a34a' : '#dc2626';
+      $('resultUserId').textContent = data.user_id || '-';
+      $('resultToken').textContent = data.refresh_token || '-';
+    }
+
+    // 一键登录（Playwright 自动登录）
     $('loginBtn').addEventListener('click', async () => {
       $('loginBtn').disabled = true;
       $('resultBox').classList.remove('show');
-      $('logOutput').style.display = 'none';
       $('steps').style.display = 'block';
       setStep(1, 'active');
-      showStatus($('statusBox'), 'pending', '<span class="spinner"></span>正在启动登录任务...');
+      showStatus($('statusBox'), 'pending', '<span class="spinner"></span>正在启动自动登录...');
 
       try {
         const resp = await fetch('/api/token-jobs', { method: 'POST' });
         const data = await resp.json();
-        jobId = data.job_id;
+        taskId = data.task_id;
         setStep(1, 'done');
         setStep(2, 'active');
         showStatus($('statusBox'), 'waiting', '<span class="spinner"></span>正在自动登录 Pixiv，请稍候（约 1-2 分钟）...');
-        $('logOutput').textContent = '';
-        $('logOutput').style.display = 'block';
 
         if (pollTimer) clearInterval(pollTimer);
-        pollTimer = setInterval(pollJob, 2000);
-        await pollJob();
+        pollTimer = setInterval(pollTask, 2000);
+        await pollTask();
       } catch (e) {
-        showStatus($('statusBox'), 'error', '启动失败：' + e.message);
+        showStatus($('statusBox'), 'error', '启动失败：' + escapeHtml(e.message));
         $('loginBtn').disabled = false;
       }
     });
 
-    async function pollJob() {
-      if (!jobId) return;
+    async function pollTask() {
+      if (!taskId) return;
       try {
-        const resp = await fetch(`/api/token-jobs/${jobId}`);
+        const resp = await fetch(`/api/token-jobs/${taskId}`);
         const data = await resp.json();
-
-        // 更新日志
-        $('logOutput').textContent = (data.output || []).join('\n');
-        $('logOutput').scrollTop = $('logOutput').scrollHeight;
 
         if (data.status === 'done') {
           if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
@@ -163,41 +206,88 @@
           setStep(3, 'active');
 
           if (data.refresh_token) {
-            $('resultBox').classList.add('show');
-            $('resultStatus').textContent = '获取成功';
-            $('resultStatus').style.color = '#16a34a';
-            $('resultUserId').textContent = data.user_id || '-';
-            $('resultToken').textContent = data.refresh_token;
-
-            // 自动保存
-            $('resultSaved').innerHTML = '<span class="spinner"></span>写入中...';
-            const saveResp = await fetch('/api/save-token', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ refresh_token: data.refresh_token, user_id: data.user_id || '' })
-            });
-            if (saveResp.ok) {
-              $('resultSaved').textContent = '已保存';
-              $('resultSaved').style.color = '#16a34a';
-              setStep(3, 'done');
-              showStatus($('statusBox'), 'success', '登录成功！token 已自动写入 .env，可以关闭此页面。');
-            } else {
-              $('resultSaved').textContent = '写入失败';
-              $('resultSaved').style.color = '#dc2626';
-              showStatus($('statusBox'), 'error', 'Token 获取成功但写入 .env 失败，请手动复制 token。');
-            }
+            showAutoResult(data);
+            // 后端已自动保存，直接显示成功
+            $('resultSaved').textContent = '已保存';
+            $('resultSaved').style.color = '#16a34a';
+            setStep(3, 'done');
+            showStatus($('statusBox'), 'success', '登录成功！token 已自动写入 .env，可以关闭此页面。');
           } else {
-            showStatus($('statusBox'), 'error', '未获取到 token，请查看下方日志。');
+            showStatus($('statusBox'), 'error', '未获取到 token，请重试或手动输入。');
           }
           $('loginBtn').disabled = false;
         } else if (data.status === 'failed') {
           if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
           setStep(2, 'pending');
-          showStatus($('statusBox'), 'error', '登录失败：' + (data.message || '未知错误'));
+          showStatus($('statusBox'), 'error', '登录失败：' + escapeHtml(data.message || '未知错误'));
           $('loginBtn').disabled = false;
         }
+        // status === 'running' 或 'pending' 继续轮询
       } catch (e) { /* 继续轮询 */ }
     }
+
+    // 手动 OAuth 流程
+    let currentOAuthTaskId = null;
+
+    $('oauthBtn').addEventListener('click', async () => {
+      $('oauthBtn').disabled = true;
+      try {
+        const resp = await fetch('/api/token-jobs', { method: 'POST' });
+        const data = await resp.json();
+        currentOAuthTaskId = data.task_id;
+        if (data.login_url) {
+          window.open(data.login_url, '_blank');
+          $('exchangeBtn').style.display = 'block';
+          showStatus($('oauthStatus'), 'waiting', '请在弹出的 Pixiv 页面完成登录，然后复制浏览器地址栏的完整 URL 粘贴到下方。');
+        }
+      } catch (e) {
+        showStatus($('oauthStatus'), 'error', '请求失败：' + escapeHtml(e.message));
+      }
+      $('oauthBtn').disabled = false;
+    });
+
+    $('callbackUrl').addEventListener('input', () => {
+      const url = $('callbackUrl').value.trim();
+      $('exchangeBtn').style.display = url.includes('code=') ? 'block' : 'none';
+    });
+
+    $('exchangeBtn').addEventListener('click', async () => {
+      const url = $('callbackUrl').value.trim();
+      if (!url) return;
+      $('exchangeBtn').disabled = true;
+      showStatus($('oauthStatus'), 'pending', '<span class="spinner"></span>正在兑换 token...');
+      try {
+        const resp = await fetch(`/oauth/exchange/${currentOAuthTaskId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ callback_url: url })
+        });
+        const data = await resp.json();
+        if (resp.ok && data.refresh_token) {
+          $('oauthResult').classList.add('show');
+          $('oauthResultStatus').textContent = '获取成功';
+          $('oauthResultStatus').style.color = '#16a34a';
+          $('oauthResultUserId').textContent = data.user_id || '-';
+          $('oauthResultToken').textContent = data.refresh_token;
+          // 自动保存
+          const saveResp = await fetch('/api/save-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refresh_token: data.refresh_token, user_id: data.user_id || '' })
+          });
+          if (saveResp.ok) {
+            showStatus($('oauthStatus'), 'success', '登录成功！token 已自动写入 .env。');
+          } else {
+            showStatus($('oauthStatus'), 'error', 'Token 获取成功但写入失败，请手动复制。');
+          }
+        } else {
+          showStatus($('oauthStatus'), 'error', '兑换失败：' + escapeHtml(data.error || '未知错误'));
+        }
+      } catch (e) {
+        showStatus($('oauthStatus'), 'error', '请求失败：' + escapeHtml(e.message));
+      }
+      $('exchangeBtn').disabled = false;
+    });
 
     // 手动保存 token
     $('manualSaveBtn').addEventListener('click', async () => {
@@ -214,56 +304,70 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ refresh_token: token, user_id: userId })
         });
-        const data = await resp.json();
         if (resp.ok) {
           showStatus($('manualStatus'), 'success', '保存成功！可以关闭此页面。');
         } else {
-          showStatus($('manualStatus'), 'error', '保存失败：' + (data.error || '未知错误'));
+          const data = await resp.json();
+          showStatus($('manualStatus'), 'error', '保存失败：' + escapeHtml(data.error || '未知错误'));
         }
       } catch (e) {
-        showStatus($('manualStatus'), 'error', '请求失败：' + e.message);
+        showStatus($('manualStatus'), 'error', '请求失败：' + escapeHtml(e.message));
       }
       $('manualSaveBtn').disabled = false;
     });
 
-    // 检查是否从 OAuth 回调跳转回来
-    (async function() {
+    // 页面初始化：检查是否配置了账号密码
+    (async function init() {
+      // 检查 OAuth 回调参数
       const params = new URLSearchParams(location.search);
       if (params.has('oauth_task')) {
         const tid = params.get('oauth_task');
         history.replaceState(null, '', '/token-login');
-        $('steps').style.display = 'block';
-        setStep(1, 'done');
-        setStep(2, 'active');
         showStatus($('statusBox'), 'pending', '<span class="spinner"></span>正在获取 token...');
         try {
           const resp = await fetch(`/oauth/task/${tid}`);
           const data = await resp.json();
           if (data.status === 'done' && data.refresh_token) {
-            setStep(2, 'done');
-            setStep(3, 'active');
             $('resultBox').classList.add('show');
             $('resultStatus').textContent = '获取成功';
             $('resultStatus').style.color = '#16a34a';
             $('resultUserId').textContent = data.user_id || '-';
             $('resultToken').textContent = data.refresh_token;
-            $('resultSaved').innerHTML = '<span class="spinner"></span>写入中...';
             const saveResp = await fetch(`/oauth/save/${tid}`, { method: 'POST' });
             if (saveResp.ok) {
               $('resultSaved').textContent = '已保存';
               $('resultSaved').style.color = '#16a34a';
-              setStep(3, 'done');
               showStatus($('statusBox'), 'success', '登录成功！token 已自动写入 .env。');
             }
           } else {
-            showStatus($('statusBox'), 'error', '授权失败：' + (data.message || '未知错误'));
+            showStatus($('statusBox'), 'error', '授权失败：' + escapeHtml(data.message || '未知错误'));
           }
         } catch (e) {
-          showStatus($('statusBox'), 'error', '请求失败：' + e.message);
+          showStatus($('statusBox'), 'error', '请求失败：' + escapeHtml(e.message));
         }
-      } else if (params.has('error')) {
-        showStatus($('statusBox'), 'error', '授权失败：' + params.get('error'));
+        return;
+      }
+      if (params.has('error')) {
+        showStatus($('statusBox'), 'error', '授权失败：' + escapeHtml(params.get('error')));
         history.replaceState(null, '', '/token-login');
+      }
+
+      // 检查是否配置了账号密码
+      try {
+        const resp = await fetch('/api/token-config');
+        const data = await resp.json();
+        hasCredentials = data.has_credentials;
+      } catch (e) {
+        hasCredentials = false;
+      }
+
+      if (hasCredentials) {
+        $('loginBtn').style.display = 'block';
+        $('autoLoginDesc').textContent = '已检测到 Pixiv 账号密码配置，点击按钮后系统会自动完成登录（约 1-2 分钟）。';
+      } else {
+        $('loginBtn').style.display = 'none';
+        $('autoLoginDesc').innerHTML = '未配置 Pixiv 账号密码。请在 <code>.env</code> 文件中设置 <code>PIXIV_USERNAME</code> 和 <code>PIXIV_PASSWORD</code> 以启用自动登录，或使用下方其他方式登录。';
+        $('oauthCard').style.display = 'block';
       }
     })();
   </script>

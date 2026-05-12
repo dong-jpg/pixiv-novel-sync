@@ -19,6 +19,8 @@ class PixivSettings:
     verify_ssl: bool
     user_id: int | None
     web_cookie: str | None = None
+    username: str | None = None
+    password: str | None = None
 
 
 @dataclass(slots=True)
@@ -107,6 +109,8 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
     verify_ssl = _parse_bool(os.getenv("PIXIV_VERIFY_SSL"), default=pixiv_raw.get("verify_ssl", True))
     user_id = _parse_optional_int(os.getenv("PIXIV_USER_ID"))
     web_cookie = os.getenv("PIXIV_WEB_COOKIE") or pixiv_raw.get("web_cookie")
+    username = os.getenv("PIXIV_USERNAME") or pixiv_raw.get("username")
+    password = os.getenv("PIXIV_PASSWORD") or pixiv_raw.get("password")
 
     public_dir = Path(os.getenv("PIXIV_PUBLIC_DIR", storage_raw.get("public_dir", "./data/library/public")))
     private_dir = Path(os.getenv("PIXIV_PRIVATE_DIR", storage_raw.get("private_dir", "./data/library/private")))
@@ -122,6 +126,8 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             verify_ssl=verify_ssl,
             user_id=user_id,
             web_cookie=web_cookie,
+            username=username,
+            password=password,
         ),
         sync=SyncSettings(
             enabled=bool(sync_raw.get("enabled", False)),
