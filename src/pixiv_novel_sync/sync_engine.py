@@ -584,7 +584,7 @@ class BookmarkNovelSyncService:
 
     def sync_subscribed_series(self, progress_callback: Any = None, limit: int = 0) -> dict[str, int]:
         """获取用户订阅的系列列表（从 watchlist 页面）"""
-        stats = {"series_synced": 0}
+        stats = {"series_synced": 0, "novels": 0, "assets_downloaded": 0}
         
         logger.info("Fetching subscribed series list (limit=%d)", limit)
         if progress_callback:
@@ -906,6 +906,7 @@ class BookmarkNovelSyncService:
                                             self.storage.write_text(novel_dir / "text.md", markdown_text)
                                         
                                         chapter_count += 1
+                                        stats["novels"] += 1
                                         if idx < len(all_novel_items) - 1 and chapter_delay > 0:
                                             time.sleep(chapter_delay)
                                     except Exception as e:
@@ -935,7 +936,7 @@ class BookmarkNovelSyncService:
                 if series_delay > 0 and queue_idx < len(series_queue):
                     time.sleep(series_delay)
             stats["series_synced"] = synced_series_count
-            logger.info("Subscribed series sync completed: %d series with new content", synced_series_count)
+            logger.info("Subscribed series sync completed: %d series, %d novels", synced_series_count, stats["novels"])
             return stats
         
         # 方式2: 从已同步的小说中提取系列
