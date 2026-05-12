@@ -80,7 +80,7 @@ class OAuthManager:
             "code_verifier": task.code_verifier,
             "grant_type": "authorization_code",
             "include_policy": "true",
-            "redirect_uri": task.callback_url,
+            "redirect_uri": PIXIV_REDIRECT_URI,
         }
         response = requests.post(PIXIV_TOKEN_ENDPOINT, data=data, headers=headers, timeout=30)
         try:
