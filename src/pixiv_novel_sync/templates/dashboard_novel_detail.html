@@ -6,54 +6,66 @@
   <title>小说详情 - Pixiv 小说同步器</title>
   <style>
     :root {
-      --bg: #ffffff;
-      --bg-soft: #f5f5f7;
-      --text: #1d1d1f;
-      --text-secondary: #86868b;
-      --line: #d2d2d7;
-      --brand-start: #007aff;
-      --brand-end: #5856d6;
-      --card-shadow: 0 2px 12px rgba(0,0,0,0.08);
-      --radius: 16px;
-      --radius-lg: 20px;
+      --bg: #f7f8fb;
+      --surface: #ffffff;
+      --surface-soft: #f4f6fb;
+      --text: #1f2330;
+      --text-secondary: #6f7685;
+      --line: #e5e8ef;
+      --brand: #0096fa;
+      --brand-soft: rgba(0, 150, 250, 0.10);
+      --success: #22c55e;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --shadow: 0 16px 36px rgba(31, 35, 48, 0.08);
+      --radius: 14px;
+      --radius-lg: 22px;
     }
     * { box-sizing: border-box; }
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; background: var(--bg-soft); color: var(--text); -webkit-font-smoothing: antialiased; }
-    .topbar { background: #fff; border-bottom: 2px solid transparent; background-image: linear-gradient(#fff, #fff), linear-gradient(90deg, var(--brand-start), var(--brand-end)); background-origin: padding-box, border-box; background-clip: padding-box, border-box; }
-    .topbar-inner { max-width: 1080px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; }
-    .brand { font-size: 17px; font-weight: 600; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-    .nav { display: flex; gap: 4px; }
-    .nav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 8px 14px; border-radius: 8px; transition: all 0.2s; position: relative; }
-    .nav a:hover { color: var(--text); background: rgba(0,122,255,0.06); }
-    .nav a.active { color: var(--brand-start); font-weight: 600; }
-    .nav a.active::after { content: ''; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); width: 20px; height: 2px; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); border-radius: 1px; }
-    .page { max-width: 1080px; margin: 0 auto; padding: 32px 24px 56px; }
-    .back-link { display: inline-flex; align-items: center; gap: 6px; color: var(--brand-start); text-decoration: none; font-size: 14px; font-weight: 600; margin-bottom: 20px; }
-    .back-link:hover { text-decoration: underline; }
-    .hero { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 32px; display: grid; grid-template-columns: 180px 1fr; gap: 28px; }
-    .cover { width: 180px; height: 250px; border-radius: 14px; object-fit: cover; background: linear-gradient(135deg, var(--brand-start), var(--brand-end)); flex-shrink: 0; }
-    .empty-cover { width: 180px; height: 250px; border-radius: 14px; background: var(--line); flex-shrink: 0; }
-    .info { display: flex; flex-direction: column; justify-content: center; }
-    .title { font-size: 24px; font-weight: 700; margin: 0 0 12px; letter-spacing: -0.02em; line-height: 1.3; }
-    .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
-    .badge { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 6px; background: rgba(0,122,255,0.1); color: var(--brand-start); font-size: 12px; font-weight: 600; }
-    .meta { color: var(--text-secondary); font-size: 13px; line-height: 1.8; }
-    .meta strong { color: var(--text); font-weight: 600; }
-    .card { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 28px; margin-top: 20px; }
-    .card-title { font-size: 16px; font-weight: 700; margin: 0 0 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
-    .content { font-size: 14px; line-height: 1.9; color: var(--text); white-space: pre-wrap; word-break: break-word; font-family: Georgia, "Times New Roman", serif; text-align: left; }
-    .content p { margin: 0 0 1em 0; text-align: left; }
-    .content br { display: block; content: ""; margin-top: 0.5em; }
-    .loading { text-align: center; padding: 48px; color: var(--text-secondary); }
-    .error { text-align: center; padding: 48px; color: var(--text-secondary); }
-    .btn { border: none; border-radius: 10px; padding: 11px 20px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
-    .btn-danger { background: linear-gradient(90deg, #ff3b30, #ff6b6b); color: #fff; }
-    .btn-danger:hover { opacity: 0.9; transform: translateY(-1px); }
-    .actions { display: flex; gap: 8px; margin-top: 16px; }
-    @media (max-width: 860px) {
-      .topbar-inner { flex-direction: column; height: auto; padding: 12px 16px; gap: 8px; }
-      .hero { grid-template-columns: 1fr; }
-      .cover, .empty-cover { width: 100%; height: 260px; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+    .topbar { position: sticky; top: 0; z-index: 10; background: rgba(255,255,255,0.86); backdrop-filter: blur(18px); border-bottom: 1px solid var(--line); }
+    .topbar-inner { max-width: 1160px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; min-height: 58px; gap: 16px; }
+    .brand { font-size: 17px; font-weight: 800; color: var(--brand); }
+    .nav { display: flex; gap: 2px; overflow-x: auto; white-space: nowrap; }
+    .nav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 9px 12px; border-radius: 999px; }
+    .nav a:hover, .nav a.active { color: var(--brand); background: var(--brand-soft); }
+    .page { max-width: 1160px; margin: 0 auto; padding: 24px 24px 64px; }
+    .back-link { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); text-decoration: none; font-size: 14px; font-weight: 700; margin: 0 0 14px; }
+    .back-link:hover { color: var(--brand); }
+    .hero { background: var(--surface); border-radius: var(--radius-lg); box-shadow: var(--shadow); border: 1px solid rgba(229,232,239,0.8); padding: 26px; display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 28px; align-items: start; }
+    .cover-wrap { position: sticky; top: 82px; }
+    .cover, .empty-cover { width: 210px; aspect-ratio: 3 / 4.15; border-radius: 18px; object-fit: cover; background: linear-gradient(135deg, #dbeafe, #eef2ff); box-shadow: 0 18px 36px rgba(31,35,48,.16); }
+    .empty-cover { display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 18px; font-weight: 800; text-align: center; padding: 18px; }
+    .info { min-width: 0; padding-top: 4px; }
+    .title { font-size: clamp(26px, 4vw, 38px); line-height: 1.22; letter-spacing: -0.035em; margin: 0 0 14px; }
+    .caption { color: var(--text-secondary); font-size: 14px; line-height: 1.8; margin: 14px 0 0; max-width: 760px; white-space: pre-wrap; }
+    .badges { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; }
+    .badge { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; border-radius: 999px; background: var(--brand-soft); color: var(--brand); font-size: 12px; font-weight: 800; }
+    .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-top: 18px; }
+    .meta-item { background: var(--surface-soft); border-radius: var(--radius); padding: 12px; }
+    .meta-label { color: var(--text-secondary); font-size: 12px; font-weight: 700; margin-bottom: 5px; }
+    .meta-value { font-size: 15px; font-weight: 800; word-break: break-word; }
+    .meta-value a { color: var(--brand); text-decoration: none; }
+    .card { background: var(--surface); border-radius: var(--radius-lg); box-shadow: var(--shadow); border: 1px solid rgba(229,232,239,0.8); margin-top: 18px; overflow: hidden; }
+    .reader-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 24px; border-bottom: 1px solid var(--line); }
+    .reader-title { margin: 0; font-size: 17px; font-weight: 900; }
+    .reader-tools { display: flex; gap: 8px; }
+    .btn { border: none; border-radius: 999px; padding: 9px 15px; font-size: 13px; font-weight: 800; cursor: pointer; transition: transform .18s, background .18s; }
+    .btn:hover { transform: translateY(-1px); }
+    .btn-soft { background: var(--surface-soft); color: var(--text); }
+    .btn-danger { background: rgba(239,68,68,.10); color: var(--danger); }
+    .content { max-width: 800px; margin: 0 auto; padding: 34px 34px 48px; color: #222838; font-size: 16px; line-height: 2.05; letter-spacing: .01em; white-space: pre-wrap; word-break: break-word; font-family: "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif SC", Georgia, serif; }
+    .loading, .error { text-align: center; padding: 56px 18px; color: var(--text-secondary); }
+    @media (max-width: 840px) {
+      .topbar-inner { align-items: flex-start; flex-direction: column; padding: 12px 16px; }
+      .page { padding: 16px 14px 44px; }
+      .hero { grid-template-columns: 1fr; padding: 18px; }
+      .cover-wrap { position: static; display: flex; justify-content: center; }
+      .cover, .empty-cover { width: min(62vw, 240px); }
+      .reader-head { align-items: flex-start; flex-direction: column; padding: 16px; }
+      .reader-tools { width: 100%; }
+      .reader-tools .btn { flex: 1; }
+      .content { padding: 24px 18px 34px; font-size: 15px; line-height: 1.95; }
     }
   </style>
 </head>
@@ -74,25 +86,28 @@
 
   <main class="page">
     <a class="back-link" href="/dashboard/novels">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       返回小说列表
     </a>
 
     <section id="hero" class="hero">
-      <div class="empty-cover"></div>
+      <div class="cover-wrap"><div class="empty-cover"></div></div>
       <div class="info">
         <h1 class="title">加载中...</h1>
         <div class="badges"></div>
-        <div class="meta">请稍候</div>
+        <div class="caption">请稍候</div>
       </div>
     </section>
 
     <section class="card">
-      <h2 class="card-title">正文预览</h2>
-      <div id="content" class="loading">正在加载正文...</div>
-      <div class="actions">
-        <button id="deleteBtn" class="btn btn-danger" onclick="deleteNovel()">删除此小说</button>
+      <div class="reader-head">
+        <h2 class="reader-title">正文</h2>
+        <div class="reader-tools">
+          <button class="btn btn-soft" onclick="window.scrollTo({top:0,behavior:'smooth'})">回到顶部</button>
+          <button id="deleteBtn" class="btn btn-danger" onclick="deleteNovel()">删除小说</button>
+        </div>
       </div>
+      <div id="content" class="loading">正在加载正文...</div>
     </section>
   </main>
 
@@ -108,6 +123,17 @@
         if (ch === '"') return '&quot;';
         return ch;
       });
+    }
+
+    function formatNumber(value) {
+      return Number(value || 0).toLocaleString('zh-CN');
+    }
+
+    function formatTextLength(chars) {
+      const value = Number(chars || 0);
+      if (!value) return '0 字';
+      if (value >= 10000) return (value / 10000).toFixed(1) + ' 万字';
+      return formatNumber(value) + ' 字';
     }
 
     function restrictLabel(value) {
@@ -126,41 +152,39 @@
       const resp = await fetch(`/api/dashboard/novels/${encodeURIComponent(novelId)}`);
       const data = await resp.json();
       if (!resp.ok) {
-        document.getElementById('hero').innerHTML = `
-          <div class="info">
-            <h1 class="title">加载失败</h1>
-            <div class="meta">未找到这本小说</div>
-          </div>
-        `;
+        document.getElementById('hero').innerHTML = '<div class="info"><h1 class="title">加载失败</h1><div class="caption">未找到这本小说</div></div>';
         document.getElementById('content').innerHTML = '<div class="error">' + escapeHtml(data.error || '未找到小说') + '</div>';
         return;
       }
       const cover = data.cover_url
         ? `<img class="cover" src="/proxy/image?url=${encodeURIComponent(data.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
         : '';
-      const fallbackCover = `<div class="empty-cover" style="display:${data.cover_url ? 'none' : 'flex'};align-items:center;justify-content:center;color:var(--text-secondary);font-size:18px;text-align:center;padding:16px;">${escapeHtml((data.title || '').slice(0, 6))}</div>`;
-      const novelStatusMap = {normal: {label: '正常', color: 'var(--success)'}, deleted: {label: '已删除', color: 'var(--danger)'}, restricted: {label: '受限', color: '#ff9500'}, unknown: {label: '未检查', color: 'var(--text-secondary)'}};
+      const fallbackCover = `<div class="empty-cover" style="display:${data.cover_url ? 'none' : 'flex'};">${escapeHtml((data.title || '').slice(0, 6))}</div>`;
+      const novelStatusMap = {normal: {label: '正常', color: 'var(--success)'}, deleted: {label: '已删除', color: 'var(--danger)'}, restricted: {label: '受限', color: 'var(--warning)'}, unknown: {label: '未检查', color: 'var(--text-secondary)'}};
       const ns = novelStatusMap[data.status] || novelStatusMap.unknown;
-      const statusBadge = `<span class="badge" style="background:${ns.color}20;color:${ns.color};">● ${ns.label}</span>`;
-      const badges = [kindLabel(data.novel_kind), restrictLabel(data.restrict_value)].map(function(b) {
-        return '<span class="badge">' + escapeHtml(b) + '</span>';
-      }).join('') + statusBadge;
+      const author = data.author_name || '未知';
+      const authorLine = data.user_id ? `<a href="/dashboard/users/${encodeURIComponent(data.user_id)}">${escapeHtml(author)}</a>` : escapeHtml(author);
+      const caption = data.caption ? escapeHtml(data.caption) : '暂无简介。';
       document.getElementById('hero').innerHTML = `
-        ${cover}${fallbackCover}
+        <div class="cover-wrap">${cover}${fallbackCover}</div>
         <div class="info">
           <h1 class="title">${escapeHtml(data.title || '未命名小说')}</h1>
-          <div class="badges">${badges}</div>
-          <div class="meta">
-            <strong>作者：</strong>${escapeHtml(data.author_name || '未知')} ${data.author_account ? `(@${escapeHtml(data.author_account)})` : ''}<br>
-            <strong>收藏：</strong>${escapeHtml(data.total_bookmarks || 0)} &nbsp; <strong>浏览：</strong>${escapeHtml(data.total_views || 0)}<br>
-            <strong>字数：</strong>${escapeHtml(data.text_length || 0)}<br>
-            <strong>发布时间：</strong>${escapeHtml(data.create_date || '-')}<br>
-            <strong>最近更新：</strong>${escapeHtml(data.last_seen_at || '-')}
+          <div class="badges">
+            <span class="badge">${escapeHtml(kindLabel(data.novel_kind))}</span>
+            <span class="badge">${escapeHtml(restrictLabel(data.restrict_value))}</span>
+            <span class="badge" style="background:${ns.color}20;color:${ns.color};">● ${ns.label}</span>
+          </div>
+          <div class="caption">${caption}</div>
+          <div class="meta-grid">
+            <div class="meta-item"><div class="meta-label">作者</div><div class="meta-value">${authorLine}</div></div>
+            <div class="meta-item"><div class="meta-label">字数</div><div class="meta-value">${formatTextLength(data.text_length)}</div></div>
+            <div class="meta-item"><div class="meta-label">收藏 / 浏览</div><div class="meta-value">${formatNumber(data.total_bookmarks)} / ${formatNumber(data.total_views)}</div></div>
+            <div class="meta-item"><div class="meta-label">发布时间</div><div class="meta-value">${escapeHtml(data.create_date || '-')}</div></div>
           </div>
         </div>
       `;
       const content = data.text_markdown || data.text_raw || '当前未找到本地正文预览内容。';
-      document.getElementById('content').innerHTML = '<div class="content">' + escapeHtml(content) + '</div>';
+      document.getElementById('content').innerHTML = '<article class="content">' + escapeHtml(content) + '</article>';
     }
 
     loadDetail().catch(function () {
@@ -168,14 +192,9 @@
     });
 
     async function deleteNovel() {
-      if (!confirm('确定要删除这本小说吗？此操作不可撤销。')) {
-        return;
-      }
-      
+      if (!confirm('确定要删除这本小说吗？此操作不可撤销。')) return;
       try {
-        const resp = await fetch(`/api/dashboard/novels/${encodeURIComponent(novelId)}`, {
-          method: 'DELETE',
-        });
+        const resp = await fetch(`/api/dashboard/novels/${encodeURIComponent(novelId)}`, { method: 'DELETE' });
         const data = await resp.json();
         if (resp.ok) {
           alert('小说已删除');

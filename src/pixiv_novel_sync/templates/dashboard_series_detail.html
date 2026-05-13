@@ -6,56 +6,71 @@
   <title>系列详情 - Pixiv 小说同步器</title>
   <style>
     :root {
-      --bg: #ffffff;
-      --bg-soft: #f5f5f7;
-      --text: #1d1d1f;
-      --text-secondary: #86868b;
-      --line: #d2d2d7;
-      --brand-start: #007aff;
-      --brand-end: #5856d6;
-      --card-shadow: 0 2px 12px rgba(0,0,0,0.08);
-      --radius: 16px;
-      --radius-lg: 20px;
+      --bg: #f7f8fb;
+      --surface: #ffffff;
+      --surface-soft: #f4f6fb;
+      --text: #1f2330;
+      --text-secondary: #6f7685;
+      --line: #e5e8ef;
+      --brand: #0096fa;
+      --brand-soft: rgba(0, 150, 250, 0.10);
+      --success: #22c55e;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --shadow: 0 16px 36px rgba(31, 35, 48, 0.08);
+      --radius: 14px;
+      --radius-lg: 22px;
     }
     * { box-sizing: border-box; }
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; background: var(--bg-soft); color: var(--text); -webkit-font-smoothing: antialiased; }
-    .topbar { background: #fff; border-bottom: 2px solid transparent; background-image: linear-gradient(#fff, #fff), linear-gradient(90deg, var(--brand-start), var(--brand-end)); background-origin: padding-box, border-box; background-clip: padding-box, border-box; }
-    .topbar-inner { max-width: 1080px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; }
-    .brand { font-size: 17px; font-weight: 600; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-    .nav { display: flex; gap: 4px; }
-    .nav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 8px 14px; border-radius: 8px; transition: all 0.2s; position: relative; }
-    .nav a:hover { color: var(--text); background: rgba(0,122,255,0.06); }
-    .nav a.active { color: var(--brand-start); font-weight: 600; }
-    .nav a.active::after { content: ''; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); width: 20px; height: 2px; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); border-radius: 1px; }
-    .page { max-width: 1080px; margin: 0 auto; padding: 32px 24px 56px; }
-    .back-link { display: inline-flex; align-items: center; gap: 6px; color: var(--brand-start); text-decoration: none; font-size: 14px; font-weight: 600; margin-bottom: 20px; }
-    .back-link:hover { text-decoration: underline; }
-    .hero { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 32px; display: grid; grid-template-columns: 180px 1fr; gap: 28px; }
-    .cover { width: 180px; height: 250px; border-radius: 14px; object-fit: cover; background: linear-gradient(135deg, var(--brand-start), var(--brand-end)); flex-shrink: 0; }
-    .empty-cover { width: 180px; height: 250px; border-radius: 14px; background: var(--line); display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 18px; text-align: center; padding: 16px; flex-shrink: 0; }
-    .info { display: flex; flex-direction: column; justify-content: center; }
-    .title { font-size: 24px; font-weight: 700; margin: 0 0 12px; letter-spacing: -0.02em; line-height: 1.3; }
-    .meta { color: var(--text-secondary); font-size: 13px; line-height: 1.8; }
-    .meta strong { color: var(--text); font-weight: 600; }
-    .card { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 28px; margin-top: 20px; }
-    .card-title { font-size: 16px; font-weight: 700; margin: 0 0 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
-    .chapter-list { display: grid; gap: 12px; }
-    .chapter-item { display: flex; align-items: center; gap: 16px; background: var(--bg-soft); border-radius: var(--radius); padding: 16px; transition: all 0.2s; text-decoration: none; color: var(--text); }
-    .chapter-item:hover { background: #ebebed; }
-    .chapter-num { width: 36px; height: 36px; border-radius: 8px; background: linear-gradient(135deg, var(--brand-start), var(--brand-end)); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; }
-    .chapter-info { flex: 1; min-width: 0; }
-    .chapter-title { font-size: 15px; font-weight: 600; }
-    .chapter-meta { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
-    .loading { text-align: center; padding: 48px; color: var(--text-secondary); }
-    .empty { text-align: center; padding: 48px; color: var(--text-secondary); }
-    .btn { border: none; border-radius: 10px; padding: 11px 20px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
-    .btn-danger { background: linear-gradient(90deg, #ff3b30, #ff6b6b); color: #fff; }
-    .btn-danger:hover { opacity: 0.9; transform: translateY(-1px); }
-    .actions { display: flex; gap: 8px; margin-top: 16px; }
-    @media (max-width: 860px) {
-      .topbar-inner { flex-direction: column; height: auto; padding: 12px 16px; gap: 8px; }
-      .hero { grid-template-columns: 1fr; }
-      .cover, .empty-cover { width: 100%; height: 260px; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+    .topbar { position: sticky; top: 0; z-index: 10; background: rgba(255,255,255,0.86); backdrop-filter: blur(18px); border-bottom: 1px solid var(--line); }
+    .topbar-inner { max-width: 1160px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; min-height: 58px; gap: 16px; }
+    .brand { font-size: 17px; font-weight: 800; color: var(--brand); }
+    .nav { display: flex; gap: 2px; overflow-x: auto; white-space: nowrap; }
+    .nav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 9px 12px; border-radius: 999px; }
+    .nav a:hover, .nav a.active { color: var(--brand); background: var(--brand-soft); }
+    .page { max-width: 1160px; margin: 0 auto; padding: 24px 24px 64px; }
+    .back-link { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); text-decoration: none; font-size: 14px; font-weight: 700; margin: 0 0 14px; }
+    .back-link:hover { color: var(--brand); }
+    .hero { background: var(--surface); border-radius: var(--radius-lg); box-shadow: var(--shadow); border: 1px solid rgba(229,232,239,0.8); padding: 26px; display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 28px; align-items: start; }
+    .cover-wrap { position: sticky; top: 82px; }
+    .cover, .empty-cover { width: 210px; aspect-ratio: 3 / 4.15; border-radius: 18px; object-fit: cover; background: linear-gradient(135deg, #dbeafe, #eef2ff); box-shadow: 0 18px 36px rgba(31,35,48,.16); }
+    .empty-cover { display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 18px; font-weight: 800; text-align: center; padding: 18px; }
+    .info { min-width: 0; padding-top: 4px; }
+    .title { font-size: clamp(26px, 4vw, 38px); line-height: 1.22; letter-spacing: -0.035em; margin: 0 0 14px; }
+    .meta { color: var(--text-secondary); font-size: 14px; line-height: 1.85; }
+    .meta strong { color: var(--text); }
+    .hero-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 0; }
+    .badge { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; border-radius: 999px; background: var(--brand-soft); color: var(--brand); font-size: 12px; font-weight: 800; }
+    .caption { margin-top: 14px; color: var(--text-secondary); font-size: 14px; line-height: 1.8; max-width: 780px; white-space: pre-wrap; }
+    .card { background: var(--surface); border-radius: var(--radius-lg); box-shadow: var(--shadow); border: 1px solid rgba(229,232,239,0.8); margin-top: 18px; overflow: hidden; }
+    .card-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 24px; border-bottom: 1px solid var(--line); }
+    .card-title { margin: 0; font-size: 17px; font-weight: 900; }
+    .card-sub { color: var(--text-secondary); font-size: 13px; font-weight: 700; }
+    .chapter-list { display: grid; gap: 10px; padding: 18px; }
+    .chapter-item { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 14px; background: var(--surface-soft); border: 1px solid transparent; border-radius: var(--radius); padding: 14px; transition: transform .18s, border .18s, background .18s; text-decoration: none; color: var(--text); }
+    .chapter-item:hover { background: #fff; border-color: rgba(0,150,250,.22); transform: translateY(-1px); }
+    .chapter-num { width: 48px; height: 48px; border-radius: 14px; background: linear-gradient(135deg, #0096fa, #7c3aed); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 15px; }
+    .chapter-info { min-width: 0; }
+    .chapter-title { font-size: 15px; font-weight: 800; line-height: 1.45; }
+    .chapter-meta { font-size: 12px; color: var(--text-secondary); margin-top: 6px; line-height: 1.5; }
+    .loading, .empty { text-align: center; padding: 54px 18px; color: var(--text-secondary); }
+    .btn { border: none; border-radius: 999px; padding: 9px 15px; font-size: 13px; font-weight: 800; cursor: pointer; transition: transform .18s, background .18s; }
+    .btn:hover { transform: translateY(-1px); }
+    .btn-danger { background: rgba(239,68,68,.10); color: var(--danger); }
+    .actions { display: flex; gap: 8px; }
+    @media (max-width: 840px) {
+      .topbar-inner { align-items: flex-start; flex-direction: column; padding: 12px 16px; }
+      .page { padding: 16px 14px 44px; }
+      .hero { grid-template-columns: 1fr; padding: 18px; }
+      .cover-wrap { position: static; display: flex; justify-content: center; }
+      .cover, .empty-cover { width: min(62vw, 240px); }
+      .card-head { align-items: flex-start; flex-direction: column; padding: 16px; }
+      .chapter-list { padding: 14px; }
+      .chapter-item { grid-template-columns: 42px minmax(0, 1fr); padding: 12px; }
+      .chapter-num { width: 42px; height: 42px; border-radius: 12px; }
+      .actions { width: 100%; }
+      .actions .btn { flex: 1; }
     }
   </style>
 </head>
@@ -76,12 +91,12 @@
 
   <main class="page">
     <a class="back-link" href="/dashboard/novels?category=following">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       返回追更列表
     </a>
 
     <section id="hero" class="hero">
-      <div class="empty-cover">加载中...</div>
+      <div class="cover-wrap"><div class="empty-cover">加载中...</div></div>
       <div class="info">
         <h1 class="title">加载中...</h1>
         <div class="meta">请稍候</div>
@@ -89,11 +104,16 @@
     </section>
 
     <section class="card">
-      <h2 class="card-title">章节列表</h2>
-      <div id="chapters" class="loading">正在加载章节...</div>
-      <div class="actions">
-        <button id="deleteBtn" class="btn btn-danger" onclick="deleteSeries()">删除此系列</button>
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">章节列表</h2>
+          <div id="chapterCount" class="card-sub"></div>
+        </div>
+        <div class="actions">
+          <button id="deleteBtn" class="btn btn-danger" onclick="deleteSeries()">删除系列</button>
+        </div>
       </div>
+      <div id="chapters" class="loading">正在加载章节...</div>
     </section>
   </main>
 
@@ -111,22 +131,22 @@
       });
     }
 
+    function formatNumber(value) {
+      return Number(value || 0).toLocaleString('zh-CN');
+    }
+
     function formatTextLength(chars) {
-      if (!chars || chars <= 0) return '0 字';
-      if (chars >= 10000) return (chars / 10000).toFixed(1) + ' 万字';
-      return chars.toLocaleString('zh-CN') + ' 字';
+      const value = Number(chars || 0);
+      if (!value) return '0 字';
+      if (value >= 10000) return (value / 10000).toFixed(1) + ' 万字';
+      return formatNumber(value) + ' 字';
     }
 
     async function loadDetail() {
       const resp = await fetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`);
       const data = await resp.json();
       if (!resp.ok) {
-        document.getElementById('hero').innerHTML = `
-          <div class="info">
-            <h1 class="title">加载失败</h1>
-            <div class="meta">未找到该系列</div>
-          </div>
-        `;
+        document.getElementById('hero').innerHTML = '<div class="info"><h1 class="title">加载失败</h1><div class="meta">未找到该系列</div></div>';
         document.getElementById('chapters').innerHTML = '<div class="empty">' + escapeHtml(data.error || '未找到系列') + '</div>';
         return;
       }
@@ -136,35 +156,39 @@
       const fallbackCover = `<div class="empty-cover" style="display:${data.cover_url ? 'none' : 'flex'};">${escapeHtml((data.title || '').slice(0, 6))}</div>`;
       const seriesStatusMap = {normal: {label: '正常', color: 'var(--success)'}, deleted: {label: '已删除', color: 'var(--danger)'}, unknown: {label: '未检查', color: 'var(--text-secondary)'}};
       const ss = seriesStatusMap[data.status] || seriesStatusMap.unknown;
+      const author = data.author_name || '未知';
+      const authorLine = data.user_id ? `<a href="/dashboard/users/${encodeURIComponent(data.user_id)}">${escapeHtml(author)}</a>` : escapeHtml(author);
       document.getElementById('hero').innerHTML = `
-        ${cover}${fallbackCover}
+        <div class="cover-wrap">${cover}${fallbackCover}</div>
         <div class="info">
           <h1 class="title">${escapeHtml(data.title || '未命名系列')}</h1>
-          <div style="margin-bottom:8px;"><span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;padding:4px 8px;border-radius:6px;background:${ss.color}20;color:${ss.color};font-weight:600;">● ${ss.label}</span>${data.last_checked_at ? `<span style="font-size:12px;color:var(--text-secondary);margin-left:8px;">最后检查: ${escapeHtml(data.last_checked_at)}</span>` : ''}</div>
-          <div class="meta">
-            <strong>作者：</strong>${escapeHtml(data.author_name || '未知')}<br>
-            <strong>章节：</strong>${escapeHtml(data.total_novels || 0)} 章<br>
-            <strong>总字数：</strong>${formatTextLength(data.total_text_length || 0)}
-            ${data.description ? '<br><strong>简介：</strong>' + escapeHtml(data.description) : ''}
+          <div class="hero-tools">
+            <span class="badge">${escapeHtml(data.total_novels || 0)} 章</span>
+            <span class="badge">${formatTextLength(data.total_text_length)}</span>
+            <span class="badge" style="background:${ss.color}20;color:${ss.color};">● ${ss.label}</span>
+            ${data.last_checked_at ? `<span class="badge">最后检查 ${escapeHtml(data.last_checked_at)}</span>` : ''}
           </div>
+          <div class="meta"><strong>作者：</strong>${authorLine}</div>
+          ${data.description ? `<div class="caption">${escapeHtml(data.description)}</div>` : ''}
         </div>
       `;
       const novels = data.novels || [];
+      document.getElementById('chapterCount').textContent = `共 ${formatNumber(novels.length)} 章`;
       const chapters = document.getElementById('chapters');
       if (!novels.length) {
         chapters.innerHTML = '<div class="empty">暂无章节</div>';
         return;
       }
-      const chapterStatusMap = {normal: {label: '正常', color: 'var(--success)'}, deleted: {label: '已删除', color: 'var(--danger)'}, restricted: {label: '受限', color: '#ff9500'}, unknown: {label: '', color: 'transparent'}};
+      const chapterStatusMap = {normal: {label: '正常', color: 'var(--success)'}, deleted: {label: '已删除', color: 'var(--danger)'}, restricted: {label: '受限', color: 'var(--warning)'}, unknown: {label: '', color: 'transparent'}};
       chapters.innerHTML = '<div class="chapter-list">' + novels.map(function (novel, index) {
         const cs = chapterStatusMap[novel.status] || chapterStatusMap.unknown;
-        const statusTag = cs.label ? `<span style="font-size:11px;padding:2px 6px;border-radius:4px;background:${cs.color}20;color:${cs.color};margin-left:6px;">${cs.label}</span>` : '';
+        const statusTag = cs.label ? `<span style="font-size:11px;padding:2px 6px;border-radius:999px;background:${cs.color}20;color:${cs.color};margin-left:6px;">${cs.label}</span>` : '';
         return `
           <a class="chapter-item" href="/dashboard/novels/${encodeURIComponent(novel.novel_id)}">
             <div class="chapter-num">${index + 1}</div>
             <div class="chapter-info">
               <div class="chapter-title">${escapeHtml(novel.title || '未命名章节')}${statusTag}</div>
-              <div class="chapter-meta">收藏 ${escapeHtml(novel.total_bookmarks || 0)} / 浏览 ${escapeHtml(novel.total_views || 0)}</div>
+              <div class="chapter-meta">${formatNumber(novel.total_bookmarks)} 收藏 · ${formatNumber(novel.total_views)} 浏览</div>
             </div>
           </a>
         `;
@@ -176,14 +200,9 @@
     });
 
     async function deleteSeries() {
-      if (!confirm('确定要删除这个系列吗？系列下的小说不会被删除，只会解除关联。此操作不可撤销。')) {
-        return;
-      }
-      
+      if (!confirm('确定要删除这个系列吗？系列下的小说不会被删除，只会解除关联。此操作不可撤销。')) return;
       try {
-        const resp = await fetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`, {
-          method: 'DELETE',
-        });
+        const resp = await fetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`, { method: 'DELETE' });
         const data = await resp.json();
         if (resp.ok) {
           alert('系列已删除');
