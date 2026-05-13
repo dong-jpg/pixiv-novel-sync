@@ -25,6 +25,7 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+config/config.yaml
 /data/
 /logs/
 *.db

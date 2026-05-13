@@ -11,8 +11,9 @@ SERVICE_NAME="pixiv-novel-sync"
 FLASK_PORT=5011
 NGINX_PORT=5010
 BACKUP_SUFFIX="$(date +%Y%m%d_%H%M%S)"
-ENV_BACKUP=".env.bak.${BACKUP_SUFFIX}"
-CONFIG_BACKUP="config/config.yaml.bak.${BACKUP_SUFFIX}"
+BACKUP_DIR="/tmp/pixiv-novel-sync-backup.${BACKUP_SUFFIX}"
+ENV_BACKUP="${BACKUP_DIR}/.env"
+CONFIG_BACKUP="${BACKUP_DIR}/config.yaml"
 CONFIG_RESTORED=false
 
 restore_config() {
@@ -24,6 +25,7 @@ restore_config() {
         echo "  已恢复 .env"
     fi
     if [ -f "$CONFIG_BACKUP" ]; then
+        mkdir -p config
         cp -f "$CONFIG_BACKUP" config/config.yaml
         echo "  已恢复 config.yaml"
     fi
@@ -44,6 +46,7 @@ cd "$INSTALL_DIR"
 
 # 1. 备份配置
 echo -e "${GREEN}[1/6] 备份配置...${NC}"
+mkdir -p "$BACKUP_DIR"
 if [ -f ".env" ]; then
     cp -f .env "$ENV_BACKUP"
 fi
@@ -69,6 +72,10 @@ pip install -e . -q
 # 5. 恢复配置
 echo -e "${GREEN}[5/6] 恢复配置...${NC}"
 restore_config
+if [ ! -f "config/config.yaml" ] && [ -f "config/config.yaml.example" ]; then
+    cp -f config/config.yaml.example config/config.yaml
+    echo "  已创建 config.yaml"
+fi
 
 # 更新 Nginx 配置
 echo -e "${GREEN}[5.5/6] 更新 Nginx 配置...${NC}"
