@@ -801,17 +801,17 @@ class BookmarkNovelSyncService:
                                 # 处理分页
                                 next_url = series_data.get("next_url")
                                 if progress_callback:
-                                    progress_callback("phase", {"phase": f"系列 {title or sid}: 共 {len(all_novel_items)} 章"})
+                                    progress_callback("phase", {"phase": f"系列 {title or sid}: 已获取 {len(all_novel_items)} 章"})
                                 while next_url:
                                     try:
-                                        next_resp = self.api.auth_request_call("GET", next_url)
-                                        if next_resp and next_resp.status_code == 200:
-                                            next_data = self.api.parse_result(next_resp)
-                                            if isinstance(next_data, dict):
-                                                all_novel_items.extend(next_data.get("novels", []))
-                                                next_url = next_data.get("next_url")
-                                            else:
-                                                break
+                                        next_query = self.api.parse_qs(next_url) or {}
+                                        last_order = next_query.get("last_order")
+                                        next_data = self.api.novel_series(int(sid), last_order=last_order) if last_order else None
+                                        if isinstance(next_data, dict):
+                                            all_novel_items.extend(next_data.get("novels", []))
+                                            next_url = next_data.get("next_url")
+                                            if progress_callback:
+                                                progress_callback("phase", {"phase": f"系列 {title or sid}: 已获取 {len(all_novel_items)} 章"})
                                         else:
                                             break
                                     except Exception as e:
@@ -916,7 +916,6 @@ class BookmarkNovelSyncService:
                                     logger.info("  Synced %d chapters, skipped %d for series %s", chapter_count, skipped_count, sid)
                                     if progress_callback:
                                         progress_callback("phase", {"phase": f"系列 {title or sid}: 同步 {chapter_count} 章, 跳过 {skipped_count} 章"})
-                                # 只有实际同步了新章节的系列才计入 synced_series_count（顺延机制）
                                 if chapter_count > 0:
                                     synced_series_count += 1
                         else:
