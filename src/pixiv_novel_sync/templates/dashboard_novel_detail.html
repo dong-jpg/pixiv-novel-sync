@@ -54,22 +54,34 @@
     .btn:hover { transform: translateY(-1px); }
     .btn-soft { background: var(--surface-soft); color: var(--text); }
     .btn-danger { background: rgba(239,68,68,.10); color: var(--danger); }
-    .content { max-width: 820px; margin: 0; padding: 34px 34px 48px; color: #222838; font-size: 16px; line-height: 2.05; letter-spacing: .01em; white-space: pre-wrap; word-break: break-word; font-family: "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif SC", Georgia, serif; text-align: left; }
+    .content { max-width: 820px; margin: 0; padding: 34px 34px 48px; color: #222838; font-size: 16px; line-height: 2.05; letter-spacing: .01em; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; font-family: "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif SC", Georgia, serif; text-align: left; }
+    .mobile-reader-bar { display: none; position: sticky; top: 59px; z-index: 8; margin: 12px 0; background: rgba(255,255,255,.92); backdrop-filter: blur(16px); border: 1px solid var(--line); border-radius: 999px; padding: 8px; gap: 8px; align-items: center; box-shadow: 0 8px 20px rgba(31,35,48,.08); }
     .progress-shell { position: fixed; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(0,0,0,.06); z-index: 20; }
     .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #0096fa, #7c3aed); transition: width .12s linear; }
     .progress-label { color: var(--text-secondary); font-size: 13px; font-weight: 800; min-width: 52px; text-align: right; }
     .restore-tip { color: var(--text-secondary); font-size: 12px; margin-top: 8px; }
     .loading, .error { text-align: center; padding: 56px 18px; color: var(--text-secondary); }
     @media (max-width: 840px) {
-      .topbar-inner { align-items: flex-start; flex-direction: column; padding: 12px 16px; }
-      .page { padding: 16px 14px 44px; }
-      .hero { grid-template-columns: 1fr; padding: 18px; }
-      .cover-wrap { position: static; display: flex; justify-content: center; }
-      .cover, .empty-cover { width: min(62vw, 240px); }
-      .reader-head { align-items: flex-start; flex-direction: column; padding: 16px; }
-      .reader-tools { width: 100%; }
-      .reader-tools .btn { flex: 1; }
-      .content { padding: 24px 18px 34px; font-size: 15px; line-height: 1.95; }
+      .topbar-inner { align-items: flex-start; flex-direction: column; padding: 10px 14px; gap: 8px; }
+      .page { padding: 12px 10px 44px; }
+      .back-link { margin-bottom: 10px; }
+      .hero { grid-template-columns: 86px minmax(0, 1fr); gap: 12px; padding: 12px; border-radius: 16px; }
+      .cover-wrap { position: static; display: block; }
+      .cover, .empty-cover { width: 86px; border-radius: 12px; box-shadow: none; }
+      .title { font-size: 20px; line-height: 1.28; margin-bottom: 8px; }
+      .caption { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; font-size: 13px; line-height: 1.55; margin-top: 8px; }
+      .badges { gap: 6px; margin-bottom: 8px; }
+      .badge { padding: 4px 8px; font-size: 11px; }
+      .meta-grid { grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
+      .meta-item { padding: 8px; }
+      .meta-label { font-size: 11px; margin-bottom: 3px; }
+      .meta-value { font-size: 12px; }
+      .reader-head { display: none; }
+      .mobile-reader-bar { display: flex; }
+      .mobile-reader-bar .btn { flex: 1; padding: 8px 10px; }
+      .progress-label { min-width: 44px; text-align: center; }
+      .card { margin-top: 10px; border-radius: 16px; }
+      .content { padding: 22px 14px 36px; font-size: 16px; line-height: 2; letter-spacing: 0; }
     }
   </style>
 </head>
@@ -111,6 +123,11 @@
           <button class="btn btn-soft" onclick="window.scrollTo({top:0,behavior:'smooth'})">回到顶部</button>
           <button id="deleteBtn" class="btn btn-danger" onclick="deleteNovel()">删除小说</button>
         </div>
+      </div>
+      <div class="mobile-reader-bar">
+        <span id="mobileProgressLabel" class="progress-label">0%</span>
+        <button class="btn btn-soft" onclick="window.scrollTo({top:0,behavior:'smooth'})">顶部</button>
+        <button class="btn btn-danger" onclick="deleteNovel()">删除</button>
       </div>
       <div id="content" class="loading">正在加载正文...</div>
     </section>
@@ -177,8 +194,10 @@
       const percent = Math.round((progress || 0) * 100);
       const fill = document.getElementById('progressFill');
       const label = document.getElementById('progressLabel');
+      const mobileLabel = document.getElementById('mobileProgressLabel');
       if (fill) fill.style.width = percent + '%';
       if (label) label.textContent = percent + '%';
+      if (mobileLabel) mobileLabel.textContent = percent + '%';
     }
 
     function saveProgress(data) {
