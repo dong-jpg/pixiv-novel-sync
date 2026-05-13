@@ -709,6 +709,26 @@ class BookmarkNovelSyncService:
             logger.info("No PIXIV_WEB_COOKIE configured, skipping Web API")
         
         # 方式1.5: 从 Web API 获取的 series_list 中，调用 App API 获取系列详情
+        if not series_list:
+            logger.info("Falling back to subscribed series from DB")
+            try:
+                rows = self.db.conn.execute(
+                    """
+                    SELECT series_id, title, description, user_id, cover_url, total_novels
+                    FROM series
+                    WHERE is_subscribed = 1
+                    ORDER BY last_seen_at DESC
+                    """
+                ).fetchall()
+                for row in rows:
+                    series_list.append({
+                        "series_id": str(row[0]),
+                        "cover_url": row[4] or "",
+                    })
+                logger.info("Loaded %d subscribed series from DB fallback", len(series_list))
+            except Exception as e:
+                logger.warning("Failed to load subscribed series from DB: %s", str(e))
+
         if series_list:
             logger.info("Fetching details for %d series via App API", len(series_list))
             series_delay = self.settings.sync.delay_seconds_between_series
@@ -938,7 +958,7 @@ class BookmarkNovelSyncService:
             logger.info("Subscribed series sync completed: %d series, %d novels", synced_series_count, stats["novels"])
             return stats
         
-        # 方式2: 从已同步的小说中提取系列
+        # 方式2: 从已同步的小说中提取系列元数据（兼容旧数据）
         if not series_list:
             logger.info("Extracting series from synced novels")
             try:
