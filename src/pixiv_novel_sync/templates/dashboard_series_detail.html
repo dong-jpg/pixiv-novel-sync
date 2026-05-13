@@ -47,16 +47,19 @@
     .card-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 24px; border-bottom: 1px solid var(--line); }
     .card-title { margin: 0; font-size: 17px; font-weight: 900; }
     .card-sub { color: var(--text-secondary); font-size: 13px; font-weight: 700; }
-    .chapter-list { display: grid; gap: 10px; padding: 18px; }
-    .chapter-item { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 14px; background: var(--surface-soft); border: 1px solid transparent; border-radius: var(--radius); padding: 14px; transition: transform .18s, border .18s, background .18s; text-decoration: none; color: var(--text); }
-    .chapter-item:hover { background: #fff; border-color: rgba(0,150,250,.22); transform: translateY(-1px); }
-    .chapter-num { width: 48px; height: 48px; border-radius: 14px; background: linear-gradient(135deg, #0096fa, #7c3aed); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 15px; }
+    .chapter-list { display: grid; gap: 0; padding: 6px 0; }
+    .chapter-item { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; min-height: 54px; border-bottom: 1px solid var(--line); padding: 8px 18px; transition: background .18s; text-decoration: none; color: var(--text); }
+    .chapter-item:hover { background: var(--surface-soft); }
+    .chapter-item.is-reading { background: rgba(0,150,250,.06); }
+    .chapter-num { color: var(--text-secondary); font-weight: 900; font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
     .chapter-info { min-width: 0; }
-    .chapter-title { font-size: 15px; font-weight: 800; line-height: 1.45; }
-    .chapter-meta { font-size: 12px; color: var(--text-secondary); margin-top: 6px; line-height: 1.5; }
+    .chapter-title { font-size: 14px; font-weight: 800; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chapter-meta { font-size: 12px; color: var(--text-secondary); margin-top: 3px; line-height: 1.4; }
+    .chapter-progress { color: var(--brand); background: var(--brand-soft); border-radius: 999px; padding: 4px 8px; font-size: 11px; font-weight: 900; white-space: nowrap; }
     .loading, .empty { text-align: center; padding: 54px 18px; color: var(--text-secondary); }
     .btn { border: none; border-radius: 999px; padding: 9px 15px; font-size: 13px; font-weight: 800; cursor: pointer; transition: transform .18s, background .18s; }
     .btn:hover { transform: translateY(-1px); }
+    .btn-primary { background: var(--brand); color: #fff; }
     .btn-danger { background: rgba(239,68,68,.10); color: var(--danger); }
     .actions { display: flex; gap: 8px; }
     @media (max-width: 840px) {
@@ -66,9 +69,9 @@
       .cover-wrap { position: static; display: flex; justify-content: center; }
       .cover, .empty-cover { width: min(62vw, 240px); }
       .card-head { align-items: flex-start; flex-direction: column; padding: 16px; }
-      .chapter-list { padding: 14px; }
-      .chapter-item { grid-template-columns: 42px minmax(0, 1fr); padding: 12px; }
-      .chapter-num { width: 42px; height: 42px; border-radius: 12px; }
+      .chapter-list { padding: 4px 0; }
+      .chapter-item { grid-template-columns: 34px minmax(0, 1fr); gap: 10px; min-height: 50px; padding: 8px 12px; }
+      .chapter-progress { grid-column: 2; justify-self: start; margin-top: -2px; }
       .actions { width: 100%; }
       .actions .btn { flex: 1; }
     }
@@ -110,6 +113,7 @@
           <div id="chapterCount" class="card-sub"></div>
         </div>
         <div class="actions">
+          <button id="continueBtn" class="btn btn-primary" style="display:none;" onclick="continueReading()">继续阅读</button>
           <button id="deleteBtn" class="btn btn-danger" onclick="deleteSeries()">删除系列</button>
         </div>
       </div>
@@ -120,6 +124,7 @@
   <script>
     const pathParts = window.location.pathname.split('/');
     const seriesId = Number(pathParts[pathParts.length - 1] || 0);
+    const progressPrefix = 'pixivNovelSync:reading:';
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>"]/g, function (ch) {
@@ -140,6 +145,22 @@
       if (!value) return '0 字';
       if (value >= 10000) return (value / 10000).toFixed(1) + ' 万字';
       return formatNumber(value) + ' 字';
+    }
+
+    function readChapterProgress(novelId) {
+      try {
+        return JSON.parse(localStorage.getItem(progressPrefix + novelId) || 'null');
+      } catch (err) {
+        return null;
+      }
+    }
+
+    let continueNovelId = null;
+
+    function continueReading() {
+      if (continueNovelId) {
+        window.location.href = `/dashboard/novels/${encodeURIComponent(continueNovelId)}`;
+      }
     }
 
     async function loadDetail() {
@@ -175,6 +196,7 @@
       const novels = data.novels || [];
       document.getElementById('chapterCount').textContent = `共 ${formatNumber(novels.length)} 章`;
       const chapters = document.getElementById('chapters');
+      let bestProgress = null;
       if (!novels.length) {
         chapters.innerHTML = '<div class="empty">暂无章节</div>';
         return;
@@ -182,17 +204,29 @@
       const chapterStatusMap = {normal: {label: '正常', color: 'var(--success)'}, deleted: {label: '已删除', color: 'var(--danger)'}, restricted: {label: '受限', color: 'var(--warning)'}, unknown: {label: '', color: 'transparent'}};
       chapters.innerHTML = '<div class="chapter-list">' + novels.map(function (novel, index) {
         const cs = chapterStatusMap[novel.status] || chapterStatusMap.unknown;
+        const saved = readChapterProgress(novel.novel_id);
+        const percent = saved && typeof saved.progress === 'number' ? Math.round(saved.progress * 100) : 0;
+        if (saved && (!bestProgress || (saved.updatedAt || 0) > (bestProgress.updatedAt || 0))) {
+          bestProgress = saved;
+          continueNovelId = novel.novel_id;
+        }
         const statusTag = cs.label ? `<span style="font-size:11px;padding:2px 6px;border-radius:999px;background:${cs.color}20;color:${cs.color};margin-left:6px;">${cs.label}</span>` : '';
+        const progressTag = percent > 0 ? `<span class="chapter-progress">${percent}%</span>` : '';
+        const itemClass = saved && percent > 0 && percent < 100 ? 'chapter-item is-reading' : 'chapter-item';
         return `
-          <a class="chapter-item" href="/dashboard/novels/${encodeURIComponent(novel.novel_id)}">
+          <a class="${itemClass}" href="/dashboard/novels/${encodeURIComponent(novel.novel_id)}">
             <div class="chapter-num">${index + 1}</div>
             <div class="chapter-info">
               <div class="chapter-title">${escapeHtml(novel.title || '未命名章节')}${statusTag}</div>
-              <div class="chapter-meta">${formatNumber(novel.total_bookmarks)} 收藏 · ${formatNumber(novel.total_views)} 浏览</div>
+              <div class="chapter-meta">${formatNumber(novel.total_bookmarks)} 收藏 · ${formatNumber(novel.total_views)} 浏览${saved && percent > 0 ? ` · 上次阅读 ${percent}%` : ''}</div>
             </div>
+            ${progressTag}
           </a>
         `;
       }).join('') + '</div>';
+      if (continueNovelId) {
+        document.getElementById('continueBtn').style.display = 'inline-flex';
+      }
     }
 
     loadDetail().catch(function () {

@@ -54,7 +54,11 @@
     .btn:hover { transform: translateY(-1px); }
     .btn-soft { background: var(--surface-soft); color: var(--text); }
     .btn-danger { background: rgba(239,68,68,.10); color: var(--danger); }
-    .content { max-width: 800px; margin: 0 auto; padding: 34px 34px 48px; color: #222838; font-size: 16px; line-height: 2.05; letter-spacing: .01em; white-space: pre-wrap; word-break: break-word; font-family: "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif SC", Georgia, serif; }
+    .content { max-width: 820px; margin: 0; padding: 34px 34px 48px; color: #222838; font-size: 16px; line-height: 2.05; letter-spacing: .01em; white-space: pre-wrap; word-break: break-word; font-family: "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif SC", Georgia, serif; text-align: left; }
+    .progress-shell { position: fixed; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(0,0,0,.06); z-index: 20; }
+    .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #0096fa, #7c3aed); transition: width .12s linear; }
+    .progress-label { color: var(--text-secondary); font-size: 13px; font-weight: 800; min-width: 52px; text-align: right; }
+    .restore-tip { color: var(--text-secondary); font-size: 12px; margin-top: 8px; }
     .loading, .error { text-align: center; padding: 56px 18px; color: var(--text-secondary); }
     @media (max-width: 840px) {
       .topbar-inner { align-items: flex-start; flex-direction: column; padding: 12px 16px; }
@@ -103,6 +107,7 @@
       <div class="reader-head">
         <h2 class="reader-title">正文</h2>
         <div class="reader-tools">
+          <span id="progressLabel" class="progress-label">0%</span>
           <button class="btn btn-soft" onclick="window.scrollTo({top:0,behavior:'smooth'})">回到顶部</button>
           <button id="deleteBtn" class="btn btn-danger" onclick="deleteNovel()">删除小说</button>
         </div>
@@ -111,9 +116,14 @@
     </section>
   </main>
 
+  <div class="progress-shell" aria-hidden="true"><div id="progressFill" class="progress-fill"></div></div>
+
   <script>
     const pathParts = window.location.pathname.split('/');
     const novelId = Number(pathParts[pathParts.length - 1] || 0);
+    const storageKey = `pixivNovelSync:reading:${novelId}`;
+    let restorePending = true;
+    let scrollThrottle = null;
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>"]/g, function (ch) {
@@ -146,6 +156,65 @@
       if (value === 'series') return '系列';
       if (value === 'single') return '单本';
       return '未知';
+    }
+
+    function readSavedProgress() {
+      try {
+        return JSON.parse(localStorage.getItem(storageKey) || 'null');
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function getReadingProgress() {
+      const doc = document.documentElement;
+      const maxScroll = Math.max(1, doc.scrollHeight - window.innerHeight);
+      const progress = Math.min(1, Math.max(0, window.scrollY / maxScroll));
+      return { scrollY: Math.max(0, Math.round(window.scrollY)), progress };
+    }
+
+    function updateProgressUi(progress) {
+      const percent = Math.round((progress || 0) * 100);
+      const fill = document.getElementById('progressFill');
+      const label = document.getElementById('progressLabel');
+      if (fill) fill.style.width = percent + '%';
+      if (label) label.textContent = percent + '%';
+    }
+
+    function saveProgress(data) {
+      const current = getReadingProgress();
+      updateProgressUi(current.progress);
+      try {
+        localStorage.setItem(storageKey, JSON.stringify({
+          novelId,
+          seriesId: data && data.series_id ? Number(data.series_id) : null,
+          title: data && data.title ? data.title : '',
+          scrollY: current.scrollY,
+          progress: current.progress,
+          updatedAt: Date.now()
+        }));
+      } catch (err) {}
+    }
+
+    function setupProgressTracking(data) {
+      const saved = readSavedProgress();
+      if (restorePending && saved && saved.scrollY > 0 && !window.location.hash && !window.location.search.includes('noRestore=1')) {
+        requestAnimationFrame(function () {
+          window.scrollTo({ top: Math.min(saved.scrollY, document.documentElement.scrollHeight), behavior: 'auto' });
+          updateProgressUi(getReadingProgress().progress);
+        });
+      } else {
+        updateProgressUi(getReadingProgress().progress);
+      }
+      restorePending = false;
+      window.addEventListener('scroll', function () {
+        if (scrollThrottle) return;
+        scrollThrottle = setTimeout(function () {
+          scrollThrottle = null;
+          saveProgress(data);
+        }, 300);
+      }, { passive: true });
+      window.addEventListener('beforeunload', function () { saveProgress(data); });
     }
 
     async function loadDetail() {
@@ -185,6 +254,7 @@
       `;
       const content = data.text_markdown || data.text_raw || '当前未找到本地正文预览内容。';
       document.getElementById('content').innerHTML = '<article class="content">' + escapeHtml(content) + '</article>';
+      setupProgressTracking(data);
     }
 
     loadDetail().catch(function () {
