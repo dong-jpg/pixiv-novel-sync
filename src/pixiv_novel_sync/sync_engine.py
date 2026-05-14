@@ -690,12 +690,19 @@ class BookmarkNovelSyncService:
                                 logger.info("Found %d subscribed series from watchlist (all pages)", len(series_list))
                                 
                                 # 标记所有系列为订阅状态（即使不获取详情）
+                                # 只在已有元数据时更新封面，避免追更列表返回裸 ID 时污染系列标题/章节数。
                                 for s in series_list:
                                     try:
-                                        self.db.upsert_subscribed_series(
-                                            series_id=int(s["series_id"]), title="", description="",
-                                            user_id=0, cover_url=s.get("cover_url", ""), total_novels=0,
-                                        )
+                                        series_id = int(s["series_id"])
+                                        existing = self.db.conn.execute(
+                                            "SELECT 1 FROM series WHERE series_id = ?",
+                                            (series_id,),
+                                        ).fetchone()
+                                        if existing:
+                                            self.db.upsert_subscribed_series(
+                                                series_id=series_id, title="", description="",
+                                                user_id=0, cover_url=s.get("cover_url", ""), total_novels=0,
+                                            )
                                     except Exception:
                                         pass
                                 
@@ -709,6 +716,9 @@ class BookmarkNovelSyncService:
             logger.info("No PIXIV_WEB_COOKIE configured, skipping Web API")
         
         # 方式1.5: 从 Web API 获取的 series_list 中，调用 App API 获取系列详情
+        repaired = self.db.repair_blank_series_titles()
+        if repaired:
+            logger.info("Repaired %d blank series titles before subscribed series sync", repaired)
         if not series_list:
             logger.info("Falling back to subscribed series from DB")
             try:
@@ -940,16 +950,8 @@ class BookmarkNovelSyncService:
                                     synced_series_count += 1
                         else:
                             logger.warning("No detail found for series %s, keys: %s", sid, list(series_data.keys()) if isinstance(series_data, dict) else "N/A")
-                            self.db.upsert_subscribed_series(
-                                series_id=int(sid), title="", description="",
-                                user_id=0, cover_url=cover_from_web, total_novels=0,
-                            )
                 except Exception as e:
                     logger.warning("Failed to fetch series %s: %s", sid, str(e))
-                    self.db.upsert_subscribed_series(
-                        series_id=int(sid), title="", description="",
-                        user_id=0, cover_url=cover_from_web, total_novels=0,
-                    )
 
                 # 系列之间的延迟
                 if series_delay > 0 and queue_idx < len(series_queue):

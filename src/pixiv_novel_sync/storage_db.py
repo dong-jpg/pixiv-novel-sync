@@ -631,6 +631,40 @@ class Database:
         )
         self.conn.commit()
 
+    def repair_blank_series_titles(self) -> int:
+        """用已归档小说的系列信息修复空标题，避免追更列表显示未命名系列。"""
+        cursor = self.conn.execute(
+            """
+            UPDATE series
+            SET title = COALESCE(
+                    NULLIF((
+                        SELECT json_extract(n.raw_json, '$.series.title')
+                        FROM novels n
+                        WHERE n.series_id = series.series_id
+                          AND json_extract(n.raw_json, '$.series.title') IS NOT NULL
+                          AND json_extract(n.raw_json, '$.series.title') != ''
+                        ORDER BY n.create_date ASC
+                        LIMIT 1
+                    ), ''),
+                    NULLIF((
+                        SELECT MIN(n.title)
+                        FROM novels n
+                        WHERE n.series_id = series.series_id
+                          AND n.title IS NOT NULL
+                          AND n.title != ''
+                    ), '')
+                ),
+                total_novels = CASE
+                    WHEN total_novels > 0 THEN total_novels
+                    ELSE (SELECT COUNT(*) FROM novels n WHERE n.series_id = series.series_id)
+                END
+            WHERE (title IS NULL OR title = '')
+              AND EXISTS (SELECT 1 FROM novels n WHERE n.series_id = series.series_id)
+            """
+        )
+        self.conn.commit()
+        return cursor.rowcount if cursor.rowcount is not None else 0
+
     def clear_subscribed_series(self) -> None:
         """清除所有订阅标记"""
         self.conn.execute("UPDATE series SET is_subscribed = 0")
