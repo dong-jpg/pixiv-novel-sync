@@ -689,8 +689,8 @@ class BookmarkNovelSyncService:
                                     })
                                 logger.info("Found %d subscribed series from watchlist (all pages)", len(series_list))
                                 
-                                # 标记所有系列为订阅状态（即使不获取详情）
-                                # 只在已有元数据时更新封面，避免追更列表返回裸 ID 时污染系列标题/章节数。
+                                # 仅更新已有系列的封面，不创建新的空记录
+                                # 新系列会在后续 App API 获取详情后才插入
                                 for s in series_list:
                                     try:
                                         series_id = int(s["series_id"])
@@ -699,10 +699,12 @@ class BookmarkNovelSyncService:
                                             (series_id,),
                                         ).fetchone()
                                         if existing:
+                                            # 已有系列：只更新封面和订阅标记
                                             self.db.upsert_subscribed_series(
                                                 series_id=series_id, title="", description="",
                                                 user_id=0, cover_url=s.get("cover_url", ""), total_novels=0,
                                             )
+                                        # 新系列：不在此处插入，等 App API 获取详情后再插入
                                     except Exception:
                                         pass
                                 
