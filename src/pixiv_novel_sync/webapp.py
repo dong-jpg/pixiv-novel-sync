@@ -1247,7 +1247,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
     @app.before_request
     def _check_auth():
-        token = settings_manager.current_settings.dashboard_token
+        token = settings_manager.load(env_path=env_path).dashboard_token
         if not token:
             return  # 未配置 token，允许所有请求
         path = request.path
@@ -1264,7 +1264,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
     @app.route("/api/auth/login", methods=["GET", "POST"])
     def auth_login():
-        token = settings_manager.current_settings.dashboard_token
+        token = settings_manager.load(env_path=env_path).dashboard_token
         if not token:
             return redirect("/")
         if request.method == "GET":
