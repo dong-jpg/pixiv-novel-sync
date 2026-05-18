@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlparse
@@ -306,12 +307,19 @@ class BookmarkNovelSyncService:
             logger.info("Syncing bookmarked novels for restrict=%s", restrict)
             if progress_callback:
                 progress_callback("page", {"page": 1, "restrict": restrict})
+
+            # 读取水位线：上次同步看到的最新 novel_id
+            watermark = self.db.get_watermark(f"bookmark_{restrict}")
+            last_max_novel_id = watermark.get("latest_novel_id", 0) if watermark else 0
+            current_max_novel_id = 0
+            hit_watermark = False
+
             next_query: dict[str, Any] | None = {"user_id": user_id, "restrict": restrict}
             page_count = 0
             while next_query:
                 if max_pages is not None and page_count >= max_pages:
                     logger.info("Reached max_pages_per_run=%s, stopping pagination", max_pages)
-                    return stats
+                    break
                 result = self.api.user_bookmarks_novel(**next_query)
                 page_count += 1
                 if progress_callback:
@@ -321,13 +329,17 @@ class BookmarkNovelSyncService:
                     # 检查是否达到实际同步数量限制
                     if max_items is not None and synced_items >= max_items:
                         logger.info("Reached max_items_per_run=%s (synced), stopping sync", max_items)
-                        return stats
+                        hit_watermark = True  # 标记为需要更新水位线
+                        break
                     processed_items += 1
                     novel_id = int(novel.id)
+                    # 跟踪本轮看到的最大 novel_id
+                    if novel_id > current_max_novel_id:
+                        current_max_novel_id = novel_id
                     title = getattr(novel, "title", f"novel_{novel_id}")
                     user = getattr(novel, "user", None)
                     author_name = getattr(user, "name", "未知") if user else "未知"
-                    
+
                     if progress_callback:
                         progress_callback("novel_start", {
                             "current": processed_items,
@@ -337,12 +349,24 @@ class BookmarkNovelSyncService:
                             "author": author_name,
                             "phase": phase_name,
                         })
-                    
+
+                    # 水位线优化：遇到 <= 上次最大ID 的已存在内容，提前终止
+                    if last_max_novel_id > 0 and novel_id <= last_max_novel_id:
+                        already_exists = False
+                        if use_check_list and novel_id in check_list:
+                            already_exists = check_list[novel_id]
+                        else:
+                            already_exists = self.db.novel_exists(novel_id)
+                        if already_exists:
+                            logger.info("Hit watermark at novel_id=%d (<= %d), stopping", novel_id, last_max_novel_id)
+                            hit_watermark = True
+                            break
+
                     # 使用预检查结果判断是否跳过
                     should_skip = False
                     if use_check_list and novel_id in check_list:
                         should_skip = check_list[novel_id]
-                    
+
                     if should_skip:
                         # 已存在，跳过
                         self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=f"bookmark_{restrict}", source_key=str(user_id)))
@@ -367,13 +391,13 @@ class BookmarkNovelSyncService:
                         # 同步成功后更新检查列表
                         if use_check_list:
                             self.db.upsert_sync_check_item(novel_id, True)
-                    
+
                     self._merge_stats(stats, counters)
-                    
+
                     # 只有实际同步（非跳过）才计入 synced_items
                     if not counters.get("skipped"):
                         synced_items += 1
-                    
+
                     if progress_callback:
                         progress_callback("novel_done", {
                             "novel_id": novel_id,
@@ -383,17 +407,31 @@ class BookmarkNovelSyncService:
                             "assets": counters.get("assets_downloaded", 0),
                             "skipped": counters.get("skipped", 0),
                         })
-                    
+
                     # 只有非跳过时才使用 item_delay
                     if not counters.get("skipped") and item_delay > 0:
                         if progress_callback:
                             progress_callback("rate_limit", {"seconds": item_delay})
                         time.sleep(item_delay)
+
+                # 水位线命中或达到限制，停止翻页
+                if hit_watermark:
+                    break
+
                 next_query = self.api.parse_qs(getattr(result, "next_url", None))
                 if next_query and page_delay > 0:
                     if progress_callback:
                         progress_callback("rate_limit", {"seconds": page_delay})
                     time.sleep(page_delay)
+
+            # 更新水位线：记录本轮看到的最大 novel_id
+            if current_max_novel_id > 0:
+                self.db.update_watermark(f"bookmark_{restrict}", {
+                    "last_sync_time": datetime.now(timezone.utc).isoformat(),
+                    "latest_novel_id": current_max_novel_id,
+                })
+                logger.info("Updated bookmark watermark for %s: latest_novel_id=%d", restrict, current_max_novel_id)
+
         return stats
 
     def sync_following_list(self, progress_callback: Any = None) -> dict[str, int]:
@@ -469,6 +507,11 @@ class BookmarkNovelSyncService:
         check_list = self.db.get_sync_check_list()
         use_check_list = len(check_list) > 0
 
+        # 读取水位线：每个用户上次同步的最新 novel_id
+        watermark = self.db.get_watermark("following_novels")
+        user_watermarks: dict[str, int] = watermark.get("user_max_ids", {}) if watermark else {}
+        current_user_max_ids: dict[str, int] = {}
+
         while next_following_query:
             # 检查是否达到最大页数限制
             if max_pages is not None and following_page_count >= max_pages:
@@ -503,6 +546,9 @@ class BookmarkNovelSyncService:
 
                 next_novel_query: dict[str, Any] | None = {"user_id": author_id}
                 author_page_count = 0
+                # 该用户上次同步的最新 novel_id
+                last_user_max = user_watermarks.get(str(author_id), 0)
+                hit_user_watermark = False
                 while next_novel_query:
                     novels_result = self.api.user_novels(**next_novel_query)
                     author_page_count += 1
@@ -510,8 +556,13 @@ class BookmarkNovelSyncService:
 
                     for novel in novels:
                         novel_id = int(novel.id)
+                        # 跟踪该用户本轮最大 novel_id
+                        prev_max = current_user_max_ids.get(str(author_id), 0)
+                        if novel_id > prev_max:
+                            current_user_max_ids[str(author_id)] = novel_id
+
                         title = getattr(novel, "title", f"novel_{novel_id}")
-                        
+
                         if progress_callback:
                             progress_callback("novel_start", {
                                 "current": users_processed,
@@ -521,12 +572,24 @@ class BookmarkNovelSyncService:
                                 "author": author_name,
                                 "phase": "同步用户小说",
                             })
-                        
+
+                        # 水位线优化：遇到 <= 用户上次最大ID 的已存在内容，提前终止
+                        if last_user_max > 0 and novel_id <= last_user_max:
+                            already_exists = False
+                            if use_check_list and novel_id in check_list:
+                                already_exists = check_list[novel_id]
+                            else:
+                                already_exists = self.db.novel_exists(novel_id)
+                            if already_exists:
+                                logger.info("Hit user watermark for user %s at novel_id=%d (<= %d)", author_id, novel_id, last_user_max)
+                                hit_user_watermark = True
+                                break
+
                         # 使用预检查结果判断是否跳过
                         should_skip = False
                         if use_check_list and novel_id in check_list:
                             should_skip = check_list[novel_id]
-                        
+
                         if should_skip:
                             # 已存在，跳过
                             counters = {"skipped": 1, "bookmarks": 0, "views": 0, "assets_downloaded": 0}
@@ -569,6 +632,10 @@ class BookmarkNovelSyncService:
                                 progress_callback("rate_limit", {"seconds": item_delay})
                             time.sleep(item_delay)
 
+                    # 水位线命中，停止该用户的后续翻页
+                    if hit_user_watermark:
+                        break
+
                     next_novel_query = self.api.parse_qs(getattr(novels_result, "next_url", None))
                     if next_novel_query and page_delay > 0:
                         if progress_callback:
@@ -580,6 +647,17 @@ class BookmarkNovelSyncService:
                 if progress_callback:
                     progress_callback("rate_limit", {"seconds": page_delay})
                 time.sleep(page_delay)
+
+        # 更新水位线：记录每个用户本轮看到的最大 novel_id
+        if current_user_max_ids:
+            # 合并历史水位线，保留未处理用户的数据
+            merged = {**user_watermarks, **current_user_max_ids}
+            self.db.update_watermark("following_novels", {
+                "last_sync_time": datetime.now(timezone.utc).isoformat(),
+                "user_max_ids": merged,
+            })
+            logger.info("Updated following_novels watermark: %d users tracked", len(merged))
+
         return stats
 
     def sync_subscribed_series(self, progress_callback: Any = None, limit: int = 0) -> dict[str, int]:
@@ -821,7 +899,20 @@ class BookmarkNovelSyncService:
                                     account=user_account, raw_json="{}",
                                 ))
                             logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
-                            
+
+                            # 水位线优化：章节数没变则跳过整个系列
+                            local_series = self.db.conn.execute(
+                                "SELECT total_novels FROM series WHERE series_id = ?", (int(sid),)
+                            ).fetchone()
+                            local_total = local_series[0] if local_series else 0
+                            if local_total > 0 and (total or 0) <= local_total:
+                                logger.info("Series %s unchanged (%d <= %d chapters), skipping chapter sync", sid, total, local_total)
+                                if progress_callback:
+                                    progress_callback("phase", {"phase": f"系列 {title or sid}: 章节数未变 ({total}), 跳过"})
+                                if skip_delay > 0:
+                                    time.sleep(skip_delay)
+                                continue
+
                             # 同步系列中的所有章节（含正文）
                             chapter_delay = self.settings.sync.delay_seconds_between_chapters
                             download_assets = self.settings.sync.download_assets

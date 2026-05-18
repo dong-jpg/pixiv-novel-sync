@@ -130,6 +130,8 @@ class Database:
         self._fix_stale_running_logs()
         # 迁移：创建待确认删除表
         self._migrate_pending_deletions_table()
+        # 迁移：创建同步水位线表
+        self._migrate_sync_watermarks_table()
         self.conn.commit()
 
     def upsert_user(self, record: UserRecord) -> None:
@@ -1200,6 +1202,55 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_pending_deletions_detected_at ON pending_deletions(detected_at DESC);
             """
         )
+
+    def _migrate_sync_watermarks_table(self) -> None:
+        """创建同步水位线表"""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS sync_watermarks (
+                sync_type TEXT NOT NULL,
+                key TEXT NOT NULL DEFAULT '_',
+                value_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (sync_type, key)
+            );
+            """
+        )
+
+    def get_watermark(self, sync_type: str, key: str = "_") -> dict | None:
+        """获取水位线，返回 value_json 解析后的 dict，不存在返回 None"""
+        row = self.conn.execute(
+            "SELECT value_json FROM sync_watermarks WHERE sync_type = ? AND key = ?",
+            (sync_type, key),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def update_watermark(self, sync_type: str, value: dict, key: str = "_") -> None:
+        """写入/更新水位线"""
+        self.conn.execute(
+            """
+            INSERT INTO sync_watermarks (sync_type, key, value_json, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(sync_type, key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (sync_type, key, json.dumps(value, ensure_ascii=False)),
+        )
+        self.conn.commit()
+
+    def clear_watermark(self, sync_type: str, key: str = "_") -> None:
+        """删除指定水位线"""
+        self.conn.execute(
+            "DELETE FROM sync_watermarks WHERE sync_type = ? AND key = ?",
+            (sync_type, key),
+        )
+        self.conn.commit()
 
     def add_pending_deletion(self, item_type: str, item_id: int, reason: str,
                              title: str, author_name: str, cover_url: str,
