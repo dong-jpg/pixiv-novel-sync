@@ -128,6 +128,8 @@ class Database:
         self._migrate_series_table()
         # 修复：将进程重启后遗留的 running 状态日志标记为 failed
         self._fix_stale_running_logs()
+        # 迁移：创建待确认删除表
+        self._migrate_pending_deletions_table()
         self.conn.commit()
 
     def upsert_user(self, record: UserRecord) -> None:
@@ -1172,3 +1174,117 @@ class Database:
             novel_ids,
         ).fetchall()
         return {row[0] for row in rows}
+
+    # ── 待确认删除 ──────────────────────────────────────────────
+
+    def _migrate_pending_deletions_table(self) -> None:
+        """创建待确认删除表"""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS pending_deletions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_type TEXT NOT NULL,
+                item_id INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                title TEXT,
+                author_name TEXT,
+                cover_url TEXT,
+                source_type TEXT,
+                detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                status TEXT NOT NULL DEFAULT 'pending',
+                confirmed_at TEXT,
+                restored_at TEXT,
+                UNIQUE(item_type, item_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_pending_deletions_status ON pending_deletions(status);
+            CREATE INDEX IF NOT EXISTS idx_pending_deletions_detected_at ON pending_deletions(detected_at DESC);
+            """
+        )
+
+    def add_pending_deletion(self, item_type: str, item_id: int, reason: str,
+                             title: str, author_name: str, cover_url: str,
+                             source_type: str | None = None) -> None:
+        """插入待确认删除记录（已有 pending 记录则跳过）"""
+        self.conn.execute(
+            """
+            INSERT OR IGNORE INTO pending_deletions
+                (item_type, item_id, reason, title, author_name, cover_url, source_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (item_type, item_id, reason, title, author_name, cover_url, source_type),
+        )
+        self.conn.commit()
+
+    def list_pending_deletions(self, page: int = 1, page_size: int = 20,
+                               item_type: str | None = None) -> dict[str, Any]:
+        """分页查询 pending 状态的待确认删除记录"""
+        page = max(page, 1)
+        page_size = max(page_size, 1)
+        where_clauses = ["status = 'pending'"]
+        params: list[Any] = []
+        if item_type in ("novel", "series"):
+            where_clauses.append("item_type = ?")
+            params.append(item_type)
+        where_sql = f"WHERE {' AND '.join(where_clauses)}"
+        total = int(self.conn.execute(f"SELECT COUNT(*) FROM pending_deletions {where_sql}", params).fetchone()[0])
+        total_pages = max((total + page_size - 1) // page_size, 1)
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
+        rows = self.conn.execute(
+            f"SELECT * FROM pending_deletions {where_sql} ORDER BY detected_at DESC LIMIT ? OFFSET ?",
+            [*params, page_size, offset],
+        ).fetchall()
+        return {
+            "items": [dict(row) for row in rows],
+            "page": page, "page_size": page_size,
+            "total": total, "total_pages": total_pages,
+        }
+
+    def confirm_pending_deletion(self, deletion_id: int) -> dict[str, Any] | None:
+        """确认删除，返回记录详情，更新状态为 confirmed"""
+        row = self.conn.execute(
+            "SELECT * FROM pending_deletions WHERE id = ? AND status = 'pending'", (deletion_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        self.conn.execute(
+            "UPDATE pending_deletions SET status = 'confirmed', confirmed_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (deletion_id,),
+        )
+        self.conn.commit()
+        return dict(row)
+
+    def restore_pending_deletion(self, deletion_id: int) -> dict[str, Any] | None:
+        """恢复，返回记录详情，更新状态为 restored"""
+        row = self.conn.execute(
+            "SELECT * FROM pending_deletions WHERE id = ? AND status = 'pending'", (deletion_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        self.conn.execute(
+            "UPDATE pending_deletions SET status = 'restored', restored_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (deletion_id,),
+        )
+        self.conn.commit()
+        return dict(row)
+
+    def get_pending_deletion_count(self) -> int:
+        """获取 pending 状态的记录总数"""
+        return int(self.conn.execute("SELECT COUNT(*) FROM pending_deletions WHERE status = 'pending'").fetchone()[0])
+
+    def cleanup_stale_pending(self, remote_ids: set[int], item_type: str) -> int:
+        """清除已重新出现在远程列表中的 pending 记录（用户重新收藏/追更了）"""
+        if not remote_ids:
+            return 0
+        rows = self.conn.execute(
+            "SELECT id, item_id FROM pending_deletions WHERE item_type = ? AND status = 'pending'",
+            (item_type,),
+        ).fetchall()
+        count = 0
+        for row in rows:
+            if row[1] in remote_ids:
+                self.conn.execute("UPDATE pending_deletions SET status = 'restored', restored_at = CURRENT_TIMESTAMP WHERE id = ?", (row[0],))
+                count += 1
+        if count:
+            self.conn.commit()
+        return count

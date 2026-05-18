@@ -86,7 +86,8 @@
       .actions .btn { flex: 1; padding: 10px 12px; }
       #continueBtn { flex: 2; }
     }
-  </style>
+  .nav-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: #ff3b30; color: #fff; font-size: 10px; font-weight: 700; margin-left: 4px; line-height: 1; }
+    </style>
 </head>
 <body>
   <header class="topbar">
@@ -260,5 +261,6 @@
       }
     }
   </script>
+<script>(function(){fetch("/api/dashboard/pending-deletions/count").then(function(r){return r.json()}).then(function(d){var b=document.getElementById("pendingBadge");if(b</body></body>d.count>0){b.textContent=d.count;b.style.display="inline-flex"}}).catch(function(){})})();</script>
 </body>
 </html>

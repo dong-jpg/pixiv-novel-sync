@@ -83,6 +83,7 @@
         <a class="active" href="/dashboard">首页</a>
         <a href="/dashboard/follows">关注</a>
         <a href="/dashboard/novels">小说</a>
+        <a href="/dashboard/pending-deletions">待确认<span id="pendingBadge" class="nav-badge" style="display:none;">0</span></a>
         <a href="/dashboard/logs">日志</a>
         <a href="/dashboard/settings">设置</a>
         <a href="/token-login">登录</a>
@@ -563,5 +564,6 @@
     setInterval(pollJobStatus, 3000);
     setInterval(loadAutoSyncStatus, 10000);
   </script>
+<script>(function(){fetch("/api/dashboard/pending-deletions/count").then(function(r){return r.json()}).then(function(d){var b=document.getElementById("pendingBadge");if(b</body></body>d.count>0){b.textContent=d.count;b.style.display="inline-flex"}}).catch(function(){})})();</script>
 </body>
 </html>

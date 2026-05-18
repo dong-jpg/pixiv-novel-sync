@@ -1003,6 +1003,250 @@ class BookmarkNovelSyncService:
         logger.info("Subscribed series sync completed: %d series", stats["series_synced"])
         return stats
 
+    # ── 取消收藏/追更检测 ──────────────────────────────────────
+
+    def run_detection(self, user_id: int, restricts: Iterable[str],
+                      progress_callback: Any = None) -> dict[str, Any]:
+        """统一入口：检测取消收藏 + 取消追更"""
+        bookmark_stats = self.detect_unbookmarked_novels(user_id, restricts, progress_callback)
+        series_stats = self.detect_unfollowed_series(progress_callback)
+        return {
+            "bookmark": bookmark_stats,
+            "series": series_stats,
+            "new_pending": bookmark_stats.get("new_pending", 0) + series_stats.get("new_pending", 0),
+        }
+
+    def detect_unbookmarked_novels(self, user_id: int, restricts: Iterable[str],
+                                    progress_callback: Any = None) -> dict[str, int]:
+        """检测用户取消收藏的小说"""
+        stats = {"total_checked": 0, "new_pending": 0, "cleaned": 0, "skipped_deleted": 0}
+
+        if progress_callback:
+            progress_callback("phase", {"phase": "获取远程收藏列表"})
+
+        # 1. 获取远程收藏 ID 集合
+        remote_ids = self._fetch_remote_bookmark_ids(user_id, restricts, progress_callback)
+
+        # 2. 清除已重新收藏的 pending 记录
+        cleaned = self.db.cleanup_stale_pending(remote_ids, "novel")
+        stats["cleaned"] = cleaned
+        if cleaned:
+            logger.info("Cleaned %d stale pending records (re-bookmarked)", cleaned)
+
+        # 3. 获取本地收藏 ID 集合
+        local_rows = self.db.conn.execute(
+            "SELECT DISTINCT novel_id FROM sources WHERE source_type LIKE 'bookmark_%'"
+        ).fetchall()
+        local_ids = {row[0] for row in local_rows}
+
+        # 4. 获取已有 pending 记录
+        existing_rows = self.db.conn.execute(
+            "SELECT item_id FROM pending_deletions WHERE item_type = 'novel' AND status = 'pending'"
+        ).fetchall()
+        existing_ids = {row[0] for row in existing_rows}
+
+        # 5. 计算差集
+        candidates = local_ids - remote_ids - existing_ids
+        stats["total_checked"] = len(candidates)
+        logger.info("Bookmark detection: remote=%d, local=%d, pending=%d, candidates=%d",
+                     len(remote_ids), len(local_ids), len(existing_ids), len(candidates))
+
+        if not candidates:
+            if progress_callback:
+                progress_callback("phase", {"phase": "收藏检测完成: 无新的取消收藏"})
+            return stats
+
+        if progress_callback:
+            progress_callback("phase", {"phase": f"检测 {len(candidates)} 本候选小说"})
+
+        # 6. 验证并写入 pending
+        for novel_id in candidates:
+            source_row = self.db.conn.execute(
+                "SELECT source_type FROM sources WHERE novel_id = ? AND source_type LIKE 'bookmark_%' LIMIT 1",
+                (novel_id,),
+            ).fetchone()
+            source_type = source_row[0] if source_row else "bookmark_public"
+
+            novel_row = self.db.conn.execute(
+                "SELECT n.title, u.name, n.cover_url FROM novels n LEFT JOIN users u ON u.user_id = n.user_id WHERE n.novel_id = ?",
+                (novel_id,),
+            ).fetchone()
+
+            try:
+                detail = self.api.novel_detail(novel_id)
+                novel_obj = getattr(detail, "novel", None) if detail else None
+                if novel_obj is None:
+                    stats["skipped_deleted"] += 1
+                    continue
+            except Exception:
+                stats["skipped_deleted"] += 1
+                continue
+
+            title = novel_row[0] if novel_row else f"Novel {novel_id}"
+            author = novel_row[1] if novel_row else "未知"
+            cover = novel_row[2] if novel_row else ""
+
+            self.db.add_pending_deletion(
+                item_type="novel", item_id=novel_id, reason="unbookmarked",
+                title=title, author_name=author, cover_url=cover, source_type=source_type,
+            )
+            stats["new_pending"] += 1
+            if progress_callback:
+                progress_callback("phase", {"phase": f"发现取消收藏: {title[:30]}"})
+            time.sleep(self.settings.sync.delay_seconds_between_skips)
+
+        if progress_callback:
+            progress_callback("phase", {"phase": f"收藏检测完成: 新增 {stats['new_pending']} 条待确认"})
+        return stats
+
+    def detect_unfollowed_series(self, progress_callback: Any = None) -> dict[str, int]:
+        """检测用户取消追更的系列"""
+        stats = {"total_checked": 0, "new_pending": 0, "cleaned": 0, "skipped_deleted": 0}
+
+        if progress_callback:
+            progress_callback("phase", {"phase": "获取远程追更列表"})
+
+        # 1. 获取远程追更系列 ID 集合
+        remote_ids = self._fetch_remote_subscribed_series_ids()
+
+        # 2. 清除已重新追更的 pending 记录
+        cleaned = self.db.cleanup_stale_pending(remote_ids, "series")
+        stats["cleaned"] = cleaned
+        if cleaned:
+            logger.info("Cleaned %d stale pending series records (re-subscribed)", cleaned)
+
+        # 3. 获取本地 is_subscribed=1 的系列 ID
+        local_rows = self.db.conn.execute(
+            "SELECT series_id FROM series WHERE is_subscribed = 1"
+        ).fetchall()
+        local_ids = {row[0] for row in local_rows}
+
+        # 4. 获取已有 pending 记录
+        existing_rows = self.db.conn.execute(
+            "SELECT item_id FROM pending_deletions WHERE item_type = 'series' AND status = 'pending'"
+        ).fetchall()
+        existing_ids = {row[0] for row in existing_rows}
+
+        # 5. 计算差集
+        candidates = local_ids - remote_ids - existing_ids
+        stats["total_checked"] = len(candidates)
+        logger.info("Series detection: remote=%d, local=%d, pending=%d, candidates=%d",
+                     len(remote_ids), len(local_ids), len(existing_ids), len(candidates))
+
+        if not candidates:
+            if progress_callback:
+                progress_callback("phase", {"phase": "追更检测完成: 无新的取消追更"})
+            return stats
+
+        if progress_callback:
+            progress_callback("phase", {"phase": f"检测 {len(candidates)} 个候选系列"})
+
+        # 6. 验证并写入 pending
+        for series_id in candidates:
+            series_row = self.db.conn.execute(
+                "SELECT title, user_id, cover_url FROM series WHERE series_id = ?",
+                (series_id,),
+            ).fetchone()
+
+            try:
+                result = self.api.novel_series(series_id)
+                detail = result.get("novel_series_detail") if isinstance(result, dict) else None
+                if detail is None:
+                    stats["skipped_deleted"] += 1
+                    continue
+            except Exception:
+                stats["skipped_deleted"] += 1
+                continue
+
+            title = series_row[0] if series_row else ""
+            if not title:
+                title_row = self.db.conn.execute(
+                    "SELECT title FROM novels WHERE series_id = ? ORDER BY create_date ASC LIMIT 1",
+                    (series_id,),
+                ).fetchone()
+                title = title_row[0] if title_row else f"Series {series_id}"
+
+            user_id_val = series_row[1] if series_row else 0
+            author = "未知"
+            if user_id_val:
+                user_row = self.db.conn.execute("SELECT name FROM users WHERE user_id = ?", (user_id_val,)).fetchone()
+                if user_row:
+                    author = user_row[0]
+            cover = series_row[2] if series_row else ""
+
+            self.db.add_pending_deletion(
+                item_type="series", item_id=series_id, reason="unfollowed_series",
+                title=title, author_name=author, cover_url=cover, source_type=None,
+            )
+            stats["new_pending"] += 1
+            if progress_callback:
+                progress_callback("phase", {"phase": f"发现取消追更: {title[:30]}"})
+            time.sleep(self.settings.sync.delay_seconds_between_skips)
+
+        if progress_callback:
+            progress_callback("phase", {"phase": f"追更检测完成: 新增 {stats['new_pending']} 条待确认"})
+        return stats
+
+    def _fetch_remote_bookmark_ids(self, user_id: int, restricts: Iterable[str],
+                                    progress_callback: Any = None) -> set[int]:
+        """获取 Pixiv 上当前全部收藏的 novel_id 集合"""
+        remote_ids: set[int] = set()
+        for restrict in restricts:
+            next_query: dict[str, Any] | None = {"user_id": user_id, "restrict": restrict}
+            page_count = 0
+            while next_query:
+                result = self.api.user_bookmarks_novel(**next_query)
+                page_count += 1
+                if progress_callback:
+                    progress_callback("phase", {"phase": f"获取收藏列表 ({restrict}) 第{page_count}页"})
+                for novel in (getattr(result, "novels", []) or []):
+                    remote_ids.add(int(novel.id))
+                next_query = self.api.parse_qs(getattr(result, "next_url", None))
+                if next_query:
+                    time.sleep(self.settings.sync.delay_seconds_between_pages)
+        return remote_ids
+
+    def _fetch_remote_subscribed_series_ids(self) -> set[int]:
+        """获取 Pixiv 上当前全部追更系列的 series_id 集合"""
+        remote_ids: set[int] = set()
+        web_cookie = self.settings.pixiv.web_cookie
+        if not web_cookie:
+            logger.info("No web_cookie, skipping remote series fetch")
+            return remote_ids
+        try:
+            import requests as http_requests
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json",
+                "Referer": "https://www.pixiv.net/following/watchlist/novels",
+                "Cookie": web_cookie,
+            }
+            proxies = {"http": self.settings.pixiv.proxy, "https": self.settings.pixiv.proxy} if self.settings.pixiv.proxy else None
+            endpoint = "https://www.pixiv.net/ajax/watch_list/novel?p=1&new=1&lang=zh"
+            response = http_requests.get(endpoint, headers=headers, proxies=proxies,
+                                         timeout=self.settings.pixiv.timeout, verify=self.settings.pixiv.verify_ssl)
+            if response.status_code == 200:
+                data = response.json()
+                body = data.get("body", {})
+                page_info = body.get("page", {})
+                watched_ids = page_info.get("watchedSeriesIds", [])
+                remote_ids.update(int(sid) for sid in watched_ids)
+                max_page = page_info.get("maxPage", 1)
+                for page_num in range(2, max_page + 1):
+                    try:
+                        paged_url = endpoint.replace("p=1", f"p={page_num}")
+                        paged_resp = http_requests.get(paged_url, headers=headers, proxies=proxies,
+                                                        timeout=self.settings.pixiv.timeout, verify=self.settings.pixiv.verify_ssl)
+                        if paged_resp.status_code == 200:
+                            paged_data = paged_resp.json()
+                            paged_ids = paged_data.get("body", {}).get("page", {}).get("watchedSeriesIds", [])
+                            remote_ids.update(int(sid) for sid in paged_ids)
+                    except Exception as e:
+                        logger.warning("Failed to fetch watchlist page %d: %s", page_num, e)
+        except Exception as e:
+            logger.warning("Failed to fetch remote subscribed series: %s", e)
+        return remote_ids
+
     def _sync_novel(
         self,
         novel: Any,

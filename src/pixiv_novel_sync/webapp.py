@@ -114,6 +114,7 @@ class AutoSyncScheduler:
             {"name": "user_status", "setting_check": "auto_sync_user_status_enabled", "sync_func": "_sync_user_status", "interval_setting": "auto_sync_following_interval_hours", "cron_setting": "auto_sync_user_status_cron"},
             {"name": "novel_status", "setting_check": "auto_sync_novel_status_enabled", "sync_func": "_sync_novel_status", "interval_setting": "auto_sync_following_interval_hours", "cron_setting": "auto_sync_novel_status_cron"},
             {"name": "series_status", "setting_check": "auto_sync_series_status_enabled", "sync_func": "_sync_series_status", "interval_setting": "auto_sync_following_interval_hours", "cron_setting": "auto_sync_series_status_cron"},
+            {"name": "pending_deletion_detection", "setting_check": "auto_sync_pending_detection_enabled", "sync_func": "_sync_pending_detection", "interval_setting": "auto_sync_pending_detection_interval_hours", "cron_setting": "auto_sync_pending_detection_cron"},
         ]
         
         while self._running:
@@ -698,6 +699,55 @@ class AutoSyncScheduler:
         finally:
             db.close()
 
+    def _sync_pending_detection(self, settings: Settings, job_id: str | None) -> None:
+        """检测取消收藏/追更"""
+        from .sync_engine import BookmarkNovelSyncService
+
+        if job_id and self.sync_job_manager:
+            self.sync_job_manager.add_log(job_id, "info", "=== 开始检测取消收藏/追更 ===")
+
+        auth = PixivAuthManager(settings.pixiv)
+        api, auth_result = auth.login()
+        if auth_result.user_id is None:
+            raise RuntimeError("Unable to determine user ID")
+
+        if job_id and self.sync_job_manager:
+            self.sync_job_manager.add_log(job_id, "success", f"登录成功, 用户ID: {auth_result.user_id}")
+
+        if self._check_stop():
+            return
+
+        db = Database(settings.storage.db_path)
+        db.init_schema()
+        storage = FileStorage(settings)
+
+        try:
+            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+
+            def on_progress(event_type: str, data: dict[str, Any]) -> None:
+                if self._check_stop():
+                    raise InterruptedError("Task stopped by user")
+                if job_id and self.sync_job_manager:
+                    if event_type == "phase":
+                        self.sync_job_manager.add_log(job_id, "info", data.get("phase", ""))
+                    elif event_type == "rate_limit":
+                        self.sync_job_manager.add_log(job_id, "warning", f"等待 {data.get('seconds', 1)} 秒")
+
+            if self._check_stop():
+                return
+
+            result = service.run_detection(
+                user_id=auth_result.user_id,
+                restricts=settings.sync.bookmark_restricts,
+                progress_callback=on_progress,
+            )
+
+            if job_id and self.sync_job_manager:
+                self.sync_job_manager.add_log(job_id, "success",
+                    f"检测完成: 发现 {result.get('new_pending', 0)} 条新的待确认记录")
+        finally:
+            db.close()
+
 
 @dataclass(slots=True)
 class SyncJobManager:
@@ -1046,6 +1096,18 @@ class SyncJobManager:
                 self.add_log(job_id, "success", f"系列状态检查完成: {checked} 个 ({summary})")
                 return {"series_checked": checked}
 
+            elif task_type == "pending_deletion_detection":
+                self.add_log(job_id, "info", "=== 开始检测取消收藏/追更 ===")
+                from .sync_engine import BookmarkNovelSyncService
+                service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+                result = service.run_detection(
+                    user_id=auth_result.user_id,
+                    restricts=settings.sync.bookmark_restricts,
+                    progress_callback=on_progress,
+                )
+                self.add_log(job_id, "success", f"检测完成: 新增 {result.get('new_pending', 0)} 条待确认记录")
+                return result
+
             else:
                 self.add_log(job_id, "error", f"未知任务类型: {task_type}")
                 return {}
@@ -1134,6 +1196,9 @@ class SettingsManager:
         sync_data["auto_sync_subscribed_series_enabled"] = bool(payload.get("auto_sync_subscribed_series_enabled", sync_data.get("auto_sync_subscribed_series_enabled", True)))
         sync_data["auto_sync_subscribed_series_interval_hours"] = int(payload.get("auto_sync_subscribed_series_interval_hours", sync_data.get("auto_sync_subscribed_series_interval_hours", 6)))
         sync_data["auto_sync_subscribed_series_cron"] = str(payload.get("auto_sync_subscribed_series_cron", sync_data.get("auto_sync_subscribed_series_cron", "")))
+        sync_data["auto_sync_pending_detection_enabled"] = bool(payload.get("auto_sync_pending_detection_enabled", sync_data.get("auto_sync_pending_detection_enabled", True)))
+        sync_data["auto_sync_pending_detection_interval_hours"] = int(payload.get("auto_sync_pending_detection_interval_hours", sync_data.get("auto_sync_pending_detection_interval_hours", 12)))
+        sync_data["auto_sync_pending_detection_cron"] = str(payload.get("auto_sync_pending_detection_cron", sync_data.get("auto_sync_pending_detection_cron", "")))
 
         with config_path.open("w", encoding="utf-8") as file:
             yaml.safe_dump(config_data, file, allow_unicode=True, sort_keys=False)
@@ -1227,6 +1292,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.get("/dashboard/logs")
     def dashboard_logs_page():
         return render_template("dashboard_logs.html")
+
+    @app.get("/dashboard/pending-deletions")
+    def dashboard_pending_deletions_page():
+        return render_template("dashboard_pending_deletions.html")
 
     @app.get("/api/token-config")
     def get_token_config():
@@ -1990,6 +2059,123 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             db.close()
 
     # ------------------------------------------------------------------
+    # 待确认删除 API
+    # ------------------------------------------------------------------
+
+    @app.get("/api/dashboard/pending-deletions")
+    def list_pending_deletions_api():
+        current_settings = settings_manager.load(env_path=env_path)
+        page = max(int(request.args.get("page", 1) or 1), 1)
+        page_size = int(request.args.get("page_size", 20) or 20)
+        item_type = request.args.get("item_type") or None
+        if item_type not in (None, "novel", "series"):
+            item_type = None
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            payload = db.list_pending_deletions(page=page, page_size=page_size, item_type=item_type)
+        finally:
+            db.close()
+        return jsonify(payload)
+
+    @app.get("/api/dashboard/pending-deletions/count")
+    def pending_deletion_count():
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            count = db.get_pending_deletion_count()
+        finally:
+            db.close()
+        return jsonify({"count": count})
+
+    @app.post("/api/dashboard/pending-deletions/detect")
+    def trigger_pending_detection():
+        current_settings = settings_manager.load(env_path=env_path)
+        if sync_job_manager.has_running_jobs():
+            return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
+        if not sync_job_manager._semaphore.acquire(blocking=False):
+            return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
+        try:
+            import uuid
+            job_id = f"detect_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+            job = SyncJobState(
+                job_id=job_id, status="running", message="检测任务已启动",
+                started_at=time.time(), task_list=["pending_deletion_detection"],
+            )
+            with sync_job_manager._lock:
+                sync_job_manager._jobs[job_id] = job
+            db = Database(current_settings.storage.db_path)
+            db.init_schema()
+            try:
+                log_id = db.create_task_log(
+                    task_type="pending_deletion_detection", task_name="检测取消收藏/追更",
+                    job_id=job_id, is_auto_sync=False,
+                )
+                job.log_id = log_id
+            finally:
+                db.close()
+            thread = threading.Thread(target=sync_job_manager._run_job, args=(job_id,), daemon=True)
+            thread.start()
+        except Exception:
+            sync_job_manager._semaphore.release()
+            raise
+        return jsonify({"ok": True, "message": "检测任务已启动", "job": _job_to_dict(job)})
+
+    @app.post("/api/dashboard/pending-deletions/<int:deletion_id>/confirm")
+    def confirm_pending_deletion(deletion_id: int):
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            record = db.confirm_pending_deletion(deletion_id)
+            if record is None:
+                return jsonify({"error": "记录不存在或已处理"}), 404
+            item_type = record["item_type"]
+            item_id = record["item_id"]
+            if item_type == "novel":
+                db.delete_novel(item_id)
+            elif item_type == "series":
+                novel_rows = db.conn.execute(
+                    "SELECT novel_id FROM novels WHERE series_id = ?", (item_id,)
+                ).fetchall()
+                for row in novel_rows:
+                    db.delete_novel(row[0])
+                db.delete_series(item_id)
+            return jsonify({"ok": True, "message": "已确认删除"})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            db.close()
+
+    @app.post("/api/dashboard/pending-deletions/<int:deletion_id>/restore")
+    def restore_pending_deletion(deletion_id: int):
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            record = db.restore_pending_deletion(deletion_id)
+            if record is None:
+                return jsonify({"error": "记录不存在或已处理"}), 404
+            item_type = record["item_type"]
+            item_id = record["item_id"]
+            source_type = record.get("source_type")
+            if item_type == "novel" and source_type:
+                from .models import SourceRecord
+                db.upsert_source(SourceRecord(
+                    novel_id=item_id, source_type=source_type,
+                    source_key=str(current_settings.pixiv.user_id or 0),
+                ))
+            elif item_type == "series":
+                db.conn.execute("UPDATE series SET is_subscribed = 1 WHERE series_id = ?", (item_id,))
+                db.conn.commit()
+            return jsonify({"ok": True, "message": "已恢复"})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            db.close()
+
+    # ------------------------------------------------------------------
     # 健康检查 API
     # ------------------------------------------------------------------
     @app.get("/api/health")
@@ -2159,6 +2345,9 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "auto_sync_subscribed_series_enabled": settings.sync.auto_sync_subscribed_series_enabled,
         "auto_sync_subscribed_series_interval_hours": settings.sync.auto_sync_subscribed_series_interval_hours,
         "auto_sync_subscribed_series_cron": settings.sync.auto_sync_subscribed_series_cron,
+        "auto_sync_pending_detection_enabled": settings.sync.auto_sync_pending_detection_enabled,
+        "auto_sync_pending_detection_interval_hours": settings.sync.auto_sync_pending_detection_interval_hours,
+        "auto_sync_pending_detection_cron": settings.sync.auto_sync_pending_detection_cron,
     }
 
 

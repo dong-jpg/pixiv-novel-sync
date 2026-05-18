@@ -66,6 +66,9 @@ class SyncSettings:
     auto_sync_subscribed_series_enabled: bool = True  # 我的追更系列
     auto_sync_subscribed_series_interval_hours: int = 6  # 追更系列间隔（小时）
     auto_sync_subscribed_series_cron: str = ""  # 追更系列cron表达式，优先于interval_hours
+    auto_sync_pending_detection_enabled: bool = True  # 检测取消收藏/追更
+    auto_sync_pending_detection_interval_hours: int = 12  # 检测间隔（小时）
+    auto_sync_pending_detection_cron: str = ""  # 检测cron表达式
 
 
 @dataclass(slots=True)
@@ -166,6 +169,9 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             auto_sync_subscribed_series_enabled=bool(sync_raw.get("auto_sync_subscribed_series_enabled", True)),
             auto_sync_subscribed_series_interval_hours=_coerce_int(sync_raw.get("auto_sync_subscribed_series_interval_hours"), 6),
             auto_sync_subscribed_series_cron=str(sync_raw.get("auto_sync_subscribed_series_cron", "")),
+            auto_sync_pending_detection_enabled=bool(sync_raw.get("auto_sync_pending_detection_enabled", True)),
+            auto_sync_pending_detection_interval_hours=_coerce_int(sync_raw.get("auto_sync_pending_detection_interval_hours"), 12),
+            auto_sync_pending_detection_cron=str(sync_raw.get("auto_sync_pending_detection_cron", "")),
         ),
         storage=StorageSettings(
             public_dir=public_dir,
