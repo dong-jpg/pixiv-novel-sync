@@ -116,6 +116,10 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_task_logs_type ON task_logs(task_type);
             CREATE INDEX IF NOT EXISTS idx_task_logs_started_at ON task_logs(started_at DESC);
             CREATE INDEX IF NOT EXISTS idx_task_logs_auto_sync ON task_logs(is_auto_sync);
+
+            CREATE INDEX IF NOT EXISTS idx_novels_user_id ON novels(user_id);
+            CREATE INDEX IF NOT EXISTS idx_novels_series_id ON novels(series_id);
+            CREATE INDEX IF NOT EXISTS idx_sources_source_type ON sources(source_type);
             """
         )
         # 迁移：为旧版 users 表添加 status 和 last_checked_at 字段
@@ -1011,13 +1015,15 @@ class Database:
         self.conn.execute("DELETE FROM sources WHERE novel_id = ?", (novel_id,))
         self.conn.execute("DELETE FROM novel_fts WHERE novel_id = ?", (novel_id,))
         self.conn.execute("DELETE FROM novels WHERE novel_id = ?", (novel_id,))
+        self.conn.commit()
 
     def delete_user(self, user_id: int) -> None:
-        """删除用户及其所有小说（单一事务）"""
-        novel_rows = self.conn.execute("SELECT novel_id FROM novels WHERE user_id = ?", (user_id,)).fetchall()
-        for row in novel_rows:
-            self.delete_novel(row[0])
-        # 删除用户
+        """删除用户及其所有小说（单一事务，批量删除）"""
+        self.conn.execute("DELETE FROM novel_texts WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
+        self.conn.execute("DELETE FROM assets WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
+        self.conn.execute("DELETE FROM sources WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
+        self.conn.execute("DELETE FROM novel_fts WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
+        self.conn.execute("DELETE FROM novels WHERE user_id = ?", (user_id,))
         self.conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
         self.conn.commit()
 
@@ -1255,7 +1261,12 @@ class Database:
     def add_pending_deletion(self, item_type: str, item_id: int, reason: str,
                              title: str, author_name: str, cover_url: str,
                              source_type: str | None = None) -> None:
-        """插入待确认删除记录（已有 pending 记录则跳过）"""
+        """插入待确认删除记录（已有 pending 记录则跳过，已确认/恢复的记录会被清除后重新插入）"""
+        # 清除已确认或已恢复的旧记录，允许重新检测
+        self.conn.execute(
+            "DELETE FROM pending_deletions WHERE item_type = ? AND item_id = ? AND status IN ('confirmed', 'restored')",
+            (item_type, item_id),
+        )
         self.conn.execute(
             """
             INSERT OR IGNORE INTO pending_deletions

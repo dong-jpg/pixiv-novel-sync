@@ -313,14 +313,20 @@ class BookmarkNovelSyncService:
             last_max_novel_id = watermark.get("latest_novel_id", 0) if watermark else 0
             current_max_novel_id = 0
             hit_watermark = False
+            reached_max_items = False
 
             next_query: dict[str, Any] | None = {"user_id": user_id, "restrict": restrict}
             page_count = 0
+            safety_limit = max_pages or 100  # 防止无限翻页
             while next_query:
-                if max_pages is not None and page_count >= max_pages:
-                    logger.info("Reached max_pages_per_run=%s, stopping pagination", max_pages)
+                if page_count >= safety_limit:
+                    logger.info("Reached page safety limit=%s, stopping pagination", safety_limit)
                     break
-                result = self.api.user_bookmarks_novel(**next_query)
+                try:
+                    result = self.api.user_bookmarks_novel(**next_query)
+                except Exception as e:
+                    logger.error("API call user_bookmarks_novel failed: %s", e)
+                    break
                 page_count += 1
                 if progress_callback:
                     progress_callback("page", {"page": page_count, "restrict": restrict})
@@ -329,7 +335,7 @@ class BookmarkNovelSyncService:
                     # 检查是否达到实际同步数量限制
                     if max_items is not None and synced_items >= max_items:
                         logger.info("Reached max_items_per_run=%s (synced), stopping sync", max_items)
-                        hit_watermark = True  # 标记为需要更新水位线
+                        reached_max_items = True
                         break
                     processed_items += 1
                     novel_id = int(novel.id)
@@ -415,7 +421,7 @@ class BookmarkNovelSyncService:
                         time.sleep(item_delay)
 
                 # 水位线命中或达到限制，停止翻页
-                if hit_watermark:
+                if hit_watermark or reached_max_items:
                     break
 
                 next_query = self.api.parse_qs(getattr(result, "next_url", None))
@@ -424,13 +430,15 @@ class BookmarkNovelSyncService:
                         progress_callback("rate_limit", {"seconds": page_delay})
                     time.sleep(page_delay)
 
-            # 更新水位线：记录本轮看到的最大 novel_id
-            if current_max_novel_id > 0:
+            # 更新水位线：仅当真正命中水位线（非 max_items 中断）且值前进时才更新
+            if hit_watermark and current_max_novel_id > last_max_novel_id:
                 self.db.update_watermark(f"bookmark_{restrict}", {
                     "last_sync_time": datetime.now(timezone.utc).isoformat(),
                     "latest_novel_id": current_max_novel_id,
                 })
                 logger.info("Updated bookmark watermark for %s: latest_novel_id=%d", restrict, current_max_novel_id)
+            elif reached_max_items:
+                logger.info("Not updating watermark for %s: stopped due to max_items limit", restrict)
 
         return stats
 
@@ -512,12 +520,30 @@ class BookmarkNovelSyncService:
         user_watermarks: dict[str, int] = watermark.get("user_max_ids", {}) if watermark else {}
         current_user_max_ids: dict[str, int] = {}
 
+        def _save_watermark():
+            if not current_user_max_ids:
+                return
+            merged = dict(user_watermarks)
+            for uid, new_max in current_user_max_ids.items():
+                old_max = merged.get(uid, 0)
+                if new_max > old_max:
+                    merged[uid] = new_max
+            self.db.update_watermark("following_novels", {
+                "last_sync_time": datetime.now(timezone.utc).isoformat(),
+                "user_max_ids": merged,
+            })
+
         while next_following_query:
             # 检查是否达到最大页数限制
             if max_pages is not None and following_page_count >= max_pages:
                 logger.info("Reached max_pages_per_run=%s, stopping pagination", max_pages)
+                _save_watermark()
                 return stats
-            following_result = self.api.user_following(**next_following_query)
+            try:
+                following_result = self.api.user_following(**next_following_query)
+            except Exception as e:
+                logger.error("API call user_following failed: %s", e)
+                break
             following_page_count += 1
             if progress_callback:
                 progress_callback("page", {"page": following_page_count})
@@ -527,10 +553,12 @@ class BookmarkNovelSyncService:
                 # 检查是否达到用户数限制
                 if users_limit > 0 and users_processed >= users_limit:
                     logger.info("Reached users_limit=%d, stopping sync", users_limit)
+                    _save_watermark()
                     return stats
                 # 检查是否达到实际同步数量限制
                 if max_items is not None and synced_items >= max_items:
                     logger.info("Reached max_items_per_run=%s (synced), stopping sync", max_items)
+                    _save_watermark()
                     return stats
                 
                 user = getattr(user_preview, "user", user_preview)
@@ -550,7 +578,11 @@ class BookmarkNovelSyncService:
                 last_user_max = user_watermarks.get(str(author_id), 0)
                 hit_user_watermark = False
                 while next_novel_query:
-                    novels_result = self.api.user_novels(**next_novel_query)
+                    try:
+                        novels_result = self.api.user_novels(**next_novel_query)
+                    except Exception as e:
+                        logger.error("API call user_novels for user %s failed: %s", author_id, e)
+                        break
                     author_page_count += 1
                     novels = getattr(novels_result, "novels", []) or []
 
@@ -648,15 +680,9 @@ class BookmarkNovelSyncService:
                     progress_callback("rate_limit", {"seconds": page_delay})
                 time.sleep(page_delay)
 
-        # 更新水位线：记录每个用户本轮看到的最大 novel_id
-        if current_user_max_ids:
-            # 合并历史水位线，保留未处理用户的数据
-            merged = {**user_watermarks, **current_user_max_ids}
-            self.db.update_watermark("following_novels", {
-                "last_sync_time": datetime.now(timezone.utc).isoformat(),
-                "user_max_ids": merged,
-            })
-            logger.info("Updated following_novels watermark: %d users tracked", len(merged))
+        # 更新水位线
+        _save_watermark()
+        logger.info("Updated following_novels watermark: %d users tracked", len(current_user_max_ids))
 
         return stats
 
@@ -909,8 +935,8 @@ class BookmarkNovelSyncService:
                                 logger.info("Series %s unchanged (%d <= %d chapters), skipping chapter sync", sid, total, local_total)
                                 if progress_callback:
                                     progress_callback("phase", {"phase": f"系列 {title or sid}: 章节数未变 ({total}), 跳过"})
-                                if skip_delay > 0:
-                                    time.sleep(skip_delay)
+                                if series_delay > 0:
+                                    time.sleep(series_delay)
                                 continue
 
                             # 同步系列中的所有章节（含正文）
@@ -1349,7 +1375,23 @@ class BookmarkNovelSyncService:
         source_key: str | None = None,
     ) -> dict[str, int]:
         novel_id = int(novel.id)
-        
+        try:
+            return self._sync_novel_inner(novel_id, novel, restrict, download_assets, write_markdown, write_raw_text, source_type, source_key)
+        except Exception as e:
+            logger.error("Failed to sync novel %d: %s", novel_id, e)
+            return {"skipped": 1, "bookmarks": 0, "views": 0, "assets_downloaded": 0}
+
+    def _sync_novel_inner(
+        self,
+        novel_id: int,
+        novel: Any,
+        restrict: str,
+        download_assets: bool,
+        write_markdown: bool,
+        write_raw_text: bool,
+        source_type: str,
+        source_key: str | None = None,
+    ) -> dict[str, int]:
         detail = self.api.novel_detail(novel_id)
         detail_novel = getattr(detail, "novel", novel)
         user = getattr(detail_novel, "user", None)

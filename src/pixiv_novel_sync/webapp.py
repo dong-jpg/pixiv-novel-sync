@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import logging
 import threading
 import time
@@ -12,7 +13,7 @@ from urllib.parse import urlparse
 
 import requests as http_requests
 import yaml
-from flask import Flask, Response, jsonify, redirect, render_template, request
+from flask import Flask, Response, jsonify, redirect, render_template, request, session
 
 from .jobs.quick_sync import run_bookmark_sync, run_check_bookmarks_task
 from .auth import PixivAuthManager
@@ -111,9 +112,9 @@ class AutoSyncScheduler:
             {"name": "following_list", "setting_check": "auto_sync_following_list_enabled", "sync_func": "_sync_following_list", "interval_setting": "auto_sync_following_list_interval_hours", "cron_setting": "auto_sync_following_list_cron"},
             {"name": "following_novels", "setting_check": "auto_sync_following_novels_enabled", "sync_func": "_sync_following_novels", "interval_setting": "auto_sync_following_novels_interval_hours", "cron_setting": "auto_sync_following_novels_cron"},
             {"name": "subscribed_series", "setting_check": "auto_sync_subscribed_series_enabled", "sync_func": "_sync_subscribed_series", "interval_setting": "auto_sync_subscribed_series_interval_hours", "cron_setting": "auto_sync_subscribed_series_cron"},
-            {"name": "user_status", "setting_check": "auto_sync_user_status_enabled", "sync_func": "_sync_user_status", "interval_setting": "auto_sync_following_interval_hours", "cron_setting": "auto_sync_user_status_cron"},
-            {"name": "novel_status", "setting_check": "auto_sync_novel_status_enabled", "sync_func": "_sync_novel_status", "interval_setting": "auto_sync_following_interval_hours", "cron_setting": "auto_sync_novel_status_cron"},
-            {"name": "series_status", "setting_check": "auto_sync_series_status_enabled", "sync_func": "_sync_series_status", "interval_setting": "auto_sync_following_interval_hours", "cron_setting": "auto_sync_series_status_cron"},
+            {"name": "user_status", "setting_check": "auto_sync_user_status_enabled", "sync_func": "_sync_user_status", "interval_setting": "auto_sync_user_status_interval_hours", "cron_setting": "auto_sync_user_status_cron"},
+            {"name": "novel_status", "setting_check": "auto_sync_novel_status_enabled", "sync_func": "_sync_novel_status", "interval_setting": "auto_sync_novel_status_interval_hours", "cron_setting": "auto_sync_novel_status_cron"},
+            {"name": "series_status", "setting_check": "auto_sync_series_status_enabled", "sync_func": "_sync_series_status", "interval_setting": "auto_sync_series_status_interval_hours", "cron_setting": "auto_sync_series_status_cron"},
             {"name": "pending_deletion_detection", "setting_check": "auto_sync_pending_detection_enabled", "sync_func": "_sync_pending_detection", "interval_setting": "auto_sync_pending_detection_interval_hours", "cron_setting": "auto_sync_pending_detection_cron"},
         ]
         
@@ -1208,6 +1209,7 @@ class SettingsManager:
 
 def create_app(config_path: str | None = None, env_path: str | None = None) -> Flask:
     app = Flask(__name__, template_folder="templates")
+    app.secret_key = os.urandom(24)
     settings_manager = SettingsManager(config_path)
     sync_job_manager = SyncJobManager(config_path=config_path, env_path=env_path)
     oauth_manager = OAuthManager()
@@ -1239,6 +1241,54 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             task.status = "failed"
             task.message = f"自动登录异常: {exc}"
             logger.exception("Playwright 自动登录失败")
+
+    # --- 认证中间件 ---
+    _AUTH_EXEMPT_PATHS = {"/proxy/image", "/api/auth/login", "/api/auth/logout", "/nginx-health"}
+
+    @app.before_request
+    def _check_auth():
+        token = settings_manager.current_settings.dashboard_token
+        if not token:
+            return  # 未配置 token，允许所有请求
+        path = request.path
+        if path in _AUTH_EXEMPT_PATHS:
+            return
+        if path.startswith("/static/"):
+            return
+        if session.get("authenticated"):
+            return
+        # API 请求返回 401，页面请求重定向到登录
+        if path.startswith("/api/"):
+            return jsonify({"error": "unauthorized"}), 401
+        return redirect("/api/auth/login")
+
+    @app.route("/api/auth/login", methods=["GET", "POST"])
+    def auth_login():
+        token = settings_manager.current_settings.dashboard_token
+        if not token:
+            return redirect("/")
+        if request.method == "GET":
+            return Response(
+                '<!DOCTYPE html><html><head><title>Login</title>'
+                '<style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f5f5f5}'
+                'form{background:white;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1)}'
+                'input{display:block;margin:1rem 0;padding:0.5rem;width:250px}'
+                'button{padding:0.5rem 1.5rem;background:#4a90d9;color:white;border:none;border-radius:4px;cursor:pointer}</style></head>'
+                '<body><form method="POST"><h2>Pixiv Novel Sync</h2>'
+                '<input name="token" type="password" placeholder="访问密码" autofocus>'
+                '<button type="submit">登录</button></form></body></html>',
+                content_type="text/html",
+            )
+        input_token = request.form.get("token", "")
+        if input_token == token:
+            session["authenticated"] = True
+            return redirect("/")
+        return Response("密码错误", status=401)
+
+    @app.route("/api/auth/logout", methods=["POST"])
+    def auth_logout():
+        session.pop("authenticated", None)
+        return jsonify({"ok": True})
 
     @app.get("/proxy/image")
     def proxy_image():
@@ -2185,15 +2235,18 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
         # 检查数据库是否可访问
         db_accessible = False
+        db = None
         try:
             current_settings = settings_manager.load(env_path=env_path)
             db = Database(current_settings.storage.db_path)
             db.init_schema()
             db.conn.execute("SELECT 1")
             db_accessible = True
-            db.close()
         except Exception:
             db_accessible = False
+        finally:
+            if db is not None:
+                db.close()
 
         # 当前运行中的任务数
         running_jobs = sum(1 for j in list(sync_job_manager._jobs.values()) if j.status == "running")

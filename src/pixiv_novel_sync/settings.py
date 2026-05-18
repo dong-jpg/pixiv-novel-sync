@@ -58,10 +58,13 @@ class SyncSettings:
     auto_sync_following_novels_cron: str = ""  # 关注用户小说cron表达式
     auto_sync_following_novels_users_limit: int = 0  # 每轮同步的用户数限制，0=全部
     auto_sync_user_status_enabled: bool = True  # 关注用户的用户状态更新
+    auto_sync_user_status_interval_hours: int = 6  # 用户状态检查间隔（小时）
     auto_sync_user_status_cron: str = ""  # 用户状态检查cron表达式
     auto_sync_novel_status_enabled: bool = True  # 小说状态检查
+    auto_sync_novel_status_interval_hours: int = 6  # 小说状态检查间隔（小时）
     auto_sync_novel_status_cron: str = ""  # 小说状态检查cron表达式
     auto_sync_series_status_enabled: bool = True  # 系列状态检查
+    auto_sync_series_status_interval_hours: int = 6  # 系列状态检查间隔（小时）
     auto_sync_series_status_cron: str = ""  # 系列状态检查cron表达式
     auto_sync_subscribed_series_enabled: bool = True  # 我的追更系列
     auto_sync_subscribed_series_interval_hours: int = 6  # 追更系列间隔（小时）
@@ -84,6 +87,7 @@ class Settings:
     sync: SyncSettings
     storage: StorageSettings
     log_level: str = "INFO"
+    dashboard_token: str | None = None
 
 
 DEFAULT_CONFIG_PATH = Path("config/config.yaml")
@@ -165,7 +169,14 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             auto_sync_following_novels_cron=str(sync_raw.get("auto_sync_following_novels_cron", "")),
             auto_sync_following_novels_users_limit=_coerce_int(sync_raw.get("auto_sync_following_novels_users_limit"), 0),
             auto_sync_user_status_enabled=bool(sync_raw.get("auto_sync_user_status_enabled", True)),
+            auto_sync_user_status_interval_hours=_coerce_int(sync_raw.get("auto_sync_user_status_interval_hours"), 6),
             auto_sync_user_status_cron=str(sync_raw.get("auto_sync_user_status_cron", "")),
+            auto_sync_novel_status_enabled=bool(sync_raw.get("auto_sync_novel_status_enabled", True)),
+            auto_sync_novel_status_interval_hours=_coerce_int(sync_raw.get("auto_sync_novel_status_interval_hours"), 6),
+            auto_sync_novel_status_cron=str(sync_raw.get("auto_sync_novel_status_cron", "")),
+            auto_sync_series_status_enabled=bool(sync_raw.get("auto_sync_series_status_enabled", True)),
+            auto_sync_series_status_interval_hours=_coerce_int(sync_raw.get("auto_sync_series_status_interval_hours"), 6),
+            auto_sync_series_status_cron=str(sync_raw.get("auto_sync_series_status_cron", "")),
             auto_sync_subscribed_series_enabled=bool(sync_raw.get("auto_sync_subscribed_series_enabled", True)),
             auto_sync_subscribed_series_interval_hours=_coerce_int(sync_raw.get("auto_sync_subscribed_series_interval_hours"), 6),
             auto_sync_subscribed_series_cron=str(sync_raw.get("auto_sync_subscribed_series_cron", "")),
@@ -179,6 +190,7 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             db_path=db_path,
         ),
         log_level=log_level,
+        dashboard_token=os.getenv("DASHBOARD_TOKEN") or sync_raw.get("dashboard_token") or None,
     )
 
 
