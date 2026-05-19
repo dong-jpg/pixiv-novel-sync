@@ -274,6 +274,9 @@ class PlaywrightLoginHelper:
     def login_web(self, username: str, password: str) -> dict[str, Any]:
         """普通网页登录 pixiv.net，获取 Web Cookie（PHPSESSID 等）。
 
+        使用 Firefox headed 模式绕过 reCAPTCHA Enterprise 检测。
+        在无显示器的服务器上自动启动 Xvfb 虚拟显示器。
+
         Returns:
             {"success": True, "cookie_string": "k1=v1; k2=v2; ..."}
             或 {"success": False, "error": "..."}
@@ -286,158 +289,186 @@ class PlaywrightLoginHelper:
         # Web 登录需要更长超时（页面加载慢）
         original_timeout = self.timeout
         self.timeout = max(self.timeout, 60000)  # 至少 60 秒
+
+        xvfb_proc = None
         try:
+            # 在无 DISPLAY 的 Linux 服务器上自动启动 Xvfb 虚拟显示器
+            xvfb_proc = self._ensure_display()
+
             with sync_playwright() as p:
                 return self._do_login_web(p, username, password)
         finally:
             self.timeout = original_timeout
+            if xvfb_proc:
+                xvfb_proc.terminate()
+                xvfb_proc.wait()
+
+    def _ensure_display(self) -> Any:
+        """确保有可用的 DISPLAY 环境变量（Linux 服务器需要 Xvfb）。
+
+        Returns:
+            Xvfb subprocess 对象（需要调用方 terminate），或 None（已有 DISPLAY）。
+        """
+        import os
+        import sys
+
+        # Windows / macOS 或已有 DISPLAY 时无需处理
+        if sys.platform != "linux" or os.environ.get("DISPLAY"):
+            return None
+
+        import subprocess
+        import random
+
+        # 选择一个随机显示号避免冲突
+        display_num = random.randint(99, 999)
+        display = f":{display_num}"
+
+        try:
+            proc = subprocess.Popen(
+                ["Xvfb", display, "-screen", "0", "1280x800x24", "-nolisten", "tcp"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            # 等待 Xvfb 启动
+            time.sleep(1)
+            if proc.poll() is not None:
+                # Xvfb 启动失败，尝试另一个显示号
+                display_num = random.randint(1000, 1999)
+                display = f":{display_num}"
+                proc = subprocess.Popen(
+                    ["Xvfb", display, "-screen", "0", "1280x800x24", "-nolisten", "tcp"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                time.sleep(1)
+
+            os.environ["DISPLAY"] = display
+            logger.info("已启动 Xvfb 虚拟显示器: %s", display)
+            return proc
+        except FileNotFoundError:
+            logger.warning("Xvfb 未安装，尝试 headless 模式（可能无法通过 reCAPTCHA）")
+            return None
 
     def _do_login_web(self, p: Any, username: str, password: str) -> dict[str, Any]:
-        browser = None
-        stealth_obj = None
-        try:
-            from playwright_stealth import Stealth
-            stealth_obj = Stealth(
-                navigator_languages_override=("ja-JP", "ja", "en-US", "en"),
-                navigator_platform_override="Win32",
-            )
-        except ImportError:
-            logger.warning("playwright-stealth 未安装，将尝试无 stealth 模式登录")
+        """使用 Firefox headed 模式登录 Pixiv（需要 Xvfb 虚拟显示器）。
 
+        Firefox headed 模式可以绕过 reCAPTCHA Enterprise 检测，
+        在 Linux 服务器上通过 xvfb-run 提供虚拟显示器。
+        """
+        browser = None
         try:
-            launch_args: dict[str, Any] = {
-                "headless": True,
-                "args": [
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-infobars",
-                    "--window-size=1280,800",
-                ],
-            }
+            import os
+            # 如果有 DISPLAY 环境变量，使用 headed 模式（更容易通过 reCAPTCHA）
+            has_display = bool(os.environ.get("DISPLAY"))
+            use_headless = not has_display
+
+            launch_args: dict[str, Any] = {"headless": use_headless}
             if self.proxy:
                 launch_args["proxy"] = {"server": self.proxy}
 
-            browser = p.chromium.launch(**launch_args)
+            if use_headless:
+                logger.warning("无虚拟显示器，使用 headless 模式（可能无法通过 reCAPTCHA）")
+
+            browser = p.firefox.launch(**launch_args)
             context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
                 viewport={"width": 1280, "height": 800},
                 locale="ja-JP",
                 timezone_id="Asia/Tokyo",
-                color_scheme="light",
             )
-
-            # 应用 stealth 补丁到 context 级别，绕过 Cloudflare 检测
-            if stealth_obj:
-                stealth_obj.apply_stealth_sync(context)
-                logger.info("已应用 playwright-stealth 反检测补丁")
-
             page = context.new_page()
 
             # 导航到 Pixiv 登录页
-            logger.info("Web Cookie 刷新: 打开 Pixiv 登录页...")
-            page.goto("https://accounts.pixiv.net/login", wait_until="domcontentloaded", timeout=self.timeout)
-
-            # 等待页面稳定（给 Cloudflare challenge 时间通过）
+            logger.info("Web Cookie 刷新: 打开 Pixiv 登录页 (Firefox headed)...")
+            page.goto("https://accounts.pixiv.net/login", wait_until="networkidle", timeout=self.timeout)
             time.sleep(3)
 
-            # 检查是否被 Cloudflare 拦截
-            page_content = page.content()
-            if "challenge-platform" in page_content or "Just a moment" in page_content:
-                logger.info("检测到 Cloudflare challenge，等待自动通过...")
-                # 等待 Cloudflare challenge 完成
-                for _ in range(20):
-                    time.sleep(2)
-                    page_content = page.content()
-                    if "challenge-platform" not in page_content and "Just a moment" not in page_content:
-                        break
-                else:
-                    self._save_screenshot(page, "web_login_cloudflare_blocked")
-                    return {"success": False, "error": "Cloudflare 验证未通过，请稍后重试"}
-
-            # 等待登录表单
-            username_selector = 'input[autocomplete="username"], input[type="email"], input[name="email"]'
-            password_selector = 'input[autocomplete="current-password"], input[type="password"]'
-
-            try:
-                page.wait_for_selector(username_selector, timeout=self.timeout)
-            except Exception:
+            # 查找用户名输入框（Pixiv 使用多种 autocomplete 属性）
+            username_selector = None
+            for sel in [
+                'input[autocomplete="username webauthn"]',
+                'input[autocomplete="username"]',
+                'input[type="text"]:visible',
+            ]:
                 try:
-                    page.wait_for_selector('input[name="pixiv_id"]', timeout=5000)
-                    username_selector = 'input[name="pixiv_id"]'
-                except Exception:
-                    self._save_screenshot(page, "web_login_form_not_found")
-                    return {"success": False, "error": "无法找到登录表单"}
-
-            # 模拟人类输入：先点击输入框，短暂延迟后逐字输入
-            logger.info("Web Cookie 刷新: 填写登录信息...")
-            page.click(username_selector)
-            time.sleep(0.5)
-            page.fill(username_selector, "")
-            page.type(username_selector, username, delay=50)
-
-            time.sleep(0.8)
-
-            try:
-                page.wait_for_selector(password_selector, timeout=5000)
-            except Exception:
-                try:
-                    page.wait_for_selector('input[name="password"]', timeout=5000)
-                    password_selector = 'input[name="password"]'
-                except Exception:
-                    self._save_screenshot(page, "web_login_password_not_found")
-                    return {"success": False, "error": "无法找到密码输入框"}
-
-            page.click(password_selector)
-            time.sleep(0.3)
-            page.fill(password_selector, "")
-            page.type(password_selector, password, delay=30)
-
-            time.sleep(0.5)
-
-            # 检查 CAPTCHA
-            if self._detect_captcha(page):
-                self._save_screenshot(page, "web_login_captcha")
-                return {"success": False, "error": "检测到验证码，无法自动登录"}
-
-            # 点击登录
-            submit_selectors = [
-                'button[type="submit"]',
-                'button:has-text("ログイン")',
-                'button:has-text("Login")',
-                'button:has-text("登录")',
-                'input[type="submit"]',
-            ]
-            clicked = False
-            for sel in submit_selectors:
-                try:
-                    btn = page.query_selector(sel)
-                    if btn and btn.is_visible():
-                        btn.click()
-                        clicked = True
+                    el = page.query_selector(sel)
+                    if el and el.is_visible():
+                        username_selector = sel
                         break
                 except Exception:
                     continue
-            if not clicked:
-                page.keyboard.press("Enter")
 
-            # 等待登录完成（跳转到首页或其他页面）
+            if not username_selector:
+                self._save_screenshot(page, "web_login_form_not_found")
+                return {"success": False, "error": "无法找到登录表单用户名输入框"}
+
+            # 模拟人类输入
+            logger.info("Web Cookie 刷新: 填写登录信息...")
+            page.click(username_selector)
+            time.sleep(0.5)
+            page.type(username_selector, username, delay=80)
+            time.sleep(0.8)
+
+            # 查找密码输入框
+            password_selector = None
+            for sel in [
+                'input[autocomplete="current-password webauthn"]',
+                'input[autocomplete="current-password"]',
+                'input[type="password"]:visible',
+            ]:
+                try:
+                    el = page.query_selector(sel)
+                    if el and el.is_visible():
+                        password_selector = sel
+                        break
+                except Exception:
+                    continue
+
+            if not password_selector:
+                self._save_screenshot(page, "web_login_password_not_found")
+                return {"success": False, "error": "无法找到密码输入框"}
+
+            page.click(password_selector)
+            time.sleep(0.3)
+            page.type(password_selector, password, delay=50)
+            time.sleep(2)
+
+            # 等待 reCAPTCHA 评分完成
+            time.sleep(3)
+
+            # 点击登录按钮（精确匹配 "ログイン" 文本的 submit 按钮）
+            login_btn = page.locator('button[type="submit"]:has-text("ログイン")')
+            btn_count = login_btn.count()
+            if btn_count > 0:
+                login_btn.last.click()
+                logger.info("Web Cookie 刷新: 已点击登录按钮")
+            else:
+                # 回退：尝试其他提交方式
+                for sel in ['button:has-text("Login")', 'button:has-text("登录")', 'input[type="submit"]']:
+                    try:
+                        btn = page.query_selector(sel)
+                        if btn and btn.is_visible():
+                            btn.click()
+                            break
+                    except Exception:
+                        continue
+                else:
+                    page.keyboard.press("Enter")
+
+            # 等待登录完成
             logger.info("Web Cookie 刷新: 等待登录完成...")
             try:
-                page.wait_for_url("**/pixiv.net/**", timeout=self.timeout)
-                # 额外等待确保 cookie 完全设置
-                time.sleep(3)
+                page.wait_for_url("**/pixiv.net/**", timeout=30000)
             except Exception:
-                # 即使超时也尝试检查 cookie，可能已经登录成功
-                time.sleep(2)
+                pass
+            # 额外等待确保 cookie 完全设置
+            time.sleep(5)
 
-            # 检查是否登录成功：看 cookie 里有没有 PHPSESSID
+            # 检查是否登录成功
             cookies = context.cookies("https://www.pixiv.net")
             cookie_dict = {c["name"]: c["value"] for c in cookies}
 
             if "PHPSESSID" not in cookie_dict:
-                # 可能还在登录页，检查错误
                 error_msg = self._extract_error_message(page)
                 self._save_screenshot(page, "web_login_failed")
                 return {"success": False, "error": error_msg or "登录失败，未获取到 PHPSESSID"}
