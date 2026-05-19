@@ -210,8 +210,8 @@ class BookmarkNovelSyncService:
                     
                     proxies = {"http": self.settings.pixiv.proxy, "https": self.settings.pixiv.proxy} if self.settings.pixiv.proxy else None
                     
-                    # 获取追更系列列表
-                    endpoint = "https://www.pixiv.net/ajax/watch_list/novel?p=1&new=1&lang=zh"
+                    # 获取追更系列列表（不带 new=1，获取全部订阅而非仅有新内容的）
+                    endpoint = "https://www.pixiv.net/ajax/watch_list/novel?p=1&lang=zh"
                     response = http_requests.get(
                         endpoint, headers=headers, proxies=proxies,
                         timeout=self.settings.pixiv.timeout,
@@ -693,9 +693,8 @@ class BookmarkNovelSyncService:
                 
                 proxies = {"http": self.settings.pixiv.proxy, "https": self.settings.pixiv.proxy} if self.settings.pixiv.proxy else None
                 
-                # 尝试多个可能的 API 端点
+                # 使用不带 new=1 的端点获取全部订阅系列
                 api_endpoints = [
-                    "https://www.pixiv.net/ajax/watch_list/novel?p=1&new=1&lang=zh",
                     "https://www.pixiv.net/ajax/watch_list/novel?p=1&lang=zh",
                 ]
                 
