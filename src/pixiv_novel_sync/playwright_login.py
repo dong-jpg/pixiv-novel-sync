@@ -294,10 +294,14 @@ class PlaywrightLoginHelper:
 
     def _do_login_web(self, p: Any, username: str, password: str) -> dict[str, Any]:
         browser = None
+        stealth_obj = None
         try:
-            from playwright_stealth import stealth_sync
+            from playwright_stealth import Stealth
+            stealth_obj = Stealth(
+                navigator_languages_override=("ja-JP", "ja", "en-US", "en"),
+                navigator_platform_override="Win32",
+            )
         except ImportError:
-            stealth_sync = None
             logger.warning("playwright-stealth 未安装，将尝试无 stealth 模式登录")
 
         try:
@@ -323,12 +327,13 @@ class PlaywrightLoginHelper:
                 timezone_id="Asia/Tokyo",
                 color_scheme="light",
             )
-            page = context.new_page()
 
-            # 应用 stealth 补丁绕过 Cloudflare 检测
-            if stealth_sync:
-                stealth_sync(page)
+            # 应用 stealth 补丁到 context 级别，绕过 Cloudflare 检测
+            if stealth_obj:
+                stealth_obj.apply_stealth_sync(context)
                 logger.info("已应用 playwright-stealth 反检测补丁")
+
+            page = context.new_page()
 
             # 导航到 Pixiv 登录页
             logger.info("Web Cookie 刷新: 打开 Pixiv 登录页...")
