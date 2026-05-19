@@ -17,8 +17,8 @@ dependencies = [
   "PyYAML>=6.0.2",
   "requests>=2.32.3",
   "Flask>=3.0.3",
-  "gppt>=4.3.0",
   "playwright>=1.48.0",
+  "croniter>=2.0.0",
 ]
 
 [project.scripts]

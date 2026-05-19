@@ -243,10 +243,19 @@
       if (currentPage < totalPages) loadNovels(currentPage + 1, currentCategory);
     });
 
-    loadNovels(1, 'bookmark').catch(function () {
+    // 读取 URL 中的 category 参数作为初始 tab（用于"返回追更列表"等链接）
+    const _initialCategory = (function() {
+      try {
+        const value = new URLSearchParams(location.search).get('category');
+        return ['bookmark', 'following'].includes(value) ? value : 'bookmark';
+      } catch (e) {
+        return 'bookmark';
+      }
+    })();
+    loadNovels(1, _initialCategory).catch(function () {
       document.getElementById('summary').textContent = '加载失败';
     });
   </script>
-<script>(function(){fetch("/api/dashboard/pending-deletions/count").then(function(r){return r.json()}).then(function(d){var b=document.getElementById("pendingBadge");if(b</body></body>d.count>0){b.textContent=d.count;b.style.display="inline-flex"}}).catch(function(){})})();</script>
+<script>(function(){fetch("/api/dashboard/pending-deletions/count").then(function(r){return r.json()}).then(function(d){var b=document.getElementById("pendingBadge");if(b && d.count>0){b.textContent=d.count;b.style.display="inline-flex"}}).catch(function(){})})();</script>
 </body>
 </html>

@@ -341,12 +341,15 @@
         const url = latestJobId ? `/api/dashboard/sync/status?job_id=${encodeURIComponent(latestJobId)}` : '/api/dashboard/sync/status';
         const resp = await fetch(url);
         const data = await safeJson(resp);
+        const isRunning = !!(data.job && data.job.status === 'running');
         if (data.job) {
           latestJobId = data.job.job_id;
           renderJob(data.job);
-          document.getElementById('startSyncBtn').disabled = data.job.status === 'running';
-          document.getElementById('syncSeriesBtn').disabled = data.job.status === 'running';
         }
+        // 任务结束后必须重新启用按钮
+        document.getElementById('startSyncBtn').disabled = isRunning;
+        document.getElementById('syncSeriesBtn').disabled = isRunning;
+        document.getElementById('checkBookmarksBtn').disabled = isRunning;
       } catch (err) {
         console.error('pollJobStatus failed', err);
       }
@@ -442,7 +445,7 @@
           { name: '同步关注列表', key: 'following_list', setting: 'auto_sync_following_list_enabled', interval_setting: 'auto_sync_following_list_interval_hours', cron_setting: 'auto_sync_following_list_cron' },
           { name: '同步关注小说', key: 'following_novels', setting: 'auto_sync_following_novels_enabled', interval_setting: 'auto_sync_following_novels_interval_hours', cron_setting: 'auto_sync_following_novels_cron' },
           { name: '同步追更系列', key: 'subscribed_series', setting: 'auto_sync_subscribed_series_enabled', interval_setting: 'auto_sync_subscribed_series_interval_hours', cron_setting: 'auto_sync_subscribed_series_cron' },
-          { name: '检查用户状态', key: 'user_status', setting: 'auto_sync_user_status_enabled', interval_setting: 'auto_sync_following_interval_hours', cron_setting: 'auto_sync_user_status_cron' },
+          { name: '检查用户状态', key: 'user_status', setting: 'auto_sync_user_status_enabled', interval_setting: 'auto_sync_user_status_interval_hours', cron_setting: 'auto_sync_user_status_cron' },
         ];
         
         let taskHtml = '';
@@ -564,6 +567,6 @@
     setInterval(pollJobStatus, 3000);
     setInterval(loadAutoSyncStatus, 10000);
   </script>
-<script>(function(){fetch("/api/dashboard/pending-deletions/count").then(function(r){return r.json()}).then(function(d){var b=document.getElementById("pendingBadge");if(b</body></body>d.count>0){b.textContent=d.count;b.style.display="inline-flex"}}).catch(function(){})})();</script>
+<script>(function(){fetch("/api/dashboard/pending-deletions/count").then(function(r){return r.json()}).then(function(d){var b=document.getElementById("pendingBadge");if(b && d.count>0){b.textContent=d.count;b.style.display="inline-flex"}}).catch(function(){})})();</script>
 </body>
 </html>

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .models import AssetRecord, NovelRecord, NovelTextRecord, SourceRecord, UserRecord
 
@@ -12,13 +14,39 @@ class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(path)
+        # check_same_thread=False 允许在多个线程间共享连接（SQLite C 层是线程安全的）；
+        # 我们用显式 RLock 串行化所有写入。读不需要锁（WAL 模式允许并发读）。
+        self.conn = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
         self.conn.row_factory = sqlite3.Row
+        self._lock: threading.RLock = threading.RLock()
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """显式事务上下文：with db.transaction() as conn: ... 在退出时统一 commit / rollback。
+
+        与 sqlite3 内置的隐式事务不同，使用显式 BEGIN IMMEDIATE 抢占写锁，
+        避免多线程下 SQLITE_BUSY。嵌套调用是安全的（RLock）。
+        """
+        with self._lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                yield self.conn
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def init_schema(self) -> None:
-        self.conn.executescript(
-            """
-            PRAGMA journal_mode=WAL;
+        with self._lock:
+            self.conn.executescript(
+                """
+                PRAGMA journal_mode=WAL;
+                PRAGMA synchronous=NORMAL;
+                PRAGMA busy_timeout=30000;
+                """
+            )
+            self.conn.executescript(
+                """
 
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -1147,6 +1175,27 @@ class Database:
         )
         self.conn.commit()
         return cursor.rowcount
+
+    def get_task_log_by_id(self, log_id: int) -> dict[str, Any] | None:
+        """获取单条任务日志详情"""
+        row = self.conn.execute(
+            "SELECT * FROM task_logs WHERE id = ?", (log_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        if item.get("stats_json"):
+            try:
+                item["stats"] = json.loads(item["stats_json"])
+            except (TypeError, ValueError):
+                item["stats"] = None
+        if item.get("logs_json"):
+            try:
+                item["logs"] = json.loads(item["logs_json"])
+            except (TypeError, ValueError):
+                item["logs"] = None
+        item["is_auto_sync"] = bool(item.get("is_auto_sync"))
+        return item
 
     def clear_sync_check_list(self) -> None:
         """清空同步检查列表"""

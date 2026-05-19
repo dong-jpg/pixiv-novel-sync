@@ -806,6 +806,29 @@ class SyncJobManager:
             self._jobs[job_id] = job
             return job
 
+    def start_user_backup_job(self, user_id: int) -> SyncJobState:
+        """启动单用户全量备份后台任务"""
+        if not self._semaphore.acquire(blocking=False):
+            raise RuntimeError("已有同步任务正在运行，请稍后再试")
+        try:
+            with self._lock:
+                import uuid
+                job_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+                job = SyncJobState(
+                    job_id=job_id,
+                    status="running",
+                    message=f"备份用户 {user_id} 的全部小说",
+                    started_at=time.time(),
+                    task_list=[f"user_backup:{user_id}"],
+                )
+                self._jobs[job_id] = job
+            thread = threading.Thread(target=self._run_job, args=(job_id,), daemon=True)
+            thread.start()
+            return job
+        except Exception:
+            self._semaphore.release()
+            raise
+
     def get_job(self, job_id: str) -> SyncJobState | None:
         with self._lock:
             return self._jobs.get(job_id)
@@ -1109,6 +1132,47 @@ class SyncJobManager:
                 self.add_log(job_id, "success", f"检测完成: 新增 {result.get('new_pending', 0)} 条待确认记录")
                 return result
 
+            elif task_type.startswith("user_backup:"):
+                try:
+                    target_uid = int(task_type.split(":", 1)[1])
+                except (ValueError, IndexError):
+                    self.add_log(job_id, "error", f"非法的用户备份任务: {task_type}")
+                    return {}
+                self.add_log(job_id, "info", f"=== 开始备份用户 {target_uid} 的全部小说 ===")
+                stats: dict[str, int] = {"novels": 0, "skipped": 0, "assets_downloaded": 0}
+                next_query: dict[str, Any] | None = {"user_id": target_uid}
+                page_count = 0
+                processed = 0
+                while next_query:
+                    try:
+                        result = api.user_novels(**next_query)
+                    except Exception as exc:
+                        self.add_log(job_id, "error", f"获取用户小说失败: {exc}")
+                        break
+                    page_count += 1
+                    novels = getattr(result, "novels", []) or []
+                    for novel in novels:
+                        title = getattr(novel, "title", "")
+                        processed += 1
+                        self.update_progress(job_id, phase="user_backup", current=processed, total=processed, current_novel=title[:40])
+                        counters = service._sync_novel(
+                            novel, "public",
+                            settings.sync.download_assets,
+                            settings.sync.write_markdown,
+                            settings.sync.write_raw_text,
+                            source_type="user_backup",
+                            source_key=str(target_uid),
+                        )
+                        for key in ("novels", "skipped", "assets_downloaded"):
+                            stats[key] = stats.get(key, 0) + counters.get(key, 0)
+                        if not counters.get("skipped") and settings.sync.delay_seconds_between_items > 0:
+                            time.sleep(settings.sync.delay_seconds_between_items)
+                    next_query = api.parse_qs(getattr(result, "next_url", None))
+                    if next_query and settings.sync.delay_seconds_between_pages > 0:
+                        time.sleep(settings.sync.delay_seconds_between_pages)
+                self.add_log(job_id, "success", f"用户备份完成: 同步 {stats.get('novels', 0)} 本，跳过 {stats.get('skipped', 0)} 本")
+                return stats
+
             else:
                 self.add_log(job_id, "error", f"未知任务类型: {task_type}")
                 return {}
@@ -1153,7 +1217,6 @@ class SettingsManager:
         )
 
         sync_data["sync_bookmarks"] = bool(payload.get("sync_bookmarks", sync_data.get("sync_bookmarks", True)))
-        sync_data["sync_following_series"] = bool(payload.get("sync_following_series", sync_data.get("sync_following_series", True)))
         sync_data["sync_following_users"] = bool(payload.get("sync_following_users", sync_data.get("sync_following_users", True)))
         sync_data["sync_following_novels"] = bool(payload.get("sync_following_novels", sync_data.get("sync_following_novels", True)))
         sync_data["sync_subscribed_series"] = bool(payload.get("sync_subscribed_series", sync_data.get("sync_subscribed_series", True)))
@@ -1178,28 +1241,45 @@ class SettingsManager:
         
         # 定时同步设置（auto_sync_enabled 由首页按钮单独控制）
         sync_data["auto_sync_timezone"] = str(payload.get("auto_sync_timezone", sync_data.get("auto_sync_timezone", "UTC")))
+
+        # 校验 cron 表达式合法性的辅助函数
+        from .settings import cron_to_next_run as _cron_check
+
+        def _save_cron(field_name: str, default: str = "") -> str:
+            value = str(payload.get(field_name, sync_data.get(field_name, default)) or "")
+            value = value.strip()
+            if value and _cron_check(value, None, sync_data.get("auto_sync_timezone", "UTC")) is None:
+                raise ValueError(f"非法的 cron 表达式: {field_name}={value!r}")
+            return value
+
+        def _save_int(field_name: str, default: int) -> int:
+            return _normalize_int(payload.get(field_name, sync_data.get(field_name, default)), default)
+
         sync_data["auto_sync_bookmarks_enabled"] = bool(payload.get("auto_sync_bookmarks_enabled", sync_data.get("auto_sync_bookmarks_enabled", True)))
-        sync_data["auto_sync_bookmarks_interval_hours"] = int(payload.get("auto_sync_bookmarks_interval_hours", sync_data.get("auto_sync_bookmarks_interval_hours", 6)))
-        sync_data["auto_sync_bookmarks_cron"] = str(payload.get("auto_sync_bookmarks_cron", sync_data.get("auto_sync_bookmarks_cron", "")))
+        sync_data["auto_sync_bookmarks_interval_hours"] = _save_int("auto_sync_bookmarks_interval_hours", 6)
+        sync_data["auto_sync_bookmarks_cron"] = _save_cron("auto_sync_bookmarks_cron")
         sync_data["auto_sync_following_list_enabled"] = bool(payload.get("auto_sync_following_list_enabled", sync_data.get("auto_sync_following_list_enabled", True)))
-        sync_data["auto_sync_following_list_interval_hours"] = int(payload.get("auto_sync_following_list_interval_hours", sync_data.get("auto_sync_following_list_interval_hours", 24)))
-        sync_data["auto_sync_following_list_cron"] = str(payload.get("auto_sync_following_list_cron", sync_data.get("auto_sync_following_list_cron", "")))
+        sync_data["auto_sync_following_list_interval_hours"] = _save_int("auto_sync_following_list_interval_hours", 24)
+        sync_data["auto_sync_following_list_cron"] = _save_cron("auto_sync_following_list_cron")
         sync_data["auto_sync_following_novels_enabled"] = bool(payload.get("auto_sync_following_novels_enabled", sync_data.get("auto_sync_following_novels_enabled", True)))
-        sync_data["auto_sync_following_novels_interval_hours"] = int(payload.get("auto_sync_following_novels_interval_hours", sync_data.get("auto_sync_following_novels_interval_hours", 6)))
-        sync_data["auto_sync_following_novels_cron"] = str(payload.get("auto_sync_following_novels_cron", sync_data.get("auto_sync_following_novels_cron", "")))
-        sync_data["auto_sync_following_novels_users_limit"] = int(payload.get("auto_sync_following_novels_users_limit", sync_data.get("auto_sync_following_novels_users_limit", 0)))
+        sync_data["auto_sync_following_novels_interval_hours"] = _save_int("auto_sync_following_novels_interval_hours", 6)
+        sync_data["auto_sync_following_novels_cron"] = _save_cron("auto_sync_following_novels_cron")
+        sync_data["auto_sync_following_novels_users_limit"] = max(_save_int("auto_sync_following_novels_users_limit", 0), 0)
         sync_data["auto_sync_user_status_enabled"] = bool(payload.get("auto_sync_user_status_enabled", sync_data.get("auto_sync_user_status_enabled", True)))
-        sync_data["auto_sync_user_status_cron"] = str(payload.get("auto_sync_user_status_cron", sync_data.get("auto_sync_user_status_cron", "")))
+        sync_data["auto_sync_user_status_interval_hours"] = _save_int("auto_sync_user_status_interval_hours", 6)
+        sync_data["auto_sync_user_status_cron"] = _save_cron("auto_sync_user_status_cron")
         sync_data["auto_sync_novel_status_enabled"] = bool(payload.get("auto_sync_novel_status_enabled", sync_data.get("auto_sync_novel_status_enabled", True)))
-        sync_data["auto_sync_novel_status_cron"] = str(payload.get("auto_sync_novel_status_cron", sync_data.get("auto_sync_novel_status_cron", "")))
+        sync_data["auto_sync_novel_status_interval_hours"] = _save_int("auto_sync_novel_status_interval_hours", 6)
+        sync_data["auto_sync_novel_status_cron"] = _save_cron("auto_sync_novel_status_cron")
         sync_data["auto_sync_series_status_enabled"] = bool(payload.get("auto_sync_series_status_enabled", sync_data.get("auto_sync_series_status_enabled", True)))
-        sync_data["auto_sync_series_status_cron"] = str(payload.get("auto_sync_series_status_cron", sync_data.get("auto_sync_series_status_cron", "")))
+        sync_data["auto_sync_series_status_interval_hours"] = _save_int("auto_sync_series_status_interval_hours", 6)
+        sync_data["auto_sync_series_status_cron"] = _save_cron("auto_sync_series_status_cron")
         sync_data["auto_sync_subscribed_series_enabled"] = bool(payload.get("auto_sync_subscribed_series_enabled", sync_data.get("auto_sync_subscribed_series_enabled", True)))
-        sync_data["auto_sync_subscribed_series_interval_hours"] = int(payload.get("auto_sync_subscribed_series_interval_hours", sync_data.get("auto_sync_subscribed_series_interval_hours", 6)))
-        sync_data["auto_sync_subscribed_series_cron"] = str(payload.get("auto_sync_subscribed_series_cron", sync_data.get("auto_sync_subscribed_series_cron", "")))
+        sync_data["auto_sync_subscribed_series_interval_hours"] = _save_int("auto_sync_subscribed_series_interval_hours", 6)
+        sync_data["auto_sync_subscribed_series_cron"] = _save_cron("auto_sync_subscribed_series_cron")
         sync_data["auto_sync_pending_detection_enabled"] = bool(payload.get("auto_sync_pending_detection_enabled", sync_data.get("auto_sync_pending_detection_enabled", True)))
-        sync_data["auto_sync_pending_detection_interval_hours"] = int(payload.get("auto_sync_pending_detection_interval_hours", sync_data.get("auto_sync_pending_detection_interval_hours", 12)))
-        sync_data["auto_sync_pending_detection_cron"] = str(payload.get("auto_sync_pending_detection_cron", sync_data.get("auto_sync_pending_detection_cron", "")))
+        sync_data["auto_sync_pending_detection_interval_hours"] = _save_int("auto_sync_pending_detection_interval_hours", 12)
+        sync_data["auto_sync_pending_detection_cron"] = _save_cron("auto_sync_pending_detection_cron")
 
         with config_path.open("w", encoding="utf-8") as file:
             yaml.safe_dump(config_data, file, allow_unicode=True, sort_keys=False)
@@ -1209,14 +1289,38 @@ class SettingsManager:
 
 def create_app(config_path: str | None = None, env_path: str | None = None) -> Flask:
     app = Flask(__name__, template_folder="templates")
-    app.secret_key = os.urandom(24)
+    # 持久化 secret_key：优先环境变量；否则按数据目录派生稳定值，避免每次重启 session 失效
+    secret = os.getenv("PIXIV_FLASK_SECRET")
+    if not secret:
+        # 派生：使用 dashboard_token 或机器名 + db_path 派生（仅作 fallback；建议 .env 设置 PIXIV_FLASK_SECRET）
+        try:
+            _stable_settings = load_settings(config_path, env_path)
+            seed = (_stable_settings.dashboard_token or "") + str(_stable_settings.storage.db_path)
+        except Exception:
+            seed = "pixiv-novel-sync"
+        if seed:
+            import hashlib as _hashlib
+            secret = _hashlib.sha256(seed.encode("utf-8")).hexdigest()
+        else:
+            secret = os.urandom(24).hex()
+            logger.warning("Using ephemeral Flask secret_key; set PIXIV_FLASK_SECRET to persist sessions")
+    app.secret_key = secret
+    # 加固 cookie：HttpOnly + SameSite=Lax；如启用 HTTPS 可设置 SESSION_COOKIE_SECURE=true
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    if os.getenv("PIXIV_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        app.config["SESSION_COOKIE_SECURE"] = True
     settings_manager = SettingsManager(config_path)
     sync_job_manager = SyncJobManager(config_path=config_path, env_path=env_path)
     oauth_manager = OAuthManager()
     auto_sync_scheduler = AutoSyncScheduler(config_path=config_path, env_path=env_path, sync_job_manager=sync_job_manager)
     
     # 启动定时同步调度器
-    auto_sync_scheduler.start()
+    # 在 Werkzeug debug reloader 下，主进程会先启动一次再 fork 子进程；只在子进程启动调度器，避免双开
+    _is_werkzeug_reload = os.getenv("WERKZEUG_RUN_MAIN") == "true"
+    _is_debug = bool(os.getenv("FLASK_DEBUG")) or bool(os.getenv("WERKZEUG_SERVER_FD"))
+    if not _is_debug or _is_werkzeug_reload:
+        auto_sync_scheduler.start()
 
     def _auto_login_worker(task, username, password, proxy, timeout):
         """后台线程：用 Playwright 无头浏览器自动完成 Pixiv OAuth 登录"""
@@ -1243,7 +1347,14 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             logger.exception("Playwright 自动登录失败")
 
     # --- 认证中间件 ---
-    _AUTH_EXEMPT_PATHS = {"/proxy/image", "/api/auth/login", "/api/auth/logout", "/nginx-health"}
+    # /proxy/image 需要登录（防止开放代理）。OAuth 回调与健康检查路径必须豁免（无 cookie 场景）。
+    _AUTH_EXEMPT_PATHS = {
+        "/api/auth/login",
+        "/api/auth/logout",
+        "/nginx-health",
+        "/api/health",
+        "/oauth/callback",
+    }
 
     @app.before_request
     def _check_auth():
@@ -1295,7 +1406,12 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         url = request.args.get("url", "").strip()
         if not url:
             return Response("Missing url parameter", status=400)
-        hostname = urlparse(url).hostname or ""
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            return Response("Invalid scheme", status=400)
+        if parsed.port not in (None, 80, 443):
+            return Response("Invalid port", status=400)
+        hostname = parsed.hostname or ""
         if not (hostname == "pximg.net" or hostname.endswith(".pximg.net")):
             return Response("Only pixiv images are allowed", status=403)
         try:
@@ -1436,21 +1552,6 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                 "mode": "oauth",
             }
         )
-
-    @app.get("/oauth/recent")
-    def oauth_recent():
-        """返回最近一个 OAuth 任务的状态（用于回调后自动恢复）"""
-        tasks = sorted(oauth_manager._tasks.values(), key=lambda t: t.created_at, reverse=True)
-        if not tasks:
-            return jsonify({"error": "no task"}), 404
-        task = tasks[0]
-        return jsonify({
-            "task_id": task.task_id,
-            "status": task.status,
-            "message": task.message,
-            "refresh_token": task.refresh_token,
-            "user_id": task.user_id,
-        })
 
     @app.get("/oauth/task/<task_id>")
     def oauth_task(task_id: str):
@@ -1704,43 +1805,31 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
     @app.post("/api/dashboard/users/<int:user_id>/sync")
     def sync_user_novels(user_id: int):
+        """触发某用户全部小说的后台备份任务，避免阻塞 HTTP 请求。"""
         current_settings = settings_manager.load(env_path=env_path)
-        from .auth import PixivAuthManager
-        auth = PixivAuthManager(current_settings.pixiv)
-        api, _ = auth.login()
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
-        storage = FileStorage(current_settings)
-        storage.ensure_dirs([
-            current_settings.storage.public_dir,
-            current_settings.storage.private_dir,
-            current_settings.storage.db_path.parent
-        ])
+        if sync_job_manager.has_running_jobs():
+            return jsonify({"ok": False, "error": "已有同步任务正在运行，请稍后再试"}), 400
         try:
-            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=current_settings)
-            stats = {"users": 0, "novels": 0, "assets_downloaded": 0}
-            from pixivpy3 import AppPixivAPI
-            next_query: dict[str, Any] | None = {"user_id": user_id}
-            while next_query:
-                result = api.user_novels(**next_query)
-                novels = getattr(result, "novels", []) or []
-                for novel in novels:
-                    counters = service._sync_novel(
-                        novel, "public",
-                        current_settings.sync.download_assets,
-                        current_settings.sync.write_markdown,
-                        current_settings.sync.write_raw_text,
-                        source_type="user_backup",
-                        source_key=str(user_id),
-                    )
-                    for key in ["users", "novels", "assets_downloaded"]:
-                        stats[key] = stats.get(key, 0) + counters.get(key, 0)
-                next_query = api.parse_qs(getattr(result, "next_url", None))
-            return jsonify({"ok": True, "stats": stats})
+            job = sync_job_manager.start_user_backup_job(user_id)
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 500
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        # 创建 DB 日志（best-effort）
+        db = Database(current_settings.storage.db_path)
+        try:
+            db.init_schema()
+            try:
+                log_id = db.create_task_log(
+                    task_type="user_backup",
+                    task_name=f"用户 {user_id} 备份",
+                    job_id=job.job_id,
+                    is_auto_sync=False,
+                )
+                job.log_id = log_id
+            except Exception as exc:
+                logger.warning("Failed to create task log for user backup: %s", exc)
         finally:
             db.close()
+        return jsonify({"ok": True, "job_id": job.job_id})
 
     @app.get("/api/dashboard/settings")
     def dashboard_settings():
@@ -1868,40 +1957,6 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             db.close()
         return jsonify({"ok": True, "message": "任务已启动", "job": _job_to_dict(job)})
 
-    @app.post("/api/dashboard/sync/following")
-    def dashboard_sync_following():
-        current_settings = settings_manager.load(env_path=env_path)
-        auth = PixivAuthManager(current_settings.pixiv)
-        api, auth_result = auth.login()
-        if auth_result.user_id is None:
-            return jsonify({"error": "Unable to determine user ID"}), 400
-
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
-        storage = FileStorage(current_settings)
-        storage.ensure_dirs([
-            current_settings.storage.public_dir,
-            current_settings.storage.private_dir,
-            current_settings.storage.db_path.parent
-        ])
-
-        try:
-            service = BookmarkNovelSyncService(
-                api=api, db=db, storage=storage, settings=current_settings
-            )
-            stats = service.sync_following_novels(
-                download_assets=current_settings.sync.download_assets,
-                write_markdown=current_settings.sync.write_markdown,
-                write_raw_text=current_settings.sync.write_raw_text,
-            )
-            logger.info("Following novels sync finished: %s", json.dumps(stats, ensure_ascii=False))
-            return jsonify({"ok": True, "stats": stats})
-        except Exception as exc:
-            logger.exception("Following novels sync failed")
-            return jsonify({"error": str(exc)}), 500
-        finally:
-            db.close()
-
     @app.post("/api/dashboard/sync/subscribed-series")
     def dashboard_sync_subscribed_series():
         current_settings = settings_manager.load(env_path=env_path)
@@ -2008,6 +2063,24 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             return jsonify(result)
         except Exception as e:
             logger.error("获取日志失败：%s", e)
+            return jsonify({"error": str(e)}), 500
+
+    @app.get("/api/dashboard/logs/<int:log_id>")
+    def get_log_detail(log_id: int):
+        """获取单条任务日志详情"""
+        try:
+            current_settings = settings_manager.load(env_path=env_path)
+            db = Database(current_settings.storage.db_path)
+            db.init_schema()
+            try:
+                item = db.get_task_log_by_id(log_id)
+            finally:
+                db.close()
+            if not item:
+                return jsonify({"error": "log not found"}), 404
+            return jsonify(item)
+        except Exception as e:
+            logger.error("获取日志详情失败：%s", e)
             return jsonify({"error": str(e)}), 500
 
     @app.get("/api/cache/status")
@@ -2369,7 +2442,6 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "delay_seconds_between_items": settings.sync.delay_seconds_between_items,
         "delay_seconds_between_pages": settings.sync.delay_seconds_between_pages,
         "sync_bookmarks": settings.sync.sync_bookmarks,
-        "sync_following_series": settings.sync.sync_following_series,
         "sync_following_users": settings.sync.sync_following_users,
         "sync_following_novels": settings.sync.sync_following_novels,
         "sync_subscribed_series": settings.sync.sync_subscribed_series,
@@ -2445,6 +2517,16 @@ def _normalize_optional_int(value: Any) -> int | None:
     if result <= 0:
         raise ValueError("整数值必须大于 0")
     return result
+
+
+def _normalize_int(value: Any, default: int) -> int:
+    """容错地把任意输入转成整数；空串/None/非法输入返回 default。"""
+    if value in (None, ""):
+        return int(default)
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return int(default)
 
 
 def _normalize_float(value: Any, min_value: float = 0.0) -> float:

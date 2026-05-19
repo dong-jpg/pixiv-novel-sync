@@ -2,6 +2,9 @@ pixiv:
   timeout: 30
   verify_ssl: true
   proxy: null
+  # web_cookie 也可以放这里（建议优先用环境变量 PIXIV_WEB_COOKIE）
+  web_cookie: null
+
 sync:
   enabled: false
   initial_manual_only: true
@@ -15,6 +18,60 @@ sync:
   max_pages_per_run: 2
   delay_seconds_between_items: 1.5
   delay_seconds_between_pages: 2.0
+  delay_seconds_between_series: 3.0
+  delay_seconds_between_chapters: 1.0
+  delay_seconds_between_skips: 0.1
+
+  # 同步内容开关
+  sync_bookmarks: true
+  sync_following_users: true
+  sync_following_novels: true
+  sync_subscribed_series: true
+
+  # 系列限速
+  series_sync_limit: 0  # 0 = 全部
+
+  # ---- 定时任务 ----
+  # 全局开关。仅在 dashboard "启用自动同步" 按钮按下时开启
+  auto_sync_enabled: false
+  # 时区，决定 cron 表达式的解释。如 Asia/Shanghai / Asia/Tokyo / UTC
+  auto_sync_timezone: UTC
+
+  # 各任务开关 / interval / cron。cron 优先于 interval；cron 留空时使用 interval
+  auto_sync_bookmarks_enabled: true
+  auto_sync_bookmarks_interval_hours: 6
+  auto_sync_bookmarks_cron: ""
+
+  auto_sync_following_list_enabled: true
+  auto_sync_following_list_interval_hours: 24
+  auto_sync_following_list_cron: ""
+
+  auto_sync_following_novels_enabled: true
+  auto_sync_following_novels_interval_hours: 6
+  auto_sync_following_novels_cron: ""
+  # 0 = 不限制每轮扫描的关注用户数
+  auto_sync_following_novels_users_limit: 0
+
+  auto_sync_user_status_enabled: true
+  auto_sync_user_status_interval_hours: 6
+  auto_sync_user_status_cron: ""
+
+  auto_sync_novel_status_enabled: true
+  auto_sync_novel_status_interval_hours: 6
+  auto_sync_novel_status_cron: ""
+
+  auto_sync_series_status_enabled: true
+  auto_sync_series_status_interval_hours: 6
+  auto_sync_series_status_cron: ""
+
+  auto_sync_subscribed_series_enabled: true
+  auto_sync_subscribed_series_interval_hours: 6
+  auto_sync_subscribed_series_cron: ""
+
+  auto_sync_pending_detection_enabled: true
+  auto_sync_pending_detection_interval_hours: 12
+  auto_sync_pending_detection_cron: ""
+
 storage:
   public_dir: ./data/library/public
   private_dir: ./data/library/private

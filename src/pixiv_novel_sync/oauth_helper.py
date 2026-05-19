@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
+import os
 import secrets
 import time
 from dataclasses import dataclass
@@ -11,6 +13,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 PIXIV_AUTH_BASE = "https://app-api.pixiv.net/web/v1/login"
 PIXIV_TOKEN_ENDPOINT = "https://oauth.secure.pixiv.net/auth/token"
@@ -86,8 +90,9 @@ class OAuthManager:
         try:
             response.raise_for_status()
         except requests.HTTPError as exc:
-            detail = response.text.strip()
-            raise RuntimeError(f"Pixiv token 接口返回 {response.status_code}: {detail}") from exc
+            # 不要把 response.text 透出，可能含敏感信息
+            logger.warning("Pixiv token endpoint returned %s", response.status_code)
+            raise RuntimeError(f"Pixiv token 接口返回 HTTP {response.status_code}") from exc
         payload = response.json()
         response_data = payload.get("response", payload)
         task.access_token = response_data.get("access_token")
@@ -132,7 +137,10 @@ class OAuthManager:
         for key, value in updates.items():
             if key not in seen:
                 result.append(f"{key}={value}")
-        env_path.write_text("\n".join(result) + "\n", encoding="utf-8")
+        # 原子写入：先写临时文件，再 rename，避免崩溃中途丢失 token
+        tmp_path = env_path.with_suffix(env_path.suffix + ".tmp")
+        tmp_path.write_text("\n".join(result) + "\n", encoding="utf-8")
+        os.replace(tmp_path, env_path)
 
     def sync_state_from_callback_url(self, task: OAuthTask, callback_url: str) -> OAuthTask:
         parsed = urlparse(callback_url.strip())

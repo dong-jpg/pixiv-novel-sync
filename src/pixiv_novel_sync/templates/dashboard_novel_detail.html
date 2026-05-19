@@ -297,6 +297,6 @@
       }
     }
   </script>
-<script>(function(){fetch("/api/dashboard/pending-deletions/count").then(function(r){return r.json()}).then(function(d){var b=document.getElementById("pendingBadge");if(b</body></body>d.count>0){b.textContent=d.count;b.style.display="inline-flex"}}).catch(function(){})})();</script>
+<script>(function(){fetch("/api/dashboard/pending-deletions/count").then(function(r){return r.json()}).then(function(d){var b=document.getElementById("pendingBadge");if(b && d.count>0){b.textContent=d.count;b.style.display="inline-flex"}}).catch(function(){})})();</script>
 </body>
 </html>

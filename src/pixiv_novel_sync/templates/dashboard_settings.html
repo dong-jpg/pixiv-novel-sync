@@ -156,10 +156,6 @@
               <label for="syncBookmarks">同步收藏小说</label>
             </div>
             <div class="check-item">
-              <input type="checkbox" id="syncFollowingSeries">
-              <label for="syncFollowingSeries">同步关注用户的系列</label>
-            </div>
-            <div class="check-item">
               <input type="checkbox" id="syncFollowingUsers">
               <label for="syncFollowingUsers">同步关注用户列表</label>
             </div>
@@ -312,11 +308,23 @@
             </div>
             <div class="check-item">
               <input type="checkbox" id="autoSyncUserStatus">
-              <label for="autoSyncUserStatus">关注用户的用户状态更新</label>
+              <label for="autoSyncUserStatus">检查关注用户状态</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="autoSyncNovelStatus">
+              <label for="autoSyncNovelStatus">检查小说状态</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="autoSyncSeriesStatus">
+              <label for="autoSyncSeriesStatus">检查系列状态</label>
             </div>
             <div class="check-item">
               <input type="checkbox" id="autoSyncSubscribedSeries">
               <label for="autoSyncSubscribedSeries">我的追更系列</label>
+            </div>
+            <div class="check-item">
+              <input type="checkbox" id="autoSyncPendingDetection">
+              <label for="autoSyncPendingDetection">检测取消收藏 / 取消追更</label>
             </div>
           </div>
         </div>
@@ -337,8 +345,24 @@
               <input type="number" id="autoSyncFollowingNovelsInterval" min="1" max="24" placeholder="6">
             </div>
             <div class="field">
+              <label for="autoSyncUserStatusInterval">用户状态间隔</label>
+              <input type="number" id="autoSyncUserStatusInterval" min="1" max="168" placeholder="6">
+            </div>
+            <div class="field">
+              <label for="autoSyncNovelStatusInterval">小说状态间隔</label>
+              <input type="number" id="autoSyncNovelStatusInterval" min="1" max="168" placeholder="6">
+            </div>
+            <div class="field">
+              <label for="autoSyncSeriesStatusInterval">系列状态间隔</label>
+              <input type="number" id="autoSyncSeriesStatusInterval" min="1" max="168" placeholder="6">
+            </div>
+            <div class="field">
               <label for="autoSyncSubscribedSeriesInterval">追更间隔</label>
               <input type="number" id="autoSyncSubscribedSeriesInterval" min="1" max="24" placeholder="6">
+            </div>
+            <div class="field">
+              <label for="autoSyncPendingDetectionInterval">取消检测间隔</label>
+              <input type="number" id="autoSyncPendingDetectionInterval" min="1" max="168" placeholder="12">
             </div>
           </div>
         </div>
@@ -364,8 +388,20 @@
               <input type="text" id="autoSyncUserStatusCron" placeholder="0 6 * * *">
             </div>
             <div class="field">
+              <label for="autoSyncNovelStatusCron">小说状态检查 Cron</label>
+              <input type="text" id="autoSyncNovelStatusCron" placeholder="">
+            </div>
+            <div class="field">
+              <label for="autoSyncSeriesStatusCron">系列状态检查 Cron</label>
+              <input type="text" id="autoSyncSeriesStatusCron" placeholder="">
+            </div>
+            <div class="field">
               <label for="autoSyncSubscribedSeriesCron">追更系列 Cron</label>
               <input type="text" id="autoSyncSubscribedSeriesCron" placeholder="0 7 * * *">
+            </div>
+            <div class="field">
+              <label for="autoSyncPendingDetectionCron">取消检测 Cron</label>
+              <input type="text" id="autoSyncPendingDetectionCron" placeholder="">
             </div>
           </div>
         </div>
@@ -480,10 +516,9 @@
       function populateSettings(s) {
         // 基础设置 - 同步内容
         checked("#syncBookmarks", s.sync_bookmarks);
-        checked("#syncFollowingSeries", s.sync_following_series);
         checked("#syncFollowingUsers", s.sync_following_users);
         checked("#syncFollowingNovels", s.sync_following_novels);
-        
+
         // 基础设置 - 同步选项
         checked("#enabled", s.enabled);
         checked("#initialManualOnly", s.initial_manual_only);
@@ -492,7 +527,7 @@
         checked("#writeRawText", s.write_raw_text);
         checked("#restrictPublic", (s.bookmark_restricts || []).includes('public'));
         checked("#restrictPrivate", (s.bookmark_restricts || []).includes('private'));
-        
+
         // 限速参数
         valueOf("#maxItems", s.max_items_per_run);
         valueOf("#maxPages", s.max_pages_per_run);
@@ -503,24 +538,34 @@
         valueOf("#skipDelay", s.delay_seconds_between_skips ?? 0.1);
         valueOf("#followingNovelsUsersLimit", s.auto_sync_following_novels_users_limit ?? 0);
         valueOf("#seriesSyncLimit", s.series_sync_limit ?? 0);
-        
+
         // 定时同步
         valueOf("#autoSyncTimezone", s.auto_sync_timezone || 'UTC');
         checked("#autoSyncBookmarks", s.auto_sync_bookmarks_enabled);
         checked("#autoSyncFollowingList", s.auto_sync_following_list_enabled);
         checked("#autoSyncFollowingNovels", s.auto_sync_following_novels_enabled);
         checked("#autoSyncUserStatus", s.auto_sync_user_status_enabled);
+        checked("#autoSyncNovelStatus", s.auto_sync_novel_status_enabled);
+        checked("#autoSyncSeriesStatus", s.auto_sync_series_status_enabled);
         checked("#autoSyncSubscribedSeries", s.auto_sync_subscribed_series_enabled);
+        checked("#autoSyncPendingDetection", s.auto_sync_pending_detection_enabled);
         valueOf("#autoSyncBookmarksInterval", s.auto_sync_bookmarks_interval_hours ?? 6);
         valueOf("#autoSyncFollowingListInterval", s.auto_sync_following_list_interval_hours ?? 24);
         valueOf("#autoSyncFollowingNovelsInterval", s.auto_sync_following_novels_interval_hours ?? 6);
+        valueOf("#autoSyncUserStatusInterval", s.auto_sync_user_status_interval_hours ?? 6);
+        valueOf("#autoSyncNovelStatusInterval", s.auto_sync_novel_status_interval_hours ?? 6);
+        valueOf("#autoSyncSeriesStatusInterval", s.auto_sync_series_status_interval_hours ?? 6);
         valueOf("#autoSyncSubscribedSeriesInterval", s.auto_sync_subscribed_series_interval_hours ?? 6);
+        valueOf("#autoSyncPendingDetectionInterval", s.auto_sync_pending_detection_interval_hours ?? 12);
         valueOf("#autoSyncBookmarksCron", s.auto_sync_bookmarks_cron ?? '');
         valueOf("#autoSyncFollowingListCron", s.auto_sync_following_list_cron ?? '');
         valueOf("#autoSyncFollowingNovelsCron", s.auto_sync_following_novels_cron ?? '');
         valueOf("#autoSyncUserStatusCron", s.auto_sync_user_status_cron ?? '');
+        valueOf("#autoSyncNovelStatusCron", s.auto_sync_novel_status_cron ?? '');
+        valueOf("#autoSyncSeriesStatusCron", s.auto_sync_series_status_cron ?? '');
         valueOf("#autoSyncSubscribedSeriesCron", s.auto_sync_subscribed_series_cron ?? '');
-        
+        valueOf("#autoSyncPendingDetectionCron", s.auto_sync_pending_detection_cron ?? '');
+
         // 更新定时同步状态
         loadAutoSyncStatus();
       }
@@ -537,7 +582,6 @@
         if ($("#restrictPrivate").checked) restricts.push('private');
         return {
           sync_bookmarks: $("#syncBookmarks").checked,
-          sync_following_series: $("#syncFollowingSeries").checked,
           sync_following_users: $("#syncFollowingUsers").checked,
           sync_following_novels: $("#syncFollowingNovels").checked,
           enabled: $("#enabled").checked,
@@ -570,16 +614,26 @@
           auto_sync_following_list_enabled: $("#autoSyncFollowingList").checked,
           auto_sync_following_novels_enabled: $("#autoSyncFollowingNovels").checked,
           auto_sync_user_status_enabled: $("#autoSyncUserStatus").checked,
+          auto_sync_novel_status_enabled: $("#autoSyncNovelStatus").checked,
+          auto_sync_series_status_enabled: $("#autoSyncSeriesStatus").checked,
           auto_sync_subscribed_series_enabled: $("#autoSyncSubscribedSeries").checked,
+          auto_sync_pending_detection_enabled: $("#autoSyncPendingDetection").checked,
           auto_sync_bookmarks_interval_hours: $("#autoSyncBookmarksInterval").value.trim(),
           auto_sync_bookmarks_cron: $("#autoSyncBookmarksCron").value.trim(),
           auto_sync_following_list_interval_hours: $("#autoSyncFollowingListInterval").value.trim(),
           auto_sync_following_list_cron: $("#autoSyncFollowingListCron").value.trim(),
           auto_sync_following_novels_interval_hours: $("#autoSyncFollowingNovelsInterval").value.trim(),
           auto_sync_following_novels_cron: $("#autoSyncFollowingNovelsCron").value.trim(),
+          auto_sync_user_status_interval_hours: $("#autoSyncUserStatusInterval").value.trim(),
           auto_sync_user_status_cron: $("#autoSyncUserStatusCron").value.trim(),
+          auto_sync_novel_status_interval_hours: $("#autoSyncNovelStatusInterval").value.trim(),
+          auto_sync_novel_status_cron: $("#autoSyncNovelStatusCron").value.trim(),
+          auto_sync_series_status_interval_hours: $("#autoSyncSeriesStatusInterval").value.trim(),
+          auto_sync_series_status_cron: $("#autoSyncSeriesStatusCron").value.trim(),
           auto_sync_subscribed_series_interval_hours: $("#autoSyncSubscribedSeriesInterval").value.trim(),
           auto_sync_subscribed_series_cron: $("#autoSyncSubscribedSeriesCron").value.trim(),
+          auto_sync_pending_detection_interval_hours: $("#autoSyncPendingDetectionInterval").value.trim(),
+          auto_sync_pending_detection_cron: $("#autoSyncPendingDetectionCron").value.trim(),
         };
       }
 
@@ -731,6 +785,6 @@
       loadCacheStatus();
     })();
   </script>
-<script>(function(){fetch("/api/dashboard/pending-deletions/count").then(function(r){return r.json()}).then(function(d){var b=document.getElementById("pendingBadge");if(b</body></body>d.count>0){b.textContent=d.count;b.style.display="inline-flex"}}).catch(function(){})})();</script>
+<script>(function(){fetch("/api/dashboard/pending-deletions/count").then(function(r){return r.json()}).then(function(d){var b=document.getElementById("pendingBadge");if(b && d.count>0){b.textContent=d.count;b.style.display="inline-flex"}}).catch(function(){})})();</script>
 </body>
 </html>

@@ -67,15 +67,18 @@ echo -e "${GREEN}[5/8] 配置文件...${NC}"
 if [ -f ".env.bak" ]; then
     mv .env.bak .env
     echo "  已恢复 .env 配置"
-else
+elif [ -f ".env.example" ]; then
     cp .env.example .env
     echo -e "  ${YELLOW}请编辑 $INSTALL_DIR/.env 填入你的 Pixiv token${NC}"
+else
+    : > .env
+    echo -e "  ${YELLOW}.env.example 不存在，已创建空 .env，请手动填写${NC}"
 fi
 
 if [ -f "config/config.yaml.bak" ]; then
     mv config/config.yaml.bak config/config.yaml
     echo "  已恢复 config.yaml 配置"
-else
+elif [ -f "config/config.yaml.example" ]; then
     cp config/config.yaml.example config/config.yaml
 fi
 
