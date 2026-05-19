@@ -295,6 +295,12 @@ class PlaywrightLoginHelper:
     def _do_login_web(self, p: Any, username: str, password: str) -> dict[str, Any]:
         browser = None
         try:
+            from playwright_stealth import stealth_sync
+        except ImportError:
+            stealth_sync = None
+            logger.warning("playwright-stealth 未安装，将尝试无 stealth 模式登录")
+
+        try:
             launch_args: dict[str, Any] = {
                 "headless": True,
                 "args": [
@@ -302,6 +308,8 @@ class PlaywrightLoginHelper:
                     "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars",
+                    "--window-size=1280,800",
                 ],
             }
             if self.proxy:
@@ -309,15 +317,39 @@ class PlaywrightLoginHelper:
 
             browser = p.chromium.launch(**launch_args)
             context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
                 viewport={"width": 1280, "height": 800},
-                locale="zh-CN",
+                locale="ja-JP",
+                timezone_id="Asia/Tokyo",
+                color_scheme="light",
             )
             page = context.new_page()
+
+            # 应用 stealth 补丁绕过 Cloudflare 检测
+            if stealth_sync:
+                stealth_sync(page)
+                logger.info("已应用 playwright-stealth 反检测补丁")
 
             # 导航到 Pixiv 登录页
             logger.info("Web Cookie 刷新: 打开 Pixiv 登录页...")
             page.goto("https://accounts.pixiv.net/login", wait_until="domcontentloaded", timeout=self.timeout)
+
+            # 等待页面稳定（给 Cloudflare challenge 时间通过）
+            time.sleep(3)
+
+            # 检查是否被 Cloudflare 拦截
+            page_content = page.content()
+            if "challenge-platform" in page_content or "Just a moment" in page_content:
+                logger.info("检测到 Cloudflare challenge，等待自动通过...")
+                # 等待 Cloudflare challenge 完成
+                for _ in range(20):
+                    time.sleep(2)
+                    page_content = page.content()
+                    if "challenge-platform" not in page_content and "Just a moment" not in page_content:
+                        break
+                else:
+                    self._save_screenshot(page, "web_login_cloudflare_blocked")
+                    return {"success": False, "error": "Cloudflare 验证未通过，请稍后重试"}
 
             # 等待登录表单
             username_selector = 'input[autocomplete="username"], input[type="email"], input[name="email"]'
@@ -333,9 +365,15 @@ class PlaywrightLoginHelper:
                     self._save_screenshot(page, "web_login_form_not_found")
                     return {"success": False, "error": "无法找到登录表单"}
 
-            # 填写凭据
+            # 模拟人类输入：先点击输入框，短暂延迟后逐字输入
             logger.info("Web Cookie 刷新: 填写登录信息...")
-            page.fill(username_selector, username)
+            page.click(username_selector)
+            time.sleep(0.5)
+            page.fill(username_selector, "")
+            page.type(username_selector, username, delay=50)
+
+            time.sleep(0.8)
+
             try:
                 page.wait_for_selector(password_selector, timeout=5000)
             except Exception:
@@ -346,7 +384,12 @@ class PlaywrightLoginHelper:
                     self._save_screenshot(page, "web_login_password_not_found")
                     return {"success": False, "error": "无法找到密码输入框"}
 
-            page.fill(password_selector, password)
+            page.click(password_selector)
+            time.sleep(0.3)
+            page.fill(password_selector, "")
+            page.type(password_selector, password, delay=30)
+
+            time.sleep(0.5)
 
             # 检查 CAPTCHA
             if self._detect_captcha(page):
@@ -356,9 +399,9 @@ class PlaywrightLoginHelper:
             # 点击登录
             submit_selectors = [
                 'button[type="submit"]',
-                'button:has-text("登录")',
-                'button:has-text("Login")',
                 'button:has-text("ログイン")',
+                'button:has-text("Login")',
+                'button:has-text("登录")',
                 'input[type="submit"]',
             ]
             clicked = False
