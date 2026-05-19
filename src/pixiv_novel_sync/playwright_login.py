@@ -283,8 +283,14 @@ class PlaywrightLoginHelper:
         except ImportError:
             return {"success": False, "error": "playwright 未安装"}
 
-        with sync_playwright() as p:
-            return self._do_login_web(p, username, password)
+        # Web 登录需要更长超时（页面加载慢）
+        original_timeout = self.timeout
+        self.timeout = max(self.timeout, 60000)  # 至少 60 秒
+        try:
+            with sync_playwright() as p:
+                return self._do_login_web(p, username, password)
+        finally:
+            self.timeout = original_timeout
 
     def _do_login_web(self, p: Any, username: str, password: str) -> dict[str, Any]:
         browser = None
@@ -311,7 +317,7 @@ class PlaywrightLoginHelper:
 
             # 导航到 Pixiv 登录页
             logger.info("Web Cookie 刷新: 打开 Pixiv 登录页...")
-            page.goto("https://accounts.pixiv.net/login", wait_until="networkidle", timeout=self.timeout)
+            page.goto("https://accounts.pixiv.net/login", wait_until="domcontentloaded", timeout=self.timeout)
 
             # 等待登录表单
             username_selector = 'input[autocomplete="username"], input[type="email"], input[name="email"]'
@@ -373,9 +379,10 @@ class PlaywrightLoginHelper:
             try:
                 page.wait_for_url("**/pixiv.net/**", timeout=self.timeout)
                 # 额外等待确保 cookie 完全设置
-                time.sleep(2)
+                time.sleep(3)
             except Exception:
-                pass
+                # 即使超时也尝试检查 cookie，可能已经登录成功
+                time.sleep(2)
 
             # 检查是否登录成功：看 cookie 里有没有 PHPSESSID
             cookies = context.cookies("https://www.pixiv.net")
