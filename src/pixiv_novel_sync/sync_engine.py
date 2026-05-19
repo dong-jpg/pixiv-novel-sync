@@ -217,7 +217,22 @@ class BookmarkNovelSyncService:
                         timeout=self.settings.pixiv.timeout,
                         verify=self.settings.pixiv.verify_ssl,
                     )
-                    
+
+                    if response.status_code in (401, 403):
+                        # Cookie 过期，尝试自动刷新
+                        logger.warning("Web Cookie 已过期 (status=%d)，尝试自动刷新...", response.status_code)
+                        new_cookie = self._auto_refresh_web_cookie()
+                        if new_cookie:
+                            web_cookie = new_cookie
+                            headers["Cookie"] = new_cookie
+                            response = http_requests.get(
+                                endpoint, headers=headers, proxies=proxies,
+                                timeout=self.settings.pixiv.timeout,
+                                verify=self.settings.pixiv.verify_ssl,
+                            )
+                        else:
+                            logger.warning("Web Cookie 自动刷新失败，跳过追更系列检查")
+
                     if response.status_code == 200:
                         data = response.json()
                         body = data.get("body", {})
@@ -707,6 +722,23 @@ class BookmarkNovelSyncService:
                             verify=self.settings.pixiv.verify_ssl,
                         )
                         logger.info("Web API %s returned status: %s", endpoint, response.status_code)
+                        if response.status_code in (401, 403):
+                            # Cookie 过期，尝试自动刷新
+                            logger.warning("Web Cookie 已过期 (status=%d)，尝试自动刷新...", response.status_code)
+                            new_cookie = self._auto_refresh_web_cookie()
+                            if new_cookie:
+                                web_cookie = new_cookie
+                                headers["Cookie"] = new_cookie
+                                # 用新 cookie 重试
+                                response = http_requests.get(
+                                    endpoint, headers=headers, proxies=proxies,
+                                    timeout=self.settings.pixiv.timeout,
+                                    verify=self.settings.pixiv.verify_ssl,
+                                )
+                                logger.info("Retry with new cookie, status: %s", response.status_code)
+                            else:
+                                logger.warning("Web Cookie 自动刷新失败，跳过 Web API")
+                                continue
                         if response.status_code == 200:
                             data = response.json()
                             if data.get("error"):
@@ -1110,6 +1142,75 @@ class BookmarkNovelSyncService:
             "new_pending": bookmark_stats.get("new_pending", 0) + series_stats.get("new_pending", 0),
         }
 
+    def _auto_refresh_web_cookie(self) -> str | None:
+        """使用 Playwright + 账号密码自动刷新 Web Cookie。
+
+        成功时返回新的 cookie 字符串并保存到 .env，失败返回 None。
+        """
+        username = self.settings.pixiv.username
+        password = self.settings.pixiv.password
+        if not username or not password:
+            logger.warning("无法自动刷新 Web Cookie: 未配置 PIXIV_USERNAME / PIXIV_PASSWORD")
+            return None
+
+        try:
+            from .playwright_login import PlaywrightLoginHelper
+
+            helper = PlaywrightLoginHelper(
+                proxy=self.settings.pixiv.proxy,
+                timeout=self.settings.pixiv.timeout,
+            )
+            result = helper.login_web(username, password)
+            if result.get("success") and result.get("cookie_string"):
+                new_cookie = result["cookie_string"]
+                # 保存到 .env
+                self._save_web_cookie_to_env(new_cookie)
+                # 更新当前 settings 实例
+                self.settings.pixiv.web_cookie = new_cookie
+                logger.info("Web Cookie 自动刷新成功")
+                return new_cookie
+            else:
+                logger.warning("Web Cookie 自动刷新失败: %s", result.get("error", "unknown"))
+                return None
+        except Exception as exc:
+            logger.warning("Web Cookie 自动刷新异常: %s", exc)
+            return None
+
+    def _save_web_cookie_to_env(self, cookie_string: str) -> None:
+        """将新的 Web Cookie 写入 .env 文件。"""
+        from pathlib import Path
+        import os
+
+        # 查找 .env 文件路径
+        env_path = Path(os.getenv("ENV_PATH", ".env"))
+        if not env_path.exists():
+            # 尝试常见位置
+            for candidate in [Path(".env"), Path("data/.env"), Path.home() / "pixiv-novel-sync" / ".env"]:
+                if candidate.exists():
+                    env_path = candidate
+                    break
+
+        if env_path.exists():
+            content = env_path.read_text(encoding="utf-8")
+            lines = content.splitlines()
+            new_lines = []
+            found = False
+            for line in lines:
+                if line.startswith("PIXIV_WEB_COOKIE="):
+                    new_lines.append(f"PIXIV_WEB_COOKIE={cookie_string}")
+                    found = True
+                else:
+                    new_lines.append(line)
+            if not found:
+                new_lines.append(f"PIXIV_WEB_COOKIE={cookie_string}")
+            # 原子写入
+            tmp_path = env_path.with_suffix(".env.tmp")
+            tmp_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+            os.replace(str(tmp_path), str(env_path))
+            logger.info("Web Cookie 已保存到 %s", env_path)
+        else:
+            logger.warning("未找到 .env 文件，无法保存 Web Cookie")
+
     def detect_unbookmarked_novels(self, user_id: int, restricts: Iterable[str],
                                     progress_callback: Any = None) -> dict[str, int]:
         """检测用户取消收藏的小说。
@@ -1366,9 +1467,19 @@ class BookmarkNovelSyncService:
                 "Cookie": web_cookie,
             }
             proxies = {"http": self.settings.pixiv.proxy, "https": self.settings.pixiv.proxy} if self.settings.pixiv.proxy else None
-            endpoint = "https://www.pixiv.net/ajax/watch_list/novel?p=1&new=1&lang=zh"
+            endpoint = "https://www.pixiv.net/ajax/watch_list/novel?p=1&lang=zh"
             response = http_requests.get(endpoint, headers=headers, proxies=proxies,
                                          timeout=self.settings.pixiv.timeout, verify=self.settings.pixiv.verify_ssl)
+            if response.status_code in (401, 403):
+                logger.warning("Web Cookie 已过期 (status=%d)，尝试自动刷新...", response.status_code)
+                new_cookie = self._auto_refresh_web_cookie()
+                if new_cookie:
+                    headers["Cookie"] = new_cookie
+                    response = http_requests.get(endpoint, headers=headers, proxies=proxies,
+                                                 timeout=self.settings.pixiv.timeout, verify=self.settings.pixiv.verify_ssl)
+                else:
+                    logger.warning("Web Cookie 自动刷新失败")
+                    return None  # type: ignore[return-value]
             if response.status_code != 200:
                 logger.warning("Watchlist endpoint returned %s", response.status_code)
                 return None  # type: ignore[return-value]

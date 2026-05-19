@@ -271,6 +271,134 @@ class PlaywrightLoginHelper:
                 continue
         return None
 
+    def login_web(self, username: str, password: str) -> dict[str, Any]:
+        """普通网页登录 pixiv.net，获取 Web Cookie（PHPSESSID 等）。
+
+        Returns:
+            {"success": True, "cookie_string": "k1=v1; k2=v2; ..."}
+            或 {"success": False, "error": "..."}
+        """
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            return {"success": False, "error": "playwright 未安装"}
+
+        with sync_playwright() as p:
+            return self._do_login_web(p, username, password)
+
+    def _do_login_web(self, p: Any, username: str, password: str) -> dict[str, Any]:
+        browser = None
+        try:
+            launch_args: dict[str, Any] = {
+                "headless": True,
+                "args": [
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            }
+            if self.proxy:
+                launch_args["proxy"] = {"server": self.proxy}
+
+            browser = p.chromium.launch(**launch_args)
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 800},
+                locale="zh-CN",
+            )
+            page = context.new_page()
+
+            # 导航到 Pixiv 登录页
+            logger.info("Web Cookie 刷新: 打开 Pixiv 登录页...")
+            page.goto("https://accounts.pixiv.net/login", wait_until="networkidle", timeout=self.timeout)
+
+            # 等待登录表单
+            username_selector = 'input[autocomplete="username"], input[type="email"], input[name="email"]'
+            password_selector = 'input[autocomplete="current-password"], input[type="password"]'
+
+            try:
+                page.wait_for_selector(username_selector, timeout=self.timeout)
+            except Exception:
+                try:
+                    page.wait_for_selector('input[name="pixiv_id"]', timeout=5000)
+                    username_selector = 'input[name="pixiv_id"]'
+                except Exception:
+                    self._save_screenshot(page, "web_login_form_not_found")
+                    return {"success": False, "error": "无法找到登录表单"}
+
+            # 填写凭据
+            logger.info("Web Cookie 刷新: 填写登录信息...")
+            page.fill(username_selector, username)
+            try:
+                page.wait_for_selector(password_selector, timeout=5000)
+            except Exception:
+                try:
+                    page.wait_for_selector('input[name="password"]', timeout=5000)
+                    password_selector = 'input[name="password"]'
+                except Exception:
+                    self._save_screenshot(page, "web_login_password_not_found")
+                    return {"success": False, "error": "无法找到密码输入框"}
+
+            page.fill(password_selector, password)
+
+            # 检查 CAPTCHA
+            if self._detect_captcha(page):
+                self._save_screenshot(page, "web_login_captcha")
+                return {"success": False, "error": "检测到验证码，无法自动登录"}
+
+            # 点击登录
+            submit_selectors = [
+                'button[type="submit"]',
+                'button:has-text("登录")',
+                'button:has-text("Login")',
+                'button:has-text("ログイン")',
+                'input[type="submit"]',
+            ]
+            clicked = False
+            for sel in submit_selectors:
+                try:
+                    btn = page.query_selector(sel)
+                    if btn and btn.is_visible():
+                        btn.click()
+                        clicked = True
+                        break
+                except Exception:
+                    continue
+            if not clicked:
+                page.keyboard.press("Enter")
+
+            # 等待登录完成（跳转到首页或其他页面）
+            logger.info("Web Cookie 刷新: 等待登录完成...")
+            try:
+                page.wait_for_url("**/pixiv.net/**", timeout=self.timeout)
+                # 额外等待确保 cookie 完全设置
+                time.sleep(2)
+            except Exception:
+                pass
+
+            # 检查是否登录成功：看 cookie 里有没有 PHPSESSID
+            cookies = context.cookies("https://www.pixiv.net")
+            cookie_dict = {c["name"]: c["value"] for c in cookies}
+
+            if "PHPSESSID" not in cookie_dict:
+                # 可能还在登录页，检查错误
+                error_msg = self._extract_error_message(page)
+                self._save_screenshot(page, "web_login_failed")
+                return {"success": False, "error": error_msg or "登录失败，未获取到 PHPSESSID"}
+
+            # 构建 cookie 字符串
+            cookie_string = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+            logger.info("Web Cookie 刷新成功，获取到 %d 个 cookie", len(cookies))
+            return {"success": True, "cookie_string": cookie_string}
+
+        except Exception as exc:
+            logger.exception("Web Cookie 刷新异常")
+            return {"success": False, "error": f"登录异常: {exc}"}
+        finally:
+            if browser:
+                browser.close()
+
     def _save_screenshot(self, page: Any, name: str) -> str | None:
         """保存页面截图。"""
         try:
