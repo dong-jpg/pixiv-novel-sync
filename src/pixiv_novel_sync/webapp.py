@@ -1740,7 +1740,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     def dashboard_users():
         current_settings = settings_manager.load(env_path=env_path)
         page = max(int(request.args.get("page", 1) or 1), 1)
-        page_size = 10
+        page_size = 12
         status = str(request.args.get("status", "all") or "all").strip().lower()
         if status not in {"all", "normal", "suspended", "cleared", "no_novels", "unknown"}:
             status = "all"
