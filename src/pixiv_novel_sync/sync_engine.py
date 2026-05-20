@@ -935,15 +935,14 @@ class BookmarkNovelSyncService:
                                 ))
                             logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
 
-                            # 水位线优化：章节数没变则跳过整个系列
-                            local_series = self.db.conn.execute(
-                                "SELECT total_novels FROM series WHERE series_id = ?", (int(sid),)
-                            ).fetchone()
-                            local_total = local_series[0] if local_series else 0
-                            if local_total > 0 and (total or 0) <= local_total:
-                                logger.info("Series %s unchanged (%d <= %d chapters), skipping chapter sync", sid, total, local_total)
+                            # 水位线优化：本地已同步章节数 >= 远端总数则跳过
+                            local_synced = self.db.conn.execute(
+                                "SELECT COUNT(*) FROM novels WHERE series_id = ?", (int(sid),)
+                            ).fetchone()[0]
+                            if local_synced > 0 and (total or 0) <= local_synced:
+                                logger.info("Series %s fully synced (%d local >= %d remote), skipping", sid, local_synced, total)
                                 if progress_callback:
-                                    progress_callback("phase", {"phase": f"系列 {title or sid}: 章节数未变 ({total}), 跳过"})
+                                    progress_callback("phase", {"phase": f"系列 {title or sid}: 已全部同步 ({local_synced}/{total}), 跳过"})
                                 if series_delay > 0:
                                     time.sleep(series_delay)
                                 continue
