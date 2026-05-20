@@ -152,7 +152,7 @@
       currentCategory = data.category || category;
 
       document.getElementById('summary').innerHTML = `共 <span class="font-bold text-gray-700 dark:text-gray-300">${data.total || 0}</span> ${currentCategory === 'following' ? '个系列' : '本'}`;
-      document.getElementById('pageInfo').textContent = '每页 10 条';
+      document.getElementById('pageInfo').textContent = '每页 8 条';
       document.getElementById('pagerText').textContent = `${currentPage} / ${totalPages}`;
       document.getElementById('prevBtn').disabled = currentPage <= 1;
       document.getElementById('nextBtn').disabled = currentPage >= totalPages;

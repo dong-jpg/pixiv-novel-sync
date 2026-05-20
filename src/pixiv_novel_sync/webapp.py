@@ -1685,7 +1685,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     def dashboard_novels():
         current_settings = settings_manager.load(env_path=env_path)
         page = max(int(request.args.get("page", 1) or 1), 1)
-        page_size = 10
+        page_size = 8
         category = str(request.args.get("category", "all") or "all").strip().lower()
         if category not in {"all", "bookmark", "following"}:
             category = "all"

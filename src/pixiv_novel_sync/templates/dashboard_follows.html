@@ -110,7 +110,7 @@
 
         return `
           <a href="/dashboard/users/${encodeURIComponent(item.user_id)}" class="group flex items-center gap-4 bg-gray-50 hover:bg-white dark:bg-gray-900/40 dark:hover:bg-gray-800 border border-transparent hover:border-gray-200 dark:hover:border-gray-700 rounded-xl p-4 transition-all hover:shadow-sm">
-            <div class="flex-shrink-0">${avatar}${fallbackCover}</div>
+            <div class="flex-shrink-0">${avatar}${fallbackAvatar}</div>
             <div class="flex-1 min-w-0">
               <div class="flex items-center justify-between gap-2 mb-1">
                 <h3 class="text-base font-bold text-gray-900 dark:text-gray-100 truncate group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors">${escapeHtml(item.name || '未命名用户')}</h3>
