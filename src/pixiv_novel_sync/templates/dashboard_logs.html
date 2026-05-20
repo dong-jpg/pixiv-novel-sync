@@ -1,129 +1,23 @@
-<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>任务日志 - Pixiv 小说同步器</title>
-  <style>
-    :root {
-      --bg: #ffffff;
-      --bg-soft: #f5f5f7;
-      --text: #1d1d1f;
-      --text-secondary: #86868b;
-      --line: #d2d2d7;
-      --brand-start: #007aff;
-      --brand-end: #5856d6;
-      --success: #34c759;
-      --danger: #ff3b30;
-      --warning: #ff9500;
-      --card-shadow: 0 2px 12px rgba(0,0,0,0.08);
-      --radius: 16px;
-      --radius-lg: 20px;
-    }
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; background: var(--bg-soft); color: var(--text); -webkit-font-smoothing: antialiased; }
-    .topbar { background: #fff; border-bottom: 2px solid transparent; background-image: linear-gradient(#fff, #fff), linear-gradient(90deg, var(--brand-start), var(--brand-end)); background-origin: padding-box, border-box; background-clip: padding-box, border-box; }
-    .topbar-inner { max-width: 1200px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; }
-    .brand { font-size: 17px; font-weight: 600; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-    .nav { display: flex; gap: 4px; }
-    .nav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 8px 14px; border-radius: 8px; transition: all 0.2s; position: relative; }
-    .nav a:hover { color: var(--text); background: rgba(0,122,255,0.06); }
-    .nav a.active { color: var(--brand-start); font-weight: 600; }
-    .nav a.active::after { content: ''; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); width: 20px; height: 2px; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); border-radius: 1px; }
-    
-    .logs-layout { max-width: 1400px; margin: 0 auto; padding: 32px 24px 56px; }
-    .page-title { font-size: 28px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.02em; }
-    .page-desc { color: var(--text-secondary); margin: 0 0 24px; font-size: 15px; }
-    
-    .filter-bar { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 20px 24px; margin-bottom: 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
-    .filter-group { display: flex; align-items: center; gap: 8px; }
-    .filter-group label { font-size: 13px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.03em; }
-    .filter-group select, .filter-group input { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-size: 14px; font-family: inherit; background: #fff; }
-    .filter-group select:focus, .filter-group input:focus { outline: none; border-color: var(--brand-start); }
-    .btn { border: none; border-radius: 10px; padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); color: #fff; }
-    .btn:hover { opacity: 0.9; transform: translateY(-1px); }
-    .btn-secondary { background: var(--bg-soft); color: var(--text); border: 1px solid var(--line); }
-    .btn-secondary:hover { background: var(--line); }
-    
-    .card { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 0; overflow: hidden; }
-    .table-container { overflow-x: auto; }
-    table { width: 100%; border-collapse: collapse; }
-    th { text-align: left; padding: 16px 20px; font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.03em; border-bottom: 1px solid var(--line); background: var(--bg-soft); }
-    td { padding: 16px 20px; font-size: 14px; border-bottom: 1px solid var(--bg-soft); }
-    tr:hover { background: var(--bg-soft); }
-    
-    .status-badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
-    .status-badge.running { background: rgba(0,122,255,0.1); color: var(--brand-start); }
-    .status-badge.completed { background: rgba(52,199,89,0.1); color: var(--success); }
-    .status-badge.failed { background: rgba(255,59,48,0.1); color: var(--danger); }
-    .status-badge.stopped { background: rgba(255,149,0,0.1); color: var(--warning); }
-    
-    .task-icon { display: inline-flex; align-items: center; gap: 8px; }
-    .type-tag { background: var(--bg-soft); padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
-    
-    .pagination { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; background: var(--bg-soft); }
-    .pagination-info { font-size: 13px; color: var(--text-secondary); }
-    .pagination-buttons { display: flex; gap: 8px; }
-    .pagination-buttons button { padding: 8px 16px; }
-    .pagination-buttons button:disabled { opacity: 0.5; cursor: not-allowed; }
-    
-    .log-detail-modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
-    .log-detail-modal.active { display: flex; }
-    .modal-content { background: #fff; border-radius: var(--radius-lg); max-width: 800px; width: 90%; max-height: 80vh; overflow: hidden; display: flex; flex-direction: column; }
-    .modal-header { padding: 20px 24px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; }
-    .modal-title { font-size: 18px; font-weight: 700; margin: 0; }
-    .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: var(--text-secondary); }
-    .modal-close:hover { color: var(--text); }
-    .modal-body { padding: 24px; overflow-y: auto; flex: 1; }
-    
-    .detail-section { margin-bottom: 20px; }
-    .detail-section:last-child { margin-bottom: 0; }
-    .detail-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 8px; }
-    .detail-value { font-size: 14px; line-height: 1.6; }
-    
-    .log-list { background: var(--bg-soft); border-radius: 10px; padding: 16px; max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px; }
-    .log-item { padding: 4px 0; border-bottom: 1px solid var(--line); }
-    .log-item:last-child { border-bottom: none; }
-    .log-time { color: var(--text-secondary); margin-right: 8px; }
-    .log-error { color: var(--danger); }
-    
-    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 12px; }
-    .stat-item { background: var(--bg-soft); padding: 12px; border-radius: 8px; }
-    .stat-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; }
-    .stat-value { font-size: 18px; font-weight: 700; margin-top: 4px; }
-    
-    @media (max-width: 768px) {
-      .filter-bar { flex-direction: column; align-items: stretch; }
-      .filter-group { flex-direction: column; align-items: stretch; }
-      th, td { padding: 12px 16px; }
-      .modal-content { width: 95%; }
-    }
-  </style>
-</head>
-<body>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <div class="brand">Pixiv 小说同步器</div>
-      <nav class="nav">
-        <a href="/dashboard">首页</a>
-        <a href="/dashboard/follows">关注</a>
-        <a href="/dashboard/novels">小说</a>
-        <a href="/dashboard/pending-deletions">待确认<span id="pendingBadge" class="nav-badge" style="display:none;">0</span></a>
-        <a href="/dashboard/settings">设置</a>
-        <a class="active" href="/dashboard/logs">日志</a>
-        <a href="/token-login">登录</a>
-      </nav>
-    </div>
-  </header>
+{% extends "base.html" %}
 
-  <main class="logs-layout">
-    <h1 class="page-title">任务日志</h1>
-    <p class="page-desc">查看手工任务和定时任务的执行记录，日志保留 3 天</p>
-    
-    <div class="filter-bar">
-      <div class="filter-group">
-        <label>任务类型</label>
-        <select id="filterType">
+{% block title %}任务日志 - Pixiv 小说同步器{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto space-y-6">
+
+  <!-- Header -->
+  <div>
+    <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-gray-100 tracking-tight mb-2">任务日志</h1>
+    <p class="text-sm sm:text-base text-gray-500 dark:text-gray-400">查看手工任务和定时任务的执行记录，日志默认保留 3 天</p>
+  </div>
+
+  <!-- Filter Bar -->
+  <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-4 sm:p-5 flex flex-col md:flex-row md:items-center gap-4">
+    <div class="flex flex-wrap items-center gap-4 flex-1">
+      <!-- Type Filter -->
+      <div class="flex items-center gap-2">
+        <label class="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">任务类型</label>
+        <select id="filterType" class="px-3 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors appearance-none min-w-[120px]">
           <option value="">全部</option>
           <option value="bookmarks">收藏同步</option>
           <option value="following_list">关注列表</option>
@@ -135,371 +29,346 @@
           <option value="pending_deletion_detection">检测取消收藏/追更</option>
         </select>
       </div>
-      
-      <div class="filter-group">
-        <label>任务来源</label>
-        <select id="filterSource">
+
+      <!-- Source Filter -->
+      <div class="flex items-center gap-2">
+        <label class="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">来源</label>
+        <select id="filterSource" class="px-3 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors appearance-none min-w-[100px]">
           <option value="">全部</option>
           <option value="manual">手工任务</option>
           <option value="auto">定时任务</option>
         </select>
       </div>
-      
-      <div class="filter-group">
-        <label>保留天数</label>
-        <select id="filterDays">
+
+      <!-- Days Filter -->
+      <div class="flex items-center gap-2">
+        <label class="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">保留天数</label>
+        <select id="filterDays" class="px-3 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors appearance-none min-w-[80px]">
           <option value="1">1 天</option>
           <option value="3" selected>3 天</option>
           <option value="7">7 天</option>
         </select>
       </div>
-      
-      <button class="btn" id="applyFilter">应用筛选</button>
-      <button class="btn btn-secondary" id="refreshLogs">刷新</button>
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary);cursor:pointer;">
-        <input type="checkbox" id="autoRefreshToggle" style="accent-color:var(--brand-start);cursor:pointer;">自动刷新 (10s)
-      </label>
     </div>
-    
-    <div class="card">
-      <div class="table-container">
-        <table>
-          <thead>
-            <tr>
-              <th>任务类型</th>
-              <th>任务名称</th>
-              <th>来源</th>
-              <th>状态</th>
-              <th>开始时间</th>
-              <th>持续时间</th>
-              <th>结果</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody id="logsTableBody">
-            <tr>
-              <td colspan="8" style="text-align:center;color:var(--text-secondary);padding:40px;">加载中...</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      
-      <div class="pagination" id="pagination" style="display:none;">
-        <div class="pagination-info"></div>
-        <div class="pagination-buttons">
-          <button class="btn btn-secondary" id="prevPage">上一页</button>
-          <button class="btn btn-secondary" id="nextPage">下一页</button>
-        </div>
-      </div>
-    </div>
-  </main>
 
-  <div class="log-detail-modal" id="detailModal">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h2 class="modal-title" id="modalTitle">任务详情</h2>
-        <button class="modal-close" id="closeModal">&times;</button>
-      </div>
-      <div class="modal-body" id="modalBody">
-        <!-- 详情内容动态生成 -->
+    <div class="flex items-center gap-3">
+      <label class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 cursor-pointer">
+        <input type="checkbox" id="autoRefreshToggle" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:focus:ring-brand-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600 cursor-pointer">
+        自动刷新 (10s)
+      </label>
+      <button id="applyFilter" class="px-4 py-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold rounded-lg transition-colors shadow-sm">应用筛选</button>
+      <button id="refreshLogs" class="px-4 py-1.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 text-sm font-semibold rounded-lg transition-colors shadow-sm">刷新</button>
+    </div>
+  </div>
+
+  <!-- Table Card -->
+  <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="w-full text-left whitespace-nowrap">
+        <thead class="bg-gray-50 dark:bg-gray-900/50 border-b border-gray-200 dark:border-gray-700/80">
+          <tr>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">任务类型</th>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">任务名称</th>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">来源</th>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">状态</th>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">开始时间</th>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">持续时间</th>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">结果</th>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider text-right">操作</th>
+          </tr>
+        </thead>
+        <tbody id="logsTableBody" class="divide-y divide-gray-100 dark:divide-gray-800">
+          <tr>
+            <td colspan="8" class="px-6 py-12 text-center text-gray-500 dark:text-gray-400">
+              <svg class="animate-spin h-6 w-6 mx-auto mb-2 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+              加载中...
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Pagination -->
+    <div id="pagination" class="hidden px-6 py-4 bg-gray-50/50 dark:bg-gray-900/50 border-t border-gray-100 dark:border-gray-800 flex items-center justify-between">
+      <div class="pagination-info text-sm text-gray-500 dark:text-gray-400 font-medium"></div>
+      <div class="flex gap-2">
+        <button id="prevPage" class="px-4 py-1.5 text-sm font-semibold bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">上一页</button>
+        <button id="nextPage" class="px-4 py-1.5 text-sm font-semibold bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">下一页</button>
       </div>
     </div>
   </div>
 
-  <script>
-    const $ = (sel) => document.querySelector(sel);
-    const $$ = (sel) => document.querySelectorAll(sel);
-    
-    let currentPage = 1;
-    let currentFilters = {
-      task_type: '',
-      is_auto: '',
-      days: 3
+</div>
+
+<!-- Modal -->
+<div id="detailModal" class="hidden fixed inset-0 z-[100] bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col border border-gray-200 dark:border-gray-700 transform transition-all">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-700/50">
+      <h2 id="modalTitle" class="text-lg font-bold text-gray-900 dark:text-white truncate">任务详情</h2>
+      <button id="closeModal" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 focus:outline-none transition-colors">
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+      </button>
+    </div>
+    <div id="modalBody" class="p-6 overflow-y-auto custom-scrollbar flex-1 text-sm text-gray-700 dark:text-gray-300">
+      <!-- Content injected by JS -->
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<style>
+  /* Dropdown arrow custom styling */
+  select {
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-position: right 0.5rem center;
+    background-repeat: no-repeat;
+    background-size: 1.5em 1.5em;
+  }
+  .dark select {
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%239ca3af' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+  }
+
+  .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+  .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+  .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(156, 163, 175, 0.5); border-radius: 4px; }
+  .dark .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(75, 85, 99, 0.5); }
+</style>
+
+<script>
+  const $ = (sel) => document.querySelector(sel);
+
+  let currentPage = 1;
+  let currentFilters = { task_type: '', is_auto: '', days: 3 };
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch] || ch));
+  }
+
+  function formatDate(dateStr) {
+    if (!dateStr) return '-';
+    const date = new Date(dateStr);
+    return date.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  function formatTime(dateStr) {
+    if (!dateStr) return '-';
+    if (/^\d{2}:\d{2}:\d{2}$/.test(dateStr)) return dateStr;
+    const date = new Date(dateStr);
+    if (isNaN(date)) return dateStr;
+    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  function formatDuration(seconds) {
+    if (seconds === null || seconds === undefined) return '-';
+    if (seconds < 60) return `${Math.round(seconds)}秒`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)}分钟`;
+    return `${(seconds / 3600).toFixed(1)}小时`;
+  }
+
+  function getStatusBadge(status) {
+    const map = {
+      'running': { label: '运行中', class: 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' },
+      'completed': { label: '完成', class: 'bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400' },
+      'succeeded': { label: '成功', class: 'bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400' },
+      'failed': { label: '失败', class: 'bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400' },
+      'stopped': { label: '停止', class: 'bg-yellow-50 text-yellow-600 dark:bg-yellow-900/30 dark:text-yellow-500' }
     };
-    
-    function formatDate(dateStr) {
-      if (!dateStr) return '-';
-      const date = new Date(dateStr);
-      return date.toLocaleString('zh-CN', {
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
-      });
-    }
+    const s = map[status] || { label: status, class: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400' };
+    return `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${s.class}">${escapeHtml(s.label)}</span>`;
+  }
 
-    function formatTime(dateStr) {
-      if (!dateStr) return '-';
-      // 兼容旧格式 "HH:MM:SS" 和新格式 ISO "YYYY-MM-DDTHH:MM:SS"
-      if (/^\d{2}:\d{2}:\d{2}$/.test(dateStr)) return dateStr;
-      const date = new Date(dateStr);
-      if (isNaN(date)) return dateStr;
-      return date.toLocaleTimeString('zh-CN', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
-      });
-    }
+  function getTaskTypeName(type) {
+    const map = {
+      'bookmark': '收藏同步', 'bookmarks': '收藏同步',
+      'following_users': '关注用户', 'following_list': '关注列表', 'following_novels': '关注小说', 'following_series': '关注系列',
+      'subscribed_series': '追更系列',
+      'user_status': '检查用户状态', 'novel_status': '检查小说状态', 'series_status': '检查系列状态',
+      'pending_deletion_detection': '检测取消',
+      'manual': '手工任务'
+    };
+    return map[type] || type;
+  }
 
-    function formatDuration(seconds) {
-      if (seconds === null || seconds === undefined) return '-';
-      if (seconds < 60) return `${Math.round(seconds)}秒`;
-      if (seconds < 3600) return `${Math.round(seconds / 60)}分钟`;
-      return `${(seconds / 3600).toFixed(1)}小时`;
-    }
-    
-    function escapeHtml(value) {
-      return String(value ?? '').replace(/[&<>"]/g, function (ch) {
-        if (ch === '&') return '&amp;';
-        if (ch === '<') return '&lt;';
-        if (ch === '>') return '&gt;';
-        if (ch === '"') return '&quot;';
-        return ch;
-      });
-    }
+  async function loadLogs(page = 1) {
+    const tbody = $('#logsTableBody');
+    tbody.innerHTML = '<tr><td colspan="8" class="px-6 py-12 text-center text-gray-500 dark:text-gray-400"><svg class="animate-spin h-6 w-6 mx-auto mb-2 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>加载中...</td></tr>';
 
-    function getStatusBadge(status) {
-      const statusMap = {
-        'running': '运行中',
-        'completed': '完成',
-        'succeeded': '完成',
-        'failed': '失败',
-        'stopped': '停止'
-      };
-      const safeStatus = ['running', 'completed', 'succeeded', 'failed', 'stopped'].includes(status) ? status : '';
-      return `<span class="status-badge ${safeStatus}">${escapeHtml(statusMap[status] || status)}</span>`;
-    }
-    
-    function getTaskTypeName(type) {
-      const typeMap = {
-        'bookmark': '收藏同步',
-        'bookmarks': '收藏同步',
-        'following_users': '关注用户',
-        'following_list': '关注列表',
-        'following_novels': '关注小说',
-        'following_series': '关注系列',
-        'subscribed_series': '追更系列',
-        'user_status': '检查用户状态',
-        'novel_status': '检查小说状态',
-        'series_status': '检查系列状态',
-        'pending_deletion_detection': '检测取消收藏/追更',
-        'manual': '手工任务'
-      };
-      return typeMap[type] || type;
-    }
-    
-    async function loadLogs(page = 1) {
-      const tbody = $('#logsTableBody');
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);padding:40px;">加载中...</td></tr>';
-      
-      try {
-        const params = new URLSearchParams({
-          page: page,
-          page_size: 20,
-          days: currentFilters.days
-        });
-        
-        if (currentFilters.task_type) params.append('task_type', currentFilters.task_type);
-        if (currentFilters.is_auto) params.append('is_auto', currentFilters.is_auto);
-        
-        const resp = await fetch(`/api/dashboard/logs?${params}`);
-        const data = await resp.json();
-        
-        if (data.items && data.items.length > 0) {
-          tbody.innerHTML = data.items.map(log => `
-            <tr>
-              <td><span class="type-tag">${escapeHtml(getTaskTypeName(log.task_type))}</span></td>
-              <td>${escapeHtml(log.task_name)}</td>
-              <td>${log.is_auto_sync ? '<span style="color:var(--brand-start);">定时任务</span>' : '<span style="color:var(--text-secondary);">手工任务</span>'}</td>
-              <td>${getStatusBadge(log.status)}</td>
-              <td>${formatDate(log.started_at)}</td>
-              <td>${formatDuration(log.duration_seconds)}</td>
-              <td>${formatResult(log)}</td>
-              <td>
-                <button class="btn btn-secondary" onclick="showLogDetail(${log.id})" style="padding:6px 12px;font-size:12px;">
-                  查看详情
-                </button>
-              </td>
-            </tr>
-          `).join('');
-          
-          // 更新分页
-          updatePagination(data, page);
-        } else {
-          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);padding:40px;">暂无日志记录</td></tr>';
-          $('#pagination').style.display = 'none';
-        }
-      } catch (e) {
-        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--danger);padding:40px;">加载失败：${e.message}</td></tr>`;
-      }
-    }
-    
-    function formatResult(log) {
-      if (log.status === 'running') return '-';
-      if (log.status === 'failed') {
-        const errorMsg = escapeHtml(log.error_message || '未知错误');
-        return `<span style="color:var(--danger);">失败：${errorMsg.substring(0, 30)}${errorMsg.length > 30 ? '...' : ''}</span>`;
-      }
-      if (log.stats) {
-        const stats = log.stats;
-        // 兼容多种命名：novels_synced / novels；users_synced / users
-        const novels = stats.novels_synced ?? stats.novels;
-        const users = stats.users_synced ?? stats.users;
-        const series = stats.series_synced;
-        const assets = stats.assets_downloaded;
-        let parts = [];
-        if (novels) parts.push(`${novels}本小说`);
-        if (users) parts.push(`${users}个用户`);
-        if (series) parts.push(`${series}个系列`);
-        if (assets) parts.push(`${assets}张图`);
-        return parts.length ? `<span style="color:var(--success);">${parts.join(', ')}</span>` : '<span style="color:var(--text-secondary);">完成</span>';
-      }
-      return '<span style="color:var(--text-secondary);">完成</span>';
-    }
-    
-    function updatePagination(data, currentPage) {
-      const pagination = $('#pagination');
-      const info = pagination.querySelector('.pagination-info');
-      info.textContent = `第 ${data.page} 页，共 ${data.total_pages} 页，${data.total} 条记录`;
-      pagination.style.display = 'flex';
-      
-      $('#prevPage').disabled = data.page <= 1;
-      $('#nextPage').disabled = data.page >= data.total_pages;
-    }
-    
-    async function showLogDetail(logId) {
-      try {
-        const resp = await fetch(`/api/dashboard/logs/${logId}`);
-        if (!resp.ok) {
-          alert('日志记录不存在');
-          return;
-        }
-        const log = await resp.json();
-        renderLogDetail(log);
-      } catch (e) {
-        alert('加载日志详情失败: ' + e.message);
-      }
-    }
+    try {
+      const params = new URLSearchParams({ page: page, page_size: 20, days: currentFilters.days });
+      if (currentFilters.task_type) params.append('task_type', currentFilters.task_type);
+      if (currentFilters.is_auto) params.append('is_auto', currentFilters.is_auto);
 
-    function renderLogDetail(log) {
-      $('#modalTitle').textContent = `${getTaskTypeName(log.task_type)} - ${log.task_name}`;
-      
-      const modalBody = $('#modalBody');
-      modalBody.innerHTML = `
-        <div class="detail-section">
-          <div class="detail-label">基本信息</div>
-          <div class="detail-value">
-            <div><strong>任务 ID:</strong> ${log.id}</div>
-            <div><strong>任务类型:</strong> ${getTaskTypeName(log.task_type)}</div>
-            <div><strong>任务名称:</strong> ${escapeHtml(log.task_name)}</div>
-            <div><strong>来源:</strong> ${log.is_auto_sync ? '定时任务' : '手工任务'}</div>
-            <div><strong>状态:</strong> ${getStatusBadge(log.status)}</div>
-          </div>
-        </div>
-        
-        <div class="detail-section">
-          <div class="detail-label">时间信息</div>
-          <div class="detail-value">
-            <div><strong>开始时间:</strong> ${formatDate(log.started_at)}</div>
-            <div><strong>结束时间:</strong> ${formatDate(log.finished_at)}</div>
-            <div><strong>持续时间:</strong> ${formatDuration(log.duration_seconds)}</div>
-          </div>
-        </div>
-        
-        ${log.stats ? `
-        <div class="detail-section">
-          <div class="detail-label">同步统计</div>
-          <div class="stats-grid">
-            ${(log.stats.novels_synced ?? log.stats.novels) ? `<div class="stat-item"><div class="stat-label">同步小说</div><div class="stat-value">${log.stats.novels_synced ?? log.stats.novels}</div></div>` : ''}
-            ${(log.stats.users_synced ?? log.stats.users) ? `<div class="stat-item"><div class="stat-label">同步用户</div><div class="stat-value">${log.stats.users_synced ?? log.stats.users}</div></div>` : ''}
-            ${log.stats.series_synced ? `<div class="stat-item"><div class="stat-label">同步系列</div><div class="stat-value">${log.stats.series_synced}</div></div>` : ''}
-            ${log.stats.assets_downloaded ? `<div class="stat-item"><div class="stat-label">下载图片</div><div class="stat-value">${log.stats.assets_downloaded}</div></div>` : ''}
-            ${log.stats.skipped ? `<div class="stat-item"><div class="stat-label">跳过</div><div class="stat-value">${log.stats.skipped}</div></div>` : ''}
-            ${log.stats.following_users_scanned ? `<div class="stat-item"><div class="stat-label">扫描用户</div><div class="stat-value">${log.stats.following_users_scanned}</div></div>` : ''}
-          </div>
-        </div>
-        ` : ''}
-        
-        ${log.error_message ? `
-        <div class="detail-section">
-          <div class="detail-label">错误信息</div>
-          <div class="detail-value" style="color:var(--danger);">${escapeHtml(log.error_message)}</div>
-        </div>
-        ` : ''}
-        
-        ${log.logs && log.logs.length > 0 ? `
-        <div class="detail-section">
-          <div class="detail-label">执行日志</div>
-          <div class="log-list">
-            ${log.logs.map(entry => `
-              <div class="log-item">
-                <span class="log-time">[${formatTime(entry.time)}]</span>
-                <span class="${(entry.level || '').toLowerCase() === 'error' ? 'log-error' : ''}">${escapeHtml(entry.message)}</span>
-              </div>
-            `).join('')}
-          </div>
-        </div>
-        ` : ''}
-      `;
-      
-      $('#detailModal').classList.add('active');
-    }
-    
-    $('#closeModal').addEventListener('click', () => {
-      $('#detailModal').classList.remove('active');
-    });
-    
-    $('#detailModal').addEventListener('click', (e) => {
-      if (e.target === $('#detailModal')) {
-        $('#detailModal').classList.remove('active');
-      }
-    });
-    
-    $('#prevPage').addEventListener('click', () => {
-      if (currentPage > 1) {
-        currentPage--;
-        loadLogs(currentPage);
-      }
-    });
-    
-    $('#nextPage').addEventListener('click', () => {
-      currentPage++;
-      loadLogs(currentPage);
-    });
-    
-    $('#applyFilter').addEventListener('click', () => {
-      currentFilters.task_type = $('#filterType').value;
-      const sourceVal = $('#filterSource').value;
-      currentFilters.is_auto = sourceVal === 'manual' ? 'false' : sourceVal === 'auto' ? 'true' : '';
-      currentFilters.days = parseInt($('#filterDays').value);
-      currentPage = 1;
-      loadLogs(currentPage);
-    });
-    
-    $('#refreshLogs').addEventListener('click', () => {
-      loadLogs(currentPage);
-    });
-    
-    // 自动刷新
-    let autoRefreshTimer = null;
-    $('#autoRefreshToggle').addEventListener('change', function () {
-      if (this.checked) {
-        autoRefreshTimer = setInterval(function () {
-          loadLogs(currentPage);
-        }, 10000);
+      const resp = await fetch(`/api/dashboard/logs?${params}`);
+      const data = await resp.json();
+
+      if (data.items && data.items.length > 0) {
+        tbody.innerHTML = data.items.map(log => `
+          <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
+            <td class="px-6 py-3 whitespace-nowrap text-sm"><span class="bg-gray-100 text-gray-700 dark:bg-gray-900/50 dark:text-gray-300 px-2 py-1 rounded border border-gray-200 dark:border-gray-700">${escapeHtml(getTaskTypeName(log.task_type))}</span></td>
+            <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100 font-medium">${escapeHtml(log.task_name)}</td>
+            <td class="px-6 py-3 whitespace-nowrap text-sm font-medium ${log.is_auto_sync ? 'text-purple-600 dark:text-purple-400' : 'text-gray-500 dark:text-gray-400'}">${log.is_auto_sync ? '定时任务' : '手工任务'}</td>
+            <td class="px-6 py-3 whitespace-nowrap">${getStatusBadge(log.status)}</td>
+            <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">${formatDate(log.started_at)}</td>
+            <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">${formatDuration(log.duration_seconds)}</td>
+            <td class="px-6 py-3 whitespace-nowrap text-sm">${formatResult(log)}</td>
+            <td class="px-6 py-3 whitespace-nowrap text-right">
+              <button onclick="showLogDetail(${log.id})" class="text-brand-600 hover:text-brand-900 dark:text-brand-400 dark:hover:text-brand-300 font-medium text-sm transition-colors focus:outline-none">查看详情</button>
+            </td>
+          </tr>
+        `).join('');
+        updatePagination(data, page);
       } else {
-        if (autoRefreshTimer) {
-          clearInterval(autoRefreshTimer);
-          autoRefreshTimer = null;
-        }
+        tbody.innerHTML = '<tr><td colspan="8" class="px-6 py-16 text-center text-gray-500 dark:text-gray-400 font-medium">暂无相关的日志记录</td></tr>';
+        $('#pagination').classList.add('hidden');
       }
-    });
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="8" class="px-6 py-12 text-center text-red-500 font-medium">加载失败：${e.message}</td></tr>`;
+    }
+  }
 
-    // 初始化加载
+  function formatResult(log) {
+    if (log.status === 'running') return '-';
+    if (log.status === 'failed') {
+      const errorMsg = escapeHtml(log.error_message || '未知错误');
+      return `<span class="text-red-500 text-xs font-medium" title="${errorMsg}">失败: ${errorMsg.substring(0, 20)}${errorMsg.length > 20 ? '...' : ''}</span>`;
+    }
+    if (log.stats) {
+      const s = log.stats;
+      const parts = [];
+      if (s.novels_synced ?? s.novels) parts.push(`${s.novels_synced ?? s.novels}本`);
+      if (s.users_synced ?? s.users) parts.push(`${s.users_synced ?? s.users}人`);
+      if (s.series_synced) parts.push(`${s.series_synced}系列`);
+      if (s.assets_downloaded) parts.push(`${s.assets_downloaded}图`);
+      return parts.length ? `<span class="text-green-600 dark:text-green-400 font-medium text-xs">${parts.join(', ')}</span>` : '<span class="text-gray-400 text-xs">完成</span>';
+    }
+    return '<span class="text-gray-400 text-xs">完成</span>';
+  }
+
+  function updatePagination(data, currentPage) {
+    const pagination = $('#pagination');
+    pagination.querySelector('.pagination-info').innerHTML = `第 <strong class="text-gray-900 dark:text-white">${data.page}</strong> 页，共 <strong class="text-gray-900 dark:text-white">${data.total_pages}</strong> 页，总计 <strong class="text-gray-900 dark:text-white">${data.total}</strong> 条记录`;
+    pagination.classList.remove('hidden');
+    pagination.classList.add('flex');
+    $('#prevPage').disabled = data.page <= 1;
+    $('#nextPage').disabled = data.page >= data.total_pages;
+  }
+
+  async function showLogDetail(logId) {
+    try {
+      const resp = await fetch(`/api/dashboard/logs/${logId}`);
+      if (!resp.ok) return alert('日志记录不存在');
+      renderLogDetail(await resp.json());
+    } catch (e) { alert('加载日志详情失败: ' + e.message); }
+  }
+
+  function renderLogDetail(log) {
+    $('#modalTitle').textContent = `${getTaskTypeName(log.task_type)} - ${log.task_name}`;
+    const b = $('#modalBody');
+
+    const renderStat = (label, value) => value ? `<div class="bg-gray-50 dark:bg-gray-900/50 p-3 rounded-lg border border-gray-100 dark:border-gray-800"><div class="text-[11px] text-gray-500 uppercase font-bold tracking-wider mb-1">${label}</div><div class="text-lg font-bold text-gray-900 dark:text-gray-100">${value}</div></div>` : '';
+
+    let statsHtml = '';
+    if(log.stats) {
+      statsHtml = `
+        <div class="mb-6">
+          <h3 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-100 dark:border-gray-700 pb-1">同步统计</h3>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            ${renderStat('小说', log.stats.novels_synced ?? log.stats.novels)}
+            ${renderStat('用户', log.stats.users_synced ?? log.stats.users)}
+            ${renderStat('系列', log.stats.series_synced)}
+            ${renderStat('图片', log.stats.assets_downloaded)}
+            ${renderStat('跳过', log.stats.skipped)}
+            ${renderStat('扫描用户', log.stats.following_users_scanned)}
+          </div>
+        </div>
+      `;
+    }
+
+    const logsHtml = (log.logs && log.logs.length > 0) ? `
+      <div>
+        <h3 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-100 dark:border-gray-700 pb-1">执行日志</h3>
+        <div class="bg-gray-900 dark:bg-black rounded-xl p-4 font-mono text-xs text-gray-300 max-h-64 overflow-y-auto custom-scrollbar space-y-1">
+          ${log.logs.map(e => {
+            const isErr = (e.level || '').toLowerCase() === 'error';
+            return `<div class="${isErr ? 'text-red-400' : ''}"><span class="text-gray-500 dark:text-gray-600 mr-2">[${formatTime(e.time)}]</span>${escapeHtml(e.message)}</div>`;
+          }).join('')}
+        </div>
+      </div>
+    ` : '';
+
+    b.innerHTML = `
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-6">
+        <div>
+          <h3 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-100 dark:border-gray-700 pb-1">基本信息</h3>
+          <div class="space-y-1.5">
+            <div class="flex justify-between"><span class="text-gray-500">任务 ID:</span> <span class="font-mono text-gray-900 dark:text-gray-100">${log.id}</span></div>
+            <div class="flex justify-between"><span class="text-gray-500">来源:</span> <span class="font-medium text-gray-900 dark:text-gray-100">${log.is_auto_sync ? '定时任务' : '手工任务'}</span></div>
+            <div class="flex justify-between"><span class="text-gray-500">状态:</span> ${getStatusBadge(log.status)}</div>
+          </div>
+        </div>
+        <div>
+          <h3 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-100 dark:border-gray-700 pb-1">时间信息</h3>
+          <div class="space-y-1.5">
+            <div class="flex justify-between"><span class="text-gray-500">开始时间:</span> <span class="text-gray-900 dark:text-gray-100">${formatDate(log.started_at)}</span></div>
+            <div class="flex justify-between"><span class="text-gray-500">结束时间:</span> <span class="text-gray-900 dark:text-gray-100">${formatDate(log.finished_at)}</span></div>
+            <div class="flex justify-between"><span class="text-gray-500">持续时间:</span> <span class="text-gray-900 dark:text-gray-100">${formatDuration(log.duration_seconds)}</span></div>
+          </div>
+        </div>
+      </div>
+
+      ${log.error_message ? `
+        <div class="mb-6">
+          <h3 class="text-xs font-bold text-red-400 dark:text-red-500 uppercase tracking-wider mb-2 border-b border-red-100 dark:border-red-900/50 pb-1">错误信息</h3>
+          <div class="p-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg border border-red-100 dark:border-red-800/50 font-mono text-sm">${escapeHtml(log.error_message)}</div>
+        </div>
+      ` : ''}
+
+      ${statsHtml}
+      ${logsHtml}
+    `;
+
+    $('#detailModal').classList.remove('hidden');
+    $('#detailModal').classList.add('flex');
+    // slight delay to allow display:flex to apply before opacity transition
+    setTimeout(() => {
+      $('#detailModal').children[0].classList.add('scale-100', 'opacity-100');
+      $('#detailModal').children[0].classList.remove('scale-95', 'opacity-0');
+    }, 10);
+  }
+
+  function hideModal() {
+    $('#detailModal').children[0].classList.remove('scale-100', 'opacity-100');
+    $('#detailModal').children[0].classList.add('scale-95', 'opacity-0');
+    setTimeout(() => {
+      $('#detailModal').classList.add('hidden');
+      $('#detailModal').classList.remove('flex');
+    }, 200);
+  }
+
+  $('#closeModal').addEventListener('click', hideModal);
+  $('#detailModal').addEventListener('click', (e) => { if (e.target === $('#detailModal')) hideModal(); });
+
+  $('#prevPage').addEventListener('click', () => { if (currentPage > 1) { currentPage--; loadLogs(currentPage); } });
+  $('#nextPage').addEventListener('click', () => { currentPage++; loadLogs(currentPage); });
+
+  $('#applyFilter').addEventListener('click', () => {
+    currentFilters.task_type = $('#filterType').value;
+    const sourceVal = $('#filterSource').value;
+    currentFilters.is_auto = sourceVal === 'manual' ? 'false' : sourceVal === 'auto' ? 'true' : '';
+    currentFilters.days = parseInt($('#filterDays').value);
+    currentPage = 1;
     loadLogs(currentPage);
-  </script>
-<script>(function(){fetch("/api/dashboard/pending-deletions/count").then(function(r){return r.json()}).then(function(d){var b=document.getElementById("pendingBadge");if(b && d.count>0){b.textContent=d.count;b.style.display="inline-flex"}}).catch(function(){})})();</script>
-</body>
-</html>
+  });
+
+  $('#refreshLogs').addEventListener('click', () => loadLogs(currentPage));
+
+  let autoRefreshTimer = null;
+  $('#autoRefreshToggle').addEventListener('change', function () {
+    if (this.checked) autoRefreshTimer = setInterval(() => loadLogs(currentPage), 10000);
+    else if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+  });
+
+  loadLogs(currentPage);
+</script>
+{% endblock %}

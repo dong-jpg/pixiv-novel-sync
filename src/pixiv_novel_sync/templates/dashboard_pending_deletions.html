@@ -1,287 +1,279 @@
-<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>待确认删除 - Pixiv 小说同步器</title>
-  <style>
-    :root {
-      --bg: #ffffff;
-      --bg-soft: #f5f5f7;
-      --text: #1d1d1f;
-      --text-secondary: #86868b;
-      --line: #d2d2d7;
-      --brand-start: #007aff;
-      --brand-end: #5856d6;
-      --card-shadow: 0 2px 12px rgba(0,0,0,0.08);
-      --radius: 16px;
-      --radius-lg: 20px;
-      --danger: #ff3b30;
-      --success: #34c759;
-    }
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; background: var(--bg-soft); color: var(--text); -webkit-font-smoothing: antialiased; }
-    .topbar { background: #fff; border-bottom: 2px solid transparent; background-image: linear-gradient(#fff, #fff), linear-gradient(90deg, var(--brand-start), var(--brand-end)); background-origin: padding-box, border-box; background-clip: padding-box, border-box; }
-    .topbar-inner { max-width: 1080px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; }
-    .brand { font-size: 17px; font-weight: 600; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-    .nav { display: flex; gap: 4px; }
-    .nav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 8px 14px; border-radius: 8px; transition: all 0.2s; position: relative; }
-    .nav a:hover { color: var(--text); background: rgba(0,122,255,0.06); }
-    .nav a.active { color: var(--brand-start); font-weight: 600; }
-    .nav a.active::after { content: ''; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); width: 20px; height: 2px; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); border-radius: 1px; }
-    .page { max-width: 1080px; margin: 0 auto; padding: 32px 24px 56px; }
-    .page-title { font-size: 28px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.02em; }
-    .page-desc { color: var(--text-secondary); margin: 0 0 24px; font-size: 15px; }
-    .card { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 24px; }
-    .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
-    .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
-    .tab { border: 1px solid var(--line); background: #fff; color: var(--text-secondary); border-radius: 8px; padding: 8px 16px; cursor: pointer; font-size: 13px; font-weight: 600; transition: all 0.2s; }
-    .tab:hover { border-color: var(--brand-start); color: var(--brand-start); }
-    .tab.active { background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); color: #fff; border-color: transparent; }
-    .summary { color: var(--text-secondary); font-size: 13px; }
-    .list { display: grid; gap: 12px; }
-    .item { display: grid; grid-template-columns: 88px 1fr; gap: 16px; background: var(--bg-soft); border-radius: var(--radius); padding: 16px; transition: all 0.2s; }
-    .item:hover { background: #ebebed; }
-    .cover { width: 88px; height: 120px; border-radius: 10px; object-fit: cover; background: linear-gradient(135deg, var(--brand-start), var(--brand-end)); flex-shrink: 0; }
-    .empty-cover { width: 88px; height: 120px; border-radius: 10px; background: var(--line); flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 12px; text-align: center; padding: 8px; }
-    .content { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
-    .title-link { color: var(--text); text-decoration: none; font-size: 16px; font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-    .title-link:hover { color: var(--brand-start); }
-    .meta { color: var(--text-secondary); font-size: 12px; margin-top: 6px; line-height: 1.6; }
-    .badge { display: inline-flex; align-items: center; padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 600; margin-right: 6px; }
-    .badge-bookmark { background: rgba(255,149,0,0.12); color: #ff9500; }
-    .badge-series { background: rgba(88,86,214,0.12); color: #5856d6; }
-    .pixiv-link { color: var(--brand-start); text-decoration: none; font-size: 12px; }
-    .pixiv-link:hover { text-decoration: underline; }
-    .actions { display: flex; gap: 8px; margin-top: 12px; }
-    .btn { border: none; border-radius: 10px; padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: var(--bg-soft); color: var(--text); }
-    .btn:hover:not(:disabled) { background: #e8e8ed; }
-    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-    .btn-sm { padding: 8px 16px; font-size: 13px; border-radius: 8px; }
-    .btn-danger { background: var(--danger); color: #fff; }
-    .btn-danger:hover:not(:disabled) { background: #d63027; }
-    .btn-success { background: var(--success); color: #fff; }
-    .btn-success:hover:not(:disabled) { background: #2db84d; }
-    .pager { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 24px; }
-    .empty-state { text-align: center; padding: 48px 24px; color: var(--text-secondary); }
-    .detect-btn { background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); color: #fff; border: none; border-radius: 8px; padding: 8px 18px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
-    .detect-btn:hover { opacity: 0.85; }
-    .detect-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-    @media (max-width: 760px) {
-      .topbar-inner { flex-direction: column; height: auto; padding: 12px 16px; gap: 8px; }
-      .item { grid-template-columns: 1fr; }
-      .cover, .empty-cover { width: 100%; height: 180px; }
-      .toolbar { flex-direction: column; align-items: flex-start; }
-    }
-  </style>
-</head>
-<body>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <div class="brand">Pixiv 小说同步器</div>
-      <nav class="nav">
-        <a href="/dashboard">首页</a>
-        <a href="/dashboard/follows">关注</a>
-        <a href="/dashboard/novels">小说</a>
-        <a class="active" href="/dashboard/pending-deletions">待确认</a>
-        <a href="/dashboard/logs">日志</a>
-        <a href="/dashboard/settings">设置</a>
-        <a href="/token-login">登录</a>
-      </nav>
+{% extends "base.html" %}
+
+{% block title %}待确认删除 - Pixiv 小说同步器{% endblock %}
+
+{% block content %}
+<div class="space-y-6 max-w-6xl mx-auto">
+
+  <!-- Header -->
+  <div>
+    <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-gray-100 tracking-tight mb-2">待确认删除</h1>
+    <p class="text-sm sm:text-base text-gray-500 dark:text-gray-400">检测到以下内容已从您的收藏/追更列表中移除，但 Pixiv 上仍存在。请确认是否删除本地归档。</p>
+  </div>
+
+  <!-- Main Card -->
+  <section class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-5 sm:p-6">
+
+    <!-- Toolbar -->
+    <div class="flex flex-col sm:flex-row justify-between items-center gap-4 mb-6">
+      <!-- Tabs -->
+      <div class="flex flex-wrap items-center gap-2 p-1 bg-gray-100 dark:bg-gray-900 rounded-lg w-full sm:w-auto" id="tabs">
+        <button class="tab-btn active px-4 py-1.5 text-sm font-semibold rounded-md transition-all bg-white dark:bg-gray-800 text-gray-900 dark:text-white shadow-sm ring-1 ring-gray-200 dark:ring-gray-700" data-type="">全部</button>
+        <button class="tab-btn px-4 py-1.5 text-sm font-semibold rounded-md transition-all text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200" data-type="novel">收藏小说</button>
+        <button class="tab-btn px-4 py-1.5 text-sm font-semibold rounded-md transition-all text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200" data-type="series">追更系列</button>
+      </div>
+
+      <!-- Actions & Summary -->
+      <div class="flex items-center gap-3 w-full sm:w-auto self-end sm:self-auto">
+        <button id="detectBtn" onclick="triggerDetection()" class="flex-1 sm:flex-none px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold rounded-lg shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500/50 disabled:opacity-50 flex items-center justify-center gap-2">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+          <span id="detectBtnText">开始检测</span>
+        </button>
+        <div class="text-right">
+          <div id="summary" class="text-xs font-bold text-gray-900 dark:text-gray-100">加载中...</div>
+          <div id="pageInfo" class="text-xs text-gray-500 dark:text-gray-400"></div>
+        </div>
+      </div>
     </div>
-  </header>
 
-  <main class="page">
-    <h1 class="page-title">待确认删除</h1>
-    <p class="page-desc">检测到以下内容已从您的收藏/追更列表中移除，但 Pixiv 上仍存在。请确认是否删除本地归档。</p>
-
-    <section class="card">
-      <div class="toolbar">
-        <div class="tabs" id="tabs">
-          <button class="tab active" data-type="">全部</button>
-          <button class="tab" data-type="novel">收藏小说</button>
-          <button class="tab" data-type="series">追更系列</button>
-        </div>
-        <button class="detect-btn" id="detectBtn" onclick="triggerDetection()">开始检测</button>
-        <div>
-          <div id="summary" class="summary">加载中...</div>
-          <div id="pageInfo" class="summary"></div>
+    <!-- List Grid -->
+    <div id="list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <!-- Skeleton Loading -->
+      <div class="animate-pulse bg-gray-50 dark:bg-gray-900/50 rounded-xl p-4 flex gap-4 border border-gray-100 dark:border-gray-800">
+        <div class="w-20 h-28 bg-gray-200 dark:bg-gray-700 rounded-lg flex-shrink-0"></div>
+        <div class="flex-1 space-y-2 py-1">
+          <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4"></div>
+          <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded w-1/2"></div>
+          <div class="h-8 bg-gray-200 dark:bg-gray-700 rounded w-full mt-4"></div>
         </div>
       </div>
-      <div id="list" class="list"></div>
-      <div class="pager">
-        <button id="prevBtn" class="btn">上一页</button>
-        <span id="pagerText" class="summary"></span>
-        <button id="nextBtn" class="btn">下一页</button>
-      </div>
-    </section>
-  </main>
+    </div>
 
-  <script>
-    let currentPage = 1;
-    let totalPages = 1;
-    let currentType = '';
+    <!-- Pagination -->
+    <div class="flex items-center justify-center gap-4 mt-8 pt-6 border-t border-gray-100 dark:border-gray-700/50">
+      <button id="prevBtn" class="px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-semibold hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm">上一页</button>
+      <span id="pagerText" class="text-sm font-mono font-medium text-gray-500 dark:text-gray-400"></span>
+      <button id="nextBtn" class="px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-semibold hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm">下一页</button>
+    </div>
 
-    function escapeHtml(value) {
-      return String(value ?? '').replace(/[&<>"]/g, function (ch) {
-        if (ch === '&') return '&amp;';
-        if (ch === '<') return '&lt;';
-        if (ch === '>') return '&gt;';
-        if (ch === '"') return '&quot;';
-        return ch;
-      });
+  </section>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  let currentPage = 1;
+  let totalPages = 1;
+  let currentType = '';
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"]/g, function (ch) {
+      if (ch === '&') return '&amp;';
+      if (ch === '<') return '&lt;';
+      if (ch === '>') return '&gt;';
+      if (ch === '"') return '&quot;';
+      return ch;
+    });
+  }
+
+  function getPixivUrl(item) {
+    if (item.item_type === 'novel') {
+      return 'https://www.pixiv.net/novel/show.php?id=' + item.item_id;
     }
+    return 'https://www.pixiv.net/novel/series/' + item.item_id;
+  }
 
-    function getPixivUrl(item) {
-      if (item.item_type === 'novel') {
-        return 'https://www.pixiv.net/novel/show.php?id=' + item.item_id;
+  function updateGlobalBadge(count) {
+    const badge = document.getElementById("globalPendingBadge");
+    if(badge) {
+      if (count > 0) {
+        badge.textContent = count > 99 ? '99+' : count;
+        badge.classList.remove('hidden');
+      } else {
+        badge.classList.add('hidden');
       }
-      return 'https://www.pixiv.net/novel/series/' + item.item_id;
     }
+  }
 
-    async function loadPending(page, type) {
-      let url = '/api/dashboard/pending-deletions?page=' + page;
-      if (type) url += '&item_type=' + encodeURIComponent(type);
+  async function loadPending(page, type) {
+    let url = '/api/dashboard/pending-deletions?page=' + page;
+    if (type) url += '&item_type=' + encodeURIComponent(type);
+    const list = document.getElementById('list');
+
+    try {
       const resp = await fetch(url);
       const data = await resp.json();
       const items = data.items || [];
       currentPage = data.page || 1;
       totalPages = data.total_pages || 1;
       currentType = type || '';
-      document.getElementById('summary').textContent = '共 ' + (data.total || 0) + ' 条待确认';
+
+      const totalCount = data.total || 0;
+      document.getElementById('summary').innerHTML = `共 <span class="text-brand-600 dark:text-brand-400 font-black">${totalCount}</span> 条待确认`;
       document.getElementById('pageInfo').textContent = '每页 ' + (data.page_size || 20) + ' 条';
-      document.getElementById('pagerText').textContent = currentPage + ' / ' + totalPages;
+      document.getElementById('pagerText').textContent = `${currentPage} / ${totalPages}`;
       document.getElementById('prevBtn').disabled = currentPage <= 1;
       document.getElementById('nextBtn').disabled = currentPage >= totalPages;
+
+      // Update global badge
+      updateGlobalBadge(totalCount);
+
       setActiveTab(currentType);
 
-      const list = document.getElementById('list');
       if (!items.length) {
-        list.innerHTML = '<div class="empty-state">没有待确认的删除记录</div>';
+        list.className = "flex justify-center py-16";
+        list.innerHTML = `
+          <div class="text-center text-gray-400 dark:text-gray-500">
+            <svg class="mx-auto h-12 w-12 mb-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
+            <p class="font-medium">没有待确认的删除记录</p>
+          </div>`;
         return;
       }
+
+      list.className = "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4";
       list.innerHTML = items.map(function (item) {
-        var pixivUrl = getPixivUrl(item);
-        var reasonLabel = item.reason === 'unbookmarked' ? '收藏取消' : '追更取消';
-        var reasonBadgeClass = item.reason === 'unbookmarked' ? 'badge-bookmark' : 'badge-series';
-        var typeLabel = item.item_type === 'novel' ? '小说' : '系列';
-        var coverHtml = '';
-        if (item.cover_url) {
-          coverHtml = '<img class="cover" src="/proxy/image?url=' + encodeURIComponent(item.cover_url) + '" alt="cover" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\';">';
-        }
-        var fallbackCover = '<div class="empty-cover" style="display:' + (item.cover_url ? 'none' : 'flex') + ';">' + escapeHtml((item.title || '').slice(0, 4)) + '</div>';
-        return '<article class="item">' +
-          coverHtml + fallbackCover +
-          '<div class="content">' +
-            '<a class="title-link" href="' + escapeHtml(pixivUrl) + '" target="_blank" rel="noopener">' + escapeHtml(item.title || '未命名') + '</a>' +
-            '<div class="meta">' +
-              '<span class="badge ' + reasonBadgeClass + '">' + escapeHtml(reasonLabel) + '</span>' +
-              '<span class="badge">' + escapeHtml(typeLabel) + '</span>' +
-              '作者：' + escapeHtml(item.author_name || '未知') +
-            '</div>' +
-            '<div class="meta">' +
-              '<a class="pixiv-link" href="' + escapeHtml(pixivUrl) + '" target="_blank" rel="noopener">Pixiv 原页</a>' +
-              ' · 检测于 ' + escapeHtml(item.detected_at || '-') +
-            '</div>' +
-            '<div class="actions">' +
-              '<button class="btn btn-sm btn-danger" onclick="confirmDeletion(' + item.id + ')">确认移除</button>' +
-              '<button class="btn btn-sm btn-success" onclick="restoreDeletion(' + item.id + ')">恢复</button>' +
-            '</div>' +
-          '</div>' +
-        '</article>';
+        const pixivUrl = getPixivUrl(item);
+        const isBookmark = item.reason === 'unbookmarked';
+        const reasonLabel = isBookmark ? '收藏取消' : '追更取消';
+        const reasonColorClass = isBookmark ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400';
+        const typeLabel = item.item_type === 'novel' ? '小说' : '系列';
+
+        const coverHtml = item.cover_url
+          ? `<img class="w-20 h-28 sm:w-24 sm:h-32 object-cover rounded-lg shadow-sm bg-gray-100 dark:bg-gray-800" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+          : '';
+        const fallbackCover = `<div class="w-20 h-28 sm:w-24 sm:h-32 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 flex items-center justify-center text-gray-400 dark:text-gray-500 font-bold text-xs p-2 text-center" style="display:${item.cover_url ? 'none' : 'flex'};">${escapeHtml((item.title || '').slice(0, 4))}</div>`;
+
+        return `
+          <article class="bg-gray-50 dark:bg-gray-900/40 border border-gray-100 dark:border-gray-800 rounded-xl p-4 flex gap-4 transition-colors hover:bg-white dark:hover:bg-gray-800 hover:shadow-sm">
+            <div class="flex-shrink-0">${coverHtml}${fallbackCover}</div>
+            <div class="flex flex-col min-w-0 justify-between py-0.5 w-full">
+              <div>
+                <a class="text-sm sm:text-base font-bold text-gray-900 dark:text-gray-100 hover:text-brand-600 dark:hover:text-brand-400 transition-colors line-clamp-2 leading-snug mb-1.5" href="${escapeHtml(pixivUrl)}" target="_blank" rel="noopener">${escapeHtml(item.title || '未命名')}</a>
+                <div class="flex items-center gap-1.5 flex-wrap mb-1.5">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold ${reasonColorClass}">${escapeHtml(reasonLabel)}</span>
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300">${escapeHtml(typeLabel)}</span>
+                </div>
+                <div class="text-xs text-gray-500 dark:text-gray-400 truncate">作者: ${escapeHtml(item.author_name || '未知')}</div>
+                <div class="text-[10px] text-gray-400 dark:text-gray-500 font-mono mt-1 truncate">检测于 ${escapeHtml(item.detected_at || '-').substring(0, 16)}</div>
+              </div>
+
+              <div class="flex gap-2 mt-3 pt-3 border-t border-gray-200 dark:border-gray-700/50">
+                <button onclick="confirmDeletion(${item.id})" class="flex-1 px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/50 text-xs font-bold rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/50">确认移除</button>
+                <button onclick="restoreDeletion(${item.id})" class="flex-1 px-3 py-1.5 bg-green-100 hover:bg-green-200 text-green-700 dark:bg-green-900/30 dark:text-green-400 dark:hover:bg-green-900/50 text-xs font-bold rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-green-500/50">忽略恢复</button>
+              </div>
+            </div>
+          </article>
+        `;
       }).join('');
+    } catch (err) {
+      document.getElementById('summary').textContent = '加载失败';
     }
+  }
 
-    function setActiveTab(type) {
-      document.querySelectorAll('.tab').forEach(function (btn) {
-        btn.classList.toggle('active', (btn.dataset.type || '') === type);
-      });
-    }
+  function setActiveTab(type) {
+    document.querySelectorAll('.tab-btn').forEach(function (btn) {
+      if ((btn.dataset.type || '') === type) {
+        btn.classList.add('active', 'bg-white', 'dark:bg-gray-800', 'text-gray-900', 'dark:text-white', 'shadow-sm', 'ring-1', 'ring-gray-200', 'dark:ring-gray-700');
+        btn.classList.remove('text-gray-500', 'dark:text-gray-400', 'hover:text-gray-700', 'dark:hover:text-gray-200');
+      } else {
+        btn.classList.remove('active', 'bg-white', 'dark:bg-gray-800', 'text-gray-900', 'dark:text-white', 'shadow-sm', 'ring-1', 'ring-gray-200', 'dark:ring-gray-700');
+        btn.classList.add('text-gray-500', 'dark:text-gray-400', 'hover:text-gray-700', 'dark:hover:text-gray-200');
+      }
+    });
+  }
 
-    async function confirmDeletion(id) {
-      if (!confirm('确认删除？此操作不可撤销。')) return;
+  async function confirmDeletion(id) {
+    if (!confirm('确认删除？此操作不可撤销，并将删除本地文件。')) return;
+    try {
       const resp = await fetch('/api/dashboard/pending-deletions/' + id + '/confirm', { method: 'POST' });
-      const data = await resp.json();
       if (resp.ok) {
         loadPending(currentPage, currentType);
       } else {
-        alert(data.error || '操作失败');
-      }
-    }
-
-    async function restoreDeletion(id) {
-      const resp = await fetch('/api/dashboard/pending-deletions/' + id + '/restore', { method: 'POST' });
-      const data = await resp.json();
-      if (resp.ok) {
-        loadPending(currentPage, currentType);
-      } else {
-        alert(data.error || '操作失败');
-      }
-    }
-
-    async function triggerDetection() {
-      var btn = document.getElementById('detectBtn');
-      btn.disabled = true;
-      btn.textContent = '检测中...';
-      try {
-        const resp = await fetch('/api/dashboard/pending-deletions/detect', { method: 'POST' });
         const data = await resp.json();
-        if (resp.ok) {
-          pollDetectionStatus(data.job ? data.job.job_id : null);
-        } else {
-          alert(data.error || '启动检测失败');
-          btn.disabled = false;
-          btn.textContent = '开始检测';
+        alert(data.error || '操作失败');
+      }
+    } catch (e) { alert('网络错误'); }
+  }
+
+  async function restoreDeletion(id) {
+    try {
+      const resp = await fetch('/api/dashboard/pending-deletions/' + id + '/restore', { method: 'POST' });
+      if (resp.ok) {
+        loadPending(currentPage, currentType);
+      } else {
+        const data = await resp.json();
+        alert(data.error || '操作失败');
+      }
+    } catch (e) { alert('网络错误'); }
+  }
+
+  async function triggerDetection() {
+    var btn = document.getElementById('detectBtn');
+    var btnText = document.getElementById('detectBtnText');
+    btn.disabled = true;
+    btnText.textContent = '检测中...';
+    btn.classList.add('animate-pulse');
+
+    try {
+      const resp = await fetch('/api/dashboard/pending-deletions/detect', { method: 'POST' });
+      const data = await resp.json();
+      if (resp.ok) {
+        pollDetectionStatus(data.job ? data.job.job_id : null);
+      } else {
+        alert(data.error || '启动检测失败');
+        resetDetectBtn();
+      }
+    } catch (e) {
+      alert('请求失败');
+      resetDetectBtn();
+    }
+  }
+
+  function resetDetectBtn() {
+    var btn = document.getElementById('detectBtn');
+    var btnText = document.getElementById('detectBtnText');
+    btn.disabled = false;
+    btnText.textContent = '开始检测';
+    btn.classList.remove('animate-pulse');
+  }
+
+  async function pollDetectionStatus(jobId) {
+    if (!jobId) {
+      resetDetectBtn();
+      loadPending(1, currentType);
+      return;
+    }
+    var poll = setInterval(async function () {
+      try {
+        const resp = await fetch('/api/dashboard/sync/status?job_id=' + jobId);
+        const data = await resp.json();
+        var job = data.job;
+        if (!job || job.status === 'succeeded' || job.status === 'failed') {
+          clearInterval(poll);
+          resetDetectBtn();
+          loadPending(1, currentType);
         }
       } catch (e) {
-        alert('请求失败');
-        btn.disabled = false;
-        btn.textContent = '开始检测';
+        clearInterval(poll);
+        resetDetectBtn();
       }
-    }
+    }, 3000);
+  }
 
-    async function pollDetectionStatus(jobId) {
-      var btn = document.getElementById('detectBtn');
-      if (!jobId) {
-        btn.disabled = false;
-        btn.textContent = '开始检测';
-        loadPending(1, currentType);
-        return;
-      }
-      var poll = setInterval(async function () {
-        try {
-          const resp = await fetch('/api/dashboard/sync/status?job_id=' + jobId);
-          const data = await resp.json();
-          var job = data.job;
-          if (!job || job.status === 'succeeded' || job.status === 'failed') {
-            clearInterval(poll);
-            btn.disabled = false;
-            btn.textContent = '开始检测';
-            loadPending(1, currentType);
-          }
-        } catch (e) {
-          clearInterval(poll);
-          btn.disabled = false;
-          btn.textContent = '开始检测';
-        }
-      }, 3000);
-    }
+  document.getElementById('tabs').addEventListener('click', function (event) {
+    var btn = event.target.closest('.tab-btn');
+    if (!btn) return;
+    loadPending(1, btn.dataset.type || '');
+  });
 
-    document.getElementById('tabs').addEventListener('click', function (event) {
-      var btn = event.target.closest('.tab');
-      if (!btn) return;
-      loadPending(1, btn.dataset.type || '');
-    });
-    document.getElementById('prevBtn').addEventListener('click', function () {
-      if (currentPage > 1) loadPending(currentPage - 1, currentType);
-    });
-    document.getElementById('nextBtn').addEventListener('click', function () {
-      if (currentPage < totalPages) loadPending(currentPage + 1, currentType);
-    });
+  document.getElementById('prevBtn').addEventListener('click', function () {
+    if (currentPage > 1) loadPending(currentPage - 1, currentType);
+  });
 
-    loadPending(1, '').catch(function () {
-      document.getElementById('summary').textContent = '加载失败';
-    });
-  </script>
-</body>
-</html>
+  document.getElementById('nextBtn').addEventListener('click', function () {
+    if (currentPage < totalPages) loadPending(currentPage + 1, currentType);
+  });
+
+  loadPending(1, '');
+</script>
+{% endblock %}

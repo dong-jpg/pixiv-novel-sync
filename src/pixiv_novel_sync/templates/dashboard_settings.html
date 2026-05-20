@@ -1,582 +1,485 @@
-<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>同步设置 - Pixiv 小说同步器</title>
-  <style>
-    :root {
-      --bg: #ffffff;
-      --bg-soft: #f5f5f7;
-      --text: #1d1d1f;
-      --text-secondary: #86868b;
-      --line: #d2d2d7;
-      --brand-start: #007aff;
-      --brand-end: #5856d6;
-      --success: #34c759;
-      --danger: #ff3b30;
-      --card-shadow: 0 2px 12px rgba(0,0,0,0.08);
-      --radius: 16px;
-      --radius-lg: 20px;
-    }
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; background: var(--bg-soft); color: var(--text); -webkit-font-smoothing: antialiased; }
-    .topbar { background: #fff; border-bottom: 2px solid transparent; background-image: linear-gradient(#fff, #fff), linear-gradient(90deg, var(--brand-start), var(--brand-end)); background-origin: padding-box, border-box; background-clip: padding-box, border-box; }
-    .topbar-inner { max-width: 1200px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; }
-    .brand { font-size: 17px; font-weight: 600; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-    .nav { display: flex; gap: 4px; }
-    .nav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 8px 14px; border-radius: 8px; transition: all 0.2s; position: relative; }
-    .nav a:hover { color: var(--text); background: rgba(0,122,255,0.06); }
-    .nav a.active { color: var(--brand-start); font-weight: 600; }
-    .nav a.active::after { content: ''; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); width: 20px; height: 2px; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); border-radius: 1px; }
-    
-    .settings-layout { max-width: 1200px; margin: 0 auto; padding: 32px 24px 56px; display: grid; grid-template-columns: 240px 1fr; gap: 32px; }
-    .settings-title { font-size: 28px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.02em; }
-    .settings-desc { color: var(--text-secondary); margin: 0 0 24px; font-size: 15px; }
-    
-    .side-menu { position: sticky; top: 32px; height: fit-content; background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 16px; }
-    .menu-list { display: flex; flex-direction: column; gap: 4px; }
-    .menu-item { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 10px; cursor: pointer; transition: all 0.2s; font-size: 14px; color: var(--text-secondary); text-decoration: none; }
-    .menu-item:hover { background: rgba(0,122,255,0.06); color: var(--text); }
-    .menu-item.active { background: linear-gradient(90deg, rgba(0,122,255,0.1), rgba(88,86,214,0.1)); color: var(--brand-start); font-weight: 600; }
-    .menu-icon { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; }
-    .menu-icon svg { width: 18px; height: 18px; }
-    
-    .content-area { min-height: 500px; }
-    .page-section { display: none; animation: fadeIn 0.3s ease; }
-    .page-section.active { display: block; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-    
-    .card { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 28px; }
-    .section { margin-bottom: 28px; }
-    .section:last-child { margin-bottom: 0; }
-    .section-title { font-size: 14px; font-weight: 700; color: var(--text); margin: 0 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
-    
-    .checks { display: grid; gap: 14px; }
-    .check-item { display: flex; align-items: center; gap: 12px; cursor: pointer; }
-    .check-item input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--brand-start); cursor: pointer; }
-    .check-item label { font-size: 14px; cursor: pointer; color: var(--text); }
-    
-    .fields { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
-    .field { display: flex; flex-direction: column; gap: 8px; }
-    .field label { font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.03em; }
-    .field input, .field select { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 14px; font-family: inherit; transition: border-color 0.2s; background: #fff; }
-    .field input:focus, .field select:focus { outline: none; border-color: var(--brand-start); }
-    .field input[type="time"] { font-family: inherit; }
-    
-    .btn { border: none; border-radius: 10px; padding: 14px 28px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); color: #fff; }
-    .btn:hover { opacity: 0.9; transform: translateY(-1px); }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-    .btn-secondary { background: var(--bg-soft); color: var(--text); border: 1px solid var(--line); }
-    .btn-secondary:hover { background: var(--line); }
-    
-    .message { margin-top: 20px; font-size: 14px; min-height: 20px; padding: 12px 16px; border-radius: 10px; }
-    .message.ok { color: var(--success); background: rgba(52,199,89,0.1); }
-    .message.bad { color: var(--danger); background: rgba(255,59,48,0.1); }
-    
-    .hint { font-size: 12px; color: var(--text-secondary); margin-top: 6px; }
-    .time-preview { font-size: 13px; color: var(--text-secondary); margin-top: 8px; padding: 8px 12px; background: var(--bg-soft); border-radius: 8px; }
-    
-    @media (max-width: 900px) {
-      .settings-layout { grid-template-columns: 1fr; }
-      .side-menu { position: static; }
-      .menu-list { flex-direction: row; flex-wrap: wrap; }
-      .menu-item { font-size: 13px; padding: 10px 12px; }
-      .topbar-inner { flex-direction: column; height: auto; padding: 12px 16px; gap: 8px; }
-      .fields { grid-template-columns: 1fr; }
-    }
-    @media (max-width: 720px) {
-      #manual .section > div[style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
-    }
-  </style>
-</head>
-<body>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <div class="brand">Pixiv 小说同步器</div>
-      <nav class="nav">
-        <a href="/dashboard">首页</a>
-        <a href="/dashboard/follows">关注</a>
-        <a href="/dashboard/novels">小说</a>
-        <a href="/dashboard/pending-deletions">待确认<span id="pendingBadge" class="nav-badge" style="display:none;">0</span></a>
-        <a class="active" href="/dashboard/settings">设置</a>
-        <a href="/dashboard/logs">日志</a>
-        <a href="/token-login">登录</a>
-      </nav>
-    </div>
-  </header>
+{% extends "base.html" %}
 
-  <main class="settings-layout">
-    <aside class="side-menu">
-      <nav class="menu-list">
-        <a class="menu-item active" href="#basic" data-section="basic">
-          <span class="menu-icon">
-            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-          </span>
+{% block title %}同步设置 - Pixiv 小说同步器{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto flex flex-col lg:flex-row gap-8">
+
+  <!-- Sidebar -->
+  <aside class="w-full lg:w-64 flex-shrink-0">
+    <div class="sticky top-20 bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-4">
+      <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100 mb-4 px-2">同步设置</h2>
+      <nav class="space-y-1" id="settingsMenu">
+        <a href="#basic" data-section="basic" class="menu-item group flex items-center px-3 py-2.5 text-sm font-medium rounded-xl transition-colors text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900/30">
+          <svg class="flex-shrink-0 mr-3 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
           基础设置
         </a>
-        <a class="menu-item" href="#limits" data-section="limits">
-          <span class="menu-icon">
-            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-          </span>
+        <a href="#limits" data-section="limits" class="menu-item group flex items-center px-3 py-2.5 text-sm font-medium rounded-xl transition-colors text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 hover:text-gray-900 dark:hover:text-white">
+          <svg class="flex-shrink-0 mr-3 w-5 h-5 text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
           限速参数
         </a>
-        <a class="menu-item" href="#following" data-section="following">
-          <span class="menu-icon">
-            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
-          </span>
-          关注追更
+        <a href="#following" data-section="following" class="menu-item group flex items-center px-3 py-2.5 text-sm font-medium rounded-xl transition-colors text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 hover:text-gray-900 dark:hover:text-white">
+          <svg class="flex-shrink-0 mr-3 w-5 h-5 text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
+          定时同步
         </a>
-        <a class="menu-item" href="#manual" data-section="manual">
-          <span class="menu-icon">
-            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122"/></svg>
-          </span>
+        <a href="#manual" data-section="manual" class="menu-item group flex items-center px-3 py-2.5 text-sm font-medium rounded-xl transition-colors text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 hover:text-gray-900 dark:hover:text-white">
+          <svg class="flex-shrink-0 mr-3 w-5 h-5 text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122"/></svg>
           手动操作
         </a>
-        <a class="menu-item" href="#cache" data-section="cache">
-          <span class="menu-icon">
-            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
-          </span>
-          缓存管理
+        <a href="#cache" data-section="cache" class="menu-item group flex items-center px-3 py-2.5 text-sm font-medium rounded-xl transition-colors text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 hover:text-gray-900 dark:hover:text-white">
+          <svg class="flex-shrink-0 mr-3 w-5 h-5 text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
+          图片缓存
         </a>
       </nav>
-    </aside>
-
-    <div class="content-area">
-      <section id="basic" class="page-section active card">
-        <h2 class="settings-title" style="margin-bottom:8px;">基础设置</h2>
-        <p class="settings-desc">配置同步内容和同步选项</p>
-        
-        <div class="section">
-          <div class="section-title">同步内容</div>
-          <p style="font-size:13px;color:var(--text-secondary);margin:0 0 14px;">分批同步可降低风控风险，建议每次只开启一项</p>
-          <div class="checks">
-            <div class="check-item">
-              <input type="checkbox" id="syncBookmarks">
-              <label for="syncBookmarks">同步收藏小说</label>
-            </div>
-            <div class="check-item">
-              <input type="checkbox" id="syncFollowingUsers">
-              <label for="syncFollowingUsers">同步关注用户列表</label>
-            </div>
-            <div class="check-item">
-              <input type="checkbox" id="syncFollowingNovels">
-              <label for="syncFollowingNovels">同步关注用户的小说</label>
-            </div>
-          </div>
-        </div>
-
-        <div class="section">
-          <div class="section-title">同步选项</div>
-          <div class="checks">
-            <div class="check-item">
-              <input type="checkbox" id="enabled">
-              <label for="enabled">启用自动同步</label>
-            </div>
-            <div class="check-item">
-              <input type="checkbox" id="initialManualOnly">
-              <label for="initialManualOnly">首次仅允许手工触发</label>
-            </div>
-            <div class="check-item">
-              <input type="checkbox" id="downloadAssets">
-              <label for="downloadAssets">下载封面与插图资源</label>
-            </div>
-            <div class="check-item">
-              <input type="checkbox" id="writeMarkdown">
-              <label for="writeMarkdown">输出 Markdown 文件</label>
-            </div>
-            <div class="check-item">
-              <input type="checkbox" id="writeRawText">
-              <label for="writeRawText">输出原始文本文件</label>
-            </div>
-            <div class="check-item">
-              <input type="checkbox" id="restrictPublic">
-              <label for="restrictPublic">同步公开收藏</label>
-            </div>
-            <div class="check-item">
-              <input type="checkbox" id="restrictPrivate">
-              <label for="restrictPrivate">同步私密收藏</label>
-            </div>
-          </div>
-        </div>
-        
-        <button class="btn" id="saveBasic">保存基础设置</button>
-        <div class="message" id="msgBasic"></div>
-      </section>
-
-      <section id="limits" class="page-section card">
-        <h2 class="settings-title" style="margin-bottom:8px;">限速参数</h2>
-        <p class="settings-desc">控制单次同步的数据量和延迟，降低风控风险</p>
-        
-        <div class="section">
-          <div class="section-title">基本限速</div>
-          <div class="fields">
-            <div class="field">
-              <label for="maxItems">单次最大条数</label>
-              <input type="number" id="maxItems" min="1" placeholder="留空表示不限">
-            </div>
-            <div class="field">
-              <label for="maxPages">单次最大页数</label>
-              <input type="number" id="maxPages" min="1" placeholder="留空表示不限">
-            </div>
-          </div>
-        </div>
-        
-        <div class="section">
-          <div class="section-title">延迟设置（秒）</div>
-          <div class="fields">
-            <div class="field">
-              <label for="itemDelay">每本之间延迟</label>
-              <input type="number" id="itemDelay" min="0" step="0.1" placeholder="0">
-            </div>
-            <div class="field">
-              <label for="pageDelay">每页之间延迟</label>
-              <input type="number" id="pageDelay" min="0" step="0.1" placeholder="0">
-            </div>
-            <div class="field">
-              <label for="seriesDelay">每个系列之间延迟</label>
-              <input type="number" id="seriesDelay" min="0" step="0.1" placeholder="3">
-            </div>
-            <div class="field">
-              <label for="chapterDelay">系列内每章之间延迟</label>
-              <input type="number" id="chapterDelay" min="0" step="0.1" placeholder="1">
-            </div>
-            <div class="field">
-              <label for="skipDelay">跳过内容时延迟</label>
-              <input type="number" id="skipDelay" min="0" step="0.1" placeholder="0.1">
-            </div>
-          </div>
-        </div>
-
-        <div class="section">
-          <div class="section-title">同步数量限制</div>
-          <div class="fields">
-            <div class="field">
-              <label for="followingNovelsUsersLimit">每轮同步用户数</label>
-              <input type="number" id="followingNovelsUsersLimit" min="0" placeholder="0">
-              <div class="hint">0 = 全部用户</div>
-            </div>
-            <div class="field">
-              <label for="seriesSyncLimit">每次同步追更系列数</label>
-              <input type="number" id="seriesSyncLimit" min="0" placeholder="0">
-              <div class="hint">0 = 全部系列</div>
-            </div>
-          </div>
-        </div>
-        
-        <button class="btn" id="saveLimits">保存限速设置</button>
-        <div class="message" id="msgLimits"></div>
-      </section>
-
-      <section id="following" class="page-section card">
-        <h2 class="settings-title" style="margin-bottom:8px;">定时同步</h2>
-        <p class="settings-desc">配置定时任务，分散执行时间降低风控风险</p>
-        
-        <div class="section">
-          <div class="section-title">时区设置</div>
-          <div class="fields">
-            <div class="field" style="grid-column:1/-1;">
-              <label for="autoSyncTimezone">定时任务时区</label>
-              <select id="autoSyncTimezone">
-                <option value="UTC">UTC (协调世界时)</option>
-                <option value="Asia/Shanghai">Asia/Shanghai (中国上海, UTC+8)</option>
-                <option value="Asia/Tokyo">Asia/Tokyo (日本东京, UTC+9)</option>
-                <option value="Asia/Seoul">Asia/Seoul (韩国首尔, UTC+9)</option>
-                <option value="America/New_York">America/New_York (美国东部, UTC-5)</option>
-                <option value="America/Los_Angeles">America/Los_Angeles (美国西部, UTC-8)</option>
-                <option value="Europe/London">Europe/London (英国伦敦, UTC+0)</option>
-                <option value="Europe/Berlin">Europe/Berlin (德国柏林, UTC+1)</option>
-              </select>
-            </div>
-          </div>
-        </div>
-
-        <div class="section">
-          <div class="section-title">定时任务开关</div>
-          <div class="checks">
-            <div class="check-item">
-              <input type="checkbox" id="autoSyncBookmarks">
-              <label for="autoSyncBookmarks">定时同步收藏</label>
-            </div>
-            <div class="check-item">
-              <input type="checkbox" id="autoSyncFollowingList">
-              <label for="autoSyncFollowingList">同步关注用户列表</label>
-            </div>
-            <div class="check-item">
-              <input type="checkbox" id="autoSyncFollowingNovels">
-              <label for="autoSyncFollowingNovels">同步关注用户小说</label>
-            </div>
-            <div class="check-item">
-              <input type="checkbox" id="autoSyncUserStatus">
-              <label for="autoSyncUserStatus">检查关注用户状态</label>
-            </div>
-            <div class="check-item">
-              <input type="checkbox" id="autoSyncNovelStatus">
-              <label for="autoSyncNovelStatus">检查小说状态</label>
-            </div>
-            <div class="check-item">
-              <input type="checkbox" id="autoSyncSeriesStatus">
-              <label for="autoSyncSeriesStatus">检查系列状态</label>
-            </div>
-            <div class="check-item">
-              <input type="checkbox" id="autoSyncSubscribedSeries">
-              <label for="autoSyncSubscribedSeries">我的追更系列</label>
-            </div>
-            <div class="check-item">
-              <input type="checkbox" id="autoSyncPendingDetection">
-              <label for="autoSyncPendingDetection">检测取消收藏 / 取消追更</label>
-            </div>
-          </div>
-        </div>
-        
-        <div class="section">
-          <div class="section-title">同步间隔（小时）</div>
-          <div class="fields">
-            <div class="field">
-              <label for="autoSyncBookmarksInterval">收藏间隔</label>
-              <input type="number" id="autoSyncBookmarksInterval" min="1" max="24" placeholder="6">
-            </div>
-            <div class="field">
-              <label for="autoSyncFollowingListInterval">关注列表间隔</label>
-              <input type="number" id="autoSyncFollowingListInterval" min="1" max="168" placeholder="24">
-            </div>
-            <div class="field">
-              <label for="autoSyncFollowingNovelsInterval">关注小说间隔</label>
-              <input type="number" id="autoSyncFollowingNovelsInterval" min="1" max="24" placeholder="6">
-            </div>
-            <div class="field">
-              <label for="autoSyncUserStatusInterval">用户状态间隔</label>
-              <input type="number" id="autoSyncUserStatusInterval" min="1" max="168" placeholder="6">
-            </div>
-            <div class="field">
-              <label for="autoSyncNovelStatusInterval">小说状态间隔</label>
-              <input type="number" id="autoSyncNovelStatusInterval" min="1" max="168" placeholder="6">
-            </div>
-            <div class="field">
-              <label for="autoSyncSeriesStatusInterval">系列状态间隔</label>
-              <input type="number" id="autoSyncSeriesStatusInterval" min="1" max="168" placeholder="6">
-            </div>
-            <div class="field">
-              <label for="autoSyncSubscribedSeriesInterval">追更间隔</label>
-              <input type="number" id="autoSyncSubscribedSeriesInterval" min="1" max="24" placeholder="6">
-            </div>
-            <div class="field">
-              <label for="autoSyncPendingDetectionInterval">取消检测间隔</label>
-              <input type="number" id="autoSyncPendingDetectionInterval" min="1" max="168" placeholder="12">
-            </div>
-          </div>
-        </div>
-
-        <div class="section">
-          <div class="section-title">Cron 表达式（可选，优先于间隔小时）</div>
-          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;">格式：分 时 日 月 周（如 "0 3 * * *" 表示每天凌晨 3 点）</p>
-          <div class="fields">
-            <div class="field">
-              <label for="autoSyncBookmarksCron">收藏同步 Cron</label>
-              <input type="text" id="autoSyncBookmarksCron" placeholder="0 3 * * *">
-            </div>
-            <div class="field">
-              <label for="autoSyncFollowingListCron">关注列表 Cron</label>
-              <input type="text" id="autoSyncFollowingListCron" placeholder="0 4 * * *">
-            </div>
-            <div class="field">
-              <label for="autoSyncFollowingNovelsCron">关注小说 Cron</label>
-              <input type="text" id="autoSyncFollowingNovelsCron" placeholder="0 5 * * *">
-            </div>
-            <div class="field">
-              <label for="autoSyncUserStatusCron">用户状态检查 Cron</label>
-              <input type="text" id="autoSyncUserStatusCron" placeholder="0 6 * * *">
-            </div>
-            <div class="field">
-              <label for="autoSyncNovelStatusCron">小说状态检查 Cron</label>
-              <input type="text" id="autoSyncNovelStatusCron" placeholder="">
-            </div>
-            <div class="field">
-              <label for="autoSyncSeriesStatusCron">系列状态检查 Cron</label>
-              <input type="text" id="autoSyncSeriesStatusCron" placeholder="">
-            </div>
-            <div class="field">
-              <label for="autoSyncSubscribedSeriesCron">追更系列 Cron</label>
-              <input type="text" id="autoSyncSubscribedSeriesCron" placeholder="0 7 * * *">
-            </div>
-            <div class="field">
-              <label for="autoSyncPendingDetectionCron">取消检测 Cron</label>
-              <input type="text" id="autoSyncPendingDetectionCron" placeholder="">
-            </div>
-          </div>
-        </div>
-
-        <div id="autoSyncStatusText" class="hint" style="margin-top:16px;">加载中...</div>
-        
-        <button class="btn" id="saveScheduler">保存定时同步设置</button>
-        <div class="message" id="msgScheduler"></div>
-      </section>
-
-      <section id="manual" class="page-section card">
-        <h2 class="settings-title" style="margin-bottom:8px;">同步操作</h2>
-        <p class="settings-desc">手动触发同步任务，同步订阅的系列和关注用户的最新小说</p>
-        
-        <div class="section">
-          <div class="section-title">手动同步</div>
-          <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;">
-            <button class="btn btn-secondary" id="manualBookmarks">同步收藏</button>
-            <button class="btn btn-secondary" id="manualFollowingUsers">同步关注用户</button>
-            <button class="btn btn-secondary" id="manualFollowingNovels">同步关注小说</button>
-            <button class="btn btn-secondary" id="manualUserStatus">检查用户状态</button>
-            <button class="btn btn-secondary" id="manualNovelStatus">检查小说状态</button>
-            <button class="btn btn-secondary" id="manualSeriesStatus">检查系列状态</button>
-          </div>
-          <div class="hint" style="margin-top:12px;">手动同步不受定时开关控制，点击后立即执行</div>
-        </div>
-
-        <div id="manualLog" style="background:var(--bg-soft);border-radius:10px;padding:16px;font-family:monospace;font-size:12px;max-height:200px;overflow-y:auto;margin-top:16px;"></div>
-      </section>
-
-      <section id="cache" class="page-section card">
-        <h2 class="settings-title" style="margin-bottom:8px;">图片缓存管理</h2>
-        <p class="settings-desc">Nginx 图片缓存，减少对 Pixiv CDN 的请求</p>
-        
-        <div class="section">
-          <div class="section-title">缓存状态</div>
-          <div id="cacheInfo" style="font-size:14px;color:var(--text-secondary);margin-bottom:16px;">
-            加载中...
-          </div>
-          <button class="btn" id="refreshCacheBtn" style="background: linear-gradient(90deg, #5856d6, #af52de); margin-right: 8px;">刷新状态</button>
-          <button class="btn" id="clearCacheBtn" style="background: linear-gradient(90deg, #ff3b30, #ff6b6b);">清空缓存</button>
-          <div id="cacheMessage" class="message" style="margin-top:16px;"></div>
-        </div>
-      </section>
     </div>
-  </main>
+  </aside>
 
-  <script>
-    (function() {
-      const $ = (sel) => document.querySelector(sel);
-      const $$ = (sel) => document.querySelectorAll(sel);
+  <!-- Content -->
+  <div class="flex-1 min-w-0">
 
-      const state = { settings: null };
+    <!-- Section 1: Basic -->
+    <section id="basic" class="page-section block bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-6 sm:p-8 mb-8 animate-[fadeIn_0.3s_ease-out]">
+      <div class="mb-6">
+        <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">基础设置</h2>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">配置要同步的核心内容和输出选项</p>
+      </div>
 
-      function escapeHtml(value) {
-        return String(value ?? '').replace(/[&<>"]/g, function (ch) {
-          if (ch === '&') return '&amp;';
-          if (ch === '<') return '&lt;';
-          if (ch === '>') return '&gt;';
-          if (ch === '"') return '&quot;';
-          return ch;
-        });
-      }
+      <div class="space-y-8">
+        <div>
+          <h3 class="text-sm font-bold text-gray-900 dark:text-gray-200 border-b border-gray-100 dark:border-gray-700 pb-2 mb-4">同步内容</h3>
+          <p class="text-xs text-gray-500 dark:text-gray-400 mb-4 bg-gray-50 dark:bg-gray-900/50 p-2.5 rounded-lg border border-gray-100 dark:border-gray-800">💡 提示：分批同步可降低风控风险，建议首次大批量拉取时仅开启一项。</p>
+          <div class="space-y-3">
+            <label class="flex items-start gap-3 cursor-pointer group">
+              <div class="flex items-center h-5"><input type="checkbox" id="syncBookmarks" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:focus:ring-brand-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600 mt-0.5 cursor-pointer"></div>
+              <span class="text-sm text-gray-700 dark:text-gray-300 font-medium group-hover:text-gray-900 dark:group-hover:text-gray-100 transition-colors">同步收藏小说</span>
+            </label>
+            <label class="flex items-start gap-3 cursor-pointer group">
+              <div class="flex items-center h-5"><input type="checkbox" id="syncFollowingUsers" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:focus:ring-brand-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600 mt-0.5 cursor-pointer"></div>
+              <span class="text-sm text-gray-700 dark:text-gray-300 font-medium group-hover:text-gray-900 dark:group-hover:text-gray-100 transition-colors">同步关注用户列表</span>
+            </label>
+            <label class="flex items-start gap-3 cursor-pointer group">
+              <div class="flex items-center h-5"><input type="checkbox" id="syncFollowingNovels" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:focus:ring-brand-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600 mt-0.5 cursor-pointer"></div>
+              <span class="text-sm text-gray-700 dark:text-gray-300 font-medium group-hover:text-gray-900 dark:group-hover:text-gray-100 transition-colors">同步关注用户的小说</span>
+            </label>
+          </div>
+        </div>
 
-      function logToPanel(msg) {
-        const log = $("#manualLog");
-        const time = new Date().toLocaleTimeString();
-        const line = document.createElement('div');
-        line.textContent = `[${time}] ${msg}`;
-        log.prepend(line);
-      }
+        <div>
+          <h3 class="text-sm font-bold text-gray-900 dark:text-gray-200 border-b border-gray-100 dark:border-gray-700 pb-2 mb-4">功能选项</h3>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-y-4 gap-x-6">
+            <label class="flex items-start gap-3 cursor-pointer group">
+              <div class="flex items-center h-5"><input type="checkbox" id="enabled" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:bg-gray-700 dark:border-gray-600 mt-0.5 cursor-pointer"></div>
+              <span class="text-sm text-gray-700 dark:text-gray-300 font-medium">启用全局同步</span>
+            </label>
+            <label class="flex items-start gap-3 cursor-pointer group">
+              <div class="flex items-center h-5"><input type="checkbox" id="initialManualOnly" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:bg-gray-700 dark:border-gray-600 mt-0.5 cursor-pointer"></div>
+              <span class="text-sm text-gray-700 dark:text-gray-300 font-medium">首次仅允许手工触发</span>
+            </label>
+            <label class="flex items-start gap-3 cursor-pointer group">
+              <div class="flex items-center h-5"><input type="checkbox" id="downloadAssets" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:bg-gray-700 dark:border-gray-600 mt-0.5 cursor-pointer"></div>
+              <span class="text-sm text-gray-700 dark:text-gray-300 font-medium">下载封面与插图资源</span>
+            </label>
+            <label class="flex items-start gap-3 cursor-pointer group">
+              <div class="flex items-center h-5"><input type="checkbox" id="writeMarkdown" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:bg-gray-700 dark:border-gray-600 mt-0.5 cursor-pointer"></div>
+              <span class="text-sm text-gray-700 dark:text-gray-300 font-medium">输出 Markdown 文件</span>
+            </label>
+            <label class="flex items-start gap-3 cursor-pointer group">
+              <div class="flex items-center h-5"><input type="checkbox" id="writeRawText" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:bg-gray-700 dark:border-gray-600 mt-0.5 cursor-pointer"></div>
+              <span class="text-sm text-gray-700 dark:text-gray-300 font-medium">输出原始文本文件</span>
+            </label>
+            <label class="flex items-start gap-3 cursor-pointer group">
+              <div class="flex items-center h-5"><input type="checkbox" id="restrictPublic" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:bg-gray-700 dark:border-gray-600 mt-0.5 cursor-pointer"></div>
+              <span class="text-sm text-gray-700 dark:text-gray-300 font-medium">同步公开收藏</span>
+            </label>
+            <label class="flex items-start gap-3 cursor-pointer group">
+              <div class="flex items-center h-5"><input type="checkbox" id="restrictPrivate" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:bg-gray-700 dark:border-gray-600 mt-0.5 cursor-pointer"></div>
+              <span class="text-sm text-gray-700 dark:text-gray-300 font-medium">同步私密收藏</span>
+            </label>
+          </div>
+        </div>
+      </div>
 
-      function menuClick(e) {
-        e.preventDefault();
-        const target = e.currentTarget;
-        const sectionId = target.getAttribute("data-section");
-        
-        $$(".menu-item").forEach(el => el.classList.remove("active"));
-        $$(".page-section").forEach(el => el.classList.remove("active"));
-        
-        target.classList.add("active");
-        $("#" + sectionId).classList.add("active");
-        history.pushState(null, "", "#" + sectionId);
-      }
+      <div class="mt-8 pt-6 border-t border-gray-100 dark:border-gray-700 flex items-center gap-4">
+        <button id="saveBasic" class="px-6 py-2.5 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 disabled:opacity-50">保存基础设置</button>
+        <span id="msgBasic" class="text-sm font-medium transition-opacity duration-300 opacity-0"></span>
+      </div>
+    </section>
 
-      $$(".menu-item").forEach(item => {
-        item.addEventListener("click", menuClick);
+    <!-- Section 2: Limits -->
+    <section id="limits" class="page-section hidden bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-6 sm:p-8 mb-8 animate-[fadeIn_0.3s_ease-out]">
+      <div class="mb-6">
+        <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">限速参数</h2>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">控制单次同步的数据量和延迟，降低 API 风控风险</p>
+      </div>
+
+      <div class="space-y-8">
+        <div>
+          <h3 class="text-sm font-bold text-gray-900 dark:text-gray-200 border-b border-gray-100 dark:border-gray-700 pb-2 mb-4">基本限速</h3>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label for="maxItems" class="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5">单次最大条数</label>
+              <input type="number" id="maxItems" min="1" placeholder="留空不限" class="block w-full px-3 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors">
+            </div>
+            <div>
+              <label for="maxPages" class="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5">单次最大页数</label>
+              <input type="number" id="maxPages" min="1" placeholder="留空不限" class="block w-full px-3 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors">
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <h3 class="text-sm font-bold text-gray-900 dark:text-gray-200 border-b border-gray-100 dark:border-gray-700 pb-2 mb-4">延迟设置 (秒)</h3>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-bold text-gray-500 dark:text-gray-400 mb-1.5">每本之间延迟</label>
+              <input type="number" id="itemDelay" min="0" step="0.1" placeholder="0" class="block w-full px-3 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors">
+            </div>
+            <div>
+              <label class="block text-xs font-bold text-gray-500 dark:text-gray-400 mb-1.5">每页之间延迟</label>
+              <input type="number" id="pageDelay" min="0" step="0.1" placeholder="0" class="block w-full px-3 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors">
+            </div>
+            <div>
+              <label class="block text-xs font-bold text-gray-500 dark:text-gray-400 mb-1.5">每个系列间延迟</label>
+              <input type="number" id="seriesDelay" min="0" step="0.1" placeholder="3" class="block w-full px-3 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors">
+            </div>
+            <div>
+              <label class="block text-xs font-bold text-gray-500 dark:text-gray-400 mb-1.5">系列内每章延迟</label>
+              <input type="number" id="chapterDelay" min="0" step="0.1" placeholder="1" class="block w-full px-3 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors">
+            </div>
+            <div>
+              <label class="block text-xs font-bold text-gray-500 dark:text-gray-400 mb-1.5">跳过内容时延迟</label>
+              <input type="number" id="skipDelay" min="0" step="0.1" placeholder="0.1" class="block w-full px-3 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors">
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <h3 class="text-sm font-bold text-gray-900 dark:text-gray-200 border-b border-gray-100 dark:border-gray-700 pb-2 mb-4">同步数量限制</h3>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-bold text-gray-500 dark:text-gray-400 mb-1.5">每轮同步用户数</label>
+              <input type="number" id="followingNovelsUsersLimit" min="0" placeholder="0" class="block w-full px-3 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors">
+              <p class="mt-1.5 text-xs text-gray-400">输入 0 代表全部用户</p>
+            </div>
+            <div>
+              <label class="block text-xs font-bold text-gray-500 dark:text-gray-400 mb-1.5">每次同步追更系列数</label>
+              <input type="number" id="seriesSyncLimit" min="0" placeholder="0" class="block w-full px-3 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors">
+              <p class="mt-1.5 text-xs text-gray-400">输入 0 代表全部系列</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-8 pt-6 border-t border-gray-100 dark:border-gray-700 flex items-center gap-4">
+        <button id="saveLimits" class="px-6 py-2.5 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 disabled:opacity-50">保存限速设置</button>
+        <span id="msgLimits" class="text-sm font-medium transition-opacity duration-300 opacity-0"></span>
+      </div>
+    </section>
+
+    <!-- Section 3: Scheduled Sync -->
+    <section id="following" class="page-section hidden bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-6 sm:p-8 mb-8 animate-[fadeIn_0.3s_ease-out]">
+      <div class="mb-6">
+        <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">定时同步配置</h2>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">配置定时任务，分散执行时间降低风控风险。注意：需要在首页开启全局引擎。</p>
+      </div>
+
+      <div class="space-y-8">
+        <div>
+          <label class="block text-sm font-bold text-gray-900 dark:text-gray-200 mb-2">系统时区</label>
+          <select id="autoSyncTimezone" class="w-full max-w-md px-4 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors appearance-none">
+            <option value="UTC">UTC (协调世界时)</option>
+            <option value="Asia/Shanghai">Asia/Shanghai (中国上海, UTC+8)</option>
+            <option value="Asia/Tokyo">Asia/Tokyo (日本东京, UTC+9)</option>
+            <option value="Asia/Seoul">Asia/Seoul (韩国首尔, UTC+9)</option>
+            <option value="America/New_York">America/New_York (美国东部, UTC-5)</option>
+            <option value="America/Los_Angeles">America/Los_Angeles (美国西部, UTC-8)</option>
+            <option value="Europe/London">Europe/London (英国伦敦, UTC+0)</option>
+            <option value="Europe/Berlin">Europe/Berlin (德国柏林, UTC+1)</option>
+          </select>
+        </div>
+
+        <div class="overflow-x-auto border border-gray-200 dark:border-gray-700 rounded-xl">
+          <table class="w-full text-sm text-left whitespace-nowrap">
+            <thead class="text-xs text-gray-500 dark:text-gray-400 uppercase bg-gray-50 dark:bg-gray-900/50">
+              <tr>
+                <th scope="col" class="px-4 py-3 font-semibold w-1/3">任务类型</th>
+                <th scope="col" class="px-4 py-3 font-semibold">固定间隔 (小时)</th>
+                <th scope="col" class="px-4 py-3 font-semibold">Cron 表达式 (优先)</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
+              <!-- Row 1 -->
+              <tr class="bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/80 transition-colors">
+                <td class="px-4 py-3">
+                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
+                    <input type="checkbox" id="autoSyncBookmarks" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:focus:ring-brand-600 dark:bg-gray-700 dark:border-gray-600 cursor-pointer">
+                    <span class="font-medium text-gray-800 dark:text-gray-200">同步收藏小说</span>
+                  </label>
+                </td>
+                <td class="px-4 py-2"><input type="number" id="autoSyncBookmarksInterval" min="1" class="w-20 px-2.5 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+                <td class="px-4 py-2"><input type="text" id="autoSyncBookmarksCron" placeholder="如 0 3 * * *" class="w-32 px-2.5 py-1.5 font-mono bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+              </tr>
+              <!-- Row 2 -->
+              <tr class="bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/80 transition-colors">
+                <td class="px-4 py-3">
+                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
+                    <input type="checkbox" id="autoSyncFollowingList" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:focus:ring-brand-600 dark:bg-gray-700 dark:border-gray-600 cursor-pointer">
+                    <span class="font-medium text-gray-800 dark:text-gray-200">更新关注用户列表</span>
+                  </label>
+                </td>
+                <td class="px-4 py-2"><input type="number" id="autoSyncFollowingListInterval" min="1" class="w-20 px-2.5 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+                <td class="px-4 py-2"><input type="text" id="autoSyncFollowingListCron" placeholder="" class="w-32 px-2.5 py-1.5 font-mono bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+              </tr>
+              <!-- Row 3 -->
+              <tr class="bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/80 transition-colors">
+                <td class="px-4 py-3">
+                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
+                    <input type="checkbox" id="autoSyncFollowingNovels" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:focus:ring-brand-600 dark:bg-gray-700 dark:border-gray-600 cursor-pointer">
+                    <span class="font-medium text-gray-800 dark:text-gray-200">同步关注用户的小说</span>
+                  </label>
+                </td>
+                <td class="px-4 py-2"><input type="number" id="autoSyncFollowingNovelsInterval" min="1" class="w-20 px-2.5 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+                <td class="px-4 py-2"><input type="text" id="autoSyncFollowingNovelsCron" placeholder="" class="w-32 px-2.5 py-1.5 font-mono bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+              </tr>
+              <!-- Row 4 -->
+              <tr class="bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/80 transition-colors">
+                <td class="px-4 py-3">
+                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
+                    <input type="checkbox" id="autoSyncSubscribedSeries" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:focus:ring-brand-600 dark:bg-gray-700 dark:border-gray-600 cursor-pointer">
+                    <span class="font-medium text-gray-800 dark:text-gray-200">同步追更系列</span>
+                  </label>
+                </td>
+                <td class="px-4 py-2"><input type="number" id="autoSyncSubscribedSeriesInterval" min="1" class="w-20 px-2.5 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+                <td class="px-4 py-2"><input type="text" id="autoSyncSubscribedSeriesCron" placeholder="" class="w-32 px-2.5 py-1.5 font-mono bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+              </tr>
+              <!-- Checks Row -->
+              <tr class="bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/80 transition-colors">
+                <td class="px-4 py-3">
+                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
+                    <input type="checkbox" id="autoSyncUserStatus" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:focus:ring-brand-600 dark:bg-gray-700 dark:border-gray-600 cursor-pointer">
+                    <span class="font-medium text-gray-800 dark:text-gray-200 text-xs">状态: 检查用户</span>
+                  </label>
+                </td>
+                <td class="px-4 py-2"><input type="number" id="autoSyncUserStatusInterval" min="1" class="w-20 px-2.5 py-1bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+                <td class="px-4 py-2"><input type="text" id="autoSyncUserStatusCron" placeholder="" class="w-32 px-2.5 py-1 font-mono bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+              </tr>
+              <tr class="bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/80 transition-colors">
+                <td class="px-4 py-3">
+                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
+                    <input type="checkbox" id="autoSyncNovelStatus" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:focus:ring-brand-600 dark:bg-gray-700 dark:border-gray-600 cursor-pointer">
+                    <span class="font-medium text-gray-800 dark:text-gray-200 text-xs">状态: 检查小说</span>
+                  </label>
+                </td>
+                <td class="px-4 py-2"><input type="number" id="autoSyncNovelStatusInterval" min="1" class="w-20 px-2.5 py-1 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+                <td class="px-4 py-2"><input type="text" id="autoSyncNovelStatusCron" placeholder="" class="w-32 px-2.5 py-1 font-mono bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+              </tr>
+              <tr class="bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/80 transition-colors">
+                <td class="px-4 py-3">
+                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
+                    <input type="checkbox" id="autoSyncSeriesStatus" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:focus:ring-brand-600 dark:bg-gray-700 dark:border-gray-600 cursor-pointer">
+                    <span class="font-medium text-gray-800 dark:text-gray-200 text-xs">状态: 检查系列</span>
+                  </label>
+                </td>
+                <td class="px-4 py-2"><input type="number" id="autoSyncSeriesStatusInterval" min="1" class="w-20 px-2.5 py-1 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+                <td class="px-4 py-2"><input type="text" id="autoSyncSeriesStatusCron" placeholder="" class="w-32 px-2.5 py-1 font-mono bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+              </tr>
+              <tr class="bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/80 transition-colors">
+                <td class="px-4 py-3">
+                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
+                    <input type="checkbox" id="autoSyncPendingDetection" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:focus:ring-brand-600 dark:bg-gray-700 dark:border-gray-600 cursor-pointer">
+                    <span class="font-medium text-gray-800 dark:text-gray-200 text-xs">检测: 取消收藏/追更</span>
+                  </label>
+                </td>
+                <td class="px-4 py-2"><input type="number" id="autoSyncPendingDetectionInterval" min="1" class="w-20 px-2.5 py-1 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+                <td class="px-4 py-2"><input type="text" id="autoSyncPendingDetectionCron" placeholder="" class="w-32 px-2.5 py-1 font-mono bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="mt-8 pt-6 border-t border-gray-100 dark:border-gray-700 flex items-center gap-4">
+        <button id="saveScheduler" class="px-6 py-2.5 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-xl transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 disabled:opacity-50">保存定时设置</button>
+        <span id="msgScheduler" class="text-sm font-medium transition-opacity duration-300 opacity-0"></span>
+      </div>
+    </section>
+
+    <!-- Section 4: Manual -->
+    <section id="manual" class="page-section hidden bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-6 sm:p-8 mb-8 animate-[fadeIn_0.3s_ease-out]">
+      <div class="mb-6">
+        <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">手动触发操作</h2>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">立刻触发特定任务执行（不受定时开关限制）</p>
+      </div>
+
+      <div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+        <button id="manualBookmarks" class="w-full px-4 py-2.5 text-sm font-semibold text-gray-700 dark:text-gray-200 bg-gray-50 hover:bg-gray-100 dark:bg-gray-900 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-xl transition-colors disabled:opacity-50">同步收藏</button>
+        <button id="manualFollowingUsers" class="w-full px-4 py-2.5 text-sm font-semibold text-gray-700 dark:text-gray-200 bg-gray-50 hover:bg-gray-100 dark:bg-gray-900 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-xl transition-colors disabled:opacity-50">同步关注用户</button>
+        <button id="manualFollowingNovels" class="w-full px-4 py-2.5 text-sm font-semibold text-gray-700 dark:text-gray-200 bg-gray-50 hover:bg-gray-100 dark:bg-gray-900 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-xl transition-colors disabled:opacity-50">同步关注小说</button>
+        <button id="manualUserStatus" class="w-full px-4 py-2.5 text-sm font-semibold text-gray-700 dark:text-gray-200 bg-gray-50 hover:bg-gray-100 dark:bg-gray-900 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-xl transition-colors disabled:opacity-50">检查用户状态</button>
+        <button id="manualNovelStatus" class="w-full px-4 py-2.5 text-sm font-semibold text-gray-700 dark:text-gray-200 bg-gray-50 hover:bg-gray-100 dark:bg-gray-900 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-xl transition-colors disabled:opacity-50">检查小说状态</button>
+        <button id="manualSeriesStatus" class="w-full px-4 py-2.5 text-sm font-semibold text-gray-700 dark:text-gray-200 bg-gray-50 hover:bg-gray-100 dark:bg-gray-900 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-xl transition-colors disabled:opacity-50">检查系列状态</button>
+      </div>
+
+      <div class="bg-gray-900 dark:bg-black rounded-xl p-4 border border-gray-800 shadow-inner">
+        <h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">执行日志 (当前页面)</h4>
+        <div id="manualLog" class="font-mono text-xs leading-relaxed text-gray-300 h-48 overflow-y-auto custom-scrollbar space-y-1">
+          <!-- Logs go here -->
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 5: Cache -->
+    <section id="cache" class="page-section hidden bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-6 sm:p-8 mb-8 animate-[fadeIn_0.3s_ease-out]">
+      <div class="mb-6">
+        <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">图片缓存管理</h2>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">管理本地图片反代缓存，清理缓存可强制重新获取最新封面。</p>
+      </div>
+
+      <div class="bg-gray-50 dark:bg-gray-900/50 rounded-xl p-5 border border-gray-100 dark:border-gray-800 mb-6 flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+        <div>
+          <div class="text-xs font-bold text-gray-500 uppercase mb-1">当前缓存占用</div>
+          <div id="cacheInfo" class="text-lg font-bold text-gray-900 dark:text-gray-100">加载中...</div>
+        </div>
+        <div class="flex items-center gap-3">
+          <button id="refreshCacheBtn" class="px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-semibold hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20">刷新状态</button>
+          <button id="clearCacheBtn" class="px-4 py-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 rounded-lg text-sm font-semibold hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-red-500/20">清空缓存</button>
+        </div>
+      </div>
+      <div id="cacheMessage" class="text-sm font-medium transition-opacity duration-300 opacity-0"></div>
+    </section>
+
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<style>
+  .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+  .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+  .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
+  select { background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e"); background-position: right 0.5rem center; background-repeat: no-repeat; background-size: 1.5em 1.5em; }
+</style>
+
+<script>
+  (function() {
+    const $ = sel => document.querySelector(sel);
+    const $$ = sel => document.querySelectorAll(sel);
+    const state = { settings: null };
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch] || ch));
+    }
+
+    function logToPanel(msg) {
+      const log = $("#manualLog");
+      const time = new Date().toLocaleTimeString();
+      const line = document.createElement('div');
+      line.innerHTML = `<span class="text-gray-500 mr-2">[${time}]</span><span class="text-gray-300">${escapeHtml(msg)}</span>`;
+      log.prepend(line);
+    }
+
+    // Tabs logic
+    function handleMenuClick(e) {
+      e.preventDefault();
+      const target = e.currentTarget;
+      const sectionId = target.getAttribute("data-section");
+
+      // Reset menu styling
+      $$(".menu-item").forEach(el => {
+        el.classList.remove("text-brand-600", "dark:text-brand-400", "bg-brand-50", "dark:bg-brand-900/30");
+        el.classList.add("text-gray-600", "dark:text-gray-300", "hover:bg-gray-50", "dark:hover:bg-gray-700/50");
+        const icon = el.querySelector('svg');
+        if(icon) { icon.classList.remove("text-brand-600", "dark:text-brand-400"); icon.classList.add("text-gray-400"); }
       });
+      // Set active menu styling
+      target.classList.remove("text-gray-600", "dark:text-gray-300", "hover:bg-gray-50", "dark:hover:bg-gray-700/50");
+      target.classList.add("text-brand-600", "dark:text-brand-400", "bg-brand-50", "dark:bg-brand-900/30");
+      const activeIcon = target.querySelector('svg');
+      if(activeIcon) { activeIcon.classList.remove("text-gray-400"); activeIcon.classList.add("text-brand-600", "dark:text-brand-400"); }
 
-      if (location.hash) {
-        const target = $('[data-section="' + location.hash.slice(1) + '"]');
-        if (target) target.click();
-      }
+      // Toggle sections
+      $$(".page-section").forEach(el => { el.classList.add("hidden"); el.classList.remove("block"); });
+      const sec = $("#" + sectionId);
+      if(sec) { sec.classList.remove("hidden"); sec.classList.add("block"); }
 
-      function checked(id, value) {
-        const el = $(id);
-        if (el) el.checked = !!value;
-      }
+      history.replaceState(null, "", "#" + sectionId);
+    }
 
-      function valueOf(id, value) {
-        const el = $(id);
-        if (el) el.value = value ?? '';
-      }
+    $$(".menu-item").forEach(item => item.addEventListener("click", handleMenuClick));
+    if (location.hash) {
+      const target = $('[data-section="' + location.hash.slice(1) + '"]');
+      if (target) handleMenuClick({preventDefault:()=>{}, currentTarget: target});
+    }
 
-      async function loadSettings() {
-        const res = await fetch("/api/dashboard/settings");
-        const data = await res.json();
-        state.settings = data;
-        populateSettings(data);
-      }
+    function checked(id, value) { const el = $(id); if (el) el.checked = !!value; }
+    function valueOf(id, value) { const el = $(id); if (el) el.value = value ?? ''; }
 
-      function populateSettings(s) {
-        // 基础设置 - 同步内容
-        checked("#syncBookmarks", s.sync_bookmarks);
-        checked("#syncFollowingUsers", s.sync_following_users);
-        checked("#syncFollowingNovels", s.sync_following_novels);
+    async function loadSettings() {
+      const res = await fetch("/api/dashboard/settings");
+      const data = await res.json();
+      state.settings = data;
+      populateSettings(data);
+    }
 
-        // 基础设置 - 同步选项
-        checked("#enabled", s.enabled);
-        checked("#initialManualOnly", s.initial_manual_only);
-        checked("#downloadAssets", s.download_assets);
-        checked("#writeMarkdown", s.write_markdown);
-        checked("#writeRawText", s.write_raw_text);
-        checked("#restrictPublic", (s.bookmark_restricts || []).includes('public'));
-        checked("#restrictPrivate", (s.bookmark_restricts || []).includes('private'));
+    function populateSettings(s) {
+      checked("#syncBookmarks", s.sync_bookmarks);
+      checked("#syncFollowingUsers", s.sync_following_users);
+      checked("#syncFollowingNovels", s.sync_following_novels);
+      checked("#enabled", s.enabled);
+      checked("#initialManualOnly", s.initial_manual_only);
+      checked("#downloadAssets", s.download_assets);
+      checked("#writeMarkdown", s.write_markdown);
+      checked("#writeRawText", s.write_raw_text);
+      checked("#restrictPublic", (s.bookmark_restricts || []).includes('public'));
+      checked("#restrictPrivate", (s.bookmark_restricts || []).includes('private'));
 
-        // 限速参数
-        valueOf("#maxItems", s.max_items_per_run);
-        valueOf("#maxPages", s.max_pages_per_run);
-        valueOf("#itemDelay", s.delay_seconds_between_items ?? 0);
-        valueOf("#pageDelay", s.delay_seconds_between_pages ?? 0);
-        valueOf("#seriesDelay", s.delay_seconds_between_series ?? 3);
-        valueOf("#chapterDelay", s.delay_seconds_between_chapters ?? 1);
-        valueOf("#skipDelay", s.delay_seconds_between_skips ?? 0.1);
-        valueOf("#followingNovelsUsersLimit", s.auto_sync_following_novels_users_limit ?? 0);
-        valueOf("#seriesSyncLimit", s.series_sync_limit ?? 0);
+      valueOf("#maxItems", s.max_items_per_run);
+      valueOf("#maxPages", s.max_pages_per_run);
+      valueOf("#itemDelay", s.delay_seconds_between_items ?? 0);
+      valueOf("#pageDelay", s.delay_seconds_between_pages ?? 0);
+      valueOf("#seriesDelay", s.delay_seconds_between_series ?? 3);
+      valueOf("#chapterDelay", s.delay_seconds_between_chapters ?? 1);
+      valueOf("#skipDelay", s.delay_seconds_between_skips ?? 0.1);
+      valueOf("#followingNovelsUsersLimit", s.auto_sync_following_novels_users_limit ?? 0);
+      valueOf("#seriesSyncLimit", s.series_sync_limit ?? 0);
 
-        // 定时同步
-        valueOf("#autoSyncTimezone", s.auto_sync_timezone || 'UTC');
-        checked("#autoSyncBookmarks", s.auto_sync_bookmarks_enabled);
-        checked("#autoSyncFollowingList", s.auto_sync_following_list_enabled);
-        checked("#autoSyncFollowingNovels", s.auto_sync_following_novels_enabled);
-        checked("#autoSyncUserStatus", s.auto_sync_user_status_enabled);
-        checked("#autoSyncNovelStatus", s.auto_sync_novel_status_enabled);
-        checked("#autoSyncSeriesStatus", s.auto_sync_series_status_enabled);
-        checked("#autoSyncSubscribedSeries", s.auto_sync_subscribed_series_enabled);
-        checked("#autoSyncPendingDetection", s.auto_sync_pending_detection_enabled);
-        valueOf("#autoSyncBookmarksInterval", s.auto_sync_bookmarks_interval_hours ?? 6);
-        valueOf("#autoSyncFollowingListInterval", s.auto_sync_following_list_interval_hours ?? 24);
-        valueOf("#autoSyncFollowingNovelsInterval", s.auto_sync_following_novels_interval_hours ?? 6);
-        valueOf("#autoSyncUserStatusInterval", s.auto_sync_user_status_interval_hours ?? 6);
-        valueOf("#autoSyncNovelStatusInterval", s.auto_sync_novel_status_interval_hours ?? 6);
-        valueOf("#autoSyncSeriesStatusInterval", s.auto_sync_series_status_interval_hours ?? 6);
-        valueOf("#autoSyncSubscribedSeriesInterval", s.auto_sync_subscribed_series_interval_hours ?? 6);
-        valueOf("#autoSyncPendingDetectionInterval", s.auto_sync_pending_detection_interval_hours ?? 12);
-        valueOf("#autoSyncBookmarksCron", s.auto_sync_bookmarks_cron ?? '');
-        valueOf("#autoSyncFollowingListCron", s.auto_sync_following_list_cron ?? '');
-        valueOf("#autoSyncFollowingNovelsCron", s.auto_sync_following_novels_cron ?? '');
-        valueOf("#autoSyncUserStatusCron", s.auto_sync_user_status_cron ?? '');
-        valueOf("#autoSyncNovelStatusCron", s.auto_sync_novel_status_cron ?? '');
-        valueOf("#autoSyncSeriesStatusCron", s.auto_sync_series_status_cron ?? '');
-        valueOf("#autoSyncSubscribedSeriesCron", s.auto_sync_subscribed_series_cron ?? '');
-        valueOf("#autoSyncPendingDetectionCron", s.auto_sync_pending_detection_cron ?? '');
+      valueOf("#autoSyncTimezone", s.auto_sync_timezone || 'UTC');
+      checked("#autoSyncBookmarks", s.auto_sync_bookmarks_enabled);
+      checked("#autoSyncFollowingList", s.auto_sync_following_list_enabled);
+      checked("#autoSyncFollowingNovels", s.auto_sync_following_novels_enabled);
+      checked("#autoSyncUserStatus", s.auto_sync_user_status_enabled);
+      checked("#autoSyncNovelStatus", s.auto_sync_novel_status_enabled);
+      checked("#autoSyncSeriesStatus", s.auto_sync_series_status_enabled);
+      checked("#autoSyncSubscribedSeries", s.auto_sync_subscribed_series_enabled);
+      checked("#autoSyncPendingDetection", s.auto_sync_pending_detection_enabled);
 
-        // 更新定时同步状态
-        loadAutoSyncStatus();
-      }
+      valueOf("#autoSyncBookmarksInterval", s.auto_sync_bookmarks_interval_hours ?? 6);
+      valueOf("#autoSyncFollowingListInterval", s.auto_sync_following_list_interval_hours ?? 24);
+      valueOf("#autoSyncFollowingNovelsInterval", s.auto_sync_following_novels_interval_hours ?? 6);
+      valueOf("#autoSyncUserStatusInterval", s.auto_sync_user_status_interval_hours ?? 6);
+      valueOf("#autoSyncNovelStatusInterval", s.auto_sync_novel_status_interval_hours ?? 6);
+      valueOf("#autoSyncSeriesStatusInterval", s.auto_sync_series_status_interval_hours ?? 6);
+      valueOf("#autoSyncSubscribedSeriesInterval", s.auto_sync_subscribed_series_interval_hours ?? 6);
+      valueOf("#autoSyncPendingDetectionInterval", s.auto_sync_pending_detection_interval_hours ?? 12);
 
-      function showMessage(el, text, ok) {
-        el.textContent = text;
-        el.className = "message " + (ok ? "ok" : "bad");
-        setTimeout(() => { el.textContent = ""; el.className = "message"; }, 4000);
-      }
+      valueOf("#autoSyncBookmarksCron", s.auto_sync_bookmarks_cron ?? '');
+      valueOf("#autoSyncFollowingListCron", s.auto_sync_following_list_cron ?? '');
+      valueOf("#autoSyncFollowingNovelsCron", s.auto_sync_following_novels_cron ?? '');
+      valueOf("#autoSyncUserStatusCron", s.auto_sync_user_status_cron ?? '');
+      valueOf("#autoSyncNovelStatusCron", s.auto_sync_novel_status_cron ?? '');
+      valueOf("#autoSyncSeriesStatusCron", s.auto_sync_series_status_cron ?? '');
+      valueOf("#autoSyncSubscribedSeriesCron", s.auto_sync_subscribed_series_cron ?? '');
+      valueOf("#autoSyncPendingDetectionCron", s.auto_sync_pending_detection_cron ?? '');
+    }
 
-      function buildBasicPayload() {
+    function showMessage(el, text, isOk) {
+      el.textContent = text;
+      el.className = `text-sm font-medium transition-opacity duration-300 opacity-100 ${isOk ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`;
+      setTimeout(() => { el.classList.replace('opacity-100', 'opacity-0'); }, 3000);
+    }
+
+    const payloadBuilders = {
+      basic: () => {
         const restricts = [];
         if ($("#restrictPublic").checked) restricts.push('public');
         if ($("#restrictPrivate").checked) restricts.push('private');
@@ -591,200 +494,116 @@
           write_raw_text: $("#writeRawText").checked,
           bookmark_restricts: restricts,
         };
-      }
+      },
+      limits: () => ({
+        max_items_per_run: $("#maxItems").value.trim(),
+        max_pages_per_run: $("#maxPages").value.trim(),
+        delay_seconds_between_items: $("#itemDelay").value.trim(),
+        delay_seconds_between_pages: $("#pageDelay").value.trim(),
+        delay_seconds_between_series: $("#seriesDelay").value.trim(),
+        delay_seconds_between_chapters: $("#chapterDelay").value.trim(),
+        delay_seconds_between_skips: $("#skipDelay").value.trim(),
+        auto_sync_following_novels_users_limit: $("#followingNovelsUsersLimit").value.trim(),
+        series_sync_limit: $("#seriesSyncLimit").value.trim(),
+      }),
+      scheduler: () => ({
+        auto_sync_timezone: $("#autoSyncTimezone").value,
+        auto_sync_bookmarks_enabled: $("#autoSyncBookmarks").checked,
+        auto_sync_following_list_enabled: $("#autoSyncFollowingList").checked,
+        auto_sync_following_novels_enabled: $("#autoSyncFollowingNovels").checked,
+        auto_sync_user_status_enabled: $("#autoSyncUserStatus").checked,
+        auto_sync_novel_status_enabled: $("#autoSyncNovelStatus").checked,
+        auto_sync_series_status_enabled: $("#autoSyncSeriesStatus").checked,
+        auto_sync_subscribed_series_enabled: $("#autoSyncSubscribedSeries").checked,
+        auto_sync_pending_detection_enabled: $("#autoSyncPendingDetection").checked,
+        auto_sync_bookmarks_interval_hours: $("#autoSyncBookmarksInterval").value.trim(),
+        auto_sync_bookmarks_cron: $("#autoSyncBookmarksCron").value.trim(),
+        auto_sync_following_list_interval_hours: $("#autoSyncFollowingListInterval").value.trim(),
+        auto_sync_following_list_cron: $("#autoSyncFollowingListCron").value.trim(),
+        auto_sync_following_novels_interval_hours: $("#autoSyncFollowingNovelsInterval").value.trim(),
+        auto_sync_following_novels_cron: $("#autoSyncFollowingNovelsCron").value.trim(),
+        auto_sync_user_status_interval_hours: $("#autoSyncUserStatusInterval").value.trim(),
+        auto_sync_user_status_cron: $("#autoSyncUserStatusCron").value.trim(),
+        auto_sync_novel_status_interval_hours: $("#autoSyncNovelStatusInterval").value.trim(),
+        auto_sync_novel_status_cron: $("#autoSyncNovelStatusCron").value.trim(),
+        auto_sync_series_status_interval_hours: $("#autoSyncSeriesStatusInterval").value.trim(),
+        auto_sync_series_status_cron: $("#autoSyncSeriesStatusCron").value.trim(),
+        auto_sync_subscribed_series_interval_hours: $("#autoSyncSubscribedSeriesInterval").value.trim(),
+        auto_sync_subscribed_series_cron: $("#autoSyncSubscribedSeriesCron").value.trim(),
+        auto_sync_pending_detection_interval_hours: $("#autoSyncPendingDetectionInterval").value.trim(),
+        auto_sync_pending_detection_cron: $("#autoSyncPendingDetectionCron").value.trim(),
+      })
+    };
 
-      function buildLimitsPayload() {
-        return {
-          max_items_per_run: $("#maxItems").value.trim(),
-          max_pages_per_run: $("#maxPages").value.trim(),
-          delay_seconds_between_items: $("#itemDelay").value.trim(),
-          delay_seconds_between_pages: $("#pageDelay").value.trim(),
-          delay_seconds_between_series: $("#seriesDelay").value.trim(),
-          delay_seconds_between_chapters: $("#chapterDelay").value.trim(),
-          delay_seconds_between_skips: $("#skipDelay").value.trim(),
-          auto_sync_following_novels_users_limit: $("#followingNovelsUsersLimit").value.trim(),
-          series_sync_limit: $("#seriesSyncLimit").value.trim(),
-        };
-      }
-
-      function buildSchedulerPayload() {
-        return {
-          auto_sync_timezone: $("#autoSyncTimezone").value,
-          auto_sync_bookmarks_enabled: $("#autoSyncBookmarks").checked,
-          auto_sync_following_list_enabled: $("#autoSyncFollowingList").checked,
-          auto_sync_following_novels_enabled: $("#autoSyncFollowingNovels").checked,
-          auto_sync_user_status_enabled: $("#autoSyncUserStatus").checked,
-          auto_sync_novel_status_enabled: $("#autoSyncNovelStatus").checked,
-          auto_sync_series_status_enabled: $("#autoSyncSeriesStatus").checked,
-          auto_sync_subscribed_series_enabled: $("#autoSyncSubscribedSeries").checked,
-          auto_sync_pending_detection_enabled: $("#autoSyncPendingDetection").checked,
-          auto_sync_bookmarks_interval_hours: $("#autoSyncBookmarksInterval").value.trim(),
-          auto_sync_bookmarks_cron: $("#autoSyncBookmarksCron").value.trim(),
-          auto_sync_following_list_interval_hours: $("#autoSyncFollowingListInterval").value.trim(),
-          auto_sync_following_list_cron: $("#autoSyncFollowingListCron").value.trim(),
-          auto_sync_following_novels_interval_hours: $("#autoSyncFollowingNovelsInterval").value.trim(),
-          auto_sync_following_novels_cron: $("#autoSyncFollowingNovelsCron").value.trim(),
-          auto_sync_user_status_interval_hours: $("#autoSyncUserStatusInterval").value.trim(),
-          auto_sync_user_status_cron: $("#autoSyncUserStatusCron").value.trim(),
-          auto_sync_novel_status_interval_hours: $("#autoSyncNovelStatusInterval").value.trim(),
-          auto_sync_novel_status_cron: $("#autoSyncNovelStatusCron").value.trim(),
-          auto_sync_series_status_interval_hours: $("#autoSyncSeriesStatusInterval").value.trim(),
-          auto_sync_series_status_cron: $("#autoSyncSeriesStatusCron").value.trim(),
-          auto_sync_subscribed_series_interval_hours: $("#autoSyncSubscribedSeriesInterval").value.trim(),
-          auto_sync_subscribed_series_cron: $("#autoSyncSubscribedSeriesCron").value.trim(),
-          auto_sync_pending_detection_interval_hours: $("#autoSyncPendingDetectionInterval").value.trim(),
-          auto_sync_pending_detection_cron: $("#autoSyncPendingDetectionCron").value.trim(),
-        };
-      }
-
-      $("#saveBasic").addEventListener("click", async () => {
-        const btn = $("#saveBasic");
+    function attachSaveHandler(btnId, msgId, builderName) {
+      $(btnId).addEventListener("click", async () => {
+        const btn = $(btnId);
         btn.disabled = true;
+        btn.innerHTML = '<svg class="animate-spin -ml-1 mr-2 h-4 w-4 inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>保存中...';
         try {
-          const res = await fetch("/api/dashboard/settings", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(buildBasicPayload()) });
+          const res = await fetch("/api/dashboard/settings", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payloadBuilders[builderName]()) });
           const data = await res.json();
-          showMessage($("#msgBasic"), data.message || "设置已保存", res.ok);
+          showMessage($(msgId), data.message || "设置已保存", res.ok);
           if (res.ok) loadSettings();
-        } catch(e) {
-          showMessage($("#msgBasic"), "保存失败：" + e.message, false);
-        } finally {
-          btn.disabled = false;
-        }
+        } catch(e) { showMessage($(msgId), "保存失败：" + e.message, false); }
+        finally { btn.disabled = false; btn.textContent = btnId.replace('#save','保存').replace('Basic','基础设置').replace('Limits','限速设置').replace('Scheduler','定时设置'); }
       });
+    }
 
-      $("#saveLimits").addEventListener("click", async () => {
-        const btn = $("#saveLimits");
-        btn.disabled = true;
-        try {
-          const res = await fetch("/api/dashboard/settings", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(buildLimitsPayload()) });
-          const data = await res.json();
-          showMessage($("#msgLimits"), data.message || "设置已保存", res.ok);
-        } catch(e) {
-          showMessage($("#msgLimits"), "保存失败：" + e.message, false);
-        } finally {
-          btn.disabled = false;
+    attachSaveHandler("#saveBasic", "#msgBasic", "basic");
+    attachSaveHandler("#saveLimits", "#msgLimits", "limits");
+    attachSaveHandler("#saveScheduler", "#msgScheduler", "scheduler");
+
+    async function triggerSync(task, btn) {
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = "请求中...";
+      logToPanel("发起任务请求：" + task);
+      try {
+        const res = await fetch("/api/dashboard/sync/" + task, { method: "POST" });
+        const data = await res.json();
+        if (data.ok) logToPanel("✓ 任务已成功加入队列");
+        else logToPanel("✗ 任务失败：" + (data.message || "未知错误"));
+      } catch(e) { logToPanel("✗ 网络错误：" + e.message); }
+      finally { btn.disabled = false; btn.textContent = original; }
+    }
+
+    $("#manualBookmarks").addEventListener("click", () => triggerSync("bookmark", $("#manualBookmarks")));
+    $("#manualFollowingUsers").addEventListener("click", () => triggerSync("following_users", $("#manualFollowingUsers")));
+    $("#manualFollowingNovels").addEventListener("click", () => triggerSync("following_novels", $("#manualFollowingNovels")));
+    $("#manualUserStatus").addEventListener("click", () => triggerSync("user_status", $("#manualUserStatus")));
+    $("#manualNovelStatus").addEventListener("click", () => triggerSync("novel_status", $("#manualNovelStatus")));
+    $("#manualSeriesStatus").addEventListener("click", () => triggerSync("series_status", $("#manualSeriesStatus")));
+
+    async function loadCacheStatus() {
+      const info = $("#cacheInfo");
+      try {
+        const resp = await fetch('/api/cache/status');
+        const data = await resp.json();
+        if (data.exists) {
+          info.innerHTML = `<span class="font-mono bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded mr-3">${data.size_human}</span> <span class="text-sm font-normal text-gray-500">文件数: ${data.file_count}</span>`;
+        } else {
+          info.textContent = '缓存目录不存在或为空';
         }
-      });
+      } catch (e) { info.textContent = '获取状态失败'; }
+    }
 
-      $("#saveScheduler").addEventListener("click", async () => {
-        const btn = $("#saveScheduler");
-        btn.disabled = true;
-        try {
-          const res = await fetch("/api/dashboard/settings", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(buildSchedulerPayload()) });
-          const data = await res.json();
-          showMessage($("#msgScheduler"), data.message || "设置已保存", res.ok);
-          if (res.ok) loadSettings();
-        } catch(e) {
-          showMessage($("#msgScheduler"), "保存失败：" + e.message, false);
-        } finally {
-          btn.disabled = false;
-        }
-      });
+    async function clearCache() {
+      const msg = $("#cacheMessage");
+      if (!confirm('确认清空所有图片缓存？\n清空后首次访问列表图片加载会变慢。')) return;
+      try {
+        const resp = await fetch('/api/cache/clear', { method: 'POST' });
+        const data = await resp.json();
+        showMessage(msg, resp.ok ? '缓存已成功清空' : (data.error || '清空失败'), resp.ok);
+        if (resp.ok) await loadCacheStatus();
+      } catch (e) { showMessage(msg, '网络错误', false); }
+    }
 
-      async function loadAutoSyncStatus() {
-        try {
-          const resp = await fetch('/api/dashboard/auto-sync/status');
-          const data = await resp.json();
-          const statusText = $("#autoSyncStatusText");
-          if (statusText) {
-            if (data.running) {
-              const nextRuns = Object.values(data.task_next_run || {}).filter(t => t > 0);
-              if (nextRuns.length > 0) {
-                const earliest = Math.min(...nextRuns);
-                const nextDate = new Date(earliest * 1000);
-                const today = new Date().toLocaleDateString();
-                const dateStr = nextDate.toLocaleDateString();
-                const timeStr = nextDate.toLocaleTimeString();
-                const displayDate = dateStr === today ? `今天 ${timeStr}` : `${dateStr} ${timeStr}`;
-                statusText.textContent = `调度器运行中，下次执行：${displayDate}`;
-              } else {
-                statusText.textContent = '调度器运行中，等待任务配置';
-              }
-              statusText.style.color = 'var(--success)';
-            } else {
-              statusText.textContent = '调度器未运行（请在首页启用）';
-              statusText.style.color = 'var(--text-secondary)';
-            }
-          }
-        } catch (e) {
-          // 忽略错误
-        }
-      }
+    $("#refreshCacheBtn").addEventListener("click", loadCacheStatus);
+    $("#clearCacheBtn").addEventListener("click", clearCache);
 
-      // 手动同步操作
-      $("#manualBookmarks").addEventListener("click", () => triggerSync("bookmark", $("#manualBookmarks")));
-      $("#manualFollowingUsers").addEventListener("click", () => triggerSync("following_users", $("#manualFollowingUsers")));
-      $("#manualFollowingNovels").addEventListener("click", () => triggerSync("following_novels", $("#manualFollowingNovels")));
-      $("#manualUserStatus").addEventListener("click", () => triggerSync("user_status", $("#manualUserStatus")));
-      $("#manualNovelStatus").addEventListener("click", () => triggerSync("novel_status", $("#manualNovelStatus")));
-      $("#manualSeriesStatus").addEventListener("click", () => triggerSync("series_status", $("#manualSeriesStatus")));
-
-      async function triggerSync(task, btn) {
-        btn.disabled = true;
-        const original = btn.textContent;
-        btn.textContent = "运行中...";
-        logToPanel("开始任务：" + task);
-        try {
-          const res = await fetch("/api/dashboard/sync/" + task, { method: "POST" });
-          const data = await res.json();
-          if (data.ok) {
-            logToPanel("任务已加入队列");
-          } else {
-            logToPanel("任务失败：" + (data.message || "未知错误"));
-          }
-        } catch(e) {
-          logToPanel("请求失败：" + e.message);
-        } finally {
-          btn.disabled = false;
-          btn.textContent = original;
-        }
-      }
-
-      // 缓存管理
-      async function loadCacheStatus() {
-        const info = $("#cacheInfo");
-        try {
-          const resp = await fetch('/api/cache/status');
-          const data = await resp.json();
-          if (data.exists) {
-            info.innerHTML = `缓存大小：<strong>${data.size_human}</strong> | 文件数量：<strong>${data.file_count}</strong>`;
-          } else {
-            info.textContent = '缓存目录不存在';
-          }
-        } catch (e) {
-          info.textContent = '获取缓存状态失败';
-        }
-      }
-
-      async function clearCache() {
-        const msg = $("#cacheMessage");
-        if (!confirm('确认清空图片缓存？清空后首次访问图片会较慢。')) return;
-        msg.className = 'message';
-        msg.textContent = '正在清空...';
-        try {
-          const resp = await fetch('/api/cache/clear', { method: 'POST' });
-          const data = await resp.json();
-          if (resp.ok) {
-            msg.className = 'message ok';
-            msg.textContent = '缓存已清空';
-            await loadCacheStatus();
-          } else {
-            msg.className = 'message bad';
-            msg.textContent = data.error || '清空失败';
-          }
-        } catch (e) {
-          msg.className = 'message bad';
-          msg.textContent = '请求失败';
-        }
-      }
-
-      $("#refreshCacheBtn").addEventListener("click", loadCacheStatus);
-      $("#clearCacheBtn").addEventListener("click", clearCache);
-
-      loadSettings();
-      loadCacheStatus();
-    })();
-  </script>
-<script>(function(){fetch("/api/dashboard/pending-deletions/count").then(function(r){return r.json()}).then(function(d){var b=document.getElementById("pendingBadge");if(b && d.count>0){b.textContent=d.count;b.style.display="inline-flex"}}).catch(function(){})})();</script>
-</body>
-</html>
+    loadSettings();
+    loadCacheStatus();
+  })();
+</script>
+{% endblock %}

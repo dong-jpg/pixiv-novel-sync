@@ -1,261 +1,299 @@
-<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>小说归档 - Pixiv 小说同步器</title>
-  <style>
-    :root {
-      --bg: #ffffff;
-      --bg-soft: #f5f5f7;
-      --text: #1d1d1f;
-      --text-secondary: #86868b;
-      --line: #d2d2d7;
-      --brand-start: #007aff;
-      --brand-end: #5856d6;
-      --card-shadow: 0 2px 12px rgba(0,0,0,0.08);
-      --radius: 16px;
-      --radius-lg: 20px;
-    }
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif; background: var(--bg-soft); color: var(--text); -webkit-font-smoothing: antialiased; }
-    .topbar { background: #fff; border-bottom: 2px solid transparent; background-image: linear-gradient(#fff, #fff), linear-gradient(90deg, var(--brand-start), var(--brand-end)); background-origin: padding-box, border-box; background-clip: padding-box, border-box; }
-    .topbar-inner { max-width: 1080px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; }
-    .brand { font-size: 17px; font-weight: 600; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-    .nav { display: flex; gap: 4px; }
-    .nav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 8px 14px; border-radius: 8px; transition: all 0.2s; position: relative; }
-    .nav a:hover { color: var(--text); background: rgba(0,122,255,0.06); }
-    .nav a.active { color: var(--brand-start); font-weight: 600; }
-    .nav a.active::after { content: ''; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); width: 20px; height: 2px; background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); border-radius: 1px; }
-    .page { max-width: 1080px; margin: 0 auto; padding: 32px 24px 56px; }
-    .page-title { font-size: 28px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.02em; }
-    .page-desc { color: var(--text-secondary); margin: 0 0 24px; font-size: 15px; }
-    .card { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--card-shadow); padding: 24px; }
-    .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
-    .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
-    .tab { border: 1px solid var(--line); background: #fff; color: var(--text-secondary); border-radius: 8px; padding: 8px 16px; cursor: pointer; font-size: 13px; font-weight: 600; transition: all 0.2s; }
-    .tab:hover { border-color: var(--brand-start); color: var(--brand-start); }
-    .tab.active { background: linear-gradient(90deg, var(--brand-start), var(--brand-end)); color: #fff; border-color: transparent; }
-    .summary { color: var(--text-secondary); font-size: 13px; }
-    .list { display: grid; gap: 12px; }
-    .item { display: grid; grid-template-columns: 88px 1fr; gap: 16px; background: var(--bg-soft); border-radius: var(--radius); padding: 16px; transition: all 0.2s; }
-    .item:hover { background: #ebebed; }
-    .cover { width: 88px; height: 120px; border-radius: 10px; object-fit: cover; background: linear-gradient(135deg, var(--brand-start), var(--brand-end)); flex-shrink: 0; }
-    .empty-cover { width: 88px; height: 120px; border-radius: 10px; background: var(--line); flex-shrink: 0; }
-    .content { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
-    .title-link { color: var(--text); text-decoration: none; font-size: 16px; font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-    .title-link:hover { color: var(--brand-start); }
-    .meta { color: var(--text-secondary); font-size: 12px; margin-top: 6px; line-height: 1.6; }
-    .badge { display: inline-flex; align-items: center; padding: 3px 8px; border-radius: 5px; background: rgba(0,122,255,0.1); color: var(--brand-start); font-size: 11px; font-weight: 600; margin-right: 6px; }
-    .search-bar { display: flex; gap: 10px; align-items: center; }
-    .search-bar input, .search-bar select { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-size: 13px; font-family: inherit; background: #fff; }
-    .search-bar input:focus, .search-bar select:focus { outline: none; border-color: var(--brand-start); }
-    .search-bar input { width: 180px; }
-    .pager { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 24px; }
-    .btn { border: none; border-radius: 10px; padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: var(--bg-soft); color: var(--text); }
-    .btn:hover:not(:disabled) { background: #e8e8ed; }
-    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-    .empty-state { text-align: center; padding: 48px 24px; color: var(--text-secondary); }
-    @media (max-width: 760px) {
-      .topbar-inner { flex-direction: column; height: auto; padding: 12px 16px; gap: 8px; }
-      .item { grid-template-columns: 1fr; }
-      .cover, .empty-cover { width: 100%; height: 180px; }
-      .toolbar { flex-direction: column; align-items: flex-start; }
-      .search-bar { width: 100%; }
-      .search-bar input { flex: 1; width: auto; }
-    }
-  </style>
-</head>
-<body>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <div class="brand">Pixiv 小说同步器</div>
-      <nav class="nav">
-        <a href="/dashboard">首页</a>
-        <a href="/dashboard/follows">关注</a>
-        <a class="active" href="/dashboard/novels">小说</a>
-        <a href="/dashboard/pending-deletions">待确认<span id="pendingBadge" class="nav-badge" style="display:none;">0</span></a>
-        <a href="/dashboard/logs">日志</a>
-        <a href="/dashboard/settings">设置</a>
-        <a href="/token-login">登录</a>
-      </nav>
+{% extends "base.html" %}
+
+{% block title %}小说归档 - Pixiv 小说同步器{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <!-- Header -->
+  <div>
+    <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-gray-100 tracking-tight mb-2">小说归档</h1>
+    <p class="text-sm sm:text-base text-gray-500 dark:text-gray-400">分页展示已同步的小说，支持分类筛选，点击标题可查看详情。</p>
+  </div>
+
+  <!-- Main Card -->
+  <section class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-5 sm:p-6">
+
+    <!-- Toolbar -->
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+
+      <!-- Tabs -->
+      <div class="flex flex-wrap items-center gap-2 p-1 bg-gray-100 dark:bg-gray-900 rounded-lg w-fit" id="tabs">
+        <button class="tab-btn px-4 py-1.5 text-sm font-semibold rounded-md transition-all text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200" data-category="bookmark">收藏</button>
+        <button class="tab-btn px-4 py-1.5 text-sm font-semibold rounded-md transition-all text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200" data-category="following">追更</button>
+      </div>
+
+      <!-- Filters & Search -->
+      <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+        <div class="relative w-full sm:w-64">
+          <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <svg class="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </div>
+          <input type="text" id="searchInput" placeholder="搜索标题或作者..." class="w-full pl-9 pr-4 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-colors">
+        </div>
+
+        <select id="sortBy" class="w-full sm:w-auto px-4 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-colors appearance-none">
+          <option value="">默认排序</option>
+          <option value="updated_desc">更新时间倒序</option>
+          <option value="bookmarks_desc">收藏数倒序</option>
+          <option value="views_desc">浏览数倒序</option>
+        </select>
+      </div>
     </div>
-  </header>
 
-  <main class="page">
-    <h1 class="page-title">小说归档</h1>
-    <p class="page-desc">分页展示已同步的小说，支持分类筛选，点击标题可查看详情。</p>
+    <!-- Summary Info -->
+    <div class="flex items-center justify-between text-xs font-medium text-gray-500 dark:text-gray-400 mb-4 px-1">
+      <div id="summary">加载中...</div>
+      <div id="pageInfo"></div>
+    </div>
 
-    <section class="card">
-      <div class="toolbar">
-        <div class="tabs" id="tabs">
-          <button class="tab active" data-category="bookmark">收藏</button>
-          <button class="tab" data-category="following">追更</button>
-        </div>
-        <div class="search-bar">
-          <input type="text" id="searchInput" placeholder="搜索标题或作者...">
-          <select id="sortBy">
-            <option value="">默认排序</option>
-            <option value="updated_desc">更新时间倒序</option>
-            <option value="bookmarks_desc">收藏数倒序</option>
-            <option value="views_desc">浏览数倒序</option>
-          </select>
-        </div>
-        <div>
-          <div id="summary" class="summary">加载中...</div>
-          <div id="pageInfo" class="summary"></div>
+    <!-- Grid List -->
+    <div id="list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6">
+      <!-- Loading Skeleton -->
+      <div class="animate-pulse bg-gray-50 dark:bg-gray-900/50 rounded-xl p-3 flex gap-4 border border-gray-100 dark:border-gray-800">
+        <div class="w-[72px] h-[100px] bg-gray-200 dark:bg-gray-700 rounded-lg flex-shrink-0"></div>
+        <div class="flex-1 py-1 space-y-2">
+          <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4"></div>
+          <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded w-1/2"></div>
+          <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded w-5/6"></div>
         </div>
       </div>
-      <div id="list" class="list"></div>
-      <div class="pager">
-        <button id="prevBtn" class="btn">上一页</button>
-        <span id="pagerText" class="summary"></span>
-        <button id="nextBtn" class="btn">下一页</button>
-      </div>
-    </section>
-  </main>
+    </div>
 
-  <script>
-    let currentPage = 1;
-    let totalPages = 1;
-    let currentCategory = 'bookmark';
-    let searchTimer = null;
+    <!-- Pagination -->
+    <div class="flex items-center justify-center gap-4 mt-8 pt-6 border-t border-gray-100 dark:border-gray-700/50">
+      <button id="prevBtn" class="px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-semibold hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm">上一页</button>
+      <span id="pagerText" class="text-sm font-mono font-medium text-gray-500 dark:text-gray-400"></span>
+      <button id="nextBtn" class="px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-semibold hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm">下一页</button>
+    </div>
 
-    function escapeHtml(value) {
-      return String(value ?? '').replace(/[&<>"]/g, function (ch) {
-        if (ch === '&') return '&amp;';
-        if (ch === '<') return '&lt;';
-        if (ch === '>') return '&gt;';
-        if (ch === '"') return '&quot;';
-        return ch;
-      });
-    }
+  </section>
+</div>
+{% endblock %}
 
-    function restrictLabel(value) {
-      if (value === 'public') return '公开';
-      if (value === 'private') return '私密';
-      return value || '';
-    }
+{% block extra_scripts %}
+<style>
+  /* Custom styles for select dropdown arrow */
+  select#sortBy {
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-position: right 0.5rem center;
+    background-repeat: no-repeat;
+    background-size: 1.5em 1.5em;
+  }
+  .dark select#sortBy {
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%239ca3af' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+  }
 
-    function kindLabel(value) {
-      if (value === 'series') return '系列';
-      if (value === 'single') return '单本';
-      return '';
-    }
+  /* Limit text lines */
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+</style>
 
-    function formatTextLength(chars) {
-      if (!chars || chars <= 0) return '0 字';
-      if (chars >= 10000) return (chars / 10000).toFixed(1) + ' 万字';
-      return chars.toLocaleString('zh-CN') + ' 字';
-    }
+<script>
+  let currentPage = 1;
+  let totalPages = 1;
+  let currentCategory = 'bookmark';
+  let searchTimer = null;
 
-    async function loadNovels(page, category) {
-      const search = (document.getElementById('searchInput').value || '').trim();
-      const sort = document.getElementById('sortBy').value || '';
-      let url = `/api/dashboard/novels?page=${page}&category=${encodeURIComponent(category)}`;
-      if (search) url += `&search=${encodeURIComponent(search)}`;
-      if (sort) url += `&sort=${encodeURIComponent(sort)}`;
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"]/g, function (ch) {
+      if (ch === '&') return '&amp;';
+      if (ch === '<') return '&lt;';
+      if (ch === '>') return '&gt;';
+      if (ch === '"') return '&quot;';
+      return ch;
+    });
+  }
+
+  function restrictLabel(value) {
+    if (value === 'public') return '公开';
+    if (value === 'private') return '私密';
+    return value || '';
+  }
+
+  function kindLabel(value) {
+    if (value === 'series') return '系列';
+    if (value === 'single') return '单本';
+    return '';
+  }
+
+  function formatTextLength(chars) {
+    if (!chars || chars <= 0) return '0 字';
+    if (chars >= 10000) return (chars / 10000).toFixed(1) + ' 万字';
+    return chars.toLocaleString('zh-CN') + ' 字';
+  }
+
+  function createBadge(text, extraClasses = '') {
+    if (!text) return '';
+    return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 ${extraClasses}">${escapeHtml(text)}</span>`;
+  }
+
+  async function loadNovels(page, category) {
+    const search = (document.getElementById('searchInput').value || '').trim();
+    const sort = document.getElementById('sortBy').value || '';
+    let url = `/api/dashboard/novels?page=${page}&category=${encodeURIComponent(category)}`;
+    if (search) url += `&search=${encodeURIComponent(search)}`;
+    if (sort) url += `&sort=${encodeURIComponent(sort)}`;
+
+    const list = document.getElementById('list');
+
+    try {
       const resp = await fetch(url);
       const data = await resp.json();
       const items = data.items || [];
       currentPage = data.page || 1;
       totalPages = data.total_pages || 1;
       currentCategory = data.category || category;
-      document.getElementById('summary').textContent = `共 ${data.total || 0} ${currentCategory === 'following' ? '个系列' : '本'}`;
+
+      document.getElementById('summary').innerHTML = `共 <span class="font-bold text-gray-700 dark:text-gray-300">${data.total || 0}</span> ${currentCategory === 'following' ? '个系列' : '本'}`;
       document.getElementById('pageInfo').textContent = '每页 10 条';
       document.getElementById('pagerText').textContent = `${currentPage} / ${totalPages}`;
       document.getElementById('prevBtn').disabled = currentPage <= 1;
       document.getElementById('nextBtn').disabled = currentPage >= totalPages;
+
       setActiveTab(currentCategory);
-      const list = document.getElementById('list');
+
       if (!items.length) {
         const emptyMsg = currentCategory === 'following' ? '暂无订阅系列，点击"同步订阅"按钮获取' : '暂无数据，请先执行一次手工同步';
-        list.innerHTML = `<div class="empty-state">${escapeHtml(emptyMsg)}</div>`;
+        list.className = "flex justify-center py-20"; // Remove grid for empty state
+        list.innerHTML = `
+          <div class="text-center">
+            <svg class="mx-auto h-12 w-12 text-gray-300 dark:text-gray-600 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+              <path vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+            </svg>
+            <p class="text-sm text-gray-500 dark:text-gray-400 font-medium">${escapeHtml(emptyMsg)}</p>
+          </div>
+        `;
         return;
       }
+
+      list.className = "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 sm:gap-5";
+
       if (currentCategory === 'following') {
         list.innerHTML = items.map(function (item) {
           const cover = item.cover_url
-            ? `<img class="cover" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+            ? `<img class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg object-cover bg-gray-100 dark:bg-gray-800 shadow-sm flex-shrink-0 group-hover:shadow-md transition-shadow" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
             : '';
-          const fallbackCover = `<div class="empty-cover" style="display:${item.cover_url ? 'none' : 'flex'};align-items:center;justify-content:center;color:var(--text-secondary);font-size:12px;text-align:center;padding:8px;">${escapeHtml((item.series_title || '').slice(0, 4))}</div>`;
-          const sourceBadge = item.source_label ? `<span class="badge">${escapeHtml(item.source_label)}</span>` : '';
+          const fallbackCover = `<div class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-800 dark:to-gray-900 border border-gray-200 dark:border-gray-700 flex items-center justify-center text-gray-400 dark:text-gray-500 text-xs font-bold text-center p-2 shadow-sm flex-shrink-0" style="display:${item.cover_url ? 'none' : 'flex'};">${escapeHtml((item.series_title || '').slice(0, 4))}</div>`;
+          const sourceBadge = createBadge(item.source_label);
+
           return `
-            <article class="item">
+            <a href="/dashboard/series/${encodeURIComponent(item.series_id)}" class="group flex gap-4 bg-gray-50 hover:bg-white dark:bg-gray-900/40 dark:hover:bg-gray-800 border border-transparent hover:border-gray-200 dark:hover:border-gray-700 rounded-xl p-3 sm:p-4 transition-all hover:shadow-sm">
               ${cover}${fallbackCover}
-              <div class="content">
-                <a class="title-link" href="/dashboard/series/${encodeURIComponent(item.series_id)}">${escapeHtml(item.series_title || '未命名系列')}</a>
-                <div class="meta">${sourceBadge}作者：${escapeHtml(item.author_name || '未知')}</div>
-                <div class="meta">章节：${escapeHtml(item.chapter_count || 0)} 章 · ${formatTextLength(item.total_text_length || 0)}</div>
-                <div class="meta">更新于 ${escapeHtml(item.last_updated || '-')}</div>
+              <div class="flex flex-col min-w-0 justify-between py-0.5">
+                <div>
+                  <h3 class="text-sm sm:text-base font-bold text-gray-900 dark:text-gray-100 group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors line-clamp-2 leading-snug mb-1.5">${escapeHtml(item.series_title || '未命名系列')}</h3>
+                  <div class="flex items-center gap-1.5 flex-wrap mb-1.5">
+                    ${sourceBadge}
+                    <span class="text-xs text-gray-500 dark:text-gray-400 truncate">作者: ${escapeHtml(item.author_name || '未知')}</span>
+                  </div>
+                </div>
+                <div class="space-y-1">
+                  <div class="text-[11px] text-gray-500 dark:text-gray-400 flex items-center gap-1">
+                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                    ${escapeHtml(item.chapter_count || 0)} 章 · ${formatTextLength(item.total_text_length || 0)}
+                  </div>
+                  <div class="text-[10px] text-gray-400 dark:text-gray-500 font-mono">
+                    更新于 ${escapeHtml(item.last_updated || '-').substring(0, 10)}
+                  </div>
+                </div>
               </div>
-            </article>
+            </a>
           `;
         }).join('');
       } else {
         list.innerHTML = items.map(function (item) {
           const cover = item.cover_url
-            ? `<img class="cover" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+            ? `<img class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg object-cover bg-gray-100 dark:bg-gray-800 shadow-sm flex-shrink-0 group-hover:shadow-md transition-shadow" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
             : '';
-          const fallbackCover = `<div class="empty-cover" style="display:${item.cover_url ? 'none' : 'flex'};align-items:center;justify-content:center;color:var(--text-secondary);font-size:12px;text-align:center;padding:8px;">${escapeHtml((item.title || '').slice(0, 4))}</div>`;
-          const badges = [kindLabel(item.novel_kind), restrictLabel(item.restrict_value)].filter(Boolean).map(function(b) {
-            return '<span class="badge">' + escapeHtml(b) + '</span>';
-          }).join('');
+          const fallbackCover = `<div class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-800 dark:to-gray-900 border border-gray-200 dark:border-gray-700 flex items-center justify-center text-gray-400 dark:text-gray-500 text-xs font-bold text-center p-2 shadow-sm flex-shrink-0" style="display:${item.cover_url ? 'none' : 'flex'};">${escapeHtml((item.title || '').slice(0, 4))}</div>`;
+
+          const badges = [kindLabel(item.novel_kind), restrictLabel(item.restrict_value)].filter(Boolean).map(b => createBadge(b)).join('');
+
           return `
-            <article class="item">
+            <a href="/dashboard/novels/${encodeURIComponent(item.novel_id)}" class="group flex gap-4 bg-gray-50 hover:bg-white dark:bg-gray-900/40 dark:hover:bg-gray-800 border border-transparent hover:border-gray-200 dark:hover:border-gray-700 rounded-xl p-3 sm:p-4 transition-all hover:shadow-sm">
               ${cover}${fallbackCover}
-              <div class="content">
-                <a class="title-link" href="/dashboard/novels/${encodeURIComponent(item.novel_id)}">${escapeHtml(item.title || '未命名小说')}</a>
-                <div class="meta">${badges}作者：${escapeHtml(item.author_name || '未知')}</div>
-                <div class="meta">收藏 ${escapeHtml(item.total_bookmarks || 0)} / 浏览 ${escapeHtml(item.total_views || 0)}</div>
-                <div class="meta">更新于 ${escapeHtml(item.last_seen_at || '-')}</div>
+              <div class="flex flex-col min-w-0 justify-between py-0.5 w-full">
+                <div>
+                  <h3 class="text-sm sm:text-base font-bold text-gray-900 dark:text-gray-100 group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors line-clamp-2 leading-snug mb-1.5">${escapeHtml(item.title || '未命名小说')}</h3>
+                  <div class="flex items-center gap-1.5 flex-wrap mb-1.5">
+                    ${badges}
+                    <span class="text-xs text-gray-500 dark:text-gray-400 truncate">作者: ${escapeHtml(item.author_name || '未知')}</span>
+                  </div>
+                </div>
+                <div class="space-y-1">
+                  <div class="text-[11px] text-gray-500 dark:text-gray-400 flex items-center gap-2">
+                    <span class="flex items-center gap-1" title="收藏数"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"></path></svg>${escapeHtml(item.total_bookmarks || 0)}</span>
+                    <span class="flex items-center gap-1" title="浏览数"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>${escapeHtml(item.total_views || 0)}</span>
+                  </div>
+                  <div class="text-[10px] text-gray-400 dark:text-gray-500 font-mono">
+                    更新于 ${escapeHtml(item.last_seen_at || '-').substring(0, 10)}
+                  </div>
+                </div>
               </div>
-            </article>
+            </a>
           `;
         }).join('');
       }
+    } catch (err) {
+      console.error(err);
+      document.getElementById('summary').innerHTML = '<span class="text-red-500">加载失败</span>';
     }
+  }
 
-    function setActiveTab(category) {
-      document.querySelectorAll('.tab').forEach(function (btn) {
-        btn.classList.toggle('active', btn.dataset.category === category);
-      });
-    }
-
-    document.getElementById('tabs').addEventListener('click', function (event) {
-      const btn = event.target.closest('.tab');
-      if (!btn) return;
-      loadNovels(1, btn.dataset.category);
-    });
-    document.getElementById('searchInput').addEventListener('input', function () {
-      clearTimeout(searchTimer);
-      searchTimer = setTimeout(function () {
-        loadNovels(1, currentCategory);
-      }, 400);
-    });
-    document.getElementById('sortBy').addEventListener('change', function () {
-      loadNovels(1, currentCategory);
-    });
-    document.getElementById('prevBtn').addEventListener('click', function () {
-      if (currentPage > 1) loadNovels(currentPage - 1, currentCategory);
-    });
-    document.getElementById('nextBtn').addEventListener('click', function () {
-      if (currentPage < totalPages) loadNovels(currentPage + 1, currentCategory);
-    });
-
-    // 读取 URL 中的 category 参数作为初始 tab（用于"返回追更列表"等链接）
-    const _initialCategory = (function() {
-      try {
-        const value = new URLSearchParams(location.search).get('category');
-        return ['bookmark', 'following'].includes(value) ? value : 'bookmark';
-      } catch (e) {
-        return 'bookmark';
+  function setActiveTab(category) {
+    document.querySelectorAll('.tab-btn').forEach(function (btn) {
+      if (btn.dataset.category === category) {
+        btn.classList.add('bg-white', 'dark:bg-gray-800', 'text-gray-900', 'dark:text-white', 'shadow-sm', 'ring-1', 'ring-gray-200', 'dark:ring-gray-700');
+        btn.classList.remove('text-gray-500', 'dark:text-gray-400', 'hover:text-gray-700', 'dark:hover:text-gray-200');
+      } else {
+        btn.classList.remove('bg-white', 'dark:bg-gray-800', 'text-gray-900', 'dark:text-white', 'shadow-sm', 'ring-1', 'ring-gray-200', 'dark:ring-gray-700');
+        btn.classList.add('text-gray-500', 'dark:text-gray-400', 'hover:text-gray-700', 'dark:hover:text-gray-200');
       }
-    })();
-    loadNovels(1, _initialCategory).catch(function () {
-      document.getElementById('summary').textContent = '加载失败';
     });
-  </script>
-<script>(function(){fetch("/api/dashboard/pending-deletions/count").then(function(r){return r.json()}).then(function(d){var b=document.getElementById("pendingBadge");if(b && d.count>0){b.textContent=d.count;b.style.display="inline-flex"}}).catch(function(){})})();</script>
-</body>
-</html>
+  }
+
+  document.getElementById('tabs').addEventListener('click', function (event) {
+    const btn = event.target.closest('.tab-btn');
+    if (!btn) return;
+    loadNovels(1, btn.dataset.category);
+  });
+
+  document.getElementById('searchInput').addEventListener('input', function () {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(function () {
+      loadNovels(1, currentCategory);
+    }, 400);
+  });
+
+  document.getElementById('sortBy').addEventListener('change', function () {
+    loadNovels(1, currentCategory);
+  });
+
+  document.getElementById('prevBtn').addEventListener('click', function () {
+    if (currentPage > 1) loadNovels(currentPage - 1, currentCategory);
+  });
+
+  document.getElementById('nextBtn').addEventListener('click', function () {
+    if (currentPage < totalPages) loadNovels(currentPage + 1, currentCategory);
+  });
+
+  // 读取 URL 中的 category 参数作为初始 tab
+  const _initialCategory = (function() {
+    try {
+      const value = new URLSearchParams(location.search).get('category');
+      return ['bookmark', 'following'].includes(value) ? value : 'bookmark';
+    } catch (e) {
+      return 'bookmark';
+    }
+  })();
+
+  loadNovels(1, _initialCategory);
+</script>
+{% endblock %}

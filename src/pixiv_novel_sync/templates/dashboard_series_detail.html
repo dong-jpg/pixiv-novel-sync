@@ -1,266 +1,263 @@
-<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>系列详情 - Pixiv 小说同步器</title>
-  <style>
-    :root {
-      --bg: #f7f8fb;
-      --surface: #ffffff;
-      --surface-soft: #f4f6fb;
-      --text: #1f2330;
-      --text-secondary: #6f7685;
-      --line: #e5e8ef;
-      --brand: #0096fa;
-      --brand-soft: rgba(0, 150, 250, 0.10);
-      --success: #22c55e;
-      --danger: #ef4444;
-      --warning: #f59e0b;
-      --shadow: 0 16px 36px rgba(31, 35, 48, 0.08);
-      --radius: 14px;
-      --radius-lg: 22px;
-    }
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
-    .topbar { position: sticky; top: 0; z-index: 10; background: rgba(255,255,255,0.86); backdrop-filter: blur(18px); border-bottom: 1px solid var(--line); }
-    .topbar-inner { max-width: 1160px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; min-height: 58px; gap: 16px; }
-    .brand { font-size: 17px; font-weight: 800; color: var(--brand); }
-    .nav { display: flex; gap: 2px; overflow-x: auto; white-space: nowrap; }
-    .nav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 9px 12px; border-radius: 999px; }
-    .nav a:hover, .nav a.active { color: var(--brand); background: var(--brand-soft); }
-    .page { max-width: 1160px; margin: 0 auto; padding: 24px 24px 64px; }
-    .back-link { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); text-decoration: none; font-size: 14px; font-weight: 700; margin: 0 0 14px; }
-    .back-link:hover { color: var(--brand); }
-    .hero { background: var(--surface); border-radius: var(--radius-lg); box-shadow: var(--shadow); border: 1px solid rgba(229,232,239,0.8); padding: 26px; display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 28px; align-items: start; }
-    .cover-wrap { position: sticky; top: 82px; }
-    .cover, .empty-cover { width: 210px; aspect-ratio: 3 / 4.15; border-radius: 18px; object-fit: cover; background: linear-gradient(135deg, #dbeafe, #eef2ff); box-shadow: 0 18px 36px rgba(31,35,48,.16); }
-    .empty-cover { display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 18px; font-weight: 800; text-align: center; padding: 18px; }
-    .info { min-width: 0; padding-top: 4px; }
-    .title { font-size: clamp(26px, 4vw, 38px); line-height: 1.22; letter-spacing: -0.035em; margin: 0 0 14px; }
-    .meta { color: var(--text-secondary); font-size: 14px; line-height: 1.85; }
-    .meta strong { color: var(--text); }
-    .hero-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 0; }
-    .badge { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; border-radius: 999px; background: var(--brand-soft); color: var(--brand); font-size: 12px; font-weight: 800; }
-    .caption { margin-top: 14px; color: var(--text-secondary); font-size: 14px; line-height: 1.8; max-width: 780px; white-space: pre-wrap; }
-    .card { background: var(--surface); border-radius: var(--radius-lg); box-shadow: var(--shadow); border: 1px solid rgba(229,232,239,0.8); margin-top: 18px; overflow: hidden; }
-    .card-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 24px; border-bottom: 1px solid var(--line); }
-    .card-title { margin: 0; font-size: 17px; font-weight: 900; }
-    .card-sub { color: var(--text-secondary); font-size: 13px; font-weight: 700; }
-    .chapter-list { display: grid; gap: 0; padding: 6px 0; }
-    .chapter-item { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; min-height: 54px; border-bottom: 1px solid var(--line); padding: 8px 18px; transition: background .18s; text-decoration: none; color: var(--text); }
-    .chapter-item:hover { background: var(--surface-soft); }
-    .chapter-item.is-reading { background: rgba(0,150,250,.06); }
-    .chapter-num { color: var(--text-secondary); font-weight: 900; font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
-    .chapter-info { min-width: 0; }
-    .chapter-title { font-size: 14px; font-weight: 800; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .chapter-meta { font-size: 12px; color: var(--text-secondary); margin-top: 3px; line-height: 1.4; }
-    .chapter-progress { color: var(--brand); background: var(--brand-soft); border-radius: 999px; padding: 4px 8px; font-size: 11px; font-weight: 900; white-space: nowrap; }
-    .loading, .empty { text-align: center; padding: 54px 18px; color: var(--text-secondary); }
-    .btn { border: none; border-radius: 999px; padding: 9px 15px; font-size: 13px; font-weight: 800; cursor: pointer; transition: transform .18s, background .18s; }
-    .btn:hover { transform: translateY(-1px); }
-    .btn-primary { background: var(--brand); color: #fff; }
-    .btn-danger { background: rgba(239,68,68,.10); color: var(--danger); }
-    .actions { display: flex; gap: 8px; }
-    @media (max-width: 840px) {
-      .topbar-inner { align-items: flex-start; flex-direction: column; padding: 10px 14px; gap: 8px; }
-      .page { padding: 12px 10px 44px; }
-      .back-link { margin-bottom: 10px; }
-      .hero { grid-template-columns: 82px minmax(0, 1fr); gap: 12px; padding: 12px; border-radius: 16px; }
-      .cover-wrap { position: static; display: block; }
-      .cover, .empty-cover { width: 82px; border-radius: 12px; box-shadow: none; }
-      .title { font-size: 20px; line-height: 1.28; margin-bottom: 8px; }
-      .hero-tools { gap: 6px; margin-top: 8px; }
-      .badge { padding: 4px 8px; font-size: 11px; }
-      .meta { font-size: 13px; line-height: 1.5; }
-      .caption { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin-top: 8px; font-size: 13px; line-height: 1.55; }
-      .card { margin-top: 10px; border-radius: 16px; }
-      .card-head { align-items: stretch; flex-direction: column; padding: 12px; gap: 10px; }
-      .card-title { font-size: 16px; }
-      .chapter-list { padding: 2px 0; }
-      .chapter-item { grid-template-columns: 30px minmax(0, 1fr); gap: 9px; min-height: 46px; padding: 7px 10px; }
-      .chapter-title { font-size: 13px; }
-      .chapter-meta { font-size: 11px; }
-      .chapter-progress { grid-column: 2; justify-self: start; margin-top: -2px; padding: 2px 7px; }
-      .actions { width: 100%; }
-      .actions .btn { flex: 1; padding: 10px 12px; }
-      #continueBtn { flex: 2; }
-    }
-  .nav-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: #ff3b30; color: #fff; font-size: 10px; font-weight: 700; margin-left: 4px; line-height: 1; }
-    </style>
-</head>
-<body>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <div class="brand">Pixiv 小说同步器</div>
-      <nav class="nav">
-        <a href="/dashboard">首页</a>
-        <a href="/dashboard/follows">关注</a>
-        <a class="active" href="/dashboard/novels">小说</a>
-        <a href="/dashboard/logs">日志</a>
-        <a href="/dashboard/settings">设置</a>
-        <a href="/token-login">登录</a>
-      </nav>
+{% extends "base.html" %}
+
+{% block title %}系列详情 - Pixiv 小说同步器{% endblock %}
+
+{% block content %}
+<div class="space-y-6 max-w-4xl mx-auto">
+
+  <!-- Back Link -->
+  <a href="/dashboard/novels?category=following" class="inline-flex items-center gap-2 text-sm font-semibold text-gray-500 hover:text-brand-600 dark:text-gray-400 dark:hover:text-brand-400 transition-colors">
+    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+    </svg>
+    返回追更列表
+  </a>
+
+  <!-- Hero Section -->
+  <section id="hero" class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-6 md:p-8 flex flex-col md:flex-row gap-6 md:gap-8 items-start relative overflow-hidden">
+    <!-- Loading State -->
+    <div class="animate-pulse flex flex-col md:flex-row gap-6 md:gap-8 w-full">
+      <div class="w-32 h-44 sm:w-48 sm:h-64 bg-gray-200 dark:bg-gray-700 rounded-xl flex-shrink-0 mx-auto md:mx-0"></div>
+      <div class="flex-1 space-y-4 py-2 w-full">
+        <div class="h-8 bg-gray-200 dark:bg-gray-700 rounded w-3/4"></div>
+        <div class="flex gap-2"><div class="h-6 w-16 bg-gray-200 dark:bg-gray-700 rounded-md"></div><div class="h-6 w-16 bg-gray-200 dark:bg-gray-700 rounded-md"></div></div>
+        <div class="space-y-2 mt-4">
+          <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded"></div>
+          <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded w-5/6"></div>
+        </div>
+      </div>
     </div>
-  </header>
+  </section>
 
-  <main class="page">
-    <a class="back-link" href="/dashboard/novels?category=following">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      返回追更列表
-    </a>
+  <!-- Chapters Section -->
+  <section class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 overflow-hidden">
 
-    <section id="hero" class="hero">
-      <div class="cover-wrap"><div class="empty-cover">加载中...</div></div>
-      <div class="info">
-        <h1 class="title">加载中...</h1>
-        <div class="meta">请稍候</div>
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 sm:px-6 sm:py-5 border-b border-gray-100 dark:border-gray-700/50 bg-gray-50/50 dark:bg-gray-900/30">
+      <div>
+        <h2 class="text-lg font-bold text-gray-900 dark:text-gray-100 tracking-tight">章节列表</h2>
+        <div id="chapterCount" class="text-sm font-medium text-gray-500 dark:text-gray-400 mt-0.5"></div>
       </div>
-    </section>
-
-    <section class="card">
-      <div class="card-head">
-        <div>
-          <h2 class="card-title">章节列表</h2>
-          <div id="chapterCount" class="card-sub"></div>
-        </div>
-        <div class="actions">
-          <button id="continueBtn" class="btn btn-primary" style="display:none;" onclick="continueReading()">继续阅读</button>
-          <button id="deleteBtn" class="btn btn-danger" onclick="deleteSeries()">删除系列</button>
-        </div>
+      <div class="flex items-center gap-3">
+        <button id="continueBtn" class="hidden px-5 py-2 text-sm font-semibold text-white bg-brand-600 hover:bg-brand-700 rounded-xl transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500/50" onclick="continueReading()">
+          继续阅读
+        </button>
+        <button id="deleteBtn" class="px-4 py-2 text-sm font-semibold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800/50 hover:bg-red-100 dark:hover:bg-red-900/40 rounded-xl transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/50" onclick="deleteSeries()">
+          删除系列
+        </button>
       </div>
-      <div id="chapters" class="loading">正在加载章节...</div>
-    </section>
-  </main>
+    </div>
 
-  <script>
-    const pathParts = window.location.pathname.split('/');
-    const seriesId = Number(pathParts[pathParts.length - 1] || 0);
-    const progressPrefix = 'pixivNovelSync:reading:';
+    <!-- Chapter List -->
+    <div id="chapters" class="divide-y divide-gray-100 dark:divide-gray-800">
+      <div class="py-12 text-center text-gray-500 dark:text-gray-400 flex flex-col items-center">
+        <svg class="animate-spin h-8 w-8 mb-4 text-gray-300 dark:text-gray-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+        <span>正在加载章节...</span>
+      </div>
+    </div>
 
-    function escapeHtml(value) {
-      return String(value ?? '').replace(/[&<>"]/g, function (ch) {
-        if (ch === '&') return '&amp;';
-        if (ch === '<') return '&lt;';
-        if (ch === '>') return '&gt;';
-        if (ch === '"') return '&quot;';
-        return ch;
-      });
+  </section>
+
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<style>
+  .cover-gradient {
+    background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%);
+  }
+  .dark .cover-gradient {
+    background: linear-gradient(135deg, #1e3a8a 0%, #312e81 100%);
+  }
+</style>
+
+<script>
+  const pathParts = window.location.pathname.split('/');
+  const seriesId = Number(pathParts[pathParts.length - 1] || 0);
+  const progressPrefix = 'pixivNovelSync:reading:';
+  let continueNovelId = null;
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"]/g, function (ch) {
+      if (ch === '&') return '&amp;';
+      if (ch === '<') return '&lt;';
+      if (ch === '>') return '&gt;';
+      if (ch === '"') return '&quot;';
+      return ch;
+    });
+  }
+
+  function formatNumber(value) {
+    return Number(value || 0).toLocaleString('zh-CN');
+  }
+
+  function formatTextLength(chars) {
+    const value = Number(chars || 0);
+    if (!value) return '0 字';
+    if (value >= 10000) return (value / 10000).toFixed(1) + ' 万字';
+    return formatNumber(value) + ' 字';
+  }
+
+  function readChapterProgress(novelId) {
+    try {
+      return JSON.parse(localStorage.getItem(progressPrefix + novelId) || 'null');
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function continueReading() {
+    if (continueNovelId) {
+      window.location.href = `/dashboard/novels/${encodeURIComponent(continueNovelId)}`;
+    }
+  }
+
+  function createBadge(text, colorClass) {
+    if (!text) return '';
+    return `<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold ${colorClass}">${escapeHtml(text)}</span>`;
+  }
+
+  async function loadDetail() {
+    const resp = await fetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`);
+    const data = await resp.json();
+    const heroSection = document.getElementById('hero');
+    const chaptersSection = document.getElementById('chapters');
+
+    if (!resp.ok) {
+      heroSection.innerHTML = `
+        <div class="text-center w-full py-10">
+          <h1 class="text-2xl font-bold text-red-500 mb-2">加载失败</h1>
+          <p class="text-gray-500 dark:text-gray-400">未找到该系列</p>
+        </div>`;
+      chaptersSection.innerHTML = `<div class="text-center py-20 text-red-500 font-medium">${escapeHtml(data.error || '未找到系列')}</div>`;
+      return;
     }
 
-    function formatNumber(value) {
-      return Number(value || 0).toLocaleString('zh-CN');
+    const cover = data.cover_url
+      ? `<img class="w-32 h-44 sm:w-48 sm:h-64 object-cover rounded-xl shadow-md border border-gray-200 dark:border-gray-700 flex-shrink-0 mx-auto md:mx-0" src="/proxy/image?url=${encodeURIComponent(data.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+      : '';
+    const fallbackCover = `<div class="w-32 h-44 sm:w-48 sm:h-64 rounded-xl cover-gradient border border-gray-200 dark:border-gray-700 flex items-center justify-center text-brand-700 dark:text-brand-300 text-lg font-bold text-center p-4 shadow-md flex-shrink-0 mx-auto md:mx-0" style="display:${data.cover_url ? 'none' : 'flex'};">${escapeHtml((data.title || '').slice(0, 6))}</div>`;
+
+    const seriesStatusMap = {
+      normal: {label: '正常', class: 'bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400'},
+      deleted: {label: '已删除', class: 'bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400'},
+      unknown: {label: '未检查', class: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'}
+    };
+    const ss = seriesStatusMap[data.status] || seriesStatusMap.unknown;
+
+    const author = data.author_name || '未知';
+    const authorLine = data.user_id ? `<a href="/dashboard/users/${encodeURIComponent(data.user_id)}" class="text-brand-600 dark:text-brand-400 hover:underline">${escapeHtml(author)}</a>` : escapeHtml(author);
+
+    let badgesHtml = `
+      ${createBadge(data.total_novels + ' 章', 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400')}
+      ${createBadge(formatTextLength(data.total_text_length), 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400')}
+      ${createBadge('● ' + ss.label, ss.class)}
+    `;
+    if (data.last_checked_at) {
+      badgesHtml += createBadge('检查于 ' + escapeHtml(data.last_checked_at).substring(0, 10), 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400');
     }
 
-    function formatTextLength(chars) {
-      const value = Number(chars || 0);
-      if (!value) return '0 字';
-      if (value >= 10000) return (value / 10000).toFixed(1) + ' 万字';
-      return formatNumber(value) + ' 字';
-    }
-
-    function readChapterProgress(novelId) {
-      try {
-        return JSON.parse(localStorage.getItem(progressPrefix + novelId) || 'null');
-      } catch (err) {
-        return null;
-      }
-    }
-
-    let continueNovelId = null;
-
-    function continueReading() {
-      if (continueNovelId) {
-        window.location.href = `/dashboard/novels/${encodeURIComponent(continueNovelId)}`;
-      }
-    }
-
-    async function loadDetail() {
-      const resp = await fetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`);
-      const data = await resp.json();
-      if (!resp.ok) {
-        document.getElementById('hero').innerHTML = '<div class="info"><h1 class="title">加载失败</h1><div class="meta">未找到该系列</div></div>';
-        document.getElementById('chapters').innerHTML = '<div class="empty">' + escapeHtml(data.error || '未找到系列') + '</div>';
-        return;
-      }
-      const cover = data.cover_url
-        ? `<img class="cover" src="/proxy/image?url=${encodeURIComponent(data.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
-        : '';
-      const fallbackCover = `<div class="empty-cover" style="display:${data.cover_url ? 'none' : 'flex'};">${escapeHtml((data.title || '').slice(0, 6))}</div>`;
-      const seriesStatusMap = {normal: {label: '正常', color: 'var(--success)'}, deleted: {label: '已删除', color: 'var(--danger)'}, unknown: {label: '未检查', color: 'var(--text-secondary)'}};
-      const ss = seriesStatusMap[data.status] || seriesStatusMap.unknown;
-      const author = data.author_name || '未知';
-      const authorLine = data.user_id ? `<a href="/dashboard/users/${encodeURIComponent(data.user_id)}">${escapeHtml(author)}</a>` : escapeHtml(author);
-      document.getElementById('hero').innerHTML = `
-        <div class="cover-wrap">${cover}${fallbackCover}</div>
-        <div class="info">
-          <h1 class="title">${escapeHtml(data.title || '未命名系列')}</h1>
-          <div class="hero-tools">
-            <span class="badge">${escapeHtml(data.total_novels || 0)} 章</span>
-            <span class="badge">${formatTextLength(data.total_text_length)}</span>
-            <span class="badge" style="background:${ss.color}20;color:${ss.color};">● ${ss.label}</span>
-            ${data.last_checked_at ? `<span class="badge">最后检查 ${escapeHtml(data.last_checked_at)}</span>` : ''}
-          </div>
-          <div class="meta"><strong>作者：</strong>${authorLine}</div>
-          ${data.description ? `<div class="caption">${escapeHtml(data.description)}</div>` : ''}
+    heroSection.innerHTML = `
+      <div class="relative z-10 flex-shrink-0 mx-auto md:mx-0">
+        ${cover}${fallbackCover}
+      </div>
+      <div class="flex-1 min-w-0 flex flex-col justify-center py-2 text-center md:text-left">
+        <h1 class="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 dark:text-white leading-tight mb-4 tracking-tight">${escapeHtml(data.title || '未命名系列')}</h1>
+        <div class="flex flex-wrap justify-center md:justify-start gap-2 mb-4">
+          ${badgesHtml}
         </div>
-      `;
-      const novels = data.novels || [];
-      document.getElementById('chapterCount').textContent = `共 ${formatNumber(novels.length)} 章`;
-      const chapters = document.getElementById('chapters');
-      let bestProgress = null;
-      if (!novels.length) {
-        chapters.innerHTML = '<div class="empty">暂无章节</div>';
-        return;
+        <div class="text-sm font-medium text-gray-600 dark:text-gray-400 mb-4 bg-gray-50 dark:bg-gray-900/50 inline-block px-3 py-1.5 rounded-lg border border-gray-100 dark:border-gray-800 self-center md:self-start">作者：${authorLine}</div>
+
+        ${data.description ? `
+          <div class="text-sm text-gray-600 dark:text-gray-300 leading-relaxed bg-gray-50 dark:bg-gray-900/30 p-4 rounded-xl border border-gray-100 dark:border-gray-800/50 mt-auto max-w-2xl whitespace-pre-wrap text-left">${escapeHtml(data.description)}</div>
+        ` : ''}
+      </div>
+    `;
+
+    document.title = `${data.title || '系列'} - Pixiv 小说同步器`;
+
+    const novels = data.novels || [];
+    document.getElementById('chapterCount').textContent = `共 ${formatNumber(novels.length)} 章`;
+
+    let bestProgress = null;
+    if (!novels.length) {
+      chaptersSection.innerHTML = `
+        <div class="py-16 text-center">
+          <svg class="mx-auto h-12 w-12 text-gray-300 dark:text-gray-600 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+          </svg>
+          <p class="text-gray-500 dark:text-gray-400 font-medium">暂无章节</p>
+        </div>`;
+      return;
+    }
+
+    const chapterStatusMap = {
+      normal: {label: '正常', class: 'text-green-600 bg-green-50 dark:bg-green-900/20 dark:text-green-400 border border-green-100 dark:border-green-800/50'},
+      deleted: {label: '已删除', class: 'text-red-600 bg-red-50 dark:bg-red-900/20 dark:text-red-400 border border-red-100 dark:border-red-800/50'},
+      restricted: {label: '受限', class: 'text-yellow-600 bg-yellow-50 dark:bg-yellow-900/20 dark:text-yellow-500 border border-yellow-100 dark:border-yellow-800/50'},
+      unknown: {label: '', class: ''}
+    };
+
+    let chaptersHtml = '';
+    novels.forEach(function (novel, index) {
+      const cs = chapterStatusMap[novel.status] || chapterStatusMap.unknown;
+      const saved = readChapterProgress(novel.novel_id);
+      const percent = saved && typeof saved.progress === 'number' ? Math.round(saved.progress * 100) : 0;
+
+      if (saved && (!bestProgress || (saved.updatedAt || 0) > (bestProgress.updatedAt || 0))) {
+        bestProgress = saved;
+        continueNovelId = novel.novel_id;
       }
-      const chapterStatusMap = {normal: {label: '正常', color: 'var(--success)'}, deleted: {label: '已删除', color: 'var(--danger)'}, restricted: {label: '受限', color: 'var(--warning)'}, unknown: {label: '', color: 'transparent'}};
-      chapters.innerHTML = '<div class="chapter-list">' + novels.map(function (novel, index) {
-        const cs = chapterStatusMap[novel.status] || chapterStatusMap.unknown;
-        const saved = readChapterProgress(novel.novel_id);
-        const percent = saved && typeof saved.progress === 'number' ? Math.round(saved.progress * 100) : 0;
-        if (saved && (!bestProgress || (saved.updatedAt || 0) > (bestProgress.updatedAt || 0))) {
-          bestProgress = saved;
-          continueNovelId = novel.novel_id;
-        }
-        const statusTag = cs.label ? `<span style="font-size:11px;padding:2px 6px;border-radius:999px;background:${cs.color}20;color:${cs.color};margin-left:6px;">${cs.label}</span>` : '';
-        const progressTag = percent > 0 ? `<span class="chapter-progress">${percent}%</span>` : '';
-        const itemClass = saved && percent > 0 && percent < 100 ? 'chapter-item is-reading' : 'chapter-item';
-        return `
-          <a class="${itemClass}" href="/dashboard/novels/${encodeURIComponent(novel.novel_id)}">
-            <div class="chapter-num">${index + 1}</div>
-            <div class="chapter-info">
-              <div class="chapter-title">${escapeHtml(novel.title || '未命名章节')}${statusTag}</div>
-              <div class="chapter-meta">${formatNumber(novel.total_bookmarks)} 收藏 · ${formatNumber(novel.total_views)} 浏览${saved && percent > 0 ? ` · 上次阅读 ${percent}%` : ''}</div>
+
+      const statusTag = cs.label ? `<span class="ml-2 px-1.5 py-0.5 text-[10px] rounded font-bold ${cs.class}">${cs.label}</span>` : '';
+      const progressTag = percent > 0 ? `<div class="flex items-center gap-1.5 ml-2 flex-shrink-0"><div class="w-16 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden hidden sm:block"><div class="h-full bg-brand-500" style="width: ${percent}%"></div></div><span class="text-[11px] font-mono font-bold text-brand-600 dark:text-brand-400">${percent}%</span></div>` : '';
+
+      const isReadingBg = (saved && percent > 0 && percent < 100) ? 'bg-brand-50/50 dark:bg-brand-900/10 border-l-2 border-brand-500' : 'hover:bg-gray-50 dark:hover:bg-gray-800/50 border-l-2 border-transparent';
+
+      chaptersHtml += `
+        <a href="/dashboard/novels/${encodeURIComponent(novel.novel_id)}" class="flex items-center gap-4 px-4 sm:px-6 py-4 transition-colors group ${isReadingBg}">
+          <div class="text-sm font-mono font-bold text-gray-400 dark:text-gray-500 w-6 text-right flex-shrink-0">${index + 1}</div>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm sm:text-base font-bold text-gray-900 dark:text-gray-100 group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors truncate mb-1">
+              ${escapeHtml(novel.title || '未命名章节')}${statusTag}
             </div>
-            ${progressTag}
-          </a>
-        `;
-      }).join('') + '</div>';
-      if (continueNovelId) {
-        document.getElementById('continueBtn').style.display = 'inline-flex';
-      }
-    }
-
-    loadDetail().catch(function () {
-      document.getElementById('chapters').innerHTML = '<div class="empty">加载失败</div>';
+            <div class="text-xs text-gray-500 dark:text-gray-400 flex items-center flex-wrap gap-x-2 gap-y-1">
+              <span><span class="font-medium text-gray-700 dark:text-gray-300">${formatNumber(novel.total_bookmarks)}</span> 收藏</span>
+              <span class="text-gray-300 dark:text-gray-600 px-1">•</span>
+              <span><span class="font-medium text-gray-700 dark:text-gray-300">${formatNumber(novel.total_views)}</span> 浏览</span>
+              ${saved && percent > 0 ? `<span class="text-gray-300 dark:text-gray-600 px-1">•</span><span class="text-brand-600 dark:text-brand-400 font-medium">上次阅读</span>` : ''}
+            </div>
+          </div>
+          ${progressTag}
+        </a>
+      `;
     });
 
-    async function deleteSeries() {
-      if (!confirm('确定要删除这个系列吗？系列下的小说不会被删除，只会解除关联。此操作不可撤销。')) return;
-      try {
-        const resp = await fetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`, { method: 'DELETE' });
-        const data = await resp.json();
-        if (resp.ok) {
-          alert('系列已删除');
-          window.location.href = '/dashboard/novels?category=following';
-        } else {
-          alert('删除失败: ' + (data.error || '未知错误'));
-        }
-      } catch (err) {
-        alert('删除失败: ' + err.message);
-      }
+    chaptersSection.innerHTML = chaptersHtml;
+
+    if (continueNovelId) {
+      document.getElementById('continueBtn').classList.remove('hidden');
+      document.getElementById('continueBtn').classList.add('inline-flex');
     }
-  </script>
-<script>(function(){fetch("/api/dashboard/pending-deletions/count").then(function(r){return r.json()}).then(function(d){var b=document.getElementById("pendingBadge");if(b && d.count>0){b.textContent=d.count;b.style.display="inline-flex"}}).catch(function(){})})();</script>
-</body>
-</html>
+  }
+
+  loadDetail().catch(function () {
+    document.getElementById('chapters').innerHTML = '<div class="py-10 text-center text-red-500 font-medium">章节加载失败</div>';
+  });
+
+  async function deleteSeries() {
+    if (!confirm('确定要删除这个系列吗？\n注意：系列下的小说不会被删除，只会解除关联。此操作不可撤销。')) return;
+    try {
+      const resp = await fetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`, { method: 'DELETE' });
+      const data = await resp.json();
+      if (resp.ok) {
+        alert('系列已删除');
+        window.location.href = '/dashboard/novels?category=following';
+      } else {
+        alert('删除失败: ' + (data.error || '未知错误'));
+      }
+    } catch (err) {
+      alert('删除失败: ' + err.message);
+    }
+  }
+</script>
+{% endblock %}

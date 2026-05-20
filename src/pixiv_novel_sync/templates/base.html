@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Pixiv 小说同步器{% endblock %}</title>
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Tailwind Configuration -->
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eff6ff',
+              100: '#dbeafe',
+              200: '#bfdbfe',
+              300: '#93c5fd',
+              400: '#60a5fa',
+              500: '#3b82f6', // primary
+              600: '#2563eb',
+              700: '#1d4ed8',
+              800: '#1e40af',
+              900: '#1e3a8a',
+              950: '#172554',
+            }
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Display"', '"Segoe UI"', 'Roboto', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Theme Toggle Script -->
+  <script>
+    function updateTheme() {
+      if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    }
+    // Initial load
+    updateTheme();
+
+    function toggleTheme() {
+      if (localStorage.theme === 'dark') {
+        localStorage.theme = 'light';
+      } else {
+        localStorage.theme = 'dark';
+      }
+      updateTheme();
+    }
+  </script>
+
+  <style>
+    /* 隐藏滚动条但保留滚动功能 (可选，看个人喜好) */
+    .scrollbar-hide::-webkit-scrollbar {
+        display: none;
+    }
+    .scrollbar-hide {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+    }
+
+    /* 平滑过渡效果 */
+    body {
+        transition: background-color 0.3s ease, color 0.3s ease;
+    }
+  </style>
+
+  {% block extra_head %}{% endblock %}
+</head>
+<body class="bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 min-h-screen flex flex-col antialiased">
+
+  <!-- 全局顶部导航栏 -->
+  <header class="sticky top-0 z-50 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md border-b border-gray-200 dark:border-gray-800">
+    <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        <!-- Brand -->
+        <div class="flex-shrink-0 flex items-center">
+          <span class="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-500 to-indigo-600 dark:from-blue-400 dark:to-indigo-500">
+            Pixiv 同步器
+          </span>
+        </div>
+
+        <!-- Desktop Navigation -->
+        <nav class="hidden md:flex items-center space-x-1 overflow-x-auto scrollbar-hide">
+          <a href="/dashboard" class="px-3 py-2 rounded-lg text-sm font-medium transition-colors {% if request.path == '/dashboard' %}bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400{% else %}text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800{% endif %}">首页</a>
+          <a href="/dashboard/follows" class="px-3 py-2 rounded-lg text-sm font-medium transition-colors {% if '/dashboard/follows' in request.path %}bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400{% else %}text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800{% endif %}">关注</a>
+          <a href="/dashboard/novels" class="px-3 py-2 rounded-lg text-sm font-medium transition-colors {% if '/dashboard/novels' in request.path %}bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400{% else %}text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800{% endif %}">小说</a>
+          <a href="/dashboard/pending-deletions" class="relative px-3 py-2 rounded-lg text-sm font-medium transition-colors {% if '/dashboard/pending-deletions' in request.path %}bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400{% else %}text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800{% endif %}">
+            待确认
+            <span id="globalPendingBadge" class="hidden absolute -top-1 -right-2 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">0</span>
+          </a>
+          <a href="/dashboard/logs" class="px-3 py-2 rounded-lg text-sm font-medium transition-colors {% if '/dashboard/logs' in request.path %}bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400{% else %}text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800{% endif %}">日志</a>
+          <a href="/dashboard/settings" class="px-3 py-2 rounded-lg text-sm font-medium transition-colors {% if '/dashboard/settings' in request.path %}bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400{% else %}text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800{% endif %}">设置</a>
+          <a href="/token-login" class="px-3 py-2 rounded-lg text-sm font-medium transition-colors text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800">登录</a>
+        </nav>
+
+        <!-- Right Side actions (Theme toggle & Mobile menu button) -->
+        <div class="flex items-center space-x-2">
+          <button onclick="toggleTheme()" class="p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800 transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500" aria-label="Toggle dark mode">
+            <!-- Sun Icon (shows in dark mode) -->
+            <svg class="hidden dark:block w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+            </svg>
+            <!-- Moon Icon (shows in light mode) -->
+            <svg class="block dark:hidden w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+            </svg>
+          </button>
+
+          <!-- Mobile menu button -->
+          <div class="flex md:hidden">
+            <button type="button" id="mobile-menu-btn" class="p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mobile Navigation Menu -->
+    <div id="mobile-menu" class="hidden md:hidden border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
+      <div class="px-2 pt-2 pb-3 space-y-1">
+        <a href="/dashboard" class="block px-3 py-2 rounded-md text-base font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800">首页</a>
+        <a href="/dashboard/follows" class="block px-3 py-2 rounded-md text-base font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800">关注</a>
+        <a href="/dashboard/novels" class="block px-3 py-2 rounded-md text-base font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800">小说</a>
+        <a href="/dashboard/pending-deletions" class="block px-3 py-2 rounded-md text-base font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800">待确认</a>
+        <a href="/dashboard/logs" class="block px-3 py-2 rounded-md text-base font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800">日志</a>
+        <a href="/dashboard/settings" class="block px-3 py-2 rounded-md text-base font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800">设置</a>
+        <a href="/token-login" class="block px-3 py-2 rounded-md text-base font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800">登录</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="flex-grow w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- Global Footer -->
+  <footer class="mt-auto py-6 text-center text-sm text-gray-500 dark:text-gray-400 border-t border-gray-200 dark:border-gray-800">
+    <p>Pixiv Novel Sync Dashboard</p>
+  </footer>
+
+  <!-- Global Scripts -->
+  <script>
+    // Mobile menu toggle
+    document.getElementById('mobile-menu-btn')?.addEventListener('click', () => {
+      const menu = document.getElementById('mobile-menu');
+      menu.classList.toggle('hidden');
+    });
+
+    // Global pending badge logic
+    (function(){
+      fetch("/api/dashboard/pending-deletions/count")
+        .then(r => r.json())
+        .then(d => {
+          const badge = document.getElementById("globalPendingBadge");
+          if(badge && d.count > 0) {
+            badge.textContent = d.count > 99 ? '99+' : d.count;
+            badge.classList.remove('hidden');
+          }
+        })
+        .catch(() => {});
+    })();
+  </script>
+
+  {% block extra_scripts %}{% endblock %}
+</body>
+</html>
