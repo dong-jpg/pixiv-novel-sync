@@ -6,44 +6,42 @@
 <div class="space-y-6">
 
   <!-- Hero Section -->
-  <section class="bg-gradient-to-br from-blue-600 to-indigo-700 dark:from-blue-800 dark:to-indigo-900 rounded-2xl shadow-lg p-6 sm:p-8 text-white relative overflow-hidden">
+  <section class="bg-blue-500/[0.12] backdrop-blur-xl backdrop-saturate-[1.8] border border-blue-300/30 shadow-glass rounded-3xl p-6 sm:p-8 relative overflow-hidden">
     <div class="relative z-10">
-      <h1 class="text-2xl sm:text-3xl font-bold mb-3">控制台首页</h1>
-      <p class="text-blue-100 max-w-2xl text-sm sm:text-base mb-6 leading-relaxed">
+      <h1 class="text-2xl sm:text-3xl font-bold text-slate-800 mb-3">控制台首页</h1>
+      <p class="text-slate-600 max-w-2xl text-sm sm:text-base mb-6 leading-relaxed">
         集中展示当前账号、归档规模与最近任务状态。默认使用手工同步模式，避免首次全量拉取导致风控。
       </p>
 
       <div class="flex flex-wrap items-center gap-3">
-        <button id="startSyncBtn" class="bg-white text-blue-600 hover:bg-blue-50 focus:ring-4 focus:ring-white/30 rounded-xl px-5 py-2.5 text-sm font-bold transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
+        <button id="startSyncBtn" class="bg-blue-500 text-white hover:bg-blue-600 focus:ring-4 focus:ring-blue-500/30 rounded-xl px-5 py-2.5 text-sm font-bold transition-all shadow-glass-sm disabled:opacity-50 disabled:cursor-not-allowed">
           开始手工同步
         </button>
-        <button id="syncSeriesBtn" class="bg-orange-500 hover:bg-orange-400 focus:ring-4 focus:ring-orange-500/30 text-white rounded-xl px-5 py-2.5 text-sm font-bold transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
+        <button id="syncSeriesBtn" class="bg-white/50 backdrop-blur-md text-orange-600 border border-white/60 hover:bg-white/70 focus:ring-4 focus:ring-orange-500/20 rounded-xl px-5 py-2.5 text-sm font-bold transition-all shadow-glass-sm disabled:opacity-50 disabled:cursor-not-allowed">
           同步追更系列
         </button>
-        <button id="checkBookmarksBtn" class="bg-purple-500 hover:bg-purple-400 focus:ring-4 focus:ring-purple-500/30 text-white rounded-xl px-5 py-2.5 text-sm font-bold transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
+        <button id="checkBookmarksBtn" class="bg-white/50 backdrop-blur-md text-purple-600 border border-white/60 hover:bg-white/70 focus:ring-4 focus:ring-purple-500/20 rounded-xl px-5 py-2.5 text-sm font-bold transition-all shadow-glass-sm disabled:opacity-50 disabled:cursor-not-allowed">
           预检查所有内容
         </button>
-        <span id="actionMessage" class="text-blue-100 text-sm ml-2 font-medium">可在设置页调整同步参数</span>
+        <span id="actionMessage" class="text-slate-500 text-sm ml-2 font-medium">可在设置页调整同步参数</span>
       </div>
 
-      <div class="mt-5 flex items-center gap-3 bg-white/10 dark:bg-black/20 w-fit px-4 py-2.5 rounded-lg border border-white/20">
-        <label for="seriesSyncLimit" class="text-sm text-blue-50 font-medium">系列同步数量限制：</label>
-        <input type="number" id="seriesSyncLimit" min="0" value="0" class="w-20 px-2 py-1 bg-white/20 border border-white/30 rounded-md text-white text-sm focus:outline-none focus:ring-2 focus:ring-white/50 text-center font-mono">
-        <span class="text-xs text-blue-200">0 = 全部系列</span>
+      <div class="mt-5 flex items-center gap-3 bg-white/30 backdrop-blur-md w-fit px-4 py-2.5 rounded-xl border border-white/50">
+        <label for="seriesSyncLimit" class="text-sm text-slate-600 font-medium">系列同步数量限制：</label>
+        <input type="number" id="seriesSyncLimit" min="0" value="0" class="w-20 px-2 py-1 bg-white/50 border border-white/60 rounded-lg text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 text-center font-mono">
+        <span class="text-xs text-slate-500">0 = 全部系列</span>
       </div>
     </div>
 
-    <!-- Decorative background elements -->
-    <div class="absolute top-0 right-0 -mr-16 -mt-16 w-64 h-64 rounded-full bg-white/10 blur-3xl"></div>
-    <div class="absolute bottom-0 right-32 w-48 h-48 rounded-full bg-indigo-500/20 blur-2xl"></div>
+    <div class="absolute top-0 right-0 -mr-16 -mt-16 w-64 h-64 rounded-full bg-blue-300/20 blur-3xl"></div>
+    <div class="absolute bottom-0 right-32 w-48 h-48 rounded-full bg-indigo-300/20 blur-2xl"></div>
   </section>
 
   <!-- Data Overview -->
   <div>
-    <h2 class="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4 px-1">数据概览</h2>
+    <h2 class="text-lg font-bold text-slate-800 mb-4 px-1">数据概览</h2>
     <div id="statsGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-      <!-- Cards rendered via JS -->
-      <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-5 flex items-center justify-center text-gray-400 dark:text-gray-500">
+      <div class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-5 flex items-center justify-center text-slate-400">
         <svg class="animate-spin h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
           <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -53,60 +51,60 @@
   </div>
 
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-    <!-- Task Status (Takes up 2 columns on large screens) -->
+    <!-- Task Status -->
     <div class="lg:col-span-2 space-y-4">
-      <h2 class="text-lg font-bold text-gray-900 dark:text-gray-100 px-1">任务状态</h2>
-      <section class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-5 sm:p-6">
-        <h3 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-4">最近同步任务</h3>
+      <h2 class="text-lg font-bold text-slate-800 px-1">任务状态</h2>
+      <section class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-5 sm:p-6">
+        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">最近同步任务</h3>
 
-        <div id="jobStatus" class="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">暂无任务记录</div>
+        <div id="jobStatus" class="text-sm text-slate-500 leading-relaxed">暂无任务记录</div>
 
         <!-- Task List -->
         <div id="taskListContainer" class="hidden mt-5">
-          <div class="text-sm font-bold text-gray-700 dark:text-gray-300 mb-3">任务列表</div>
-          <div id="taskList" class="bg-gray-50 dark:bg-gray-900/50 rounded-xl p-3 sm:p-4 space-y-1.5 border border-gray-100 dark:border-gray-800"></div>
+          <div class="text-sm font-bold text-slate-700 mb-3">任务列表</div>
+          <div id="taskList" class="bg-white/30 rounded-xl p-3 sm:p-4 space-y-1.5 border border-white/40"></div>
         </div>
 
         <!-- Progress Bar -->
-        <div id="progressBar" class="hidden mt-6 bg-gray-50 dark:bg-gray-900/50 rounded-xl p-4 border border-gray-100 dark:border-gray-800">
+        <div id="progressBar" class="hidden mt-6 bg-white/30 rounded-xl p-4 border border-white/40">
           <div class="flex justify-between items-center mb-2">
-            <span id="progressPhase" class="text-sm font-semibold text-gray-700 dark:text-gray-300">准备中</span>
-            <span id="progressCount" class="text-xs font-medium text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800 px-2 py-1 rounded-md shadow-sm border border-gray-100 dark:border-gray-700">0/0</span>
+            <span id="progressPhase" class="text-sm font-semibold text-slate-700">准备中</span>
+            <span id="progressCount" class="text-xs font-medium text-slate-500 bg-white/50 px-2 py-1 rounded-lg shadow-glass-sm border border-white/60">0/0</span>
           </div>
-          <div class="h-2.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-            <div id="progressFill" class="h-full w-0 bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-300 ease-out"></div>
+          <div class="h-2.5 bg-white/40 rounded-full overflow-hidden">
+            <div id="progressFill" class="h-full w-0 bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-300 ease-out rounded-full"></div>
           </div>
-          <div id="progressNovel" class="text-xs text-gray-500 dark:text-gray-400 mt-2 truncate font-medium"></div>
+          <div id="progressNovel" class="text-xs text-slate-500 mt-2 truncate font-medium"></div>
         </div>
 
         <!-- Logs -->
-        <div id="logContainer" class="hidden mt-6 pt-5 border-t border-gray-100 dark:border-gray-700/50">
+        <div id="logContainer" class="hidden mt-6 pt-5 border-t border-white/30">
           <div class="flex justify-between items-center mb-3">
-            <span class="text-sm font-bold text-gray-700 dark:text-gray-300">同步日志</span>
-            <span id="logCount" class="text-xs font-medium text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded-full">0 条</span>
+            <span class="text-sm font-bold text-slate-700">同步日志</span>
+            <span id="logCount" class="text-xs font-medium text-slate-500 bg-white/50 px-2 py-0.5 rounded-full border border-white/40">0 条</span>
           </div>
-          <div id="logList" class="max-h-72 overflow-y-auto font-mono text-xs leading-relaxed bg-gray-900 dark:bg-black text-gray-300 rounded-xl p-4 shadow-inner custom-scrollbar"></div>
+          <div id="logList" class="max-h-72 overflow-y-auto font-mono text-xs leading-relaxed bg-slate-900/80 backdrop-blur-xl text-gray-300 rounded-xl p-4 shadow-inner custom-scrollbar"></div>
         </div>
       </section>
     </div>
 
     <!-- Auto Sync Status -->
     <div class="space-y-4">
-      <h2 class="text-lg font-bold text-gray-900 dark:text-gray-100 px-1">定时任务</h2>
-      <section class="bg-gradient-to-b from-gray-50 to-gray-100 dark:from-gray-800/80 dark:to-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700/50 p-5 sm:p-6 h-full">
+      <h2 class="text-lg font-bold text-slate-800 px-1">定时任务</h2>
+      <section class="bg-white/30 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-5 sm:p-6 h-full">
         <div class="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4 mb-6">
-          <h3 class="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider m-0 mt-1">定时同步状态</h3>
+          <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider m-0 mt-1">定时同步状态</h3>
           <div class="flex flex-wrap gap-2">
-            <button id="toggleAutoSyncBtn" class="bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:hover:bg-purple-900/50 rounded-lg px-3 py-1.5 text-xs font-bold transition-colors">
+            <button id="toggleAutoSyncBtn" class="bg-purple-500/10 text-purple-700 hover:bg-purple-500/20 border border-purple-300/30 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors">
               启用定时同步
             </button>
-            <button id="stopAutoTaskBtn" class="hidden bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/50 rounded-lg px-3 py-1.5 text-xs font-bold transition-colors">
+            <button id="stopAutoTaskBtn" class="hidden bg-red-500/10 text-red-700 hover:bg-red-500/20 border border-red-300/30 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors">
               停止当前任务
             </button>
           </div>
         </div>
 
-        <div id="autoSyncStatus" class="text-sm font-medium text-gray-500 dark:text-gray-400 mb-4 bg-white dark:bg-gray-900/50 px-3 py-2 rounded-lg border border-gray-100 dark:border-gray-800 inline-block shadow-sm">加载中...</div>
+        <div id="autoSyncStatus" class="text-sm font-medium text-slate-500 mb-4 bg-white/40 px-3 py-2 rounded-xl border border-white/50 inline-block shadow-glass-sm">加载中...</div>
         <div id="autoTaskList" class="space-y-2"></div>
       </section>
     </div>
@@ -117,32 +115,16 @@
 
 {% block extra_scripts %}
 <style>
-  /* Custom scrollbar for logs */
-  .custom-scrollbar::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-  .custom-scrollbar::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.1);
-    border-radius: 4px;
-  }
-  .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.2);
-    border-radius: 4px;
-  }
-  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.3);
-  }
-
-  /* Status animations */
+  .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+  .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); border-radius: 4px; }
+  .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
   @keyframes pulse-ring {
-    0% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
-    70% { transform: scale(1); box-shadow: 0 0 0 4px rgba(59, 130, 246, 0); }
-    100% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+    0% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(59,130,246,0.7); }
+    70% { transform: scale(1); box-shadow: 0 0 0 4px rgba(59,130,246,0); }
+    100% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(59,130,246,0); }
   }
-  .running-dot {
-    animation: pulse-ring 2s infinite;
-  }
+  .running-dot { animation: pulse-ring 2s infinite; }
 </style>
 
 <script>
@@ -160,30 +142,24 @@
     });
   }
 
-  async function safeJson(resp) {
-    try {
-      return await resp.json();
-    } catch (err) {
-      return {};
-    }
-  }
+  async function safeJson(resp) { try { return await resp.json(); } catch (err) { return {}; } }
 
   function renderCurrentUser(user) {
     if (!user) {
-      return '<div class="text-2xl sm:text-3xl font-bold text-gray-400 dark:text-gray-500 mb-1">未绑定</div><div class="text-xs sm:text-sm text-gray-500 dark:text-gray-400">当前数据库里还没有账号信息</div>';
+      return '<div class="text-2xl sm:text-3xl font-bold text-slate-400 mb-1">未绑定</div><div class="text-xs sm:text-sm text-slate-500">当前数据库里还没有账号信息</div>';
     }
     const avatar = user.avatar_url
-      ? `<img class="w-12 h-12 sm:w-14 sm:h-14 rounded-full object-cover ring-2 ring-white dark:ring-gray-800 shadow-sm" src="/proxy/image?url=${encodeURIComponent(user.avatar_url)}" alt="avatar" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+      ? `<img class="w-12 h-12 sm:w-14 sm:h-14 rounded-full object-cover ring-2 ring-white/60 shadow-sm" src="/proxy/image?url=${encodeURIComponent(user.avatar_url)}" alt="avatar" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
       : '';
-    const fallbackAvatar = `<div class="w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white font-bold text-xl shadow-sm ring-2 ring-white dark:ring-gray-800" style="display:${user.avatar_url ? 'none' : 'flex'};">${escapeHtml((user.name || 'U').slice(0, 2))}</div>`;
+    const fallbackAvatar = `<div class="w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white font-bold text-xl shadow-sm ring-2 ring-white/60" style="display:${user.avatar_url ? 'none' : 'flex'};">${escapeHtml((user.name || 'U').slice(0, 2))}</div>`;
     const account = user.account ? `@${escapeHtml(user.account)}` : `ID ${escapeHtml(user.user_id)}`;
-    const fallback = user.is_fallback ? '<div class="mt-2 inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-500">回退展示</div>' : '';
+    const fallback = user.is_fallback ? '<div class="mt-2 inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-yellow-500/10 text-yellow-800 border border-yellow-300/30">回退展示</div>' : '';
     return `
       <div class="flex items-center gap-4">
         ${avatar}${fallbackAvatar}
         <div class="min-w-0 flex-1">
-          <div class="text-base sm:text-lg font-bold text-gray-900 dark:text-gray-100 truncate">${escapeHtml(user.name || '未命名用户')}</div>
-          <div class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 truncate">${account}</div>
+          <div class="text-base sm:text-lg font-bold text-slate-800 truncate">${escapeHtml(user.name || '未命名用户')}</div>
+          <div class="text-xs sm:text-sm text-slate-500 truncate">${account}</div>
           ${fallback}
         </div>
       </div>
@@ -193,11 +169,10 @@
   function renderStatCard(title, value, rawHtml = false) {
     const isNum = !rawHtml && !isNaN(value);
     const displayValue = rawHtml ? value : escapeHtml(value);
-    const valueClass = isNum ? 'text-3xl font-black text-gray-900 dark:text-white tracking-tight' : 'text-lg font-bold text-gray-800 dark:text-gray-200';
-
+    const valueClass = isNum ? 'text-3xl font-black text-slate-800 tracking-tight' : 'text-lg font-bold text-slate-700';
     return `
-      <article class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-5 sm:p-6 flex flex-col justify-center transition-all hover:shadow-md">
-        <h3 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2 sm:mb-3">${escapeHtml(title)}</h3>
+      <article class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-5 sm:p-6 flex flex-col justify-center transition-all hover:bg-white/45 hover:shadow-glass-lg">
+        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 sm:mb-3">${escapeHtml(title)}</h3>
         <div class="${rawHtml ? '' : valueClass}">${displayValue}</div>
       </article>
     `;
@@ -210,9 +185,9 @@
 
     let syncStatusHtml = '';
     if (data.sync_enabled) {
-      syncStatusHtml = '<div class="flex items-center gap-2"><div class="w-3 h-3 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div><span class="text-xl font-bold text-green-600 dark:text-green-400">开启</span></div>';
+      syncStatusHtml = '<div class="flex items-center gap-2"><div class="w-3 h-3 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div><span class="text-xl font-bold text-green-600">开启</span></div>';
     } else {
-      syncStatusHtml = '<div class="flex items-center gap-2"><div class="w-3 h-3 rounded-full bg-gray-300 dark:bg-gray-600"></div><span class="text-xl font-bold text-gray-500">关闭</span></div>';
+      syncStatusHtml = '<div class="flex items-center gap-2"><div class="w-3 h-3 rounded-full bg-slate-300"></div><span class="text-xl font-bold text-slate-500">关闭</span></div>';
     }
 
     const cards = [
@@ -243,33 +218,30 @@
     const container = document.getElementById('taskListContainer');
     const taskListEl = document.getElementById('taskList');
 
-    if (!taskList || taskList.length === 0) {
-      container.classList.add('hidden');
-      return;
-    }
+    if (!taskList || taskList.length === 0) { container.classList.add('hidden'); return; }
 
     container.classList.remove('hidden');
     const html = taskList.map(function(task, index) {
-      let statusClass = 'text-gray-500 dark:text-gray-400';
-      let iconHtml = '<div class="w-4 h-4 rounded-full border-2 border-gray-300 dark:border-gray-600 flex-shrink-0"></div>';
+      let statusClass = 'text-slate-500';
+      let iconHtml = '<div class="w-4 h-4 rounded-full border-2 border-slate-300 flex-shrink-0"></div>';
 
       if (status === 'running') {
         if (index < currentIndex) {
-          statusClass = 'text-green-600 dark:text-green-400 font-medium';
+          statusClass = 'text-green-600 font-medium';
           iconHtml = '<svg class="w-4 h-4 text-green-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>';
         } else if (index === currentIndex) {
-          statusClass = 'text-blue-600 dark:text-blue-400 font-bold';
+          statusClass = 'text-blue-600 font-bold';
           iconHtml = '<div class="w-4 h-4 rounded-full bg-blue-500 flex-shrink-0 running-dot"></div>';
         }
       } else if (status === 'succeeded') {
-        statusClass = 'text-green-600 dark:text-green-400 font-medium';
+        statusClass = 'text-green-600 font-medium';
         iconHtml = '<svg class="w-4 h-4 text-green-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>';
       } else if (status === 'failed' && index === currentIndex) {
-        statusClass = 'text-red-600 dark:text-red-400 font-bold';
+        statusClass = 'text-red-600 font-bold';
         iconHtml = '<svg class="w-4 h-4 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path></svg>';
       }
 
-      return `<div class="flex items-center gap-3 py-1.5 px-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors ${statusClass}">
+      return `<div class="flex items-center gap-3 py-1.5 px-2 rounded-xl hover:bg-white/40 transition-colors ${statusClass}">
         ${iconHtml}
         <span class="text-sm truncate">${index + 1}. ${escapeHtml(task)}</span>
       </div>`;
@@ -283,43 +255,41 @@
     const logContainer = document.getElementById('logContainer');
 
     if (!job) {
-      container.innerHTML = '<span class="text-gray-400 dark:text-gray-500 italic">暂无近期任务记录</span>';
+      container.innerHTML = '<span class="text-slate-400 italic">暂无近期任务记录</span>';
       progressBar.classList.add('hidden');
       logContainer.classList.add('hidden');
       document.getElementById('taskListContainer').classList.add('hidden');
       return;
     }
 
-    let statusConfig = { text: job.status, color: 'text-gray-600 dark:text-gray-400', bg: 'bg-gray-100 dark:bg-gray-800' };
-    if (job.status === 'succeeded') statusConfig = { text: '成功', color: 'text-green-700 dark:text-green-400', bg: 'bg-green-100 dark:bg-green-900/30', border: 'border-green-200 dark:border-green-800' };
-    else if (job.status === 'failed') statusConfig = { text: '失败', color: 'text-red-700 dark:text-red-400', bg: 'bg-red-100 dark:bg-red-900/30', border: 'border-red-200 dark:border-red-800' };
-    else if (job.status === 'running') statusConfig = { text: '运行中', color: 'text-blue-700 dark:text-blue-400', bg: 'bg-blue-100 dark:bg-blue-900/30', border: 'border-blue-200 dark:border-blue-800', dot: true };
+    let statusConfig = { text: job.status, color: 'text-slate-600', bg: 'bg-white/40' };
+    if (job.status === 'succeeded') statusConfig = { text: '成功', color: 'text-green-700', bg: 'bg-green-500/10', border: 'border-green-300/30' };
+    else if (job.status === 'failed') statusConfig = { text: '失败', color: 'text-red-700', bg: 'bg-red-500/10', border: 'border-red-300/30' };
+    else if (job.status === 'running') statusConfig = { text: '运行中', color: 'text-blue-700', bg: 'bg-blue-500/10', border: 'border-blue-300/30', dot: true };
 
-    const elapsed = job.elapsed ? `<span class="ml-2 text-xs text-gray-500">耗时 ${job.elapsed}s</span>` : '';
-    const stats = job.stats ? `<div class="mt-3 text-sm flex gap-3"><span class="px-2 py-1 bg-gray-100 dark:bg-gray-800 rounded-md">小说: <strong class="text-gray-900 dark:text-gray-100">${job.stats.novels || 0}</strong> 本</span><span class="px-2 py-1 bg-gray-100 dark:bg-gray-800 rounded-md">资源: <strong class="text-gray-900 dark:text-gray-100">${job.stats.assets_downloaded || 0}</strong> 个</span></div>` : '';
-    const error = job.error ? `<div class="mt-3 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-100 dark:border-red-800/50"><strong>错误：</strong>${escapeHtml(job.error)}</div>` : '';
+    const elapsed = job.elapsed ? `<span class="ml-2 text-xs text-slate-500">耗时 ${job.elapsed}s</span>` : '';
+    const stats = job.stats ? `<div class="mt-3 text-sm flex gap-3"><span class="px-2 py-1 bg-white/40 border border-white/50 rounded-lg">小说: <strong class="text-slate-800">${job.stats.novels || 0}</strong> 本</span><span class="px-2 py-1 bg-white/40 border border-white/50 rounded-lg">资源: <strong class="text-slate-800">${job.stats.assets_downloaded || 0}</strong> 个</span></div>` : '';
+    const error = job.error ? `<div class="mt-3 text-sm text-red-600 bg-red-500/10 p-3 rounded-xl border border-red-300/30"><strong>错误：</strong>${escapeHtml(job.error)}</div>` : '';
     const jobType = job.is_auto_sync ? '定时任务' : '手工任务';
     const dotHtml = statusConfig.dot ? '<span class="inline-block w-2 h-2 rounded-full bg-blue-500 mr-1.5 animate-pulse"></span>' : '';
 
     container.innerHTML = `
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
-        <div class="text-sm font-medium text-gray-700 dark:text-gray-300">
-          <span class="text-gray-500 mr-2">${jobType}</span>
-          <span class="font-mono text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded border border-gray-200 dark:border-gray-700">${escapeHtml(job.job_id).substring(0,8)}...</span>
+        <div class="text-sm font-medium text-slate-700">
+          <span class="text-slate-500 mr-2">${jobType}</span>
+          <span class="font-mono text-xs bg-white/40 px-1.5 py-0.5 rounded-lg border border-white/50">${escapeHtml(job.job_id).substring(0,8)}...</span>
         </div>
-        <div class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-bold ${statusConfig.bg} ${statusConfig.color} ${statusConfig.border ? 'border ' + statusConfig.border : ''}">
+        <div class="inline-flex items-center px-2.5 py-1 rounded-xl text-xs font-bold ${statusConfig.bg} ${statusConfig.color} ${statusConfig.border ? 'border ' + statusConfig.border : ''}">
           ${dotHtml}${statusConfig.text} ${elapsed}
         </div>
       </div>
-      ${job.message ? `<div class="text-sm text-gray-600 dark:text-gray-400">${escapeHtml(job.message)}</div>` : ''}
+      ${job.message ? `<div class="text-sm text-slate-600">${escapeHtml(job.message)}</div>` : ''}
       ${stats}
       ${error}
     `;
 
-    // Task List
     renderTaskList(job.task_list, job.current_task_index, job.status);
 
-    // Progress Bar
     if (job.status === 'running' && job.progress) {
       progressBar.classList.remove('hidden');
       const current = job.progress.current || 0;
@@ -335,7 +305,6 @@
       progressBar.classList.add('hidden');
     }
 
-    // Logs
     if (job.logs && job.logs.length > 0) {
       logContainer.classList.remove('hidden');
       document.getElementById('logCount').textContent = `${job.logs.length} 条`;
@@ -346,8 +315,7 @@
         if (log.level === 'error') { textClass = 'text-red-400'; prefix = `<span class="text-red-500 mr-1.5 font-bold">✗</span>`; }
         else if (log.level === 'success') { textClass = 'text-green-400'; prefix = `<span class="text-green-500 mr-1.5 font-bold">✓</span>`; }
         else if (log.level === 'warning') { textClass = 'text-yellow-400'; prefix = `<span class="text-yellow-500 mr-1.5 font-bold">⚠</span>`; }
-
-        return `<div class="mb-1 ${textClass} break-words"><span class="text-gray-500 dark:text-gray-600 mr-2">[${log.time.split(' ')[1] || log.time}]</span>${prefix}${escapeHtml(log.message)}</div>`;
+        return `<div class="mb-1 ${textClass} break-words"><span class="text-gray-500 mr-2">[${log.time.split(' ')[1] || log.time}]</span>${prefix}${escapeHtml(log.message)}</div>`;
       }).join('');
       logList.scrollTop = logList.scrollHeight;
     } else {
@@ -361,23 +329,17 @@
       const resp = await fetch(url);
       const data = await safeJson(resp);
       const isRunning = !!(data.job && data.job.status === 'running');
-      if (data.job) {
-        latestJobId = data.job.job_id;
-        renderJob(data.job);
-      }
+      if (data.job) { latestJobId = data.job.job_id; renderJob(data.job); }
       document.getElementById('startSyncBtn').disabled = isRunning;
       document.getElementById('syncSeriesBtn').disabled = isRunning;
       document.getElementById('checkBookmarksBtn').disabled = isRunning;
-    } catch (err) {
-      console.error('pollJobStatus failed', err);
-    }
+    } catch (err) { console.error('pollJobStatus failed', err); }
   }
 
   async function startSync() {
     const btn = document.getElementById('startSyncBtn');
     const msg = document.getElementById('actionMessage');
-    btn.disabled = true;
-    msg.textContent = '正在启动...';
+    btn.disabled = true; msg.textContent = '正在启动...';
     try {
       const resp = await fetch('/api/dashboard/sync/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       const data = await safeJson(resp);
@@ -385,28 +347,21 @@
       latestJobId = data.job && data.job.job_id ? data.job.job_id : null;
       msg.textContent = data.message || '已启动';
       await loadStatus();
-    } catch (err) {
-      msg.textContent = '启动失败';
-      btn.disabled = false;
-    }
+    } catch (err) { msg.textContent = '启动失败'; btn.disabled = false; }
   }
 
   async function syncSeries() {
     const btn = document.getElementById('syncSeriesBtn');
     const msg = document.getElementById('actionMessage');
     const limit = parseInt(document.getElementById('seriesSyncLimit').value) || 0;
-    btn.disabled = true;
-    msg.textContent = '正在启动...';
+    btn.disabled = true; msg.textContent = '正在启动...';
     try {
       const resp = await fetch('/api/dashboard/sync/subscribed-series', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: limit }) });
       const data = await safeJson(resp);
       if (!resp.ok) { msg.textContent = data.error || '失败'; btn.disabled = false; return; }
       msg.textContent = `成功启动系列同步`;
       await loadStatus();
-    } catch (err) {
-      msg.textContent = '失败';
-      btn.disabled = false;
-    }
+    } catch (err) { msg.textContent = '失败'; btn.disabled = false; }
   }
 
   async function loadAutoSyncStatus() {
@@ -422,12 +377,12 @@
 
       if (autoSyncEnabled) {
         toggleBtn.textContent = '禁用定时同步';
-        toggleBtn.className = 'bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/50 rounded-lg px-3 py-1.5 text-xs font-bold transition-colors';
-        statusEl.innerHTML = '<span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-green-500"></span> <span class="text-green-600 dark:text-green-400 font-bold">已启用后台常驻运行</span></span>';
+        toggleBtn.className = 'bg-red-500/10 text-red-700 hover:bg-red-500/20 border border-red-300/30 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors';
+        statusEl.innerHTML = '<span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-green-500"></span> <span class="text-green-600 font-bold">已启用后台常驻运行</span></span>';
       } else {
         toggleBtn.textContent = '启用定时同步';
-        toggleBtn.className = 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:hover:bg-purple-900/50 rounded-lg px-3 py-1.5 text-xs font-bold transition-colors';
-        statusEl.innerHTML = '<span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-gray-400"></span> <span>目前未启动定时任务</span></span>';
+        toggleBtn.className = 'bg-purple-500/10 text-purple-700 hover:bg-purple-500/20 border border-purple-300/30 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors';
+        statusEl.innerHTML = '<span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-slate-400"></span> <span>目前未启动定时任务</span></span>';
       }
 
       if (data.current_task_job_id) stopBtn.classList.remove('hidden'); else stopBtn.classList.add('hidden');
@@ -444,28 +399,26 @@
         const isRunning = data.current_task_job_id?.includes(task.key);
         const intervalHours = data.task_intervals?.[task.key] || 6;
         const cronExpr = data.task_crons?.[task.key] || '';
-
         let statusText = cronExpr || `每 ${intervalHours} 小时`;
-        let statusColor = 'text-gray-400 dark:text-gray-500';
-        let bgClass = 'bg-white dark:bg-gray-800';
-        let dot = '<div class="w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-gray-600 mr-2.5"></div>';
+        let statusColor = 'text-slate-400';
+        let bgClass = 'bg-white/30 border-white/40';
+        let dot = '<div class="w-1.5 h-1.5 rounded-full bg-slate-300 mr-2.5"></div>';
 
         if (isRunning) {
           statusText = '执行中...';
-          statusColor = 'text-blue-600 dark:text-blue-400 font-bold';
-          bgClass = 'bg-blue-50 dark:bg-blue-900/20 border-blue-100 dark:border-blue-800';
+          statusColor = 'text-blue-600 font-bold';
+          bgClass = 'bg-blue-500/10 border-blue-300/30';
           dot = '<div class="w-1.5 h-1.5 rounded-full bg-blue-500 mr-2.5 animate-pulse"></div>';
         }
 
-        return `<div class="flex items-center justify-between p-2.5 rounded-lg border border-gray-100 dark:border-gray-700/50 ${bgClass} transition-colors">
+        return `<div class="flex items-center justify-between p-2.5 rounded-xl border ${bgClass} transition-colors">
           <div class="flex items-center">
             ${dot}
-            <span class="text-sm text-gray-700 dark:text-gray-300 font-medium">${task.name}</span>
+            <span class="text-sm text-slate-700 font-medium">${task.name}</span>
           </div>
-          <span class="text-xs bg-gray-100 dark:bg-gray-900/50 px-2 py-1 rounded font-mono ${statusColor}">${statusText}</span>
+          <span class="text-xs bg-white/40 border border-white/50 px-2 py-1 rounded-lg font-mono ${statusColor}">${statusText}</span>
         </div>`;
       }).join('');
-
     } catch (err) { console.error(err); }
   }
 
@@ -491,8 +444,7 @@
   async function checkBookmarks() {
     const btn = document.getElementById('checkBookmarksBtn');
     const msg = document.getElementById('actionMessage');
-    btn.disabled = true;
-    msg.textContent = '启动预检查...';
+    btn.disabled = true; msg.textContent = '启动预检查...';
     try {
       const resp = await fetch('/api/dashboard/check-bookmarks', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
       if (!resp.ok) { msg.textContent = '失败'; btn.disabled = false; return; }
@@ -509,7 +461,6 @@
 
   loadStatus().catch(err => document.getElementById('actionMessage').textContent = '初始化失败');
   loadAutoSyncStatus();
-
   setInterval(pollJobStatus, 3000);
   setInterval(loadAutoSyncStatus, 10000);
 </script>
