@@ -2,50 +2,18 @@
 
 {% block title %}小说详情 - Pixiv 小说同步器{% endblock %}
 
-{% block content %}
-<div class="space-y-6 max-w-4xl mx-auto">
-
-  <!-- Back Link -->
-  <a href="/dashboard/novels" class="inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-brand-600 transition-colors">
-    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-    </svg>
-    返回小说列表
-  </a>
-
-  <!-- Hero Section (Novel Info) -->
-  <section id="hero" class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-6 md:p-8 flex flex-col md:flex-row gap-6 md:gap-8 items-start relative overflow-hidden">
-    <div class="animate-pulse flex flex-col md:flex-row gap-6 md:gap-8 w-full">
-      <div class="w-32 h-44 sm:w-48 sm:h-64 bg-white/30 rounded-xl flex-shrink-0 mx-auto md:mx-0"></div>
-      <div class="flex-1 space-y-4 py-2 w-full">
-        <div class="h-8 bg-white/30 rounded w-3/4"></div>
-        <div class="flex gap-2"><div class="h-5 bg-white/30 rounded w-16"></div><div class="h-5 bg-white/30 rounded w-16"></div></div>
-        <div class="space-y-2 mt-4"><div class="h-4 bg-white/30 rounded"></div><div class="h-4 bg-white/30 rounded w-5/6"></div></div>
-        <div class="grid grid-cols-2 gap-4 mt-6"><div class="h-12 bg-white/30 rounded"></div><div class="h-12 bg-white/30 rounded"></div></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Pixiv-style Reader -->
-  <div id="content" class="novel-reader-content">
-    <div style="text-align:center;padding:5rem 0;color:#999;">正在加载正文...</div>
-  </div>
-
-</div>
-
-<!-- Bottom Progress Bar -->
-<div class="fixed bottom-0 left-0 right-0 h-1 bg-white/30 z-50">
-  <div id="progressFill" class="h-full w-0 bg-gradient-to-r from-brand-500 to-indigo-500 transition-all duration-150 ease-linear"></div>
-</div>
-{% endblock %}
-
-{% block extra_scripts %}
+{% block extra_head %}
 <style>
+  /* 覆盖 base.html 的渐变背景，使用 Pixiv 纯色背景 */
+  body { background-color: #fffffc !important; color: #444; }
+  body > .fixed.-z-10 { display: none !important; }
+
   /* ========== Pixiv Novel Reader Style ========== */
   .novel-reader-content {
     max-width: 680px;
     width: 80%;
-    margin: 3rem auto 5rem;
+    margin: 0 auto;
+    padding: 0 0 6rem;
     font-family: "BIZ UDMincho", "Hiragino Mincho ProN", "Hiragino Mincho Pro", "Yu Mincho", YuMincho, "Noto Serif JP", "Noto Serif SC", "Source Han Serif SC", "宋体", SimSun, serif;
     font-size: 1.0625rem;
     line-height: 2;
@@ -59,9 +27,10 @@
     font-size: 1.75rem;
     font-weight: 600;
     text-align: center;
-    color: #555;
-    padding: 2rem 0 0.5rem;
-    line-height: 1.4;
+    color: #333;
+    padding: 2.5rem 0 0.5rem;
+    line-height: 1.5;
+    letter-spacing: 0.04em;
   }
 
   .novel-reader-content .novel-author {
@@ -70,15 +39,13 @@
     color: #999;
     margin-bottom: 2.5rem;
     padding-bottom: 1.5rem;
-    border-bottom: 1px solid #eee;
+    border-bottom: 1px solid #e8e8e8;
   }
-
   .novel-reader-content .novel-author a {
-    color: #888;
+    color: #0096fa;
     text-decoration: none;
   }
   .novel-reader-content .novel-author a:hover {
-    color: #0096fa;
     text-decoration: underline;
   }
 
@@ -86,32 +53,135 @@
     margin: 0;
     text-indent: 1em;
   }
-
   .novel-reader-content .reader-body p:empty {
     height: 1.8em;
   }
 
-  .novel-reader-content .reader-body p + p {
-    margin-top: 0;
+  /* 信息卡在 Pixiv 背景下的样式 */
+  .novel-info-card {
+    background: #fff;
+    border: 1px solid #eee;
+    border-radius: 12px;
+    padding: 1.5rem 2rem;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  }
+  .novel-info-card .info-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.75rem;
+  }
+  @media (min-width: 1024px) {
+    .novel-info-card .info-grid { grid-template-columns: repeat(4, 1fr); }
+  }
+  .novel-info-card .info-item {
+    background: #f8f8f6;
+    border-radius: 8px;
+    padding: 0.75rem;
+  }
+  .novel-info-card .info-item .label {
+    font-size: 11px;
+    font-weight: 700;
+    color: #aaa;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .novel-info-card .info-item .value {
+    font-size: 14px;
+    font-weight: 600;
+    color: #444;
+  }
+  .novel-info-card .info-item .value a {
+    color: #0096fa;
+    text-decoration: none;
+  }
+  .novel-info-card .info-item .value a:hover {
+    text-decoration: underline;
   }
 
-  /* Cover gradient fallback */
   .cover-gradient {
-    background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%);
+    background: linear-gradient(135deg, #e8ecf4 0%, #d4dbe8 100%);
   }
+
+  /* 返回链接 */
+  .back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #999;
+    text-decoration: none;
+    transition: color 0.15s;
+  }
+  .back-link:hover { color: #0096fa; }
+
+  /* 徽章 */
+  .novel-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    border-radius: 4px;
+    line-height: 1.6;
+  }
+  .badge-blue { background: #e8f0fe; color: #1a73e8; }
+  .badge-gray { background: #f0f0f0; color: #666; }
+  .badge-green { background: #e6f4ea; color: #137333; }
+  .badge-red { background: #fce8e6; color: #c5221f; }
+  .badge-yellow { background: #fef7e0; color: #b06000; }
 
   @media (max-width: 640px) {
     .novel-reader-content {
-      width: 90%;
-      margin: 2rem auto 4rem;
+      width: 92%;
       font-size: 1rem;
     }
     .novel-reader-content .novel-title {
-      font-size: 1.4rem;
+      font-size: 1.35rem;
+    }
+    .novel-info-card {
+      padding: 1rem 1.25rem;
     }
   }
 </style>
+{% endblock %}
 
+{% block content %}
+<div style="max-width:960px;margin:0 auto;padding:0 1rem;">
+
+  <!-- Back Link -->
+  <div style="padding:1rem 0;">
+    <a class="back-link" href="/dashboard/novels">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+      返回小说列表
+    </a>
+  </div>
+
+  <!-- Novel Info Card -->
+  <section id="hero" class="novel-info-card" style="margin-bottom:2rem;">
+    <div style="display:flex;gap:1.5rem;align-items:flex-start;flex-wrap:wrap;">
+      <div style="width:120px;height:168px;background:#f0f0f0;border-radius:8px;flex-shrink:0;animation:pulse 2s infinite;"></div>
+      <div style="flex:1;min-width:200px;">
+        <div style="height:28px;background:#f0f0f0;border-radius:6px;width:60%;margin-bottom:12px;animation:pulse 2s infinite;"></div>
+        <div style="height:16px;background:#f0f0f0;border-radius:4px;width:40%;animation:pulse 2s infinite;"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Pixiv-style Reader -->
+  <div id="content" class="novel-reader-content">
+    <div style="text-align:center;padding:5rem 0;color:#999;">正在加载正文...</div>
+  </div>
+
+</div>
+
+<!-- Bottom Progress Bar -->
+<div class="fixed bottom-0 left-0 right-0 h-1 z-50" style="background:#eee;">
+  <div id="progressFill" class="h-full w-0 transition-all duration-150 ease-linear" style="background:#0096fa;"></div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
 <script>
   const pathParts = window.location.pathname.split('/');
   const novelId = Number(pathParts[pathParts.length - 1] || 0);
@@ -121,180 +191,135 @@
 
   function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"]/g, function (ch) {
-      if (ch === '&') return '&amp;';
-      if (ch === '<') return '&lt;';
-      if (ch === '>') return '&gt;';
-      if (ch === '"') return '&quot;';
-      return ch;
+      if (ch === '&') return '&amp;'; if (ch === '<') return '&lt;';
+      if (ch === '>') return '&gt;'; if (ch === '"') return '&quot;'; return ch;
     });
   }
-
   function formatNumber(value) { return Number(value || 0).toLocaleString('zh-CN'); }
-
   function formatTextLength(chars) {
-    const value = Number(chars || 0);
-    if (!value) return '0 字';
-    if (value >= 10000) return (value / 10000).toFixed(1) + ' 万字';
-    return formatNumber(value) + ' 字';
+    const v = Number(chars || 0);
+    if (!v) return '0 字';
+    return v >= 10000 ? (v / 10000).toFixed(1) + ' 万字' : formatNumber(v) + ' 字';
   }
 
+  function badgeClass(type) {
+    return { brand:'badge-blue', success:'badge-green', danger:'badge-red', warning:'badge-yellow', default:'badge-gray' }[type] || 'badge-gray';
+  }
   function createBadge(text, type) {
     if (!text) return '';
-    const styles = {
-      brand: 'bg-blue-500/10 text-blue-700 border border-blue-300/30 rounded-xl',
-      success: 'bg-green-500/10 text-green-700 border border-green-300/30 rounded-xl',
-      danger: 'bg-red-500/10 text-red-700 border border-red-300/30 rounded-xl',
-      warning: 'bg-yellow-500/10 text-yellow-700 border border-yellow-300/30 rounded-xl',
-      default: 'bg-slate-500/10 text-slate-700 border border-slate-300/30 rounded-xl'
-    };
-    return `<span class="inline-flex items-center px-2 py-0.5 text-xs font-bold ${styles[type] || styles.default}">${escapeHtml(text)}</span>`;
+    return `<span class="novel-badge ${badgeClass(type)}">${escapeHtml(text)}</span>`;
   }
-
   function restrictLabel(v) { return v === 'public' ? '公开' : v === 'private' ? '私密' : v || '未知'; }
   function kindLabel(v) { return v === 'series' ? '系列' : v === 'single' ? '单本' : '未知'; }
 
   function readSavedProgress() {
     try { return JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch (e) { return null; }
   }
-
   function getReadingProgress() {
     const doc = document.documentElement;
     const maxScroll = Math.max(1, doc.scrollHeight - window.innerHeight);
-    const progress = Math.min(1, Math.max(0, window.scrollY / maxScroll));
-    return { scrollY: Math.max(0, Math.round(window.scrollY)), progress };
+    return { scrollY: Math.max(0, Math.round(window.scrollY)), progress: Math.min(1, Math.max(0, window.scrollY / maxScroll)) };
   }
-
   function updateProgressUi(progress) {
-    const percent = Math.round((progress || 0) * 100);
     const fill = document.getElementById('progressFill');
-    if (fill) fill.style.width = percent + '%';
+    if (fill) fill.style.width = Math.round((progress || 0) * 100) + '%';
   }
-
   function saveProgress(data) {
     const current = getReadingProgress();
     updateProgressUi(current.progress);
     try {
       localStorage.setItem(storageKey, JSON.stringify({
-        novelId,
-        seriesId: data && data.series_id ? Number(data.series_id) : null,
-        title: data && data.title ? data.title : '',
-        scrollY: current.scrollY,
-        progress: current.progress,
-        updatedAt: Date.now()
+        novelId, seriesId: data?.series_id ? Number(data.series_id) : null,
+        title: data?.title || '', scrollY: current.scrollY,
+        progress: current.progress, updatedAt: Date.now()
       }));
     } catch (e) {}
   }
-
   function setupProgressTracking(data) {
     const saved = readSavedProgress();
     if (restorePending && saved && saved.scrollY > 0 && !window.location.hash) {
-      requestAnimationFrame(function () {
+      requestAnimationFrame(() => {
         window.scrollTo({ top: Math.min(saved.scrollY, document.documentElement.scrollHeight), behavior: 'auto' });
         updateProgressUi(getReadingProgress().progress);
       });
-    } else {
-      updateProgressUi(getReadingProgress().progress);
-    }
+    } else { updateProgressUi(getReadingProgress().progress); }
     restorePending = false;
-    window.addEventListener('scroll', function () {
+    window.addEventListener('scroll', () => {
       if (scrollThrottle) return;
-      scrollThrottle = setTimeout(function () { scrollThrottle = null; saveProgress(data); }, 300);
+      scrollThrottle = setTimeout(() => { scrollThrottle = null; saveProgress(data); }, 300);
     }, { passive: true });
-    window.addEventListener('beforeunload', function () { saveProgress(data); });
+    window.addEventListener('beforeunload', () => saveProgress(data));
   }
 
   function formatContent(text, title, authorName, userId) {
-    // Build Pixiv-style header
     let header = '';
-    if (title) {
-      header += `<div class="novel-title">${escapeHtml(title)}</div>`;
-    }
+    if (title) header += `<div class="novel-title">${escapeHtml(title)}</div>`;
     if (authorName) {
-      const authorLink = userId
+      const link = userId
         ? `<a href="/dashboard/users/${encodeURIComponent(userId)}">${escapeHtml(authorName)}</a>`
         : escapeHtml(authorName);
-      header += `<div class="novel-author">${authorLink}</div>`;
+      header += `<div class="novel-author">${link}</div>`;
     }
-
-    // Format body text into paragraphs (Pixiv style: each line is a <p>)
     let bodyHtml;
     if (text.includes('<p>')) {
       bodyHtml = text;
     } else {
-      const lines = text.split('\n');
-      bodyHtml = lines.map(function(line) {
-        const trimmed = line.trim();
-        if (!trimmed) return '<p></p>';
-        return '<p>' + escapeHtml(trimmed) + '</p>';
+      bodyHtml = text.split('\n').map(line => {
+        const t = line.trim();
+        return t ? '<p>' + escapeHtml(t) + '</p>' : '<p></p>';
       }).join('\n');
     }
-
     return header + '<div class="reader-body">' + bodyHtml + '</div>';
   }
 
   async function loadDetail() {
     const resp = await fetch(`/api/dashboard/novels/${encodeURIComponent(novelId)}`);
     const data = await resp.json();
-
     if (!resp.ok) {
-      document.getElementById('hero').innerHTML = `
-        <div class="text-center w-full py-10">
-          <h1 class="text-2xl font-bold text-red-500 mb-2">加载失败</h1>
-          <p class="text-slate-500">未找到这本小说</p>
-        </div>`;
-      document.getElementById('content').innerHTML = `<div style="text-align:center;padding:5rem 0;color:#c00;">${escapeHtml(data.error || '未找到小说')}</div>`;
+      document.getElementById('hero').innerHTML = '<div style="text-align:center;padding:2rem;"><h2 style="color:#c00;font-size:1.25rem;">加载失败</h2><p style="color:#999;margin-top:8px;">未找到这本小说</p></div>';
+      document.getElementById('content').innerHTML = '<div style="text-align:center;padding:5rem 0;color:#c00;">' + escapeHtml(data.error || '未找到小说') + '</div>';
       return;
     }
 
-    // Hero
+    // Hero info card
     const cover = data.cover_url
-      ? `<img class="w-32 h-44 sm:w-48 sm:h-64 object-cover rounded-xl shadow-glass-sm border border-white/50 flex-shrink-0 mx-auto md:mx-0" src="/proxy/image?url=${encodeURIComponent(data.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+      ? `<img style="width:120px;height:168px;object-fit:cover;border-radius:8px;flex-shrink:0;" src="/proxy/image?url=${encodeURIComponent(data.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
       : '';
-    const fallbackCover = `<div class="w-32 h-44 sm:w-48 sm:h-64 rounded-xl cover-gradient border border-white/50 flex items-center justify-center text-brand-700 text-lg font-bold text-center p-4 shadow-glass-sm flex-shrink-0 mx-auto md:mx-0" style="display:${data.cover_url ? 'none' : 'flex'};">${escapeHtml((data.title || '').slice(0, 6))}</div>`;
+    const fallbackCover = `<div class="cover-gradient" style="width:120px;height:168px;border-radius:8px;display:${data.cover_url ? 'none' : 'flex'};align-items:center;justify-content:center;color:#667;font-weight:bold;text-align:center;padding:8px;flex-shrink:0;font-size:14px;">${escapeHtml((data.title || '').slice(0, 8))}</div>`;
 
-    const nsMap = { normal: {l:'正常',t:'success'}, deleted: {l:'已删除',t:'danger'}, restricted: {l:'受限',t:'warning'}, unknown: {l:'未检查',t:'default'} };
+    const nsMap = { normal:{l:'正常',t:'success'}, deleted:{l:'已删除',t:'danger'}, restricted:{l:'受限',t:'warning'}, unknown:{l:'未检查',t:'default'} };
     const ns = nsMap[data.status] || nsMap.unknown;
     const author = data.author_name || '未知';
-    const authorLine = data.user_id ? `<a href="/dashboard/users/${encodeURIComponent(data.user_id)}" class="text-brand-600 hover:underline">${escapeHtml(author)}</a>` : escapeHtml(author);
-    const badges = [createBadge(kindLabel(data.novel_kind),'brand'), createBadge(restrictLabel(data.restrict_value),'default'), createBadge('● '+ns.l, ns.t)].join('');
+    const authorLink = data.user_id ? `<a href="/dashboard/users/${encodeURIComponent(data.user_id)}">${escapeHtml(author)}</a>` : escapeHtml(author);
 
     document.getElementById('hero').innerHTML = `
-      <div class="relative z-10 flex-shrink-0 mx-auto md:mx-0">${cover}${fallbackCover}</div>
-      <div class="flex-1 min-w-0 flex flex-col justify-center py-2 text-center md:text-left">
-        <h1 class="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-800 leading-tight mb-3 tracking-tight">${escapeHtml(data.title || '未命名小说')}</h1>
-        <div class="flex flex-wrap justify-center md:justify-start gap-2 mb-4">${badges}</div>
-        <div class="text-sm text-slate-600 leading-relaxed mb-6 max-w-2xl bg-white/30 backdrop-blur-md p-4 rounded-xl border border-white/40">
-          ${data.caption ? escapeHtml(data.caption) : '<span class="italic text-slate-400">暂无简介。</span>'}
-        </div>
-        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mt-auto">
-          <div class="bg-white/30 backdrop-blur-md p-3 rounded-xl border border-white/40">
-            <div class="text-[11px] font-bold text-slate-400 uppercase mb-1">作者</div>
-            <div class="text-sm font-semibold text-slate-800 truncate">${authorLine}</div>
+      <div style="display:flex;gap:1.5rem;align-items:flex-start;flex-wrap:wrap;">
+        ${cover}${fallbackCover}
+        <div style="flex:1;min-width:200px;">
+          <h1 style="font-size:1.5rem;font-weight:700;color:#333;margin:0 0 8px;line-height:1.4;">${escapeHtml(data.title || '未命名小说')}</h1>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;">
+            ${createBadge(kindLabel(data.novel_kind), 'brand')}
+            ${createBadge(restrictLabel(data.restrict_value), 'default')}
+            ${createBadge(ns.l, ns.t)}
           </div>
-          <div class="bg-white/30 backdrop-blur-md p-3 rounded-xl border border-white/40">
-            <div class="text-[11px] font-bold text-slate-400 uppercase mb-1">字数</div>
-            <div class="text-sm font-semibold text-slate-800">${formatTextLength(data.text_length)}</div>
-          </div>
-          <div class="bg-white/30 backdrop-blur-md p-3 rounded-xl border border-white/40">
-            <div class="text-[11px] font-bold text-slate-400 uppercase mb-1">收藏 / 浏览</div>
-            <div class="text-sm font-semibold text-slate-800">${formatNumber(data.total_bookmarks)} <span class="text-slate-400 mx-0.5">/</span> ${formatNumber(data.total_views)}</div>
-          </div>
-          <div class="bg-white/30 backdrop-blur-md p-3 rounded-xl border border-white/40">
-            <div class="text-[11px] font-bold text-slate-400 uppercase mb-1">发布时间</div>
-            <div class="text-sm font-semibold text-slate-800 truncate">${escapeHtml(data.create_date || '-').substring(0, 10)}</div>
+          ${data.caption ? `<p style="font-size:13px;color:#666;line-height:1.7;margin:0 0 16px;">${escapeHtml(data.caption)}</p>` : ''}
+          <div class="info-grid">
+            <div class="info-item"><div class="label">作者</div><div class="value">${authorLink}</div></div>
+            <div class="info-item"><div class="label">字数</div><div class="value">${formatTextLength(data.text_length)}</div></div>
+            <div class="info-item"><div class="label">收藏 / 浏览</div><div class="value">${formatNumber(data.total_bookmarks)} / ${formatNumber(data.total_views)}</div></div>
+            <div class="info-item"><div class="label">发布时间</div><div class="value">${escapeHtml(data.create_date || '-').substring(0, 10)}</div></div>
           </div>
         </div>
       </div>
     `;
 
-    // Reader content — Pixiv style
+    // Reader content
     const rawContent = data.text_raw || data.text_markdown || '';
     document.getElementById('content').innerHTML = formatContent(rawContent, data.title, data.author_name, data.user_id);
-
     setupProgressTracking(data);
   }
 
-  loadDetail().catch(function () {
+  loadDetail().catch(() => {
     document.getElementById('content').innerHTML = '<div style="text-align:center;padding:5rem 0;color:#c00;font-weight:bold;">加载失败</div>';
   });
 </script>
