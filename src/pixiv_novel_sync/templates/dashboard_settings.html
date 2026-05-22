@@ -157,9 +157,9 @@
           <h3 class="text-sm font-bold text-gray-900 dark:text-gray-200 border-b border-gray-100 dark:border-gray-700 pb-2 mb-4">同步数量限制</h3>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label class="block text-xs font-bold text-gray-500 dark:text-gray-400 mb-1.5">每轮同步用户数</label>
+              <label class="block text-xs font-bold text-gray-500 dark:text-gray-400 mb-1.5">全量备份每轮用户数</label>
               <input type="number" id="followingNovelsUsersLimit" min="0" placeholder="0" class="block w-full px-3 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors">
-              <p class="mt-1.5 text-xs text-gray-400">输入 0 代表全部用户</p>
+              <p class="mt-1.5 text-xs text-gray-400">全量备份任务每轮处理的用户数，0=全部</p>
             </div>
             <div>
               <label class="block text-xs font-bold text-gray-500 dark:text-gray-400 mb-1.5">每次同步追更系列数</label>
@@ -282,6 +282,16 @@
                 </td>
                 <td class="px-4 py-2"><input type="number" id="autoSyncSeriesStatusInterval" min="1" class="w-20 px-2.5 py-1 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
                 <td class="px-4 py-2"><input type="text" id="autoSyncSeriesStatusCron" placeholder="" class="w-32 px-2.5 py-1 font-mono bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+              </tr>
+              <tr class="bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/80 transition-colors">
+                <td class="px-4 py-3">
+                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
+                    <input type="checkbox" id="autoSyncUserBackup" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:focus:ring-brand-600 dark:bg-gray-700 dark:border-gray-600 cursor-pointer">
+                    <span class="font-medium text-gray-800 dark:text-gray-200">全量备份关注用户</span>
+                  </label>
+                </td>
+                <td class="px-4 py-2"><input type="number" id="autoSyncUserBackupInterval" min="1" class="w-20 px-2.5 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
+                <td class="px-4 py-2"><input type="text" id="autoSyncUserBackupCron" placeholder="" class="w-32 px-2.5 py-1.5 font-mono bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500/50"></td>
               </tr>
               <tr class="bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/80 transition-colors">
                 <td class="px-4 py-3">
@@ -451,6 +461,7 @@
       checked("#autoSyncNovelStatus", s.auto_sync_novel_status_enabled);
       checked("#autoSyncSeriesStatus", s.auto_sync_series_status_enabled);
       checked("#autoSyncSubscribedSeries", s.auto_sync_subscribed_series_enabled);
+      checked("#autoSyncUserBackup", s.auto_sync_user_backup_enabled);
       checked("#autoSyncPendingDetection", s.auto_sync_pending_detection_enabled);
 
       valueOf("#autoSyncBookmarksInterval", s.auto_sync_bookmarks_interval_hours ?? 6);
@@ -460,6 +471,7 @@
       valueOf("#autoSyncNovelStatusInterval", s.auto_sync_novel_status_interval_hours ?? 6);
       valueOf("#autoSyncSeriesStatusInterval", s.auto_sync_series_status_interval_hours ?? 6);
       valueOf("#autoSyncSubscribedSeriesInterval", s.auto_sync_subscribed_series_interval_hours ?? 6);
+      valueOf("#autoSyncUserBackupInterval", s.auto_sync_user_backup_interval_hours ?? 24);
       valueOf("#autoSyncPendingDetectionInterval", s.auto_sync_pending_detection_interval_hours ?? 12);
 
       valueOf("#autoSyncBookmarksCron", s.auto_sync_bookmarks_cron ?? '');
@@ -469,6 +481,7 @@
       valueOf("#autoSyncNovelStatusCron", s.auto_sync_novel_status_cron ?? '');
       valueOf("#autoSyncSeriesStatusCron", s.auto_sync_series_status_cron ?? '');
       valueOf("#autoSyncSubscribedSeriesCron", s.auto_sync_subscribed_series_cron ?? '');
+      valueOf("#autoSyncUserBackupCron", s.auto_sync_user_backup_cron ?? '');
       valueOf("#autoSyncPendingDetectionCron", s.auto_sync_pending_detection_cron ?? '');
     }
 
@@ -515,6 +528,7 @@
         auto_sync_novel_status_enabled: $("#autoSyncNovelStatus").checked,
         auto_sync_series_status_enabled: $("#autoSyncSeriesStatus").checked,
         auto_sync_subscribed_series_enabled: $("#autoSyncSubscribedSeries").checked,
+        auto_sync_user_backup_enabled: $("#autoSyncUserBackup").checked,
         auto_sync_pending_detection_enabled: $("#autoSyncPendingDetection").checked,
         auto_sync_bookmarks_interval_hours: $("#autoSyncBookmarksInterval").value.trim(),
         auto_sync_bookmarks_cron: $("#autoSyncBookmarksCron").value.trim(),
@@ -530,6 +544,8 @@
         auto_sync_series_status_cron: $("#autoSyncSeriesStatusCron").value.trim(),
         auto_sync_subscribed_series_interval_hours: $("#autoSyncSubscribedSeriesInterval").value.trim(),
         auto_sync_subscribed_series_cron: $("#autoSyncSubscribedSeriesCron").value.trim(),
+        auto_sync_user_backup_interval_hours: $("#autoSyncUserBackupInterval").value.trim(),
+        auto_sync_user_backup_cron: $("#autoSyncUserBackupCron").value.trim(),
         auto_sync_pending_detection_interval_hours: $("#autoSyncPendingDetectionInterval").value.trim(),
         auto_sync_pending_detection_cron: $("#autoSyncPendingDetectionCron").value.trim(),
       })

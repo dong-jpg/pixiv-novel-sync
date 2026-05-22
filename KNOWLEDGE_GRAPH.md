@@ -416,17 +416,18 @@ create_app()
 
 ### 9.3 定时任务调度器 (AutoSyncScheduler)
 
-8 个独立运行的定时任务，每个支持 cron 表达式或固定间隔：
+9 个独立运行的定时任务，每个支持 cron 表达式或固定间隔：
 
 | 任务名 | 方法 | 默认间隔 | 用途 |
 |--------|------|----------|------|
 | `bookmarks` | `_sync_bookmarks` | 6h | 收藏同步 |
 | `following_list` | `_sync_following_list` | 24h | 关注用户列表 |
-| `following_novels` | `_sync_following_novels` | 6h | 关注用户小说 |
+| `following_novels` | `_sync_following_novels` | 6h | 关注用户新小说（水位线增量，扫描全部用户） |
 | `subscribed_series` | `_sync_subscribed_series` | 6h | 追更系列 |
 | `user_status` | `_sync_user_status` | 6h | 用户状态检查 |
 | `novel_status` | `_sync_novel_status` | 6h | 小说状态检查 |
 | `series_status` | `_sync_series_status` | 6h | 系列状态检查 |
+| `user_backup` | `_sync_user_backup` | 24h | 全量备份关注用户小说（按 users_limit 轮询） |
 | `pending_deletion_detection` | `_sync_pending_detection` | 12h | 取消检测 |
 
 ---
@@ -597,11 +598,11 @@ requests + Cookie → Pixiv Web API: watchList
 
 | 文件 | 行数 | 职责 |
 |------|------|------|
-| `webapp.py` | 2626 | Flask 应用、路由、调度器、任务管理 |
+| `webapp.py` | 2750 | Flask 应用、路由、调度器、任务管理 |
 | `sync_engine.py` | 1677 | 同步业务逻辑核心 |
 | `storage_db.py` | 1401 | SQLite 数据库操作 |
 | `playwright_login.py` | 499 | Playwright 自动登录 |
-| `settings.py` | 402 | 配置加载、cron 解析 |
+| `settings.py` | 408 | 配置加载、cron 解析 |
 | `oauth_helper.py` | 196 | OAuth PKCE 流程 |
 | `jobs/quick_sync.py` | 112 | 同步任务入口 |
 | `storage_files.py` | 108 | 文件存储、资源下载 |

@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -115,6 +115,7 @@ class AutoSyncScheduler:
             {"name": "user_status", "setting_check": "auto_sync_user_status_enabled", "sync_func": "_sync_user_status", "interval_setting": "auto_sync_user_status_interval_hours", "cron_setting": "auto_sync_user_status_cron"},
             {"name": "novel_status", "setting_check": "auto_sync_novel_status_enabled", "sync_func": "_sync_novel_status", "interval_setting": "auto_sync_novel_status_interval_hours", "cron_setting": "auto_sync_novel_status_cron"},
             {"name": "series_status", "setting_check": "auto_sync_series_status_enabled", "sync_func": "_sync_series_status", "interval_setting": "auto_sync_series_status_interval_hours", "cron_setting": "auto_sync_series_status_cron"},
+            {"name": "user_backup", "setting_check": "auto_sync_user_backup_enabled", "sync_func": "_sync_user_backup", "interval_setting": "auto_sync_user_backup_interval_hours", "cron_setting": "auto_sync_user_backup_cron"},
             {"name": "pending_deletion_detection", "setting_check": "auto_sync_pending_detection_enabled", "sync_func": "_sync_pending_detection", "interval_setting": "auto_sync_pending_detection_interval_hours", "cron_setting": "auto_sync_pending_detection_cron"},
         ]
         
@@ -221,6 +222,7 @@ class AutoSyncScheduler:
                 "user_status": "检查用户状态",
                 "novel_status": "检查小说状态",
                 "series_status": "检查系列状态",
+                "user_backup": "全量备份关注用户小说",
             }
             job = self.sync_job_manager.start_auto_job(task_name, task_labels.get(task_name, task_name))
             self._current_task_job_id = job.job_id
@@ -436,8 +438,6 @@ class AutoSyncScheduler:
         try:
             service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
             
-            users_limit = settings.sync.auto_sync_following_novels_users_limit
-            
             def on_progress(event_type: str, data: dict[str, Any]) -> None:
                 if self._check_stop():
                     raise InterruptedError("Task stopped by user")
@@ -477,15 +477,14 @@ class AutoSyncScheduler:
                 return
             
             if job_id and self.sync_job_manager:
-                limit_text = f"限制 {users_limit} 位用户" if users_limit > 0 else "全部用户"
-                self.sync_job_manager.add_log(job_id, "info", f"开始扫描关注用户的小说 ({limit_text})...")
-            
+                self.sync_job_manager.add_log(job_id, "info", "开始扫描关注用户的新小说 (全部用户)...")
+
             stats = service.sync_following_novels(
                 download_assets=settings.sync.download_assets,
                 write_markdown=settings.sync.write_markdown,
                 write_raw_text=settings.sync.write_raw_text,
                 progress_callback=on_progress,
-                users_limit=users_limit,
+                users_limit=0,
             )
             
             if job_id and self.sync_job_manager:
@@ -707,6 +706,122 @@ class AutoSyncScheduler:
             summary = ", ".join(f"{k}: {v}" for k, v in status_counts.items())
             if job_id and self.sync_job_manager:
                 self.sync_job_manager.add_log(job_id, "success", f"系列状态检查完成: {checked_count} 个 ({summary})")
+        finally:
+            db.close()
+
+    def _sync_user_backup(self, settings: Settings, job_id: str | None) -> None:
+        """定时全量备份关注用户小说（按 users_limit 轮询）"""
+        from .auth import PixivAuthManager
+        from .sync_engine import BookmarkNovelSyncService
+
+        if job_id and self.sync_job_manager:
+            self.sync_job_manager.add_log(job_id, "info", "加载配置完成")
+
+        auth = PixivAuthManager(settings)
+        api = auth.login()
+        if job_id and self.sync_job_manager:
+            self.sync_job_manager.add_log(job_id, "info", f"登录成功, 用户ID: {settings.pixiv.user_id}")
+
+        db = Database(settings.storage.db_path)
+        db.init_schema()
+        storage = FileStorage(settings)
+        storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
+
+        try:
+            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+
+            # 获取所有关注用户 ID（按 user_id 排序，保证稳定顺序）
+            all_user_ids = [r[0] for r in db.conn.execute("SELECT user_id FROM users ORDER BY user_id").fetchall()]
+            total_users = len(all_user_ids)
+            if total_users == 0:
+                if job_id and self.sync_job_manager:
+                    self.sync_job_manager.add_log(job_id, "info", "没有关注用户，跳过")
+                return
+
+            # 读取水位线偏移量
+            watermark = db.get_watermark("user_backup_rotation")
+            offset = watermark.get("offset", 0) if watermark else 0
+            if offset >= total_users:
+                offset = 0
+
+            users_limit = settings.sync.auto_sync_following_novels_users_limit
+            if users_limit <= 0:
+                users_limit = total_users  # 0 = 全部
+
+            batch = all_user_ids[offset:offset + users_limit]
+            next_offset = offset + len(batch)
+            if next_offset >= total_users:
+                next_offset = 0
+
+            if job_id and self.sync_job_manager:
+                self.sync_job_manager.add_log(job_id, "info", f"=== 全量备份关注用户小说: 用户 {offset+1}-{offset+len(batch)}/{total_users}, 本轮 {len(batch)} 人 ===")
+
+            total_novels = 0
+            total_skipped = 0
+            total_assets = 0
+            item_delay = settings.sync.delay_seconds_between_items
+            page_delay = settings.sync.delay_seconds_between_pages
+
+            for idx, uid in enumerate(batch):
+                if self._check_stop():
+                    break
+
+                # 获取用户名
+                user_row = db.conn.execute("SELECT name FROM users WHERE user_id = ?", (uid,)).fetchone()
+                user_name = user_row[0] if user_row else str(uid)
+
+                if job_id and self.sync_job_manager:
+                    self.sync_job_manager.add_log(job_id, "info", f"[{idx+1}/{len(batch)}] {user_name} (ID: {uid})")
+                    self.sync_job_manager.update_progress(job_id, phase="全量备份", current=idx+1, total=len(batch), author=user_name)
+
+                # 逐页获取该用户所有小说并同步
+                next_query: dict[str, Any] | None = {"user_id": uid}
+                user_novels = 0
+                user_skipped = 0
+                while next_query:
+                    try:
+                        result = api.user_novels(**next_query)
+                    except Exception as exc:
+                        logger.error("user_novels API failed for user %s: %s", uid, exc)
+                        if job_id and self.sync_job_manager:
+                            self.sync_job_manager.add_log(job_id, "error", f"  获取小说列表失败: {exc}")
+                        break
+                    novels = getattr(result, "novels", []) or []
+                    for novel in novels:
+                        if self._check_stop():
+                            break
+                        counters = service._sync_novel(
+                            novel, "public",
+                            settings.sync.download_assets,
+                            settings.sync.write_markdown,
+                            settings.sync.write_raw_text,
+                            source_type="user_backup",
+                            source_key=str(uid),
+                        )
+                        if counters.get("skipped"):
+                            user_skipped += 1
+                        else:
+                            user_novels += 1
+                            total_assets += counters.get("assets_downloaded", 0)
+                            if item_delay > 0:
+                                time.sleep(item_delay)
+                    next_query = api.parse_qs(getattr(result, "next_url", None))
+                    if next_query and page_delay > 0:
+                        time.sleep(page_delay)
+
+                total_novels += user_novels
+                total_skipped += user_skipped
+                if job_id and self.sync_job_manager:
+                    self.sync_job_manager.add_log(job_id, "info", f"  同步 {user_novels} 本, 跳过 {user_skipped} 本")
+
+            # 更新水位线偏移量
+            db.update_watermark("user_backup_rotation", {
+                "offset": next_offset,
+                "last_sync_time": datetime.now(timezone.utc).isoformat(),
+            })
+
+            if job_id and self.sync_job_manager:
+                self.sync_job_manager.add_log(job_id, "success", f"全量备份完成: 同步 {total_novels} 本, 跳过 {total_skipped} 本, 资源 {total_assets} 个")
         finally:
             db.close()
 
@@ -1287,6 +1402,9 @@ class SettingsManager:
         sync_data["auto_sync_subscribed_series_enabled"] = bool(payload.get("auto_sync_subscribed_series_enabled", sync_data.get("auto_sync_subscribed_series_enabled", True)))
         sync_data["auto_sync_subscribed_series_interval_hours"] = _save_int("auto_sync_subscribed_series_interval_hours", 6)
         sync_data["auto_sync_subscribed_series_cron"] = _save_cron("auto_sync_subscribed_series_cron")
+        sync_data["auto_sync_user_backup_enabled"] = bool(payload.get("auto_sync_user_backup_enabled", sync_data.get("auto_sync_user_backup_enabled", False)))
+        sync_data["auto_sync_user_backup_interval_hours"] = _save_int("auto_sync_user_backup_interval_hours", 24)
+        sync_data["auto_sync_user_backup_cron"] = _save_cron("auto_sync_user_backup_cron")
         sync_data["auto_sync_pending_detection_enabled"] = bool(payload.get("auto_sync_pending_detection_enabled", sync_data.get("auto_sync_pending_detection_enabled", True)))
         sync_data["auto_sync_pending_detection_interval_hours"] = _save_int("auto_sync_pending_detection_interval_hours", 12)
         sync_data["auto_sync_pending_detection_cron"] = _save_cron("auto_sync_pending_detection_cron")
@@ -2483,6 +2601,9 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "auto_sync_subscribed_series_enabled": settings.sync.auto_sync_subscribed_series_enabled,
         "auto_sync_subscribed_series_interval_hours": settings.sync.auto_sync_subscribed_series_interval_hours,
         "auto_sync_subscribed_series_cron": settings.sync.auto_sync_subscribed_series_cron,
+        "auto_sync_user_backup_enabled": settings.sync.auto_sync_user_backup_enabled,
+        "auto_sync_user_backup_interval_hours": settings.sync.auto_sync_user_backup_interval_hours,
+        "auto_sync_user_backup_cron": settings.sync.auto_sync_user_backup_cron,
         "auto_sync_pending_detection_enabled": settings.sync.auto_sync_pending_detection_enabled,
         "auto_sync_pending_detection_interval_hours": settings.sync.auto_sync_pending_detection_interval_hours,
         "auto_sync_pending_detection_cron": settings.sync.auto_sync_pending_detection_cron,
