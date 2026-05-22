@@ -6,7 +6,7 @@
 <div class="space-y-6 max-w-4xl mx-auto">
 
   <!-- Back Link -->
-  <a href="/dashboard/novels?category=following" class="inline-flex items-center gap-2 text-sm font-semibold text-gray-500 hover:text-brand-600 dark:text-gray-400 dark:hover:text-brand-400 transition-colors">
+  <a href="/dashboard/novels?category=following" class="inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-brand-600 transition-colors">
     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
     </svg>
@@ -14,43 +14,43 @@
   </a>
 
   <!-- Hero Section -->
-  <section id="hero" class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-6 md:p-8 flex flex-col md:flex-row gap-6 md:gap-8 items-start relative overflow-hidden">
+  <section id="hero" class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-6 md:p-8 flex flex-col md:flex-row gap-6 md:gap-8 items-start relative overflow-hidden">
     <!-- Loading State -->
     <div class="animate-pulse flex flex-col md:flex-row gap-6 md:gap-8 w-full">
-      <div class="w-32 h-44 sm:w-48 sm:h-64 bg-gray-200 dark:bg-gray-700 rounded-xl flex-shrink-0 mx-auto md:mx-0"></div>
+      <div class="w-32 h-44 sm:w-48 sm:h-64 bg-white/30 rounded-xl flex-shrink-0 mx-auto md:mx-0"></div>
       <div class="flex-1 space-y-4 py-2 w-full">
-        <div class="h-8 bg-gray-200 dark:bg-gray-700 rounded w-3/4"></div>
-        <div class="flex gap-2"><div class="h-6 w-16 bg-gray-200 dark:bg-gray-700 rounded-md"></div><div class="h-6 w-16 bg-gray-200 dark:bg-gray-700 rounded-md"></div></div>
+        <div class="h-8 bg-white/30 rounded w-3/4"></div>
+        <div class="flex gap-2"><div class="h-6 w-16 bg-white/30 rounded-md"></div><div class="h-6 w-16 bg-white/30 rounded-md"></div></div>
         <div class="space-y-2 mt-4">
-          <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded"></div>
-          <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded w-5/6"></div>
+          <div class="h-4 bg-white/30 rounded"></div>
+          <div class="h-4 bg-white/30 rounded w-5/6"></div>
         </div>
       </div>
     </div>
   </section>
 
   <!-- Chapters Section -->
-  <section class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 overflow-hidden">
+  <section class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl overflow-hidden">
 
-    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 sm:px-6 sm:py-5 border-b border-gray-100 dark:border-gray-700/50 bg-gray-50/50 dark:bg-gray-900/30">
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 sm:px-6 sm:py-5 border-b border-white/30 bg-white/20">
       <div>
-        <h2 class="text-lg font-bold text-gray-900 dark:text-gray-100 tracking-tight">章节列表</h2>
-        <div id="chapterCount" class="text-sm font-medium text-gray-500 dark:text-gray-400 mt-0.5"></div>
+        <h2 class="text-lg font-bold text-slate-800 tracking-tight">章节列表</h2>
+        <div id="chapterCount" class="text-sm font-medium text-slate-500 mt-0.5"></div>
       </div>
       <div class="flex items-center gap-3">
-        <button id="continueBtn" class="hidden px-5 py-2 text-sm font-semibold text-white bg-brand-600 hover:bg-brand-700 rounded-xl transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500/50" onclick="continueReading()">
+        <button id="continueBtn" class="hidden px-5 py-2 text-sm font-semibold text-white bg-brand-600 hover:bg-brand-700 rounded-xl transition-colors shadow-glass-sm focus:outline-none focus:ring-2 focus:ring-brand-500/50" onclick="continueReading()">
           继续阅读
         </button>
-        <button id="deleteBtn" class="px-4 py-2 text-sm font-semibold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800/50 hover:bg-red-100 dark:hover:bg-red-900/40 rounded-xl transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/50" onclick="deleteSeries()">
+        <button id="deleteBtn" class="px-4 py-2 text-sm font-semibold text-red-600 bg-red-500/10 border border-red-300/30 hover:bg-red-500/20 rounded-xl transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/50 shadow-glass-sm" onclick="deleteSeries()">
           删除系列
         </button>
       </div>
     </div>
 
     <!-- Chapter List -->
-    <div id="chapters" class="divide-y divide-gray-100 dark:divide-gray-800">
-      <div class="py-12 text-center text-gray-500 dark:text-gray-400 flex flex-col items-center">
-        <svg class="animate-spin h-8 w-8 mb-4 text-gray-300 dark:text-gray-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+    <div id="chapters">
+      <div class="py-12 text-center text-slate-500 flex flex-col items-center">
+        <svg class="animate-spin h-8 w-8 mb-4 text-slate-300" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
         <span>正在加载章节...</span>
       </div>
     </div>
@@ -64,9 +64,6 @@
 <style>
   .cover-gradient {
     background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%);
-  }
-  .dark .cover-gradient {
-    background: linear-gradient(135deg, #1e3a8a 0%, #312e81 100%);
   }
 </style>
 
@@ -113,7 +110,7 @@
 
   function createBadge(text, colorClass) {
     if (!text) return '';
-    return `<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold ${colorClass}">${escapeHtml(text)}</span>`;
+    return `<span class="inline-flex items-center px-2 py-0.5 text-[11px] font-bold ${colorClass}">${escapeHtml(text)}</span>`;
   }
 
   async function loadDetail() {
@@ -126,34 +123,34 @@
       heroSection.innerHTML = `
         <div class="text-center w-full py-10">
           <h1 class="text-2xl font-bold text-red-500 mb-2">加载失败</h1>
-          <p class="text-gray-500 dark:text-gray-400">未找到该系列</p>
+          <p class="text-slate-500">未找到该系列</p>
         </div>`;
       chaptersSection.innerHTML = `<div class="text-center py-20 text-red-500 font-medium">${escapeHtml(data.error || '未找到系列')}</div>`;
       return;
     }
 
     const cover = data.cover_url
-      ? `<img class="w-32 h-44 sm:w-48 sm:h-64 object-cover rounded-xl shadow-md border border-gray-200 dark:border-gray-700 flex-shrink-0 mx-auto md:mx-0" src="/proxy/image?url=${encodeURIComponent(data.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+      ? `<img class="w-32 h-44 sm:w-48 sm:h-64 object-cover rounded-xl shadow-glass-sm border border-white/50 flex-shrink-0 mx-auto md:mx-0" src="/proxy/image?url=${encodeURIComponent(data.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
       : '';
-    const fallbackCover = `<div class="w-32 h-44 sm:w-48 sm:h-64 rounded-xl cover-gradient border border-gray-200 dark:border-gray-700 flex items-center justify-center text-brand-700 dark:text-brand-300 text-lg font-bold text-center p-4 shadow-md flex-shrink-0 mx-auto md:mx-0" style="display:${data.cover_url ? 'none' : 'flex'};">${escapeHtml((data.title || '').slice(0, 6))}</div>`;
+    const fallbackCover = `<div class="w-32 h-44 sm:w-48 sm:h-64 rounded-xl cover-gradient border border-white/50 flex items-center justify-center text-brand-700 text-lg font-bold text-center p-4 shadow-glass-sm flex-shrink-0 mx-auto md:mx-0" style="display:${data.cover_url ? 'none' : 'flex'};">${escapeHtml((data.title || '').slice(0, 6))}</div>`;
 
     const seriesStatusMap = {
-      normal: {label: '正常', class: 'bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400'},
-      deleted: {label: '已删除', class: 'bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400'},
-      unknown: {label: '未检查', class: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'}
+      normal: {label: '正常', class: 'bg-green-500/10 text-green-700 border border-green-300/30 rounded-xl'},
+      deleted: {label: '已删除', class: 'bg-red-500/10 text-red-700 border border-red-300/30 rounded-xl'},
+      unknown: {label: '未检查', class: 'bg-slate-500/10 text-slate-700 border border-slate-300/30 rounded-xl'}
     };
     const ss = seriesStatusMap[data.status] || seriesStatusMap.unknown;
 
     const author = data.author_name || '未知';
-    const authorLine = data.user_id ? `<a href="/dashboard/users/${encodeURIComponent(data.user_id)}" class="text-brand-600 dark:text-brand-400 hover:underline">${escapeHtml(author)}</a>` : escapeHtml(author);
+    const authorLine = data.user_id ? `<a href="/dashboard/users/${encodeURIComponent(data.user_id)}" class="text-brand-600 hover:underline">${escapeHtml(author)}</a>` : escapeHtml(author);
 
     let badgesHtml = `
-      ${createBadge(data.total_novels + ' 章', 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400')}
-      ${createBadge(formatTextLength(data.total_text_length), 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400')}
+      ${createBadge(data.total_novels + ' 章', 'bg-blue-500/10 text-blue-700 border border-blue-300/30 rounded-xl')}
+      ${createBadge(formatTextLength(data.total_text_length), 'bg-slate-500/10 text-slate-700 border border-slate-300/30 rounded-xl')}
       ${createBadge('● ' + ss.label, ss.class)}
     `;
     if (data.last_checked_at) {
-      badgesHtml += createBadge('检查于 ' + escapeHtml(data.last_checked_at).substring(0, 10), 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400');
+      badgesHtml += createBadge('检查于 ' + escapeHtml(data.last_checked_at).substring(0, 10), 'bg-slate-500/10 text-slate-600 border border-slate-300/30 rounded-xl');
     }
 
     heroSection.innerHTML = `
@@ -161,14 +158,14 @@
         ${cover}${fallbackCover}
       </div>
       <div class="flex-1 min-w-0 flex flex-col justify-center py-2 text-center md:text-left">
-        <h1 class="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 dark:text-white leading-tight mb-4 tracking-tight">${escapeHtml(data.title || '未命名系列')}</h1>
+        <h1 class="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-800 leading-tight mb-4 tracking-tight">${escapeHtml(data.title || '未命名系列')}</h1>
         <div class="flex flex-wrap justify-center md:justify-start gap-2 mb-4">
           ${badgesHtml}
         </div>
-        <div class="text-sm font-medium text-gray-600 dark:text-gray-400 mb-4 bg-gray-50 dark:bg-gray-900/50 inline-block px-3 py-1.5 rounded-lg border border-gray-100 dark:border-gray-800 self-center md:self-start">作者：${authorLine}</div>
+        <div class="text-sm font-medium text-slate-600 mb-4 bg-white/30 backdrop-blur-md inline-block px-3 py-1.5 rounded-lg border border-white/40 self-center md:self-start">作者：${authorLine}</div>
 
         ${data.description ? `
-          <div class="text-sm text-gray-600 dark:text-gray-300 leading-relaxed bg-gray-50 dark:bg-gray-900/30 p-4 rounded-xl border border-gray-100 dark:border-gray-800/50 mt-auto max-w-2xl whitespace-pre-wrap text-left">${escapeHtml(data.description)}</div>
+          <div class="text-sm text-slate-600 leading-relaxed bg-white/30 backdrop-blur-md p-4 rounded-xl border border-white/40 mt-auto max-w-2xl whitespace-pre-wrap text-left">${escapeHtml(data.description)}</div>
         ` : ''}
       </div>
     `;
@@ -182,18 +179,18 @@
     if (!novels.length) {
       chaptersSection.innerHTML = `
         <div class="py-16 text-center">
-          <svg class="mx-auto h-12 w-12 text-gray-300 dark:text-gray-600 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg class="mx-auto h-12 w-12 text-slate-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
           </svg>
-          <p class="text-gray-500 dark:text-gray-400 font-medium">暂无章节</p>
+          <p class="text-slate-500 font-medium">暂无章节</p>
         </div>`;
       return;
     }
 
     const chapterStatusMap = {
-      normal: {label: '正常', class: 'text-green-600 bg-green-50 dark:bg-green-900/20 dark:text-green-400 border border-green-100 dark:border-green-800/50'},
-      deleted: {label: '已删除', class: 'text-red-600 bg-red-50 dark:bg-red-900/20 dark:text-red-400 border border-red-100 dark:border-red-800/50'},
-      restricted: {label: '受限', class: 'text-yellow-600 bg-yellow-50 dark:bg-yellow-900/20 dark:text-yellow-500 border border-yellow-100 dark:border-yellow-800/50'},
+      normal: {label: '正常', class: 'text-green-700 bg-green-500/10 border border-green-300/30'},
+      deleted: {label: '已删除', class: 'text-red-700 bg-red-500/10 border border-red-300/30'},
+      restricted: {label: '受限', class: 'text-yellow-700 bg-yellow-500/10 border border-yellow-300/30'},
       unknown: {label: '', class: ''}
     };
 
@@ -208,23 +205,23 @@
         continueNovelId = novel.novel_id;
       }
 
-      const statusTag = cs.label ? `<span class="ml-2 px-1.5 py-0.5 text-[10px] rounded font-bold ${cs.class}">${cs.label}</span>` : '';
-      const progressTag = percent > 0 ? `<div class="flex items-center gap-1.5 ml-2 flex-shrink-0"><div class="w-16 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden hidden sm:block"><div class="h-full bg-brand-500" style="width: ${percent}%"></div></div><span class="text-[11px] font-mono font-bold text-brand-600 dark:text-brand-400">${percent}%</span></div>` : '';
+      const statusTag = cs.label ? `<span class="ml-2 px-1.5 py-0.5 text-[10px] rounded-lg font-bold ${cs.class}">${cs.label}</span>` : '';
+      const progressTag = percent > 0 ? `<div class="flex items-center gap-1.5 ml-2 flex-shrink-0"><div class="w-16 h-1.5 bg-white/40 rounded-full overflow-hidden hidden sm:block"><div class="h-full bg-brand-500" style="width: ${percent}%"></div></div><span class="text-[11px] font-mono font-bold text-brand-600">${percent}%</span></div>` : '';
 
-      const isReadingBg = (saved && percent > 0 && percent < 100) ? 'bg-brand-50/50 dark:bg-brand-900/10 border-l-2 border-brand-500' : 'hover:bg-gray-50 dark:hover:bg-gray-800/50 border-l-2 border-transparent';
+      const isReadingBg = (saved && percent > 0 && percent < 100) ? 'bg-brand-500/10 border-l-2 border-brand-500' : 'hover:bg-white/30 border-l-2 border-transparent';
 
       chaptersHtml += `
-        <a href="/dashboard/novels/${encodeURIComponent(novel.novel_id)}" class="flex items-center gap-4 px-4 sm:px-6 py-4 transition-colors group ${isReadingBg}">
-          <div class="text-sm font-mono font-bold text-gray-400 dark:text-gray-500 w-6 text-right flex-shrink-0">${index + 1}</div>
+        <a href="/dashboard/novels/${encodeURIComponent(novel.novel_id)}" class="flex items-center gap-4 px-4 sm:px-6 py-4 transition-colors group border-b border-white/20 ${isReadingBg}">
+          <div class="text-sm font-mono font-bold text-slate-400 w-6 text-right flex-shrink-0">${index + 1}</div>
           <div class="flex-1 min-w-0">
-            <div class="text-sm sm:text-base font-bold text-gray-900 dark:text-gray-100 group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors truncate mb-1">
+            <div class="text-sm sm:text-base font-bold text-slate-800 group-hover:text-brand-600 transition-colors truncate mb-1">
               ${escapeHtml(novel.title || '未命名章节')}${statusTag}
             </div>
-            <div class="text-xs text-gray-500 dark:text-gray-400 flex items-center flex-wrap gap-x-2 gap-y-1">
-              <span><span class="font-medium text-gray-700 dark:text-gray-300">${formatNumber(novel.total_bookmarks)}</span> 收藏</span>
-              <span class="text-gray-300 dark:text-gray-600 px-1">•</span>
-              <span><span class="font-medium text-gray-700 dark:text-gray-300">${formatNumber(novel.total_views)}</span> 浏览</span>
-              ${saved && percent > 0 ? `<span class="text-gray-300 dark:text-gray-600 px-1">•</span><span class="text-brand-600 dark:text-brand-400 font-medium">上次阅读</span>` : ''}
+            <div class="text-xs text-slate-500 flex items-center flex-wrap gap-x-2 gap-y-1">
+              <span><span class="font-medium text-slate-700">${formatNumber(novel.total_bookmarks)}</span> 收藏</span>
+              <span class="text-slate-300 px-1">•</span>
+              <span><span class="font-medium text-slate-700">${formatNumber(novel.total_views)}</span> 浏览</span>
+              ${saved && percent > 0 ? `<span class="text-slate-300 px-1">•</span><span class="text-brand-600 font-medium">上次阅读</span>` : ''}
             </div>
           </div>
           ${progressTag}

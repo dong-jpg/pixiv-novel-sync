@@ -7,17 +7,17 @@
 
   <!-- Header -->
   <div>
-    <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-gray-100 tracking-tight mb-2">任务日志</h1>
-    <p class="text-sm sm:text-base text-gray-500 dark:text-gray-400">查看手工任务和定时任务的执行记录，日志默认保留 3 天</p>
+    <h1 class="text-2xl sm:text-3xl font-bold text-slate-800 tracking-tight mb-2">任务日志</h1>
+    <p class="text-sm sm:text-base text-slate-500">查看手工任务和定时任务的执行记录，日志默认保留 3 天</p>
   </div>
 
   <!-- Filter Bar -->
-  <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-4 sm:p-5 flex flex-col md:flex-row md:items-center gap-4">
+  <div class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-4 sm:p-5 flex flex-col md:flex-row md:items-center gap-4">
     <div class="flex flex-wrap items-center gap-4 flex-1">
       <!-- Type Filter -->
       <div class="flex items-center gap-2">
-        <label class="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">任务类型</label>
-        <select id="filterType" class="px-3 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors appearance-none min-w-[120px]">
+        <label class="text-xs font-bold text-slate-500 uppercase tracking-wider">任务类型</label>
+        <select id="filterType" class="px-3 py-1.5 bg-white/50 border border-white/60 text-slate-800 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors appearance-none min-w-[120px]">
           <option value="">全部</option>
           <option value="bookmarks">收藏同步</option>
           <option value="following_list">关注列表</option>
@@ -32,8 +32,8 @@
 
       <!-- Source Filter -->
       <div class="flex items-center gap-2">
-        <label class="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">来源</label>
-        <select id="filterSource" class="px-3 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors appearance-none min-w-[100px]">
+        <label class="text-xs font-bold text-slate-500 uppercase tracking-wider">来源</label>
+        <select id="filterSource" class="px-3 py-1.5 bg-white/50 border border-white/60 text-slate-800 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors appearance-none min-w-[100px]">
           <option value="">全部</option>
           <option value="manual">手工任务</option>
           <option value="auto">定时任务</option>
@@ -42,8 +42,8 @@
 
       <!-- Days Filter -->
       <div class="flex items-center gap-2">
-        <label class="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">保留天数</label>
-        <select id="filterDays" class="px-3 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-colors appearance-none min-w-[80px]">
+        <label class="text-xs font-bold text-slate-500 uppercase tracking-wider">保留天数</label>
+        <select id="filterDays" class="px-3 py-1.5 bg-white/50 border border-white/60 text-slate-800 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors appearance-none min-w-[80px]">
           <option value="1">1 天</option>
           <option value="3" selected>3 天</option>
           <option value="7">7 天</option>
@@ -52,35 +52,35 @@
     </div>
 
     <div class="flex items-center gap-3">
-      <label class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 cursor-pointer">
-        <input type="checkbox" id="autoRefreshToggle" class="w-4 h-4 text-brand-600 bg-gray-100 border-gray-300 rounded focus:ring-brand-500 dark:focus:ring-brand-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600 cursor-pointer">
+      <label class="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+        <input type="checkbox" id="autoRefreshToggle" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 focus:ring-2 cursor-pointer">
         自动刷新 (10s)
       </label>
-      <button id="applyFilter" class="px-4 py-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold rounded-lg transition-colors shadow-sm">应用筛选</button>
-      <button id="refreshLogs" class="px-4 py-1.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 text-sm font-semibold rounded-lg transition-colors shadow-sm">刷新</button>
+      <button id="applyFilter" class="px-4 py-1.5 bg-blue-500 text-white hover:bg-blue-600 text-sm font-semibold rounded-xl transition-colors shadow-glass-sm">应用筛选</button>
+      <button id="refreshLogs" class="px-4 py-1.5 bg-white/40 backdrop-blur-md border border-white/60 hover:bg-white/55 text-slate-700 text-sm font-semibold rounded-xl transition-colors shadow-glass-sm">刷新</button>
     </div>
   </div>
 
   <!-- Table Card -->
-  <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 overflow-hidden">
+  <div class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl overflow-hidden">
     <div class="overflow-x-auto">
       <table class="w-full text-left whitespace-nowrap">
-        <thead class="bg-gray-50 dark:bg-gray-900/50 border-b border-gray-200 dark:border-gray-700/80">
+        <thead class="bg-white/20 border-b border-white/30">
           <tr>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">任务类型</th>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">任务名称</th>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">来源</th>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">状态</th>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">开始时间</th>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">持续时间</th>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">结果</th>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider text-right">操作</th>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">任务类型</th>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">任务名称</th>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">来源</th>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">状态</th>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">开始时间</th>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">持续时间</th>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">结果</th>
+            <th scope="col" class="px-6 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">操作</th>
           </tr>
         </thead>
-        <tbody id="logsTableBody" class="divide-y divide-gray-100 dark:divide-gray-800">
+        <tbody id="logsTableBody" class="divide-y divide-white/20">
           <tr>
-            <td colspan="8" class="px-6 py-12 text-center text-gray-500 dark:text-gray-400">
-              <svg class="animate-spin h-6 w-6 mx-auto mb-2 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+            <td colspan="8" class="px-6 py-12 text-center text-slate-500">
+              <svg class="animate-spin h-6 w-6 mx-auto mb-2 text-slate-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
               加载中...
             </td>
           </tr>
@@ -89,11 +89,11 @@
     </div>
 
     <!-- Pagination -->
-    <div id="pagination" class="hidden px-6 py-4 bg-gray-50/50 dark:bg-gray-900/50 border-t border-gray-100 dark:border-gray-800 flex items-center justify-between">
-      <div class="pagination-info text-sm text-gray-500 dark:text-gray-400 font-medium"></div>
+    <div id="pagination" class="hidden px-6 py-4 bg-white/20 border-t border-white/30 flex items-center justify-between">
+      <div class="pagination-info text-sm text-slate-500 font-medium"></div>
       <div class="flex gap-2">
-        <button id="prevPage" class="px-4 py-1.5 text-sm font-semibold bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">上一页</button>
-        <button id="nextPage" class="px-4 py-1.5 text-sm font-semibold bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">下一页</button>
+        <button id="prevPage" class="px-4 py-1.5 text-sm font-semibold bg-white/40 backdrop-blur-md border border-white/60 text-slate-700 rounded-xl hover:bg-white/55 transition-colors shadow-glass-sm disabled:opacity-50 disabled:cursor-not-allowed">上一页</button>
+        <button id="nextPage" class="px-4 py-1.5 text-sm font-semibold bg-white/40 backdrop-blur-md border border-white/60 text-slate-700 rounded-xl hover:bg-white/55 transition-colors shadow-glass-sm disabled:opacity-50 disabled:cursor-not-allowed">下一页</button>
       </div>
     </div>
   </div>
@@ -101,15 +101,15 @@
 </div>
 
 <!-- Modal -->
-<div id="detailModal" class="hidden fixed inset-0 z-[100] bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-  <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col border border-gray-200 dark:border-gray-700 transform transition-all">
-    <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-700/50">
-      <h2 id="modalTitle" class="text-lg font-bold text-gray-900 dark:text-white truncate">任务详情</h2>
-      <button id="closeModal" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 focus:outline-none transition-colors">
+<div id="detailModal" class="hidden fixed inset-0 z-[100] bg-black/30 backdrop-blur-sm flex items-center justify-center p-4">
+  <div class="bg-white/50 backdrop-blur-2xl backdrop-saturate-[1.5] border border-white/40 shadow-glass-lg rounded-3xl w-full max-w-3xl max-h-[90vh] flex flex-col transform transition-all">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-white/30">
+      <h2 id="modalTitle" class="text-lg font-bold text-slate-800 truncate">任务详情</h2>
+      <button id="closeModal" class="text-slate-400 hover:text-slate-600 focus:outline-none transition-colors">
         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
       </button>
     </div>
-    <div id="modalBody" class="p-6 overflow-y-auto custom-scrollbar flex-1 text-sm text-gray-700 dark:text-gray-300">
+    <div id="modalBody" class="p-6 overflow-y-auto custom-scrollbar flex-1 text-sm text-slate-700">
       <!-- Content injected by JS -->
     </div>
   </div>
@@ -125,14 +125,10 @@
     background-repeat: no-repeat;
     background-size: 1.5em 1.5em;
   }
-  .dark select {
-    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%239ca3af' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
-  }
 
   .custom-scrollbar::-webkit-scrollbar { width: 6px; }
   .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
   .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(156, 163, 175, 0.5); border-radius: 4px; }
-  .dark .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(75, 85, 99, 0.5); }
 </style>
 
 <script>
@@ -168,14 +164,14 @@
 
   function getStatusBadge(status) {
     const map = {
-      'running': { label: '运行中', class: 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' },
-      'completed': { label: '完成', class: 'bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400' },
-      'succeeded': { label: '成功', class: 'bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400' },
-      'failed': { label: '失败', class: 'bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400' },
-      'stopped': { label: '停止', class: 'bg-yellow-50 text-yellow-600 dark:bg-yellow-900/30 dark:text-yellow-500' }
+      'running': { label: '运行中', class: 'bg-blue-500/10 text-blue-700 border border-blue-300/30 rounded-xl' },
+      'completed': { label: '完成', class: 'bg-green-500/10 text-green-700 border border-green-300/30 rounded-xl' },
+      'succeeded': { label: '成功', class: 'bg-green-500/10 text-green-700 border border-green-300/30 rounded-xl' },
+      'failed': { label: '失败', class: 'bg-red-500/10 text-red-700 border border-red-300/30 rounded-xl' },
+      'stopped': { label: '停止', class: 'bg-yellow-500/10 text-yellow-700 border border-yellow-300/30 rounded-xl' }
     };
-    const s = map[status] || { label: status, class: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400' };
-    return `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${s.class}">${escapeHtml(s.label)}</span>`;
+    const s = map[status] || { label: status, class: 'bg-slate-500/10 text-slate-700 border border-slate-300/30 rounded-xl' };
+    return `<span class="inline-flex items-center px-2 py-0.5 text-xs font-bold ${s.class}">${escapeHtml(s.label)}</span>`;
   }
 
   function getTaskTypeName(type) {
@@ -192,7 +188,7 @@
 
   async function loadLogs(page = 1) {
     const tbody = $('#logsTableBody');
-    tbody.innerHTML = '<tr><td colspan="8" class="px-6 py-12 text-center text-gray-500 dark:text-gray-400"><svg class="animate-spin h-6 w-6 mx-auto mb-2 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>加载中...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="px-6 py-12 text-center text-slate-500"><svg class="animate-spin h-6 w-6 mx-auto mb-2 text-slate-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>加载中...</td></tr>';
 
     try {
       const params = new URLSearchParams({ page: page, page_size: 20, days: currentFilters.days });
@@ -204,22 +200,22 @@
 
       if (data.items && data.items.length > 0) {
         tbody.innerHTML = data.items.map(log => `
-          <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
-            <td class="px-6 py-3 whitespace-nowrap text-sm"><span class="bg-gray-100 text-gray-700 dark:bg-gray-900/50 dark:text-gray-300 px-2 py-1 rounded border border-gray-200 dark:border-gray-700">${escapeHtml(getTaskTypeName(log.task_type))}</span></td>
-            <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100 font-medium">${escapeHtml(log.task_name)}</td>
-            <td class="px-6 py-3 whitespace-nowrap text-sm font-medium ${log.is_auto_sync ? 'text-purple-600 dark:text-purple-400' : 'text-gray-500 dark:text-gray-400'}">${log.is_auto_sync ? '定时任务' : '手工任务'}</td>
+          <tr class="hover:bg-white/30 transition-colors">
+            <td class="px-6 py-3 whitespace-nowrap text-sm"><span class="bg-slate-500/10 text-slate-700 border border-slate-300/30 px-2 py-1 rounded-xl">${escapeHtml(getTaskTypeName(log.task_type))}</span></td>
+            <td class="px-6 py-3 whitespace-nowrap text-sm text-slate-800 font-medium">${escapeHtml(log.task_name)}</td>
+            <td class="px-6 py-3 whitespace-nowrap text-sm font-medium ${log.is_auto_sync ? 'text-purple-600' : 'text-slate-500'}">${log.is_auto_sync ? '定时任务' : '手工任务'}</td>
             <td class="px-6 py-3 whitespace-nowrap">${getStatusBadge(log.status)}</td>
-            <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">${formatDate(log.started_at)}</td>
-            <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">${formatDuration(log.duration_seconds)}</td>
+            <td class="px-6 py-3 whitespace-nowrap text-sm text-slate-500">${formatDate(log.started_at)}</td>
+            <td class="px-6 py-3 whitespace-nowrap text-sm text-slate-500">${formatDuration(log.duration_seconds)}</td>
             <td class="px-6 py-3 whitespace-nowrap text-sm">${formatResult(log)}</td>
             <td class="px-6 py-3 whitespace-nowrap text-right">
-              <button onclick="showLogDetail(${log.id})" class="text-brand-600 hover:text-brand-900 dark:text-brand-400 dark:hover:text-brand-300 font-medium text-sm transition-colors focus:outline-none">查看详情</button>
+              <button onclick="showLogDetail(${log.id})" class="text-brand-600 hover:text-brand-800 font-medium text-sm transition-colors focus:outline-none">查看详情</button>
             </td>
           </tr>
         `).join('');
         updatePagination(data, page);
       } else {
-        tbody.innerHTML = '<tr><td colspan="8" class="px-6 py-16 text-center text-gray-500 dark:text-gray-400 font-medium">暂无相关的日志记录</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="px-6 py-16 text-center text-slate-500 font-medium">暂无相关的日志记录</td></tr>';
         $('#pagination').classList.add('hidden');
       }
     } catch (e) {
@@ -240,14 +236,14 @@
       if (s.users_synced ?? s.users) parts.push(`${s.users_synced ?? s.users}人`);
       if (s.series_synced) parts.push(`${s.series_synced}系列`);
       if (s.assets_downloaded) parts.push(`${s.assets_downloaded}图`);
-      return parts.length ? `<span class="text-green-600 dark:text-green-400 font-medium text-xs">${parts.join(', ')}</span>` : '<span class="text-gray-400 text-xs">完成</span>';
+      return parts.length ? `<span class="text-green-700 font-medium text-xs">${parts.join(', ')}</span>` : '<span class="text-slate-400 text-xs">完成</span>';
     }
-    return '<span class="text-gray-400 text-xs">完成</span>';
+    return '<span class="text-slate-400 text-xs">完成</span>';
   }
 
   function updatePagination(data, currentPage) {
     const pagination = $('#pagination');
-    pagination.querySelector('.pagination-info').innerHTML = `第 <strong class="text-gray-900 dark:text-white">${data.page}</strong> 页，共 <strong class="text-gray-900 dark:text-white">${data.total_pages}</strong> 页，总计 <strong class="text-gray-900 dark:text-white">${data.total}</strong> 条记录`;
+    pagination.querySelector('.pagination-info').innerHTML = `第 <strong class="text-slate-800">${data.page}</strong> 页，共 <strong class="text-slate-800">${data.total_pages}</strong> 页，总计 <strong class="text-slate-800">${data.total}</strong> 条记录`;
     pagination.classList.remove('hidden');
     pagination.classList.add('flex');
     $('#prevPage').disabled = data.page <= 1;
@@ -266,13 +262,13 @@
     $('#modalTitle').textContent = `${getTaskTypeName(log.task_type)} - ${log.task_name}`;
     const b = $('#modalBody');
 
-    const renderStat = (label, value) => value ? `<div class="bg-gray-50 dark:bg-gray-900/50 p-3 rounded-lg border border-gray-100 dark:border-gray-800"><div class="text-[11px] text-gray-500 uppercase font-bold tracking-wider mb-1">${label}</div><div class="text-lg font-bold text-gray-900 dark:text-gray-100">${value}</div></div>` : '';
+    const renderStat = (label, value) => value ? `<div class="bg-white/30 backdrop-blur-md p-3 rounded-xl border border-white/40"><div class="text-[11px] text-slate-500 uppercase font-bold tracking-wider mb-1">${label}</div><div class="text-lg font-bold text-slate-800">${value}</div></div>` : '';
 
     let statsHtml = '';
     if(log.stats) {
       statsHtml = `
         <div class="mb-6">
-          <h3 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-100 dark:border-gray-700 pb-1">同步统计</h3>
+          <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 border-b border-white/30 pb-1">同步统计</h3>
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
             ${renderStat('小说', log.stats.novels_synced ?? log.stats.novels)}
             ${renderStat('用户', log.stats.users_synced ?? log.stats.users)}
@@ -287,11 +283,11 @@
 
     const logsHtml = (log.logs && log.logs.length > 0) ? `
       <div>
-        <h3 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-100 dark:border-gray-700 pb-1">执行日志</h3>
-        <div class="bg-gray-900 dark:bg-black rounded-xl p-4 font-mono text-xs text-gray-300 max-h-64 overflow-y-auto custom-scrollbar space-y-1">
+        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 border-b border-white/30 pb-1">执行日志</h3>
+        <div class="bg-slate-900/80 backdrop-blur-xl rounded-xl p-4 font-mono text-xs text-gray-300 max-h-64 overflow-y-auto custom-scrollbar space-y-1">
           ${log.logs.map(e => {
             const isErr = (e.level || '').toLowerCase() === 'error';
-            return `<div class="${isErr ? 'text-red-400' : ''}"><span class="text-gray-500 dark:text-gray-600 mr-2">[${formatTime(e.time)}]</span>${escapeHtml(e.message)}</div>`;
+            return `<div class="${isErr ? 'text-red-400' : ''}"><span class="text-gray-500 mr-2">[${formatTime(e.time)}]</span>${escapeHtml(e.message)}</div>`;
           }).join('')}
         </div>
       </div>
@@ -300,27 +296,27 @@
     b.innerHTML = `
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-6">
         <div>
-          <h3 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-100 dark:border-gray-700 pb-1">基本信息</h3>
+          <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 border-b border-white/30 pb-1">基本信息</h3>
           <div class="space-y-1.5">
-            <div class="flex justify-between"><span class="text-gray-500">任务 ID:</span> <span class="font-mono text-gray-900 dark:text-gray-100">${log.id}</span></div>
-            <div class="flex justify-between"><span class="text-gray-500">来源:</span> <span class="font-medium text-gray-900 dark:text-gray-100">${log.is_auto_sync ? '定时任务' : '手工任务'}</span></div>
-            <div class="flex justify-between"><span class="text-gray-500">状态:</span> ${getStatusBadge(log.status)}</div>
+            <div class="flex justify-between"><span class="text-slate-500">任务 ID:</span> <span class="font-mono text-slate-800">${log.id}</span></div>
+            <div class="flex justify-between"><span class="text-slate-500">来源:</span> <span class="font-medium text-slate-800">${log.is_auto_sync ? '定时任务' : '手工任务'}</span></div>
+            <div class="flex justify-between"><span class="text-slate-500">状态:</span> ${getStatusBadge(log.status)}</div>
           </div>
         </div>
         <div>
-          <h3 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-100 dark:border-gray-700 pb-1">时间信息</h3>
+          <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 border-b border-white/30 pb-1">时间信息</h3>
           <div class="space-y-1.5">
-            <div class="flex justify-between"><span class="text-gray-500">开始时间:</span> <span class="text-gray-900 dark:text-gray-100">${formatDate(log.started_at)}</span></div>
-            <div class="flex justify-between"><span class="text-gray-500">结束时间:</span> <span class="text-gray-900 dark:text-gray-100">${formatDate(log.finished_at)}</span></div>
-            <div class="flex justify-between"><span class="text-gray-500">持续时间:</span> <span class="text-gray-900 dark:text-gray-100">${formatDuration(log.duration_seconds)}</span></div>
+            <div class="flex justify-between"><span class="text-slate-500">开始时间:</span> <span class="text-slate-800">${formatDate(log.started_at)}</span></div>
+            <div class="flex justify-between"><span class="text-slate-500">结束时间:</span> <span class="text-slate-800">${formatDate(log.finished_at)}</span></div>
+            <div class="flex justify-between"><span class="text-slate-500">持续时间:</span> <span class="text-slate-800">${formatDuration(log.duration_seconds)}</span></div>
           </div>
         </div>
       </div>
 
       ${log.error_message ? `
         <div class="mb-6">
-          <h3 class="text-xs font-bold text-red-400 dark:text-red-500 uppercase tracking-wider mb-2 border-b border-red-100 dark:border-red-900/50 pb-1">错误信息</h3>
-          <div class="p-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg border border-red-100 dark:border-red-800/50 font-mono text-sm">${escapeHtml(log.error_message)}</div>
+          <h3 class="text-xs font-bold text-red-500 uppercase tracking-wider mb-2 border-b border-red-300/30 pb-1">错误信息</h3>
+          <div class="p-3 bg-red-500/10 text-red-700 rounded-xl border border-red-300/30 font-mono text-sm">${escapeHtml(log.error_message)}</div>
         </div>
       ` : ''}
 

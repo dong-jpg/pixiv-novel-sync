@@ -299,7 +299,11 @@ class Database:
 
     def export_stats(self) -> str:
         row = self.conn.execute(
-            "SELECT (SELECT COUNT(*) FROM users) AS users_count, (SELECT COUNT(*) FROM novels) AS novels_count"
+            "SELECT "
+            "(SELECT COUNT(*) FROM users) AS users_count, "
+            "(SELECT COUNT(*) FROM novels) AS novels_count, "
+            "(SELECT COUNT(*) FROM series) AS series_count, "
+            "(SELECT COUNT(*) FROM pending_deletions WHERE status = 'pending') AS pending_count"
         ).fetchone()
         return json.dumps(dict(row), ensure_ascii=False)
 

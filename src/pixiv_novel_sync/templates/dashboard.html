@@ -8,28 +8,28 @@
   <!-- Hero Section -->
   <section class="bg-blue-500/[0.12] backdrop-blur-xl backdrop-saturate-[1.8] border border-blue-300/30 shadow-glass rounded-3xl p-6 sm:p-8 relative overflow-hidden">
     <div class="relative z-10">
-      <h1 class="text-2xl sm:text-3xl font-bold text-slate-800 mb-3">控制台首页</h1>
-      <p class="text-slate-600 max-w-2xl text-sm sm:text-base mb-6 leading-relaxed">
-        集中展示当前账号、归档规模与最近任务状态。默认使用手工同步模式，避免首次全量拉取导致风控。
+      <h1 class="text-2xl sm:text-3xl font-bold text-slate-800 mb-2">控制台首页</h1>
+      <p class="text-slate-600 max-w-2xl text-sm mb-5 leading-relaxed">
+        归档规模与任务状态一览。可在设置页调整同步参数。
       </p>
 
       <div class="flex flex-wrap items-center gap-3">
         <button id="startSyncBtn" class="bg-blue-500 text-white hover:bg-blue-600 focus:ring-4 focus:ring-blue-500/30 rounded-xl px-5 py-2.5 text-sm font-bold transition-all shadow-glass-sm disabled:opacity-50 disabled:cursor-not-allowed">
           开始手工同步
         </button>
-        <button id="syncSeriesBtn" class="bg-white/50 backdrop-blur-md text-orange-600 border border-white/60 hover:bg-white/70 focus:ring-4 focus:ring-orange-500/20 rounded-xl px-5 py-2.5 text-sm font-bold transition-all shadow-glass-sm disabled:opacity-50 disabled:cursor-not-allowed">
+        <button id="syncSeriesBtn" class="bg-white/50 backdrop-blur-md text-orange-600 border border-white/60 hover:bg-white/70 focus:ring-4 focus:ring-orange-500/20 rounded-xl px-4 py-2 text-sm font-bold transition-all shadow-glass-sm disabled:opacity-50 disabled:cursor-not-allowed">
           同步追更系列
         </button>
-        <button id="checkBookmarksBtn" class="bg-white/50 backdrop-blur-md text-purple-600 border border-white/60 hover:bg-white/70 focus:ring-4 focus:ring-purple-500/20 rounded-xl px-5 py-2.5 text-sm font-bold transition-all shadow-glass-sm disabled:opacity-50 disabled:cursor-not-allowed">
-          预检查所有内容
+        <button id="checkBookmarksBtn" class="bg-white/50 backdrop-blur-md text-purple-600 border border-white/60 hover:bg-white/70 focus:ring-4 focus:ring-purple-500/20 rounded-xl px-4 py-2 text-sm font-bold transition-all shadow-glass-sm disabled:opacity-50 disabled:cursor-not-allowed">
+          预检查
         </button>
-        <span id="actionMessage" class="text-slate-500 text-sm ml-2 font-medium">可在设置页调整同步参数</span>
+        <span id="actionMessage" class="text-slate-500 text-sm font-medium"></span>
       </div>
 
-      <div class="mt-5 flex items-center gap-3 bg-white/30 backdrop-blur-md w-fit px-4 py-2.5 rounded-xl border border-white/50">
-        <label for="seriesSyncLimit" class="text-sm text-slate-600 font-medium">系列同步数量限制：</label>
-        <input type="number" id="seriesSyncLimit" min="0" value="0" class="w-20 px-2 py-1 bg-white/50 border border-white/60 rounded-lg text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 text-center font-mono">
-        <span class="text-xs text-slate-500">0 = 全部系列</span>
+      <div class="mt-4 flex items-center gap-3 bg-white/30 backdrop-blur-md w-fit px-3 py-2 rounded-xl border border-white/50">
+        <label for="seriesSyncLimit" class="text-xs text-slate-600 font-medium">系列限制:</label>
+        <input type="number" id="seriesSyncLimit" min="0" value="0" class="w-16 px-2 py-1 bg-white/50 border border-white/60 rounded-lg text-slate-800 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/50 text-center font-mono">
+        <span class="text-[10px] text-slate-400">0=全部</span>
       </div>
     </div>
 
@@ -183,19 +183,18 @@
     const data = await safeJson(resp);
     const stats = data.stats || {};
 
-    let syncStatusHtml = '';
-    if (data.sync_enabled) {
-      syncStatusHtml = '<div class="flex items-center gap-2"><div class="w-3 h-3 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div><span class="text-xl font-bold text-green-600">开启</span></div>';
-    } else {
-      syncStatusHtml = '<div class="flex items-center gap-2"><div class="w-3 h-3 rounded-full bg-slate-300"></div><span class="text-xl font-bold text-slate-500">关闭</span></div>';
-    }
-
     const cards = [
       ['当前账号', renderCurrentUser(data.current_user || null), true],
-      ['已归档作者', (stats.users_count || 0).toLocaleString(), false],
       ['已归档小说', (stats.novels_count || 0).toLocaleString(), false],
-      ['自动同步', syncStatusHtml, true],
+      ['已归档作者', (stats.users_count || 0).toLocaleString(), false],
+      ['已归档系列', (stats.series_count || 0).toLocaleString(), false],
     ];
+
+    // 如果有待处理删除，替换最后一个卡片
+    const pendingCount = stats.pending_count || 0;
+    if (pendingCount > 0) {
+      cards[3] = ['待处理删除', `<div class="flex items-center gap-2"><span class="text-2xl font-black text-red-600">${pendingCount}</span><a href="/dashboard/pending-deletions" class="text-xs text-red-500 hover:underline">去处理 →</a></div>`, true];
+    }
 
     document.getElementById('statsGrid').innerHTML = cards.map(function (entry) {
       return renderStatCard(entry[0], entry[1], entry[2]);
@@ -387,19 +386,48 @@
 
       if (data.current_task_job_id) stopBtn.classList.remove('hidden'); else stopBtn.classList.add('hidden');
 
-      const tasks = [
-        { name: '同步收藏小说', key: 'bookmarks' },
-        { name: '同步关注列表', key: 'following_list' },
-        { name: '同步关注小说', key: 'following_novels' },
-        { name: '同步追更系列', key: 'subscribed_series' },
-        { name: '检查用户状态', key: 'user_status' },
-      ];
+      const taskLabels = {
+        bookmarks: '同步收藏小说',
+        following_list: '同步关注列表',
+        following_novels: '同步关注小说',
+        subscribed_series: '同步追更系列',
+        user_backup: '全量备份用户',
+        user_status: '检查用户状态',
+        novel_status: '检查小说状态',
+        series_status: '检查系列状态',
+        pending_deletion_detection: '检测取消收藏',
+      };
 
-      taskListEl.innerHTML = tasks.map(task => {
-        const isRunning = data.current_task_job_id?.includes(task.key);
-        const intervalHours = data.task_intervals?.[task.key] || 6;
-        const cronExpr = data.task_crons?.[task.key] || '';
-        let statusText = cronExpr || `每 ${intervalHours} 小时`;
+      // 从后端返回的 task_intervals 动态生成任务列表
+      const taskKeys = Object.keys(data.task_intervals || {});
+      // 按预定义顺序排列
+      const orderedKeys = ['bookmarks','following_list','following_novels','subscribed_series','user_backup','user_status','novel_status','series_status','pending_deletion_detection'];
+      const sortedKeys = orderedKeys.filter(k => taskKeys.includes(k));
+      // 补上后端有但预定义中没有的
+      taskKeys.forEach(k => { if (!sortedKeys.includes(k)) sortedKeys.push(k); });
+
+      function formatRelativeTime(ts) {
+        if (!ts) return '';
+        const diff = ts * 1000 - Date.now();
+        const absDiff = Math.abs(diff);
+        if (absDiff < 60000) return diff > 0 ? '即将' : '刚刚';
+        const mins = Math.floor(absDiff / 60000);
+        if (mins < 60) return diff > 0 ? `${mins}分钟后` : `${mins}分钟前`;
+        const hours = Math.floor(mins / 60);
+        if (hours < 24) return diff > 0 ? `${hours}小时后` : `${hours}小时前`;
+        const days = Math.floor(hours / 24);
+        return diff > 0 ? `${days}天后` : `${days}天前`;
+      }
+
+      taskListEl.innerHTML = sortedKeys.map(key => {
+        const name = taskLabels[key] || key;
+        const isRunning = data.current_task_job_id?.includes(key);
+        const intervalHours = data.task_intervals?.[key] || 6;
+        const cronExpr = data.task_crons?.[key] || '';
+        const lastRun = data.task_last_run?.[key];
+        const nextRun = data.task_next_run?.[key];
+
+        let statusText = cronExpr || `每 ${intervalHours}h`;
         let statusColor = 'text-slate-400';
         let bgClass = 'bg-white/30 border-white/40';
         let dot = '<div class="w-1.5 h-1.5 rounded-full bg-slate-300 mr-2.5"></div>';
@@ -411,12 +439,22 @@
           dot = '<div class="w-1.5 h-1.5 rounded-full bg-blue-500 mr-2.5 animate-pulse"></div>';
         }
 
+        const lastRunText = lastRun ? formatRelativeTime(lastRun) : '从未';
+        const nextRunText = nextRun ? formatRelativeTime(nextRun) : '-';
+
         return `<div class="flex items-center justify-between p-2.5 rounded-xl border ${bgClass} transition-colors">
-          <div class="flex items-center">
+          <div class="flex items-center min-w-0">
             ${dot}
-            <span class="text-sm text-slate-700 font-medium">${task.name}</span>
+            <div class="min-w-0">
+              <span class="text-sm text-slate-700 font-medium block truncate">${escapeHtml(name)}</span>
+              <span class="text-[10px] text-slate-400">${isRunning ? '' : `上次: ${lastRunText}`}</span>
+            </div>
           </div>
-          <span class="text-xs bg-white/40 border border-white/50 px-2 py-1 rounded-lg font-mono ${statusColor}">${statusText}</span>
+          <div class="text-right flex-shrink-0 ml-2">
+            <span class="text-xs bg-white/40 border border-white/50 px-2 py-0.5 rounded-lg font-mono ${statusColor} block">${statusText}</span>
+            ${!isRunning && nextRun ? `<span class="text-[10px] text-slate-400 mt-0.5 block">下次: ${nextRunText}</span>` : ''}
+          </div>
+        </div>`;
         </div>`;
       }).join('');
     } catch (err) { console.error(err); }

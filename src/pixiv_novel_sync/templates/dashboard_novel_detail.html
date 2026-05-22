@@ -6,7 +6,7 @@
 <div class="space-y-6 max-w-4xl mx-auto">
 
   <!-- Back Link -->
-  <a href="/dashboard/novels" class="inline-flex items-center gap-2 text-sm font-semibold text-gray-500 hover:text-brand-600 dark:text-gray-400 dark:hover:text-brand-400 transition-colors">
+  <a href="/dashboard/novels" class="inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-brand-600 transition-colors">
     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
     </svg>
@@ -14,59 +14,59 @@
   </a>
 
   <!-- Hero Section (Novel Info) -->
-  <section id="hero" class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-6 md:p-8 flex flex-col md:flex-row gap-6 md:gap-8 items-start relative overflow-hidden">
+  <section id="hero" class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-6 md:p-8 flex flex-col md:flex-row gap-6 md:gap-8 items-start relative overflow-hidden">
     <!-- Loading State -->
     <div class="animate-pulse flex flex-col md:flex-row gap-6 md:gap-8 w-full">
-      <div class="w-32 h-44 sm:w-48 sm:h-64 bg-gray-200 dark:bg-gray-700 rounded-xl flex-shrink-0 mx-auto md:mx-0"></div>
+      <div class="w-32 h-44 sm:w-48 sm:h-64 bg-white/30 rounded-xl flex-shrink-0 mx-auto md:mx-0"></div>
       <div class="flex-1 space-y-4 py-2 w-full">
-        <div class="h-8 bg-gray-200 dark:bg-gray-700 rounded w-3/4"></div>
-        <div class="flex gap-2"><div class="h-5 bg-gray-200 dark:bg-gray-700 rounded w-16"></div><div class="h-5 bg-gray-200 dark:bg-gray-700 rounded w-16"></div></div>
+        <div class="h-8 bg-white/30 rounded w-3/4"></div>
+        <div class="flex gap-2"><div class="h-5 bg-white/30 rounded w-16"></div><div class="h-5 bg-white/30 rounded w-16"></div></div>
         <div class="space-y-2 mt-4">
-          <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded"></div>
-          <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded w-5/6"></div>
+          <div class="h-4 bg-white/30 rounded"></div>
+          <div class="h-4 bg-white/30 rounded w-5/6"></div>
         </div>
         <div class="grid grid-cols-2 gap-4 mt-6">
-          <div class="h-12 bg-gray-200 dark:bg-gray-700 rounded"></div>
-          <div class="h-12 bg-gray-200 dark:bg-gray-700 rounded"></div>
+          <div class="h-12 bg-white/30 rounded"></div>
+          <div class="h-12 bg-white/30 rounded"></div>
         </div>
       </div>
     </div>
   </section>
 
   <!-- Reader Section -->
-  <section class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 overflow-hidden relative">
+  <section class="bg-white/50 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl overflow-hidden relative">
 
     <!-- Reader Header (Desktop) -->
-    <div class="hidden md:flex justify-between items-center px-8 py-4 border-b border-gray-100 dark:border-gray-700/50 bg-gray-50/50 dark:bg-gray-800/50 sticky top-16 z-20 backdrop-blur-md">
-      <h2 class="text-lg font-bold text-gray-900 dark:text-gray-100 m-0">正文阅读</h2>
+    <div class="hidden md:flex justify-between items-center px-8 py-4 border-b border-white/30 bg-white/45 backdrop-blur-lg sticky top-16 z-20">
+      <h2 class="text-lg font-bold text-slate-800 m-0">正文阅读</h2>
       <div class="flex items-center gap-3">
-        <div class="text-sm font-bold text-gray-400 dark:text-gray-500 bg-white dark:bg-gray-900 px-3 py-1 rounded-lg border border-gray-200 dark:border-gray-700 min-w-[60px] text-center shadow-sm">
+        <div class="text-sm font-bold text-slate-400 bg-white/50 px-3 py-1 rounded-lg border border-white/60 min-w-[60px] text-center shadow-glass-sm">
           <span id="progressLabel">0%</span>
         </div>
-        <button onclick="window.scrollTo({top:0,behavior:'smooth'})" class="px-4 py-1.5 text-sm font-semibold text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors shadow-sm">
+        <button onclick="window.scrollTo({top:0,behavior:'smooth'})" class="px-4 py-1.5 text-sm font-semibold text-slate-600 bg-white/40 backdrop-blur-md border border-white/60 rounded-xl hover:bg-white/55 transition-colors shadow-glass-sm">
           回到顶部
         </button>
-        <button onclick="deleteNovel()" class="px-4 py-1.5 text-sm font-semibold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800/50 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors shadow-sm">
+        <button onclick="deleteNovel()" class="px-4 py-1.5 text-sm font-semibold text-red-600 bg-red-500/10 border border-red-300/30 rounded-xl hover:bg-red-500/20 transition-colors shadow-glass-sm">
           删除小说
         </button>
       </div>
     </div>
 
     <!-- Reader Header (Mobile) -->
-    <div class="md:hidden sticky top-16 z-20 bg-white/90 dark:bg-gray-900/90 backdrop-blur-md border-b border-gray-200 dark:border-gray-800 p-3 flex items-center justify-between shadow-sm">
-      <div class="text-sm font-bold text-brand-600 dark:text-brand-400">
+    <div class="md:hidden sticky top-16 z-20 bg-white/45 backdrop-blur-lg border-b border-white/30 p-3 flex items-center justify-between shadow-glass-sm">
+      <div class="text-sm font-bold text-brand-600">
         <span id="mobileProgressLabel">0%</span>
       </div>
       <div class="flex gap-2">
-        <button onclick="window.scrollTo({top:0,behavior:'smooth'})" class="px-3 py-1.5 text-xs font-semibold text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-800 rounded-md">顶部</button>
-        <button onclick="deleteNovel()" class="px-3 py-1.5 text-xs font-semibold text-white bg-red-500 hover:bg-red-600 rounded-md">删除</button>
+        <button onclick="window.scrollTo({top:0,behavior:'smooth'})" class="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white/40 border border-white/60 rounded-xl hover:bg-white/55">顶部</button>
+        <button onclick="deleteNovel()" class="px-3 py-1.5 text-xs font-semibold text-white bg-red-500 hover:bg-red-600 rounded-xl shadow-glass-sm">删除</button>
       </div>
     </div>
 
     <!-- Reader Content -->
     <div class="px-5 py-8 md:px-12 md:py-12">
-      <div id="content" class="text-gray-800 dark:text-gray-300 text-base md:text-lg leading-loose md:leading-loose max-w-prose mx-auto font-serif" style="word-break: break-word; overflow-wrap: anywhere;">
-        <div class="text-center py-20 text-gray-400 dark:text-gray-500 animate-pulse">正在加载正文...</div>
+      <div id="content" class="text-slate-800 text-base md:text-lg leading-loose md:leading-loose max-w-prose mx-auto font-serif" style="word-break: break-word; overflow-wrap: anywhere;">
+        <div class="text-center py-20 text-slate-400 animate-pulse">正在加载正文...</div>
       </div>
     </div>
 
@@ -75,7 +75,7 @@
 </div>
 
 <!-- Global Progress Bar -->
-<div class="fixed bottom-0 left-0 right-0 h-1.5 bg-gray-200 dark:bg-gray-800 z-50">
+<div class="fixed bottom-0 left-0 right-0 h-1.5 bg-white/30 z-50">
   <div id="progressFill" class="h-full w-0 bg-gradient-to-r from-brand-500 to-indigo-500 transition-all duration-150 ease-linear"></div>
 </div>
 {% endblock %}
@@ -91,9 +91,6 @@
   /* Fallback image styling inside the hero */
   .cover-gradient {
     background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%);
-  }
-  .dark .cover-gradient {
-    background: linear-gradient(135deg, #1e3a8a 0%, #312e81 100%);
   }
 </style>
 
@@ -128,14 +125,14 @@
   function createBadge(text, type = 'default') {
     if (!text) return '';
     const styles = {
-      brand: 'bg-brand-50 text-brand-600 dark:bg-brand-900/30 dark:text-brand-400',
-      success: 'bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400',
-      danger: 'bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400',
-      warning: 'bg-yellow-50 text-yellow-600 dark:bg-yellow-900/30 dark:text-yellow-500',
-      default: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+      brand: 'bg-blue-500/10 text-blue-700 border border-blue-300/30 rounded-xl',
+      success: 'bg-green-500/10 text-green-700 border border-green-300/30 rounded-xl',
+      danger: 'bg-red-500/10 text-red-700 border border-red-300/30 rounded-xl',
+      warning: 'bg-yellow-500/10 text-yellow-700 border border-yellow-300/30 rounded-xl',
+      default: 'bg-slate-500/10 text-slate-700 border border-slate-300/30 rounded-xl'
     };
     const styleClass = styles[type] || styles.default;
-    return `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${styleClass}">${escapeHtml(text)}</span>`;
+    return `<span class="inline-flex items-center px-2 py-0.5 text-xs font-bold ${styleClass}">${escapeHtml(text)}</span>`;
   }
 
   function restrictLabel(value) {
@@ -231,16 +228,16 @@
       document.getElementById('hero').innerHTML = `
         <div class="text-center w-full py-10">
           <h1 class="text-2xl font-bold text-red-500 mb-2">加载失败</h1>
-          <p class="text-gray-500 dark:text-gray-400">未找到这本小说</p>
+          <p class="text-slate-500">未找到这本小说</p>
         </div>`;
-      document.getElementById('content').innerHTML = `<div class="text-center py-20 text-red-500 bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-100 dark:border-red-800/50">${escapeHtml(data.error || '未找到小说')}</div>`;
+      document.getElementById('content').innerHTML = `<div class="text-center py-20 text-red-500 bg-red-500/10 rounded-xl border border-red-300/30">${escapeHtml(data.error || '未找到小说')}</div>`;
       return;
     }
 
     const cover = data.cover_url
-      ? `<img class="w-32 h-44 sm:w-48 sm:h-64 object-cover rounded-xl shadow-md border border-gray-200 dark:border-gray-700 flex-shrink-0 mx-auto md:mx-0" src="/proxy/image?url=${encodeURIComponent(data.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+      ? `<img class="w-32 h-44 sm:w-48 sm:h-64 object-cover rounded-xl shadow-glass-sm border border-white/50 flex-shrink-0 mx-auto md:mx-0" src="/proxy/image?url=${encodeURIComponent(data.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
       : '';
-    const fallbackCover = `<div class="w-32 h-44 sm:w-48 sm:h-64 rounded-xl cover-gradient border border-gray-200 dark:border-gray-700 flex items-center justify-center text-brand-700 dark:text-brand-300 text-lg font-bold text-center p-4 shadow-md flex-shrink-0 mx-auto md:mx-0" style="display:${data.cover_url ? 'none' : 'flex'};">${escapeHtml((data.title || '').slice(0, 6))}</div>`;
+    const fallbackCover = `<div class="w-32 h-44 sm:w-48 sm:h-64 rounded-xl cover-gradient border border-white/50 flex items-center justify-center text-brand-700 text-lg font-bold text-center p-4 shadow-glass-sm flex-shrink-0 mx-auto md:mx-0" style="display:${data.cover_url ? 'none' : 'flex'};">${escapeHtml((data.title || '').slice(0, 6))}</div>`;
 
     const novelStatusMap = {
       normal: {label: '正常', type: 'success'},
@@ -251,7 +248,7 @@
     const ns = novelStatusMap[data.status] || novelStatusMap.unknown;
 
     const author = data.author_name || '未知';
-    const authorLine = data.user_id ? `<a href="/dashboard/users/${encodeURIComponent(data.user_id)}" class="text-brand-600 dark:text-brand-400 hover:underline">${escapeHtml(author)}</a>` : escapeHtml(author);
+    const authorLine = data.user_id ? `<a href="/dashboard/users/${encodeURIComponent(data.user_id)}" class="text-brand-600 hover:underline">${escapeHtml(author)}</a>` : escapeHtml(author);
 
     const badges = [
       createBadge(kindLabel(data.novel_kind), 'brand'),
@@ -264,30 +261,30 @@
         ${cover}${fallbackCover}
       </div>
       <div class="flex-1 min-w-0 flex flex-col justify-center py-2 text-center md:text-left">
-        <h1 class="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 dark:text-white leading-tight mb-3 tracking-tight">${escapeHtml(data.title || '未命名小说')}</h1>
+        <h1 class="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-800 leading-tight mb-3 tracking-tight">${escapeHtml(data.title || '未命名小说')}</h1>
         <div class="flex flex-wrap justify-center md:justify-start gap-2 mb-4">
           ${badges}
         </div>
-        <div class="text-sm text-gray-600 dark:text-gray-300 leading-relaxed mb-6 max-w-2xl bg-gray-50 dark:bg-gray-900/50 p-4 rounded-xl border border-gray-100 dark:border-gray-700/50">
-          ${data.caption ? escapeHtml(data.caption) : '<span class="italic text-gray-400">暂无简介。</span>'}
+        <div class="text-sm text-slate-600 leading-relaxed mb-6 max-w-2xl bg-white/30 backdrop-blur-md p-4 rounded-xl border border-white/40">
+          ${data.caption ? escapeHtml(data.caption) : '<span class="italic text-slate-400">暂无简介。</span>'}
         </div>
 
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mt-auto">
-          <div class="bg-gray-50 dark:bg-gray-900/50 p-3 rounded-xl border border-gray-100 dark:border-gray-700/50">
-            <div class="text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase mb-1">作者</div>
-            <div class="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">${authorLine}</div>
+          <div class="bg-white/30 backdrop-blur-md p-3 rounded-xl border border-white/40">
+            <div class="text-[11px] font-bold text-slate-400 uppercase mb-1">作者</div>
+            <div class="text-sm font-semibold text-slate-800 truncate">${authorLine}</div>
           </div>
-          <div class="bg-gray-50 dark:bg-gray-900/50 p-3 rounded-xl border border-gray-100 dark:border-gray-700/50">
-            <div class="text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase mb-1">字数</div>
-            <div class="text-sm font-semibold text-gray-900 dark:text-gray-100">${formatTextLength(data.text_length)}</div>
+          <div class="bg-white/30 backdrop-blur-md p-3 rounded-xl border border-white/40">
+            <div class="text-[11px] font-bold text-slate-400 uppercase mb-1">字数</div>
+            <div class="text-sm font-semibold text-slate-800">${formatTextLength(data.text_length)}</div>
           </div>
-          <div class="bg-gray-50 dark:bg-gray-900/50 p-3 rounded-xl border border-gray-100 dark:border-gray-700/50">
-            <div class="text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase mb-1">收藏 / 浏览</div>
-            <div class="text-sm font-semibold text-gray-900 dark:text-gray-100">${formatNumber(data.total_bookmarks)} <span class="text-gray-400 mx-0.5">/</span> ${formatNumber(data.total_views)}</div>
+          <div class="bg-white/30 backdrop-blur-md p-3 rounded-xl border border-white/40">
+            <div class="text-[11px] font-bold text-slate-400 uppercase mb-1">收藏 / 浏览</div>
+            <div class="text-sm font-semibold text-slate-800">${formatNumber(data.total_bookmarks)} <span class="text-slate-400 mx-0.5">/</span> ${formatNumber(data.total_views)}</div>
           </div>
-          <div class="bg-gray-50 dark:bg-gray-900/50 p-3 rounded-xl border border-gray-100 dark:border-gray-700/50">
-            <div class="text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase mb-1">发布时间</div>
-            <div class="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">${escapeHtml(data.create_date || '-').substring(0, 10)}</div>
+          <div class="bg-white/30 backdrop-blur-md p-3 rounded-xl border border-white/40">
+            <div class="text-[11px] font-bold text-slate-400 uppercase mb-1">发布时间</div>
+            <div class="text-sm font-semibold text-slate-800 truncate">${escapeHtml(data.create_date || '-').substring(0, 10)}</div>
           </div>
         </div>
       </div>
@@ -300,7 +297,7 @@
   }
 
   loadDetail().catch(function () {
-    document.getElementById('content').innerHTML = '<div class="text-center py-20 text-red-500 font-bold bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-100 dark:border-red-800/50">加载失败</div>';
+    document.getElementById('content').innerHTML = '<div class="text-center py-20 text-red-500 font-bold bg-red-500/10 rounded-xl border border-red-300/30">加载失败</div>';
   });
 
   async function deleteNovel() {
