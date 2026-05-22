@@ -889,6 +889,8 @@ class Database:
                         series_info["cover_url"] = cu
                         break
         series_info["novels"] = [dict(row) for row in novels]
+        # 用本地实际记录数覆盖远端 total_novels
+        series_info["total_novels"] = len(novels)
         # 计算系列总字数
         total_text_length = sum(row.get("text_length", 0) or 0 for row in series_info["novels"])
         series_info["total_text_length"] = total_text_length

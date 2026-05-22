@@ -943,7 +943,8 @@ class BookmarkNovelSyncService:
                                 ))
                             logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
 
-                            # 水位线优化：本地已同步章节数 >= 远端总数则跳过（只计有正文的记录）
+                            # 水位线优化：比较本地已同步数（有正文）和 API 返回的章节列表总长度
+                            # 不依赖远端 content_count（可能不准确），改用实际获取到的章节列表长度
                             local_synced = self.db.conn.execute(
                                 "SELECT COUNT(*) FROM novels n INNER JOIN novel_texts nt ON n.novel_id = nt.novel_id WHERE n.series_id = ?", (int(sid),)
                             ).fetchone()[0]

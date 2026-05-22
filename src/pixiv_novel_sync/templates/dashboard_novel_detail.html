@@ -15,82 +15,109 @@
 
   <!-- Hero Section (Novel Info) -->
   <section id="hero" class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-6 md:p-8 flex flex-col md:flex-row gap-6 md:gap-8 items-start relative overflow-hidden">
-    <!-- Loading State -->
     <div class="animate-pulse flex flex-col md:flex-row gap-6 md:gap-8 w-full">
       <div class="w-32 h-44 sm:w-48 sm:h-64 bg-white/30 rounded-xl flex-shrink-0 mx-auto md:mx-0"></div>
       <div class="flex-1 space-y-4 py-2 w-full">
         <div class="h-8 bg-white/30 rounded w-3/4"></div>
         <div class="flex gap-2"><div class="h-5 bg-white/30 rounded w-16"></div><div class="h-5 bg-white/30 rounded w-16"></div></div>
-        <div class="space-y-2 mt-4">
-          <div class="h-4 bg-white/30 rounded"></div>
-          <div class="h-4 bg-white/30 rounded w-5/6"></div>
-        </div>
-        <div class="grid grid-cols-2 gap-4 mt-6">
-          <div class="h-12 bg-white/30 rounded"></div>
-          <div class="h-12 bg-white/30 rounded"></div>
-        </div>
+        <div class="space-y-2 mt-4"><div class="h-4 bg-white/30 rounded"></div><div class="h-4 bg-white/30 rounded w-5/6"></div></div>
+        <div class="grid grid-cols-2 gap-4 mt-6"><div class="h-12 bg-white/30 rounded"></div><div class="h-12 bg-white/30 rounded"></div></div>
       </div>
     </div>
   </section>
 
-  <!-- Reader Section -->
-  <section class="bg-white/50 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl overflow-hidden relative">
-
-    <!-- Reader Header (Desktop) -->
-    <div class="hidden md:flex justify-between items-center px-8 py-4 border-b border-white/30 bg-white/45 backdrop-blur-lg sticky top-16 z-20">
-      <h2 class="text-lg font-bold text-slate-800 m-0">正文阅读</h2>
-      <div class="flex items-center gap-3">
-        <div class="text-sm font-bold text-slate-400 bg-white/50 px-3 py-1 rounded-lg border border-white/60 min-w-[60px] text-center shadow-glass-sm">
-          <span id="progressLabel">0%</span>
-        </div>
-        <button onclick="window.scrollTo({top:0,behavior:'smooth'})" class="px-4 py-1.5 text-sm font-semibold text-slate-600 bg-white/40 backdrop-blur-md border border-white/60 rounded-xl hover:bg-white/55 transition-colors shadow-glass-sm">
-          回到顶部
-        </button>
-        <button onclick="deleteNovel()" class="px-4 py-1.5 text-sm font-semibold text-red-600 bg-red-500/10 border border-red-300/30 rounded-xl hover:bg-red-500/20 transition-colors shadow-glass-sm">
-          删除小说
-        </button>
-      </div>
+  <!-- Pixiv-style Reader -->
+  <section class="novel-reader-wrapper">
+    <div id="content" class="novel-reader-content">
+      <div style="text-align:center;padding:5rem 0;color:#999;">正在加载正文...</div>
     </div>
-
-    <!-- Reader Header (Mobile) -->
-    <div class="md:hidden sticky top-16 z-20 bg-white/45 backdrop-blur-lg border-b border-white/30 p-3 flex items-center justify-between shadow-glass-sm">
-      <div class="text-sm font-bold text-brand-600">
-        <span id="mobileProgressLabel">0%</span>
-      </div>
-      <div class="flex gap-2">
-        <button onclick="window.scrollTo({top:0,behavior:'smooth'})" class="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white/40 border border-white/60 rounded-xl hover:bg-white/55">顶部</button>
-        <button onclick="deleteNovel()" class="px-3 py-1.5 text-xs font-semibold text-white bg-red-500 hover:bg-red-600 rounded-xl shadow-glass-sm">删除</button>
-      </div>
-    </div>
-
-    <!-- Reader Content -->
-    <div class="px-5 py-8 md:px-12 md:py-12">
-      <div id="content" class="text-slate-800 text-base md:text-lg leading-loose md:leading-loose max-w-prose mx-auto font-serif" style="word-break: break-word; overflow-wrap: anywhere;">
-        <div class="text-center py-20 text-slate-400 animate-pulse">正在加载正文...</div>
-      </div>
-    </div>
-
   </section>
 
 </div>
 
-<!-- Global Progress Bar -->
-<div class="fixed bottom-0 left-0 right-0 h-1.5 bg-white/30 z-50">
+<!-- Bottom Progress Bar -->
+<div class="fixed bottom-0 left-0 right-0 h-1 bg-white/30 z-50">
   <div id="progressFill" class="h-full w-0 bg-gradient-to-r from-brand-500 to-indigo-500 transition-all duration-150 ease-linear"></div>
 </div>
 {% endblock %}
 
 {% block extra_scripts %}
 <style>
-  /* Base typography for reader */
-  .reader-content p {
-    margin-bottom: 1.5em;
-    text-indent: 2em;
+  /* ========== Pixiv Novel Reader Style ========== */
+  .novel-reader-wrapper {
+    background-color: #fffffc;
+    border-radius: 1rem;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.06);
+    overflow: hidden;
   }
 
-  /* Fallback image styling inside the hero */
+  .novel-reader-content {
+    max-width: 680px;
+    width: 80%;
+    margin: 3rem auto 5rem;
+    font-family: "BIZ UDMincho", "Hiragino Mincho ProN", "Hiragino Mincho Pro", "Yu Mincho", YuMincho, "Noto Serif JP", "Noto Serif SC", "Source Han Serif SC", "宋体", SimSun, serif;
+    font-size: 1.0625rem;
+    line-height: 2;
+    letter-spacing: 0.06em;
+    color: #444;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+
+  .novel-reader-content .novel-title {
+    font-size: 1.75rem;
+    font-weight: 600;
+    text-align: center;
+    color: #555;
+    padding: 2rem 0 0.5rem;
+    line-height: 1.4;
+  }
+
+  .novel-reader-content .novel-author {
+    text-align: center;
+    font-size: 0.875rem;
+    color: #999;
+    margin-bottom: 2.5rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid #eee;
+  }
+
+  .novel-reader-content .novel-author a {
+    color: #888;
+    text-decoration: none;
+  }
+  .novel-reader-content .novel-author a:hover {
+    color: #0096fa;
+    text-decoration: underline;
+  }
+
+  .novel-reader-content .reader-body p {
+    margin: 0;
+    text-indent: 1em;
+  }
+
+  .novel-reader-content .reader-body p:empty {
+    height: 1.8em;
+  }
+
+  .novel-reader-content .reader-body p + p {
+    margin-top: 0;
+  }
+
+  /* Cover gradient fallback */
   .cover-gradient {
     background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%);
+  }
+
+  @media (max-width: 640px) {
+    .novel-reader-content {
+      width: 90%;
+      margin: 2rem auto 4rem;
+      font-size: 1rem;
+    }
+    .novel-reader-content .novel-title {
+      font-size: 1.4rem;
+    }
   }
 </style>
 
@@ -111,9 +138,7 @@
     });
   }
 
-  function formatNumber(value) {
-    return Number(value || 0).toLocaleString('zh-CN');
-  }
+  function formatNumber(value) { return Number(value || 0).toLocaleString('zh-CN'); }
 
   function formatTextLength(chars) {
     const value = Number(chars || 0);
@@ -122,7 +147,7 @@
     return formatNumber(value) + ' 字';
   }
 
-  function createBadge(text, type = 'default') {
+  function createBadge(text, type) {
     if (!text) return '';
     const styles = {
       brand: 'bg-blue-500/10 text-blue-700 border border-blue-300/30 rounded-xl',
@@ -131,28 +156,14 @@
       warning: 'bg-yellow-500/10 text-yellow-700 border border-yellow-300/30 rounded-xl',
       default: 'bg-slate-500/10 text-slate-700 border border-slate-300/30 rounded-xl'
     };
-    const styleClass = styles[type] || styles.default;
-    return `<span class="inline-flex items-center px-2 py-0.5 text-xs font-bold ${styleClass}">${escapeHtml(text)}</span>`;
+    return `<span class="inline-flex items-center px-2 py-0.5 text-xs font-bold ${styles[type] || styles.default}">${escapeHtml(text)}</span>`;
   }
 
-  function restrictLabel(value) {
-    if (value === 'public') return '公开';
-    if (value === 'private') return '私密';
-    return value || '未知';
-  }
-
-  function kindLabel(value) {
-    if (value === 'series') return '系列';
-    if (value === 'single') return '单本';
-    return '未知';
-  }
+  function restrictLabel(v) { return v === 'public' ? '公开' : v === 'private' ? '私密' : v || '未知'; }
+  function kindLabel(v) { return v === 'series' ? '系列' : v === 'single' ? '单本' : '未知'; }
 
   function readSavedProgress() {
-    try {
-      return JSON.parse(localStorage.getItem(storageKey) || 'null');
-    } catch (err) {
-      return null;
-    }
+    try { return JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch (e) { return null; }
   }
 
   function getReadingProgress() {
@@ -165,11 +176,7 @@
   function updateProgressUi(progress) {
     const percent = Math.round((progress || 0) * 100);
     const fill = document.getElementById('progressFill');
-    const label = document.getElementById('progressLabel');
-    const mobileLabel = document.getElementById('mobileProgressLabel');
     if (fill) fill.style.width = percent + '%';
-    if (label) label.textContent = percent + '%';
-    if (mobileLabel) mobileLabel.textContent = percent + '%';
   }
 
   function saveProgress(data) {
@@ -184,12 +191,12 @@
         progress: current.progress,
         updatedAt: Date.now()
       }));
-    } catch (err) {}
+    } catch (e) {}
   }
 
   function setupProgressTracking(data) {
     const saved = readSavedProgress();
-    if (restorePending && saved && saved.scrollY > 0 && !window.location.hash && !window.location.search.includes('noRestore=1')) {
+    if (restorePending && saved && saved.scrollY > 0 && !window.location.hash) {
       requestAnimationFrame(function () {
         window.scrollTo({ top: Math.min(saved.scrollY, document.documentElement.scrollHeight), behavior: 'auto' });
         updateProgressUi(getReadingProgress().progress);
@@ -198,26 +205,40 @@
       updateProgressUi(getReadingProgress().progress);
     }
     restorePending = false;
-
     window.addEventListener('scroll', function () {
       if (scrollThrottle) return;
-      scrollThrottle = setTimeout(function () {
-        scrollThrottle = null;
-        saveProgress(data);
-      }, 300);
+      scrollThrottle = setTimeout(function () { scrollThrottle = null; saveProgress(data); }, 300);
     }, { passive: true });
-
     window.addEventListener('beforeunload', function () { saveProgress(data); });
   }
 
-  function formatContent(text) {
-    // Basic formatting for raw text to ensure readability if not markdown
-    // Convert newlines to paragraphs
-    if (!text.includes('<p>')) {
-      const paragraphs = escapeHtml(text).split(/\n\s*\n/).filter(p => p.trim());
-      return '<div class="reader-content">' + paragraphs.map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('') + '</div>';
+  function formatContent(text, title, authorName, userId) {
+    // Build Pixiv-style header
+    let header = '';
+    if (title) {
+      header += `<div class="novel-title">${escapeHtml(title)}</div>`;
     }
-    return `<div class="reader-content">${text}</div>`; // Assume it's already HTML (e.g. from markdown render)
+    if (authorName) {
+      const authorLink = userId
+        ? `<a href="/dashboard/users/${encodeURIComponent(userId)}">${escapeHtml(authorName)}</a>`
+        : escapeHtml(authorName);
+      header += `<div class="novel-author">${authorLink}</div>`;
+    }
+
+    // Format body text into paragraphs (Pixiv style: each line is a <p>)
+    let bodyHtml;
+    if (text.includes('<p>')) {
+      bodyHtml = text;
+    } else {
+      const lines = text.split('\n');
+      bodyHtml = lines.map(function(line) {
+        const trimmed = line.trim();
+        if (!trimmed) return '<p></p>';
+        return '<p>' + escapeHtml(trimmed) + '</p>';
+      }).join('\n');
+    }
+
+    return header + '<div class="reader-body">' + bodyHtml + '</div>';
   }
 
   async function loadDetail() {
@@ -230,45 +251,30 @@
           <h1 class="text-2xl font-bold text-red-500 mb-2">加载失败</h1>
           <p class="text-slate-500">未找到这本小说</p>
         </div>`;
-      document.getElementById('content').innerHTML = `<div class="text-center py-20 text-red-500 bg-red-500/10 rounded-xl border border-red-300/30">${escapeHtml(data.error || '未找到小说')}</div>`;
+      document.getElementById('content').innerHTML = `<div style="text-align:center;padding:5rem 0;color:#c00;">${escapeHtml(data.error || '未找到小说')}</div>`;
       return;
     }
 
+    // Hero
     const cover = data.cover_url
       ? `<img class="w-32 h-44 sm:w-48 sm:h-64 object-cover rounded-xl shadow-glass-sm border border-white/50 flex-shrink-0 mx-auto md:mx-0" src="/proxy/image?url=${encodeURIComponent(data.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
       : '';
     const fallbackCover = `<div class="w-32 h-44 sm:w-48 sm:h-64 rounded-xl cover-gradient border border-white/50 flex items-center justify-center text-brand-700 text-lg font-bold text-center p-4 shadow-glass-sm flex-shrink-0 mx-auto md:mx-0" style="display:${data.cover_url ? 'none' : 'flex'};">${escapeHtml((data.title || '').slice(0, 6))}</div>`;
 
-    const novelStatusMap = {
-      normal: {label: '正常', type: 'success'},
-      deleted: {label: '已删除', type: 'danger'},
-      restricted: {label: '受限', type: 'warning'},
-      unknown: {label: '未检查', type: 'default'}
-    };
-    const ns = novelStatusMap[data.status] || novelStatusMap.unknown;
-
+    const nsMap = { normal: {l:'正常',t:'success'}, deleted: {l:'已删除',t:'danger'}, restricted: {l:'受限',t:'warning'}, unknown: {l:'未检查',t:'default'} };
+    const ns = nsMap[data.status] || nsMap.unknown;
     const author = data.author_name || '未知';
     const authorLine = data.user_id ? `<a href="/dashboard/users/${encodeURIComponent(data.user_id)}" class="text-brand-600 hover:underline">${escapeHtml(author)}</a>` : escapeHtml(author);
-
-    const badges = [
-      createBadge(kindLabel(data.novel_kind), 'brand'),
-      createBadge(restrictLabel(data.restrict_value), 'default'),
-      createBadge(`● ${ns.label}`, ns.type)
-    ].join('');
+    const badges = [createBadge(kindLabel(data.novel_kind),'brand'), createBadge(restrictLabel(data.restrict_value),'default'), createBadge('● '+ns.l, ns.t)].join('');
 
     document.getElementById('hero').innerHTML = `
-      <div class="relative z-10 flex-shrink-0 mx-auto md:mx-0">
-        ${cover}${fallbackCover}
-      </div>
+      <div class="relative z-10 flex-shrink-0 mx-auto md:mx-0">${cover}${fallbackCover}</div>
       <div class="flex-1 min-w-0 flex flex-col justify-center py-2 text-center md:text-left">
         <h1 class="text-2xl sm:text-3xl md:text-4xl font-bold text-slate-800 leading-tight mb-3 tracking-tight">${escapeHtml(data.title || '未命名小说')}</h1>
-        <div class="flex flex-wrap justify-center md:justify-start gap-2 mb-4">
-          ${badges}
-        </div>
+        <div class="flex flex-wrap justify-center md:justify-start gap-2 mb-4">${badges}</div>
         <div class="text-sm text-slate-600 leading-relaxed mb-6 max-w-2xl bg-white/30 backdrop-blur-md p-4 rounded-xl border border-white/40">
           ${data.caption ? escapeHtml(data.caption) : '<span class="italic text-slate-400">暂无简介。</span>'}
         </div>
-
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mt-auto">
           <div class="bg-white/30 backdrop-blur-md p-3 rounded-xl border border-white/40">
             <div class="text-[11px] font-bold text-slate-400 uppercase mb-1">作者</div>
@@ -290,30 +296,15 @@
       </div>
     `;
 
-    const rawContent = data.text_markdown || data.text_raw || '当前未找到本地正文预览内容。';
-    document.getElementById('content').innerHTML = formatContent(rawContent);
+    // Reader content — Pixiv style
+    const rawContent = data.text_raw || data.text_markdown || '';
+    document.getElementById('content').innerHTML = formatContent(rawContent, data.title, data.author_name, data.user_id);
 
     setupProgressTracking(data);
   }
 
   loadDetail().catch(function () {
-    document.getElementById('content').innerHTML = '<div class="text-center py-20 text-red-500 font-bold bg-red-500/10 rounded-xl border border-red-300/30">加载失败</div>';
+    document.getElementById('content').innerHTML = '<div style="text-align:center;padding:5rem 0;color:#c00;font-weight:bold;">加载失败</div>';
   });
-
-  async function deleteNovel() {
-    if (!confirm('确定要删除这本小说吗？此操作不可撤销。')) return;
-    try {
-      const resp = await fetch(`/api/dashboard/novels/${encodeURIComponent(novelId)}`, { method: 'DELETE' });
-      const data = await resp.json();
-      if (resp.ok) {
-        alert('小说已删除');
-        window.location.href = '/dashboard/novels';
-      } else {
-        alert('删除失败: ' + (data.error || '未知错误'));
-      }
-    } catch (err) {
-      alert('删除失败: ' + err.message);
-    }
-  }
 </script>
 {% endblock %}
