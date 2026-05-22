@@ -442,13 +442,23 @@ class AutoSyncScheduler:
                 if self._check_stop():
                     raise InterruptedError("Task stopped by user")
                 if job_id and self.sync_job_manager:
-                    if event_type == "novel_start":
-                        self.sync_job_manager.add_log(job_id, "info", f"[{data.get('current', '?')}/{data.get('total', '?')}] {data.get('title', '')[:30]}")
+                    if event_type == "user_start":
+                        total = data.get('total', 0)
+                        total_str = str(total) if total > 0 else '?'
+                        self.sync_job_manager.add_log(job_id, "info", f"[{data.get('current', '?')}/{total_str}] {data.get('author', '')}")
                         self.sync_job_manager.update_progress(
                             job_id,
                             phase=data.get("phase", "同步用户小说"),
                             current=data.get('current', 0),
-                            total=data.get('total', 50),
+                            total=total or 50,
+                            current_novel='',
+                            author=data.get('author', ''),
+                        )
+                    elif event_type == "novel_start":
+                        self.sync_job_manager.add_log(job_id, "info", f"  › {data.get('title', '')[:30]}")
+                        self.sync_job_manager.update_progress(
+                            job_id,
+                            phase=data.get("phase", "同步用户小说"),
                             current_novel=data.get('title', '')[:40],
                             author=data.get('author', ''),
                         )

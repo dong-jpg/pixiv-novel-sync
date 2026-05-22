@@ -565,6 +565,15 @@ class BookmarkNovelSyncService:
 
                 logger.info("Syncing followed user novels for user_id=%s name=%s", author_id, author_name)
 
+                if progress_callback:
+                    progress_callback("user_start", {
+                        "current": users_processed,
+                        "total": users_limit or 0,
+                        "author": author_name,
+                        "author_id": author_id,
+                        "phase": "同步用户小说",
+                    })
+
                 next_novel_query: dict[str, Any] | None = {"user_id": author_id}
                 author_page_count = 0
                 # 该用户上次同步的最新 novel_id
@@ -590,8 +599,6 @@ class BookmarkNovelSyncService:
 
                         if progress_callback:
                             progress_callback("novel_start", {
-                                "current": users_processed,
-                                "total": users_limit or 0,
                                 "novel_id": novel_id,
                                 "title": title,
                                 "author": author_name,
