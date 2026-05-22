@@ -760,6 +760,7 @@ class AutoSyncScheduler:
             total_skipped = 0
             total_assets = 0
             item_delay = settings.sync.delay_seconds_between_items
+            skip_delay = settings.sync.delay_seconds_between_skips
             page_delay = settings.sync.delay_seconds_between_pages
 
             for idx, uid in enumerate(batch):
@@ -800,6 +801,8 @@ class AutoSyncScheduler:
                         )
                         if counters.get("skipped"):
                             user_skipped += 1
+                            if skip_delay > 0:
+                                time.sleep(skip_delay)
                         else:
                             user_novels += 1
                             total_assets += counters.get("assets_downloaded", 0)
@@ -1288,7 +1291,10 @@ class SyncJobManager:
                         )
                         for key in ("novels", "skipped", "assets_downloaded"):
                             stats[key] = stats.get(key, 0) + counters.get(key, 0)
-                        if not counters.get("skipped") and settings.sync.delay_seconds_between_items > 0:
+                        if counters.get("skipped"):
+                            if settings.sync.delay_seconds_between_skips > 0:
+                                time.sleep(settings.sync.delay_seconds_between_skips)
+                        elif settings.sync.delay_seconds_between_items > 0:
                             time.sleep(settings.sync.delay_seconds_between_items)
                     next_query = api.parse_qs(getattr(result, "next_url", None))
                     if next_query and settings.sync.delay_seconds_between_pages > 0:
