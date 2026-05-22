@@ -7,13 +7,17 @@
   /* 覆盖 base.html 的渐变背景，使用 Pixiv 纯色背景 */
   body { background-color: #fffffc !important; color: #444; }
   body > .fixed.-z-10 { display: none !important; }
+  /* 覆盖 main 的宽度和 padding 限制，让正文铺满 */
+  main.flex-grow { max-width: 100% !important; padding: 0 !important; }
+  /* 隐藏 footer */
+  footer { display: none !important; }
 
   /* ========== Pixiv Novel Reader Style ========== */
   .novel-reader-content {
     max-width: 680px;
-    width: 80%;
+    width: 90%;
     margin: 0 auto;
-    padding: 0 0 6rem;
+    padding: 1rem 0 6rem;
     font-family: "BIZ UDMincho", "Hiragino Mincho ProN", "Hiragino Mincho Pro", "Yu Mincho", YuMincho, "Noto Serif JP", "Noto Serif SC", "Source Han Serif SC", "宋体", SimSun, serif;
     font-size: 1.0625rem;
     line-height: 2;
@@ -28,25 +32,32 @@
     font-weight: 600;
     text-align: center;
     color: #333;
-    padding: 2.5rem 0 0.5rem;
+    padding: 1.5rem 0 0.5rem;
     line-height: 1.5;
     letter-spacing: 0.04em;
   }
 
-  .novel-reader-content .novel-author {
+  .novel-reader-content .novel-meta {
     text-align: center;
-    font-size: 0.875rem;
+    font-size: 0.8125rem;
     color: #999;
-    margin-bottom: 2.5rem;
+    margin-bottom: 2rem;
     padding-bottom: 1.5rem;
     border-bottom: 1px solid #e8e8e8;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.8;
   }
-  .novel-reader-content .novel-author a {
+  .novel-reader-content .novel-meta a {
     color: #0096fa;
     text-decoration: none;
   }
-  .novel-reader-content .novel-author a:hover {
+  .novel-reader-content .novel-meta a:hover {
     text-decoration: underline;
+  }
+  .novel-reader-content .novel-meta .meta-stats {
+    margin-top: 6px;
+    font-size: 0.75rem;
+    color: #bbb;
   }
 
   .novel-reader-content .reader-body p {
@@ -57,52 +68,6 @@
     height: 1.8em;
   }
 
-  /* 信息卡在 Pixiv 背景下的样式 */
-  .novel-info-card {
-    background: #fff;
-    border: 1px solid #eee;
-    border-radius: 12px;
-    padding: 1.5rem 2rem;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
-  }
-  .novel-info-card .info-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 0.75rem;
-  }
-  @media (min-width: 1024px) {
-    .novel-info-card .info-grid { grid-template-columns: repeat(4, 1fr); }
-  }
-  .novel-info-card .info-item {
-    background: #f8f8f6;
-    border-radius: 8px;
-    padding: 0.75rem;
-  }
-  .novel-info-card .info-item .label {
-    font-size: 11px;
-    font-weight: 700;
-    color: #aaa;
-    text-transform: uppercase;
-    margin-bottom: 4px;
-  }
-  .novel-info-card .info-item .value {
-    font-size: 14px;
-    font-weight: 600;
-    color: #444;
-  }
-  .novel-info-card .info-item .value a {
-    color: #0096fa;
-    text-decoration: none;
-  }
-  .novel-info-card .info-item .value a:hover {
-    text-decoration: underline;
-  }
-
-  .cover-gradient {
-    background: linear-gradient(135deg, #e8ecf4 0%, #d4dbe8 100%);
-  }
-
-  /* 返回链接 */
   .back-link {
     display: inline-flex;
     align-items: center;
@@ -112,24 +77,9 @@
     color: #999;
     text-decoration: none;
     transition: color 0.15s;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
   .back-link:hover { color: #0096fa; }
-
-  /* 徽章 */
-  .novel-badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 2px 8px;
-    font-size: 11px;
-    font-weight: 700;
-    border-radius: 4px;
-    line-height: 1.6;
-  }
-  .badge-blue { background: #e8f0fe; color: #1a73e8; }
-  .badge-gray { background: #f0f0f0; color: #666; }
-  .badge-green { background: #e6f4ea; color: #137333; }
-  .badge-red { background: #fce8e6; color: #c5221f; }
-  .badge-yellow { background: #fef7e0; color: #b06000; }
 
   @media (max-width: 640px) {
     .novel-reader-content {
@@ -139,36 +89,22 @@
     .novel-reader-content .novel-title {
       font-size: 1.35rem;
     }
-    .novel-info-card {
-      padding: 1rem 1.25rem;
-    }
   }
 </style>
 {% endblock %}
 
 {% block content %}
-<div style="max-width:960px;margin:0 auto;padding:0 1rem;">
+<div>
 
   <!-- Back Link -->
-  <div style="padding:1rem 0;">
+  <div style="max-width:680px;width:90%;margin:0 auto;padding:0.75rem 0;">
     <a class="back-link" href="/dashboard/novels">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
       返回小说列表
     </a>
   </div>
 
-  <!-- Novel Info Card -->
-  <section id="hero" class="novel-info-card" style="margin-bottom:2rem;">
-    <div style="display:flex;gap:1.5rem;align-items:flex-start;flex-wrap:wrap;">
-      <div style="width:120px;height:168px;background:#f0f0f0;border-radius:8px;flex-shrink:0;animation:pulse 2s infinite;"></div>
-      <div style="flex:1;min-width:200px;">
-        <div style="height:28px;background:#f0f0f0;border-radius:6px;width:60%;margin-bottom:12px;animation:pulse 2s infinite;"></div>
-        <div style="height:16px;background:#f0f0f0;border-radius:4px;width:40%;animation:pulse 2s infinite;"></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Pixiv-style Reader -->
+  <!-- Pixiv-style Reader (title + author + body all inside) -->
   <div id="content" class="novel-reader-content">
     <div style="text-align:center;padding:5rem 0;color:#999;">正在加载正文...</div>
   </div>
@@ -201,16 +137,6 @@
     if (!v) return '0 字';
     return v >= 10000 ? (v / 10000).toFixed(1) + ' 万字' : formatNumber(v) + ' 字';
   }
-
-  function badgeClass(type) {
-    return { brand:'badge-blue', success:'badge-green', danger:'badge-red', warning:'badge-yellow', default:'badge-gray' }[type] || 'badge-gray';
-  }
-  function createBadge(text, type) {
-    if (!text) return '';
-    return `<span class="novel-badge ${badgeClass(type)}">${escapeHtml(text)}</span>`;
-  }
-  function restrictLabel(v) { return v === 'public' ? '公开' : v === 'private' ? '私密' : v || '未知'; }
-  function kindLabel(v) { return v === 'series' ? '系列' : v === 'single' ? '单本' : '未知'; }
 
   function readSavedProgress() {
     try { return JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch (e) { return null; }
@@ -251,15 +177,26 @@
     window.addEventListener('beforeunload', () => saveProgress(data));
   }
 
-  function formatContent(text, title, authorName, userId) {
+  function formatContent(text, data) {
+    const title = data.title || '';
+    const authorName = data.author_name || '未知';
+    const userId = data.user_id;
+
     let header = '';
     if (title) header += `<div class="novel-title">${escapeHtml(title)}</div>`;
-    if (authorName) {
-      const link = userId
-        ? `<a href="/dashboard/users/${encodeURIComponent(userId)}">${escapeHtml(authorName)}</a>`
-        : escapeHtml(authorName);
-      header += `<div class="novel-author">${link}</div>`;
-    }
+
+    // Meta line: author + stats
+    const authorLink = userId
+      ? `<a href="/dashboard/users/${encodeURIComponent(userId)}">${escapeHtml(authorName)}</a>`
+      : escapeHtml(authorName);
+    const statsLine = [
+      formatTextLength(data.text_length),
+      `${formatNumber(data.total_bookmarks)} 收藏`,
+      `${formatNumber(data.total_views)} 浏览`,
+    ].join('&nbsp;&nbsp;·&nbsp;&nbsp;');
+    header += `<div class="novel-meta">${authorLink}<div class="meta-stats">${statsLine}</div></div>`;
+
+    // Body
     let bodyHtml;
     if (text.includes('<p>')) {
       bodyHtml = text;
@@ -276,46 +213,14 @@
     const resp = await fetch(`/api/dashboard/novels/${encodeURIComponent(novelId)}`);
     const data = await resp.json();
     if (!resp.ok) {
-      document.getElementById('hero').innerHTML = '<div style="text-align:center;padding:2rem;"><h2 style="color:#c00;font-size:1.25rem;">加载失败</h2><p style="color:#999;margin-top:8px;">未找到这本小说</p></div>';
       document.getElementById('content').innerHTML = '<div style="text-align:center;padding:5rem 0;color:#c00;">' + escapeHtml(data.error || '未找到小说') + '</div>';
       return;
     }
+    // Set page title
+    if (data.title) document.title = escapeHtml(data.title) + ' - Pixiv 小说同步器';
 
-    // Hero info card
-    const cover = data.cover_url
-      ? `<img style="width:120px;height:168px;object-fit:cover;border-radius:8px;flex-shrink:0;" src="/proxy/image?url=${encodeURIComponent(data.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
-      : '';
-    const fallbackCover = `<div class="cover-gradient" style="width:120px;height:168px;border-radius:8px;display:${data.cover_url ? 'none' : 'flex'};align-items:center;justify-content:center;color:#667;font-weight:bold;text-align:center;padding:8px;flex-shrink:0;font-size:14px;">${escapeHtml((data.title || '').slice(0, 8))}</div>`;
-
-    const nsMap = { normal:{l:'正常',t:'success'}, deleted:{l:'已删除',t:'danger'}, restricted:{l:'受限',t:'warning'}, unknown:{l:'未检查',t:'default'} };
-    const ns = nsMap[data.status] || nsMap.unknown;
-    const author = data.author_name || '未知';
-    const authorLink = data.user_id ? `<a href="/dashboard/users/${encodeURIComponent(data.user_id)}">${escapeHtml(author)}</a>` : escapeHtml(author);
-
-    document.getElementById('hero').innerHTML = `
-      <div style="display:flex;gap:1.5rem;align-items:flex-start;flex-wrap:wrap;">
-        ${cover}${fallbackCover}
-        <div style="flex:1;min-width:200px;">
-          <h1 style="font-size:1.5rem;font-weight:700;color:#333;margin:0 0 8px;line-height:1.4;">${escapeHtml(data.title || '未命名小说')}</h1>
-          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;">
-            ${createBadge(kindLabel(data.novel_kind), 'brand')}
-            ${createBadge(restrictLabel(data.restrict_value), 'default')}
-            ${createBadge(ns.l, ns.t)}
-          </div>
-          ${data.caption ? `<p style="font-size:13px;color:#666;line-height:1.7;margin:0 0 16px;">${escapeHtml(data.caption)}</p>` : ''}
-          <div class="info-grid">
-            <div class="info-item"><div class="label">作者</div><div class="value">${authorLink}</div></div>
-            <div class="info-item"><div class="label">字数</div><div class="value">${formatTextLength(data.text_length)}</div></div>
-            <div class="info-item"><div class="label">收藏 / 浏览</div><div class="value">${formatNumber(data.total_bookmarks)} / ${formatNumber(data.total_views)}</div></div>
-            <div class="info-item"><div class="label">发布时间</div><div class="value">${escapeHtml(data.create_date || '-').substring(0, 10)}</div></div>
-          </div>
-        </div>
-      </div>
-    `;
-
-    // Reader content
     const rawContent = data.text_raw || data.text_markdown || '';
-    document.getElementById('content').innerHTML = formatContent(rawContent, data.title, data.author_name, data.user_id);
+    document.getElementById('content').innerHTML = formatContent(rawContent, data);
     setupProgressTracking(data);
   }
 
