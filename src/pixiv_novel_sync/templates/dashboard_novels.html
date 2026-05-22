@@ -7,34 +7,34 @@
 
   <!-- Header -->
   <div>
-    <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-gray-100 tracking-tight mb-2">小说归档</h1>
-    <p class="text-sm sm:text-base text-gray-500 dark:text-gray-400">分页展示已同步的小说，支持分类筛选，点击标题可查看详情。</p>
+    <h1 class="text-2xl sm:text-3xl font-bold text-slate-800 tracking-tight mb-2">小说归档</h1>
+    <p class="text-sm sm:text-base text-slate-600">分页展示已同步的小说，支持分类筛选，点击标题可查看详情。</p>
   </div>
 
   <!-- Main Card -->
-  <section class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-5 sm:p-6">
+  <section class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-5 sm:p-6">
 
     <!-- Toolbar -->
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
 
       <!-- Tabs -->
-      <div class="flex flex-wrap items-center gap-2 p-1 bg-gray-100 dark:bg-gray-900 rounded-lg w-fit" id="tabs">
-        <button class="tab-btn px-4 py-1.5 text-sm font-semibold rounded-md transition-all text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200" data-category="bookmark">收藏</button>
-        <button class="tab-btn px-4 py-1.5 text-sm font-semibold rounded-md transition-all text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200" data-category="following">追更</button>
+      <div class="flex flex-wrap items-center gap-2 p-1 bg-white/30 backdrop-blur-md border border-white/40 rounded-xl w-fit" id="tabs">
+        <button class="tab-btn px-4 py-1.5 text-sm font-semibold rounded-xl transition-all text-slate-600 hover:text-slate-800 hover:bg-white/40" data-category="bookmark">收藏</button>
+        <button class="tab-btn px-4 py-1.5 text-sm font-semibold rounded-xl transition-all text-slate-600 hover:text-slate-800 hover:bg-white/40" data-category="following">追更</button>
       </div>
 
       <!-- Filters & Search -->
       <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
         <div class="relative w-full sm:w-64">
           <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-            <svg class="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg class="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
           </div>
-          <input type="text" id="searchInput" placeholder="搜索标题或作者..." class="w-full pl-9 pr-4 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-colors">
+          <input type="text" id="searchInput" placeholder="搜索标题或作者..." class="w-full pl-9 pr-4 py-2 bg-white/50 border border-white/60 text-slate-800 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors">
         </div>
 
-        <select id="sortBy" class="w-full sm:w-auto px-4 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-colors appearance-none">
+        <select id="sortBy" class="w-full sm:w-auto px-4 py-2 bg-white/50 border border-white/60 text-slate-800 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors appearance-none">
           <option value="">默认排序</option>
           <option value="updated_desc">更新时间倒序</option>
           <option value="bookmarks_desc">收藏数倒序</option>
@@ -44,7 +44,7 @@
     </div>
 
     <!-- Summary Info -->
-    <div class="flex items-center justify-between text-xs font-medium text-gray-500 dark:text-gray-400 mb-4 px-1">
+    <div class="flex items-center justify-between text-xs font-medium text-slate-600 mb-4 px-1">
       <div id="summary">加载中...</div>
       <div id="pageInfo"></div>
     </div>
@@ -52,21 +52,21 @@
     <!-- Grid List -->
     <div id="list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6">
       <!-- Loading Skeleton -->
-      <div class="animate-pulse bg-gray-50 dark:bg-gray-900/50 rounded-xl p-3 flex gap-4 border border-gray-100 dark:border-gray-800">
-        <div class="w-[72px] h-[100px] bg-gray-200 dark:bg-gray-700 rounded-lg flex-shrink-0"></div>
+      <div class="bg-white/30 animate-pulse rounded-2xl p-3 flex gap-4 border border-white/40">
+        <div class="w-[72px] h-[100px] bg-white/40 rounded-lg flex-shrink-0"></div>
         <div class="flex-1 py-1 space-y-2">
-          <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4"></div>
-          <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded w-1/2"></div>
-          <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded w-5/6"></div>
+          <div class="h-4 bg-white/40 rounded w-3/4"></div>
+          <div class="h-3 bg-white/40 rounded w-1/2"></div>
+          <div class="h-3 bg-white/40 rounded w-5/6"></div>
         </div>
       </div>
     </div>
 
     <!-- Pagination -->
-    <div class="flex items-center justify-center gap-4 mt-8 pt-6 border-t border-gray-100 dark:border-gray-700/50">
-      <button id="prevBtn" class="px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-semibold hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm">上一页</button>
-      <span id="pagerText" class="text-sm font-mono font-medium text-gray-500 dark:text-gray-400"></span>
-      <button id="nextBtn" class="px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-semibold hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm">下一页</button>
+    <div class="flex items-center justify-center gap-4 mt-8 pt-6 border-t border-white/30">
+      <button id="prevBtn" class="px-4 py-2 bg-white/40 backdrop-blur-md border border-white/60 shadow-glass-sm rounded-xl text-slate-600 text-sm font-semibold hover:bg-white/55 focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all">上一页</button>
+      <span id="pagerText" class="text-sm font-mono font-medium text-slate-600"></span>
+      <button id="nextBtn" class="px-4 py-2 bg-white/40 backdrop-blur-md border border-white/60 shadow-glass-sm rounded-xl text-slate-600 text-sm font-semibold hover:bg-white/55 focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all">下一页</button>
     </div>
 
   </section>
@@ -81,9 +81,6 @@
     background-position: right 0.5rem center;
     background-repeat: no-repeat;
     background-size: 1.5em 1.5em;
-  }
-  .dark select#sortBy {
-    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%239ca3af' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
   }
 
   /* Limit text lines */
@@ -131,7 +128,7 @@
 
   function createBadge(text, extraClasses = '') {
     if (!text) return '';
-    return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 ${extraClasses}">${escapeHtml(text)}</span>`;
+    return `<span class="inline-flex items-center px-1.5 py-0.5 rounded-xl text-[10px] font-bold bg-blue-500/10 text-blue-700 border border-blue-300/30 ${extraClasses}">${escapeHtml(text)}</span>`;
   }
 
   async function loadNovels(page, category) {
@@ -151,7 +148,7 @@
       totalPages = data.total_pages || 1;
       currentCategory = data.category || category;
 
-      document.getElementById('summary').innerHTML = `共 <span class="font-bold text-gray-700 dark:text-gray-300">${data.total || 0}</span> ${currentCategory === 'following' ? '个系列' : '本'}`;
+      document.getElementById('summary').innerHTML = `共 <span class="font-bold text-slate-800">${data.total || 0}</span> ${currentCategory === 'following' ? '个系列' : '本'}`;
       document.getElementById('pageInfo').textContent = '每页 8 条';
       document.getElementById('pagerText').textContent = `${currentPage} / ${totalPages}`;
       document.getElementById('prevBtn').disabled = currentPage <= 1;
@@ -161,13 +158,13 @@
 
       if (!items.length) {
         const emptyMsg = currentCategory === 'following' ? '暂无订阅系列，点击"同步订阅"按钮获取' : '暂无数据，请先执行一次手工同步';
-        list.className = "flex justify-center py-20"; // Remove grid for empty state
+        list.className = "flex justify-center py-20";
         list.innerHTML = `
           <div class="text-center">
-            <svg class="mx-auto h-12 w-12 text-gray-300 dark:text-gray-600 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+            <svg class="mx-auto h-12 w-12 text-slate-400 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
               <path vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
             </svg>
-            <p class="text-sm text-gray-500 dark:text-gray-400 font-medium">${escapeHtml(emptyMsg)}</p>
+            <p class="text-sm text-slate-600 font-medium">${escapeHtml(emptyMsg)}</p>
           </div>
         `;
         return;
@@ -178,28 +175,28 @@
       if (currentCategory === 'following') {
         list.innerHTML = items.map(function (item) {
           const cover = item.cover_url
-            ? `<img class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg object-cover bg-gray-100 dark:bg-gray-800 shadow-sm flex-shrink-0 group-hover:shadow-md transition-shadow" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+            ? `<img class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg object-cover bg-white/30 shadow-glass-sm flex-shrink-0 group-hover:shadow-glass transition-shadow" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
             : '';
-          const fallbackCover = `<div class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-800 dark:to-gray-900 border border-gray-200 dark:border-gray-700 flex items-center justify-center text-gray-400 dark:text-gray-500 text-xs font-bold text-center p-2 shadow-sm flex-shrink-0" style="display:${item.cover_url ? 'none' : 'flex'};">${escapeHtml((item.series_title || '').slice(0, 4))}</div>`;
+          const fallbackCover = `<div class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg bg-gradient-to-br from-white/50 to-white/30 border border-white/50 flex items-center justify-center text-slate-400 text-xs font-bold text-center p-2 shadow-glass-sm flex-shrink-0" style="display:${item.cover_url ? 'none' : 'flex'};">${escapeHtml((item.series_title || '').slice(0, 4))}</div>`;
           const sourceBadge = createBadge(item.source_label);
 
           return `
-            <a href="/dashboard/series/${encodeURIComponent(item.series_id)}" class="group flex gap-4 bg-gray-50 hover:bg-white dark:bg-gray-900/40 dark:hover:bg-gray-800 border border-transparent hover:border-gray-200 dark:hover:border-gray-700 rounded-xl p-3 sm:p-4 transition-all hover:shadow-sm">
+            <a href="/dashboard/series/${encodeURIComponent(item.series_id)}" class="group flex gap-4 bg-white/25 hover:bg-white/40 border border-white/40 hover:border-white/60 rounded-xl p-3 sm:p-4 transition-all hover:shadow-glass-sm backdrop-blur-md">
               ${cover}${fallbackCover}
               <div class="flex flex-col min-w-0 justify-between py-0.5">
                 <div>
-                  <h3 class="text-sm sm:text-base font-bold text-gray-900 dark:text-gray-100 group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors line-clamp-2 leading-snug mb-1.5">${escapeHtml(item.series_title || '未命名系列')}</h3>
+                  <h3 class="text-sm sm:text-base font-bold text-slate-800 group-hover:text-brand-600 transition-colors line-clamp-2 leading-snug mb-1.5">${escapeHtml(item.series_title || '未命名系列')}</h3>
                   <div class="flex items-center gap-1.5 flex-wrap mb-1.5">
                     ${sourceBadge}
-                    <span class="text-xs text-gray-500 dark:text-gray-400 truncate">作者: ${escapeHtml(item.author_name || '未知')}</span>
+                    <span class="text-xs text-slate-600 truncate">作者: ${escapeHtml(item.author_name || '未知')}</span>
                   </div>
                 </div>
                 <div class="space-y-1">
-                  <div class="text-[11px] text-gray-500 dark:text-gray-400 flex items-center gap-1">
-                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                  <div class="text-[11px] text-slate-600 flex items-center gap-1">
+                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
                     ${escapeHtml(item.chapter_count || 0)} 章 · ${formatTextLength(item.total_text_length || 0)}
                   </div>
-                  <div class="text-[10px] text-gray-400 dark:text-gray-500 font-mono">
+                  <div class="text-[10px] text-slate-400 font-mono">
                     更新于 ${escapeHtml(item.last_updated || '-').substring(0, 10)}
                   </div>
                 </div>
@@ -210,29 +207,29 @@
       } else {
         list.innerHTML = items.map(function (item) {
           const cover = item.cover_url
-            ? `<img class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg object-cover bg-gray-100 dark:bg-gray-800 shadow-sm flex-shrink-0 group-hover:shadow-md transition-shadow" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+            ? `<img class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg object-cover bg-white/30 shadow-glass-sm flex-shrink-0 group-hover:shadow-glass transition-shadow" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
             : '';
-          const fallbackCover = `<div class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-800 dark:to-gray-900 border border-gray-200 dark:border-gray-700 flex items-center justify-center text-gray-400 dark:text-gray-500 text-xs font-bold text-center p-2 shadow-sm flex-shrink-0" style="display:${item.cover_url ? 'none' : 'flex'};">${escapeHtml((item.title || '').slice(0, 4))}</div>`;
+          const fallbackCover = `<div class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg bg-gradient-to-br from-white/50 to-white/30 border border-white/50 flex items-center justify-center text-slate-400 text-xs font-bold text-center p-2 shadow-glass-sm flex-shrink-0" style="display:${item.cover_url ? 'none' : 'flex'};">${escapeHtml((item.title || '').slice(0, 4))}</div>`;
 
           const badges = [kindLabel(item.novel_kind), restrictLabel(item.restrict_value)].filter(Boolean).map(b => createBadge(b)).join('');
 
           return `
-            <a href="/dashboard/novels/${encodeURIComponent(item.novel_id)}" class="group flex gap-4 bg-gray-50 hover:bg-white dark:bg-gray-900/40 dark:hover:bg-gray-800 border border-transparent hover:border-gray-200 dark:hover:border-gray-700 rounded-xl p-3 sm:p-4 transition-all hover:shadow-sm">
+            <a href="/dashboard/novels/${encodeURIComponent(item.novel_id)}" class="group flex gap-4 bg-white/25 hover:bg-white/40 border border-white/40 hover:border-white/60 rounded-xl p-3 sm:p-4 transition-all hover:shadow-glass-sm backdrop-blur-md">
               ${cover}${fallbackCover}
               <div class="flex flex-col min-w-0 justify-between py-0.5 w-full">
                 <div>
-                  <h3 class="text-sm sm:text-base font-bold text-gray-900 dark:text-gray-100 group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors line-clamp-2 leading-snug mb-1.5">${escapeHtml(item.title || '未命名小说')}</h3>
+                  <h3 class="text-sm sm:text-base font-bold text-slate-800 group-hover:text-brand-600 transition-colors line-clamp-2 leading-snug mb-1.5">${escapeHtml(item.title || '未命名小说')}</h3>
                   <div class="flex items-center gap-1.5 flex-wrap mb-1.5">
                     ${badges}
-                    <span class="text-xs text-gray-500 dark:text-gray-400 truncate">作者: ${escapeHtml(item.author_name || '未知')}</span>
+                    <span class="text-xs text-slate-600 truncate">作者: ${escapeHtml(item.author_name || '未知')}</span>
                   </div>
                 </div>
                 <div class="space-y-1">
-                  <div class="text-[11px] text-gray-500 dark:text-gray-400 flex items-center gap-2">
+                  <div class="text-[11px] text-slate-600 flex items-center gap-2">
                     <span class="flex items-center gap-1" title="收藏数"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"></path></svg>${escapeHtml(item.total_bookmarks || 0)}</span>
                     <span class="flex items-center gap-1" title="浏览数"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>${escapeHtml(item.total_views || 0)}</span>
                   </div>
-                  <div class="text-[10px] text-gray-400 dark:text-gray-500 font-mono">
+                  <div class="text-[10px] text-slate-400 font-mono">
                     更新于 ${escapeHtml(item.last_seen_at || '-').substring(0, 10)}
                   </div>
                 </div>
@@ -250,11 +247,11 @@
   function setActiveTab(category) {
     document.querySelectorAll('.tab-btn').forEach(function (btn) {
       if (btn.dataset.category === category) {
-        btn.classList.add('bg-white', 'dark:bg-gray-800', 'text-gray-900', 'dark:text-white', 'shadow-sm', 'ring-1', 'ring-gray-200', 'dark:ring-gray-700');
-        btn.classList.remove('text-gray-500', 'dark:text-gray-400', 'hover:text-gray-700', 'dark:hover:text-gray-200');
+        btn.classList.add('bg-blue-500/10', 'text-blue-600', 'border', 'border-blue-300/30', 'shadow-glass-sm');
+        btn.classList.remove('text-slate-600', 'hover:text-slate-800', 'hover:bg-white/40');
       } else {
-        btn.classList.remove('bg-white', 'dark:bg-gray-800', 'text-gray-900', 'dark:text-white', 'shadow-sm', 'ring-1', 'ring-gray-200', 'dark:ring-gray-700');
-        btn.classList.add('text-gray-500', 'dark:text-gray-400', 'hover:text-gray-700', 'dark:hover:text-gray-200');
+        btn.classList.remove('bg-blue-500/10', 'text-blue-600', 'border', 'border-blue-300/30', 'shadow-glass-sm');
+        btn.classList.add('text-slate-600', 'hover:text-slate-800', 'hover:bg-white/40');
       }
     });
   }
