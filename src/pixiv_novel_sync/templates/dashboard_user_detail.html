@@ -308,14 +308,12 @@
         const resp = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}/sync`, {method: 'POST'});
         const data = await resp.json();
         if (data.ok) {
-          showToast(`同步完成: ${data.stats.novels || 0} 篇小说`);
-          loadUser();
-          loadNovels(1);
+          showToast('备份任务已启动，可在首页查看进度');
         } else {
-          showToast('同步失败: ' + (data.error || '未知错误'));
+          showToast('启动失败: ' + (data.error || '未知错误'));
         }
       } catch (err) {
-        showToast('同步失败');
+        showToast('启动失败');
       }
     }
 
