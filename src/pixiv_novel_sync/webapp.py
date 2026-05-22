@@ -1153,15 +1153,13 @@ class SyncJobManager:
 
             elif task_type == "following_novels":
                 self.add_log(job_id, "info", "=== 开始同步关注用户小说 ===")
-                users_limit = settings.sync.auto_sync_following_novels_users_limit
-                limit_text = f"限制 {users_limit} 位用户" if users_limit > 0 else "全部用户"
-                self.add_log(job_id, "info", f"开始扫描关注用户的小说 ({limit_text})...")
+                self.add_log(job_id, "info", "开始扫描关注用户的新小说 (全部用户)...")
                 stats = service.sync_following_novels(
                     download_assets=settings.sync.download_assets,
                     write_markdown=settings.sync.write_markdown,
                     write_raw_text=settings.sync.write_raw_text,
                     progress_callback=on_progress,
-                    users_limit=users_limit,
+                    users_limit=0,
                 )
                 self.add_log(job_id, "success", f"关注用户小说同步完成: 同步 {stats.get('novels', 0)} 本, 跳过 {stats.get('skipped', 0)} 本")
                 return stats
