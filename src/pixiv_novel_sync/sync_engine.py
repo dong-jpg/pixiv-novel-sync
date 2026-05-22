@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import types
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -942,9 +943,9 @@ class BookmarkNovelSyncService:
                                 ))
                             logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
 
-                            # 水位线优化：本地已同步章节数 >= 远端总数则跳过
+                            # 水位线优化：本地已同步章节数 >= 远端总数则跳过（只计有正文的记录）
                             local_synced = self.db.conn.execute(
-                                "SELECT COUNT(*) FROM novels WHERE series_id = ?", (int(sid),)
+                                "SELECT COUNT(*) FROM novels n INNER JOIN novel_texts nt ON n.novel_id = nt.novel_id WHERE n.series_id = ?", (int(sid),)
                             ).fetchone()[0]
                             if local_synced > 0 and (total or 0) <= local_synced:
                                 logger.info("Series %s fully synced (%d local >= %d remote), skipping", sid, local_synced, total)
@@ -985,11 +986,6 @@ class BookmarkNovelSyncService:
                                 chapter_count = 0
                                 skipped_count = 0
 
-                                def _g(obj, key, default=None):
-                                    if isinstance(obj, dict):
-                                        return obj.get(key, default)
-                                    return getattr(obj, key, default)
-
                                 for idx, novel_item in enumerate(all_novel_items):
                                     if not isinstance(novel_item, dict):
                                         continue
@@ -1006,76 +1002,23 @@ class BookmarkNovelSyncService:
                                             time.sleep(skip_delay)
                                         continue
 
-                                    try:
-                                        if progress_callback:
-                                            progress_callback("phase", {"phase": f"  [{idx+1}/{len(all_novel_items)}] 同步章节: {novel_id}"})
-                                        # 获取小说详情
-                                        novel_detail_result = self.api.novel_detail(novel_id)
-                                        detail_novel = getattr(novel_detail_result, "novel", None)
-                                        if detail_novel is None and isinstance(novel_detail_result, dict):
-                                            detail_novel = novel_detail_result.get("novel", novel_detail_result)
-                                        if detail_novel is None:
-                                            logger.warning("novel_detail returned None for %d, skipping", novel_id)
-                                            continue
+                                    if progress_callback:
+                                        progress_callback("phase", {"phase": f"  [{idx+1}/{len(all_novel_items)}] 同步章节: {novel_id}"})
 
-                                        n_user = detail_novel.get("user") if isinstance(detail_novel, dict) else getattr(detail_novel, "user", None)
-                                        n_user_id = int(n_user.get("id", 0) or 0) if isinstance(n_user, dict) else (int(getattr(n_user, "id", 0) or 0) if n_user else 0)
-                                        n_user_name = (n_user.get("name") if isinstance(n_user, dict) else getattr(n_user, "name", "unknown")) if n_user else user_name
-                                        n_account = (n_user.get("account") if isinstance(n_user, dict) else getattr(n_user, "account", None)) if n_user else None
-                                        if not n_user_id:
-                                            n_user_id = user_id
-                                        
-                                        if n_user_id:
-                                            self.db.upsert_user(UserRecord(
-                                                user_id=n_user_id, name=n_user_name,
-                                                account=n_account, raw_json="{}",
-                                            ))
-                                        
+                                    novel_obj = types.SimpleNamespace(id=novel_id)
+                                    counters = self._sync_novel(
+                                        novel_obj, "public",
+                                        download_assets, write_markdown, write_raw_text,
+                                        source_type="subscribed_series",
+                                        source_key=str(sid),
+                                    )
 
-                                        caption = clean_caption(_g(detail_novel, "caption", ""))
-                                        cover_url = _extract_cover_url(detail_novel)
-                                        if not cover_url:
-                                            cover_url = _g(detail_novel, "url", "")
-                                        
-                                        self.db.upsert_novel(NovelRecord(
-                                            novel_id=novel_id, user_id=n_user_id or user_id,
-                                            series_id=int(sid), title=_g(detail_novel, "title", f"novel_{novel_id}"),
-                                            caption=caption, visible=bool(_g(detail_novel, "visible", True)),
-                                            restrict="public", x_restrict=int(_g(detail_novel, "x_restrict", 0) or 0),
-                                            text_length=int(_g(detail_novel, "text_length", 0) or 0),
-                                            total_bookmarks=int(_g(detail_novel, "total_bookmarks", 0) or 0),
-                                            total_views=int(_g(detail_novel, "total_view", 0) or 0),
-                                            cover_url=cover_url, tags_json="[]",
-                                            create_date=_g(detail_novel, "create_date"),
-                                            raw_json="{}", meta_hash="",
-                                        ))
-                                        
-                                        # 获取正文
-                                        webview = self.api.webview_novel(novel_id)
-                                        body = normalize_text(_extract_novel_text(webview))
-                                        text_hash = sha256_text(body)
-                                        markdown_text = to_markdown(_g(detail_novel, "title", ""), n_user_name, caption, body) if write_markdown else None
-                                        
-                                        self.db.upsert_novel_text(NovelTextRecord(
-                                            novel_id=novel_id, text_raw=body,
-                                            text_markdown=markdown_text, text_hash=text_hash,
-                                        ))
-                                        self.db.replace_fts(novel_id, _g(detail_novel, "title", ""), caption, n_user_name, body)
-                                        
-                                        # 写入文件
-                                        novel_dir = self.storage.novel_dir("public", n_user_id or user_id, n_user_name, novel_id, _g(detail_novel, "title", ""))
-                                        if write_raw_text:
-                                            self.storage.write_text(novel_dir / "text.txt", body)
-                                        if write_markdown and markdown_text:
-                                            self.storage.write_text(novel_dir / "text.md", markdown_text)
-                                        
+                                    if not counters.get("skipped"):
                                         chapter_count += 1
                                         stats["novels"] += 1
-                                        if idx < len(all_novel_items) - 1 and chapter_delay > 0:
-                                            time.sleep(chapter_delay)
-                                    except Exception as e:
-                                        logger.warning("Failed to sync chapter %d: %s", novel_id, e)
-                                
+                                    if idx < len(all_novel_items) - 1 and chapter_delay > 0:
+                                        time.sleep(chapter_delay)
+
                                 if chapter_count:
                                     logger.info("  Synced %d chapters, skipped %d for series %s", chapter_count, skipped_count, sid)
                                     if progress_callback:
