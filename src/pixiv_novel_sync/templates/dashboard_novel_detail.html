@@ -27,11 +27,9 @@
   </section>
 
   <!-- Pixiv-style Reader -->
-  <section class="novel-reader-wrapper">
-    <div id="content" class="novel-reader-content">
-      <div style="text-align:center;padding:5rem 0;color:#999;">正在加载正文...</div>
-    </div>
-  </section>
+  <div id="content" class="novel-reader-content">
+    <div style="text-align:center;padding:5rem 0;color:#999;">正在加载正文...</div>
+  </div>
 
 </div>
 
@@ -44,13 +42,6 @@
 {% block extra_scripts %}
 <style>
   /* ========== Pixiv Novel Reader Style ========== */
-  .novel-reader-wrapper {
-    background-color: #fffffc;
-    border-radius: 1rem;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.06);
-    overflow: hidden;
-  }
-
   .novel-reader-content {
     max-width: 680px;
     width: 80%;
