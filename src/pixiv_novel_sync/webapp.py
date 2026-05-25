@@ -1432,6 +1432,9 @@ class SettingsManager:
 
 def create_app(config_path: str | None = None, env_path: str | None = None) -> Flask:
     app = Flask(__name__, template_folder="templates")
+    # 修改 Jinja2 变量分隔符，避免与 Vue 3 的 {{ }} 冲突
+    app.jinja_env.variable_start_string = "{["
+    app.jinja_env.variable_end_string = "]}"
     # 持久化 secret_key：优先环境变量；否则按数据目录派生稳定值，避免每次重启 session 失效
     secret = os.getenv("PIXIV_FLASK_SECRET")
     if not secret:
