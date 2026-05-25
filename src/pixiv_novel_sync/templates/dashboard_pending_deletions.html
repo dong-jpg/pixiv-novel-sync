@@ -3,57 +3,107 @@
 {% block title %}待确认删除 - Pixiv 小说同步器{% endblock %}
 
 {% block content %}
-<div class="space-y-6 max-w-6xl mx-auto">
+<div class="px-6 lg:px-8 pt-6 space-y-6 max-w-6xl mx-auto pb-8">
 
   <!-- Header -->
-  <div>
-    <h1 class="text-2xl sm:text-3xl font-bold text-slate-800 tracking-tight mb-2">待确认删除</h1>
-    <p class="text-sm sm:text-base text-slate-600">检测到以下内容已从您的收藏/追更列表中移除，但 Pixiv 上仍存在。请确认是否删除本地归档。</p>
+  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900 mb-1">待确认删除</h1>
+      <p class="text-sm text-pixiv-gray">检测到以下内容已从收藏/追更列表中移除，请确认是否删除本地归档。</p>
+    </div>
+    <button @click="triggerDetection" :disabled="detecting" class="inline-flex items-center gap-2 px-4 py-2 bg-brand-500 text-white hover:bg-brand-600 rounded-lg text-sm font-medium transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50 flex-shrink-0">
+      <svg v-if="detecting" class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+      <svg v-else class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+      {{ detecting ? '检测中...' : '开始检测' }}
+    </button>
   </div>
 
   <!-- Main Card -->
-  <section class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-5 sm:p-6">
+  <section class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
 
-    <!-- Toolbar -->
-    <div class="flex flex-col sm:flex-row justify-between items-center gap-4 mb-6">
+    <!-- Tab Filter + Summary -->
+    <div class="flex flex-col sm:flex-row justify-between items-center gap-4 px-5 py-4 border-b border-gray-100 bg-gray-50">
       <!-- Tabs -->
-      <div class="flex flex-wrap items-center gap-2 p-1 bg-white/30 backdrop-blur-md border border-white/40 rounded-xl w-full sm:w-auto" id="tabs">
-        <button class="tab-btn active px-4 py-1.5 text-sm font-semibold rounded-xl transition-all bg-blue-500/10 text-blue-600 border border-blue-300/30 shadow-glass-sm" data-type="">全部</button>
-        <button class="tab-btn px-4 py-1.5 text-sm font-semibold rounded-xl transition-all text-slate-600 hover:text-slate-800 hover:bg-white/40" data-type="novel">收藏小说</button>
-        <button class="tab-btn px-4 py-1.5 text-sm font-semibold rounded-xl transition-all text-slate-600 hover:text-slate-800 hover:bg-white/40" data-type="series">追更系列</button>
-      </div>
-
-      <!-- Actions & Summary -->
-      <div class="flex items-center gap-3 w-full sm:w-auto self-end sm:self-auto">
-        <button id="detectBtn" onclick="triggerDetection()" class="flex-1 sm:flex-none px-4 py-2 bg-blue-500 text-white hover:bg-blue-600 rounded-xl shadow-glass-sm text-sm font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-50 flex items-center justify-center gap-2">
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-          <span id="detectBtnText">开始检测</span>
+      <div class="flex items-center gap-1 p-0.5 bg-gray-100 rounded-lg">
+        <button v-for="tab in tabOptions" :key="tab.value" @click="switchTab(tab.value)"
+                class="px-4 py-1.5 text-sm font-medium rounded-md transition-all"
+                :class="currentType === tab.value ? 'bg-white text-brand-500 shadow-sm' : 'text-pixiv-gray hover:text-gray-900'">
+          {{ tab.label }}
         </button>
-        <div class="text-right">
-          <div id="summary" class="text-xs font-bold text-slate-800">加载中...</div>
-          <div id="pageInfo" class="text-xs text-slate-600"></div>
+      </div>
+
+      <!-- Summary -->
+      <div class="text-sm text-pixiv-gray">
+        共 <span class="font-medium text-gray-900">{{ totalItems }}</span> 条待确认
+      </div>
+    </div>
+
+    <!-- Loading State -->
+    <div v-if="loading" class="p-6">
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div v-for="n in 3" :key="n" class="animate-pulse border border-gray-100 rounded-lg p-4 flex gap-4">
+          <div class="w-20 h-28 bg-gray-100 rounded-md flex-shrink-0"></div>
+          <div class="flex-1 space-y-2 py-1">
+            <div class="h-4 bg-gray-100 rounded w-3/4"></div>
+            <div class="h-3 bg-gray-100 rounded w-1/2"></div>
+            <div class="h-8 bg-gray-100 rounded w-full mt-4"></div>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- List Grid -->
-    <div id="list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-      <!-- Skeleton Loading -->
-      <div class="bg-white/30 animate-pulse rounded-2xl p-4 flex gap-4 border border-white/40">
-        <div class="w-20 h-28 bg-white/40 rounded-lg flex-shrink-0"></div>
-        <div class="flex-1 space-y-2 py-1">
-          <div class="h-4 bg-white/40 rounded w-3/4"></div>
-          <div class="h-3 bg-white/40 rounded w-1/2"></div>
-          <div class="h-8 bg-white/40 rounded w-full mt-4"></div>
-        </div>
+    <!-- Empty State -->
+    <div v-else-if="!items.length" class="py-16 text-center">
+      <svg class="mx-auto h-12 w-12 text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+      <p class="text-pixiv-gray text-sm">没有待确认的删除记录</p>
+    </div>
+
+    <!-- Item Grid -->
+    <div v-else class="p-5">
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <article v-for="item in items" :key="item.id" class="bg-white border border-gray-100 rounded-xl p-4 flex gap-4 hover:border-gray-200 hover:shadow-sm transition-all">
+          <!-- Cover -->
+          <div class="flex-shrink-0">
+            <img v-if="item.cover_url" :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)" class="w-20 h-28 sm:w-24 sm:h-32 object-cover rounded-md border border-gray-100 bg-gray-50" @error="item.cover_url = ''">
+            <div v-else class="w-20 h-28 sm:w-24 sm:h-32 rounded-md bg-gray-50 border border-gray-100 flex items-center justify-center text-pixiv-gray font-medium text-xs p-2 text-center">
+              {{ (item.title || '').substring(0, 4) }}
+            </div>
+          </div>
+
+          <!-- Info -->
+          <div class="flex flex-col min-w-0 justify-between py-0.5 w-full">
+            <div>
+              <a :href="getPixivUrl(item)" target="_blank" rel="noopener" class="text-sm font-medium text-gray-900 hover:text-brand-500 transition-colors line-clamp-2 leading-snug mb-1.5">
+                {{ item.title || '未命名' }}
+              </a>
+              <div class="flex items-center gap-1.5 flex-wrap mb-1.5">
+                <app-badge :type="item.reason === 'unbookmarked' ? 'yellow' : 'blue'">
+                  {{ item.reason === 'unbookmarked' ? '收藏取消' : '追更取消' }}
+                </app-badge>
+                <app-badge type="gray">{{ item.item_type === 'novel' ? '小说' : '系列' }}</app-badge>
+              </div>
+              <div class="text-xs text-pixiv-gray truncate">作者: {{ item.author_name || '未知' }}</div>
+              <div class="text-[10px] text-gray-400 font-mono mt-1 truncate">检测于 {{ (item.detected_at || '-').substring(0, 16) }}</div>
+            </div>
+
+            <div class="flex gap-2 mt-3 pt-3 border-t border-gray-100">
+              <button @click="confirmDeletion(item.id)" class="flex-1 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-xs font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1">确认移除</button>
+              <button @click="restoreDeletion(item.id)" class="flex-1 px-3 py-1.5 bg-green-50 hover:bg-green-100 text-green-600 border border-green-200 text-xs font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-1">忽略恢复</button>
+            </div>
+          </div>
+        </article>
       </div>
     </div>
 
-    <!-- Pagination -->
-    <div class="flex items-center justify-center gap-4 mt-8 pt-6 border-t border-white/30">
-      <button id="prevBtn" class="px-4 py-2 bg-white/40 backdrop-blur-md border border-white/60 shadow-glass-sm rounded-xl text-slate-600 text-sm font-semibold hover:bg-white/55 focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all">上一页</button>
-      <span id="pagerText" class="text-sm font-mono font-medium text-slate-600"></span>
-      <button id="nextBtn" class="px-4 py-2 bg-white/40 backdrop-blur-md border border-white/60 shadow-glass-sm rounded-xl text-slate-600 text-sm font-semibold hover:bg-white/55 focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all">下一页</button>
+    <!-- Pagination Footer -->
+    <div v-if="totalPages > 1" class="px-5 py-4 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
+      <div class="text-sm text-pixiv-gray">
+        第 <span class="font-medium text-gray-900">{{ currentPage }}</span> / <span class="font-medium text-gray-900">{{ totalPages }}</span> 页
+      </div>
+      <div class="flex gap-2">
+        <button @click="loadPending(currentPage - 1)" :disabled="currentPage <= 1" class="px-4 py-1.5 text-sm font-medium bg-white border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">上一页</button>
+        <button @click="loadPending(currentPage + 1)" :disabled="currentPage >= totalPages" class="px-4 py-1.5 text-sm font-medium bg-white border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">下一页</button>
+      </div>
     </div>
 
   </section>
@@ -62,218 +112,148 @@
 
 {% block extra_scripts %}
 <script>
-  let currentPage = 1;
-  let totalPages = 1;
-  let currentType = '';
+  initVueApp({
+    setup() {
+      const { ref, onMounted } = Vue;
 
-  function escapeHtml(value) {
-    return String(value ?? '').replace(/[&<>"]/g, function (ch) {
-      if (ch === '&') return '&amp;';
-      if (ch === '<') return '&lt;';
-      if (ch === '>') return '&gt;';
-      if (ch === '"') return '&quot;';
-      return ch;
-    });
-  }
+      // State
+      const items = ref([]);
+      const loading = ref(true);
+      const currentPage = ref(1);
+      const totalPages = ref(1);
+      const totalItems = ref(0);
+      const currentType = ref('');
+      const detecting = ref(false);
 
-  function getPixivUrl(item) {
-    if (item.item_type === 'novel') {
-      return 'https://www.pixiv.net/novel/show.php?id=' + item.item_id;
-    }
-    return 'https://www.pixiv.net/novel/series/' + item.item_id;
-  }
+      const tabOptions = [
+        { value: '', label: '全部' },
+        { value: 'novel', label: '收藏小说' },
+        { value: 'series', label: '追更系列' }
+      ];
 
-  function updateGlobalBadge(count) {
-    const badge = document.getElementById("globalPendingBadge");
-    if(badge) {
-      if (count > 0) {
-        badge.textContent = count > 99 ? '99+' : count;
-        badge.classList.remove('hidden');
-      } else {
-        badge.classList.add('hidden');
-      }
-    }
-  }
-
-  async function loadPending(page, type) {
-    let url = '/api/dashboard/pending-deletions?page=' + page;
-    if (type) url += '&item_type=' + encodeURIComponent(type);
-    const list = document.getElementById('list');
-
-    try {
-      const resp = await fetch(url);
-      const data = await resp.json();
-      const items = data.items || [];
-      currentPage = data.page || 1;
-      totalPages = data.total_pages || 1;
-      currentType = type || '';
-
-      const totalCount = data.total || 0;
-      document.getElementById('summary').innerHTML = `共 <span class="text-brand-600 font-black">${totalCount}</span> 条待确认`;
-      document.getElementById('pageInfo').textContent = '每页 ' + (data.page_size || 20) + ' 条';
-      document.getElementById('pagerText').textContent = `${currentPage} / ${totalPages}`;
-      document.getElementById('prevBtn').disabled = currentPage <= 1;
-      document.getElementById('nextBtn').disabled = currentPage >= totalPages;
-
-      // Update global badge
-      updateGlobalBadge(totalCount);
-
-      setActiveTab(currentType);
-
-      if (!items.length) {
-        list.className = "flex justify-center py-16";
-        list.innerHTML = `
-          <div class="text-center text-slate-400">
-            <svg class="mx-auto h-12 w-12 mb-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
-            <p class="font-medium">没有待确认的删除记录</p>
-          </div>`;
-        return;
-      }
-
-      list.className = "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4";
-      list.innerHTML = items.map(function (item) {
-        const pixivUrl = getPixivUrl(item);
-        const isBookmark = item.reason === 'unbookmarked';
-        const reasonLabel = isBookmark ? '收藏取消' : '追更取消';
-        const reasonColorClass = isBookmark ? 'bg-orange-500/10 text-orange-700 border border-orange-300/30 rounded-xl' : 'bg-indigo-500/10 text-indigo-700 border border-indigo-300/30 rounded-xl';
-        const typeLabel = item.item_type === 'novel' ? '小说' : '系列';
-
-        const coverHtml = item.cover_url
-          ? `<img class="w-20 h-28 sm:w-24 sm:h-32 object-cover rounded-lg shadow-glass-sm bg-white/30" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
-          : '';
-        const fallbackCover = `<div class="w-20 h-28 sm:w-24 sm:h-32 rounded-lg bg-gradient-to-br from-white/50 to-white/30 border border-white/50 flex items-center justify-center text-slate-400 font-bold text-xs p-2 text-center" style="display:${item.cover_url ? 'none' : 'flex'};">${escapeHtml((item.title || '').slice(0, 4))}</div>`;
-
-        return `
-          <article class="bg-white/25 border border-white/40 rounded-xl p-4 flex gap-4 transition-all hover:bg-white/40 hover:shadow-glass-sm backdrop-blur-md">
-            <div class="flex-shrink-0">${coverHtml}${fallbackCover}</div>
-            <div class="flex flex-col min-w-0 justify-between py-0.5 w-full">
-              <div>
-                <a class="text-sm sm:text-base font-bold text-slate-800 hover:text-brand-600 transition-colors line-clamp-2 leading-snug mb-1.5" href="${escapeHtml(pixivUrl)}" target="_blank" rel="noopener">${escapeHtml(item.title || '未命名')}</a>
-                <div class="flex items-center gap-1.5 flex-wrap mb-1.5">
-                  <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold ${reasonColorClass}">${escapeHtml(reasonLabel)}</span>
-                  <span class="inline-flex items-center px-1.5 py-0.5 rounded-xl text-[10px] font-bold bg-slate-500/10 text-slate-700 border border-slate-300/30">${escapeHtml(typeLabel)}</span>
-                </div>
-                <div class="text-xs text-slate-600 truncate">作者: ${escapeHtml(item.author_name || '未知')}</div>
-                <div class="text-[10px] text-slate-400 font-mono mt-1 truncate">检测于 ${escapeHtml(item.detected_at || '-').substring(0, 16)}</div>
-              </div>
-
-              <div class="flex gap-2 mt-3 pt-3 border-t border-white/30">
-                <button onclick="confirmDeletion(${item.id})" class="flex-1 px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-700 border border-red-300/30 text-xs font-bold rounded-xl transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/50">确认移除</button>
-                <button onclick="restoreDeletion(${item.id})" class="flex-1 px-3 py-1.5 bg-green-500/10 hover:bg-green-500/20 text-green-700 border border-green-300/30 text-xs font-bold rounded-xl transition-colors focus:outline-none focus:ring-2 focus:ring-green-500/50">忽略恢复</button>
-              </div>
-            </div>
-          </article>
-        `;
-      }).join('');
-    } catch (err) {
-      document.getElementById('summary').textContent = '加载失败';
-    }
-  }
-
-  function setActiveTab(type) {
-    document.querySelectorAll('.tab-btn').forEach(function (btn) {
-      if ((btn.dataset.type || '') === type) {
-        btn.classList.add('active', 'bg-blue-500/10', 'text-blue-600', 'border', 'border-blue-300/30', 'shadow-glass-sm');
-        btn.classList.remove('text-slate-600', 'hover:text-slate-800', 'hover:bg-white/40');
-      } else {
-        btn.classList.remove('active', 'bg-blue-500/10', 'text-blue-600', 'border', 'border-blue-300/30', 'shadow-glass-sm');
-        btn.classList.add('text-slate-600', 'hover:text-slate-800', 'hover:bg-white/40');
-      }
-    });
-  }
-
-  async function confirmDeletion(id) {
-    if (!confirm('确认删除？此操作不可撤销，并将删除本地文件。')) return;
-    try {
-      const resp = await fetch('/api/dashboard/pending-deletions/' + id + '/confirm', { method: 'POST' });
-      if (resp.ok) {
-        loadPending(currentPage, currentType);
-      } else {
-        const data = await resp.json();
-        alert(data.error || '操作失败');
-      }
-    } catch (e) { alert('网络错误'); }
-  }
-
-  async function restoreDeletion(id) {
-    try {
-      const resp = await fetch('/api/dashboard/pending-deletions/' + id + '/restore', { method: 'POST' });
-      if (resp.ok) {
-        loadPending(currentPage, currentType);
-      } else {
-        const data = await resp.json();
-        alert(data.error || '操作失败');
-      }
-    } catch (e) { alert('网络错误'); }
-  }
-
-  async function triggerDetection() {
-    var btn = document.getElementById('detectBtn');
-    var btnText = document.getElementById('detectBtnText');
-    btn.disabled = true;
-    btnText.textContent = '检测中...';
-    btn.classList.add('animate-pulse');
-
-    try {
-      const resp = await fetch('/api/dashboard/pending-deletions/detect', { method: 'POST' });
-      const data = await resp.json();
-      if (resp.ok) {
-        pollDetectionStatus(data.job ? data.job.job_id : null);
-      } else {
-        alert(data.error || '启动检测失败');
-        resetDetectBtn();
-      }
-    } catch (e) {
-      alert('请求失败');
-      resetDetectBtn();
-    }
-  }
-
-  function resetDetectBtn() {
-    var btn = document.getElementById('detectBtn');
-    var btnText = document.getElementById('detectBtnText');
-    btn.disabled = false;
-    btnText.textContent = '开始检测';
-    btn.classList.remove('animate-pulse');
-  }
-
-  async function pollDetectionStatus(jobId) {
-    if (!jobId) {
-      resetDetectBtn();
-      loadPending(1, currentType);
-      return;
-    }
-    var poll = setInterval(async function () {
-      try {
-        const resp = await fetch('/api/dashboard/sync/status?job_id=' + jobId);
-        const data = await resp.json();
-        var job = data.job;
-        if (!job || job.status === 'succeeded' || job.status === 'failed') {
-          clearInterval(poll);
-          resetDetectBtn();
-          loadPending(1, currentType);
+      // Helpers
+      const getPixivUrl = (item) => {
+        if (item.item_type === 'novel') {
+          return 'https://www.pixiv.net/novel/show.php?id=' + item.item_id;
         }
-      } catch (e) {
-        clearInterval(poll);
-        resetDetectBtn();
-      }
-    }, 3000);
-  }
+        return 'https://www.pixiv.net/novel/series/' + item.item_id;
+      };
 
-  document.getElementById('tabs').addEventListener('click', function (event) {
-    var btn = event.target.closest('.tab-btn');
-    if (!btn) return;
-    loadPending(1, btn.dataset.type || '');
+      const updateGlobalBadge = (count) => {
+        const badge = document.getElementById("globalPendingBadge");
+        if (badge) {
+          if (count > 0) {
+            badge.textContent = count > 99 ? '99+' : count;
+            badge.classList.remove('hidden');
+          } else {
+            badge.classList.add('hidden');
+          }
+        }
+      };
+
+      // Data fetching
+      const loadPending = async (page, type) => {
+        if (type === undefined) type = currentType.value;
+        loading.value = true;
+        let url = '/api/dashboard/pending-deletions?page=' + page;
+        if (type) url += '&item_type=' + encodeURIComponent(type);
+
+        try {
+          const resp = await fetch(url);
+          const data = await resp.json();
+          items.value = data.items || [];
+          currentPage.value = data.page || 1;
+          totalPages.value = data.total_pages || 1;
+          totalItems.value = data.total || 0;
+          currentType.value = type || '';
+          updateGlobalBadge(data.total || 0);
+        } catch (err) {
+          console.error('Failed to load pending deletions', err);
+        } finally {
+          loading.value = false;
+        }
+      };
+
+      const switchTab = (type) => {
+        loadPending(1, type);
+      };
+
+      // Actions
+      const confirmDeletion = async (id) => {
+        if (!confirm('确认删除？此操作不可撤销，并将删除本地文件。')) return;
+        try {
+          const resp = await fetch('/api/dashboard/pending-deletions/' + id + '/confirm', { method: 'POST' });
+          if (resp.ok) {
+            loadPending(currentPage.value);
+          } else {
+            const data = await resp.json();
+            alert(data.error || '操作失败');
+          }
+        } catch (e) { alert('网络错误'); }
+      };
+
+      const restoreDeletion = async (id) => {
+        try {
+          const resp = await fetch('/api/dashboard/pending-deletions/' + id + '/restore', { method: 'POST' });
+          if (resp.ok) {
+            loadPending(currentPage.value);
+          } else {
+            const data = await resp.json();
+            alert(data.error || '操作失败');
+          }
+        } catch (e) { alert('网络错误'); }
+      };
+
+      const triggerDetection = async () => {
+        detecting.value = true;
+        try {
+          const resp = await fetch('/api/dashboard/pending-deletions/detect', { method: 'POST' });
+          const data = await resp.json();
+          if (resp.ok) {
+            pollDetectionStatus(data.job ? data.job.job_id : null);
+          } else {
+            alert(data.error || '启动检测失败');
+            detecting.value = false;
+          }
+        } catch (e) {
+          alert('请求失败');
+          detecting.value = false;
+        }
+      };
+
+      const pollDetectionStatus = (jobId) => {
+        if (!jobId) {
+          detecting.value = false;
+          loadPending(1);
+          return;
+        }
+        const poll = setInterval(async () => {
+          try {
+            const resp = await fetch('/api/dashboard/sync/status?job_id=' + jobId);
+            const data = await resp.json();
+            const job = data.job;
+            if (!job || job.status === 'succeeded' || job.status === 'failed') {
+              clearInterval(poll);
+              detecting.value = false;
+              loadPending(1);
+            }
+          } catch (e) {
+            clearInterval(poll);
+            detecting.value = false;
+          }
+        }, 3000);
+      };
+
+      onMounted(() => {
+        loadPending(1, '');
+      });
+
+      return {
+        items, loading, currentPage, totalPages, totalItems, currentType, detecting,
+        tabOptions, getPixivUrl, loadPending, switchTab,
+        confirmDeletion, restoreDeletion, triggerDetection
+      };
+    }
   });
-
-  document.getElementById('prevBtn').addEventListener('click', function () {
-    if (currentPage > 1) loadPending(currentPage - 1, currentType);
-  });
-
-  document.getElementById('nextBtn').addEventListener('click', function () {
-    if (currentPage < totalPages) loadPending(currentPage + 1, currentType);
-  });
-
-  loadPending(1, '');
 </script>
 {% endblock %}

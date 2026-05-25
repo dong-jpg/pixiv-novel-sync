@@ -3,21 +3,21 @@
 {% block title %}任务日志 - Pixiv 小说同步器{% endblock %}
 
 {% block content %}
-<div class="max-w-7xl mx-auto space-y-6">
+<div class="px-6 lg:px-8 pt-6 max-w-7xl mx-auto space-y-6 pb-8">
 
   <!-- Header -->
   <div>
-    <h1 class="text-2xl font-bold text-gray-900 mb-2">任务日志</h1>
-    <p class="text-sm text-gray-500">查看手工任务和定时任务的执行记录，日志默认保留 3 天</p>
+    <h1 class="text-2xl font-bold text-gray-900 mb-1">任务日志</h1>
+    <p class="text-sm text-pixiv-gray">查看手工任务和定时任务的执行记录，日志默认保留 3 天</p>
   </div>
 
   <!-- Filter Bar -->
-  <div class="bg-white border border-gray-200 rounded-lg p-5 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-    <div class="flex flex-wrap items-center gap-4 flex-1">
+  <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div class="flex flex-wrap items-center gap-3 sm:gap-4 flex-1">
 
       <div class="flex items-center gap-2">
-        <label class="text-xs font-bold text-gray-500 uppercase">任务类型</label>
-        <select v-model="filters.task_type" class="pl-3 pr-8 py-1.5 bg-white border border-gray-300 text-gray-900 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors custom-select min-w-[120px]">
+        <label class="text-xs font-medium text-pixiv-gray uppercase whitespace-nowrap">类型</label>
+        <select v-model="filters.task_type" class="pl-3 pr-8 py-1.5 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors custom-select min-w-[120px]">
           <option value="">全部</option>
           <option value="bookmarks">收藏同步</option>
           <option value="following_list">关注列表</option>
@@ -31,8 +31,8 @@
       </div>
 
       <div class="flex items-center gap-2">
-        <label class="text-xs font-bold text-gray-500 uppercase">来源</label>
-        <select v-model="filters.source" class="pl-3 pr-8 py-1.5 bg-white border border-gray-300 text-gray-900 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors custom-select min-w-[100px]">
+        <label class="text-xs font-medium text-pixiv-gray uppercase whitespace-nowrap">来源</label>
+        <select v-model="filters.source" class="pl-3 pr-8 py-1.5 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors custom-select min-w-[100px]">
           <option value="">全部</option>
           <option value="manual">手工任务</option>
           <option value="auto">定时任务</option>
@@ -40,8 +40,8 @@
       </div>
 
       <div class="flex items-center gap-2">
-        <label class="text-xs font-bold text-gray-500 uppercase">保留天数</label>
-        <select v-model="filters.days" class="pl-3 pr-8 py-1.5 bg-white border border-gray-300 text-gray-900 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors custom-select min-w-[80px]">
+        <label class="text-xs font-medium text-pixiv-gray uppercase whitespace-nowrap">天数</label>
+        <select v-model="filters.days" class="pl-3 pr-8 py-1.5 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors custom-select min-w-[80px]">
           <option value="1">1 天</option>
           <option value="3">3 天</option>
           <option value="7">7 天</option>
@@ -50,58 +50,66 @@
     </div>
 
     <div class="flex items-center gap-3">
-      <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-        <input type="checkbox" v-model="autoRefresh" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500 cursor-pointer">
-        自动刷新 (10s)
+      <label class="flex items-center gap-2 text-sm text-pixiv-gray cursor-pointer select-none">
+        <input type="checkbox" v-model="autoRefresh" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500 cursor-pointer">
+        自动刷新
       </label>
-      <button @click="applyFilter" class="px-4 py-1.5 bg-brand-500 text-white hover:bg-brand-600 text-sm font-semibold rounded-md transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2">
-        应用筛选
+      <button @click="applyFilter" class="px-4 py-1.5 bg-brand-500 text-white hover:bg-brand-600 text-sm font-medium rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2">
+        筛选
       </button>
     </div>
   </div>
 
   <!-- Table Card -->
-  <div class="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden flex flex-col min-h-[400px]">
+  <div class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden flex flex-col min-h-[400px]">
     <div class="overflow-x-auto">
       <table class="w-full text-left whitespace-nowrap">
-        <thead class="bg-gray-50 border-b border-gray-200">
+        <thead class="bg-gray-50 border-b border-gray-100">
           <tr>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">任务类型</th>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">任务名称</th>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">来源</th>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">状态</th>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">开始时间</th>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">持续时间</th>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">结果</th>
-            <th scope="col" class="px-6 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider text-right">操作</th>
+            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">任务类型</th>
+            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">任务名称</th>
+            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">来源</th>
+            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">状态</th>
+            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">开始时间</th>
+            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">耗时</th>
+            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">结果</th>
+            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider text-right">操作</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-gray-100">
+        <tbody class="divide-y divide-gray-50">
           <tr v-if="loading">
-            <td colspan="8" class="px-6 py-12 text-center text-gray-500">正在加载...</td>
+            <td colspan="8" class="px-5 py-12 text-center text-pixiv-gray">
+              <div class="inline-flex items-center gap-2">
+                <svg class="animate-spin h-4 w-4 text-brand-500" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                正在加载...
+              </div>
+            </td>
           </tr>
           <tr v-else-if="error">
-            <td colspan="8" class="px-6 py-12 text-center text-red-500">{{ error }}</td>
+            <td colspan="8" class="px-5 py-12 text-center text-red-500">{{ error }}</td>
           </tr>
           <tr v-else-if="!items.length">
-            <td colspan="8" class="px-6 py-16 text-center text-gray-500">暂无相关的日志记录</td>
+            <td colspan="8" class="px-5 py-16 text-center">
+              <svg class="mx-auto h-10 w-10 text-gray-300 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+              <p class="text-pixiv-gray text-sm">暂无相关的日志记录</p>
+            </td>
           </tr>
-          <tr v-else v-for="log in items" :key="log.id" class="hover:bg-gray-50 transition-colors">
-            <td class="px-6 py-3 whitespace-nowrap text-sm">
-              <span class="bg-gray-100 text-gray-700 border border-gray-200 px-2 py-1 rounded-md">{{ getTaskTypeName(log.task_type) }}</span>
+          <tr v-else v-for="log in items" :key="log.id" @click="showDetail(log.id)" class="hover:bg-gray-50/50 transition-colors cursor-pointer">
+            <td class="px-5 py-3 whitespace-nowrap text-sm">
+              <span class="bg-gray-50 text-gray-700 border border-gray-100 px-2 py-1 rounded-md text-xs font-medium">{{ getTaskTypeName(log.task_type) }}</span>
             </td>
-            <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-900 font-medium">{{ log.task_name }}</td>
-            <td class="px-6 py-3 whitespace-nowrap text-sm font-medium" :class="log.is_auto_sync ? 'text-brand-600' : 'text-gray-500'">
-              {{ log.is_auto_sync ? '定时任务' : '手工任务' }}
+            <td class="px-5 py-3 whitespace-nowrap text-sm text-gray-900 font-medium max-w-[200px] truncate">{{ log.task_name }}</td>
+            <td class="px-5 py-3 whitespace-nowrap text-sm font-medium" :class="log.is_auto_sync ? 'text-brand-500' : 'text-pixiv-gray'">
+              {{ log.is_auto_sync ? '定时' : '手工' }}
             </td>
-            <td class="px-6 py-3 whitespace-nowrap">
+            <td class="px-5 py-3 whitespace-nowrap">
               <app-badge :type="getStatusConfig(log.status).type">{{ getStatusConfig(log.status).label }}</app-badge>
             </td>
-            <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-500">{{ formatDate(log.started_at) }}</td>
-            <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-500">{{ formatDuration(log.duration_seconds) }}</td>
-            <td class="px-6 py-3 whitespace-nowrap text-sm" v-html="formatResult(log)"></td>
-            <td class="px-6 py-3 whitespace-nowrap text-right">
-              <button @click="showDetail(log.id)" class="text-brand-600 hover:text-brand-800 font-medium text-sm transition-colors focus:outline-none">查看详情</button>
+            <td class="px-5 py-3 whitespace-nowrap text-sm text-pixiv-gray">{{ formatDate(log.started_at) }}</td>
+            <td class="px-5 py-3 whitespace-nowrap text-sm text-pixiv-gray">{{ formatDuration(log.duration_seconds) }}</td>
+            <td class="px-5 py-3 whitespace-nowrap text-sm" v-html="formatResult(log)"></td>
+            <td class="px-5 py-3 whitespace-nowrap text-right">
+              <button @click.stop="showDetail(log.id)" class="text-brand-500 hover:text-brand-600 font-medium text-sm transition-colors focus:outline-none">详情</button>
             </td>
           </tr>
         </tbody>
@@ -109,84 +117,87 @@
     </div>
 
     <!-- Pagination Footer -->
-    <div class="mt-auto px-6 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
-      <div class="text-sm text-gray-500 font-medium">
-        第 <strong class="text-gray-900">{{ page }}</strong> 页，共 <strong class="text-gray-900">{{ totalPages }}</strong> 页，总计 <strong class="text-gray-900">{{ totalItems }}</strong> 条记录
+    <div class="mt-auto px-5 py-4 bg-gray-50 border-t border-gray-100 flex flex-col sm:flex-row items-center justify-between gap-3">
+      <div class="text-sm text-pixiv-gray">
+        第 <span class="font-medium text-gray-900">{{ page }}</span> 页，共 <span class="font-medium text-gray-900">{{ totalPages }}</span> 页（<span class="font-medium text-gray-900">{{ totalItems }}</span> 条）
       </div>
       <div class="flex gap-2">
-        <button @click="handlePageChange(page - 1)" :disabled="page <= 1 || loading" class="px-4 py-1.5 text-sm font-semibold bg-white border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">上一页</button>
-        <button @click="handlePageChange(page + 1)" :disabled="page >= totalPages || loading" class="px-4 py-1.5 text-sm font-semibold bg-white border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">下一页</button>
+        <button @click="handlePageChange(page - 1)" :disabled="page <= 1 || loading" class="px-4 py-1.5 text-sm font-medium bg-white border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">上一页</button>
+        <button @click="handlePageChange(page + 1)" :disabled="page >= totalPages || loading" class="px-4 py-1.5 text-sm font-medium bg-white border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">下一页</button>
       </div>
     </div>
   </div>
 
-  <!-- Detail Modal using Vue component from vue_components.html -->
+  <!-- Detail Modal -->
   <app-modal :is-open="modalOpen" :title="modalTitle" @close="modalOpen = false">
-    <div v-if="detailLoading" class="py-10 text-center text-gray-500">加载详情中...</div>
+    <div v-if="detailLoading" class="py-10 text-center text-pixiv-gray">
+      <svg class="animate-spin h-6 w-6 text-brand-500 mx-auto mb-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+      加载详情中...
+    </div>
     <div v-else-if="selectedLog" class="text-sm text-gray-700">
-      <!-- 基本信息 -->
+      <!-- Basic + Time Info -->
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-6">
         <div>
-          <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">基本信息</h3>
-          <div class="space-y-1.5 mt-3">
-            <div class="flex justify-between"><span class="text-gray-500">任务 ID:</span> <span class="font-mono text-gray-900">{{ selectedLog.id }}</span></div>
-            <div class="flex justify-between"><span class="text-gray-500">来源:</span> <span class="font-medium text-gray-900">{{ selectedLog.is_auto_sync ? '定时任务' : '手工任务' }}</span></div>
-            <div class="flex justify-between"><span class="text-gray-500">状态:</span> <app-badge :type="getStatusConfig(selectedLog.status).type">{{ getStatusConfig(selectedLog.status).label }}</app-badge></div>
+          <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider mb-3 pb-2 border-b border-gray-100">基本信息</h3>
+          <div class="space-y-2">
+            <div class="flex justify-between"><span class="text-pixiv-gray">任务 ID:</span> <span class="font-mono text-gray-900">{{ selectedLog.id }}</span></div>
+            <div class="flex justify-between"><span class="text-pixiv-gray">来源:</span> <span class="font-medium text-gray-900">{{ selectedLog.is_auto_sync ? '定时任务' : '手工任务' }}</span></div>
+            <div class="flex justify-between items-center"><span class="text-pixiv-gray">状态:</span> <app-badge :type="getStatusConfig(selectedLog.status).type">{{ getStatusConfig(selectedLog.status).label }}</app-badge></div>
           </div>
         </div>
         <div>
-          <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">时间信息</h3>
-          <div class="space-y-1.5 mt-3">
-            <div class="flex justify-between"><span class="text-gray-500">开始时间:</span> <span class="text-gray-900">{{ formatDate(selectedLog.started_at) }}</span></div>
-            <div class="flex justify-between"><span class="text-gray-500">结束时间:</span> <span class="text-gray-900">{{ formatDate(selectedLog.finished_at) }}</span></div>
-            <div class="flex justify-between"><span class="text-gray-500">持续时间:</span> <span class="text-gray-900">{{ formatDuration(selectedLog.duration_seconds) }}</span></div>
+          <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider mb-3 pb-2 border-b border-gray-100">时间信息</h3>
+          <div class="space-y-2">
+            <div class="flex justify-between"><span class="text-pixiv-gray">开始:</span> <span class="text-gray-900">{{ formatDate(selectedLog.started_at) }}</span></div>
+            <div class="flex justify-between"><span class="text-pixiv-gray">结束:</span> <span class="text-gray-900">{{ formatDate(selectedLog.finished_at) }}</span></div>
+            <div class="flex justify-between"><span class="text-pixiv-gray">耗时:</span> <span class="text-gray-900">{{ formatDuration(selectedLog.duration_seconds) }}</span></div>
           </div>
         </div>
       </div>
 
-      <!-- 错误信息 -->
+      <!-- Error -->
       <div v-if="selectedLog.error_message" class="mb-6">
-        <h3 class="text-xs font-bold text-red-500 uppercase tracking-wider mb-2 border-b border-red-200 pb-1">错误信息</h3>
-        <div class="p-3 mt-3 bg-red-50 text-red-700 rounded-md border border-red-200 font-mono text-sm break-all">
+        <h3 class="text-xs font-medium text-red-500 uppercase tracking-wider mb-3 pb-2 border-b border-red-100">错误信息</h3>
+        <div class="p-3 bg-red-50 text-red-700 rounded-lg border border-red-100 font-mono text-sm break-all">
           {{ selectedLog.error_message }}
         </div>
       </div>
 
-      <!-- 统计信息 -->
+      <!-- Stats -->
       <div v-if="selectedLog.stats" class="mb-6">
-        <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">同步统计</h3>
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
-          <div v-if="(selectedLog.stats.novels_synced ?? selectedLog.stats.novels) !== undefined" class="bg-gray-50 p-3 rounded-md border border-gray-200">
-            <div class="text-[11px] text-gray-500 uppercase font-bold tracking-wider mb-1">小说</div>
+        <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider mb-3 pb-2 border-b border-gray-100">同步统计</h3>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div v-if="(selectedLog.stats.novels_synced ?? selectedLog.stats.novels) !== undefined" class="bg-gray-50 p-3 rounded-lg border border-gray-100">
+            <div class="text-[11px] text-pixiv-gray uppercase font-medium tracking-wider mb-1">小说</div>
             <div class="text-lg font-bold text-gray-900">{{ selectedLog.stats.novels_synced ?? selectedLog.stats.novels }}</div>
           </div>
-          <div v-if="(selectedLog.stats.users_synced ?? selectedLog.stats.users) !== undefined" class="bg-gray-50 p-3 rounded-md border border-gray-200">
-            <div class="text-[11px] text-gray-500 uppercase font-bold tracking-wider mb-1">用户</div>
+          <div v-if="(selectedLog.stats.users_synced ?? selectedLog.stats.users) !== undefined" class="bg-gray-50 p-3 rounded-lg border border-gray-100">
+            <div class="text-[11px] text-pixiv-gray uppercase font-medium tracking-wider mb-1">用户</div>
             <div class="text-lg font-bold text-gray-900">{{ selectedLog.stats.users_synced ?? selectedLog.stats.users }}</div>
           </div>
-          <div v-if="selectedLog.stats.series_synced !== undefined" class="bg-gray-50 p-3 rounded-md border border-gray-200">
-            <div class="text-[11px] text-gray-500 uppercase font-bold tracking-wider mb-1">系列</div>
+          <div v-if="selectedLog.stats.series_synced !== undefined" class="bg-gray-50 p-3 rounded-lg border border-gray-100">
+            <div class="text-[11px] text-pixiv-gray uppercase font-medium tracking-wider mb-1">系列</div>
             <div class="text-lg font-bold text-gray-900">{{ selectedLog.stats.series_synced }}</div>
           </div>
-          <div v-if="selectedLog.stats.assets_downloaded !== undefined" class="bg-gray-50 p-3 rounded-md border border-gray-200">
-            <div class="text-[11px] text-gray-500 uppercase font-bold tracking-wider mb-1">图片</div>
+          <div v-if="selectedLog.stats.assets_downloaded !== undefined" class="bg-gray-50 p-3 rounded-lg border border-gray-100">
+            <div class="text-[11px] text-pixiv-gray uppercase font-medium tracking-wider mb-1">图片</div>
             <div class="text-lg font-bold text-gray-900">{{ selectedLog.stats.assets_downloaded }}</div>
           </div>
-          <div v-if="selectedLog.stats.skipped !== undefined" class="bg-gray-50 p-3 rounded-md border border-gray-200">
-            <div class="text-[11px] text-gray-500 uppercase font-bold tracking-wider mb-1">跳过</div>
+          <div v-if="selectedLog.stats.skipped !== undefined" class="bg-gray-50 p-3 rounded-lg border border-gray-100">
+            <div class="text-[11px] text-pixiv-gray uppercase font-medium tracking-wider mb-1">跳过</div>
             <div class="text-lg font-bold text-gray-900">{{ selectedLog.stats.skipped }}</div>
           </div>
-          <div v-if="selectedLog.stats.following_users_scanned !== undefined" class="bg-gray-50 p-3 rounded-md border border-gray-200">
-            <div class="text-[11px] text-gray-500 uppercase font-bold tracking-wider mb-1">扫描用户</div>
+          <div v-if="selectedLog.stats.following_users_scanned !== undefined" class="bg-gray-50 p-3 rounded-lg border border-gray-100">
+            <div class="text-[11px] text-pixiv-gray uppercase font-medium tracking-wider mb-1">扫描用户</div>
             <div class="text-lg font-bold text-gray-900">{{ selectedLog.stats.following_users_scanned }}</div>
           </div>
         </div>
       </div>
 
-      <!-- 执行日志 -->
+      <!-- Execution Logs -->
       <div v-if="selectedLog.logs && selectedLog.logs.length > 0">
-        <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">执行日志</h3>
-        <div class="mt-3 bg-gray-900 rounded-md p-4 font-mono text-xs text-gray-300 max-h-64 overflow-y-auto space-y-1">
+        <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider mb-3 pb-2 border-b border-gray-100">执行日志</h3>
+        <div class="bg-gray-900 rounded-lg p-4 font-mono text-xs text-gray-300 max-h-64 overflow-y-auto space-y-1">
           <div v-for="(l, i) in selectedLog.logs" :key="i" :class="l.level === 'error' ? 'text-red-400' : ''">
             <span class="text-gray-500 mr-2">[{{ formatTime(l.time) }}]</span>
             {{ l.message }}
@@ -202,6 +213,7 @@
 {% block extra_scripts %}
 <style>
   .custom-select {
+    appearance: none;
     background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
     background-position: right 0.5rem center;
     background-repeat: no-repeat;
@@ -269,7 +281,7 @@
       };
 
       const silentFetchData = async () => {
-        if (loading.value || modalOpen.value) return; // 不打断当前加载，模态框打开时不自动刷新背景
+        if (loading.value || modalOpen.value) return;
         try {
           const params = new URLSearchParams({ page: page.value, page_size: 20, days: filters.days });
           if (filters.task_type) params.append('task_type', filters.task_type);
@@ -369,9 +381,9 @@
           if (s.users_synced ?? s.users) parts.push(`${s.users_synced ?? s.users}人`);
           if (s.series_synced) parts.push(`${s.series_synced}系列`);
           if (s.assets_downloaded) parts.push(`${s.assets_downloaded}图`);
-          return parts.length ? `<span class="text-green-700 font-medium text-xs">${parts.join(', ')}</span>` : '<span class="text-gray-500 text-xs">完成</span>';
+          return parts.length ? `<span class="text-green-700 font-medium text-xs">${parts.join(', ')}</span>` : '<span class="text-pixiv-gray text-xs">完成</span>';
         }
-        return '<span class="text-gray-500 text-xs">完成</span>';
+        return '<span class="text-pixiv-gray text-xs">完成</span>';
       };
 
       watch(autoRefresh, (val) => {

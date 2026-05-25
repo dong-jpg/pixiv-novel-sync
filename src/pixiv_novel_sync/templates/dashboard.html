@@ -1,190 +1,294 @@
 {% extends "base.html" %}
 
-{% block title %}首页 - Pixiv 小说同步器{% endblock %}
+{% block title %}控制台 - Pixiv 小说同步器{% endblock %}
 
 {% block content %}
-<div class="space-y-6">
+<div class="flex flex-col min-h-screen">
 
-  <!-- 欢迎 / 快捷操作区域 -->
-  <section class="bg-white border border-gray-200 rounded-lg p-6 sm:p-8 shadow-sm">
-    <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+  <!-- ===== Sticky Top Header Bar ===== -->
+  <header class="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-gray-100">
+    <div class="px-6 lg:px-8 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
       <div>
-        <h1 class="text-2xl font-bold text-gray-900 mb-2">控制台首页</h1>
-        <p class="text-gray-500 text-sm">管理同步任务，查看数据归档统计。</p>
+        <h1 class="text-xl font-bold text-gray-900 leading-tight">控制台</h1>
+        <p class="text-xs text-gray-400 mt-0.5">管理同步任务，查看数据归档统计</p>
       </div>
-
-      <div class="flex flex-wrap items-center gap-3">
-        <div class="flex items-center gap-2 mr-4">
-          <label class="text-sm text-gray-500">系列限制</label>
-          <input type="number" v-model.number="seriesSyncLimit" class="w-20 px-2 py-1.5 border border-gray-300 rounded-md text-sm text-center focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none" min="0">
+      <div class="flex flex-wrap items-center gap-2.5">
+        <div class="flex items-center gap-1.5 mr-1">
+          <label class="text-xs text-gray-400 whitespace-nowrap">系列限制</label>
+          <input type="number" v-model.number="seriesSyncLimit" min="0"
+            class="w-16 px-2 py-1.5 border border-gray-200 rounded-lg text-xs text-center
+                   focus:ring-2 focus:ring-brand-400 focus:border-brand-400 outline-none
+                   bg-gray-50 transition-colors">
         </div>
-
-        <button @click="startManualSync('check-bookmarks')" :disabled="isTaskRunning" class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md text-sm font-medium hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 disabled:opacity-50 transition-colors">
+        <button @click="startManualSync('check-bookmarks')" :disabled="isTaskRunning"
+          class="inline-flex items-center gap-1.5 px-3.5 py-1.5 border border-gray-200 bg-white text-gray-600
+                 rounded-lg text-xs font-medium hover:bg-gray-50 hover:border-gray-300
+                 focus:outline-none focus:ring-2 focus:ring-brand-400
+                 disabled:opacity-40 disabled:pointer-events-none transition-all">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
           预检查
         </button>
-        <button @click="startManualSync('subscribed-series')" :disabled="isTaskRunning" class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md text-sm font-medium hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 disabled:opacity-50 transition-colors">
-          同步追更系列
+        <button @click="startManualSync('subscribed-series')" :disabled="isTaskRunning"
+          class="inline-flex items-center gap-1.5 px-3.5 py-1.5 border border-gray-200 bg-white text-gray-600
+                 rounded-lg text-xs font-medium hover:bg-gray-50 hover:border-gray-300
+                 focus:outline-none focus:ring-2 focus:ring-brand-400
+                 disabled:opacity-40 disabled:pointer-events-none transition-all">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          同步追更
         </button>
-        <button @click="startManualSync('start')" :disabled="isTaskRunning" class="px-4 py-2 bg-brand-500 text-white rounded-md text-sm font-medium hover:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 disabled:opacity-50 transition-colors shadow-sm">
-          开始手工同步
+        <button @click="startManualSync('start')" :disabled="isTaskRunning"
+          class="inline-flex items-center gap-1.5 px-4 py-1.5 bg-brand-500 text-white
+                 rounded-lg text-xs font-semibold hover:bg-brand-600
+                 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1
+                 disabled:opacity-40 disabled:pointer-events-none transition-all shadow-sm shadow-brand-200">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          开始同步
         </button>
       </div>
     </div>
-  </section>
+  </header>
 
-  <!-- 数据概览 -->
-  <div>
-    <h2 class="text-lg font-bold text-gray-900 mb-4 px-1">数据概览</h2>
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+  <!-- ===== Page Body ===== -->
+  <div class="flex-1 px-6 lg:px-8 py-6 space-y-6">
 
-      <!-- 当前账号 -->
-      <article class="bg-white border border-gray-200 rounded-lg p-5 flex flex-col justify-center shadow-sm">
-        <h3 class="text-xs font-bold text-gray-400 uppercase mb-3">当前账号</h3>
-        <div v-if="loadingStats" class="animate-pulse h-10 bg-gray-200 rounded w-2/3"></div>
-        <div v-else-if="!currentUser" class="text-gray-400">未绑定</div>
-        <div v-else class="flex items-center gap-3">
-          <img v-if="currentUser.avatar_url" :src="'/proxy/image?url=' + encodeURIComponent(currentUser.avatar_url)" class="w-12 h-12 rounded-md object-cover border border-gray-100" @error="currentUser.avatar_url = ''">
-          <div v-else class="w-12 h-12 rounded-md bg-brand-100 text-brand-600 flex items-center justify-center font-bold text-xl">{{ (currentUser.name || 'U').substring(0,2) }}</div>
-          <div class="min-w-0">
-            <div class="font-bold text-gray-900 truncate">{{ currentUser.name || '未命名' }}</div>
-            <div class="text-xs text-gray-500 truncate">{{ currentUser.account ? '@' + currentUser.account : 'ID ' + currentUser.user_id }}</div>
+    <!-- ===== Stat Cards Grid ===== -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <!-- 小说总数 -->
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-brand-200 transition-all p-5">
+        <div class="flex items-center justify-between mb-3">
+          <span class="text-sm font-bold text-gray-800">小说总数</span>
+          <div class="w-9 h-9 rounded-lg bg-brand-50 flex items-center justify-center">
+            <svg class="w-5 h-5 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
           </div>
         </div>
-      </article>
+        <div v-if="loadingStats" class="animate-pulse h-8 bg-gray-100 rounded-lg w-1/2"></div>
+        <div v-else class="text-3xl font-black text-gray-900">{{ stats.novels_count.toLocaleString() }}</div>
+      </div>
 
-      <!-- 统计卡片 -->
-      <article v-for="stat in statCards" :key="stat.label" class="bg-white border border-gray-200 rounded-lg p-5 flex flex-col justify-center shadow-sm">
-        <h3 class="text-xs font-bold text-gray-400 uppercase mb-2">{{ stat.label }}</h3>
-        <div v-if="loadingStats" class="animate-pulse h-8 bg-gray-200 rounded w-1/2 mt-1"></div>
-        <div v-else class="text-3xl font-black text-gray-900">{{ stat.value.toLocaleString() }}</div>
-      </article>
-
-    </div>
-  </div>
-
-  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-    <!-- 任务状态区域 -->
-    <div class="lg:col-span-2 space-y-4">
-      <h2 class="text-lg font-bold text-gray-900 px-1">任务状态</h2>
-      <section class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm min-h-[300px]">
-        <h3 class="text-xs font-bold text-gray-400 uppercase mb-4">最近同步任务</h3>
-
-        <div v-if="loadingJob" class="animate-pulse space-y-4">
-          <div class="h-4 bg-gray-200 rounded w-1/4"></div>
-          <div class="h-20 bg-gray-100 rounded"></div>
+      <!-- 关注作者 -->
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-blue-200 transition-all p-5">
+        <div class="flex items-center justify-between mb-3">
+          <span class="text-sm font-bold text-gray-800">关注作者</span>
+          <div class="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center">
+            <svg class="w-5 h-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+          </div>
         </div>
+        <div v-if="loadingStats" class="animate-pulse h-8 bg-gray-100 rounded-lg w-1/2"></div>
+        <div v-else class="text-3xl font-black text-gray-900">{{ stats.users_count.toLocaleString() }}</div>
+      </div>
 
-        <div v-else-if="!latestJob" class="text-gray-500 text-sm">暂无近期任务记录</div>
+      <!-- 追更系列 -->
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-violet-200 transition-all p-5">
+        <div class="flex items-center justify-between mb-3">
+          <span class="text-sm font-bold text-gray-800">追更系列</span>
+          <div class="w-9 h-9 rounded-lg bg-violet-50 flex items-center justify-center">
+            <svg class="w-5 h-5 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+          </div>
+        </div>
+        <div v-if="loadingStats" class="animate-pulse h-8 bg-gray-100 rounded-lg w-1/2"></div>
+        <div v-else class="text-3xl font-black text-gray-900">{{ stats.series_count.toLocaleString() }}</div>
+      </div>
 
+      <!-- 待确认 -->
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-amber-200 transition-all p-5">
+        <div class="flex items-center justify-between mb-3">
+          <span class="text-sm font-bold text-gray-800">待确认</span>
+          <div class="w-9 h-9 rounded-lg bg-amber-50 flex items-center justify-center">
+            <svg class="w-5 h-5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+          </div>
+        </div>
+        <div v-if="loadingStats" class="animate-pulse h-8 bg-gray-100 rounded-lg w-1/2"></div>
         <div v-else>
-          <!-- 任务 Header -->
-          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
-            <div class="text-sm text-gray-600">
-              <span class="mr-2">{{ latestJob.is_auto_sync ? '定时任务' : '手工任务' }}</span>
-              <span class="font-mono text-xs bg-gray-100 px-1.5 py-0.5 rounded">{{ latestJob.job_id?.substring(0,8) }}...</span>
-            </div>
-
-            <app-badge :type="jobStatusColor(latestJob.status)">
-              <span v-if="latestJob.status === 'running'" class="inline-block w-2 h-2 rounded-full bg-blue-500 mr-1.5 animate-pulse"></span>
-              {{ jobStatusText(latestJob.status) }}
-              <span v-if="latestJob.elapsed" class="ml-1 opacity-80">({{ latestJob.elapsed }}s)</span>
-            </app-badge>
-          </div>
-
-          <div v-if="latestJob.message" class="text-sm text-gray-700 mb-4">{{ latestJob.message }}</div>
-
-          <div v-if="latestJob.stats" class="mb-4 flex gap-3 text-sm">
-            <div class="px-3 py-1.5 bg-gray-50 border border-gray-100 rounded-md">小说: <strong class="text-gray-900">{{ latestJob.stats.novels || 0 }}</strong></div>
-            <div class="px-3 py-1.5 bg-gray-50 border border-gray-100 rounded-md">资源: <strong class="text-gray-900">{{ latestJob.stats.assets_downloaded || 0 }}</strong></div>
-          </div>
-
-          <div v-if="latestJob.error" class="mb-4 text-sm text-red-700 bg-red-50 p-3 rounded-md border border-red-100">
-            <strong>错误：</strong>{{ latestJob.error }}
-          </div>
-
-          <!-- 子任务列表 -->
-          <div v-if="latestJob.task_list?.length" class="mb-6 bg-gray-50 rounded-md p-3 border border-gray-100 space-y-1.5">
-            <div v-for="(task, index) in latestJob.task_list" :key="index" class="flex items-center gap-3 text-sm px-2 py-1 rounded" :class="taskItemClass(index, latestJob.current_task_index, latestJob.status)">
-              <!-- 图标 -->
-              <span v-html="taskIcon(index, latestJob.current_task_index, latestJob.status)"></span>
-              <span>{{ index + 1 }}. {{ task }}</span>
-            </div>
-          </div>
-
-          <!-- 进度条 -->
-          <div v-if="latestJob.status === 'running' && latestJob.progress" class="mb-6 p-4 border border-gray-200 rounded-md">
-            <div class="flex justify-between items-center mb-2">
-              <span class="text-sm font-semibold text-gray-700">{{ latestJob.progress.phase || '同步中' }}</span>
-              <span class="text-xs text-gray-500 font-mono">{{ progressPercent }}% ({{ latestJob.progress.current || 0 }}/{{ latestJob.progress.total || 50 }})</span>
-            </div>
-            <div class="h-2 bg-gray-100 rounded-full overflow-hidden">
-              <div class="h-full bg-brand-500 transition-all duration-300" :style="{ width: progressPercent + '%' }"></div>
-            </div>
-            <div class="text-xs text-gray-500 mt-2 truncate">
-              {{ latestJob.progress.current_novel ? `当前: ${latestJob.progress.current_novel}` : '准备中...' }}
-            </div>
-          </div>
-
-          <!-- 日志终端 -->
-          <div v-if="latestJob.logs?.length">
-            <div class="text-xs font-bold text-gray-500 mb-2">同步日志 ({{ latestJob.logs.length }})</div>
-            <div class="h-64 overflow-y-auto bg-gray-900 text-gray-300 p-4 rounded-md font-mono text-xs leading-relaxed" ref="logContainer">
-              <div v-for="(log, i) in latestJob.logs" :key="i" class="mb-1 break-words" :class="logLevelClass(log.level)">
-                <span class="text-gray-500 mr-2">[{{ log.time.split(' ')[1] || log.time }}]</span>
-                <span v-html="logPrefix(log.level)" class="mr-1.5"></span>
-                {{ log.message }}
-              </div>
-            </div>
-          </div>
-
+          <span class="text-3xl font-black" :class="stats.pending_count > 0 ? 'text-amber-600' : 'text-gray-900'">{{ stats.pending_count.toLocaleString() }}</span>
         </div>
-      </section>
+      </div>
     </div>
 
-    <!-- 定时任务区域 -->
-    <div class="space-y-4">
-      <h2 class="text-lg font-bold text-gray-900 px-1">定时任务</h2>
-      <section class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm h-full flex flex-col">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="text-xs font-bold text-gray-400 uppercase">后台常驻</h3>
-          <button @click="toggleAutoSync" :disabled="togglingAutoSync" :class="autoSyncStatus?.running ? 'text-red-600 bg-red-50 hover:bg-red-100' : 'text-green-600 bg-green-50 hover:bg-green-100'" class="px-3 py-1 text-xs font-bold rounded-md transition-colors disabled:opacity-50">
-            {{ autoSyncStatus?.running ? '禁用定时同步' : '启用定时同步' }}
-          </button>
+    <!-- ===== Running Task Section (shown when a job is running) ===== -->
+    <div v-if="latestJob && latestJob.status === 'running'" class="bg-white rounded-xl border border-brand-200 shadow-sm p-5 space-y-4">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <div class="w-2.5 h-2.5 rounded-full bg-brand-500 animate-pulse"></div>
+          <span class="text-sm font-bold text-gray-800">任务执行中</span>
+          <span class="font-mono text-[11px] text-gray-400 bg-gray-50 px-2 py-0.5 rounded-md">{{ latestJob.job_id?.substring(0,8) }}</span>
         </div>
+        <app-badge type="blue">
+          <span class="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 mr-1.5 animate-pulse"></span>
+          {{ latestJob.message || '运行中' }}
+          <span v-if="latestJob.elapsed" class="ml-1 opacity-80">({{ latestJob.elapsed }}s)</span>
+        </app-badge>
+      </div>
 
-        <div v-if="loadingAutoSync" class="animate-pulse h-10 bg-gray-100 rounded mb-4"></div>
-        <div v-else class="mb-6 flex items-center justify-between bg-gray-50 p-3 rounded-md border border-gray-200">
-          <div class="flex items-center gap-2 text-sm font-medium">
-            <div :class="autoSyncStatus.running ? 'bg-green-500' : 'bg-gray-400'" class="w-2.5 h-2.5 rounded-full"></div>
-            <span :class="autoSyncStatus.running ? 'text-green-700' : 'text-gray-500'">{{ autoSyncStatus.running ? '已启用' : '未运行' }}</span>
-          </div>
-          <button v-if="autoSyncStatus.current_task_job_id" @click="stopAutoTask" class="text-xs text-red-600 font-bold px-2 py-1 border border-red-200 bg-red-50 rounded hover:bg-red-100">
-            停止当前任务
-          </button>
+      <!-- Sub-task list -->
+      <div v-if="latestJob.task_list?.length" class="flex flex-wrap gap-2">
+        <div v-for="(task, index) in latestJob.task_list" :key="index"
+          class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg border transition-colors"
+          :class="taskPillClass(index, latestJob.current_task_index, latestJob.status)">
+          <span v-html="taskIcon(index, latestJob.current_task_index, latestJob.status)"></span>
+          <span>{{ task }}</span>
         </div>
+      </div>
 
-        <div class="flex-grow space-y-2 overflow-y-auto">
-          <div v-for="task in autoTasksList" :key="task.key" class="flex justify-between items-center p-2.5 bg-gray-50 rounded-md border border-gray-100">
-            <div class="min-w-0">
-              <div class="text-sm font-medium text-gray-800 flex items-center gap-2">
-                <span v-if="task.isRunning" class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse"></span>
-                <span v-else class="w-1.5 h-1.5 rounded-full bg-gray-300"></span>
-                {{ task.name }}
-              </div>
-              <div class="text-[10px] text-gray-500 ml-3.5 mt-0.5">上次: {{ task.lastRunText }}</div>
-            </div>
-            <div class="text-right">
-              <div class="text-xs font-mono px-1.5 py-0.5 rounded bg-white border border-gray-200" :class="task.isRunning ? 'text-brand-600 border-brand-200 bg-brand-50' : 'text-gray-500'">
-                {{ task.isRunning ? '执行中...' : task.statusText }}
-              </div>
-              <div v-if="!task.isRunning && task.nextRunText" class="text-[10px] text-gray-400 mt-0.5">下次: {{ task.nextRunText }}</div>
+      <!-- Progress bar -->
+      <div v-if="latestJob.progress">
+        <div class="flex justify-between items-center mb-1.5">
+          <span class="text-xs font-semibold text-gray-600">{{ latestJob.progress.phase || '同步中' }}</span>
+          <span class="text-[11px] text-gray-400 font-mono">{{ progressPercent }}% ({{ latestJob.progress.current || 0 }}/{{ latestJob.progress.total || 0 }})</span>
+        </div>
+        <div class="h-2 bg-brand-100 rounded-full overflow-hidden">
+          <div class="h-full bg-brand-500 rounded-full transition-all duration-500 ease-out" :style="{ width: progressPercent + '%' }"></div>
+        </div>
+        <div class="text-[11px] text-gray-400 mt-1.5 truncate">
+          {{ latestJob.progress.current_novel ? `当前: ${latestJob.progress.current_novel}` : '准备中...' }}
+        </div>
+      </div>
+
+      <!-- Mini log terminal -->
+      <div v-if="latestJob.logs?.length">
+        <div class="bg-gray-900 rounded-lg overflow-hidden">
+          <div class="flex items-center justify-between px-3 py-1.5 bg-gray-800/50">
+            <span class="text-[10px] font-mono text-gray-400">LOGS</span>
+            <span class="text-[10px] font-mono text-gray-500">{{ latestJob.logs.length }} entries</span>
+          </div>
+          <div class="h-48 overflow-y-auto p-3 font-mono text-[11px] leading-relaxed" ref="logContainer">
+            <div v-for="(log, i) in latestJob.logs" :key="i" class="mb-0.5 break-words" :class="logLevelClass(log.level)">
+              <span class="text-gray-600 mr-1.5">[{{ log.time.split(' ')[1] || log.time }}]</span>
+              <span v-html="logPrefix(log.level)" class="mr-1"></span>
+              {{ log.message }}
             </div>
           </div>
         </div>
-      </section>
+      </div>
     </div>
+
+    <!-- ===== Two-Column Layout ===== -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+      <!-- Left: 最近活动 Timeline (2/3) -->
+      <div class="lg:col-span-2">
+        <div class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-brand-200 transition-all">
+          <div class="px-5 pt-5 pb-3 border-b border-gray-50">
+            <span class="text-sm font-bold text-gray-800">最近活动</span>
+          </div>
+          <div class="px-5 py-4">
+            <!-- Loading -->
+            <div v-if="loadingActivity" class="space-y-4 py-2">
+              <div v-for="n in 4" :key="n" class="flex gap-4 animate-pulse">
+                <div class="w-2.5 h-2.5 rounded-full bg-gray-200 mt-1.5 flex-shrink-0"></div>
+                <div class="flex-1 space-y-2">
+                  <div class="h-3 bg-gray-100 rounded w-3/4"></div>
+                  <div class="h-2.5 bg-gray-50 rounded w-1/3"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Empty -->
+            <div v-else-if="!activityList.length" class="py-8 text-center text-gray-400 text-sm">暂无近期活动记录</div>
+
+            <!-- Timeline -->
+            <div v-else class="relative">
+              <!-- Timeline line -->
+              <div class="absolute left-[5px] top-2 bottom-2 w-px bg-gray-100"></div>
+
+              <div v-for="(item, idx) in activityList" :key="idx" class="relative flex gap-4 pb-5 last:pb-0">
+                <!-- Dot -->
+                <div class="relative z-10 flex-shrink-0 mt-1">
+                  <div class="w-[11px] h-[11px] rounded-full border-2"
+                    :class="{
+                      'bg-green-400 border-green-200': item.dotColor === 'green',
+                      'bg-blue-400 border-blue-200': item.dotColor === 'blue',
+                      'bg-amber-400 border-amber-200': item.dotColor === 'yellow',
+                      'bg-red-400 border-red-200': item.dotColor === 'red',
+                      'bg-gray-300 border-gray-200': item.dotColor === 'gray'
+                    }"></div>
+                </div>
+                <!-- Content -->
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-start justify-between gap-2">
+                    <div>
+                      <span class="text-sm text-gray-800 font-medium">{{ item.title }}</span>
+                      <app-badge v-if="item.badge" :type="item.badgeType" class="ml-2">{{ item.badge }}</app-badge>
+                    </div>
+                    <span class="text-[11px] text-gray-400 whitespace-nowrap flex-shrink-0">{{ item.timeText }}</span>
+                  </div>
+                  <div v-if="item.detail" class="text-xs text-gray-400 mt-0.5 truncate">{{ item.detail }}</div>
+                  <!-- Stats row -->
+                  <div v-if="item.stats" class="flex gap-2 mt-1.5">
+                    <span v-for="(sv, sk) in item.stats" :key="sk" class="text-[11px] px-2 py-0.5 bg-gray-50 border border-gray-100 rounded-md text-gray-500">
+                      {{ sk }}: <strong class="text-gray-700">{{ sv }}</strong>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Pagination for activity -->
+            <div v-if="activityTotalPages > 1" class="pt-4 border-t border-gray-50 mt-2">
+              <app-pagination :page="activityPage" :pages="activityTotalPages" @update:page="loadActivity"></app-pagination>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: 定时任务 Panel (1/3) -->
+      <div>
+        <div class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-brand-200 transition-all">
+          <div class="px-5 pt-5 pb-3 border-b border-gray-50 flex items-center justify-between">
+            <span class="text-sm font-bold text-gray-800">定时任务</span>
+            <button @click="toggleAutoSync" :disabled="togglingAutoSync"
+              class="px-2.5 py-1 text-[11px] font-semibold rounded-lg transition-all disabled:opacity-50"
+              :class="autoSyncStatus?.running
+                ? 'text-red-600 bg-red-50 border border-red-200 hover:bg-red-100'
+                : 'text-green-600 bg-green-50 border border-green-200 hover:bg-green-100'">
+              {{ autoSyncStatus?.running ? '停用' : '启用' }}
+            </button>
+          </div>
+
+          <div class="px-5 py-4 space-y-3">
+            <!-- Status indicator -->
+            <div v-if="loadingAutoSync" class="animate-pulse h-10 bg-gray-50 rounded-lg"></div>
+            <div v-else class="flex items-center justify-between p-3 rounded-lg border"
+              :class="autoSyncStatus.running ? 'bg-green-50/50 border-green-200' : 'bg-gray-50 border-gray-100'">
+              <div class="flex items-center gap-2 text-xs font-medium">
+                <div class="w-2 h-2 rounded-full" :class="autoSyncStatus.running ? 'bg-green-500 pulse-soft' : 'bg-gray-400'"></div>
+                <span :class="autoSyncStatus.running ? 'text-green-700' : 'text-gray-500'">{{ autoSyncStatus.running ? '定时同步已启用' : '未运行' }}</span>
+              </div>
+              <button v-if="autoSyncStatus.current_task_job_id" @click="stopAutoTask"
+                class="text-[11px] text-red-600 font-semibold px-2 py-0.5 border border-red-200 bg-red-50 rounded-md hover:bg-red-100 transition-colors">
+                停止当前
+              </button>
+            </div>
+
+            <!-- Task list -->
+            <div class="space-y-1.5 max-h-[400px] overflow-y-auto">
+              <div v-for="task in autoTasksList" :key="task.key"
+                class="flex justify-between items-center p-2.5 rounded-lg border border-gray-100 bg-gray-50/50 hover:bg-gray-50 transition-colors">
+                <div class="min-w-0">
+                  <div class="text-xs font-medium text-gray-700 flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                      :class="task.isRunning ? 'bg-brand-500 animate-pulse' : 'bg-gray-300'"></span>
+                    {{ task.name }}
+                  </div>
+                  <div class="text-[10px] text-gray-400 ml-3 mt-0.5">上次: {{ task.lastRunText }}</div>
+                </div>
+                <div class="text-right flex-shrink-0 ml-2">
+                  <div class="text-[11px] font-mono px-1.5 py-0.5 rounded border"
+                    :class="task.isRunning
+                      ? 'text-brand-600 border-brand-200 bg-brand-50'
+                      : 'text-gray-500 border-gray-200 bg-white'">
+                    {{ task.isRunning ? '执行中...' : task.statusText }}
+                  </div>
+                  <div v-if="!task.isRunning && task.nextRunText" class="text-[10px] text-gray-400 mt-0.5">下次: {{ task.nextRunText }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
   </div>
-
 </div>
 {% endblock %}
 
@@ -192,12 +296,10 @@
 <script>
   initVueApp({
     setup() {
-      const { ref, reactive, computed, onMounted, onUnmounted, nextTick } = Vue;
+      const { ref, computed, onMounted, onUnmounted, nextTick } = Vue;
 
-      // State
-      const currentUser = ref(null);
-      const statCards = ref([]);
-      const pendingCount = ref(0);
+      // ── State ──
+      const stats = ref({ novels_count: 0, users_count: 0, series_count: 0, pending_count: 0 });
       const loadingStats = ref(true);
 
       const latestJob = ref(null);
@@ -209,17 +311,23 @@
       const loadingAutoSync = ref(true);
       const togglingAutoSync = ref(false);
 
+      const activityList = ref([]);
+      const activityPage = ref(1);
+      const activityTotalPages = ref(1);
+      const loadingActivity = ref(true);
+
       const logContainer = ref(null);
 
       let pollInterval = null;
       let autoSyncInterval = null;
 
-      // Computed
+      // ── Computed ──
       const isTaskRunning = computed(() => latestJob.value?.status === 'running');
+
       const progressPercent = computed(() => {
         if (!latestJob.value?.progress) return 0;
         const c = latestJob.value.progress.current || 0;
-        const t = latestJob.value.progress.total || 1; // avoid /0
+        const t = latestJob.value.progress.total || 1;
         return Math.min(Math.round((c / t) * 100), 100);
       });
 
@@ -266,27 +374,24 @@
         });
       });
 
-      // Methods
+      // ── Data Fetching ──
       const fetchStatus = async () => {
         try {
           const res = await fetch('/api/dashboard/status');
           if (res.ok) {
             const data = await res.json();
-            currentUser.value = data.current_user;
-
-            const stats = data.stats || {};
-            pendingCount.value = stats.pending_count || 0;
-            statCards.value = [
-              { label: '已归档小说', value: stats.novels_count || 0 },
-              { label: '已归档作者', value: stats.users_count || 0 },
-              { label: '已归档系列', value: stats.series_count || 0 }
-            ];
+            const s = data.stats || {};
+            stats.value = {
+              novels_count: s.novels_count || 0,
+              users_count: s.users_count || 0,
+              series_count: s.series_count || 0,
+              pending_count: s.pending_count || 0,
+            };
 
             if (data.series_sync_limit !== undefined && seriesSyncLimit.value === 0) {
               seriesSyncLimit.value = data.series_sync_limit;
             }
 
-            // Sync job initialization
             if (data.latest_job) {
               updateJob(data.latest_job);
             }
@@ -296,7 +401,7 @@
       };
 
       const fetchJobStatus = async () => {
-        if (loadingJob.value) return; // Wait for initial load
+        if (loadingJob.value) return;
         try {
           const jobIdParam = latestJob.value?.job_id ? `?job_id=${latestJob.value.job_id}` : '';
           const res = await fetch(`/api/dashboard/sync/status${jobIdParam}`);
@@ -326,17 +431,72 @@
         finally { loadingAutoSync.value = false; }
       };
 
-      // Actions
+      const loadActivity = async (page) => {
+        if (page !== undefined) activityPage.value = page;
+        loadingActivity.value = activityList.value.length === 0;
+        try {
+          const res = await fetch(`/api/dashboard/logs?page=${activityPage.value}&page_size=5&days=3`);
+          if (res.ok) {
+            const data = await res.json();
+            const items = data.items || data.logs || [];
+            activityTotalPages.value = data.total_pages || data.pages || 1;
+
+            const now = Date.now();
+            const formatTime = (ts) => {
+              if (!ts) return '';
+              const d = new Date(typeof ts === 'number' ? ts * 1000 : ts);
+              const diff = now - d.getTime();
+              if (diff < 60000) return '刚刚';
+              const m = Math.floor(diff / 60000);
+              if (m < 60) return `${m}分钟前`;
+              const h = Math.floor(m / 60);
+              if (h < 24) return `${h}小时前`;
+              const days = Math.floor(h / 24);
+              if (days < 7) return `${days}天前`;
+              return d.toLocaleDateString('zh-CN');
+            };
+
+            const statusColorMap = {
+              succeeded: 'green', success: 'green', completed: 'green',
+              failed: 'red', error: 'red',
+              running: 'blue', pending: 'blue',
+              warning: 'yellow', cancelled: 'yellow',
+            };
+
+            const statusTextMap = {
+              succeeded: '成功', success: '成功', completed: '完成',
+              failed: '失败', error: '错误',
+              running: '运行中', pending: '等待中',
+              warning: '警告', cancelled: '已取消',
+            };
+
+            activityList.value = items.map(item => {
+              const status = item.status || 'info';
+              const color = statusColorMap[status] || 'gray';
+              return {
+                title: item.task_name || item.message || item.job_type || '任务',
+                detail: item.message || item.detail || null,
+                timeText: formatTime(item.created_at || item.start_time || item.timestamp),
+                dotColor: color,
+                badge: statusTextMap[status] || status,
+                badgeType: color === 'yellow' ? 'yellow' : color,
+                stats: item.stats ? { '小说': item.stats.novels || 0, '资源': item.stats.assets_downloaded || 0 } : null,
+              };
+            });
+          }
+        } catch(e) { console.error(e); }
+        finally { loadingActivity.value = false; }
+      };
+
+      // ── Actions ──
       const startManualSync = async (type) => {
         if (isTaskRunning.value) return;
         try {
           const url = type === 'check-bookmarks' ? '/api/dashboard/check-bookmarks' :
                       type === 'subscribed-series' ? '/api/dashboard/sync/subscribed-series' : '/api/dashboard/sync/start';
-
           const body = type === 'subscribed-series' ? JSON.stringify({ limit: seriesSyncLimit.value }) : '{}';
-
           await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
-          fetchStatus(); // Immediately refresh
+          fetchStatus();
         } catch(e) { console.error(e); }
       };
 
@@ -359,35 +519,23 @@
         } catch(e) {}
       };
 
-      // UI Helpers
-      const jobStatusColor = (status) => {
-        if (status === 'succeeded') return 'green';
-        if (status === 'failed') return 'red';
-        if (status === 'running') return 'blue';
-        return 'gray';
-      };
-
-      const jobStatusText = (status) => {
-        const map = { succeeded: '成功', failed: '失败', running: '运行中', pending: '等待中' };
-        return map[status] || status;
-      };
-
-      const taskItemClass = (idx, curr, status) => {
+      // ── UI Helpers ──
+      const taskPillClass = (idx, curr, status) => {
         if (status === 'running') {
-          if (idx < curr) return 'text-green-600 font-medium bg-green-50/50';
-          if (idx === curr) return 'text-brand-600 font-bold bg-brand-50 border-brand-100';
-          return 'text-gray-500';
+          if (idx < curr) return 'bg-green-50 border-green-200 text-green-700';
+          if (idx === curr) return 'bg-brand-50 border-brand-300 text-brand-700 font-semibold';
+          return 'bg-gray-50 border-gray-200 text-gray-400';
         }
-        if (status === 'succeeded') return 'text-green-600';
-        if (status === 'failed' && idx === curr) return 'text-red-600 bg-red-50';
-        return 'text-gray-500';
+        if (status === 'succeeded') return 'bg-green-50 border-green-200 text-green-700';
+        if (status === 'failed' && idx === curr) return 'bg-red-50 border-red-200 text-red-700';
+        return 'bg-gray-50 border-gray-200 text-gray-400';
       };
 
       const taskIcon = (idx, curr, status) => {
-        const check = `<svg class="w-4 h-4 text-green-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>`;
-        const err = `<svg class="w-4 h-4 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path></svg>`;
-        const run = `<div class="w-3 h-3 rounded-full bg-brand-500 flex-shrink-0 ml-0.5 mr-0.5 animate-pulse"></div>`;
-        const wait = `<div class="w-3 h-3 rounded-full border-2 border-gray-300 flex-shrink-0 ml-0.5 mr-0.5"></div>`;
+        const check = `<svg class="w-3 h-3 text-green-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>`;
+        const err = `<svg class="w-3 h-3 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path></svg>`;
+        const run = `<div class="w-2.5 h-2.5 rounded-full bg-brand-500 flex-shrink-0 animate-pulse"></div>`;
+        const wait = `<div class="w-2.5 h-2.5 rounded-full border-2 border-gray-300 flex-shrink-0"></div>`;
 
         if (status === 'running') {
           if (idx < curr) return check;
@@ -407,15 +555,17 @@
       };
 
       const logPrefix = (lvl) => {
-        if (lvl === 'error') return `<span class="text-red-500 font-bold">✗</span>`;
-        if (lvl === 'success') return `<span class="text-green-500 font-bold">✓</span>`;
-        if (lvl === 'warning') return `<span class="text-yellow-500 font-bold">⚠</span>`;
-        return `<span class="text-brand-400">›</span>`;
+        if (lvl === 'error') return `<span class="text-red-500 font-bold">ERR</span>`;
+        if (lvl === 'success') return `<span class="text-green-500 font-bold">OK</span>`;
+        if (lvl === 'warning') return `<span class="text-yellow-500 font-bold">WRN</span>`;
+        return `<span class="text-brand-400">---</span>`;
       };
 
+      // ── Lifecycle ──
       onMounted(() => {
         fetchStatus();
         fetchAutoSync();
+        loadActivity();
         pollInterval = setInterval(fetchJobStatus, 3000);
         autoSyncInterval = setInterval(fetchAutoSync, 10000);
       });
@@ -426,12 +576,13 @@
       });
 
       return {
-        currentUser, statCards, pendingCount, loadingStats,
+        stats, loadingStats,
         latestJob, loadingJob, isTaskRunning, progressPercent,
         seriesSyncLimit, startManualSync,
         autoSyncStatus, loadingAutoSync, togglingAutoSync, autoTasksList, toggleAutoSync, stopAutoTask,
-        jobStatusColor, jobStatusText, taskItemClass, taskIcon, logLevelClass, logPrefix,
-        logContainer
+        activityList, activityPage, activityTotalPages, loadingActivity, loadActivity,
+        taskPillClass, taskIcon, logLevelClass, logPrefix,
+        logContainer,
       };
     }
   });

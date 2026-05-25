@@ -2,148 +2,225 @@
 {% block title %}用户详情 - Pixiv 小说同步器{% endblock %}
 
 {% block content %}
-<div class="max-w-5xl mx-auto space-y-5 pt-2">
+<div class="space-y-0 max-w-5xl mx-auto">
 
-  <!-- Back Link -->
-  <a class="inline-flex items-center gap-1.5 text-sm font-bold text-gray-500 hover:text-brand-500 transition-colors" href="/dashboard/follows">
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    返回关注列表
-  </a>
-
-  <!-- Hero Section -->
-  <section class="bg-white border border-gray-200 shadow-sm rounded-lg overflow-hidden">
-    <div class="h-32 sm:h-36 bg-gray-100"></div>
-
-    <div v-if="loadingUser" class="px-4 sm:px-7 pb-5 sm:pb-7 -mt-9 sm:-mt-12 flex">
-      <div class="w-[76px] h-[76px] sm:w-[104px] sm:h-[104px] rounded-full bg-gray-200 border-4 border-white animate-pulse shrink-0"></div>
-      <div class="ml-4 mt-12 space-y-2 flex-1">
-        <div class="h-6 bg-gray-200 rounded w-1/3 animate-pulse"></div>
-        <div class="h-4 bg-gray-200 rounded w-1/4 animate-pulse"></div>
-      </div>
+  <!-- Sticky Header -->
+  <div class="sticky top-0 z-20 bg-pixiv-bg/95 backdrop-blur-sm border-b border-gray-100 px-4 sm:px-6 py-4">
+    <div class="flex items-center gap-2">
+      <a class="inline-flex items-center gap-1 text-sm font-bold text-gray-500 hover:text-brand-500 transition-colors" href="/dashboard/follows">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        关注作者
+      </a>
+      <span v-if="user" class="text-gray-300">/</span>
+      <span v-if="user" class="text-sm font-bold text-gray-900 truncate">{{ user.name || '未命名用户' }}</span>
     </div>
+  </div>
 
-    <div v-else-if="!user" class="px-4 sm:px-7 pb-5 sm:pb-7 -mt-9 sm:-mt-12">
-      <div class="mt-14">
-        <h1 class="text-xl sm:text-2xl font-extrabold text-gray-900">加载失败</h1>
-        <div class="text-sm text-gray-500 mt-1">未找到该用户</div>
-      </div>
-    </div>
+  <div class="px-4 sm:px-6 pt-4 pb-6 space-y-5">
 
-    <div v-else class="grid grid-cols-[76px_1fr] sm:grid-cols-[104px_1fr_auto] gap-3 sm:gap-5 px-4 sm:px-7 pb-5 sm:pb-7 items-end -mt-9 sm:-mt-12">
-      <div class="shrink-0 relative">
-        <img v-if="user.avatar_url" :src="'/proxy/image?url=' + encodeURIComponent(user.avatar_url)"
-             class="w-[76px] h-[76px] sm:w-[104px] sm:h-[104px] rounded-full border-4 border-white object-cover bg-white" @error="user.avatar_url = ''">
-        <div v-else class="w-[76px] h-[76px] sm:w-[104px] sm:h-[104px] rounded-full border-4 border-white flex items-center justify-center bg-brand-100 text-brand-600 font-bold text-2xl sm:text-3xl bg-white">
-          {{ (user.name || 'U').substring(0, 2) }}
-        </div>
-      </div>
-      <div class="min-w-0">
-        <h1 class="text-xl sm:text-2xl md:text-3xl font-bold text-gray-900 leading-tight tracking-tight mb-1 truncate" :title="user.name">{{ user.name || '未命名用户' }}</h1>
-        <div class="flex flex-wrap gap-2 items-center mt-2">
-          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
-            {{ user.account ? '@' + user.account : 'ID ' + user.user_id }}
-          </span>
-          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-brand-50 text-brand-700">
-            {{ user.novel_count || 0 }} 篇小说
-          </span>
-          <app-badge :type="statusConfig(user.status).type" class="ml-1">
-            <span class="w-1.5 h-1.5 rounded-full mr-1.5" :class="statusConfig(user.status).dotClass"></span>
-            {{ statusConfig(user.status).label }}
-          </app-badge>
-        </div>
-        <div v-if="user.last_checked_at" class="text-xs text-gray-400 mt-2 font-mono">
-          最后检查: {{ user.last_checked_at }}
-        </div>
-      </div>
-      <div class="flex gap-2.5 flex-wrap justify-end col-span-full sm:col-span-1 mt-4 sm:mt-0">
-        <button @click="checkStatus" :disabled="checking" class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md text-sm font-medium hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 disabled:opacity-50 transition-colors">
-          {{ checking ? '检查中...' : '检查状态' }}
-        </button>
-        <button @click="syncAll" :disabled="syncing" class="px-4 py-2 bg-brand-500 text-white rounded-md text-sm font-medium hover:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 disabled:opacity-50 transition-colors shadow-sm">
-          {{ syncing ? '启动中...' : '备份全部' }}
-        </button>
-      </div>
-    </div>
-  </section>
+    <!-- Hero Section -->
+    <section class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+      <!-- Banner -->
+      <div class="h-28 sm:h-36 bg-gradient-to-r from-brand-50 to-blue-50"></div>
 
-  <!-- Content Card -->
-  <section class="bg-white border border-gray-200 shadow-sm rounded-lg p-4 sm:p-6">
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
-      <!-- Tabs -->
-      <div class="flex items-center gap-1 p-1 bg-gray-50 border border-gray-200 rounded-lg w-fit">
-        <button @click="category = 'single'"
-          class="px-4 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap"
-          :class="category === 'single' ? 'bg-white text-brand-600 shadow-sm border border-gray-200' : 'text-gray-600 hover:text-gray-900'">
-          单本
-        </button>
-        <button @click="category = 'series'"
-          class="px-4 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap"
-          :class="category === 'series' ? 'bg-white text-brand-600 shadow-sm border border-gray-200' : 'text-gray-600 hover:text-gray-900'">
-          系列
-        </button>
-      </div>
-      <span class="text-sm font-medium text-gray-500">共 {{ totalItems }} 项</span>
-    </div>
-
-    <!-- Error State -->
-    <div v-if="error" class="text-center py-12 text-red-500 text-sm">{{ error }}</div>
-
-    <!-- Loading State -->
-    <div v-else-if="loadingItems" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-      <div v-for="i in 6" :key="i" class="bg-white border border-gray-100 rounded-md p-3 flex gap-3 animate-pulse">
-        <div class="w-[58px] h-[80px] bg-gray-100 rounded"></div>
-        <div class="flex-1 py-1 space-y-2">
-          <div class="h-4 bg-gray-100 rounded w-3/4"></div>
-          <div class="h-3 bg-gray-100 rounded w-1/2"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Empty State -->
-    <div v-else-if="items.length === 0" class="text-center py-12 text-gray-400 text-sm">暂无内容</div>
-
-    <!-- List -->
-    <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-      <template v-if="category === 'series'">
-        <a v-for="item in items" :key="item.series_id" :href="'/dashboard/series/' + encodeURIComponent(item.series_id)"
-           class="group flex gap-3 p-3 bg-white border border-gray-200 rounded-md hover:border-brand-300 hover:shadow-sm transition-all min-h-[90px]">
-          <div class="w-[58px] h-[80px] flex-shrink-0 bg-gray-100 rounded overflow-hidden">
-            <img v-if="item.cover_url" :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)" class="w-full h-full object-cover" @error="item.cover_url = ''">
+      <!-- Loading skeleton -->
+      <div v-if="loadingUser" class="px-5 sm:px-7 pb-6 -mt-10 sm:-mt-12">
+        <div class="flex items-end gap-4">
+          <div class="w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-gray-200 border-4 border-white animate-pulse shrink-0"></div>
+          <div class="flex-1 space-y-2 pb-1">
+            <div class="h-6 bg-gray-200 rounded w-1/3 animate-pulse"></div>
+            <div class="h-4 bg-gray-200 rounded w-1/4 animate-pulse"></div>
           </div>
-          <div class="min-w-0 flex flex-col justify-center py-0.5">
-            <div class="text-sm font-bold text-gray-900 leading-snug line-clamp-2 group-hover:text-brand-600 transition-colors">{{ item.series_title || '未命名系列' }}</div>
-            <div class="text-xs text-gray-500 mt-1 truncate">{{ item.author_name || '未知作者' }}</div>
-            <div class="text-[11px] text-gray-400 mt-1">{{ item.chapter_count || 0 }} 章 <span v-if="item.total_text_length">· {{ formatTextLength(item.total_text_length) }}</span></div>
-          </div>
-        </a>
-      </template>
+        </div>
+      </div>
 
-      <template v-else>
-        <a v-for="item in items" :key="item.novel_id" :href="'/dashboard/novels/' + encodeURIComponent(item.novel_id)"
-           class="group flex gap-3 p-3 bg-white border border-gray-200 rounded-md hover:border-brand-300 hover:shadow-sm transition-all min-h-[90px]">
-          <div class="w-[58px] h-[80px] flex-shrink-0 bg-gray-100 rounded overflow-hidden relative">
-            <img v-if="item.cover_url" :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)" class="w-full h-full object-cover" @error="item.cover_url = ''">
-          </div>
-          <div class="min-w-0 flex flex-col justify-center py-0.5">
-            <div class="text-sm font-bold text-gray-900 leading-snug line-clamp-2 group-hover:text-brand-600 transition-colors">
-              {{ item.title || '未命名小说' }}
-              <span v-if="item.series_title" class="inline-flex bg-gray-100 text-gray-600 rounded px-1.5 py-0.5 text-[10px] font-normal ml-1 border border-gray-200 align-text-bottom">{{ item.series_title }}</span>
-            </div>
-            <div class="text-[11px] text-gray-400 mt-1.5 flex items-center gap-2">
-              <span title="收藏数" class="flex items-center gap-0.5"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"></path></svg>{{ item.total_bookmarks || 0 }}</span>
-              <span title="浏览数" class="flex items-center gap-0.5"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>{{ item.total_views || 0 }}</span>
+      <!-- Error state -->
+      <div v-else-if="!user" class="px-5 sm:px-7 pb-6 -mt-10 sm:-mt-12">
+        <div class="mt-14">
+          <h1 class="text-xl font-bold text-gray-900">加载失败</h1>
+          <p class="text-sm text-gray-500 mt-1">未找到该用户</p>
+        </div>
+      </div>
+
+      <!-- User info -->
+      <div v-else class="px-5 sm:px-7 pb-6 -mt-10 sm:-mt-12">
+        <div class="flex flex-col sm:flex-row sm:items-end gap-4">
+          <!-- Large avatar -->
+          <div class="shrink-0">
+            <img v-if="user.avatar_url"
+                 :src="'/proxy/image?url=' + encodeURIComponent(user.avatar_url)"
+                 class="w-20 h-20 sm:w-24 sm:h-24 rounded-full border-4 border-white object-cover bg-white shadow-sm"
+                 @error="user.avatar_url = ''">
+            <div v-else
+                 class="w-20 h-20 sm:w-24 sm:h-24 rounded-full border-4 border-white flex items-center justify-center bg-brand-50 text-brand-600 font-bold text-2xl sm:text-3xl shadow-sm">
+              {{ (user.name || 'U').substring(0, 2) }}
             </div>
           </div>
-        </a>
-      </template>
-    </div>
 
-    <!-- Pagination -->
-    <app-pagination v-if="!loadingItems && !error" :page="page" :pages="totalPages" @update:page="handlePageChange"></app-pagination>
-  </section>
+          <!-- Info block -->
+          <div class="flex-1 min-w-0">
+            <h1 class="text-xl sm:text-2xl font-bold text-gray-900 truncate" :title="user.name">
+              {{ user.name || '未命名用户' }}
+            </h1>
+            <div class="flex flex-wrap items-center gap-2 mt-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
+                {{ user.account ? '@' + user.account : 'ID ' + user.user_id }}
+              </span>
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-brand-50 text-brand-700">
+                {{ user.novel_count || 0 }} 篇小说
+              </span>
+              <app-badge :type="statusType(user.status)">
+                <span class="w-1.5 h-1.5 rounded-full mr-1.5" :class="statusDotClass(user.status)"></span>
+                {{ statusLabel(user.status) }}
+              </app-badge>
+            </div>
+            <div v-if="user.last_checked_at" class="text-xs text-gray-400 mt-2 font-mono">
+              最后检查: {{ user.last_checked_at }}
+            </div>
+          </div>
 
-  <!-- Toast (Simple Custom Implementation for Vue) -->
-  <div v-show="toast.visible" class="fixed bottom-6 right-6 bg-gray-900 text-white px-4 py-2 rounded-md shadow-lg text-sm transition-opacity duration-300 z-50">
+          <!-- Action buttons -->
+          <div class="flex gap-2.5 flex-wrap sm:justify-end shrink-0">
+            <button @click="checkStatus" :disabled="checking"
+              class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 disabled:opacity-50 transition-colors">
+              {{ checking ? '检查中...' : '检查状态' }}
+            </button>
+            <button @click="syncAll" :disabled="syncing"
+              class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 disabled:opacity-50 transition-colors shadow-sm">
+              {{ syncing ? '启动中...' : '备份全部' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Content Card -->
+    <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-4 sm:p-6">
+      <!-- Tabs + count -->
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
+        <div class="flex items-center gap-1 p-1 bg-gray-50 border border-gray-200 rounded-lg w-fit">
+          <button @click="category = 'single'"
+            class="px-4 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap"
+            :class="category === 'single'
+              ? 'bg-white text-brand-600 shadow-sm border border-gray-200'
+              : 'text-gray-600 hover:text-gray-900'">
+            单篇小说
+          </button>
+          <button @click="category = 'series'"
+            class="px-4 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap"
+            :class="category === 'series'
+              ? 'bg-white text-brand-600 shadow-sm border border-gray-200'
+              : 'text-gray-600 hover:text-gray-900'">
+            系列
+          </button>
+        </div>
+        <span class="text-sm font-medium text-gray-500">共 {{ totalItems }} 项</span>
+      </div>
+
+      <!-- Error -->
+      <div v-if="itemError" class="text-center py-12">
+        <div class="text-red-500 mb-2">
+          <svg class="mx-auto h-10 w-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <p class="text-sm text-red-600">{{ itemError }}</p>
+      </div>
+
+      <!-- Loading skeleton -->
+      <div v-else-if="loadingItems" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div v-for="i in 6" :key="i" class="bg-white rounded-xl border border-gray-100 p-3 flex gap-3 animate-pulse">
+          <div class="w-[58px] h-[80px] bg-gray-100 rounded"></div>
+          <div class="flex-1 py-1 space-y-2">
+            <div class="h-4 bg-gray-100 rounded w-3/4"></div>
+            <div class="h-3 bg-gray-100 rounded w-1/2"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Empty -->
+      <div v-else-if="items.length === 0" class="text-center py-12">
+        <svg class="mx-auto h-10 w-10 text-gray-300 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
+        </svg>
+        <p class="text-sm text-gray-500">暂无内容</p>
+      </div>
+
+      <!-- Content Grid -->
+      <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <!-- Series cards -->
+        <template v-if="category === 'series'">
+          <a v-for="item in items" :key="item.series_id"
+             :href="'/dashboard/series/' + encodeURIComponent(item.series_id)"
+             class="group flex gap-3 p-3 bg-white rounded-xl border border-gray-100 hover:border-brand-300 hover:shadow-md transition-all">
+            <div class="w-[58px] h-[80px] flex-shrink-0 bg-gray-100 rounded-lg overflow-hidden">
+              <img v-if="item.cover_url"
+                   :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)"
+                   class="w-full h-full object-cover"
+                   @error="item.cover_url = ''">
+            </div>
+            <div class="min-w-0 flex flex-col justify-center py-0.5">
+              <div class="text-sm font-bold text-gray-900 leading-snug line-clamp-2 group-hover:text-brand-600 transition-colors">
+                {{ item.series_title || '未命名系列' }}
+              </div>
+              <div class="text-xs text-gray-500 mt-1 truncate">{{ item.author_name || '未知作者' }}</div>
+              <div class="text-[11px] text-gray-400 mt-1">
+                {{ item.chapter_count || 0 }} 章
+                <span v-if="item.total_text_length"> · {{ formatTextLength(item.total_text_length) }}</span>
+              </div>
+            </div>
+          </a>
+        </template>
+
+        <!-- Novel cards -->
+        <template v-else>
+          <a v-for="item in items" :key="item.novel_id"
+             :href="'/dashboard/novels/' + encodeURIComponent(item.novel_id)"
+             class="group flex gap-3 p-3 bg-white rounded-xl border border-gray-100 hover:border-brand-300 hover:shadow-md transition-all">
+            <div class="w-[58px] h-[80px] flex-shrink-0 bg-gray-100 rounded-lg overflow-hidden">
+              <img v-if="item.cover_url"
+                   :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)"
+                   class="w-full h-full object-cover"
+                   @error="item.cover_url = ''">
+            </div>
+            <div class="min-w-0 flex flex-col justify-center py-0.5">
+              <div class="text-sm font-bold text-gray-900 leading-snug line-clamp-2 group-hover:text-brand-600 transition-colors">
+                {{ item.title || '未命名小说' }}
+                <span v-if="item.series_title"
+                      class="inline-flex bg-gray-100 text-gray-600 rounded px-1.5 py-0.5 text-[10px] font-normal ml-1 border border-gray-200 align-text-bottom">
+                  {{ item.series_title }}
+                </span>
+              </div>
+              <div class="text-[11px] text-gray-400 mt-1.5 flex items-center gap-2">
+                <span title="收藏数" class="flex items-center gap-0.5">
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg>
+                  {{ item.total_bookmarks || 0 }}
+                </span>
+                <span title="浏览数" class="flex items-center gap-0.5">
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                  {{ item.total_views || 0 }}
+                </span>
+              </div>
+            </div>
+          </a>
+        </template>
+      </div>
+
+      <!-- Pagination -->
+      <app-pagination
+        v-if="!loadingItems && !itemError"
+        :page="page"
+        :pages="totalPages"
+        @update:page="handlePageChange"
+      ></app-pagination>
+    </section>
+
+  </div>
+
+  <!-- Toast notification -->
+  <div v-if="toast.visible"
+       class="fixed bottom-6 right-6 z-50 bg-gray-900 text-white px-5 py-2.5 rounded-lg shadow-lg text-sm transition-all duration-300"
+       :class="toast.visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2'">
     {{ toast.message }}
   </div>
 
@@ -164,25 +241,24 @@
     setup() {
       const { ref, reactive, watch, onMounted } = Vue;
 
-      const pathParts = window.location.pathname.split('/');
-      const userId = Number(pathParts[pathParts.length - 1] || 0);
+      const userId = Number(location.pathname.split('/').pop() || 0);
 
-      // User State
+      // ── User state ──
       const user = ref(null);
       const loadingUser = ref(true);
       const checking = ref(false);
       const syncing = ref(false);
 
-      // List State
+      // ── Items state ──
       const category = ref('single');
       const items = ref([]);
       const totalItems = ref(0);
       const page = ref(1);
       const totalPages = ref(1);
       const loadingItems = ref(true);
-      const error = ref(null);
+      const itemError = ref(null);
 
-      // Toast State
+      // ── Toast ──
       const toast = reactive({ visible: false, message: '', timeout: null });
 
       const showToast = (msg, duration = 3000) => {
@@ -192,15 +268,17 @@
         toast.timeout = setTimeout(() => { toast.visible = false; }, duration);
       };
 
-      const statusConfig = (s) => {
-        const map = {
-          normal: { label: '有小说', type: 'green', dotClass: 'bg-green-500' },
-          no_novels: { label: '无小说', type: 'yellow', dotClass: 'bg-yellow-500' },
-          suspended: { label: '封号', type: 'red', dotClass: 'bg-red-500' },
-          unknown: { label: '未知', type: 'gray', dotClass: 'bg-gray-500' }
-        };
-        return map[s] || map.unknown;
+      // ── Status helpers ──
+      const statusMap = {
+        normal:    { label: '正常',  type: 'green',  dotClass: 'bg-green-500' },
+        no_novels: { label: '无小说', type: 'yellow', dotClass: 'bg-yellow-500' },
+        suspended: { label: '已停用', type: 'red',    dotClass: 'bg-red-500' },
+        unknown:   { label: '未知',  type: 'gray',   dotClass: 'bg-gray-500' }
       };
+
+      const statusLabel = (s) => (statusMap[s] || statusMap.unknown).label;
+      const statusType = (s) => (statusMap[s] || statusMap.unknown).type;
+      const statusDotClass = (s) => (statusMap[s] || statusMap.unknown).dotClass;
 
       const formatTextLength = (chars) => {
         if (!chars || chars <= 0) return '';
@@ -208,9 +286,11 @@
         return chars.toLocaleString('zh-CN') + ' 字';
       };
 
+      // ── Fetch user detail ──
       const fetchUser = async () => {
+        loadingUser.value = true;
         try {
-          const res = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}`);
+          const res = await fetch('/api/dashboard/users/' + encodeURIComponent(userId));
           if (res.ok) {
             user.value = await res.json();
           } else {
@@ -223,11 +303,16 @@
         }
       };
 
+      // ── Fetch novels / series ──
       const fetchItems = async () => {
         loadingItems.value = true;
-        error.value = null;
+        itemError.value = null;
         try {
-          const res = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}/novels?page=${page.value}&category=${category.value}`);
+          const params = new URLSearchParams({
+            page: page.value,
+            category: category.value
+          });
+          const res = await fetch('/api/dashboard/users/' + encodeURIComponent(userId) + '/novels?' + params);
           if (!res.ok) throw new Error('Failed to load items');
           const data = await res.json();
           items.value = data.items || [];
@@ -235,7 +320,7 @@
           page.value = data.page || 1;
           totalPages.value = data.total_pages || 1;
         } catch (e) {
-          error.value = '加载失败';
+          itemError.value = '加载失败，请检查网络连接或稍后重试。';
           items.value = [];
         } finally {
           loadingItems.value = false;
@@ -245,20 +330,22 @@
       const handlePageChange = (newPage) => {
         page.value = newPage;
         fetchItems();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
       };
 
+      // ── Actions ──
       const checkStatus = async () => {
         if (checking.value) return;
         checking.value = true;
         showToast('正在检查用户状态...');
         try {
-          const res = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}/check`, { method: 'POST' });
+          const res = await fetch('/api/dashboard/users/' + encodeURIComponent(userId) + '/check', { method: 'POST' });
           const data = await res.json();
           if (data.ok) {
-            showToast(`状态: ${statusConfig(data.status).label}`);
-            await fetchUser(); // Refresh user data
+            showToast('状态: ' + statusLabel(data.status));
+            await fetchUser();
           } else {
-            showToast(`检查失败: ${data.error || '未知错误'}`);
+            showToast('检查失败: ' + (data.error || '未知错误'));
           }
         } catch (e) {
           showToast('检查失败');
@@ -273,12 +360,12 @@
         syncing.value = true;
         showToast('开始同步...');
         try {
-          const res = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}/sync`, { method: 'POST' });
+          const res = await fetch('/api/dashboard/users/' + encodeURIComponent(userId) + '/sync', { method: 'POST' });
           const data = await res.json();
           if (data.ok) {
             showToast('备份任务已启动，可在首页查看进度');
           } else {
-            showToast(`启动失败: ${data.error || '未知错误'}`);
+            showToast('启动失败: ' + (data.error || '未知错误'));
           }
         } catch (e) {
           showToast('启动失败');
@@ -287,6 +374,7 @@
         }
       };
 
+      // ── Watchers ──
       watch(category, () => {
         page.value = 1;
         fetchItems();
@@ -299,9 +387,10 @@
 
       return {
         user, loadingUser, checking, syncing,
-        category, items, totalItems, page, totalPages, loadingItems, error,
+        category, items, totalItems, page, totalPages, loadingItems, itemError,
         toast,
-        statusConfig, formatTextLength, handlePageChange, checkStatus, syncAll
+        statusLabel, statusType, statusDotClass,
+        formatTextLength, handlePageChange, checkStatus, syncAll
       };
     }
   });

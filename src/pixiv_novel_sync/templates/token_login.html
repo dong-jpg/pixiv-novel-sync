@@ -2,150 +2,114 @@
 
 {% block title %}Pixiv 登录 - Pixiv 小说同步器{% endblock %}
 
-{% block content %}
-<div class="max-w-2xl mx-auto space-y-6 pt-4">
+{% block extra_head %}
+<style>
+  .login-card { background:#fff; border-radius:.75rem; border:1px solid #e8eaed; padding:1.5rem 2rem; transition:all .2s; }
+  .login-card:hover { border-color:#bae0ff; }
+  .status-box { display:none; margin-top:1rem; padding:.75rem 1rem; border-radius:.5rem; font-size:.8125rem; font-weight:500; border:1px solid; }
+  .status-box.pending { background:#e6f4ff; color:#0073cc; border-color:#bae0ff; }
+  .status-box.success { background:#ecfdf5; color:#047857; border-color:#a7f3d0; }
+  .status-box.error { background:#fef2f2; color:#b91c1c; border-color:#fecaca; }
+  .status-box.waiting { background:#fffbeb; color:#92400e; border-color:#fde68a; }
+  .step-item { display:flex; align-items:center; gap:.75rem; font-size:.8125rem; color:#999; transition:all .15s; }
+  .step-num { width:1.5rem; height:1.5rem; display:flex; align-items:center; justify-content:center; border-radius:50%; font-size:.6875rem; font-weight:700; background:#f3f4f6; color:#666; border:1px solid #e8eaed; transition:all .15s; }
+  .step-item.active { color:#0073cc; font-weight:600; }
+  .step-item.active .step-num { background:#0096fa; color:#fff; border-color:#0096fa; }
+  .step-item.done { color:#333; font-weight:500; }
+  .step-item.done .step-num { background:#10b981; color:#fff; border-color:#10b981; }
+  .login-btn { display:block; width:100%; padding:.75rem; border-radius:.5rem; font-size:.875rem; font-weight:600; text-align:center; cursor:pointer; transition:all .15s; border:none; }
+  .login-btn:disabled { opacity:.5; cursor:not-allowed; }
+  .login-input { width:100%; padding:.625rem 1rem; border-radius:.5rem; border:1px solid #e8eaed; font-size:.8125rem; background:#fff; transition:border-color .15s; outline:none; }
+  .login-input:focus { border-color:#0096fa; box-shadow:0 0 0 3px rgba(0,150,250,.1); }
+</style>
+{% endblock %}
 
-  <!-- Back Link -->
-  <a href="/dashboard" class="inline-flex items-center gap-2 text-sm font-semibold text-slate-400 hover:text-blue-500 transition-colors mb-2">
-    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-    </svg>
+{% block content %}
+<div class="px-6 lg:px-8 pt-6 max-w-2xl mx-auto space-y-6">
+
+  <a href="/dashboard" class="inline-flex items-center gap-1.5 text-sm text-pixiv-gray hover:text-brand-500 transition-colors">
+    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
     返回首页
   </a>
 
-  <!-- Header -->
-  <div class="text-center mb-8">
-    <h1 class="text-2xl sm:text-3xl font-black text-slate-800 tracking-tight">Pixiv 账号登录</h1>
-    <p class="mt-2 text-sm text-slate-400">配置 Pixiv API 访问凭证，以便系统能拉取您的收藏与小说</p>
+  <div class="text-center py-2">
+    <h1 class="text-2xl font-bold text-gray-900">Pixiv 账号登录</h1>
+    <p class="mt-1.5 text-sm text-pixiv-gray">配置 Pixiv API 访问凭证，以便系统拉取收藏与小说</p>
   </div>
 
-  <!-- Auto Login Card -->
-  <section class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-6 sm:p-8 relative overflow-hidden group">
-    <div class="absolute top-0 right-0 p-4 opacity-5 pointer-events-none group-hover:opacity-10 transition-opacity">
-      <svg class="w-24 h-24 text-blue-500" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm0 18c-4.411 0-8-3.589-8-8s3.589-8 8-8 8 3.589 8 8-3.589 8-8 8zm1-13h-2v6h6v-2h-4V7z"/></svg>
+  <!-- Auto Login -->
+  <section class="login-card">
+    <div class="flex items-center gap-2.5 mb-3">
+      <div class="w-7 h-7 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-xs font-bold border border-brand-200">1</div>
+      <h2 class="text-base font-bold text-gray-900">全自动一键登录</h2>
+    </div>
+    <div id="autoLoginDesc" class="text-sm text-pixiv-gray mb-4 p-3 bg-gray-50 rounded-lg border border-gray-100">
+      <svg class="animate-spin inline-block w-3.5 h-3.5 mr-1.5 text-brand-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10" stroke-width="4" class="opacity-25"></circle><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" class="opacity-75"></path></svg>
+      检查配置中...
     </div>
 
-    <div class="relative z-10">
-      <div class="flex items-center gap-3 mb-3">
-        <div class="w-8 h-8 rounded-full bg-blue-500/15 border border-blue-300/30 flex items-center justify-center text-blue-600 text-sm font-bold shrink-0">1</div>
-        <h2 class="text-lg font-bold text-slate-800">全自动一键登录</h2>
-      </div>
-      <div id="autoLoginDesc" class="text-sm text-slate-600 mb-6 bg-white/40 backdrop-blur-md border border-white/60 shadow-glass-sm p-3.5 rounded-xl">
-        <svg class="animate-spin inline-block w-4 h-4 mr-2 text-blue-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10" stroke-width="4" class="opacity-25"></circle><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" class="opacity-75"></path></svg>
-        检查配置中...
-      </div>
+    <button id="loginBtn" class="login-btn bg-brand-500 text-white hover:bg-brand-600 hidden">一键自动获取并保存 Token</button>
 
-      <button id="loginBtn" class="hidden w-full px-6 py-3.5 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-xl shadow-glass-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-50 disabled:cursor-not-allowed transform hover:-translate-y-0.5">
-        一键自动获取并保存 Token
-      </button>
+    <div class="hidden mt-5 space-y-2.5" id="steps">
+      <div class="step-item" id="step1"><div class="step-num" id="step1Num">1</div><span>启动自动化浏览器</span></div>
+      <div class="step-item" id="step2"><div class="step-num" id="step2Num">2</div><span>后台自动模拟登录授权</span></div>
+      <div class="step-item" id="step3"><div class="step-num" id="step3Num">3</div><span>提取 Refresh Token 并保存</span></div>
+    </div>
 
-      <div class="steps hidden mt-6 space-y-3" id="steps">
-        <div class="step flex items-center gap-3 text-sm text-slate-400 transition-colors" id="step1">
-          <div class="step-num w-6 h-6 flex items-center justify-center rounded-full text-xs font-bold bg-white/50 border border-white/60 text-slate-600 transition-colors" id="step1Num">1</div>
-          <span class="font-medium">启动自动化浏览器</span>
-        </div>
-        <div class="step flex items-center gap-3 text-sm text-slate-400 transition-colors" id="step2">
-          <div class="step-num w-6 h-6 flex items-center justify-center rounded-full text-xs font-bold bg-white/50 border border-white/60 text-slate-600 transition-colors" id="step2Num">2</div>
-          <span class="font-medium">后台自动模拟登录授权</span>
-        </div>
-        <div class="step flex items-center gap-3 text-sm text-slate-400 transition-colors" id="step3">
-          <div class="step-num w-6 h-6 flex items-center justify-center rounded-full text-xs font-bold bg-white/50 border border-white/60 text-slate-600 transition-colors" id="step3Num">3</div>
-          <span class="font-medium">提取 Refresh Token 并保存</span>
-        </div>
-      </div>
+    <div id="statusBox" class="status-box"></div>
 
-      <div id="statusBox" class="hidden mt-6 px-4 py-3 rounded-xl text-sm font-medium border"></div>
-
-      <div id="resultBox" class="hidden mt-6 bg-white/40 backdrop-blur-md border border-white/60 shadow-glass-sm rounded-xl p-5">
-        <div class="space-y-3">
-          <div class="flex justify-between items-center pb-3 border-b border-white/30">
-            <span class="text-xs font-bold text-slate-400 uppercase">状态</span>
-            <span id="resultStatus" class="text-sm font-bold">-</span>
-          </div>
-          <div class="flex justify-between items-center pb-3 border-b border-white/30">
-            <span class="text-xs font-bold text-slate-400 uppercase">User ID</span>
-            <span id="resultUserId" class="text-sm font-medium text-slate-800">-</span>
-          </div>
-          <div class="flex flex-col gap-1 pb-3 border-b border-white/30">
-            <span class="text-xs font-bold text-slate-400 uppercase">Refresh Token</span>
-            <span id="resultToken" class="text-xs font-mono bg-white/50 border border-white/60 p-2 rounded-lg break-all text-slate-800">-</span>
-          </div>
-          <div class="flex justify-between items-center pt-1">
-            <span class="text-xs font-bold text-slate-400 uppercase">系统存储</span>
-            <span id="resultSaved" class="text-sm font-bold text-slate-800">-</span>
-          </div>
-        </div>
-      </div>
+    <div id="resultBox" class="hidden mt-5 p-4 bg-gray-50 rounded-lg border border-gray-100 space-y-2.5">
+      <div class="flex justify-between text-sm"><span class="text-pixiv-gray">状态</span><span id="resultStatus" class="font-semibold">-</span></div>
+      <div class="flex justify-between text-sm"><span class="text-pixiv-gray">User ID</span><span id="resultUserId" class="font-medium text-gray-900">-</span></div>
+      <div class="text-sm"><span class="text-pixiv-gray block mb-1">Refresh Token</span><code id="resultToken" class="text-xs font-mono bg-white border border-gray-200 p-2 rounded block break-all text-gray-800">-</code></div>
+      <div class="flex justify-between text-sm"><span class="text-pixiv-gray">系统存储</span><span id="resultSaved" class="font-semibold text-gray-900">-</span></div>
     </div>
   </section>
 
-  <!-- Manual OAuth Card -->
-  <section class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-6 sm:p-8 hidden" id="oauthCard">
-    <div class="flex items-center gap-3 mb-3">
-      <div class="w-8 h-8 rounded-full bg-violet-500/15 border border-violet-300/30 flex items-center justify-center text-violet-600 text-sm font-bold shrink-0">2</div>
-      <h2 class="text-lg font-bold text-slate-800">手动 OAuth 获取</h2>
+  <!-- OAuth -->
+  <section class="login-card hidden" id="oauthCard">
+    <div class="flex items-center gap-2.5 mb-3">
+      <div class="w-7 h-7 rounded-full bg-purple-50 text-purple-600 flex items-center justify-center text-xs font-bold border border-purple-200">2</div>
+      <h2 class="text-base font-bold text-gray-900">手动 OAuth 获取</h2>
     </div>
-    <p class="text-sm text-slate-600 mb-6 bg-white/40 backdrop-blur-md border border-white/60 shadow-glass-sm p-3.5 rounded-xl">
-      点击下方按钮打开 Pixiv 登录页，登录成功后页面会跳转（可能显示无法访问）。请复制当时<strong class="text-slate-800">浏览器地址栏的完整 URL</strong>，粘贴到下方输入框中。
-    </p>
+    <p class="text-sm text-pixiv-gray mb-4">点击按钮打开 Pixiv 登录页，登录后复制<strong class="text-gray-700">浏览器地址栏的完整 URL</strong> 粘贴到输入框。</p>
 
-    <div class="space-y-4">
-      <button id="oauthBtn" class="w-full px-5 py-3 bg-white/40 backdrop-blur-md border-2 border-blue-400/40 hover:border-blue-500 text-blue-600 font-bold rounded-xl shadow-glass-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/50">
-        1. 打开 Pixiv 授权页面
-      </button>
-
-      <input type="text" id="callbackUrl" class="w-full px-4 py-3 bg-white/50 border border-white/60 rounded-xl text-sm font-mono text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors" placeholder="2. 粘贴包含 code=... 的跳转 URL">
-
-      <button id="exchangeBtn" class="hidden w-full px-5 py-3 bg-green-500 hover:bg-green-600 text-white font-bold rounded-xl shadow-glass-sm transition-all focus:outline-none focus:ring-2 focus:ring-green-500/50">
-        3. 验证并提取 Token
-      </button>
+    <div class="space-y-3">
+      <button id="oauthBtn" class="login-btn bg-white text-brand-600 border-2 border-brand-200 hover:border-brand-400">1. 打开 Pixiv 授权页面</button>
+      <input type="text" id="callbackUrl" class="login-input font-mono" placeholder="2. 粘贴包含 code=... 的跳转 URL">
+      <button id="exchangeBtn" class="login-btn bg-green-500 text-white hover:bg-green-600 hidden">3. 验证并提取 Token</button>
     </div>
 
-    <div id="oauthStatus" class="hidden mt-4 px-4 py-3 rounded-xl text-sm font-medium border"></div>
+    <div id="oauthStatus" class="status-box"></div>
 
-    <div id="oauthResult" class="hidden mt-6 bg-white/40 backdrop-blur-md border border-white/60 shadow-glass-sm rounded-xl p-5">
-      <div class="space-y-3">
-        <div class="flex justify-between items-center pb-3 border-b border-white/30">
-          <span class="text-xs font-bold text-slate-400 uppercase">状态</span>
-          <span id="oauthResultStatus" class="text-sm font-bold">-</span>
-        </div>
-        <div class="flex justify-between items-center pb-3 border-b border-white/30">
-          <span class="text-xs font-bold text-slate-400 uppercase">User ID</span>
-          <span id="oauthResultUserId" class="text-sm font-medium text-slate-800">-</span>
-        </div>
-        <div class="flex flex-col gap-1 pb-1">
-          <span class="text-xs font-bold text-slate-400 uppercase">Refresh Token</span>
-          <span id="oauthResultToken" class="text-xs font-mono bg-white/50 border border-white/60 p-2 rounded-lg break-all text-slate-800">-</span>
-        </div>
-      </div>
+    <div id="oauthResult" class="hidden mt-5 p-4 bg-gray-50 rounded-lg border border-gray-100 space-y-2.5">
+      <div class="flex justify-between text-sm"><span class="text-pixiv-gray">状态</span><span id="oauthResultStatus" class="font-semibold">-</span></div>
+      <div class="flex justify-between text-sm"><span class="text-pixiv-gray">User ID</span><span id="oauthResultUserId" class="font-medium text-gray-900">-</span></div>
+      <div class="text-sm"><span class="text-pixiv-gray block mb-1">Refresh Token</span><code id="oauthResultToken" class="text-xs font-mono bg-white border border-gray-200 p-2 rounded block break-all text-gray-800">-</code></div>
     </div>
   </section>
 
-  <!-- Manual Token Input Card -->
-  <section class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-6 sm:p-8">
-    <div class="flex items-center gap-3 mb-3">
-      <div class="w-8 h-8 rounded-full bg-emerald-500/15 border border-emerald-300/30 flex items-center justify-center text-emerald-600 text-sm font-bold shrink-0">3</div>
-      <h2 class="text-lg font-bold text-slate-800">直接填入凭证</h2>
+  <!-- Manual Token -->
+  <section class="login-card">
+    <div class="flex items-center gap-2.5 mb-3">
+      <div class="w-7 h-7 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center text-xs font-bold border border-emerald-200">3</div>
+      <h2 class="text-base font-bold text-gray-900">直接填入凭证</h2>
     </div>
-    <p class="text-sm text-slate-600 mb-6">如果您已经通过其他工具获取了 Pixiv 的 <code class="bg-white/50 border border-white/60 rounded px-1.5 py-0.5 text-sm text-slate-700">refresh_token</code>，可直接在此处保存。</p>
+    <p class="text-sm text-pixiv-gray mb-4">已通过其他方式获取 <code class="bg-gray-100 px-1.5 py-0.5 rounded text-xs text-gray-700">refresh_token</code> 可直接保存。</p>
 
-    <div class="space-y-4">
+    <div class="space-y-3">
       <div>
-        <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Refresh Token <span class="text-red-500">*</span></label>
-        <input type="text" id="manualToken" class="w-full px-4 py-3 bg-white/50 border border-white/60 rounded-xl text-sm font-mono text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors" placeholder="粘贴 refresh_token">
+        <label class="block text-xs font-semibold text-pixiv-gray uppercase tracking-wider mb-1">Refresh Token <span class="text-red-500">*</span></label>
+        <input type="text" id="manualToken" class="login-input font-mono" placeholder="粘贴 refresh_token">
       </div>
-
       <div>
-        <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">User ID (可选)</label>
-        <input type="text" id="manualUserId" class="w-full px-4 py-3 bg-white/50 border border-white/60 rounded-xl text-sm font-mono text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors" placeholder="例如: 12345678">
+        <label class="block text-xs font-semibold text-pixiv-gray uppercase tracking-wider mb-1">User ID (可选)</label>
+        <input type="text" id="manualUserId" class="login-input font-mono" placeholder="例如: 12345678">
       </div>
-
-      <button id="manualSaveBtn" class="w-full sm:w-auto px-6 py-3 bg-slate-700 hover:bg-slate-800 text-white font-bold rounded-xl shadow-glass-sm transition-all focus:outline-none focus:ring-2 focus:ring-slate-500/50">
-        保存 Token 凭证
-      </button>
+      <button id="manualSaveBtn" class="login-btn bg-gray-800 text-white hover:bg-gray-900">保存 Token 凭证</button>
     </div>
 
-    <div id="manualStatus" class="hidden mt-4 px-4 py-3 rounded-xl text-sm font-medium border"></div>
+    <div id="manualStatus" class="status-box"></div>
   </section>
 
 </div>
@@ -154,86 +118,46 @@
 {% block extra_scripts %}
 <script>
   const $ = (id) => document.getElementById(id);
-  let taskId = null;
-  let pollTimer = null;
-  let hasCredentials = false;
-  let oauthTaskId = null;
+  let taskId = null, pollTimer = null, hasCredentials = false, currentOAuthTaskId = null;
 
-  function escapeHtml(text) {
-    const d = document.createElement('div');
-    d.textContent = text;
-    return d.innerHTML;
-  }
+  function escapeHtml(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
 
   function showStatus(box, type, html) {
-    box.classList.remove('hidden');
-    box.className = 'mt-4 px-4 py-3 rounded-xl text-sm font-medium border backdrop-blur-md';
-
-    if (type === 'pending') {
-      box.classList.add('bg-blue-500/10', 'text-blue-700', 'border-blue-300/30');
-    } else if (type === 'success') {
-      box.classList.add('bg-green-500/10', 'text-green-700', 'border-green-300/30');
-    } else if (type === 'error') {
-      box.classList.add('bg-red-500/10', 'text-red-700', 'border-red-300/30');
-    } else if (type === 'waiting') {
-      box.classList.add('bg-amber-500/10', 'text-amber-700', 'border-amber-300/30');
-    }
-
+    box.style.display = 'block';
+    box.className = 'status-box ' + type;
     box.innerHTML = html;
   }
 
+  const spin = '<svg class="animate-spin inline-block w-3.5 h-3.5 mr-1.5" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10" stroke-width="4" class="opacity-25"></circle><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" class="opacity-75"></path></svg>';
+
   function setStep(n, state) {
-    const num = $(`step${n}Num`);
-    const step = $(`step${n}`);
-
-    num.className = 'step-num w-6 h-6 flex items-center justify-center rounded-full text-xs font-bold transition-colors';
-    step.className = 'step flex items-center gap-3 text-sm transition-colors';
-
-    if (state === 'pending') {
-      num.classList.add('bg-white/50', 'border', 'border-white/60', 'text-slate-600');
-      step.classList.add('text-slate-400');
-      num.textContent = n;
-    } else if (state === 'active') {
-      num.classList.add('bg-blue-500', 'text-white', 'animate-pulse');
-      step.classList.add('text-blue-600', 'font-bold');
-      num.textContent = n;
-    } else if (state === 'done') {
-      num.classList.add('bg-green-500', 'text-white');
-      step.classList.add('text-slate-800', 'font-medium');
-      num.innerHTML = '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>';
-    }
+    const el = $('step' + n), num = $('step' + n + 'Num');
+    el.className = 'step-item' + (state === 'active' ? ' active' : state === 'done' ? ' done' : '');
+    if (state === 'done') num.innerHTML = '<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>';
+    else num.textContent = n;
+    if (state === 'active') num.classList.add('animate-pulse');
   }
 
   function showAutoResult(data) {
     $('resultBox').classList.remove('hidden');
     $('resultStatus').textContent = data.status === 'done' ? '提取成功' : data.status;
-    $('resultStatus').className = data.status === 'done' ? 'text-sm font-bold text-green-600' : 'text-sm font-bold text-red-600';
+    $('resultStatus').className = data.status === 'done' ? 'font-semibold text-green-600' : 'font-semibold text-red-600';
     $('resultUserId').textContent = data.user_id || '-';
     $('resultToken').textContent = data.refresh_token || '-';
   }
 
-  const spinnerHtml = '<svg class="animate-spin inline-block w-4 h-4 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>';
-
-  // One-click login
   $('loginBtn').addEventListener('click', async () => {
     $('loginBtn').disabled = true;
     $('resultBox').classList.add('hidden');
     $('steps').classList.remove('hidden');
-
-    setStep(1, 'active');
-    setStep(2, 'pending');
-    setStep(3, 'pending');
-
-    showStatus($('statusBox'), 'pending', spinnerHtml + '正在启动自动登录核心...');
-
+    setStep(1, 'active'); setStep(2, 'pending'); setStep(3, 'pending');
+    showStatus($('statusBox'), 'pending', spin + '正在启动自动登录...');
     try {
       const resp = await fetch('/api/token-jobs', { method: 'POST' });
       const data = await resp.json();
       taskId = data.task_id;
-      setStep(1, 'done');
-      setStep(2, 'active');
-      showStatus($('statusBox'), 'waiting', spinnerHtml + '正在后台模拟网页登录，此过程需耗时 1-2 分钟，请耐心等待...');
-
+      setStep(1, 'done'); setStep(2, 'active');
+      showStatus($('statusBox'), 'waiting', spin + '正在后台模拟登录，需 1-2 分钟...');
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = setInterval(pollTask, 2000);
       await pollTask();
@@ -246,189 +170,99 @@
   async function pollTask() {
     if (!taskId) return;
     try {
-      const resp = await fetch(`/api/token-jobs/${taskId}`);
-      const data = await resp.json();
-
+      const data = await (await fetch('/api/token-jobs/' + taskId)).json();
       if (data.status === 'done') {
-        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-        setStep(2, 'done');
-        setStep(3, 'active');
-
+        clearInterval(pollTimer); pollTimer = null;
+        setStep(2, 'done'); setStep(3, 'active');
         if (data.refresh_token) {
           showAutoResult(data);
-          $('resultSaved').innerHTML = '<span class="text-green-600 font-bold">已写入配置文件</span>';
+          $('resultSaved').innerHTML = '<span class="text-green-600 font-semibold">已写入配置</span>';
           setStep(3, 'done');
-          showStatus($('statusBox'), 'success', '<strong>配置成功！</strong>凭证已生效，您可以安全关闭此页面。');
+          showStatus($('statusBox'), 'success', '<strong>成功！</strong>凭证已生效。');
         } else {
-          showStatus($('statusBox'), 'error', '<strong>登录成功，但未提取到 token。</strong>请重试或尝试手动 OAuth 方式。');
+          showStatus($('statusBox'), 'error', '登录成功但未提取到 Token，请重试。');
         }
-        $('loginBtn').disabled = false;
-        $('loginBtn').textContent = '重新获取 Token';
+        $('loginBtn').disabled = false; $('loginBtn').textContent = '重新获取';
       } else if (data.status === 'failed') {
-        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-        setStep(2, 'pending');
-        showStatus($('statusBox'), 'error', '<strong>登录流程失败：</strong>' + escapeHtml(data.message || '可能遇到了风控验证或账号密码错误'));
-        $('loginBtn').disabled = false;
-        $('loginBtn').textContent = '重新尝试登录';
+        clearInterval(pollTimer); pollTimer = null;
+        showStatus($('statusBox'), 'error', '<strong>失败：</strong>' + escapeHtml(data.message || '未知错误'));
+        $('loginBtn').disabled = false; $('loginBtn').textContent = '重试';
       }
-    } catch (e) { }
+    } catch (e) {}
   }
 
-  // OAuth Flow
   $('oauthBtn').addEventListener('click', async () => {
-    $('oauthBtn').disabled = true;
-    $('oauthBtn').innerHTML = spinnerHtml + '生成登录链接...';
+    $('oauthBtn').disabled = true; $('oauthBtn').innerHTML = spin + '生成链接...';
     try {
-      const resp = await fetch('/api/token-jobs', { method: 'POST' });
-      const data = await resp.json();
+      const data = await (await fetch('/api/token-jobs', { method: 'POST' })).json();
       currentOAuthTaskId = data.task_id;
-      if (data.login_url) {
-        window.open(data.login_url, '_blank');
-        $('callbackUrl').classList.remove('hidden');
-        $('callbackUrl').focus();
-        showStatus($('oauthStatus'), 'waiting', '<strong>待验证：</strong>请在弹出的新标签页完成 Pixiv 授权。完成后将跳转链接粘贴至输入框。');
-      }
-    } catch (e) {
-      showStatus($('oauthStatus'), 'error', '请求失败：' + escapeHtml(e.message));
-    }
-    $('oauthBtn').disabled = false;
-    $('oauthBtn').innerHTML = '重新打开 Pixiv 授权页面';
+      if (data.login_url) { window.open(data.login_url, '_blank'); showStatus($('oauthStatus'), 'waiting', '请在新标签页完成授权，然后粘贴跳转 URL。'); }
+    } catch (e) { showStatus($('oauthStatus'), 'error', '失败：' + escapeHtml(e.message)); }
+    $('oauthBtn').disabled = false; $('oauthBtn').innerHTML = '重新打开授权页面';
   });
 
   $('callbackUrl').addEventListener('input', () => {
-    const url = $('callbackUrl').value.trim();
-    if (url.includes('code=')) {
-      $('exchangeBtn').classList.remove('hidden');
-    } else {
-      $('exchangeBtn').classList.add('hidden');
-    }
+    $('exchangeBtn').classList.toggle('hidden', !$('callbackUrl').value.includes('code='));
   });
 
   $('exchangeBtn').addEventListener('click', async () => {
     const url = $('callbackUrl').value.trim();
     if (!url) return;
-    $('exchangeBtn').disabled = true;
-    $('exchangeBtn').innerHTML = spinnerHtml + '解析验证中...';
-    showStatus($('oauthStatus'), 'pending', spinnerHtml + '正在与 Pixiv 服务器验证 Token...');
-
+    $('exchangeBtn').disabled = true; $('exchangeBtn').innerHTML = spin + '验证中...';
+    showStatus($('oauthStatus'), 'pending', spin + '正在验证 Token...');
     try {
-      const resp = await fetch(`/oauth/exchange/${currentOAuthTaskId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ callback_url: url })
-      });
+      const resp = await fetch('/oauth/exchange/' + currentOAuthTaskId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callback_url: url }) });
       const data = await resp.json();
-
       if (resp.ok && data.refresh_token) {
         $('oauthResult').classList.remove('hidden');
-        $('oauthResultStatus').innerHTML = '<span class="text-green-600 font-bold">解析成功</span>';
+        $('oauthResultStatus').innerHTML = '<span class="text-green-600 font-semibold">成功</span>';
         $('oauthResultUserId').textContent = data.user_id || '-';
         $('oauthResultToken').textContent = data.refresh_token;
-
-        const saveResp = await fetch('/api/save-token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refresh_token: data.refresh_token, user_id: data.user_id || '' })
-        });
-
-        if (saveResp.ok) {
-          showStatus($('oauthStatus'), 'success', '<strong>配置成功！</strong>Token 已保存，您可以正常使用同步器功能。');
-        } else {
-          showStatus($('oauthStatus'), 'waiting', 'Token 获取成功，但写入配置文件失败。请手动复制并贴入下方表单。');
-        }
-      } else {
-        showStatus($('oauthStatus'), 'error', '<strong>兑换失败：</strong>' + escapeHtml(data.error || '无效的链接或 Token 已过期'));
-      }
-    } catch (e) {
-      showStatus($('oauthStatus'), 'error', '请求发生异常：' + escapeHtml(e.message));
-    }
-
-    $('exchangeBtn').disabled = false;
-    $('exchangeBtn').innerHTML = '验证并提取 Token';
+        const sr = await fetch('/api/save-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: data.refresh_token, user_id: data.user_id || '' }) });
+        showStatus($('oauthStatus'), sr.ok ? 'success' : 'waiting', sr.ok ? '<strong>成功！</strong>Token 已保存。' : 'Token 获取成功，但写入失败。请手动复制。');
+      } else { showStatus($('oauthStatus'), 'error', '<strong>失败：</strong>' + escapeHtml(data.error || '无效链接')); }
+    } catch (e) { showStatus($('oauthStatus'), 'error', '异常：' + escapeHtml(e.message)); }
+    $('exchangeBtn').disabled = false; $('exchangeBtn').innerHTML = '验证并提取 Token';
   });
 
-  // Manual Token
   $('manualSaveBtn').addEventListener('click', async () => {
-    const token = $('manualToken').value.trim();
-    const userId = $('manualUserId').value.trim();
-    if (!token) {
-      showStatus($('manualStatus'), 'error', '请提供 refresh_token 内容');
-      return;
-    }
-
-    $('manualSaveBtn').disabled = true;
-    $('manualSaveBtn').innerHTML = spinnerHtml + '保存中...';
-
+    const token = $('manualToken').value.trim(), userId = $('manualUserId').value.trim();
+    if (!token) { showStatus($('manualStatus'), 'error', '请提供 refresh_token'); return; }
+    $('manualSaveBtn').disabled = true; $('manualSaveBtn').innerHTML = spin + '保存中...';
     try {
-      const resp = await fetch('/api/save-token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: token, user_id: userId })
-      });
-      if (resp.ok) {
-        showStatus($('manualStatus'), 'success', '<strong>凭证已保存！</strong>相关配置已更新。');
-      } else {
-        const data = await resp.json();
-        showStatus($('manualStatus'), 'error', '<strong>保存失败：</strong>' + escapeHtml(data.error || '未知错误'));
-      }
-    } catch (e) {
-      showStatus($('manualStatus'), 'error', '网络请求失败：' + escapeHtml(e.message));
-    }
-
-    $('manualSaveBtn').disabled = false;
-    $('manualSaveBtn').innerHTML = '保存 Token 凭证';
+      const resp = await fetch('/api/save-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: token, user_id: userId }) });
+      showStatus($('manualStatus'), resp.ok ? 'success' : 'error', resp.ok ? '<strong>已保存！</strong>' : '<strong>失败</strong>');
+    } catch (e) { showStatus($('manualStatus'), 'error', '网络错误'); }
+    $('manualSaveBtn').disabled = false; $('manualSaveBtn').innerHTML = '保存 Token 凭证';
   });
 
-  // Initialization check
   (async function init() {
     const params = new URLSearchParams(location.search);
     if (params.has('oauth_task')) {
-      const tid = params.get('oauth_task');
-      history.replaceState(null, '', '/token-login');
-      showStatus($('statusBox'), 'pending', spinnerHtml + '正在完成最终授权...');
+      const tid = params.get('oauth_task'); history.replaceState(null, '', '/token-login');
+      showStatus($('statusBox'), 'pending', spin + '完成授权...');
       try {
-        const resp = await fetch(`/oauth/task/${tid}`);
-        const data = await resp.json();
+        const data = await (await fetch('/oauth/task/' + tid)).json();
         if (data.status === 'done' && data.refresh_token) {
           $('resultBox').classList.remove('hidden');
-          $('resultStatus').innerHTML = '<span class="text-green-600 font-bold">授权成功</span>';
+          $('resultStatus').innerHTML = '<span class="text-green-600 font-semibold">成功</span>';
           $('resultUserId').textContent = data.user_id || '-';
           $('resultToken').textContent = data.refresh_token;
-
-          const saveResp = await fetch(`/oauth/save/${tid}`, { method: 'POST' });
-          if (saveResp.ok) {
-            $('resultSaved').innerHTML = '<span class="text-green-600 font-bold">已应用到配置</span>';
-            showStatus($('statusBox'), 'success', '<strong>登录完成！</strong>Pixiv 服务已连接。');
-          }
-        } else {
-          showStatus($('statusBox'), 'error', '<strong>授权异常：</strong>' + escapeHtml(data.message || '流程中断'));
-        }
-      } catch (e) {
-        showStatus($('statusBox'), 'error', '<strong>检查失败：</strong>' + escapeHtml(e.message));
-      }
+          const sr = await fetch('/oauth/save/' + tid, { method: 'POST' });
+          if (sr.ok) { $('resultSaved').innerHTML = '<span class="text-green-600 font-semibold">已应用</span>'; showStatus($('statusBox'), 'success', '<strong>完成！</strong>'); }
+        } else { showStatus($('statusBox'), 'error', '异常：' + escapeHtml(data.message || '中断')); }
+      } catch (e) { showStatus($('statusBox'), 'error', '检查失败'); }
       return;
     }
-
-    if (params.has('error')) {
-      showStatus($('statusBox'), 'error', '<strong>登录取消或失败：</strong>' + escapeHtml(params.get('error')));
-      history.replaceState(null, '', '/token-login');
-    }
-
-    try {
-      const resp = await fetch('/api/token-config');
-      const data = await resp.json();
-      hasCredentials = data.has_credentials;
-    } catch (e) {
-      hasCredentials = false;
-    }
-
+    if (params.has('error')) { showStatus($('statusBox'), 'error', escapeHtml(params.get('error'))); history.replaceState(null, '', '/token-login'); }
+    try { hasCredentials = (await (await fetch('/api/token-config')).json()).has_credentials; } catch(e) { hasCredentials = false; }
     if (hasCredentials) {
       $('loginBtn').classList.remove('hidden');
-      $('autoLoginDesc').innerHTML = '已检测到环境变量中配置了 <code class="bg-white/50 border border-white/60 rounded px-1.5 py-0.5 text-sm text-slate-700">PIXIV_USERNAME</code> 和密码，您可以直接点击下方按钮触发全自动登录。';
-      $('autoLoginDesc').className = 'text-sm text-blue-700 mb-6 bg-blue-500/10 backdrop-blur-md border border-blue-300/30 shadow-glass-sm p-3.5 rounded-xl';
+      $('autoLoginDesc').innerHTML = '已检测到 <code class="bg-gray-100 px-1 py-0.5 rounded text-xs">PIXIV_USERNAME</code> 和密码，可直接自动登录。';
+      $('autoLoginDesc').className = 'text-sm text-brand-700 mb-4 p-3 bg-brand-50 rounded-lg border border-brand-100';
     } else {
       $('loginBtn').classList.add('hidden');
-      $('autoLoginDesc').innerHTML = '系统未检测到账号密码环境变量。请在 <code class="bg-white/50 border border-white/60 rounded px-1.5 py-0.5 text-sm text-slate-700">.env</code> 中配置 <code class="bg-white/50 border border-white/60 rounded px-1.5 py-0.5 text-sm text-slate-700">PIXIV_USERNAME</code> 及 <code class="bg-white/50 border border-white/60 rounded px-1.5 py-0.5 text-sm text-slate-700">PIXIV_PASSWORD</code> 以启用此功能。或者请使用下方提供的手动方式。';
+      $('autoLoginDesc').innerHTML = '未检测到账号密码。请在 <code class="bg-gray-100 px-1 py-0.5 rounded text-xs">.env</code> 中配置，或使用下方手动方式。';
       $('oauthCard').classList.remove('hidden');
     }
   })();

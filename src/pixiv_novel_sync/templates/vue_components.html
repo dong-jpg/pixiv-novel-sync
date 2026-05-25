@@ -1,233 +1,188 @@
 <!--
-  全局 Vue 组件定义文件。
-  通过 Jinja 的 include 引入到 base.html 底部。
-  在此统一定义 AppNavbar, AppPagination, AppModal, AppBadge 等通用 UI 组件。
+  Global Vue 3 component definitions.
+  Included at bottom of base.html via Jinja include.
 -->
-
 <script>
-  function registerGlobalComponents(app) {
-    const { ref, onMounted } = Vue;
+function registerGlobalComponents(app) {
+  const { ref, computed, onMounted } = Vue;
 
-    // 1. 顶层导航栏 AppNavbar
-    app.component('app-navbar', {
-      props: ['currentPath'],
-      template: `
-        <header class="sticky top-0 z-50 bg-white border-b border-gray-200 shadow-sm">
-          <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex items-center justify-between h-14">
-              <!-- Brand -->
-              <a href="/dashboard" class="flex-shrink-0 flex items-center">
-                <span class="text-lg font-bold text-brand-500">Pixiv 同步器</span>
-              </a>
+  // ── SVG icon paths (reusable) ──
+  const ICONS = {
+    home: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>',
+    book: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>',
+    users: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>',
+    trash: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>',
+    clipboard: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>',
+    cog: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>',
+  };
 
-              <!-- Desktop Navigation -->
-              <nav class="hidden md:flex items-center h-full space-x-6">
-                <a href="/dashboard" :class="navClass('/dashboard')">首页</a>
-                <a href="/dashboard/follows" :class="navClass('/dashboard/follows')">关注</a>
-                <a href="/dashboard/novels" :class="navClass('/dashboard/novels')">小说</a>
+  const NAV_ITEMS = [
+    { path: '/dashboard', label: '首页', icon: 'home', exact: true },
+    { path: '/dashboard/novels', label: '小说归档', icon: 'book' },
+    { path: '/dashboard/follows', label: '关注作者', icon: 'users' },
+    { type: 'divider', label: '系统' },
+    { path: '/dashboard/pending-deletions', label: '待确认', icon: 'trash', hasBadge: true },
+    { path: '/dashboard/logs', label: '任务日志', icon: 'clipboard' },
+    { path: '/dashboard/settings', label: '设置', icon: 'cog' },
+  ];
 
-                <a href="/dashboard/pending-deletions" :class="navClass('/dashboard/pending-deletions')" class="relative">
-                  待确认
-                  <span v-if="pendingCount > 0" class="absolute -top-1 -right-4 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
-                    {{ pendingCount > 99 ? '99+' : pendingCount }}
-                  </span>
-                </a>
-
-                <a href="/dashboard/logs" :class="navClass('/dashboard/logs')">日志</a>
-                <a href="/dashboard/settings" :class="navClass('/dashboard/settings')">设置</a>
-                <a href="/token-login" class="text-sm font-medium text-gray-600 hover:text-brand-500 transition-colors">登录</a>
-              </nav>
-
-              <!-- Mobile menu button -->
-              <div class="flex md:hidden">
-                <button type="button" @click="mobileMenuOpen = !mobileMenuOpen" class="p-2 text-gray-500 hover:text-brand-500">
-                  <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Mobile Navigation Menu -->
-          <div v-show="mobileMenuOpen" class="md:hidden border-t border-gray-100 bg-white">
-            <div class="px-3 pt-2 pb-3 space-y-1">
-              <a href="/dashboard" :class="mobileNavClass('/dashboard')">首页</a>
-              <a href="/dashboard/follows" :class="mobileNavClass('/dashboard/follows')">关注</a>
-              <a href="/dashboard/novels" :class="mobileNavClass('/dashboard/novels')">小说</a>
-              <a href="/dashboard/pending-deletions" :class="mobileNavClass('/dashboard/pending-deletions')">
-                待确认 <span v-if="pendingCount > 0" class="ml-2 text-red-500 font-bold">({{ pendingCount }})</span>
-              </a>
-              <a href="/dashboard/logs" :class="mobileNavClass('/dashboard/logs')">日志</a>
-              <a href="/dashboard/settings" :class="mobileNavClass('/dashboard/settings')">设置</a>
-              <a href="/token-login" class="block px-3 py-2 text-base font-medium text-gray-700">登录</a>
-            </div>
-          </div>
-        </header>
-      `,
-      setup(props) {
-        const mobileMenuOpen = ref(false);
-        const pendingCount = ref(0);
-
-        const fetchShellData = async () => {
-          try {
-            const res = await fetch("/api/dashboard/shell-data");
-            if (res.ok) {
-              const data = await res.json();
-              pendingCount.value = data.pending_count || 0;
-            } else {
-              // fallback if new endpoint not available yet
-              const fallbackRes = await fetch("/api/dashboard/pending-deletions/count");
-              if (fallbackRes.ok) {
-                const fbData = await fallbackRes.json();
-                pendingCount.value = fbData.count || 0;
-              }
-            }
-          } catch (e) {
-            console.error("Failed to fetch shell data", e);
-          }
-        };
-
-        const isMatch = (path, target) => {
-          if (target === '/dashboard') return path === target;
-          return path.startsWith(target);
-        };
-
-        const navClass = (target) => {
-          const active = isMatch(props.currentPath, target);
-          return [
-            'h-full flex items-center text-sm font-medium border-b-2 transition-colors',
-            active ? 'border-brand-500 text-brand-500' : 'border-transparent text-gray-600 hover:text-brand-500 hover:border-brand-300'
-          ];
-        };
-
-        const mobileNavClass = (target) => {
-          const active = isMatch(props.currentPath, target);
-          return [
-            'block px-3 py-2 text-base font-medium rounded-md transition-colors',
-            active ? 'bg-brand-50 text-brand-600' : 'text-gray-700 hover:bg-gray-50'
-          ];
-        };
-
-        onMounted(() => {
-          fetchPendingCount();
-        });
-
-        return {
-          mobileMenuOpen,
-          pendingCount,
-          navClass,
-          mobileNavClass
-        };
-      }
-    });
-
-    // 2. 通用分页组件 AppPagination
-    app.component('app-pagination', {
-      props: {
-        page: { type: Number, required: true },
-        pages: { type: Number, required: true },
-      },
-      emits: ['update:page'],
-      template: `
-        <div v-if="pages > 1" class="flex justify-center mt-8 space-x-2">
-          <button
-            @click="changePage(page - 1)"
-            :disabled="page <= 1"
-            class="px-4 py-2 border rounded-md text-sm transition-colors"
-            :class="page <= 1 ? 'border-gray-200 text-gray-400 cursor-not-allowed bg-gray-50' : 'border-gray-300 text-gray-700 bg-white hover:border-brand-500 hover:text-brand-500'">
-            上一页
-          </button>
-
-          <span class="px-4 py-2 text-sm text-gray-600 flex items-center">
-            第 {{ page }} / {{ pages }} 页
-          </span>
-
-          <button
-            @click="changePage(page + 1)"
-            :disabled="page >= pages"
-            class="px-4 py-2 border rounded-md text-sm transition-colors"
-            :class="page >= pages ? 'border-gray-200 text-gray-400 cursor-not-allowed bg-gray-50' : 'border-gray-300 text-gray-700 bg-white hover:border-brand-500 hover:text-brand-500'">
-            下一页
-          </button>
-        </div>
-      `,
-      setup(props, { emit }) {
-        const changePage = (newPage) => {
-          if (newPage >= 1 && newPage <= props.pages) {
-            emit('update:page', newPage);
-          }
-        };
-        return { changePage };
-      }
-    });
-
-    // 3. 通用 Badge 组件 AppBadge
-    app.component('app-badge', {
-      props: {
-        type: { type: String, default: 'gray' }, // 'blue', 'green', 'red', 'yellow', 'gray'
-      },
-      template: `
-        <span :class="['inline-flex items-center px-2 py-0.5 rounded text-xs font-medium', colorClasses]">
-          <slot></slot>
-        </span>
-      `,
-      computed: {
-        colorClasses() {
-          const map = {
-            blue: 'bg-blue-100 text-blue-800',
-            green: 'bg-green-100 text-green-800',
-            red: 'bg-red-100 text-red-800',
-            yellow: 'bg-yellow-100 text-yellow-800',
-            gray: 'bg-gray-100 text-gray-800',
-            brand: 'bg-brand-100 text-brand-800',
-          };
-          return map[this.type] || map.gray;
-        }
-      }
-    });
-
-    // 4. 模态框 AppModal
-    app.component('app-modal', {
-      props: {
-        title: { type: String, required: true },
-        isOpen: { type: Boolean, required: true },
-      },
-      emits: ['close'],
-      template: `
-        <div v-if="isOpen" class="fixed inset-0 z-[100] overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
-          <!-- Backdrop -->
-          <div class="fixed inset-0 bg-gray-900 bg-opacity-50 transition-opacity" @click="$emit('close')"></div>
-
-          <div class="flex min-h-screen items-center justify-center p-4 text-center sm:p-0">
-            <!-- Modal panel -->
-            <div class="relative transform overflow-hidden rounded-lg bg-white text-left shadow-xl transition-all sm:my-8 w-full max-w-2xl">
-              <!-- Header -->
-              <div class="bg-gray-50 px-4 py-3 border-b border-gray-200 flex justify-between items-center">
-                <h3 class="text-lg font-medium leading-6 text-gray-900" id="modal-title">
-                  {{ title }}
-                </h3>
-                <button type="button" class="text-gray-400 hover:text-gray-500" @click="$emit('close')">
-                  <span class="sr-only">关闭</span>
-                  <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-
-              <!-- Content -->
-              <div class="px-4 py-5 sm:p-6 bg-white max-h-[70vh] overflow-y-auto">
-                <slot></slot>
-              </div>
-
-              <!-- Footer -->
-              <div v-if="$slots.footer" class="bg-gray-50 px-4 py-3 border-t border-gray-200 sm:flex sm:flex-row-reverse sm:px-6">
-                <slot name="footer"></slot>
-              </div>
-            </div>
-          </div>
-        </div>
-      `
-    });
+  function isActive(currentPath, item) {
+    if (item.exact) return currentPath === item.path;
+    return currentPath.startsWith(item.path);
   }
+
+  // ── 1. Sidebar Navigation ──
+  app.component('app-sidebar-nav', {
+    props: ['currentPath'],
+    template: `
+      <template v-for="(item, i) in items" :key="i">
+        <div v-if="item.type === 'divider'" class="pt-3 pb-1 px-4">
+          <div class="text-[10px] font-bold text-gray-400 uppercase tracking-wider">{{ item.label }}</div>
+        </div>
+        <a v-else :href="item.path" :class="['sidebar-link', isActive(item) && 'active']">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" v-html="icons[item.icon]"></svg>
+          <span>{{ item.label }}</span>
+          <span v-if="item.hasBadge && pendingCount > 0" class="ml-auto bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none">
+            {{ pendingCount > 99 ? '99+' : pendingCount }}
+          </span>
+        </a>
+      </template>
+    `,
+    setup(props) {
+      const pendingCount = ref(0);
+      const items = NAV_ITEMS;
+      const icons = ICONS;
+      const _isActive = (item) => isActive(props.currentPath, item);
+
+      onMounted(async () => {
+        try {
+          const res = await fetch('/api/dashboard/shell-data');
+          if (res.ok) { const d = await res.json(); pendingCount.value = d.pending_count || 0; }
+        } catch(e) {}
+      });
+
+      return { items, icons, pendingCount, isActive: _isActive };
+    }
+  });
+
+  // ── 2. Sidebar Footer (user + sync status) ──
+  app.component('app-sidebar-footer', {
+    template: `
+      <div>
+        <div v-if="user" class="flex items-center gap-2.5 mb-2">
+          <img v-if="user.avatar_url" :src="'/proxy/image?url=' + encodeURIComponent(user.avatar_url)" class="w-8 h-8 rounded-full object-cover border border-gray-100" @error="user.avatar_url = ''">
+          <div v-else class="w-8 h-8 rounded-full bg-brand-100 text-brand-600 flex items-center justify-center text-xs font-bold">{{ (user.name || 'U').substring(0,2) }}</div>
+          <div class="min-w-0 flex-1">
+            <div class="text-xs font-semibold text-gray-800 truncate">{{ user.name || '未绑定' }}</div>
+            <div class="text-[10px] text-pixiv-light truncate">ID {{ user.user_id || '-' }}</div>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 text-[11px]">
+          <span :class="['w-2 h-2 rounded-full flex-shrink-0', autoSyncRunning ? 'bg-green-400 pulse-soft' : 'bg-gray-300']"></span>
+          <span :class="autoSyncRunning ? 'text-green-600 font-medium' : 'text-gray-400'">{{ autoSyncRunning ? '定时同步已启用' : '定时同步未启用' }}</span>
+        </div>
+      </div>
+    `,
+    setup() {
+      const user = ref(null);
+      const autoSyncRunning = ref(false);
+      onMounted(async () => {
+        try {
+          const [statusRes, autoRes] = await Promise.all([
+            fetch('/api/dashboard/status'),
+            fetch('/api/dashboard/auto-sync/status'),
+          ]);
+          if (statusRes.ok) { const d = await statusRes.json(); user.value = d.current_user; }
+          if (autoRes.ok) { const d = await autoRes.json(); autoSyncRunning.value = d.running; }
+        } catch(e) {}
+      });
+      return { user, autoSyncRunning };
+    }
+  });
+
+  // ── 3. Mobile Bottom Bar ──
+  app.component('app-mobile-bar', {
+    props: ['currentPath'],
+    template: `
+      <nav class="mobile-bottom-bar">
+        <a v-for="item in mobileItems" :key="item.path" :href="item.path" :class="{ active: isActive(item) }">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" v-html="icons[item.icon]"></svg>
+          <span>{{ item.label }}</span>
+        </a>
+      </nav>
+    `,
+    setup(props) {
+      const mobileItems = NAV_ITEMS.filter(i => !i.type && !i.hasBadge && i.icon !== 'clipboard');
+      const icons = ICONS;
+      const _isActive = (item) => isActive(props.currentPath, item);
+      return { mobileItems, icons, isActive: _isActive };
+    }
+  });
+
+  // ── 4. Pagination ──
+  app.component('app-pagination', {
+    props: {
+      page: { type: Number, required: true },
+      pages: { type: Number, required: true },
+    },
+    emits: ['update:page'],
+    template: `
+      <div v-if="pages > 1" class="flex items-center justify-center gap-2 mt-8">
+        <button @click="go(page - 1)" :disabled="page <= 1"
+          class="px-3 py-1.5 rounded-lg border text-sm transition-colors"
+          :class="page <= 1 ? 'border-gray-200 text-gray-400 bg-white cursor-not-allowed' : 'border-gray-200 text-gray-700 bg-white hover:bg-gray-50'">
+          &larr;
+        </button>
+        <span class="text-sm text-gray-600 px-2">
+          第 <strong class="text-gray-900">{{ page }}</strong> / <strong class="text-gray-900">{{ pages }}</strong> 页
+        </span>
+        <button @click="go(page + 1)" :disabled="page >= pages"
+          class="px-3 py-1.5 rounded-lg border text-sm transition-colors"
+          :class="page >= pages ? 'border-gray-200 text-gray-400 bg-white cursor-not-allowed' : 'border-gray-200 text-gray-700 bg-white hover:bg-gray-50'">
+          &rarr;
+        </button>
+      </div>
+    `,
+    setup(props, { emit }) {
+      const go = (p) => { if (p >= 1 && p <= props.pages) emit('update:page', p); };
+      return { go };
+    }
+  });
+
+  // ── 5. Badge ──
+  app.component('app-badge', {
+    props: { type: { type: String, default: 'gray' } },
+    template: `<span :class="['inline-flex items-center px-2 py-0.5 rounded text-xs font-medium', cls]"><slot></slot></span>`,
+    computed: {
+      cls() {
+        const m = { blue:'bg-blue-50 text-blue-700', green:'bg-green-50 text-green-700', red:'bg-red-50 text-red-700', yellow:'bg-yellow-50 text-yellow-700', gray:'bg-gray-100 text-gray-700', brand:'bg-brand-50 text-brand-700' };
+        return m[this.type] || m.gray;
+      }
+    }
+  });
+
+  // ── 6. Modal ──
+  app.component('app-modal', {
+    props: { title: { type: String, required: true }, isOpen: { type: Boolean, required: true } },
+    emits: ['close'],
+    template: `
+      <div v-if="isOpen" class="fixed inset-0 z-[100] overflow-y-auto">
+        <div class="fixed inset-0 bg-gray-900/50 transition-opacity" @click="$emit('close')"></div>
+        <div class="flex min-h-screen items-center justify-center p-4">
+          <div class="relative bg-white rounded-xl shadow-xl w-full max-w-2xl overflow-hidden">
+            <div class="px-5 py-4 border-b border-gray-100 flex justify-between items-center">
+              <h3 class="text-base font-bold text-gray-900">{{ title }}</h3>
+              <button @click="$emit('close')" class="text-gray-400 hover:text-gray-600 p-1">
+                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+              </button>
+            </div>
+            <div class="px-5 py-5 max-h-[70vh] overflow-y-auto"><slot></slot></div>
+            <div v-if="$slots.footer" class="px-5 py-3 border-t border-gray-100 bg-gray-50 flex justify-end gap-2"><slot name="footer"></slot></div>
+          </div>
+        </div>
+      </div>
+    `
+  });
+
+} // end registerGlobalComponents
 </script>

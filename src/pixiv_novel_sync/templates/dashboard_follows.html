@@ -3,31 +3,28 @@
 {% block title %}关注作者 - Pixiv 小说同步器{% endblock %}
 
 {% block content %}
-<div class="space-y-6 max-w-6xl mx-auto">
+<div class="space-y-0 max-w-6xl mx-auto">
 
-  <!-- Header -->
-  <div>
-    <h1 class="text-2xl font-bold text-gray-900 mb-2">关注作者</h1>
-    <p class="text-sm text-gray-500">展示已同步到本地的关注作者列表，支持按状态筛选。</p>
+  <!-- Sticky Header -->
+  <div class="sticky top-0 z-20 bg-pixiv-bg/95 backdrop-blur-sm border-b border-gray-100 px-4 sm:px-6 py-4">
+    <h1 class="text-xl font-bold text-gray-900">关注作者</h1>
   </div>
 
-  <!-- Main Card -->
-  <section class="bg-white border border-gray-200 rounded-lg p-5 sm:p-6 shadow-sm">
+  <div class="px-4 sm:px-6 pt-4 pb-6 space-y-5">
 
-    <!-- Toolbar -->
-    <div class="flex flex-col sm:flex-row justify-between items-center gap-4 mb-6 border-b border-gray-100 pb-4">
-      <!-- Tabs -->
-      <div class="flex items-center gap-1 p-1 bg-gray-50 border border-gray-200 rounded-lg w-full sm:w-auto overflow-x-auto">
+    <!-- Status Filter Tabs -->
+    <div class="flex items-center justify-between gap-4 flex-wrap">
+      <div class="flex items-center gap-1 p-1 bg-gray-50 border border-gray-200 rounded-lg overflow-x-auto">
         <button v-for="tab in tabs" :key="tab.value"
           @click="status = tab.value"
           class="px-4 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap"
-          :class="status === tab.value ? 'bg-white text-brand-600 shadow-sm border border-gray-200' : 'text-gray-600 hover:text-gray-900'">
+          :class="status === tab.value
+            ? 'bg-white text-brand-600 shadow-sm border border-gray-200'
+            : 'text-gray-600 hover:text-gray-900'">
           {{ tab.label }}
         </button>
       </div>
-
-      <!-- Summary -->
-      <div class="text-sm font-medium text-gray-500 self-end sm:self-auto">
+      <div class="text-sm font-medium text-gray-500">
         <span v-if="loading">加载中...</span>
         <span v-else>共 <span class="font-bold text-gray-900">{{ totalItems }}</span> 人</span>
       </div>
@@ -51,54 +48,62 @@
       <p class="text-sm text-gray-500">暂无数据</p>
     </div>
 
-    <!-- List Grid -->
-    <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-      <!-- Skeleton Loading -->
-      <template v-if="loading">
-        <div v-for="i in 6" :key="i" class="bg-white border border-gray-100 rounded-md p-4 flex items-center gap-4">
-          <div class="w-12 h-12 bg-gray-100 rounded-full flex-shrink-0 animate-pulse"></div>
-          <div class="flex-1 space-y-2 py-1">
-            <div class="h-4 bg-gray-100 rounded w-3/4 animate-pulse"></div>
-            <div class="h-3 bg-gray-100 rounded w-1/2 animate-pulse"></div>
-          </div>
+    <!-- Grid: Skeleton Loading -->
+    <div v-else-if="loading" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+      <div v-for="i in 12" :key="i" class="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+        <div class="flex flex-col items-center text-center">
+          <div class="w-16 h-16 bg-gray-100 rounded-full animate-pulse mb-3"></div>
+          <div class="h-4 bg-gray-100 rounded w-2/3 animate-pulse mb-2"></div>
+          <div class="h-3 bg-gray-100 rounded w-1/2 animate-pulse mb-2"></div>
+          <div class="h-3 bg-gray-100 rounded w-1/3 animate-pulse"></div>
         </div>
-      </template>
+      </div>
+    </div>
 
-      <!-- Actual Items -->
-      <template v-else>
-        <a v-for="item in items" :key="item.user_id" :href="'/dashboard/users/' + encodeURIComponent(item.user_id)"
-           class="group flex items-center gap-4 bg-white border border-gray-200 rounded-md p-4 hover:border-brand-300 hover:shadow-sm transition-all">
-
+    <!-- Grid: User Cards -->
+    <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+      <a v-for="item in items" :key="item.user_id"
+         :href="'/dashboard/users/' + encodeURIComponent(item.user_id)"
+         class="group bg-white rounded-xl border border-gray-100 shadow-sm p-5 hover:border-brand-300 hover:shadow-md transition-all">
+        <div class="flex flex-col items-center text-center">
           <!-- Avatar -->
-          <div class="flex-shrink-0">
-            <img v-if="item.avatar_url" :src="'/proxy/image?url=' + encodeURIComponent(item.avatar_url)"
-                 class="w-12 h-12 rounded-full object-cover border border-gray-100" @error="item.avatar_url = ''">
-            <div v-else class="w-12 h-12 rounded-full flex items-center justify-center bg-brand-100 text-brand-600 font-bold text-lg border border-brand-200">
+          <div class="mb-3">
+            <img v-if="item.avatar_url"
+                 :src="'/proxy/image?url=' + encodeURIComponent(item.avatar_url)"
+                 class="w-16 h-16 rounded-full object-cover border-2 border-gray-100 group-hover:border-brand-200 transition-colors"
+                 @error="item.avatar_url = ''">
+            <div v-else
+                 class="w-16 h-16 rounded-full flex items-center justify-center bg-brand-50 text-brand-600 font-bold text-lg border-2 border-brand-100">
               {{ (item.name || 'U').substring(0, 2) }}
             </div>
           </div>
 
-          <!-- Content -->
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center justify-between gap-2 mb-1">
-              <h3 class="text-base font-bold text-gray-900 truncate group-hover:text-brand-600 transition-colors" :title="item.name">
-                {{ item.name || '未命名用户' }}
-              </h3>
-              <!-- Status Badge -->
-              <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded flex-shrink-0" :class="statusConfig(item.status).badgeClass">
-                <span class="w-1.5 h-1.5 rounded-full mr-1" :class="statusConfig(item.status).dotClass"></span>
-                {{ statusConfig(item.status).label }}
-              </span>
-            </div>
-            <div class="text-xs text-gray-500 truncate mb-1">
-              {{ item.account ? '@' + item.account : 'ID ' + item.user_id }} <span class="mx-1 text-gray-300">|</span> 小说 {{ item.novel_count || 0 }} 篇
-            </div>
-            <div class="text-[10px] text-gray-400 font-mono truncate">
-              更新于 {{ (item.updated_at || '-').substring(0, 10) }}
-            </div>
+          <!-- Name -->
+          <h3 class="text-sm font-bold text-gray-900 truncate w-full group-hover:text-brand-600 transition-colors" :title="item.name">
+            {{ item.name || '未命名用户' }}
+          </h3>
+
+          <!-- Account -->
+          <div class="text-xs text-gray-500 truncate w-full mt-0.5">
+            {{ item.account ? '@' + item.account : 'ID ' + item.user_id }}
           </div>
-        </a>
-      </template>
+
+          <!-- Novel count + Status badge -->
+          <div class="flex items-center gap-2 mt-2.5">
+            <span class="text-xs text-gray-500">{{ item.novel_count || 0 }} 篇小说</span>
+            <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded"
+                  :class="statusBadgeClass(item.status)">
+              <span class="w-1.5 h-1.5 rounded-full mr-1" :class="statusDotClass(item.status)"></span>
+              {{ statusLabel(item.status) }}
+            </span>
+          </div>
+
+          <!-- Updated time -->
+          <div class="text-[10px] text-gray-400 font-mono mt-2">
+            更新于 {{ (item.updated_at || '-').substring(0, 10) }}
+          </div>
+        </div>
+      </a>
     </div>
 
     <!-- Pagination -->
@@ -109,7 +114,7 @@
       @update:page="handlePageChange"
     ></app-pagination>
 
-  </section>
+  </div>
 </div>
 {% endblock %}
 
@@ -119,7 +124,6 @@
     setup() {
       const { ref, watch, onMounted } = Vue;
 
-      // State
       const items = ref([]);
       const totalItems = ref(0);
       const page = ref(1);
@@ -130,36 +134,36 @@
 
       const tabs = [
         { label: '全部', value: 'all' },
-        { label: '有小说', value: 'normal' },
+        { label: '正常', value: 'normal' },
         { label: '无小说', value: 'no_novels' },
-        { label: '封号', value: 'suspended' }
+        { label: '已停用', value: 'suspended' }
       ];
 
       let fetchAbortController = null;
 
-      // Methods
       const fetchData = async () => {
         loading.value = true;
         error.value = null;
 
-        if (fetchAbortController) {
-          fetchAbortController.abort();
-        }
+        if (fetchAbortController) fetchAbortController.abort();
         fetchAbortController = new AbortController();
 
         try {
-          const res = await fetch(`/api/dashboard/users?page=${page.value}&status=${status.value}`, {
+          const params = new URLSearchParams({
+            page: page.value,
+            page_size: 12,
+            status: status.value
+          });
+          const res = await fetch('/api/dashboard/users?' + params, {
             signal: fetchAbortController.signal
           });
-
-          if (!res.ok) throw new Error('API Request Failed');
+          if (!res.ok) throw new Error('API request failed');
 
           const data = await res.json();
           items.value = data.items || [];
           totalItems.value = data.total || 0;
           page.value = data.page || 1;
           totalPages.value = data.total_pages || 1;
-
         } catch (err) {
           if (err.name !== 'AbortError') {
             console.error(err);
@@ -179,29 +183,27 @@
         window.scrollTo({ top: 0, behavior: 'smooth' });
       };
 
-      const statusConfig = (s) => {
-        const map = {
-          normal: { label: '有小说', badgeClass: 'bg-green-50 text-green-700 border border-green-200', dotClass: 'bg-green-500' },
-          no_novels: { label: '无小说', badgeClass: 'bg-yellow-50 text-yellow-700 border border-yellow-200', dotClass: 'bg-yellow-500' },
-          suspended: { label: '封号', badgeClass: 'bg-red-50 text-red-700 border border-red-200', dotClass: 'bg-red-500' },
-          unknown: { label: '未知', badgeClass: 'bg-gray-50 text-gray-700 border border-gray-200', dotClass: 'bg-gray-500' }
-        };
-        return map[s] || map.unknown;
+      const statusMap = {
+        normal:    { label: '正常', badgeClass: 'bg-green-50 text-green-700 border border-green-200', dotClass: 'bg-green-500' },
+        no_novels: { label: '无小说', badgeClass: 'bg-yellow-50 text-yellow-700 border border-yellow-200', dotClass: 'bg-yellow-500' },
+        suspended: { label: '已停用', badgeClass: 'bg-red-50 text-red-700 border border-red-200', dotClass: 'bg-red-500' },
+        unknown:   { label: '未知', badgeClass: 'bg-gray-50 text-gray-700 border border-gray-200', dotClass: 'bg-gray-500' }
       };
 
-      // Watchers
+      const statusLabel = (s) => (statusMap[s] || statusMap.unknown).label;
+      const statusBadgeClass = (s) => (statusMap[s] || statusMap.unknown).badgeClass;
+      const statusDotClass = (s) => (statusMap[s] || statusMap.unknown).dotClass;
+
       watch(status, () => {
         page.value = 1;
         fetchData();
       });
 
-      onMounted(() => {
-        fetchData();
-      });
+      onMounted(() => fetchData());
 
       return {
         items, totalItems, page, totalPages, loading, error, status, tabs,
-        handlePageChange, statusConfig
+        handlePageChange, statusLabel, statusBadgeClass, statusDotClass
       };
     }
   });

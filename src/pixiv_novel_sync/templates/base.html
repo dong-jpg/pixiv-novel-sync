@@ -5,88 +5,88 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Pixiv 小说同步器{% endblock %}</title>
 
-  <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Tailwind Config -->
   <script src="/static/tailwind_config.js"></script>
-
-  <!-- Vue 3 -->
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
 
   <style>
-    /* 避免 Vue 渲染闪烁 */
     [v-cloak] { display: none !important; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
 
-    .scrollbar-hide::-webkit-scrollbar { display: none; }
-    .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
-  </style>
+    /* Sidebar */
+    .sidebar-link { display:flex; align-items:center; gap:.75rem; padding:.5rem 1rem; border-radius:.5rem; font-size:.8125rem; font-weight:500; color:#555; transition:all .15s; }
+    .sidebar-link:hover { background:#e6f4ff; color:#0096fa; }
+    .sidebar-link.active { background:#0096fa; color:#fff; font-weight:600; box-shadow:0 2px 8px rgba(0,150,250,.2); }
+    .sidebar-link svg { width:1.125rem; height:1.125rem; flex-shrink:0; }
 
-  <script>
-    // 由于之前 Tailwind config 是直接写在 base.html 中的，现在我们为了复用，
-    // 将它的逻辑提取出来了，但是在开发阶段，我们需要确保 config 正确加载。
-    // 如果 /static/tailwind_config.js 没有被 Flask serve，我们仍然在这里放置一份 fallback。
-    if (!window.tailwind || !window.tailwind.config) {
-      window.tailwind = window.tailwind || {};
-      window.tailwind.config = {
-        darkMode: 'class',
-        theme: {
-          extend: {
-            colors: {
-              brand: {
-                50: '#f2f9ff', 100: '#e6f3ff', 200: '#bfdfff', 300: '#99cbff',
-                400: '#4da6ff', 500: '#0096fa', 600: '#0087e1', 700: '#0070bb',
-                800: '#005a96', 900: '#00497b', 950: '#002f4d',
-              },
-              pixiv: {
-                bg: '#f5f6f8', text: '#333333', gray: '#999999'
-              }
-            },
-            fontFamily: {
-              sans: ['"Helvetica Neue"', 'Helvetica', '"PingFang SC"', '"Hiragino Sans GB"', '"Microsoft YaHei"', '微软雅黑', 'Arial', 'sans-serif'],
-            }
-          }
-        }
-      };
+    /* Mobile bottom bar */
+    @media(max-width:1023px) {
+      .app-sidebar { display:none !important; }
+      .mobile-bottom-bar { display:flex !important; }
+      .app-main { margin-left:0 !important; }
     }
-  </script>
+    .mobile-bottom-bar { display:none; position:fixed; bottom:0; left:0; right:0; background:#fff; border-top:1px solid #e8eaed; z-index:50; padding:2px 0; padding-bottom:env(safe-area-inset-bottom); }
+    .mobile-bottom-bar a { flex:1; display:flex; flex-direction:column; align-items:center; gap:1px; padding:4px 0; font-size:10px; color:#858585; transition:color .15s; }
+    .mobile-bottom-bar a.active { color:#0096fa; }
+    .mobile-bottom-bar a svg { width:20px; height:20px; }
+
+    @keyframes pulse-soft { 0%,100%{ opacity:1 } 50%{ opacity:.4 } }
+    .pulse-soft { animation: pulse-soft 2s ease-in-out infinite; }
+  </style>
 
   {% block extra_head %}{% endblock %}
 </head>
-<body class="min-h-screen flex flex-col antialiased text-pixiv-text bg-pixiv-bg">
+<body class="bg-pixiv-bg text-pixiv-text antialiased">
 
-  <!-- Vue 挂载点 -->
-  <div id="app" class="flex-grow flex flex-col" v-cloak>
+  <div id="app" v-cloak>
+    <div class="flex min-h-screen">
 
-    <!-- Navbar 组件占位 -->
-    <app-navbar current-path="{[ request.path ]}"></app-navbar>
+      <!-- ===== Left Sidebar (Desktop) ===== -->
+      <aside class="app-sidebar fixed top-0 left-0 bottom-0 w-[220px] bg-white border-r border-pixiv-border flex flex-col z-40">
+        <div class="px-5 py-5 border-b border-gray-100">
+          <a href="/dashboard" class="flex items-center gap-2.5 no-underline">
+            <div class="w-9 h-9 bg-brand-500 rounded-lg flex items-center justify-center flex-shrink-0">
+              <svg class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+            </div>
+            <div>
+              <div class="text-sm font-bold text-gray-900 leading-tight">Pixiv Novel</div>
+              <div class="text-[10px] text-pixiv-light leading-tight">Sync Manager</div>
+            </div>
+          </a>
+        </div>
 
-    <!-- Main Content -->
-    <main class="flex-grow w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      {% block content %}{% endblock %}
-    </main>
+        <nav class="flex-1 px-3 py-3 space-y-0.5 overflow-y-auto">
+          <app-sidebar-nav current-path="{[ request.path ]}"></app-sidebar-nav>
+        </nav>
 
-    <!-- Footer -->
-    <footer class="mt-auto py-6 text-center text-sm text-pixiv-gray bg-white border-t border-gray-200">
-      <p>Pixiv Novel Sync Dashboard</p>
-    </footer>
+        <div class="px-4 py-3 border-t border-gray-100 flex-shrink-0">
+          <app-sidebar-footer></app-sidebar-footer>
+        </div>
+      </aside>
 
+      <!-- ===== Main Content ===== -->
+      <main class="app-main flex-1 lg:ml-[220px] min-h-screen pb-16 lg:pb-0">
+        {% block content %}{% endblock %}
+      </main>
+
+    </div>
+
+    <!-- ===== Mobile Bottom Tab Bar ===== -->
+    <app-mobile-bar current-path="{[ request.path ]}"></app-mobile-bar>
   </div>
 
-  <!-- 引入全局共享的 Vue 组件模板 -->
   {% include 'vue_components.html' ignore missing %}
 
   <script>
-    // 全局的基础 Vue 实例初始化工具
-    // 为了支持各个页面不同的逻辑，我们在 base 提供一个基座方法
     window.initVueApp = function(setupFunc) {
       const { createApp } = Vue;
       const app = createApp(setupFunc);
-
-      // 注册全局组件 (在 vue_components.html 中定义)
       if (typeof registerGlobalComponents === 'function') {
         registerGlobalComponents(app);
       }
-
       app.mount('#app');
       return app;
     };

@@ -5,27 +5,37 @@ window.tailwind.config = {
     extend: {
       colors: {
         brand: {
-          50: '#f2f9ff',
-          100: '#e6f3ff',
-          200: '#bfdfff',
-          300: '#99cbff',
-          400: '#4da6ff',
-          500: '#0096fa', // Pixiv primary blue
-          600: '#0087e1',
-          700: '#0070bb',
-          800: '#005a96',
-          900: '#00497b',
-          950: '#002f4d',
+          50: '#e6f4ff',
+          100: '#bae0ff',
+          200: '#7cc4fa',
+          300: '#47a8f5',
+          400: '#1a91f0',
+          500: '#0096fa',
+          600: '#0073cc',
+          700: '#00559e',
+          800: '#003870',
+          900: '#001d42',
         },
         pixiv: {
           bg: '#f5f6f8',
           text: '#333333',
-          gray: '#999999'
-        }
+          gray: '#858585',
+          light: '#999999',
+          border: '#e8eaed',
+        },
       },
       fontFamily: {
-        sans: ['"Helvetica Neue"', 'Helvetica', '"PingFang SC"', '"Hiragino Sans GB"', '"Microsoft YaHei"', '微软雅黑', 'Arial', 'sans-serif'],
-      }
-    }
-  }
+        sans: [
+          '-apple-system', 'BlinkMacSystemFont', '"Helvetica Neue"',
+          '"PingFang SC"', '"Hiragino Sans GB"', '"Microsoft YaHei"',
+          'Arial', 'sans-serif',
+        ],
+        serif: [
+          '"BIZ UDMincho"', '"Hiragino Mincho ProN"', '"Yu Mincho"',
+          '"Noto Serif JP"', '"Noto Serif SC"', '"Source Han Serif SC"',
+          '"SimSun"', 'serif',
+        ],
+      },
+    },
+  },
 };

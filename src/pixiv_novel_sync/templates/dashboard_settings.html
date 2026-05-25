@@ -3,17 +3,16 @@
 {% block title %}同步设置 - Pixiv 小说同步器{% endblock %}
 
 {% block content %}
-<div class="max-w-6xl mx-auto flex flex-col lg:flex-row gap-8">
+<div class="px-6 lg:px-8 pt-6 max-w-6xl mx-auto flex flex-col lg:flex-row gap-6 pb-8">
 
-  <!-- Sidebar -->
-  <aside class="w-full lg:w-64 flex-shrink-0">
-    <div class="sticky top-20 bg-white border border-gray-200 shadow-sm rounded-lg p-4">
-      <h2 class="text-lg font-bold text-gray-900 mb-4 px-2">同步设置</h2>
-      <nav class="space-y-1">
-        <button v-for="tab in tabs" :key="tab.id" @click="activeTab = tab.id"
-                class="w-full flex items-center px-3 py-2.5 text-sm font-medium rounded-md transition-colors text-left"
-                :class="activeTab === tab.id ? 'text-brand-600 bg-brand-50' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'">
-          <span class="mr-3 text-lg">{{ tab.icon }}</span>
+  <!-- Sidebar Tab Navigation -->
+  <aside class="w-full lg:w-56 flex-shrink-0">
+    <div class="sticky top-4 bg-white rounded-xl border border-gray-100 shadow-sm p-3">
+      <nav class="space-y-0.5">
+        <button v-for="tab in tabs" :key="tab.id" @click="switchTab(tab.id)"
+                class="w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium rounded-lg transition-colors text-left"
+                :class="activeTab === tab.id ? 'text-brand-500 bg-brand-50' : 'text-pixiv-gray hover:bg-gray-50 hover:text-gray-900'">
+          <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" v-html="tab.svg"></svg>
           {{ tab.name }}
         </button>
       </nav>
@@ -24,69 +23,71 @@
   <div class="flex-1 min-w-0" v-if="settings">
 
     <!-- Section 1: Basic -->
-    <section v-show="activeTab === 'basic'" class="bg-white border border-gray-200 shadow-sm rounded-lg p-6 sm:p-8 animate-[fadeIn_0.3s_ease-out]">
-      <div class="mb-6 border-b border-gray-100 pb-4">
+    <section v-show="activeTab === 'basic'" class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 sm:p-8">
+      <div class="mb-6 pb-4 border-b border-gray-100">
         <h2 class="text-xl font-bold text-gray-900">基础设置</h2>
-        <p class="text-sm text-gray-500 mt-1">配置要同步的核心内容和输出选项</p>
+        <p class="text-sm text-pixiv-gray mt-1">配置要同步的核心内容和输出选项</p>
       </div>
 
       <div class="space-y-8">
         <div>
           <h3 class="text-sm font-bold text-gray-900 mb-3">同步内容</h3>
-          <p class="text-xs text-brand-600 mb-4 bg-brand-50 p-2.5 rounded-md border border-brand-100">💡 提示：分批同步可降低风控风险，建议首次大批量拉取时仅开启一项。</p>
+          <div class="p-3 bg-blue-50 rounded-lg border border-blue-100 text-xs text-brand-500 font-medium mb-4">
+            提示：分批同步可降低风控风险，建议首次大批量拉取时仅开启一项。
+          </div>
           <div class="space-y-3">
             <label class="flex items-center gap-3 cursor-pointer group">
-              <input type="checkbox" v-model="settings.sync_bookmarks" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
-              <span class="text-sm text-gray-700 font-medium group-hover:text-gray-900 transition-colors">同步收藏小说</span>
+              <input type="checkbox" v-model="settings.sync_bookmarks" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 group-hover:text-gray-900 transition-colors">同步收藏小说</span>
             </label>
             <label class="flex items-center gap-3 cursor-pointer group">
-              <input type="checkbox" v-model="settings.sync_following_users" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
-              <span class="text-sm text-gray-700 font-medium group-hover:text-gray-900 transition-colors">同步关注用户列表</span>
+              <input type="checkbox" v-model="settings.sync_following_users" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 group-hover:text-gray-900 transition-colors">同步关注用户列表</span>
             </label>
             <label class="flex items-center gap-3 cursor-pointer group">
-              <input type="checkbox" v-model="settings.sync_following_novels" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
-              <span class="text-sm text-gray-700 font-medium group-hover:text-gray-900 transition-colors">同步关注用户的小说</span>
+              <input type="checkbox" v-model="settings.sync_following_novels" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 group-hover:text-gray-900 transition-colors">同步关注用户的小说</span>
             </label>
           </div>
         </div>
 
         <div>
           <h3 class="text-sm font-bold text-gray-900 mb-3">功能选项</h3>
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-y-4 gap-x-6">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-y-3 gap-x-6">
             <label class="flex items-center gap-3 cursor-pointer group">
-              <input type="checkbox" v-model="settings.enabled" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
-              <span class="text-sm text-gray-700 font-medium">启用全局同步</span>
+              <input type="checkbox" v-model="settings.enabled" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700">启用全局同步</span>
             </label>
             <label class="flex items-center gap-3 cursor-pointer group">
-              <input type="checkbox" v-model="settings.initial_manual_only" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
-              <span class="text-sm text-gray-700 font-medium">首次仅允许手工触发</span>
+              <input type="checkbox" v-model="settings.initial_manual_only" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700">首次仅允许手工触发</span>
             </label>
             <label class="flex items-center gap-3 cursor-pointer group">
-              <input type="checkbox" v-model="settings.download_assets" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
-              <span class="text-sm text-gray-700 font-medium">下载封面与插图资源</span>
+              <input type="checkbox" v-model="settings.download_assets" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700">下载封面与插图资源</span>
             </label>
             <label class="flex items-center gap-3 cursor-pointer group">
-              <input type="checkbox" v-model="settings.write_markdown" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
-              <span class="text-sm text-gray-700 font-medium">输出 Markdown 文件</span>
+              <input type="checkbox" v-model="settings.write_markdown" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700">输出 Markdown 文件</span>
             </label>
             <label class="flex items-center gap-3 cursor-pointer group">
-              <input type="checkbox" v-model="settings.write_raw_text" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
-              <span class="text-sm text-gray-700 font-medium">输出原始文本文件</span>
+              <input type="checkbox" v-model="settings.write_raw_text" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700">输出原始文本文件</span>
             </label>
             <label class="flex items-center gap-3 cursor-pointer group">
-              <input type="checkbox" v-model="settings.bookmark_restricts" value="public" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
-              <span class="text-sm text-gray-700 font-medium">同步公开收藏</span>
+              <input type="checkbox" v-model="settings.bookmark_restricts" value="public" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700">同步公开收藏</span>
             </label>
             <label class="flex items-center gap-3 cursor-pointer group">
-              <input type="checkbox" v-model="settings.bookmark_restricts" value="private" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
-              <span class="text-sm text-gray-700 font-medium">同步私密收藏</span>
+              <input type="checkbox" v-model="settings.bookmark_restricts" value="private" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700">同步私密收藏</span>
             </label>
           </div>
         </div>
       </div>
 
       <div class="mt-8 pt-6 border-t border-gray-100 flex items-center gap-4">
-        <button @click="saveSettings('basic')" :disabled="saving" class="px-6 py-2 bg-brand-500 text-white hover:bg-brand-600 font-medium rounded-md transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50">
+        <button @click="saveSettings('basic')" :disabled="saving" class="px-5 py-2 bg-brand-500 text-white hover:bg-brand-600 font-medium text-sm rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50">
           {{ saving ? '保存中...' : '保存基础设置' }}
         </button>
         <span v-if="saveMessage" class="text-sm font-medium" :class="saveSuccess ? 'text-green-600' : 'text-red-600'">{{ saveMessage }}</span>
@@ -94,10 +95,10 @@
     </section>
 
     <!-- Section 2: Limits -->
-    <section v-show="activeTab === 'limits'" class="bg-white border border-gray-200 shadow-sm rounded-lg p-6 sm:p-8 animate-[fadeIn_0.3s_ease-out]">
-      <div class="mb-6 border-b border-gray-100 pb-4">
+    <section v-show="activeTab === 'limits'" class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 sm:p-8">
+      <div class="mb-6 pb-4 border-b border-gray-100">
         <h2 class="text-xl font-bold text-gray-900">限速参数</h2>
-        <p class="text-sm text-gray-500 mt-1">控制单次同步的数据量和延迟，降低 API 风控风险</p>
+        <p class="text-sm text-pixiv-gray mt-1">控制单次同步的数据量和延迟，降低 API 风控风险</p>
       </div>
 
       <div class="space-y-8">
@@ -105,12 +106,12 @@
           <h3 class="text-sm font-bold text-gray-900 mb-3">基本限速</h3>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label class="block text-xs font-bold text-gray-500 uppercase mb-1.5">单次最大条数 (留空不限)</label>
-              <input type="number" v-model.number="settings.max_items_per_run" min="1" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">单次最大条数 (留空不限)</label>
+              <input type="number" v-model.number="settings.max_items_per_run" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
             <div>
-              <label class="block text-xs font-bold text-gray-500 uppercase mb-1.5">单次最大页数 (留空不限)</label>
-              <input type="number" v-model.number="settings.max_pages_per_run" min="1" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">单次最大页数 (留空不限)</label>
+              <input type="number" v-model.number="settings.max_pages_per_run" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
           </div>
         </div>
@@ -119,24 +120,24 @@
           <h3 class="text-sm font-bold text-gray-900 mb-3">延迟设置 (秒)</h3>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label class="block text-xs font-bold text-gray-500 mb-1.5">每本之间延迟</label>
-              <input type="number" v-model.number="settings.delay_seconds_between_items" step="0.1" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">每本之间延迟</label>
+              <input type="number" v-model.number="settings.delay_seconds_between_items" step="0.1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
             <div>
-              <label class="block text-xs font-bold text-gray-500 mb-1.5">每页之间延迟</label>
-              <input type="number" v-model.number="settings.delay_seconds_between_pages" step="0.1" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">每页之间延迟</label>
+              <input type="number" v-model.number="settings.delay_seconds_between_pages" step="0.1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
             <div>
-              <label class="block text-xs font-bold text-gray-500 mb-1.5">每个系列间延迟</label>
-              <input type="number" v-model.number="settings.delay_seconds_between_series" step="0.1" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">每个系列间延迟</label>
+              <input type="number" v-model.number="settings.delay_seconds_between_series" step="0.1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
             <div>
-              <label class="block text-xs font-bold text-gray-500 mb-1.5">系列内每章延迟</label>
-              <input type="number" v-model.number="settings.delay_seconds_between_chapters" step="0.1" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">系列内每章延迟</label>
+              <input type="number" v-model.number="settings.delay_seconds_between_chapters" step="0.1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
             <div>
-              <label class="block text-xs font-bold text-gray-500 mb-1.5">跳过内容时延迟</label>
-              <input type="number" v-model.number="settings.delay_seconds_between_skips" step="0.1" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">跳过内容时延迟</label>
+              <input type="number" v-model.number="settings.delay_seconds_between_skips" step="0.1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
           </div>
         </div>
@@ -145,21 +146,21 @@
           <h3 class="text-sm font-bold text-gray-900 mb-3">同步数量限制</h3>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label class="block text-xs font-bold text-gray-500 mb-1.5">全量备份每轮用户数</label>
-              <input type="number" v-model.number="settings.auto_sync_following_novels_users_limit" min="0" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
-              <p class="mt-1.5 text-xs text-gray-400">0=全部</p>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">全量备份每轮用户数</label>
+              <input type="number" v-model.number="settings.auto_sync_following_novels_users_limit" min="0" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <p class="mt-1.5 text-xs text-pixiv-gray">0=全部</p>
             </div>
             <div>
-              <label class="block text-xs font-bold text-gray-500 mb-1.5">每次同步追更系列数</label>
-              <input type="number" v-model.number="settings.series_sync_limit" min="0" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
-              <p class="mt-1.5 text-xs text-gray-400">0=全部</p>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">每次同步追更系列数</label>
+              <input type="number" v-model.number="settings.series_sync_limit" min="0" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <p class="mt-1.5 text-xs text-pixiv-gray">0=全部</p>
             </div>
           </div>
         </div>
       </div>
 
       <div class="mt-8 pt-6 border-t border-gray-100 flex items-center gap-4">
-        <button @click="saveSettings('limits')" :disabled="saving" class="px-6 py-2 bg-brand-500 text-white hover:bg-brand-600 font-medium rounded-md transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50">
+        <button @click="saveSettings('limits')" :disabled="saving" class="px-5 py-2 bg-brand-500 text-white hover:bg-brand-600 font-medium text-sm rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50">
           {{ saving ? '保存中...' : '保存限速设置' }}
         </button>
         <span v-if="saveMessage" class="text-sm font-medium" :class="saveSuccess ? 'text-green-600' : 'text-red-600'">{{ saveMessage }}</span>
@@ -167,16 +168,16 @@
     </section>
 
     <!-- Section 3: Scheduled Sync -->
-    <section v-show="activeTab === 'scheduler'" class="bg-white border border-gray-200 shadow-sm rounded-lg p-6 sm:p-8 animate-[fadeIn_0.3s_ease-out]">
-      <div class="mb-6 border-b border-gray-100 pb-4">
+    <section v-show="activeTab === 'scheduler'" class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 sm:p-8">
+      <div class="mb-6 pb-4 border-b border-gray-100">
         <h2 class="text-xl font-bold text-gray-900">定时同步配置</h2>
-        <p class="text-sm text-gray-500 mt-1">配置定时任务，分散执行时间降低风控风险。注意：需要在首页开启全局定时开关。</p>
+        <p class="text-sm text-pixiv-gray mt-1">配置定时任务，分散执行时间降低风控风险。需要在首页开启全局定时开关。</p>
       </div>
 
       <div class="space-y-6">
         <div>
           <label class="block text-sm font-bold text-gray-900 mb-2">系统时区</label>
-          <select v-model="settings.auto_sync_timezone" class="w-full max-w-md px-3 py-2 bg-white border border-gray-300 text-gray-900 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 custom-select">
+          <select v-model="settings.auto_sync_timezone" class="w-full max-w-md px-3 py-2 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 custom-select">
             <option value="UTC">UTC (协调世界时)</option>
             <option value="Asia/Shanghai">Asia/Shanghai (中国上海, UTC+8)</option>
             <option value="Asia/Tokyo">Asia/Tokyo (日本东京, UTC+9)</option>
@@ -188,29 +189,29 @@
           </select>
         </div>
 
-        <div class="bg-white border border-gray-200 rounded-md overflow-hidden">
+        <div class="rounded-lg border border-gray-100 overflow-hidden">
           <div class="overflow-x-auto">
             <table class="w-full text-sm text-left whitespace-nowrap">
-              <thead class="bg-gray-50 border-b border-gray-200">
+              <thead class="bg-gray-50 border-b border-gray-100">
                 <tr>
-                  <th scope="col" class="px-4 py-3 text-xs font-bold text-gray-500 uppercase w-1/3">任务类型</th>
-                  <th scope="col" class="px-4 py-3 text-xs font-bold text-gray-500 uppercase">固定间隔 (小时)</th>
-                  <th scope="col" class="px-4 py-3 text-xs font-bold text-gray-500 uppercase">Cron 表达式 (优先)</th>
+                  <th scope="col" class="px-4 py-3 text-xs font-medium text-pixiv-gray uppercase w-1/3">任务类型</th>
+                  <th scope="col" class="px-4 py-3 text-xs font-medium text-pixiv-gray uppercase">间隔 (小时)</th>
+                  <th scope="col" class="px-4 py-3 text-xs font-medium text-pixiv-gray uppercase">Cron (优先)</th>
                 </tr>
               </thead>
-              <tbody class="divide-y divide-gray-100">
-                <tr v-for="task in schedulerTasks" :key="task.key" class="hover:bg-gray-50">
+              <tbody class="divide-y divide-gray-50">
+                <tr v-for="task in schedulerTasks" :key="task.key" class="hover:bg-gray-50/50">
                   <td class="px-4 py-3">
                     <label class="flex items-center gap-2 cursor-pointer">
-                      <input type="checkbox" v-model="settings[task.enableKey]" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
+                      <input type="checkbox" v-model="settings[task.enableKey]" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
                       <span class="font-medium text-gray-900">{{ task.label }}</span>
                     </label>
                   </td>
                   <td class="px-4 py-2">
-                    <input type="number" v-model.number="settings[task.intervalKey]" min="1" class="w-20 px-2 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+                    <input type="number" v-model.number="settings[task.intervalKey]" min="1" class="w-20 px-2 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
                   </td>
                   <td class="px-4 py-2">
-                    <input type="text" v-model="settings[task.cronKey]" placeholder="如 0 3 * * *" class="w-32 px-2 py-1.5 font-mono border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+                    <input type="text" v-model="settings[task.cronKey]" placeholder="如 0 3 * * *" class="w-32 px-2 py-1.5 font-mono border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
                   </td>
                 </tr>
               </tbody>
@@ -220,29 +221,30 @@
       </div>
 
       <div class="mt-8 pt-6 border-t border-gray-100 flex items-center gap-4">
-        <button @click="saveSettings('scheduler')" :disabled="saving" class="px-6 py-2 bg-brand-500 text-white hover:bg-brand-600 font-medium rounded-md transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50">
+        <button @click="saveSettings('scheduler')" :disabled="saving" class="px-5 py-2 bg-brand-500 text-white hover:bg-brand-600 font-medium text-sm rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50">
           {{ saving ? '保存中...' : '保存定时设置' }}
         </button>
         <span v-if="saveMessage" class="text-sm font-medium" :class="saveSuccess ? 'text-green-600' : 'text-red-600'">{{ saveMessage }}</span>
       </div>
     </section>
 
-    <!-- Section 4: Manual -->
-    <section v-show="activeTab === 'manual'" class="bg-white border border-gray-200 shadow-sm rounded-lg p-6 sm:p-8 animate-[fadeIn_0.3s_ease-out]">
-      <div class="mb-6 border-b border-gray-100 pb-4">
+    <!-- Section 4: Manual Sync -->
+    <section v-show="activeTab === 'manual'" class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 sm:p-8">
+      <div class="mb-6 pb-4 border-b border-gray-100">
         <h2 class="text-xl font-bold text-gray-900">手动触发操作</h2>
-        <p class="text-sm text-gray-500 mt-1">立刻触发特定任务执行（不受定时开关限制）</p>
+        <p class="text-sm text-pixiv-gray mt-1">立刻触发特定任务执行（不受定时开关限制）</p>
       </div>
 
-      <div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
-        <button v-for="btn in manualButtons" :key="btn.id" @click="triggerManualTask(btn.id, btn.label)" :disabled="triggering" class="w-full px-4 py-2.5 text-sm font-semibold rounded-md transition-colors disabled:opacity-50 shadow-sm border focus:outline-none focus:ring-2 focus:ring-offset-1" :class="btn.class">
+      <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
+        <button v-for="btn in manualButtons" :key="btn.id" @click="triggerManualTask(btn.id, btn.label)" :disabled="triggering" class="w-full px-4 py-2.5 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 shadow-sm border focus:outline-none focus:ring-2 focus:ring-offset-1" :class="btn.class">
           {{ btn.label }}
         </button>
       </div>
 
-      <div class="bg-gray-900 rounded-md p-4 shadow-inner">
-        <h4 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">执行日志 (当前页面)</h4>
+      <div class="bg-gray-900 rounded-lg p-4">
+        <h4 class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">执行日志</h4>
         <div class="font-mono text-xs leading-relaxed text-gray-300 h-48 overflow-y-auto space-y-1">
+          <div v-if="!manualLogs.length" class="text-gray-600 py-4 text-center">点击上方按钮触发任务</div>
           <div v-for="(log, i) in manualLogs" :key="i">
             <span class="text-gray-500 mr-2">[{{ log.time }}]</span>
             <span :class="log.error ? 'text-red-400' : 'text-gray-300'">{{ log.msg }}</span>
@@ -252,25 +254,25 @@
     </section>
 
     <!-- Section 5: Cache -->
-    <section v-show="activeTab === 'cache'" class="bg-white border border-gray-200 shadow-sm rounded-lg p-6 sm:p-8 animate-[fadeIn_0.3s_ease-out]">
-      <div class="mb-6 border-b border-gray-100 pb-4">
+    <section v-show="activeTab === 'cache'" class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 sm:p-8">
+      <div class="mb-6 pb-4 border-b border-gray-100">
         <h2 class="text-xl font-bold text-gray-900">图片缓存管理</h2>
-        <p class="text-sm text-gray-500 mt-1">管理本地图片反代缓存，清理缓存可强制重新获取最新封面。</p>
+        <p class="text-sm text-pixiv-gray mt-1">管理本地图片反代缓存，清理缓存可强制重新获取最新封面。</p>
       </div>
 
-      <div class="bg-gray-50 rounded-md p-5 border border-gray-200 mb-6 flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+      <div class="bg-gray-50 rounded-lg p-5 border border-gray-100 mb-6 flex flex-col sm:flex-row justify-between sm:items-center gap-4">
         <div>
-          <div class="text-xs font-bold text-gray-500 uppercase mb-1">当前缓存占用</div>
+          <div class="text-xs font-medium text-pixiv-gray uppercase mb-1.5">当前缓存占用</div>
           <div v-if="loadingCache" class="animate-pulse h-6 bg-gray-200 rounded w-24"></div>
-          <div v-else-if="cacheData.exists" class="text-lg font-bold text-gray-900">
-            <span class="font-mono bg-white px-2 py-0.5 rounded border border-gray-200 mr-3">{{ cacheData.size_human }}</span>
-            <span class="text-sm font-normal text-gray-500">文件数: {{ cacheData.file_count }}</span>
+          <div v-else-if="cacheData.exists" class="text-lg font-bold text-gray-900 flex items-center gap-3">
+            <span class="font-mono bg-white px-2.5 py-0.5 rounded-md border border-gray-100 text-base">{{ cacheData.size_human }}</span>
+            <span class="text-sm font-normal text-pixiv-gray">{{ cacheData.file_count }} 个文件</span>
           </div>
-          <div v-else class="text-gray-500">缓存目录不存在或为空</div>
+          <div v-else class="text-pixiv-gray text-sm">缓存目录不存在或为空</div>
         </div>
         <div class="flex items-center gap-3">
-          <button @click="fetchCacheStatus" class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md text-sm font-semibold hover:bg-gray-50 transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500">刷新状态</button>
-          <button @click="clearCache" :disabled="clearingCache" class="px-4 py-2 bg-red-50 border border-red-200 text-red-600 rounded-md text-sm font-semibold hover:bg-red-100 transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50">清空缓存</button>
+          <button @click="fetchCacheStatus" class="px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500">刷新状态</button>
+          <button @click="clearCache" :disabled="clearingCache" class="px-4 py-2 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm font-medium hover:bg-red-100 transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50">清空缓存</button>
         </div>
       </div>
       <div v-if="cacheMessage" class="text-sm font-medium" :class="cacheSuccess ? 'text-green-600' : 'text-red-600'">{{ cacheMessage }}</div>
@@ -283,6 +285,7 @@
 {% block extra_scripts %}
 <style>
   .custom-select {
+    appearance: none;
     background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
     background-position: right 0.5rem center;
     background-repeat: no-repeat;
@@ -294,15 +297,20 @@
     setup() {
       const { ref, onMounted } = Vue;
 
-      // Layout
+      // Layout - using SVG icons
       const tabs = [
-        { id: 'basic', name: '基础设置', icon: '⚙️' },
-        { id: 'limits', name: '限速参数', icon: '⏱️' },
-        { id: 'scheduler', name: '定时同步', icon: '📅' },
-        { id: 'manual', name: '手动操作', icon: '🚀' },
-        { id: 'cache', name: '图片缓存', icon: '🖼️' },
+        { id: 'basic', name: '基础', svg: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>' },
+        { id: 'limits', name: '限速', svg: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>' },
+        { id: 'scheduler', name: '定时任务', svg: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>' },
+        { id: 'manual', name: '手工同步', svg: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>' },
+        { id: 'cache', name: '缓存', svg: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/>' },
       ];
       const activeTab = ref(window.location.hash ? window.location.hash.slice(1) : 'basic');
+
+      const switchTab = (tabId) => {
+        activeTab.value = tabId;
+        window.location.hash = tabId;
+      };
 
       // State
       const settings = ref(null);
@@ -344,10 +352,10 @@
         try {
           const res = await fetch(`/api/dashboard/sync/${task}`, { method: 'POST' });
           const data = await res.json();
-          if (res.ok) addLog(`✓ 任务已成功加入队列 (${label})`);
-          else addLog(`✗ 任务失败：${data.message || '未知错误'}`, true);
+          if (res.ok) addLog(`任务已成功加入队列 (${label})`);
+          else addLog(`任务失败：${data.message || '未知错误'}`, true);
         } catch (e) {
-          addLog(`✗ 网络错误：${e.message}`, true);
+          addLog(`网络错误：${e.message}`, true);
         } finally {
           triggering.value = false;
         }
@@ -412,7 +420,6 @@
         saving.value = true;
         saveMessage.value = '';
         try {
-          // Send the entire reactive object. The backend handles updating valid fields.
           const res = await fetch('/api/dashboard/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -437,7 +444,7 @@
       });
 
       return {
-        tabs, activeTab, settings, saving, saveMessage, saveSuccess,
+        tabs, activeTab, switchTab, settings, saving, saveMessage, saveSuccess,
         schedulerTasks, manualButtons, triggering, manualLogs,
         loadingCache, clearingCache, cacheData, cacheMessage, cacheSuccess,
         saveSettings, triggerManualTask, fetchCacheStatus, clearCache
