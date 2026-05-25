@@ -14,7 +14,7 @@
 | 语言 | Python >= 3.10 |
 | 用途 | Pixiv 小说增量归档：自动同步收藏/关注/追更的小说到本地 SQLite + 文件系统 |
 | 入口 | CLI (`pixiv-novel-sync`) 或 Web (`create_app()`) |
-| 总代码量 | ~7,400 行 Python + 11 个 Jinja2 HTML 模板 |
+| 总代码量 | ~7,500 行 Python + 11 个 Jinja2 HTML 模板 |
 
 ---
 
@@ -377,43 +377,44 @@ create_app()
 | `/api/dashboard/users` | GET | 用户列表 (JSON) |
 | `/api/dashboard/users/<id>` | GET | 用户详情 (JSON) |
 | `/api/dashboard/users/<id>/novels` | GET | 用户小说列表 |
-| `/api/dashboard/users/<id>/check-status` | POST | 检查用户状态 |
-| `/api/dashboard/users/<id>/sync-novels` | POST | 同步用户小说 |
+| `/api/dashboard/users/<id>/check` | POST | 检查用户状态 |
+| `/api/dashboard/users/<id>/sync` | POST | 同步用户小说 |
 | `/api/dashboard/settings` | GET/POST | 获取/保存设置 |
 | `/api/dashboard/settings/reload` | POST | 重载配置 |
 | `/api/dashboard/sync/start` | POST | 启动完整同步 |
-| `/api/dashboard/sync/check-bookmarks` | POST | 启动预检查 |
+| `/api/dashboard/check-bookmarks` | POST | 启动预检查 |
 | `/api/dashboard/sync/status` | GET | 当前任务状态 |
 | `/api/dashboard/sync/<task_type>` | POST | 启动单个同步任务 |
 | `/api/dashboard/sync/subscribed-series` | POST | 同步追更系列 |
 | `/api/dashboard/auto-sync/status` | GET | 定时调度器状态 |
 | `/api/dashboard/auto-sync/toggle` | POST | 开关定时调度器 |
-| `/api/dashboard/auto-sync/stop-current` | POST | 停止当前定时任务 |
+| `/api/dashboard/auto-sync/stop-task` | POST | 停止当前定时任务 |
 | `/api/dashboard/logs` | GET | 任务日志 (JSON, 分页) |
 | `/api/dashboard/logs/<id>` | GET | 日志详情 |
-| `/api/dashboard/cache/status` | GET | Nginx 缓存状态 |
-| `/api/dashboard/cache/clear` | POST | 清理缓存 |
+| `/api/cache/status` | GET | Nginx 缓存状态 |
+| `/api/cache/clear` | POST | 清理缓存 |
+| `/api/dashboard/shell-data` | GET | 聚合的 Web Shell 状态数据 |
 | `/api/dashboard/export/stats` | GET | 导出统计 (JSON) |
 | **删除操作** | | |
-| `/api/dashboard/novels/<id>/delete` | POST | 删除小说 |
-| `/api/dashboard/users/<id>/delete` | POST | 删除用户 |
-| `/api/dashboard/series/<id>/delete` | POST | 删除系列 |
-| `/api/dashboard/novels/<id>/delete-bookmark` | POST | 删除收藏 |
+| `/api/dashboard/novels/<id>` | DELETE | 删除小说 |
+| `/api/dashboard/users/<id>` | DELETE | 删除用户 |
+| `/api/dashboard/series/<id>` | DELETE | 删除系列 |
+| `/api/dashboard/bookmarks/<id>` | DELETE | 删除收藏 |
 | **待删除管理** | | |
 | `/api/dashboard/pending-deletions` | GET | 待删除列表 |
 | `/api/dashboard/pending-deletions/count` | GET | 待删除数量 |
-| `/api/dashboard/pending-deletions/trigger` | POST | 触发检测 |
+| `/api/dashboard/pending-deletions/detect` | POST | 触发检测 |
 | `/api/dashboard/pending-deletions/<id>/confirm` | POST | 确认删除 |
 | `/api/dashboard/pending-deletions/<id>/restore` | POST | 恢复 |
 | **系统** | | |
 | `/api/health` | GET | 健康检查 |
 | **OAuth Token 获取** | | |
-| `/api/token/config` | GET | Token 配置状态 |
-| `/api/token/job` | POST | 创建 Token 获取任务 |
-| `/api/token/job/<id>` | GET | Token 任务状态 |
-| `/api/token/save` | POST | 保存 Token |
-| `/api/oauth/start` | POST | 启动 OAuth PKCE |
-| `/api/oauth/exchange/<id>` | POST | 交换 Token |
+| `/api/token-config` | GET | Token 配置状态 |
+| `/api/token-jobs` | POST | 创建 Token 获取任务 |
+| `/api/token-jobs/<id>` | GET | Token 任务状态 |
+| `/api/save-token` | POST | 保存 Token |
+| `/oauth/start` | POST | 启动 OAuth PKCE |
+| `/oauth/exchange/<id>` | POST | 交换 Token |
 
 ### 9.3 定时任务调度器 (AutoSyncScheduler)
 
@@ -599,11 +600,11 @@ requests + Cookie → Pixiv Web API: watchList
 
 | 文件 | 行数 | 职责 |
 |------|------|------|
-| `webapp.py` | 2750 | Flask 应用、路由、调度器、任务管理 |
-| `sync_engine.py` | 1677 | 同步业务逻辑核心 |
-| `storage_db.py` | 1401 | SQLite 数据库操作 |
+| `webapp.py` | 2781 | Flask 应用、路由、调度器、任务管理 |
+| `sync_engine.py` | 1679 | 同步业务逻辑核心 |
+| `storage_db.py` | 1455 | SQLite 数据库操作 |
 | `playwright_login.py` | 499 | Playwright 自动登录 |
-| `settings.py` | 408 | 配置加载、cron 解析 |
+| `settings.py` | 412 | 配置加载、cron 解析 |
 | `oauth_helper.py` | 196 | OAuth PKCE 流程 |
 | `jobs/quick_sync.py` | 112 | 同步任务入口 |
 | `storage_files.py` | 108 | 文件存储、资源下载 |

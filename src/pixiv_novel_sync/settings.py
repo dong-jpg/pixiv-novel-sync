@@ -388,20 +388,24 @@ def _simple_cron_next_run(parsed: dict[str, Any], base_dt: datetime) -> float | 
         hours = parse_field(parsed["hour"], 0, 23)
         days = parse_field(parsed["day"], 1, 31)
         months = parse_field(parsed["month"], 1, 12)
-        weekdays = parse_field(parsed["weekday"], 0, 6)
+        cron_weekdays = parse_field(parsed["weekday"], 0, 6)
+        # cron 约定: 0=Sunday, 1=Monday, ..., 6=Saturday
+        # Python datetime.weekday(): 0=Monday, ..., 6=Sunday
+        # 转换: cron day -> python day: (cron - 1) % 7
+        python_weekdays = [(d - 1) % 7 for d in cron_weekdays]
     except (ValueError, IndexError):
         return None
-    
+
     # 查找下一个匹配的时间
     current = base_dt + timedelta(minutes=1)
     current = current.replace(second=0, microsecond=0)
-    
+
     for _ in range(366 * 24 * 60):  # 最多检查一年
         if (current.minute in minutes and
             current.hour in hours and
             current.day in days and
             current.month in months and
-            current.weekday() in weekdays):
+            current.weekday() in python_weekdays):
             return current.timestamp()
         current += timedelta(minutes=1)
     

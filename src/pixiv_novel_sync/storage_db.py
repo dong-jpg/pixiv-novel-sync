@@ -167,99 +167,104 @@ class Database:
         self.conn.commit()
 
     def upsert_user(self, record: UserRecord) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO users (user_id, name, account, raw_json)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-              name = excluded.name,
-              account = CASE WHEN excluded.account IS NOT NULL AND excluded.account != '' THEN excluded.account ELSE users.account END,
-              raw_json = CASE WHEN excluded.raw_json != '{}' AND excluded.raw_json != '' THEN excluded.raw_json ELSE users.raw_json END,
-              updated_at = CURRENT_TIMESTAMP
-            """,
-            (record.user_id, record.name, record.account, record.raw_json),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO users (user_id, name, account, raw_json)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                  name = excluded.name,
+                  account = CASE WHEN excluded.account IS NOT NULL AND excluded.account != '' THEN excluded.account ELSE users.account END,
+                  raw_json = CASE WHEN excluded.raw_json != '{}' AND excluded.raw_json != '' THEN excluded.raw_json ELSE users.raw_json END,
+                  updated_at = CURRENT_TIMESTAMP
+                """,
+                (record.user_id, record.name, record.account, record.raw_json),
+            )
+            self.conn.commit()
 
     def upsert_novel(self, record: NovelRecord) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO novels (
-                novel_id, user_id, series_id, title, caption, visible, restrict_value,
-                x_restrict, text_length, total_bookmarks, total_views, cover_url,
-                tags_json, create_date, raw_json, meta_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(novel_id) DO UPDATE SET
-                user_id = excluded.user_id,
-                series_id = excluded.series_id,
-                title = excluded.title,
-                caption = excluded.caption,
-                visible = excluded.visible,
-                restrict_value = excluded.restrict_value,
-                x_restrict = excluded.x_restrict,
-                text_length = excluded.text_length,
-                total_bookmarks = excluded.total_bookmarks,
-                total_views = excluded.total_views,
-                cover_url = excluded.cover_url,
-                tags_json = excluded.tags_json,
-                create_date = excluded.create_date,
-                raw_json = excluded.raw_json,
-                meta_hash = excluded.meta_hash,
-                last_seen_at = CURRENT_TIMESTAMP
-            """,
-            (
-                record.novel_id,
-                record.user_id,
-                record.series_id,
-                record.title,
-                record.caption,
-                1 if record.visible else 0,
-                record.restrict,
-                record.x_restrict,
-                record.text_length,
-                record.total_bookmarks,
-                record.total_views,
-                record.cover_url,
-                record.tags_json,
-                record.create_date,
-                record.raw_json,
-                record.meta_hash,
-            ),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO novels (
+                    novel_id, user_id, series_id, title, caption, visible, restrict_value,
+                    x_restrict, text_length, total_bookmarks, total_views, cover_url,
+                    tags_json, create_date, raw_json, meta_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(novel_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    series_id = excluded.series_id,
+                    title = excluded.title,
+                    caption = excluded.caption,
+                    visible = excluded.visible,
+                    restrict_value = excluded.restrict_value,
+                    x_restrict = excluded.x_restrict,
+                    text_length = excluded.text_length,
+                    total_bookmarks = excluded.total_bookmarks,
+                    total_views = excluded.total_views,
+                    cover_url = excluded.cover_url,
+                    tags_json = excluded.tags_json,
+                    create_date = excluded.create_date,
+                    raw_json = excluded.raw_json,
+                    meta_hash = excluded.meta_hash,
+                    last_seen_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    record.novel_id,
+                    record.user_id,
+                    record.series_id,
+                    record.title,
+                    record.caption,
+                    1 if record.visible else 0,
+                    record.restrict,
+                    record.x_restrict,
+                    record.text_length,
+                    record.total_bookmarks,
+                    record.total_views,
+                    record.cover_url,
+                    record.tags_json,
+                    record.create_date,
+                    record.raw_json,
+                    record.meta_hash,
+                ),
+            )
+            self.conn.commit()
 
     def upsert_novel_text(self, record: NovelTextRecord) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO novel_texts (novel_id, text_raw, text_markdown, text_hash, fetched_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(novel_id) DO UPDATE SET
-                text_raw = excluded.text_raw,
-                text_markdown = excluded.text_markdown,
-                text_hash = excluded.text_hash,
-                fetched_at = CURRENT_TIMESTAMP
-            """,
-            (record.novel_id, record.text_raw, record.text_markdown, record.text_hash),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO novel_texts (novel_id, text_raw, text_markdown, text_hash, fetched_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(novel_id) DO UPDATE SET
+                    text_raw = excluded.text_raw,
+                    text_markdown = excluded.text_markdown,
+                    text_hash = excluded.text_hash,
+                    fetched_at = CURRENT_TIMESTAMP
+                """,
+                (record.novel_id, record.text_raw, record.text_markdown, record.text_hash),
+            )
+            self.conn.commit()
 
     def upsert_source(self, record: SourceRecord) -> None:
-        self.conn.execute(
-            """
-            INSERT OR IGNORE INTO sources (novel_id, source_type, source_key)
-            VALUES (?, ?, ?)
-            """,
-            (record.novel_id, record.source_type, record.source_key),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO sources (novel_id, source_type, source_key)
+                VALUES (?, ?, ?)
+                """,
+                (record.novel_id, record.source_type, record.source_key),
+            )
+            self.conn.commit()
 
     def replace_fts(self, novel_id: int, title: str, caption: str, author_name: str, body: str) -> None:
-        self.conn.execute("DELETE FROM novel_fts WHERE novel_id = ?", (novel_id,))
-        self.conn.execute(
-            "INSERT INTO novel_fts (novel_id, title, caption, author_name, body) VALUES (?, ?, ?, ?, ?)",
-            (novel_id, title, caption, author_name, body),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute("DELETE FROM novel_fts WHERE novel_id = ?", (novel_id,))
+            self.conn.execute(
+                "INSERT INTO novel_fts (novel_id, title, caption, author_name, body) VALUES (?, ?, ?, ?, ?)",
+                (novel_id, title, caption, author_name, body),
+            )
+            self.conn.commit()
 
     def get_novel_text_hash(self, novel_id: int) -> str | None:
         row = self.conn.execute("SELECT text_hash FROM novel_texts WHERE novel_id = ?", (novel_id,)).fetchone()
@@ -277,25 +282,27 @@ class Database:
 
     def touch_novel(self, novel_id: int) -> None:
         """更新小说的 last_seen_at 时间戳"""
-        self.conn.execute(
-            "UPDATE novels SET last_seen_at = CURRENT_TIMESTAMP WHERE novel_id = ?",
-            (novel_id,),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "UPDATE novels SET last_seen_at = CURRENT_TIMESTAMP WHERE novel_id = ?",
+                (novel_id,),
+            )
+            self.conn.commit()
 
     def record_asset(self, novel_id: int, asset_type: str, remote_url: str, local_path: str, file_hash: str | None) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO assets (novel_id, asset_type, remote_url, local_path, file_hash, downloaded_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(novel_id, asset_type, remote_url) DO UPDATE SET
-                local_path = excluded.local_path,
-                file_hash = excluded.file_hash,
-                downloaded_at = CURRENT_TIMESTAMP
-            """,
-            (novel_id, asset_type, remote_url, local_path, file_hash),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO assets (novel_id, asset_type, remote_url, local_path, file_hash, downloaded_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(novel_id, asset_type, remote_url) DO UPDATE SET
+                    local_path = excluded.local_path,
+                    file_hash = excluded.file_hash,
+                    downloaded_at = CURRENT_TIMESTAMP
+                """,
+                (novel_id, asset_type, remote_url, local_path, file_hash),
+            )
+            self.conn.commit()
 
     def export_stats(self) -> str:
         row = self.conn.execute(
@@ -608,25 +615,28 @@ class Database:
             self.conn.execute("ALTER TABLE series ADD COLUMN last_checked_at TEXT")
 
     def upsert_user_status(self, user_id: int, status: str) -> None:
-        self.conn.execute(
-            "UPDATE users SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE user_id = ?",
-            (status, user_id),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "UPDATE users SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+                (status, user_id),
+            )
+            self.conn.commit()
 
     def upsert_novel_status(self, novel_id: int, status: str) -> None:
-        self.conn.execute(
-            "UPDATE novels SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE novel_id = ?",
-            (status, novel_id),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "UPDATE novels SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE novel_id = ?",
+                (status, novel_id),
+            )
+            self.conn.commit()
 
     def upsert_series_status(self, series_id: int, status: str) -> None:
-        self.conn.execute(
-            "UPDATE series SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE series_id = ?",
-            (status, series_id),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "UPDATE series SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE series_id = ?",
+                (status, series_id),
+            )
+            self.conn.commit()
 
     def get_all_novel_ids(self) -> list[int]:
         rows = self.conn.execute("SELECT novel_id FROM novels ORDER BY novel_id").fetchall()
@@ -637,43 +647,45 @@ class Database:
         return [row[0] for row in rows]
 
     def upsert_series(self, series_id: int, title: str, description: str, user_id: int, cover_url: str | None) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO series (series_id, title, description, user_id, cover_url, total_novels, last_seen_at)
-            VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
-            ON CONFLICT(series_id) DO UPDATE SET
-                title = CASE WHEN excluded.title != '' THEN excluded.title ELSE series.title END,
-                description = CASE WHEN excluded.description != '' THEN excluded.description ELSE series.description END,
-                cover_url = CASE WHEN excluded.cover_url IS NOT NULL AND excluded.cover_url != '' THEN excluded.cover_url ELSE series.cover_url END,
-                user_id = CASE WHEN excluded.user_id != 0 THEN excluded.user_id ELSE series.user_id END,
-                total_novels = (SELECT COUNT(*) FROM novels WHERE series_id = ?),
-                last_seen_at = CURRENT_TIMESTAMP
-            """,
-            (series_id, title, description, user_id, cover_url, series_id),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO series (series_id, title, description, user_id, cover_url, total_novels, last_seen_at)
+                VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT(series_id) DO UPDATE SET
+                    title = CASE WHEN excluded.title != '' THEN excluded.title ELSE series.title END,
+                    description = CASE WHEN excluded.description != '' THEN excluded.description ELSE series.description END,
+                    cover_url = CASE WHEN excluded.cover_url IS NOT NULL AND excluded.cover_url != '' THEN excluded.cover_url ELSE series.cover_url END,
+                    user_id = CASE WHEN excluded.user_id != 0 THEN excluded.user_id ELSE series.user_id END,
+                    total_novels = (SELECT COUNT(*) FROM novels WHERE series_id = ?),
+                    last_seen_at = CURRENT_TIMESTAMP
+                """,
+                (series_id, title, description, user_id, cover_url, series_id),
+            )
+            self.conn.commit()
 
     def upsert_subscribed_series(self, series_id: int, title: str, description: str, user_id: int, cover_url: str | None, total_novels: int = 0) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO series (series_id, title, description, user_id, cover_url, total_novels, is_subscribed, last_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
-            ON CONFLICT(series_id) DO UPDATE SET
-                title = CASE WHEN excluded.title != '' THEN excluded.title ELSE series.title END,
-                description = CASE WHEN excluded.description != '' THEN excluded.description ELSE series.description END,
-                user_id = CASE WHEN excluded.user_id != 0 THEN excluded.user_id ELSE series.user_id END,
-                cover_url = COALESCE(excluded.cover_url, series.cover_url),
-                total_novels = CASE WHEN excluded.total_novels > 0 THEN excluded.total_novels ELSE series.total_novels END,
-                is_subscribed = 1,
-                last_seen_at = CURRENT_TIMESTAMP
-            """,
-            (series_id, title, description, user_id, cover_url, total_novels),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO series (series_id, title, description, user_id, cover_url, total_novels, is_subscribed, last_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT(series_id) DO UPDATE SET
+                    title = CASE WHEN excluded.title != '' THEN excluded.title ELSE series.title END,
+                    description = CASE WHEN excluded.description != '' THEN excluded.description ELSE series.description END,
+                    user_id = CASE WHEN excluded.user_id != 0 THEN excluded.user_id ELSE series.user_id END,
+                    cover_url = COALESCE(excluded.cover_url, series.cover_url),
+                    total_novels = CASE WHEN excluded.total_novels > 0 THEN excluded.total_novels ELSE series.total_novels END,
+                    is_subscribed = 1,
+                    last_seen_at = CURRENT_TIMESTAMP
+                """,
+                (series_id, title, description, user_id, cover_url, total_novels),
+            )
+            self.conn.commit()
 
     def repair_blank_series_titles(self) -> int:
         """用已归档小说的系列信息修复空标题，避免追更列表显示未命名系列。"""
-        cursor = self.conn.execute(
+        cursor = self.conn.execute(  # 读操作为主，写入量小，WAL 模式下可接受
             """
             UPDATE series
             SET title = COALESCE(
@@ -707,8 +719,9 @@ class Database:
 
     def clear_subscribed_series(self) -> None:
         """清除所有订阅标记"""
-        self.conn.execute("UPDATE series SET is_subscribed = 0")
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute("UPDATE series SET is_subscribed = 0")
+            self.conn.commit()
 
     def list_bookmark_novels(self, page: int = 1, page_size: int = 10,
                             search: str = "", sort: str = "") -> dict[str, Any]:
@@ -1044,36 +1057,55 @@ class Database:
 
     def delete_novel(self, novel_id: int) -> None:
         """删除小说及其相关数据"""
-        self.conn.execute("DELETE FROM novel_texts WHERE novel_id = ?", (novel_id,))
-        self.conn.execute("DELETE FROM assets WHERE novel_id = ?", (novel_id,))
-        self.conn.execute("DELETE FROM sources WHERE novel_id = ?", (novel_id,))
-        self.conn.execute("DELETE FROM novel_fts WHERE novel_id = ?", (novel_id,))
-        self.conn.execute("DELETE FROM novels WHERE novel_id = ?", (novel_id,))
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self.conn.execute("DELETE FROM novel_texts WHERE novel_id = ?", (novel_id,))
+                self.conn.execute("DELETE FROM assets WHERE novel_id = ?", (novel_id,))
+                self.conn.execute("DELETE FROM sources WHERE novel_id = ?", (novel_id,))
+                self.conn.execute("DELETE FROM novel_fts WHERE novel_id = ?", (novel_id,))
+                self.conn.execute("DELETE FROM novels WHERE novel_id = ?", (novel_id,))
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def delete_user(self, user_id: int) -> None:
         """删除用户及其所有小说（单一事务，批量删除）"""
-        self.conn.execute("DELETE FROM novel_texts WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
-        self.conn.execute("DELETE FROM assets WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
-        self.conn.execute("DELETE FROM sources WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
-        self.conn.execute("DELETE FROM novel_fts WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
-        self.conn.execute("DELETE FROM novels WHERE user_id = ?", (user_id,))
-        self.conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self.conn.execute("DELETE FROM novel_texts WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
+                self.conn.execute("DELETE FROM assets WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
+                self.conn.execute("DELETE FROM sources WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
+                self.conn.execute("DELETE FROM novel_fts WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
+                self.conn.execute("DELETE FROM novels WHERE user_id = ?", (user_id,))
+                self.conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def delete_series(self, series_id: int) -> None:
         """删除系列（不删除小说，只解除关联）"""
-        self.conn.execute("UPDATE novels SET series_id = NULL WHERE series_id = ?", (series_id,))
-        self.conn.execute("DELETE FROM series WHERE series_id = ?", (series_id,))
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self.conn.execute("UPDATE novels SET series_id = NULL WHERE series_id = ?", (series_id,))
+                self.conn.execute("DELETE FROM series WHERE series_id = ?", (series_id,))
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def delete_bookmark(self, novel_id: int) -> None:
         """删除收藏记录"""
-        self.conn.execute(
-            "DELETE FROM sources WHERE novel_id = ? AND source_type LIKE 'bookmark_%'",
-            (novel_id,),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM sources WHERE novel_id = ? AND source_type LIKE 'bookmark_%'",
+                (novel_id,),
+            )
+            self.conn.commit()
 
     def init_sync_check_table(self) -> None:
         """初始化同步检查表"""
@@ -1090,33 +1122,35 @@ class Database:
 
     def create_task_log(self, task_type: str, task_name: str, job_id: str | None = None, is_auto_sync: bool = False) -> int:
         """创建任务日志记录"""
-        cursor = self.conn.execute(
-            """
-            INSERT INTO task_logs (task_type, task_name, job_id, status, started_at, is_auto_sync)
-            VALUES (?, ?, ?, 'running', datetime('now'), ?)
-            """,
-            (task_type, task_name, job_id, 1 if is_auto_sync else 0)
-        )
-        self.conn.commit()
-        return cursor.lastrowid
+        with self._lock:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO task_logs (task_type, task_name, job_id, status, started_at, is_auto_sync)
+                VALUES (?, ?, ?, 'running', datetime('now'), ?)
+                """,
+                (task_type, task_name, job_id, 1 if is_auto_sync else 0)
+            )
+            self.conn.commit()
+            return cursor.lastrowid
 
     def update_task_log(self, log_id: int, status: str, stats: dict[str, Any] | None = None,
                        error_message: str | None = None, logs: list[dict[str, Any]] | None = None) -> None:
         """更新任务日志"""
-        self.conn.execute(
-            """
-            UPDATE task_logs
-            SET status = ?,
-                finished_at = datetime('now'),
-                duration_seconds = (julianday(datetime('now')) - julianday(started_at)) * 86400,
-                stats_json = ?,
-                error_message = ?,
-                logs_json = ?
-            WHERE id = ?
-            """,
-            (status, json.dumps(stats) if stats else None, error_message, json.dumps(logs) if logs else None, log_id)
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                """
+                UPDATE task_logs
+                SET status = ?,
+                    finished_at = datetime('now'),
+                    duration_seconds = (julianday(datetime('now')) - julianday(started_at)) * 86400,
+                    stats_json = ?,
+                    error_message = ?,
+                    logs_json = ?
+                WHERE id = ?
+                """,
+                (status, json.dumps(stats) if stats else None, error_message, json.dumps(logs) if logs else None, log_id)
+            )
+            self.conn.commit()
 
     def get_task_logs(self, page: int = 1, page_size: int = 20,
                      task_type: str | None = None, is_auto_sync: bool | None = None,
@@ -1175,12 +1209,13 @@ class Database:
 
     def cleanup_old_task_logs(self, days: int = 3) -> int:
         """清理旧的任务日志"""
-        cursor = self.conn.execute(
-            "DELETE FROM task_logs WHERE started_at < datetime('now', ? || ' days')",
-            (f"-{days}",)
-        )
-        self.conn.commit()
-        return cursor.rowcount
+        with self._lock:
+            cursor = self.conn.execute(
+                "DELETE FROM task_logs WHERE started_at < datetime('now', ? || ' days')",
+                (f"-{days}",)
+            )
+            self.conn.commit()
+            return cursor.rowcount
 
     def get_task_log_by_id(self, log_id: int) -> dict[str, Any] | None:
         """获取单条任务日志详情"""
@@ -1205,22 +1240,24 @@ class Database:
 
     def clear_sync_check_list(self) -> None:
         """清空同步检查列表"""
-        self.conn.execute("DELETE FROM sync_check_list")
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute("DELETE FROM sync_check_list")
+            self.conn.commit()
 
     def upsert_sync_check_item(self, novel_id: int, exists_local: bool) -> None:
         """更新同步检查项"""
-        self.conn.execute(
-            """
-            INSERT INTO sync_check_list (novel_id, exists_local, checked_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(novel_id) DO UPDATE SET
-                exists_local = excluded.exists_local,
-                checked_at = CURRENT_TIMESTAMP
-            """,
-            (novel_id, 1 if exists_local else 0),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO sync_check_list (novel_id, exists_local, checked_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(novel_id) DO UPDATE SET
+                    exists_local = excluded.exists_local,
+                    checked_at = CURRENT_TIMESTAMP
+                """,
+                (novel_id, 1 if exists_local else 0),
+            )
+            self.conn.commit()
 
     def get_sync_check_list(self) -> dict[int, bool]:
         """获取同步检查列表，返回 {novel_id: exists_local}"""
@@ -1228,15 +1265,20 @@ class Database:
         return {row[0]: bool(row[1]) for row in rows}
 
     def get_existing_novel_ids(self, novel_ids: list[int]) -> set[int]:
-        """批量检查小说是否已存在，返回已存在的 ID 集合"""
+        """批量检查小说是否已存在，返回已存在的 ID 集合（分批查询避免超出 SQLite 变量限制）"""
         if not novel_ids:
             return set()
-        placeholders = ",".join(["?"] * len(novel_ids))
-        rows = self.conn.execute(
-            f"SELECT novel_id FROM novels WHERE novel_id IN ({placeholders})",
-            novel_ids,
-        ).fetchall()
-        return {row[0] for row in rows}
+        result: set[int] = set()
+        batch_size = 500
+        for i in range(0, len(novel_ids), batch_size):
+            batch = novel_ids[i:i + batch_size]
+            placeholders = ",".join(["?"] * len(batch))
+            rows = self.conn.execute(
+                f"SELECT novel_id FROM novels WHERE novel_id IN ({placeholders})",
+                batch,
+            ).fetchall()
+            result.update(row[0] for row in rows)
+        return result
 
     # ── 待确认删除 ──────────────────────────────────────────────
 
@@ -1293,44 +1335,47 @@ class Database:
 
     def update_watermark(self, sync_type: str, value: dict, key: str = "_") -> None:
         """写入/更新水位线"""
-        self.conn.execute(
-            """
-            INSERT INTO sync_watermarks (sync_type, key, value_json, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(sync_type, key) DO UPDATE SET
-                value_json = excluded.value_json,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (sync_type, key, json.dumps(value, ensure_ascii=False)),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO sync_watermarks (sync_type, key, value_json, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(sync_type, key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (sync_type, key, json.dumps(value, ensure_ascii=False)),
+            )
+            self.conn.commit()
 
     def clear_watermark(self, sync_type: str, key: str = "_") -> None:
         """删除指定水位线"""
-        self.conn.execute(
-            "DELETE FROM sync_watermarks WHERE sync_type = ? AND key = ?",
-            (sync_type, key),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM sync_watermarks WHERE sync_type = ? AND key = ?",
+                (sync_type, key),
+            )
+            self.conn.commit()
 
     def add_pending_deletion(self, item_type: str, item_id: int, reason: str,
                              title: str, author_name: str, cover_url: str,
                              source_type: str | None = None) -> None:
         """插入待确认删除记录（已有 pending 记录则跳过，已确认/恢复的记录会被清除后重新插入）"""
-        # 清除已确认或已恢复的旧记录，允许重新检测
-        self.conn.execute(
-            "DELETE FROM pending_deletions WHERE item_type = ? AND item_id = ? AND status IN ('confirmed', 'restored')",
-            (item_type, item_id),
-        )
-        self.conn.execute(
-            """
-            INSERT OR IGNORE INTO pending_deletions
-                (item_type, item_id, reason, title, author_name, cover_url, source_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (item_type, item_id, reason, title, author_name, cover_url, source_type),
-        )
-        self.conn.commit()
+        with self._lock:
+            # 清除已确认或已恢复的旧记录，允许重新检测
+            self.conn.execute(
+                "DELETE FROM pending_deletions WHERE item_type = ? AND item_id = ? AND status IN ('confirmed', 'restored')",
+                (item_type, item_id),
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO pending_deletions
+                    (item_type, item_id, reason, title, author_name, cover_url, source_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (item_type, item_id, reason, title, author_name, cover_url, source_type),
+            )
+            self.conn.commit()
 
     def list_pending_deletions(self, page: int = 1, page_size: int = 20,
                                item_type: str | None = None) -> dict[str, Any]:
@@ -1359,31 +1404,33 @@ class Database:
 
     def confirm_pending_deletion(self, deletion_id: int) -> dict[str, Any] | None:
         """确认删除，返回记录详情，更新状态为 confirmed"""
-        row = self.conn.execute(
-            "SELECT * FROM pending_deletions WHERE id = ? AND status = 'pending'", (deletion_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        self.conn.execute(
-            "UPDATE pending_deletions SET status = 'confirmed', confirmed_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (deletion_id,),
-        )
-        self.conn.commit()
-        return dict(row)
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM pending_deletions WHERE id = ? AND status = 'pending'", (deletion_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            self.conn.execute(
+                "UPDATE pending_deletions SET status = 'confirmed', confirmed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (deletion_id,),
+            )
+            self.conn.commit()
+            return dict(row)
 
     def restore_pending_deletion(self, deletion_id: int) -> dict[str, Any] | None:
         """恢复，返回记录详情，更新状态为 restored"""
-        row = self.conn.execute(
-            "SELECT * FROM pending_deletions WHERE id = ? AND status = 'pending'", (deletion_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        self.conn.execute(
-            "UPDATE pending_deletions SET status = 'restored', restored_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (deletion_id,),
-        )
-        self.conn.commit()
-        return dict(row)
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM pending_deletions WHERE id = ? AND status = 'pending'", (deletion_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            self.conn.execute(
+                "UPDATE pending_deletions SET status = 'restored', restored_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (deletion_id,),
+            )
+            self.conn.commit()
+            return dict(row)
 
     def get_pending_deletion_count(self) -> int:
         """获取 pending 状态的记录总数"""
@@ -1393,15 +1440,16 @@ class Database:
         """清除已重新出现在远程列表中的 pending 记录（用户重新收藏/追更了）"""
         if not remote_ids:
             return 0
-        rows = self.conn.execute(
-            "SELECT id, item_id FROM pending_deletions WHERE item_type = ? AND status = 'pending'",
-            (item_type,),
-        ).fetchall()
-        count = 0
-        for row in rows:
-            if row[1] in remote_ids:
-                self.conn.execute("UPDATE pending_deletions SET status = 'restored', restored_at = CURRENT_TIMESTAMP WHERE id = ?", (row[0],))
-                count += 1
-        if count:
-            self.conn.commit()
-        return count
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id, item_id FROM pending_deletions WHERE item_type = ? AND status = 'pending'",
+                (item_type,),
+            ).fetchall()
+            count = 0
+            for row in rows:
+                if row[1] in remote_ids:
+                    self.conn.execute("UPDATE pending_deletions SET status = 'restored', restored_at = CURRENT_TIMESTAMP WHERE id = ?", (row[0],))
+                    count += 1
+            if count:
+                self.conn.commit()
+            return count

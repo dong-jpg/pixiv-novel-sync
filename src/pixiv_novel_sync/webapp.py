@@ -573,13 +573,22 @@ class AutoSyncScheduler:
         db.init_schema()
         
         try:
-            # 获取所有关注的用户
-            users = db.list_users(page=1, page_size=1000)
-            user_list = users.get("items", [])
-            
+            # 获取所有关注的用户（分页遍历全部）
+            user_list: list[dict[str, Any]] = []
+            page_num = 1
+            while True:
+                page_data = db.list_users(page=page_num, page_size=500)
+                items = page_data.get("items", [])
+                if not items:
+                    break
+                user_list.extend(items)
+                if page_num >= page_data.get("total_pages", 1):
+                    break
+                page_num += 1
+
             if job_id and self.sync_job_manager:
                 self.sync_job_manager.add_log(job_id, "info", f"共 {len(user_list)} 个用户需要检查")
-            
+
             checked_count = 0
             for user in user_list:
                 if self._check_stop():
@@ -717,10 +726,12 @@ class AutoSyncScheduler:
         if job_id and self.sync_job_manager:
             self.sync_job_manager.add_log(job_id, "info", "加载配置完成")
 
-        auth = PixivAuthManager(settings)
-        api = auth.login()
+        auth = PixivAuthManager(settings.pixiv)
+        api, auth_result = auth.login()
+        if auth_result.user_id is None:
+            raise RuntimeError("Unable to determine user ID")
         if job_id and self.sync_job_manager:
-            self.sync_job_manager.add_log(job_id, "info", f"登录成功, 用户ID: {settings.pixiv.user_id}")
+            self.sync_job_manager.add_log(job_id, "success", f"登录成功, 用户ID: {auth_result.user_id}")
 
         db = Database(settings.storage.db_path)
         db.init_schema()
@@ -1127,7 +1138,7 @@ class SyncJobManager:
 
             elif task_type == "following_users":
                 self.add_log(job_id, "info", "=== 开始同步关注用户列表 ===")
-                next_query: dict[str, Any] | None = {"restrict": "public"}
+                next_query: dict[str, Any] | None = {"user_id": auth_result.user_id, "restrict": "public"}
                 page_count = 0
                 users_count = 0
                 while next_query:
@@ -1522,8 +1533,9 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                 '<button type="submit">登录</button></form></body></html>',
                 content_type="text/html",
             )
+        import hmac as _hmac
         input_token = request.form.get("token", "")
-        if input_token == token:
+        if _hmac.compare_digest(input_token, token):
             session["authenticated"] = True
             return redirect("/")
         return Response("密码错误", status=401)
