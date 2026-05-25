@@ -23,7 +23,7 @@
 ```
 ┌─────────────────────────────────────────────────┐
 │                   前端层                          │
-│  Jinja2 模板 + Tailwind CSS (CDN) + 原生 JS     │
+│  Jinja2 模板 + Vue 3 (CDN) + Tailwind CSS (CDN)   │
 ├─────────────────────────────────────────────────┤
 │                   Web 层                         │
 │  Flask >= 3.0.3 (SSR, REST API, 图片代理)       │
@@ -369,6 +369,7 @@ create_app()
 | `/dashboard/pending-deletions` | GET | 待确认删除 |
 | **API** | | |
 | `/api/dashboard/status` | GET | 系统状态 (统计 + 调度器) |
+| `/api/dashboard/shell-data` | GET | 聚合的 Web Shell 状态数据 (Navbar 等) |
 | `/api/dashboard/follows` | GET | 关注用户列表 (JSON) |
 | `/api/dashboard/novels` | GET | 小说列表 (JSON, 支持分页/筛选) |
 | `/api/dashboard/novels/<id>` | GET | 小说详情 (JSON) |
