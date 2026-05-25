@@ -59,8 +59,8 @@ def run_check_bookmarks_task(settings: Settings, job_manager: Any, job_id: str) 
         db.init_schema()
         storage = FileStorage(settings)
         storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
-        service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
-        
+        service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings, sync_check_scope=job_id)
+
         def on_progress(event_type: str, data: dict[str, Any]) -> None:
             if event_type == "phase":
                 job_manager.add_log(job_id, "info", data.get("phase", ""))
@@ -95,6 +95,7 @@ def run_check_bookmarks_task(settings: Settings, job_manager: Any, job_id: str) 
             job.status = "succeeded"
             job.message = "预检查完成"
             job.stats = check_stats
+            job.progress["sync_check_scope"] = job_id
             job.finished_at = time.time()
 
         return check_stats

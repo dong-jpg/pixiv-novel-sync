@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,35 +46,39 @@ class OAuthTask:
 class OAuthManager:
     def __init__(self) -> None:
         self._tasks: dict[str, OAuthTask] = {}
+        self._lock = threading.RLock()
 
     def create_task(self, external_base_url: str) -> OAuthTask:
-        task_id = secrets.token_urlsafe(16)
-        state = secrets.token_urlsafe(24)
-        code_verifier = self._generate_code_verifier()
-        callback_url = f"{external_base_url.rstrip('/')}/oauth/callback"
-        login_url = self._build_login_url(state=state, code_challenge=self._code_challenge(code_verifier), callback_url=callback_url)
-        task = OAuthTask(
-            task_id=task_id,
-            state=state,
-            code_verifier=code_verifier,
-            created_at=time.time(),
-            callback_url=callback_url,
-            login_url=login_url,
-        )
-        self._tasks[task_id] = task
-        self._cleanup()
-        return task
+        with self._lock:
+            task_id = secrets.token_urlsafe(16)
+            state = secrets.token_urlsafe(24)
+            code_verifier = self._generate_code_verifier()
+            callback_url = f"{external_base_url.rstrip('/')}/oauth/callback"
+            login_url = self._build_login_url(state=state, code_challenge=self._code_challenge(code_verifier), callback_url=callback_url)
+            task = OAuthTask(
+                task_id=task_id,
+                state=state,
+                code_verifier=code_verifier,
+                created_at=time.time(),
+                callback_url=callback_url,
+                login_url=login_url,
+            )
+            self._tasks[task_id] = task
+            self._cleanup_locked()
+            return task
 
     def get_task(self, task_id: str) -> OAuthTask | None:
-        self._cleanup()
-        return self._tasks.get(task_id)
+        with self._lock:
+            self._cleanup_locked()
+            return self._tasks.get(task_id)
 
     def find_task_by_state(self, state: str) -> OAuthTask | None:
-        self._cleanup()
-        for task in self._tasks.values():
-            if task.state == state:
-                return task
-        return None
+        with self._lock:
+            self._cleanup_locked()
+            for task in self._tasks.values():
+                if task.state == state:
+                    return task
+            return None
 
     def exchange_code(self, task: OAuthTask, code: str) -> OAuthTask:
         headers = self._build_oauth_headers()
@@ -170,6 +175,10 @@ class OAuthManager:
         return f"{PIXIV_AUTH_BASE}?{urlencode(params)}"
 
     def _cleanup(self) -> None:
+        with self._lock:
+            self._cleanup_locked()
+
+    def _cleanup_locked(self) -> None:
         now = time.time()
         expired = [task_id for task_id, task in self._tasks.items() if now - task.created_at > TASK_TTL_SECONDS]
         for task_id in expired:

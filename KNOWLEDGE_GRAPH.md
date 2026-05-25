@@ -458,7 +458,7 @@ create_app()
 │                                                     │
 │ 4. Playwright 自动登录 (获取 refresh_token)          │
 │    → playwright_login.py: PlaywrightLoginHelper      │
-│    → Firefox headed + Xvfb → 绕过 reCAPTCHA          │
+│    → Firefox headed + Xvfb → 辅助常规浏览器登录       │
 │    → 输入用户名密码 → 获取 Cookie + Token            │
 │                                                     │
 │ 5. Web Cookie (追更列表专用)                         │
@@ -592,7 +592,11 @@ requests + Cookie → Pixiv Web API: watchList
 | 顺延机制 | 跳过已存在内容不计入配额，确保新内容都能被同步 |
 | FTS5 全文搜索 | 高效的小说标题/正文搜索 |
 | Nginx 图片缓存 | 减少对 Pixiv CDN 的请求，绕过防盗链 |
-| Playwright + Xvfb | 绕过 reCAPTCHA 自动登录获取 Cookie |
+| `sync_check_list` scoped by `scope` | 预检查结果按任务隔离，避免自动/手动任务互相污染 |
+| `_sync_novel` 失败返回 `failed` | 避免 API/网络失败被误报为“跳过已存在” |
+| 关注用户小说不再用 novel_id 硬停 | 防止旧 ID/排序异常内容被水位线漏同步 |
+| 订阅系列按正文存在性跳过 | 仅有元数据但缺正文的章节会被补同步 |
+| 事务感知 commit | 单本小说 DB 写入合并提交，减少提交次数并提升一致性 |
 
 ---
 

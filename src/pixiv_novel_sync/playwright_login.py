@@ -274,7 +274,7 @@ class PlaywrightLoginHelper:
     def login_web(self, username: str, password: str) -> dict[str, Any]:
         """普通网页登录 pixiv.net，获取 Web Cookie（PHPSESSID 等）。
 
-        使用 Firefox headed 模式绕过 reCAPTCHA Enterprise 检测。
+        使用 Firefox headed 模式提高自动登录成功率。
         在无显示器的服务器上自动启动 Xvfb 虚拟显示器。
 
         Returns:
@@ -352,7 +352,7 @@ class PlaywrightLoginHelper:
     def _do_login_web(self, p: Any, username: str, password: str) -> dict[str, Any]:
         """使用 Firefox headed 模式登录 Pixiv（需要 Xvfb 虚拟显示器）。
 
-        Firefox headed 模式可以绕过 reCAPTCHA Enterprise 检测，
+        Firefox headed 模式更接近常规浏览器登录流程，
         在 Linux 服务器上通过 xvfb-run 提供虚拟显示器。
         """
         browser = None

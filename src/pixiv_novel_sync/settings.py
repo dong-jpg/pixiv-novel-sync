@@ -139,54 +139,54 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             password=password,
         ),
         sync=SyncSettings(
-            enabled=bool(sync_raw.get("enabled", False)),
-            initial_manual_only=bool(sync_raw.get("initial_manual_only", True)),
-            download_assets=bool(sync_raw.get("download_assets", True)),
-            write_markdown=bool(sync_raw.get("write_markdown", True)),
-            write_raw_text=bool(sync_raw.get("write_raw_text", True)),
+            enabled=_coerce_bool(sync_raw.get("enabled"), False),
+            initial_manual_only=_coerce_bool(sync_raw.get("initial_manual_only"), True),
+            download_assets=_coerce_bool(sync_raw.get("download_assets"), True),
+            write_markdown=_coerce_bool(sync_raw.get("write_markdown"), True),
+            write_raw_text=_coerce_bool(sync_raw.get("write_raw_text"), True),
             bookmark_restricts=list(sync_raw.get("bookmark_restricts", ["public", "private"])),
             max_items_per_run=_coerce_optional_int(sync_raw.get("max_items_per_run")),
             max_pages_per_run=_coerce_optional_int(sync_raw.get("max_pages_per_run")),
             delay_seconds_between_items=_coerce_float(sync_raw.get("delay_seconds_between_items"), 0.0),
             delay_seconds_between_pages=_coerce_float(sync_raw.get("delay_seconds_between_pages"), 0.0),
-            sync_bookmarks=bool(sync_raw.get("sync_bookmarks", True)),
-            sync_following_users=bool(sync_raw.get("sync_following_users", True)),
-            sync_following_novels=bool(sync_raw.get("sync_following_novels", True)),
-            sync_subscribed_series=bool(sync_raw.get("sync_subscribed_series", True)),
+            sync_bookmarks=_coerce_bool(sync_raw.get("sync_bookmarks"), True),
+            sync_following_users=_coerce_bool(sync_raw.get("sync_following_users"), True),
+            sync_following_novels=_coerce_bool(sync_raw.get("sync_following_novels"), True),
+            sync_subscribed_series=_coerce_bool(sync_raw.get("sync_subscribed_series"), True),
             series_sync_limit=_coerce_int(sync_raw.get("series_sync_limit"), 0),
             delay_seconds_between_series=_coerce_float(sync_raw.get("delay_seconds_between_series"), 3.0),
             delay_seconds_between_chapters=_coerce_float(sync_raw.get("delay_seconds_between_chapters"), 1.0),
             delay_seconds_between_skips=_coerce_float(sync_raw.get("delay_seconds_between_skips"), 0.1),
             # 定时任务配置
-            auto_sync_enabled=bool(sync_raw.get("auto_sync_enabled", False)),
+            auto_sync_enabled=_coerce_bool(sync_raw.get("auto_sync_enabled"), False),
             auto_sync_timezone=str(sync_raw.get("auto_sync_timezone", "UTC")),
-            auto_sync_bookmarks_enabled=bool(sync_raw.get("auto_sync_bookmarks_enabled", True)),
-            auto_sync_bookmarks_interval_hours=_coerce_int(sync_raw.get("auto_sync_bookmarks_interval_hours"), 6),
+            auto_sync_bookmarks_enabled=_coerce_bool(sync_raw.get("auto_sync_bookmarks_enabled"), True),
+            auto_sync_bookmarks_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_bookmarks_interval_hours"), 6),
             auto_sync_bookmarks_cron=str(sync_raw.get("auto_sync_bookmarks_cron", "")),
-            auto_sync_following_list_enabled=bool(sync_raw.get("auto_sync_following_list_enabled", True)),
-            auto_sync_following_list_interval_hours=_coerce_int(sync_raw.get("auto_sync_following_list_interval_hours"), 24),
+            auto_sync_following_list_enabled=_coerce_bool(sync_raw.get("auto_sync_following_list_enabled"), True),
+            auto_sync_following_list_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_following_list_interval_hours"), 24),
             auto_sync_following_list_cron=str(sync_raw.get("auto_sync_following_list_cron", "")),
-            auto_sync_following_novels_enabled=bool(sync_raw.get("auto_sync_following_novels_enabled", True)),
-            auto_sync_following_novels_interval_hours=_coerce_int(sync_raw.get("auto_sync_following_novels_interval_hours"), 6),
+            auto_sync_following_novels_enabled=_coerce_bool(sync_raw.get("auto_sync_following_novels_enabled"), True),
+            auto_sync_following_novels_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_following_novels_interval_hours"), 6),
             auto_sync_following_novels_cron=str(sync_raw.get("auto_sync_following_novels_cron", "")),
-            auto_sync_following_novels_users_limit=_coerce_int(sync_raw.get("auto_sync_following_novels_users_limit"), 0),
-            auto_sync_user_status_enabled=bool(sync_raw.get("auto_sync_user_status_enabled", True)),
-            auto_sync_user_status_interval_hours=_coerce_int(sync_raw.get("auto_sync_user_status_interval_hours"), 6),
+            auto_sync_following_novels_users_limit=max(_coerce_int(sync_raw.get("auto_sync_following_novels_users_limit"), 0), 0),
+            auto_sync_user_status_enabled=_coerce_bool(sync_raw.get("auto_sync_user_status_enabled"), True),
+            auto_sync_user_status_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_user_status_interval_hours"), 6),
             auto_sync_user_status_cron=str(sync_raw.get("auto_sync_user_status_cron", "")),
-            auto_sync_novel_status_enabled=bool(sync_raw.get("auto_sync_novel_status_enabled", True)),
-            auto_sync_novel_status_interval_hours=_coerce_int(sync_raw.get("auto_sync_novel_status_interval_hours"), 6),
+            auto_sync_novel_status_enabled=_coerce_bool(sync_raw.get("auto_sync_novel_status_enabled"), True),
+            auto_sync_novel_status_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_novel_status_interval_hours"), 6),
             auto_sync_novel_status_cron=str(sync_raw.get("auto_sync_novel_status_cron", "")),
-            auto_sync_series_status_enabled=bool(sync_raw.get("auto_sync_series_status_enabled", True)),
-            auto_sync_series_status_interval_hours=_coerce_int(sync_raw.get("auto_sync_series_status_interval_hours"), 6),
+            auto_sync_series_status_enabled=_coerce_bool(sync_raw.get("auto_sync_series_status_enabled"), True),
+            auto_sync_series_status_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_series_status_interval_hours"), 6),
             auto_sync_series_status_cron=str(sync_raw.get("auto_sync_series_status_cron", "")),
-            auto_sync_subscribed_series_enabled=bool(sync_raw.get("auto_sync_subscribed_series_enabled", True)),
-            auto_sync_subscribed_series_interval_hours=_coerce_int(sync_raw.get("auto_sync_subscribed_series_interval_hours"), 6),
+            auto_sync_subscribed_series_enabled=_coerce_bool(sync_raw.get("auto_sync_subscribed_series_enabled"), True),
+            auto_sync_subscribed_series_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_subscribed_series_interval_hours"), 6),
             auto_sync_subscribed_series_cron=str(sync_raw.get("auto_sync_subscribed_series_cron", "")),
-            auto_sync_user_backup_enabled=bool(sync_raw.get("auto_sync_user_backup_enabled", False)),
-            auto_sync_user_backup_interval_hours=_coerce_int(sync_raw.get("auto_sync_user_backup_interval_hours"), 24),
+            auto_sync_user_backup_enabled=_coerce_bool(sync_raw.get("auto_sync_user_backup_enabled"), False),
+            auto_sync_user_backup_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_user_backup_interval_hours"), 24),
             auto_sync_user_backup_cron=str(sync_raw.get("auto_sync_user_backup_cron", "")),
-            auto_sync_pending_detection_enabled=bool(sync_raw.get("auto_sync_pending_detection_enabled", True)),
-            auto_sync_pending_detection_interval_hours=_coerce_int(sync_raw.get("auto_sync_pending_detection_interval_hours"), 12),
+            auto_sync_pending_detection_enabled=_coerce_bool(sync_raw.get("auto_sync_pending_detection_enabled"), True),
+            auto_sync_pending_detection_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_pending_detection_interval_hours"), 12),
             auto_sync_pending_detection_cron=str(sync_raw.get("auto_sync_pending_detection_cron", "")),
         ),
         storage=StorageSettings(
@@ -250,6 +250,26 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (ValueError, TypeError):
         return default
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if value in (None, ""):
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "y"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "n"}:
+        return False
+    return bool(default)
+
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    result = _coerce_int(value, default)
+    return result if result > 0 else default
 
 
 def parse_cron_expression(cron_expr: str) -> dict[str, Any] | None:

@@ -22,11 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 class BookmarkNovelSyncService:
-    def __init__(self, api: AppPixivAPI, db: Database, storage: FileStorage, settings: Settings) -> None:
+    def __init__(self, api: AppPixivAPI, db: Database, storage: FileStorage, settings: Settings, sync_check_scope: str = "_") -> None:
         self.api = api
         self.db = db
         self.storage = storage
         self.settings = settings
+        self.sync_check_scope = sync_check_scope
 
     def check_bookmarks_existence(self, user_id: int, restricts: Iterable[str], progress_callback: Any = None) -> dict[str, int]:
         """预检查：获取全部收藏列表，标记哪些已存在本地"""
@@ -34,7 +35,7 @@ class BookmarkNovelSyncService:
         
         # 初始化检查表
         self.db.init_sync_check_table()
-        self.db.clear_sync_check_list()
+        self.db.clear_sync_check_list(self.sync_check_scope)
         
         if progress_callback:
             progress_callback("phase", {"phase": "检查收藏列表"})
@@ -74,7 +75,7 @@ class BookmarkNovelSyncService:
         # 第三步：标记并保存结果
         for novel_id in all_novel_ids:
             exists = novel_id in existing_ids
-            self.db.upsert_sync_check_item(novel_id, exists)
+            self.db.upsert_sync_check_item(novel_id, exists, self.sync_check_scope)
             stats["total_checked"] += 1
             if exists:
                 stats["existing"] += 1
@@ -102,7 +103,7 @@ class BookmarkNovelSyncService:
         
         # 初始化检查表
         self.db.init_sync_check_table()
-        self.db.clear_sync_check_list()
+        self.db.clear_sync_check_list(self.sync_check_scope)
         
         all_novel_ids = []
         bookmark_ids: list[int] = []
@@ -284,7 +285,7 @@ class BookmarkNovelSyncService:
         # 标记并保存结果
         for novel_id in all_novel_ids:
             exists = novel_id in existing_ids
-            self.db.upsert_sync_check_item(novel_id, exists)
+            self.db.upsert_sync_check_item(novel_id, exists, self.sync_check_scope)
             stats["total_checked"] += 1
             if exists:
                 stats["existing"] += 1
@@ -316,7 +317,7 @@ class BookmarkNovelSyncService:
         synced_items = 0  # 实际同步的数量（不包括跳过的）
 
         # 获取预检查结果
-        check_list = self.db.get_sync_check_list()
+        check_list = self.db.get_sync_check_list(self.sync_check_scope)
         use_check_list = len(check_list) > 0
 
         for restrict in restricts:
@@ -395,7 +396,7 @@ class BookmarkNovelSyncService:
                         )
                         # 同步成功后更新检查列表
                         if use_check_list:
-                            self.db.upsert_sync_check_item(novel_id, True)
+                            self.db.upsert_sync_check_item(novel_id, True, self.sync_check_scope)
 
                     self._merge_stats(stats, counters)
 
@@ -410,11 +411,12 @@ class BookmarkNovelSyncService:
                             "bookmarks": counters.get("bookmarks", 0),
                             "views": counters.get("views", 0),
                             "assets": counters.get("assets_downloaded", 0),
+                            "failed": counters.get("failed", 0),
                             "skipped": counters.get("skipped", 0),
                         })
 
                     # 只有非跳过时才使用 item_delay
-                    if not counters.get("skipped") and item_delay > 0:
+                    if counters.get("novels", 0) > 0 and item_delay > 0:
                         if progress_callback:
                             progress_callback("rate_limit", {"seconds": item_delay})
                         time.sleep(item_delay)
@@ -506,13 +508,14 @@ class BookmarkNovelSyncService:
         following_page_count = 0
 
         # 获取预检查结果
-        check_list = self.db.get_sync_check_list()
+        check_list = self.db.get_sync_check_list(self.sync_check_scope)
         use_check_list = len(check_list) > 0
 
-        # 读取水位线：每个用户上次同步的最新 novel_id
+        # 读取水位线：每个用户上次见到的最新 novel_id，仅用于观测，不作为硬停止条件
         watermark = self.db.get_watermark("following_novels")
         user_watermarks: dict[str, int] = watermark.get("user_max_ids", {}) if watermark else {}
         current_user_max_ids: dict[str, int] = {}
+        existing_streak_limit = 30
 
         def _save_watermark():
             if not current_user_max_ids:
@@ -577,9 +580,8 @@ class BookmarkNovelSyncService:
 
                 next_novel_query: dict[str, Any] | None = {"user_id": author_id}
                 author_page_count = 0
-                # 该用户上次同步的最新 novel_id
-                last_user_max = user_watermarks.get(str(author_id), 0)
-                hit_user_watermark = False
+                existing_streak = 0
+                stop_author_scan = False
                 while next_novel_query:
                     try:
                         novels_result = self.api.user_novels(**next_novel_query)
@@ -606,18 +608,6 @@ class BookmarkNovelSyncService:
                                 "phase": "同步用户小说",
                             })
 
-                        # 水位线优化：遇到 <= 用户上次最大ID 的已存在内容，提前终止
-                        if last_user_max > 0 and novel_id <= last_user_max:
-                            already_exists = False
-                            if use_check_list and novel_id in check_list:
-                                already_exists = check_list[novel_id]
-                            else:
-                                already_exists = self.db.novel_exists(novel_id)
-                            if already_exists:
-                                logger.info("Hit user watermark for user %s at novel_id=%d (<= %d)", author_id, novel_id, last_user_max)
-                                hit_user_watermark = True
-                                break
-
                         # 使用预检查结果判断是否跳过
                         should_skip = False
                         if use_check_list and novel_id in check_list:
@@ -626,12 +616,21 @@ class BookmarkNovelSyncService:
                         if should_skip:
                             # 已存在，跳过
                             counters = {"skipped": 1, "bookmarks": 0, "views": 0, "assets_downloaded": 0}
+                            existing_streak += 1
+                            if author_page_count > 1 and existing_streak >= existing_streak_limit:
+                                logger.info(
+                                    "Stopping user %s scan after %d consecutive existing novels",
+                                    author_id,
+                                    existing_streak,
+                                )
+                                stop_author_scan = True
                             skip_delay = self.settings.sync.delay_seconds_between_skips
                             if skip_delay > 0:
                                 if progress_callback:
                                     progress_callback("rate_limit", {"seconds": skip_delay})
                                 time.sleep(skip_delay)
                         else:
+                            existing_streak = 0
                             counters = self._sync_novel(
                                 novel,
                                 getattr(novel, "restrict", "public") or "public",
@@ -642,12 +641,12 @@ class BookmarkNovelSyncService:
                                 source_key=str(author_id),
                             )
                             if use_check_list:
-                                self.db.upsert_sync_check_item(novel_id, True)
+                                self.db.upsert_sync_check_item(novel_id, True, self.sync_check_scope)
                         
                         self._merge_stats(stats, counters)
 
                         # 只有实际同步（非跳过）才计入 synced_items
-                        if not counters.get("skipped"):
+                        if counters.get("novels", 0) > 0:
                             synced_items += 1
                         
                         if progress_callback:
@@ -657,16 +656,16 @@ class BookmarkNovelSyncService:
                                 "bookmarks": counters.get("bookmarks", 0),
                                 "views": counters.get("views", 0),
                                 "assets": counters.get("assets_downloaded", 0),
-                                "skipped": counters.get("skipped", 0),
+                                "failed": counters.get("failed", 0),
+                            "skipped": counters.get("skipped", 0),
                             })
                         
-                        if not counters.get("skipped") and item_delay > 0:
+                        if counters.get("novels", 0) > 0 and item_delay > 0:
                             if progress_callback:
                                 progress_callback("rate_limit", {"seconds": item_delay})
                             time.sleep(item_delay)
 
-                    # 水位线命中，停止该用户的后续翻页
-                    if hit_user_watermark:
+                    if stop_author_scan:
                         break
 
                     next_novel_query = self.api.parse_qs(getattr(novels_result, "next_url", None))
@@ -943,25 +942,12 @@ class BookmarkNovelSyncService:
                                 ))
                             logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
 
-                            # 水位线优化：比较本地已同步数（有正文）和 API 返回的章节列表总长度
-                            # 不依赖远端 content_count（可能不准确），改用实际获取到的章节列表长度
-                            local_synced = self.db.conn.execute(
-                                "SELECT COUNT(*) FROM novels n INNER JOIN novel_texts nt ON n.novel_id = nt.novel_id WHERE n.series_id = ?", (int(sid),)
-                            ).fetchone()[0]
-                            if local_synced > 0 and (total or 0) <= local_synced:
-                                logger.info("Series %s fully synced (%d local >= %d remote), skipping", sid, local_synced, total)
-                                if progress_callback:
-                                    progress_callback("phase", {"phase": f"系列 {title or sid}: 已全部同步 ({local_synced}/{total}), 跳过"})
-                                if series_delay > 0:
-                                    time.sleep(series_delay)
-                                continue
-
                             # 同步系列中的所有章节（含正文）
                             chapter_delay = self.settings.sync.delay_seconds_between_chapters
                             download_assets = self.settings.sync.download_assets
                             write_markdown = self.settings.sync.write_markdown
                             write_raw_text = self.settings.sync.write_raw_text
-                            
+
                             if isinstance(series_data, dict):
                                 all_novel_items = list(series_data.get("novels", []))
                                 # 处理分页
@@ -994,8 +980,8 @@ class BookmarkNovelSyncService:
                                     if not novel_id:
                                         continue
 
-                                    # 检查是否已存在（跳过机制）
-                                    if self.db.novel_exists(novel_id):
+                                    # 检查是否已存在正文（只有有正文才跳过；仅有元数据时补同步）
+                                    if self.db.novel_text_exists(novel_id):
                                         skipped_count += 1
                                         if progress_callback:
                                             progress_callback("phase", {"phase": f"  [{idx+1}/{len(all_novel_items)}] 跳过已存在: {novel_id}"})
@@ -1014,9 +1000,11 @@ class BookmarkNovelSyncService:
                                         source_key=str(sid),
                                     )
 
-                                    if not counters.get("skipped"):
+                                    if counters.get("novels", 0) > 0:
                                         chapter_count += 1
                                         stats["novels"] += 1
+                                    if counters.get("failed", 0):
+                                        stats["failed"] = stats.get("failed", 0) + counters.get("failed", 0)
                                     if idx < len(all_novel_items) - 1 and chapter_delay > 0:
                                         time.sleep(chapter_delay)
 
@@ -1469,7 +1457,7 @@ class BookmarkNovelSyncService:
             return self._sync_novel_inner(novel_id, novel, restrict, download_assets, write_markdown, write_raw_text, source_type, source_key)
         except Exception as e:
             logger.error("Failed to sync novel %d: %s", novel_id, e)
-            return {"skipped": 1, "bookmarks": 0, "views": 0, "assets_downloaded": 0}
+            return {"failed": 1, "bookmarks": 0, "views": 0, "assets_downloaded": 0}
 
     def _sync_novel_inner(
         self,
@@ -1494,16 +1482,6 @@ class BookmarkNovelSyncService:
             user_name = getattr(user, "name", "unknown")
             account = getattr(user, "account", None)
 
-        if user_id:
-            self.db.upsert_user(
-                UserRecord(
-                    user_id=user_id,
-                    name=user_name,
-                    account=account,
-                    raw_json=stable_json_dumps(_to_plain(user) if user else "{}"),
-                )
-            )
-
         caption = clean_caption(getattr(detail_novel, "caption", None))
         tags_json = stable_json_dumps(_extract_tags(getattr(detail_novel, "tags", [])))
         meta_plain = _to_plain(detail_novel)
@@ -1513,42 +1491,52 @@ class BookmarkNovelSyncService:
         series_id = int(series.id) if getattr(series, "id", None) else None
         title = getattr(detail_novel, "title", f"novel_{novel_id}")
 
-        self.db.upsert_novel(
-            NovelRecord(
-                novel_id=novel_id,
-                user_id=user_id,
-                series_id=series_id,
-                title=title,
-                caption=caption,
-                visible=bool(getattr(detail_novel, "visible", True)),
-                restrict=restrict,
-                x_restrict=int(getattr(detail_novel, "x_restrict", 0) or 0),
-                text_length=int(getattr(detail_novel, "text_length", 0) or 0),
-                total_bookmarks=int(getattr(detail_novel, "total_bookmarks", 0) or 0),
-                total_views=int(getattr(detail_novel, "total_view", 0) or 0),
-                cover_url=cover_url,
-                tags_json=tags_json,
-                create_date=getattr(detail_novel, "create_date", None),
-                raw_json=stable_json_dumps(meta_plain),
-                meta_hash=meta_hash,
-            )
-        )
-        self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
-
         webview = self.api.webview_novel(novel_id)
         body = normalize_text(_extract_novel_text(webview))
         text_hash = sha256_text(body)
         markdown_text = to_markdown(title, user_name, caption, body) if write_markdown else None
 
-        self.db.upsert_novel_text(
-            NovelTextRecord(
-                novel_id=novel_id,
-                text_raw=body,
-                text_markdown=markdown_text,
-                text_hash=text_hash,
+        with self.db.transaction():
+            if user_id:
+                self.db.upsert_user(
+                    UserRecord(
+                        user_id=user_id,
+                        name=user_name,
+                        account=account,
+                        raw_json=stable_json_dumps(_to_plain(user) if user else "{}"),
+                    )
+                )
+
+            self.db.upsert_novel(
+                NovelRecord(
+                    novel_id=novel_id,
+                    user_id=user_id,
+                    series_id=series_id,
+                    title=title,
+                    caption=caption,
+                    visible=bool(getattr(detail_novel, "visible", True)),
+                    restrict=restrict,
+                    x_restrict=int(getattr(detail_novel, "x_restrict", 0) or 0),
+                    text_length=int(getattr(detail_novel, "text_length", 0) or 0),
+                    total_bookmarks=int(getattr(detail_novel, "total_bookmarks", 0) or 0),
+                    total_views=int(getattr(detail_novel, "total_view", 0) or 0),
+                    cover_url=cover_url,
+                    tags_json=tags_json,
+                    create_date=getattr(detail_novel, "create_date", None),
+                    raw_json=stable_json_dumps(meta_plain),
+                    meta_hash=meta_hash,
+                )
             )
-        )
-        self.db.replace_fts(novel_id, title, caption, user_name, body)
+            self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
+            self.db.upsert_novel_text(
+                NovelTextRecord(
+                    novel_id=novel_id,
+                    text_raw=body,
+                    text_markdown=markdown_text,
+                    text_hash=text_hash,
+                )
+            )
+            self.db.replace_fts(novel_id, title, caption, user_name, body)
 
         novel_dir = self.storage.novel_dir(restrict, user_id, user_name, novel_id, title)
         self.storage.write_text(novel_dir / "meta.json", json.dumps(meta_plain, ensure_ascii=False, indent=2))
@@ -1589,6 +1577,8 @@ class BookmarkNovelSyncService:
             "novels": 0,
             "texts_updated": 0,
             "assets_downloaded": 0,
+            "failed": 0,
+            "skipped": 0,
             "following_users_scanned": 0,
         }
 

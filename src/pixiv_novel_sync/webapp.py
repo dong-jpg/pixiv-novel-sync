@@ -225,6 +225,9 @@ class AutoSyncScheduler:
                 "user_backup": "全量备份关注用户小说",
             }
             job = self.sync_job_manager.start_auto_job(task_name, task_labels.get(task_name, task_name))
+            if job is None:
+                logger.info("Auto sync task %s skipped: another sync task is running", task_name)
+                return
             self._current_task_job_id = job.job_id
 
             # 创建数据库日志记录
@@ -273,6 +276,7 @@ class AutoSyncScheduler:
                 with self._lock:
                     self._current_task_job_id = None
                     self._stop_current_task = False
+                self.sync_job_manager._semaphore.release()
         else:
             # 没有 job_manager，直接执行
             func = getattr(self, sync_func_name, None)
@@ -326,7 +330,10 @@ class AutoSyncScheduler:
                         )
                     elif event_type == "novel_done":
                         skipped = data.get('skipped', 0)
-                        if skipped:
+                        failed = data.get('failed', 0)
+                        if failed:
+                            self.sync_job_manager.add_log(job_id, "error", "  失败（详见服务日志）")
+                        elif skipped:
                             self.sync_job_manager.add_log(job_id, "info", "  跳过（已存在）")
                         else:
                             self.sync_job_manager.add_log(job_id, "info", f"  完成: 收藏{data.get('bookmarks', 0)} 浏览{data.get('views', 0)}")
@@ -464,7 +471,10 @@ class AutoSyncScheduler:
                         )
                     elif event_type == "novel_done":
                         skipped = data.get('skipped', 0)
-                        if skipped:
+                        failed = data.get('failed', 0)
+                        if failed:
+                            self.sync_job_manager.add_log(job_id, "error", "  失败（详见服务日志）")
+                        elif skipped:
                             self.sync_job_manager.add_log(job_id, "info", "  跳过（已存在）")
                         else:
                             self.sync_job_manager.add_log(job_id, "info", f"  完成: 收藏{data.get('bookmarks', 0)} 浏览{data.get('views', 0)}")
@@ -930,20 +940,26 @@ class SyncJobManager:
             self._semaphore.release()
             raise
     
-    def start_auto_job(self, task_name: str, task_label: str) -> SyncJobState:
+    def start_auto_job(self, task_name: str, task_label: str) -> SyncJobState | None:
         """启动定时任务"""
-        with self._lock:
-            job_id = f"auto_{task_name}_{int(time.time() * 1000)}"
-            job = SyncJobState(
-                job_id=job_id,
-                status="running",
-                message=f"定时任务: {task_label}",
-                started_at=time.time(),
-                task_list=[task_label],
-                is_auto_sync=True,
-            )
-            self._jobs[job_id] = job
-            return job
+        if not self._semaphore.acquire(blocking=False):
+            return None
+        try:
+            with self._lock:
+                job_id = f"auto_{task_name}_{int(time.time() * 1000)}"
+                job = SyncJobState(
+                    job_id=job_id,
+                    status="running",
+                    message=f"定时任务: {task_label}",
+                    started_at=time.time(),
+                    task_list=[task_label],
+                    is_auto_sync=True,
+                )
+                self._jobs[job_id] = job
+                return job
+        except Exception:
+            self._semaphore.release()
+            raise
 
     def start_user_backup_job(self, user_id: int) -> SyncJobState:
         """启动单用户全量备份后台任务"""
@@ -1106,7 +1122,9 @@ class SyncJobManager:
                     self.add_log(job_id, "info", f"[{data.get('current', '?')}/{data.get('total', '?')}] {data.get('title', '')[:30]}")
                     self.update_progress(job_id, phase=data.get("phase", task_type), current=data.get('current', 0), total=data.get('total', 50))
                 elif event_type == "novel_done":
-                    if data.get('skipped'):
+                    if data.get('failed'):
+                        self.add_log(job_id, "error", "  失败（详见服务日志）")
+                    elif data.get('skipped'):
                         self.add_log(job_id, "info", "  跳过（已存在）")
                     else:
                         self.add_log(job_id, "info", f"  完成: 收藏{data.get('bookmarks', 0)} 浏览{data.get('views', 0)}")
@@ -1392,8 +1410,9 @@ class SettingsManager:
                 raise ValueError(f"非法的 cron 表达式: {field_name}={value!r}")
             return value
 
-        def _save_int(field_name: str, default: int) -> int:
-            return _normalize_int(payload.get(field_name, sync_data.get(field_name, default)), default)
+        def _save_int(field_name: str, default: int, min_value: int = 1) -> int:
+            value = _normalize_int(payload.get(field_name, sync_data.get(field_name, default)), default)
+            return max(value, min_value)
 
         sync_data["auto_sync_bookmarks_enabled"] = bool(payload.get("auto_sync_bookmarks_enabled", sync_data.get("auto_sync_bookmarks_enabled", True)))
         sync_data["auto_sync_bookmarks_interval_hours"] = _save_int("auto_sync_bookmarks_interval_hours", 6)
