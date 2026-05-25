@@ -5,107 +5,182 @@
 {% block content %}
 <div class="space-y-6">
 
-  <!-- Hero Section -->
-  <section class="bg-blue-500/[0.12] backdrop-blur-xl backdrop-saturate-[1.8] border border-blue-300/30 shadow-glass rounded-3xl p-6 sm:p-8 relative overflow-hidden">
-    <div class="relative z-10">
-      <h1 class="text-2xl sm:text-3xl font-bold text-slate-800 mb-2">控制台首页</h1>
-      <p class="text-slate-600 max-w-2xl text-sm mb-5 leading-relaxed">
-        归档规模与任务状态一览。可在设置页调整同步参数。
-      </p>
+  <!-- 欢迎 / 快捷操作区域 -->
+  <section class="bg-white border border-gray-200 rounded-lg p-6 sm:p-8 shadow-sm">
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+      <div>
+        <h1 class="text-2xl font-bold text-gray-900 mb-2">控制台首页</h1>
+        <p class="text-gray-500 text-sm">管理同步任务，查看数据归档统计。</p>
+      </div>
 
       <div class="flex flex-wrap items-center gap-3">
-        <button id="startSyncBtn" class="bg-blue-500 text-white hover:bg-blue-600 focus:ring-4 focus:ring-blue-500/30 rounded-xl px-5 py-2.5 text-sm font-bold transition-all shadow-glass-sm disabled:opacity-50 disabled:cursor-not-allowed">
-          开始手工同步
-        </button>
-        <button id="syncSeriesBtn" class="bg-white/50 backdrop-blur-md text-orange-600 border border-white/60 hover:bg-white/70 focus:ring-4 focus:ring-orange-500/20 rounded-xl px-4 py-2 text-sm font-bold transition-all shadow-glass-sm disabled:opacity-50 disabled:cursor-not-allowed">
-          同步追更系列
-        </button>
-        <button id="checkBookmarksBtn" class="bg-white/50 backdrop-blur-md text-purple-600 border border-white/60 hover:bg-white/70 focus:ring-4 focus:ring-purple-500/20 rounded-xl px-4 py-2 text-sm font-bold transition-all shadow-glass-sm disabled:opacity-50 disabled:cursor-not-allowed">
+        <div class="flex items-center gap-2 mr-4">
+          <label class="text-sm text-gray-500">系列限制</label>
+          <input type="number" v-model.number="seriesSyncLimit" class="w-20 px-2 py-1.5 border border-gray-300 rounded-md text-sm text-center focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none" min="0">
+        </div>
+
+        <button @click="startManualSync('check-bookmarks')" :disabled="isTaskRunning" class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md text-sm font-medium hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 disabled:opacity-50 transition-colors">
           预检查
         </button>
-        <span id="actionMessage" class="text-slate-500 text-sm font-medium"></span>
-      </div>
-
-      <div class="mt-4 flex items-center gap-3 bg-white/30 backdrop-blur-md w-fit px-3 py-2 rounded-xl border border-white/50">
-        <label for="seriesSyncLimit" class="text-xs text-slate-600 font-medium">系列限制:</label>
-        <input type="number" id="seriesSyncLimit" min="0" value="0" class="w-16 px-2 py-1 bg-white/50 border border-white/60 rounded-lg text-slate-800 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/50 text-center font-mono">
-        <span class="text-[10px] text-slate-400">0=全部</span>
+        <button @click="startManualSync('subscribed-series')" :disabled="isTaskRunning" class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md text-sm font-medium hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 disabled:opacity-50 transition-colors">
+          同步追更系列
+        </button>
+        <button @click="startManualSync('start')" :disabled="isTaskRunning" class="px-4 py-2 bg-brand-500 text-white rounded-md text-sm font-medium hover:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 disabled:opacity-50 transition-colors shadow-sm">
+          开始手工同步
+        </button>
       </div>
     </div>
-
-    <div class="absolute top-0 right-0 -mr-16 -mt-16 w-64 h-64 rounded-full bg-blue-300/20 blur-3xl"></div>
-    <div class="absolute bottom-0 right-32 w-48 h-48 rounded-full bg-indigo-300/20 blur-2xl"></div>
   </section>
 
-  <!-- Data Overview -->
+  <!-- 数据概览 -->
   <div>
-    <h2 class="text-lg font-bold text-slate-800 mb-4 px-1">数据概览</h2>
-    <div id="statsGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-      <div class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-5 flex items-center justify-center text-slate-400">
-        <svg class="animate-spin h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-        </svg>
-      </div>
+    <h2 class="text-lg font-bold text-gray-900 mb-4 px-1">数据概览</h2>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+
+      <!-- 当前账号 -->
+      <article class="bg-white border border-gray-200 rounded-lg p-5 flex flex-col justify-center shadow-sm">
+        <h3 class="text-xs font-bold text-gray-400 uppercase mb-3">当前账号</h3>
+        <div v-if="loadingStats" class="animate-pulse h-10 bg-gray-200 rounded w-2/3"></div>
+        <div v-else-if="!currentUser" class="text-gray-400">未绑定</div>
+        <div v-else class="flex items-center gap-3">
+          <img v-if="currentUser.avatar_url" :src="'/proxy/image?url=' + encodeURIComponent(currentUser.avatar_url)" class="w-12 h-12 rounded-md object-cover border border-gray-100" @error="currentUser.avatar_url = ''">
+          <div v-else class="w-12 h-12 rounded-md bg-brand-100 text-brand-600 flex items-center justify-center font-bold text-xl">{{ (currentUser.name || 'U').substring(0,2) }}</div>
+          <div class="min-w-0">
+            <div class="font-bold text-gray-900 truncate">{{ currentUser.name || '未命名' }}</div>
+            <div class="text-xs text-gray-500 truncate">{{ currentUser.account ? '@' + currentUser.account : 'ID ' + currentUser.user_id }}</div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 统计卡片 -->
+      <article v-for="stat in statCards" :key="stat.label" class="bg-white border border-gray-200 rounded-lg p-5 flex flex-col justify-center shadow-sm">
+        <h3 class="text-xs font-bold text-gray-400 uppercase mb-2">{{ stat.label }}</h3>
+        <div v-if="loadingStats" class="animate-pulse h-8 bg-gray-200 rounded w-1/2 mt-1"></div>
+        <div v-else class="text-3xl font-black text-gray-900">{{ stat.value.toLocaleString() }}</div>
+      </article>
+
     </div>
   </div>
 
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-    <!-- Task Status -->
+    <!-- 任务状态区域 -->
     <div class="lg:col-span-2 space-y-4">
-      <h2 class="text-lg font-bold text-slate-800 px-1">任务状态</h2>
-      <section class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-5 sm:p-6">
-        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">最近同步任务</h3>
+      <h2 class="text-lg font-bold text-gray-900 px-1">任务状态</h2>
+      <section class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm min-h-[300px]">
+        <h3 class="text-xs font-bold text-gray-400 uppercase mb-4">最近同步任务</h3>
 
-        <div id="jobStatus" class="text-sm text-slate-500 leading-relaxed">暂无任务记录</div>
-
-        <!-- Task List -->
-        <div id="taskListContainer" class="hidden mt-5">
-          <div class="text-sm font-bold text-slate-700 mb-3">任务列表</div>
-          <div id="taskList" class="bg-white/30 rounded-xl p-3 sm:p-4 space-y-1.5 border border-white/40"></div>
+        <div v-if="loadingJob" class="animate-pulse space-y-4">
+          <div class="h-4 bg-gray-200 rounded w-1/4"></div>
+          <div class="h-20 bg-gray-100 rounded"></div>
         </div>
 
-        <!-- Progress Bar -->
-        <div id="progressBar" class="hidden mt-6 bg-white/30 rounded-xl p-4 border border-white/40">
-          <div class="flex justify-between items-center mb-2">
-            <span id="progressPhase" class="text-sm font-semibold text-slate-700">准备中</span>
-            <span id="progressCount" class="text-xs font-medium text-slate-500 bg-white/50 px-2 py-1 rounded-lg shadow-glass-sm border border-white/60">0/0</span>
-          </div>
-          <div class="h-2.5 bg-white/40 rounded-full overflow-hidden">
-            <div id="progressFill" class="h-full w-0 bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-300 ease-out rounded-full"></div>
-          </div>
-          <div id="progressNovel" class="text-xs text-slate-500 mt-2 truncate font-medium"></div>
-        </div>
+        <div v-else-if="!latestJob" class="text-gray-500 text-sm">暂无近期任务记录</div>
 
-        <!-- Logs -->
-        <div id="logContainer" class="hidden mt-6 pt-5 border-t border-white/30">
-          <div class="flex justify-between items-center mb-3">
-            <span class="text-sm font-bold text-slate-700">同步日志</span>
-            <span id="logCount" class="text-xs font-medium text-slate-500 bg-white/50 px-2 py-0.5 rounded-full border border-white/40">0 条</span>
+        <div v-else>
+          <!-- 任务 Header -->
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+            <div class="text-sm text-gray-600">
+              <span class="mr-2">{{ latestJob.is_auto_sync ? '定时任务' : '手工任务' }}</span>
+              <span class="font-mono text-xs bg-gray-100 px-1.5 py-0.5 rounded">{{ latestJob.job_id?.substring(0,8) }}...</span>
+            </div>
+
+            <app-badge :type="jobStatusColor(latestJob.status)">
+              <span v-if="latestJob.status === 'running'" class="inline-block w-2 h-2 rounded-full bg-blue-500 mr-1.5 animate-pulse"></span>
+              {{ jobStatusText(latestJob.status) }}
+              <span v-if="latestJob.elapsed" class="ml-1 opacity-80">({{ latestJob.elapsed }}s)</span>
+            </app-badge>
           </div>
-          <div id="logList" class="max-h-72 overflow-y-auto font-mono text-xs leading-relaxed bg-slate-900/80 backdrop-blur-xl text-gray-300 rounded-xl p-4 shadow-inner custom-scrollbar"></div>
+
+          <div v-if="latestJob.message" class="text-sm text-gray-700 mb-4">{{ latestJob.message }}</div>
+
+          <div v-if="latestJob.stats" class="mb-4 flex gap-3 text-sm">
+            <div class="px-3 py-1.5 bg-gray-50 border border-gray-100 rounded-md">小说: <strong class="text-gray-900">{{ latestJob.stats.novels || 0 }}</strong></div>
+            <div class="px-3 py-1.5 bg-gray-50 border border-gray-100 rounded-md">资源: <strong class="text-gray-900">{{ latestJob.stats.assets_downloaded || 0 }}</strong></div>
+          </div>
+
+          <div v-if="latestJob.error" class="mb-4 text-sm text-red-700 bg-red-50 p-3 rounded-md border border-red-100">
+            <strong>错误：</strong>{{ latestJob.error }}
+          </div>
+
+          <!-- 子任务列表 -->
+          <div v-if="latestJob.task_list?.length" class="mb-6 bg-gray-50 rounded-md p-3 border border-gray-100 space-y-1.5">
+            <div v-for="(task, index) in latestJob.task_list" :key="index" class="flex items-center gap-3 text-sm px-2 py-1 rounded" :class="taskItemClass(index, latestJob.current_task_index, latestJob.status)">
+              <!-- 图标 -->
+              <span v-html="taskIcon(index, latestJob.current_task_index, latestJob.status)"></span>
+              <span>{{ index + 1 }}. {{ task }}</span>
+            </div>
+          </div>
+
+          <!-- 进度条 -->
+          <div v-if="latestJob.status === 'running' && latestJob.progress" class="mb-6 p-4 border border-gray-200 rounded-md">
+            <div class="flex justify-between items-center mb-2">
+              <span class="text-sm font-semibold text-gray-700">{{ latestJob.progress.phase || '同步中' }}</span>
+              <span class="text-xs text-gray-500 font-mono">{{ progressPercent }}% ({{ latestJob.progress.current || 0 }}/{{ latestJob.progress.total || 50 }})</span>
+            </div>
+            <div class="h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div class="h-full bg-brand-500 transition-all duration-300" :style="{ width: progressPercent + '%' }"></div>
+            </div>
+            <div class="text-xs text-gray-500 mt-2 truncate">
+              {{ latestJob.progress.current_novel ? `当前: ${latestJob.progress.current_novel}` : '准备中...' }}
+            </div>
+          </div>
+
+          <!-- 日志终端 -->
+          <div v-if="latestJob.logs?.length">
+            <div class="text-xs font-bold text-gray-500 mb-2">同步日志 ({{ latestJob.logs.length }})</div>
+            <div class="h-64 overflow-y-auto bg-gray-900 text-gray-300 p-4 rounded-md font-mono text-xs leading-relaxed" ref="logContainer">
+              <div v-for="(log, i) in latestJob.logs" :key="i" class="mb-1 break-words" :class="logLevelClass(log.level)">
+                <span class="text-gray-500 mr-2">[{{ log.time.split(' ')[1] || log.time }}]</span>
+                <span v-html="logPrefix(log.level)" class="mr-1.5"></span>
+                {{ log.message }}
+              </div>
+            </div>
+          </div>
+
         </div>
       </section>
     </div>
 
-    <!-- Auto Sync Status -->
+    <!-- 定时任务区域 -->
     <div class="space-y-4">
-      <h2 class="text-lg font-bold text-slate-800 px-1">定时任务</h2>
-      <section class="bg-white/30 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-5 sm:p-6 h-full">
-        <div class="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4 mb-6">
-          <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider m-0 mt-1">定时同步状态</h3>
-          <div class="flex flex-wrap gap-2">
-            <button id="toggleAutoSyncBtn" class="bg-purple-500/10 text-purple-700 hover:bg-purple-500/20 border border-purple-300/30 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors">
-              启用定时同步
-            </button>
-            <button id="stopAutoTaskBtn" class="hidden bg-red-500/10 text-red-700 hover:bg-red-500/20 border border-red-300/30 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors">
-              停止当前任务
-            </button>
-          </div>
+      <h2 class="text-lg font-bold text-gray-900 px-1">定时任务</h2>
+      <section class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm h-full flex flex-col">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-xs font-bold text-gray-400 uppercase">后台常驻</h3>
+          <button @click="toggleAutoSync" :disabled="togglingAutoSync" :class="autoSyncStatus?.running ? 'text-red-600 bg-red-50 hover:bg-red-100' : 'text-green-600 bg-green-50 hover:bg-green-100'" class="px-3 py-1 text-xs font-bold rounded-md transition-colors disabled:opacity-50">
+            {{ autoSyncStatus?.running ? '禁用定时同步' : '启用定时同步' }}
+          </button>
         </div>
 
-        <div id="autoSyncStatus" class="text-sm font-medium text-slate-500 mb-4 bg-white/40 px-3 py-2 rounded-xl border border-white/50 inline-block shadow-glass-sm">加载中...</div>
-        <div id="autoTaskList" class="space-y-2"></div>
+        <div v-if="loadingAutoSync" class="animate-pulse h-10 bg-gray-100 rounded mb-4"></div>
+        <div v-else class="mb-6 flex items-center justify-between bg-gray-50 p-3 rounded-md border border-gray-200">
+          <div class="flex items-center gap-2 text-sm font-medium">
+            <div :class="autoSyncStatus.running ? 'bg-green-500' : 'bg-gray-400'" class="w-2.5 h-2.5 rounded-full"></div>
+            <span :class="autoSyncStatus.running ? 'text-green-700' : 'text-gray-500'">{{ autoSyncStatus.running ? '已启用' : '未运行' }}</span>
+          </div>
+          <button v-if="autoSyncStatus.current_task_job_id" @click="stopAutoTask" class="text-xs text-red-600 font-bold px-2 py-1 border border-red-200 bg-red-50 rounded hover:bg-red-100">
+            停止当前任务
+          </button>
+        </div>
+
+        <div class="flex-grow space-y-2 overflow-y-auto">
+          <div v-for="task in autoTasksList" :key="task.key" class="flex justify-between items-center p-2.5 bg-gray-50 rounded-md border border-gray-100">
+            <div class="min-w-0">
+              <div class="text-sm font-medium text-gray-800 flex items-center gap-2">
+                <span v-if="task.isRunning" class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse"></span>
+                <span v-else class="w-1.5 h-1.5 rounded-full bg-gray-300"></span>
+                {{ task.name }}
+              </div>
+              <div class="text-[10px] text-gray-500 ml-3.5 mt-0.5">上次: {{ task.lastRunText }}</div>
+            </div>
+            <div class="text-right">
+              <div class="text-xs font-mono px-1.5 py-0.5 rounded bg-white border border-gray-200" :class="task.isRunning ? 'text-brand-600 border-brand-200 bg-brand-50' : 'text-gray-500'">
+                {{ task.isRunning ? '执行中...' : task.statusText }}
+              </div>
+              <div v-if="!task.isRunning && task.nextRunText" class="text-[10px] text-gray-400 mt-0.5">下次: {{ task.nextRunText }}</div>
+            </div>
+          </div>
+        </div>
       </section>
     </div>
   </div>
@@ -114,391 +189,251 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<style>
-  .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
-  .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); border-radius: 4px; }
-  .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
-  .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
-  @keyframes pulse-ring {
-    0% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(59,130,246,0.7); }
-    70% { transform: scale(1); box-shadow: 0 0 0 4px rgba(59,130,246,0); }
-    100% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(59,130,246,0); }
-  }
-  .running-dot { animation: pulse-ring 2s infinite; }
-</style>
-
 <script>
-  let latestJobId = null;
-  let autoSyncEnabled = false;
-  let autoSyncStatusInterval = null;
+  initVueApp({
+    setup() {
+      const { ref, reactive, computed, onMounted, onUnmounted, nextTick } = Vue;
 
-  function escapeHtml(value) {
-    return String(value ?? '').replace(/[&<>"]/g, function (ch) {
-      if (ch === '&') return '&amp;';
-      if (ch === '<') return '&lt;';
-      if (ch === '>') return '&gt;';
-      if (ch === '"') return '&quot;';
-      return ch;
-    });
-  }
+      // State
+      const currentUser = ref(null);
+      const statCards = ref([]);
+      const pendingCount = ref(0);
+      const loadingStats = ref(true);
 
-  async function safeJson(resp) { try { return await resp.json(); } catch (err) { return {}; } }
+      const latestJob = ref(null);
+      const loadingJob = ref(true);
 
-  function renderCurrentUser(user) {
-    if (!user) {
-      return '<div class="text-2xl sm:text-3xl font-bold text-slate-400 mb-1">未绑定</div><div class="text-xs sm:text-sm text-slate-500">当前数据库里还没有账号信息</div>';
-    }
-    const avatar = user.avatar_url
-      ? `<img class="w-12 h-12 sm:w-14 sm:h-14 rounded-full object-cover ring-2 ring-white/60 shadow-sm" src="/proxy/image?url=${encodeURIComponent(user.avatar_url)}" alt="avatar" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
-      : '';
-    const fallbackAvatar = `<div class="w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white font-bold text-xl shadow-sm ring-2 ring-white/60" style="display:${user.avatar_url ? 'none' : 'flex'};">${escapeHtml((user.name || 'U').slice(0, 2))}</div>`;
-    const account = user.account ? `@${escapeHtml(user.account)}` : `ID ${escapeHtml(user.user_id)}`;
-    const fallback = user.is_fallback ? '<div class="mt-2 inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-yellow-500/10 text-yellow-800 border border-yellow-300/30">回退展示</div>' : '';
-    return `
-      <div class="flex items-center gap-4">
-        ${avatar}${fallbackAvatar}
-        <div class="min-w-0 flex-1">
-          <div class="text-base sm:text-lg font-bold text-slate-800 truncate">${escapeHtml(user.name || '未命名用户')}</div>
-          <div class="text-xs sm:text-sm text-slate-500 truncate">${account}</div>
-          ${fallback}
-        </div>
-      </div>
-    `;
-  }
+      const seriesSyncLimit = ref(0);
 
-  function renderStatCard(title, value, rawHtml = false) {
-    const isNum = !rawHtml && !isNaN(value);
-    const displayValue = rawHtml ? value : escapeHtml(value);
-    const valueClass = isNum ? 'text-3xl font-black text-slate-800 tracking-tight' : 'text-lg font-bold text-slate-700';
-    return `
-      <article class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-5 sm:p-6 flex flex-col justify-center transition-all hover:bg-white/45 hover:shadow-glass-lg">
-        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 sm:mb-3">${escapeHtml(title)}</h3>
-        <div class="${rawHtml ? '' : valueClass}">${displayValue}</div>
-      </article>
-    `;
-  }
+      const autoSyncStatus = ref({ running: false });
+      const loadingAutoSync = ref(true);
+      const togglingAutoSync = ref(false);
 
-  async function loadStatus() {
-    const resp = await fetch('/api/dashboard/status');
-    const data = await safeJson(resp);
-    const stats = data.stats || {};
+      const logContainer = ref(null);
 
-    const cards = [
-      ['当前账号', renderCurrentUser(data.current_user || null), true],
-      ['已归档小说', (stats.novels_count || 0).toLocaleString(), false],
-      ['已归档作者', (stats.users_count || 0).toLocaleString(), false],
-      ['已归档系列', (stats.series_count || 0).toLocaleString(), false],
-    ];
+      let pollInterval = null;
+      let autoSyncInterval = null;
 
-    // 如果有待处理删除，替换最后一个卡片
-    const pendingCount = stats.pending_count || 0;
-    if (pendingCount > 0) {
-      cards[3] = ['待处理删除', `<div class="flex items-center gap-2"><span class="text-2xl font-black text-red-600">${pendingCount}</span><a href="/dashboard/pending-deletions" class="text-xs text-red-500 hover:underline">去处理 →</a></div>`, true];
-    }
+      // Computed
+      const isTaskRunning = computed(() => latestJob.value?.status === 'running');
+      const progressPercent = computed(() => {
+        if (!latestJob.value?.progress) return 0;
+        const c = latestJob.value.progress.current || 0;
+        const t = latestJob.value.progress.total || 1; // avoid /0
+        return Math.min(Math.round((c / t) * 100), 100);
+      });
 
-    document.getElementById('statsGrid').innerHTML = cards.map(function (entry) {
-      return renderStatCard(entry[0], entry[1], entry[2]);
-    }).join('');
+      const autoTasksList = computed(() => {
+        if (!autoSyncStatus.value || !autoSyncStatus.value.task_intervals) return [];
+        const data = autoSyncStatus.value;
+        const labels = {
+          bookmarks: '同步收藏小说', following_list: '同步关注列表',
+          following_novels: '同步关注小说', subscribed_series: '同步追更系列',
+          user_backup: '全量备份用户', user_status: '检查用户状态',
+          novel_status: '检查小说状态', series_status: '检查系列状态',
+          pending_deletion_detection: '检测取消收藏',
+        };
 
-    latestJobId = data.latest_job && data.latest_job.job_id ? data.latest_job.job_id : latestJobId;
-    renderJob(data.latest_job || null);
+        const keys = Object.keys(data.task_intervals);
+        const ordered = ['bookmarks','following_list','following_novels','subscribed_series','user_backup','user_status','novel_status','series_status','pending_deletion_detection'];
+        const sorted = ordered.filter(k => keys.includes(k));
+        keys.forEach(k => { if (!sorted.includes(k)) sorted.push(k); });
 
-    const isRunning = !!(data.latest_job && data.latest_job.status === 'running');
-    document.getElementById('startSyncBtn').disabled = isRunning;
-    document.getElementById('syncSeriesBtn').disabled = isRunning;
-    document.getElementById('checkBookmarksBtn').disabled = isRunning;
+        const now = Date.now();
+        const formatRel = (ts) => {
+          if (!ts) return '从未';
+          const diff = ts * 1000 - now;
+          const abs = Math.abs(diff);
+          if (abs < 60000) return '刚刚';
+          const m = Math.floor(abs / 60000);
+          if (m < 60) return diff > 0 ? `${m}分钟后` : `${m}分钟前`;
+          const h = Math.floor(m / 60);
+          if (h < 24) return diff > 0 ? `${h}小时后` : `${h}小时前`;
+          const d = Math.floor(h / 24);
+          return diff > 0 ? `${d}天后` : `${d}天前`;
+        };
 
-    if (data.series_sync_limit !== undefined) {
-      document.getElementById('seriesSyncLimit').value = data.series_sync_limit || 0;
-    }
-  }
+        return sorted.map(k => {
+          const isRunning = data.current_task_job_id?.includes(k);
+          return {
+            key: k,
+            name: labels[k] || k,
+            isRunning,
+            statusText: data.task_crons?.[k] || `每 ${data.task_intervals[k]}h`,
+            lastRunText: formatRel(data.task_last_run?.[k]),
+            nextRunText: data.task_next_run?.[k] ? formatRel(data.task_next_run[k]) : null
+          };
+        });
+      });
 
-  function renderTaskList(taskList, currentIndex, status) {
-    const container = document.getElementById('taskListContainer');
-    const taskListEl = document.getElementById('taskList');
+      // Methods
+      const fetchStatus = async () => {
+        try {
+          const res = await fetch('/api/dashboard/status');
+          if (res.ok) {
+            const data = await res.json();
+            currentUser.value = data.current_user;
 
-    if (!taskList || taskList.length === 0) { container.classList.add('hidden'); return; }
+            const stats = data.stats || {};
+            pendingCount.value = stats.pending_count || 0;
+            statCards.value = [
+              { label: '已归档小说', value: stats.novels_count || 0 },
+              { label: '已归档作者', value: stats.users_count || 0 },
+              { label: '已归档系列', value: stats.series_count || 0 }
+            ];
 
-    container.classList.remove('hidden');
-    const html = taskList.map(function(task, index) {
-      let statusClass = 'text-slate-500';
-      let iconHtml = '<div class="w-4 h-4 rounded-full border-2 border-slate-300 flex-shrink-0"></div>';
+            if (data.series_sync_limit !== undefined && seriesSyncLimit.value === 0) {
+              seriesSyncLimit.value = data.series_sync_limit;
+            }
 
-      if (status === 'running') {
-        if (index < currentIndex) {
-          statusClass = 'text-green-600 font-medium';
-          iconHtml = '<svg class="w-4 h-4 text-green-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>';
-        } else if (index === currentIndex) {
-          statusClass = 'text-blue-600 font-bold';
-          iconHtml = '<div class="w-4 h-4 rounded-full bg-blue-500 flex-shrink-0 running-dot"></div>';
-        }
-      } else if (status === 'succeeded') {
-        statusClass = 'text-green-600 font-medium';
-        iconHtml = '<svg class="w-4 h-4 text-green-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>';
-      } else if (status === 'failed' && index === currentIndex) {
-        statusClass = 'text-red-600 font-bold';
-        iconHtml = '<svg class="w-4 h-4 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path></svg>';
-      }
-
-      return `<div class="flex items-center gap-3 py-1.5 px-2 rounded-xl hover:bg-white/40 transition-colors ${statusClass}">
-        ${iconHtml}
-        <span class="text-sm truncate">${index + 1}. ${escapeHtml(task)}</span>
-      </div>`;
-    }).join('');
-    taskListEl.innerHTML = html;
-  }
-
-  function renderJob(job) {
-    const container = document.getElementById('jobStatus');
-    const progressBar = document.getElementById('progressBar');
-    const logContainer = document.getElementById('logContainer');
-
-    if (!job) {
-      container.innerHTML = '<span class="text-slate-400 italic">暂无近期任务记录</span>';
-      progressBar.classList.add('hidden');
-      logContainer.classList.add('hidden');
-      document.getElementById('taskListContainer').classList.add('hidden');
-      return;
-    }
-
-    let statusConfig = { text: job.status, color: 'text-slate-600', bg: 'bg-white/40' };
-    if (job.status === 'succeeded') statusConfig = { text: '成功', color: 'text-green-700', bg: 'bg-green-500/10', border: 'border-green-300/30' };
-    else if (job.status === 'failed') statusConfig = { text: '失败', color: 'text-red-700', bg: 'bg-red-500/10', border: 'border-red-300/30' };
-    else if (job.status === 'running') statusConfig = { text: '运行中', color: 'text-blue-700', bg: 'bg-blue-500/10', border: 'border-blue-300/30', dot: true };
-
-    const elapsed = job.elapsed ? `<span class="ml-2 text-xs text-slate-500">耗时 ${job.elapsed}s</span>` : '';
-    const stats = job.stats ? `<div class="mt-3 text-sm flex gap-3"><span class="px-2 py-1 bg-white/40 border border-white/50 rounded-lg">小说: <strong class="text-slate-800">${job.stats.novels || 0}</strong> 本</span><span class="px-2 py-1 bg-white/40 border border-white/50 rounded-lg">资源: <strong class="text-slate-800">${job.stats.assets_downloaded || 0}</strong> 个</span></div>` : '';
-    const error = job.error ? `<div class="mt-3 text-sm text-red-600 bg-red-500/10 p-3 rounded-xl border border-red-300/30"><strong>错误：</strong>${escapeHtml(job.error)}</div>` : '';
-    const jobType = job.is_auto_sync ? '定时任务' : '手工任务';
-    const dotHtml = statusConfig.dot ? '<span class="inline-block w-2 h-2 rounded-full bg-blue-500 mr-1.5 animate-pulse"></span>' : '';
-
-    container.innerHTML = `
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
-        <div class="text-sm font-medium text-slate-700">
-          <span class="text-slate-500 mr-2">${jobType}</span>
-          <span class="font-mono text-xs bg-white/40 px-1.5 py-0.5 rounded-lg border border-white/50">${escapeHtml(job.job_id).substring(0,8)}...</span>
-        </div>
-        <div class="inline-flex items-center px-2.5 py-1 rounded-xl text-xs font-bold ${statusConfig.bg} ${statusConfig.color} ${statusConfig.border ? 'border ' + statusConfig.border : ''}">
-          ${dotHtml}${statusConfig.text} ${elapsed}
-        </div>
-      </div>
-      ${job.message ? `<div class="text-sm text-slate-600">${escapeHtml(job.message)}</div>` : ''}
-      ${stats}
-      ${error}
-    `;
-
-    renderTaskList(job.task_list, job.current_task_index, job.status);
-
-    if (job.status === 'running' && job.progress) {
-      progressBar.classList.remove('hidden');
-      const current = job.progress.current || 0;
-      const total = job.progress.total || 50;
-      const percent = Math.min(Math.round((current / total) * 100), 100);
-      document.getElementById('progressPhase').textContent = job.progress.phase || '同步中';
-      document.getElementById('progressCount').textContent = `${percent}% (${current}/${total})`;
-      document.getElementById('progressFill').style.width = percent + '%';
-      document.getElementById('progressNovel').textContent = job.progress.current_novel
-        ? `当前: ${job.progress.current_novel}${job.progress.author ? ' - ' + job.progress.author : ''}`
-        : '准备中...';
-    } else {
-      progressBar.classList.add('hidden');
-    }
-
-    if (job.logs && job.logs.length > 0) {
-      logContainer.classList.remove('hidden');
-      document.getElementById('logCount').textContent = `${job.logs.length} 条`;
-      const logList = document.getElementById('logList');
-      logList.innerHTML = job.logs.map(function(log) {
-        let textClass = 'text-gray-300';
-        let prefix = `<span class="text-blue-400 mr-1.5">›</span>`;
-        if (log.level === 'error') { textClass = 'text-red-400'; prefix = `<span class="text-red-500 mr-1.5 font-bold">✗</span>`; }
-        else if (log.level === 'success') { textClass = 'text-green-400'; prefix = `<span class="text-green-500 mr-1.5 font-bold">✓</span>`; }
-        else if (log.level === 'warning') { textClass = 'text-yellow-400'; prefix = `<span class="text-yellow-500 mr-1.5 font-bold">⚠</span>`; }
-        return `<div class="mb-1 ${textClass} break-words"><span class="text-gray-500 mr-2">[${log.time.split(' ')[1] || log.time}]</span>${prefix}${escapeHtml(log.message)}</div>`;
-      }).join('');
-      logList.scrollTop = logList.scrollHeight;
-    } else {
-      logContainer.classList.add('hidden');
-    }
-  }
-
-  async function pollJobStatus() {
-    try {
-      const url = latestJobId ? `/api/dashboard/sync/status?job_id=${encodeURIComponent(latestJobId)}` : '/api/dashboard/sync/status';
-      const resp = await fetch(url);
-      const data = await safeJson(resp);
-      const isRunning = !!(data.job && data.job.status === 'running');
-      if (data.job) { latestJobId = data.job.job_id; renderJob(data.job); }
-      document.getElementById('startSyncBtn').disabled = isRunning;
-      document.getElementById('syncSeriesBtn').disabled = isRunning;
-      document.getElementById('checkBookmarksBtn').disabled = isRunning;
-    } catch (err) { console.error('pollJobStatus failed', err); }
-  }
-
-  async function startSync() {
-    const btn = document.getElementById('startSyncBtn');
-    const msg = document.getElementById('actionMessage');
-    btn.disabled = true; msg.textContent = '正在启动...';
-    try {
-      const resp = await fetch('/api/dashboard/sync/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      const data = await safeJson(resp);
-      if (!resp.ok) { msg.textContent = data.error || '启动失败'; btn.disabled = false; return; }
-      latestJobId = data.job && data.job.job_id ? data.job.job_id : null;
-      msg.textContent = data.message || '已启动';
-      await loadStatus();
-    } catch (err) { msg.textContent = '启动失败'; btn.disabled = false; }
-  }
-
-  async function syncSeries() {
-    const btn = document.getElementById('syncSeriesBtn');
-    const msg = document.getElementById('actionMessage');
-    const limit = parseInt(document.getElementById('seriesSyncLimit').value) || 0;
-    btn.disabled = true; msg.textContent = '正在启动...';
-    try {
-      const resp = await fetch('/api/dashboard/sync/subscribed-series', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: limit }) });
-      const data = await safeJson(resp);
-      if (!resp.ok) { msg.textContent = data.error || '失败'; btn.disabled = false; return; }
-      msg.textContent = `成功启动系列同步`;
-      await loadStatus();
-    } catch (err) { msg.textContent = '失败'; btn.disabled = false; }
-  }
-
-  async function loadAutoSyncStatus() {
-    try {
-      const resp = await fetch('/api/dashboard/auto-sync/status');
-      const data = await safeJson(resp);
-      autoSyncEnabled = data.running;
-
-      const statusEl = document.getElementById('autoSyncStatus');
-      const toggleBtn = document.getElementById('toggleAutoSyncBtn');
-      const stopBtn = document.getElementById('stopAutoTaskBtn');
-      const taskListEl = document.getElementById('autoTaskList');
-
-      if (autoSyncEnabled) {
-        toggleBtn.textContent = '禁用定时同步';
-        toggleBtn.className = 'bg-red-500/10 text-red-700 hover:bg-red-500/20 border border-red-300/30 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors';
-        statusEl.innerHTML = '<span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-green-500"></span> <span class="text-green-600 font-bold">已启用后台常驻运行</span></span>';
-      } else {
-        toggleBtn.textContent = '启用定时同步';
-        toggleBtn.className = 'bg-purple-500/10 text-purple-700 hover:bg-purple-500/20 border border-purple-300/30 rounded-xl px-3 py-1.5 text-xs font-bold transition-colors';
-        statusEl.innerHTML = '<span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-slate-400"></span> <span>目前未启动定时任务</span></span>';
-      }
-
-      if (data.current_task_job_id) stopBtn.classList.remove('hidden'); else stopBtn.classList.add('hidden');
-
-      const taskLabels = {
-        bookmarks: '同步收藏小说',
-        following_list: '同步关注列表',
-        following_novels: '同步关注小说',
-        subscribed_series: '同步追更系列',
-        user_backup: '全量备份用户',
-        user_status: '检查用户状态',
-        novel_status: '检查小说状态',
-        series_status: '检查系列状态',
-        pending_deletion_detection: '检测取消收藏',
+            // Sync job initialization
+            if (data.latest_job) {
+              updateJob(data.latest_job);
+            }
+          }
+        } catch(e) { console.error(e); }
+        finally { loadingStats.value = false; loadingJob.value = false; }
       };
 
-      // 从后端返回的 task_intervals 动态生成任务列表
-      const taskKeys = Object.keys(data.task_intervals || {});
-      // 按预定义顺序排列
-      const orderedKeys = ['bookmarks','following_list','following_novels','subscribed_series','user_backup','user_status','novel_status','series_status','pending_deletion_detection'];
-      const sortedKeys = orderedKeys.filter(k => taskKeys.includes(k));
-      // 补上后端有但预定义中没有的
-      taskKeys.forEach(k => { if (!sortedKeys.includes(k)) sortedKeys.push(k); });
+      const fetchJobStatus = async () => {
+        if (loadingJob.value) return; // Wait for initial load
+        try {
+          const jobIdParam = latestJob.value?.job_id ? `?job_id=${latestJob.value.job_id}` : '';
+          const res = await fetch(`/api/dashboard/sync/status${jobIdParam}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.job) updateJob(data.job);
+          }
+        } catch(e) { console.error(e); }
+      };
 
-      function formatRelativeTime(ts) {
-        if (!ts) return '';
-        const diff = ts * 1000 - Date.now();
-        const absDiff = Math.abs(diff);
-        if (absDiff < 60000) return diff > 0 ? '即将' : '刚刚';
-        const mins = Math.floor(absDiff / 60000);
-        if (mins < 60) return diff > 0 ? `${mins}分钟后` : `${mins}分钟前`;
-        const hours = Math.floor(mins / 60);
-        if (hours < 24) return diff > 0 ? `${hours}小时后` : `${hours}小时前`;
-        const days = Math.floor(hours / 24);
-        return diff > 0 ? `${days}天后` : `${days}天前`;
-      }
-
-      taskListEl.innerHTML = sortedKeys.map(key => {
-        const name = taskLabels[key] || key;
-        const isRunning = data.current_task_job_id?.includes(key);
-        const intervalHours = data.task_intervals?.[key] || 6;
-        const cronExpr = data.task_crons?.[key] || '';
-        const lastRun = data.task_last_run?.[key];
-        const nextRun = data.task_next_run?.[key];
-
-        let statusText = cronExpr || `每 ${intervalHours}h`;
-        let statusColor = 'text-slate-400';
-        let bgClass = 'bg-white/30 border-white/40';
-        let dot = '<div class="w-1.5 h-1.5 rounded-full bg-slate-300 mr-2.5"></div>';
-
-        if (isRunning) {
-          statusText = '执行中...';
-          statusColor = 'text-blue-600 font-bold';
-          bgClass = 'bg-blue-500/10 border-blue-300/30';
-          dot = '<div class="w-1.5 h-1.5 rounded-full bg-blue-500 mr-2.5 animate-pulse"></div>';
+      const updateJob = (jobData) => {
+        latestJob.value = jobData;
+        if (jobData.logs?.length) {
+          nextTick(() => {
+            if (logContainer.value) {
+              logContainer.value.scrollTop = logContainer.value.scrollHeight;
+            }
+          });
         }
+      };
 
-        const lastRunText = lastRun ? formatRelativeTime(lastRun) : '从未';
-        const nextRunText = nextRun ? formatRelativeTime(nextRun) : '-';
+      const fetchAutoSync = async () => {
+        try {
+          const res = await fetch('/api/dashboard/auto-sync/status');
+          if (res.ok) autoSyncStatus.value = await res.json();
+        } catch(e) {}
+        finally { loadingAutoSync.value = false; }
+      };
 
-        return `<div class="flex items-center justify-between p-2.5 rounded-xl border ${bgClass} transition-colors">
-          <div class="flex items-center min-w-0">
-            ${dot}
-            <div class="min-w-0">
-              <span class="text-sm text-slate-700 font-medium block truncate">${escapeHtml(name)}</span>
-              <span class="text-[10px] text-slate-400">${isRunning ? '' : `上次: ${lastRunText}`}</span>
-            </div>
-          </div>
-          <div class="text-right flex-shrink-0 ml-2">
-            <span class="text-xs bg-white/40 border border-white/50 px-2 py-0.5 rounded-lg font-mono ${statusColor} block">${statusText}</span>
-            ${!isRunning && nextRun ? `<span class="text-[10px] text-slate-400 mt-0.5 block">下次: ${nextRunText}</span>` : ''}
-          </div>
-        </div>`;
-      }).join('');
-    } catch (err) { console.error(err); }
-  }
+      // Actions
+      const startManualSync = async (type) => {
+        if (isTaskRunning.value) return;
+        try {
+          const url = type === 'check-bookmarks' ? '/api/dashboard/check-bookmarks' :
+                      type === 'subscribed-series' ? '/api/dashboard/sync/subscribed-series' : '/api/dashboard/sync/start';
 
-  async function toggleAutoSync() {
-    const btn = document.getElementById('toggleAutoSyncBtn');
-    const newState = !autoSyncEnabled;
-    btn.disabled = true;
-    try {
-      const resp = await fetch('/api/dashboard/auto-sync/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: newState }) });
-      if (resp.ok) { autoSyncEnabled = newState; await loadAutoSyncStatus(); }
-    } catch (err) {} finally { btn.disabled = false; }
-  }
+          const body = type === 'subscribed-series' ? JSON.stringify({ limit: seriesSyncLimit.value }) : '{}';
 
-  async function stopAutoTask() {
-    const btn = document.getElementById('stopAutoTaskBtn');
-    btn.disabled = true;
-    try {
-      const resp = await fetch('/api/dashboard/auto-sync/stop-task', { method: 'POST' });
-      if (resp.ok) setTimeout(loadAutoSyncStatus, 1000);
-    } catch (err) {} finally { btn.disabled = false; }
-  }
+          await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+          fetchStatus(); // Immediately refresh
+        } catch(e) { console.error(e); }
+      };
 
-  async function checkBookmarks() {
-    const btn = document.getElementById('checkBookmarksBtn');
-    const msg = document.getElementById('actionMessage');
-    btn.disabled = true; msg.textContent = '启动预检查...';
-    try {
-      const resp = await fetch('/api/dashboard/check-bookmarks', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-      if (!resp.ok) { msg.textContent = '失败'; btn.disabled = false; return; }
-      msg.textContent = '已启动预检查';
-      await loadStatus();
-    } catch (err) { msg.textContent = '失败'; btn.disabled = false; }
-  }
+      const toggleAutoSync = async () => {
+        togglingAutoSync.value = true;
+        try {
+          await fetch('/api/dashboard/auto-sync/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !autoSyncStatus.value.running })
+          });
+          await fetchAutoSync();
+        } finally { togglingAutoSync.value = false; }
+      };
 
-  document.getElementById('startSyncBtn').addEventListener('click', startSync);
-  document.getElementById('syncSeriesBtn').addEventListener('click', syncSeries);
-  document.getElementById('checkBookmarksBtn').addEventListener('click', checkBookmarks);
-  document.getElementById('toggleAutoSyncBtn').addEventListener('click', toggleAutoSync);
-  document.getElementById('stopAutoTaskBtn').addEventListener('click', stopAutoTask);
+      const stopAutoTask = async () => {
+        try {
+          await fetch('/api/dashboard/auto-sync/stop-task', { method: 'POST' });
+          setTimeout(fetchAutoSync, 1000);
+        } catch(e) {}
+      };
 
-  loadStatus().catch(err => document.getElementById('actionMessage').textContent = '初始化失败');
-  loadAutoSyncStatus();
-  setInterval(pollJobStatus, 3000);
-  setInterval(loadAutoSyncStatus, 10000);
+      // UI Helpers
+      const jobStatusColor = (status) => {
+        if (status === 'succeeded') return 'green';
+        if (status === 'failed') return 'red';
+        if (status === 'running') return 'blue';
+        return 'gray';
+      };
+
+      const jobStatusText = (status) => {
+        const map = { succeeded: '成功', failed: '失败', running: '运行中', pending: '等待中' };
+        return map[status] || status;
+      };
+
+      const taskItemClass = (idx, curr, status) => {
+        if (status === 'running') {
+          if (idx < curr) return 'text-green-600 font-medium bg-green-50/50';
+          if (idx === curr) return 'text-brand-600 font-bold bg-brand-50 border-brand-100';
+          return 'text-gray-500';
+        }
+        if (status === 'succeeded') return 'text-green-600';
+        if (status === 'failed' && idx === curr) return 'text-red-600 bg-red-50';
+        return 'text-gray-500';
+      };
+
+      const taskIcon = (idx, curr, status) => {
+        const check = `<svg class="w-4 h-4 text-green-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>`;
+        const err = `<svg class="w-4 h-4 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path></svg>`;
+        const run = `<div class="w-3 h-3 rounded-full bg-brand-500 flex-shrink-0 ml-0.5 mr-0.5 animate-pulse"></div>`;
+        const wait = `<div class="w-3 h-3 rounded-full border-2 border-gray-300 flex-shrink-0 ml-0.5 mr-0.5"></div>`;
+
+        if (status === 'running') {
+          if (idx < curr) return check;
+          if (idx === curr) return run;
+          return wait;
+        }
+        if (status === 'succeeded') return check;
+        if (status === 'failed' && idx === curr) return err;
+        return wait;
+      };
+
+      const logLevelClass = (lvl) => {
+        if (lvl === 'error') return 'text-red-400';
+        if (lvl === 'success') return 'text-green-400';
+        if (lvl === 'warning') return 'text-yellow-400';
+        return 'text-gray-300';
+      };
+
+      const logPrefix = (lvl) => {
+        if (lvl === 'error') return `<span class="text-red-500 font-bold">✗</span>`;
+        if (lvl === 'success') return `<span class="text-green-500 font-bold">✓</span>`;
+        if (lvl === 'warning') return `<span class="text-yellow-500 font-bold">⚠</span>`;
+        return `<span class="text-brand-400">›</span>`;
+      };
+
+      onMounted(() => {
+        fetchStatus();
+        fetchAutoSync();
+        pollInterval = setInterval(fetchJobStatus, 3000);
+        autoSyncInterval = setInterval(fetchAutoSync, 10000);
+      });
+
+      onUnmounted(() => {
+        clearInterval(pollInterval);
+        clearInterval(autoSyncInterval);
+      });
+
+      return {
+        currentUser, statCards, pendingCount, loadingStats,
+        latestJob, loadingJob, isTaskRunning, progressPercent,
+        seriesSyncLimit, startManualSync,
+        autoSyncStatus, loadingAutoSync, togglingAutoSync, autoTasksList, toggleAutoSync, stopAutoTask,
+        jobStatusColor, jobStatusText, taskItemClass, taskIcon, logLevelClass, logPrefix,
+        logContainer
+      };
+    }
+  });
 </script>
 {% endblock %}

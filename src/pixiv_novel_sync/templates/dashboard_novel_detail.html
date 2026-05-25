@@ -4,13 +4,8 @@
 
 {% block extra_head %}
 <style>
-  /* 覆盖 base.html 的渐变背景，使用 Pixiv 纯色背景 */
-  body { background-color: #fffffc !important; color: #444; }
-  body > .fixed.-z-10 { display: none !important; }
-  /* 覆盖 main 的宽度和 padding 限制，让正文铺满 */
-  main.flex-grow { max-width: 100% !important; padding: 0 !important; }
-  /* 隐藏 footer */
-  footer { display: none !important; }
+  /* 覆盖 base.html 的默认行为，阅读页使用更纯粹的白底体验 */
+  body { background-color: #fff !important; color: #444; }
 
   /* ========== Pixiv Novel Reader Style ========== */
   .novel-reader-content {
@@ -35,6 +30,7 @@
     padding: 1.5rem 0 0.5rem;
     line-height: 1.5;
     letter-spacing: 0.04em;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
 
   .novel-reader-content .novel-meta {
@@ -43,7 +39,7 @@
     color: #999;
     margin-bottom: 2rem;
     padding-bottom: 1.5rem;
-    border-bottom: 1px solid #e8e8e8;
+    border-bottom: 1px solid #f0f0f0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     line-height: 1.8;
   }
@@ -62,170 +58,200 @@
 
   .novel-reader-content .reader-body p {
     margin: 0;
-    text-indent: 1em;
+    text-indent: 1.5em;
   }
   .novel-reader-content .reader-body p:empty {
     height: 1.8em;
   }
 
-  .back-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 13px;
-    font-weight: 600;
-    color: #999;
-    text-decoration: none;
-    transition: color 0.15s;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  }
-  .back-link:hover { color: #0096fa; }
-
   @media (max-width: 640px) {
     .novel-reader-content {
       width: 92%;
-      font-size: 1rem;
+      font-size: 1.1rem;
     }
     .novel-reader-content .novel-title {
-      font-size: 1.35rem;
+      font-size: 1.4rem;
     }
   }
 </style>
 {% endblock %}
 
 {% block content %}
-<div>
+<div class="h-full bg-white relative">
 
-  <!-- Back Link -->
-  <div style="max-width:680px;width:90%;margin:0 auto;padding:0.75rem 0;">
-    <a class="back-link" href="/dashboard/novels">
+  <!-- Back Link (Reader Mode specific) -->
+  <div style="max-width:680px; width:90%; margin:0 auto; padding:0.75rem 0;" class="flex items-center justify-between">
+    <a href="/dashboard/novels" class="inline-flex items-center gap-1 text-[13px] font-bold text-gray-500 hover:text-brand-500 transition-colors font-sans">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
-      返回小说列表
+      返回列表
+    </a>
+    <a v-if="novel && novel.series_id" :href="'/dashboard/series/' + novel.series_id" class="inline-flex items-center gap-1 text-[13px] font-bold text-brand-500 hover:text-brand-600 transition-colors font-sans bg-brand-50 px-2 py-0.5 rounded">
+      查看系列
     </a>
   </div>
 
-  <!-- Pixiv-style Reader (title + author + body all inside) -->
-  <div id="content" class="novel-reader-content">
-    <div style="text-align:center;padding:5rem 0;color:#999;">正在加载正文...</div>
+  <!-- Error State -->
+  <div v-if="error" class="text-center py-20 text-red-500 font-bold font-sans">{{ error }}</div>
+
+  <!-- Loading State -->
+  <div v-else-if="loading" class="text-center py-20 text-gray-400 font-sans">正在加载正文...</div>
+
+  <!-- Reader Content -->
+  <div v-else id="reader-content" class="novel-reader-content">
+    <div class="novel-title">{{ novel.title || '无标题' }}</div>
+    <div class="novel-meta">
+      <a v-if="novel.user_id" :href="'/dashboard/users/' + novel.user_id">{{ novel.author_name || '未知' }}</a>
+      <span v-else>{{ novel.author_name || '未知' }}</span>
+      <div class="meta-stats">
+        {{ formatTextLength(novel.text_length) }} &nbsp;&nbsp;·&nbsp;&nbsp;
+        {{ formatNumber(novel.total_bookmarks) }} 收藏 &nbsp;&nbsp;·&nbsp;&nbsp;
+        {{ formatNumber(novel.total_views) }} 浏览
+      </div>
+    </div>
+    <div class="reader-body" v-html="formattedContent"></div>
   </div>
 
-</div>
+  <!-- Progress Bar -->
+  <div class="fixed bottom-0 left-0 right-0 h-1 z-50 bg-gray-100">
+    <div class="h-full bg-brand-500 transition-all duration-150 ease-linear" :style="{ width: progressPercent + '%' }"></div>
+  </div>
 
-<!-- Bottom Progress Bar -->
-<div class="fixed bottom-0 left-0 right-0 h-1 z-50" style="background:#eee;">
-  <div id="progressFill" class="h-full w-0 transition-all duration-150 ease-linear" style="background:#0096fa;"></div>
 </div>
 {% endblock %}
 
 {% block extra_scripts %}
 <script>
-  const pathParts = window.location.pathname.split('/');
-  const novelId = Number(pathParts[pathParts.length - 1] || 0);
-  const storageKey = `pixivNovelSync:reading:${novelId}`;
-  let restorePending = true;
-  let scrollThrottle = null;
+  // Hide default layout parts explicitly for reader mode
+  document.querySelector('footer').style.display = 'none';
+  document.querySelector('main').classList.remove('max-w-6xl', 'px-4', 'sm:px-6', 'lg:px-8', 'py-8');
+  document.querySelector('main').classList.add('w-full', 'max-w-full', 'px-0', 'py-0');
 
-  function escapeHtml(value) {
-    return String(value ?? '').replace(/[&<>"]/g, function (ch) {
-      if (ch === '&') return '&amp;'; if (ch === '<') return '&lt;';
-      if (ch === '>') return '&gt;'; if (ch === '"') return '&quot;'; return ch;
-    });
-  }
-  function formatNumber(value) { return Number(value || 0).toLocaleString('zh-CN'); }
-  function formatTextLength(chars) {
-    const v = Number(chars || 0);
-    if (!v) return '0 字';
-    return v >= 10000 ? (v / 10000).toFixed(1) + ' 万字' : formatNumber(v) + ' 字';
-  }
+  initVueApp({
+    setup() {
+      const { ref, computed, onMounted, onUnmounted, nextTick } = Vue;
 
-  function readSavedProgress() {
-    try { return JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch (e) { return null; }
-  }
-  function getReadingProgress() {
-    const doc = document.documentElement;
-    const maxScroll = Math.max(1, doc.scrollHeight - window.innerHeight);
-    return { scrollY: Math.max(0, Math.round(window.scrollY)), progress: Math.min(1, Math.max(0, window.scrollY / maxScroll)) };
-  }
-  function updateProgressUi(progress) {
-    const fill = document.getElementById('progressFill');
-    if (fill) fill.style.width = Math.round((progress || 0) * 100) + '%';
-  }
-  function saveProgress(data) {
-    const current = getReadingProgress();
-    updateProgressUi(current.progress);
-    try {
-      localStorage.setItem(storageKey, JSON.stringify({
-        novelId, seriesId: data?.series_id ? Number(data.series_id) : null,
-        title: data?.title || '', scrollY: current.scrollY,
-        progress: current.progress, updatedAt: Date.now()
-      }));
-    } catch (e) {}
-  }
-  function setupProgressTracking(data) {
-    const saved = readSavedProgress();
-    if (restorePending && saved && saved.scrollY > 0 && !window.location.hash) {
-      requestAnimationFrame(() => {
-        window.scrollTo({ top: Math.min(saved.scrollY, document.documentElement.scrollHeight), behavior: 'auto' });
-        updateProgressUi(getReadingProgress().progress);
+      const pathParts = window.location.pathname.split('/');
+      const novelId = Number(pathParts[pathParts.length - 1] || 0);
+      const storageKey = `pixivNovelSync:reading:${novelId}`;
+
+      const novel = ref(null);
+      const loading = ref(true);
+      const error = ref(null);
+      const progressPercent = ref(0);
+
+      let restorePending = true;
+      let scrollThrottle = null;
+
+      const formatNumber = (val) => Number(val || 0).toLocaleString('zh-CN');
+      const formatTextLength = (chars) => {
+        const val = Number(chars || 0);
+        if (!val) return '0 字';
+        if (val >= 10000) return (val / 10000).toFixed(1) + ' 万字';
+        return formatNumber(val) + ' 字';
+      };
+
+      const escapeHtml = (unsafe) => {
+        return (unsafe || '').replace(/[&<"'>]/g, function (match) {
+          const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+          return map[match];
+        });
+      };
+
+      const formattedContent = computed(() => {
+        if (!novel.value) return '';
+        const text = novel.value.text_raw || novel.value.text_markdown || '';
+        if (text.includes('<p>')) return text;
+        return text.split('\n').map(line => {
+          const t = line.trim();
+          return t ? `<p>${escapeHtml(t)}</p>` : `<p></p>`;
+        }).join('\n');
       });
-    } else { updateProgressUi(getReadingProgress().progress); }
-    restorePending = false;
-    window.addEventListener('scroll', () => {
-      if (scrollThrottle) return;
-      scrollThrottle = setTimeout(() => { scrollThrottle = null; saveProgress(data); }, 300);
-    }, { passive: true });
-    window.addEventListener('beforeunload', () => saveProgress(data));
-  }
 
-  function formatContent(text, data) {
-    const title = data.title || '';
-    const authorName = data.author_name || '未知';
-    const userId = data.user_id;
+      // Progress Tracking
+      const readSavedProgress = () => {
+        try { return JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch (e) { return null; }
+      };
 
-    let header = '';
-    if (title) header += `<div class="novel-title">${escapeHtml(title)}</div>`;
+      const getReadingProgress = () => {
+        const doc = document.documentElement;
+        const maxScroll = Math.max(1, doc.scrollHeight - window.innerHeight);
+        return {
+          scrollY: Math.max(0, Math.round(window.scrollY)),
+          progress: Math.min(1, Math.max(0, window.scrollY / maxScroll))
+        };
+      };
 
-    // Meta line: author + stats
-    const authorLink = userId
-      ? `<a href="/dashboard/users/${encodeURIComponent(userId)}">${escapeHtml(authorName)}</a>`
-      : escapeHtml(authorName);
-    const statsLine = [
-      formatTextLength(data.text_length),
-      `${formatNumber(data.total_bookmarks)} 收藏`,
-      `${formatNumber(data.total_views)} 浏览`,
-    ].join('&nbsp;&nbsp;·&nbsp;&nbsp;');
-    header += `<div class="novel-meta">${authorLink}<div class="meta-stats">${statsLine}</div></div>`;
+      const saveProgress = () => {
+        if (!novel.value) return;
+        const current = getReadingProgress();
+        progressPercent.value = Math.round(current.progress * 100);
+        try {
+          localStorage.setItem(storageKey, JSON.stringify({
+            novelId,
+            seriesId: novel.value.series_id ? Number(novel.value.series_id) : null,
+            title: novel.value.title || '',
+            scrollY: current.scrollY,
+            progress: current.progress,
+            updatedAt: Date.now()
+          }));
+        } catch (e) {}
+      };
 
-    // Body
-    let bodyHtml;
-    if (text.includes('<p>')) {
-      bodyHtml = text;
-    } else {
-      bodyHtml = text.split('\n').map(line => {
-        const t = line.trim();
-        return t ? '<p>' + escapeHtml(t) + '</p>' : '<p></p>';
-      }).join('\n');
+      const handleScroll = () => {
+        if (scrollThrottle) return;
+        scrollThrottle = setTimeout(() => {
+          scrollThrottle = null;
+          saveProgress();
+        }, 300);
+      };
+
+      const fetchDetail = async () => {
+        loading.value = true;
+        error.value = null;
+        try {
+          const res = await fetch(`/api/dashboard/novels/${encodeURIComponent(novelId)}`);
+          const data = await res.json();
+          if (res.ok) {
+            novel.value = data;
+            if (data.title) document.title = `${data.title} - Pixiv 小说同步器`;
+
+            // Restore scroll after render
+            nextTick(() => {
+              const saved = readSavedProgress();
+              if (restorePending && saved && saved.scrollY > 0 && !window.location.hash) {
+                window.scrollTo({ top: Math.min(saved.scrollY, document.documentElement.scrollHeight), behavior: 'auto' });
+              }
+              saveProgress(); // Initial save to get progress percent
+              restorePending = false;
+            });
+
+          } else {
+            error.value = data.error || '未找到小说';
+          }
+        } catch (e) {
+          error.value = '加载失败';
+        } finally {
+          loading.value = false;
+        }
+      };
+
+      onMounted(() => {
+        fetchDetail();
+        window.addEventListener('scroll', handleScroll, { passive: true });
+        window.addEventListener('beforeunload', saveProgress);
+      });
+
+      onUnmounted(() => {
+        window.removeEventListener('scroll', handleScroll);
+        window.removeEventListener('beforeunload', saveProgress);
+        clearTimeout(scrollThrottle);
+      });
+
+      return {
+        novel, loading, error, progressPercent,
+        formattedContent, formatNumber, formatTextLength
+      };
     }
-    return header + '<div class="reader-body">' + bodyHtml + '</div>';
-  }
-
-  async function loadDetail() {
-    const resp = await fetch(`/api/dashboard/novels/${encodeURIComponent(novelId)}`);
-    const data = await resp.json();
-    if (!resp.ok) {
-      document.getElementById('content').innerHTML = '<div style="text-align:center;padding:5rem 0;color:#c00;">' + escapeHtml(data.error || '未找到小说') + '</div>';
-      return;
-    }
-    // Set page title
-    if (data.title) document.title = escapeHtml(data.title) + ' - Pixiv 小说同步器';
-
-    const rawContent = data.text_raw || data.text_markdown || '';
-    document.getElementById('content').innerHTML = formatContent(rawContent, data);
-    setupProgressTracking(data);
-  }
-
-  loadDetail().catch(() => {
-    document.getElementById('content').innerHTML = '<div style="text-align:center;padding:5rem 0;color:#c00;font-weight:bold;">加载失败</div>';
   });
 </script>
 {% endblock %}

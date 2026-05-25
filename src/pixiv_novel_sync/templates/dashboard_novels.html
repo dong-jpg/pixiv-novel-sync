@@ -7,34 +7,50 @@
 
   <!-- Header -->
   <div>
-    <h1 class="text-2xl sm:text-3xl font-bold text-slate-800 tracking-tight mb-2">小说归档</h1>
-    <p class="text-sm sm:text-base text-slate-600">分页展示已同步的小说，支持分类筛选，点击标题可查看详情。</p>
+    <h1 class="text-2xl font-bold text-gray-900 mb-2">小说归档</h1>
+    <p class="text-sm text-gray-500">分页展示已同步的小说或系列，支持分类筛选，点击卡片可查看详情或阅读。</p>
   </div>
 
   <!-- Main Card -->
-  <section class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-5 sm:p-6">
+  <section class="bg-white border border-gray-200 rounded-lg p-5 sm:p-6 shadow-sm">
 
     <!-- Toolbar -->
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
 
       <!-- Tabs -->
-      <div class="flex flex-wrap items-center gap-2 p-1 bg-white/30 backdrop-blur-md border border-white/40 rounded-xl w-fit" id="tabs">
-        <button class="tab-btn px-4 py-1.5 text-sm font-semibold rounded-xl transition-all text-slate-600 hover:text-slate-800 hover:bg-white/40" data-category="bookmark">收藏</button>
-        <button class="tab-btn px-4 py-1.5 text-sm font-semibold rounded-xl transition-all text-slate-600 hover:text-slate-800 hover:bg-white/40" data-category="following">追更</button>
+      <div class="flex items-center gap-1 p-1 bg-gray-50 border border-gray-200 rounded-lg w-fit">
+        <button
+          @click="filters.category = 'bookmark'"
+          class="px-4 py-1.5 text-sm font-medium rounded-md transition-colors"
+          :class="filters.category === 'bookmark' ? 'bg-white text-brand-600 shadow-sm border border-gray-200' : 'text-gray-600 hover:text-gray-900'">
+          收藏
+        </button>
+        <button
+          @click="filters.category = 'following'"
+          class="px-4 py-1.5 text-sm font-medium rounded-md transition-colors"
+          :class="filters.category === 'following' ? 'bg-white text-brand-600 shadow-sm border border-gray-200' : 'text-gray-600 hover:text-gray-900'">
+          追更
+        </button>
       </div>
 
       <!-- Filters & Search -->
       <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
         <div class="relative w-full sm:w-64">
           <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-            <svg class="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg class="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
           </div>
-          <input type="text" id="searchInput" placeholder="搜索标题或作者..." class="w-full pl-9 pr-4 py-2 bg-white/50 border border-white/60 text-slate-800 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors">
+          <input
+            type="text"
+            v-model="filters.search"
+            placeholder="搜索标题或作者..."
+            class="w-full pl-9 pr-4 py-2 bg-white border border-gray-300 text-gray-900 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors">
         </div>
 
-        <select id="sortBy" class="w-full sm:w-auto px-4 py-2 bg-white/50 border border-white/60 text-slate-800 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors appearance-none">
+        <select
+          v-model="filters.sort"
+          class="w-full sm:w-auto pl-4 pr-8 py-2 bg-white border border-gray-300 text-gray-900 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors appearance-none custom-select">
           <option value="">默认排序</option>
           <option value="updated_desc">更新时间倒序</option>
           <option value="bookmarks_desc">收藏数倒序</option>
@@ -44,30 +60,135 @@
     </div>
 
     <!-- Summary Info -->
-    <div class="flex items-center justify-between text-xs font-medium text-slate-600 mb-4 px-1">
-      <div id="summary">加载中...</div>
-      <div id="pageInfo"></div>
-    </div>
-
-    <!-- Grid List -->
-    <div id="list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6">
-      <!-- Loading Skeleton -->
-      <div class="bg-white/30 animate-pulse rounded-2xl p-3 flex gap-4 border border-white/40">
-        <div class="w-[72px] h-[100px] bg-white/40 rounded-lg flex-shrink-0"></div>
-        <div class="flex-1 py-1 space-y-2">
-          <div class="h-4 bg-white/40 rounded w-3/4"></div>
-          <div class="h-3 bg-white/40 rounded w-1/2"></div>
-          <div class="h-3 bg-white/40 rounded w-5/6"></div>
-        </div>
+    <div class="flex items-center justify-between text-xs font-medium text-gray-500 mb-4 px-1 border-b border-gray-100 pb-3">
+      <div>
+        <span v-if="loading">加载中...</span>
+        <span v-else>共 <span class="font-bold text-gray-900">{{ totalItems }}</span> {{ filters.category === 'following' ? '个系列' : '本' }}</span>
       </div>
     </div>
 
-    <!-- Pagination -->
-    <div class="flex items-center justify-center gap-4 mt-8 pt-6 border-t border-white/30">
-      <button id="prevBtn" class="px-4 py-2 bg-white/40 backdrop-blur-md border border-white/60 shadow-glass-sm rounded-xl text-slate-600 text-sm font-semibold hover:bg-white/55 focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all">上一页</button>
-      <span id="pagerText" class="text-sm font-mono font-medium text-slate-600"></span>
-      <button id="nextBtn" class="px-4 py-2 bg-white/40 backdrop-blur-md border border-white/60 shadow-glass-sm rounded-xl text-slate-600 text-sm font-semibold hover:bg-white/55 focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all">下一页</button>
+    <!-- Error State -->
+    <div v-if="error" class="text-center py-20">
+      <div class="text-red-500 mb-2">
+        <svg class="mx-auto h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+      </div>
+      <p class="text-sm text-red-600">{{ error }}</p>
     </div>
+
+    <!-- Empty State -->
+    <div v-else-if="!loading && items.length === 0" class="text-center py-20">
+      <svg class="mx-auto h-12 w-12 text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+      </svg>
+      <p class="text-sm text-gray-500">{{ filters.category === 'following' ? '暂无订阅系列' : '暂无数据，请先执行一次手工同步' }}</p>
+    </div>
+
+    <!-- Grid List -->
+    <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6">
+
+      <!-- Loading Skeletons -->
+      <template v-if="loading">
+        <div v-for="i in 8" :key="i" class="bg-white border border-gray-100 rounded-md p-3 flex gap-4">
+          <div class="w-[72px] h-[100px] bg-gray-100 rounded-md flex-shrink-0 animate-pulse"></div>
+          <div class="flex-1 py-1 space-y-2">
+            <div class="h-4 bg-gray-100 rounded w-3/4 animate-pulse"></div>
+            <div class="h-3 bg-gray-100 rounded w-1/2 animate-pulse"></div>
+            <div class="h-3 bg-gray-100 rounded w-5/6 animate-pulse"></div>
+          </div>
+        </div>
+      </template>
+
+      <!-- Actual Items -->
+      <template v-else>
+        <!-- 追更系列渲染 -->
+        <template v-if="filters.category === 'following'">
+          <a v-for="item in items" :key="item.series_id" :href="'/dashboard/series/' + encodeURIComponent(item.series_id)"
+             class="group flex gap-4 bg-white border border-gray-200 rounded-md p-3 hover:border-brand-300 hover:shadow-sm transition-all">
+
+            <div class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] flex-shrink-0 relative overflow-hidden rounded-md bg-gray-100 border border-gray-200">
+              <img v-if="item.cover_url" :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)"
+                   class="w-full h-full object-cover" @error="item.cover_url = ''">
+              <div v-else class="w-full h-full flex items-center justify-center text-gray-400 text-xs font-bold text-center p-2">
+                {{ (item.series_title || '').substring(0, 4) }}
+              </div>
+            </div>
+
+            <div class="flex flex-col min-w-0 justify-between py-0.5">
+              <div>
+                <h3 class="text-sm font-bold text-gray-900 group-hover:text-brand-600 transition-colors line-clamp-2 leading-snug mb-1.5" :title="item.series_title">
+                  {{ item.series_title || '未命名系列' }}
+                </h3>
+                <div class="flex items-center gap-1.5 flex-wrap mb-1.5">
+                  <app-badge v-if="item.source_label" type="blue">{{ item.source_label }}</app-badge>
+                  <span class="text-xs text-gray-500 truncate">作者: {{ item.author_name || '未知' }}</span>
+                </div>
+              </div>
+              <div class="space-y-1">
+                <div class="text-[11px] text-gray-500 flex items-center gap-1">
+                  <svg class="w-3.5 h-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                  {{ item.chapter_count || 0 }} 章 · {{ formatTextLength(item.total_text_length) }}
+                </div>
+                <div class="text-[10px] text-gray-400 font-mono">更新于 {{ (item.last_updated || '-').substring(0, 10) }}</div>
+              </div>
+            </div>
+          </a>
+        </template>
+
+        <!-- 收藏小说渲染 -->
+        <template v-else>
+          <a v-for="item in items" :key="item.novel_id" :href="'/dashboard/novels/' + encodeURIComponent(item.novel_id)"
+             class="group flex gap-4 bg-white border border-gray-200 rounded-md p-3 hover:border-brand-300 hover:shadow-sm transition-all">
+
+            <div class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] flex-shrink-0 relative overflow-hidden rounded-md bg-gray-100 border border-gray-200">
+              <img v-if="item.cover_url" :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)"
+                   class="w-full h-full object-cover" @error="item.cover_url = ''">
+              <div v-else class="w-full h-full flex items-center justify-center text-gray-400 text-xs font-bold text-center p-2">
+                {{ (item.title || '').substring(0, 4) }}
+              </div>
+            </div>
+
+            <div class="flex flex-col min-w-0 justify-between py-0.5 w-full">
+              <div>
+                <h3 class="text-sm font-bold text-gray-900 group-hover:text-brand-600 transition-colors line-clamp-2 leading-snug mb-1.5" :title="item.title">
+                  {{ item.title || '未命名小说' }}
+                </h3>
+                <div class="flex items-center gap-1.5 flex-wrap mb-1.5">
+                  <app-badge v-if="item.novel_kind === 'series'" type="blue">系列</app-badge>
+                  <app-badge v-else-if="item.novel_kind === 'single'" type="gray">单本</app-badge>
+                  <app-badge v-if="item.restrict_value === 'public'" type="green">公开</app-badge>
+                  <app-badge v-else-if="item.restrict_value === 'private'" type="red">私密</app-badge>
+                  <span class="text-xs text-gray-500 truncate">作者: {{ item.author_name || '未知' }}</span>
+                </div>
+              </div>
+              <div class="space-y-1">
+                <div class="text-[11px] text-gray-500 flex items-center gap-3">
+                  <span class="flex items-center gap-1" title="收藏数">
+                    <svg class="w-3 h-3 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"></path></svg>
+                    {{ item.total_bookmarks || 0 }}
+                  </span>
+                  <span class="flex items-center gap-1" title="浏览数">
+                    <svg class="w-3 h-3 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                    {{ item.total_views || 0 }}
+                  </span>
+                </div>
+                <div class="text-[10px] text-gray-400 font-mono">更新于 {{ (item.last_seen_at || '-').substring(0, 10) }}</div>
+              </div>
+            </div>
+          </a>
+        </template>
+      </template>
+
+    </div>
+
+    <!-- Pagination -->
+    <app-pagination
+      v-if="!loading && !error"
+      :page="page"
+      :pages="totalPages"
+      @update:page="handlePageChange"
+    ></app-pagination>
 
   </section>
 </div>
@@ -75,15 +196,12 @@
 
 {% block extra_scripts %}
 <style>
-  /* Custom styles for select dropdown arrow */
-  select#sortBy {
+  .custom-select {
     background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
     background-position: right 0.5rem center;
     background-repeat: no-repeat;
     background-size: 1.5em 1.5em;
   }
-
-  /* Limit text lines */
   .line-clamp-2 {
     display: -webkit-box;
     -webkit-line-clamp: 2;
@@ -93,204 +211,112 @@
 </style>
 
 <script>
-  let currentPage = 1;
-  let totalPages = 1;
-  let currentCategory = 'bookmark';
-  let searchTimer = null;
+  initVueApp({
+    setup() {
+      const { ref, reactive, watch, onMounted } = Vue;
 
-  function escapeHtml(value) {
-    return String(value ?? '').replace(/[&<>"]/g, function (ch) {
-      if (ch === '&') return '&amp;';
-      if (ch === '<') return '&lt;';
-      if (ch === '>') return '&gt;';
-      if (ch === '"') return '&quot;';
-      return ch;
-    });
-  }
+      // State
+      const items = ref([]);
+      const totalItems = ref(0);
+      const page = ref(1);
+      const totalPages = ref(1);
+      const loading = ref(true);
+      const error = ref(null);
 
-  function restrictLabel(value) {
-    if (value === 'public') return '公开';
-    if (value === 'private') return '私密';
-    return value || '';
-  }
+      // Filters
+      const initialCategory = new URLSearchParams(window.location.search).get('category');
+      const filters = reactive({
+        category: ['bookmark', 'following'].includes(initialCategory) ? initialCategory : 'bookmark',
+        search: '',
+        sort: ''
+      });
 
-  function kindLabel(value) {
-    if (value === 'series') return '系列';
-    if (value === 'single') return '单本';
-    return '';
-  }
+      let fetchAbortController = null;
+      let searchTimeout = null;
 
-  function formatTextLength(chars) {
-    if (!chars || chars <= 0) return '0 字';
-    if (chars >= 10000) return (chars / 10000).toFixed(1) + ' 万字';
-    return chars.toLocaleString('zh-CN') + ' 字';
-  }
+      // Methods
+      const fetchData = async () => {
+        loading.value = true;
+        error.value = null;
 
-  function createBadge(text, extraClasses = '') {
-    if (!text) return '';
-    return `<span class="inline-flex items-center px-1.5 py-0.5 rounded-xl text-[10px] font-bold bg-blue-500/10 text-blue-700 border border-blue-300/30 ${extraClasses}">${escapeHtml(text)}</span>`;
-  }
+        if (fetchAbortController) {
+          fetchAbortController.abort();
+        }
+        fetchAbortController = new AbortController();
 
-  async function loadNovels(page, category) {
-    const search = (document.getElementById('searchInput').value || '').trim();
-    const sort = document.getElementById('sortBy').value || '';
-    let url = `/api/dashboard/novels?page=${page}&category=${encodeURIComponent(category)}`;
-    if (search) url += `&search=${encodeURIComponent(search)}`;
-    if (sort) url += `&sort=${encodeURIComponent(sort)}`;
+        try {
+          const params = new URLSearchParams({
+            page: page.value.toString(),
+            category: filters.category
+          });
+          if (filters.search) params.append('search', filters.search);
+          if (filters.sort) params.append('sort', filters.sort);
 
-    const list = document.getElementById('list');
+          const res = await fetch(`/api/dashboard/novels?${params.toString()}`, {
+            signal: fetchAbortController.signal
+          });
 
-    try {
-      const resp = await fetch(url);
-      const data = await resp.json();
-      const items = data.items || [];
-      currentPage = data.page || 1;
-      totalPages = data.total_pages || 1;
-      currentCategory = data.category || category;
+          if (!res.ok) throw new Error('API Request Failed');
 
-      document.getElementById('summary').innerHTML = `共 <span class="font-bold text-slate-800">${data.total || 0}</span> ${currentCategory === 'following' ? '个系列' : '本'}`;
-      document.getElementById('pageInfo').textContent = '每页 8 条';
-      document.getElementById('pagerText').textContent = `${currentPage} / ${totalPages}`;
-      document.getElementById('prevBtn').disabled = currentPage <= 1;
-      document.getElementById('nextBtn').disabled = currentPage >= totalPages;
+          const data = await res.json();
+          items.value = data.items || [];
+          totalItems.value = data.total || 0;
+          page.value = data.page || 1;
+          totalPages.value = data.total_pages || 1;
 
-      setActiveTab(currentCategory);
+        } catch (err) {
+          if (err.name !== 'AbortError') {
+            console.error(err);
+            error.value = '加载失败，请检查网络连接或稍后重试。';
+            items.value = [];
+          }
+        } finally {
+          if (fetchAbortController && !fetchAbortController.signal.aborted) {
+            loading.value = false;
+          }
+        }
+      };
 
-      if (!items.length) {
-        const emptyMsg = currentCategory === 'following' ? '暂无订阅系列，点击"同步订阅"按钮获取' : '暂无数据，请先执行一次手工同步';
-        list.className = "flex justify-center py-20";
-        list.innerHTML = `
-          <div class="text-center">
-            <svg class="mx-auto h-12 w-12 text-slate-400 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-              <path vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
-            </svg>
-            <p class="text-sm text-slate-600 font-medium">${escapeHtml(emptyMsg)}</p>
-          </div>
-        `;
-        return;
-      }
+      const handlePageChange = (newPage) => {
+        page.value = newPage;
+        fetchData();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      };
 
-      list.className = "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 sm:gap-5";
+      const formatTextLength = (chars) => {
+        if (!chars || chars <= 0) return '0 字';
+        if (chars >= 10000) return (chars / 10000).toFixed(1) + ' 万字';
+        return chars.toLocaleString('zh-CN') + ' 字';
+      };
 
-      if (currentCategory === 'following') {
-        list.innerHTML = items.map(function (item) {
-          const cover = item.cover_url
-            ? `<img class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg object-cover bg-white/30 shadow-glass-sm flex-shrink-0 group-hover:shadow-glass transition-shadow" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
-            : '';
-          const fallbackCover = `<div class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg bg-gradient-to-br from-white/50 to-white/30 border border-white/50 flex items-center justify-center text-slate-400 text-xs font-bold text-center p-2 shadow-glass-sm flex-shrink-0" style="display:${item.cover_url ? 'none' : 'flex'};">${escapeHtml((item.series_title || '').slice(0, 4))}</div>`;
-          const sourceBadge = createBadge(item.source_label);
+      // Watchers
+      watch(() => filters.category, () => {
+        page.value = 1;
+        fetchData();
+      });
 
-          return `
-            <a href="/dashboard/series/${encodeURIComponent(item.series_id)}" class="group flex gap-4 bg-white/25 hover:bg-white/40 border border-white/40 hover:border-white/60 rounded-xl p-3 sm:p-4 transition-all hover:shadow-glass-sm backdrop-blur-md">
-              ${cover}${fallbackCover}
-              <div class="flex flex-col min-w-0 justify-between py-0.5">
-                <div>
-                  <h3 class="text-sm sm:text-base font-bold text-slate-800 group-hover:text-brand-600 transition-colors line-clamp-2 leading-snug mb-1.5">${escapeHtml(item.series_title || '未命名系列')}</h3>
-                  <div class="flex items-center gap-1.5 flex-wrap mb-1.5">
-                    ${sourceBadge}
-                    <span class="text-xs text-slate-600 truncate">作者: ${escapeHtml(item.author_name || '未知')}</span>
-                  </div>
-                </div>
-                <div class="space-y-1">
-                  <div class="text-[11px] text-slate-600 flex items-center gap-1">
-                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
-                    ${escapeHtml(item.chapter_count || 0)} 章 · ${formatTextLength(item.total_text_length || 0)}
-                  </div>
-                  <div class="text-[10px] text-slate-400 font-mono">
-                    更新于 ${escapeHtml(item.last_updated || '-').substring(0, 10)}
-                  </div>
-                </div>
-              </div>
-            </a>
-          `;
-        }).join('');
-      } else {
-        list.innerHTML = items.map(function (item) {
-          const cover = item.cover_url
-            ? `<img class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg object-cover bg-white/30 shadow-glass-sm flex-shrink-0 group-hover:shadow-glass transition-shadow" src="/proxy/image?url=${encodeURIComponent(item.cover_url)}" alt="cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
-            : '';
-          const fallbackCover = `<div class="w-[72px] h-[100px] sm:w-[84px] sm:h-[116px] rounded-lg bg-gradient-to-br from-white/50 to-white/30 border border-white/50 flex items-center justify-center text-slate-400 text-xs font-bold text-center p-2 shadow-glass-sm flex-shrink-0" style="display:${item.cover_url ? 'none' : 'flex'};">${escapeHtml((item.title || '').slice(0, 4))}</div>`;
+      watch(() => filters.sort, () => {
+        page.value = 1;
+        fetchData();
+      });
 
-          const badges = [kindLabel(item.novel_kind), restrictLabel(item.restrict_value)].filter(Boolean).map(b => createBadge(b)).join('');
+      watch(() => filters.search, () => {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+          page.value = 1;
+          fetchData();
+        }, 400);
+      });
 
-          return `
-            <a href="/dashboard/novels/${encodeURIComponent(item.novel_id)}" class="group flex gap-4 bg-white/25 hover:bg-white/40 border border-white/40 hover:border-white/60 rounded-xl p-3 sm:p-4 transition-all hover:shadow-glass-sm backdrop-blur-md">
-              ${cover}${fallbackCover}
-              <div class="flex flex-col min-w-0 justify-between py-0.5 w-full">
-                <div>
-                  <h3 class="text-sm sm:text-base font-bold text-slate-800 group-hover:text-brand-600 transition-colors line-clamp-2 leading-snug mb-1.5">${escapeHtml(item.title || '未命名小说')}</h3>
-                  <div class="flex items-center gap-1.5 flex-wrap mb-1.5">
-                    ${badges}
-                    <span class="text-xs text-slate-600 truncate">作者: ${escapeHtml(item.author_name || '未知')}</span>
-                  </div>
-                </div>
-                <div class="space-y-1">
-                  <div class="text-[11px] text-slate-600 flex items-center gap-2">
-                    <span class="flex items-center gap-1" title="收藏数"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"></path></svg>${escapeHtml(item.total_bookmarks || 0)}</span>
-                    <span class="flex items-center gap-1" title="浏览数"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>${escapeHtml(item.total_views || 0)}</span>
-                  </div>
-                  <div class="text-[10px] text-slate-400 font-mono">
-                    更新于 ${escapeHtml(item.last_seen_at || '-').substring(0, 10)}
-                  </div>
-                </div>
-              </div>
-            </a>
-          `;
-        }).join('');
-      }
-    } catch (err) {
-      console.error(err);
-      document.getElementById('summary').innerHTML = '<span class="text-red-500">加载失败</span>';
+      onMounted(() => {
+        fetchData();
+      });
+
+      return {
+        items, totalItems, page, totalPages, loading, error, filters,
+        handlePageChange, formatTextLength
+      };
     }
-  }
-
-  function setActiveTab(category) {
-    document.querySelectorAll('.tab-btn').forEach(function (btn) {
-      if (btn.dataset.category === category) {
-        btn.classList.add('bg-blue-500/10', 'text-blue-600', 'border', 'border-blue-300/30', 'shadow-glass-sm');
-        btn.classList.remove('text-slate-600', 'hover:text-slate-800', 'hover:bg-white/40');
-      } else {
-        btn.classList.remove('bg-blue-500/10', 'text-blue-600', 'border', 'border-blue-300/30', 'shadow-glass-sm');
-        btn.classList.add('text-slate-600', 'hover:text-slate-800', 'hover:bg-white/40');
-      }
-    });
-  }
-
-  document.getElementById('tabs').addEventListener('click', function (event) {
-    const btn = event.target.closest('.tab-btn');
-    if (!btn) return;
-    loadNovels(1, btn.dataset.category);
   });
-
-  document.getElementById('searchInput').addEventListener('input', function () {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(function () {
-      loadNovels(1, currentCategory);
-    }, 400);
-  });
-
-  document.getElementById('sortBy').addEventListener('change', function () {
-    loadNovels(1, currentCategory);
-  });
-
-  document.getElementById('prevBtn').addEventListener('click', function () {
-    if (currentPage > 1) loadNovels(currentPage - 1, currentCategory);
-  });
-
-  document.getElementById('nextBtn').addEventListener('click', function () {
-    if (currentPage < totalPages) loadNovels(currentPage + 1, currentCategory);
-  });
-
-  // 读取 URL 中的 category 参数作为初始 tab
-  const _initialCategory = (function() {
-    try {
-      const value = new URLSearchParams(location.search).get('category');
-      return ['bookmark', 'following'].includes(value) ? value : 'bookmark';
-    } catch (e) {
-      return 'bookmark';
-    }
-  })();
-
-  loadNovels(1, _initialCategory);
 </script>
 {% endblock %}

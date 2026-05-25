@@ -2333,6 +2333,21 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             db.close()
         return jsonify(payload)
 
+    @app.get("/api/dashboard/shell-data")
+    def shell_data():
+        """提供前端 Shell (Navbar 等) 需要的全局聚合数据"""
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            pending_count = db.get_pending_deletion_count()
+            # 可以根据需要扩展用户信息等
+        finally:
+            db.close()
+        return jsonify({
+            "pending_count": pending_count
+        })
+
     @app.get("/api/dashboard/pending-deletions/count")
     def pending_deletion_count():
         current_settings = settings_manager.load(env_path=env_path)

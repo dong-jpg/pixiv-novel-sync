@@ -1,0 +1,233 @@
+<!--
+  全局 Vue 组件定义文件。
+  通过 Jinja 的 include 引入到 base.html 底部。
+  在此统一定义 AppNavbar, AppPagination, AppModal, AppBadge 等通用 UI 组件。
+-->
+
+<script>
+  function registerGlobalComponents(app) {
+    const { ref, onMounted } = Vue;
+
+    // 1. 顶层导航栏 AppNavbar
+    app.component('app-navbar', {
+      props: ['currentPath'],
+      template: `
+        <header class="sticky top-0 z-50 bg-white border-b border-gray-200 shadow-sm">
+          <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-14">
+              <!-- Brand -->
+              <a href="/dashboard" class="flex-shrink-0 flex items-center">
+                <span class="text-lg font-bold text-brand-500">Pixiv 同步器</span>
+              </a>
+
+              <!-- Desktop Navigation -->
+              <nav class="hidden md:flex items-center h-full space-x-6">
+                <a href="/dashboard" :class="navClass('/dashboard')">首页</a>
+                <a href="/dashboard/follows" :class="navClass('/dashboard/follows')">关注</a>
+                <a href="/dashboard/novels" :class="navClass('/dashboard/novels')">小说</a>
+
+                <a href="/dashboard/pending-deletions" :class="navClass('/dashboard/pending-deletions')" class="relative">
+                  待确认
+                  <span v-if="pendingCount > 0" class="absolute -top-1 -right-4 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
+                    {{ pendingCount > 99 ? '99+' : pendingCount }}
+                  </span>
+                </a>
+
+                <a href="/dashboard/logs" :class="navClass('/dashboard/logs')">日志</a>
+                <a href="/dashboard/settings" :class="navClass('/dashboard/settings')">设置</a>
+                <a href="/token-login" class="text-sm font-medium text-gray-600 hover:text-brand-500 transition-colors">登录</a>
+              </nav>
+
+              <!-- Mobile menu button -->
+              <div class="flex md:hidden">
+                <button type="button" @click="mobileMenuOpen = !mobileMenuOpen" class="p-2 text-gray-500 hover:text-brand-500">
+                  <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Mobile Navigation Menu -->
+          <div v-show="mobileMenuOpen" class="md:hidden border-t border-gray-100 bg-white">
+            <div class="px-3 pt-2 pb-3 space-y-1">
+              <a href="/dashboard" :class="mobileNavClass('/dashboard')">首页</a>
+              <a href="/dashboard/follows" :class="mobileNavClass('/dashboard/follows')">关注</a>
+              <a href="/dashboard/novels" :class="mobileNavClass('/dashboard/novels')">小说</a>
+              <a href="/dashboard/pending-deletions" :class="mobileNavClass('/dashboard/pending-deletions')">
+                待确认 <span v-if="pendingCount > 0" class="ml-2 text-red-500 font-bold">({{ pendingCount }})</span>
+              </a>
+              <a href="/dashboard/logs" :class="mobileNavClass('/dashboard/logs')">日志</a>
+              <a href="/dashboard/settings" :class="mobileNavClass('/dashboard/settings')">设置</a>
+              <a href="/token-login" class="block px-3 py-2 text-base font-medium text-gray-700">登录</a>
+            </div>
+          </div>
+        </header>
+      `,
+      setup(props) {
+        const mobileMenuOpen = ref(false);
+        const pendingCount = ref(0);
+
+        const fetchShellData = async () => {
+          try {
+            const res = await fetch("/api/dashboard/shell-data");
+            if (res.ok) {
+              const data = await res.json();
+              pendingCount.value = data.pending_count || 0;
+            } else {
+              // fallback if new endpoint not available yet
+              const fallbackRes = await fetch("/api/dashboard/pending-deletions/count");
+              if (fallbackRes.ok) {
+                const fbData = await fallbackRes.json();
+                pendingCount.value = fbData.count || 0;
+              }
+            }
+          } catch (e) {
+            console.error("Failed to fetch shell data", e);
+          }
+        };
+
+        const isMatch = (path, target) => {
+          if (target === '/dashboard') return path === target;
+          return path.startsWith(target);
+        };
+
+        const navClass = (target) => {
+          const active = isMatch(props.currentPath, target);
+          return [
+            'h-full flex items-center text-sm font-medium border-b-2 transition-colors',
+            active ? 'border-brand-500 text-brand-500' : 'border-transparent text-gray-600 hover:text-brand-500 hover:border-brand-300'
+          ];
+        };
+
+        const mobileNavClass = (target) => {
+          const active = isMatch(props.currentPath, target);
+          return [
+            'block px-3 py-2 text-base font-medium rounded-md transition-colors',
+            active ? 'bg-brand-50 text-brand-600' : 'text-gray-700 hover:bg-gray-50'
+          ];
+        };
+
+        onMounted(() => {
+          fetchPendingCount();
+        });
+
+        return {
+          mobileMenuOpen,
+          pendingCount,
+          navClass,
+          mobileNavClass
+        };
+      }
+    });
+
+    // 2. 通用分页组件 AppPagination
+    app.component('app-pagination', {
+      props: {
+        page: { type: Number, required: true },
+        pages: { type: Number, required: true },
+      },
+      emits: ['update:page'],
+      template: `
+        <div v-if="pages > 1" class="flex justify-center mt-8 space-x-2">
+          <button
+            @click="changePage(page - 1)"
+            :disabled="page <= 1"
+            class="px-4 py-2 border rounded-md text-sm transition-colors"
+            :class="page <= 1 ? 'border-gray-200 text-gray-400 cursor-not-allowed bg-gray-50' : 'border-gray-300 text-gray-700 bg-white hover:border-brand-500 hover:text-brand-500'">
+            上一页
+          </button>
+
+          <span class="px-4 py-2 text-sm text-gray-600 flex items-center">
+            第 {{ page }} / {{ pages }} 页
+          </span>
+
+          <button
+            @click="changePage(page + 1)"
+            :disabled="page >= pages"
+            class="px-4 py-2 border rounded-md text-sm transition-colors"
+            :class="page >= pages ? 'border-gray-200 text-gray-400 cursor-not-allowed bg-gray-50' : 'border-gray-300 text-gray-700 bg-white hover:border-brand-500 hover:text-brand-500'">
+            下一页
+          </button>
+        </div>
+      `,
+      setup(props, { emit }) {
+        const changePage = (newPage) => {
+          if (newPage >= 1 && newPage <= props.pages) {
+            emit('update:page', newPage);
+          }
+        };
+        return { changePage };
+      }
+    });
+
+    // 3. 通用 Badge 组件 AppBadge
+    app.component('app-badge', {
+      props: {
+        type: { type: String, default: 'gray' }, // 'blue', 'green', 'red', 'yellow', 'gray'
+      },
+      template: `
+        <span :class="['inline-flex items-center px-2 py-0.5 rounded text-xs font-medium', colorClasses]">
+          <slot></slot>
+        </span>
+      `,
+      computed: {
+        colorClasses() {
+          const map = {
+            blue: 'bg-blue-100 text-blue-800',
+            green: 'bg-green-100 text-green-800',
+            red: 'bg-red-100 text-red-800',
+            yellow: 'bg-yellow-100 text-yellow-800',
+            gray: 'bg-gray-100 text-gray-800',
+            brand: 'bg-brand-100 text-brand-800',
+          };
+          return map[this.type] || map.gray;
+        }
+      }
+    });
+
+    // 4. 模态框 AppModal
+    app.component('app-modal', {
+      props: {
+        title: { type: String, required: true },
+        isOpen: { type: Boolean, required: true },
+      },
+      emits: ['close'],
+      template: `
+        <div v-if="isOpen" class="fixed inset-0 z-[100] overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+          <!-- Backdrop -->
+          <div class="fixed inset-0 bg-gray-900 bg-opacity-50 transition-opacity" @click="$emit('close')"></div>
+
+          <div class="flex min-h-screen items-center justify-center p-4 text-center sm:p-0">
+            <!-- Modal panel -->
+            <div class="relative transform overflow-hidden rounded-lg bg-white text-left shadow-xl transition-all sm:my-8 w-full max-w-2xl">
+              <!-- Header -->
+              <div class="bg-gray-50 px-4 py-3 border-b border-gray-200 flex justify-between items-center">
+                <h3 class="text-lg font-medium leading-6 text-gray-900" id="modal-title">
+                  {{ title }}
+                </h3>
+                <button type="button" class="text-gray-400 hover:text-gray-500" @click="$emit('close')">
+                  <span class="sr-only">关闭</span>
+                  <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              <!-- Content -->
+              <div class="px-4 py-5 sm:p-6 bg-white max-h-[70vh] overflow-y-auto">
+                <slot></slot>
+              </div>
+
+              <!-- Footer -->
+              <div v-if="$slots.footer" class="bg-gray-50 px-4 py-3 border-t border-gray-200 sm:flex sm:flex-row-reverse sm:px-6">
+                <slot name="footer"></slot>
+              </div>
+            </div>
+          </div>
+        </div>
+      `
+    });
+  }
+</script>

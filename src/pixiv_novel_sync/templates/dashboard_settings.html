@@ -7,186 +7,176 @@
 
   <!-- Sidebar -->
   <aside class="w-full lg:w-64 flex-shrink-0">
-    <div class="sticky top-20 bg-white/30 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-4">
-      <h2 class="text-xl font-bold text-slate-800 mb-4 px-2">同步设置</h2>
-      <nav class="space-y-1" id="settingsMenu">
-        <a href="#basic" data-section="basic" class="menu-item group flex items-center px-3 py-2.5 text-sm font-medium rounded-xl transition-colors text-brand-600 bg-white/50 border border-white/60 shadow-glass-sm">
-          <svg class="flex-shrink-0 mr-3 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-          基础设置
-        </a>
-        <a href="#limits" data-section="limits" class="menu-item group flex items-center px-3 py-2.5 text-sm font-medium rounded-xl transition-colors text-slate-600 hover:bg-white/40 hover:text-slate-800">
-          <svg class="flex-shrink-0 mr-3 w-5 h-5 text-slate-400 group-hover:text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-          限速参数
-        </a>
-        <a href="#following" data-section="following" class="menu-item group flex items-center px-3 py-2.5 text-sm font-medium rounded-xl transition-colors text-slate-600 hover:bg-white/40 hover:text-slate-800">
-          <svg class="flex-shrink-0 mr-3 w-5 h-5 text-slate-400 group-hover:text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
-          定时同步
-        </a>
-        <a href="#manual" data-section="manual" class="menu-item group flex items-center px-3 py-2.5 text-sm font-medium rounded-xl transition-colors text-slate-600 hover:bg-white/40 hover:text-slate-800">
-          <svg class="flex-shrink-0 mr-3 w-5 h-5 text-slate-400 group-hover:text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122"/></svg>
-          手动操作
-        </a>
-        <a href="#cache" data-section="cache" class="menu-item group flex items-center px-3 py-2.5 text-sm font-medium rounded-xl transition-colors text-slate-600 hover:bg-white/40 hover:text-slate-800">
-          <svg class="flex-shrink-0 mr-3 w-5 h-5 text-slate-400 group-hover:text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
-          图片缓存
-        </a>
+    <div class="sticky top-20 bg-white border border-gray-200 shadow-sm rounded-lg p-4">
+      <h2 class="text-lg font-bold text-gray-900 mb-4 px-2">同步设置</h2>
+      <nav class="space-y-1">
+        <button v-for="tab in tabs" :key="tab.id" @click="activeTab = tab.id"
+                class="w-full flex items-center px-3 py-2.5 text-sm font-medium rounded-md transition-colors text-left"
+                :class="activeTab === tab.id ? 'text-brand-600 bg-brand-50' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'">
+          <span class="mr-3 text-lg">{{ tab.icon }}</span>
+          {{ tab.name }}
+        </button>
       </nav>
     </div>
   </aside>
 
   <!-- Content -->
-  <div class="flex-1 min-w-0">
+  <div class="flex-1 min-w-0" v-if="settings">
 
     <!-- Section 1: Basic -->
-    <section id="basic" class="page-section block bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-6 sm:p-8 mb-8 animate-[fadeIn_0.3s_ease-out]">
-      <div class="mb-6">
-        <h2 class="text-xl font-bold text-slate-800">基础设置</h2>
-        <p class="text-sm text-slate-500 mt-1">配置要同步的核心内容和输出选项</p>
+    <section v-show="activeTab === 'basic'" class="bg-white border border-gray-200 shadow-sm rounded-lg p-6 sm:p-8 animate-[fadeIn_0.3s_ease-out]">
+      <div class="mb-6 border-b border-gray-100 pb-4">
+        <h2 class="text-xl font-bold text-gray-900">基础设置</h2>
+        <p class="text-sm text-gray-500 mt-1">配置要同步的核心内容和输出选项</p>
       </div>
 
       <div class="space-y-8">
         <div>
-          <h3 class="text-sm font-bold text-slate-800 border-b border-white/30 pb-2 mb-4">同步内容</h3>
-          <p class="text-xs text-slate-500 mb-4 bg-white/30 backdrop-blur-md p-2.5 rounded-xl border border-white/40">💡 提示：分批同步可降低风控风险，建议首次大批量拉取时仅开启一项。</p>
+          <h3 class="text-sm font-bold text-gray-900 mb-3">同步内容</h3>
+          <p class="text-xs text-brand-600 mb-4 bg-brand-50 p-2.5 rounded-md border border-brand-100">💡 提示：分批同步可降低风控风险，建议首次大批量拉取时仅开启一项。</p>
           <div class="space-y-3">
-            <label class="flex items-start gap-3 cursor-pointer group">
-              <div class="flex items-center h-5"><input type="checkbox" id="syncBookmarks" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 focus:ring-2 mt-0.5 cursor-pointer"></div>
-              <span class="text-sm text-slate-700 font-medium group-hover:text-slate-800 transition-colors">同步收藏小说</span>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.sync_bookmarks" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 font-medium group-hover:text-gray-900 transition-colors">同步收藏小说</span>
             </label>
-            <label class="flex items-start gap-3 cursor-pointer group">
-              <div class="flex items-center h-5"><input type="checkbox" id="syncFollowingUsers" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 focus:ring-2 mt-0.5 cursor-pointer"></div>
-              <span class="text-sm text-slate-700 font-medium group-hover:text-slate-800 transition-colors">同步关注用户列表</span>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.sync_following_users" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 font-medium group-hover:text-gray-900 transition-colors">同步关注用户列表</span>
             </label>
-            <label class="flex items-start gap-3 cursor-pointer group">
-              <div class="flex items-center h-5"><input type="checkbox" id="syncFollowingNovels" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 focus:ring-2 mt-0.5 cursor-pointer"></div>
-              <span class="text-sm text-slate-700 font-medium group-hover:text-slate-800 transition-colors">同步关注用户的小说</span>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.sync_following_novels" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 font-medium group-hover:text-gray-900 transition-colors">同步关注用户的小说</span>
             </label>
           </div>
         </div>
 
         <div>
-          <h3 class="text-sm font-bold text-slate-800 border-b border-white/30 pb-2 mb-4">功能选项</h3>
+          <h3 class="text-sm font-bold text-gray-900 mb-3">功能选项</h3>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-y-4 gap-x-6">
-            <label class="flex items-start gap-3 cursor-pointer group">
-              <div class="flex items-center h-5"><input type="checkbox" id="enabled" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 mt-0.5 cursor-pointer"></div>
-              <span class="text-sm text-slate-700 font-medium">启用全局同步</span>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.enabled" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 font-medium">启用全局同步</span>
             </label>
-            <label class="flex items-start gap-3 cursor-pointer group">
-              <div class="flex items-center h-5"><input type="checkbox" id="initialManualOnly" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 mt-0.5 cursor-pointer"></div>
-              <span class="text-sm text-slate-700 font-medium">首次仅允许手工触发</span>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.initial_manual_only" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 font-medium">首次仅允许手工触发</span>
             </label>
-            <label class="flex items-start gap-3 cursor-pointer group">
-              <div class="flex items-center h-5"><input type="checkbox" id="downloadAssets" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 mt-0.5 cursor-pointer"></div>
-              <span class="text-sm text-slate-700 font-medium">下载封面与插图资源</span>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.download_assets" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 font-medium">下载封面与插图资源</span>
             </label>
-            <label class="flex items-start gap-3 cursor-pointer group">
-              <div class="flex items-center h-5"><input type="checkbox" id="writeMarkdown" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 mt-0.5 cursor-pointer"></div>
-              <span class="text-sm text-slate-700 font-medium">输出 Markdown 文件</span>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.write_markdown" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 font-medium">输出 Markdown 文件</span>
             </label>
-            <label class="flex items-start gap-3 cursor-pointer group">
-              <div class="flex items-center h-5"><input type="checkbox" id="writeRawText" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 mt-0.5 cursor-pointer"></div>
-              <span class="text-sm text-slate-700 font-medium">输出原始文本文件</span>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.write_raw_text" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 font-medium">输出原始文本文件</span>
             </label>
-            <label class="flex items-start gap-3 cursor-pointer group">
-              <div class="flex items-center h-5"><input type="checkbox" id="restrictPublic" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 mt-0.5 cursor-pointer"></div>
-              <span class="text-sm text-slate-700 font-medium">同步公开收藏</span>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.bookmark_restricts" value="public" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 font-medium">同步公开收藏</span>
             </label>
-            <label class="flex items-start gap-3 cursor-pointer group">
-              <div class="flex items-center h-5"><input type="checkbox" id="restrictPrivate" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 mt-0.5 cursor-pointer"></div>
-              <span class="text-sm text-slate-700 font-medium">同步私密收藏</span>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.bookmark_restricts" value="private" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 font-medium">同步私密收藏</span>
             </label>
           </div>
         </div>
       </div>
 
-      <div class="mt-8 pt-6 border-t border-white/30 flex items-center gap-4">
-        <button id="saveBasic" class="px-6 py-2.5 bg-blue-500 text-white hover:bg-blue-600 font-bold rounded-xl transition-colors shadow-glass-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:ring-offset-2 disabled:opacity-50">保存基础设置</button>
-        <span id="msgBasic" class="text-sm font-medium transition-opacity duration-300 opacity-0"></span>
+      <div class="mt-8 pt-6 border-t border-gray-100 flex items-center gap-4">
+        <button @click="saveSettings('basic')" :disabled="saving" class="px-6 py-2 bg-brand-500 text-white hover:bg-brand-600 font-medium rounded-md transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50">
+          {{ saving ? '保存中...' : '保存基础设置' }}
+        </button>
+        <span v-if="saveMessage" class="text-sm font-medium" :class="saveSuccess ? 'text-green-600' : 'text-red-600'">{{ saveMessage }}</span>
       </div>
     </section>
 
     <!-- Section 2: Limits -->
-    <section id="limits" class="page-section hidden bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-6 sm:p-8 mb-8 animate-[fadeIn_0.3s_ease-out]">
-      <div class="mb-6">
-        <h2 class="text-xl font-bold text-slate-800">限速参数</h2>
-        <p class="text-sm text-slate-500 mt-1">控制单次同步的数据量和延迟，降低 API 风控风险</p>
+    <section v-show="activeTab === 'limits'" class="bg-white border border-gray-200 shadow-sm rounded-lg p-6 sm:p-8 animate-[fadeIn_0.3s_ease-out]">
+      <div class="mb-6 border-b border-gray-100 pb-4">
+        <h2 class="text-xl font-bold text-gray-900">限速参数</h2>
+        <p class="text-sm text-gray-500 mt-1">控制单次同步的数据量和延迟，降低 API 风控风险</p>
       </div>
 
       <div class="space-y-8">
         <div>
-          <h3 class="text-sm font-bold text-slate-800 border-b border-white/30 pb-2 mb-4">基本限速</h3>
+          <h3 class="text-sm font-bold text-gray-900 mb-3">基本限速</h3>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label for="maxItems" class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">单次最大条数</label>
-              <input type="number" id="maxItems" min="1" placeholder="留空不限" class="block w-full px-3 py-2.5 bg-white/50 border border-white/60 rounded-xl text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors">
+              <label class="block text-xs font-bold text-gray-500 uppercase mb-1.5">单次最大条数 (留空不限)</label>
+              <input type="number" v-model.number="settings.max_items_per_run" min="1" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
             <div>
-              <label for="maxPages" class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">单次最大页数</label>
-              <input type="number" id="maxPages" min="1" placeholder="留空不限" class="block w-full px-3 py-2.5 bg-white/50 border border-white/60 rounded-xl text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors">
+              <label class="block text-xs font-bold text-gray-500 uppercase mb-1.5">单次最大页数 (留空不限)</label>
+              <input type="number" v-model.number="settings.max_pages_per_run" min="1" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
           </div>
         </div>
 
         <div>
-          <h3 class="text-sm font-bold text-slate-800 border-b border-white/30 pb-2 mb-4">延迟设置 (秒)</h3>
+          <h3 class="text-sm font-bold text-gray-900 mb-3">延迟设置 (秒)</h3>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label class="block text-xs font-bold text-slate-500 mb-1.5">每本之间延迟</label>
-              <input type="number" id="itemDelay" min="0" step="0.1" placeholder="0" class="block w-full px-3 py-2.5 bg-white/50 border border-white/60 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors">
+              <label class="block text-xs font-bold text-gray-500 mb-1.5">每本之间延迟</label>
+              <input type="number" v-model.number="settings.delay_seconds_between_items" step="0.1" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
             <div>
-              <label class="block text-xs font-bold text-slate-500 mb-1.5">每页之间延迟</label>
-              <input type="number" id="pageDelay" min="0" step="0.1" placeholder="0" class="block w-full px-3 py-2.5 bg-white/50 border border-white/60 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors">
+              <label class="block text-xs font-bold text-gray-500 mb-1.5">每页之间延迟</label>
+              <input type="number" v-model.number="settings.delay_seconds_between_pages" step="0.1" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
             <div>
-              <label class="block text-xs font-bold text-slate-500 mb-1.5">每个系列间延迟</label>
-              <input type="number" id="seriesDelay" min="0" step="0.1" placeholder="3" class="block w-full px-3 py-2.5 bg-white/50 border border-white/60 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors">
+              <label class="block text-xs font-bold text-gray-500 mb-1.5">每个系列间延迟</label>
+              <input type="number" v-model.number="settings.delay_seconds_between_series" step="0.1" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
             <div>
-              <label class="block text-xs font-bold text-slate-500 mb-1.5">系列内每章延迟</label>
-              <input type="number" id="chapterDelay" min="0" step="0.1" placeholder="1" class="block w-full px-3 py-2.5 bg-white/50 border border-white/60 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors">
+              <label class="block text-xs font-bold text-gray-500 mb-1.5">系列内每章延迟</label>
+              <input type="number" v-model.number="settings.delay_seconds_between_chapters" step="0.1" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
             <div>
-              <label class="block text-xs font-bold text-slate-500 mb-1.5">跳过内容时延迟</label>
-              <input type="number" id="skipDelay" min="0" step="0.1" placeholder="0.1" class="block w-full px-3 py-2.5 bg-white/50 border border-white/60 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors">
+              <label class="block text-xs font-bold text-gray-500 mb-1.5">跳过内容时延迟</label>
+              <input type="number" v-model.number="settings.delay_seconds_between_skips" step="0.1" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
           </div>
         </div>
 
         <div>
-          <h3 class="text-sm font-bold text-slate-800 border-b border-white/30 pb-2 mb-4">同步数量限制</h3>
+          <h3 class="text-sm font-bold text-gray-900 mb-3">同步数量限制</h3>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label class="block text-xs font-bold text-slate-500 mb-1.5">全量备份每轮用户数</label>
-              <input type="number" id="followingNovelsUsersLimit" min="0" placeholder="0" class="block w-full px-3 py-2.5 bg-white/50 border border-white/60 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors">
-              <p class="mt-1.5 text-xs text-slate-400">全量备份任务每轮处理的用户数，0=全部</p>
+              <label class="block text-xs font-bold text-gray-500 mb-1.5">全量备份每轮用户数</label>
+              <input type="number" v-model.number="settings.auto_sync_following_novels_users_limit" min="0" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <p class="mt-1.5 text-xs text-gray-400">0=全部</p>
             </div>
             <div>
-              <label class="block text-xs font-bold text-slate-500 mb-1.5">每次同步追更系列数</label>
-              <input type="number" id="seriesSyncLimit" min="0" placeholder="0" class="block w-full px-3 py-2.5 bg-white/50 border border-white/60 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors">
-              <p class="mt-1.5 text-xs text-slate-400">输入 0 代表全部系列</p>
+              <label class="block text-xs font-bold text-gray-500 mb-1.5">每次同步追更系列数</label>
+              <input type="number" v-model.number="settings.series_sync_limit" min="0" class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <p class="mt-1.5 text-xs text-gray-400">0=全部</p>
             </div>
           </div>
         </div>
       </div>
 
-      <div class="mt-8 pt-6 border-t border-white/30 flex items-center gap-4">
-        <button id="saveLimits" class="px-6 py-2.5 bg-blue-500 text-white hover:bg-blue-600 font-bold rounded-xl transition-colors shadow-glass-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:ring-offset-2 disabled:opacity-50">保存限速设置</button>
-        <span id="msgLimits" class="text-sm font-medium transition-opacity duration-300 opacity-0"></span>
+      <div class="mt-8 pt-6 border-t border-gray-100 flex items-center gap-4">
+        <button @click="saveSettings('limits')" :disabled="saving" class="px-6 py-2 bg-brand-500 text-white hover:bg-brand-600 font-medium rounded-md transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50">
+          {{ saving ? '保存中...' : '保存限速设置' }}
+        </button>
+        <span v-if="saveMessage" class="text-sm font-medium" :class="saveSuccess ? 'text-green-600' : 'text-red-600'">{{ saveMessage }}</span>
       </div>
     </section>
 
     <!-- Section 3: Scheduled Sync -->
-    <section id="following" class="page-section hidden bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-6 sm:p-8 mb-8 animate-[fadeIn_0.3s_ease-out]">
-      <div class="mb-6">
-        <h2 class="text-xl font-bold text-slate-800">定时同步配置</h2>
-        <p class="text-sm text-slate-500 mt-1">配置定时任务，分散执行时间降低风控风险。注意：需要在首页开启全局引擎。</p>
+    <section v-show="activeTab === 'scheduler'" class="bg-white border border-gray-200 shadow-sm rounded-lg p-6 sm:p-8 animate-[fadeIn_0.3s_ease-out]">
+      <div class="mb-6 border-b border-gray-100 pb-4">
+        <h2 class="text-xl font-bold text-gray-900">定时同步配置</h2>
+        <p class="text-sm text-gray-500 mt-1">配置定时任务，分散执行时间降低风控风险。注意：需要在首页开启全局定时开关。</p>
       </div>
 
-      <div class="space-y-8">
+      <div class="space-y-6">
         <div>
-          <label class="block text-sm font-bold text-slate-800 mb-2">系统时区</label>
-          <select id="autoSyncTimezone" class="w-full max-w-md px-4 py-2.5 bg-white/50 border border-white/60 text-slate-800 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors appearance-none">
+          <label class="block text-sm font-bold text-gray-900 mb-2">系统时区</label>
+          <select v-model="settings.auto_sync_timezone" class="w-full max-w-md px-3 py-2 bg-white border border-gray-300 text-gray-900 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 custom-select">
             <option value="UTC">UTC (协调世界时)</option>
             <option value="Asia/Shanghai">Asia/Shanghai (中国上海, UTC+8)</option>
             <option value="Asia/Tokyo">Asia/Tokyo (日本东京, UTC+9)</option>
@@ -198,164 +188,92 @@
           </select>
         </div>
 
-        <div class="bg-white/35 backdrop-blur-xl border border-white/50 shadow-glass rounded-2xl overflow-hidden">
-          <table class="w-full text-sm text-left whitespace-nowrap">
-            <thead class="bg-white/20">
-              <tr>
-                <th scope="col" class="px-4 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider w-1/3">任务类型</th>
-                <th scope="col" class="px-4 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">固定间隔 (小时)</th>
-                <th scope="col" class="px-4 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">Cron 表达式 (优先)</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-white/20">
-              <!-- Row 1 -->
-              <tr class="hover:bg-white/20 transition-colors">
-                <td class="px-4 py-3">
-                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
-                    <input type="checkbox" id="autoSyncBookmarks" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 cursor-pointer">
-                    <span class="font-medium text-slate-800">同步收藏小说</span>
-                  </label>
-                </td>
-                <td class="px-4 py-2"><input type="number" id="autoSyncBookmarksInterval" min="1" class="w-20 px-2.5 py-1.5 bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-                <td class="px-4 py-2"><input type="text" id="autoSyncBookmarksCron" placeholder="如 0 3 * * *" class="w-32 px-2.5 py-1.5 font-mono bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-              </tr>
-              <!-- Row 2 -->
-              <tr class="hover:bg-white/20 transition-colors">
-                <td class="px-4 py-3">
-                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
-                    <input type="checkbox" id="autoSyncFollowingList" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 cursor-pointer">
-                    <span class="font-medium text-slate-800">更新关注用户列表</span>
-                  </label>
-                </td>
-                <td class="px-4 py-2"><input type="number" id="autoSyncFollowingListInterval" min="1" class="w-20 px-2.5 py-1.5 bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-                <td class="px-4 py-2"><input type="text" id="autoSyncFollowingListCron" placeholder="" class="w-32 px-2.5 py-1.5 font-mono bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-              </tr>
-              <!-- Row 3 -->
-              <tr class="hover:bg-white/20 transition-colors">
-                <td class="px-4 py-3">
-                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
-                    <input type="checkbox" id="autoSyncFollowingNovels" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 cursor-pointer">
-                    <span class="font-medium text-slate-800">同步关注用户的小说</span>
-                  </label>
-                </td>
-                <td class="px-4 py-2"><input type="number" id="autoSyncFollowingNovelsInterval" min="1" class="w-20 px-2.5 py-1.5 bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-                <td class="px-4 py-2"><input type="text" id="autoSyncFollowingNovelsCron" placeholder="" class="w-32 px-2.5 py-1.5 font-mono bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-              </tr>
-              <!-- Row 4 -->
-              <tr class="hover:bg-white/20 transition-colors">
-                <td class="px-4 py-3">
-                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
-                    <input type="checkbox" id="autoSyncSubscribedSeries" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 cursor-pointer">
-                    <span class="font-medium text-slate-800">同步追更系列</span>
-                  </label>
-                </td>
-                <td class="px-4 py-2"><input type="number" id="autoSyncSubscribedSeriesInterval" min="1" class="w-20 px-2.5 py-1.5 bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-                <td class="px-4 py-2"><input type="text" id="autoSyncSubscribedSeriesCron" placeholder="" class="w-32 px-2.5 py-1.5 font-mono bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-              </tr>
-              <!-- Checks Row -->
-              <tr class="hover:bg-white/20 transition-colors">
-                <td class="px-4 py-3">
-                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
-                    <input type="checkbox" id="autoSyncUserStatus" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 cursor-pointer">
-                    <span class="font-medium text-slate-800 text-xs">状态: 检查用户</span>
-                  </label>
-                </td>
-                <td class="px-4 py-2"><input type="number" id="autoSyncUserStatusInterval" min="1" class="w-20 px-2.5 py-1.5 bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-                <td class="px-4 py-2"><input type="text" id="autoSyncUserStatusCron" placeholder="" class="w-32 px-2.5 py-1.5 font-mono bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-              </tr>
-              <tr class="hover:bg-white/20 transition-colors">
-                <td class="px-4 py-3">
-                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
-                    <input type="checkbox" id="autoSyncNovelStatus" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 cursor-pointer">
-                    <span class="font-medium text-slate-800 text-xs">状态: 检查小说</span>
-                  </label>
-                </td>
-                <td class="px-4 py-2"><input type="number" id="autoSyncNovelStatusInterval" min="1" class="w-20 px-2.5 py-1.5 bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-                <td class="px-4 py-2"><input type="text" id="autoSyncNovelStatusCron" placeholder="" class="w-32 px-2.5 py-1.5 font-mono bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-              </tr>
-              <tr class="hover:bg-white/20 transition-colors">
-                <td class="px-4 py-3">
-                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
-                    <input type="checkbox" id="autoSyncSeriesStatus" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 cursor-pointer">
-                    <span class="font-medium text-slate-800 text-xs">状态: 检查系列</span>
-                  </label>
-                </td>
-                <td class="px-4 py-2"><input type="number" id="autoSyncSeriesStatusInterval" min="1" class="w-20 px-2.5 py-1.5 bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-                <td class="px-4 py-2"><input type="text" id="autoSyncSeriesStatusCron" placeholder="" class="w-32 px-2.5 py-1.5 font-mono bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-              </tr>
-              <tr class="hover:bg-white/20 transition-colors">
-                <td class="px-4 py-3">
-                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
-                    <input type="checkbox" id="autoSyncUserBackup" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 cursor-pointer">
-                    <span class="font-medium text-slate-800">全量备份关注用户</span>
-                  </label>
-                </td>
-                <td class="px-4 py-2"><input type="number" id="autoSyncUserBackupInterval" min="1" class="w-20 px-2.5 py-1.5 bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-                <td class="px-4 py-2"><input type="text" id="autoSyncUserBackupCron" placeholder="" class="w-32 px-2.5 py-1.5 font-mono bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-              </tr>
-              <tr class="hover:bg-white/20 transition-colors">
-                <td class="px-4 py-3">
-                  <label class="flex items-center gap-2 cursor-pointer w-full h-full">
-                    <input type="checkbox" id="autoSyncPendingDetection" class="w-4 h-4 text-brand-600 bg-white/50 border-white/60 rounded focus:ring-blue-500/50 cursor-pointer">
-                    <span class="font-medium text-slate-800 text-xs">检测: 取消收藏/追更</span>
-                  </label>
-                </td>
-                <td class="px-4 py-2"><input type="number" id="autoSyncPendingDetectionInterval" min="1" class="w-20 px-2.5 py-1.5 bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-                <td class="px-4 py-2"><input type="text" id="autoSyncPendingDetectionCron" placeholder="" class="w-32 px-2.5 py-1.5 font-mono bg-white/50 border border-white/60 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/50"></td>
-              </tr>
-            </tbody>
-          </table>
+        <div class="bg-white border border-gray-200 rounded-md overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm text-left whitespace-nowrap">
+              <thead class="bg-gray-50 border-b border-gray-200">
+                <tr>
+                  <th scope="col" class="px-4 py-3 text-xs font-bold text-gray-500 uppercase w-1/3">任务类型</th>
+                  <th scope="col" class="px-4 py-3 text-xs font-bold text-gray-500 uppercase">固定间隔 (小时)</th>
+                  <th scope="col" class="px-4 py-3 text-xs font-bold text-gray-500 uppercase">Cron 表达式 (优先)</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-100">
+                <tr v-for="task in schedulerTasks" :key="task.key" class="hover:bg-gray-50">
+                  <td class="px-4 py-3">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" v-model="settings[task.enableKey]" class="w-4 h-4 text-brand-600 bg-white border-gray-300 rounded focus:ring-brand-500">
+                      <span class="font-medium text-gray-900">{{ task.label }}</span>
+                    </label>
+                  </td>
+                  <td class="px-4 py-2">
+                    <input type="number" v-model.number="settings[task.intervalKey]" min="1" class="w-20 px-2 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+                  </td>
+                  <td class="px-4 py-2">
+                    <input type="text" v-model="settings[task.cronKey]" placeholder="如 0 3 * * *" class="w-32 px-2 py-1.5 font-mono border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
-      <div class="mt-8 pt-6 border-t border-white/30 flex items-center gap-4">
-        <button id="saveScheduler" class="px-6 py-2.5 bg-blue-500 text-white hover:bg-blue-600 font-bold rounded-xl transition-colors shadow-glass-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:ring-offset-2 disabled:opacity-50">保存定时设置</button>
-        <span id="msgScheduler" class="text-sm font-medium transition-opacity duration-300 opacity-0"></span>
+      <div class="mt-8 pt-6 border-t border-gray-100 flex items-center gap-4">
+        <button @click="saveSettings('scheduler')" :disabled="saving" class="px-6 py-2 bg-brand-500 text-white hover:bg-brand-600 font-medium rounded-md transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50">
+          {{ saving ? '保存中...' : '保存定时设置' }}
+        </button>
+        <span v-if="saveMessage" class="text-sm font-medium" :class="saveSuccess ? 'text-green-600' : 'text-red-600'">{{ saveMessage }}</span>
       </div>
     </section>
 
     <!-- Section 4: Manual -->
-    <section id="manual" class="page-section hidden bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-6 sm:p-8 mb-8 animate-[fadeIn_0.3s_ease-out]">
-      <div class="mb-6">
-        <h2 class="text-xl font-bold text-slate-800">手动触发操作</h2>
-        <p class="text-sm text-slate-500 mt-1">立刻触发特定任务执行（不受定时开关限制）</p>
+    <section v-show="activeTab === 'manual'" class="bg-white border border-gray-200 shadow-sm rounded-lg p-6 sm:p-8 animate-[fadeIn_0.3s_ease-out]">
+      <div class="mb-6 border-b border-gray-100 pb-4">
+        <h2 class="text-xl font-bold text-gray-900">手动触发操作</h2>
+        <p class="text-sm text-gray-500 mt-1">立刻触发特定任务执行（不受定时开关限制）</p>
       </div>
 
       <div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
-        <button id="manualBookmarks" class="w-full px-4 py-2.5 text-sm font-semibold text-blue-700 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-300/30 rounded-xl transition-colors disabled:opacity-50 shadow-glass-sm">同步收藏</button>
-        <button id="manualFollowingUsers" class="w-full px-4 py-2.5 text-sm font-semibold text-violet-700 bg-violet-500/10 hover:bg-violet-500/20 border border-violet-300/30 rounded-xl transition-colors disabled:opacity-50 shadow-glass-sm">同步关注用户</button>
-        <button id="manualFollowingNovels" class="w-full px-4 py-2.5 text-sm font-semibold text-emerald-700 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-300/30 rounded-xl transition-colors disabled:opacity-50 shadow-glass-sm">同步关注小说</button>
-        <button id="manualUserStatus" class="w-full px-4 py-2.5 text-sm font-semibold text-amber-700 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-300/30 rounded-xl transition-colors disabled:opacity-50 shadow-glass-sm">检查用户状态</button>
-        <button id="manualNovelStatus" class="w-full px-4 py-2.5 text-sm font-semibold text-rose-700 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-300/30 rounded-xl transition-colors disabled:opacity-50 shadow-glass-sm">检查小说状态</button>
-        <button id="manualSeriesStatus" class="w-full px-4 py-2.5 text-sm font-semibold text-cyan-700 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-300/30 rounded-xl transition-colors disabled:opacity-50 shadow-glass-sm">检查系列状态</button>
+        <button v-for="btn in manualButtons" :key="btn.id" @click="triggerManualTask(btn.id, btn.label)" :disabled="triggering" class="w-full px-4 py-2.5 text-sm font-semibold rounded-md transition-colors disabled:opacity-50 shadow-sm border focus:outline-none focus:ring-2 focus:ring-offset-1" :class="btn.class">
+          {{ btn.label }}
+        </button>
       </div>
 
-      <div class="bg-slate-900/80 backdrop-blur-xl rounded-xl p-4 border border-slate-700/50 shadow-inner">
-        <h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">执行日志 (当前页面)</h4>
-        <div id="manualLog" class="font-mono text-xs leading-relaxed text-gray-300 h-48 overflow-y-auto custom-scrollbar space-y-1">
-          <!-- Logs go here -->
+      <div class="bg-gray-900 rounded-md p-4 shadow-inner">
+        <h4 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">执行日志 (当前页面)</h4>
+        <div class="font-mono text-xs leading-relaxed text-gray-300 h-48 overflow-y-auto space-y-1">
+          <div v-for="(log, i) in manualLogs" :key="i">
+            <span class="text-gray-500 mr-2">[{{ log.time }}]</span>
+            <span :class="log.error ? 'text-red-400' : 'text-gray-300'">{{ log.msg }}</span>
+          </div>
         </div>
       </div>
     </section>
 
     <!-- Section 5: Cache -->
-    <section id="cache" class="page-section hidden bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-6 sm:p-8 mb-8 animate-[fadeIn_0.3s_ease-out]">
-      <div class="mb-6">
-        <h2 class="text-xl font-bold text-slate-800">图片缓存管理</h2>
-        <p class="text-sm text-slate-500 mt-1">管理本地图片反代缓存，清理缓存可强制重新获取最新封面。</p>
+    <section v-show="activeTab === 'cache'" class="bg-white border border-gray-200 shadow-sm rounded-lg p-6 sm:p-8 animate-[fadeIn_0.3s_ease-out]">
+      <div class="mb-6 border-b border-gray-100 pb-4">
+        <h2 class="text-xl font-bold text-gray-900">图片缓存管理</h2>
+        <p class="text-sm text-gray-500 mt-1">管理本地图片反代缓存，清理缓存可强制重新获取最新封面。</p>
       </div>
 
-      <div class="bg-white/30 backdrop-blur-md rounded-xl p-5 border border-white/40 mb-6 flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+      <div class="bg-gray-50 rounded-md p-5 border border-gray-200 mb-6 flex flex-col sm:flex-row justify-between sm:items-center gap-4">
         <div>
-          <div class="text-xs font-bold text-slate-500 uppercase mb-1">当前缓存占用</div>
-          <div id="cacheInfo" class="text-lg font-bold text-slate-800">加载中...</div>
+          <div class="text-xs font-bold text-gray-500 uppercase mb-1">当前缓存占用</div>
+          <div v-if="loadingCache" class="animate-pulse h-6 bg-gray-200 rounded w-24"></div>
+          <div v-else-if="cacheData.exists" class="text-lg font-bold text-gray-900">
+            <span class="font-mono bg-white px-2 py-0.5 rounded border border-gray-200 mr-3">{{ cacheData.size_human }}</span>
+            <span class="text-sm font-normal text-gray-500">文件数: {{ cacheData.file_count }}</span>
+          </div>
+          <div v-else class="text-gray-500">缓存目录不存在或为空</div>
         </div>
         <div class="flex items-center gap-3">
-          <button id="refreshCacheBtn" class="px-4 py-2 bg-white/40 backdrop-blur-md border border-white/60 text-slate-700 rounded-xl text-sm font-semibold hover:bg-white/55 transition-colors shadow-glass-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20">刷新状态</button>
-          <button id="clearCacheBtn" class="px-4 py-2 bg-red-500/10 border border-red-300/30 text-red-600 rounded-xl text-sm font-semibold hover:bg-red-500/20 transition-colors shadow-glass-sm focus:outline-none focus:ring-2 focus:ring-red-500/20">清空缓存</button>
+          <button @click="fetchCacheStatus" class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md text-sm font-semibold hover:bg-gray-50 transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500">刷新状态</button>
+          <button @click="clearCache" :disabled="clearingCache" class="px-4 py-2 bg-red-50 border border-red-200 text-red-600 rounded-md text-sm font-semibold hover:bg-red-100 transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50">清空缓存</button>
         </div>
       </div>
-      <div id="cacheMessage" class="text-sm font-medium transition-opacity duration-300 opacity-0"></div>
+      <div v-if="cacheMessage" class="text-sm font-medium" :class="cacheSuccess ? 'text-green-600' : 'text-red-600'">{{ cacheMessage }}</div>
     </section>
 
   </div>
@@ -364,262 +282,167 @@
 
 {% block extra_scripts %}
 <style>
-  .custom-scrollbar::-webkit-scrollbar { width: 6px; }
-  .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-  .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
-  select { background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e"); background-position: right 0.5rem center; background-repeat: no-repeat; background-size: 1.5em 1.5em; }
+  .custom-select {
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-position: right 0.5rem center;
+    background-repeat: no-repeat;
+    background-size: 1.5em 1.5em;
+  }
 </style>
-
 <script>
-  (function() {
-    const $ = sel => document.querySelector(sel);
-    const $$ = sel => document.querySelectorAll(sel);
-    const state = { settings: null };
+  initVueApp({
+    setup() {
+      const { ref, onMounted } = Vue;
 
-    function escapeHtml(value) {
-      return String(value ?? '').replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch] || ch));
-    }
+      // Layout
+      const tabs = [
+        { id: 'basic', name: '基础设置', icon: '⚙️' },
+        { id: 'limits', name: '限速参数', icon: '⏱️' },
+        { id: 'scheduler', name: '定时同步', icon: '📅' },
+        { id: 'manual', name: '手动操作', icon: '🚀' },
+        { id: 'cache', name: '图片缓存', icon: '🖼️' },
+      ];
+      const activeTab = ref(window.location.hash ? window.location.hash.slice(1) : 'basic');
 
-    function logToPanel(msg) {
-      const log = $("#manualLog");
-      const time = new Date().toLocaleTimeString();
-      const line = document.createElement('div');
-      line.innerHTML = `<span class="text-gray-500 mr-2">[${time}]</span><span class="text-gray-300">${escapeHtml(msg)}</span>`;
-      log.prepend(line);
-    }
+      // State
+      const settings = ref(null);
+      const saving = ref(false);
+      const saveMessage = ref('');
+      const saveSuccess = ref(true);
 
-    // Tabs logic
-    function handleMenuClick(e) {
-      e.preventDefault();
-      const target = e.currentTarget;
-      const sectionId = target.getAttribute("data-section");
+      const schedulerTasks = [
+        { key: 'bookmarks', label: '同步收藏小说', enableKey: 'auto_sync_bookmarks_enabled', intervalKey: 'auto_sync_bookmarks_interval_hours', cronKey: 'auto_sync_bookmarks_cron' },
+        { key: 'followingList', label: '更新关注用户列表', enableKey: 'auto_sync_following_list_enabled', intervalKey: 'auto_sync_following_list_interval_hours', cronKey: 'auto_sync_following_list_cron' },
+        { key: 'followingNovels', label: '同步关注用户的小说', enableKey: 'auto_sync_following_novels_enabled', intervalKey: 'auto_sync_following_novels_interval_hours', cronKey: 'auto_sync_following_novels_cron' },
+        { key: 'subscribedSeries', label: '同步追更系列', enableKey: 'auto_sync_subscribed_series_enabled', intervalKey: 'auto_sync_subscribed_series_interval_hours', cronKey: 'auto_sync_subscribed_series_cron' },
+        { key: 'userStatus', label: '状态: 检查用户', enableKey: 'auto_sync_user_status_enabled', intervalKey: 'auto_sync_user_status_interval_hours', cronKey: 'auto_sync_user_status_cron' },
+        { key: 'novelStatus', label: '状态: 检查小说', enableKey: 'auto_sync_novel_status_enabled', intervalKey: 'auto_sync_novel_status_interval_hours', cronKey: 'auto_sync_novel_status_cron' },
+        { key: 'seriesStatus', label: '状态: 检查系列', enableKey: 'auto_sync_series_status_enabled', intervalKey: 'auto_sync_series_status_interval_hours', cronKey: 'auto_sync_series_status_cron' },
+        { key: 'userBackup', label: '全量备份关注用户', enableKey: 'auto_sync_user_backup_enabled', intervalKey: 'auto_sync_user_backup_interval_hours', cronKey: 'auto_sync_user_backup_cron' },
+        { key: 'pendingDetection', label: '检测: 取消收藏/追更', enableKey: 'auto_sync_pending_detection_enabled', intervalKey: 'auto_sync_pending_detection_interval_hours', cronKey: 'auto_sync_pending_detection_cron' }
+      ];
 
-      // Reset menu styling
-      $$(".menu-item").forEach(el => {
-        el.classList.remove("text-brand-600", "bg-white/50", "border", "border-white/60", "shadow-glass-sm");
-        el.classList.add("text-slate-600", "hover:bg-white/40");
-        const icon = el.querySelector('svg');
-        if(icon) { icon.classList.remove("text-brand-600"); icon.classList.add("text-slate-400"); }
-      });
-      // Set active menu styling
-      target.classList.remove("text-slate-600", "hover:bg-white/40");
-      target.classList.add("text-brand-600", "bg-white/50", "border", "border-white/60", "shadow-glass-sm");
-      const activeIcon = target.querySelector('svg');
-      if(activeIcon) { activeIcon.classList.remove("text-slate-400"); activeIcon.classList.add("text-brand-600"); }
+      // Manual Tab
+      const manualButtons = [
+        { id: 'bookmark', label: '同步收藏', class: 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 focus:ring-blue-500' },
+        { id: 'following_users', label: '同步关注用户', class: 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100 focus:ring-indigo-500' },
+        { id: 'following_novels', label: '同步关注小说', class: 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 focus:ring-emerald-500' },
+        { id: 'user_status', label: '检查用户状态', class: 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 focus:ring-amber-500' },
+        { id: 'novel_status', label: '检查小说状态', class: 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100 focus:ring-rose-500' },
+        { id: 'series_status', label: '检查系列状态', class: 'bg-cyan-50 text-cyan-700 border-cyan-200 hover:bg-cyan-100 focus:ring-cyan-500' }
+      ];
+      const triggering = ref(false);
+      const manualLogs = ref([]);
 
-      // Toggle sections
-      $$(".page-section").forEach(el => { el.classList.add("hidden"); el.classList.remove("block"); });
-      const sec = $("#" + sectionId);
-      if(sec) { sec.classList.remove("hidden"); sec.classList.add("block"); }
+      const addLog = (msg, error = false) => {
+        manualLogs.value.unshift({ time: new Date().toLocaleTimeString('zh-CN'), msg, error });
+      };
 
-      history.replaceState(null, "", "#" + sectionId);
-    }
-
-    $$(".menu-item").forEach(item => item.addEventListener("click", handleMenuClick));
-    if (location.hash) {
-      const target = $('[data-section="' + location.hash.slice(1) + '"]');
-      if (target) handleMenuClick({preventDefault:()=>{}, currentTarget: target});
-    }
-
-    function checked(id, value) { const el = $(id); if (el) el.checked = !!value; }
-    function valueOf(id, value) { const el = $(id); if (el) el.value = value ?? ''; }
-
-    async function loadSettings() {
-      const res = await fetch("/api/dashboard/settings");
-      const data = await res.json();
-      state.settings = data;
-      populateSettings(data);
-    }
-
-    function populateSettings(s) {
-      checked("#syncBookmarks", s.sync_bookmarks);
-      checked("#syncFollowingUsers", s.sync_following_users);
-      checked("#syncFollowingNovels", s.sync_following_novels);
-      checked("#enabled", s.enabled);
-      checked("#initialManualOnly", s.initial_manual_only);
-      checked("#downloadAssets", s.download_assets);
-      checked("#writeMarkdown", s.write_markdown);
-      checked("#writeRawText", s.write_raw_text);
-      checked("#restrictPublic", (s.bookmark_restricts || []).includes('public'));
-      checked("#restrictPrivate", (s.bookmark_restricts || []).includes('private'));
-
-      valueOf("#maxItems", s.max_items_per_run);
-      valueOf("#maxPages", s.max_pages_per_run);
-      valueOf("#itemDelay", s.delay_seconds_between_items ?? 0);
-      valueOf("#pageDelay", s.delay_seconds_between_pages ?? 0);
-      valueOf("#seriesDelay", s.delay_seconds_between_series ?? 3);
-      valueOf("#chapterDelay", s.delay_seconds_between_chapters ?? 1);
-      valueOf("#skipDelay", s.delay_seconds_between_skips ?? 0.1);
-      valueOf("#followingNovelsUsersLimit", s.auto_sync_following_novels_users_limit ?? 0);
-      valueOf("#seriesSyncLimit", s.series_sync_limit ?? 0);
-
-      valueOf("#autoSyncTimezone", s.auto_sync_timezone || 'UTC');
-      checked("#autoSyncBookmarks", s.auto_sync_bookmarks_enabled);
-      checked("#autoSyncFollowingList", s.auto_sync_following_list_enabled);
-      checked("#autoSyncFollowingNovels", s.auto_sync_following_novels_enabled);
-      checked("#autoSyncUserStatus", s.auto_sync_user_status_enabled);
-      checked("#autoSyncNovelStatus", s.auto_sync_novel_status_enabled);
-      checked("#autoSyncSeriesStatus", s.auto_sync_series_status_enabled);
-      checked("#autoSyncSubscribedSeries", s.auto_sync_subscribed_series_enabled);
-      checked("#autoSyncUserBackup", s.auto_sync_user_backup_enabled);
-      checked("#autoSyncPendingDetection", s.auto_sync_pending_detection_enabled);
-
-      valueOf("#autoSyncBookmarksInterval", s.auto_sync_bookmarks_interval_hours ?? 6);
-      valueOf("#autoSyncFollowingListInterval", s.auto_sync_following_list_interval_hours ?? 24);
-      valueOf("#autoSyncFollowingNovelsInterval", s.auto_sync_following_novels_interval_hours ?? 6);
-      valueOf("#autoSyncUserStatusInterval", s.auto_sync_user_status_interval_hours ?? 6);
-      valueOf("#autoSyncNovelStatusInterval", s.auto_sync_novel_status_interval_hours ?? 6);
-      valueOf("#autoSyncSeriesStatusInterval", s.auto_sync_series_status_interval_hours ?? 6);
-      valueOf("#autoSyncSubscribedSeriesInterval", s.auto_sync_subscribed_series_interval_hours ?? 6);
-      valueOf("#autoSyncUserBackupInterval", s.auto_sync_user_backup_interval_hours ?? 24);
-      valueOf("#autoSyncPendingDetectionInterval", s.auto_sync_pending_detection_interval_hours ?? 12);
-
-      valueOf("#autoSyncBookmarksCron", s.auto_sync_bookmarks_cron ?? '');
-      valueOf("#autoSyncFollowingListCron", s.auto_sync_following_list_cron ?? '');
-      valueOf("#autoSyncFollowingNovelsCron", s.auto_sync_following_novels_cron ?? '');
-      valueOf("#autoSyncUserStatusCron", s.auto_sync_user_status_cron ?? '');
-      valueOf("#autoSyncNovelStatusCron", s.auto_sync_novel_status_cron ?? '');
-      valueOf("#autoSyncSeriesStatusCron", s.auto_sync_series_status_cron ?? '');
-      valueOf("#autoSyncSubscribedSeriesCron", s.auto_sync_subscribed_series_cron ?? '');
-      valueOf("#autoSyncUserBackupCron", s.auto_sync_user_backup_cron ?? '');
-      valueOf("#autoSyncPendingDetectionCron", s.auto_sync_pending_detection_cron ?? '');
-    }
-
-    function showMessage(el, text, isOk) {
-      el.textContent = text;
-      el.className = `text-sm font-medium transition-opacity duration-300 opacity-100 ${isOk ? 'text-green-600' : 'text-red-600'}`;
-      setTimeout(() => { el.classList.replace('opacity-100', 'opacity-0'); }, 3000);
-    }
-
-    const payloadBuilders = {
-      basic: () => {
-        const restricts = [];
-        if ($("#restrictPublic").checked) restricts.push('public');
-        if ($("#restrictPrivate").checked) restricts.push('private');
-        return {
-          sync_bookmarks: $("#syncBookmarks").checked,
-          sync_following_users: $("#syncFollowingUsers").checked,
-          sync_following_novels: $("#syncFollowingNovels").checked,
-          enabled: $("#enabled").checked,
-          initial_manual_only: $("#initialManualOnly").checked,
-          download_assets: $("#downloadAssets").checked,
-          write_markdown: $("#writeMarkdown").checked,
-          write_raw_text: $("#writeRawText").checked,
-          bookmark_restricts: restricts,
-        };
-      },
-      limits: () => ({
-        max_items_per_run: $("#maxItems").value.trim(),
-        max_pages_per_run: $("#maxPages").value.trim(),
-        delay_seconds_between_items: $("#itemDelay").value.trim(),
-        delay_seconds_between_pages: $("#pageDelay").value.trim(),
-        delay_seconds_between_series: $("#seriesDelay").value.trim(),
-        delay_seconds_between_chapters: $("#chapterDelay").value.trim(),
-        delay_seconds_between_skips: $("#skipDelay").value.trim(),
-        auto_sync_following_novels_users_limit: $("#followingNovelsUsersLimit").value.trim(),
-        series_sync_limit: $("#seriesSyncLimit").value.trim(),
-      }),
-      scheduler: () => ({
-        auto_sync_timezone: $("#autoSyncTimezone").value,
-        auto_sync_bookmarks_enabled: $("#autoSyncBookmarks").checked,
-        auto_sync_following_list_enabled: $("#autoSyncFollowingList").checked,
-        auto_sync_following_novels_enabled: $("#autoSyncFollowingNovels").checked,
-        auto_sync_user_status_enabled: $("#autoSyncUserStatus").checked,
-        auto_sync_novel_status_enabled: $("#autoSyncNovelStatus").checked,
-        auto_sync_series_status_enabled: $("#autoSyncSeriesStatus").checked,
-        auto_sync_subscribed_series_enabled: $("#autoSyncSubscribedSeries").checked,
-        auto_sync_user_backup_enabled: $("#autoSyncUserBackup").checked,
-        auto_sync_pending_detection_enabled: $("#autoSyncPendingDetection").checked,
-        auto_sync_bookmarks_interval_hours: $("#autoSyncBookmarksInterval").value.trim(),
-        auto_sync_bookmarks_cron: $("#autoSyncBookmarksCron").value.trim(),
-        auto_sync_following_list_interval_hours: $("#autoSyncFollowingListInterval").value.trim(),
-        auto_sync_following_list_cron: $("#autoSyncFollowingListCron").value.trim(),
-        auto_sync_following_novels_interval_hours: $("#autoSyncFollowingNovelsInterval").value.trim(),
-        auto_sync_following_novels_cron: $("#autoSyncFollowingNovelsCron").value.trim(),
-        auto_sync_user_status_interval_hours: $("#autoSyncUserStatusInterval").value.trim(),
-        auto_sync_user_status_cron: $("#autoSyncUserStatusCron").value.trim(),
-        auto_sync_novel_status_interval_hours: $("#autoSyncNovelStatusInterval").value.trim(),
-        auto_sync_novel_status_cron: $("#autoSyncNovelStatusCron").value.trim(),
-        auto_sync_series_status_interval_hours: $("#autoSyncSeriesStatusInterval").value.trim(),
-        auto_sync_series_status_cron: $("#autoSyncSeriesStatusCron").value.trim(),
-        auto_sync_subscribed_series_interval_hours: $("#autoSyncSubscribedSeriesInterval").value.trim(),
-        auto_sync_subscribed_series_cron: $("#autoSyncSubscribedSeriesCron").value.trim(),
-        auto_sync_user_backup_interval_hours: $("#autoSyncUserBackupInterval").value.trim(),
-        auto_sync_user_backup_cron: $("#autoSyncUserBackupCron").value.trim(),
-        auto_sync_pending_detection_interval_hours: $("#autoSyncPendingDetectionInterval").value.trim(),
-        auto_sync_pending_detection_cron: $("#autoSyncPendingDetectionCron").value.trim(),
-      })
-    };
-
-    function attachSaveHandler(btnId, msgId, builderName) {
-      $(btnId).addEventListener("click", async () => {
-        const btn = $(btnId);
-        btn.disabled = true;
-        btn.innerHTML = '<svg class="animate-spin -ml-1 mr-2 h-4 w-4 inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>保存中...';
+      const triggerManualTask = async (task, label) => {
+        triggering.value = true;
+        addLog(`发起任务请求：${label}`);
         try {
-          const res = await fetch("/api/dashboard/settings", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payloadBuilders[builderName]()) });
+          const res = await fetch(`/api/dashboard/sync/${task}`, { method: 'POST' });
           const data = await res.json();
-          showMessage($(msgId), data.message || "设置已保存", res.ok);
-          if (res.ok) loadSettings();
-        } catch(e) { showMessage($(msgId), "保存失败：" + e.message, false); }
-        finally { btn.disabled = false; btn.textContent = btnId.replace('#save','保存').replace('Basic','基础设置').replace('Limits','限速设置').replace('Scheduler','定时设置'); }
-      });
-    }
-
-    attachSaveHandler("#saveBasic", "#msgBasic", "basic");
-    attachSaveHandler("#saveLimits", "#msgLimits", "limits");
-    attachSaveHandler("#saveScheduler", "#msgScheduler", "scheduler");
-
-    async function triggerSync(task, btn) {
-      btn.disabled = true;
-      const original = btn.textContent;
-      btn.textContent = "请求中...";
-      logToPanel("发起任务请求：" + task);
-      try {
-        const res = await fetch("/api/dashboard/sync/" + task, { method: "POST" });
-        const data = await res.json();
-        if (data.ok) logToPanel("✓ 任务已成功加入队列");
-        else logToPanel("✗ 任务失败：" + (data.message || "未知错误"));
-      } catch(e) { logToPanel("✗ 网络错误：" + e.message); }
-      finally { btn.disabled = false; btn.textContent = original; }
-    }
-
-    $("#manualBookmarks").addEventListener("click", () => triggerSync("bookmark", $("#manualBookmarks")));
-    $("#manualFollowingUsers").addEventListener("click", () => triggerSync("following_users", $("#manualFollowingUsers")));
-    $("#manualFollowingNovels").addEventListener("click", () => triggerSync("following_novels", $("#manualFollowingNovels")));
-    $("#manualUserStatus").addEventListener("click", () => triggerSync("user_status", $("#manualUserStatus")));
-    $("#manualNovelStatus").addEventListener("click", () => triggerSync("novel_status", $("#manualNovelStatus")));
-    $("#manualSeriesStatus").addEventListener("click", () => triggerSync("series_status", $("#manualSeriesStatus")));
-
-    async function loadCacheStatus() {
-      const info = $("#cacheInfo");
-      try {
-        const resp = await fetch('/api/cache/status');
-        const data = await resp.json();
-        if (data.exists) {
-          info.innerHTML = `<span class="font-mono bg-white/30 backdrop-blur-md px-2 py-0.5 rounded-lg border border-white/40 mr-3">${data.size_human}</span> <span class="text-sm font-normal text-slate-500">文件数: ${data.file_count}</span>`;
-        } else {
-          info.textContent = '缓存目录不存在或为空';
+          if (res.ok) addLog(`✓ 任务已成功加入队列 (${label})`);
+          else addLog(`✗ 任务失败：${data.message || '未知错误'}`, true);
+        } catch (e) {
+          addLog(`✗ 网络错误：${e.message}`, true);
+        } finally {
+          triggering.value = false;
         }
-      } catch (e) { info.textContent = '获取状态失败'; }
+      };
+
+      // Cache Tab
+      const loadingCache = ref(true);
+      const clearingCache = ref(false);
+      const cacheData = ref({});
+      const cacheMessage = ref('');
+      const cacheSuccess = ref(true);
+
+      const fetchCacheStatus = async () => {
+        loadingCache.value = true;
+        try {
+          const res = await fetch('/api/cache/status');
+          cacheData.value = await res.json();
+        } catch (e) {
+          cacheData.value = { exists: false };
+        } finally {
+          loadingCache.value = false;
+        }
+      };
+
+      const clearCache = async () => {
+        if (!confirm('确认清空所有图片缓存？\n清空后首次访问列表图片加载会变慢。')) return;
+        clearingCache.value = true;
+        try {
+          const res = await fetch('/api/cache/clear', { method: 'POST' });
+          const data = await res.json();
+          cacheSuccess.value = res.ok;
+          cacheMessage.value = res.ok ? '缓存已成功清空' : (data.error || '清空失败');
+          if (res.ok) fetchCacheStatus();
+          setTimeout(() => { cacheMessage.value = ''; }, 3000);
+        } catch (e) {
+          cacheSuccess.value = false;
+          cacheMessage.value = '网络错误';
+        } finally {
+          clearingCache.value = false;
+        }
+      };
+
+      // General Settings
+      const fetchSettings = async () => {
+        try {
+          const res = await fetch('/api/dashboard/settings');
+          const data = await res.json();
+          if (!data.bookmark_restricts) data.bookmark_restricts = [];
+          settings.value = data;
+        } catch (e) {
+          console.error("Failed to fetch settings");
+        }
+      };
+
+      const showSaveStatus = (msg, success) => {
+        saveMessage.value = msg;
+        saveSuccess.value = success;
+        setTimeout(() => { saveMessage.value = ''; }, 3000);
+      };
+
+      const saveSettings = async (section) => {
+        saving.value = true;
+        saveMessage.value = '';
+        try {
+          // Send the entire reactive object. The backend handles updating valid fields.
+          const res = await fetch('/api/dashboard/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(settings.value)
+          });
+          const data = await res.json();
+          showSaveStatus(data.message || '设置已保存', res.ok);
+        } catch (e) {
+          showSaveStatus('保存失败：网络错误', false);
+        } finally {
+          saving.value = false;
+        }
+      };
+
+      onMounted(() => {
+        fetchSettings();
+        fetchCacheStatus();
+        window.addEventListener('hashchange', () => {
+          const hash = window.location.hash.slice(1);
+          if (tabs.find(t => t.id === hash)) activeTab.value = hash;
+        });
+      });
+
+      return {
+        tabs, activeTab, settings, saving, saveMessage, saveSuccess,
+        schedulerTasks, manualButtons, triggering, manualLogs,
+        loadingCache, clearingCache, cacheData, cacheMessage, cacheSuccess,
+        saveSettings, triggerManualTask, fetchCacheStatus, clearCache
+      };
     }
-
-    async function clearCache() {
-      const msg = $("#cacheMessage");
-      if (!confirm('确认清空所有图片缓存？\n清空后首次访问列表图片加载会变慢。')) return;
-      try {
-        const resp = await fetch('/api/cache/clear', { method: 'POST' });
-        const data = await resp.json();
-        showMessage(msg, resp.ok ? '缓存已成功清空' : (data.error || '清空失败'), resp.ok);
-        if (resp.ok) await loadCacheStatus();
-      } catch (e) { showMessage(msg, '网络错误', false); }
-    }
-
-    $("#refreshCacheBtn").addEventListener("click", loadCacheStatus);
-    $("#clearCacheBtn").addEventListener("click", clearCache);
-
-    loadSettings();
-    loadCacheStatus();
-  })();
+  });
 </script>
 {% endblock %}

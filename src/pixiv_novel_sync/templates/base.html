@@ -5,129 +5,91 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Pixiv 小说同步器{% endblock %}</title>
 
+  <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Tailwind Config -->
+  <script src="/static/tailwind_config.js"></script>
 
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            brand: {
-              50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd',
-              400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8',
-              800: '#1e40af', 900: '#1e3a8a', 950: '#172554',
-            }
-          },
-          fontFamily: {
-            sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Display"', '"Segoe UI"', 'Roboto', 'sans-serif'],
-          },
-          boxShadow: {
-            'glass': '0 8px 32px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.6)',
-            'glass-sm': '0 2px 8px rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.5)',
-            'glass-nav': '0 1px 4px rgba(0,0,0,0.06)',
-            'glass-lg': '0 16px 48px rgba(0,0,0,0.1), inset 0 1px 0 rgba(255,255,255,0.7)',
-          },
-          backdropSaturate: {
-            '180': '1.8',
-          },
-        }
-      }
-    }
-  </script>
+  <!-- Vue 3 -->
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
 
   <style>
+    /* 避免 Vue 渲染闪烁 */
+    [v-cloak] { display: none !important; }
+
     .scrollbar-hide::-webkit-scrollbar { display: none; }
     .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
   </style>
 
+  <script>
+    // 由于之前 Tailwind config 是直接写在 base.html 中的，现在我们为了复用，
+    // 将它的逻辑提取出来了，但是在开发阶段，我们需要确保 config 正确加载。
+    // 如果 /static/tailwind_config.js 没有被 Flask serve，我们仍然在这里放置一份 fallback。
+    if (!window.tailwind || !window.tailwind.config) {
+      window.tailwind = window.tailwind || {};
+      window.tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              brand: {
+                50: '#f2f9ff', 100: '#e6f3ff', 200: '#bfdfff', 300: '#99cbff',
+                400: '#4da6ff', 500: '#0096fa', 600: '#0087e1', 700: '#0070bb',
+                800: '#005a96', 900: '#00497b', 950: '#002f4d',
+              },
+              pixiv: {
+                bg: '#f5f6f8', text: '#333333', gray: '#999999'
+              }
+            },
+            fontFamily: {
+              sans: ['"Helvetica Neue"', 'Helvetica', '"PingFang SC"', '"Hiragino Sans GB"', '"Microsoft YaHei"', '微软雅黑', 'Arial', 'sans-serif'],
+            }
+          }
+        }
+      };
+    }
+  </script>
+
   {% block extra_head %}{% endblock %}
 </head>
-<body class="min-h-screen flex flex-col antialiased text-slate-800">
+<body class="min-h-screen flex flex-col antialiased text-pixiv-text bg-pixiv-bg">
 
-  <!-- 固定渐变背景 + 彩色 blobs -->
-  <div class="fixed inset-0 -z-10 overflow-hidden">
-    <div class="absolute inset-0 bg-gradient-to-br from-sky-100 via-white to-indigo-50"></div>
-    <div class="absolute -top-32 -left-32 w-[500px] h-[500px] rounded-full bg-sky-200/70 blur-3xl"></div>
-    <div class="absolute top-1/3 -right-20 w-[400px] h-[400px] rounded-full bg-violet-200/60 blur-3xl"></div>
-    <div class="absolute -bottom-20 left-1/4 w-[450px] h-[450px] rounded-full bg-rose-200/50 blur-3xl"></div>
+  <!-- Vue 挂载点 -->
+  <div id="app" class="flex-grow flex flex-col" v-cloak>
+
+    <!-- Navbar 组件占位 -->
+    <app-navbar current-path="{{ request.path }}"></app-navbar>
+
+    <!-- Main Content -->
+    <main class="flex-grow w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {% block content %}{% endblock %}
+    </main>
+
+    <!-- Footer -->
+    <footer class="mt-auto py-6 text-center text-sm text-pixiv-gray bg-white border-t border-gray-200">
+      <p>Pixiv Novel Sync Dashboard</p>
+    </footer>
+
   </div>
 
-  <!-- 液态玻璃导航栏 -->
-  <header class="sticky top-0 z-50 bg-white/45 backdrop-blur-lg backdrop-saturate-[1.8] border-b border-white/50 shadow-glass-nav">
-    <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div class="flex items-center justify-between h-14">
-        <!-- Brand -->
-        <a href="/dashboard" class="flex-shrink-0">
-          <span class="text-lg font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-500 to-indigo-600">
-            Pixiv 同步器
-          </span>
-        </a>
-
-        <!-- Desktop Navigation -->
-        <nav class="hidden md:flex items-center space-x-1 overflow-x-auto scrollbar-hide">
-          <a href="/dashboard" class="px-3 py-1.5 rounded-xl text-sm font-medium transition-all {% if request.path == '/dashboard' %}bg-white/50 text-blue-600 shadow-glass-sm border border-white/60{% else %}text-slate-600 hover:bg-white/40 hover:shadow-glass-sm{% endif %}">首页</a>
-          <a href="/dashboard/follows" class="px-3 py-1.5 rounded-xl text-sm font-medium transition-all {% if '/dashboard/follows' in request.path or '/dashboard/users' in request.path %}bg-white/50 text-blue-600 shadow-glass-sm border border-white/60{% else %}text-slate-600 hover:bg-white/40 hover:shadow-glass-sm{% endif %}">关注</a>
-          <a href="/dashboard/novels" class="px-3 py-1.5 rounded-xl text-sm font-medium transition-all {% if '/dashboard/novels' in request.path %}bg-white/50 text-blue-600 shadow-glass-sm border border-white/60{% else %}text-slate-600 hover:bg-white/40 hover:shadow-glass-sm{% endif %}">小说</a>
-          <a href="/dashboard/pending-deletions" class="relative px-3 py-1.5 rounded-xl text-sm font-medium transition-all {% if '/dashboard/pending-deletions' in request.path %}bg-white/50 text-blue-600 shadow-glass-sm border border-white/60{% else %}text-slate-600 hover:bg-white/40 hover:shadow-glass-sm{% endif %}">
-            待确认
-            <span id="globalPendingBadge" class="hidden absolute -top-1 -right-2 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">0</span>
-          </a>
-          <a href="/dashboard/logs" class="px-3 py-1.5 rounded-xl text-sm font-medium transition-all {% if '/dashboard/logs' in request.path %}bg-white/50 text-blue-600 shadow-glass-sm border border-white/60{% else %}text-slate-600 hover:bg-white/40 hover:shadow-glass-sm{% endif %}">日志</a>
-          <a href="/dashboard/settings" class="px-3 py-1.5 rounded-xl text-sm font-medium transition-all {% if '/dashboard/settings' in request.path %}bg-white/50 text-blue-600 shadow-glass-sm border border-white/60{% else %}text-slate-600 hover:bg-white/40 hover:shadow-glass-sm{% endif %}">设置</a>
-          <a href="/token-login" class="px-3 py-1.5 rounded-xl text-sm font-medium transition-all text-slate-600 hover:bg-white/40 hover:shadow-glass-sm">登录</a>
-        </nav>
-
-        <!-- Mobile menu button -->
-        <div class="flex md:hidden">
-          <button type="button" id="mobile-menu-btn" class="p-2 rounded-xl text-slate-600 hover:bg-white/40 focus:outline-none focus:ring-2 focus:ring-brand-500/50">
-            <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Mobile Navigation Menu -->
-    <div id="mobile-menu" class="hidden md:hidden border-t border-white/30 bg-white/40 backdrop-blur-lg backdrop-saturate-[1.8]">
-      <div class="px-3 pt-2 pb-3 space-y-1">
-        <a href="/dashboard" class="block px-3 py-2 rounded-xl text-sm font-medium text-slate-700 hover:bg-white/40">首页</a>
-        <a href="/dashboard/follows" class="block px-3 py-2 rounded-xl text-sm font-medium text-slate-700 hover:bg-white/40">关注</a>
-        <a href="/dashboard/novels" class="block px-3 py-2 rounded-xl text-sm font-medium text-slate-700 hover:bg-white/40">小说</a>
-        <a href="/dashboard/pending-deletions" class="block px-3 py-2 rounded-xl text-sm font-medium text-slate-700 hover:bg-white/40">待确认</a>
-        <a href="/dashboard/logs" class="block px-3 py-2 rounded-xl text-sm font-medium text-slate-700 hover:bg-white/40">日志</a>
-        <a href="/dashboard/settings" class="block px-3 py-2 rounded-xl text-sm font-medium text-slate-700 hover:bg-white/40">设置</a>
-        <a href="/token-login" class="block px-3 py-2 rounded-xl text-sm font-medium text-slate-700 hover:bg-white/40">登录</a>
-      </div>
-    </div>
-  </header>
-
-  <!-- Main Content -->
-  <main class="flex-grow w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-    {% block content %}{% endblock %}
-  </main>
-
-  <!-- Footer -->
-  <footer class="mt-auto py-6 text-center text-sm text-slate-400">
-    <p>Pixiv Novel Sync Dashboard</p>
-  </footer>
+  <!-- 引入全局共享的 Vue 组件模板 -->
+  {% include 'vue_components.html' ignore missing %}
 
   <script>
-    document.getElementById('mobile-menu-btn')?.addEventListener('click', () => {
-      document.getElementById('mobile-menu').classList.toggle('hidden');
-    });
-    (function(){
-      fetch("/api/dashboard/pending-deletions/count")
-        .then(r => r.json())
-        .then(d => {
-          const badge = document.getElementById("globalPendingBadge");
-          if(badge && d.count > 0) {
-            badge.textContent = d.count > 99 ? '99+' : d.count;
-            badge.classList.remove('hidden');
-          }
-        })
-        .catch(() => {});
-    })();
+    // 全局的基础 Vue 实例初始化工具
+    // 为了支持各个页面不同的逻辑，我们在 base 提供一个基座方法
+    window.initVueApp = function(setupFunc) {
+      const { createApp } = Vue;
+      const app = createApp(setupFunc);
+
+      // 注册全局组件 (在 vue_components.html 中定义)
+      if (typeof registerGlobalComponents === 'function') {
+        registerGlobalComponents(app);
+      }
+
+      app.mount('#app');
+      return app;
+    };
   </script>
 
   {% block extra_scripts %}{% endblock %}

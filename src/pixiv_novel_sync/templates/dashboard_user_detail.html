@@ -5,240 +5,305 @@
 <div class="max-w-5xl mx-auto space-y-5 pt-2">
 
   <!-- Back Link -->
-  <a class="inline-flex items-center gap-1.5 text-sm font-bold text-slate-400 hover:text-blue-500 transition-colors" href="/dashboard/follows">
+  <a class="inline-flex items-center gap-1.5 text-sm font-bold text-gray-500 hover:text-brand-500 transition-colors" href="/dashboard/follows">
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
     返回关注列表
   </a>
 
   <!-- Hero Section -->
-  <section id="hero" class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl overflow-hidden">
-    <div class="h-32 sm:h-36 bg-gradient-to-r from-sky-400 via-blue-500 to-violet-500"></div>
-    <div class="grid grid-cols-[76px_1fr] sm:grid-cols-[104px_1fr_auto] gap-3 sm:gap-5 px-4 sm:px-7 pb-5 sm:pb-7 items-end -mt-9 sm:-mt-12">
-      <div class="w-[76px] h-[76px] sm:w-[104px] sm:h-[104px] rounded-full bg-gradient-to-br from-blue-100 to-blue-200 border-[4px] sm:border-[5px] border-white/60 ring-2 ring-white/60 shadow-lg flex items-center justify-center text-blue-500 text-2xl sm:text-[34px] font-extrabold shrink-0">...</div>
+  <section class="bg-white border border-gray-200 shadow-sm rounded-lg overflow-hidden">
+    <div class="h-32 sm:h-36 bg-gray-100"></div>
+
+    <div v-if="loadingUser" class="px-4 sm:px-7 pb-5 sm:pb-7 -mt-9 sm:-mt-12 flex">
+      <div class="w-[76px] h-[76px] sm:w-[104px] sm:h-[104px] rounded-full bg-gray-200 border-4 border-white animate-pulse shrink-0"></div>
+      <div class="ml-4 mt-12 space-y-2 flex-1">
+        <div class="h-6 bg-gray-200 rounded w-1/3 animate-pulse"></div>
+        <div class="h-4 bg-gray-200 rounded w-1/4 animate-pulse"></div>
+      </div>
+    </div>
+
+    <div v-else-if="!user" class="px-4 sm:px-7 pb-5 sm:pb-7 -mt-9 sm:-mt-12">
+      <div class="mt-14">
+        <h1 class="text-xl sm:text-2xl font-extrabold text-gray-900">加载失败</h1>
+        <div class="text-sm text-gray-500 mt-1">未找到该用户</div>
+      </div>
+    </div>
+
+    <div v-else class="grid grid-cols-[76px_1fr] sm:grid-cols-[104px_1fr_auto] gap-3 sm:gap-5 px-4 sm:px-7 pb-5 sm:pb-7 items-end -mt-9 sm:-mt-12">
+      <div class="shrink-0 relative">
+        <img v-if="user.avatar_url" :src="'/proxy/image?url=' + encodeURIComponent(user.avatar_url)"
+             class="w-[76px] h-[76px] sm:w-[104px] sm:h-[104px] rounded-full border-4 border-white object-cover bg-white" @error="user.avatar_url = ''">
+        <div v-else class="w-[76px] h-[76px] sm:w-[104px] sm:h-[104px] rounded-full border-4 border-white flex items-center justify-center bg-brand-100 text-brand-600 font-bold text-2xl sm:text-3xl bg-white">
+          {{ (user.name || 'U').substring(0, 2) }}
+        </div>
+      </div>
       <div class="min-w-0">
-        <h1 class="text-xl sm:text-2xl md:text-[34px] font-extrabold text-slate-800 leading-tight tracking-tight mb-1">加载中...</h1>
-        <div class="text-sm text-slate-400">请稍候</div>
+        <h1 class="text-xl sm:text-2xl md:text-3xl font-bold text-gray-900 leading-tight tracking-tight mb-1 truncate" :title="user.name">{{ user.name || '未命名用户' }}</h1>
+        <div class="flex flex-wrap gap-2 items-center mt-2">
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
+            {{ user.account ? '@' + user.account : 'ID ' + user.user_id }}
+          </span>
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-brand-50 text-brand-700">
+            {{ user.novel_count || 0 }} 篇小说
+          </span>
+          <app-badge :type="statusConfig(user.status).type" class="ml-1">
+            <span class="w-1.5 h-1.5 rounded-full mr-1.5" :class="statusConfig(user.status).dotClass"></span>
+            {{ statusConfig(user.status).label }}
+          </app-badge>
+        </div>
+        <div v-if="user.last_checked_at" class="text-xs text-gray-400 mt-2 font-mono">
+          最后检查: {{ user.last_checked_at }}
+        </div>
+      </div>
+      <div class="flex gap-2.5 flex-wrap justify-end col-span-full sm:col-span-1 mt-4 sm:mt-0">
+        <button @click="checkStatus" :disabled="checking" class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md text-sm font-medium hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 disabled:opacity-50 transition-colors">
+          {{ checking ? '检查中...' : '检查状态' }}
+        </button>
+        <button @click="syncAll" :disabled="syncing" class="px-4 py-2 bg-brand-500 text-white rounded-md text-sm font-medium hover:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 disabled:opacity-50 transition-colors shadow-sm">
+          {{ syncing ? '启动中...' : '备份全部' }}
+        </button>
       </div>
     </div>
   </section>
 
   <!-- Content Card -->
-  <section class="bg-white/35 backdrop-blur-xl backdrop-saturate-[1.8] border border-white/50 shadow-glass rounded-2xl p-4 sm:p-6">
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+  <section class="bg-white border border-gray-200 shadow-sm rounded-lg p-4 sm:p-6">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
       <!-- Tabs -->
-      <div class="flex bg-white/40 backdrop-blur-md border border-white/60 rounded-xl p-1 shadow-glass-sm">
-        <button class="tab flex-1 sm:flex-none px-4 py-2 rounded-lg text-sm font-bold transition-all text-blue-600 bg-white/60 shadow-glass-sm" data-category="single" onclick="switchTab('single')">单本</button>
-        <button class="tab flex-1 sm:flex-none px-4 py-2 rounded-lg text-sm font-bold transition-all text-slate-400 hover:text-slate-600" data-category="series" onclick="switchTab('series')">系列</button>
+      <div class="flex items-center gap-1 p-1 bg-gray-50 border border-gray-200 rounded-lg w-fit">
+        <button @click="category = 'single'"
+          class="px-4 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap"
+          :class="category === 'single' ? 'bg-white text-brand-600 shadow-sm border border-gray-200' : 'text-gray-600 hover:text-gray-900'">
+          单本
+        </button>
+        <button @click="category = 'series'"
+          class="px-4 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap"
+          :class="category === 'series' ? 'bg-white text-brand-600 shadow-sm border border-gray-200' : 'text-gray-600 hover:text-gray-900'">
+          系列
+        </button>
       </div>
-      <span id="novelCount" class="text-sm font-semibold text-slate-400"></span>
+      <span class="text-sm font-medium text-gray-500">共 {{ totalItems }} 项</span>
     </div>
 
-    <div id="novels" class="text-center py-12 text-slate-400">正在加载小说...</div>
+    <!-- Error State -->
+    <div v-if="error" class="text-center py-12 text-red-500 text-sm">{{ error }}</div>
 
-    <div class="flex justify-center items-center gap-4 mt-5" id="pager" style="display:none;">
-      <button id="prevBtn" class="bg-white/40 backdrop-blur-md border border-white/60 shadow-glass-sm rounded-xl px-4 py-2 text-sm font-bold text-slate-600 hover:bg-white/55 disabled:opacity-40 disabled:cursor-not-allowed transition-all">上一页</button>
-      <span id="pagerText" class="text-sm font-semibold text-slate-400"></span>
-      <button id="nextBtn" class="bg-white/40 backdrop-blur-md border border-white/60 shadow-glass-sm rounded-xl px-4 py-2 text-sm font-bold text-slate-600 hover:bg-white/55 disabled:opacity-40 disabled:cursor-not-allowed transition-all">下一页</button>
+    <!-- Loading State -->
+    <div v-else-if="loadingItems" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div v-for="i in 6" :key="i" class="bg-white border border-gray-100 rounded-md p-3 flex gap-3 animate-pulse">
+        <div class="w-[58px] h-[80px] bg-gray-100 rounded"></div>
+        <div class="flex-1 py-1 space-y-2">
+          <div class="h-4 bg-gray-100 rounded w-3/4"></div>
+          <div class="h-3 bg-gray-100 rounded w-1/2"></div>
+        </div>
+      </div>
     </div>
+
+    <!-- Empty State -->
+    <div v-else-if="items.length === 0" class="text-center py-12 text-gray-400 text-sm">暂无内容</div>
+
+    <!-- List -->
+    <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <template v-if="category === 'series'">
+        <a v-for="item in items" :key="item.series_id" :href="'/dashboard/series/' + encodeURIComponent(item.series_id)"
+           class="group flex gap-3 p-3 bg-white border border-gray-200 rounded-md hover:border-brand-300 hover:shadow-sm transition-all min-h-[90px]">
+          <div class="w-[58px] h-[80px] flex-shrink-0 bg-gray-100 rounded overflow-hidden">
+            <img v-if="item.cover_url" :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)" class="w-full h-full object-cover" @error="item.cover_url = ''">
+          </div>
+          <div class="min-w-0 flex flex-col justify-center py-0.5">
+            <div class="text-sm font-bold text-gray-900 leading-snug line-clamp-2 group-hover:text-brand-600 transition-colors">{{ item.series_title || '未命名系列' }}</div>
+            <div class="text-xs text-gray-500 mt-1 truncate">{{ item.author_name || '未知作者' }}</div>
+            <div class="text-[11px] text-gray-400 mt-1">{{ item.chapter_count || 0 }} 章 <span v-if="item.total_text_length">· {{ formatTextLength(item.total_text_length) }}</span></div>
+          </div>
+        </a>
+      </template>
+
+      <template v-else>
+        <a v-for="item in items" :key="item.novel_id" :href="'/dashboard/novels/' + encodeURIComponent(item.novel_id)"
+           class="group flex gap-3 p-3 bg-white border border-gray-200 rounded-md hover:border-brand-300 hover:shadow-sm transition-all min-h-[90px]">
+          <div class="w-[58px] h-[80px] flex-shrink-0 bg-gray-100 rounded overflow-hidden relative">
+            <img v-if="item.cover_url" :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)" class="w-full h-full object-cover" @error="item.cover_url = ''">
+          </div>
+          <div class="min-w-0 flex flex-col justify-center py-0.5">
+            <div class="text-sm font-bold text-gray-900 leading-snug line-clamp-2 group-hover:text-brand-600 transition-colors">
+              {{ item.title || '未命名小说' }}
+              <span v-if="item.series_title" class="inline-flex bg-gray-100 text-gray-600 rounded px-1.5 py-0.5 text-[10px] font-normal ml-1 border border-gray-200 align-text-bottom">{{ item.series_title }}</span>
+            </div>
+            <div class="text-[11px] text-gray-400 mt-1.5 flex items-center gap-2">
+              <span title="收藏数" class="flex items-center gap-0.5"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"></path></svg>{{ item.total_bookmarks || 0 }}</span>
+              <span title="浏览数" class="flex items-center gap-0.5"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>{{ item.total_views || 0 }}</span>
+            </div>
+          </div>
+        </a>
+      </template>
+    </div>
+
+    <!-- Pagination -->
+    <app-pagination v-if="!loadingItems && !error" :page="page" :pages="totalPages" @update:page="handlePageChange"></app-pagination>
   </section>
 
-</div>
+  <!-- Toast (Simple Custom Implementation for Vue) -->
+  <div v-show="toast.visible" class="fixed bottom-6 right-6 bg-gray-900 text-white px-4 py-2 rounded-md shadow-lg text-sm transition-opacity duration-300 z-50">
+    {{ toast.message }}
+  </div>
 
-<!-- Toast -->
-<div id="toast" class="fixed bottom-6 right-6 left-auto bg-white/50 backdrop-blur-lg border border-white/50 shadow-glass-sm rounded-xl text-slate-800 px-5 py-3 text-sm font-medium z-[1000] hidden max-sm:left-4 max-sm:right-4 max-sm:text-center"></div>
+</div>
 {% endblock %}
 
 {% block extra_scripts %}
 <style>
-  .novel-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 14px;
-  }
-  @media (max-width: 640px) {
-    .novel-grid { grid-template-columns: 1fr; gap: 10px; }
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
 </style>
 <script>
-  const pathParts = window.location.pathname.split('/');
-  const userId = Number(pathParts[pathParts.length - 1] || 0);
-  let currentPage = 1;
-  let totalPages = 1;
-  let currentCategory = 'single';
+  initVueApp({
+    setup() {
+      const { ref, reactive, watch, onMounted } = Vue;
 
-  function escapeHtml(value) {
-    return String(value ?? '').replace(/[&<>"]/g, function (ch) {
-      if (ch === '&') return '&amp;';
-      if (ch === '<') return '&lt;';
-      if (ch === '>') return '&gt;';
-      if (ch === '"') return '&quot;';
-      return ch;
-    });
-  }
+      const pathParts = window.location.pathname.split('/');
+      const userId = Number(pathParts[pathParts.length - 1] || 0);
 
-  function formatNumber(value) {
-    return Number(value || 0).toLocaleString('zh-CN');
-  }
+      // User State
+      const user = ref(null);
+      const loadingUser = ref(true);
+      const checking = ref(false);
+      const syncing = ref(false);
 
-  function formatTextLength(chars) {
-    const value = Number(chars || 0);
-    if (!value) return '';
-    if (value >= 10000) return (value / 10000).toFixed(1) + ' 万字';
-    return formatNumber(value) + ' 字';
-  }
+      // List State
+      const category = ref('single');
+      const items = ref([]);
+      const totalItems = ref(0);
+      const page = ref(1);
+      const totalPages = ref(1);
+      const loadingItems = ref(true);
+      const error = ref(null);
 
-  function showToast(message, duration) {
-    const toast = document.getElementById('toast');
-    toast.textContent = message;
-    toast.classList.remove('hidden');
-    toast.style.display = 'block';
-    setTimeout(function () { toast.classList.add('hidden'); toast.style.display = ''; }, duration || 3000);
-  }
+      // Toast State
+      const toast = reactive({ visible: false, message: '', timeout: null });
 
-  const statusColors = {
-    normal: { label: '有小说', bg: 'bg-green-500/10', text: 'text-green-700', border: 'border-green-300/30' },
-    no_novels: { label: '无小说', bg: 'bg-amber-500/10', text: 'text-amber-700', border: 'border-amber-300/30' },
-    suspended: { label: '封号', bg: 'bg-red-500/10', text: 'text-red-700', border: 'border-red-300/30' },
-    unknown: { label: '未知', bg: 'bg-slate-500/10', text: 'text-slate-600', border: 'border-slate-300/30' }
-  };
+      const showToast = (msg, duration = 3000) => {
+        toast.message = msg;
+        toast.visible = true;
+        clearTimeout(toast.timeout);
+        toast.timeout = setTimeout(() => { toast.visible = false; }, duration);
+      };
 
-  async function loadUser() {
-    const resp = await fetch('/api/dashboard/users/' + encodeURIComponent(userId));
-    const data = await resp.json();
-    if (!resp.ok) {
-      document.getElementById('hero').innerHTML = '<div class="h-32 sm:h-36 bg-gradient-to-r from-sky-400 via-blue-500 to-violet-500"></div><div class="px-4 sm:px-7 pb-5 sm:pb-7 -mt-9 sm:-mt-12"><div><h1 class="text-xl sm:text-2xl font-extrabold text-slate-800 mt-14">加载失败</h1><div class="text-sm text-slate-400 mt-1">未找到该用户</div></div></div>';
-      return;
+      const statusConfig = (s) => {
+        const map = {
+          normal: { label: '有小说', type: 'green', dotClass: 'bg-green-500' },
+          no_novels: { label: '无小说', type: 'yellow', dotClass: 'bg-yellow-500' },
+          suspended: { label: '封号', type: 'red', dotClass: 'bg-red-500' },
+          unknown: { label: '未知', type: 'gray', dotClass: 'bg-gray-500' }
+        };
+        return map[s] || map.unknown;
+      };
+
+      const formatTextLength = (chars) => {
+        if (!chars || chars <= 0) return '';
+        if (chars >= 10000) return (chars / 10000).toFixed(1) + ' 万字';
+        return chars.toLocaleString('zh-CN') + ' 字';
+      };
+
+      const fetchUser = async () => {
+        try {
+          const res = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}`);
+          if (res.ok) {
+            user.value = await res.json();
+          } else {
+            user.value = null;
+          }
+        } catch (e) {
+          user.value = null;
+        } finally {
+          loadingUser.value = false;
+        }
+      };
+
+      const fetchItems = async () => {
+        loadingItems.value = true;
+        error.value = null;
+        try {
+          const res = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}/novels?page=${page.value}&category=${category.value}`);
+          if (!res.ok) throw new Error('Failed to load items');
+          const data = await res.json();
+          items.value = data.items || [];
+          totalItems.value = data.total || 0;
+          page.value = data.page || 1;
+          totalPages.value = data.total_pages || 1;
+        } catch (e) {
+          error.value = '加载失败';
+          items.value = [];
+        } finally {
+          loadingItems.value = false;
+        }
+      };
+
+      const handlePageChange = (newPage) => {
+        page.value = newPage;
+        fetchItems();
+      };
+
+      const checkStatus = async () => {
+        if (checking.value) return;
+        checking.value = true;
+        showToast('正在检查用户状态...');
+        try {
+          const res = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}/check`, { method: 'POST' });
+          const data = await res.json();
+          if (data.ok) {
+            showToast(`状态: ${statusConfig(data.status).label}`);
+            await fetchUser(); // Refresh user data
+          } else {
+            showToast(`检查失败: ${data.error || '未知错误'}`);
+          }
+        } catch (e) {
+          showToast('检查失败');
+        } finally {
+          checking.value = false;
+        }
+      };
+
+      const syncAll = async () => {
+        if (syncing.value) return;
+        if (!confirm('确定要备份该用户的全部小说吗？')) return;
+        syncing.value = true;
+        showToast('开始同步...');
+        try {
+          const res = await fetch(`/api/dashboard/users/${encodeURIComponent(userId)}/sync`, { method: 'POST' });
+          const data = await res.json();
+          if (data.ok) {
+            showToast('备份任务已启动，可在首页查看进度');
+          } else {
+            showToast(`启动失败: ${data.error || '未知错误'}`);
+          }
+        } catch (e) {
+          showToast('启动失败');
+        } finally {
+          syncing.value = false;
+        }
+      };
+
+      watch(category, () => {
+        page.value = 1;
+        fetchItems();
+      });
+
+      onMounted(() => {
+        fetchUser();
+        fetchItems();
+      });
+
+      return {
+        user, loadingUser, checking, syncing,
+        category, items, totalItems, page, totalPages, loadingItems, error,
+        toast,
+        statusConfig, formatTextLength, handlePageChange, checkStatus, syncAll
+      };
     }
-    var avatar = data.avatar_url
-      ? '<img class="w-[76px] h-[76px] sm:w-[104px] sm:h-[104px] rounded-full border-[4px] sm:border-[5px] border-white/60 ring-2 ring-white/60 shadow-lg object-cover shrink-0" src="/proxy/image?url=' + encodeURIComponent(data.avatar_url) + '" alt="avatar" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\';">'
-      : '';
-    var fallbackAvatar = '<div class="w-[76px] h-[76px] sm:w-[104px] sm:h-[104px] rounded-full bg-gradient-to-br from-blue-100 to-blue-200 border-[4px] sm:border-[5px] border-white/60 ring-2 ring-white/60 shadow-lg flex items-center justify-center text-blue-500 text-2xl sm:text-[34px] font-extrabold shrink-0" style="display:' + (data.avatar_url ? 'none' : 'flex') + ';">' + escapeHtml((data.name || 'U').slice(0, 2)) + '</div>';
-    var account = data.account ? '@' + escapeHtml(data.account) : 'ID ' + escapeHtml(data.user_id);
-    var status = statusColors[data.status] || statusColors.unknown;
-    document.getElementById('hero').innerHTML =
-      '<div class="h-32 sm:h-36 bg-gradient-to-r from-sky-400 via-blue-500 to-violet-500"></div>' +
-      '<div class="grid grid-cols-[76px_1fr] sm:grid-cols-[104px_1fr_auto] gap-3 sm:gap-5 px-4 sm:px-7 pb-5 sm:pb-7 items-end -mt-9 sm:-mt-12">' +
-        avatar + fallbackAvatar +
-        '<div class="min-w-0">' +
-          '<h1 class="text-xl sm:text-2xl md:text-[34px] font-extrabold text-slate-800 leading-tight tracking-tight mb-1">' + escapeHtml(data.name || '未命名用户') + '</h1>' +
-          '<div class="flex flex-wrap gap-2 items-center">' +
-            '<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-500/10 text-slate-600 border border-slate-300/30 text-xs font-bold">' + account + '</span>' +
-            '<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-blue-500/10 text-blue-700 border border-blue-300/30 text-xs font-bold">' + formatNumber(data.novel_count) + ' 篇小说</span>' +
-            (data.last_checked_at ? '<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-500/10 text-slate-600 border border-slate-300/30 text-xs font-bold">最后检查 ' + escapeHtml(data.last_checked_at) + '</span>' : '') +
-            '<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl ' + status.bg + ' ' + status.text + ' border ' + status.border + ' text-xs font-bold">' + status.label + '</span>' +
-          '</div>' +
-        '</div>' +
-        '<div class="flex gap-2.5 flex-wrap justify-end col-span-full sm:col-span-1">' +
-          '<button class="bg-white/40 backdrop-blur-md border border-white/60 shadow-glass-sm rounded-xl px-4 py-2.5 text-sm font-bold text-slate-600 hover:bg-white/55 transition-all" onclick="checkStatus()">检查状态</button>' +
-          '<button class="bg-blue-500 text-white hover:bg-blue-600 rounded-xl shadow-glass-sm px-4 py-2.5 text-sm font-bold transition-all" onclick="syncAll()">备份全部</button>' +
-        '</div>' +
-      '</div>';
-  }
-
-  async function loadNovels(page) {
-    var resp = await fetch('/api/dashboard/users/' + encodeURIComponent(userId) + '/novels?page=' + page + '&category=' + currentCategory);
-    var data = await resp.json();
-    var items = data.items || [];
-    currentPage = data.page || 1;
-    totalPages = data.total_pages || 1;
-    document.getElementById('novelCount').textContent = '共 ' + formatNumber(data.total) + ' 项';
-    var novels = document.getElementById('novels');
-    if (!items.length) {
-      novels.innerHTML = '<div class="text-center py-12 text-slate-400">暂无内容</div>';
-      document.getElementById('pager').style.display = 'none';
-      return;
-    }
-    if (currentCategory === 'series') {
-      novels.innerHTML = '<div class="novel-grid">' + items.map(function (item) {
-        var cover = item.cover_url
-          ? '<img class="w-[58px] h-[80px] sm:w-[72px] sm:h-[98px] rounded-xl object-cover bg-gradient-to-br from-blue-50 to-indigo-50" src="/proxy/image?url=' + encodeURIComponent(item.cover_url) + '" alt="cover" onerror="this.style.background=\'linear-gradient(135deg,#dbeafe,#eef2ff)\';">'
-          : '<div class="w-[58px] h-[80px] sm:w-[72px] sm:h-[98px] rounded-xl bg-gradient-to-br from-blue-50 to-indigo-50"></div>';
-        var wordCount = formatTextLength(item.total_text_length);
-        return '<a class="grid grid-cols-[58px_1fr] sm:grid-cols-[72px_1fr] gap-3 min-h-[90px] sm:min-h-[120px] p-3 rounded-xl bg-white/30 backdrop-blur-md border border-white/50 shadow-glass-sm text-slate-800 no-underline hover:bg-white/50 hover:shadow-glass transition-all" href="/dashboard/series/' + encodeURIComponent(item.series_id) + '">' +
-          cover +
-          '<div class="min-w-0 flex flex-col justify-center">' +
-            '<div class="text-sm sm:text-[15px] font-extrabold leading-snug line-clamp-2">' + escapeHtml(item.series_title || '未命名系列') + '</div>' +
-            '<div class="text-xs text-slate-400 mt-1.5">' + escapeHtml(item.author_name || '未知作者') + '</div>' +
-            '<div class="text-xs text-slate-400 mt-0.5">' + formatNumber(item.chapter_count) + ' 章' + (wordCount ? ' \u00b7 ' + wordCount : '') + '</div>' +
-          '</div>' +
-        '</a>';
-      }).join('') + '</div>';
-    } else {
-      novels.innerHTML = '<div class="novel-grid">' + items.map(function (item) {
-        var cover = item.cover_url
-          ? '<img class="w-[58px] h-[80px] sm:w-[72px] sm:h-[98px] rounded-xl object-cover bg-gradient-to-br from-blue-50 to-indigo-50" src="/proxy/image?url=' + encodeURIComponent(item.cover_url) + '" alt="cover" onerror="this.style.background=\'linear-gradient(135deg,#dbeafe,#eef2ff)\';">'
-          : '<div class="w-[58px] h-[80px] sm:w-[72px] sm:h-[98px] rounded-xl bg-gradient-to-br from-blue-50 to-indigo-50"></div>';
-        var seriesTag = item.series_title ? '<span class="inline-flex bg-blue-500/10 text-blue-700 border border-blue-300/30 rounded-xl px-1.5 py-0.5 text-[11px] font-bold ml-1">' + escapeHtml(item.series_title) + '</span>' : '';
-        var wordCount = formatTextLength(item.text_length);
-        return '<a class="grid grid-cols-[58px_1fr] sm:grid-cols-[72px_1fr] gap-3 min-h-[90px] sm:min-h-[120px] p-3 rounded-xl bg-white/30 backdrop-blur-md border border-white/50 shadow-glass-sm text-slate-800 no-underline hover:bg-white/50 hover:shadow-glass transition-all" href="/dashboard/novels/' + encodeURIComponent(item.novel_id) + '">' +
-          cover +
-          '<div class="min-w-0 flex flex-col justify-center">' +
-            '<div class="text-sm sm:text-[15px] font-extrabold leading-snug line-clamp-2">' + escapeHtml(item.title || '未命名小说') + seriesTag + '</div>' +
-            '<div class="text-xs text-slate-400 mt-1.5">' + (wordCount ? wordCount + ' \u00b7 ' : '') + '收藏 ' + formatNumber(item.total_bookmarks) + ' / 浏览 ' + formatNumber(item.total_views) + '</div>' +
-          '</div>' +
-        '</a>';
-      }).join('') + '</div>';
-    }
-    document.getElementById('pager').style.display = 'flex';
-    document.getElementById('pagerText').textContent = currentPage + ' / ' + totalPages;
-    document.getElementById('prevBtn').disabled = currentPage <= 1;
-    document.getElementById('nextBtn').disabled = currentPage >= totalPages;
-  }
-
-  function switchTab(category) {
-    currentCategory = category;
-    document.querySelectorAll('.tab').forEach(function(t) {
-      var isActive = t.dataset.category === category;
-      t.classList.toggle('text-blue-600', isActive);
-      t.classList.toggle('bg-white/60', isActive);
-      t.classList.toggle('shadow-glass-sm', isActive);
-      t.classList.toggle('text-slate-400', !isActive);
-    });
-    loadNovels(1);
-  }
-
-  async function checkStatus() {
-    showToast('正在检查用户状态...');
-    try {
-      var resp = await fetch('/api/dashboard/users/' + encodeURIComponent(userId) + '/check', {method: 'POST'});
-      var data = await resp.json();
-      if (data.ok) {
-        var status = statusColors[data.status] || statusColors.unknown;
-        showToast('状态: ' + status.label);
-        loadUser();
-      } else {
-        showToast('检查失败: ' + (data.error || '未知错误'));
-      }
-    } catch (err) {
-      showToast('检查失败');
-    }
-  }
-
-  async function syncAll() {
-    if (!confirm('确定要备份该用户的全部小说吗？')) return;
-    showToast('开始同步...');
-    try {
-      var resp = await fetch('/api/dashboard/users/' + encodeURIComponent(userId) + '/sync', {method: 'POST'});
-      var data = await resp.json();
-      if (data.ok) {
-        showToast('备份任务已启动，可在首页查看进度');
-      } else {
-        showToast('启动失败: ' + (data.error || '未知错误'));
-      }
-    } catch (err) {
-      showToast('启动失败');
-    }
-  }
-
-  document.getElementById('prevBtn').addEventListener('click', function () {
-    if (currentPage > 1) loadNovels(currentPage - 1);
-  });
-  document.getElementById('nextBtn').addEventListener('click', function () {
-    if (currentPage < totalPages) loadNovels(currentPage + 1);
-  });
-
-  loadUser().then(function () { loadNovels(1); }).catch(function () {
-    document.getElementById('novels').innerHTML = '<div class="text-center py-12 text-slate-400">加载失败</div>';
   });
 </script>
 {% endblock %}

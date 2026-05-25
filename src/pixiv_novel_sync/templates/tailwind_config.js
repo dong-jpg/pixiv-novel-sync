@@ -1,25 +1,31 @@
-tailwind.config = {
+window.tailwind = window.tailwind || {};
+window.tailwind.config = {
   darkMode: 'class',
   theme: {
     extend: {
       colors: {
         brand: {
-          50: '#eff6ff',
-          100: '#dbeafe',
-          200: '#bfdbfe',
-          300: '#93c5fd',
-          400: '#60a5fa',
-          500: '#3b82f6', // primary
-          600: '#2563eb',
-          700: '#1d4ed8',
-          800: '#1e40af',
-          900: '#1e3a8a',
-          950: '#172554',
+          50: '#f2f9ff',
+          100: '#e6f3ff',
+          200: '#bfdfff',
+          300: '#99cbff',
+          400: '#4da6ff',
+          500: '#0096fa', // Pixiv primary blue
+          600: '#0087e1',
+          700: '#0070bb',
+          800: '#005a96',
+          900: '#00497b',
+          950: '#002f4d',
+        },
+        pixiv: {
+          bg: '#f5f6f8',
+          text: '#333333',
+          gray: '#999999'
         }
       },
       fontFamily: {
-        sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Display"', '"Segoe UI"', 'Roboto', 'sans-serif'],
+        sans: ['"Helvetica Neue"', 'Helvetica', '"PingFang SC"', '"Hiragino Sans GB"', '"Microsoft YaHei"', '微软雅黑', 'Arial', 'sans-serif'],
       }
     }
   }
-}
+};
