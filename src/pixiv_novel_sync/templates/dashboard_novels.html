@@ -216,13 +216,26 @@
       </a>
     </div>
 
-    <!-- Pagination -->
-    <app-pagination
-      v-if="!loading && !error && items.length > 0"
-      :page="page"
-      :pages="totalPages"
-      @update:page="handlePageChange"
-    ></app-pagination>
+    <!-- Pagination + Page Size -->
+    <div v-if="!loading && !error && items.length > 0" class="flex flex-col sm:flex-row items-center justify-between gap-3 mt-8 px-1">
+      <div class="flex items-center gap-2 text-sm text-gray-500">
+        <span>每页</span>
+        <select v-model.number="pageSize" @change="onPageSizeChange"
+          class="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand-300">
+          <option :value="10">10</option>
+          <option :value="20">20</option>
+          <option :value="40">40</option>
+          <option :value="60">60</option>
+        </select>
+        <span>条</span>
+        <span class="text-gray-400 ml-2">共 {{ totalItems }} 条</span>
+      </div>
+      <app-pagination
+        :page="page"
+        :pages="totalPages"
+        @update:page="handlePageChange"
+      ></app-pagination>
+    </div>
 
   </div>
 </div>
@@ -253,6 +266,7 @@
       const items = ref([]);
       const totalItems = ref(0);
       const page = ref(1);
+      const pageSize = ref(10);
       const totalPages = ref(1);
       const loading = ref(true);
       const error = ref(null);
@@ -305,6 +319,7 @@
         try {
           const params = new URLSearchParams({
             page: page.value.toString(),
+            page_size: pageSize.value.toString(),
             category: filters.category
           });
           if (filters.search) params.append('search', filters.search);
@@ -339,6 +354,11 @@
         page.value = newPage;
         fetchData();
         window.scrollTo({ top: 0, behavior: 'smooth' });
+      };
+
+      const onPageSizeChange = () => {
+        page.value = 1;
+        fetchData();
       };
 
       const formatTextLength = (chars) => {
@@ -383,8 +403,8 @@
       });
 
       return {
-        items, totalItems, page, totalPages, loading, error, filters,
-        handlePageChange, formatTextLength, formatCount, formatDate, getGradient
+        items, totalItems, page, pageSize, totalPages, loading, error, filters,
+        handlePageChange, onPageSizeChange, formatTextLength, formatCount, formatDate, getGradient
       };
     }
   });

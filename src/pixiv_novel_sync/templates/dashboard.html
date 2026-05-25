@@ -7,43 +7,40 @@
 
   <!-- ===== Sticky Top Header Bar ===== -->
   <header class="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-gray-100">
-    <div class="px-6 lg:px-8 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-      <div>
-        <h1 class="text-xl font-bold text-gray-900 leading-tight">控制台</h1>
-        <p class="text-xs text-gray-400 mt-0.5">管理同步任务，查看数据归档统计</p>
-      </div>
-      <div class="flex flex-wrap items-center gap-2.5">
-        <div class="flex items-center gap-1.5 mr-1">
-          <label class="text-xs text-gray-400 whitespace-nowrap">系列限制</label>
-          <input type="number" v-model.number="seriesSyncLimit" min="0"
-            class="w-16 px-2 py-1.5 border border-gray-200 rounded-lg text-xs text-center
-                   focus:ring-2 focus:ring-brand-400 focus:border-brand-400 outline-none
-                   bg-gray-50 transition-colors">
+    <div class="px-6 lg:px-8 py-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h1 class="text-xl font-bold text-gray-900 leading-tight">控制台</h1>
+          <p class="text-xs text-gray-400 mt-0.5">管理同步任务，查看数据归档统计</p>
         </div>
-        <button @click="startManualSync('check-bookmarks')" :disabled="isTaskRunning"
-          class="inline-flex items-center gap-1.5 px-3.5 py-1.5 border border-gray-200 bg-white text-gray-600
-                 rounded-lg text-xs font-medium hover:bg-gray-50 hover:border-gray-300
-                 focus:outline-none focus:ring-2 focus:ring-brand-400
-                 disabled:opacity-40 disabled:pointer-events-none transition-all">
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
-          预检查
-        </button>
-        <button @click="startManualSync('subscribed-series')" :disabled="isTaskRunning"
-          class="inline-flex items-center gap-1.5 px-3.5 py-1.5 border border-gray-200 bg-white text-gray-600
-                 rounded-lg text-xs font-medium hover:bg-gray-50 hover:border-gray-300
-                 focus:outline-none focus:ring-2 focus:ring-brand-400
-                 disabled:opacity-40 disabled:pointer-events-none transition-all">
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-          同步追更
-        </button>
-        <button @click="startManualSync('start')" :disabled="isTaskRunning"
-          class="inline-flex items-center gap-1.5 px-4 py-1.5 bg-brand-500 text-white
-                 rounded-lg text-xs font-semibold hover:bg-brand-600
-                 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1
-                 disabled:opacity-40 disabled:pointer-events-none transition-all shadow-sm shadow-brand-200">
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-          开始同步
-        </button>
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <div class="hidden sm:flex items-center gap-1.5 mr-1">
+            <label class="text-xs text-gray-400 whitespace-nowrap">系列限制</label>
+            <input type="number" v-model.number="seriesSyncLimit" min="0"
+              class="w-16 px-2 py-1.5 border border-gray-200 rounded-lg text-xs text-center
+                     focus:ring-2 focus:ring-brand-400 focus:border-brand-400 outline-none bg-gray-50">
+          </div>
+          <button @click="startManualSync('check-bookmarks')" :disabled="isTaskRunning"
+            class="hidden sm:inline-flex items-center gap-1.5 px-3.5 py-2 border border-gray-200 bg-white text-gray-700
+                   rounded-lg text-sm font-medium hover:bg-gray-50 hover:border-gray-300
+                   disabled:opacity-40 disabled:pointer-events-none transition-all">
+            预检查
+          </button>
+          <button @click="startManualSync('subscribed-series')" :disabled="isTaskRunning"
+            class="hidden sm:inline-flex items-center gap-1.5 px-3.5 py-2 border border-gray-200 bg-white text-gray-700
+                   rounded-lg text-sm font-medium hover:bg-gray-50 hover:border-gray-300
+                   disabled:opacity-40 disabled:pointer-events-none transition-all">
+            同步追更
+          </button>
+          <button @click="startManualSync('start')" :disabled="isTaskRunning"
+            class="inline-flex items-center gap-1.5 px-5 py-2 bg-brand-500 text-white
+                   rounded-lg text-sm font-semibold hover:bg-brand-600
+                   focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1
+                   disabled:opacity-40 disabled:pointer-events-none transition-all shadow-sm shadow-brand-200">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            开始同步
+          </button>
+        </div>
       </div>
     </div>
   </header>
