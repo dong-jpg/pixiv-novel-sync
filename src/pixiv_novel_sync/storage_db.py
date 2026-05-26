@@ -176,6 +176,8 @@ class Database:
         self._migrate_pending_deletions_table()
         # 迁移：创建同步水位线表
         self._migrate_sync_watermarks_table()
+        # 迁移：创建/升级预检查表。旧服务端库可能已有无 scope 的 sync_check_list。
+        self.init_sync_check_table()
         self._commit_if_needed()
 
     def upsert_user(self, record: UserRecord) -> None:

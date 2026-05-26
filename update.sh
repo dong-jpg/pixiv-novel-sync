@@ -89,6 +89,25 @@ sudo setfacl -d -m g::rwx /var/cache/nginx/pixiv_img 2>/dev/null || true
 sudo nginx -t && sudo systemctl reload nginx
 echo "  Nginx 配置已更新"
 
+# 更新 systemd 服务配置，清理旧版手工部署留下的脏行
+sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<SERVICE_EOF
+[Unit]
+Description=Pixiv Novel Sync Web UI
+After=network.target
+
+[Service]
+Type=simple
+User=${USER}
+WorkingDirectory=${INSTALL_DIR}
+Environment=PATH=${INSTALL_DIR}/.venv/bin
+ExecStart=${INSTALL_DIR}/.venv/bin/pixiv-novel-sync --config config/config.yaml web-token-ui --host 127.0.0.1 --port ${FLASK_PORT}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+SERVICE_EOF
+
 # 6. 重启服务
 echo -e "${GREEN}[6/6] 重启服务...${NC}"
 sudo systemctl daemon-reload
