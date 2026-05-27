@@ -414,12 +414,12 @@ class AIWritingService:
             provider_config = self._load_provider_config(db, agent.provider_id)
             text = self._resolve_input_text(db, payload)
             chunks = split_text_by_chars(text, int(payload.get("chunk_chars") or 4000))
-            # 根据实际上下文窗口动态计算可发送的 chunk 数量
-            # Agent 有设置用 Agent 的，否则 fallback 到 Provider 级别
+            # 采样策略：风格分析不需要全文，取有代表性的片段即可
+            # 硬上限 15 个 chunk（约 6 万字），足够提取风格特征
             effective_window = agent.context_window if agent.context_window > 16000 else provider_config.context_window
             chunk_char_size = int(payload.get("chunk_chars") or 4000)
-            usable_chars = int(effective_window * 1.5 * 0.7)  # token→字符粗估 * 可用比例
-            max_sample_chunks = max(6, usable_chars // chunk_char_size)
+            usable_chars = int(effective_window * 1.5 * 0.7)
+            max_sample_chunks = min(15, max(6, usable_chars // chunk_char_size))
             if len(chunks) > max_sample_chunks:
                 step = len(chunks) // max_sample_chunks
                 sampled = [chunks[i * step] for i in range(max_sample_chunks)]
@@ -517,11 +517,11 @@ class AIWritingService:
             provider_config = self._load_provider_config(db, agent.provider_id)
             text = self._resolve_input_text(db, payload)
             chunks = split_text_by_chars(text, int(payload.get("chunk_chars") or 4000))
-            # 根据实际上下文窗口动态计算，小说蒸馏用 80% 窗口（需要更多上下文）
+            # 采样策略：小说蒸馏需要更多上下文提取剧情，但硬上限 25 个 chunk（约 10 万字）
             effective_window = agent.context_window if agent.context_window > 16000 else provider_config.context_window
             chunk_char_size = int(payload.get("chunk_chars") or 4000)
             usable_chars = int(effective_window * 1.5 * 0.8)
-            max_sample_chunks = max(10, usable_chars // chunk_char_size)
+            max_sample_chunks = min(25, max(10, usable_chars // chunk_char_size))
             if len(chunks) > max_sample_chunks:
                 step = len(chunks) // max_sample_chunks
                 sampled = [chunks[i * step] for i in range(max_sample_chunks)]

@@ -811,6 +811,11 @@ window.initVueApp({
         const res = await fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         if (!res.ok || !res.body) throw new Error('流式请求失败');
         await readSSE(res);
+        if (!streamOutput.value.trim()) {
+          showMessage('任务完成但模型返回空内容（可能输入过长或被模型截断）', 'error');
+        } else {
+          showMessage('生成完成');
+        }
       } catch (e) { showMessage(e.message, 'error'); }
       finally { streaming.value = false; }
     }
