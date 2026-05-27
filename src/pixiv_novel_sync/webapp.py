@@ -69,6 +69,7 @@ def _format_task_phase(task_type: str) -> str:
     return _task_label(task_type)
 
 
+@dataclass
 class AutoSyncScheduler:
     """定时同步调度器 - 每个任务独立运行"""
     config_path: str | None
