@@ -72,6 +72,10 @@ class OpenAICompatibleProvider(AIProvider):
                 timeout=self.config.timeout_seconds,
                 proxies=self._proxies(),
             ) as response:
+                if response.status_code >= 500:
+                    # 流式失败，fallback 到非流式
+                    yield from self._fallback_non_stream(url, headers, payload)
+                    return
                 if response.status_code >= 400:
                     raise AIProviderError(_safe_http_error(response))
                 for raw_line in response.iter_lines(decode_unicode=True):
@@ -92,6 +96,29 @@ class OpenAICompatibleProvider(AIProvider):
                     text = delta.get("content") or ""
                     if text:
                         yield AIStreamChunk(type="delta", text=text)
+        except requests.RequestException as exc:
+            raise AIProviderError(f"AI API 请求失败：{exc}") from exc
+
+    def _fallback_non_stream(self, url: str, headers: dict[str, str], payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        """流式请求失败时 fallback 到非流式调用。"""
+        payload_copy = {**payload, "stream": False}
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload_copy,
+                timeout=self.config.timeout_seconds,
+                proxies=self._proxies(),
+            )
+            if response.status_code >= 400:
+                raise AIProviderError(_safe_http_error(response))
+            data = response.json()
+            choice = data.get("choices", [{}])[0]
+            message = choice.get("message", {})
+            text = message.get("content") or ""
+            if text:
+                yield AIStreamChunk(type="delta", text=text)
+            yield AIStreamChunk(type="done")
         except requests.RequestException as exc:
             raise AIProviderError(f"AI API 请求失败：{exc}") from exc
 
