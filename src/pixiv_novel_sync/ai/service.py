@@ -351,7 +351,7 @@ class AIWritingService:
                 SELECT n.text_raw, n.text_markdown, n.title, n.series_order
                 FROM novels n
                 WHERE n.series_id = ?
-                ORDER BY COALESCE(n.series_order, n.create_date ASC)
+                ORDER BY n.series_order ASC, n.create_date ASC
                 """,
                 (series_id,),
             ).fetchall()
