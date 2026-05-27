@@ -280,7 +280,7 @@ class AIWritingService:
 
     def _normalize_provider_payload(self, payload: dict[str, Any], require_key: bool = False, partial: bool = False) -> dict[str, Any]:
         data: dict[str, Any] = {}
-        keys = ["name", "provider_type", "base_url", "default_model", "available_models", "timeout_seconds", "max_retries", "proxy", "enabled"]
+        keys = ["name", "provider_type", "base_url", "default_model", "available_models", "timeout_seconds", "max_retries", "proxy", "context_window", "enabled"]
         for key in keys:
             if key in payload:
                 data[key] = payload[key]
@@ -318,7 +318,8 @@ class AIWritingService:
             id=int(row["id"]), name=row["name"], provider_type=row["provider_type"],
             base_url=row.get("base_url"), api_key=api_key, default_model=row.get("default_model"),
             timeout_seconds=int(row.get("timeout_seconds") or 120), max_retries=int(row.get("max_retries") or 2),
-            proxy=row.get("proxy"), enabled=bool(row.get("enabled")),
+            proxy=row.get("proxy"), context_window=int(row.get("context_window") or 128000),
+            enabled=bool(row.get("enabled")),
         )
 
     def _load_agent_config(self, db: Database, agent_id: int) -> AIAgentConfig:
@@ -413,10 +414,11 @@ class AIWritingService:
             provider_config = self._load_provider_config(db, agent.provider_id)
             text = self._resolve_input_text(db, payload)
             chunks = split_text_by_chars(text, int(payload.get("chunk_chars") or 4000))
-            # 根据 Agent 的 context_window 动态计算可发送的 chunk 数量
-            # 预留 30% 窗口给 system prompt + 输出
+            # 根据实际上下文窗口动态计算可发送的 chunk 数量
+            # Agent 有设置用 Agent 的，否则 fallback 到 Provider 级别
+            effective_window = agent.context_window if agent.context_window > 16000 else provider_config.context_window
             chunk_char_size = int(payload.get("chunk_chars") or 4000)
-            usable_chars = int(agent.context_window * 1.5 * 0.7)  # token→字符粗估 * 可用比例
+            usable_chars = int(effective_window * 1.5 * 0.7)  # token→字符粗估 * 可用比例
             max_sample_chunks = max(6, usable_chars // chunk_char_size)
             if len(chunks) > max_sample_chunks:
                 step = len(chunks) // max_sample_chunks
@@ -515,9 +517,10 @@ class AIWritingService:
             provider_config = self._load_provider_config(db, agent.provider_id)
             text = self._resolve_input_text(db, payload)
             chunks = split_text_by_chars(text, int(payload.get("chunk_chars") or 4000))
-            # 根据 Agent 的 context_window 动态计算，小说蒸馏用 80% 窗口（需要更多上下文）
+            # 根据实际上下文窗口动态计算，小说蒸馏用 80% 窗口（需要更多上下文）
+            effective_window = agent.context_window if agent.context_window > 16000 else provider_config.context_window
             chunk_char_size = int(payload.get("chunk_chars") or 4000)
-            usable_chars = int(agent.context_window * 1.5 * 0.8)
+            usable_chars = int(effective_window * 1.5 * 0.8)
             max_sample_chunks = max(10, usable_chars // chunk_char_size)
             if len(chunks) > max_sample_chunks:
                 step = len(chunks) // max_sample_chunks

@@ -15,6 +15,7 @@ class AIProviderConfig:
     timeout_seconds: int = 120
     max_retries: int = 2
     proxy: str | None = None
+    context_window: int = 128000
     enabled: bool = True
 
 
