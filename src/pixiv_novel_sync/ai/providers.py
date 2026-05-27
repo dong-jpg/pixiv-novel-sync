@@ -110,7 +110,10 @@ class OpenAICompatibleProvider(AIProvider):
                         event = json.loads(data)
                     except json.JSONDecodeError:
                         continue
-                    delta = event.get("choices", [{}])[0].get("delta", {})
+                    choices = event.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
                     text = delta.get("content") or ""
                     if text:
                         yield AIStreamChunk(type="delta", text=text)
