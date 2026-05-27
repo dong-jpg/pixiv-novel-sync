@@ -96,6 +96,7 @@ class OpenAICompatibleProvider(AIProvider):
                     return
                 if response.status_code >= 400:
                     raise AIProviderError(_safe_http_error(response))
+                response.encoding = "utf-8"
                 for raw_line in response.iter_lines(decode_unicode=True):
                     if not raw_line:
                         continue
@@ -202,6 +203,7 @@ class AnthropicProvider(AIProvider):
             ) as response:
                 if response.status_code >= 400:
                     raise AIProviderError(_safe_http_error(response))
+                response.encoding = "utf-8"
                 for raw_line in response.iter_lines(decode_unicode=True):
                     if not raw_line:
                         continue

@@ -387,6 +387,11 @@
         <input type="checkbox" v-model="distillForm.full_text" class="rounded border-gray-300">
         全文分析（分批 map-reduce，适合长篇系列，耗时较长）
       </label>
+      <div v-if="distillForm.full_text" class="flex items-center gap-2">
+        <label class="text-xs text-pixiv-gray whitespace-nowrap">每批 chunks 数：</label>
+        <input type="number" v-model.number="distillForm.batch_size" min="1" max="50" class="w-24 px-2 py-1 border border-gray-200 rounded text-sm" placeholder="自动">
+        <span class="text-xs text-pixiv-gray">（留空自动计算，越大每批文本越多）</span>
+      </div>
       <button @click="startDistill" :disabled="streaming" class="px-5 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium disabled:opacity-50">
         {{ streaming ? '蒸馏中...' : '开始蒸馏' }}
       </button>
@@ -717,7 +722,7 @@ window.initVueApp({
     const providerForm = reactive({ id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
     const agentForm = reactive({ id: 0, name: '', task_type: 'continue', provider_id: 0, model: '', system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
     const auditForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', audit_dimensions: [] });
-    const distillForm = reactive({ agent_id: 0, distill_type: 'style', source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', chunk_chars: 4000, existing_profile_id: 0, full_text: false });
+    const distillForm = reactive({ agent_id: 0, distill_type: 'style', source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', chunk_chars: 4000, existing_profile_id: 0, full_text: false, batch_size: 0 });
     const jobFilter = reactive({ task_type: '', status: '' });
     const promptForm = reactive({ id: 0, name: '', category: 'general', template: '', description: '' });
     const seedProviderId = ref(0);

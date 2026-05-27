@@ -418,10 +418,14 @@ class AIWritingService:
             all_chunks = split_text_by_chars(text, chunk_char_size)
             full_text_mode = bool(payload.get("full_text", False))
 
-            # 确定每批大小
-            effective_window = agent.context_window if agent.context_window > 16000 else provider_config.context_window
-            usable_chars = int(effective_window * 1.5 * 0.7)
-            batch_size = min(5, max(3, usable_chars // chunk_char_size))
+            # 确定每批大小：优先使用用户指定的 batch_size，否则自动计算
+            user_batch_size = int(payload.get("batch_size") or 0)
+            if user_batch_size > 0:
+                batch_size = user_batch_size
+            else:
+                effective_window = agent.context_window if agent.context_window > 16000 else provider_config.context_window
+                usable_chars = int(effective_window * 1.5 * 0.7)
+                batch_size = min(5, max(3, usable_chars // chunk_char_size))
 
             if not full_text_mode and len(all_chunks) > batch_size:
                 # 采样模式：均匀取样
@@ -557,9 +561,13 @@ class AIWritingService:
             all_chunks = split_text_by_chars(text, chunk_char_size)
             full_text_mode = bool(payload.get("full_text", False))
 
-            effective_window = agent.context_window if agent.context_window > 16000 else provider_config.context_window
-            usable_chars = int(effective_window * 1.5 * 0.8)
-            batch_size = min(8, max(5, usable_chars // chunk_char_size))
+            user_batch_size = int(payload.get("batch_size") or 0)
+            if user_batch_size > 0:
+                batch_size = user_batch_size
+            else:
+                effective_window = agent.context_window if agent.context_window > 16000 else provider_config.context_window
+                usable_chars = int(effective_window * 1.5 * 0.8)
+                batch_size = min(8, max(5, usable_chars // chunk_char_size))
 
             if not full_text_mode and len(all_chunks) > batch_size:
                 step = len(all_chunks) // batch_size
