@@ -125,14 +125,16 @@ class OpenAICompatibleProvider(AIProvider):
                 url,
                 headers=headers,
                 json=payload_copy,
-                timeout=self.config.timeout_seconds,
+                timeout=max(self.config.timeout_seconds, 300),  # 非流式至少 5 分钟
                 proxies=self._proxies(),
             )
             if response.status_code >= 400:
                 raise AIProviderError(_safe_http_error(response))
             data = response.json()
-            choice = data.get("choices", [{}])[0]
-            message = choice.get("message", {})
+            choices = data.get("choices") or []
+            if not choices:
+                raise AIProviderError(f"AI API 返回空 choices（模型可能不支持此请求）: {str(data)[:200]}")
+            message = choices[0].get("message", {})
             text = message.get("content") or ""
             if text:
                 yield AIStreamChunk(type="delta", text=text)
