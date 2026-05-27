@@ -81,70 +81,104 @@ class OpenAICompatibleProvider(AIProvider):
             yield from self._non_stream_generate(url, headers, payload)
 
     def _stream_chat_completions(self, url: str, headers: dict[str, str], payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
-        try:
-            with requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                stream=True,
-                timeout=self.config.timeout_seconds,
-                proxies=self._proxies(),
-            ) as response:
-                if response.status_code >= 500:
-                    # 流式失败，fallback 到非流式
-                    yield from self._non_stream_generate(url, headers, payload)
-                    return
-                if response.status_code >= 400:
-                    raise AIProviderError(_safe_http_error(response))
-                response.encoding = "utf-8"
-                for raw_line in response.iter_lines(decode_unicode=True):
-                    if not raw_line:
-                        continue
-                    line = raw_line.strip()
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        yield AIStreamChunk(type="done")
+        max_retries = max(1, self.config.max_retries)
+        last_error: str | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                with requests.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    stream=True,
+                    timeout=self.config.timeout_seconds,
+                    proxies=self._proxies(),
+                ) as response:
+                    if response.status_code in (502, 503, 504, 408, 429):
+                        last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                        if attempt < max_retries:
+                            import time as _t
+                            _t.sleep(2 ** attempt)
+                            continue
+                        # 重试耗尽，fallback 到非流式
+                        yield from self._non_stream_generate(url, headers, payload)
                         return
-                    try:
-                        event = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    choices = event.get("choices") or []
-                    if not choices:
-                        continue
-                    delta = choices[0].get("delta") or {}
-                    text = delta.get("content") or ""
-                    if text:
-                        yield AIStreamChunk(type="delta", text=text)
-        except requests.RequestException as exc:
-            raise AIProviderError(f"AI API 请求失败：{exc}") from exc
+                    if response.status_code >= 500:
+                        # 其他 5xx，fallback 到非流式
+                        yield from self._non_stream_generate(url, headers, payload)
+                        return
+                    if response.status_code >= 400:
+                        raise AIProviderError(_safe_http_error(response))
+                    response.encoding = "utf-8"
+                    for raw_line in response.iter_lines(decode_unicode=True):
+                        if not raw_line:
+                            continue
+                        line = raw_line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            yield AIStreamChunk(type="done")
+                            return
+                        try:
+                            event = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        choices = event.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta") or {}
+                        text = delta.get("content") or ""
+                        if text:
+                            yield AIStreamChunk(type="delta", text=text)
+                    return
+            except requests.RequestException as exc:
+                last_error = str(exc)
+                if attempt < max_retries:
+                    import time as _t
+                    _t.sleep(2 ** attempt)
+                    continue
+                raise AIProviderError(f"AI API 请求失败（已重试 {max_retries} 次）：{last_error}") from exc
 
     def _non_stream_generate(self, url: str, headers: dict[str, str], payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
         """非流式调用：一次性获取完整响应。"""
         payload_copy = {**payload, "stream": False}
-        try:
-            response = requests.post(
-                url,
-                headers=headers,
-                json=payload_copy,
-                timeout=max(self.config.timeout_seconds, 300),  # 非流式至少 5 分钟
-                proxies=self._proxies(),
-            )
-            if response.status_code >= 400:
-                raise AIProviderError(_safe_http_error(response))
-            data = response.json()
-            choices = data.get("choices") or []
-            if not choices:
-                raise AIProviderError(f"AI API 返回空 choices（模型可能不支持此请求）: {str(data)[:200]}")
-            message = choices[0].get("message", {})
-            text = message.get("content") or ""
-            if text:
-                yield AIStreamChunk(type="delta", text=text)
-            yield AIStreamChunk(type="done")
-        except requests.RequestException as exc:
-            raise AIProviderError(f"AI API 请求失败：{exc}") from exc
+        max_retries = max(1, self.config.max_retries)
+        last_error: str | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    json=payload_copy,
+                    timeout=max(self.config.timeout_seconds, 300),
+                    proxies=self._proxies(),
+                )
+                if response.status_code in (502, 503, 504, 408, 429):
+                    last_error = f"HTTP {response.status_code}"
+                    if attempt < max_retries:
+                        import time as _t
+                        _t.sleep(2 ** attempt)
+                        continue
+                    raise AIProviderError(f"AI API 网关错误 {response.status_code}（已重试 {max_retries} 次）")
+                if response.status_code >= 400:
+                    raise AIProviderError(_safe_http_error(response))
+                data = response.json()
+                choices = data.get("choices") or []
+                if not choices:
+                    raise AIProviderError(f"AI API 返回空 choices（模型可能不支持此请求）: {str(data)[:200]}")
+                message = choices[0].get("message", {})
+                text = message.get("content") or ""
+                if text:
+                    yield AIStreamChunk(type="delta", text=text)
+                yield AIStreamChunk(type="done")
+                return
+            except requests.RequestException as exc:
+                last_error = str(exc)
+                if attempt < max_retries:
+                    import time as _t
+                    _t.sleep(2 ** attempt)
+                    continue
+                raise AIProviderError(f"AI API 请求失败（已重试 {max_retries} 次）：{last_error}") from exc
 
 
 class XAIProvider(OpenAICompatibleProvider):
