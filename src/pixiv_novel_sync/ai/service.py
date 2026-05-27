@@ -15,6 +15,7 @@ from .prompts import (
     build_audit_messages,
     build_continue_messages,
     build_novel_distill_messages,
+    build_plan_messages,
     build_rewrite_messages,
     build_style_distill_messages,
     build_summarize_messages,
@@ -163,6 +164,7 @@ class AIWritingService:
                 output_chars=payload.get("output_chars"),
                 style_prompt=payload.get("style_prompt"),
                 novel_prompt=payload.get("novel_prompt"),
+                plan_text=payload.get("plan_text"),
             )
             db.create_ai_job(job_id, "continue", agent.id, {**payload, "resolved_context_chars": len(context)})
             job_created = True
@@ -301,7 +303,7 @@ class AIWritingService:
             for key in ("name", "task_type", "provider_id", "system_prompt"):
                 if not data.get(key):
                     raise AIServiceError(f"缺少 Agent 字段：{key}")
-        if data.get("task_type") not in {None, "continue", "rewrite", "distill_style", "distill_novel", "audit", "general"}:
+        if data.get("task_type") not in {None, "continue", "rewrite", "distill_style", "distill_novel", "audit", "general", "plan"}:
             raise AIServiceError("不支持的 Agent 类型")
         return data
 
@@ -621,6 +623,57 @@ class AIWritingService:
         finally:
             db.close()
 
+    # ── 写前构思 ────────────────────────────────────────────────
+
+    def stream_plan(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        """生成续写前的章节构思。"""
+        db = self._db()
+        job_id = uuid.uuid4().hex
+        output_parts: list[str] = []
+        job_created = False
+        agent_id = int(payload.get("agent_id") or 0)
+        try:
+            agent = self._load_agent_config(db, agent_id)
+            provider_config = self._load_provider_config(db, agent.provider_id)
+            context = self._resolve_input_text(db, payload)
+            # 构思任务只看最近的内容即可，不需要全文摘要
+            context_chars = int(payload.get("context_chars") or 8000)
+            context = get_tail_context(context, context_chars)
+            messages = build_plan_messages(
+                system_prompt=agent.system_prompt,
+                context=context,
+                instruction=payload.get("instruction"),
+                novel_prompt=payload.get("novel_prompt"),
+            )
+            db.create_ai_job(job_id, "plan", agent.id, {**payload, "resolved_context_chars": len(context)})
+            job_created = True
+            yield AIStreamChunk(type="metadata", data={"job_id": job_id})
+            model = agent.model or provider_config.default_model
+            if not model:
+                raise AIServiceError("Agent 或 Provider 未配置模型")
+            provider = create_provider(provider_config)
+            for chunk in provider.stream_generate(
+                messages, model=model, temperature=agent.temperature,
+                top_p=agent.top_p, max_tokens=agent.max_tokens,
+            ):
+                if chunk.type == "delta":
+                    output_parts.append(chunk.text)
+                    yield chunk
+            output = "".join(output_parts)
+            db.update_ai_job(job_id, "succeeded", output_text=output, output_json={"chars": len(output)})
+            yield AIStreamChunk(type="done", data={"job_id": job_id, "chars": len(output)})
+        except GeneratorExit:
+            if job_created:
+                db.update_ai_job(job_id, "cancelled", output_text="".join(output_parts), error_message="客户端断开连接")
+            raise
+        except Exception as exc:
+            message = str(exc)
+            if job_created:
+                db.update_ai_job(job_id, "failed", output_text="".join(output_parts), error_message=message)
+            yield AIStreamChunk(type="error", data={"message": message})
+        finally:
+            db.close()
+
     # ── Prompt 模板 ─────────────────────────────────────────────
 
     def list_prompt_templates(self, category: str | None = None) -> list[dict[str, Any]]:
@@ -688,6 +741,7 @@ class AIWritingService:
             {"name": "蒸馏-风格提取", "category": "distill", "template": "你是专业的文学风格分析专家。\n请从叙事视角、语气特征、句式特点、用词风格、描写手法、对话风格、节奏特征、常用修辞手法等维度提取写作风格特征。", "description": "风格蒸馏 prompt", "is_builtin": True},
             {"name": "蒸馏-小说设定提取", "category": "distill", "template": "你是专业的小说结构分析专家。\n请提取角色列表及关系、世界观设定、关键剧情点、伏笔列表、时间线、主题与情感基调。", "description": "小说蒸馏 prompt", "is_builtin": True},
             {"name": "摘要提取", "category": "summarize", "template": "你是专业的小说文本摘要提取助手。\n请保留主要角色当前状态、正在进行的剧情线、最近发生的重要事件、已埋伏笔、情感氛围、时间地点信息。\n摘要控制在原文 10%-20% 篇幅。", "description": "长文本摘要提取 prompt", "is_builtin": True},
+            {"name": "写前构思", "category": "plan", "template": "你是专业的小说创作总编。\n请根据已有上文，为接下来的续写制定章节构思，包含：本次目标、读者期待、该兑现的伏笔、暂不掀开的悬念、必须发生的改变、章尾钩子、不要做的事。", "description": "续写前的章节规划 prompt", "is_builtin": True},
         ]
         db = self._db()
         try:
@@ -785,6 +839,14 @@ class AIWritingService:
                 "max_tokens": 4000,
                 "context_window": 16000,
             },
+            {
+                "name": "章节构思师",
+                "task_type": "plan",
+                "system_prompt": "你是专业的小说创作总编（不是写手），擅长在动笔前规划章节走向。\n你的任务是根据已有上文，为接下来的续写制定一份简洁清晰的章节构思。\n\n【输出结构 - 严格按照以下格式输出 Markdown，不要输出其他内容】\n\n## 本次目标\n（一句话说明本段续写要达到什么效果，≤ 50 字）\n\n## 读者此刻在等什么\n（基于上文，分析读者最期待看到的剧情走向，最多 3 点）\n\n## 该兑现的伏笔/线索\n（列出 1-3 条上文已埋下、本次应当推进或回收的线索）\n\n## 暂不掀开的\n（列出 1-2 条可继续埋藏的悬念）\n\n## 本次必须发生的改变\n（明确 1-3 条具体变化：信息/关系/物理/情感/力量变化，要可验证）\n\n## 章尾钩子\n（设计一个让读者想继续看下去的悬念点）\n\n## 不要做的事\n（针对本段具体内容，列出 2-4 条禁忌）\n\n【原则】\n- 构思必须基于上文事实，不要脱离已有剧情发明新设定\n- 每节内容用一两句话表达，不要长篇大论\n- 不要写正文，只写规划",
+                "temperature": 0.6,
+                "max_tokens": 2000,
+                "context_window": 16000,
+            },
         ]
         db = self._db()
         created: dict[str, int] = {}
@@ -837,25 +899,46 @@ class AIWritingService:
 
     def _smart_context(self, text: str, context_window: int,
                        provider_config: AIProviderConfig, model: str) -> str:
-        """智能上下文处理：超长时自动提取摘要 + 末尾上下文。"""
+        """智能上下文处理：超长时自动分段摘要 + 末尾上下文。
+
+        分层策略：
+        - 短文本（<= 60% 窗口）：原样返回
+        - 长文本：分段摘要前文 + 保留尾部 30% 字符作为续接锚点
+        - 分段摘要：每 8000 字一段，避免长文摘要时丢失中段信息
+        """
         est_tokens = estimate_token_count(text)
         max_tokens = context_window * 0.6  # 留 40% 给输出和 prompt
         if est_tokens <= max_tokens:
             return text
-        # 需要摘要：取前文做摘要 + 末尾上下文
-        tail_chars = int(context_window * 0.4)
+        # 保留尾部 30% 字符作为续接锚点（含最近的完整场景）
+        tail_chars = int(context_window * 0.3)
         tail = get_tail_context(text, tail_chars)
         head = text[:len(text) - len(tail)]
         if not head.strip():
             return tail
-        # 同步调用摘要
-        messages = build_summarize_messages(text=head[:8000])  # 限制摘要输入
-        summary_parts: list[str] = []
+        # 分段摘要：每 8000 字一段
+        segment_size = 8000
+        segments = [head[i:i + segment_size] for i in range(0, len(head), segment_size)]
         provider = create_provider(provider_config)
-        for chunk in provider.stream_generate(messages, model=model, temperature=0.3, top_p=0.9, max_tokens=1000):
-            if chunk.type == "delta":
-                summary_parts.append(chunk.text)
-        summary = "".join(summary_parts).strip()
+        summary_parts: list[str] = []
+        for idx, seg in enumerate(segments, 1):
+            messages = build_summarize_messages(
+                text=seg,
+                focus=f"第 {idx}/{len(segments)} 段，请保留与后续剧情衔接相关的关键信息。",
+            )
+            seg_summary: list[str] = []
+            for chunk in provider.stream_generate(
+                messages, model=model, temperature=0.3, top_p=0.9, max_tokens=800,
+            ):
+                if chunk.type == "delta":
+                    seg_summary.append(chunk.text)
+            seg_text = "".join(seg_summary).strip()
+            if seg_text:
+                if len(segments) > 1:
+                    summary_parts.append(f"[第 {idx} 段摘要]\n{seg_text}")
+                else:
+                    summary_parts.append(seg_text)
+        summary = "\n\n".join(summary_parts)
         if summary:
             return f"【前文摘要】\n{summary}\n\n【最近原文】\n{tail}"
         return tail

@@ -7,6 +7,7 @@ from typing import Any
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
 from .ai.service import AIServiceError, AIWritingService
+from .ai.detection import detect_ai_tells
 from .settings import Settings
 
 
@@ -335,6 +336,36 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
     def stream_audit():
         try:
             return stream_response(service.stream_audit(json_payload()))
+        except Exception as exc:
+            return fail(exc)
+
+    # ── 写前构思 ────────────────────────────────────────────────
+
+    @app.post("/api/dashboard/ai/plan/stream")
+    def stream_plan():
+        try:
+            return stream_response(service.stream_plan(json_payload()))
+        except Exception as exc:
+            return fail(exc)
+
+    # ── AI 痕迹检测（本地规则，无需 LLM）─────────────────────────
+
+    @app.post("/api/dashboard/ai/detect-ai-tells")
+    def detect_ai_tells_route():
+        try:
+            payload = json_payload()
+            text = str(payload.get("text") or "")
+            if not text.strip():
+                raise AIServiceError("文本不能为空")
+            report = detect_ai_tells(text)
+            return ok({
+                "score": report.score,
+                "issues": [
+                    {"type": i.type, "severity": i.severity, "message": i.message, "detail": i.detail}
+                    for i in report.issues
+                ],
+                "stats": report.stats,
+            })
         except Exception as exc:
             return fail(exc)
 

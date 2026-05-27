@@ -99,11 +99,26 @@
         <label class="block text-xs font-medium text-pixiv-gray mb-1.5">续写指令</label>
         <input v-model="continueForm.instruction" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="例如：自然延续，重点描写主角心理变化">
       </div>
+      <div class="border border-amber-100 bg-amber-50 rounded-lg p-3 space-y-2">
+        <div class="flex items-center justify-between">
+          <label class="text-xs font-medium text-amber-700">写前构思（可选，提升续写连贯性）</label>
+          <div class="flex gap-2">
+            <select v-model.number="continueForm.plan_agent_id" class="px-2 py-1 border border-amber-200 rounded text-xs bg-white">
+              <option :value="0">选择构思 Agent</option>
+              <option v-for="agent in planAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option>
+            </select>
+            <button @click="startPlan" :disabled="streaming || !continueForm.plan_agent_id" class="px-3 py-1 bg-amber-500 text-white rounded text-xs disabled:opacity-50">
+              生成构思
+            </button>
+          </div>
+        </div>
+        <textarea v-model="continueForm.plan_text" rows="5" class="w-full px-2 py-1.5 border border-amber-200 rounded text-xs font-serif" placeholder="点击"生成构思"自动填充，或手动编写章节构思后再续写..."></textarea>
+      </div>
       <button @click="startContinue" :disabled="streaming" class="px-5 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium disabled:opacity-50">
         {{ streaming ? '生成中...' : '开始续写' }}
       </button>
     </div>
-    <output-panel title="续写结果" :text="streamOutput" :job-id="currentJobId" :streaming="streaming" @save="saveDraft('续写草稿', streamOutput)"></output-panel>
+    <output-panel title="续写结果" :text="streamOutput" :job-id="currentJobId" :streaming="streaming" :show-detect="true" @save="saveDraft('续写草稿', streamOutput)" @detect="detectAITells"></output-panel>
   </section>
 
   <section v-show="activeTab === 'rewrite'" class="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -203,6 +218,7 @@
         <option value="continue">续写</option>
         <option value="rewrite">改写</option>
         <option value="audit">内容审计</option>
+        <option value="plan">写前构思</option>
         <option value="distill_style">风格蒸馏</option>
         <option value="distill_novel">小说蒸馏</option>
         <option value="general">通用</option>
@@ -377,6 +393,7 @@
         <option value="continue">续写</option>
         <option value="rewrite">改写</option>
         <option value="audit">审计</option>
+        <option value="plan">构思</option>
         <option value="distill_style">风格蒸馏</option>
         <option value="distill_novel">小说蒸馏</option>
       </select>
@@ -476,6 +493,7 @@
           <option value="continue">续写</option>
           <option value="rewrite">改写</option>
           <option value="audit">审计</option>
+          <option value="plan">构思</option>
           <option value="distill">蒸馏</option>
           <option value="summarize">摘要</option>
           <option value="general">通用</option>
@@ -488,6 +506,7 @@
         <option value="continue">续写</option>
         <option value="rewrite">改写</option>
         <option value="audit">审计</option>
+        <option value="plan">构思</option>
         <option value="distill">蒸馏</option>
         <option value="summarize">摘要</option>
       </select>
@@ -632,8 +651,8 @@ window.initVueApp({
       }
     },
     'output-panel': {
-      props: ['title', 'text', 'jobId', 'streaming'],
-      emits: ['save'],
+      props: ['title', 'text', 'jobId', 'streaming', 'showDetect'],
+      emits: ['save', 'detect'],
       template: `
         <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 flex flex-col min-h-[28rem]">
           <div class="flex items-center justify-between mb-3">
@@ -641,9 +660,10 @@ window.initVueApp({
             <span v-if="jobId" class="text-xs text-pixiv-gray">Job {{ jobId.substring(0, 8) }}</span>
           </div>
           <pre class="flex-1 whitespace-pre-wrap text-sm text-gray-800 font-serif overflow-auto bg-gray-50 rounded-lg p-3 border border-gray-100">{{ text || (streaming ? '等待输出...' : '暂无输出') }}</pre>
-          <div class="flex gap-2 mt-3">
+          <div class="flex gap-2 mt-3 flex-wrap">
             <button @click="$emit('save')" :disabled="!text" class="px-3 py-1.5 bg-brand-500 text-white rounded-lg text-xs disabled:opacity-50">保存草稿</button>
             <button @click="copyText" :disabled="!text" class="px-3 py-1.5 bg-gray-100 rounded-lg text-xs disabled:opacity-50">复制</button>
+            <button v-if="showDetect" @click="$emit('detect')" :disabled="!text" class="px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg text-xs disabled:opacity-50">AI 痕迹检测</button>
           </div>
         </div>`,
       methods: {
@@ -683,7 +703,7 @@ window.initVueApp({
     const streamOutput = ref('');
     const currentJobId = ref('');
 
-    const continueForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', context_chars: 8000, output_chars: 3000, instruction: '', smart_context: true, style_profile_id: 0, novel_profile_id: 0 });
+    const continueForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', context_chars: 8000, output_chars: 3000, instruction: '', smart_context: true, style_profile_id: 0, novel_profile_id: 0, plan_agent_id: 0, plan_text: '' });
     const rewriteForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', rewrite_type: 'polish', instruction: '' });
     const providerForm = reactive({ id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, enabled: true });
     const agentForm = reactive({ id: 0, name: '', task_type: 'continue', provider_id: 0, model: '', system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
@@ -698,6 +718,7 @@ window.initVueApp({
     const rewriteAgents = computed(() => agents.value.filter(a => ['rewrite', 'general'].includes(a.task_type)));
     const auditAgents = computed(() => agents.value.filter(a => ['audit', 'general'].includes(a.task_type)));
     const distillAgents = computed(() => agents.value.filter(a => ['distill_style', 'distill_novel', 'general'].includes(a.task_type)));
+    const planAgents = computed(() => agents.value.filter(a => ['plan', 'general'].includes(a.task_type)));
 
     function resetProviderForm() {
       Object.assign(providerForm, { id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, enabled: true });
@@ -825,6 +846,37 @@ window.initVueApp({
     // ── 内容审计 ──────────────────────────────────────────────
     function startAudit() { startStream('/api/dashboard/ai/audit/stream', auditForm); }
 
+    // ── 写前构思 ──────────────────────────────────────────────
+    async function startPlan() {
+      if (!continueForm.plan_agent_id) { showMessage('请先选择构思 Agent', 'error'); return; }
+      streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
+      const planPayload = { agent_id: continueForm.plan_agent_id, source_type: continueForm.source_type, novel_id: continueForm.novel_id, series_id: continueForm.series_id, document_id: continueForm.document_id, text: continueForm.text, instruction: continueForm.instruction, context_chars: continueForm.context_chars };
+      try {
+        const res = await fetch('/api/dashboard/ai/plan/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(planPayload) });
+        if (!res.ok || !res.body) throw new Error('构思请求失败');
+        await readSSE(res);
+        continueForm.plan_text = streamOutput.value;
+        showMessage('构思已生成，可直接续写或手动调整');
+      } catch (e) { showMessage(e.message, 'error'); }
+      finally { streaming.value = false; }
+    }
+
+    // ── AI 痕迹检测 ──────────────────────────────────────────
+    async function detectAITells() {
+      if (!streamOutput.value) return;
+      try {
+        const res = await fetch('/api/dashboard/ai/detect-ai-tells', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: streamOutput.value }) });
+        const data = await res.json();
+        if (!res.ok || data.ok === false) throw new Error(data.error || '检测失败');
+        const report = data.data;
+        let msg = `AI 痕迹评分：${report.score.toFixed(0)}/100（越高越像人写）`;
+        if (report.issues && report.issues.length) {
+          msg += '\n问题：' + report.issues.map(i => `[${i.severity}] ${i.message}`).join('；');
+        }
+        alert(msg);
+      } catch (e) { showMessage(e.message, 'error'); }
+    }
+
     // ── 蒸馏 ──────────────────────────────────────────────────
     function startDistill() {
       const url = distillForm.distill_type === 'style' ? '/api/dashboard/ai/distill/style/stream' : '/api/dashboard/ai/distill/novel/stream';
@@ -897,7 +949,7 @@ window.initVueApp({
     onMounted(async () => {
       await Promise.all([loadProviders(), loadAgents(), loadDrafts(), loadStyleProfiles(), loadNovelProfiles(), loadPromptTemplates()]);
     });
-    return { tabs, activeTab, providers, agents, drafts, draftHistory, jobs, selectedJob, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, jobFilter, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, loadJobs, startAudit, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents };
+    return { tabs, activeTab, providers, agents, drafts, draftHistory, jobs, selectedJob, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, jobFilter, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, planAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, loadJobs, startAudit, startPlan, detectAITells, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents };
   }
 });
 </script>

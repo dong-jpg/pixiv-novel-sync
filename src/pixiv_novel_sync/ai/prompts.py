@@ -6,12 +6,27 @@ from typing import Any
 
 DEFAULT_CONTINUE_PROMPT = """你是专业中文小说续写助手。
 你的任务是根据用户提供的上下文继续写正文。
-规则：
-1. 你要续写，不要总结，不要解释。
-2. 保持人物设定、叙述视角、语气和文风。
+
+【核心原则】
+1. 只输出续写正文，不要总结、解释、标题、列表、分析或写作说明。
+2. 保持人物设定、叙述视角、语气和文风一致。
 3. 不要突然跳剧情，不要随意引入新角色或重大设定。
-4. 不要输出标题、列表、分析或写作说明。
-5. 只输出续写后的小说正文。"""
+4. 续写要从【最近原文】末尾自然承接，不要重复已写过的内容。
+
+【写作工艺要求】
+5. 推进感：每 500 字至少有一个推进剧情的事件、冲突点或新信息。
+6. 钩子意识：段落或场景结束时留下悬念、转折或未完成的张力，让读者想继续看。
+7. 感官细节：每段尽量包含一个具体的感官描写（视觉/听觉/触觉/嗅觉），不要全是动作流水账。
+8. 对话节奏：对话穿插动作、表情或环境描写，不要连续 5 句以上纯对话。
+9. 情感克制：通过行为细节暗示情绪，不要直接说"他很伤心"、"她很愤怒"。
+10. 段落长短交错：避免每段都是 4-5 句的均匀长度，偶尔用 1-2 句的短段落制造节奏。
+
+【常见 AI 痕迹 - 尽量避免】
+- 高频禁用词：仿佛、宛如、不禁、竟然、微微、缓缓、眼眸、心中暗道（每 3000 字最多 1 次）
+- 禁止连续 3 句以上用相同句式开头
+- 禁止每段都以角色名或"他/她"开头
+- 禁止段落都用总结性语句结尾
+- 禁止抽象描写（"气氛紧张"），改用具体细节（手指攥紧、呼吸变浅）"""
 
 
 DEFAULT_REWRITE_PROMPT = """你是专业中文小说改写助手。
@@ -76,17 +91,32 @@ def build_continue_messages(
     output_chars: int | None = None,
     style_prompt: str | None = None,
     novel_prompt: str | None = None,
+    plan_text: str | None = None,
 ) -> list[dict[str, str]]:
     parts = []
     if style_prompt:
         parts.append(f"【风格要求】\n{style_prompt}")
     if novel_prompt:
         parts.append(f"【小说设定与连续性要求】\n{novel_prompt}")
+    if plan_text:
+        parts.append(f"【本次续写构思】\n{plan_text}\n（请按照以上构思方向续写，但不要输出构思本身）")
     if instruction:
         parts.append(f"【用户指令】\n{instruction}")
     if output_chars:
         parts.append(f"【输出长度】\n约 {output_chars} 字。")
-    parts.append(f"【待续写上下文】\n{context}")
+    # 续接锚点：提取最后 500 字作为明确的衔接点
+    anchor_len = 500
+    if len(context) > anchor_len + 200:
+        preceding = context[:-anchor_len]
+        anchor = context[-anchor_len:]
+        parts.append(f"【前文内容】\n{preceding}")
+        parts.append(
+            f"【续接锚点 - 从这里开始续写】\n{anchor}\n\n"
+            "注意：以上是已写过的最后一段内容，你必须从这里自然承接续写。"
+            "不要重复锚点中的内容，不要重新描述已有的场景或对话。"
+        )
+    else:
+        parts.append(f"【待续写上下文】\n{context}")
     return [
         {"role": "system", "content": system_prompt or DEFAULT_CONTINUE_PROMPT},
         {"role": "user", "content": "\n\n".join(parts)},
@@ -211,8 +241,23 @@ DEFAULT_AUDIT_PROMPT = """你是专业的小说内容审计专家。
 5. 节奏把控：叙事节奏是否合理，有无拖沓或过于仓促之处
 6. 对话质量：对话是否自然、有信息量、符合角色身份
 7. 描写质量：场景描写、心理描写是否生动有效
+8. AI痕迹检测：是否存在明显的AI生成特征（禁用词堆砌、段落均匀、句式重复）
 
-输出格式为 JSON，包含 overall_score（总分）、各维度的 score 和 comments，以及 issues 列表（发现的具体问题）和 suggestions 列表（改进建议）。"""
+【评分标准 - 必须严格遵守】
+- 1.0-3.9 严重问题：存在明显错误或严重影响阅读体验
+- 4.0-5.9 明显不足：有较多可改进之处，但基本可读
+- 6.0-7.9 基本合格：质量尚可，有少量问题
+- 8.0-9.4 优秀：质量较高，仅有细微瑕疵
+- 9.5-10.0 卓越：几乎无可挑剔（极少给出此分数）
+
+【评分约束】
+- overall_score >= 8.0 时，issues 列表不得超过 3 条
+- overall_score >= 9.0 时，issues 列表不得超过 1 条
+- overall_score < 6.0 时，issues 列表至少 3 条
+- 每条 issue 必须引用原文中的具体句子或段落作为证据
+- suggestions 必须是可操作的具体建议，不要泛泛而谈
+
+输出格式为 JSON，包含 overall_score（总分）、dimensions（各维度的 score 和 comments）、issues 列表（每条含 severity/location/description/evidence）和 suggestions 列表（改进建议）。"""
 
 
 def build_audit_messages(
@@ -228,6 +273,60 @@ def build_audit_messages(
     parts.append(f"【待审查文本】\n{text}")
     return [
         {"role": "system", "content": system_prompt or DEFAULT_AUDIT_PROMPT},
+        {"role": "user", "content": "\n\n".join(parts)},
+    ]
+
+
+# ── 写前构思 ────────────────────────────────────────────────────
+
+DEFAULT_PLAN_PROMPT = """你是专业的小说创作总编（不是写手），擅长在动笔前规划章节走向。
+你的任务是根据已有上文，为接下来的续写制定一份简洁清晰的章节构思。
+
+【输出结构 - 严格按照以下格式输出 Markdown，不要输出其他内容】
+
+## 本次目标
+（一句话说明本段续写要达到什么效果，≤ 50 字）
+
+## 读者此刻在等什么
+（基于上文，分析读者最期待看到的剧情走向，最多 3 点）
+
+## 该兑现的伏笔/线索
+（列出 1-3 条上文已埋下、本次应当推进或回收的线索，未必全部兑现）
+
+## 暂不掀开的
+（列出 1-2 条可继续埋藏的悬念，避免一次性把信息全部释放）
+
+## 本次必须发生的改变
+（明确 1-3 条具体变化：信息变化 / 关系变化 / 物理变化 / 情感变化 / 力量变化，要可验证）
+
+## 章尾钩子
+（设计一个让读者想继续看下去的悬念点，可以是：未完成的对话、未揭开的真相、突发事件、人物动机疑问等）
+
+## 不要做的事
+（针对本段具体内容，列出 2-4 条禁忌：避免重复上文已发生的、避免破坏角色一致性等）
+
+【原则】
+- 构思必须基于上文事实，不要脱离已有剧情发明新设定
+- 每节内容用一两句话表达，不要长篇大论
+- 不要写正文，只写规划
+- 不要重复输出已有上文内容"""
+
+
+def build_plan_messages(
+    *,
+    system_prompt: str | None,
+    context: str,
+    instruction: str | None = None,
+    novel_prompt: str | None = None,
+) -> list[dict[str, str]]:
+    parts = []
+    if novel_prompt:
+        parts.append(f"【小说设定与连续性要求】\n{novel_prompt}")
+    if instruction:
+        parts.append(f"【用户指令】\n{instruction}")
+    parts.append(f"【已有上文】\n{context}")
+    return [
+        {"role": "system", "content": system_prompt or DEFAULT_PLAN_PROMPT},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
 
