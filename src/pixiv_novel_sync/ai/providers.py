@@ -36,6 +36,21 @@ class AIProvider:
 class OpenAICompatibleProvider(AIProvider):
     default_base_url = "https://api.openai.com/v1"
 
+    def _resolve_base_url(self) -> str:
+        """自动检测并拼接 /v1 路径。"""
+        base_url = (self.config.base_url or self.default_base_url).rstrip("/")
+        # 已经包含 /v1 则不重复拼接
+        if base_url.endswith("/v1") or "/v1/" in base_url:
+            return base_url
+        # 官方 API 地址不需要拼接（已经内置 /v1）
+        official_hosts = ("api.openai.com", "api.deepseek.com", "api.x.ai", "api.anthropic.com")
+        from urllib.parse import urlparse
+        host = urlparse(base_url).hostname or ""
+        if host in official_hosts:
+            return base_url
+        # 其他地址（自建网关等）自动拼接 /v1
+        return f"{base_url}/v1"
+
     def stream_generate(
         self,
         messages: list[dict[str, str]],
@@ -46,7 +61,7 @@ class OpenAICompatibleProvider(AIProvider):
     ) -> Iterator[AIStreamChunk]:
         if not self.config.api_key:
             raise AIProviderError("Provider 未配置 API key")
-        base_url = (self.config.base_url or self.default_base_url).rstrip("/")
+        base_url = self._resolve_base_url()
         url = f"{base_url}/chat/completions"
         payload = {
             "model": model,
