@@ -386,3 +386,17 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
             return ok()
         except Exception as exc:
             return fail(exc)
+
+    # ── 内置 Agent 初始化 ──────────────────────────────────────
+
+    @app.post("/api/dashboard/ai/agents/seed")
+    def seed_builtin_agents():
+        try:
+            payload = json_payload()
+            provider_id = int(payload.get("provider_id") or 0)
+            if not provider_id:
+                raise AIServiceError("需要指定 provider_id")
+            created = service.seed_builtin_agents(provider_id)
+            return ok(created)
+        except Exception as exc:
+            return fail(exc)

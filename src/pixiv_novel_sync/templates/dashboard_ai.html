@@ -117,6 +117,7 @@
           <label class="block text-xs font-medium text-pixiv-gray mb-1.5">改写类型</label>
           <select v-model="rewriteForm.rewrite_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
             <option value="polish">润色</option>
+            <option value="deai">去AI味</option>
             <option value="expand">扩写</option>
             <option value="shorten">缩写</option>
             <option value="dialogue">改善对话</option>
@@ -182,6 +183,14 @@
   <section v-show="activeTab === 'agents'" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
     <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-3">
       <h2 class="text-lg font-bold text-gray-900">Agent 设置</h2>
+      <div class="flex gap-2 mb-2">
+        <select v-model.number="seedProviderId" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+          <option :value="0">选择 Provider 初始化默认 Agent</option>
+          <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+        </select>
+        <button @click="seedAgents" :disabled="!seedProviderId" class="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-sm disabled:opacity-50">一键初始化</button>
+      </div>
+      <p class="text-xs text-pixiv-gray">初始化 10 个内置 Agent（续写/改写/去AI味/审计/蒸馏等），已有同名 Agent 不会重复创建。</p>
       <input v-model="agentForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Agent 名称">
       <select v-model="agentForm.task_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
         <option value="continue">续写</option>
@@ -563,6 +572,7 @@ window.initVueApp({
     const distillForm = reactive({ agent_id: 0, distill_type: 'style', source_type: 'manual', novel_id: null, document_id: 0, text: '', chunk_chars: 4000, existing_profile_id: 0 });
     const jobFilter = reactive({ task_type: '', status: '' });
     const promptForm = reactive({ id: 0, name: '', category: 'general', template: '', description: '' });
+    const seedProviderId = ref(0);
     const auditDimensions = ['角色一致性', '剧情连贯性', '文风统一性', '伏笔追踪', '节奏把控', '对话质量', '描写质量'];
 
     const continueAgents = computed(() => agents.value.filter(a => ['continue', 'general'].includes(a.task_type)));
@@ -756,11 +766,19 @@ window.initVueApp({
       try { await api('/api/dashboard/ai/prompt-templates/seed', { method: 'POST' }); showMessage('内置模板已初始化'); await loadPromptTemplates(); }
       catch (e) { showMessage(e.message, 'error'); }
     }
+    async function seedAgents() {
+      if (!seedProviderId.value) return;
+      try {
+        const created = await api('/api/dashboard/ai/agents/seed', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ provider_id: seedProviderId.value }) });
+        const count = Object.keys(created).length;
+        await loadAgents(); showMessage(`已初始化 ${count} 个内置 Agent`);
+      } catch (e) { showMessage(e.message, 'error'); }
+    }
 
     onMounted(async () => {
       await Promise.all([loadProviders(), loadAgents(), loadDrafts(), loadStyleProfiles(), loadNovelProfiles(), loadPromptTemplates()]);
     });
-    return { tabs, activeTab, providers, agents, drafts, draftHistory, jobs, selectedJob, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, jobFilter, promptForm, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, loadJobs, startAudit, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates };
+    return { tabs, activeTab, providers, agents, drafts, draftHistory, jobs, selectedJob, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, jobFilter, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, loadJobs, startAudit, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents };
   }
 });
 </script>

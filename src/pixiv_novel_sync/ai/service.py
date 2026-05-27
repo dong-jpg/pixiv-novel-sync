@@ -660,7 +660,7 @@ class AIWritingService:
             {"name": "续写-默认", "category": "continue", "template": "你是专业中文小说续写助手。\n你的任务是根据用户提供的上下文继续写正文。\n规则：\n1. 你要续写，不要总结，不要解释。\n2. 保持人物设定、叙述视角、语气和文风。\n3. 不要突然跳剧情，不要随意引入新角色或重大设定。\n4. 不要输出标题、列表、分析或写作说明。\n5. 只输出续写后的小说正文。", "description": "标准续写 prompt", "is_builtin": True},
             {"name": "续写-心理描写", "category": "continue", "template": "你是专业中文小说续写助手，擅长细腻的心理描写。\n你的任务是根据用户提供的上下文继续写正文。\n规则：\n1. 重点描写角色的内心活动、情感变化和心理冲突。\n2. 保持人物设定、叙述视角、语气和文风。\n3. 不要突然跳剧情。\n4. 只输出续写后的小说正文。", "description": "侧重心理描写的续写 prompt", "is_builtin": True},
             {"name": "改写-润色", "category": "rewrite", "template": "你是专业中文小说改写助手。\n你的任务是润色文本，提升文学质量。\n规则：\n1. 保留原剧情事实和关键信息。\n2. 优化用词和句式，提升文学性。\n3. 不新增重大事件，不删除关键情节。\n4. 只输出改写后的正文。", "description": "标准润色 prompt", "is_builtin": True},
-            {"name": "改写-去AI味", "category": "rewrite", "template": "你是专业中文小说改写助手。\n你的任务是改写文本，去除 AI 生成的痕迹。\n规则：\n1. 保留原剧情事实和关键信息。\n2. 去除模板化、套路化的表达。\n3. 增加自然的口语化表达和个性化描写。\n4. 避免过度使用排比、比喻等修辞。\n5. 只输出改写后的正文。", "description": "去除 AI 痕迹的改写 prompt", "is_builtin": True},
+            {"name": "改写-去AI味", "category": "rewrite", "template": "你是专业中文小说改写助手，专门去除AI生成痕迹。\n\n禁用词汇：仿佛、宛如、不禁、竟然、微微、轻轻、缓缓、深吸一口气、嘴角上扬、眼眸、心中暗道、似乎、好像（每段最多1次）、不由自主、若有所思\n\n句式要求：\n- 禁止连续3句以上用相同句式开头\n- 长短句交替，禁止排比句\n- 对话不要全部用\"XX说\"\n\n描写要求：\n- 禁止抽象描写，用具体细节\n- 每段至少1个感官细节\n- 对话要有信息量\n\n整体要求：像真人写的，允许不完美表达，情感要克制。", "description": "去除 AI 痕迹的改写 prompt（详细版）", "is_builtin": True},
             {"name": "审计-全面审查", "category": "audit", "template": "你是专业的小说内容审计专家。\n请从角色一致性、剧情连贯性、文风统一性、伏笔追踪、节奏把控、对话质量、描写质量七个维度进行审查。\n每个维度给出评分（1-10）和具体意见。", "description": "全面内容审计 prompt", "is_builtin": True},
             {"name": "蒸馏-风格提取", "category": "distill", "template": "你是专业的文学风格分析专家。\n请从叙事视角、语气特征、句式特点、用词风格、描写手法、对话风格、节奏特征、常用修辞手法等维度提取写作风格特征。", "description": "风格蒸馏 prompt", "is_builtin": True},
             {"name": "蒸馏-小说设定提取", "category": "distill", "template": "你是专业的小说结构分析专家。\n请提取角色列表及关系、世界观设定、关键剧情点、伏笔列表、时间线、主题与情感基调。", "description": "小说蒸馏 prompt", "is_builtin": True},
@@ -677,6 +677,109 @@ class AIWritingService:
             db.close()
 
     # ── 草稿版本历史 ────────────────────────────────────────────
+
+    def seed_builtin_agents(self, provider_id: int) -> dict[str, int]:
+        """初始化内置 Agent（幂等，同名则跳过）。返回 {name: id}。"""
+        from .prompts import DEAI_RULES
+        agents = [
+            {
+                "name": "通用续写助手",
+                "task_type": "continue",
+                "system_prompt": "你是专业中文小说续写助手。\n你的任务是根据用户提供的上下文继续写正文。\n\n规则：\n1. 你要续写，不要总结，不要解释。\n2. 保持人物设定、叙述视角、语气和文风。\n3. 不要突然跳剧情，不要随意引入新角色或重大设定。\n4. 不要输出标题、列表、分析或写作说明。\n5. 只输出续写后的小说正文。\n6. 续写自然流畅，像原作者的风格继续写下去。\n7. 注意保持伏笔的延续，不要忘记前文埋下的线索。",
+                "temperature": 0.85,
+                "max_tokens": 4000,
+                "context_window": 16000,
+            },
+            {
+                "name": "续写-心理描写专精",
+                "task_type": "continue",
+                "system_prompt": '你是专业中文小说续写助手，擅长细腻的心理描写。\n\n写作要求：\n1. 重点描写角色的内心活动、情感变化和心理冲突。\n2. 通过行为细节暗示心理，而非直接说"他很伤心"。\n3. 保持人物设定、叙述视角、语气和文风。\n4. 不要突然跳剧情。\n5. 只输出续写后的小说正文。\n\n心理描写技巧：\n- 用身体反应暗示情绪（手指攥紧、呼吸变浅、眼神躲闪）\n- 用环境映射心理（光线变暗暗示心情沉重）\n- 用内心独白展现纠结（但不要每段都有）\n- 克制表达，不要动不动就"热泪盈眶"',
+                "temperature": 0.8,
+                "max_tokens": 4000,
+                "context_window": 16000,
+            },
+            {
+                "name": "续写-对话专精",
+                "task_type": "continue",
+                "system_prompt": '你是专业中文小说续写助手，擅长写自然生动的对话。\n\n写作要求：\n1. 对话要符合角色身份、性格和说话习惯。\n2. 对话要有信息量，推进剧情或展现人物关系。\n3. 禁止废话对话（嗯、哦、好吧、你说得对）。\n4. 对话中穿插动作描写，不要全是XX说。\n5. 每个角色的说话方式要有区别。\n6. 只输出续写后的小说正文。\n\n对话技巧：\n- 潜台词：角色不会把所有想法都说出来\n- 打断：真实对话中经常有打断和插话\n- 省略：有时话说一半比说完更有力量\n- 口癖：给角色设计1-2个口头禅（但不要滥用）',
+                "temperature": 0.85,
+                "max_tokens": 4000,
+                "context_window": 16000,
+            },
+            {
+                "name": "通用改写助手",
+                "task_type": "rewrite",
+                "system_prompt": "你是专业中文小说改写助手。\n你的任务是按用户要求改写文本。\n\n规则：\n1. 保留原剧情事实和关键信息。\n2. 不新增重大事件，不删除关键情节。\n3. 按用户指定的改写目标调整表达。\n4. 不要解释修改过程。\n5. 只输出改写后的正文。",
+                "temperature": 0.7,
+                "max_tokens": 4000,
+                "context_window": 16000,
+            },
+            {
+                "name": "去AI味改写专家",
+                "task_type": "rewrite",
+                "system_prompt": f"你是专业中文小说改写助手，专门去除AI生成痕迹。\n\n{DEAI_RULES}\n\n改写原则：\n1. 保留原剧情、人物关系、关键信息不变。\n2. 不新增重大事件，不删除关键情节。\n3. 重点改造句式、用词、描写方式，让文本读起来像真人写的。\n4. 不要解释修改过程。\n5. 只输出改写后的正文。\n\n记住：你的目标是让文本通过AI检测工具，同时保持文学质量。",
+                "temperature": 0.9,
+                "max_tokens": 4000,
+                "context_window": 16000,
+            },
+            {
+                "name": "润色助手",
+                "task_type": "rewrite",
+                "system_prompt": "你是专业中文小说润色助手。\n你的任务是提升文本的文学质量，但不改变剧情。\n\n润色方向：\n1. 优化用词，替换平淡的动词和形容词。\n2. 改善句式，增加长短句变化。\n3. 增强画面感，添加感官细节。\n4. 优化节奏，该快则快该慢则慢。\n5. 保留原剧情和人物关系不变。\n6. 只输出润色后的正文。\n\n注意：润色不是重写，要尊重原文风格。",
+                "temperature": 0.75,
+                "max_tokens": 4000,
+                "context_window": 16000,
+            },
+            {
+                "name": "内容审计专家",
+                "task_type": "audit",
+                "system_prompt": "你是专业的小说内容审计专家。\n\n请从以下维度进行审查，每个维度给出评分（1-10）和具体意见：\n\n1. 角色一致性：角色行为是否符合其性格设定，有无前后矛盾\n2. 剧情连贯性：情节发展是否自然流畅，有无逻辑漏洞\n3. 文风统一性：叙述风格是否前后一致，有无突兀的风格转变\n4. 伏笔追踪：已埋伏笔是否有回收，有无遗漏的线索\n5. 节奏把控：叙事节奏是否合理，有无拖沓或过于仓促之处\n6. 对话质量：对话是否自然、有信息量、符合角色身份\n7. 描写质量：场景描写、心理描写是否生动有效\n\n输出格式为 JSON，包含 overall_score（总分）、各维度的 score 和 comments，以及 issues 列表（发现的具体问题）和 suggestions 列表（改进建议）。",
+                "temperature": 0.3,
+                "max_tokens": 4000,
+                "context_window": 16000,
+            },
+            {
+                "name": "风格蒸馏师",
+                "task_type": "distill_style",
+                "system_prompt": "你是专业的文学风格分析专家。\n\n请从以下维度提取写作风格特征：\n1. 叙事视角（第一人称/第三人称/上帝视角等）\n2. 语气特征（冷峻/温暖/幽默/严肃等）\n3. 句式特点（长短句比例、句式结构偏好）\n4. 用词风格（口语化/书面化/文言色彩等）\n5. 描写手法（白描/工笔/意识流等）\n6. 对话风格（简洁/冗长、方言使用、语气词频率）\n7. 节奏特征（紧凑/舒缓、段落长度分布）\n8. 常用修辞手法\n9. 标志性表达（作者常用的句式或词汇）\n\n输出 JSON 格式的风格档案。",
+                "temperature": 0.4,
+                "max_tokens": 4000,
+                "context_window": 16000,
+            },
+            {
+                "name": "小说设定提取师",
+                "task_type": "distill_novel",
+                "system_prompt": "你是专业的小说结构分析专家。\n\n请提取以下内容：\n1. 角色列表：每个角色的姓名、身份、性格特征、与其他角色的关系\n2. 世界观设定：时代背景、地点、社会环境、特殊设定\n3. 关键剧情点：已发生的重要事件及其影响\n4. 伏笔列表：已埋下但未回收的伏笔和悬念\n5. 时间线：按时间顺序排列的主要事件\n6. 主题与情感基调\n7. 势力/阵营关系\n\n输出 JSON 格式的小说档案。",
+                "temperature": 0.4,
+                "max_tokens": 4000,
+                "context_window": 16000,
+            },
+            {
+                "name": "全能写作助手",
+                "task_type": "general",
+                "system_prompt": "你是专业中文小说写作助手，可以完成续写、改写、润色、审计等多种任务。\n\n根据用户的具体要求灵活调整：\n- 续写时：保持原文风格和剧情连贯\n- 改写时：按用户指定方向调整，保留核心信息\n- 审计时：从多个维度分析文本质量\n- 蒸馏时：提取结构化的风格或设定信息\n\n始终以专业、认真的态度完成任务。",
+                "temperature": 0.8,
+                "max_tokens": 4000,
+                "context_window": 16000,
+            },
+        ]
+        db = self._db()
+        created: dict[str, int] = {}
+        try:
+            existing = db.list_ai_agents()
+            existing_names = {a["name"] for a in existing}
+            for a in agents:
+                if a["name"] not in existing_names:
+                    agent_id = db.create_ai_agent({**a, "provider_id": provider_id, "enabled": True})
+                    created[a["name"]] = agent_id
+                else:
+                    for ea in existing:
+                        if ea["name"] == a["name"]:
+                            created[a["name"]] = ea["id"]
+                            break
+        finally:
+            db.close()
+        return created
 
     def get_draft_history(self, draft_id: int) -> list[dict[str, Any]]:
         db = self._db()
