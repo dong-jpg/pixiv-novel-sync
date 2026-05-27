@@ -348,10 +348,11 @@ class AIWritingService:
                 raise AIServiceError("请选择系列")
             novels = db.conn.execute(
                 """
-                SELECT n.text_raw, n.text_markdown, n.title, n.series_order
+                SELECT nt.text_raw, nt.text_markdown, n.title, n.create_date
                 FROM novels n
+                LEFT JOIN novel_texts nt ON nt.novel_id = n.novel_id
                 WHERE n.series_id = ?
-                ORDER BY n.series_order ASC, n.create_date ASC
+                ORDER BY n.create_date ASC
                 """,
                 (series_id,),
             ).fetchall()
@@ -362,8 +363,10 @@ class AIWritingService:
                 r = dict(row)
                 title = r.get("title", "")
                 content = r.get("text_raw") or r.get("text_markdown") or ""
-                if content:
+                if content.strip():
                     parts.append(f"{'=' * 40}\n【{title}】\n{'=' * 40}\n\n{content}")
+            if not parts:
+                raise AIServiceError("系列下的小说均无文本内容（可能尚未抓取正文）")
             text = "\n\n".join(parts)
         elif source_type == "document":
             document_id = int(payload.get("document_id") or 0)
