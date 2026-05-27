@@ -181,6 +181,10 @@
       <input v-model="providerForm.base_url" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="base_url，可留空使用默认值">
       <input v-model="providerForm.default_model" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="默认模型">
       <input type="number" v-model.number="providerForm.context_window" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="上下文窗口(tokens)，例如 1000000">
+      <label class="flex items-center gap-2 text-sm text-gray-700">
+        <input type="checkbox" v-model="providerForm.stream_enabled" class="rounded border-gray-300">
+        启用流式输出（关闭后使用非流式调用，适合不支持 streaming 的网关）
+      </label>
       <input v-model="providerForm.api_key" type="password" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="API key（只保存，不回显）">
       <div class="flex gap-2">
         <button @click="saveProvider" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">{{ providerForm.id ? '更新 Provider' : '保存 Provider' }}</button>
@@ -710,7 +714,7 @@ window.initVueApp({
 
     const continueForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', context_chars: 8000, output_chars: 3000, instruction: '', smart_context: true, style_profile_id: 0, novel_profile_id: 0, plan_agent_id: 0, plan_text: '' });
     const rewriteForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', rewrite_type: 'polish', instruction: '' });
-    const providerForm = reactive({ id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, enabled: true });
+    const providerForm = reactive({ id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
     const agentForm = reactive({ id: 0, name: '', task_type: 'continue', provider_id: 0, model: '', system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
     const auditForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', audit_dimensions: [] });
     const distillForm = reactive({ agent_id: 0, distill_type: 'style', source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', chunk_chars: 4000, existing_profile_id: 0, full_text: false });
@@ -726,10 +730,10 @@ window.initVueApp({
     const planAgents = computed(() => agents.value.filter(a => ['plan', 'general'].includes(a.task_type)));
 
     function resetProviderForm() {
-      Object.assign(providerForm, { id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, enabled: true });
+      Object.assign(providerForm, { id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
     }
     function editProvider(provider) {
-      Object.assign(providerForm, { id: provider.id, name: provider.name || '', provider_type: provider.provider_type || 'openai_compatible', base_url: provider.base_url || '', default_model: provider.default_model || '', api_key: '', timeout_seconds: provider.timeout_seconds || 120, max_retries: provider.max_retries || 2, context_window: provider.context_window || 128000, enabled: provider.enabled !== false });
+      Object.assign(providerForm, { id: provider.id, name: provider.name || '', provider_type: provider.provider_type || 'openai_compatible', base_url: provider.base_url || '', default_model: provider.default_model || '', api_key: '', timeout_seconds: provider.timeout_seconds || 120, max_retries: provider.max_retries || 2, context_window: provider.context_window || 128000, stream_enabled: provider.stream_enabled !== false, enabled: provider.enabled !== false });
     }
     function resetAgentForm() {
       Object.assign(agentForm, { id: 0, name: '', task_type: 'continue', provider_id: 0, model: '', system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });

@@ -280,7 +280,7 @@ class AIWritingService:
 
     def _normalize_provider_payload(self, payload: dict[str, Any], require_key: bool = False, partial: bool = False) -> dict[str, Any]:
         data: dict[str, Any] = {}
-        keys = ["name", "provider_type", "base_url", "default_model", "available_models", "timeout_seconds", "max_retries", "proxy", "context_window", "enabled"]
+        keys = ["name", "provider_type", "base_url", "default_model", "available_models", "timeout_seconds", "max_retries", "proxy", "context_window", "stream_enabled", "enabled"]
         for key in keys:
             if key in payload:
                 data[key] = payload[key]
@@ -319,6 +319,7 @@ class AIWritingService:
             base_url=row.get("base_url"), api_key=api_key, default_model=row.get("default_model"),
             timeout_seconds=int(row.get("timeout_seconds") or 120), max_retries=int(row.get("max_retries") or 2),
             proxy=row.get("proxy"), context_window=int(row.get("context_window") or 128000),
+            stream_enabled=bool(row.get("stream_enabled", 1)),
             enabled=bool(row.get("enabled")),
         )
 

@@ -69,13 +69,16 @@ class OpenAICompatibleProvider(AIProvider):
             "temperature": temperature,
             "top_p": top_p,
             "max_tokens": max_tokens,
-            "stream": True,
+            "stream": self.config.stream_enabled,
         }
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
         }
-        yield from self._stream_chat_completions(url, headers, payload)
+        if self.config.stream_enabled:
+            yield from self._stream_chat_completions(url, headers, payload)
+        else:
+            yield from self._non_stream_generate(url, headers, payload)
 
     def _stream_chat_completions(self, url: str, headers: dict[str, str], payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
         try:
@@ -89,7 +92,7 @@ class OpenAICompatibleProvider(AIProvider):
             ) as response:
                 if response.status_code >= 500:
                     # 流式失败，fallback 到非流式
-                    yield from self._fallback_non_stream(url, headers, payload)
+                    yield from self._non_stream_generate(url, headers, payload)
                     return
                 if response.status_code >= 400:
                     raise AIProviderError(_safe_http_error(response))
@@ -114,8 +117,8 @@ class OpenAICompatibleProvider(AIProvider):
         except requests.RequestException as exc:
             raise AIProviderError(f"AI API 请求失败：{exc}") from exc
 
-    def _fallback_non_stream(self, url: str, headers: dict[str, str], payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
-        """流式请求失败时 fallback 到非流式调用。"""
+    def _non_stream_generate(self, url: str, headers: dict[str, str], payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        """非流式调用：一次性获取完整响应。"""
         payload_copy = {**payload, "stream": False}
         try:
             response = requests.post(

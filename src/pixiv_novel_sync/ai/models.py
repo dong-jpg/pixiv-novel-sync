@@ -16,6 +16,7 @@ class AIProviderConfig:
     max_retries: int = 2
     proxy: str | None = None
     context_window: int = 128000
+    stream_enabled: bool = True
     enabled: bool = True
 
 

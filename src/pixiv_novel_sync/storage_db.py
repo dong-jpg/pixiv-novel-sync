@@ -1354,6 +1354,7 @@ class Database:
                 max_retries INTEGER NOT NULL DEFAULT 2,
                 proxy TEXT,
                 context_window INTEGER NOT NULL DEFAULT 128000,
+                stream_enabled INTEGER NOT NULL DEFAULT 1,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -1460,6 +1461,12 @@ class Database:
             self.conn.commit()
         except Exception:
             pass  # 列已存在则忽略
+        # 迁移：为已有 ai_providers 表添加 stream_enabled 列
+        try:
+            self.conn.execute("ALTER TABLE ai_providers ADD COLUMN stream_enabled INTEGER NOT NULL DEFAULT 1")
+            self.conn.commit()
+        except Exception:
+            pass
 
     def _row_to_ai_provider(self, row: sqlite3.Row, include_secret: bool = False) -> dict[str, Any]:
         item = dict(row)
@@ -1493,8 +1500,8 @@ class Database:
                 """
                 INSERT INTO ai_providers (
                     name, provider_type, base_url, api_key_encrypted, default_model,
-                    available_models_json, timeout_seconds, max_retries, proxy, context_window, enabled
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    available_models_json, timeout_seconds, max_retries, proxy, context_window, stream_enabled, enabled
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data.get("name"),
@@ -1507,6 +1514,7 @@ class Database:
                     int(data.get("max_retries") or 2),
                     data.get("proxy"),
                     int(data.get("context_window") or 128000),
+                    1 if data.get("stream_enabled", True) else 0,
                     1 if data.get("enabled", True) else 0,
                 ),
             )
@@ -1516,7 +1524,7 @@ class Database:
     def update_ai_provider(self, provider_id: int, data: dict[str, Any]) -> None:
         allowed = {
             "name", "provider_type", "base_url", "api_key_encrypted", "default_model",
-            "available_models", "timeout_seconds", "max_retries", "proxy", "context_window", "enabled",
+            "available_models", "timeout_seconds", "max_retries", "proxy", "context_window", "stream_enabled", "enabled",
         }
         fields: list[str] = []
         params: list[Any] = []
