@@ -179,11 +179,15 @@ def build_style_distill_messages(
     *,
     system_prompt: str | None,
     text_chunks: list[str],
-    existing_profile: dict[str, Any] | None = None,
+    existing_profile: dict[str, Any] | str | None = None,
 ) -> list[dict[str, str]]:
     parts = []
     if existing_profile:
-        parts.append(f"【已有风格档案】\n{json.dumps(existing_profile, ensure_ascii=False, indent=2)}")
+        if isinstance(existing_profile, dict):
+            profile_text = json.dumps(existing_profile, ensure_ascii=False, indent=2)
+        else:
+            profile_text = str(existing_profile)
+        parts.append(f"【已有风格档案】\n{profile_text}")
         parts.append("请在已有档案基础上，根据新文本补充和修正风格特征。")
     for i, chunk in enumerate(text_chunks, 1):
         parts.append(f"【文本片段 {i}】\n{chunk}")
@@ -213,11 +217,15 @@ def build_novel_distill_messages(
     *,
     system_prompt: str | None,
     text_chunks: list[str],
-    existing_profile: dict[str, Any] | None = None,
+    existing_profile: dict[str, Any] | str | None = None,
 ) -> list[dict[str, str]]:
     parts = []
     if existing_profile:
-        parts.append(f"【已有小说档案】\n{json.dumps(existing_profile, ensure_ascii=False, indent=2)}")
+        if isinstance(existing_profile, dict):
+            profile_text = json.dumps(existing_profile, ensure_ascii=False, indent=2)
+        else:
+            profile_text = str(existing_profile)
+        parts.append(f"【已有小说档案】\n{profile_text}")
         parts.append("请在已有档案基础上，根据新文本补充和修正小说设定。")
     for i, chunk in enumerate(text_chunks, 1):
         parts.append(f"【文本片段 {i}】\n{chunk}")

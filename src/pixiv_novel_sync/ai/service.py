@@ -413,44 +413,77 @@ class AIWritingService:
             agent = self._load_agent_config(db, agent_id)
             provider_config = self._load_provider_config(db, agent.provider_id)
             text = self._resolve_input_text(db, payload)
-            chunks = split_text_by_chars(text, int(payload.get("chunk_chars") or 4000))
-            # 采样策略：风格分析不需要全文，取有代表性的片段即可
-            # 硬上限 15 个 chunk（约 6 万字），足够提取风格特征
-            effective_window = agent.context_window if agent.context_window > 16000 else provider_config.context_window
             chunk_char_size = int(payload.get("chunk_chars") or 4000)
+            all_chunks = split_text_by_chars(text, chunk_char_size)
+            full_text_mode = bool(payload.get("full_text", False))
+
+            # 确定每批大小
+            effective_window = agent.context_window if agent.context_window > 16000 else provider_config.context_window
             usable_chars = int(effective_window * 1.5 * 0.7)
-            max_sample_chunks = min(15, max(6, usable_chars // chunk_char_size))
-            if len(chunks) > max_sample_chunks:
-                step = len(chunks) // max_sample_chunks
-                sampled = [chunks[i * step] for i in range(max_sample_chunks)]
-                # 确保包含最后一个片段
-                if sampled[-1] != chunks[-1]:
-                    sampled[-1] = chunks[-1]
-                chunks = sampled
+            batch_size = min(15, max(6, usable_chars // chunk_char_size))
+
+            if not full_text_mode and len(all_chunks) > batch_size:
+                # 采样模式：均匀取样
+                step = len(all_chunks) // batch_size
+                sampled = [all_chunks[i * step] for i in range(batch_size)]
+                if sampled[-1] != all_chunks[-1]:
+                    sampled[-1] = all_chunks[-1]
+                batches = [sampled]
+            elif full_text_mode and len(all_chunks) > batch_size:
+                # 全文模式：分批 map-reduce
+                batches = [all_chunks[i:i + batch_size] for i in range(0, len(all_chunks), batch_size)]
+            else:
+                batches = [all_chunks]
+
             existing_profile = None
             if payload.get("existing_profile_id"):
                 existing_profile = db.get_ai_style_profile(int(payload["existing_profile_id"]))
                 if existing_profile:
                     existing_profile = existing_profile.get("profile")
-            messages = build_style_distill_messages(
-                system_prompt=agent.system_prompt,
-                text_chunks=chunks,
-                existing_profile=existing_profile,
-            )
-            db.create_ai_job(job_id, "distill_style", agent.id, {**payload, "chunks_count": len(chunks)})
+
+            db.create_ai_job(job_id, "distill_style", agent.id, {
+                **payload, "chunks_count": len(all_chunks), "batches": len(batches), "mode": "full" if full_text_mode else "sample",
+            })
             job_created = True
-            yield AIStreamChunk(type="metadata", data={"job_id": job_id})
+            yield AIStreamChunk(type="metadata", data={"job_id": job_id, "batches": len(batches)})
+
             model = agent.model or provider_config.default_model
             if not model:
                 raise AIServiceError("Agent 或 Provider 未配置模型")
             provider = create_provider(provider_config)
-            for chunk in provider.stream_generate(
-                messages, model=model, temperature=agent.temperature,
-                top_p=agent.top_p, max_tokens=agent.max_tokens,
-            ):
-                if chunk.type == "delta":
-                    output_parts.append(chunk.text)
-                    yield chunk
+
+            for batch_idx, batch_chunks in enumerate(batches):
+                is_last = batch_idx == len(batches) - 1
+                messages = build_style_distill_messages(
+                    system_prompt=agent.system_prompt,
+                    text_chunks=batch_chunks,
+                    existing_profile=existing_profile,
+                )
+                # 进度通知
+                if len(batches) > 1:
+                    progress_text = f"\n\n--- 正在分析第 {batch_idx + 1}/{len(batches)} 批 ---\n\n"
+                    yield AIStreamChunk(type="delta", text=progress_text)
+                    output_parts.append(progress_text)
+
+                batch_output: list[str] = []
+                for chunk in provider.stream_generate(
+                    messages, model=model, temperature=agent.temperature,
+                    top_p=agent.top_p, max_tokens=agent.max_tokens,
+                ):
+                    if chunk.type == "delta":
+                        batch_output.append(chunk.text)
+                        if is_last:
+                            yield chunk
+
+                batch_text = "".join(batch_output)
+                if not is_last:
+                    # 中间批次：用输出作为下一批的 existing_profile
+                    existing_profile = batch_text
+                    output_parts.append(f"[批次 {batch_idx + 1} 完成，{len(batch_text)} 字]\n")
+                    yield AIStreamChunk(type="delta", text=f"[批次 {batch_idx + 1} 完成，{len(batch_text)} 字]\n")
+                else:
+                    output_parts.append(batch_text)
+
             output = "".join(output_parts)
             db.update_ai_job(job_id, "succeeded", output_text=output, output_json={"chars": len(output)})
             yield AIStreamChunk(type="done", data={"job_id": job_id, "chars": len(output)})
@@ -516,42 +549,71 @@ class AIWritingService:
             agent = self._load_agent_config(db, agent_id)
             provider_config = self._load_provider_config(db, agent.provider_id)
             text = self._resolve_input_text(db, payload)
-            chunks = split_text_by_chars(text, int(payload.get("chunk_chars") or 4000))
-            # 采样策略：小说蒸馏需要更多上下文提取剧情，但硬上限 25 个 chunk（约 10 万字）
-            effective_window = agent.context_window if agent.context_window > 16000 else provider_config.context_window
             chunk_char_size = int(payload.get("chunk_chars") or 4000)
+            all_chunks = split_text_by_chars(text, chunk_char_size)
+            full_text_mode = bool(payload.get("full_text", False))
+
+            effective_window = agent.context_window if agent.context_window > 16000 else provider_config.context_window
             usable_chars = int(effective_window * 1.5 * 0.8)
-            max_sample_chunks = min(25, max(10, usable_chars // chunk_char_size))
-            if len(chunks) > max_sample_chunks:
-                step = len(chunks) // max_sample_chunks
-                sampled = [chunks[i * step] for i in range(max_sample_chunks)]
-                if sampled[-1] != chunks[-1]:
-                    sampled[-1] = chunks[-1]
-                chunks = sampled
+            batch_size = min(25, max(10, usable_chars // chunk_char_size))
+
+            if not full_text_mode and len(all_chunks) > batch_size:
+                step = len(all_chunks) // batch_size
+                sampled = [all_chunks[i * step] for i in range(batch_size)]
+                if sampled[-1] != all_chunks[-1]:
+                    sampled[-1] = all_chunks[-1]
+                batches = [sampled]
+            elif full_text_mode and len(all_chunks) > batch_size:
+                batches = [all_chunks[i:i + batch_size] for i in range(0, len(all_chunks), batch_size)]
+            else:
+                batches = [all_chunks]
+
             existing_profile = None
             if payload.get("existing_profile_id"):
                 existing_profile = db.get_ai_novel_profile(int(payload["existing_profile_id"]))
                 if existing_profile:
                     existing_profile = existing_profile.get("profile")
-            messages = build_novel_distill_messages(
-                system_prompt=agent.system_prompt,
-                text_chunks=chunks,
-                existing_profile=existing_profile,
-            )
-            db.create_ai_job(job_id, "distill_novel", agent.id, {**payload, "chunks_count": len(chunks)})
+
+            db.create_ai_job(job_id, "distill_novel", agent.id, {
+                **payload, "chunks_count": len(all_chunks), "batches": len(batches), "mode": "full" if full_text_mode else "sample",
+            })
             job_created = True
-            yield AIStreamChunk(type="metadata", data={"job_id": job_id})
+            yield AIStreamChunk(type="metadata", data={"job_id": job_id, "batches": len(batches)})
+
             model = agent.model or provider_config.default_model
             if not model:
                 raise AIServiceError("Agent 或 Provider 未配置模型")
             provider = create_provider(provider_config)
-            for chunk in provider.stream_generate(
-                messages, model=model, temperature=agent.temperature,
-                top_p=agent.top_p, max_tokens=agent.max_tokens,
-            ):
-                if chunk.type == "delta":
-                    output_parts.append(chunk.text)
-                    yield chunk
+
+            for batch_idx, batch_chunks in enumerate(batches):
+                is_last = batch_idx == len(batches) - 1
+                messages = build_novel_distill_messages(
+                    system_prompt=agent.system_prompt,
+                    text_chunks=batch_chunks,
+                    existing_profile=existing_profile,
+                )
+                if len(batches) > 1:
+                    progress_text = f"\n\n--- 正在分析第 {batch_idx + 1}/{len(batches)} 批 ---\n\n"
+                    yield AIStreamChunk(type="delta", text=progress_text)
+                    output_parts.append(progress_text)
+
+                batch_output: list[str] = []
+                for chunk in provider.stream_generate(
+                    messages, model=model, temperature=agent.temperature,
+                    top_p=agent.top_p, max_tokens=agent.max_tokens,
+                ):
+                    if chunk.type == "delta":
+                        batch_output.append(chunk.text)
+                        if is_last:
+                            yield chunk
+
+                batch_text = "".join(batch_output)
+                if not is_last:
+                    existing_profile = batch_text
+                    output_parts.append(f"[批次 {batch_idx + 1} 完成，{len(batch_text)} 字]\n")
+                    yield AIStreamChunk(type="delta", text=f"[批次 {batch_idx + 1} 完成，{len(batch_text)} 字]\n")
+                else:
+                    output_parts.append(batch_text)
             output = "".join(output_parts)
             db.update_ai_job(job_id, "succeeded", output_text=output, output_json={"chars": len(output)})
             yield AIStreamChunk(type="done", data={"job_id": job_id, "chars": len(output)})

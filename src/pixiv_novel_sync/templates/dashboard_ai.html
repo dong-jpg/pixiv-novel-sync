@@ -379,6 +379,10 @@
         <p class="text-xs text-pixiv-gray">已选择文档 ID：{{ distillForm.document_id || '未上传' }}</p>
       </div>
       <textarea v-else v-model="distillForm.text" rows="10" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif" placeholder="粘贴需要蒸馏的文本..."></textarea>
+      <label class="flex items-center gap-2 text-sm text-gray-700">
+        <input type="checkbox" v-model="distillForm.full_text" class="rounded border-gray-300">
+        全文分析（分批 map-reduce，适合长篇系列，耗时较长）
+      </label>
       <button @click="startDistill" :disabled="streaming" class="px-5 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium disabled:opacity-50">
         {{ streaming ? '蒸馏中...' : '开始蒸馏' }}
       </button>
@@ -709,7 +713,7 @@ window.initVueApp({
     const providerForm = reactive({ id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, enabled: true });
     const agentForm = reactive({ id: 0, name: '', task_type: 'continue', provider_id: 0, model: '', system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
     const auditForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', audit_dimensions: [] });
-    const distillForm = reactive({ agent_id: 0, distill_type: 'style', source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', chunk_chars: 4000, existing_profile_id: 0 });
+    const distillForm = reactive({ agent_id: 0, distill_type: 'style', source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', chunk_chars: 4000, existing_profile_id: 0, full_text: false });
     const jobFilter = reactive({ task_type: '', status: '' });
     const promptForm = reactive({ id: 0, name: '', category: 'general', template: '', description: '' });
     const seedProviderId = ref(0);
