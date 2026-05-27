@@ -41,14 +41,13 @@
           <label class="block text-xs font-medium text-pixiv-gray mb-1.5">输入来源</label>
           <select v-model="continueForm.source_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
             <option value="manual">手动文本</option>
-            <option value="archive_novel">归档小说 ID</option>
+            <option value="archive_novel">归档小说</option>
             <option value="document">上传文档</option>
           </select>
         </div>
       </div>
       <div v-if="continueForm.source_type === 'archive_novel'">
-        <label class="block text-xs font-medium text-pixiv-gray mb-1.5">小说 ID</label>
-        <input type="number" v-model.number="continueForm.novel_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="输入已归档 novel_id">
+        <novel-search v-model="continueForm.novel_id"></novel-search>
       </div>
       <div v-else-if="continueForm.source_type === 'document'" class="space-y-2">
         <label class="block text-xs font-medium text-pixiv-gray mb-1.5">上传 .txt / .md</label>
@@ -127,12 +126,11 @@
       </div>
       <select v-model="rewriteForm.source_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
         <option value="manual">手动文本</option>
-        <option value="archive_novel">归档小说 ID</option>
+        <option value="archive_novel">归档小说</option>
         <option value="document">上传文档</option>
       </select>
       <div v-if="rewriteForm.source_type === 'archive_novel'">
-        <label class="block text-xs font-medium text-pixiv-gray mb-1.5">小说 ID</label>
-        <input type="number" v-model.number="rewriteForm.novel_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="输入已归档 novel_id">
+        <novel-search v-model="rewriteForm.novel_id"></novel-search>
       </div>
       <div v-else-if="rewriteForm.source_type === 'document'" class="space-y-2">
         <input type="file" accept=".txt,.md,text/plain,text/markdown" @change="uploadDocument($event, rewriteForm)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
@@ -277,14 +275,13 @@
           <label class="block text-xs font-medium text-pixiv-gray mb-1.5">输入来源</label>
           <select v-model="auditForm.source_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
             <option value="manual">手动文本</option>
-            <option value="archive_novel">归档小说 ID</option>
+            <option value="archive_novel">归档小说</option>
             <option value="document">上传文档</option>
           </select>
         </div>
       </div>
       <div v-if="auditForm.source_type === 'archive_novel'">
-        <label class="block text-xs font-medium text-pixiv-gray mb-1.5">小说 ID</label>
-        <input type="number" v-model.number="auditForm.novel_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="输入已归档 novel_id">
+        <novel-search v-model="auditForm.novel_id"></novel-search>
       </div>
       <div v-else-if="auditForm.source_type === 'document'" class="space-y-2">
         <input type="file" accept=".txt,.md,text/plain,text/markdown" @change="uploadDocument($event, auditForm)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
@@ -331,7 +328,7 @@
           <label class="block text-xs font-medium text-pixiv-gray mb-1.5">输入来源</label>
           <select v-model="distillForm.source_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
             <option value="manual">手动文本</option>
-            <option value="archive_novel">归档小说 ID</option>
+            <option value="archive_novel">归档小说</option>
             <option value="document">上传文档</option>
           </select>
         </div>
@@ -341,8 +338,7 @@
         </div>
       </div>
       <div v-if="distillForm.source_type === 'archive_novel'">
-        <label class="block text-xs font-medium text-pixiv-gray mb-1.5">小说 ID</label>
-        <input type="number" v-model.number="distillForm.novel_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="输入已归档 novel_id">
+        <novel-search v-model="distillForm.novel_id"></novel-search>
       </div>
       <div v-else-if="distillForm.source_type === 'document'" class="space-y-2">
         <input type="file" accept=".txt,.md,text/plain,text/markdown" @change="uploadDocument($event, distillForm)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
@@ -512,6 +508,59 @@
 <script>
 window.initVueApp({
   components: {
+    'novel-search': {
+      props: ['modelValue'],
+      emits: ['update:modelValue'],
+      template: `
+        <div class="relative">
+          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">搜索归档小说</label>
+          <input type="text" v-model="query" @input="onSearch" @focus="showDropdown = true"
+                 class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                 placeholder="输入小说标题搜索...">
+          <div v-if="selectedTitle" class="text-xs text-green-600 mt-1">已选择：{{ selectedTitle }}</div>
+          <div v-if="showDropdown && results.length" class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-auto">
+            <div v-for="novel in results" :key="novel.novel_id" @click="selectNovel(novel)"
+                 class="px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 border-b border-gray-50 last:border-0">
+              <div class="font-medium text-gray-900 truncate">{{ novel.title }}</div>
+              <div class="text-xs text-pixiv-gray">{{ novel.author_name || '未知作者' }} · ID: {{ novel.novel_id }}</div>
+            </div>
+          </div>
+          <div v-if="showDropdown && query && !results.length && !searching" class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-sm text-pixiv-gray">
+            未找到匹配的小说
+          </div>
+        </div>
+      `,
+      data() {
+        return { query: '', results: [], showDropdown: false, searching: false, selectedTitle: '', searchTimer: null };
+      },
+      methods: {
+        onSearch() {
+          clearTimeout(this.searchTimer);
+          if (!this.query.trim()) { this.results = []; return; }
+          this.searching = true;
+          this.searchTimer = setTimeout(async () => {
+            try {
+              const res = await fetch('/api/dashboard/novels?search=' + encodeURIComponent(this.query) + '&page_size=10');
+              const data = await res.json();
+              this.results = data.items || [];
+            } catch { this.results = []; }
+            finally { this.searching = false; }
+          }, 300);
+        },
+        selectNovel(novel) {
+          this.selectedTitle = novel.title;
+          this.showDropdown = false;
+          this.query = '';
+          this.results = [];
+          this.$emit('update:modelValue', novel.novel_id);
+        }
+      },
+      watch: {
+        modelValue(val) {
+          if (!val) this.selectedTitle = '';
+        }
+      }
+    },
     'output-panel': {
       props: ['title', 'text', 'jobId', 'streaming'],
       emits: ['save'],
