@@ -413,8 +413,11 @@ class AIWritingService:
             provider_config = self._load_provider_config(db, agent.provider_id)
             text = self._resolve_input_text(db, payload)
             chunks = split_text_by_chars(text, int(payload.get("chunk_chars") or 4000))
-            # 采样策略：长文本只取有代表性的片段（开头、中间、结尾），避免超出上下文窗口
-            max_sample_chunks = 6
+            # 根据 Agent 的 context_window 动态计算可发送的 chunk 数量
+            # 预留 30% 窗口给 system prompt + 输出
+            chunk_char_size = int(payload.get("chunk_chars") or 4000)
+            usable_chars = int(agent.context_window * 1.5 * 0.7)  # token→字符粗估 * 可用比例
+            max_sample_chunks = max(6, usable_chars // chunk_char_size)
             if len(chunks) > max_sample_chunks:
                 step = len(chunks) // max_sample_chunks
                 sampled = [chunks[i * step] for i in range(max_sample_chunks)]
@@ -512,8 +515,10 @@ class AIWritingService:
             provider_config = self._load_provider_config(db, agent.provider_id)
             text = self._resolve_input_text(db, payload)
             chunks = split_text_by_chars(text, int(payload.get("chunk_chars") or 4000))
-            # 小说蒸馏需要更多上下文来提取剧情/角色，采样更多片段
-            max_sample_chunks = 10
+            # 根据 Agent 的 context_window 动态计算，小说蒸馏用 80% 窗口（需要更多上下文）
+            chunk_char_size = int(payload.get("chunk_chars") or 4000)
+            usable_chars = int(agent.context_window * 1.5 * 0.8)
+            max_sample_chunks = max(10, usable_chars // chunk_char_size)
             if len(chunks) > max_sample_chunks:
                 step = len(chunks) // max_sample_chunks
                 sampled = [chunks[i * step] for i in range(max_sample_chunks)]
