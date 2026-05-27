@@ -296,6 +296,19 @@ class Database:
         row = self.conn.execute("SELECT 1 FROM novel_texts WHERE novel_id = ? LIMIT 1", (novel_id,)).fetchone()
         return row is not None
 
+    def count_series_novel_texts(self, series_id: int) -> int:
+        """统计本地已保存正文的系列章节数。"""
+        row = self.conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM novels n
+            JOIN novel_texts nt ON nt.novel_id = n.novel_id
+            WHERE n.series_id = ?
+            """,
+            (series_id,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
     def get_novel_meta_hash(self, novel_id: int) -> str | None:
         """获取小说的 meta_hash，用于增量同步判断"""
         row = self.conn.execute("SELECT meta_hash FROM novels WHERE novel_id = ?", (novel_id,)).fetchone()

@@ -340,6 +340,29 @@ class AIWritingService:
             if not novel:
                 raise AIServiceError("归档小说不存在")
             text = novel.get("text_raw") or novel.get("text_markdown") or ""
+        elif source_type == "archive_series":
+            series_id = int(payload.get("series_id") or 0)
+            if not series_id:
+                raise AIServiceError("请选择系列")
+            novels = db.conn.execute(
+                """
+                SELECT n.text_raw, n.text_markdown, n.title, n.series_order
+                FROM novels n
+                WHERE n.series_id = ?
+                ORDER BY COALESCE(n.series_order, n.create_date ASC)
+                """,
+                (series_id,),
+            ).fetchall()
+            if not novels:
+                raise AIServiceError("系列下没有找到小说")
+            parts: list[str] = []
+            for row in novels:
+                r = dict(row)
+                title = r.get("title", "")
+                content = r.get("text_raw") or r.get("text_markdown") or ""
+                if content:
+                    parts.append(f"{'=' * 40}\n【{title}】\n{'=' * 40}\n\n{content}")
+            text = "\n\n".join(parts)
         elif source_type == "document":
             document_id = int(payload.get("document_id") or 0)
             document = db.get_ai_document(document_id)

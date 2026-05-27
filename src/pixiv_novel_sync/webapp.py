@@ -46,7 +46,29 @@ class SyncJobState:
     log_id: int | None = None  # 关联的日志 ID
 
 
-@dataclass(slots=True)
+TASK_LABELS = {
+    "bookmark": "同步收藏小说",
+    "bookmarks": "同步收藏小说",
+    "following_users": "同步关注用户列表",
+    "following_list": "同步关注用户列表",
+    "following_novels": "同步关注用户小说",
+    "subscribed_series": "同步追更系列",
+    "user_status": "检查用户状态",
+    "novel_status": "检查小说状态",
+    "series_status": "检查系列状态",
+    "user_backup": "全量备份关注用户小说",
+    "pending_deletion_detection": "检测取消收藏/追更",
+}
+
+
+def _task_label(task_type: str) -> str:
+    return TASK_LABELS.get(task_type, task_type)
+
+
+def _format_task_phase(task_type: str) -> str:
+    return _task_label(task_type)
+
+
 class AutoSyncScheduler:
     """定时同步调度器 - 每个任务独立运行"""
     config_path: str | None
@@ -214,17 +236,7 @@ class AutoSyncScheduler:
 
         # 创建任务记录
         if self.sync_job_manager:
-            task_labels = {
-                "bookmarks": "同步收藏小说",
-                "following_list": "同步关注用户列表",
-                "following_novels": "同步关注用户小说",
-                "subscribed_series": "同步追更系列",
-                "user_status": "检查用户状态",
-                "novel_status": "检查小说状态",
-                "series_status": "检查系列状态",
-                "user_backup": "全量备份关注用户小说",
-            }
-            job = self.sync_job_manager.start_auto_job(task_name, task_labels.get(task_name, task_name))
+            job = self.sync_job_manager.start_auto_job(task_name, _task_label(task_name))
             if job is None:
                 logger.info("Auto sync task %s skipped: another sync task is running", task_name)
                 return
@@ -237,7 +249,7 @@ class AutoSyncScheduler:
                 db.init_schema()
                 log_id = db.create_task_log(
                     task_type=task_name,
-                    task_name=task_labels.get(task_name, task_name),
+                    task_name=_task_label(task_name),
                     job_id=job.job_id,
                     is_auto_sync=True
                 )
@@ -253,7 +265,7 @@ class AutoSyncScheduler:
                 func = getattr(self, sync_func_name)
                 func(settings, job.job_id)
                 job.status = "succeeded"
-                job.message = f"{task_labels.get(task_name, task_name)}完成"
+                job.message = f"{_task_label(task_name)}完成"
             except Exception as e:
                 job.status = "failed"
                 job.message = f"任务失败: {str(e)}"
@@ -1048,7 +1060,7 @@ class SyncJobManager:
             total_stats: dict[str, Any] = {}
             for idx, task_type in enumerate(job.task_list):
                 job.current_task_index = idx
-                self.update_progress(job_id, phase=task_type, message=f"正在执行: {task_type}")
+                self.update_progress(job_id, phase=_format_task_phase(task_type), message=f"正在执行: {_task_label(task_type)}")
                 task_stats = self._run_single_sync(settings, task_type, job_id)
                 if task_stats:
                     for key, val in task_stats.items():
@@ -1120,7 +1132,7 @@ class SyncJobManager:
             def on_progress(event_type: str, data: dict[str, Any]) -> None:
                 if event_type == "novel_start":
                     self.add_log(job_id, "info", f"[{data.get('current', '?')}/{data.get('total', '?')}] {data.get('title', '')[:30]}")
-                    self.update_progress(job_id, phase=data.get("phase", task_type), current=data.get('current', 0), total=data.get('total', 50))
+                    self.update_progress(job_id, phase=data.get("phase") or _format_task_phase(task_type), current=data.get('current', 0), total=data.get('total', 50))
                 elif event_type == "novel_done":
                     if data.get('failed'):
                         self.add_log(job_id, "error", "  失败（详见服务日志）")

@@ -42,12 +42,17 @@
           <select v-model="continueForm.source_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
             <option value="manual">手动文本</option>
             <option value="archive_novel">归档小说</option>
+            <option value="archive_series">归档系列</option>
             <option value="document">上传文档</option>
           </select>
         </div>
       </div>
       <div v-if="continueForm.source_type === 'archive_novel'">
         <novel-search v-model="continueForm.novel_id"></novel-search>
+      </div>
+      <div v-else-if="continueForm.source_type === 'archive_series'">
+        <series-search v-model="continueForm.series_id"></series-search>
+        <p class="text-xs text-pixiv-gray mt-1">选择系列后，将按顺序拼接系列内所有章节作为输入源。</p>
       </div>
       <div v-else-if="continueForm.source_type === 'document'" class="space-y-2">
         <label class="block text-xs font-medium text-pixiv-gray mb-1.5">上传 .txt / .md</label>
@@ -127,10 +132,14 @@
       <select v-model="rewriteForm.source_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
         <option value="manual">手动文本</option>
         <option value="archive_novel">归档小说</option>
+        <option value="archive_series">归档系列</option>
         <option value="document">上传文档</option>
       </select>
       <div v-if="rewriteForm.source_type === 'archive_novel'">
         <novel-search v-model="rewriteForm.novel_id"></novel-search>
+      </div>
+      <div v-else-if="rewriteForm.source_type === 'archive_series'">
+        <series-search v-model="rewriteForm.series_id"></series-search>
       </div>
       <div v-else-if="rewriteForm.source_type === 'document'" class="space-y-2">
         <input type="file" accept=".txt,.md,text/plain,text/markdown" @change="uploadDocument($event, rewriteForm)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
@@ -276,12 +285,16 @@
           <select v-model="auditForm.source_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
             <option value="manual">手动文本</option>
             <option value="archive_novel">归档小说</option>
+            <option value="archive_series">归档系列</option>
             <option value="document">上传文档</option>
           </select>
         </div>
       </div>
       <div v-if="auditForm.source_type === 'archive_novel'">
         <novel-search v-model="auditForm.novel_id"></novel-search>
+      </div>
+      <div v-else-if="auditForm.source_type === 'archive_series'">
+        <series-search v-model="auditForm.series_id"></series-search>
       </div>
       <div v-else-if="auditForm.source_type === 'document'" class="space-y-2">
         <input type="file" accept=".txt,.md,text/plain,text/markdown" @change="uploadDocument($event, auditForm)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
@@ -329,6 +342,7 @@
           <select v-model="distillForm.source_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
             <option value="manual">手动文本</option>
             <option value="archive_novel">归档小说</option>
+            <option value="archive_series">归档系列</option>
             <option value="document">上传文档</option>
           </select>
         </div>
@@ -339,6 +353,9 @@
       </div>
       <div v-if="distillForm.source_type === 'archive_novel'">
         <novel-search v-model="distillForm.novel_id"></novel-search>
+      </div>
+      <div v-else-if="distillForm.source_type === 'archive_series'">
+        <series-search v-model="distillForm.series_id"></series-search>
       </div>
       <div v-else-if="distillForm.source_type === 'document'" class="space-y-2">
         <input type="file" accept=".txt,.md,text/plain,text/markdown" @change="uploadDocument($event, distillForm)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
@@ -561,6 +578,59 @@ window.initVueApp({
         }
       }
     },
+    'series-search': {
+      props: ['modelValue'],
+      emits: ['update:modelValue'],
+      template: `
+        <div class="relative">
+          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">搜索系列</label>
+          <input type="text" v-model="query" @input="onSearch" @focus="showDropdown = true"
+                 class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                 placeholder="输入系列标题或作者名搜索...">
+          <div v-if="selectedTitle" class="text-xs text-green-600 mt-1">已选择：{{ selectedTitle }}</div>
+          <div v-if="showDropdown && results.length" class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-auto">
+            <div v-for="s in results" :key="s.series_id" @click="selectSeries(s)"
+                 class="px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 border-b border-gray-50 last:border-0">
+              <div class="font-medium text-gray-900 truncate">{{ s.title }}</div>
+              <div class="text-xs text-pixiv-gray">{{ s.author_name || '未知作者' }} · {{ s.total_novels || '?' }} 章 · 约 {{ Math.round((s.total_text_length || 0) / 1000) }}k 字</div>
+            </div>
+          </div>
+          <div v-if="showDropdown && query && !results.length && !searching" class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-sm text-pixiv-gray">
+            未找到匹配的系列
+          </div>
+        </div>
+      `,
+      data() {
+        return { query: '', results: [], showDropdown: false, searching: false, selectedTitle: '', searchTimer: null };
+      },
+      methods: {
+        onSearch() {
+          clearTimeout(this.searchTimer);
+          if (!this.query.trim()) { this.results = []; return; }
+          this.searching = true;
+          this.searchTimer = setTimeout(async () => {
+            try {
+              const res = await fetch('/api/dashboard/ai/series/search?q=' + encodeURIComponent(this.query) + '&limit=10');
+              const data = await res.json();
+              this.results = data.data || [];
+            } catch { this.results = []; }
+            finally { this.searching = false; }
+          }, 300);
+        },
+        selectSeries(s) {
+          this.selectedTitle = s.title;
+          this.showDropdown = false;
+          this.query = '';
+          this.results = [];
+          this.$emit('update:modelValue', s.series_id);
+        }
+      },
+      watch: {
+        modelValue(val) {
+          if (!val) this.selectedTitle = '';
+        }
+      }
+    },
     'output-panel': {
       props: ['title', 'text', 'jobId', 'streaming'],
       emits: ['save'],
@@ -613,12 +683,12 @@ window.initVueApp({
     const streamOutput = ref('');
     const currentJobId = ref('');
 
-    const continueForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, document_id: 0, text: '', context_chars: 8000, output_chars: 3000, instruction: '', smart_context: true, style_profile_id: 0, novel_profile_id: 0 });
-    const rewriteForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, document_id: 0, text: '', rewrite_type: 'polish', instruction: '' });
+    const continueForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', context_chars: 8000, output_chars: 3000, instruction: '', smart_context: true, style_profile_id: 0, novel_profile_id: 0 });
+    const rewriteForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', rewrite_type: 'polish', instruction: '' });
     const providerForm = reactive({ id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, enabled: true });
     const agentForm = reactive({ id: 0, name: '', task_type: 'continue', provider_id: 0, model: '', system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
-    const auditForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, document_id: 0, text: '', audit_dimensions: [] });
-    const distillForm = reactive({ agent_id: 0, distill_type: 'style', source_type: 'manual', novel_id: null, document_id: 0, text: '', chunk_chars: 4000, existing_profile_id: 0 });
+    const auditForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', audit_dimensions: [] });
+    const distillForm = reactive({ agent_id: 0, distill_type: 'style', source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', chunk_chars: 4000, existing_profile_id: 0 });
     const jobFilter = reactive({ task_type: '', status: '' });
     const promptForm = reactive({ id: 0, name: '', category: 'general', template: '', description: '' });
     const seedProviderId = ref(0);

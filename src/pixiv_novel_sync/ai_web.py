@@ -387,6 +387,46 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
         except Exception as exc:
             return fail(exc)
 
+    # ── 系列搜索 ────────────────────────────────────────────────
+
+    @app.get("/api/dashboard/ai/series/search")
+    def search_series_for_ai():
+        """搜索系列，用于 AI 创作选择输入源。"""
+        try:
+            q = str(request.args.get("q", "") or "").strip()
+            limit = min(int(request.args.get("limit", 10) or 10), 20)
+            from .storage_db import Database
+            from .settings import Settings
+            current_settings = settings
+            db = Database(current_settings.storage.db_path)
+            db.init_schema()
+            try:
+                search_pattern = f"%{q}%" if q else "%"
+                rows = db.conn.execute(
+                    """
+                    SELECT
+                        se.series_id,
+                        CASE WHEN se.title IS NOT NULL AND se.title != '' THEN se.title
+                             ELSE (SELECT MIN(n.title) FROM novels n WHERE n.series_id = se.series_id)
+                        END AS title,
+                        u.name AS author_name,
+                        se.total_novels,
+                        COALESCE((SELECT SUM(n.text_length) FROM novels n WHERE n.series_id = se.series_id), 0) AS total_text_length
+                    FROM series se
+                    LEFT JOIN users AS u ON u.user_id = se.user_id
+                    WHERE (se.title LIKE ? OR u.name LIKE ?)
+                      AND EXISTS (SELECT 1 FROM novels n WHERE n.series_id = se.series_id)
+                    ORDER BY se.last_seen_at DESC
+                    LIMIT ?
+                    """,
+                    (search_pattern, search_pattern, limit),
+                ).fetchall()
+                return ok([dict(row) for row in rows])
+            finally:
+                db.close()
+        except Exception as exc:
+            return fail(exc)
+
     # ── 内置 Agent 初始化 ──────────────────────────────────────
 
     @app.post("/api/dashboard/ai/agents/seed")

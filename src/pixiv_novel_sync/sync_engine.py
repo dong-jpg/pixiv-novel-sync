@@ -870,6 +870,8 @@ class BookmarkNovelSyncService:
             # 使用 while 循环以支持顺延：当 limit > 0 时，全部跳过的系列不计入 limit
             series_queue = list(series_list)
             queue_idx = 0
+            consecutive_fetch_failures = 0
+            max_consecutive_fetch_failures = 5
             while queue_idx < len(series_queue):
                 if limit > 0 and synced_series_count >= limit:
                     break
@@ -895,6 +897,7 @@ class BookmarkNovelSyncService:
                         if not detail:
                             detail = getattr(series_data, "novel_series_detail", None)
                         if detail:
+                            consecutive_fetch_failures = 0
                             # detail 可能是 dict 或对象
                             if isinstance(detail, dict):
                                 title = detail.get("title", "")
@@ -941,6 +944,20 @@ class BookmarkNovelSyncService:
                                     account=user_account, raw_json="{}",
                                 ))
                             logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
+
+                            remote_total = int(total or 0)
+                            local_text_count = self.db.count_series_novel_texts(int(sid))
+                            if remote_total > 0 and local_text_count == remote_total:
+                                stats["skipped"] = stats.get("skipped", 0) + remote_total
+                                logger.info(
+                                    "Skip full series %s: local chapters=%d matches remote total=%d",
+                                    sid,
+                                    local_text_count,
+                                    remote_total,
+                                )
+                                if progress_callback:
+                                    progress_callback("phase", {"phase": f"系列 {title or sid}: 本地 {local_text_count} 章与远端一致，跳过全系列"})
+                                continue
 
                             # 同步系列中的所有章节（含正文）
                             chapter_delay = self.settings.sync.delay_seconds_between_chapters
@@ -1015,9 +1032,44 @@ class BookmarkNovelSyncService:
                                 if chapter_count > 0:
                                     synced_series_count += 1
                         else:
+                            consecutive_fetch_failures += 1
                             logger.warning("No detail found for series %s, keys: %s", sid, list(series_data.keys()) if isinstance(series_data, dict) else "N/A")
+                            if progress_callback:
+                                progress_callback("phase", {"phase": f"系列 {sid}: 获取详情失败，已连续失败 {consecutive_fetch_failures} 次"})
+                            if consecutive_fetch_failures >= max_consecutive_fetch_failures:
+                                logger.warning(
+                                    "Stopping subscribed series sync after %d consecutive series detail failures; likely rate limited or blocked",
+                                    consecutive_fetch_failures,
+                                )
+                                if progress_callback:
+                                    progress_callback("phase", {"phase": "连续获取系列详情失败，疑似触发 Pixiv 风控，已暂停追更系列同步"})
+                                break
+                    else:
+                        consecutive_fetch_failures += 1
+                        logger.warning("Empty response for series %s", sid)
+                        if progress_callback:
+                            progress_callback("phase", {"phase": f"系列 {sid}: 获取详情为空，已连续失败 {consecutive_fetch_failures} 次"})
+                        if consecutive_fetch_failures >= max_consecutive_fetch_failures:
+                            logger.warning(
+                                "Stopping subscribed series sync after %d consecutive empty series responses; likely rate limited or blocked",
+                                consecutive_fetch_failures,
+                            )
+                            if progress_callback:
+                                progress_callback("phase", {"phase": "连续获取系列详情为空，疑似触发 Pixiv 风控，已暂停追更系列同步"})
+                            break
                 except Exception as e:
+                    consecutive_fetch_failures += 1
                     logger.warning("Failed to fetch series %s: %s", sid, str(e))
+                    if progress_callback:
+                        progress_callback("phase", {"phase": f"系列 {sid}: 获取失败，已连续失败 {consecutive_fetch_failures} 次"})
+                    if consecutive_fetch_failures >= max_consecutive_fetch_failures:
+                        logger.warning(
+                            "Stopping subscribed series sync after %d consecutive fetch exceptions; likely rate limited or blocked",
+                            consecutive_fetch_failures,
+                        )
+                        if progress_callback:
+                            progress_callback("phase", {"phase": "连续获取系列失败，疑似触发 Pixiv 风控，已暂停追更系列同步"})
+                        break
 
                 # 系列之间的延迟
                 if series_delay > 0 and queue_idx < len(series_queue):
