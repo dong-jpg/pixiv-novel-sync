@@ -413,6 +413,15 @@ class AIWritingService:
             provider_config = self._load_provider_config(db, agent.provider_id)
             text = self._resolve_input_text(db, payload)
             chunks = split_text_by_chars(text, int(payload.get("chunk_chars") or 4000))
+            # 采样策略：长文本只取有代表性的片段（开头、中间、结尾），避免超出上下文窗口
+            max_sample_chunks = 6
+            if len(chunks) > max_sample_chunks:
+                step = len(chunks) // max_sample_chunks
+                sampled = [chunks[i * step] for i in range(max_sample_chunks)]
+                # 确保包含最后一个片段
+                if sampled[-1] != chunks[-1]:
+                    sampled[-1] = chunks[-1]
+                chunks = sampled
             existing_profile = None
             if payload.get("existing_profile_id"):
                 existing_profile = db.get_ai_style_profile(int(payload["existing_profile_id"]))
@@ -503,6 +512,14 @@ class AIWritingService:
             provider_config = self._load_provider_config(db, agent.provider_id)
             text = self._resolve_input_text(db, payload)
             chunks = split_text_by_chars(text, int(payload.get("chunk_chars") or 4000))
+            # 小说蒸馏需要更多上下文来提取剧情/角色，采样更多片段
+            max_sample_chunks = 10
+            if len(chunks) > max_sample_chunks:
+                step = len(chunks) // max_sample_chunks
+                sampled = [chunks[i * step] for i in range(max_sample_chunks)]
+                if sampled[-1] != chunks[-1]:
+                    sampled[-1] = chunks[-1]
+                chunks = sampled
             existing_profile = None
             if payload.get("existing_profile_id"):
                 existing_profile = db.get_ai_novel_profile(int(payload["existing_profile_id"]))
