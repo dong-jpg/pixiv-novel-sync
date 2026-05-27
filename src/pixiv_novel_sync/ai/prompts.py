@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -70,3 +71,143 @@ def build_rewrite_messages(
 def safe_prompt_preview(messages: list[dict[str, Any]], max_chars: int = 1000) -> str:
     text = "\n\n".join(str(message.get("content", "")) for message in messages)
     return text[:max_chars]
+
+
+# ── 风格蒸馏 ────────────────────────────────────────────────────
+
+DEFAULT_DISTILL_STYLE_PROMPT = """你是专业的文学风格分析专家。
+你的任务是从用户提供的文本中提取写作风格特征，输出结构化的风格档案。
+
+你需要分析以下维度：
+1. 叙事视角（第一人称/第三人称/上帝视角等）
+2. 语气特征（冷峻/温暖/幽默/严肃等）
+3. 句式特点（长短句比例、句式结构偏好）
+4. 用词风格（口语化/书面化/文言色彩等）
+5. 描写手法（白描/工笔/意识流等）
+6. 对话风格（简洁/冗长、方言使用、语气词频率）
+7. 节奏特征（紧凑/舒缓、段落长度分布）
+8. 常用修辞手法
+
+输出格式为 JSON，包含以上各维度的分析结果。"""
+
+
+def build_style_distill_messages(
+    *,
+    system_prompt: str | None,
+    text_chunks: list[str],
+    existing_profile: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    parts = []
+    if existing_profile:
+        parts.append(f"【已有风格档案】\n{json.dumps(existing_profile, ensure_ascii=False, indent=2)}")
+        parts.append("请在已有档案基础上，根据新文本补充和修正风格特征。")
+    for i, chunk in enumerate(text_chunks, 1):
+        parts.append(f"【文本片段 {i}】\n{chunk}")
+    return [
+        {"role": "system", "content": system_prompt or DEFAULT_DISTILL_STYLE_PROMPT},
+        {"role": "user", "content": "\n\n".join(parts)},
+    ]
+
+
+# ── 小说蒸馏 ────────────────────────────────────────────────────
+
+DEFAULT_DISTILL_NOVEL_PROMPT = """你是专业的小说结构分析专家。
+你的任务是从用户提供的小说文本中提取结构化的小说设定和剧情信息。
+
+你需要提取以下内容：
+1. 角色列表：每个角色的姓名、身份、性格特征、与其他角色的关系
+2. 世界观设定：时代背景、地点、社会环境、特殊设定
+3. 关键剧情点：已发生的重要事件及其影响
+4. 伏笔列表：已埋下但未回收的伏笔和悬念
+5. 时间线：按时间顺序排列的主要事件
+6. 主题与情感基调
+
+输出格式为 JSON，包含以上各维度的结构化信息。"""
+
+
+def build_novel_distill_messages(
+    *,
+    system_prompt: str | None,
+    text_chunks: list[str],
+    existing_profile: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    parts = []
+    if existing_profile:
+        parts.append(f"【已有小说档案】\n{json.dumps(existing_profile, ensure_ascii=False, indent=2)}")
+        parts.append("请在已有档案基础上，根据新文本补充和修正小说设定。")
+    for i, chunk in enumerate(text_chunks, 1):
+        parts.append(f"【文本片段 {i}】\n{chunk}")
+    return [
+        {"role": "system", "content": system_prompt or DEFAULT_DISTILL_NOVEL_PROMPT},
+        {"role": "user", "content": "\n\n".join(parts)},
+    ]
+
+
+# ── 内容审计 ────────────────────────────────────────────────────
+
+DEFAULT_AUDIT_PROMPT = """你是专业的小说内容审计专家。
+你的任务是对用户提供的小说文本进行全面的质量审查。
+
+请从以下维度进行审查，每个维度给出评分（1-10）和具体意见：
+
+1. 角色一致性：角色行为是否符合其性格设定，有无前后矛盾
+2. 剧情连贯性：情节发展是否自然流畅，有无逻辑漏洞
+3. 文风统一性：叙述风格是否前后一致，有无突兀的风格转变
+4. 伏笔追踪：已埋伏笔是否有回收，有无遗漏的线索
+5. 节奏把控：叙事节奏是否合理，有无拖沓或过于仓促之处
+6. 对话质量：对话是否自然、有信息量、符合角色身份
+7. 描写质量：场景描写、心理描写是否生动有效
+
+输出格式为 JSON，包含 overall_score（总分）、各维度的 score 和 comments，以及 issues 列表（发现的具体问题）和 suggestions 列表（改进建议）。"""
+
+
+def build_audit_messages(
+    *,
+    system_prompt: str | None,
+    text: str,
+    audit_dimensions: list[str] | None = None,
+) -> list[dict[str, str]]:
+    parts = []
+    if audit_dimensions:
+        parts.append(f"【重点审查维度】\n{', '.join(audit_dimensions)}")
+        parts.append("请重点审查以上维度，其他维度简要审查。")
+    parts.append(f"【待审查文本】\n{text}")
+    return [
+        {"role": "system", "content": system_prompt or DEFAULT_AUDIT_PROMPT},
+        {"role": "user", "content": "\n\n".join(parts)},
+    ]
+
+
+# ── 摘要提取 ────────────────────────────────────────────────────
+
+DEFAULT_SUMMARIZE_PROMPT = """你是专业的小说文本摘要提取助手。
+你的任务是对用户提供的小说文本进行摘要提取，保留关键信息用于后续续写时的上下文参考。
+
+需要保留的关键信息：
+1. 主要角色当前状态和位置
+2. 正在进行的剧情线和冲突
+3. 最近发生的重要事件
+4. 已埋下的伏笔和悬念
+5. 情感氛围和基调
+6. 时间和地点信息
+
+要求：
+- 摘要应简洁精炼，控制在原文 10%-20% 的篇幅
+- 按时间顺序组织信息
+- 重点保留对后续写作有参考价值的信息
+- 不要添加原文中没有的内容"""
+
+
+def build_summarize_messages(
+    *,
+    text: str,
+    focus: str | None = None,
+) -> list[dict[str, str]]:
+    parts = []
+    if focus:
+        parts.append(f"【重点关注】\n{focus}")
+    parts.append(f"【待摘要文本】\n{text}")
+    return [
+        {"role": "system", "content": DEFAULT_SUMMARIZE_PROMPT},
+        {"role": "user", "content": "\n\n".join(parts)},
+    ]

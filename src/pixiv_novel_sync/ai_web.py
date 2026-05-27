@@ -195,3 +195,194 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
             return ok()
         except Exception as exc:
             return fail(exc)
+
+    @app.get("/api/dashboard/ai/drafts/<int:draft_id>/history")
+    def get_ai_draft_history(draft_id: int):
+        try:
+            return ok(service.get_draft_history(draft_id))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/drafts/<int:draft_id>/fork")
+    def fork_ai_draft(draft_id: int):
+        try:
+            new_id = service.fork_draft(draft_id, json_payload())
+            return ok({"id": new_id})
+        except Exception as exc:
+            return fail(exc)
+
+    # ── 任务历史 ────────────────────────────────────────────────
+
+    @app.get("/api/dashboard/ai/jobs")
+    def list_ai_jobs():
+        try:
+            task_type = request.args.get("task_type") or None
+            status = request.args.get("status") or None
+            page = int(request.args.get("page", 1))
+            page_size = int(request.args.get("page_size", 20))
+            return ok(service.list_jobs(task_type=task_type, status=status, page=page, page_size=page_size))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/jobs/<job_id>")
+    def get_ai_job(job_id: str):
+        try:
+            return ok(service.get_job(job_id))
+        except Exception as exc:
+            return fail(exc)
+
+    # ── 风格蒸馏 ────────────────────────────────────────────────
+
+    @app.post("/api/dashboard/ai/distill/style/stream")
+    def stream_distill_style():
+        try:
+            return stream_response(service.stream_distill_style(json_payload()))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/style-profiles")
+    def list_style_profiles():
+        try:
+            page = int(request.args.get("page", 1))
+            page_size = int(request.args.get("page_size", 20))
+            return ok(service.list_style_profiles(page=page, page_size=page_size))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/style-profiles/<int:profile_id>")
+    def get_style_profile(profile_id: int):
+        try:
+            return ok(service.get_style_profile(profile_id))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.put("/api/dashboard/ai/style-profiles/<int:profile_id>")
+    def update_style_profile(profile_id: int):
+        try:
+            service.update_style_profile(profile_id, json_payload())
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.delete("/api/dashboard/ai/style-profiles/<int:profile_id>")
+    def delete_style_profile(profile_id: int):
+        try:
+            service.delete_style_profile(profile_id)
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/style-profiles/save")
+    def save_style_profile():
+        try:
+            profile_id = service.save_style_profile(json_payload())
+            return ok({"id": profile_id})
+        except Exception as exc:
+            return fail(exc)
+
+    # ── 小说蒸馏 ────────────────────────────────────────────────
+
+    @app.post("/api/dashboard/ai/distill/novel/stream")
+    def stream_distill_novel():
+        try:
+            return stream_response(service.stream_distill_novel(json_payload()))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/novel-profiles")
+    def list_novel_profiles():
+        try:
+            page = int(request.args.get("page", 1))
+            page_size = int(request.args.get("page_size", 20))
+            return ok(service.list_novel_profiles(page=page, page_size=page_size))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/novel-profiles/<int:profile_id>")
+    def get_novel_profile(profile_id: int):
+        try:
+            return ok(service.get_novel_profile(profile_id))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.put("/api/dashboard/ai/novel-profiles/<int:profile_id>")
+    def update_novel_profile(profile_id: int):
+        try:
+            service.update_novel_profile(profile_id, json_payload())
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.delete("/api/dashboard/ai/novel-profiles/<int:profile_id>")
+    def delete_novel_profile(profile_id: int):
+        try:
+            service.delete_novel_profile(profile_id)
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/novel-profiles/save")
+    def save_novel_profile():
+        try:
+            profile_id = service.save_novel_profile(json_payload())
+            return ok({"id": profile_id})
+        except Exception as exc:
+            return fail(exc)
+
+    # ── 内容审计 ────────────────────────────────────────────────
+
+    @app.post("/api/dashboard/ai/audit/stream")
+    def stream_audit():
+        try:
+            return stream_response(service.stream_audit(json_payload()))
+        except Exception as exc:
+            return fail(exc)
+
+    # ── Prompt 模板 ─────────────────────────────────────────────
+
+    @app.get("/api/dashboard/ai/prompt-templates")
+    def list_prompt_templates():
+        try:
+            category = request.args.get("category") or None
+            return ok(service.list_prompt_templates(category=category))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/prompt-templates/<int:template_id>")
+    def get_prompt_template(template_id: int):
+        try:
+            return ok(service.get_prompt_template(template_id))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/prompt-templates")
+    def create_prompt_template():
+        try:
+            template_id = service.create_prompt_template(json_payload())
+            return ok({"id": template_id})
+        except Exception as exc:
+            return fail(exc)
+
+    @app.put("/api/dashboard/ai/prompt-templates/<int:template_id>")
+    def update_prompt_template(template_id: int):
+        try:
+            service.update_prompt_template(template_id, json_payload())
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.delete("/api/dashboard/ai/prompt-templates/<int:template_id>")
+    def delete_prompt_template(template_id: int):
+        try:
+            service.delete_prompt_template(template_id)
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/prompt-templates/seed")
+    def seed_prompt_templates():
+        try:
+            service.seed_builtin_templates()
+            return ok()
+        except Exception as exc:
+            return fail(exc)

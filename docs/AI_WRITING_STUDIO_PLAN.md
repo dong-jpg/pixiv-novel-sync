@@ -53,23 +53,29 @@
 - 复杂 diff 对比。
 - Prompt 模板管理。
 
-### Phase 2：风格蒸馏 / 小说蒸馏
+### Phase 2：风格蒸馏 / 小说蒸馏 ✅
 
-实现：
+已实现：
 
-- 文本切块。
-- 风格 profile。
-- 小说 profile。
-- 续写/改写时引用 profile。
+- 文本切块（`split_text_by_chars`）。
+- 风格 profile（`ai_style_profiles` 完整 CRUD + 流式蒸馏）。
+- 小说 profile（`ai_novel_profiles` 完整 CRUD + 流式蒸馏）。
+- 续写/改写时引用 profile（`style_prompt`/`novel_prompt` 参数）。
 
-### Phase 3：体验增强
+### Phase 3：体验增强 ✅
 
-实现：
+已实现：
+
+- 草稿版本历史（`parent_draft_id` 递归查询 + fork）。
+- Prompt 模板管理（`ai_prompt_templates` 表 + CRUD + 内置模板种子）。
+- 内容审计（`stream_audit` + 7 维度审查）。
+- 长文本智能处理（`_smart_context` 自动摘要）。
+- 任务历史查看（`list_ai_jobs` 分页+过滤）。
+
+未实现（低优先级）：
 
 - 多版本候选。
 - diff 对比。
-- 草稿版本历史。
-- Prompt 模板管理。
 - Agent 一键复制。
 - Token/费用估算。
 
@@ -857,3 +863,57 @@ tests/test_ai_db.py
 - 已补充 Provider 禁用校验：禁用的 Provider 不会被调用。
 - 已通过本地验证：`python -m compileall src/pixiv_novel_sync`、AI Provider/Agent HTTP CRUD 冒烟、流式预校验错误路径、文档上传接口、禁用 Provider 路径。
 - 待联调：真实 OpenAI-compatible、Anthropic、xAI API 调用；浏览器端交互细节；客户端断连时的 job 状态表现。
+
+### 2026-05-26（Phase 2/3 全面升级）
+
+参考 inkos、MuMuAINovel、ai-novel-writer 三个开源项目，完成以下功能升级：
+
+**数据库层（storage_db.py）：**
+- 新增 `ai_prompt_templates` 表及索引。
+- 补全 `ai_jobs`：`list_ai_jobs`（分页+过滤）、`delete_ai_job`。
+- 新增 `ai_style_profiles` 完整 CRUD（6 个方法）。
+- 新增 `ai_novel_profiles` 完整 CRUD（6 个方法）。
+- 补全 `ai_documents`：`list_ai_documents`、`delete_ai_document`。
+- 新增 `ai_prompt_templates` 完整 CRUD（5 个方法）。
+- 新增 `ai_drafts.get_ai_draft_history`（递归版本链查询）。
+
+**Prompt 层（ai/prompts.py）：**
+- 新增 `build_style_distill_messages` — 风格蒸馏 prompt（参考 inkos 风格指纹提取）。
+- 新增 `build_novel_distill_messages` — 小说蒸馏 prompt（提取角色/世界观/伏笔/时间线）。
+- 新增 `build_audit_messages` — 内容审计 prompt（7 维度质量审查，参考 inkos 33 维度审计简化版）。
+- 新增 `build_summarize_messages` — 摘要提取 prompt（长文本智能处理）。
+
+**服务层（ai/service.py）：**
+- 新增 `list_jobs`、`get_job` — 任务历史查询。
+- 新增 `stream_distill_style`、`save_style_profile`、`list/get/update/delete_style_profile`。
+- 新增 `stream_distill_novel`、`save_novel_profile`、`list/get/update/delete_novel_profile`。
+- 新增 `stream_audit` — 流式内容审计。
+- 新增 `list/get/create/update/delete_prompt_template`、`seed_builtin_templates`。
+- 新增 `get_draft_history`、`fork_draft` — 草稿版本历史。
+- 新增 `_smart_context` — 长文本智能上下文处理（自动摘要+末尾上下文）。
+- 修改 `stream_continue`：支持 `smart_context` 开关、`style_prompt`/`novel_prompt` 引用。
+- `_normalize_agent_payload` 新增 `audit` 类型支持。
+
+**文本切块（ai/chunking.py）：**
+- 新增 `estimate_token_count` — token 数估算。
+- 新增 `needs_summarization` — 判断是否需要摘要。
+
+**路由层（ai_web.py）：**
+- 新增 `/api/dashboard/ai/jobs`、`/api/dashboard/ai/jobs/<job_id>` — 任务历史。
+- 新增 `/api/dashboard/ai/drafts/<id>/history`、`/api/dashboard/ai/drafts/<id>/fork` — 草稿版本。
+- 新增 `/api/dashboard/ai/distill/style/stream`、`/api/dashboard/ai/style-profiles/*` — 风格蒸馏。
+- 新增 `/api/dashboard/ai/distill/novel/stream`、`/api/dashboard/ai/novel-profiles/*` — 小说蒸馏。
+- 新增 `/api/dashboard/ai/audit/stream` — 内容审计。
+- 新增 `/api/dashboard/ai/prompt-templates/*` — Prompt 模板管理。
+
+**前端（dashboard_ai.html）：**
+- tabs 从 5 个扩展到 10 个：续写、改写、内容审计、蒸馏、草稿、任务历史、档案、Prompt 模板、Agent 设置、API 设置。
+- 续写：新增智能上下文开关、风格/小说档案选择器。
+- 改写：新增归档小说选择支持。
+- 新增内容审计 tab：支持多维度选择、归档小说/文档输入。
+- 新增蒸馏 tab：支持风格/小说蒸馏、分块大小配置。
+- 新增任务历史 tab：支持按类型/状态过滤、查看输出详情。
+- 新增档案 tab：风格档案和小说档案列表、JSON 查看。
+- 新增 Prompt 模板 tab：分类筛选、内置模板初始化、自定义模板 CRUD。
+- 草稿：新增版本历史、创建新版本、删除功能。
+- Agent 设置：task_type 新增 audit/distill_style/distill_novel 选项。

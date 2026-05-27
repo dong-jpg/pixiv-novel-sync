@@ -1,6 +1,20 @@
 from __future__ import annotations
 
 
+def estimate_token_count(text: str) -> int:
+    """简单估算 token 数。中文约 1.5 字/token，英文约 4 字符/token。"""
+    if not text:
+        return 0
+    chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+    other_chars = len(text) - chinese_chars
+    return int(chinese_chars / 1.5 + other_chars / 4)
+
+
+def needs_summarization(text: str, context_window: int) -> bool:
+    """判断文本是否需要摘要处理。"""
+    return estimate_token_count(text) > context_window * 0.6
+
+
 def get_tail_context(text: str, context_chars: int) -> str:
     text = text or ""
     context_chars = max(int(context_chars or 0), 0)
