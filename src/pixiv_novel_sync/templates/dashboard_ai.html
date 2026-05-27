@@ -229,9 +229,10 @@
       </select>
       <input v-model="agentForm.model" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="模型，留空使用 Provider 默认模型">
       <textarea v-model="agentForm.system_prompt" rows="8" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="System prompt"></textarea>
-      <div class="grid grid-cols-2 gap-3">
+      <div class="grid grid-cols-3 gap-3">
         <input type="number" step="0.1" v-model.number="agentForm.temperature" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="temperature">
         <input type="number" v-model.number="agentForm.max_tokens" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="max_tokens">
+        <input type="number" v-model.number="agentForm.context_window" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="上下文窗口(tokens)">
       </div>
       <div class="flex gap-2">
         <button @click="saveAgent" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">{{ agentForm.id ? '更新 Agent' : '保存 Agent' }}</button>
