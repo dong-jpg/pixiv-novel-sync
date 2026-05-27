@@ -421,7 +421,7 @@ class AIWritingService:
             # 确定每批大小
             effective_window = agent.context_window if agent.context_window > 16000 else provider_config.context_window
             usable_chars = int(effective_window * 1.5 * 0.7)
-            batch_size = min(15, max(6, usable_chars // chunk_char_size))
+            batch_size = min(5, max(3, usable_chars // chunk_char_size))
 
             if not full_text_mode and len(all_chunks) > batch_size:
                 # 采样模式：均匀取样
@@ -455,6 +455,9 @@ class AIWritingService:
 
             for batch_idx, batch_chunks in enumerate(batches):
                 is_last = batch_idx == len(batches) - 1
+                # 批次间间隔 2 秒，避免触发网关限流
+                if batch_idx > 0:
+                    time.sleep(2)
                 messages = build_style_distill_messages(
                     system_prompt=agent.system_prompt,
                     text_chunks=batch_chunks,
@@ -556,7 +559,7 @@ class AIWritingService:
 
             effective_window = agent.context_window if agent.context_window > 16000 else provider_config.context_window
             usable_chars = int(effective_window * 1.5 * 0.8)
-            batch_size = min(25, max(10, usable_chars // chunk_char_size))
+            batch_size = min(8, max(5, usable_chars // chunk_char_size))
 
             if not full_text_mode and len(all_chunks) > batch_size:
                 step = len(all_chunks) // batch_size
@@ -588,6 +591,8 @@ class AIWritingService:
 
             for batch_idx, batch_chunks in enumerate(batches):
                 is_last = batch_idx == len(batches) - 1
+                if batch_idx > 0:
+                    time.sleep(2)
                 messages = build_novel_distill_messages(
                     system_prompt=agent.system_prompt,
                     text_chunks=batch_chunks,
