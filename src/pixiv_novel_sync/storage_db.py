@@ -178,6 +178,8 @@ class Database:
         self._migrate_sync_watermarks_table()
         # 迁移：创建/升级预检查表。旧服务端库可能已有无 scope 的 sync_check_list。
         self.init_sync_check_table()
+        # 迁移：创建 AI 创作工作台相关表
+        self._migrate_ai_tables()
         self._commit_if_needed()
 
     def upsert_user(self, record: UserRecord) -> None:
@@ -1320,6 +1322,381 @@ class Database:
             ).fetchall()
             result.update(row[0] for row in rows)
         return result
+
+    # ── AI 创作工作台 ──────────────────────────────────────────────
+
+    def _migrate_ai_tables(self) -> None:
+        """创建 AI 创作工作台相关表。"""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS ai_providers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                provider_type TEXT NOT NULL,
+                base_url TEXT,
+                api_key_encrypted TEXT,
+                default_model TEXT,
+                available_models_json TEXT,
+                timeout_seconds INTEGER NOT NULL DEFAULT 120,
+                max_retries INTEGER NOT NULL DEFAULT 2,
+                proxy TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_agents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                provider_id INTEGER NOT NULL,
+                model TEXT,
+                system_prompt TEXT NOT NULL,
+                temperature REAL NOT NULL DEFAULT 0.8,
+                top_p REAL NOT NULL DEFAULT 0.9,
+                max_tokens INTEGER NOT NULL DEFAULT 4000,
+                context_window INTEGER NOT NULL DEFAULT 16000,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL UNIQUE,
+                task_type TEXT NOT NULL,
+                agent_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'running',
+                input_json TEXT NOT NULL,
+                output_text TEXT,
+                output_json TEXT,
+                error_message TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_drafts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                source_job_id TEXT,
+                parent_draft_id INTEGER,
+                style_profile_id INTEGER,
+                novel_profile_id INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                metadata_json TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_style_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                source_type TEXT,
+                source_ids_json TEXT,
+                profile_json TEXT NOT NULL,
+                sample_prompt TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_novel_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                source_type TEXT,
+                source_ids_json TEXT,
+                profile_json TEXT NOT NULL,
+                continuation_prompt TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ai_agents_task_type ON ai_agents(task_type);
+            CREATE INDEX IF NOT EXISTS idx_ai_agents_provider_id ON ai_agents(provider_id);
+            CREATE INDEX IF NOT EXISTS idx_ai_jobs_job_id ON ai_jobs(job_id);
+            CREATE INDEX IF NOT EXISTS idx_ai_jobs_created_at ON ai_jobs(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_ai_drafts_updated_at ON ai_drafts(updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_ai_documents_hash ON ai_documents(content_hash);
+            """
+        )
+
+    def _row_to_ai_provider(self, row: sqlite3.Row, include_secret: bool = False) -> dict[str, Any]:
+        item = dict(row)
+        item["enabled"] = bool(item.get("enabled"))
+        item["has_api_key"] = bool(item.get("api_key_encrypted"))
+        if item.get("available_models_json"):
+            try:
+                item["available_models"] = json.loads(item["available_models_json"])
+            except (TypeError, ValueError):
+                item["available_models"] = []
+        else:
+            item["available_models"] = []
+        if not include_secret:
+            item.pop("api_key_encrypted", None)
+        item.pop("available_models_json", None)
+        return item
+
+    def list_ai_providers(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT * FROM ai_providers ORDER BY id DESC").fetchall()
+        return [self._row_to_ai_provider(row) for row in rows]
+
+    def get_ai_provider(self, provider_id: int, include_secret: bool = False) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM ai_providers WHERE id = ?", (provider_id,)).fetchone()
+        if row is None:
+            return None
+        return self._row_to_ai_provider(row, include_secret=include_secret)
+
+    def create_ai_provider(self, data: dict[str, Any]) -> int:
+        with self._lock:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO ai_providers (
+                    name, provider_type, base_url, api_key_encrypted, default_model,
+                    available_models_json, timeout_seconds, max_retries, proxy, enabled
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data.get("name"),
+                    data.get("provider_type"),
+                    data.get("base_url"),
+                    data.get("api_key_encrypted"),
+                    data.get("default_model"),
+                    json.dumps(data.get("available_models") or [], ensure_ascii=False),
+                    int(data.get("timeout_seconds") or 120),
+                    int(data.get("max_retries") or 2),
+                    data.get("proxy"),
+                    1 if data.get("enabled", True) else 0,
+                ),
+            )
+            self._commit_if_needed()
+            return int(cursor.lastrowid)
+
+    def update_ai_provider(self, provider_id: int, data: dict[str, Any]) -> None:
+        allowed = {
+            "name", "provider_type", "base_url", "api_key_encrypted", "default_model",
+            "available_models", "timeout_seconds", "max_retries", "proxy", "enabled",
+        }
+        fields: list[str] = []
+        params: list[Any] = []
+        for key in allowed:
+            if key not in data:
+                continue
+            column = "available_models_json" if key == "available_models" else key
+            value = json.dumps(data[key] or [], ensure_ascii=False) if key == "available_models" else data[key]
+            if key == "enabled":
+                value = 1 if value else 0
+            fields.append(f"{column} = ?")
+            params.append(value)
+        if not fields:
+            return
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(provider_id)
+        with self._lock:
+            self.conn.execute(f"UPDATE ai_providers SET {', '.join(fields)} WHERE id = ?", params)
+            self._commit_if_needed()
+
+    def delete_ai_provider(self, provider_id: int) -> None:
+        with self._lock:
+            self.conn.execute("DELETE FROM ai_providers WHERE id = ?", (provider_id,))
+            self._commit_if_needed()
+
+    def _row_to_ai_agent(self, row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        item["enabled"] = bool(item.get("enabled"))
+        return item
+
+    def list_ai_agents(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT a.*, p.name AS provider_name, p.provider_type AS provider_type
+            FROM ai_agents a
+            LEFT JOIN ai_providers p ON p.id = a.provider_id
+            ORDER BY a.id DESC
+            """
+        ).fetchall()
+        return [self._row_to_ai_agent(row) for row in rows]
+
+    def get_ai_agent(self, agent_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM ai_agents WHERE id = ?", (agent_id,)).fetchone()
+        return self._row_to_ai_agent(row) if row else None
+
+    def create_ai_agent(self, data: dict[str, Any]) -> int:
+        with self._lock:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO ai_agents (
+                    name, task_type, provider_id, model, system_prompt, temperature,
+                    top_p, max_tokens, context_window, enabled
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data.get("name"), data.get("task_type"), int(data.get("provider_id")),
+                    data.get("model"), data.get("system_prompt"), float(data.get("temperature") or 0.8),
+                    float(data.get("top_p") or 0.9), int(data.get("max_tokens") or 4000),
+                    int(data.get("context_window") or 16000), 1 if data.get("enabled", True) else 0,
+                ),
+            )
+            self._commit_if_needed()
+            return int(cursor.lastrowid)
+
+    def update_ai_agent(self, agent_id: int, data: dict[str, Any]) -> None:
+        allowed = {"name", "task_type", "provider_id", "model", "system_prompt", "temperature", "top_p", "max_tokens", "context_window", "enabled"}
+        fields: list[str] = []
+        params: list[Any] = []
+        for key in allowed:
+            if key not in data:
+                continue
+            value = data[key]
+            if key in {"provider_id", "max_tokens", "context_window"}:
+                value = int(value)
+            elif key in {"temperature", "top_p"}:
+                value = float(value)
+            elif key == "enabled":
+                value = 1 if value else 0
+            fields.append(f"{key} = ?")
+            params.append(value)
+        if not fields:
+            return
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(agent_id)
+        with self._lock:
+            self.conn.execute(f"UPDATE ai_agents SET {', '.join(fields)} WHERE id = ?", params)
+            self._commit_if_needed()
+
+    def delete_ai_agent(self, agent_id: int) -> None:
+        with self._lock:
+            self.conn.execute("DELETE FROM ai_agents WHERE id = ?", (agent_id,))
+            self._commit_if_needed()
+
+    def create_ai_job(self, job_id: str, task_type: str, agent_id: int | None, input_data: dict[str, Any]) -> None:
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO ai_jobs (job_id, task_type, agent_id, status, input_json, started_at)
+                VALUES (?, ?, ?, 'running', ?, CURRENT_TIMESTAMP)
+                """,
+                (job_id, task_type, agent_id, json.dumps(input_data, ensure_ascii=False)),
+            )
+            self._commit_if_needed()
+
+    def update_ai_job(self, job_id: str, status: str, output_text: str | None = None,
+                      output_json: dict[str, Any] | None = None, error_message: str | None = None) -> None:
+        with self._lock:
+            self.conn.execute(
+                """
+                UPDATE ai_jobs
+                SET status = ?, output_text = COALESCE(?, output_text),
+                    output_json = COALESCE(?, output_json), error_message = ?,
+                    finished_at = CASE WHEN ? IN ('succeeded', 'failed', 'cancelled') THEN CURRENT_TIMESTAMP ELSE finished_at END
+                WHERE job_id = ?
+                """,
+                (
+                    status,
+                    output_text,
+                    json.dumps(output_json, ensure_ascii=False) if output_json is not None else None,
+                    error_message,
+                    status,
+                    job_id,
+                ),
+            )
+            self._commit_if_needed()
+
+    def get_ai_job(self, job_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM ai_jobs WHERE job_id = ?", (job_id,)).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        for key in ("input_json", "output_json"):
+            if item.get(key):
+                try:
+                    item[key[:-5]] = json.loads(item[key])
+                except (TypeError, ValueError):
+                    item[key[:-5]] = None
+        return item
+
+    def list_ai_drafts(self, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+        page = max(page, 1)
+        page_size = max(page_size, 1)
+        total = int(self.conn.execute("SELECT COUNT(*) FROM ai_drafts").fetchone()[0])
+        total_pages = max((total + page_size - 1) // page_size, 1)
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
+        rows = self.conn.execute(
+            "SELECT * FROM ai_drafts ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            (page_size, offset),
+        ).fetchall()
+        return {"items": [dict(row) for row in rows], "page": page, "page_size": page_size, "total": total, "total_pages": total_pages}
+
+    def get_ai_draft(self, draft_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM ai_drafts WHERE id = ?", (draft_id,)).fetchone()
+        return dict(row) if row else None
+
+    def create_ai_draft(self, data: dict[str, Any]) -> int:
+        with self._lock:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO ai_drafts (title, content, source_job_id, parent_draft_id, style_profile_id, novel_profile_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (data.get("title"), data.get("content"), data.get("source_job_id"), data.get("parent_draft_id"), data.get("style_profile_id"), data.get("novel_profile_id")),
+            )
+            self._commit_if_needed()
+            return int(cursor.lastrowid)
+
+    def update_ai_draft(self, draft_id: int, data: dict[str, Any]) -> None:
+        allowed = {"title", "content", "source_job_id", "parent_draft_id", "style_profile_id", "novel_profile_id"}
+        fields: list[str] = []
+        params: list[Any] = []
+        for key in allowed:
+            if key in data:
+                fields.append(f"{key} = ?")
+                params.append(data[key])
+        if not fields:
+            return
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(draft_id)
+        with self._lock:
+            self.conn.execute(f"UPDATE ai_drafts SET {', '.join(fields)} WHERE id = ?", params)
+            self._commit_if_needed()
+
+    def delete_ai_draft(self, draft_id: int) -> None:
+        with self._lock:
+            self.conn.execute("DELETE FROM ai_drafts WHERE id = ?", (draft_id,))
+            self._commit_if_needed()
+
+    def create_ai_document(self, data: dict[str, Any]) -> int:
+        with self._lock:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO ai_documents (title, source_type, content, content_hash, metadata_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (data.get("title"), data.get("source_type"), data.get("content"), data.get("content_hash"), json.dumps(data.get("metadata") or {}, ensure_ascii=False)),
+            )
+            self._commit_if_needed()
+            return int(cursor.lastrowid)
+
+    def get_ai_document(self, document_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM ai_documents WHERE id = ?", (document_id,)).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        if item.get("metadata_json"):
+            try:
+                item["metadata"] = json.loads(item["metadata_json"])
+            except (TypeError, ValueError):
+                item["metadata"] = {}
+        item.pop("metadata_json", None)
+        return item
 
     # ── 待确认删除 ──────────────────────────────────────────────
 

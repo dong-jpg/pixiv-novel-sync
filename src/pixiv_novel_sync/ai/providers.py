@@ -1,0 +1,202 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Iterator
+from typing import Any
+
+import requests
+
+from .models import AIProviderConfig, AIStreamChunk
+
+
+class AIProviderError(RuntimeError):
+    pass
+
+
+class AIProvider:
+    def __init__(self, config: AIProviderConfig) -> None:
+        self.config = config
+
+    def stream_generate(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        temperature: float,
+        top_p: float,
+        max_tokens: int,
+    ) -> Iterator[AIStreamChunk]:
+        raise NotImplementedError
+
+    def _proxies(self) -> dict[str, str] | None:
+        if not self.config.proxy:
+            return None
+        return {"http": self.config.proxy, "https": self.config.proxy}
+
+
+class OpenAICompatibleProvider(AIProvider):
+    default_base_url = "https://api.openai.com/v1"
+
+    def stream_generate(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        temperature: float,
+        top_p: float,
+        max_tokens: int,
+    ) -> Iterator[AIStreamChunk]:
+        if not self.config.api_key:
+            raise AIProviderError("Provider 未配置 API key")
+        base_url = (self.config.base_url or self.default_base_url).rstrip("/")
+        url = f"{base_url}/chat/completions"
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.config.api_key}",
+            "Content-Type": "application/json",
+        }
+        yield from self._stream_chat_completions(url, headers, payload)
+
+    def _stream_chat_completions(self, url: str, headers: dict[str, str], payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        try:
+            with requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                stream=True,
+                timeout=self.config.timeout_seconds,
+                proxies=self._proxies(),
+            ) as response:
+                if response.status_code >= 400:
+                    raise AIProviderError(_safe_http_error(response))
+                for raw_line in response.iter_lines(decode_unicode=True):
+                    if not raw_line:
+                        continue
+                    line = raw_line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        yield AIStreamChunk(type="done")
+                        return
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    delta = event.get("choices", [{}])[0].get("delta", {})
+                    text = delta.get("content") or ""
+                    if text:
+                        yield AIStreamChunk(type="delta", text=text)
+        except requests.RequestException as exc:
+            raise AIProviderError(f"AI API 请求失败：{exc}") from exc
+
+
+class XAIProvider(OpenAICompatibleProvider):
+    default_base_url = "https://api.x.ai/v1"
+
+
+class AnthropicProvider(AIProvider):
+    default_base_url = "https://api.anthropic.com"
+
+    def stream_generate(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        temperature: float,
+        top_p: float,
+        max_tokens: int,
+    ) -> Iterator[AIStreamChunk]:
+        if not self.config.api_key:
+            raise AIProviderError("Provider 未配置 API key")
+        base_url = (self.config.base_url or self.default_base_url).rstrip("/")
+        url = f"{base_url}/v1/messages"
+        system_parts: list[str] = []
+        anthropic_messages: list[dict[str, str]] = []
+        for message in messages:
+            role = message.get("role") or "user"
+            content = message.get("content") or ""
+            if role == "system":
+                system_parts.append(content)
+            elif role == "assistant":
+                anthropic_messages.append({"role": "assistant", "content": content})
+            else:
+                anthropic_messages.append({"role": "user", "content": content})
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": anthropic_messages,
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        if system_parts:
+            payload["system"] = "\n\n".join(system_parts)
+        headers = {
+            "x-api-key": self.config.api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        try:
+            with requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                stream=True,
+                timeout=self.config.timeout_seconds,
+                proxies=self._proxies(),
+            ) as response:
+                if response.status_code >= 400:
+                    raise AIProviderError(_safe_http_error(response))
+                for raw_line in response.iter_lines(decode_unicode=True):
+                    if not raw_line:
+                        continue
+                    line = raw_line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    event_type = event.get("type")
+                    if event_type == "content_block_delta":
+                        delta = event.get("delta") or {}
+                        text = delta.get("text") or ""
+                        if text:
+                            yield AIStreamChunk(type="delta", text=text)
+                    elif event_type == "message_stop":
+                        yield AIStreamChunk(type="done")
+                        return
+                    elif event_type == "error":
+                        error = event.get("error") or {}
+                        raise AIProviderError(str(error.get("message") or "Anthropic API 返回错误"))
+        except requests.RequestException as exc:
+            raise AIProviderError(f"AI API 请求失败：{exc}") from exc
+
+
+def create_provider(config: AIProviderConfig) -> AIProvider:
+    provider_type = config.provider_type
+    if provider_type == "openai_compatible":
+        return OpenAICompatibleProvider(config)
+    if provider_type == "anthropic":
+        return AnthropicProvider(config)
+    if provider_type == "xai":
+        return XAIProvider(config)
+    raise AIProviderError(f"不支持的 Provider 类型：{provider_type}")
+
+
+def _safe_http_error(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+        message = payload.get("error", {}).get("message") if isinstance(payload.get("error"), dict) else payload.get("error")
+        if message:
+            return f"AI API 返回错误 {response.status_code}：{message}"
+    except ValueError:
+        pass
+    text = response.text[:500] if response.text else ""
+    return f"AI API 返回错误 {response.status_code}：{text}"

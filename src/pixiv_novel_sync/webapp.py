@@ -1538,6 +1538,9 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             return jsonify({"error": "unauthorized"}), 401
         return redirect("/api/auth/login")
 
+    from .ai_web import register_ai_routes
+    register_ai_routes(app, settings_manager.load(env_path=env_path))
+
     @app.route("/api/auth/login", methods=["GET", "POST"])
     def auth_login():
         token = settings_manager.load(env_path=env_path).dashboard_token
