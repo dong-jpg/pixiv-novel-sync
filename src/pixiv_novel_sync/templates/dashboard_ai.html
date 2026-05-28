@@ -14,9 +14,9 @@
     </div>
   </div>
 
-  <div class="flex flex-wrap gap-2 mb-5">
+  <div class="flex gap-2 mb-5 overflow-x-auto pb-1 scrollbar-thin">
     <button v-for="tab in tabs" :key="tab.id" @click="activeTab = tab.id"
-            class="px-4 py-2 text-sm font-medium rounded-lg transition-colors"
+            class="px-4 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap flex-shrink-0"
             :class="activeTab === tab.id ? 'bg-brand-500 text-white shadow-sm' : 'bg-white text-gray-600 border border-gray-100 hover:bg-gray-50'">
       {{ tab.name }}
     </button>
@@ -25,6 +25,213 @@
   <div v-if="message" class="mb-4 px-4 py-3 rounded-lg text-sm" :class="messageType === 'error' ? 'bg-red-50 text-red-700 border border-red-100' : 'bg-green-50 text-green-700 border border-green-100'">
     {{ message }}
   </div>
+
+  <!-- ═══ 写作项目 ═══ -->
+  <section v-show="activeTab === 'projects'">
+    <!-- 项目列表视图 -->
+    <div v-if="projectView === 'list'" class="space-y-4">
+      <div class="flex items-center justify-between">
+        <h2 class="text-lg font-bold text-gray-900">写作项目</h2>
+        <button @click="showCreateProject = !showCreateProject" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">新建项目</button>
+      </div>
+      <div v-if="showCreateProject" class="bg-white rounded-xl border border-gray-100 shadow-sm p-4 space-y-3">
+        <input v-model="newProjectForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="项目名称">
+        <textarea v-model="newProjectForm.description" rows="2" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="项目描述（可选）"></textarea>
+        <div class="flex gap-2">
+          <button @click="createProject" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">创建</button>
+          <button @click="showCreateProject = false" class="px-4 py-2 bg-gray-100 rounded-lg text-sm">取消</button>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div v-for="p in projectList" :key="p.id" class="bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:shadow-md transition-shadow cursor-pointer" @click="openProject(p)">
+          <div class="font-bold text-gray-900">{{ p.name }}</div>
+          <div v-if="p.description" class="text-xs text-pixiv-gray mt-1 line-clamp-2">{{ p.description }}</div>
+          <div class="flex items-center gap-3 mt-3 text-xs text-pixiv-gray">
+            <span>{{ p.chapter_count || 0 }} 章</span>
+            <span>{{ Math.round((p.total_words || 0) / 1000) }}k 字</span>
+          </div>
+          <div class="flex gap-2 mt-3" @click.stop>
+            <button @click="deleteProject(p.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
+          </div>
+        </div>
+      </div>
+      <p v-if="!projectList.length" class="text-sm text-pixiv-gray text-center py-8">暂无项目，点击「新建项目」开始创作</p>
+    </div>
+
+    <!-- 项目详情视图 -->
+    <div v-else-if="projectView === 'detail'" class="space-y-4">
+      <div class="flex items-center gap-2 text-sm text-pixiv-gray mb-2 cursor-pointer" @click="projectView = 'list'">
+        <span class="hover:text-brand-500">写作项目</span> <span>/</span> <span class="text-gray-900 font-medium">{{ currentProject?.name }}</span>
+      </div>
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <div class="lg:col-span-2 space-y-4">
+          <!-- 章节列表 -->
+          <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="font-bold text-gray-900">章节</h3>
+              <button @click="createChapter" class="px-3 py-1.5 bg-brand-500 text-white rounded-lg text-xs">新建章节</button>
+            </div>
+            <div class="space-y-2">
+              <div v-for="ch in chapters" :key="ch.id" class="flex items-center justify-between border border-gray-100 rounded-lg p-3 hover:bg-gray-50 cursor-pointer" @click="openChapter(ch)">
+                <div>
+                  <span class="text-xs text-pixiv-gray mr-2">第{{ ch.chapter_number }}章</span>
+                  <span class="text-sm font-medium text-gray-900">{{ ch.title || '未命名' }}</span>
+                </div>
+                <div class="flex items-center gap-3">
+                  <span class="text-xs text-pixiv-gray">{{ ch.word_count }} 字</span>
+                  <span class="text-xs px-2 py-0.5 rounded" :class="ch.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'">{{ ch.status === 'completed' ? '完成' : '草稿' }}</span>
+                  <button @click.stop="deleteChapter(ch.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
+                </div>
+              </div>
+            </div>
+            <p v-if="!chapters.length" class="text-sm text-pixiv-gray text-center py-4">暂无章节</p>
+          </div>
+          <!-- 伏笔面板 -->
+          <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="font-bold text-gray-900">伏笔追踪</h3>
+              <button @click="showForeshadowForm = !showForeshadowForm" class="text-xs px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg">添加伏笔</button>
+            </div>
+            <div class="flex gap-2 mb-3 flex-wrap">
+              <button v-for="f in ['all','pending','approaching','resolved']" :key="f" @click="foreshadowFilter = f"
+                class="text-xs px-2 py-1 rounded" :class="foreshadowFilter === f ? 'bg-brand-500 text-white' : 'bg-gray-100 text-gray-600'">
+                {{ {all:'全部',pending:'待回收',approaching:'即将到期',resolved:'已回收'}[f] }}
+              </button>
+            </div>
+            <div v-if="showForeshadowForm" class="border border-amber-100 bg-amber-50 rounded-lg p-3 mb-3 space-y-2">
+              <input v-model="newForeshadow.description" class="w-full px-3 py-2 border border-amber-200 rounded-lg text-sm" placeholder="伏笔描述">
+              <div class="grid grid-cols-3 gap-2">
+                <input type="number" v-model.number="newForeshadow.planted_chapter" class="px-2 py-1.5 border border-amber-200 rounded text-xs" placeholder="埋设章节">
+                <input type="number" v-model.number="newForeshadow.target_resolve_chapter" class="px-2 py-1.5 border border-amber-200 rounded text-xs" placeholder="目标回收章节">
+                <select v-model="newForeshadow.importance" class="px-2 py-1.5 border border-amber-200 rounded text-xs">
+                  <option value="high">高</option><option value="normal">中</option><option value="low">低</option>
+                </select>
+              </div>
+              <button @click="addForeshadow" class="px-3 py-1.5 bg-amber-500 text-white rounded text-xs">保存</button>
+            </div>
+            <div class="space-y-2">
+              <div v-for="fs in filteredForeshadows" :key="fs.id" class="border rounded-lg p-2 text-sm" :class="fs.status === 'resolved' ? 'border-green-200 bg-green-50' : (fs.target_resolve_chapter && fs.target_resolve_chapter <= (chapters.length || 0) ? 'border-red-200 bg-red-50' : 'border-gray-100')">
+                <div class="flex items-center justify-between">
+                  <span>{{ fs.description }}</span>
+                  <div class="flex gap-1">
+                    <button v-if="fs.status === 'pending'" @click="resolveForeshadow(fs.id)" class="text-xs px-2 py-0.5 rounded bg-green-100 text-green-700">标记回收</button>
+                    <button @click="deleteForeshadow(fs.id)" class="text-xs px-2 py-0.5 rounded bg-red-50 text-red-600">删除</button>
+                  </div>
+                </div>
+                <div class="text-xs text-pixiv-gray mt-1">
+                  <span v-if="fs.planted_chapter">第{{ fs.planted_chapter }}章埋设</span>
+                  <span v-if="fs.target_resolve_chapter"> · 目标第{{ fs.target_resolve_chapter }}章回收</span>
+                  <span class="ml-2 px-1.5 py-0.5 rounded" :class="{'bg-red-100 text-red-700': fs.importance === 'high', 'bg-gray-100': fs.importance === 'normal', 'bg-blue-50 text-blue-600': fs.importance === 'low'}">{{ fs.importance }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- 右侧：状态记忆 + 搜索 -->
+        <div class="space-y-4">
+          <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4 space-y-3">
+            <h3 class="font-bold text-gray-900 text-sm">项目状态记忆</h3>
+            <div v-for="(label, key) in {character_state:'角色状态', plot_progress:'剧情进展', world_state:'世界观'}" :key="key">
+              <label class="block text-xs font-medium text-pixiv-gray mb-1">{{ label }}</label>
+              <textarea v-model="projectStates[key]" rows="4" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" :placeholder="'记录' + label + '...'"></textarea>
+            </div>
+            <button @click="saveProjectStates" class="w-full px-3 py-1.5 bg-brand-500 text-white rounded-lg text-xs">保存状态</button>
+          </div>
+          <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4 space-y-3">
+            <h3 class="font-bold text-gray-900 text-sm">语义搜索</h3>
+            <div class="flex gap-2">
+              <input v-model="searchQuery" class="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="搜索历史片段..." @keyup.enter="searchProject">
+              <button @click="searchProject" class="px-3 py-2 bg-gray-100 rounded-lg text-xs">搜索</button>
+            </div>
+            <div v-if="searchResults.length" class="space-y-2 max-h-48 overflow-auto">
+              <div v-for="r in searchResults" :key="r.content" class="border border-gray-100 rounded p-2 text-xs">
+                <div class="flex items-center justify-between text-pixiv-gray mb-1">
+                  <span>第{{ r.chapter_number }}章 · {{ r.entry_type }}</span>
+                  <span>{{ (r.score * 100).toFixed(0) }}%</span>
+                </div>
+                <div class="text-gray-700">{{ r.content.substring(0, 150) }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 章节编辑视图 -->
+    <div v-else-if="projectView === 'chapter'" class="space-y-4">
+      <div class="flex items-center gap-2 text-sm text-pixiv-gray mb-2">
+        <span class="cursor-pointer hover:text-brand-500" @click="projectView = 'list'">写作项目</span>
+        <span>/</span>
+        <span class="cursor-pointer hover:text-brand-500" @click="projectView = 'detail'">{{ currentProject?.name }}</span>
+        <span>/</span>
+        <span class="text-gray-900 font-medium">第{{ currentChapter?.chapter_number }}章</span>
+      </div>
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <div class="lg:col-span-2 space-y-4">
+          <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
+            <input v-model="chapterEditForm.title" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-bold" placeholder="章节标题">
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">章节大纲（续写时自动引用）</label>
+              <textarea v-model="chapterEditForm.outline" rows="4" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs" placeholder="本章大纲/构思..."></textarea>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">正文内容</label>
+              <textarea v-model="chapterEditForm.content" rows="20" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif" placeholder="章节正文..."></textarea>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button @click="saveCurrentChapter" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">保存章节</button>
+              <button @click="startChapterContinue" :disabled="streaming" class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm disabled:opacity-50">{{ streaming ? '续写中...' : 'AI 续写' }}</button>
+              <button @click="startChapterPlan" :disabled="streaming" class="px-4 py-2 bg-amber-500 text-white rounded-lg text-sm disabled:opacity-50">生成构思</button>
+              <button @click="autoUpdateState" :disabled="streaming" class="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm disabled:opacity-50">更新状态</button>
+              <button @click="appendOutput" v-if="streamOutput && !streaming" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">追加到正文</button>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-medium text-pixiv-gray mb-1.5">续写 Agent</label>
+                <select v-model.number="chapterContinueAgent" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+                  <option :value="0">请选择</option>
+                  <option v-for="a in continueAgents" :key="a.id" :value="a.id">{{ a.name }}</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-pixiv-gray mb-1.5">续写指令</label>
+                <input v-model="chapterInstruction" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="可选指令...">
+              </div>
+            </div>
+          </div>
+          <!-- 摘要和关键事件 -->
+          <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4 space-y-3">
+            <h3 class="font-bold text-gray-900 text-sm">章节元数据</h3>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1">摘要</label>
+              <textarea v-model="chapterEditForm.summary" rows="3" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="本章摘要（用于后续章节的上下文）"></textarea>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1">关键事件（每行一个）</label>
+              <textarea v-model="chapterKeyEventsText" rows="3" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="事件1&#10;事件2"></textarea>
+            </div>
+            <div class="flex gap-2">
+              <button @click="saveCurrentChapter" class="px-3 py-1.5 bg-brand-500 text-white rounded text-xs">保存</button>
+              <button @click="indexChapter" class="px-3 py-1.5 bg-gray-100 rounded text-xs">索引到检索库</button>
+            </div>
+          </div>
+        </div>
+        <!-- 右侧输出面板 + 伏笔提醒 -->
+        <div class="space-y-4">
+          <output-panel title="AI 输出" :text="streamOutput" :job-id="currentJobId" :streaming="streaming" :show-detect="true" @save="saveDraft('章节续写', streamOutput)" @detect="detectAITells"></output-panel>
+          <div v-if="chapterForeshadowAlerts.length" class="bg-amber-50 border border-amber-200 rounded-xl p-4">
+            <h3 class="font-bold text-amber-800 text-sm mb-2">伏笔提醒</h3>
+            <div v-for="fs in chapterForeshadowAlerts" :key="fs.id" class="text-xs text-amber-700 mb-1">
+              <span class="font-medium" :class="fs.target_resolve_chapter < currentChapter?.chapter_number ? 'text-red-600' : ''">
+                {{ fs.target_resolve_chapter < currentChapter?.chapter_number ? '[超期]' : '[即将到期]' }}
+              </span>
+              {{ fs.description }}（目标第{{ fs.target_resolve_chapter }}章）
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
 
   <section v-show="activeTab === 'continue'" class="grid grid-cols-1 lg:grid-cols-3 gap-5">
     <div class="lg:col-span-2 bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
@@ -693,12 +900,13 @@ window.initVueApp({
   setup() {
     const { ref, reactive, computed, onMounted } = Vue;
     const tabs = [
+      { id: 'projects', name: '写作项目' },
       { id: 'continue', name: '续写' }, { id: 'rewrite', name: '改写' }, { id: 'audit', name: '内容审计' },
       { id: 'distill', name: '蒸馏' }, { id: 'drafts', name: '草稿' }, { id: 'jobs', name: '任务历史' },
       { id: 'profiles', name: '档案' }, { id: 'prompts', name: 'Prompt 模板' },
       { id: 'agents', name: 'Agent 设置' }, { id: 'providers', name: 'API 设置' }
     ];
-    const activeTab = ref('continue');
+    const activeTab = ref('projects');
     const providers = ref([]);
     const agents = ref([]);
     const drafts = ref([]);
@@ -716,6 +924,40 @@ window.initVueApp({
     const streaming = ref(false);
     const streamOutput = ref('');
     const currentJobId = ref('');
+
+    // ── 写作项目状态 ──────────────────────────────────────────
+    const projectView = ref('list');
+    const projectList = ref([]);
+    const currentProject = ref(null);
+    const chapters = ref([]);
+    const currentChapter = ref(null);
+    const foreshadows = ref([]);
+    const foreshadowFilter = ref('all');
+    const projectStates = reactive({ character_state: '', plot_progress: '', world_state: '' });
+    const showCreateProject = ref(false);
+    const showForeshadowForm = ref(false);
+    const newProjectForm = reactive({ name: '', description: '' });
+    const newForeshadow = reactive({ description: '', planted_chapter: null, target_resolve_chapter: null, importance: 'normal' });
+    const chapterEditForm = reactive({ title: '', content: '', outline: '', summary: '' });
+    const chapterKeyEventsText = ref('');
+    const chapterContinueAgent = ref(0);
+    const chapterInstruction = ref('');
+    const searchQuery = ref('');
+    const searchResults = ref([]);
+
+    const filteredForeshadows = computed(() => {
+      if (foreshadowFilter.value === 'all') return foreshadows.value;
+      if (foreshadowFilter.value === 'approaching') {
+        const cn = chapters.value.length;
+        return foreshadows.value.filter(f => f.status === 'pending' && f.target_resolve_chapter && f.target_resolve_chapter <= cn + 2);
+      }
+      return foreshadows.value.filter(f => f.status === foreshadowFilter.value);
+    });
+    const chapterForeshadowAlerts = computed(() => {
+      if (!currentChapter.value) return [];
+      const cn = currentChapter.value.chapter_number;
+      return foreshadows.value.filter(f => f.status === 'pending' && f.target_resolve_chapter && f.target_resolve_chapter <= cn + 2);
+    });
 
     const continueForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', context_chars: 8000, output_chars: 3000, instruction: '', smart_context: true, style_profile_id: 0, novel_profile_id: 0, plan_agent_id: 0, plan_text: '' });
     const rewriteForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', rewrite_type: 'polish', instruction: '' });
@@ -965,10 +1207,143 @@ window.initVueApp({
       } catch (e) { showMessage(e.message, 'error'); }
     }
 
+    // ── 写作项目函数 ──────────────────────────────────────────
+    async function loadProjects() { try { projectList.value = await api('/api/dashboard/ai/projects'); } catch {} }
+    async function createProject() {
+      if (!newProjectForm.name.trim()) { showMessage('项目名称不能为空', 'error'); return; }
+      try { await api('/api/dashboard/ai/projects', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(newProjectForm) }); Object.assign(newProjectForm, { name: '', description: '' }); showCreateProject.value = false; await loadProjects(); showMessage('项目已创建'); }
+      catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function deleteProject(id) {
+      if (!confirm('确认删除此项目及其所有章节？')) return;
+      try { await api('/api/dashboard/ai/projects/' + id, { method: 'DELETE' }); await loadProjects(); } catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function openProject(p) {
+      currentProject.value = p;
+      projectView.value = 'detail';
+      await Promise.all([loadChapters(p.id), loadForeshadows(p.id), loadProjectStates(p.id)]);
+    }
+    async function loadChapters(pid) { try { chapters.value = await api('/api/dashboard/ai/projects/' + pid + '/chapters'); } catch { chapters.value = []; } }
+    async function loadForeshadows(pid) { try { foreshadows.value = await api('/api/dashboard/ai/projects/' + pid + '/foreshadows'); } catch { foreshadows.value = []; } }
+    async function loadProjectStates(pid) {
+      try {
+        const states = await api('/api/dashboard/ai/projects/' + pid + '/states');
+        projectStates.character_state = states.character_state || '';
+        projectStates.plot_progress = states.plot_progress || '';
+        projectStates.world_state = states.world_state || '';
+      } catch { Object.assign(projectStates, { character_state: '', plot_progress: '', world_state: '' }); }
+    }
+    async function saveProjectStates() {
+      const pid = currentProject.value?.id;
+      if (!pid) return;
+      try {
+        for (const [key, val] of Object.entries(projectStates)) {
+          if (val.trim()) await api('/api/dashboard/ai/projects/' + pid + '/states/' + key, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ content: val }) });
+        }
+        showMessage('状态已保存');
+      } catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function createChapter() {
+      const pid = currentProject.value?.id;
+      if (!pid) return;
+      try { await api('/api/dashboard/ai/chapters', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ project_id: pid }) }); await loadChapters(pid); showMessage('章节已创建'); }
+      catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function deleteChapter(id) {
+      if (!confirm('确认删除此章节？')) return;
+      try { await api('/api/dashboard/ai/chapters/' + id, { method: 'DELETE' }); await loadChapters(currentProject.value?.id); }
+      catch (e) { showMessage(e.message, 'error'); }
+    }
+    function openChapter(ch) {
+      currentChapter.value = ch;
+      Object.assign(chapterEditForm, { title: ch.title || '', content: ch.content || '', outline: ch.outline || '', summary: ch.summary || '' });
+      chapterKeyEventsText.value = (ch.key_events || []).join('\n');
+      projectView.value = 'chapter';
+    }
+    async function saveCurrentChapter() {
+      if (!currentChapter.value) return;
+      const keyEvents = chapterKeyEventsText.value.split('\n').map(s => s.trim()).filter(Boolean);
+      try {
+        await api('/api/dashboard/ai/chapters/' + currentChapter.value.id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ ...chapterEditForm, key_events: keyEvents }) });
+        currentChapter.value = { ...currentChapter.value, ...chapterEditForm, key_events: keyEvents, word_count: (chapterEditForm.content || '').length };
+        showMessage('章节已保存');
+      } catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function startChapterContinue() {
+      if (!chapterContinueAgent.value) { showMessage('请选择续写 Agent', 'error'); return; }
+      await saveCurrentChapter();
+      const payload = { agent_id: chapterContinueAgent.value, project_id: currentProject.value?.id, chapter_id: currentChapter.value?.id, instruction: chapterInstruction.value };
+      startStream('/api/dashboard/ai/chapters/continue/stream', payload);
+    }
+    async function startChapterPlan() {
+      if (!chapterContinueAgent.value) { showMessage('请选择 Agent', 'error'); return; }
+      streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
+      const payload = { agent_id: chapterContinueAgent.value, source_type: 'manual', text: chapterEditForm.content || '(空)', instruction: chapterInstruction.value, context_chars: 8000 };
+      try {
+        const res = await fetch('/api/dashboard/ai/plan/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        if (!res.ok || !res.body) throw new Error('构思请求失败');
+        await readSSE(res);
+        chapterEditForm.outline = streamOutput.value;
+        showMessage('构思已生成并填入大纲');
+      } catch (e) { showMessage(e.message, 'error'); }
+      finally { streaming.value = false; }
+    }
+    async function autoUpdateState() {
+      if (!chapterContinueAgent.value) { showMessage('请选择 Agent', 'error'); return; }
+      if (!chapterEditForm.content.trim()) { showMessage('章节内容为空', 'error'); return; }
+      await saveCurrentChapter();
+      const payload = { agent_id: chapterContinueAgent.value, chapter_id: currentChapter.value?.id };
+      streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
+      try {
+        const res = await fetch('/api/dashboard/ai/projects/' + currentProject.value?.id + '/states/auto-update/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        if (!res.ok || !res.body) throw new Error('状态更新请求失败');
+        await readSSE(res);
+        await loadProjectStates(currentProject.value?.id);
+        await loadForeshadows(currentProject.value?.id);
+        showMessage('项目状态已自动更新');
+      } catch (e) { showMessage(e.message, 'error'); }
+      finally { streaming.value = false; }
+    }
+    function appendOutput() {
+      if (!streamOutput.value) return;
+      chapterEditForm.content = (chapterEditForm.content || '') + '\n' + streamOutput.value;
+      streamOutput.value = '';
+      showMessage('已追加到正文');
+    }
+    async function addForeshadow() {
+      if (!newForeshadow.description.trim()) { showMessage('伏笔描述不能为空', 'error'); return; }
+      try {
+        await api('/api/dashboard/ai/foreshadows', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ ...newForeshadow, project_id: currentProject.value?.id }) });
+        Object.assign(newForeshadow, { description: '', planted_chapter: null, target_resolve_chapter: null, importance: 'normal' });
+        showForeshadowForm.value = false;
+        await loadForeshadows(currentProject.value?.id);
+      } catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function resolveForeshadow(id) {
+      try { await api('/api/dashboard/ai/foreshadows/' + id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ status: 'resolved', resolved_chapter: currentChapter.value?.chapter_number || chapters.value.length }) }); await loadForeshadows(currentProject.value?.id); }
+      catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function deleteForeshadow(id) {
+      if (!confirm('确认删除此伏笔？')) return;
+      try { await api('/api/dashboard/ai/foreshadows/' + id, { method: 'DELETE' }); await loadForeshadows(currentProject.value?.id); }
+      catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function searchProject() {
+      if (!searchQuery.value.trim() || !currentProject.value) return;
+      try { searchResults.value = await api('/api/dashboard/ai/projects/' + currentProject.value.id + '/search?q=' + encodeURIComponent(searchQuery.value)); }
+      catch (e) { showMessage(e.message, 'error'); searchResults.value = []; }
+    }
+    async function indexChapter() {
+      if (!currentChapter.value || !currentProject.value) return;
+      await saveCurrentChapter();
+      try { await api('/api/dashboard/ai/projects/' + currentProject.value.id + '/chapters/' + currentChapter.value.id + '/index', { method: 'POST' }); showMessage('已索引到检索库'); }
+      catch (e) { showMessage(e.message, 'error'); }
+    }
+
     onMounted(async () => {
-      await Promise.all([loadProviders(), loadAgents(), loadDrafts(), loadStyleProfiles(), loadNovelProfiles(), loadPromptTemplates()]);
+      await Promise.all([loadProviders(), loadAgents(), loadDrafts(), loadStyleProfiles(), loadNovelProfiles(), loadPromptTemplates(), loadProjects()]);
     });
-    return { tabs, activeTab, providers, agents, drafts, draftHistory, jobs, selectedJob, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, jobFilter, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, planAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, loadJobs, startAudit, startPlan, detectAITells, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents };
+    return { tabs, activeTab, providers, agents, drafts, draftHistory, jobs, selectedJob, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, jobFilter, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, planAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, loadJobs, startAudit, startPlan, detectAITells, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents, projectView, projectList, currentProject, chapters, currentChapter, foreshadows, foreshadowFilter, filteredForeshadows, chapterForeshadowAlerts, projectStates, showCreateProject, showForeshadowForm, newProjectForm, newForeshadow, chapterEditForm, chapterKeyEventsText, chapterContinueAgent, chapterInstruction, searchQuery, searchResults, loadProjects, createProject, deleteProject, openProject, createChapter, deleteChapter, openChapter, saveCurrentChapter, startChapterContinue, startChapterPlan, autoUpdateState, appendOutput, addForeshadow, resolveForeshadow, deleteForeshadow, searchProject, indexChapter, saveProjectStates };
   }
 });
 </script>
