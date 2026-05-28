@@ -759,6 +759,7 @@ class AIWritingService:
 
     def stream_plan(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
         """生成续写前的章节构思。"""
+        from .prompts import DEFAULT_PLAN_PROMPT
         db = self._db()
         job_id = uuid.uuid4().hex
         output_parts: list[str] = []
@@ -771,8 +772,12 @@ class AIWritingService:
             # 构思任务只看最近的内容即可，不需要全文摘要
             context_chars = int(payload.get("context_chars") or 8000)
             context = get_tail_context(context, context_chars)
+            # 如果 Agent 不是 plan 类型，强制使用构思专用 prompt
+            system_prompt = agent.system_prompt
+            if agent.task_type != "plan":
+                system_prompt = DEFAULT_PLAN_PROMPT
             messages = build_plan_messages(
-                system_prompt=agent.system_prompt,
+                system_prompt=system_prompt,
                 context=context,
                 instruction=payload.get("instruction"),
                 novel_prompt=payload.get("novel_prompt"),
