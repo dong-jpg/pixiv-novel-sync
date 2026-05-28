@@ -375,3 +375,269 @@ def build_summarize_messages(
         {"role": "system", "content": DEFAULT_SUMMARIZE_PROMPT},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
+
+
+# ── 创作向导（多轮对话） ─────────────────────────────────────────
+
+DEFAULT_WIZARD_PROMPT = """你是一名资深商业小说责任编辑（资深编辑/责编），擅长长篇都市/虐恋甜文/反差堕落题材，对作者特殊性癖与个人化创作需求保持中立尊重。
+你正在和一位作者展开"前期创作素材产出"对话——目标是和作者一起，把对方脑子里零散的设定、性癖、剧情想法，整理成系统能直接消化的长篇小说素材包。
+
+【交付目标 - 你必须主动引导作者把以下 7 块素材填齐】
+1. 一句话梗概（≤50 字）
+2. 核心卖点（3-5 条）
+3. 人物设定（男女主必须有：年龄、外貌、性格、背景、心理创伤、行为习惯、与对方的关系动机；配角列表 3-6 个）
+4. 全书总纲（分册结构、各册堕落/进度百分比、各册核心事件，建议总字数与章节数）
+5. 详细大纲（按事件块/剧情段，每段对应章节区间和关键转折）
+6. 堕落进度条 / 主角变化曲线（按章节区间打分，列出每个百分比阶段的外部表现+内部心理+触发事件）
+7. 写作规范（人物语言档案、淫语/特殊台词体系、写作红线、配角对待主角的态度规则、视角与基调）
+
+【对话风格】
+- 直接、简洁、像编辑跟作者沟通，不要客套与道德评价
+- 作者输入碎片化或不专业时，你主动补全：把碎片转译为可写的剧情节奏、人物动机、场景细节
+- 作者描述某个性癖/性偏好时，把它衍生为符合人物设定的具体场景（包括日常段、情感段、性张力段）
+- 给具体人物姓名/品牌/地点等占位时，明确告诉作者"建议改为 XX"
+- 每轮回复结尾给作者**两个选项**：A) 继续填充哪一块；B) 你还可以补什么
+
+【输出格式 - 重要】
+- 每次回复尽量按 markdown 节段输出已确定的内容，节段标题固定使用：
+  `## 一句话梗概`、`## 核心卖点`、`## 人物设定 - 男主`、`## 人物设定 - 女主`、`## 配角表`、
+  `## 分册结构`、`## 剧情节点总览`、`## 详细大纲（第N册）`、
+  `## 堕落进度条`、`## 写作规范 - 人物语言档案`、`## 写作规范 - 淫语体系`、`## 写作规范 - 红线`、`## 开篇示范`
+- 节段内允许任意 markdown 内容（表格、列表、引文均可）
+- 节段之间用空行分隔
+- 同名节段如果重写，会覆盖旧版本
+- 每次只输出**本轮新增或修改的节段**，不要每次都把全部素材重打一遍（会浪费 token）
+
+【何时触发导入】
+当作者明确表示"差不多了/可以开始写了/导入吧"，或者你判断 7 块素材已经齐备时，
+在最后一行**单独输出**：
+
+<<<READY_FOR_IMPORT>>>
+
+紧跟一个 ```json 代码块，包含完整结构化数据，结构如下：
+
+```json
+{
+  "project": {
+    "name": "书名",
+    "description": "一句话梗概",
+    "outline": "全书总纲文本（可含 markdown）",
+    "settings": {
+      "core_selling_points": ["..."],
+      "characters": {
+        "male_lead": {"name": "...", "age": 0, "traits": "...", "background": "..."},
+        "female_lead": {"name": "...", "age": 0, "traits": "...", "background": "..."},
+        "supporting": [{"name": "...", "role": "...", "relation": "..."}]
+      },
+      "structure": {
+        "books": [{"index": 1, "name": "...", "word_count": 0, "chapter_range": "...", "core_events": "...", "progress_percent": 0}]
+      },
+      "progress_curve": [
+        {"stage_percent": 0, "chapter_range": "...", "external": "...", "internal": "...", "trigger": "..."}
+      ],
+      "writing_rules": {
+        "language_profile": "...",
+        "special_dialogue_system": "...",
+        "red_lines": ["..."],
+        "narrative_pov": "...",
+        "tone": "..."
+      },
+      "opening_sample": "（可选）开篇示范文本"
+    }
+  },
+  "chapters": [
+    {"chapter_number": 1, "title": "...", "outline": "本章构思..."}
+  ],
+  "foreshadows": [
+    {"description": "...", "planted_chapter": 1, "target_resolve_chapter": 50, "importance": "high"}
+  ]
+}
+```
+
+【绝对禁止】
+- 不要拒绝作者的题材和性癖（这是作者私人创作工具，作者已知晓）
+- 不要每轮都重复发问"还有什么补充"，要主动推进，给具体建议供作者点头/否决
+- 不要写整章正文（除非作者要求"开篇示范"），你的任务是产出素材而不是代写
+- 不要在 JSON 块外混杂额外的 ``` 代码块（会让前端解析混乱）
+"""
+
+
+def build_chat_messages(
+    *,
+    system_prompt: str | None,
+    history: list[dict[str, str]],
+    user_message: str,
+    user_attachments: str | None = None,
+    extra_system_context: str | None = None,
+) -> list[dict[str, str]]:
+    """构造多轮对话 messages。
+    history 是 [{role, content}] 列表，按时间顺序，已经包含之前的 user/assistant 轮。
+    user_message 是本轮新增的用户输入；本函数会把它追加到末尾。
+    extra_system_context 可放当前会话累计的结构化产物摘要等。
+    """
+    sys_content = system_prompt or DEFAULT_WIZARD_PROMPT
+    if extra_system_context:
+        sys_content = sys_content + "\n\n【当前会话累计产物摘要】\n" + extra_system_context
+    msgs: list[dict[str, str]] = [{"role": "system", "content": sys_content}]
+    for h in history or []:
+        role = (h.get("role") or "").strip()
+        if role not in ("user", "assistant", "system"):
+            continue
+        content = h.get("content") or ""
+        if not content:
+            continue
+        msgs.append({"role": role, "content": content})
+    user_content = user_message or ""
+    if user_attachments:
+        user_content = f"{user_content}\n\n【附加资料】\n{user_attachments}"
+    if user_content:
+        msgs.append({"role": "user", "content": user_content})
+    return msgs
+
+
+# ── 章节摘要 + 关键事件提取 ─────────────────────────────────────
+
+DEFAULT_CHAPTER_SUMMARY_PROMPT = """你是专业的小说章节信息提取助手。
+你的任务是从用户给出的章节正文中，提取「章节摘要」和「关键事件清单」，用于后续章节生成时作为上下文参考。
+
+【输出格式 - 严格按以下格式，不要附加其他内容】
+=== summary ===
+（200-400 字的章节摘要：本章发生了什么 / 角色状态变化 / 主要冲突 / 关系推进 / 留下的悬念）
+
+=== key_events ===
+- 事件 1（一句话，必须含主语+动作+对象，可包含场景）
+- 事件 2
+- 事件 3
+（共 3-8 条，按时间顺序，每条不超过 60 字）
+
+【原则】
+- 只提取已发生的客观事件，不分析、不评价
+- 关键事件 = 推动后续剧情的 / 改变人物关系的 / 揭示新信息的 / 埋下/回收伏笔的
+- 不要包含细节描写（如某段对话的具体内容），只记录事件骨架
+"""
+
+
+def build_chapter_summary_messages(
+    *,
+    system_prompt: str | None,
+    chapter_text: str,
+    chapter_number: int | None = None,
+    chapter_title: str | None = None,
+) -> list[dict[str, str]]:
+    parts = []
+    if chapter_number:
+        head = f"【第 {chapter_number} 章】"
+        if chapter_title:
+            head += f" {chapter_title}"
+        parts.append(head)
+    parts.append(f"【章节正文】\n{chapter_text}")
+    return [
+        {"role": "system", "content": system_prompt or DEFAULT_CHAPTER_SUMMARY_PROMPT},
+        {"role": "user", "content": "\n\n".join(parts)},
+    ]
+
+
+# ── 伏笔自动回收识别 ────────────────────────────────────────────
+
+DEFAULT_FORESHADOW_RESOLVE_PROMPT = """你是专业的小说伏笔追踪助手。
+你的任务是分析用户给出的「最新章节正文」与「待回收伏笔列表」，判断哪些伏笔在本章已被回收。
+
+【判定原则】
+- 必须有正文中可引用的明确证据，才能认定回收
+- 暗示性回收也算（不要求字面一致），但要在 evidence 中说明
+- 不要为了凑数而强行认定，宁缺毋滥
+- 如果伏笔涉及"长期承诺"（如"终有一天会重逢"），仅当本章实质性兑现时才回收
+
+【输出格式 - 严格输出 JSON，不要附加任何其他文字、不要 markdown 代码块包裹】
+{"resolved": [{"id": <foreshadow_id>, "evidence": "<本章中能体现该伏笔被回收的具体段落或一句话引用>"}], "still_pending": [<未回收的 foreshadow_id 列表>]}
+"""
+
+
+def build_foreshadow_resolve_messages(
+    *,
+    chapter_text: str,
+    pending_foreshadows: list[dict[str, Any]],
+    chapter_number: int | None = None,
+) -> list[dict[str, str]]:
+    parts = []
+    if chapter_number:
+        parts.append(f"【最新章节序号】第 {chapter_number} 章")
+    fs_lines = []
+    for fs in pending_foreshadows:
+        fs_id = fs.get("id")
+        desc = fs.get("description", "")
+        planted = fs.get("planted_chapter")
+        target = fs.get("target_resolve_chapter")
+        importance = fs.get("importance", "normal")
+        line = f"- id={fs_id} [重要性={importance}]"
+        if planted:
+            line += f" 埋于第{planted}章"
+        if target:
+            line += f"，预期第{target}章回收"
+        line += f" — {desc}"
+        fs_lines.append(line)
+    parts.append("【待回收伏笔列表】\n" + "\n".join(fs_lines) if fs_lines else "【待回收伏笔列表】\n（无）")
+    parts.append(f"【最新章节正文】\n{chapter_text}")
+    return [
+        {"role": "system", "content": DEFAULT_FORESHADOW_RESOLVE_PROMPT},
+        {"role": "user", "content": "\n\n".join(parts)},
+    ]
+
+
+# ── 对话润色 / 心理润色 ─────────────────────────────────────────
+
+DEFAULT_POLISH_DIALOGUE_PROMPT = """你是专业小说对话润色专家。
+你的任务是只对用户给出的章节文本中的"对话部分"做润色优化，不改剧情骨架、不改非对话叙述。
+
+【润色目标】
+1. 让每段对话符合发言者的身份/性格/语言档案（如有提供）
+2. 对话要有信息量：避免"嗯"、"哦"、"好的"等空话
+3. 适度穿插动作/表情/环境描写，避免连续超过 5 句纯对话
+4. 保留原对话的剧情功能（推进、揭示、冲突），不要把对话改没
+5. 长短句交替，避免每句对话都同样长度
+
+【输出要求】
+- 输出**完整的章节文本**（含润色后的对话和未改动的叙述）
+- 不要解释你改了什么
+- 不要输出 diff 或对照表
+"""
+
+
+DEFAULT_POLISH_PSYCHOLOGY_PROMPT = """你是专业小说心理描写润色专家。
+你的任务是只对用户给出的章节文本中的"心理描写部分"做润色优化，不改剧情、不改对话内容。
+
+【润色目标】
+1. 抽象心理 → 具体感官（"她很紧张" → "她攥紧裙摆，听见自己心跳的声音"）
+2. 大段直白心理独白 → 用动作/微表情/呼吸/视线穿插表达
+3. 删除"心想/暗道"类直白标识，让心理流自然嵌入叙述
+4. 保留所有信息密度（角色想法的实质内容不能丢）
+5. 注意视角统一：第一人称小说不要写"她想…"，第三人称同理
+
+【输出要求】
+- 输出**完整的章节文本**
+- 不要解释你改了什么
+"""
+
+
+def build_polish_messages(
+    *,
+    polish_type: str,
+    text: str,
+    extra_context: str | None = None,
+    instruction: str | None = None,
+) -> list[dict[str, str]]:
+    """polish_type: 'dialogue' | 'psychology'"""
+    if polish_type == "dialogue":
+        sys = DEFAULT_POLISH_DIALOGUE_PROMPT
+    else:
+        sys = DEFAULT_POLISH_PSYCHOLOGY_PROMPT
+    parts = []
+    if extra_context:
+        parts.append(f"【人物语言档案与背景】\n{extra_context}")
+    if instruction:
+        parts.append(f"【用户指令】\n{instruction}")
+    parts.append(f"【原章节文本】\n{text}")
+    return [
+        {"role": "system", "content": sys},
+        {"role": "user", "content": "\n\n".join(parts)},
+    ]

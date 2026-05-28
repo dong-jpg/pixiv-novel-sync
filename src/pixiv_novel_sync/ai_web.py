@@ -41,6 +41,12 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
                     yield sse("done", chunk.data or {})
                 elif chunk.type == "error":
                     yield sse("error", chunk.data or {"message": "AI 任务失败"})
+                elif chunk.type == "custom":
+                    # pipeline 等多步骤场景的自定义事件，event 名取自 data.event
+                    data = chunk.data or {}
+                    event_name = data.get("event") or "custom"
+                    payload = {k: v for k, v in data.items() if k != "event"}
+                    yield sse(event_name, payload)
 
         return Response(
             stream_with_context(generate()),
@@ -640,5 +646,113 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
                 raise AIServiceError("搜索关键词不能为空")
             top_k = min(int(request.args.get("top_k", 5) or 5), 20)
             return ok(service.search_project_context(project_id, query, top_k=top_k))
+        except Exception as exc:
+            return fail(exc)
+
+    # ── 创作向导多轮对话 ─────────────────────────────────────────────
+
+    @app.get("/api/dashboard/ai/chat/sessions")
+    def list_chat_sessions_api():
+        try:
+            scope = request.args.get("scope") or None
+            status = request.args.get("status") or None
+            return ok(service.list_chat_sessions(scope=scope, status=status))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/chat/sessions")
+    def create_chat_session_api():
+        try:
+            sid = service.create_chat_session(json_payload())
+            return ok({"id": sid})
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/chat/sessions/<int:session_id>")
+    def get_chat_session_api(session_id: int):
+        try:
+            return ok(service.get_chat_session(session_id, with_messages=True))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.put("/api/dashboard/ai/chat/sessions/<int:session_id>")
+    def update_chat_session_api(session_id: int):
+        try:
+            service.update_chat_session(session_id, json_payload())
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.delete("/api/dashboard/ai/chat/sessions/<int:session_id>")
+    def delete_chat_session_api(session_id: int):
+        try:
+            service.delete_chat_session(session_id)
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/chat/stream")
+    def chat_stream_api():
+        try:
+            return stream_response(service.stream_chat(json_payload()))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/chat/sessions/<int:session_id>/preview")
+    def preview_wizard_session_api(session_id: int):
+        try:
+            return ok(service.parse_wizard_session(session_id))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/chat/sessions/<int:session_id>/import-to-project")
+    def import_wizard_to_project_api(session_id: int):
+        try:
+            payload = json_payload()
+            project_id = service.import_wizard_session(
+                session_id,
+                mode=payload.get("mode") or "create",
+                target_project_id=payload.get("target_project_id"),
+                overwrite_fields=payload.get("overwrite_fields") or [],
+            )
+            return ok({"project_id": project_id})
+        except Exception as exc:
+            return fail(exc)
+
+    # ── 章节 Pipeline + 摘要/伏笔/润色/聚合面板 ──────────────────────
+
+    @app.post("/api/dashboard/ai/chapters/pipeline/stream")
+    def chapter_pipeline_stream_api():
+        try:
+            return stream_response(service.stream_chapter_pipeline(json_payload()))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/chapters/extract-summary/stream")
+    def chapter_extract_summary_stream_api():
+        try:
+            return stream_response(service.stream_extract_chapter_summary(json_payload()))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/chapters/polish/stream")
+    def chapter_polish_stream_api():
+        try:
+            return stream_response(service.stream_polish(json_payload()))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/projects/<int:project_id>/foreshadows/auto-resolve/stream")
+    def auto_resolve_foreshadows_stream_api(project_id: int):
+        try:
+            payload = {**json_payload(), "project_id": project_id}
+            return stream_response(service.stream_auto_resolve_foreshadows(payload))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/chapters/<int:chapter_id>/dashboard")
+    def chapter_dashboard_api(chapter_id: int):
+        try:
+            return ok(service.get_chapter_dashboard(chapter_id))
         except Exception as exc:
             return fail(exc)

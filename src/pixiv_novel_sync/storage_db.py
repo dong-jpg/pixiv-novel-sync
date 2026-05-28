@@ -2217,7 +2217,7 @@ class Database:
     # ══════════════════════════════════════════════════════════════
 
     def _migrate_ai_writing_tables(self) -> None:
-        """创建 AI 写作项目相关表（项目、章节、伏笔、状态记忆）。"""
+        """创建 AI 写作项目相关表（项目、章节、伏笔、状态记忆、对话向导）。"""
         self.conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS ai_writing_projects (
@@ -2244,6 +2244,7 @@ class Database:
                 outline TEXT,
                 word_count INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'draft',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(project_id, chapter_number)
@@ -2272,11 +2273,41 @@ class Database:
                 UNIQUE(project_id, state_type)
             );
 
+            CREATE TABLE IF NOT EXISTS ai_chat_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id INTEGER,
+                scope TEXT NOT NULL DEFAULT 'wizard',
+                title TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'active',
+                imported_project_id INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE INDEX IF NOT EXISTS idx_ai_chapters_project ON ai_chapters(project_id, chapter_number);
             CREATE INDEX IF NOT EXISTS idx_ai_foreshadows_project ON ai_foreshadows(project_id, status);
             CREATE INDEX IF NOT EXISTS idx_ai_project_states_project ON ai_project_states(project_id);
+            CREATE INDEX IF NOT EXISTS idx_ai_chat_sessions_scope ON ai_chat_sessions(scope, status);
+            CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_session ON ai_chat_messages(session_id);
             """
         )
+        # 给已有 ai_chapters 表补 metadata_json 列（老库迁移）
+        try:
+            cols = {row[1] for row in self.conn.execute("PRAGMA table_info(ai_chapters)").fetchall()}
+            if "metadata_json" not in cols:
+                self.conn.execute("ALTER TABLE ai_chapters ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
+        except sqlite3.OperationalError:
+            pass
 
     # ── ai_writing_projects CRUD ───────────────────────────────────
 
@@ -2434,7 +2465,7 @@ class Database:
             return int(cursor.lastrowid)
 
     def update_ai_chapter(self, chapter_id: int, data: dict[str, Any]) -> None:
-        allowed = {"title", "content", "summary", "key_events", "outline", "status"}
+        allowed = {"title", "content", "summary", "key_events", "outline", "status", "metadata"}
         fields: list[str] = []
         params: list[Any] = []
         for key in allowed:
@@ -2443,6 +2474,9 @@ class Database:
             if key == "key_events":
                 fields.append("key_events_json = ?")
                 params.append(json.dumps(data[key], ensure_ascii=False) if data[key] else None)
+            elif key == "metadata":
+                fields.append("metadata_json = ?")
+                params.append(json.dumps(data[key] or {}, ensure_ascii=False))
             elif key == "content":
                 fields.append("content = ?")
                 params.append(data[key])
@@ -2458,6 +2492,24 @@ class Database:
         with self._lock:
             self.conn.execute(f"UPDATE ai_chapters SET {', '.join(fields)} WHERE id = ?", params)
             self._commit_if_needed()
+
+    def patch_ai_chapter_metadata(self, chapter_id: int, patch: dict[str, Any]) -> dict[str, Any]:
+        """对 chapter.metadata_json 做浅合并 patch。返回合并后的完整 metadata 字典。"""
+        with self._lock:
+            row = self.conn.execute("SELECT metadata_json FROM ai_chapters WHERE id = ?", (chapter_id,)).fetchone()
+            current: dict[str, Any] = {}
+            if row and row[0]:
+                try:
+                    current = json.loads(row[0]) or {}
+                except (TypeError, ValueError):
+                    current = {}
+            current.update(patch or {})
+            self.conn.execute(
+                "UPDATE ai_chapters SET metadata_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (json.dumps(current, ensure_ascii=False), chapter_id),
+            )
+            self._commit_if_needed()
+            return current
 
     def delete_ai_chapter(self, chapter_id: int) -> None:
         with self._lock:
@@ -2481,6 +2533,14 @@ class Database:
         else:
             item["key_events"] = []
         item.pop("key_events_json", None)
+        if item.get("metadata_json"):
+            try:
+                item["metadata"] = json.loads(item["metadata_json"])
+            except (TypeError, ValueError):
+                item["metadata"] = {}
+        else:
+            item["metadata"] = {}
+        item.pop("metadata_json", None)
         return item
 
     # ── ai_foreshadows CRUD ────────────────────────────────────────
@@ -2600,3 +2660,149 @@ class Database:
                 (project_id, state_type),
             )
             self._commit_if_needed()
+
+    # ══════════════════════════════════════════════════════════════
+    # AI 对话向导 / 多轮聊天
+    # ══════════════════════════════════════════════════════════════
+
+    def list_ai_chat_sessions(self, scope: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+        sql = """SELECT s.*,
+                   (SELECT COUNT(*) FROM ai_chat_messages m WHERE m.session_id = s.id) AS message_count,
+                   (SELECT m.content FROM ai_chat_messages m WHERE m.session_id = s.id ORDER BY m.id DESC LIMIT 1) AS last_message,
+                   a.name AS agent_name
+                 FROM ai_chat_sessions s
+                 LEFT JOIN ai_agents a ON a.id = s.agent_id
+                 WHERE 1=1"""
+        params: list[Any] = []
+        if scope:
+            sql += " AND s.scope = ?"
+            params.append(scope)
+        if status:
+            sql += " AND s.status = ?"
+            params.append(status)
+        sql += " ORDER BY s.updated_at DESC"
+        rows = self.conn.execute(sql, params).fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = self._parse_json_field(item.pop("metadata_json", None), {})
+            results.append(item)
+        return results
+
+    def get_ai_chat_session(self, session_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """SELECT s.*, a.name AS agent_name
+               FROM ai_chat_sessions s LEFT JOIN ai_agents a ON a.id = s.agent_id
+               WHERE s.id = ?""",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["metadata"] = self._parse_json_field(item.pop("metadata_json", None), {})
+        return item
+
+    def create_ai_chat_session(self, data: dict[str, Any]) -> int:
+        with self._lock:
+            cursor = self.conn.execute(
+                """INSERT INTO ai_chat_sessions (agent_id, scope, title, metadata_json, status)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    data.get("agent_id"),
+                    data.get("scope") or "wizard",
+                    data.get("title"),
+                    json.dumps(data.get("metadata") or {}, ensure_ascii=False),
+                    data.get("status") or "active",
+                ),
+            )
+            self._commit_if_needed()
+            return int(cursor.lastrowid)
+
+    def update_ai_chat_session(self, session_id: int, data: dict[str, Any]) -> None:
+        allowed = {"agent_id", "title", "scope", "status", "imported_project_id", "metadata"}
+        fields: list[str] = []
+        params: list[Any] = []
+        for key in allowed:
+            if key not in data:
+                continue
+            if key == "metadata":
+                fields.append("metadata_json = ?")
+                params.append(json.dumps(data[key] or {}, ensure_ascii=False))
+            else:
+                fields.append(f"{key} = ?")
+                params.append(data[key])
+        if not fields:
+            return
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(session_id)
+        with self._lock:
+            self.conn.execute(f"UPDATE ai_chat_sessions SET {', '.join(fields)} WHERE id = ?", params)
+            self._commit_if_needed()
+
+    def patch_ai_chat_session_metadata(self, session_id: int, patch: dict[str, Any]) -> dict[str, Any]:
+        """对 session.metadata_json 做浅合并 patch。返回合并后字典。"""
+        with self._lock:
+            row = self.conn.execute("SELECT metadata_json FROM ai_chat_sessions WHERE id = ?", (session_id,)).fetchone()
+            current: dict[str, Any] = {}
+            if row and row[0]:
+                try:
+                    current = json.loads(row[0]) or {}
+                except (TypeError, ValueError):
+                    current = {}
+            current.update(patch or {})
+            self.conn.execute(
+                "UPDATE ai_chat_sessions SET metadata_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (json.dumps(current, ensure_ascii=False), session_id),
+            )
+            self._commit_if_needed()
+            return current
+
+    def delete_ai_chat_session(self, session_id: int) -> None:
+        with self._lock:
+            self.conn.execute("DELETE FROM ai_chat_messages WHERE session_id = ?", (session_id,))
+            self.conn.execute("DELETE FROM ai_chat_sessions WHERE id = ?", (session_id,))
+            self._commit_if_needed()
+
+    def list_ai_chat_messages(self, session_id: int, limit: int | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM ai_chat_messages WHERE session_id = ? ORDER BY id ASC"
+        params: list[Any] = [session_id]
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = self.conn.execute(sql, params).fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = self._parse_json_field(item.pop("metadata_json", None), {})
+            results.append(item)
+        return results
+
+    def append_ai_chat_message(self, session_id: int, role: str, content: str, metadata: dict[str, Any] | None = None) -> int:
+        with self._lock:
+            cursor = self.conn.execute(
+                """INSERT INTO ai_chat_messages (session_id, role, content, metadata_json)
+                   VALUES (?, ?, ?, ?)""",
+                (session_id, role, content, json.dumps(metadata or {}, ensure_ascii=False)),
+            )
+            self.conn.execute("UPDATE ai_chat_sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (session_id,))
+            self._commit_if_needed()
+            return int(cursor.lastrowid)
+
+    def delete_ai_chat_messages_after(self, session_id: int, message_id: int) -> int:
+        """删除指定消息（含）之后的所有消息，用于'重发'功能。返回删除条数。"""
+        with self._lock:
+            cursor = self.conn.execute(
+                "DELETE FROM ai_chat_messages WHERE session_id = ? AND id >= ?",
+                (session_id, message_id),
+            )
+            self._commit_if_needed()
+            return int(cursor.rowcount or 0)
+
+    @staticmethod
+    def _parse_json_field(value: Any, default: Any) -> Any:
+        if not value:
+            return default
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return default

@@ -15,9 +15,13 @@ from .detection import detect_ai_tells
 from .models import AIAgentConfig, AIProviderConfig, AIStreamChunk
 from .prompts import (
     build_audit_messages,
+    build_chapter_summary_messages,
+    build_chat_messages,
     build_continue_messages,
+    build_foreshadow_resolve_messages,
     build_novel_distill_messages,
     build_plan_messages,
+    build_polish_messages,
     build_rewrite_messages,
     build_style_distill_messages,
     build_summarize_messages,
@@ -312,7 +316,7 @@ class AIWritingService:
             for key in ("name", "task_type", "provider_id", "system_prompt"):
                 if not data.get(key):
                     raise AIServiceError(f"缺少 Agent 字段：{key}")
-        if data.get("task_type") not in {None, "continue", "rewrite", "distill_style", "distill_novel", "audit", "general", "plan"}:
+        if data.get("task_type") not in {None, "continue", "rewrite", "distill_style", "distill_novel", "audit", "general", "plan", "wizard", "chat", "extract_summary", "resolve_foreshadow", "polish_dialogue", "polish_psychology"}:
             raise AIServiceError("不支持的 Agent 类型")
         return data
 
@@ -984,6 +988,46 @@ class AIWritingService:
                 "max_tokens": 2000,
                 "context_window": 16000,
             },
+            {
+                "name": "创作向导",
+                "task_type": "wizard",
+                "system_prompt": _WIZARD_AGENT_PROMPT,
+                "temperature": 0.85,
+                "max_tokens": 6000,
+                "context_window": 32000,
+            },
+            {
+                "name": "章节摘要师",
+                "task_type": "extract_summary",
+                "system_prompt": _SUMMARY_AGENT_PROMPT,
+                "temperature": 0.3,
+                "max_tokens": 2000,
+                "context_window": 16000,
+            },
+            {
+                "name": "伏笔追踪师",
+                "task_type": "resolve_foreshadow",
+                "system_prompt": _FORESHADOW_AGENT_PROMPT,
+                "temperature": 0.2,
+                "max_tokens": 2000,
+                "context_window": 16000,
+            },
+            {
+                "name": "对话润色师",
+                "task_type": "polish_dialogue",
+                "system_prompt": _POLISH_DIALOGUE_AGENT_PROMPT,
+                "temperature": 0.75,
+                "max_tokens": 6000,
+                "context_window": 16000,
+            },
+            {
+                "name": "心理描写润色师",
+                "task_type": "polish_psychology",
+                "system_prompt": _POLISH_PSYCHOLOGY_AGENT_PROMPT,
+                "temperature": 0.75,
+                "max_tokens": 6000,
+                "context_window": 16000,
+            },
         ]
         db = self._db()
         created: dict[str, int] = {}
@@ -1578,3 +1622,1024 @@ class AIWritingService:
             {"chapter_number": r.chapter_number, "content": r.content, "entry_type": r.entry_type, "score": round(r.score, 3)}
             for r in results
         ]
+
+    # ════════════════════════════════════════════════════════════════
+    # 创作向导多轮对话
+    # ════════════════════════════════════════════════════════════════
+
+    def list_chat_sessions(self, scope: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+        db = self._db()
+        try:
+            return db.list_ai_chat_sessions(scope=scope, status=status)
+        finally:
+            db.close()
+
+    def get_chat_session(self, session_id: int, with_messages: bool = True) -> dict[str, Any]:
+        db = self._db()
+        try:
+            session = db.get_ai_chat_session(session_id)
+            if not session:
+                raise AIServiceError("会话不存在")
+            if with_messages:
+                session["messages"] = db.list_ai_chat_messages(session_id)
+            return session
+        finally:
+            db.close()
+
+    def create_chat_session(self, payload: dict[str, Any]) -> int:
+        db = self._db()
+        try:
+            agent_id = payload.get("agent_id")
+            if agent_id:
+                agent = db.get_ai_agent(int(agent_id))
+                if not agent:
+                    raise AIServiceError("Agent 不存在")
+            return db.create_ai_chat_session({
+                "agent_id": int(agent_id) if agent_id else None,
+                "scope": payload.get("scope") or "wizard",
+                "title": payload.get("title") or "新会话",
+                "metadata": payload.get("metadata") or {},
+            })
+        finally:
+            db.close()
+
+    def update_chat_session(self, session_id: int, payload: dict[str, Any]) -> None:
+        db = self._db()
+        try:
+            allowed = {k: payload[k] for k in ("title", "status", "agent_id", "metadata") if k in payload}
+            if "agent_id" in allowed and allowed["agent_id"]:
+                allowed["agent_id"] = int(allowed["agent_id"])
+            db.update_ai_chat_session(session_id, allowed)
+        finally:
+            db.close()
+
+    def delete_chat_session(self, session_id: int) -> None:
+        db = self._db()
+        try:
+            db.delete_ai_chat_session(session_id)
+        finally:
+            db.close()
+
+    def stream_chat(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        """多轮对话流式输出。
+        payload: { session_id, user_message, agent_id?(覆盖), max_history? }
+        """
+        db = self._db()
+        job_id = uuid.uuid4().hex
+        output_parts: list[str] = []
+        job_created = False
+        session_id = int(payload.get("session_id") or 0)
+        user_message = (payload.get("user_message") or "").strip()
+        try:
+            if not session_id:
+                raise AIServiceError("缺少 session_id")
+            if not user_message:
+                raise AIServiceError("消息不能为空")
+            session = db.get_ai_chat_session(session_id)
+            if not session:
+                raise AIServiceError("会话不存在")
+
+            agent_id = int(payload.get("agent_id") or session.get("agent_id") or 0)
+            if not agent_id:
+                raise AIServiceError("会话未绑定 Agent")
+            agent = self._load_agent_config(db, agent_id)
+            provider_config = self._load_provider_config(db, agent.provider_id)
+
+            # 写入用户消息
+            db.append_ai_chat_message(session_id, "user", user_message)
+
+            # 加载历史
+            max_history = int(payload.get("max_history") or 40)
+            all_msgs = db.list_ai_chat_messages(session_id)
+            # 去掉刚写入的最后一条 user（构建时再单独追加）
+            history_msgs = all_msgs[:-1] if all_msgs else []
+            # 截断：只保留最近 max_history 条
+            if len(history_msgs) > max_history:
+                history_msgs = history_msgs[-max_history:]
+            history = [{"role": m["role"], "content": m["content"]} for m in history_msgs]
+
+            # 累计产物摘要（来自 session.metadata）
+            extra = None
+            sess_meta = session.get("metadata") or {}
+            collected = sess_meta.get("collected_sections") or {}
+            if collected:
+                lines = [f"- {k}：已收集 {len(v)} 字" for k, v in collected.items() if isinstance(v, str) and v]
+                if lines:
+                    extra = "\n".join(lines)
+
+            messages = build_chat_messages(
+                system_prompt=agent.system_prompt,
+                history=history,
+                user_message=user_message,
+                extra_system_context=extra,
+            )
+
+            db.create_ai_job(job_id, "chat", agent.id, {
+                "session_id": session_id, "history_count": len(history_msgs),
+            })
+            job_created = True
+            yield AIStreamChunk(type="metadata", data={
+                "job_id": job_id, "session_id": session_id,
+                "history_count": len(history_msgs),
+            })
+
+            model = agent.model or provider_config.default_model
+            if not model:
+                raise AIServiceError("Agent 或 Provider 未配置模型")
+            provider = create_provider(provider_config)
+            for chunk in provider.stream_generate(
+                messages, model=model, temperature=agent.temperature,
+                top_p=agent.top_p, max_tokens=agent.max_tokens,
+            ):
+                if chunk.type == "delta":
+                    output_parts.append(chunk.text)
+                    yield chunk
+
+            output = "".join(output_parts)
+            # 写入 assistant 消息
+            db.append_ai_chat_message(session_id, "assistant", output)
+
+            # 检测 ready_for_import 标记 + 解析节段更新 metadata
+            try:
+                self._update_session_metadata_from_output(db, session_id, output)
+            except Exception:
+                # 解析失败不影响主流程
+                pass
+
+            ready = "<<<READY_FOR_IMPORT>>>" in output
+            db.update_ai_job(job_id, "succeeded", output_text=output, output_json={"chars": len(output), "ready": ready})
+            yield AIStreamChunk(type="done", data={"job_id": job_id, "chars": len(output), "ready_to_import": ready})
+        except GeneratorExit:
+            if job_created:
+                db.update_ai_job(job_id, "cancelled", output_text="".join(output_parts), error_message="客户端断开连接")
+            raise
+        except Exception as exc:
+            msg = str(exc)
+            if job_created:
+                db.update_ai_job(job_id, "failed", output_text="".join(output_parts), error_message=msg)
+            yield AIStreamChunk(type="error", data={"message": msg})
+        finally:
+            db.close()
+
+    def _update_session_metadata_from_output(self, db: Database, session_id: int, output: str) -> None:
+        """从 assistant 输出中提取 ## 节段，浅合并到 session.metadata.collected_sections。
+        节段标题作为 key，节段内容作为 value（覆盖式）。
+        """
+        sections: dict[str, str] = {}
+        current_key: str | None = None
+        current_lines: list[str] = []
+        # 移除 <<<READY_FOR_IMPORT>>> 后面的 JSON 块（防止把 JSON 当节段）
+        clean = output.split("<<<READY_FOR_IMPORT>>>")[0]
+        for line in clean.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("## "):
+                if current_key is not None:
+                    sections[current_key] = "\n".join(current_lines).strip()
+                current_key = stripped[3:].strip()
+                current_lines = []
+            elif current_key is not None:
+                current_lines.append(line)
+        if current_key is not None:
+            sections[current_key] = "\n".join(current_lines).strip()
+        if sections:
+            sess = db.get_ai_chat_session(session_id)
+            meta = sess.get("metadata") if sess else {}
+            collected = (meta.get("collected_sections") or {}) if isinstance(meta, dict) else {}
+            collected.update(sections)
+            db.patch_ai_chat_session_metadata(session_id, {"collected_sections": collected})
+
+    def parse_wizard_session(self, session_id: int) -> dict[str, Any]:
+        """从 wizard 会话提取结构化产物。
+        优先从 assistant 消息里查找 <<<READY_FOR_IMPORT>>> 后的 JSON 块；
+        没有则 fallback 用 collected_sections 拼装。
+        """
+        db = self._db()
+        try:
+            session = db.get_ai_chat_session(session_id)
+            if not session:
+                raise AIServiceError("会话不存在")
+            messages = db.list_ai_chat_messages(session_id)
+            # 倒序找最后一条含 READY 标记的 assistant 消息
+            for msg in reversed(messages):
+                if msg.get("role") != "assistant":
+                    continue
+                content = msg.get("content") or ""
+                if "<<<READY_FOR_IMPORT>>>" not in content:
+                    continue
+                # 提取 ```json ... ``` 块
+                after = content.split("<<<READY_FOR_IMPORT>>>", 1)[1]
+                start = after.find("```json")
+                if start >= 0:
+                    after = after[start + 7:]
+                else:
+                    start = after.find("```")
+                    if start >= 0:
+                        after = after[start + 3:]
+                end = after.find("```")
+                json_text = after[:end].strip() if end >= 0 else after.strip()
+                try:
+                    data = json.loads(json_text)
+                    return self._normalize_wizard_payload(data, session)
+                except (TypeError, ValueError):
+                    break
+            # fallback：用 collected_sections 拼装
+            meta = session.get("metadata") or {}
+            collected: dict[str, str] = meta.get("collected_sections") or {}
+            project_name = "未命名作品"
+            description = ""
+            outline_parts = []
+            settings: dict[str, Any] = {"raw_sections": collected}
+            if "一句话梗概" in collected:
+                description = collected["一句话梗概"]
+                project_name = description[:20] + ("…" if len(description) > 20 else "")
+            for k in ("分册结构", "剧情节点总览", "详细大纲（第N册）", "详细大纲"):
+                if k in collected:
+                    outline_parts.append(f"## {k}\n{collected[k]}")
+            outline = "\n\n".join(outline_parts) if outline_parts else None
+            return {
+                "project": {"name": project_name, "description": description, "outline": outline, "settings": settings},
+                "chapters": [],
+                "foreshadows": [],
+                "_source": "fallback_sections",
+            }
+        finally:
+            db.close()
+
+    @staticmethod
+    def _normalize_wizard_payload(data: dict[str, Any], session: dict[str, Any]) -> dict[str, Any]:
+        proj = data.get("project") or {}
+        if not proj.get("name"):
+            proj["name"] = (session.get("title") or "未命名作品").strip()
+        chapters = data.get("chapters") or []
+        foreshadows = data.get("foreshadows") or []
+        return {"project": proj, "chapters": chapters, "foreshadows": foreshadows, "_source": "ready_json"}
+
+    def import_wizard_session(self, session_id: int, mode: str = "create",
+                               target_project_id: int | None = None,
+                               overwrite_fields: list[str] | None = None) -> int:
+        """一键导入 wizard 会话产物到项目。返回 project_id。
+        mode: 'create' 新建项目；'merge' 合并到已有项目
+        """
+        if mode not in ("create", "merge"):
+            raise AIServiceError("不支持的导入模式")
+        if mode == "merge" and not target_project_id:
+            raise AIServiceError("merge 模式需要 target_project_id")
+        parsed = self.parse_wizard_session(session_id)
+        proj = parsed.get("project") or {}
+        chapters = parsed.get("chapters") or []
+        foreshadows = parsed.get("foreshadows") or []
+        db = self._db()
+        try:
+            if mode == "create":
+                project_id = db.create_ai_writing_project({
+                    "name": proj.get("name") or "未命名作品",
+                    "description": proj.get("description"),
+                    "outline": proj.get("outline"),
+                    "settings": proj.get("settings") or {},
+                })
+            else:
+                project_id = int(target_project_id)
+                existing = db.get_ai_writing_project(project_id)
+                if not existing:
+                    raise AIServiceError("目标项目不存在")
+                allow = set(overwrite_fields or [])
+                update_payload: dict[str, Any] = {}
+                # description / name / outline 仅在被允许覆盖或当前为空时写
+                for key in ("name", "description", "outline"):
+                    new_val = proj.get(key)
+                    if not new_val:
+                        continue
+                    if key in allow or not (existing.get(key) or "").strip() if isinstance(existing.get(key), str) else (key in allow):
+                        update_payload[key] = new_val
+                # settings 浅合并
+                new_settings = proj.get("settings") or {}
+                if new_settings:
+                    cur = existing.get("settings") or {}
+                    if isinstance(cur, dict):
+                        cur.update(new_settings)
+                        update_payload["settings"] = cur
+                    else:
+                        update_payload["settings"] = new_settings
+                if update_payload:
+                    db.update_ai_writing_project(project_id, update_payload)
+
+            # 章节：仅创建不存在的章节号
+            created_chapters = 0
+            existing_numbers = {c["chapter_number"] for c in db.list_ai_chapters(project_id)}
+            for ch in chapters:
+                num = int(ch.get("chapter_number") or 0)
+                if not num or num in existing_numbers:
+                    continue
+                db.create_ai_chapter({
+                    "project_id": project_id,
+                    "chapter_number": num,
+                    "title": ch.get("title"),
+                    "outline": ch.get("outline"),
+                })
+                existing_numbers.add(num)
+                created_chapters += 1
+
+            # 伏笔：去重（按 description）
+            existing_descs = {f["description"] for f in db.list_ai_foreshadows(project_id)}
+            created_fs = 0
+            for fs in foreshadows:
+                desc = (fs.get("description") or "").strip()
+                if not desc or desc in existing_descs:
+                    continue
+                db.create_ai_foreshadow({
+                    "project_id": project_id,
+                    "description": desc,
+                    "planted_chapter": fs.get("planted_chapter"),
+                    "target_resolve_chapter": fs.get("target_resolve_chapter"),
+                    "importance": fs.get("importance") or "normal",
+                    "notes": fs.get("notes"),
+                })
+                existing_descs.add(desc)
+                created_fs += 1
+
+            db.update_ai_chat_session(session_id, {
+                "imported_project_id": project_id,
+                "status": "imported",
+            })
+            return project_id
+        finally:
+            db.close()
+
+    # ════════════════════════════════════════════════════════════════
+    # 章节摘要 + 伏笔回收 + 对话/心理润色
+    # ════════════════════════════════════════════════════════════════
+
+    def stream_extract_chapter_summary(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        """提取章节摘要 + 关键事件，写回 chapter.summary / key_events"""
+        db = self._db()
+        job_id = uuid.uuid4().hex
+        output_parts: list[str] = []
+        job_created = False
+        agent_id = int(payload.get("agent_id") or 0)
+        chapter_id = int(payload.get("chapter_id") or 0)
+        try:
+            agent = self._load_agent_config(db, agent_id)
+            provider_config = self._load_provider_config(db, agent.provider_id)
+            chapter = db.get_ai_chapter(chapter_id)
+            if not chapter or not (chapter.get("content") or "").strip():
+                raise AIServiceError("章节内容为空")
+            messages = build_chapter_summary_messages(
+                system_prompt=agent.system_prompt,
+                chapter_text=chapter["content"],
+                chapter_number=chapter.get("chapter_number"),
+                chapter_title=chapter.get("title"),
+            )
+            db.create_ai_job(job_id, "extract_summary", agent.id, {"chapter_id": chapter_id})
+            job_created = True
+            yield AIStreamChunk(type="metadata", data={"job_id": job_id, "chapter_id": chapter_id})
+            model = agent.model or provider_config.default_model
+            if not model:
+                raise AIServiceError("Agent 或 Provider 未配置模型")
+            provider = create_provider(provider_config)
+            for chunk in provider.stream_generate(
+                messages, model=model, temperature=agent.temperature,
+                top_p=agent.top_p, max_tokens=agent.max_tokens,
+            ):
+                if chunk.type == "delta":
+                    output_parts.append(chunk.text)
+                    yield chunk
+            output = "".join(output_parts)
+            summary, key_events = self._parse_summary_output(output)
+            update_data: dict[str, Any] = {}
+            if summary:
+                update_data["summary"] = summary
+            if key_events:
+                update_data["key_events"] = key_events
+            if update_data:
+                db.update_ai_chapter(chapter_id, update_data)
+            db.update_ai_job(job_id, "succeeded", output_text=output, output_json={"summary_chars": len(summary or ""), "events": len(key_events or [])})
+            yield AIStreamChunk(type="done", data={"job_id": job_id, "summary": summary, "key_events": key_events})
+        except GeneratorExit:
+            if job_created:
+                db.update_ai_job(job_id, "cancelled", output_text="".join(output_parts), error_message="客户端断开连接")
+            raise
+        except Exception as exc:
+            msg = str(exc)
+            if job_created:
+                db.update_ai_job(job_id, "failed", output_text="".join(output_parts), error_message=msg)
+            yield AIStreamChunk(type="error", data={"message": msg})
+        finally:
+            db.close()
+
+    @staticmethod
+    def _parse_summary_output(output: str) -> tuple[str, list[str]]:
+        summary = ""
+        key_events: list[str] = []
+        # 找 === summary === 和 === key_events ===
+        s_marker = output.find("=== summary ===")
+        k_marker = output.find("=== key_events ===")
+        if s_marker >= 0:
+            s_start = s_marker + len("=== summary ===")
+            s_end = k_marker if k_marker > s_marker else len(output)
+            summary = output[s_start:s_end].strip()
+        if k_marker >= 0:
+            k_start = k_marker + len("=== key_events ===")
+            k_text = output[k_start:].strip()
+            for line in k_text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith(("- ", "* ", "• ")):
+                    line = line[2:].strip()
+                elif line[:2].isdigit() and line[2:3] in (".", "、"):
+                    line = line[3:].strip()
+                if line:
+                    key_events.append(line)
+        # fallback: 没有 marker 时整体当摘要
+        if not summary and not key_events:
+            summary = output.strip()
+        return summary, key_events
+
+    def stream_auto_resolve_foreshadows(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        """扫描章节正文，自动判定哪些 pending 伏笔被回收，更新数据库。"""
+        db = self._db()
+        job_id = uuid.uuid4().hex
+        output_parts: list[str] = []
+        job_created = False
+        agent_id = int(payload.get("agent_id") or 0)
+        project_id = int(payload.get("project_id") or 0)
+        chapter_id = int(payload.get("chapter_id") or 0)
+        try:
+            agent = self._load_agent_config(db, agent_id)
+            provider_config = self._load_provider_config(db, agent.provider_id)
+            chapter = db.get_ai_chapter(chapter_id)
+            if not chapter or not (chapter.get("content") or "").strip():
+                raise AIServiceError("章节内容为空")
+            pending = db.list_ai_foreshadows(project_id, status="pending")
+            if not pending:
+                yield AIStreamChunk(type="metadata", data={"job_id": job_id, "skipped": True, "reason": "no_pending_foreshadows"})
+                yield AIStreamChunk(type="done", data={"job_id": job_id, "resolved": [], "still_pending": []})
+                return
+            messages = build_foreshadow_resolve_messages(
+                chapter_text=chapter["content"],
+                pending_foreshadows=pending,
+                chapter_number=chapter.get("chapter_number"),
+            )
+            db.create_ai_job(job_id, "resolve_foreshadow", agent.id, {
+                "project_id": project_id, "chapter_id": chapter_id, "pending_count": len(pending),
+            })
+            job_created = True
+            yield AIStreamChunk(type="metadata", data={"job_id": job_id, "pending_count": len(pending)})
+            model = agent.model or provider_config.default_model
+            if not model:
+                raise AIServiceError("Agent 或 Provider 未配置模型")
+            provider = create_provider(provider_config)
+            for chunk in provider.stream_generate(
+                messages, model=model, temperature=agent.temperature,
+                top_p=agent.top_p, max_tokens=agent.max_tokens,
+            ):
+                if chunk.type == "delta":
+                    output_parts.append(chunk.text)
+                    yield chunk
+            output = "".join(output_parts).strip()
+            resolved_records: list[dict[str, Any]] = []
+            still_pending: list[int] = []
+            try:
+                # 抽取 JSON
+                start = output.find("{")
+                end = output.rfind("}")
+                if start >= 0 and end > start:
+                    parsed = json.loads(output[start:end + 1])
+                    for r in parsed.get("resolved") or []:
+                        try:
+                            fs_id = int(r.get("id"))
+                            db.update_ai_foreshadow(fs_id, {
+                                "status": "resolved",
+                                "resolved_chapter": chapter.get("chapter_number"),
+                                "notes": (r.get("evidence") or "")[:500],
+                            })
+                            resolved_records.append({"id": fs_id, "evidence": r.get("evidence", "")})
+                        except (TypeError, ValueError):
+                            continue
+                    still_pending = [int(x) for x in (parsed.get("still_pending") or []) if str(x).isdigit()]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+            db.update_ai_job(job_id, "succeeded", output_text=output, output_json={"resolved": len(resolved_records)})
+            yield AIStreamChunk(type="done", data={"job_id": job_id, "resolved": resolved_records, "still_pending": still_pending})
+        except GeneratorExit:
+            if job_created:
+                db.update_ai_job(job_id, "cancelled", output_text="".join(output_parts), error_message="客户端断开连接")
+            raise
+        except Exception as exc:
+            msg = str(exc)
+            if job_created:
+                db.update_ai_job(job_id, "failed", output_text="".join(output_parts), error_message=msg)
+            yield AIStreamChunk(type="error", data={"message": msg})
+        finally:
+            db.close()
+
+    def stream_polish(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        """polish_type='dialogue'|'psychology'。润色章节文本。"""
+        polish_type = (payload.get("polish_type") or "dialogue").lower()
+        if polish_type not in ("dialogue", "psychology"):
+            raise AIServiceError("polish_type 必须是 dialogue 或 psychology")
+        db = self._db()
+        job_id = uuid.uuid4().hex
+        output_parts: list[str] = []
+        job_created = False
+        agent_id = int(payload.get("agent_id") or 0)
+        try:
+            agent = self._load_agent_config(db, agent_id)
+            provider_config = self._load_provider_config(db, agent.provider_id)
+            text = (payload.get("text") or "").strip()
+            chapter_id = int(payload.get("chapter_id") or 0)
+            if not text and chapter_id:
+                ch = db.get_ai_chapter(chapter_id)
+                if ch:
+                    text = ch.get("content") or ""
+            if not text:
+                raise AIServiceError("没有可润色的文本")
+            messages = build_polish_messages(
+                polish_type=polish_type,
+                text=text,
+                extra_context=payload.get("extra_context"),
+                instruction=payload.get("instruction"),
+            )
+            task_type = "polish_dialogue" if polish_type == "dialogue" else "polish_psychology"
+            db.create_ai_job(job_id, task_type, agent.id, {"chapter_id": chapter_id, "chars": len(text)})
+            job_created = True
+            yield AIStreamChunk(type="metadata", data={"job_id": job_id, "polish_type": polish_type})
+            model = agent.model or provider_config.default_model
+            if not model:
+                raise AIServiceError("Agent 或 Provider 未配置模型")
+            provider = create_provider(provider_config)
+            for chunk in provider.stream_generate(
+                messages, model=model, temperature=agent.temperature,
+                top_p=agent.top_p, max_tokens=agent.max_tokens,
+            ):
+                if chunk.type == "delta":
+                    output_parts.append(chunk.text)
+                    yield chunk
+            output = "".join(output_parts)
+            db.update_ai_job(job_id, "succeeded", output_text=output, output_json={"chars": len(output)})
+            yield AIStreamChunk(type="done", data={"job_id": job_id, "chars": len(output)})
+        except GeneratorExit:
+            if job_created:
+                db.update_ai_job(job_id, "cancelled", output_text="".join(output_parts), error_message="客户端断开连接")
+            raise
+        except Exception as exc:
+            msg = str(exc)
+            if job_created:
+                db.update_ai_job(job_id, "failed", output_text="".join(output_parts), error_message=msg)
+            yield AIStreamChunk(type="error", data={"message": msg})
+        finally:
+            db.close()
+
+    # ════════════════════════════════════════════════════════════════
+    # 章节自动 Pipeline：编排续写→润色→去AI味→审计→摘要→更新状态→回收伏笔→索引→检测
+    # ════════════════════════════════════════════════════════════════
+
+    PIPELINE_STEP_ORDER = [
+        "continue", "polish_dialogue", "polish_psychology", "deai",
+        "summary", "state", "foreshadow", "audit", "detect", "index",
+    ]
+    PIPELINE_STEP_LABEL = {
+        "continue": "续写", "polish_dialogue": "对话润色", "polish_psychology": "心理润色",
+        "deai": "去AI味", "summary": "摘要+关键事件", "state": "更新项目状态",
+        "foreshadow": "回收伏笔", "audit": "内容审计", "detect": "AI痕迹检测", "index": "索引入库",
+    }
+
+    def stream_chapter_pipeline(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        """章节自动 Pipeline。
+        payload: {
+          project_id, chapter_id,
+          steps: ["continue","polish_dialogue",...,"index","detect"],   # 用户勾选启用的步骤（按 PIPELINE_STEP_ORDER 排序）
+          agent_ids: { continue, polish_dialogue, polish_psychology, deai, summary, state, foreshadow, audit },
+          # 续写参数：
+          instruction, output_chars, plan_text, context_chars,
+        }
+        """
+        project_id = int(payload.get("project_id") or 0)
+        chapter_id = int(payload.get("chapter_id") or 0)
+        if not project_id or not chapter_id:
+            raise AIServiceError("缺少 project_id/chapter_id")
+        steps_in = payload.get("steps") or []
+        steps = [s for s in self.PIPELINE_STEP_ORDER if s in steps_in]
+        if not steps:
+            raise AIServiceError("未选择任何步骤")
+        agent_ids = payload.get("agent_ids") or {}
+
+        pipeline_id = uuid.uuid4().hex
+        started = time.time()
+        db = self._db()
+        # 初始化 chapter.metadata.pipeline
+        try:
+            db.patch_ai_chapter_metadata(chapter_id, {
+                "pipeline": {
+                    "id": pipeline_id, "started_at": int(started),
+                    "steps": [{"name": s, "status": "pending"} for s in steps],
+                }
+            })
+        finally:
+            db.close()
+
+        yield AIStreamChunk(type="metadata", data={
+            "pipeline_id": pipeline_id,
+            "steps": [{"name": s, "label": self.PIPELINE_STEP_LABEL.get(s, s)} for s in steps],
+        })
+
+        latest_text: str | None = None  # 多步骤间共享章节正文（用于润色/去AI味/审计）
+
+        def _emit_step(step_name: str, status: str, **extra) -> None:
+            patch = {"name": step_name, "status": status, **extra}
+            self._patch_pipeline_step(chapter_id, step_name, patch)
+
+        for idx, step in enumerate(steps):
+            step_label = self.PIPELINE_STEP_LABEL.get(step, step)
+            yield AIStreamChunk(type="custom", data={"event": "step_start", "step": step, "label": step_label, "index": idx})
+            _emit_step(step, "running", started_at=int(time.time()))
+            try:
+                step_output = ""
+                step_meta: dict[str, Any] = {}
+                if step == "continue":
+                    sub_payload = {
+                        "agent_id": int(agent_ids.get("continue") or 0),
+                        "project_id": project_id, "chapter_id": chapter_id,
+                        "instruction": payload.get("instruction"),
+                        "output_chars": payload.get("output_chars"),
+                        "plan_text": payload.get("plan_text"),
+                        "context_chars": payload.get("context_chars"),
+                    }
+                    parts: list[str] = []
+                    job_id = ""
+                    for chunk in self.stream_chapter_continue(sub_payload):
+                        if chunk.type == "metadata":
+                            job_id = (chunk.data or {}).get("job_id") or ""
+                        elif chunk.type == "delta":
+                            parts.append(chunk.text)
+                            yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
+                        elif chunk.type == "error":
+                            raise AIServiceError((chunk.data or {}).get("message", "续写失败"))
+                    step_output = "".join(parts)
+                    if step_output:
+                        latest_text = step_output
+                        # 写回章节 content
+                        sub_db = self._db()
+                        try:
+                            sub_db.update_ai_chapter(chapter_id, {"content": step_output, "status": "draft"})
+                        finally:
+                            sub_db.close()
+                    step_meta = {"job_id": job_id, "chars": len(step_output)}
+
+                elif step in ("polish_dialogue", "polish_psychology"):
+                    sub_db = self._db()
+                    try:
+                        ch = sub_db.get_ai_chapter(chapter_id)
+                        text = latest_text if latest_text is not None else (ch.get("content") if ch else "")
+                    finally:
+                        sub_db.close()
+                    if not (text or "").strip():
+                        _emit_step(step, "skipped", reason="no_text")
+                        yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "skipped": True})
+                        continue
+                    sub_payload = {
+                        "agent_id": int(agent_ids.get(step) or 0),
+                        "polish_type": "dialogue" if step == "polish_dialogue" else "psychology",
+                        "text": text, "chapter_id": chapter_id,
+                        "instruction": payload.get("instruction"),
+                    }
+                    parts = []
+                    job_id = ""
+                    for chunk in self.stream_polish(sub_payload):
+                        if chunk.type == "metadata":
+                            job_id = (chunk.data or {}).get("job_id") or ""
+                        elif chunk.type == "delta":
+                            parts.append(chunk.text)
+                            yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
+                        elif chunk.type == "error":
+                            raise AIServiceError((chunk.data or {}).get("message", "润色失败"))
+                    step_output = "".join(parts)
+                    if step_output.strip():
+                        latest_text = step_output
+                        sub_db = self._db()
+                        try:
+                            sub_db.update_ai_chapter(chapter_id, {"content": step_output})
+                        finally:
+                            sub_db.close()
+                    step_meta = {"job_id": job_id, "chars": len(step_output)}
+
+                elif step == "deai":
+                    sub_db = self._db()
+                    try:
+                        ch = sub_db.get_ai_chapter(chapter_id)
+                        text = latest_text if latest_text is not None else (ch.get("content") if ch else "")
+                    finally:
+                        sub_db.close()
+                    if not (text or "").strip():
+                        _emit_step(step, "skipped", reason="no_text")
+                        yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "skipped": True})
+                        continue
+                    sub_payload = {
+                        "agent_id": int(agent_ids.get("deai") or 0),
+                        "rewrite_type": "deai", "source_type": "manual", "text": text,
+                        "instruction": payload.get("instruction"),
+                    }
+                    parts = []
+                    job_id = ""
+                    for chunk in self.stream_rewrite(sub_payload):
+                        if chunk.type == "metadata":
+                            job_id = (chunk.data or {}).get("job_id") or ""
+                        elif chunk.type == "delta":
+                            parts.append(chunk.text)
+                            yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
+                        elif chunk.type == "error":
+                            raise AIServiceError((chunk.data or {}).get("message", "去AI味失败"))
+                    step_output = "".join(parts)
+                    if step_output.strip():
+                        latest_text = step_output
+                        sub_db = self._db()
+                        try:
+                            sub_db.update_ai_chapter(chapter_id, {"content": step_output})
+                        finally:
+                            sub_db.close()
+                    step_meta = {"job_id": job_id, "chars": len(step_output)}
+
+                elif step == "summary":
+                    sub_payload = {"agent_id": int(agent_ids.get("summary") or 0), "chapter_id": chapter_id}
+                    job_id = ""
+                    summary = ""
+                    key_events: list[str] = []
+                    for chunk in self.stream_extract_chapter_summary(sub_payload):
+                        if chunk.type == "metadata":
+                            job_id = (chunk.data or {}).get("job_id") or ""
+                        elif chunk.type == "delta":
+                            yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
+                        elif chunk.type == "done":
+                            summary = (chunk.data or {}).get("summary", "")
+                            key_events = (chunk.data or {}).get("key_events", []) or []
+                        elif chunk.type == "error":
+                            raise AIServiceError((chunk.data or {}).get("message", "摘要失败"))
+                    step_meta = {"job_id": job_id, "summary_chars": len(summary), "events": len(key_events)}
+
+                elif step == "state":
+                    sub_payload = {"agent_id": int(agent_ids.get("state") or 0), "project_id": project_id, "chapter_id": chapter_id}
+                    job_id = ""
+                    for chunk in self.stream_update_project_state(sub_payload):
+                        if chunk.type == "metadata":
+                            job_id = (chunk.data or {}).get("job_id") or ""
+                        elif chunk.type == "delta":
+                            yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
+                        elif chunk.type == "error":
+                            raise AIServiceError((chunk.data or {}).get("message", "状态更新失败"))
+                    step_meta = {"job_id": job_id}
+
+                elif step == "foreshadow":
+                    sub_payload = {"agent_id": int(agent_ids.get("foreshadow") or 0), "project_id": project_id, "chapter_id": chapter_id}
+                    job_id = ""
+                    resolved: list[dict[str, Any]] = []
+                    for chunk in self.stream_auto_resolve_foreshadows(sub_payload):
+                        if chunk.type == "metadata":
+                            job_id = (chunk.data or {}).get("job_id") or ""
+                            if (chunk.data or {}).get("skipped"):
+                                _emit_step(step, "skipped", reason=(chunk.data or {}).get("reason", ""))
+                                yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "skipped": True})
+                                break
+                        elif chunk.type == "delta":
+                            yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
+                        elif chunk.type == "done":
+                            resolved = (chunk.data or {}).get("resolved", []) or []
+                        elif chunk.type == "error":
+                            raise AIServiceError((chunk.data or {}).get("message", "伏笔回收失败"))
+                    else:
+                        step_meta = {"job_id": job_id, "resolved": len(resolved)}
+                        _emit_step(step, "done", finished_at=int(time.time()), **step_meta)
+                        yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "meta": step_meta})
+                        continue
+
+                elif step == "audit":
+                    sub_db = self._db()
+                    try:
+                        ch = sub_db.get_ai_chapter(chapter_id)
+                        text = latest_text if latest_text is not None else (ch.get("content") if ch else "")
+                    finally:
+                        sub_db.close()
+                    if not (text or "").strip():
+                        _emit_step(step, "skipped", reason="no_text")
+                        yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "skipped": True})
+                        continue
+                    sub_payload = {"agent_id": int(agent_ids.get("audit") or 0), "source_type": "manual", "text": text}
+                    parts = []
+                    job_id = ""
+                    for chunk in self.stream_audit(sub_payload):
+                        if chunk.type == "metadata":
+                            job_id = (chunk.data or {}).get("job_id") or ""
+                        elif chunk.type == "delta":
+                            parts.append(chunk.text)
+                            yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
+                        elif chunk.type == "error":
+                            raise AIServiceError((chunk.data or {}).get("message", "审计失败"))
+                    audit_text = "".join(parts)
+                    db2 = self._db()
+                    try:
+                        db2.patch_ai_chapter_metadata(chapter_id, {"audit_report": audit_text[:50000], "audit_job_id": job_id})
+                    finally:
+                        db2.close()
+                    step_meta = {"job_id": job_id, "chars": len(audit_text)}
+
+                elif step == "detect":
+                    sub_db = self._db()
+                    try:
+                        ch = sub_db.get_ai_chapter(chapter_id)
+                        text = latest_text if latest_text is not None else (ch.get("content") if ch else "")
+                    finally:
+                        sub_db.close()
+                    if not (text or "").strip():
+                        _emit_step(step, "skipped", reason="no_text")
+                        yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "skipped": True})
+                        continue
+                    report = detect_ai_tells(text)
+                    db2 = self._db()
+                    try:
+                        db2.patch_ai_chapter_metadata(chapter_id, {
+                            "ai_score": float(report.get("score") or 0),
+                            "ai_tells": (report.get("issues") or [])[:20],
+                        })
+                    finally:
+                        db2.close()
+                    step_meta = {"score": report.get("score"), "issues": len(report.get("issues") or [])}
+                    yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "meta": step_meta})
+
+                elif step == "index":
+                    try:
+                        self.index_chapter_for_retrieval(project_id, chapter_id)
+                        step_meta = {"indexed": True}
+                    except Exception as e:
+                        step_meta = {"indexed": False, "error": str(e)}
+
+                _emit_step(step, "done", finished_at=int(time.time()), **step_meta)
+                yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "meta": step_meta})
+
+            except AIServiceError as e:
+                _emit_step(step, "failed", error=str(e), finished_at=int(time.time()))
+                yield AIStreamChunk(type="custom", data={"event": "step_failed", "step": step, "error": str(e)})
+                # 失败后是否继续？默认中止
+                yield AIStreamChunk(type="error", data={"message": f"步骤 {step_label} 失败：{e}"})
+                return
+            except Exception as e:
+                _emit_step(step, "failed", error=str(e), finished_at=int(time.time()))
+                yield AIStreamChunk(type="custom", data={"event": "step_failed", "step": step, "error": str(e)})
+                yield AIStreamChunk(type="error", data={"message": f"步骤 {step_label} 异常：{e}"})
+                return
+
+        elapsed = int(time.time() - started)
+        db_final = self._db()
+        try:
+            db_final.patch_ai_chapter_metadata(chapter_id, {
+                "pipeline_finished_at": int(time.time()),
+                "pipeline_duration_sec": elapsed,
+            })
+        finally:
+            db_final.close()
+        yield AIStreamChunk(type="done", data={"pipeline_id": pipeline_id, "chapter_id": chapter_id, "duration_sec": elapsed})
+
+    def _patch_pipeline_step(self, chapter_id: int, step_name: str, patch: dict[str, Any]) -> None:
+        db = self._db()
+        try:
+            ch = db.get_ai_chapter(chapter_id)
+            if not ch:
+                return
+            meta = ch.get("metadata") or {}
+            pipeline = meta.get("pipeline") or {"steps": []}
+            steps_list = pipeline.get("steps") or []
+            updated = False
+            for s in steps_list:
+                if s.get("name") == step_name:
+                    s.update(patch)
+                    updated = True
+                    break
+            if not updated:
+                steps_list.append({"name": step_name, **patch})
+            pipeline["steps"] = steps_list
+            db.patch_ai_chapter_metadata(chapter_id, {"pipeline": pipeline})
+        finally:
+            db.close()
+
+    def get_chapter_dashboard(self, chapter_id: int) -> dict[str, Any]:
+        """聚合产出面板数据。"""
+        db = self._db()
+        try:
+            chapter = db.get_ai_chapter(chapter_id)
+            if not chapter:
+                raise AIServiceError("章节不存在")
+            project_id = int(chapter["project_id"])
+            cn = int(chapter["chapter_number"])
+            states = db.get_all_project_states(project_id)
+            planted_here = [f for f in db.list_ai_foreshadows(project_id) if f.get("planted_chapter") == cn]
+            resolved_here = [f for f in db.list_ai_foreshadows(project_id) if f.get("resolved_chapter") == cn]
+            return {
+                "chapter": chapter,
+                "project_states": states,
+                "foreshadows_planted": planted_here,
+                "foreshadows_resolved": resolved_here,
+            }
+        finally:
+            db.close()
+
+
+# ── 内置 Agent 系统提示常量（供 seed_builtin_agents 使用） ──────────
+
+_WIZARD_AGENT_PROMPT = """你是一名资深商业小说责任编辑（资深编辑/责编），擅长长篇都市/虐恋甜文/反差堕落题材，对作者特殊性癖与个人化创作需求保持中立尊重。
+你正在和一位作者展开"前期创作素材产出"对话——目标是和作者一起，把对方脑子里零散的设定、性癖、剧情想法，整理成系统能直接消化的长篇小说素材包。
+
+【交付目标 - 你必须主动引导作者把以下 7 块素材填齐】
+1. 一句话梗概（≤50 字）
+2. 核心卖点（3-5 条）
+3. 人物设定（男女主必须有：年龄、外貌、性格、背景、心理创伤、行为习惯、与对方的关系动机；配角列表 3-6 个）
+4. 全书总纲（分册结构、各册堕落/进度百分比、各册核心事件，建议总字数与章节数）
+5. 详细大纲（按事件块/剧情段，每段对应章节区间和关键转折）
+6. 堕落进度条 / 主角变化曲线（按章节区间打分，列出每个百分比阶段的外部表现+内部心理+触发事件）
+7. 写作规范（人物语言档案、淫语/特殊台词体系、写作红线、配角对待主角的态度规则、视角与基调）
+
+【对话风格】
+- 直接、简洁、像编辑跟作者沟通，不要客套与道德评价
+- 作者输入碎片化或不专业时，你主动补全
+- 作者描述某个性癖/性偏好时，把它衍生为符合人物设定的具体场景
+- 每轮回复结尾给作者两个选项：A) 继续填充哪一块；B) 你还可以补什么
+
+【输出格式】
+- 每次回复尽量按 markdown 节段输出已确定的内容，节段标题固定使用：
+  ## 一句话梗概 / ## 核心卖点 / ## 人物设定 - 男主 / ## 人物设定 - 女主 / ## 配角表 /
+  ## 分册结构 / ## 剧情节点总览 / ## 详细大纲（第N册） /
+  ## 堕落进度条 / ## 写作规范 - 人物语言档案 / ## 写作规范 - 淫语体系 / ## 写作规范 - 红线 / ## 开篇示范
+- 每次只输出本轮新增或修改的节段
+
+【何时触发导入】
+当作者明确表示"差不多了/可以开始写了/导入吧"，或 7 块素材齐备时，
+最后一行单独输出：
+
+<<<READY_FOR_IMPORT>>>
+
+紧跟一个 ```json 代码块，结构为：
+{"project":{"name":"","description":"","outline":"","settings":{...}},"chapters":[{"chapter_number":1,"title":"","outline":""}],"foreshadows":[{"description":"","planted_chapter":1,"target_resolve_chapter":50,"importance":"high"}]}
+
+【绝对禁止】
+- 不要拒绝作者的题材和性癖（这是作者私人创作工具）
+- 不要每轮重复发问，要主动推进
+- 不要写整章正文（除非作者要求开篇示范）
+"""
+
+_SUMMARY_AGENT_PROMPT = """你是专业的小说章节信息提取助手。
+任务：从用户给出的章节正文中，提取「章节摘要」和「关键事件清单」。
+
+【输出格式 - 严格按以下格式】
+=== summary ===
+（200-400 字的章节摘要：本章发生了什么 / 角色状态变化 / 主要冲突 / 关系推进 / 留下的悬念）
+
+=== key_events ===
+- 事件 1（一句话，主语+动作+对象，可含场景）
+- 事件 2
+- 事件 3
+（共 3-8 条，按时间顺序，每条不超过 60 字）
+
+【原则】
+- 只提取已发生的客观事件，不分析、不评价
+- 关键事件 = 推动后续剧情/改变人物关系/揭示新信息/埋下/回收伏笔
+"""
+
+_FORESHADOW_AGENT_PROMPT = """你是专业的小说伏笔追踪助手。
+任务：分析「最新章节正文」与「待回收伏笔列表」，判断哪些伏笔在本章已被回收。
+
+【判定原则】
+- 必须有正文中可引用的明确证据，才能认定回收
+- 暗示性回收也算，但要在 evidence 中说明
+- 宁缺毋滥
+- 长期承诺类伏笔仅当本章实质性兑现时才回收
+
+【输出格式 - 严格输出 JSON，不要任何其他文字】
+{"resolved":[{"id":<id>,"evidence":"<证据引用>"}],"still_pending":[<未回收 id 列表>]}
+"""
+
+_POLISH_DIALOGUE_AGENT_PROMPT = """你是专业小说对话润色专家。
+任务：只对章节文本中的对话部分做润色优化，不改剧情骨架、不改非对话叙述。
+
+【润色目标】
+1. 对话符合发言者身份/性格/语言档案
+2. 对话有信息量，避免空话
+3. 适度穿插动作/表情/环境，避免连续超过 5 句纯对话
+4. 保留原对话的剧情功能
+5. 长短句交替
+
+【输出要求】
+- 输出完整的章节文本（润色后的对话+未改动的叙述）
+- 不要解释你改了什么
+"""
+
+_POLISH_PSYCHOLOGY_AGENT_PROMPT = """你是专业小说心理描写润色专家。
+任务：只对章节文本中的心理描写部分做润色优化，不改剧情、不改对话内容。
+
+【润色目标】
+1. 抽象心理 → 具体感官（"她很紧张" → "她攥紧裙摆，听见自己心跳"）
+2. 大段直白心理独白 → 用动作/微表情/呼吸/视线穿插表达
+3. 删除"心想/暗道"类直白标识
+4. 保留所有信息密度
+5. 视角统一
+
+【输出要求】
+- 输出完整的章节文本
+- 不要解释你改了什么
+"""
