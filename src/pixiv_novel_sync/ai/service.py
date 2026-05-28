@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 import uuid
 from collections.abc import Iterator
@@ -10,6 +11,7 @@ from typing import Any
 from ..storage_db import Database
 from .chunking import estimate_token_count, get_tail_context, split_text_by_chars
 from .crypto import AISecretManager
+from .detection import detect_ai_tells
 from .models import AIAgentConfig, AIProviderConfig, AIStreamChunk
 from .prompts import (
     build_audit_messages,
@@ -21,6 +23,7 @@ from .prompts import (
     build_summarize_messages,
 )
 from .providers import create_provider
+from .retrieval import BaseRetriever, create_retriever
 
 
 class AIServiceError(RuntimeError):
@@ -31,6 +34,12 @@ class AIWritingService:
     def __init__(self, db_path: Path, secret_manager: AISecretManager | None = None) -> None:
         self.db_path = db_path
         self.secret_manager = secret_manager or AISecretManager()
+        self._retriever: BaseRetriever | None = None
+
+    def _get_retriever(self) -> BaseRetriever:
+        if self._retriever is None:
+            self._retriever = create_retriever(self.db_path)
+        return self._retriever
 
     def _db(self) -> Database:
         db = Database(self.db_path)
@@ -693,14 +702,33 @@ class AIWritingService:
             agent = self._load_agent_config(db, agent_id)
             provider_config = self._load_provider_config(db, agent.provider_id)
             text = self._resolve_input_text(db, payload)
+
+            # P4: 先跑规则检测，把结果注入 LLM 审计 prompt
+            rule_report = detect_ai_tells(text)
+            rule_context = None
+            if rule_report.issues:
+                lines = [f"- [{i.severity}] {i.message}" + (f" ({i.detail})" if i.detail else "") for i in rule_report.issues]
+                rule_context = (
+                    f"【规则检测预分析 - AI痕迹得分 {rule_report.score:.0f}/100】\n"
+                    + "\n".join(lines)
+                    + "\n\n请在审计中参考以上规则检测结果，对 AI 痕迹维度给出更精确的评估。"
+                )
+
             messages = build_audit_messages(
                 system_prompt=agent.system_prompt,
                 text=text,
                 audit_dimensions=payload.get("audit_dimensions"),
+                rule_detection_context=rule_context,
             )
-            db.create_ai_job(job_id, "audit", agent.id, {**payload, "text_chars": len(text)})
+            db.create_ai_job(job_id, "audit", agent.id, {
+                **payload, "text_chars": len(text),
+                "rule_score": rule_report.score, "rule_issues_count": len(rule_report.issues),
+            })
             job_created = True
-            yield AIStreamChunk(type="metadata", data={"job_id": job_id})
+            yield AIStreamChunk(type="metadata", data={
+                "job_id": job_id,
+                "rule_detection": {"score": rule_report.score, "issues_count": len(rule_report.issues)},
+            })
             model = agent.model or provider_config.default_model
             if not model:
                 raise AIServiceError("Agent 或 Provider 未配置模型")
@@ -1046,3 +1074,502 @@ class AIWritingService:
         if summary:
             return f"【前文摘要】\n{summary}\n\n【最近原文】\n{tail}"
         return tail
+
+    # ══════════════════════════════════════════════════════════════
+    # 写作项目 / 章节 / 伏笔 / 状态记忆
+    # ══════════════════════════════════════════════════════════════
+
+    # ── 项目 CRUD ──────────────────────────────────────────────────
+
+    def list_writing_projects(self, status: str | None = None) -> list[dict[str, Any]]:
+        db = self._db()
+        try:
+            return db.list_ai_writing_projects(status=status)
+        finally:
+            db.close()
+
+    def get_writing_project(self, project_id: int) -> dict[str, Any]:
+        db = self._db()
+        try:
+            project = db.get_ai_writing_project(project_id)
+            if not project:
+                raise AIServiceError("写作项目不存在")
+            return project
+        finally:
+            db.close()
+
+    def create_writing_project(self, payload: dict[str, Any]) -> int:
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise AIServiceError("项目名称不能为空")
+        db = self._db()
+        try:
+            return db.create_ai_writing_project(payload)
+        finally:
+            db.close()
+
+    def update_writing_project(self, project_id: int, payload: dict[str, Any]) -> None:
+        db = self._db()
+        try:
+            db.update_ai_writing_project(project_id, payload)
+        finally:
+            db.close()
+
+    def delete_writing_project(self, project_id: int) -> None:
+        db = self._db()
+        try:
+            db.delete_ai_writing_project(project_id)
+        finally:
+            db.close()
+
+    # ── 章节 CRUD ──────────────────────────────────────────────────
+
+    def list_chapters(self, project_id: int) -> list[dict[str, Any]]:
+        db = self._db()
+        try:
+            return db.list_ai_chapters(project_id)
+        finally:
+            db.close()
+
+    def get_chapter(self, chapter_id: int) -> dict[str, Any]:
+        db = self._db()
+        try:
+            chapter = db.get_ai_chapter(chapter_id)
+            if not chapter:
+                raise AIServiceError("章节不存在")
+            return chapter
+        finally:
+            db.close()
+
+    def create_chapter(self, payload: dict[str, Any]) -> int:
+        project_id = int(payload.get("project_id") or 0)
+        if not project_id:
+            raise AIServiceError("缺少 project_id")
+        db = self._db()
+        try:
+            if not db.get_ai_writing_project(project_id):
+                raise AIServiceError("写作项目不存在")
+            if "chapter_number" not in payload or not payload["chapter_number"]:
+                payload["chapter_number"] = db.get_next_chapter_number(project_id)
+            return db.create_ai_chapter(payload)
+        finally:
+            db.close()
+
+    def update_chapter(self, chapter_id: int, payload: dict[str, Any]) -> None:
+        db = self._db()
+        try:
+            db.update_ai_chapter(chapter_id, payload)
+        finally:
+            db.close()
+
+    def delete_chapter(self, chapter_id: int) -> None:
+        db = self._db()
+        try:
+            db.delete_ai_chapter(chapter_id)
+        finally:
+            db.close()
+
+    # ── 伏笔 CRUD ─────────────────────────────────────────────────
+
+    def list_foreshadows(self, project_id: int, status: str | None = None) -> list[dict[str, Any]]:
+        db = self._db()
+        try:
+            return db.list_ai_foreshadows(project_id, status=status)
+        finally:
+            db.close()
+
+    def create_foreshadow(self, payload: dict[str, Any]) -> int:
+        project_id = int(payload.get("project_id") or 0)
+        if not project_id:
+            raise AIServiceError("缺少 project_id")
+        description = str(payload.get("description") or "").strip()
+        if not description:
+            raise AIServiceError("伏笔描述不能为空")
+        db = self._db()
+        try:
+            return db.create_ai_foreshadow(payload)
+        finally:
+            db.close()
+
+    def update_foreshadow(self, foreshadow_id: int, payload: dict[str, Any]) -> None:
+        db = self._db()
+        try:
+            db.update_ai_foreshadow(foreshadow_id, payload)
+        finally:
+            db.close()
+
+    def delete_foreshadow(self, foreshadow_id: int) -> None:
+        db = self._db()
+        try:
+            db.delete_ai_foreshadow(foreshadow_id)
+        finally:
+            db.close()
+
+    # ── 项目状态记忆 ───────────────────────────────────────────────
+
+    def get_project_states(self, project_id: int) -> dict[str, str]:
+        db = self._db()
+        try:
+            return db.get_all_project_states(project_id)
+        finally:
+            db.close()
+
+    def update_project_state(self, project_id: int, state_type: str, content: str) -> None:
+        db = self._db()
+        try:
+            db.upsert_ai_project_state(project_id, state_type, content)
+        finally:
+            db.close()
+
+    # ── 项目上下文构建（续写时自动加载）─────────────────────────────
+
+    def build_project_context(self, project_id: int, current_chapter_number: int | None = None) -> str:
+        """构建项目级上下文，用于注入续写 prompt。
+
+        包含：项目大纲 + 状态记忆 + 伏笔提醒 + 前几章摘要 + 上一章末尾。
+        """
+        db = self._db()
+        try:
+            project = db.get_ai_writing_project(project_id)
+            if not project:
+                raise AIServiceError("写作项目不存在")
+
+            parts: list[str] = []
+
+            # 1. 项目大纲
+            if project.get("outline"):
+                outline = project["outline"]
+                if isinstance(outline, dict):
+                    parts.append(f"【项目大纲】\n{json.dumps(outline, ensure_ascii=False, indent=2)}")
+                else:
+                    parts.append(f"【项目大纲】\n{outline}")
+
+            # 2. 状态记忆
+            states = db.get_all_project_states(project_id)
+            for state_type, content in states.items():
+                label = {"character_state": "角色状态", "plot_progress": "剧情进展",
+                         "world_state": "世界观状态", "pending_hooks": "伏笔追踪"}.get(state_type, state_type)
+                parts.append(f"【{label}】\n{content}")
+
+            # 3. 伏笔提醒
+            if current_chapter_number:
+                approaching = db.get_approaching_foreshadows(project_id, current_chapter_number)
+                overdue = db.get_overdue_foreshadows(project_id, current_chapter_number)
+                if overdue:
+                    lines = [f"- [超期] {f['description']}（第{f['planted_chapter']}章埋设，目标第{f['target_resolve_chapter']}章回收）" for f in overdue]
+                    parts.append(f"【超期伏笔 - 急需回收】\n" + "\n".join(lines))
+                if approaching:
+                    non_overdue = [f for f in approaching if f not in overdue]
+                    if non_overdue:
+                        lines = [f"- {f['description']}（目标第{f['target_resolve_chapter']}章回收）" for f in non_overdue]
+                        parts.append(f"【即将到期伏笔】\n" + "\n".join(lines))
+
+            # 4. 前几章摘要 + 上一章末尾
+            chapters = db.list_ai_chapters(project_id)
+            if chapters and current_chapter_number:
+                prev_chapters = [c for c in chapters if c["chapter_number"] < current_chapter_number]
+                # 取最近 5 章的摘要
+                recent = prev_chapters[-5:]
+                if recent:
+                    summary_lines = []
+                    for c in recent:
+                        summary = c.get("summary") or "(无摘要)"
+                        summary_lines.append(f"第{c['chapter_number']}章 {c.get('title') or ''}: {summary}")
+                    parts.append(f"【前文摘要】\n" + "\n".join(summary_lines))
+
+                # 上一章末尾 500 字
+                if prev_chapters:
+                    last_chapter = prev_chapters[-1]
+                    last_content = last_chapter.get("content") or ""
+                    if last_content:
+                        tail = last_content[-500:] if len(last_content) > 500 else last_content
+                        parts.append(f"【上一章末尾】\n{tail}")
+
+            return "\n\n".join(parts)
+        finally:
+            db.close()
+
+    # ── 章节续写（项目模式）────────────────────────────────────────
+
+    def stream_chapter_continue(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        """基于项目上下文的章节续写。"""
+        db = self._db()
+        job_id = uuid.uuid4().hex
+        output_parts: list[str] = []
+        job_created = False
+        agent_id = int(payload.get("agent_id") or 0)
+        project_id = int(payload.get("project_id") or 0)
+        chapter_id = int(payload.get("chapter_id") or 0)
+
+        try:
+            agent = self._load_agent_config(db, agent_id)
+            provider_config = self._load_provider_config(db, agent.provider_id)
+
+            # 获取章节信息
+            chapter = db.get_ai_chapter(chapter_id) if chapter_id else None
+            chapter_number = chapter["chapter_number"] if chapter else int(payload.get("chapter_number") or 1)
+
+            # 构建项目上下文
+            project_context = ""
+            if project_id:
+                db.close()
+                project_context = self.build_project_context(project_id, chapter_number)
+                db = self._db()
+
+            # 当前章节已有内容
+            existing_content = ""
+            if chapter and chapter.get("content"):
+                existing_content = chapter["content"]
+            elif payload.get("text"):
+                existing_content = str(payload["text"])
+
+            # 合并上下文
+            full_context = ""
+            if project_context and existing_content:
+                full_context = f"{project_context}\n\n【当前章节已有内容】\n{existing_content}"
+            elif project_context:
+                full_context = project_context
+            elif existing_content:
+                full_context = existing_content
+
+            if not full_context.strip():
+                raise AIServiceError("没有可用的上下文（项目为空且未提供文本）")
+
+            # 智能上下文处理
+            context_chars = int(payload.get("context_chars") or agent.context_window)
+            if len(full_context) > context_chars:
+                full_context = get_tail_context(full_context, context_chars)
+
+            # 加载章节大纲
+            plan_text = None
+            if chapter and chapter.get("outline"):
+                plan_text = chapter["outline"]
+            elif payload.get("plan_text"):
+                plan_text = payload["plan_text"]
+
+            # 加载风格/小说档案
+            style_prompt = payload.get("style_prompt")
+            novel_prompt = payload.get("novel_prompt")
+            if not style_prompt and project_id:
+                project = db.get_ai_writing_project(project_id)
+                if project and project.get("style_profile_id"):
+                    profile = db.get_ai_style_profile(project["style_profile_id"])
+                    if profile:
+                        style_prompt = profile.get("profile_json") or profile.get("profile")
+            if not novel_prompt and project_id:
+                project = project if 'project' in dir() else db.get_ai_writing_project(project_id)
+                if project and project.get("novel_profile_id"):
+                    profile = db.get_ai_novel_profile(project["novel_profile_id"])
+                    if profile:
+                        novel_prompt = profile.get("profile_json") or profile.get("profile")
+
+            messages = build_continue_messages(
+                system_prompt=agent.system_prompt,
+                context=full_context,
+                instruction=payload.get("instruction"),
+                output_chars=payload.get("output_chars"),
+                style_prompt=style_prompt,
+                novel_prompt=novel_prompt,
+                plan_text=plan_text,
+            )
+
+            db.create_ai_job(job_id, "chapter_continue", agent.id, {
+                "project_id": project_id, "chapter_id": chapter_id,
+                "chapter_number": chapter_number, "context_chars": len(full_context),
+            })
+            job_created = True
+            yield AIStreamChunk(type="metadata", data={"job_id": job_id, "project_id": project_id, "chapter_number": chapter_number})
+
+            model = agent.model or provider_config.default_model
+            if not model:
+                raise AIServiceError("Agent 或 Provider 未配置模型")
+            provider = create_provider(provider_config)
+            for chunk in provider.stream_generate(
+                messages, model=model, temperature=agent.temperature,
+                top_p=agent.top_p, max_tokens=agent.max_tokens,
+            ):
+                if chunk.type == "delta":
+                    output_parts.append(chunk.text)
+                    yield chunk
+
+            output = "".join(output_parts)
+            db.update_ai_job(job_id, "succeeded", output_text=output, output_json={"chars": len(output)})
+            yield AIStreamChunk(type="done", data={"job_id": job_id, "chars": len(output)})
+        except GeneratorExit:
+            if job_created:
+                db.update_ai_job(job_id, "cancelled", output_text="".join(output_parts), error_message="客户端断开连接")
+            raise
+        except Exception as exc:
+            message = str(exc)
+            if job_created:
+                db.update_ai_job(job_id, "failed", output_text="".join(output_parts), error_message=message)
+            yield AIStreamChunk(type="error", data={"message": message})
+        finally:
+            db.close()
+
+    # ── 章节完成后自动更新状态 ─────────────────────────────────────
+
+    def stream_update_project_state(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        """章节完成后，用 LLM 自动更新项目状态记忆。
+
+        分析新章节内容，更新 character_state / plot_progress / pending_hooks。
+        """
+        db = self._db()
+        job_id = uuid.uuid4().hex
+        output_parts: list[str] = []
+        job_created = False
+        agent_id = int(payload.get("agent_id") or 0)
+        project_id = int(payload.get("project_id") or 0)
+        chapter_id = int(payload.get("chapter_id") or 0)
+
+        try:
+            agent = self._load_agent_config(db, agent_id)
+            provider_config = self._load_provider_config(db, agent.provider_id)
+
+            chapter = db.get_ai_chapter(chapter_id)
+            if not chapter or not chapter.get("content"):
+                raise AIServiceError("章节内容为空，无法更新状态")
+
+            # 获取现有状态
+            states = db.get_all_project_states(project_id)
+            existing_state_text = ""
+            if states:
+                parts = []
+                for st, content in states.items():
+                    parts.append(f"[{st}]\n{content}")
+                existing_state_text = "\n\n".join(parts)
+
+            system_prompt = """你是小说项目状态管理助手。根据新完成的章节内容，更新项目的状态记忆。
+
+请输出以下三个部分（用 === 分隔）：
+
+=== character_state ===
+列出所有角色的当前状态（位置、情绪、关系变化、新获得的信息）。
+
+=== plot_progress ===
+简要记录到目前为止的剧情进展（按时间线，每章 1-2 句话）。
+
+=== new_foreshadows ===
+列出本章新埋下的伏笔（如果有的话），每条一行，格式：描述 | 重要性(high/normal/low)
+
+规则：
+- 简洁精炼，每个部分不超过 500 字
+- 只记录事实，不做评价
+- 如果有已有状态，在其基础上更新而非重写"""
+
+            user_content_parts = []
+            if existing_state_text:
+                user_content_parts.append(f"【已有状态】\n{existing_state_text}")
+            user_content_parts.append(f"【第{chapter['chapter_number']}章内容】\n{chapter['content']}")
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": "\n\n".join(user_content_parts)},
+            ]
+
+            db.create_ai_job(job_id, "update_state", agent.id, {"project_id": project_id, "chapter_id": chapter_id})
+            job_created = True
+            yield AIStreamChunk(type="metadata", data={"job_id": job_id})
+
+            model = agent.model or provider_config.default_model
+            if not model:
+                raise AIServiceError("Agent 或 Provider 未配置模型")
+            provider = create_provider(provider_config)
+            for chunk in provider.stream_generate(
+                messages, model=model, temperature=0.3, top_p=0.9, max_tokens=2000,
+            ):
+                if chunk.type == "delta":
+                    output_parts.append(chunk.text)
+                    yield chunk
+
+            output = "".join(output_parts)
+
+            # 解析输出并保存状态
+            self._parse_and_save_state(db, project_id, chapter, output)
+
+            db.update_ai_job(job_id, "succeeded", output_text=output, output_json={"chars": len(output)})
+            yield AIStreamChunk(type="done", data={"job_id": job_id, "chars": len(output)})
+        except GeneratorExit:
+            if job_created:
+                db.update_ai_job(job_id, "cancelled", output_text="".join(output_parts), error_message="客户端断开连接")
+            raise
+        except Exception as exc:
+            message = str(exc)
+            if job_created:
+                db.update_ai_job(job_id, "failed", output_text="".join(output_parts), error_message=message)
+            yield AIStreamChunk(type="error", data={"message": message})
+        finally:
+            db.close()
+
+    def _parse_and_save_state(self, db: Database, project_id: int, chapter: dict[str, Any], output: str) -> None:
+        """解析 LLM 输出的状态更新并保存到数据库。"""
+        sections = output.split("===")
+        current_type = ""
+        for section in sections:
+            section = section.strip()
+            if not section:
+                continue
+            # 检查是否是标题行
+            if section in ("character_state", "plot_progress", "new_foreshadows"):
+                current_type = section
+                continue
+            # 尝试从 "xxx ===" 格式提取
+            for st in ("character_state", "plot_progress", "new_foreshadows"):
+                if st in section:
+                    current_type = st
+                    section = section.replace(st, "").strip()
+                    break
+
+            if not section or not current_type:
+                continue
+
+            if current_type in ("character_state", "plot_progress"):
+                db.upsert_ai_project_state(project_id, current_type, section)
+            elif current_type == "new_foreshadows":
+                # 解析伏笔列表
+                for line in section.splitlines():
+                    line = line.strip().lstrip("- •")
+                    if not line:
+                        continue
+                    parts = line.split("|")
+                    description = parts[0].strip()
+                    importance = "normal"
+                    if len(parts) > 1:
+                        imp = parts[1].strip().lower()
+                        if imp in ("high", "normal", "low"):
+                            importance = imp
+                    if description:
+                        db.create_ai_foreshadow({
+                            "project_id": project_id,
+                            "description": description,
+                            "planted_chapter": chapter.get("chapter_number"),
+                            "importance": importance,
+                        })
+
+    # ── 语义检索 ───────────────────────────────────────────────────
+
+    def index_chapter_for_retrieval(self, project_id: int, chapter_id: int) -> None:
+        """将章节摘要和关键事件索引到检索库。"""
+        db = self._db()
+        try:
+            chapter = db.get_ai_chapter(chapter_id)
+            if not chapter:
+                raise AIServiceError("章节不存在")
+            retriever = self._get_retriever()
+            retriever.index_chapter(
+                project_id=project_id,
+                chapter_number=chapter["chapter_number"],
+                summary=chapter.get("summary") or "",
+                key_events=chapter.get("key_events") or [],
+            )
+        finally:
+            db.close()
+
+    def search_project_context(self, project_id: int, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+        """语义检索项目历史片段。"""
+        retriever = self._get_retriever()
+        results = retriever.search(project_id, query, top_k=top_k)
+        return [
+            {"chapter_number": r.chapter_number, "content": r.content, "entry_type": r.entry_type, "score": round(r.score, 3)}
+            for r in results
+        ]

@@ -917,3 +917,53 @@ tests/test_ai_db.py
 - 新增 Prompt 模板 tab：分类筛选、内置模板初始化、自定义模板 CRUD。
 - 草稿：新增版本历史、创建新版本、删除功能。
 - Agent 设置：task_type 新增 audit/distill_style/distill_novel 选项。
+
+### 2026-05-28（Phase 4: 写作项目系统 + 深度优化）
+
+参考 inkos（多 Agent 流水线 + 真相文件）、MuMuAINovel（RAG + 大纲驱动 + 伏笔三态）、ai-novel-writer（规则检测 + 铁律）三个开源项目，完成以下功能升级：
+
+**P0 - Anthropic Provider 重试加固（providers.py）：**
+- `AnthropicProvider` 对齐 OpenAI 的重试逻辑：502/503/504/408/429 指数退避。
+- 新增 `_non_stream_generate` 非流式 fallback（解析 Anthropic content blocks）。
+- 重试耗尽后自动降级到非流式调用。
+
+**P1 - 写作项目系统（storage_db.py + service.py + ai_web.py）：**
+- 新增 `ai_writing_projects` 表：项目名、大纲、关联风格/小说档案、设置。
+- 新增 `ai_chapters` 表：章节序号、标题、内容、摘要、关键事件、大纲、字数。
+- 新增 `ai_project_states` 表：持久化状态记忆（character_state / plot_progress / world_state）。
+- 新增 `ai_foreshadows` 表：伏笔三态追踪（pending / approaching / resolved）。
+- 完整 CRUD：项目 5 方法、章节 7 方法、伏笔 6 方法、状态 4 方法。
+- 新增 `build_project_context`：自动构建项目级上下文（大纲 + 状态 + 伏笔提醒 + 前章摘要 + 上章末尾）。
+- 新增 `stream_chapter_continue`：基于项目上下文的章节续写。
+- 新增 `stream_update_project_state`：章节完成后 LLM 自动更新状态记忆 + 自动提取新伏笔。
+- 路由：`/api/dashboard/ai/projects/*`、`/api/dashboard/ai/chapters/*`、`/api/dashboard/ai/foreshadows/*`。
+
+**P2 - 持久化上下文记忆：**
+- `ai_project_states` 表 UPSERT 机制，每次续写后可自动更新。
+- `stream_update_project_state` 解析 LLM 输出的 `=== section ===` 格式，分别保存各状态类型。
+- 续写时通过 `build_project_context` 自动注入历史状态，无需每次重新摘要全文。
+
+**P3 - 伏笔管理三态：**
+- `get_approaching_foreshadows`：当前章节 >= target - 2 时提醒。
+- `get_overdue_foreshadows`：超过目标章节仍未回收时警告。
+- 续写 prompt 自动注入超期/即将到期伏笔列表。
+- `stream_update_project_state` 自动从 LLM 输出中提取新伏笔。
+
+**P4 - detection 整合进审计：**
+- `stream_audit` 调用前先跑 `detect_ai_tells` 规则检测。
+- 规则检测结果（得分 + 问题列表）注入 LLM 审计 prompt 的 `rule_detection_context`。
+- metadata 事件返回 `rule_detection.score` 和 `issues_count`，前端可展示。
+- `build_audit_messages` 新增 `rule_detection_context` 参数。
+
+**P5 - 大纲驱动续写：**
+- `ai_chapters.outline` 字段存储章节大纲。
+- `stream_chapter_continue` 自动加载章节 outline 作为 `plan_text`。
+- 支持先用 `stream_plan` 生成构思 → 保存到章节 outline → 续写时自动引用。
+
+**P6 - 语义检索（ai/retrieval.py）：**
+- 新增 `TFIDFRetriever`：零依赖，基于字符 bigram + TF-IDF 余弦相似度。
+- 新增 `EmbeddingRetriever`：可选 sentence-transformers，本地 embedding 语义检索。
+- `create_retriever` 工厂函数：自动降级（无 sentence-transformers 时用 TFIDF）。
+- `index_chapter_for_retrieval`：索引章节摘要和关键事件。
+- `search_project_context`：按语义相关性召回历史片段。
+- 路由：`POST /projects/<id>/chapters/<id>/index`、`GET /projects/<id>/search?q=...`。

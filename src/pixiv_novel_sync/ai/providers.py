@@ -226,43 +226,104 @@ class AnthropicProvider(AIProvider):
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
-        try:
-            with requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                stream=True,
-                timeout=self.config.timeout_seconds,
-                proxies=self._proxies(),
-            ) as response:
+        max_retries = max(1, self.config.max_retries)
+        last_error: str | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                with requests.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    stream=True,
+                    timeout=self.config.timeout_seconds,
+                    proxies=self._proxies(),
+                ) as response:
+                    if response.status_code in (502, 503, 504, 408, 429):
+                        last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                        if attempt < max_retries:
+                            import time as _t
+                            _t.sleep(2 ** attempt)
+                            continue
+                        # 重试耗尽，fallback 到非流式
+                        yield from self._non_stream_generate(url, headers, payload)
+                        return
+                    if response.status_code >= 500:
+                        # 其他 5xx，fallback 到非流式
+                        yield from self._non_stream_generate(url, headers, payload)
+                        return
+                    if response.status_code >= 400:
+                        raise AIProviderError(_safe_http_error(response))
+                    response.encoding = "utf-8"
+                    for raw_line in response.iter_lines(decode_unicode=True):
+                        if not raw_line:
+                            continue
+                        line = raw_line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        try:
+                            event = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        event_type = event.get("type")
+                        if event_type == "content_block_delta":
+                            delta = event.get("delta") or {}
+                            text = delta.get("text") or ""
+                            if text:
+                                yield AIStreamChunk(type="delta", text=text)
+                        elif event_type == "message_stop":
+                            yield AIStreamChunk(type="done")
+                            return
+                        elif event_type == "error":
+                            error = event.get("error") or {}
+                            raise AIProviderError(str(error.get("message") or "Anthropic API 返回错误"))
+                    return
+            except requests.RequestException as exc:
+                last_error = str(exc)
+                if attempt < max_retries:
+                    import time as _t
+                    _t.sleep(2 ** attempt)
+                    continue
+                raise AIProviderError(f"AI API 请求失败（已重试 {max_retries} 次）：{last_error}") from exc
+
+    def _non_stream_generate(self, url: str, headers: dict[str, str], payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        """非流式 fallback：关闭 stream 一次性获取完整响应。"""
+        payload_copy = {**payload, "stream": False}
+        max_retries = max(1, self.config.max_retries)
+        for attempt in range(max_retries + 1):
+            try:
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    json=payload_copy,
+                    timeout=max(self.config.timeout_seconds, 300),
+                    proxies=self._proxies(),
+                )
+                if response.status_code in (502, 503, 504, 408, 429):
+                    if attempt < max_retries:
+                        import time as _t
+                        _t.sleep(2 ** attempt)
+                        continue
+                    raise AIProviderError(f"Anthropic API 网关错误 {response.status_code}（已重试 {max_retries} 次）")
                 if response.status_code >= 400:
                     raise AIProviderError(_safe_http_error(response))
-                response.encoding = "utf-8"
-                for raw_line in response.iter_lines(decode_unicode=True):
-                    if not raw_line:
-                        continue
-                    line = raw_line.strip()
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    try:
-                        event = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    event_type = event.get("type")
-                    if event_type == "content_block_delta":
-                        delta = event.get("delta") or {}
-                        text = delta.get("text") or ""
-                        if text:
-                            yield AIStreamChunk(type="delta", text=text)
-                    elif event_type == "message_stop":
-                        yield AIStreamChunk(type="done")
-                        return
-                    elif event_type == "error":
-                        error = event.get("error") or {}
-                        raise AIProviderError(str(error.get("message") or "Anthropic API 返回错误"))
-        except requests.RequestException as exc:
-            raise AIProviderError(f"AI API 请求失败：{exc}") from exc
+                data = response.json()
+                content_blocks = data.get("content") or []
+                text_parts: list[str] = []
+                for block in content_blocks:
+                    if block.get("type") == "text":
+                        text_parts.append(block.get("text") or "")
+                text = "".join(text_parts)
+                if text:
+                    yield AIStreamChunk(type="delta", text=text)
+                yield AIStreamChunk(type="done")
+                return
+            except requests.RequestException as exc:
+                if attempt < max_retries:
+                    import time as _t
+                    _t.sleep(2 ** attempt)
+                    continue
+                raise AIProviderError(f"Anthropic API 请求失败（已重试 {max_retries} 次）：{exc}") from exc
 
 
 def create_provider(config: AIProviderConfig) -> AIProvider:

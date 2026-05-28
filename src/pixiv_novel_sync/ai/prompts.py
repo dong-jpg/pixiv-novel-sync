@@ -273,11 +273,14 @@ def build_audit_messages(
     system_prompt: str | None,
     text: str,
     audit_dimensions: list[str] | None = None,
+    rule_detection_context: str | None = None,
 ) -> list[dict[str, str]]:
     parts = []
     if audit_dimensions:
         parts.append(f"【重点审查维度】\n{', '.join(audit_dimensions)}")
         parts.append("请重点审查以上维度，其他维度简要审查。")
+    if rule_detection_context:
+        parts.append(rule_detection_context)
     parts.append(f"【待审查文本】\n{text}")
     return [
         {"role": "system", "content": system_prompt or DEFAULT_AUDIT_PROMPT},

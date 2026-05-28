@@ -471,3 +471,174 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
             return ok(created)
         except Exception as exc:
             return fail(exc)
+
+    # ── 写作项目 ───────────────────────────────────────────────
+
+    @app.get("/api/dashboard/ai/projects")
+    def list_writing_projects():
+        try:
+            status = request.args.get("status") or None
+            return ok(service.list_writing_projects(status=status))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/projects/<int:project_id>")
+    def get_writing_project(project_id: int):
+        try:
+            return ok(service.get_writing_project(project_id))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/projects")
+    def create_writing_project():
+        try:
+            project_id = service.create_writing_project(json_payload())
+            return ok({"id": project_id})
+        except Exception as exc:
+            return fail(exc)
+
+    @app.put("/api/dashboard/ai/projects/<int:project_id>")
+    def update_writing_project(project_id: int):
+        try:
+            service.update_writing_project(project_id, json_payload())
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.delete("/api/dashboard/ai/projects/<int:project_id>")
+    def delete_writing_project(project_id: int):
+        try:
+            service.delete_writing_project(project_id)
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    # ── 章节 ───────────────────────────────────────────────────
+
+    @app.get("/api/dashboard/ai/projects/<int:project_id>/chapters")
+    def list_chapters(project_id: int):
+        try:
+            return ok(service.list_chapters(project_id))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/chapters/<int:chapter_id>")
+    def get_chapter(chapter_id: int):
+        try:
+            return ok(service.get_chapter(chapter_id))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/chapters")
+    def create_chapter():
+        try:
+            chapter_id = service.create_chapter(json_payload())
+            return ok({"id": chapter_id})
+        except Exception as exc:
+            return fail(exc)
+
+    @app.put("/api/dashboard/ai/chapters/<int:chapter_id>")
+    def update_chapter(chapter_id: int):
+        try:
+            service.update_chapter(chapter_id, json_payload())
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.delete("/api/dashboard/ai/chapters/<int:chapter_id>")
+    def delete_chapter(chapter_id: int):
+        try:
+            service.delete_chapter(chapter_id)
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/chapters/continue/stream")
+    def stream_chapter_continue():
+        try:
+            return stream_response(service.stream_chapter_continue(json_payload()))
+        except Exception as exc:
+            return fail(exc)
+
+    # ── 项目状态记忆 ───────────────────────────────────────────
+
+    @app.get("/api/dashboard/ai/projects/<int:project_id>/states")
+    def get_project_states(project_id: int):
+        try:
+            return ok(service.get_project_states(project_id))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.put("/api/dashboard/ai/projects/<int:project_id>/states/<state_type>")
+    def update_project_state(project_id: int, state_type: str):
+        try:
+            payload = json_payload()
+            content = str(payload.get("content") or "")
+            service.update_project_state(project_id, state_type, content)
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/projects/<int:project_id>/states/auto-update/stream")
+    def stream_update_state(project_id: int):
+        try:
+            payload = json_payload()
+            payload["project_id"] = project_id
+            return stream_response(service.stream_update_project_state(payload))
+        except Exception as exc:
+            return fail(exc)
+
+    # ── 伏笔管理 ───────────────────────────────────────────────
+
+    @app.get("/api/dashboard/ai/projects/<int:project_id>/foreshadows")
+    def list_foreshadows(project_id: int):
+        try:
+            status = request.args.get("status") or None
+            return ok(service.list_foreshadows(project_id, status=status))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/foreshadows")
+    def create_foreshadow():
+        try:
+            foreshadow_id = service.create_foreshadow(json_payload())
+            return ok({"id": foreshadow_id})
+        except Exception as exc:
+            return fail(exc)
+
+    @app.put("/api/dashboard/ai/foreshadows/<int:foreshadow_id>")
+    def update_foreshadow(foreshadow_id: int):
+        try:
+            service.update_foreshadow(foreshadow_id, json_payload())
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.delete("/api/dashboard/ai/foreshadows/<int:foreshadow_id>")
+    def delete_foreshadow(foreshadow_id: int):
+        try:
+            service.delete_foreshadow(foreshadow_id)
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    # ── 语义检索 ───────────────────────────────────────────────
+
+    @app.post("/api/dashboard/ai/projects/<int:project_id>/chapters/<int:chapter_id>/index")
+    def index_chapter_retrieval(project_id: int, chapter_id: int):
+        try:
+            service.index_chapter_for_retrieval(project_id, chapter_id)
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/projects/<int:project_id>/search")
+    def search_project(project_id: int):
+        try:
+            query = str(request.args.get("q", "") or "").strip()
+            if not query:
+                raise AIServiceError("搜索关键词不能为空")
+            top_k = min(int(request.args.get("top_k", 5) or 5), 20)
+            return ok(service.search_project_context(project_id, query, top_k=top_k))
+        except Exception as exc:
+            return fail(exc)
