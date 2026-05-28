@@ -37,18 +37,29 @@ class OpenAICompatibleProvider(AIProvider):
     default_base_url = "https://api.openai.com/v1"
 
     def _resolve_base_url(self) -> str:
-        """自动检测并拼接 /v1 路径。"""
+        """决定最终请求的 base URL。
+
+        规则（优先级从高到低）：
+        1. 用户已显式包含 /v1（结尾或路径中段）→ 原样使用
+        2. 官方 host（api.openai.com / api.deepseek.com / api.x.ai）→ 原样使用
+        3. base_url 已经有自定义路径段（path 不是空也不是 "/"）→ 视为完整路径，不追加
+           如：`https://gateway.cc/codex` → `https://gateway.cc/codex/chat/completions`
+        4. 否则自动拼 `/v1`（典型自建网关的根 URL）
+        """
         base_url = (self.config.base_url or self.default_base_url).rstrip("/")
-        # 已经包含 /v1 则不重复拼接
         if base_url.endswith("/v1") or "/v1/" in base_url:
             return base_url
-        # 官方 API 地址不需要拼接（已经内置 /v1）
-        official_hosts = ("api.openai.com", "api.deepseek.com", "api.x.ai", "api.anthropic.com")
         from urllib.parse import urlparse
-        host = urlparse(base_url).hostname or ""
+        parsed = urlparse(base_url)
+        host = parsed.hostname or ""
+        official_hosts = ("api.openai.com", "api.deepseek.com", "api.x.ai", "api.anthropic.com")
         if host in official_hosts:
             return base_url
-        # 其他地址（自建网关等）自动拼接 /v1
+        # 已有自定义路径段（如 /codex / /api/openai 等）→ 不再拼 /v1
+        path = parsed.path or ""
+        if path and path not in ("", "/"):
+            return base_url
+        # 根 URL → 自动拼 /v1
         return f"{base_url}/v1"
 
     def stream_generate(
