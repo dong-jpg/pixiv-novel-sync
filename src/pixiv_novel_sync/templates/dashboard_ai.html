@@ -26,6 +26,116 @@
     {{ message }}
   </div>
 
+  <!-- ═══ 创作向导 ═══ -->
+  <section v-show="activeTab === 'wizard'" class="grid grid-cols-1 lg:grid-cols-12 gap-4" style="height: calc(100vh - 220px); min-height: 600px;">
+    <!-- 左：会话列表 -->
+    <div class="lg:col-span-3 bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col overflow-hidden">
+      <div class="p-3 border-b border-gray-100 flex items-center gap-2">
+        <span class="text-sm font-bold text-gray-900 flex-1">会话</span>
+        <button @click="openNewWizardSession" class="text-xs px-2 py-1 bg-brand-500 text-white rounded hover:bg-brand-600">+ 新建</button>
+      </div>
+      <div class="flex-1 overflow-y-auto p-2 space-y-1">
+        <div v-for="s in chatSessions" :key="s.id" @click="selectChatSession(s.id)"
+             class="px-3 py-2 rounded-lg cursor-pointer text-sm border"
+             :class="currentChatSession?.id === s.id ? 'bg-brand-50 border-brand-200' : 'border-transparent hover:bg-gray-50'">
+          <div class="font-medium text-gray-900 truncate">{{ s.title || '未命名会话' }}</div>
+          <div class="text-xs text-pixiv-gray flex items-center gap-1 mt-0.5">
+            <span>{{ s.message_count || 0 }} 条</span>
+            <span v-if="s.status === 'imported'" class="ml-1 px-1.5 py-0.5 rounded bg-green-100 text-green-700 text-[10px]">已导入</span>
+          </div>
+        </div>
+        <p v-if="!chatSessions.length" class="text-xs text-pixiv-gray px-3 py-2">还没有会话</p>
+      </div>
+    </div>
+
+    <!-- 中：对话主区 -->
+    <div class="lg:col-span-6 bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col overflow-hidden">
+      <div class="p-3 border-b border-gray-100 flex items-center gap-2">
+        <span class="text-sm font-bold text-gray-900 flex-1 truncate">{{ currentChatSession ? (currentChatSession.title || '未命名会话') : '选择或新建会话' }}</span>
+        <select v-if="currentChatSession" v-model.number="currentChatSession.agent_id" @change="updateChatSessionAgent" class="text-xs px-2 py-1 border border-gray-200 rounded">
+          <option :value="0">选择向导 Agent</option>
+          <option v-for="a in wizardAgents" :key="a.id" :value="a.id">{{ a.name }}</option>
+        </select>
+        <button v-if="currentChatSession" @click="openImportWizardModal" class="text-xs px-2 py-1 bg-amber-500 text-white rounded hover:bg-amber-600">一键导入到项目</button>
+        <button v-if="currentChatSession" @click="renameWizardSession" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">重命名</button>
+        <button v-if="currentChatSession" @click="deleteWizardSession" class="text-xs px-2 py-1 bg-red-50 text-red-600 rounded hover:bg-red-100">删除</button>
+      </div>
+      <div ref="chatLogRef" class="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
+        <div v-for="m in chatMessages" :key="m.id" class="flex gap-2" :class="m.role === 'user' ? 'flex-row-reverse' : ''">
+          <div class="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold"
+               :class="m.role === 'user' ? 'bg-brand-500 text-white' : 'bg-amber-100 text-amber-700'">
+            {{ m.role === 'user' ? '你' : 'AI' }}
+          </div>
+          <div class="max-w-[85%] px-3 py-2 rounded-lg text-sm font-serif whitespace-pre-wrap break-words"
+               :class="m.role === 'user' ? 'bg-brand-500 text-white' : 'bg-white border border-gray-100 text-gray-800'">{{ m.content }}</div>
+        </div>
+        <div v-if="chatStreaming" class="flex gap-2">
+          <div class="flex-shrink-0 w-7 h-7 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center text-xs font-bold">AI</div>
+          <div class="max-w-[85%] px-3 py-2 rounded-lg text-sm font-serif whitespace-pre-wrap break-words bg-white border border-amber-200 text-gray-800">{{ chatStreamingText || '思考中…' }}</div>
+        </div>
+        <p v-if="!chatMessages.length && !chatStreaming" class="text-sm text-pixiv-gray text-center mt-10">向 AI 描述你想写的故事，编辑会逐步引导你产出完整素材。</p>
+      </div>
+      <div class="border-t border-gray-100 p-3 space-y-2">
+        <textarea v-model="chatInput" @keydown.enter.exact.prevent="sendChatMessage" rows="3"
+                  :placeholder="currentChatSession ? '描述你想写的故事或回答 AI 的问题（Enter 发送，Shift+Enter 换行）' : '请先在左侧选择或新建会话'"
+                  :disabled="!currentChatSession || chatStreaming"
+                  class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif resize-none disabled:bg-gray-50"></textarea>
+        <div class="flex items-center gap-2 justify-between">
+          <p class="text-xs text-pixiv-gray">{{ chatStreaming ? '生成中…' : '输入完按 Enter 发送' }}</p>
+          <button @click="sendChatMessage" :disabled="!currentChatSession || chatStreaming || !chatInput.trim()"
+                  class="px-4 py-1.5 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">发送</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右：实时产物预览 -->
+    <div class="lg:col-span-3 bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col overflow-hidden">
+      <div class="p-3 border-b border-gray-100 flex items-center gap-2">
+        <span class="text-sm font-bold text-gray-900 flex-1">实时产物</span>
+        <button @click="loadWizardPreview" :disabled="!currentChatSession" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50">刷新</button>
+      </div>
+      <div class="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
+        <div v-if="wizardSectionKeys.length">
+          <details v-for="key in wizardSectionKeys" :key="key" class="border border-gray-100 rounded-lg" open>
+            <summary class="px-2.5 py-1.5 text-xs font-medium text-gray-900 cursor-pointer bg-gray-50 rounded-t-lg">{{ key }}</summary>
+            <pre class="px-2.5 py-2 whitespace-pre-wrap font-serif text-gray-700 max-h-72 overflow-auto">{{ wizardSections[key] }}</pre>
+          </details>
+        </div>
+        <p v-else class="text-pixiv-gray text-center mt-6">AI 输出 markdown 节段后会自动填充到这里。<br>当 AI 输出 <code class="text-amber-600">&lt;&lt;&lt;READY_FOR_IMPORT&gt;&gt;&gt;</code> 后即可一键导入。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 一键导入弹窗 ═══ -->
+  <div v-if="showImportModal" class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" @click.self="showImportModal = false">
+    <div class="bg-white rounded-xl shadow-xl max-w-md w-full p-5 space-y-4">
+      <h3 class="text-lg font-bold text-gray-900">一键导入到项目</h3>
+      <div class="space-y-2">
+        <label class="flex items-center gap-2 text-sm">
+          <input type="radio" v-model="importMode" value="create"> 新建项目（推荐）
+        </label>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="radio" v-model="importMode" value="merge"> 合并到已有项目
+        </label>
+        <select v-if="importMode === 'merge'" v-model.number="importTargetProjectId" class="w-full px-3 py-2 border border-gray-200 rounded text-sm">
+          <option :value="0">选择目标项目</option>
+          <option v-for="p in projectList" :key="p.id" :value="p.id">{{ p.name }}</option>
+        </select>
+        <div v-if="importMode === 'merge'" class="text-xs text-pixiv-gray">
+          合并模式仅添加目标项目中尚不存在的章节/伏笔，settings 浅合并。如需强制覆盖某字段：
+          <label v-for="f in ['name','description','outline']" :key="f" class="ml-2 inline-flex items-center gap-1">
+            <input type="checkbox" :value="f" v-model="importOverwriteFields" class="rounded">{{ f }}
+          </label>
+        </div>
+      </div>
+      <p class="text-xs text-pixiv-gray border-t pt-2">导入后会跳到「写作项目」tab 直接打开新项目。</p>
+      <div class="flex justify-end gap-2">
+        <button @click="showImportModal = false" class="px-3 py-1.5 bg-gray-100 rounded text-sm">取消</button>
+        <button @click="confirmImportWizard" :disabled="importing || (importMode === 'merge' && !importTargetProjectId)" class="px-3 py-1.5 bg-brand-500 text-white rounded text-sm disabled:opacity-50">{{ importing ? '导入中…' : '确认导入' }}</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ═══ 写作项目 ═══ -->
   <section v-show="activeTab === 'projects'">
     <!-- 项目列表视图 -->
@@ -218,7 +328,126 @@
         </div>
         <!-- 右侧输出面板 + 伏笔提醒 -->
         <div class="space-y-4">
+          <!-- ════ 自动 Pipeline 配置卡片 ════ -->
+          <div class="bg-gradient-to-br from-amber-50 to-rose-50 rounded-xl border border-amber-200 p-4 space-y-3">
+            <div class="flex items-center justify-between">
+              <h3 class="font-bold text-gray-900 text-sm">🚀 自动生成本章</h3>
+              <button @click="pipelineExpanded = !pipelineExpanded" class="text-xs text-pixiv-gray">{{ pipelineExpanded ? '收起' : '展开' }}</button>
+            </div>
+            <div v-if="pipelineExpanded" class="space-y-2">
+              <div class="text-xs text-pixiv-gray">勾选要执行的步骤，按顺序自动串联：</div>
+              <div class="grid grid-cols-2 gap-1 text-xs">
+                <label v-for="s in pipelineAllSteps" :key="s.id" class="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-white/50">
+                  <input type="checkbox" :value="s.id" v-model="pipelineSelectedSteps" class="rounded">
+                  <span>{{ s.label }}</span>
+                </label>
+              </div>
+              <details class="text-xs">
+                <summary class="cursor-pointer text-pixiv-gray">指定每步使用的 Agent</summary>
+                <div class="mt-2 space-y-1.5">
+                  <div v-for="s in pipelineAllSteps" :key="s.id" class="flex items-center gap-2">
+                    <span class="w-20 text-xs text-pixiv-gray">{{ s.label }}</span>
+                    <select v-model.number="pipelineAgentIds[s.id]" class="flex-1 px-1.5 py-0.5 border border-gray-200 rounded text-xs bg-white">
+                      <option :value="0">默认/不需要</option>
+                      <option v-for="a in pipelineAgentsFor(s.id)" :key="a.id" :value="a.id">{{ a.name }}</option>
+                    </select>
+                  </div>
+                </div>
+              </details>
+            </div>
+            <button @click="startChapterPipeline" :disabled="pipelineRunning || !currentChapter" class="w-full px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+              {{ pipelineRunning ? '执行中…' : '一键自动生成' }}
+            </button>
+            <div v-if="pipelineSteps.length" class="space-y-1 text-xs">
+              <div v-for="(s, i) in pipelineSteps" :key="s.name + i" class="flex items-center gap-2">
+                <span class="w-3 h-3 rounded-full flex-shrink-0"
+                      :class="{
+                        'bg-gray-200': s.status === 'pending',
+                        'bg-blue-500 animate-pulse': s.status === 'running',
+                        'bg-green-500': s.status === 'done',
+                        'bg-yellow-500': s.status === 'skipped',
+                        'bg-red-500': s.status === 'failed',
+                      }"></span>
+                <span class="flex-1 truncate text-gray-700">{{ s.label }}</span>
+                <span class="text-pixiv-gray text-[10px]">{{ s.statusLabel }}</span>
+              </div>
+            </div>
+          </div>
+
           <output-panel title="AI 输出" :text="streamOutput" :job-id="currentJobId" :streaming="streaming" :show-detect="true" @save="saveDraft('章节续写', streamOutput)" @detect="detectAITells"></output-panel>
+
+          <!-- ════ 章节产出面板（聚合视图） ════ -->
+          <div v-if="chapterDashboard" class="bg-white rounded-xl border border-gray-100 shadow-sm">
+            <div class="border-b border-gray-100 px-4 pt-3 flex items-center gap-1 overflow-x-auto">
+              <button v-for="t in dashboardTabs" :key="t.id" @click="dashboardTab = t.id"
+                      class="px-3 py-1.5 text-xs font-medium rounded-t-lg whitespace-nowrap"
+                      :class="dashboardTab === t.id ? 'bg-brand-500 text-white' : 'text-gray-600 hover:bg-gray-50'">
+                {{ t.label }}
+              </button>
+              <button @click="loadChapterDashboard" class="ml-auto text-xs text-pixiv-gray hover:text-gray-700">刷新</button>
+            </div>
+            <div class="p-4 text-xs">
+              <div v-if="dashboardTab === 'meta'" class="space-y-2">
+                <div><span class="font-medium text-gray-900">摘要：</span><pre class="mt-1 whitespace-pre-wrap font-serif text-gray-700">{{ chapterDashboard.chapter?.summary || '（无）' }}</pre></div>
+                <div><span class="font-medium text-gray-900">关键事件：</span>
+                  <ul class="mt-1 list-disc pl-5 text-gray-700">
+                    <li v-for="(e, i) in chapterDashboard.chapter?.key_events || []" :key="i">{{ e }}</li>
+                  </ul>
+                </div>
+              </div>
+              <div v-else-if="dashboardTab === 'state'" class="space-y-2">
+                <div v-for="(v, k) in chapterDashboard.project_states || {}" :key="k">
+                  <div class="font-medium text-gray-900">{{ stateLabel(k) }}</div>
+                  <pre class="mt-1 whitespace-pre-wrap text-gray-700 max-h-40 overflow-auto">{{ v }}</pre>
+                </div>
+              </div>
+              <div v-else-if="dashboardTab === 'foreshadow'">
+                <div v-if="chapterDashboard.foreshadows_planted?.length">
+                  <div class="font-medium text-gray-900 mb-1">本章新埋伏笔</div>
+                  <ul class="list-disc pl-5 text-gray-700 space-y-1">
+                    <li v-for="f in chapterDashboard.foreshadows_planted" :key="f.id">{{ f.description }}<span v-if="f.target_resolve_chapter" class="text-pixiv-gray"> (目标第{{ f.target_resolve_chapter }}章)</span></li>
+                  </ul>
+                </div>
+                <div v-if="chapterDashboard.foreshadows_resolved?.length" class="mt-3">
+                  <div class="font-medium text-green-700 mb-1">本章回收伏笔</div>
+                  <ul class="list-disc pl-5 text-gray-700 space-y-1">
+                    <li v-for="f in chapterDashboard.foreshadows_resolved" :key="f.id">{{ f.description }}<span v-if="f.notes" class="text-pixiv-gray block"> 证据：{{ f.notes }}</span></li>
+                  </ul>
+                </div>
+                <p v-if="!chapterDashboard.foreshadows_planted?.length && !chapterDashboard.foreshadows_resolved?.length" class="text-pixiv-gray">本章无伏笔变化。</p>
+              </div>
+              <div v-else-if="dashboardTab === 'detect'">
+                <div v-if="chapterDashboard.chapter?.metadata?.ai_score !== undefined">
+                  <div class="text-2xl font-bold" :class="(chapterDashboard.chapter.metadata.ai_score || 0) >= 70 ? 'text-green-600' : 'text-amber-600'">
+                    {{ Math.round(chapterDashboard.chapter.metadata.ai_score || 0) }} / 100
+                  </div>
+                  <p class="text-pixiv-gray">分数越高越像人写</p>
+                  <ul v-if="chapterDashboard.chapter.metadata.ai_tells?.length" class="mt-2 list-disc pl-5 text-gray-700 space-y-1">
+                    <li v-for="(it, i) in chapterDashboard.chapter.metadata.ai_tells" :key="i"><span class="text-amber-700">[{{ it.severity }}]</span> {{ it.message }}</li>
+                  </ul>
+                </div>
+                <p v-else class="text-pixiv-gray">尚未检测，运行 Pipeline 时会自动检测。</p>
+              </div>
+              <div v-else-if="dashboardTab === 'audit'">
+                <pre v-if="chapterDashboard.chapter?.metadata?.audit_report" class="whitespace-pre-wrap font-serif text-gray-700 max-h-96 overflow-auto">{{ chapterDashboard.chapter.metadata.audit_report }}</pre>
+                <p v-else class="text-pixiv-gray">尚未审计，运行 Pipeline 时会自动审计。</p>
+              </div>
+              <div v-else-if="dashboardTab === 'pipeline'">
+                <div v-if="chapterDashboard.chapter?.metadata?.pipeline" class="space-y-2">
+                  <p class="text-pixiv-gray">本章已运行的 Pipeline 步骤：</p>
+                  <table class="w-full">
+                    <tr v-for="s in chapterDashboard.chapter.metadata.pipeline.steps || []" :key="s.name" class="border-b border-gray-50">
+                      <td class="py-1 pr-2 text-gray-900">{{ pipelineStepLabel(s.name) }}</td>
+                      <td class="py-1 px-2"><span class="px-1.5 py-0.5 rounded text-[10px]" :class="pipelineStatusBadge(s.status)">{{ s.status }}</span></td>
+                      <td class="py-1 pl-2 text-pixiv-gray">{{ s.error || s.reason || '' }}</td>
+                    </tr>
+                  </table>
+                </div>
+                <p v-else class="text-pixiv-gray">本章尚未运行过 Pipeline。</p>
+              </div>
+            </div>
+          </div>
+
           <div v-if="chapterForeshadowAlerts.length" class="bg-amber-50 border border-amber-200 rounded-xl p-4">
             <h3 class="font-bold text-amber-800 text-sm mb-2">伏笔提醒</h3>
             <div v-for="fs in chapterForeshadowAlerts" :key="fs.id" class="text-xs text-amber-700 mb-1">
@@ -900,13 +1129,14 @@ window.initVueApp({
   setup() {
     const { ref, reactive, computed, onMounted } = Vue;
     const tabs = [
+      { id: 'wizard', name: '创作向导' },
       { id: 'projects', name: '写作项目' },
       { id: 'continue', name: '续写' }, { id: 'rewrite', name: '改写' }, { id: 'audit', name: '内容审计' },
       { id: 'distill', name: '蒸馏' }, { id: 'drafts', name: '草稿' }, { id: 'jobs', name: '任务历史' },
       { id: 'profiles', name: '档案' }, { id: 'prompts', name: 'Prompt 模板' },
       { id: 'agents', name: 'Agent 设置' }, { id: 'providers', name: 'API 设置' }
     ];
-    const activeTab = ref('projects');
+    const activeTab = ref('wizard');
     const providers = ref([]);
     const agents = ref([]);
     const drafts = ref([]);
@@ -1254,11 +1484,14 @@ window.initVueApp({
       try { await api('/api/dashboard/ai/chapters/' + id, { method: 'DELETE' }); await loadChapters(currentProject.value?.id); }
       catch (e) { showMessage(e.message, 'error'); }
     }
-    function openChapter(ch) {
+    async function openChapter(ch) {
       currentChapter.value = ch;
       Object.assign(chapterEditForm, { title: ch.title || '', content: ch.content || '', outline: ch.outline || '', summary: ch.summary || '' });
       chapterKeyEventsText.value = (ch.key_events || []).join('\n');
       projectView.value = 'chapter';
+      // 同步加载产出面板
+      try { chapterDashboard.value = await api('/api/dashboard/ai/chapters/' + ch.id + '/dashboard'); }
+      catch { chapterDashboard.value = null; }
     }
     async function saveCurrentChapter() {
       if (!currentChapter.value) return;
@@ -1340,10 +1573,327 @@ window.initVueApp({
       catch (e) { showMessage(e.message, 'error'); }
     }
 
+    // ── 创作向导（多轮对话） ──────────────────────────────────────
+    const chatSessions = ref([]);
+    const currentChatSession = ref(null);
+    const chatMessages = ref([]);
+    const chatInput = ref('');
+    const chatStreaming = ref(false);
+    const chatStreamingText = ref('');
+    const chatLogRef = ref(null);
+    const wizardSections = ref({});
+    const showImportModal = ref(false);
+    const importMode = ref('create');
+    const importTargetProjectId = ref(0);
+    const importOverwriteFields = ref([]);
+    const importing = ref(false);
+    const wizardAgents = computed(() => agents.value.filter(a => ['wizard', 'general', 'chat'].includes(a.task_type)));
+    const wizardSectionKeys = computed(() => Object.keys(wizardSections.value || {}));
+
+    async function loadChatSessions() {
+      try { chatSessions.value = await api('/api/dashboard/ai/chat/sessions?scope=wizard'); }
+      catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function selectChatSession(id) {
+      try {
+        const data = await api('/api/dashboard/ai/chat/sessions/' + id);
+        currentChatSession.value = { id: data.id, agent_id: data.agent_id, title: data.title, status: data.status, metadata: data.metadata };
+        chatMessages.value = data.messages || [];
+        wizardSections.value = (data.metadata && data.metadata.collected_sections) || {};
+        await scrollChatToBottom();
+      } catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function openNewWizardSession() {
+      // 默认绑定第一个可用的 wizard agent，没有则提示
+      const wa = wizardAgents.value;
+      if (!wa.length) {
+        showMessage('还没有创作向导 Agent。请先在 API 设置/Agent 设置里创建 Provider，然后到 Agent 设置点"一键初始化"。', 'error');
+        activeTab.value = 'agents';
+        return;
+      }
+      const title = prompt('给这次创作起个名字：', '新作品 ' + new Date().toLocaleString('zh-CN', { hour12: false }).slice(5, 16));
+      if (title === null) return;
+      try {
+        const res = await api('/api/dashboard/ai/chat/sessions', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ agent_id: wa[0].id, scope: 'wizard', title: title || '未命名作品' }) });
+        await loadChatSessions();
+        await selectChatSession(res.id);
+      } catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function updateChatSessionAgent() {
+      if (!currentChatSession.value) return;
+      try { await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ agent_id: currentChatSession.value.agent_id }) }); }
+      catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function renameWizardSession() {
+      if (!currentChatSession.value) return;
+      const title = prompt('修改会话名称：', currentChatSession.value.title || '');
+      if (title === null) return;
+      try {
+        await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ title }) });
+        currentChatSession.value.title = title;
+        await loadChatSessions();
+      } catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function deleteWizardSession() {
+      if (!currentChatSession.value) return;
+      if (!confirm('确认删除这个会话？所有对话记录都会丢失。')) return;
+      try {
+        await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id, { method: 'DELETE' });
+        currentChatSession.value = null;
+        chatMessages.value = [];
+        wizardSections.value = {};
+        await loadChatSessions();
+      } catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function scrollChatToBottom() {
+      await Vue.nextTick();
+      const el = chatLogRef.value;
+      if (el && el.scrollTo) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    }
+    async function sendChatMessage() {
+      if (!currentChatSession.value || !chatInput.value.trim() || chatStreaming.value) return;
+      const text = chatInput.value.trim();
+      chatInput.value = '';
+      // 立即在前端追加 user 消息（乐观）
+      chatMessages.value.push({ id: Date.now(), role: 'user', content: text });
+      chatStreaming.value = true;
+      chatStreamingText.value = '';
+      await scrollChatToBottom();
+      try {
+        const res = await fetch('/api/dashboard/ai/chat/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ session_id: currentChatSession.value.id, user_message: text }) });
+        if (!res.ok || !res.body) throw new Error('请求失败');
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let readyToImport = false;
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split('\n\n');
+          buffer = events.pop() || '';
+          for (const raw of events) {
+            const lines = raw.split('\n');
+            const event = (lines.find(l => l.startsWith('event:')) || '').slice(6).trim();
+            const dataLine = (lines.find(l => l.startsWith('data:')) || '').slice(5).trim();
+            if (!dataLine) continue;
+            const data = JSON.parse(dataLine);
+            if (event === 'delta') { chatStreamingText.value += data.text || ''; await scrollChatToBottom(); }
+            else if (event === 'done') { readyToImport = !!data.ready_to_import; }
+            else if (event === 'error') throw new Error(data.message || '生成失败');
+          }
+        }
+        // 把流式文本作为 assistant 消息
+        if (chatStreamingText.value) {
+          chatMessages.value.push({ id: Date.now() + 1, role: 'assistant', content: chatStreamingText.value });
+        }
+        chatStreamingText.value = '';
+        // 刷新预览节段
+        await loadWizardPreview(false);
+        await loadChatSessions();
+        if (readyToImport) {
+          showMessage('AI 标记内容已就绪，可点击"一键导入到项目"');
+        }
+      } catch (e) {
+        showMessage(e.message, 'error');
+      } finally {
+        chatStreaming.value = false;
+        await scrollChatToBottom();
+      }
+    }
+    async function loadWizardPreview(notify = true) {
+      if (!currentChatSession.value) return;
+      try {
+        // 重新拉取 session 以更新 metadata.collected_sections（chat stream 后端会自动 patch）
+        const data = await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id);
+        wizardSections.value = (data.metadata && data.metadata.collected_sections) || {};
+        if (notify) showMessage('已刷新');
+      } catch (e) { if (notify) showMessage(e.message, 'error'); }
+    }
+    function openImportWizardModal() {
+      if (!currentChatSession.value) return;
+      importMode.value = 'create';
+      importTargetProjectId.value = 0;
+      importOverwriteFields.value = [];
+      showImportModal.value = true;
+    }
+    async function confirmImportWizard() {
+      if (!currentChatSession.value) return;
+      importing.value = true;
+      try {
+        const payload = { mode: importMode.value };
+        if (importMode.value === 'merge') {
+          if (!importTargetProjectId.value) throw new Error('请选择目标项目');
+          payload.target_project_id = importTargetProjectId.value;
+          payload.overwrite_fields = importOverwriteFields.value;
+        }
+        const res = await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id + '/import-to-project', {
+          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload),
+        });
+        showMessage('已导入到项目（id=' + res.project_id + '）');
+        showImportModal.value = false;
+        await loadProjects();
+        await loadChatSessions();
+        // 跳到项目 tab 并打开
+        activeTab.value = 'projects';
+        const project = projectList.value.find(p => p.id === res.project_id);
+        if (project) await openProject(project);
+      } catch (e) {
+        showMessage(e.message, 'error');
+      } finally {
+        importing.value = false;
+      }
+    }
+
+    // ── 章节自动 Pipeline + 产出面板 ──────────────────────────────
+    const pipelineAllSteps = [
+      { id: 'continue', label: '续写' },
+      { id: 'polish_dialogue', label: '对话润色' },
+      { id: 'polish_psychology', label: '心理润色' },
+      { id: 'deai', label: '去AI味' },
+      { id: 'summary', label: '摘要+关键事件' },
+      { id: 'state', label: '更新项目状态' },
+      { id: 'foreshadow', label: '回收伏笔' },
+      { id: 'audit', label: '内容审计' },
+      { id: 'detect', label: 'AI痕迹检测' },
+      { id: 'index', label: '索引入库' },
+    ];
+    const pipelineExpanded = ref(true);
+    const pipelineSelectedSteps = ref(['continue', 'summary', 'state', 'foreshadow', 'detect', 'index']);
+    const pipelineAgentIds = reactive({ continue: 0, polish_dialogue: 0, polish_psychology: 0, deai: 0, summary: 0, state: 0, foreshadow: 0, audit: 0 });
+    const pipelineRunning = ref(false);
+    const pipelineSteps = ref([]); // {name, label, status, statusLabel}
+    const chapterDashboard = ref(null);
+    const dashboardTab = ref('meta');
+    const dashboardTabs = [
+      { id: 'meta', label: '摘要+关键事件' },
+      { id: 'state', label: '项目状态' },
+      { id: 'foreshadow', label: '伏笔变化' },
+      { id: 'detect', label: 'AI痕迹' },
+      { id: 'audit', label: '审计报告' },
+      { id: 'pipeline', label: 'Pipeline 历史' },
+    ];
+
+    function pipelineAgentsFor(stepId) {
+      const map = {
+        continue: ['continue', 'general'],
+        polish_dialogue: ['polish_dialogue', 'rewrite', 'general'],
+        polish_psychology: ['polish_psychology', 'rewrite', 'general'],
+        deai: ['rewrite', 'general'],
+        summary: ['extract_summary', 'general'],
+        state: ['general', 'continue'],
+        foreshadow: ['resolve_foreshadow', 'general'],
+        audit: ['audit', 'general'],
+      };
+      const allowed = map[stepId] || [];
+      return agents.value.filter(a => allowed.includes(a.task_type));
+    }
+    function pipelineStepLabel(name) {
+      const s = pipelineAllSteps.find(x => x.id === name);
+      return s ? s.label : name;
+    }
+    function pipelineStatusBadge(status) {
+      const map = { pending: 'bg-gray-100 text-gray-600', running: 'bg-blue-100 text-blue-700', done: 'bg-green-100 text-green-700', skipped: 'bg-yellow-100 text-yellow-700', failed: 'bg-red-100 text-red-700' };
+      return map[status] || 'bg-gray-100 text-gray-600';
+    }
+    function stateLabel(key) {
+      const map = { character_state: '角色状态', plot_progress: '剧情进展', world_state: '世界观状态', pending_hooks: '未回收钩子' };
+      return map[key] || key;
+    }
+    async function loadChapterDashboard() {
+      if (!currentChapter.value) { chapterDashboard.value = null; return; }
+      try { chapterDashboard.value = await api('/api/dashboard/ai/chapters/' + currentChapter.value.id + '/dashboard'); }
+      catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function startChapterPipeline() {
+      if (!currentChapter.value || pipelineRunning.value) return;
+      const steps = pipelineSelectedSteps.value.slice();
+      if (!steps.length) { showMessage('至少选择一个步骤', 'error'); return; }
+      // 自动填充未指定的 agent_id
+      const agent_ids = {};
+      for (const s of pipelineAllSteps) {
+        if (!steps.includes(s.id)) continue;
+        if (s.id === 'index' || s.id === 'detect') continue;
+        let aid = pipelineAgentIds[s.id];
+        if (!aid) {
+          const candidates = pipelineAgentsFor(s.id);
+          if (candidates.length) aid = candidates[0].id;
+        }
+        agent_ids[s.id] = aid || 0;
+      }
+      pipelineRunning.value = true;
+      pipelineSteps.value = steps.map(name => ({ name, label: pipelineStepLabel(name), status: 'pending', statusLabel: '等待' }));
+      streamOutput.value = '';
+      try {
+        const payload = {
+          project_id: currentProject.value.id,
+          chapter_id: currentChapter.value.id,
+          steps,
+          agent_ids,
+          instruction: chapterInstruction.value,
+          output_chars: 3000,
+          plan_text: chapterEditForm.outline,
+          context_chars: 8000,
+        };
+        const res = await fetch('/api/dashboard/ai/chapters/pipeline/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        if (!res.ok || !res.body) throw new Error('请求失败');
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let curStepName = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split('\n\n');
+          buffer = events.pop() || '';
+          for (const raw of events) {
+            const lines = raw.split('\n');
+            const event = (lines.find(l => l.startsWith('event:')) || '').slice(6).trim();
+            const dataLine = (lines.find(l => l.startsWith('data:')) || '').slice(5).trim();
+            if (!dataLine) continue;
+            const data = JSON.parse(dataLine);
+            if (event === 'metadata') {
+              // pipeline_meta
+              if (data.steps) pipelineSteps.value = data.steps.map(s => ({ name: s.name, label: s.label, status: 'pending', statusLabel: '等待' }));
+            } else if (event === 'step_start') {
+              curStepName = data.step;
+              const idx = pipelineSteps.value.findIndex(x => x.name === data.step);
+              if (idx >= 0) { pipelineSteps.value[idx].status = 'running'; pipelineSteps.value[idx].statusLabel = '运行中'; }
+              streamOutput.value = ''; // 重置当前步骤输出
+            } else if (event === 'delta') {
+              if (data.step === curStepName) streamOutput.value += data.text || '';
+            } else if (event === 'step_done') {
+              const idx = pipelineSteps.value.findIndex(x => x.name === data.step);
+              if (idx >= 0) {
+                pipelineSteps.value[idx].status = data.skipped ? 'skipped' : 'done';
+                pipelineSteps.value[idx].statusLabel = data.skipped ? '跳过' : '完成';
+              }
+            } else if (event === 'step_failed') {
+              const idx = pipelineSteps.value.findIndex(x => x.name === data.step);
+              if (idx >= 0) { pipelineSteps.value[idx].status = 'failed'; pipelineSteps.value[idx].statusLabel = '失败'; }
+            } else if (event === 'done') {
+              showMessage('Pipeline 完成（耗时 ' + (data.duration_sec || 0) + ' 秒）');
+            } else if (event === 'error') {
+              throw new Error(data.message || '执行失败');
+            }
+          }
+        }
+        // 重新加载章节数据 + dashboard
+        await openChapter(currentChapter.value);
+        await loadChapterDashboard();
+        await loadForeshadows(currentProject.value.id);
+      } catch (e) {
+        showMessage(e.message, 'error');
+      } finally {
+        pipelineRunning.value = false;
+      }
+    }
+
     onMounted(async () => {
-      await Promise.all([loadProviders(), loadAgents(), loadDrafts(), loadStyleProfiles(), loadNovelProfiles(), loadPromptTemplates(), loadProjects()]);
+      await Promise.all([loadProviders(), loadAgents(), loadDrafts(), loadStyleProfiles(), loadNovelProfiles(), loadPromptTemplates(), loadProjects(), loadChatSessions()]);
     });
-    return { tabs, activeTab, providers, agents, drafts, draftHistory, jobs, selectedJob, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, jobFilter, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, planAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, loadJobs, startAudit, startPlan, detectAITells, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents, projectView, projectList, currentProject, chapters, currentChapter, foreshadows, foreshadowFilter, filteredForeshadows, chapterForeshadowAlerts, projectStates, showCreateProject, showForeshadowForm, newProjectForm, newForeshadow, chapterEditForm, chapterKeyEventsText, chapterContinueAgent, chapterInstruction, searchQuery, searchResults, loadProjects, createProject, deleteProject, openProject, createChapter, deleteChapter, openChapter, saveCurrentChapter, startChapterContinue, startChapterPlan, autoUpdateState, appendOutput, addForeshadow, resolveForeshadow, deleteForeshadow, searchProject, indexChapter, saveProjectStates };
+    return { tabs, activeTab, providers, agents, drafts, draftHistory, jobs, selectedJob, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, jobFilter, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, planAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, loadJobs, startAudit, startPlan, detectAITells, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents, projectView, projectList, currentProject, chapters, currentChapter, foreshadows, foreshadowFilter, filteredForeshadows, chapterForeshadowAlerts, projectStates, showCreateProject, showForeshadowForm, newProjectForm, newForeshadow, chapterEditForm, chapterKeyEventsText, chapterContinueAgent, chapterInstruction, searchQuery, searchResults, loadProjects, createProject, deleteProject, openProject, createChapter, deleteChapter, openChapter, saveCurrentChapter, startChapterContinue, startChapterPlan, autoUpdateState, appendOutput, addForeshadow, resolveForeshadow, deleteForeshadow, searchProject, indexChapter, saveProjectStates, chatSessions, currentChatSession, chatMessages, chatInput, chatStreaming, chatStreamingText, chatLogRef, wizardSections, wizardSectionKeys, wizardAgents, showImportModal, importMode, importTargetProjectId, importOverwriteFields, importing, loadChatSessions, selectChatSession, openNewWizardSession, updateChatSessionAgent, renameWizardSession, deleteWizardSession, sendChatMessage, loadWizardPreview, openImportWizardModal, confirmImportWizard, pipelineAllSteps, pipelineExpanded, pipelineSelectedSteps, pipelineAgentIds, pipelineRunning, pipelineSteps, chapterDashboard, dashboardTab, dashboardTabs, pipelineAgentsFor, pipelineStepLabel, pipelineStatusBadge, stateLabel, loadChapterDashboard, startChapterPipeline };
   }
 });
 </script>
