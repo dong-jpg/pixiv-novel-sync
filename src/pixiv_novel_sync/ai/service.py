@@ -2453,15 +2453,21 @@ class AIWritingService:
                         yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "skipped": True})
                         continue
                     report = detect_ai_tells(text)
+                    # AITellReport 是 dataclass，必须用属性访问
+                    score = float(report.score or 0)
+                    issues_dump = [
+                        {"type": i.type, "severity": i.severity, "message": i.message, "detail": i.detail}
+                        for i in (report.issues or [])
+                    ]
                     db2 = self._db()
                     try:
                         db2.patch_ai_chapter_metadata(chapter_id, {
-                            "ai_score": float(report.get("score") or 0),
-                            "ai_tells": (report.get("issues") or [])[:20],
+                            "ai_score": score,
+                            "ai_tells": issues_dump[:20],
                         })
                     finally:
                         db2.close()
-                    step_meta = {"score": report.get("score"), "issues": len(report.get("issues") or [])}
+                    step_meta = {"score": score, "issues": len(issues_dump)}
                     yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "meta": step_meta})
 
                 elif step == "index":
@@ -2476,15 +2482,13 @@ class AIWritingService:
 
             except AIServiceError as e:
                 _emit_step(step, "failed", error=str(e), finished_at=int(time.time()))
-                yield AIStreamChunk(type="custom", data={"event": "step_failed", "step": step, "error": str(e)})
-                # 失败后是否继续？默认中止
-                yield AIStreamChunk(type="error", data={"message": f"步骤 {step_label} 失败：{e}"})
-                return
+                yield AIStreamChunk(type="custom", data={"event": "step_failed", "step": step, "error": str(e), "label": step_label})
+                # 单步失败不中止整个 pipeline，继续后续步骤（用户可事后重试单步）
+                continue
             except Exception as e:
                 _emit_step(step, "failed", error=str(e), finished_at=int(time.time()))
-                yield AIStreamChunk(type="custom", data={"event": "step_failed", "step": step, "error": str(e)})
-                yield AIStreamChunk(type="error", data={"message": f"步骤 {step_label} 异常：{e}"})
-                return
+                yield AIStreamChunk(type="custom", data={"event": "step_failed", "step": step, "error": str(e), "label": step_label})
+                continue
 
         elapsed = int(time.time() - started)
         db_final = self._db()

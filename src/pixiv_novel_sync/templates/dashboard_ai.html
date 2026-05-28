@@ -365,49 +365,28 @@
         </div>
         <!-- 右侧输出面板 + 伏笔提醒 -->
         <div class="space-y-4">
-          <!-- ════ 自动 Pipeline 配置卡片 ════ -->
+          <!-- ════ 自动 Pipeline 入口（轻量化：只放按钮和最近运行的状态） ════ -->
           <div class="bg-gradient-to-br from-amber-50 to-rose-50 rounded-xl border border-amber-200 p-4 space-y-3">
             <div class="flex items-center justify-between">
               <h3 class="font-bold text-gray-900 text-sm">🚀 自动生成本章</h3>
-              <button @click="pipelineExpanded = !pipelineExpanded" class="text-xs text-pixiv-gray">{{ pipelineExpanded ? '收起' : '展开' }}</button>
+              <button v-if="pipelineSteps.length" @click="showPipelineModal = true" class="text-xs px-2 py-1 bg-white border border-amber-200 rounded text-amber-700 hover:bg-amber-50">查看运行详情</button>
             </div>
-            <div v-if="pipelineExpanded" class="space-y-2">
-              <div class="text-xs text-pixiv-gray">勾选要执行的步骤，按顺序自动串联：</div>
-              <div class="grid grid-cols-2 gap-1 text-xs">
-                <label v-for="s in pipelineAllSteps" :key="s.id" class="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-white/50">
-                  <input type="checkbox" :value="s.id" v-model="pipelineSelectedSteps" class="rounded">
-                  <span>{{ s.label }}</span>
-                </label>
-              </div>
-              <details class="text-xs">
-                <summary class="cursor-pointer text-pixiv-gray">指定每步使用的 Agent</summary>
-                <div class="mt-2 space-y-1.5">
-                  <div v-for="s in pipelineAllSteps" :key="s.id" class="flex items-center gap-2">
-                    <span class="w-20 text-xs text-pixiv-gray">{{ s.label }}</span>
-                    <select v-model.number="pipelineAgentIds[s.id]" class="flex-1 px-1.5 py-0.5 border border-gray-200 rounded text-xs bg-white">
-                      <option :value="0">默认/不需要</option>
-                      <option v-for="a in pipelineAgentsFor(s.id)" :key="a.id" :value="a.id">{{ a.name }}</option>
-                    </select>
-                  </div>
-                </div>
-              </details>
-            </div>
-            <button @click="startChapterPipeline" :disabled="pipelineRunning || !currentChapter" class="w-full px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium disabled:opacity-50">
-              {{ pipelineRunning ? '执行中…' : '一键自动生成' }}
+            <p class="text-xs text-pixiv-gray">点击下方按钮配置并运行多 agent 自动 pipeline（续写 → 润色 → 去AI味 → 摘要 → 状态 → 伏笔 → 审计 → 痕迹检测）。</p>
+            <button @click="openPipelineModal" :disabled="!currentChapter" class="w-full px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+              {{ pipelineRunning ? '执行中（点击查看进度）' : '配置并运行 Pipeline' }}
             </button>
-            <div v-if="pipelineSteps.length" class="space-y-1 text-xs">
-              <div v-for="(s, i) in pipelineSteps" :key="s.name + i" class="flex items-center gap-2">
-                <span class="w-3 h-3 rounded-full flex-shrink-0"
-                      :class="{
-                        'bg-gray-200': s.status === 'pending',
-                        'bg-blue-500 animate-pulse': s.status === 'running',
-                        'bg-green-500': s.status === 'done',
-                        'bg-yellow-500': s.status === 'skipped',
-                        'bg-red-500': s.status === 'failed',
-                      }"></span>
-                <span class="flex-1 truncate text-gray-700">{{ s.label }}</span>
-                <span class="text-pixiv-gray text-[10px]">{{ s.statusLabel }}</span>
-              </div>
+            <!-- 概要进度（小图标） -->
+            <div v-if="pipelineSteps.length" class="flex flex-wrap gap-1">
+              <span v-for="(s, i) in pipelineSteps" :key="s.name + i"
+                    :title="s.label + ' ' + s.statusLabel + (s.error ? ' - ' + s.error : '')"
+                    class="inline-flex items-center justify-center w-6 h-6 rounded text-[10px] font-medium cursor-help"
+                    :class="{
+                      'bg-gray-100 text-gray-400': s.status === 'pending',
+                      'bg-blue-500 text-white animate-pulse': s.status === 'running',
+                      'bg-green-500 text-white': s.status === 'done',
+                      'bg-yellow-400 text-yellow-900': s.status === 'skipped',
+                      'bg-red-500 text-white': s.status === 'failed',
+                    }">{{ i + 1 }}</span>
             </div>
           </div>
 
@@ -497,9 +476,98 @@
         </div>
       </div>
     </div>
-  </section>
 
-  <section v-show="activeTab === 'continue'" class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+    <!-- ════ Pipeline 全屏 Modal（独立操作页） ════ -->
+    <div v-if="showPipelineModal" class="fixed inset-0 bg-black/50 z-50 flex items-stretch justify-center p-2 sm:p-6" @click.self="onPipelineModalClose">
+      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-6xl flex flex-col overflow-hidden" style="max-height: calc(100vh - 1rem);">
+        <!-- 顶部条 -->
+        <div class="flex items-center justify-between px-5 py-3 border-b border-gray-100 bg-gradient-to-r from-amber-50 to-rose-50 flex-shrink-0">
+          <div>
+            <h2 class="text-lg font-bold text-gray-900">🚀 自动生成本章 · {{ currentProject?.name }} 第{{ currentChapter?.chapter_number }}章</h2>
+            <p class="text-xs text-pixiv-gray mt-0.5">{{ pipelineRunning ? '正在按顺序执行所选步骤，每步独立保存，失败可单独重试' : '勾选步骤、配置 Agent，然后启动 Pipeline' }}</p>
+          </div>
+          <button @click="onPipelineModalClose" class="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">{{ pipelineRunning ? '后台运行（关闭）' : '关闭' }}</button>
+        </div>
+        <!-- 主体三栏 -->
+        <div class="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 overflow-hidden min-h-0">
+          <!-- 左：配置 + 进度 -->
+          <div class="lg:col-span-4 border-r border-gray-100 overflow-y-auto p-4 space-y-4 bg-gray-50/40">
+            <div>
+              <h3 class="text-sm font-bold text-gray-900 mb-2">① 选择步骤</h3>
+              <div class="grid grid-cols-2 gap-1 text-xs">
+                <label v-for="s in pipelineAllSteps" :key="s.id" class="flex items-center gap-1.5 px-2 py-1.5 rounded bg-white border border-gray-100 hover:border-amber-300">
+                  <input type="checkbox" :value="s.id" v-model="pipelineSelectedSteps" :disabled="pipelineRunning" class="rounded">
+                  <span class="flex-1">{{ s.label }}</span>
+                </label>
+              </div>
+              <div class="flex gap-2 mt-2">
+                <button @click="pipelineSelectedSteps = pipelineAllSteps.map(s => s.id)" :disabled="pipelineRunning" class="text-xs text-pixiv-gray hover:text-gray-700">全选</button>
+                <button @click="pipelineSelectedSteps = ['continue','summary','state','foreshadow','index']" :disabled="pipelineRunning" class="text-xs text-pixiv-gray hover:text-gray-700">最小集</button>
+                <button @click="pipelineSelectedSteps = []" :disabled="pipelineRunning" class="text-xs text-pixiv-gray hover:text-gray-700">清空</button>
+              </div>
+            </div>
+            <div>
+              <h3 class="text-sm font-bold text-gray-900 mb-2">② 指定每步 Agent</h3>
+              <div class="space-y-1.5">
+                <div v-for="s in pipelineAllSteps" :key="s.id" class="flex items-center gap-2 text-xs"
+                     :class="pipelineSelectedSteps.includes(s.id) ? '' : 'opacity-40'">
+                  <span class="w-20 text-pixiv-gray flex-shrink-0">{{ s.label }}</span>
+                  <select v-model.number="pipelineAgentIds[s.id]" :disabled="pipelineRunning || !pipelineSelectedSteps.includes(s.id)" class="flex-1 px-1.5 py-1 border border-gray-200 rounded bg-white">
+                    <option :value="0">默认/不需要</option>
+                    <option v-for="a in pipelineAgentsFor(s.id)" :key="a.id" :value="a.id">{{ a.name }}</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div class="space-y-2">
+              <button v-if="!pipelineRunning" @click="startChapterPipeline" :disabled="!currentChapter || !pipelineSelectedSteps.length" class="w-full px-4 py-2.5 bg-amber-500 text-white rounded-lg text-sm font-bold disabled:opacity-50">▶ 启动 Pipeline</button>
+              <p v-else class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">运行中…右侧可看到实时输出。已完成的步骤已经独立写库，即使后续失败也不会丢。</p>
+            </div>
+            <!-- 进度列表（带重试按钮） -->
+            <div v-if="pipelineSteps.length">
+              <h3 class="text-sm font-bold text-gray-900 mb-2">③ 进度</h3>
+              <div class="space-y-1.5">
+                <div v-for="(s, i) in pipelineSteps" :key="s.name + i" class="bg-white border border-gray-100 rounded-lg px-3 py-2 text-xs">
+                  <div class="flex items-center gap-2">
+                    <span class="w-5 h-5 inline-flex items-center justify-center rounded text-[10px] font-bold flex-shrink-0"
+                          :class="{
+                            'bg-gray-100 text-gray-400': s.status === 'pending',
+                            'bg-blue-500 text-white animate-pulse': s.status === 'running',
+                            'bg-green-500 text-white': s.status === 'done',
+                            'bg-yellow-400 text-yellow-900': s.status === 'skipped',
+                            'bg-red-500 text-white': s.status === 'failed',
+                          }">{{ i + 1 }}</span>
+                    <span class="flex-1 font-medium text-gray-900">{{ s.label }}</span>
+                    <span class="text-pixiv-gray">{{ s.statusLabel }}</span>
+                    <button v-if="s.status === 'failed' || s.status === 'skipped'" @click="retryPipelineStep(s.name)" :disabled="pipelineRunning" class="px-1.5 py-0.5 bg-blue-50 text-blue-600 border border-blue-100 rounded text-[10px] hover:bg-blue-100 disabled:opacity-50" title="只重跑这一步">🔁 重试</button>
+                  </div>
+                  <div v-if="s.error" class="mt-1 text-[11px] text-red-600 break-all">{{ s.error }}</div>
+                  <div v-else-if="s.reason" class="mt-1 text-[11px] text-pixiv-gray">已跳过：{{ s.reason }}</div>
+                  <div v-else-if="s.meta && Object.keys(s.meta).length" class="mt-1 text-[11px] text-pixiv-gray">{{ formatStepMeta(s.meta) }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 右：实时流式输出（大区域、固定滚动） -->
+          <div class="lg:col-span-8 flex flex-col overflow-hidden">
+            <div class="px-5 py-2 border-b border-gray-100 flex items-center gap-3 flex-shrink-0">
+              <span class="text-sm font-bold text-gray-900">实时输出</span>
+              <span v-if="pipelineCurrentStep" class="text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-100">{{ pipelineStepLabel(pipelineCurrentStep) }} 中</span>
+              <span v-if="streamOutput" class="text-xs text-pixiv-gray ml-auto">{{ streamOutput.length.toLocaleString() }} 字</span>
+              <button @click="streamOutput = ''" :disabled="pipelineRunning" class="text-xs text-pixiv-gray hover:text-gray-700 disabled:opacity-30">清空</button>
+            </div>
+            <pre ref="pipelineOutputRef" class="flex-1 whitespace-pre-wrap text-sm text-gray-800 font-serif overflow-y-auto bg-gray-50 p-4 border-0 m-0">{{ streamOutput || (pipelineRunning ? '等待输出...' : '点击左侧"启动 Pipeline"开始') }}</pre>
+            <div class="px-5 py-2 border-t border-gray-100 flex items-center gap-2 flex-shrink-0 flex-wrap">
+              <span class="text-xs text-pixiv-gray">所有产出已独立保存到章节，可在写作页查看</span>
+              <button v-if="streamOutput" @click="copyPipelineOutput" class="ml-auto text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">复制</button>
+              <button v-if="streamOutput" @click="scrollPipelineOutputBottom" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">↓ 底部</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
     <div class="lg:col-span-2 bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
       <h2 class="text-lg font-bold text-gray-900">AI 续写</h2>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1141,24 +1209,52 @@ window.initVueApp({
       props: ['title', 'text', 'jobId', 'streaming', 'showDetect'],
       emits: ['save', 'detect'],
       template: `
-        <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 flex flex-col min-h-[28rem]">
+        <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 flex flex-col">
           <div class="flex items-center justify-between mb-3">
             <h2 class="text-lg font-bold text-gray-900">{{ title }}</h2>
-            <span v-if="jobId" class="text-xs text-pixiv-gray">Job {{ jobId.substring(0, 8) }}</span>
+            <div class="flex items-center gap-2">
+              <span v-if="text" class="text-xs text-pixiv-gray">{{ text.length.toLocaleString() }} 字</span>
+              <span v-if="jobId" class="text-xs text-pixiv-gray">Job {{ jobId.substring(0, 8) }}</span>
+            </div>
           </div>
-          <pre class="flex-1 whitespace-pre-wrap text-sm text-gray-800 font-serif overflow-auto bg-gray-50 rounded-lg p-3 border border-gray-100">{{ text || (streaming ? '等待输出...' : '暂无输出') }}</pre>
+          <pre ref="contentRef" class="whitespace-pre-wrap text-sm text-gray-800 font-serif overflow-y-auto bg-gray-50 rounded-lg p-3 border border-gray-100"
+               style="height: 24rem; min-height: 18rem; max-height: 60vh;">{{ text || (streaming ? '等待输出...' : '暂无输出') }}</pre>
           <div class="flex gap-2 mt-3 flex-wrap">
             <button @click="$emit('save')" :disabled="!text" class="px-3 py-1.5 bg-brand-500 text-white rounded-lg text-xs disabled:opacity-50">保存草稿</button>
             <button @click="copyText" :disabled="!text" class="px-3 py-1.5 bg-gray-100 rounded-lg text-xs disabled:opacity-50">复制</button>
             <button v-if="showDetect" @click="$emit('detect')" :disabled="!text" class="px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg text-xs disabled:opacity-50">AI 痕迹检测</button>
+            <button v-if="text" @click="scrollToBottom" class="px-3 py-1.5 bg-gray-100 rounded-lg text-xs ml-auto" title="滚到底部">↓ 底部</button>
           </div>
         </div>`,
+      watch: {
+        text() { this.$nextTick(() => this.autoScroll()); }
+      },
       methods: {
+        autoScroll() {
+          const el = this.$refs.contentRef;
+          if (!el || !this.streaming) return;
+          // 流式状态下自动跟随到底部（除非用户手动向上滚过）
+          if (this._userScrolled) return;
+          el.scrollTop = el.scrollHeight;
+        },
+        scrollToBottom() {
+          const el = this.$refs.contentRef;
+          if (el) { el.scrollTop = el.scrollHeight; this._userScrolled = false; }
+        },
         async copyText() {
           if (!this.text) return;
           if (window.navigator && window.navigator.clipboard) {
             await window.navigator.clipboard.writeText(this.text);
           }
+        }
+      },
+      mounted() {
+        const el = this.$refs.contentRef;
+        if (el) {
+          el.addEventListener('scroll', () => {
+            // 距底部 > 100px 视为用户向上看历史
+            this._userScrolled = (el.scrollHeight - el.scrollTop - el.clientHeight) > 100;
+          });
         }
       }
     }
@@ -1936,6 +2032,7 @@ window.initVueApp({
         agent_ids[s.id] = aid || 0;
       }
       pipelineRunning.value = true;
+      pipelineCurrentStep.value = '';
       pipelineSteps.value = steps.map(name => ({ name, label: pipelineStepLabel(name), status: 'pending', statusLabel: '等待' }));
       streamOutput.value = '';
       try {
@@ -1968,24 +2065,32 @@ window.initVueApp({
             if (!dataLine) continue;
             const data = JSON.parse(dataLine);
             if (event === 'metadata') {
-              // pipeline_meta
               if (data.steps) pipelineSteps.value = data.steps.map(s => ({ name: s.name, label: s.label, status: 'pending', statusLabel: '等待' }));
             } else if (event === 'step_start') {
               curStepName = data.step;
+              pipelineCurrentStep.value = data.step;
               const idx = pipelineSteps.value.findIndex(x => x.name === data.step);
               if (idx >= 0) { pipelineSteps.value[idx].status = 'running'; pipelineSteps.value[idx].statusLabel = '运行中'; }
-              streamOutput.value = ''; // 重置当前步骤输出
+              streamOutput.value = '';
             } else if (event === 'delta') {
               if (data.step === curStepName) streamOutput.value += data.text || '';
             } else if (event === 'step_done') {
               const idx = pipelineSteps.value.findIndex(x => x.name === data.step);
               if (idx >= 0) {
-                pipelineSteps.value[idx].status = data.skipped ? 'skipped' : 'done';
-                pipelineSteps.value[idx].statusLabel = data.skipped ? '跳过' : '完成';
+                const skipped = !!data.skipped;
+                pipelineSteps.value[idx].status = skipped ? 'skipped' : 'done';
+                pipelineSteps.value[idx].statusLabel = skipped ? '跳过' : '完成';
+                if (data.meta) pipelineSteps.value[idx].meta = data.meta;
+                if (skipped && data.reason) pipelineSteps.value[idx].reason = data.reason;
               }
             } else if (event === 'step_failed') {
               const idx = pipelineSteps.value.findIndex(x => x.name === data.step);
-              if (idx >= 0) { pipelineSteps.value[idx].status = 'failed'; pipelineSteps.value[idx].statusLabel = '失败'; }
+              if (idx >= 0) {
+                pipelineSteps.value[idx].status = 'failed';
+                pipelineSteps.value[idx].statusLabel = '失败';
+                pipelineSteps.value[idx].error = data.error || '未知错误';
+              }
+              showMessage('步骤"' + (data.label || data.step) + '"失败：' + (data.error || ''), 'error');
             } else if (event === 'done') {
               showMessage('Pipeline 完成（耗时 ' + (data.duration_sec || 0) + ' 秒）');
             } else if (event === 'error') {
@@ -2001,13 +2106,71 @@ window.initVueApp({
         showMessage(e.message, 'error');
       } finally {
         pipelineRunning.value = false;
+        pipelineCurrentStep.value = '';
       }
     }
+
+    // ── Pipeline Modal 控制 ─────────────────────────────────────
+    const showPipelineModal = ref(false);
+    const pipelineCurrentStep = ref('');
+    const pipelineOutputRef = ref(null);
+    function openPipelineModal() {
+      showPipelineModal.value = true;
+    }
+    function onPipelineModalClose() {
+      // 运行中允许"后台运行"——只关弹窗，不停 pipeline
+      showPipelineModal.value = false;
+    }
+    async function retryPipelineStep(stepName) {
+      if (!currentChapter.value || pipelineRunning.value) return;
+      const savedSelected = pipelineSelectedSteps.value.slice();
+      pipelineSelectedSteps.value = [stepName];
+      try {
+        await startChapterPipeline();
+      } finally {
+        pipelineSelectedSteps.value = savedSelected;
+      }
+    }
+    function formatStepMeta(meta) {
+      if (!meta || typeof meta !== 'object') return '';
+      const parts = [];
+      if (meta.chars != null) parts.push(meta.chars + ' 字');
+      if (meta.events != null) parts.push(meta.events + ' 个事件');
+      if (meta.resolved != null) parts.push('回收 ' + meta.resolved);
+      if (meta.score != null) parts.push('分数 ' + Math.round(meta.score));
+      if (meta.issues != null) parts.push(meta.issues + ' 问题');
+      if (meta.indexed != null) parts.push(meta.indexed ? '已索引' : '索引失败');
+      return parts.join(' · ');
+    }
+    async function copyPipelineOutput() {
+      if (!streamOutput.value) return;
+      try { await navigator.clipboard.writeText(streamOutput.value); showMessage('已复制'); }
+      catch (e) { showMessage('复制失败', 'error'); }
+    }
+    function scrollPipelineOutputBottom() {
+      const el = pipelineOutputRef.value;
+      if (el) el.scrollTop = el.scrollHeight;
+    }
+    // 流式输出时自动跟随到底
+    let _autoScrollTimer = null;
+    Vue.watch(streamOutput, () => {
+      if (!pipelineRunning.value || !showPipelineModal.value) return;
+      if (_autoScrollTimer) return;
+      _autoScrollTimer = requestAnimationFrame(() => {
+        const el = pipelineOutputRef.value;
+        if (el) {
+          // 用户向上滚动看历史时不强制跟随
+          const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+          if (distFromBottom < 200) el.scrollTop = el.scrollHeight;
+        }
+        _autoScrollTimer = null;
+      });
+    });
 
     onMounted(async () => {
       await Promise.all([loadProviders(), loadAgents(), loadDrafts(), loadStyleProfiles(), loadNovelProfiles(), loadPromptTemplates(), loadProjects(), loadChatSessions()]);
     });
-    return { tabs, activeTab, providers, agents, drafts, draftHistory, jobs, selectedJob, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, jobFilter, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, planAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, loadJobs, startAudit, startPlan, detectAITells, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents, projectView, projectList, currentProject, chapters, currentChapter, foreshadows, foreshadowFilter, filteredForeshadows, chapterForeshadowAlerts, projectStates, showCreateProject, showForeshadowForm, newProjectForm, newForeshadow, chapterEditForm, chapterKeyEventsText, chapterContinueAgent, chapterInstruction, searchQuery, searchResults, loadProjects, createProject, deleteProject, openProject, createChapter, deleteChapter, openChapter, saveCurrentChapter, startChapterContinue, startChapterPlan, autoUpdateState, appendOutput, addForeshadow, resolveForeshadow, deleteForeshadow, searchProject, indexChapter, saveProjectStates, chatSessions, currentChatSession, chatMessages, chatInput, chatStreaming, chatStreamingText, chatLogRef, wizardSections, wizardSectionKeys, wizardAgents, showImportModal, importMode, importTargetProjectId, importOverwriteFields, importing, loadChatSessions, selectChatSession, openNewWizardSession, updateChatSessionAgent, renameWizardSession, deleteWizardSession, sendChatMessage, loadWizardPreview, openImportWizardModal, confirmImportWizard, showImportMaterialModal, materialTitle, materialContent, materialExtraInstruction, materialImporting, onMaterialFileSelected, confirmImportMaterial, pipelineAllSteps, pipelineExpanded, pipelineSelectedSteps, pipelineAgentIds, pipelineRunning, pipelineSteps, chapterDashboard, dashboardTab, dashboardTabs, pipelineAgentsFor, pipelineStepLabel, pipelineStatusBadge, stateLabel, loadChapterDashboard, startChapterPipeline };
+    return { tabs, activeTab, providers, agents, drafts, draftHistory, jobs, selectedJob, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, jobFilter, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, planAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, loadJobs, startAudit, startPlan, detectAITells, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents, projectView, projectList, currentProject, chapters, currentChapter, foreshadows, foreshadowFilter, filteredForeshadows, chapterForeshadowAlerts, projectStates, showCreateProject, showForeshadowForm, newProjectForm, newForeshadow, chapterEditForm, chapterKeyEventsText, chapterContinueAgent, chapterInstruction, searchQuery, searchResults, loadProjects, createProject, deleteProject, openProject, createChapter, deleteChapter, openChapter, saveCurrentChapter, startChapterContinue, startChapterPlan, autoUpdateState, appendOutput, addForeshadow, resolveForeshadow, deleteForeshadow, searchProject, indexChapter, saveProjectStates, chatSessions, currentChatSession, chatMessages, chatInput, chatStreaming, chatStreamingText, chatLogRef, wizardSections, wizardSectionKeys, wizardAgents, showImportModal, importMode, importTargetProjectId, importOverwriteFields, importing, loadChatSessions, selectChatSession, openNewWizardSession, updateChatSessionAgent, renameWizardSession, deleteWizardSession, sendChatMessage, loadWizardPreview, openImportWizardModal, confirmImportWizard, showImportMaterialModal, materialTitle, materialContent, materialExtraInstruction, materialImporting, onMaterialFileSelected, confirmImportMaterial, pipelineAllSteps, pipelineExpanded, pipelineSelectedSteps, pipelineAgentIds, pipelineRunning, pipelineSteps, chapterDashboard, dashboardTab, dashboardTabs, pipelineAgentsFor, pipelineStepLabel, pipelineStatusBadge, stateLabel, loadChapterDashboard, startChapterPipeline, showPipelineModal, pipelineCurrentStep, pipelineOutputRef, openPipelineModal, onPipelineModalClose, retryPipelineStep, formatStepMeta, copyPipelineOutput, scrollPipelineOutputBottom };
   }
 });
 </script>
