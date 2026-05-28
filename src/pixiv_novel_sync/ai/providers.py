@@ -349,9 +349,19 @@ def create_provider(config: AIProviderConfig) -> AIProvider:
 
 
 def _safe_http_error(response: requests.Response) -> str:
+    # 强制按 UTF-8 解码（很多上游网关 Content-Type 不带 charset，requests 会按 latin-1 解析导致中文乱码）
+    if not response.encoding or response.encoding.lower() in ("iso-8859-1", "latin-1"):
+        response.encoding = "utf-8"
     try:
         payload = response.json()
-        message = payload.get("error", {}).get("message") if isinstance(payload.get("error"), dict) else payload.get("error")
+        if isinstance(payload, dict):
+            err = payload.get("error")
+            if isinstance(err, dict):
+                message = err.get("message") or err.get("type")
+            else:
+                message = err or payload.get("message") or payload.get("detail")
+        else:
+            message = None
         if message:
             return f"AI API 返回错误 {response.status_code}：{message}"
     except ValueError:
