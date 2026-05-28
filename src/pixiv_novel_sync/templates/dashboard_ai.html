@@ -30,9 +30,10 @@
   <section v-show="activeTab === 'wizard'" class="grid grid-cols-1 lg:grid-cols-12 gap-4" style="height: calc(100vh - 220px); min-height: 600px;">
     <!-- 左：会话列表 -->
     <div class="lg:col-span-3 bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col overflow-hidden">
-      <div class="p-3 border-b border-gray-100 flex items-center gap-2">
+      <div class="p-3 border-b border-gray-100 flex items-center gap-2 flex-wrap">
         <span class="text-sm font-bold text-gray-900 flex-1">会话</span>
         <button @click="openNewWizardSession" class="text-xs px-2 py-1 bg-brand-500 text-white rounded hover:bg-brand-600">+ 新建</button>
+        <button @click="showImportMaterialModal = true" class="text-xs px-2 py-1 bg-amber-500 text-white rounded hover:bg-amber-600" title="把已有大纲/设定/聊天记录直接喂给 AI">📥 导入素材</button>
       </div>
       <div class="flex-1 overflow-y-auto p-2 space-y-1">
         <div v-for="s in chatSessions" :key="s.id" @click="selectChatSession(s.id)"
@@ -132,6 +133,42 @@
       <div class="flex justify-end gap-2">
         <button @click="showImportModal = false" class="px-3 py-1.5 bg-gray-100 rounded text-sm">取消</button>
         <button @click="confirmImportWizard" :disabled="importing || (importMode === 'merge' && !importTargetProjectId)" class="px-3 py-1.5 bg-brand-500 text-white rounded text-sm disabled:opacity-50">{{ importing ? '导入中…' : '确认导入' }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ 素材一键导入弹窗 ═══ -->
+  <div v-if="showImportMaterialModal" class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" @click.self="showImportMaterialModal = false">
+    <div class="bg-white rounded-xl shadow-xl max-w-2xl w-full p-5 space-y-4 max-h-[90vh] flex flex-col">
+      <div>
+        <h3 class="text-lg font-bold text-gray-900">📥 从已有素材导入</h3>
+        <p class="text-xs text-pixiv-gray mt-1">把已有的大纲、人物设定、和别的 AI 的聊天记录、写作笔记直接喂给创作向导，让它整理成本系统的结构。</p>
+      </div>
+      <div class="space-y-2">
+        <label class="block text-xs font-medium text-pixiv-gray">作品名称（可选，留空 AI 自取）</label>
+        <input v-model="materialTitle" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="例如：沉溺">
+      </div>
+      <div class="space-y-2 flex-1 flex flex-col min-h-0">
+        <div class="flex items-center justify-between">
+          <label class="block text-xs font-medium text-pixiv-gray">素材内容</label>
+          <div class="flex gap-2 items-center">
+            <input ref="materialFileInputRef" type="file" accept=".txt,.md,text/plain,text/markdown" class="hidden" @change="onMaterialFileSelected">
+            <button @click="$refs.materialFileInputRef.click()" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">📂 上传 .txt/.md</button>
+            <span v-if="materialContent" class="text-xs text-pixiv-gray">{{ materialContent.length.toLocaleString() }} 字</span>
+          </div>
+        </div>
+        <textarea v-model="materialContent" rows="12" class="w-full flex-1 px-3 py-2 border border-gray-200 rounded-lg text-xs font-serif resize-none" placeholder="粘贴你的全部素材：大纲、人物设定、和其他 AI 的聊天记录、设定笔记、性癖描述、剧情想法都行，AI 会自动整理。"></textarea>
+      </div>
+      <div class="space-y-2">
+        <label class="block text-xs font-medium text-pixiv-gray">额外说明（可选）</label>
+        <input v-model="materialExtraInstruction" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="例如：把女主名字改成林瑾瑜，开篇直接改成面试相遇">
+      </div>
+      <div class="text-xs text-pixiv-gray bg-amber-50 border border-amber-100 rounded-lg p-2">
+        提交后会自动创建一个新会话，把素材+引导语一起发给创作向导。AI 整理完成会输出 <code class="text-amber-700">&lt;&lt;&lt;READY_FOR_IMPORT&gt;&gt;&gt;</code>，那时再点"一键导入到项目"。
+      </div>
+      <div class="flex justify-end gap-2">
+        <button @click="showImportMaterialModal = false" class="px-3 py-1.5 bg-gray-100 rounded text-sm">取消</button>
+        <button @click="confirmImportMaterial" :disabled="materialImporting || !materialContent.trim()" class="px-3 py-1.5 bg-amber-500 text-white rounded text-sm disabled:opacity-50">{{ materialImporting ? '提交中…' : '提交给 AI 整理' }}</button>
       </div>
     </div>
   </div>
@@ -1587,6 +1624,12 @@ window.initVueApp({
     const importTargetProjectId = ref(0);
     const importOverwriteFields = ref([]);
     const importing = ref(false);
+    // ── 素材一键导入 ───────────────────────────────────────────────
+    const showImportMaterialModal = ref(false);
+    const materialTitle = ref('');
+    const materialContent = ref('');
+    const materialExtraInstruction = ref('');
+    const materialImporting = ref(false);
     const wizardAgents = computed(() => agents.value.filter(a => ['wizard', 'general', 'chat'].includes(a.task_type)));
     const wizardSectionKeys = computed(() => Object.keys(wizardSections.value || {}));
 
@@ -1745,6 +1788,77 @@ window.initVueApp({
       }
     }
 
+    // 素材一键导入：自动建会话+套引导语+发送
+    function onMaterialFileSelected(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      if (file.size > 5 * 1024 * 1024) { showMessage('文件不能超过 5MB', 'error'); return; }
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        materialContent.value = String(e.target.result || '');
+        if (!materialTitle.value) {
+          materialTitle.value = file.name.replace(/\.(txt|md)$/i, '');
+        }
+      };
+      reader.onerror = () => showMessage('文件读取失败', 'error');
+      reader.readAsText(file, 'utf-8');
+      event.target.value = '';
+    }
+    async function confirmImportMaterial() {
+      if (!materialContent.value.trim()) return;
+      const wa = wizardAgents.value;
+      if (!wa.length) {
+        showMessage('请先在 Agent 设置里"一键初始化"创建创作向导 Agent', 'error');
+        showImportMaterialModal.value = false;
+        activeTab.value = 'agents';
+        return;
+      }
+      materialImporting.value = true;
+      try {
+        // 1. 创建新会话
+        const title = (materialTitle.value || '').trim() || ('素材导入 ' + new Date().toLocaleString('zh-CN', { hour12: false }).slice(5, 16));
+        const sessionRes = await api('/api/dashboard/ai/chat/sessions', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ agent_id: wa[0].id, scope: 'wizard', title }),
+        });
+        const newSessionId = sessionRes.id;
+        await loadChatSessions();
+        await selectChatSession(newSessionId);
+
+        // 2. 拼装引导消息
+        const extra = materialExtraInstruction.value.trim();
+        const prompt = [
+          '我已经有现成的创作素材（可能来自其他 AI 的聊天记录、自己写的大纲、人物设定等等）。',
+          '请你直接把这些素材整理成本系统需要的 7 块结构（梗概/卖点/人物/总纲/详细大纲/进度条/写作规范），按 markdown 节段输出，',
+          '同时立即在最后输出 <<<READY_FOR_IMPORT>>> 标记和完整的 JSON 块（含 project / chapters / foreshadows）。',
+          '不要反复确认，不要再问问题，直接整理输出。如果素材里某些细节缺失，用专业判断合理补全即可。',
+          extra ? `\n额外要求：${extra}` : '',
+          materialTitle.value.trim() ? `\n作品名称：${materialTitle.value.trim()}` : '',
+          '\n以下是素材原文：\n',
+          '═══════════════════════════════════════',
+          materialContent.value,
+          '═══════════════════════════════════════',
+        ].filter(Boolean).join('\n');
+
+        // 3. 关闭弹窗、切到向导 tab、设置输入框、自动发送
+        showImportMaterialModal.value = false;
+        activeTab.value = 'wizard';
+        chatInput.value = prompt;
+        await Vue.nextTick();
+        // 4. 触发发送
+        await sendChatMessage();
+        // 清空字段
+        materialContent.value = '';
+        materialTitle.value = '';
+        materialExtraInstruction.value = '';
+        showMessage('已提交给 AI，正在整理…');
+      } catch (e) {
+        showMessage(e.message, 'error');
+      } finally {
+        materialImporting.value = false;
+      }
+    }
+
     // ── 章节自动 Pipeline + 产出面板 ──────────────────────────────
     const pipelineAllSteps = [
       { id: 'continue', label: '续写' },
@@ -1893,7 +2007,7 @@ window.initVueApp({
     onMounted(async () => {
       await Promise.all([loadProviders(), loadAgents(), loadDrafts(), loadStyleProfiles(), loadNovelProfiles(), loadPromptTemplates(), loadProjects(), loadChatSessions()]);
     });
-    return { tabs, activeTab, providers, agents, drafts, draftHistory, jobs, selectedJob, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, jobFilter, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, planAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, loadJobs, startAudit, startPlan, detectAITells, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents, projectView, projectList, currentProject, chapters, currentChapter, foreshadows, foreshadowFilter, filteredForeshadows, chapterForeshadowAlerts, projectStates, showCreateProject, showForeshadowForm, newProjectForm, newForeshadow, chapterEditForm, chapterKeyEventsText, chapterContinueAgent, chapterInstruction, searchQuery, searchResults, loadProjects, createProject, deleteProject, openProject, createChapter, deleteChapter, openChapter, saveCurrentChapter, startChapterContinue, startChapterPlan, autoUpdateState, appendOutput, addForeshadow, resolveForeshadow, deleteForeshadow, searchProject, indexChapter, saveProjectStates, chatSessions, currentChatSession, chatMessages, chatInput, chatStreaming, chatStreamingText, chatLogRef, wizardSections, wizardSectionKeys, wizardAgents, showImportModal, importMode, importTargetProjectId, importOverwriteFields, importing, loadChatSessions, selectChatSession, openNewWizardSession, updateChatSessionAgent, renameWizardSession, deleteWizardSession, sendChatMessage, loadWizardPreview, openImportWizardModal, confirmImportWizard, pipelineAllSteps, pipelineExpanded, pipelineSelectedSteps, pipelineAgentIds, pipelineRunning, pipelineSteps, chapterDashboard, dashboardTab, dashboardTabs, pipelineAgentsFor, pipelineStepLabel, pipelineStatusBadge, stateLabel, loadChapterDashboard, startChapterPipeline };
+    return { tabs, activeTab, providers, agents, drafts, draftHistory, jobs, selectedJob, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, jobFilter, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, planAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, loadJobs, startAudit, startPlan, detectAITells, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents, projectView, projectList, currentProject, chapters, currentChapter, foreshadows, foreshadowFilter, filteredForeshadows, chapterForeshadowAlerts, projectStates, showCreateProject, showForeshadowForm, newProjectForm, newForeshadow, chapterEditForm, chapterKeyEventsText, chapterContinueAgent, chapterInstruction, searchQuery, searchResults, loadProjects, createProject, deleteProject, openProject, createChapter, deleteChapter, openChapter, saveCurrentChapter, startChapterContinue, startChapterPlan, autoUpdateState, appendOutput, addForeshadow, resolveForeshadow, deleteForeshadow, searchProject, indexChapter, saveProjectStates, chatSessions, currentChatSession, chatMessages, chatInput, chatStreaming, chatStreamingText, chatLogRef, wizardSections, wizardSectionKeys, wizardAgents, showImportModal, importMode, importTargetProjectId, importOverwriteFields, importing, loadChatSessions, selectChatSession, openNewWizardSession, updateChatSessionAgent, renameWizardSession, deleteWizardSession, sendChatMessage, loadWizardPreview, openImportWizardModal, confirmImportWizard, showImportMaterialModal, materialTitle, materialContent, materialExtraInstruction, materialImporting, onMaterialFileSelected, confirmImportMaterial, pipelineAllSteps, pipelineExpanded, pipelineSelectedSteps, pipelineAgentIds, pipelineRunning, pipelineSteps, chapterDashboard, dashboardTab, dashboardTabs, pipelineAgentsFor, pipelineStepLabel, pipelineStatusBadge, stateLabel, loadChapterDashboard, startChapterPipeline };
   }
 });
 </script>
