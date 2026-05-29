@@ -721,37 +721,38 @@ class Database:
 
     def repair_blank_series_titles(self) -> int:
         """用已归档小说的系列信息修复空标题，避免追更列表显示未命名系列。"""
-        cursor = self.conn.execute(  # 读操作为主，写入量小，WAL 模式下可接受
-            """
-            UPDATE series
-            SET title = COALESCE(
-                    NULLIF((
-                        SELECT json_extract(n.raw_json, '$.series.title')
-                        FROM novels n
-                        WHERE n.series_id = series.series_id
-                          AND json_extract(n.raw_json, '$.series.title') IS NOT NULL
-                          AND json_extract(n.raw_json, '$.series.title') != ''
-                        ORDER BY n.create_date ASC
-                        LIMIT 1
-                    ), ''),
-                    NULLIF((
-                        SELECT MIN(n.title)
-                        FROM novels n
-                        WHERE n.series_id = series.series_id
-                          AND n.title IS NOT NULL
-                          AND n.title != ''
-                    ), '')
-                ),
-                total_novels = CASE
-                    WHEN total_novels > 0 THEN total_novels
-                    ELSE (SELECT COUNT(*) FROM novels n WHERE n.series_id = series.series_id)
-                END
-            WHERE (title IS NULL OR title = '')
-              AND EXISTS (SELECT 1 FROM novels n WHERE n.series_id = series.series_id)
-            """
-        )
-        self._commit_if_needed()
-        return cursor.rowcount if cursor.rowcount is not None else 0
+        with self._lock:
+            cursor = self.conn.execute(
+                """
+                UPDATE series
+                SET title = COALESCE(
+                        NULLIF((
+                            SELECT json_extract(n.raw_json, '$.series.title')
+                            FROM novels n
+                            WHERE n.series_id = series.series_id
+                              AND json_extract(n.raw_json, '$.series.title') IS NOT NULL
+                              AND json_extract(n.raw_json, '$.series.title') != ''
+                            ORDER BY n.create_date ASC
+                            LIMIT 1
+                        ), ''),
+                        NULLIF((
+                            SELECT MIN(n.title)
+                            FROM novels n
+                            WHERE n.series_id = series.series_id
+                              AND n.title IS NOT NULL
+                              AND n.title != ''
+                        ), '')
+                    ),
+                    total_novels = CASE
+                        WHEN total_novels > 0 THEN total_novels
+                        ELSE (SELECT COUNT(*) FROM novels n WHERE n.series_id = series.series_id)
+                    END
+                WHERE (title IS NULL OR title = '')
+                  AND EXISTS (SELECT 1 FROM novels n WHERE n.series_id = series.series_id)
+                """
+            )
+            self._commit_if_needed()
+            return cursor.rowcount if cursor.rowcount is not None else 0
 
     def clear_subscribed_series(self) -> None:
         """清除所有订阅标记"""
@@ -2413,11 +2414,16 @@ class Database:
 
     def delete_ai_writing_project(self, project_id: int) -> None:
         with self._lock:
-            self.conn.execute("DELETE FROM ai_chapters WHERE project_id = ?", (project_id,))
-            self.conn.execute("DELETE FROM ai_foreshadows WHERE project_id = ?", (project_id,))
-            self.conn.execute("DELETE FROM ai_project_states WHERE project_id = ?", (project_id,))
-            self.conn.execute("DELETE FROM ai_writing_projects WHERE id = ?", (project_id,))
-            self._commit_if_needed()
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self.conn.execute("DELETE FROM ai_chapters WHERE project_id = ?", (project_id,))
+                self.conn.execute("DELETE FROM ai_foreshadows WHERE project_id = ?", (project_id,))
+                self.conn.execute("DELETE FROM ai_project_states WHERE project_id = ?", (project_id,))
+                self.conn.execute("DELETE FROM ai_writing_projects WHERE id = ?", (project_id,))
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     # ── ai_chapters CRUD ───────────────────────────────────────────
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import Any
 
@@ -59,6 +60,8 @@ class SourceRecord:
 def as_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {f.name: getattr(value, f.name) for f in dataclasses.fields(value)}
     if hasattr(value, "__dict__"):
         return dict(value.__dict__)
     return {}

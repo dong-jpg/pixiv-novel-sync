@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -63,10 +63,6 @@ TASK_LABELS = {
 
 def _task_label(task_type: str) -> str:
     return TASK_LABELS.get(task_type, task_type)
-
-
-def _format_task_phase(task_type: str) -> str:
-    return _task_label(task_type)
 
 
 @dataclass
@@ -162,7 +158,7 @@ class AutoSyncScheduler:
                             db.close()
 
                 now = time.time()
-                timezone = settings.sync.auto_sync_timezone
+                tz_name = settings.sync.auto_sync_timezone
                 
                 # 更新所有任务的配置信息（用于前端显示）
                 for task_config in task_configs:
@@ -193,7 +189,7 @@ class AutoSyncScheduler:
                     if task_name not in self._task_next_run:
                         if cron_expr:
                             from .settings import cron_to_next_run
-                            self._task_next_run[task_name] = cron_to_next_run(cron_expr, now, timezone) or (now + task_interval_seconds)
+                            self._task_next_run[task_name] = cron_to_next_run(cron_expr, now, tz_name) or (now + task_interval_seconds)
                         else:
                             self._task_next_run[task_name] = now + task_interval_seconds
                         logger.info("Task %s scheduled, next run: %s", task_name, 
@@ -208,7 +204,7 @@ class AutoSyncScheduler:
                                 skip_now = time.time()
                                 if cron_expr:
                                     from .settings import cron_to_next_run
-                                    self._task_next_run[task_name] = cron_to_next_run(cron_expr, skip_now, timezone) or (skip_now + task_interval_seconds)
+                                    self._task_next_run[task_name] = cron_to_next_run(cron_expr, skip_now, tz_name) or (skip_now + task_interval_seconds)
                                 else:
                                     self._task_next_run[task_name] = skip_now + task_interval_seconds
                                 continue
@@ -218,7 +214,7 @@ class AutoSyncScheduler:
                         self._task_last_run[task_name] = time.time()
                         if cron_expr:
                             from .settings import cron_to_next_run
-                            self._task_next_run[task_name] = cron_to_next_run(cron_expr, time.time(), timezone) or (time.time() + task_interval_seconds)
+                            self._task_next_run[task_name] = cron_to_next_run(cron_expr, time.time(), tz_name) or (time.time() + task_interval_seconds)
                         else:
                             self._task_next_run[task_name] = time.time() + task_interval_seconds
                         
@@ -1061,7 +1057,7 @@ class SyncJobManager:
             total_stats: dict[str, Any] = {}
             for idx, task_type in enumerate(job.task_list):
                 job.current_task_index = idx
-                self.update_progress(job_id, phase=_format_task_phase(task_type), message=f"正在执行: {_task_label(task_type)}")
+                self.update_progress(job_id, phase=_task_label(task_type), message=f"正在执行: {_task_label(task_type)}")
                 task_stats = self._run_single_sync(settings, task_type, job_id)
                 if task_stats:
                     for key, val in task_stats.items():
@@ -1133,7 +1129,7 @@ class SyncJobManager:
             def on_progress(event_type: str, data: dict[str, Any]) -> None:
                 if event_type == "novel_start":
                     self.add_log(job_id, "info", f"[{data.get('current', '?')}/{data.get('total', '?')}] {data.get('title', '')[:30]}")
-                    self.update_progress(job_id, phase=data.get("phase") or _format_task_phase(task_type), current=data.get('current', 0), total=data.get('total', 50))
+                    self.update_progress(job_id, phase=data.get("phase") or _task_label(task_type), current=data.get('current', 0), total=data.get('total', 50))
                 elif event_type == "novel_done":
                     if data.get('failed'):
                         self.add_log(job_id, "error", "  失败（详见服务日志）")
@@ -1223,8 +1219,17 @@ class SyncJobManager:
 
             elif task_type == "user_status":
                 self.add_log(job_id, "info", "=== 开始检查用户状态 ===")
-                users = db.list_users(page=1, page_size=1000)
-                user_list = users.get("items", [])
+                user_list: list[dict[str, Any]] = []
+                page_num = 1
+                while True:
+                    page_data = db.list_users(page=page_num, page_size=500)
+                    items = page_data.get("items", [])
+                    if not items:
+                        break
+                    user_list.extend(items)
+                    if page_num >= page_data.get("total_pages", 1):
+                        break
+                    page_num += 1
                 self.add_log(job_id, "info", f"共 {len(user_list)} 个用户需要检查")
                 checked_count = 0
                 for user in user_list:
@@ -1354,9 +1359,23 @@ class SyncJobManager:
 class SettingsManager:
     def __init__(self, config_path: str | None) -> None:
         self.config_path = config_path
+        self._cache: Settings | None = None
+        self._cache_time: float = 0.0
+        self._cache_ttl: float = 5.0  # 缓存 5 秒
 
     def load(self, env_path: str | None = None) -> Settings:
-        return load_settings(self.config_path, env_path)
+        now = time.time()
+        if self._cache is not None and (now - self._cache_time) < self._cache_ttl:
+            return self._cache
+        settings = load_settings(self.config_path, env_path)
+        self._cache = settings
+        self._cache_time = now
+        return settings
+
+    def invalidate(self) -> None:
+        """手动失效缓存（保存设置后调用）。"""
+        self._cache = None
+        self._cache_time = 0.0
 
     def save_sync_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.config_path:
@@ -1459,6 +1478,7 @@ class SettingsManager:
         with config_path.open("w", encoding="utf-8") as file:
             yaml.safe_dump(config_data, file, allow_unicode=True, sort_keys=False)
 
+        self.invalidate()
         return _settings_to_dict(load_settings(config_path, None))
 
 
@@ -1853,7 +1873,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.get("/api/dashboard/follows")
     def dashboard_follows():
         current_settings = settings_manager.load(env_path=env_path)
-        page = max(int(request.args.get("page", 1) or 1), 1)
+        page = max(_safe_int(request.args.get("page", 1), 1), 1)
         page_size = 10
         db = Database(current_settings.storage.db_path)
         db.init_schema()
@@ -1866,8 +1886,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.get("/api/dashboard/novels")
     def dashboard_novels():
         current_settings = settings_manager.load(env_path=env_path)
-        page = max(int(request.args.get("page", 1) or 1), 1)
-        page_size = min(max(int(request.args.get("page_size", 10) or 10), 1), 100)
+        page = max(_safe_int(request.args.get("page", 1), 1), 1)
+        page_size = min(max(_safe_int(request.args.get("page_size", 10), 10), 1), 100)
         category = str(request.args.get("category", "all") or "all").strip().lower()
         if category not in {"all", "bookmark", "following"}:
             category = "all"
@@ -1921,7 +1941,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.get("/api/dashboard/users")
     def dashboard_users():
         current_settings = settings_manager.load(env_path=env_path)
-        page = max(int(request.args.get("page", 1) or 1), 1)
+        page = max(_safe_int(request.args.get("page", 1), 1), 1)
         page_size = 12
         status = str(request.args.get("status", "all") or "all").strip().lower()
         if status not in {"all", "normal", "suspended", "cleared", "no_novels", "unknown"}:
@@ -1954,7 +1974,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.get("/api/dashboard/users/<int:user_id>/novels")
     def dashboard_user_novels(user_id: int):
         current_settings = settings_manager.load(env_path=env_path)
-        page = max(int(request.args.get("page", 1) or 1), 1)
+        page = max(_safe_int(request.args.get("page", 1), 1), 1)
         page_size = 10
         category = request.args.get("category", "all")
         db = Database(current_settings.storage.db_path)
@@ -2071,6 +2091,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         # 创建一个专门的预检查任务（不通过 start_job，避免触发同步）
         if not sync_job_manager._semaphore.acquire(blocking=False):
             return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
+        thread_started = False
         try:
             import uuid
             job_id = f"check_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
@@ -2092,8 +2113,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                 daemon=True,
             )
             thread.start()
+            thread_started = True
         except Exception:
-            sync_job_manager._semaphore.release()
+            if not thread_started:
+                sync_job_manager._semaphore.release()
             raise
         
         return jsonify({"ok": True, "message": "预检查任务已启动", "job": _job_to_dict(job)})
@@ -2370,8 +2393,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.get("/api/dashboard/pending-deletions")
     def list_pending_deletions_api():
         current_settings = settings_manager.load(env_path=env_path)
-        page = max(int(request.args.get("page", 1) or 1), 1)
-        page_size = int(request.args.get("page_size", 20) or 20)
+        page = max(_safe_int(request.args.get("page", 1), 1), 1)
+        page_size = _safe_int(request.args.get("page_size", 20), 20)
         item_type = request.args.get("item_type") or None
         if item_type not in (None, "novel", "series"):
             item_type = None
@@ -2416,6 +2439,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
         if not sync_job_manager._semaphore.acquire(blocking=False):
             return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
+        thread_started = False
         try:
             import uuid
             job_id = f"detect_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
@@ -2437,8 +2461,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                 db.close()
             thread = threading.Thread(target=sync_job_manager._run_job, args=(job_id,), daemon=True)
             thread.start()
+            thread_started = True
         except Exception:
-            sync_job_manager._semaphore.release()
+            if not thread_started:
+                sync_job_manager._semaphore.release()
             raise
         return jsonify({"ok": True, "message": "检测任务已启动", "job": _job_to_dict(job)})
 
@@ -2713,6 +2739,14 @@ def _load_yaml_file(path: Path) -> dict[str, Any]:
     return data
 
 
+def _safe_int(value: Any, default: int) -> int:
+    """安全解析整数参数，无效值返回 default。"""
+    try:
+        return int(value) if value not in (None, "") else default
+    except (ValueError, TypeError):
+        return default
+
+
 def _normalize_optional_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
@@ -2751,7 +2785,13 @@ def _external_base_url(req) -> str:
     forwarded_proto = req.headers.get("X-Forwarded-Proto")
     forwarded_host = req.headers.get("X-Forwarded-Host")
     if forwarded_proto and forwarded_host:
-        return f"{forwarded_proto}://{forwarded_host}"
+        # 仅信任白名单中的 forwarded host，防止 OAuth 回调被劫持
+        trusted_hosts = os.environ.get("TRUSTED_FORWARDED_HOSTS", "")
+        if trusted_hosts:
+            allowed = {h.strip().lower() for h in trusted_hosts.split(",") if h.strip()}
+            if forwarded_host.lower() in allowed:
+                return f"{forwarded_proto}://{forwarded_host}"
+            logger.warning("Untrusted X-Forwarded-Host: %s (allowed: %s)", forwarded_host, allowed)
 
     parsed = urlparse(req.base_url)
     return f"{parsed.scheme}://{parsed.netloc}"

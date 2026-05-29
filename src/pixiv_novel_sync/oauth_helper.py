@@ -174,10 +174,6 @@ class OAuthManager:
         }
         return f"{PIXIV_AUTH_BASE}?{urlencode(params)}"
 
-    def _cleanup(self) -> None:
-        with self._lock:
-            self._cleanup_locked()
-
     def _cleanup_locked(self) -> None:
         now = time.time()
         expired = [task_id for task_id, task in self._tasks.items() if now - task.created_at > TASK_TTL_SECONDS]

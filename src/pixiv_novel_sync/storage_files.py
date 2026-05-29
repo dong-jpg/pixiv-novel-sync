@@ -25,6 +25,14 @@ _DEFAULT_HEADERS = {
 class FileStorage:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._session: requests.Session | None = None
+
+    @property
+    def session(self) -> requests.Session:
+        if self._session is None:
+            self._session = requests.Session()
+            self._session.headers.update(_DEFAULT_HEADERS)
+        return self._session
 
     def base_dir(self, restrict: str) -> Path:
         return self.settings.storage.private_dir if restrict == "private" else self.settings.storage.public_dir
@@ -38,15 +46,23 @@ class FileStorage:
         """原子写文本文件：tmp + os.replace。"""
         ensure_parent(path)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(content, encoding="utf-8")
-        os.replace(tmp, path)
+        try:
+            tmp.write_text(content, encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def write_bytes(self, path: Path, content: bytes) -> str:
         """原子写二进制文件：tmp + os.replace。"""
         ensure_parent(path)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_bytes(content)
-        os.replace(tmp, path)
+        try:
+            tmp.write_bytes(content)
+            os.replace(tmp, path)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
         return hashlib.sha256(content).hexdigest()
 
     def download_asset(
@@ -63,9 +79,8 @@ class FileStorage:
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
-                with requests.get(
+                with self.session.get(
                     url,
-                    headers=_DEFAULT_HEADERS,
                     timeout=timeout,
                     verify=verify_ssl,
                     proxies=proxies,
@@ -75,13 +90,17 @@ class FileStorage:
                     ensure_parent(target)
                     tmp = target.with_suffix(target.suffix + ".tmp")
                     hasher = hashlib.sha256()
-                    with tmp.open("wb") as fh:
-                        for chunk in response.iter_content(chunk_size=64 * 1024):
-                            if not chunk:
-                                continue
-                            fh.write(chunk)
-                            hasher.update(chunk)
-                    os.replace(tmp, target)
+                    try:
+                        with tmp.open("wb") as fh:
+                            for chunk in response.iter_content(chunk_size=64 * 1024):
+                                if not chunk:
+                                    continue
+                                fh.write(chunk)
+                                hasher.update(chunk)
+                        os.replace(tmp, target)
+                    except Exception:
+                        tmp.unlink(missing_ok=True)
+                        raise
                     return hasher.hexdigest()
             except Exception as exc:
                 last_exc = exc
