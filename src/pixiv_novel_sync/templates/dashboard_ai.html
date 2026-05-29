@@ -1214,7 +1214,7 @@ window.initVueApp({
       props: ['title', 'text', 'jobId', 'streaming', 'showDetect'],
       emits: ['save', 'detect'],
       template: `
-        <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 flex flex-col">
+        <div v-if="text || streaming" class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 flex flex-col">
           <div class="flex items-center justify-between mb-3">
             <h2 class="text-lg font-bold text-gray-900">{{ title }}</h2>
             <div class="flex items-center gap-2">
@@ -1223,7 +1223,7 @@ window.initVueApp({
             </div>
           </div>
           <pre ref="contentRef" class="whitespace-pre-wrap text-sm text-gray-800 font-serif overflow-y-auto bg-gray-50 rounded-lg p-3 border border-gray-100"
-               style="height: 24rem; min-height: 18rem; max-height: 60vh;">{{ text || (streaming ? '等待输出...' : '暂无输出') }}</pre>
+               style="max-height: 60vh; min-height: 8rem;">{{ text || '等待输出...' }}</pre>
           <div class="flex gap-2 mt-3 flex-wrap">
             <button @click="$emit('save')" :disabled="!text" class="px-3 py-1.5 bg-brand-500 text-white rounded-lg text-xs disabled:opacity-50">保存草稿</button>
             <button @click="copyText" :disabled="!text" class="px-3 py-1.5 bg-gray-100 rounded-lg text-xs disabled:opacity-50">复制</button>
@@ -1238,7 +1238,6 @@ window.initVueApp({
         autoScroll() {
           const el = this.$refs.contentRef;
           if (!el || !this.streaming) return;
-          // 流式状态下自动跟随到底部（除非用户手动向上滚过）
           if (this._userScrolled) return;
           el.scrollTop = el.scrollHeight;
         },
@@ -1257,7 +1256,6 @@ window.initVueApp({
         const el = this.$refs.contentRef;
         if (el) {
           el.addEventListener('scroll', () => {
-            // 距底部 > 100px 视为用户向上看历史
             this._userScrolled = (el.scrollHeight - el.scrollTop - el.clientHeight) > 100;
           });
         }
