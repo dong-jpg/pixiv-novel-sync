@@ -342,6 +342,84 @@ def build_plan_messages(
     ]
 
 
+DEFAULT_LONGFORM_PLAN_PROMPT = """你是专业中文长篇小说总编，负责在正式写正文前制定全书规划。
+
+你的任务：根据项目信息和用户要求，生成可直接用于批量创建章节的结构化长篇规划。
+
+【必须输出严格 JSON】
+只输出一个 JSON 对象，不要 markdown，不要解释，不要代码块。结构如下：
+{
+  "project_outline": "全书总纲，包含核心冲突、主线推进、阶段结构、结局方向，可用换行组织",
+  "expected_chapter_count": 12,
+  "chapters": [
+    {
+      "chapter_number": 1,
+      "title": "章节标题",
+      "outline": "本章大纲：本章目标、关键事件、情绪变化、章尾钩子",
+      "target_words": 3000
+    }
+  ],
+  "foreshadows": [
+    {
+      "description": "伏笔描述",
+      "planted_chapter": 1,
+      "target_resolve_chapter": 6,
+      "importance": "normal"
+    }
+  ]
+}
+
+【规划规则】
+- 不要写正文，只规划。
+- chapters 数量必须等于 expected_chapter_count，除非用户明确要求只规划部分章节。
+- 每章 title 必须具体，不要使用“第一章”“第二章”这种空泛标题。
+- 每章 outline 要能直接指导本章续写，包含：本章目标、关键事件、人物状态变化、需要埋设/回收的伏笔、章尾钩子。
+- 章节之间必须有连续性，不能像独立短篇。
+- 如果项目已有大纲或已有章节，要在其基础上续接，不要推翻已存在内容。
+- expected_chapter_count 必须是正整数。
+- target_words 默认 3000，除非用户另有要求。
+"""
+
+
+def build_longform_plan_messages(
+    *,
+    system_prompt: str | None,
+    project: dict[str, Any],
+    chapters: list[dict[str, Any]] | None = None,
+    instruction: str | None = None,
+    expected_chapters: int | None = None,
+) -> list[dict[str, str]]:
+    parts = []
+    parts.append(f"【项目名称】\n{project.get('name') or '未命名作品'}")
+    if project.get("description"):
+        parts.append(f"【项目简介】\n{project.get('description')}")
+    if project.get("outline"):
+        outline = project.get("outline")
+        if not isinstance(outline, str):
+            outline = json.dumps(outline, ensure_ascii=False, indent=2)
+        parts.append(f"【已有全书大纲】\n{outline}")
+    settings = project.get("settings") or {}
+    if settings:
+        parts.append(f"【项目设置/素材】\n{json.dumps(settings, ensure_ascii=False, indent=2)}")
+    if chapters:
+        chapter_lines = []
+        for ch in chapters:
+            chapter_lines.append(
+                f"第{ch.get('chapter_number')}章：{ch.get('title') or '未命名'}\n"
+                f"大纲：{ch.get('outline') or '（无）'}\n"
+                f"正文字数：{ch.get('word_count') or 0}"
+            )
+        parts.append("【已有章节】\n" + "\n\n".join(chapter_lines))
+    if expected_chapters:
+        parts.append(f"【期望章节数】\n请规划为 {expected_chapters} 章。")
+    if instruction:
+        parts.append(f"【用户规划要求】\n{instruction}")
+    return [
+        {"role": "system", "content": system_prompt or DEFAULT_LONGFORM_PLAN_PROMPT},
+        {"role": "user", "content": "\n\n".join(parts)},
+    ]
+
+
 # ── 摘要提取 ────────────────────────────────────────────────────
 
 DEFAULT_SUMMARIZE_PROMPT = """你是专业的小说文本摘要提取助手。

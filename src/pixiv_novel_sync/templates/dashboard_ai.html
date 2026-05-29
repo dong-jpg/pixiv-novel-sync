@@ -26,6 +26,12 @@
     {{ message }}
   </div>
 
+  <div v-if="toastMessage" class="fixed right-4 bottom-20 lg:bottom-6 z-[120] max-w-sm px-4 py-3 rounded-xl shadow-xl border text-sm flex items-start gap-2"
+       :class="toastType === 'error' ? 'bg-red-50 text-red-800 border-red-200' : 'bg-green-50 text-green-800 border-green-200'">
+    <span class="font-bold">{{ toastType === 'error' ? '!' : '✓' }}</span>
+    <span>{{ toastMessage }}</span>
+  </div>
+
   <!-- ═══ 创作向导 ═══ -->
   <section v-show="activeTab === 'wizard'" class="grid grid-cols-1 lg:grid-cols-12 gap-4" style="height: calc(100vh - 220px); min-height: 600px;">
     <!-- 左：会话列表 -->
@@ -212,6 +218,62 @@
       </div>
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <div class="lg:col-span-2 space-y-4">
+          <!-- 长篇规划 -->
+          <div class="bg-gradient-to-br from-indigo-50 to-brand-50 rounded-xl border border-indigo-100 shadow-sm p-4 space-y-4">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <h3 class="font-bold text-gray-900">长篇规划</h3>
+                <p class="text-xs text-pixiv-gray mt-1">先生成全书大纲、预计章节数和每章标题/大纲，再批量创建章节骨架。</p>
+              </div>
+              <span v-if="longformPlan.expected_chapter_count" class="text-xs px-2 py-1 rounded-full bg-white border border-indigo-100 text-indigo-700">预计 {{ longformPlan.expected_chapter_count }} 章</span>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label class="block text-xs font-medium text-pixiv-gray mb-1">规划 Agent</label>
+                <select v-model.number="longformPlanForm.agent_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+                  <option :value="0">请选择</option>
+                  <option v-for="a in planAgents" :key="a.id" :value="a.id">{{ a.name }}</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-pixiv-gray mb-1">期望章节数</label>
+                <input type="number" min="1" v-model.number="longformPlanForm.expected_chapters" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white" placeholder="例如 12">
+              </div>
+              <div class="flex items-end">
+                <button @click="generateLongformPlan" :disabled="longformPlanning || !longformPlanForm.agent_id" class="w-full px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+                  {{ longformPlanning ? '规划中…' : '生成全书规划' }}
+                </button>
+              </div>
+            </div>
+            <textarea v-model="longformPlanForm.instruction" rows="3" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white" placeholder="补充规划要求：题材、节奏、主线、预计篇幅、必须出现的剧情节点等"></textarea>
+            <div v-if="longformPlan.project_outline || longformPlan.chapters.length" class="bg-white/80 rounded-lg border border-indigo-100 p-3 space-y-3">
+              <div v-if="longformPlan.project_outline">
+                <div class="text-xs font-bold text-gray-900 mb-1">全书大纲</div>
+                <pre class="text-xs text-gray-700 whitespace-pre-wrap max-h-40 overflow-auto font-serif">{{ longformPlan.project_outline }}</pre>
+              </div>
+              <div v-if="longformPlan.chapters.length" class="space-y-2">
+                <div class="flex items-center justify-between gap-2 flex-wrap">
+                  <div class="text-xs font-bold text-gray-900">章节规划（{{ longformPlan.chapters.length }} 章）</div>
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <button @click="createNextPlannedChapter" class="text-xs px-2 py-1 bg-brand-500 text-white rounded">创建下一章</button>
+                    <input type="number" min="1" v-model.number="longformCreateCount" class="w-20 px-2 py-1 border border-gray-200 rounded text-xs" placeholder="数量">
+                    <button @click="createPlannedChapters(longformCreateCount)" class="text-xs px-2 py-1 bg-indigo-600 text-white rounded">创建前 N 章</button>
+                    <button @click="createPlannedChapters(0)" class="text-xs px-2 py-1 bg-gray-900 text-white rounded">创建全部</button>
+                  </div>
+                </div>
+                <div class="max-h-64 overflow-auto space-y-2 pr-1">
+                  <div v-for="ch in longformPlan.chapters" :key="ch.chapter_number" class="border border-gray-100 rounded-lg p-2 text-xs bg-white">
+                    <div class="flex items-center justify-between gap-2">
+                      <div class="font-medium text-gray-900">第{{ ch.chapter_number }}章 {{ ch.title }}</div>
+                      <span :class="plannedChapterExists(ch.chapter_number) ? 'text-green-600' : 'text-pixiv-gray'">{{ plannedChapterExists(ch.chapter_number) ? '已创建' : ((ch.target_words || 3000) + ' 字') }}</span>
+                    </div>
+                    <div class="text-gray-600 mt-1 whitespace-pre-wrap">{{ ch.outline }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- 章节列表 -->
           <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
             <div class="flex items-center justify-between mb-3">
@@ -325,6 +387,9 @@
               <label class="block text-xs font-medium text-pixiv-gray mb-1.5">正文内容</label>
               <textarea v-model="chapterEditForm.content" rows="20" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif" placeholder="章节正文..."></textarea>
             </div>
+            <div v-if="!chapterEditForm.title || !chapterEditForm.outline" class="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+              这个章节缺少标题或大纲。空白新建章节不会自动生成这些内容；可以点“生成构思”，或先在项目页生成长篇规划后再创建章节。
+            </div>
             <div class="flex flex-wrap gap-2">
               <button @click="saveCurrentChapter" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">保存章节</button>
               <button @click="startChapterContinue" :disabled="streaming" class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm disabled:opacity-50">{{ streaming ? '续写中...' : 'AI 续写' }}</button>
@@ -332,6 +397,7 @@
               <button @click="autoUpdateState" :disabled="streaming" class="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm disabled:opacity-50">更新状态</button>
               <button @click="appendOutput" v-if="streamOutput && !streaming" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">追加到正文</button>
             </div>
+            <p class="text-xs text-pixiv-gray">普通“AI 续写”只生成到右侧输出，不会自动写入正文或索引；需要“追加到正文”后保存。想自动保存、摘要并索引，请用右侧 Pipeline。</p>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label class="block text-xs font-medium text-pixiv-gray mb-1.5">续写 Agent</label>
@@ -357,9 +423,10 @@
               <label class="block text-xs font-medium text-pixiv-gray mb-1">关键事件（每行一个）</label>
               <textarea v-model="chapterKeyEventsText" rows="3" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="事件1&#10;事件2"></textarea>
             </div>
-            <div class="flex gap-2">
+            <div class="flex gap-2 items-center flex-wrap">
               <button @click="saveCurrentChapter" class="px-3 py-1.5 bg-brand-500 text-white rounded text-xs">保存</button>
               <button @click="indexChapter" class="px-3 py-1.5 bg-gray-100 rounded text-xs">索引到检索库</button>
+              <span v-if="chapterActionStatus" class="text-xs text-green-600">{{ chapterActionStatus }}</span>
             </div>
           </div>
         </div>
@@ -368,10 +435,10 @@
           <!-- ════ 自动 Pipeline 入口（轻量化：只放按钮和最近运行的状态） ════ -->
           <div class="bg-gradient-to-br from-amber-50 to-rose-50 rounded-xl border border-amber-200 p-4 space-y-3">
             <div class="flex items-center justify-between">
-              <h3 class="font-bold text-gray-900 text-sm">🚀 自动生成本章</h3>
+              <h3 class="font-bold text-gray-900 text-sm">自动生成本章</h3>
               <button v-if="pipelineSteps.length" @click="showPipelineModal = true" class="text-xs px-2 py-1 bg-white border border-amber-200 rounded text-amber-700 hover:bg-amber-50">查看运行详情</button>
             </div>
-            <p class="text-xs text-pixiv-gray">点击下方按钮配置并运行多 agent 自动 pipeline（续写 → 润色 → 去AI味 → 摘要 → 状态 → 伏笔 → 审计 → 痕迹检测）。</p>
+            <p class="text-xs text-pixiv-gray">Pipeline 会按所选步骤自动处理本章：续写会写回正文，默认还会生成摘要/关键事件、更新状态、回收伏笔、AI 痕迹检测并索引入库。</p>
             <button @click="openPipelineModal" :disabled="!currentChapter" class="w-full px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium disabled:opacity-50">
               {{ pipelineRunning ? '执行中（点击查看进度）' : '配置并运行 Pipeline' }}
             </button>
@@ -1289,6 +1356,9 @@ window.initVueApp({
     const promptFilter = ref('');
     const message = ref('');
     const messageType = ref('success');
+    const toastMessage = ref('');
+    const toastType = ref('success');
+    let toastTimer = null;
     const streaming = ref(false);
     const streamOutput = ref('');
     const currentJobId = ref('');
@@ -1310,8 +1380,13 @@ window.initVueApp({
     const chapterKeyEventsText = ref('');
     const chapterContinueAgent = ref(0);
     const chapterInstruction = ref('');
+    const chapterActionStatus = ref('');
     const searchQuery = ref('');
     const searchResults = ref([]);
+    const longformPlanning = ref(false);
+    const longformCreateCount = ref(3);
+    const longformPlanForm = reactive({ agent_id: 0, expected_chapters: null, instruction: '' });
+    const longformPlan = reactive({ project_outline: '', expected_chapter_count: 0, chapters: [], foreshadows: [] });
 
     const filteredForeshadows = computed(() => {
       if (foreshadowFilter.value === 'all') return foreshadows.value;
@@ -1326,6 +1401,17 @@ window.initVueApp({
       const cn = currentChapter.value.chapter_number;
       return foreshadows.value.filter(f => f.status === 'pending' && f.target_resolve_chapter && f.target_resolve_chapter <= cn + 2);
     });
+    function syncLongformPlanFromProject(project) {
+      const plan = project?.settings?.longform_plan || {};
+      longformPlan.project_outline = plan.project_outline || '';
+      longformPlan.expected_chapter_count = plan.expected_chapter_count || project?.settings?.expected_chapter_count || 0;
+      longformPlan.chapters = Array.isArray(plan.chapters) ? plan.chapters : [];
+      longformPlan.foreshadows = Array.isArray(plan.foreshadows) ? plan.foreshadows : [];
+    }
+    function plannedChapterExists(chapterNumber) {
+      return chapters.value.some(ch => Number(ch.chapter_number) === Number(chapterNumber));
+    }
+    const missingPlannedChapters = computed(() => longformPlan.chapters.filter(ch => !plannedChapterExists(ch.chapter_number)));
 
     const continueForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', context_chars: 8000, output_chars: 3000, instruction: '', smart_context: true, style_profile_id: 0, novel_profile_id: 0, plan_agent_id: 0, plan_text: '' });
     const rewriteForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', rewrite_type: 'polish', instruction: '' });
@@ -1356,7 +1442,15 @@ window.initVueApp({
     function editAgent(agent) {
       Object.assign(agentForm, { id: agent.id, name: agent.name || '', task_type: agent.task_type || 'continue', provider_id: agent.provider_id || 0, model: agent.model || '', system_prompt: agent.system_prompt || '', temperature: agent.temperature || 0.8, top_p: agent.top_p || 0.9, max_tokens: agent.max_tokens || 4000, context_window: agent.context_window || 16000, enabled: agent.enabled !== false });
     }
-    function showMessage(text, type = 'success') { message.value = text; messageType.value = type; setTimeout(() => { message.value = ''; }, 4000); }
+    function showMessage(text, type = 'success') {
+      message.value = text;
+      messageType.value = type;
+      toastMessage.value = text;
+      toastType.value = type;
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { toastMessage.value = ''; }, 3200);
+      setTimeout(() => { message.value = ''; }, 4000);
+    }
     async function api(url, options = {}) {
       const res = await fetch(url, options);
       const data = await res.json();
@@ -1410,6 +1504,7 @@ window.initVueApp({
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let plan = null;
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -1424,9 +1519,12 @@ window.initVueApp({
           const data = JSON.parse(dataLine);
           if (event === 'metadata') currentJobId.value = data.job_id || '';
           if (event === 'delta') streamOutput.value += data.text || '';
+          if (event === 'longform_plan') plan = data.plan;
+          if (event === 'done' && data.plan) plan = data.plan;
           if (event === 'error') throw new Error(data.message || '生成失败');
         }
       }
+      return plan;
     }
     async function startStream(url, payload) {
       streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
@@ -1588,6 +1686,7 @@ window.initVueApp({
     }
     async function openProject(p) {
       currentProject.value = p;
+      syncLongformPlanFromProject(p);
       projectView.value = 'detail';
       await Promise.all([loadChapters(p.id), loadForeshadows(p.id), loadProjectStates(p.id)]);
     }
@@ -1614,9 +1713,45 @@ window.initVueApp({
     async function createChapter() {
       const pid = currentProject.value?.id;
       if (!pid) return;
-      try { await api('/api/dashboard/ai/chapters', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ project_id: pid }) }); await loadChapters(pid); showMessage('章节已创建'); }
+      try { await api('/api/dashboard/ai/chapters', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ project_id: pid }) }); await loadChapters(pid); showMessage('空白章节已创建，可手动填写标题/大纲，或先生成全书规划'); }
       catch (e) { showMessage(e.message, 'error'); }
     }
+    async function refreshCurrentProject() {
+      if (!currentProject.value) return;
+      try {
+        currentProject.value = await api('/api/dashboard/ai/projects/' + currentProject.value.id);
+        syncLongformPlanFromProject(currentProject.value);
+      } catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function generateLongformPlan() {
+      const pid = currentProject.value?.id;
+      if (!pid) return;
+      if (!longformPlanForm.agent_id) { showMessage('请选择规划 Agent', 'error'); return; }
+      longformPlanning.value = true; streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
+      try {
+        const res = await fetch('/api/dashboard/ai/projects/' + pid + '/longform-plan/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(longformPlanForm) });
+        if (!res.ok || !res.body) throw new Error('长篇规划请求失败');
+        const plan = await readSSE(res);
+        if (!plan) throw new Error('模型未返回可用规划');
+        Object.assign(longformPlan, { project_outline: plan.project_outline || '', expected_chapter_count: plan.expected_chapter_count || 0, chapters: plan.chapters || [], foreshadows: plan.foreshadows || [] });
+        await refreshCurrentProject();
+        showMessage('长篇规划已生成并保存');
+      } catch (e) { showMessage(e.message, 'error'); }
+      finally { longformPlanning.value = false; streaming.value = false; }
+    }
+    async function createPlannedChapters(count = 0) {
+      const pid = currentProject.value?.id;
+      if (!pid) return;
+      let selected = missingPlannedChapters.value;
+      if (count && count > 0) selected = selected.slice(0, count);
+      if (!selected.length) { showMessage('没有需要创建的规划章节'); return; }
+      try {
+        const result = await api('/api/dashboard/ai/projects/' + pid + '/chapters/batch', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ chapters: selected, mode: 'missing_only' }) });
+        await loadChapters(pid);
+        showMessage(`已创建 ${result.created?.length || 0} 章，跳过 ${result.skipped?.length || 0} 章`);
+      } catch (e) { showMessage(e.message, 'error'); }
+    }
+    function createNextPlannedChapter() { createPlannedChapters(1); }
     async function deleteChapter(id) {
       if (!confirm('确认删除此章节？')) return;
       try { await api('/api/dashboard/ai/chapters/' + id, { method: 'DELETE' }); await loadChapters(currentProject.value?.id); }
@@ -1626,6 +1761,7 @@ window.initVueApp({
       currentChapter.value = ch;
       Object.assign(chapterEditForm, { title: ch.title || '', content: ch.content || '', outline: ch.outline || '', summary: ch.summary || '' });
       chapterKeyEventsText.value = (ch.key_events || []).join('\n');
+      chapterActionStatus.value = '';
       projectView.value = 'chapter';
       // 同步加载产出面板
       try { chapterDashboard.value = await api('/api/dashboard/ai/chapters/' + ch.id + '/dashboard'); }
@@ -1637,6 +1773,7 @@ window.initVueApp({
       try {
         await api('/api/dashboard/ai/chapters/' + currentChapter.value.id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ ...chapterEditForm, key_events: keyEvents }) });
         currentChapter.value = { ...currentChapter.value, ...chapterEditForm, key_events: keyEvents, word_count: (chapterEditForm.content || '').length };
+        chapterActionStatus.value = '已保存';
         showMessage('章节已保存');
       } catch (e) { showMessage(e.message, 'error'); }
     }
@@ -1707,7 +1844,7 @@ window.initVueApp({
     async function indexChapter() {
       if (!currentChapter.value || !currentProject.value) return;
       await saveCurrentChapter();
-      try { await api('/api/dashboard/ai/projects/' + currentProject.value.id + '/chapters/' + currentChapter.value.id + '/index', { method: 'POST' }); showMessage('已索引到检索库'); }
+      try { await api('/api/dashboard/ai/projects/' + currentProject.value.id + '/chapters/' + currentChapter.value.id + '/index', { method: 'POST' }); chapterActionStatus.value = '已保存并索引到检索库'; showMessage('已索引到检索库'); }
       catch (e) { showMessage(e.message, 'error'); }
     }
 
@@ -2175,7 +2312,7 @@ window.initVueApp({
     onMounted(async () => {
       await Promise.all([loadProviders(), loadAgents(), loadDrafts(), loadStyleProfiles(), loadNovelProfiles(), loadPromptTemplates(), loadProjects(), loadChatSessions()]);
     });
-    return { tabs, activeTab, providers, agents, drafts, draftHistory, jobs, selectedJob, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, jobFilter, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, planAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, loadJobs, startAudit, startPlan, detectAITells, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents, projectView, projectList, currentProject, chapters, currentChapter, foreshadows, foreshadowFilter, filteredForeshadows, chapterForeshadowAlerts, projectStates, showCreateProject, showForeshadowForm, newProjectForm, newForeshadow, chapterEditForm, chapterKeyEventsText, chapterContinueAgent, chapterInstruction, searchQuery, searchResults, loadProjects, createProject, deleteProject, openProject, createChapter, deleteChapter, openChapter, saveCurrentChapter, startChapterContinue, startChapterPlan, autoUpdateState, appendOutput, addForeshadow, resolveForeshadow, deleteForeshadow, searchProject, indexChapter, saveProjectStates, chatSessions, currentChatSession, chatMessages, chatInput, chatStreaming, chatStreamingText, chatLogRef, wizardSections, wizardSectionKeys, wizardAgents, showImportModal, importMode, importTargetProjectId, importOverwriteFields, importing, loadChatSessions, selectChatSession, openNewWizardSession, updateChatSessionAgent, renameWizardSession, deleteWizardSession, sendChatMessage, loadWizardPreview, openImportWizardModal, confirmImportWizard, showImportMaterialModal, materialTitle, materialContent, materialExtraInstruction, materialImporting, onMaterialFileSelected, confirmImportMaterial, pipelineAllSteps, pipelineExpanded, pipelineSelectedSteps, pipelineAgentIds, pipelineRunning, pipelineSteps, chapterDashboard, dashboardTab, dashboardTabs, pipelineAgentsFor, pipelineStepLabel, pipelineStatusBadge, stateLabel, loadChapterDashboard, startChapterPipeline, showPipelineModal, pipelineCurrentStep, pipelineOutputRef, openPipelineModal, onPipelineModalClose, retryPipelineStep, formatStepMeta, copyPipelineOutput, scrollPipelineOutputBottom };
+    return { tabs, activeTab, providers, agents, drafts, draftHistory, jobs, selectedJob, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, toastMessage, toastType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, jobFilter, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, planAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, loadJobs, startAudit, startPlan, detectAITells, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents, projectView, projectList, currentProject, chapters, currentChapter, foreshadows, foreshadowFilter, filteredForeshadows, chapterForeshadowAlerts, projectStates, showCreateProject, showForeshadowForm, newProjectForm, newForeshadow, chapterEditForm, chapterKeyEventsText, chapterContinueAgent, chapterInstruction, chapterActionStatus, searchQuery, searchResults, longformPlanning, longformCreateCount, longformPlanForm, longformPlan, plannedChapterExists, missingPlannedChapters, generateLongformPlan, createPlannedChapters, createNextPlannedChapter, loadProjects, createProject, deleteProject, openProject, createChapter, deleteChapter, openChapter, saveCurrentChapter, startChapterContinue, startChapterPlan, autoUpdateState, appendOutput, addForeshadow, resolveForeshadow, deleteForeshadow, searchProject, indexChapter, saveProjectStates, chatSessions, currentChatSession, chatMessages, chatInput, chatStreaming, chatStreamingText, chatLogRef, wizardSections, wizardSectionKeys, wizardAgents, showImportModal, importMode, importTargetProjectId, importOverwriteFields, importing, loadChatSessions, selectChatSession, openNewWizardSession, updateChatSessionAgent, renameWizardSession, deleteWizardSession, sendChatMessage, loadWizardPreview, openImportWizardModal, confirmImportWizard, showImportMaterialModal, materialTitle, materialContent, materialExtraInstruction, materialImporting, onMaterialFileSelected, confirmImportMaterial, pipelineAllSteps, pipelineExpanded, pipelineSelectedSteps, pipelineAgentIds, pipelineRunning, pipelineSteps, chapterDashboard, dashboardTab, dashboardTabs, pipelineAgentsFor, pipelineStepLabel, pipelineStatusBadge, stateLabel, loadChapterDashboard, startChapterPipeline, showPipelineModal, pipelineCurrentStep, pipelineOutputRef, openPipelineModal, onPipelineModalClose, retryPipelineStep, formatStepMeta, copyPipelineOutput, scrollPipelineOutputBottom };
   }
 });
 </script>

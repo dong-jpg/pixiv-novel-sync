@@ -19,6 +19,7 @@ from .prompts import (
     build_chat_messages,
     build_continue_messages,
     build_foreshadow_resolve_messages,
+    build_longform_plan_messages,
     build_novel_distill_messages,
     build_plan_messages,
     build_polish_messages,
@@ -1204,6 +1205,46 @@ class AIWritingService:
         finally:
             db.close()
 
+    def create_chapters_from_plan(self, project_id: int, chapters: list[dict[str, Any]], mode: str = "missing_only") -> dict[str, Any]:
+        if mode != "missing_only":
+            raise AIServiceError("当前仅支持 missing_only 模式")
+        if not chapters:
+            raise AIServiceError("没有可创建的章节")
+        db = self._db()
+        created: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        try:
+            if not db.get_ai_writing_project(project_id):
+                raise AIServiceError("写作项目不存在")
+            existing_numbers = {int(ch["chapter_number"]) for ch in db.list_ai_chapters(project_id)}
+            for raw in chapters:
+                try:
+                    chapter_number = int(raw.get("chapter_number") or 0)
+                except (TypeError, ValueError):
+                    chapter_number = 0
+                if chapter_number <= 0:
+                    skipped.append({"chapter_number": raw.get("chapter_number"), "reason": "invalid_number"})
+                    continue
+                if chapter_number in existing_numbers:
+                    skipped.append({"chapter_number": chapter_number, "reason": "exists"})
+                    continue
+                metadata = dict(raw.get("metadata") or {})
+                if raw.get("target_words"):
+                    metadata["target_words"] = raw.get("target_words")
+                chapter_id = db.create_ai_chapter({
+                    "project_id": project_id,
+                    "chapter_number": chapter_number,
+                    "title": str(raw.get("title") or "").strip() or f"第{chapter_number}章",
+                    "outline": str(raw.get("outline") or "").strip(),
+                })
+                if metadata:
+                    db.patch_ai_chapter_metadata(chapter_id, metadata)
+                existing_numbers.add(chapter_number)
+                created.append({"id": chapter_id, "chapter_number": chapter_number})
+            return {"created": created, "skipped": skipped}
+        finally:
+            db.close()
+
     def update_chapter(self, chapter_id: int, payload: dict[str, Any]) -> None:
         db = self._db()
         try:
@@ -1335,6 +1376,135 @@ class AIWritingService:
                         parts.append(f"【上一章末尾】\n{tail}")
 
             return "\n\n".join(parts)
+        finally:
+            db.close()
+
+    @staticmethod
+    def _extract_json_object(text: str) -> dict[str, Any]:
+        cleaned = (text or "").strip()
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:].strip()
+        elif cleaned.startswith("```"):
+            cleaned = cleaned[3:].strip()
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3].strip()
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start < 0 or end <= start:
+            raise AIServiceError("模型未返回有效 JSON")
+        try:
+            data = json.loads(cleaned[start:end + 1])
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise AIServiceError("模型返回的 JSON 无法解析") from exc
+        if not isinstance(data, dict):
+            raise AIServiceError("模型返回的规划格式不正确")
+        return data
+
+    @staticmethod
+    def _normalize_longform_plan(data: dict[str, Any]) -> dict[str, Any]:
+        chapters_in = data.get("chapters") or []
+        chapters: list[dict[str, Any]] = []
+        for i, raw in enumerate(chapters_in, 1):
+            if not isinstance(raw, dict):
+                continue
+            try:
+                chapter_number = int(raw.get("chapter_number") or i)
+            except (TypeError, ValueError):
+                chapter_number = i
+            if chapter_number <= 0:
+                continue
+            target_words = raw.get("target_words") or 3000
+            try:
+                target_words = int(target_words)
+            except (TypeError, ValueError):
+                target_words = 3000
+            chapters.append({
+                "chapter_number": chapter_number,
+                "title": str(raw.get("title") or f"第{chapter_number}章").strip(),
+                "outline": str(raw.get("outline") or "").strip(),
+                "target_words": target_words,
+            })
+        chapters.sort(key=lambda item: item["chapter_number"])
+        expected = data.get("expected_chapter_count") or len(chapters)
+        try:
+            expected = int(expected)
+        except (TypeError, ValueError):
+            expected = len(chapters)
+        foreshadows = [f for f in (data.get("foreshadows") or []) if isinstance(f, dict)]
+        return {
+            "project_outline": str(data.get("project_outline") or "").strip(),
+            "expected_chapter_count": max(expected, 0),
+            "chapters": chapters,
+            "foreshadows": foreshadows,
+        }
+
+    def stream_longform_plan(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        project_id = int(payload.get("project_id") or 0)
+        agent_id = int(payload.get("agent_id") or 0)
+        if not project_id:
+            raise AIServiceError("缺少 project_id")
+        db = self._db()
+        job_id = uuid.uuid4().hex
+        output_parts: list[str] = []
+        job_created = False
+        try:
+            agent = self._load_agent_config(db, agent_id)
+            provider_config = self._load_provider_config(db, agent.provider_id)
+            project = db.get_ai_writing_project(project_id)
+            if not project:
+                raise AIServiceError("写作项目不存在")
+            chapters = db.list_ai_chapters(project_id)
+            expected = payload.get("expected_chapters")
+            try:
+                expected_chapters = int(expected) if expected else None
+            except (TypeError, ValueError):
+                expected_chapters = None
+            messages = build_longform_plan_messages(
+                system_prompt=agent.system_prompt if agent.task_type == "plan" else None,
+                project=project,
+                chapters=chapters,
+                instruction=payload.get("instruction"),
+                expected_chapters=expected_chapters,
+            )
+            db.create_ai_job(job_id, "longform_plan", agent.id, {
+                "project_id": project_id,
+                "expected_chapters": expected_chapters,
+                "instruction": payload.get("instruction"),
+            })
+            job_created = True
+            yield AIStreamChunk(type="metadata", data={"job_id": job_id})
+            model = agent.model or provider_config.default_model
+            if not model:
+                raise AIServiceError("Agent 或 Provider 未配置模型")
+            provider = create_provider(provider_config)
+            for chunk in provider.stream_generate(
+                messages, model=model, temperature=agent.temperature,
+                top_p=agent.top_p, max_tokens=agent.max_tokens,
+            ):
+                if chunk.type == "delta":
+                    output_parts.append(chunk.text)
+                    yield chunk
+            output = "".join(output_parts)
+            plan = self._normalize_longform_plan(self._extract_json_object(output))
+            settings = dict(project.get("settings") or {})
+            settings["longform_plan"] = plan
+            settings["expected_chapter_count"] = plan["expected_chapter_count"]
+            db.update_ai_writing_project(project_id, {
+                "outline": plan["project_outline"] or project.get("outline"),
+                "settings": settings,
+            })
+            db.update_ai_job(job_id, "succeeded", output_text=output, output_json=plan)
+            yield AIStreamChunk(type="custom", data={"event": "longform_plan", "plan": plan})
+            yield AIStreamChunk(type="done", data={"job_id": job_id, "plan": plan})
+        except GeneratorExit:
+            if job_created:
+                db.update_ai_job(job_id, "cancelled", output_text="".join(output_parts), error_message="客户端断开连接")
+            raise
+        except Exception as exc:
+            message = str(exc)
+            if job_created:
+                db.update_ai_job(job_id, "failed", output_text="".join(output_parts), error_message=message)
+            yield AIStreamChunk(type="error", data={"message": message})
         finally:
             db.close()
 

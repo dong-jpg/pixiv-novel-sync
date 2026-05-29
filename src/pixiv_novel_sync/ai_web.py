@@ -559,6 +559,27 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
         except Exception as exc:
             return fail(exc)
 
+    @app.post("/api/dashboard/ai/projects/<int:project_id>/longform-plan/stream")
+    def stream_longform_plan(project_id: int):
+        try:
+            payload = json_payload()
+            payload["project_id"] = project_id
+            return stream_response(service.stream_longform_plan(payload))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/projects/<int:project_id>/chapters/batch")
+    def create_chapters_batch(project_id: int):
+        try:
+            payload = json_payload()
+            return ok(service.create_chapters_from_plan(
+                project_id,
+                payload.get("chapters") or [],
+                mode=payload.get("mode") or "missing_only",
+            ))
+        except Exception as exc:
+            return fail(exc)
+
     @app.post("/api/dashboard/ai/chapters/continue/stream")
     def stream_chapter_continue():
         try:
