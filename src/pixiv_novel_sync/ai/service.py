@@ -19,6 +19,7 @@ from .prompts import (
     build_chat_messages,
     build_continue_messages,
     build_foreshadow_resolve_messages,
+    build_longform_detail_messages,
     build_longform_plan_messages,
     build_novel_distill_messages,
     build_plan_messages,
@@ -1229,13 +1230,30 @@ class AIWritingService:
                     skipped.append({"chapter_number": chapter_number, "reason": "exists"})
                     continue
                 metadata = dict(raw.get("metadata") or {})
-                if raw.get("target_words"):
-                    metadata["target_words"] = raw.get("target_words")
+                metadata_fields = {
+                    "target_words": raw.get("target_words"),
+                    "summary_outline": raw.get("outline") or raw.get("summary_outline"),
+                    "detailed_outline": raw.get("detailed_outline") or raw.get("expanded_outline"),
+                    "volume_number": raw.get("volume_number"),
+                    "story_function": raw.get("story_function"),
+                    "key_events": raw.get("key_events"),
+                    "foreshadow_refs": raw.get("foreshadow_refs"),
+                    "scene_beats": raw.get("scene_beats"),
+                    "writing_notes": raw.get("writing_notes"),
+                }
+                for key, value in metadata_fields.items():
+                    if value:
+                        metadata[key] = value
+                outline_text = (
+                    str(raw.get("detailed_outline") or "").strip()
+                    or str(raw.get("expanded_outline") or "").strip()
+                    or str(raw.get("outline") or raw.get("summary_outline") or "").strip()
+                )
                 chapter_id = db.create_ai_chapter({
                     "project_id": project_id,
                     "chapter_number": chapter_number,
                     "title": str(raw.get("title") or "").strip() or f"第{chapter_number}章",
-                    "outline": str(raw.get("outline") or "").strip(),
+                    "outline": outline_text,
                 })
                 if metadata:
                     db.patch_ai_chapter_metadata(chapter_id, metadata)
@@ -1401,7 +1419,20 @@ class AIWritingService:
         return data
 
     @staticmethod
-    def _normalize_longform_plan(data: dict[str, Any]) -> dict[str, Any]:
+    def _optional_positive_int(value: Any) -> int | None:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
+
+    @staticmethod
+    def _normalize_longform_plan(
+        data: dict[str, Any],
+        *,
+        target_words: int | None = None,
+        chapter_words_reference: int | None = None,
+    ) -> dict[str, Any]:
         chapters_in = data.get("chapters") or []
         chapters: list[dict[str, Any]] = []
         for i, raw in enumerate(chapters_in, 1):
@@ -1413,27 +1444,52 @@ class AIWritingService:
                 chapter_number = i
             if chapter_number <= 0:
                 continue
-            target_words = raw.get("target_words") or 3000
+            target = raw.get("target_words") or chapter_words_reference or data.get("average_chapter_words") or 3000
             try:
-                target_words = int(target_words)
+                target = int(target)
             except (TypeError, ValueError):
-                target_words = 3000
+                target = 3000
+            outline = str(raw.get("outline") or raw.get("summary_outline") or "").strip()
             chapters.append({
                 "chapter_number": chapter_number,
                 "title": str(raw.get("title") or f"第{chapter_number}章").strip(),
-                "outline": str(raw.get("outline") or "").strip(),
-                "target_words": target_words,
+                "outline": outline,
+                "detailed_outline": str(raw.get("detailed_outline") or raw.get("expanded_outline") or "").strip(),
+                "target_words": target,
+                "volume_number": raw.get("volume_number"),
+                "story_function": str(raw.get("story_function") or "").strip(),
+                "key_events": raw.get("key_events") if isinstance(raw.get("key_events"), list) else [],
+                "foreshadow_refs": raw.get("foreshadow_refs") if isinstance(raw.get("foreshadow_refs"), list) else [],
+                "scene_beats": raw.get("scene_beats") if isinstance(raw.get("scene_beats"), list) else [],
+                "writing_notes": str(raw.get("writing_notes") or "").strip(),
             })
         chapters.sort(key=lambda item: item["chapter_number"])
+        plan_target = data.get("target_words") or target_words
+        try:
+            plan_target = int(plan_target) if plan_target else 0
+        except (TypeError, ValueError):
+            plan_target = target_words or 0
         expected = data.get("expected_chapter_count") or len(chapters)
         try:
             expected = int(expected)
         except (TypeError, ValueError):
             expected = len(chapters)
+        average = data.get("average_chapter_words")
+        try:
+            average = int(average) if average else 0
+        except (TypeError, ValueError):
+            average = 0
+        if not average and plan_target and expected:
+            average = max(round(plan_target / expected), 1)
         foreshadows = [f for f in (data.get("foreshadows") or []) if isinstance(f, dict)]
+        volumes = [v for v in (data.get("volumes") or data.get("volume_structure") or []) if isinstance(v, dict)]
         return {
             "project_outline": str(data.get("project_outline") or "").strip(),
+            "target_words": max(plan_target or 0, 0),
             "expected_chapter_count": max(expected, 0),
+            "average_chapter_words": max(average or 0, 0),
+            "structure_notes": str(data.get("structure_notes") or data.get("planning_rationale") or "").strip(),
+            "volumes": volumes,
             "chapters": chapters,
             "foreshadows": foreshadows,
         }
@@ -1454,21 +1510,31 @@ class AIWritingService:
             if not project:
                 raise AIServiceError("写作项目不存在")
             chapters = db.list_ai_chapters(project_id)
-            expected = payload.get("expected_chapters")
-            try:
-                expected_chapters = int(expected) if expected else None
-            except (TypeError, ValueError):
-                expected_chapters = None
+            target_words = self._optional_positive_int(payload.get("target_words"))
+            expected_chapters = self._optional_positive_int(payload.get("expected_chapters"))
+            chapter_words_reference = self._optional_positive_int(payload.get("chapter_words_reference")) or 3000
+            if not target_words and expected_chapters:
+                target_words = expected_chapters * chapter_words_reference
+            if not target_words:
+                raise AIServiceError("缺少目标总字数")
+            if target_words > 10_000_000:
+                raise AIServiceError("目标总字数过大，请分阶段规划")
+            if expected_chapters and expected_chapters > 2000:
+                raise AIServiceError("章节数参考过大")
             messages = build_longform_plan_messages(
                 system_prompt=agent.system_prompt if agent.task_type == "plan" else None,
                 project=project,
                 chapters=chapters,
                 instruction=payload.get("instruction"),
+                target_words=target_words,
                 expected_chapters=expected_chapters,
+                chapter_words_reference=chapter_words_reference,
             )
             db.create_ai_job(job_id, "longform_plan", agent.id, {
                 "project_id": project_id,
+                "target_words": target_words,
                 "expected_chapters": expected_chapters,
+                "chapter_words_reference": chapter_words_reference,
                 "instruction": payload.get("instruction"),
             })
             job_created = True
@@ -1485,10 +1551,16 @@ class AIWritingService:
                     output_parts.append(chunk.text)
                     yield chunk
             output = "".join(output_parts)
-            plan = self._normalize_longform_plan(self._extract_json_object(output))
+            plan = self._normalize_longform_plan(
+                self._extract_json_object(output),
+                target_words=target_words,
+                chapter_words_reference=chapter_words_reference,
+            )
             settings = dict(project.get("settings") or {})
             settings["longform_plan"] = plan
-            settings["expected_chapter_count"] = plan["expected_chapter_count"]
+            settings["target_words"] = plan.get("target_words")
+            settings["expected_chapter_count"] = plan.get("expected_chapter_count")
+            settings["average_chapter_words"] = plan.get("average_chapter_words")
             db.update_ai_writing_project(project_id, {
                 "outline": plan["project_outline"] or project.get("outline"),
                 "settings": settings,
@@ -1496,6 +1568,124 @@ class AIWritingService:
             db.update_ai_job(job_id, "succeeded", output_text=output, output_json=plan)
             yield AIStreamChunk(type="custom", data={"event": "longform_plan", "plan": plan})
             yield AIStreamChunk(type="done", data={"job_id": job_id, "plan": plan})
+        except GeneratorExit:
+            if job_created:
+                db.update_ai_job(job_id, "cancelled", output_text="".join(output_parts), error_message="客户端断开连接")
+            raise
+        except Exception as exc:
+            message = str(exc)
+            if job_created:
+                db.update_ai_job(job_id, "failed", output_text="".join(output_parts), error_message=message)
+            yield AIStreamChunk(type="error", data={"message": message})
+        finally:
+            db.close()
+
+    @staticmethod
+    def _normalize_longform_detail_plan(data: dict[str, Any]) -> dict[int, dict[str, Any]]:
+        result: dict[int, dict[str, Any]] = {}
+        for raw in data.get("chapters") or []:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                chapter_number = int(raw.get("chapter_number") or 0)
+            except (TypeError, ValueError):
+                continue
+            detailed_outline = str(raw.get("detailed_outline") or raw.get("expanded_outline") or "").strip()
+            if chapter_number <= 0 or not detailed_outline:
+                continue
+            result[chapter_number] = {
+                "detailed_outline": detailed_outline,
+                "scene_beats": raw.get("scene_beats") if isinstance(raw.get("scene_beats"), list) else [],
+                "writing_notes": str(raw.get("writing_notes") or "").strip(),
+            }
+        return result
+
+    def stream_longform_plan_details(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        project_id = int(payload.get("project_id") or 0)
+        agent_id = int(payload.get("agent_id") or 0)
+        if not project_id:
+            raise AIServiceError("缺少 project_id")
+        db = self._db()
+        job_id = uuid.uuid4().hex
+        output_parts: list[str] = []
+        job_created = False
+        try:
+            agent = self._load_agent_config(db, agent_id)
+            provider_config = self._load_provider_config(db, agent.provider_id)
+            project = db.get_ai_writing_project(project_id)
+            if not project:
+                raise AIServiceError("写作项目不存在")
+            settings = dict(project.get("settings") or {})
+            plan = dict(settings.get("longform_plan") or {})
+            plan_chapters = list(plan.get("chapters") or [])
+            if not plan_chapters:
+                raise AIServiceError("请先生成全书规划")
+            selected_numbers = payload.get("chapter_numbers") or []
+            selected = {int(n) for n in selected_numbers if str(n).isdigit()}
+            mode = payload.get("mode") or "missing_only"
+            target_chapters = []
+            for ch in plan_chapters:
+                number = int(ch.get("chapter_number") or 0)
+                if selected and number not in selected:
+                    continue
+                if mode == "missing_only" and ch.get("detailed_outline"):
+                    continue
+                target_chapters.append(ch)
+            if not target_chapters:
+                raise AIServiceError("没有需要扩写的章节梗概")
+            messages = build_longform_detail_messages(
+                system_prompt=agent.system_prompt if agent.task_type == "plan" else None,
+                project=project,
+                longform_plan=plan,
+                chapters=target_chapters,
+                instruction=payload.get("instruction"),
+            )
+            db.create_ai_job(job_id, "longform_plan_details", agent.id, {
+                "project_id": project_id,
+                "mode": mode,
+                "chapter_numbers": [ch.get("chapter_number") for ch in target_chapters],
+                "instruction": payload.get("instruction"),
+            })
+            job_created = True
+            yield AIStreamChunk(type="metadata", data={"job_id": job_id, "chapters": len(target_chapters)})
+            model = agent.model or provider_config.default_model
+            if not model:
+                raise AIServiceError("Agent 或 Provider 未配置模型")
+            provider = create_provider(provider_config)
+            for chunk in provider.stream_generate(
+                messages, model=model, temperature=agent.temperature,
+                top_p=agent.top_p, max_tokens=agent.max_tokens,
+            ):
+                if chunk.type == "delta":
+                    output_parts.append(chunk.text)
+                    yield chunk
+            output = "".join(output_parts)
+            details = self._normalize_longform_detail_plan(self._extract_json_object(output))
+            if not details:
+                raise AIServiceError("模型未返回可用详细梗概")
+            for ch in plan_chapters:
+                number = int(ch.get("chapter_number") or 0)
+                detail = details.get(number)
+                if not detail:
+                    continue
+                ch["detailed_outline"] = detail["detailed_outline"]
+                ch["scene_beats"] = detail.get("scene_beats") or []
+                ch["writing_notes"] = detail.get("writing_notes") or ""
+                existing_chapter = db.get_ai_chapter_by_number(project_id, number)
+                if existing_chapter:
+                    db.update_ai_chapter(existing_chapter["id"], {"outline": detail["detailed_outline"]})
+                    db.patch_ai_chapter_metadata(existing_chapter["id"], {
+                        "summary_outline": ch.get("outline"),
+                        "detailed_outline": detail["detailed_outline"],
+                        "scene_beats": detail.get("scene_beats") or [],
+                        "writing_notes": detail.get("writing_notes") or "",
+                    })
+            plan["chapters"] = plan_chapters
+            settings["longform_plan"] = plan
+            db.update_ai_writing_project(project_id, {"settings": settings})
+            db.update_ai_job(job_id, "succeeded", output_text=output, output_json={"plan": plan, "updated": len(details)})
+            yield AIStreamChunk(type="custom", data={"event": "longform_plan_details", "plan": plan})
+            yield AIStreamChunk(type="done", data={"job_id": job_id, "plan": plan, "updated": len(details)})
         except GeneratorExit:
             if job_created:
                 db.update_ai_job(job_id, "cancelled", output_text="".join(output_parts), error_message="客户端断开连接")
