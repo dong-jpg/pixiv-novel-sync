@@ -27,6 +27,21 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
     def fail(exc: Exception, status: int = 400):
         return jsonify({"ok": False, "error": str(exc)}), status
 
+    def parse_int(value: Any, default: int, name: str = "参数",
+                  min_value: int | None = None, max_value: int | None = None) -> int:
+        """安全解析整数参数，给出友好错误信息。"""
+        if value is None or value == "":
+            return default
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            raise AIServiceError(f"{name} 必须是整数") from None
+        if min_value is not None and number < min_value:
+            raise AIServiceError(f"{name} 不能小于 {min_value}")
+        if max_value is not None and number > max_value:
+            raise AIServiceError(f"{name} 不能大于 {max_value}")
+        return number
+
     def sse(event: str, data: dict[str, Any]) -> str:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -35,6 +50,8 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
             for chunk in chunks:
                 if chunk.type == "delta":
                     yield sse("delta", {"text": chunk.text})
+                elif chunk.type == "progress":
+                    yield sse("progress", chunk.data or {})
                 elif chunk.type == "metadata":
                     yield sse("metadata", chunk.data or {})
                 elif chunk.type == "done":
@@ -173,8 +190,8 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
     @app.get("/api/dashboard/ai/drafts")
     def list_ai_drafts():
         try:
-            page = int(request.args.get("page", 1))
-            page_size = int(request.args.get("page_size", 20))
+            page = parse_int(request.args.get("page"), 1, "page", min_value=1)
+            page_size = parse_int(request.args.get("page_size"), 20, "page_size", min_value=1, max_value=200)
             return ok(service.list_drafts(page=page, page_size=page_size))
         except Exception as exc:
             return fail(exc)
@@ -225,8 +242,8 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
         try:
             task_type = request.args.get("task_type") or None
             status = request.args.get("status") or None
-            page = int(request.args.get("page", 1))
-            page_size = int(request.args.get("page_size", 20))
+            page = parse_int(request.args.get("page"), 1, "page", min_value=1)
+            page_size = parse_int(request.args.get("page_size"), 20, "page_size", min_value=1, max_value=200)
             return ok(service.list_jobs(task_type=task_type, status=status, page=page, page_size=page_size))
         except Exception as exc:
             return fail(exc)
@@ -235,6 +252,19 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
     def get_ai_job(job_id: str):
         try:
             return ok(service.get_job(job_id))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/jobs/cleanup")
+    def cleanup_ai_jobs():
+        try:
+            payload = json_payload()
+            keep_days = parse_int(payload.get("keep_days"), 30, "keep_days", min_value=1)
+            keep_failed_days = payload.get("keep_failed_days")
+            if keep_failed_days is not None:
+                keep_failed_days = parse_int(keep_failed_days, 0, "keep_failed_days", min_value=1)
+            deleted = service.cleanup_jobs(keep_days=keep_days, keep_failed_days=keep_failed_days)
+            return ok({"deleted": deleted})
         except Exception as exc:
             return fail(exc)
 
@@ -250,8 +280,8 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
     @app.get("/api/dashboard/ai/style-profiles")
     def list_style_profiles():
         try:
-            page = int(request.args.get("page", 1))
-            page_size = int(request.args.get("page_size", 20))
+            page = parse_int(request.args.get("page"), 1, "page", min_value=1)
+            page_size = parse_int(request.args.get("page_size"), 20, "page_size", min_value=1, max_value=200)
             return ok(service.list_style_profiles(page=page, page_size=page_size))
         except Exception as exc:
             return fail(exc)
@@ -299,8 +329,8 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
     @app.get("/api/dashboard/ai/novel-profiles")
     def list_novel_profiles():
         try:
-            page = int(request.args.get("page", 1))
-            page_size = int(request.args.get("page_size", 20))
+            page = parse_int(request.args.get("page"), 1, "page", min_value=1)
+            page_size = parse_int(request.args.get("page_size"), 20, "page_size", min_value=1, max_value=200)
             return ok(service.list_novel_profiles(page=page, page_size=page_size))
         except Exception as exc:
             return fail(exc)
@@ -431,7 +461,7 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
         """搜索系列，用于 AI 创作选择输入源。"""
         try:
             q = str(request.args.get("q", "") or "").strip()
-            limit = min(int(request.args.get("limit", 10) or 10), 20)
+            limit = parse_int(request.args.get("limit"), 10, "limit", min_value=1, max_value=20)
             from .storage_db import Database
             from .settings import Settings
             current_settings = settings
@@ -470,7 +500,7 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
     def seed_builtin_agents():
         try:
             payload = json_payload()
-            provider_id = int(payload.get("provider_id") or 0)
+            provider_id = parse_int(payload.get("provider_id"), 0, "provider_id", min_value=0)
             if not provider_id:
                 raise AIServiceError("需要指定 provider_id")
             created = service.seed_builtin_agents(provider_id)
@@ -577,6 +607,29 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
         except Exception as exc:
             return fail(exc)
 
+    @app.post("/api/dashboard/ai/projects/<int:project_id>/longform-plan/import-output")
+    def import_longform_plan_output_api(project_id: int):
+        try:
+            return ok(service.import_longform_plan_output(project_id, json_payload()))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/projects/<int:project_id>/longform-plan/details/import-output")
+    def import_longform_plan_details_output_api(project_id: int):
+        try:
+            return ok(service.import_longform_plan_details_output(project_id, json_payload()))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/projects/<int:project_id>/context/preview")
+    def preview_project_context_api(project_id: int):
+        try:
+            payload = json_payload()
+            payload["project_id"] = project_id
+            return ok(service.preview_project_context(payload))
+        except Exception as exc:
+            return fail(exc)
+
     @app.post("/api/dashboard/ai/projects/<int:project_id>/chapters/batch")
     def create_chapters_batch(project_id: int):
         try:
@@ -674,7 +727,7 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
             query = str(request.args.get("q", "") or "").strip()
             if not query:
                 raise AIServiceError("搜索关键词不能为空")
-            top_k = min(int(request.args.get("top_k", 5) or 5), 20)
+            top_k = parse_int(request.args.get("top_k"), 5, "top_k", min_value=1, max_value=20)
             return ok(service.search_project_context(project_id, query, top_k=top_k))
         except Exception as exc:
             return fail(exc)
@@ -749,6 +802,14 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
         except Exception as exc:
             return fail(exc)
 
+    @app.post("/api/dashboard/ai/chat/sessions/<int:session_id>/import-raw-to-project")
+    def import_wizard_raw_to_project_api(session_id: int):
+        try:
+            project_id = service.import_wizard_output(session_id, json_payload())
+            return ok({"project_id": project_id})
+        except Exception as exc:
+            return fail(exc)
+
     # ── 章节 Pipeline + 摘要/伏笔/润色/聚合面板 ──────────────────────
 
     @app.post("/api/dashboard/ai/chapters/pipeline/stream")
@@ -777,6 +838,13 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
         try:
             payload = {**json_payload(), "project_id": project_id}
             return stream_response(service.stream_auto_resolve_foreshadows(payload))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/projects/<int:project_id>/foreshadows/auto-resolve/import-output")
+    def import_foreshadow_resolution_output_api(project_id: int):
+        try:
+            return ok(service.import_foreshadow_resolution_output(project_id, json_payload()))
         except Exception as exc:
             return fail(exc)
 

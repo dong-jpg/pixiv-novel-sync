@@ -44,6 +44,9 @@ class BaseRetriever:
     def delete_project(self, project_id: int) -> None:
         raise NotImplementedError
 
+    def delete_chapter(self, project_id: int, chapter_number: int) -> None:
+        raise NotImplementedError
+
 
 class TFIDFRetriever(BaseRetriever):
     """基于 TF-IDF 的轻量检索器（零外部依赖）。"""
@@ -152,6 +155,14 @@ class TFIDFRetriever(BaseRetriever):
     def delete_project(self, project_id: int) -> None:
         with self._lock:
             self.conn.execute("DELETE FROM retrieval_entries WHERE project_id = ?", (project_id,))
+            self.conn.commit()
+
+    def delete_chapter(self, project_id: int, chapter_number: int) -> None:
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM retrieval_entries WHERE project_id = ? AND chapter_number = ?",
+                (project_id, chapter_number),
+            )
             self.conn.commit()
 
     def close(self) -> None:
@@ -265,6 +276,14 @@ class EmbeddingRetriever(BaseRetriever):
     def delete_project(self, project_id: int) -> None:
         with self._lock:
             self.conn.execute("DELETE FROM retrieval_vectors WHERE project_id = ?", (project_id,))
+            self.conn.commit()
+
+    def delete_chapter(self, project_id: int, chapter_number: int) -> None:
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM retrieval_vectors WHERE project_id = ? AND chapter_number = ?",
+                (project_id, chapter_number),
+            )
             self.conn.commit()
 
     def close(self) -> None:

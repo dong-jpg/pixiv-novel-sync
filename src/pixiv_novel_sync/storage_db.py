@@ -311,6 +311,20 @@ class Database:
         ).fetchone()
         return int(row[0]) if row else 0
 
+    def list_series_novel_texts(self, series_id: int) -> list[dict[str, Any]]:
+        """按创建时间升序列出系列下所有小说正文（含 title/text_raw/text_markdown/create_date）。"""
+        rows = self.conn.execute(
+            """
+            SELECT nt.text_raw, nt.text_markdown, n.title, n.create_date
+            FROM novels n
+            LEFT JOIN novel_texts nt ON nt.novel_id = n.novel_id
+            WHERE n.series_id = ?
+            ORDER BY n.create_date ASC
+            """,
+            (series_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_novel_meta_hash(self, novel_id: int) -> str | None:
         """获取小说的 meta_hash，用于增量同步判断"""
         row = self.conn.execute("SELECT meta_hash FROM novels WHERE novel_id = ?", (novel_id,)).fetchone()
@@ -1536,7 +1550,7 @@ class Database:
                 continue
             column = "available_models_json" if key == "available_models" else key
             value = json.dumps(data[key] or [], ensure_ascii=False) if key == "available_models" else data[key]
-            if key == "enabled":
+            if key in ("enabled", "stream_enabled"):
                 value = 1 if value else 0
             fields.append(f"{column} = ?")
             params.append(value)
@@ -1781,6 +1795,28 @@ class Database:
         with self._lock:
             self.conn.execute("DELETE FROM ai_jobs WHERE job_id = ?", (job_id,))
             self._commit_if_needed()
+
+    def cleanup_ai_jobs(self, keep_days: int = 30, keep_failed_days: int | None = None) -> int:
+        """清理 ai_jobs：默认保留最近 30 天的已完成任务，失败任务可单独配置保留天数。
+
+        返回删除的行数。
+        """
+        if keep_failed_days is None:
+            keep_failed_days = keep_days
+        with self._lock:
+            cur = self.conn.execute(
+                """
+                DELETE FROM ai_jobs
+                WHERE (status IN ('done', 'completed', 'success')
+                       AND created_at < datetime('now', ? || ' days'))
+                   OR (status IN ('failed', 'error', 'cancelled')
+                       AND created_at < datetime('now', ? || ' days'))
+                """,
+                (f"-{int(keep_days)}", f"-{int(keep_failed_days)}"),
+            )
+            deleted = cur.rowcount or 0
+            self._commit_if_needed()
+        return int(deleted)
 
     # ── ai_style_profiles ───────────────────────────────────────
 
@@ -2427,6 +2463,13 @@ class Database:
 
     # ── ai_chapters CRUD ───────────────────────────────────────────
 
+    def list_ai_chapter_refs(self, project_id: int) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT id, chapter_number FROM ai_chapters WHERE project_id = ? ORDER BY chapter_number ASC",
+            (project_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_ai_chapters(self, project_id: int) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT * FROM ai_chapters WHERE project_id = ? ORDER BY chapter_number ASC",
@@ -2516,6 +2559,22 @@ class Database:
             )
             self._commit_if_needed()
             return current
+
+    def update_ai_chapters_outlines_and_metadata(self, updates: list[dict[str, Any]]) -> None:
+        if not updates:
+            return
+        with self._lock:
+            for item in updates:
+                chapter_id = int(item.get("id") or item.get("chapter_id") or 0)
+                if not chapter_id:
+                    continue
+                outline = item.get("outline")
+                metadata = item.get("metadata") or {}
+                self.conn.execute(
+                    "UPDATE ai_chapters SET outline = ?, metadata_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (outline, json.dumps(metadata, ensure_ascii=False), chapter_id),
+                )
+            self._commit_if_needed()
 
     def delete_ai_chapter(self, chapter_id: int) -> None:
         with self._lock:

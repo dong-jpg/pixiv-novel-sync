@@ -22,6 +22,9 @@ dependencies = [
   "croniter>=2.0.0",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
 [project.scripts]
 pixiv-novel-sync = "pixiv_novel_sync.cli:main"
 
@@ -31,6 +34,10 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
 
 [tool.setuptools.package-data]
 pixiv_novel_sync = ["templates/*.html"]

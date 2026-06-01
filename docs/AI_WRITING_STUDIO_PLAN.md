@@ -1,7 +1,7 @@
 # AI 创作工作台实施计划
 
-> 状态：Phase 1 基础实现已落地，待人工联调外部 API。  
-> 最近更新：2026-05-26  
+> 状态：AI 创作工作台已进入长篇项目化写作阶段；核心链路已落地，待系统性联调、测试与体验收敛。  
+> 最近更新：2026-06-01  
 > 用途：记录 AI 创作工作台的产品决策、技术方案和后续实时变更。
 
 ## 1. 当前确认的产品决策
@@ -18,7 +18,8 @@
 - Provider 第一版暂不实现：
   - `gemini`
 - 蒸馏小说定义：提取剧情、角色、世界观、设定、伏笔、时间线等结构化资料，不是训练模型。
-- AI 生成内容可以保存为本地草稿，但不混入 Pixiv 原始归档表，单独放 `ai_drafts`。
+- 当前实现已从“续写/改写工具”升级为“长篇小说创作工作台”：支持创作向导、写作项目、长篇规划、章节续写、章节流水线、伏笔/状态记忆、检索、审计和润色。
+- 后续优化重点不再是继续堆功能，而是围绕 **稳定性、可解释性、自动保存、流程收敛、测试覆盖、上下文质量** 做产品化。
 
 ## 2. 阶段规划
 
@@ -78,6 +79,37 @@
 - diff 对比。
 - Agent 一键复制。
 - Token/费用估算。
+
+### Phase 4：写作项目系统 + 深度优化 ✅
+
+已实现：
+
+- 写作项目：`ai_writing_projects`，保存项目名称、简介、大纲、关联档案、项目设置。
+- 章节管理：`ai_chapters`，支持章节序号、标题、正文、摘要、关键事件、大纲和元数据。
+- 项目状态记忆：`ai_project_states`，维护角色状态、剧情进展、世界观状态、伏笔追踪等持久上下文。
+- 伏笔管理：`ai_foreshadows`，支持 pending/approaching/resolved 三态和超期/临近提醒。
+- 项目级上下文构建：自动注入项目大纲、状态记忆、伏笔提醒、前章摘要、上一章末尾。
+- 章节续写：`stream_chapter_continue` 基于项目上下文与章节大纲续写。
+- 语义检索：`TFIDFRetriever` 零依赖 fallback，可选 `EmbeddingRetriever`。
+- 内容审计增强：本地 AI 痕迹规则检测结果可注入 LLM 审计。
+
+### Phase 5：长篇创作闭环与产品化 ✅/进行中
+
+已实现：
+
+- 创作向导多轮对话：支持素材收集、会话预览和一键导入项目。
+- 长篇规划：按目标总字数、章节数参考和单章字数参考生成全书规划，并写入项目 `settings.longform_plan`。
+- 详细章节梗概扩写：将章节概要批量扩展为 `detailed_outline`、`scene_beats`、`writing_notes`。
+- 批量建章：从长篇规划创建缺失章节，保留章节元数据。
+- 章节后处理：章节摘要/关键事件提取、对话润色、心理描写润色、伏笔自动回收、章节 dashboard。
+- 章节 Pipeline：串联续写、润色、去 AI 味、摘要、状态更新、伏笔处理、审计、规则检测、检索索引等步骤。
+
+进行中/待强化：
+
+- 前端流程需要进一步收敛成“向导 → 规划 → 章节 → Pipeline → 回看/修正”的主路径，降低 10+ tabs 的认知负担。
+- 长篇规划 JSON 解析、章节导入、pipeline 中间态已具备 raw output 重试导入和 metadata 展示，后续重点是浏览器联调与交互减负。
+- 自动保存和断线续跑基础能力已落地：章节续写会自动写回正文，pipeline 单步状态可回看；后续可继续增强断线恢复与断点续跑。
+
 
 ## 3. 当前代码库关键位置
 
@@ -829,25 +861,115 @@ tests/test_ai_db.py
 - SSE 格式输出正确。
 - `archive_novel` 能读取 `get_novel_detail()` 的文本。
 - AI job 成功/失败状态能写入 DB。
+- 长篇规划、详细梗概、创作向导、章节 Pipeline 相关测试。
 
-## 14. 风险点
+## 14. 健壮性检查结论与优化方向（2026-06-01）
 
-1. **三类 Provider 首版同时做，适配复杂度较高**  
-   xAI 可以复用 OpenAI-compatible 解析，但仍建议作为独立 provider type。
+### 14.1 当前完成度
 
-2. **流式输出与 DB job 状态同步**  
-   用户关闭页面时要避免 job 长期处于 `running`。
+按代码现状评估：
 
-3. **加密密钥丢失或变化**  
-   旧 API key 会无法解密，需要 UI 提示重新填写。
+- Phase 1-3：已完成，具备 Provider/Agent、续写/改写、草稿、文档、蒸馏、审计、模板和任务历史。
+- Phase 4：已完成主体能力，具备项目化写作、章节、状态记忆、伏笔、检索和章节续写。
+- Phase 5：已完成核心链路，但仍处于产品化完善阶段，重点是稳定性、流程收敛和测试覆盖。
 
-4. **隐私风险**  
-   存档小说文本会发送给外部 API，需要明确提示用户。
+总体判断：当前项目已经不是“AI 续写插件”，而是“本地长篇小说创作工作台”。下一步优先级应从新增功能转向闭环质量。
 
-5. **长文本上下文控制**  
-   Phase 1 默认只发送末尾 N 字，不直接发送整本。
+### 14.2 代码健壮性风险
 
-## 15. 变更记录
+1. **Pipeline/长篇规划仍强依赖模型严格输出 JSON/固定标记**
+   - 长篇规划、详细梗概、伏笔回收、创作向导导入等逻辑依赖模型输出 JSON 或 `=== section ===`。
+   - 当前已具备 fenced JSON/前后说明剥离、READY JSON fallback、伏笔回收 warning 等基础容错，但还没有“用户编辑原始输出后重试导入”的闭环。
+   - 建议：统一增加 JSON 修复/二次解析层；失败时保存原始输出并允许前端手动修正后继续。
+
+2. **Provider fallback 体验仍需可视化**
+   - `OpenAICompatibleProvider` 和 `AnthropicProvider` 已限制流式失败后只做一次非流式 fallback，避免重复等待放大。
+   - 风险：网关故障时用户仍只能看到前端等待，缺少“正在重试/切换非流式”的明确反馈。
+   - 建议：Provider 层或 service 层透出 progress 事件，提示重试次数、fallback 状态和预计风险。
+
+3. **流式长任务中间态恢复不足**
+   - 续写的 `_smart_context` 失败已能创建并记录失败 job；长篇规划/详细梗概也会记录失败输出。
+   - 风险：章节 Pipeline 多步骤输出仍需要更细粒度状态，客户端断开后无法从失败步骤继续。
+   - 建议：pipeline 每步写入状态、耗时、输出摘要、warnings 和 step checkpoint。
+
+4. **检索库与主库分离，生命周期仍需收敛**
+   - `ai_retrieval.db` / `ai_retrieval_vec.db` 独立于主 SQLite。
+   - 风险：章节删除、内容更新、项目删除时检索索引可能滞后；备份/迁移也容易遗漏。
+   - 建议：在章节更新/删除、项目删除后统一触发重建或清理；文档说明备份需要包含检索库。
+
+5. **创作向导默认 prompt 题材导向过强**
+   - `DEFAULT_WIZARD_PROMPT` 明确偏向商业小说、虐恋甜文、反差堕落、特殊性癖等。
+   - 风险：作为通用 AI 创作入口时过度窄化，影响其他题材；也可能让用户误以为系统默认鼓励特定风格。
+   - 建议：拆成“通用创作向导”与“题材模板”，默认使用中性 prompt，特殊题材作为可选模板。
+
+6. **模块复杂度集中在 `AIWritingService`**
+   - `service.py` 已承担 Provider 配置、草稿、蒸馏、项目、长篇规划、chat、pipeline、润色、检索等多职责。
+   - 风险：后续修改容易引入回归，测试粒度也会变粗。
+   - 建议：按领域拆分为 ProviderService、DraftService、ProjectService、PlanningService、PipelineService、ChatService，先从 pipeline 和 project 拆起。
+
+7. **长篇规划/详细梗概的数据库写入已批量化**
+   - 当前已用 `list_ai_chapter_refs()` 避免读取整章正文，并新增 `update_ai_chapters_outlines_and_metadata()` 在单个事务内批量更新章节 outline 与 metadata。
+   - 风险：章节很多时仍需关注单次批量事务大小；SQLite 小规模长篇项目可接受。
+   - 建议：后续如继续扩展为超长篇项目，再把 settings 回写、章节 patch、检索索引刷新纳入更完整的事务/队列策略。
+### 14.3 无用或可收敛实现
+
+- `stream_plan` 与 `stream_longform_plan` 都承担“规划”职责，建议在前端明确一个是短段续写构思、一个是全书规划，避免用户混淆。
+- `ai_drafts` 与 `ai_chapters.content` 都可保存 AI 正文，建议明确：草稿用于临时片段，章节用于项目正式正文；前端提供“保存到草稿/写入章节”的清晰分流。
+- Prompt 模板、Agent system_prompt、内置 prompt 三套 prompt 来源并存，建议增加“实际生效 prompt 预览”，否则调试困难。
+- `EmbeddingRetriever` 是可选能力，但当前创建入口默认 `use_embeddings=False`，属于潜在能力；文档和 UI 应标注“实验性/未默认启用”。
+
+### 14.4 下一步需求优先级
+
+P0：稳定闭环
+
+- 长篇规划、详细梗概、伏笔回收、向导导入已支持从 raw output / job output_text 重试导入。
+- pipeline 已记录顶层 status/current_step/warnings/duration，单步失败后标记 partial 并保留 warnings。
+- 章节续写已支持流式自动保存，异常/断连时尽量保留 partial output。
+- Provider 重试/fallback 已通过 SSE progress 明确展示给前端。
+
+P1：体验收敛
+
+- 首页主路径改为：创作向导 → 建项目 → 全书规划 → 生成章节 → 章节 Pipeline → 审计/修正。
+- 将 Provider/Agent/Prompt 模板等设置项下沉到“设置”，减少主写作界面 tab 数。
+- 当前上下文预览接口已落地，可显示本次发给模型的项目上下文、章节正文片段、章节大纲和 prompt 预览。
+
+P2：质量提升
+
+- 增加 Token/费用估算，生成前提示预计上下文和输出规模。
+- 增加章节一致性检查：角色状态变化、伏笔状态、时间线冲突。
+- 检索自动化已补齐基础生命周期：章节/项目删除会清索引，章节摘要/关键事件更新会刷新或删除索引。
+- 详细梗概章节 outline/metadata 更新已改为批量写入；后续可继续评估 settings 回写与检索索引刷新是否需要纳入统一事务/队列。
+
+P3：测试覆盖
+
+- Provider 请求体与 SSE 解析单测。
+- 加密迁移与密钥错误路径测试。
+- 长篇规划 JSON 解析/归一化测试。
+- 创作向导 READY JSON 解析测试。
+- Pipeline 单步失败、断线取消、重试/继续测试。
+
+
+### 2026-06-01（健壮性审查与需求收敛）
+
+- 完成 AI 创作模块代码健壮性复查：当前 Phase 1-4 主体完成，Phase 5 核心链路已落地但仍需产品化闭环。
+- 已修复路由层数字参数校验不一致、续写摘要失败无 job 记录、Provider fallback 重试放大、伏笔 JSON 解析静默失败等问题。
+- 已优化长篇规划/详细梗概写入路径：新增章节轻量引用查询，避免为编号映射读取整章正文；详细梗概同步章节时合并 outline 与 metadata 写入；项目 settings 无变化时跳过回写。
+- 需求优先级调整：下一步从新增功能转向稳定闭环、主流程收敛、上下文可解释、自动保存和测试覆盖。
+- Provider 重试/fallback 已通过 SSE progress 透出：`openai_compatible` 与 `anthropic` 在 retry/fallback 时都会发送 phase/message/provider/status_code 等进度数据。
+- 已补充 Provider fallback 进度事件测试，验证重试、fallback、非流式输出顺序。
+- 章节续写已支持自动保存：直接章节续写会按时间/字符阈值写回 `ai_chapters.content`，失败或断连时也尽量保存 partial output；pipeline 子续写显式禁用 autosave，避免双重写回。
+- Pipeline metadata 已收敛：`metadata.pipeline` 记录 `status/current_step/warnings/failed_steps/skipped_steps/duration_sec`，单步失败不中断后续步骤并标记 partial。
+- Raw output 重试导入已落地：新增长篇规划、详细梗概、伏笔回收、创作向导 raw import 服务与 API，可从 `output_text/raw_output/job_id` 解析并重新应用。
+- 上下文预览已落地：新增项目 context preview API，复用章节续写上下文构建与 `safe_prompt_preview()`。
+- 检索生命周期已补齐：`BaseRetriever`/TF-IDF/Embedding 新增 `delete_chapter()`，项目/章节删除和章节摘要更新会同步检索索引。
+- 创作向导 prompt 已拆分：`WIZARD_BASE_PROMPT` + `WIZARD_GENRE_PROMPTS` + `build_wizard_prompt()`，内置创作向导 Agent 统一使用 `DEFAULT_WIZARD_PROMPT`。
+- 已新增/更新测试：`test_ai_service_stream_continue.py`、`test_ai_retrieval.py`、`test_ai_prompts.py` 等。
+- 前端已接入 raw output 重试导入：长篇规划、详细梗概、伏笔回收和创作向导导入弹窗均可从原始输出恢复。
+- 前端已接入章节上下文预览：章节详情页可查看 stats、项目上下文、完整上下文片段和 prompt 预览，并标识风格/小说档案注入状态。
+- 前端已展示自动保存与 Pipeline 状态：章节续写完成后刷新正文并提示已自动保存；章节 dashboard 展示 pipeline status/current_step/warnings/duration/failed/skipped。
+- 详细梗概同步章节已进一步批量化：`AIWritingService._apply_longform_plan_details()` 构造章节更新列表后调用 `Database.update_ai_chapters_outlines_and_metadata()`。
+- `AIWritingService` 文件级拆分仍保留为后续重构项，本轮只补齐用户可见闭环和数据库批量写入。
+- 已通过本地验证：`python -m pytest tests/test_ai_service_parsing.py tests/test_ai_web_int_parsing.py tests/test_ai_service_stream_continue.py tests/test_ai_providers_fallback.py tests/test_ai_retrieval.py tests/test_ai_prompts.py`。
 
 ### 2026-05-26
 
