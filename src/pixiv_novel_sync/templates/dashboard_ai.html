@@ -1890,6 +1890,18 @@ window.initVueApp({
       showRawImportModal.value = true;
     }
 
+    async function fetchStream(url, payload, fallbackError) {
+      const res = await fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      if (!res.ok || !res.body) {
+        let message = fallbackError;
+        try {
+          const data = await res.json();
+          message = data.error || message;
+        } catch (_) {}
+        throw new Error(message);
+      }
+      return res;
+    }
     async function generateLongformPlan() {
       const pid = currentProject.value?.id;
       if (!pid) return;
@@ -1897,8 +1909,7 @@ window.initVueApp({
       if (!longformPlanForm.target_words) { showMessage('请填写目标总字数', 'error'); return; }
       longformPlanning.value = true; streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
       try {
-        const res = await fetch('/api/dashboard/ai/projects/' + pid + '/longform-plan/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(longformPlanForm) });
-        if (!res.ok || !res.body) throw new Error('长篇规划请求失败');
+        const res = await fetchStream('/api/dashboard/ai/projects/' + pid + '/longform-plan/stream', longformPlanForm, '长篇规划请求失败');
         const plan = await readSSE(res);
         if (!plan) throw new Error('模型未返回可用规划');
         Object.assign(longformPlan, { project_outline: plan.project_outline || '', target_words: plan.target_words || 0, expected_chapter_count: plan.expected_chapter_count || 0, average_chapter_words: plan.average_chapter_words || 0, structure_notes: plan.structure_notes || '', volumes: plan.volumes || [], chapters: plan.chapters || [], foreshadows: plan.foreshadows || [] });
@@ -1913,8 +1924,7 @@ window.initVueApp({
       if (!longformDetailForm.agent_id) { showMessage('请选择详细梗概 Agent', 'error'); return; }
       longformDetailPlanning.value = true; streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
       try {
-        const res = await fetch('/api/dashboard/ai/projects/' + pid + '/longform-plan/details/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(longformDetailForm) });
-        if (!res.ok || !res.body) throw new Error('详细梗概扩写请求失败');
+        const res = await fetchStream('/api/dashboard/ai/projects/' + pid + '/longform-plan/details/stream', longformDetailForm, '详细梗概扩写请求失败');
         const plan = await readSSE(res);
         if (!plan) throw new Error('模型未返回可用详细梗概');
         Object.assign(longformPlan, { project_outline: plan.project_outline || '', target_words: plan.target_words || 0, expected_chapter_count: plan.expected_chapter_count || 0, average_chapter_words: plan.average_chapter_words || 0, structure_notes: plan.structure_notes || '', volumes: plan.volumes || [], chapters: plan.chapters || [], foreshadows: plan.foreshadows || [] });

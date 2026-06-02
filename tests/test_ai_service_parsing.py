@@ -15,6 +15,9 @@ class FakeDB:
         self.closed = False
         self.session = {"id": 1, "title": "测试会话", "metadata": {"collected_sections": {"一句话梗概": "一个故事"}}}
         self.messages: list[dict] = []
+        self.project = {"id": 1, "name": "测试项目", "description": "", "outline": "", "settings": {}}
+        self.chapters: list[dict] = []
+        self.updated_projects: list[tuple[int, dict]] = []
 
     def get_ai_chapter(self, chapter_id: int):
         return {"id": chapter_id, "project_id": 1, "chapter_number": 3, "content": "章节正文"}
@@ -36,6 +39,16 @@ class FakeDB:
 
     def list_ai_chat_messages(self, _session_id: int):
         return self.messages
+
+    def get_ai_writing_project(self, _project_id: int):
+        return self.project
+
+    def list_ai_chapters(self, _project_id: int):
+        return self.chapters
+
+    def update_ai_writing_project(self, project_id: int, payload: dict):
+        self.updated_projects.append((project_id, payload))
+        self.project.update(payload)
 
     def close(self) -> None:
         self.closed = True
@@ -172,6 +185,26 @@ def test_create_chapters_from_plan_uses_lightweight_chapter_refs(monkeypatch, tm
     assert result["skipped"] == [{"chapter_number": 1, "reason": "exists"}]
     assert result["created"] == [{"id": 22, "chapter_number": 2}]
     assert created_payloads[0]["outline"] == "概要"
+
+
+def test_stream_longform_plan_is_registered_and_saves_plan(monkeypatch, tmp_path):
+    service = make_service(tmp_path)
+    fake_db = FakeDB()
+    agent = AIAgentConfig(id=1, name="规划", task_type="plan", provider_id=2, model="m", system_prompt="s")
+    provider_config = AIProviderConfig(id=2, name="p", provider_type="openai_compatible", base_url=None, api_key="k", default_model="m")
+    output = '{"project_outline":"全书大纲","expected_chapter_count":1,"chapters":[{"chapter_number":1,"title":"第一章","outline":"开篇"}]}'
+
+    monkeypatch.setattr(service, "_db", lambda: fake_db)
+    monkeypatch.setattr(service, "_load_agent_config", lambda _db, _agent_id: agent)
+    monkeypatch.setattr(service, "_load_provider_config", lambda _db, _provider_id: provider_config)
+    monkeypatch.setattr("pixiv_novel_sync.ai.service.create_provider", lambda _config: FakeProvider(output))
+
+    chunks = list(service.stream_longform_plan({"agent_id": 1, "project_id": 1, "target_words": 4000}))
+
+    assert chunks[0].type == "metadata"
+    assert chunks[-1].type == "done"
+    assert fake_db.updated_projects
+    assert fake_db.project["settings"]["longform_plan"]["chapters"][0]["title"] == "第一章"
 
 
 class FakeProvider:

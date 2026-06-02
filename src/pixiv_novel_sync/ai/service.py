@@ -1679,6 +1679,7 @@ class AIWritingService:
         finally:
             db.close()
 
+    def stream_longform_plan(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
         project_id = self._safe_int(payload.get("project_id"), 0, "project_id", min_value=0)
         agent_id = self._safe_int(payload.get("agent_id"), 0, "agent_id", min_value=0)
         if not project_id:
