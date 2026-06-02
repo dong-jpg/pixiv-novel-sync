@@ -1602,7 +1602,17 @@ window.initVueApp({
         await loadAgents(); resetAgentForm(); showMessage('Agent 已保存');
       } catch (e) { showMessage(e.message, 'error'); }
     }
-    async function deleteAgent(id) { if (!confirm('确认删除 Agent？')) return; await api('/api/dashboard/ai/agents/' + id, { method: 'DELETE' }); await loadAgents(); }
+    async function deleteAgent(id) {
+      if (!confirm('确认删除 Agent？')) return;
+      try {
+        await api('/api/dashboard/ai/agents/' + id, { method: 'DELETE' });
+        await loadAgents();
+        if (agentForm.id === id) resetAgentForm();
+        showMessage('Agent 已删除');
+      } catch (e) {
+        showMessage(e.message, 'error');
+      }
+    }
 
     async function uploadDocument(event, targetForm) {
       const file = event.target.files && event.target.files[0];
