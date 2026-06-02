@@ -22,13 +22,13 @@
     </button>
   </div>
 
-  <div v-if="message" class="mb-4 px-4 py-3 rounded-lg text-sm" :class="messageType === 'error' ? 'bg-red-50 text-red-700 border border-red-100' : 'bg-green-50 text-green-700 border border-green-100'">
+  <div v-if="message" class="mb-4 px-4 py-3 rounded-lg text-sm" :class="messageType === 'error' ? 'bg-red-50 text-red-700 border border-red-100' : (messageType === 'warning' ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-green-50 text-green-700 border border-green-100')">
     {{ message }}
   </div>
 
   <div v-if="toastMessage" class="fixed right-4 bottom-20 lg:bottom-6 z-[120] max-w-sm px-4 py-3 rounded-xl shadow-xl border text-sm flex items-start gap-2"
-       :class="toastType === 'error' ? 'bg-red-50 text-red-800 border-red-200' : 'bg-green-50 text-green-800 border-green-200'">
-    <span class="font-bold">{{ toastType === 'error' ? '!' : '✓' }}</span>
+       :class="toastType === 'error' ? 'bg-red-50 text-red-800 border-red-200' : (toastType === 'warning' ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-green-50 text-green-800 border-green-200')">
+    <span class="font-bold">{{ toastType === 'error' ? '!' : (toastType === 'warning' ? '!' : '✓') }}</span>
     <span>{{ toastMessage }}</span>
   </div>
 
@@ -2474,7 +2474,7 @@ window.initVueApp({
                 pipelineSteps.value[idx].statusLabel = '失败';
                 pipelineSteps.value[idx].error = data.error || '未知错误';
               }
-              showMessage('步骤"' + (data.label || data.step) + '"失败：' + (data.error || ''), 'error');
+              showMessage('步骤"' + (data.label || data.step) + '"失败，已跳过并继续：' + (data.error || ''), 'warning');
             } else if (event === 'done') {
               showMessage('Pipeline 完成（耗时 ' + (data.duration_sec || 0) + ' 秒）');
             } else if (event === 'error') {
