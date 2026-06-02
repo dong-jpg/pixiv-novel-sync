@@ -1571,8 +1571,13 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             return jsonify({"error": "unauthorized"}), 401
         return redirect("/api/auth/login")
 
+    current_settings_for_routes = settings_manager.load(env_path=env_path)
+
     from .ai_web import register_ai_routes
-    register_ai_routes(app, settings_manager.load(env_path=env_path))
+    register_ai_routes(app, current_settings_for_routes)
+
+    from .preference_web import register_preference_routes
+    register_preference_routes(app, current_settings_for_routes)
 
     @app.route("/api/auth/login", methods=["GET", "POST"])
     def auth_login():
