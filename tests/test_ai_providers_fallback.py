@@ -60,12 +60,12 @@ def test_openai_stream_fallback_uses_single_non_stream_attempt(monkeypatch):
         max_tokens=100,
     ))
 
-    assert len(calls) == 4
+    assert len(calls) == 5
     assert calls[-1]["json"]["stream"] is False
-    assert [chunk.type for chunk in chunks] == ["progress", "progress", "progress", "delta", "done"]
-    assert [chunk.data["phase"] for chunk in chunks[:3] if chunk.data] == ["retry", "retry", "fallback"]
+    assert [chunk.type for chunk in chunks] == ["progress", "progress", "progress", "progress", "delta", "done"]
+    assert [chunk.data["phase"] for chunk in chunks[:4] if chunk.data] == ["retry", "retry", "retry", "fallback"]
     assert chunks[0].data and chunks[0].data["provider"] == "openai_compatible"
-    assert chunks[3].text == "ok"
+    assert chunks[4].text == "ok"
 
 
 def test_openai_empty_stream_falls_back_to_non_stream(monkeypatch):
@@ -116,12 +116,12 @@ def test_anthropic_stream_fallback_uses_single_non_stream_attempt(monkeypatch):
         max_tokens=100,
     ))
 
-    assert len(calls) == 4
+    assert len(calls) == 5
     assert calls[-1]["json"]["stream"] is False
-    assert [chunk.type for chunk in chunks] == ["progress", "progress", "progress", "delta", "done"]
-    assert [chunk.data["phase"] for chunk in chunks[:3] if chunk.data] == ["retry", "retry", "fallback"]
+    assert [chunk.type for chunk in chunks] == ["progress", "progress", "progress", "progress", "delta", "done"]
+    assert [chunk.data["phase"] for chunk in chunks[:4] if chunk.data] == ["retry", "retry", "retry", "fallback"]
     assert chunks[0].data and chunks[0].data["provider"] == "anthropic"
-    assert chunks[3].text == "ok"
+    assert chunks[4].text == "ok"
 
 
 def test_anthropic_empty_stream_falls_back_to_non_stream(monkeypatch):

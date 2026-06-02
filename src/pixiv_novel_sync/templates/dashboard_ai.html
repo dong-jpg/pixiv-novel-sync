@@ -2399,7 +2399,7 @@ window.initVueApp({
       try { chapterDashboard.value = await api('/api/dashboard/ai/chapters/' + currentChapter.value.id + '/dashboard'); }
       catch (e) { showMessage(e.message, 'error'); }
     }
-    async function startChapterPipeline() {
+    async function startChapterPipeline(autoRetryFailed = true) {
       if (!currentChapter.value || pipelineRunning.value) return;
       const steps = pipelineSelectedSteps.value.slice();
       if (!steps.length) { showMessage('至少选择一个步骤', 'error'); return; }
@@ -2476,7 +2476,12 @@ window.initVueApp({
               }
               showMessage('步骤"' + (data.label || data.step) + '"失败，已跳过并继续：' + (data.error || ''), 'warning');
             } else if (event === 'done') {
-              showMessage('Pipeline 完成（耗时 ' + (data.duration_sec || 0) + ' 秒）');
+              const failed = pipelineSteps.value.filter(s => s.status === 'failed').map(s => s.name);
+              if (autoRetryFailed && failed.length) {
+                showMessage('Pipeline 完成，但有 ' + failed.length + ' 个步骤失败，请稍候自动重试', 'warning');
+              } else {
+                showMessage('Pipeline 完成（耗时 ' + (data.duration_sec || 0) + ' 秒）');
+              }
             } else if (event === 'error') {
               throw new Error(data.message || '执行失败');
             }
@@ -2486,6 +2491,11 @@ window.initVueApp({
         await openChapter(currentChapter.value);
         await loadChapterDashboard();
         await loadForeshadows(currentProject.value.id);
+        const failed = pipelineSteps.value.filter(s => s.status === 'failed').map(s => s.name);
+        if (autoRetryFailed && failed.length) {
+          pipelineRunning.value = false;
+          await retryFailedPipelineSteps(failed, 3);
+        }
       } catch (e) {
         showMessage(e.message, 'error');
       } finally {
@@ -2510,7 +2520,37 @@ window.initVueApp({
       const savedSelected = pipelineSelectedSteps.value.slice();
       pipelineSelectedSteps.value = [stepName];
       try {
-        await startChapterPipeline();
+        await startChapterPipeline(false);
+      } finally {
+        pipelineSelectedSteps.value = savedSelected;
+      }
+    }
+    async function retryFailedPipelineSteps(stepNames, maxAttempts = 3) {
+      const uniqueSteps = Array.from(new Set((stepNames || []).filter(Boolean)));
+      if (!uniqueSteps.length) return;
+      const savedSelected = pipelineSelectedSteps.value.slice();
+      try {
+        for (const stepName of uniqueSteps) {
+          let succeeded = false;
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            const label = pipelineStepLabel(stepName);
+            showMessage('正在重试步骤"' + label + '"（' + attempt + '/' + maxAttempts + '）', 'warning');
+            const idx = pipelineSteps.value.findIndex(x => x.name === stepName);
+            if (idx >= 0) {
+              pipelineSteps.value[idx].status = 'running';
+              pipelineSteps.value[idx].statusLabel = '重试中 ' + attempt + '/' + maxAttempts;
+              pipelineSteps.value[idx].error = '';
+            }
+            pipelineSelectedSteps.value = [stepName];
+            await startChapterPipeline(false);
+            const latest = pipelineSteps.value.find(x => x.name === stepName);
+            if (latest && latest.status !== 'failed') {
+              succeeded = true;
+              break;
+            }
+          }
+          if (!succeeded) showMessage('步骤"' + pipelineStepLabel(stepName) + '"重试 ' + maxAttempts + ' 次后仍失败', 'warning');
+        }
       } finally {
         pipelineSelectedSteps.value = savedSelected;
       }

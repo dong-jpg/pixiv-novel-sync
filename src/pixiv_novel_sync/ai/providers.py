@@ -96,7 +96,7 @@ class OpenAICompatibleProvider(AIProvider):
             yield from self._non_stream_generate(url, headers, payload)
 
     def _stream_chat_completions(self, url: str, headers: dict[str, str], payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
-        max_retries = max(1, self.config.max_retries)
+        max_retries = max(3, self.config.max_retries)
         last_error: str | None = None
         for attempt in range(max_retries + 1):
             try:
@@ -108,7 +108,7 @@ class OpenAICompatibleProvider(AIProvider):
                     timeout=self.config.timeout_seconds,
                     proxies=self._proxies(),
                 ) as response:
-                    if response.status_code in (502, 503, 504, 408, 429):
+                    if response.status_code in (500, 502, 503, 504, 408, 429):
                         last_error = f"HTTP {response.status_code}: {response.text[:200]}"
                         if attempt < max_retries:
                             yield _progress(
@@ -128,16 +128,7 @@ class OpenAICompatibleProvider(AIProvider):
                             provider="openai_compatible",
                             status_code=response.status_code,
                         )
-                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=0)
-                        return
-                    if response.status_code >= 500:
-                        yield _progress(
-                            "fallback",
-                            f"流式请求返回 HTTP {response.status_code}，切换为非流式请求",
-                            provider="openai_compatible",
-                            status_code=response.status_code,
-                        )
-                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=0)
+                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=3)
                         return
                     if response.status_code >= 400:
                         raise AIProviderError(_safe_http_error(response))
@@ -157,7 +148,7 @@ class OpenAICompatibleProvider(AIProvider):
                                     "流式请求没有返回正文，切换为非流式请求",
                                     provider="openai_compatible",
                                 )
-                                yield from self._non_stream_generate(url, headers, payload, max_retries_override=0)
+                                yield from self._non_stream_generate(url, headers, payload, max_retries_override=3)
                             else:
                                 yield AIStreamChunk(type="done")
                             return
@@ -179,7 +170,7 @@ class OpenAICompatibleProvider(AIProvider):
                             "流式请求结束但没有返回正文，切换为非流式请求",
                             provider="openai_compatible",
                         )
-                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=0)
+                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=3)
                     return
             except requests.RequestException as exc:
                 last_error = str(exc)
@@ -205,7 +196,7 @@ class OpenAICompatibleProvider(AIProvider):
     ) -> Iterator[AIStreamChunk]:
         """非流式调用：一次性获取完整响应。"""
         payload_copy = {**payload, "stream": False}
-        max_retries = max(0, max_retries_override) if max_retries_override is not None else max(1, self.config.max_retries)
+        max_retries = max(0, max_retries_override) if max_retries_override is not None else max(3, self.config.max_retries)
         last_error: str | None = None
         for attempt in range(max_retries + 1):
             try:
@@ -216,7 +207,7 @@ class OpenAICompatibleProvider(AIProvider):
                     timeout=max(self.config.timeout_seconds, 300),
                     proxies=self._proxies(),
                 )
-                if response.status_code in (502, 503, 504, 408, 429):
+                if response.status_code in (500, 502, 503, 504, 408, 429):
                     last_error = f"HTTP {response.status_code}"
                     if attempt < max_retries:
                         import time as _t
@@ -292,7 +283,7 @@ class AnthropicProvider(AIProvider):
         if not self.config.stream_enabled:
             yield from self._non_stream_generate(url, headers, payload)
             return
-        max_retries = max(1, self.config.max_retries)
+        max_retries = max(3, self.config.max_retries)
         last_error: str | None = None
         for attempt in range(max_retries + 1):
             try:
@@ -304,7 +295,7 @@ class AnthropicProvider(AIProvider):
                     timeout=self.config.timeout_seconds,
                     proxies=self._proxies(),
                 ) as response:
-                    if response.status_code in (502, 503, 504, 408, 429):
+                    if response.status_code in (500, 502, 503, 504, 408, 429):
                         last_error = f"HTTP {response.status_code}: {response.text[:200]}"
                         if attempt < max_retries:
                             yield _progress(
@@ -324,16 +315,7 @@ class AnthropicProvider(AIProvider):
                             provider="anthropic",
                             status_code=response.status_code,
                         )
-                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=0)
-                        return
-                    if response.status_code >= 500:
-                        yield _progress(
-                            "fallback",
-                            f"Anthropic 流式请求返回 HTTP {response.status_code}，切换为非流式请求",
-                            provider="anthropic",
-                            status_code=response.status_code,
-                        )
-                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=0)
+                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=3)
                         return
                     if response.status_code >= 400:
                         raise AIProviderError(_safe_http_error(response))
@@ -364,7 +346,7 @@ class AnthropicProvider(AIProvider):
                                     "Anthropic 流式请求没有返回正文，切换为非流式请求",
                                     provider="anthropic",
                                 )
-                                yield from self._non_stream_generate(url, headers, payload, max_retries_override=0)
+                                yield from self._non_stream_generate(url, headers, payload, max_retries_override=3)
                             else:
                                 yield AIStreamChunk(type="done")
                             return
@@ -377,7 +359,7 @@ class AnthropicProvider(AIProvider):
                             "Anthropic 流式请求结束但没有返回正文，切换为非流式请求",
                             provider="anthropic",
                         )
-                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=0)
+                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=3)
                     return
             except requests.RequestException as exc:
                 last_error = str(exc)
@@ -403,7 +385,7 @@ class AnthropicProvider(AIProvider):
     ) -> Iterator[AIStreamChunk]:
         """非流式 fallback：关闭 stream 一次性获取完整响应。"""
         payload_copy = {**payload, "stream": False}
-        max_retries = max(0, max_retries_override) if max_retries_override is not None else max(1, self.config.max_retries)
+        max_retries = max(0, max_retries_override) if max_retries_override is not None else max(3, self.config.max_retries)
         for attempt in range(max_retries + 1):
             try:
                 response = requests.post(
@@ -413,7 +395,7 @@ class AnthropicProvider(AIProvider):
                     timeout=max(self.config.timeout_seconds, 300),
                     proxies=self._proxies(),
                 )
-                if response.status_code in (502, 503, 504, 408, 429):
+                if response.status_code in (500, 502, 503, 504, 408, 429):
                     if attempt < max_retries:
                         import time as _t
                         _t.sleep(2 ** attempt)
