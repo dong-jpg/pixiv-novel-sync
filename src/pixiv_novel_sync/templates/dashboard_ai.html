@@ -317,6 +317,15 @@
               </button>
             </div>
             <textarea v-model="longformPlanForm.instruction" rows="3" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white" placeholder="补充规划要求：题材、节奏、主线、预计篇幅、必须出现的剧情节点等"></textarea>
+            <div v-if="longformPlanning || longformDetailPlanning || streamOutput" class="bg-white/90 rounded-lg border border-indigo-100 overflow-hidden">
+              <div class="px-3 py-2 border-b border-indigo-100 flex items-center gap-2">
+                <span class="text-xs font-bold text-gray-900">实时输出</span>
+                <span v-if="currentJobId" class="text-[10px] font-mono text-pixiv-gray">{{ currentJobId.substring(0, 8) }}</span>
+                <span v-if="longformPlanning || longformDetailPlanning" class="text-[10px] text-indigo-600 animate-pulse">生成中…</span>
+                <button v-if="streamOutput && !longformPlanning && !longformDetailPlanning" @click="streamOutput = ''" class="ml-auto text-xs text-pixiv-gray hover:text-gray-700">清空</button>
+              </div>
+              <pre class="p-3 text-xs whitespace-pre-wrap font-mono text-gray-700 max-h-64 overflow-auto">{{ streamOutput || '等待模型输出…' }}</pre>
+            </div>
             <div v-if="longformPlan.project_outline || longformPlan.chapters.length" class="bg-white/80 rounded-lg border border-indigo-100 p-3 space-y-3">
               <div v-if="longformPlan.structure_notes">
                 <div class="text-xs font-bold text-gray-900 mb-1">结构拆分说明</div>

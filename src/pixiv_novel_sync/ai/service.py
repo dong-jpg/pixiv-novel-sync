@@ -1707,7 +1707,7 @@ class AIWritingService:
             if expected_chapters and expected_chapters > 2000:
                 raise AIServiceError("章节数参考过大")
             messages = build_longform_plan_messages(
-                system_prompt=agent.system_prompt if agent.task_type == "plan" else None,
+                system_prompt=None,
                 project=project,
                 chapters=chapters,
                 instruction=payload.get("instruction"),
@@ -1815,7 +1815,7 @@ class AIWritingService:
             if not target_chapters:
                 raise AIServiceError("没有需要扩写的章节梗概")
             messages = build_longform_detail_messages(
-                system_prompt=agent.system_prompt if agent.task_type == "plan" else None,
+                system_prompt=None,
                 project=project,
                 longform_plan=plan,
                 chapters=target_chapters,
