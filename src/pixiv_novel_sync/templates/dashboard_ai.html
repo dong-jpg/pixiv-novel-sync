@@ -269,7 +269,8 @@
         </div>
       </div>
       <p v-if="!projectList.length" class="text-sm text-pixiv-gray text-center py-8">暂无项目，点击「新建项目」开始创作</p>
-    </div><div v-else-if="projectView === 'detail'" class="space-y-4">
+    </div>
+    <div v-if="projectView === 'detail'" class="space-y-4">
       <div class="flex items-center gap-2 text-sm text-pixiv-gray mb-2 cursor-pointer" @click="projectView = 'list'">
         <span class="hover:text-brand-500">写作项目</span> <span>/</span> <span class="text-gray-900 font-medium">{{ currentProject?.name }}</span>
       </div>
@@ -450,7 +451,8 @@
           </div>
         </div>
       </div>
-    </div><div v-else-if="projectView === 'chapter'" class="space-y-4">
+    </div>
+    <div v-if="projectView === 'chapter'" class="space-y-4">
       <div class="flex items-center gap-2 text-sm text-pixiv-gray mb-2">
         <span class="cursor-pointer hover:text-brand-500" @click="projectView = 'list'">写作项目</span>
         <span>/</span>
