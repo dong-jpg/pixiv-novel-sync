@@ -1655,6 +1655,7 @@ window.initVueApp({
           if (!dataLine) continue;
           const data = JSON.parse(dataLine);
           if (event === 'metadata') currentJobId.value = data.job_id || '';
+          if (event === 'progress') streamOutput.value += '\n[' + (data.phase || 'progress') + '] ' + (data.message || '处理中…') + '\n';
           if (event === 'delta') streamOutput.value += data.text || '';
           if (event === 'longform_plan') plan = data.plan;
           if (event === 'longform_plan_details') plan = data.plan;

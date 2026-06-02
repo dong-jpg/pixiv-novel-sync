@@ -142,6 +142,7 @@ class OpenAICompatibleProvider(AIProvider):
                     if response.status_code >= 400:
                         raise AIProviderError(_safe_http_error(response))
                     response.encoding = "utf-8"
+                    emitted_delta = False
                     for raw_line in response.iter_lines(decode_unicode=True):
                         if not raw_line:
                             continue
@@ -150,7 +151,15 @@ class OpenAICompatibleProvider(AIProvider):
                             continue
                         data = line[5:].strip()
                         if data == "[DONE]":
-                            yield AIStreamChunk(type="done")
+                            if not emitted_delta:
+                                yield _progress(
+                                    "fallback",
+                                    "流式请求没有返回正文，切换为非流式请求",
+                                    provider="openai_compatible",
+                                )
+                                yield from self._non_stream_generate(url, headers, payload, max_retries_override=0)
+                            else:
+                                yield AIStreamChunk(type="done")
                             return
                         try:
                             event = json.loads(data)
@@ -162,7 +171,15 @@ class OpenAICompatibleProvider(AIProvider):
                         delta = choices[0].get("delta") or {}
                         text = delta.get("content") or ""
                         if text:
+                            emitted_delta = True
                             yield AIStreamChunk(type="delta", text=text)
+                    if not emitted_delta:
+                        yield _progress(
+                            "fallback",
+                            "流式请求结束但没有返回正文，切换为非流式请求",
+                            provider="openai_compatible",
+                        )
+                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=0)
                     return
             except requests.RequestException as exc:
                 last_error = str(exc)
@@ -321,6 +338,7 @@ class AnthropicProvider(AIProvider):
                     if response.status_code >= 400:
                         raise AIProviderError(_safe_http_error(response))
                     response.encoding = "utf-8"
+                    emitted_delta = False
                     for raw_line in response.iter_lines(decode_unicode=True):
                         if not raw_line:
                             continue
@@ -337,13 +355,29 @@ class AnthropicProvider(AIProvider):
                             delta = event.get("delta") or {}
                             text = delta.get("text") or ""
                             if text:
+                                emitted_delta = True
                                 yield AIStreamChunk(type="delta", text=text)
                         elif event_type == "message_stop":
-                            yield AIStreamChunk(type="done")
+                            if not emitted_delta:
+                                yield _progress(
+                                    "fallback",
+                                    "Anthropic 流式请求没有返回正文，切换为非流式请求",
+                                    provider="anthropic",
+                                )
+                                yield from self._non_stream_generate(url, headers, payload, max_retries_override=0)
+                            else:
+                                yield AIStreamChunk(type="done")
                             return
                         elif event_type == "error":
                             error = event.get("error") or {}
                             raise AIProviderError(str(error.get("message") or "Anthropic API 返回错误"))
+                    if not emitted_delta:
+                        yield _progress(
+                            "fallback",
+                            "Anthropic 流式请求结束但没有返回正文，切换为非流式请求",
+                            provider="anthropic",
+                        )
+                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=0)
                     return
             except requests.RequestException as exc:
                 last_error = str(exc)
