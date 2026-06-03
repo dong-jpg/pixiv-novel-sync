@@ -122,14 +122,7 @@ class OpenAICompatibleProvider(AIProvider):
                             import time as _t
                             _t.sleep(2 ** attempt)
                             continue
-                        yield _progress(
-                            "fallback",
-                            f"流式请求持续返回 HTTP {response.status_code}，切换为非流式请求",
-                            provider="openai_compatible",
-                            status_code=response.status_code,
-                        )
-                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=3)
-                        return
+                        raise AIProviderError(f"AI API 网关错误 {response.status_code}（已重试 {max_retries} 次）：{last_error}")
                     if response.status_code >= 400:
                         raise AIProviderError(_safe_http_error(response))
                     response.encoding = "utf-8"
@@ -204,7 +197,7 @@ class OpenAICompatibleProvider(AIProvider):
                     url,
                     headers=headers,
                     json=payload_copy,
-                    timeout=max(self.config.timeout_seconds, 300),
+                    timeout=self.config.timeout_seconds,
                     proxies=self._proxies(),
                 )
                 if response.status_code in (500, 502, 503, 504, 408, 429):
@@ -309,14 +302,7 @@ class AnthropicProvider(AIProvider):
                             import time as _t
                             _t.sleep(2 ** attempt)
                             continue
-                        yield _progress(
-                            "fallback",
-                            f"Anthropic 流式请求持续返回 HTTP {response.status_code}，切换为非流式请求",
-                            provider="anthropic",
-                            status_code=response.status_code,
-                        )
-                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=3)
-                        return
+                        raise AIProviderError(f"Anthropic API 网关错误 {response.status_code}（已重试 {max_retries} 次）：{last_error}")
                     if response.status_code >= 400:
                         raise AIProviderError(_safe_http_error(response))
                     response.encoding = "utf-8"
@@ -392,7 +378,7 @@ class AnthropicProvider(AIProvider):
                     url,
                     headers=headers,
                     json=payload_copy,
-                    timeout=max(self.config.timeout_seconds, 300),
+                    timeout=self.config.timeout_seconds,
                     proxies=self._proxies(),
                 )
                 if response.status_code in (500, 502, 503, 504, 408, 429):
