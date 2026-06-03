@@ -278,6 +278,132 @@
       <div v-if="cacheMessage" class="text-sm font-medium" :class="cacheSuccess ? 'text-green-600' : 'text-red-600'">{{ cacheMessage }}</div>
     </section>
 
+    <!-- Section 6: AI API -->
+    <section v-show="activeTab === 'ai-api'" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-3">
+        <div>
+          <h2 class="text-xl font-bold text-gray-900">AI API 设置</h2>
+          <p class="text-sm text-pixiv-gray mt-1">配置模型服务商，测试时会显示实时状态。</p>
+        </div>
+        <input v-model="providerForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="名称">
+        <select v-model="providerForm.provider_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+          <option value="openai_compatible">OpenAI-compatible</option>
+          <option value="anthropic">Anthropic</option>
+          <option value="xai">xAI</option>
+        </select>
+        <input v-model="providerForm.base_url" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="base_url，可留空使用默认值">
+        <input v-model="providerForm.default_model" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="默认模型">
+        <input type="number" v-model.number="providerForm.context_window" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="上下文窗口(tokens)">
+        <label class="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" v-model="providerForm.stream_enabled" class="rounded border-gray-300">
+          启用流式输出
+        </label>
+        <input v-model="providerForm.api_key" type="password" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="API key（只保存，不回显）">
+        <div class="flex gap-2 flex-wrap">
+          <button @click="saveProvider" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">{{ providerForm.id ? '更新 Provider' : '保存 Provider' }}</button>
+          <button v-if="providerForm.id" @click="resetProviderForm" class="px-4 py-2 bg-gray-100 rounded-lg text-sm">取消编辑</button>
+        </div>
+        <p v-if="aiMessage" class="text-sm" :class="aiMessageType === 'error' ? 'text-red-600' : (aiMessageType === 'warning' ? 'text-amber-600' : 'text-green-600')">{{ aiMessage }}</p>
+      </div>
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-xl font-bold text-gray-900">已配置 Provider</h2>
+          <button @click="loadProviders" class="text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">刷新</button>
+        </div>
+        <div class="space-y-2">
+          <div v-for="provider in providers" :key="provider.id" class="border border-gray-100 rounded-lg p-3 text-sm">
+            <div class="font-semibold text-gray-900">{{ provider.name }}</div>
+            <div class="text-xs text-pixiv-gray mt-1">{{ provider.provider_type }} · {{ provider.default_model || '未设置模型' }} · Key: {{ provider.has_api_key ? '已保存' : '未保存' }}</div>
+            <div v-if="providerTestStatus[provider.id]" class="mt-2 text-xs px-2 py-1 rounded" :class="providerTestStatus[provider.id].type === 'error' ? 'bg-red-50 text-red-700' : (providerTestStatus[provider.id].type === 'warning' ? 'bg-amber-50 text-amber-700' : 'bg-green-50 text-green-700')">{{ providerTestStatus[provider.id].text }}</div>
+            <div class="flex gap-2 mt-2 flex-wrap">
+              <button @click="editProvider(provider)" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">编辑</button>
+              <button @click="testProvider(provider.id)" :disabled="testingProviderId === provider.id" class="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-50">{{ testingProviderId === provider.id ? '测试中…' : '测试' }}</button>
+              <button @click="deleteProvider(provider.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
+            </div>
+          </div>
+          <p v-if="!providers.length" class="text-sm text-pixiv-gray text-center py-8">暂无 Provider</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 7: AI Agent -->
+    <section v-show="activeTab === 'ai-agents'" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-3">
+        <div>
+          <h2 class="text-xl font-bold text-gray-900">AI Agent 设置</h2>
+          <p class="text-sm text-pixiv-gray mt-1">按任务类型批量管理 Agent，创作页会默认选择最优 Agent。</p>
+        </div>
+        <div class="flex gap-2 mb-2 flex-wrap">
+          <select v-model.number="seedProviderId" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+            <option :value="0">选择 Provider 初始化默认 Agent</option>
+            <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </select>
+          <button @click="seedAgents" :disabled="!seedProviderId" class="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-sm disabled:opacity-50">一键初始化</button>
+        </div>
+        <input v-model="agentForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Agent 名称">
+        <select v-model="agentForm.task_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+          <option value="wizard">创作向导</option>
+          <option value="continue">续写 / 自动写作</option>
+          <option value="rewrite">改写 / 去 AI 味</option>
+          <option value="audit">内容审计</option>
+          <option value="plan">规划 / 构思</option>
+          <option value="extract_summary">摘要提取</option>
+          <option value="resolve_foreshadow">伏笔回收</option>
+          <option value="distill_style">风格蒸馏</option>
+          <option value="distill_novel">小说蒸馏</option>
+          <option value="general">通用</option>
+        </select>
+        <select v-model.number="agentForm.provider_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+          <option :value="0">选择 Provider</option>
+          <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option>
+        </select>
+        <input v-model="agentForm.model" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="模型，留空使用 Provider 默认模型">
+        <textarea v-model="agentForm.system_prompt" rows="8" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="System prompt"></textarea>
+        <div class="grid grid-cols-2 gap-3">
+          <input type="number" step="0.1" v-model.number="agentForm.temperature" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="temperature">
+          <input type="number" v-model.number="agentForm.max_tokens" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="max_tokens">
+        </div>
+        <label class="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" v-model="agentForm.enabled" class="rounded border-gray-300">
+          启用 Agent
+        </label>
+        <div class="flex gap-2 flex-wrap">
+          <button @click="saveAgent" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">{{ agentForm.id ? '更新 Agent' : '保存 Agent' }}</button>
+          <button v-if="agentForm.id" @click="resetAgentForm" class="px-4 py-2 bg-gray-100 rounded-lg text-sm">取消编辑</button>
+        </div>
+      </div>
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+        <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
+          <h2 class="text-xl font-bold text-gray-900">Agent 列表</h2>
+          <select v-model="agentFilter" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+            <option value="">全部类型</option>
+            <option value="wizard">创作向导</option>
+            <option value="continue">续写 / 自动写作</option>
+            <option value="rewrite">改写</option>
+            <option value="audit">内容审计</option>
+            <option value="plan">规划</option>
+            <option value="distill_style">风格蒸馏</option>
+            <option value="distill_novel">小说蒸馏</option>
+            <option value="general">通用</option>
+          </select>
+        </div>
+        <div class="space-y-2 max-h-[70vh] overflow-y-auto pr-1">
+          <div v-for="agent in filteredAgents" :key="agent.id" class="border border-gray-100 rounded-lg p-3 text-sm">
+            <div class="flex items-center justify-between gap-2">
+              <div class="font-semibold text-gray-900 truncate">{{ agent.name }}</div>
+              <span class="text-[10px] px-2 py-0.5 rounded" :class="agent.enabled === false ? 'bg-gray-100 text-gray-500' : 'bg-green-50 text-green-700'">{{ agent.enabled === false ? '停用' : '启用' }}</span>
+            </div>
+            <div class="text-xs text-pixiv-gray mt-1">{{ agent.task_type }} · {{ agent.provider_name || 'Provider 不存在' }} · {{ agent.model || '默认模型' }}</div>
+            <div class="flex gap-2 mt-2">
+              <button @click="editAgent(agent)" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">编辑</button>
+              <button @click="deleteAgent(agent.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
+            </div>
+          </div>
+          <p v-if="!filteredAgents.length" class="text-sm text-pixiv-gray text-center py-8">暂无匹配 Agent</p>
+        </div>
+      </div>
+    </section>
+
   </div>
 </div>
 {% endblock %}
@@ -295,7 +421,7 @@
 <script>
   initVueApp({
     setup() {
-      const { ref, onMounted } = Vue;
+      const { ref, reactive, computed, onMounted } = Vue;
 
       // Layout - using SVG icons
       const tabs = [
@@ -304,6 +430,8 @@
         { id: 'scheduler', name: '定时任务', svg: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>' },
         { id: 'manual', name: '手工同步', svg: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>' },
         { id: 'cache', name: '缓存', svg: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/>' },
+        { id: 'ai-api', name: 'AI API', svg: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>' },
+        { id: 'ai-agents', name: 'AI Agent', svg: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0"/>' },
       ];
       const activeTab = ref(window.location.hash ? window.location.hash.slice(1) : 'basic');
 
@@ -317,6 +445,17 @@
       const saving = ref(false);
       const saveMessage = ref('');
       const saveSuccess = ref(true);
+      const providers = ref([]);
+      const agents = ref([]);
+      const agentFilter = ref('');
+      const seedProviderId = ref(0);
+      const testingProviderId = ref(0);
+      const providerTestStatus = reactive({});
+      const aiMessage = ref('');
+      const aiMessageType = ref('success');
+      const providerForm = reactive({ id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
+      const agentForm = reactive({ id: 0, name: '', task_type: 'continue', provider_id: 0, model: '', system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
+      const filteredAgents = computed(() => agentFilter.value ? agents.value.filter(a => a.task_type === agentFilter.value) : agents.value);
 
       const schedulerTasks = [
         { key: 'bookmarks', label: '同步收藏小说', enableKey: 'auto_sync_bookmarks_enabled', intervalKey: 'auto_sync_bookmarks_interval_hours', cronKey: 'auto_sync_bookmarks_cron' },
@@ -416,6 +555,69 @@
         setTimeout(() => { saveMessage.value = ''; }, 3000);
       };
 
+      const showAiMessage = (msg, type = 'success') => {
+        aiMessage.value = msg;
+        aiMessageType.value = type;
+        setTimeout(() => { aiMessage.value = ''; }, 4000);
+      };
+      const aiApi = async (url, options = {}) => {
+        const res = await fetch(url, options);
+        const data = await res.json();
+        if (!res.ok || data.ok === false) throw new Error(data.error || '请求失败');
+        return data.data;
+      };
+      const loadProviders = async () => { providers.value = await aiApi('/api/dashboard/ai/providers'); };
+      const loadAgents = async () => { agents.value = await aiApi('/api/dashboard/ai/agents'); };
+      const resetProviderForm = () => Object.assign(providerForm, { id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
+      const editProvider = (provider) => Object.assign(providerForm, { id: provider.id, name: provider.name || '', provider_type: provider.provider_type || 'openai_compatible', base_url: provider.base_url || '', default_model: provider.default_model || '', api_key: '', timeout_seconds: provider.timeout_seconds || 120, max_retries: provider.max_retries || 2, context_window: provider.context_window || 128000, stream_enabled: provider.stream_enabled !== false, enabled: provider.enabled !== false });
+      const saveProvider = async () => {
+        try {
+          const payload = { ...providerForm };
+          const id = payload.id;
+          delete payload.id;
+          await aiApi(id ? '/api/dashboard/ai/providers/' + id : '/api/dashboard/ai/providers', { method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+          await loadProviders(); resetProviderForm(); showAiMessage('Provider 已保存');
+        } catch (e) { showAiMessage(e.message, 'error'); }
+      };
+      const deleteProvider = async (id) => {
+        if (!confirm('确认删除 Provider？')) return;
+        try { await aiApi('/api/dashboard/ai/providers/' + id, { method: 'DELETE' }); await loadProviders(); showAiMessage('Provider 已删除'); }
+        catch (e) { showAiMessage(e.message, 'error'); }
+      };
+      const testProvider = async (id) => {
+        testingProviderId.value = id;
+        providerTestStatus[id] = { type: 'warning', text: '测试中，请稍候…' };
+        try {
+          const data = await aiApi('/api/dashboard/ai/providers/' + id + '/test', { method: 'POST' });
+          providerTestStatus[id] = { type: 'success', text: '测试成功：' + (data.text || 'OK') };
+        } catch (e) {
+          providerTestStatus[id] = { type: 'error', text: '测试失败：' + e.message };
+        } finally { testingProviderId.value = 0; }
+      };
+      const resetAgentForm = () => Object.assign(agentForm, { id: 0, name: '', task_type: 'continue', provider_id: 0, model: '', system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
+      const editAgent = (agent) => Object.assign(agentForm, { id: agent.id, name: agent.name || '', task_type: agent.task_type || 'continue', provider_id: agent.provider_id || 0, model: agent.model || '', system_prompt: agent.system_prompt || '', temperature: agent.temperature || 0.8, top_p: agent.top_p || 0.9, max_tokens: agent.max_tokens || 4000, context_window: agent.context_window || 16000, enabled: agent.enabled !== false });
+      const saveAgent = async () => {
+        try {
+          const payload = { ...agentForm };
+          const id = payload.id;
+          delete payload.id;
+          await aiApi(id ? '/api/dashboard/ai/agents/' + id : '/api/dashboard/ai/agents', { method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+          await loadAgents(); resetAgentForm(); showAiMessage('Agent 已保存');
+        } catch (e) { showAiMessage(e.message, 'error'); }
+      };
+      const deleteAgent = async (id) => {
+        if (!confirm('确认删除 Agent？')) return;
+        try { await aiApi('/api/dashboard/ai/agents/' + id, { method: 'DELETE' }); await loadAgents(); showAiMessage('Agent 已删除'); }
+        catch (e) { showAiMessage(e.message, 'error'); }
+      };
+      const seedAgents = async () => {
+        if (!seedProviderId.value) return;
+        try {
+          const created = await aiApi('/api/dashboard/ai/agents/seed', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ provider_id: seedProviderId.value }) });
+          await loadAgents(); showAiMessage('已初始化 ' + Object.keys(created || {}).length + ' 个内置 Agent');
+        } catch (e) { showAiMessage(e.message, 'error'); }
+      };
+
       const saveSettings = async (section) => {
         saving.value = true;
         saveMessage.value = '';
@@ -437,6 +639,8 @@
       onMounted(() => {
         fetchSettings();
         fetchCacheStatus();
+        loadProviders();
+        loadAgents();
         window.addEventListener('hashchange', () => {
           const hash = window.location.hash.slice(1);
           if (tabs.find(t => t.id === hash)) activeTab.value = hash;
@@ -447,7 +651,11 @@
         tabs, activeTab, switchTab, settings, saving, saveMessage, saveSuccess,
         schedulerTasks, manualButtons, triggering, manualLogs,
         loadingCache, clearingCache, cacheData, cacheMessage, cacheSuccess,
-        saveSettings, triggerManualTask, fetchCacheStatus, clearCache
+        saveSettings, triggerManualTask, fetchCacheStatus, clearCache,
+        providers, agents, filteredAgents, agentFilter, seedProviderId, testingProviderId, providerTestStatus,
+        aiMessage, aiMessageType, providerForm, agentForm,
+        loadProviders, loadAgents, resetProviderForm, editProvider, saveProvider, deleteProvider, testProvider,
+        resetAgentForm, editAgent, saveAgent, deleteAgent, seedAgents
       };
     }
   });

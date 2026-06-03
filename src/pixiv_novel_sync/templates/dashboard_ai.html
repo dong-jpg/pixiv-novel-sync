@@ -7,15 +7,15 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
     <div>
       <h1 class="text-2xl font-bold text-gray-900">AI 创作</h1>
-      <p class="text-sm text-pixiv-gray mt-1">续写、改写、草稿与 Agent/API 配置</p>
+      <p class="text-sm text-pixiv-gray mt-1">创作向导规划 · 写作项目自动写作 · 任务历史</p>
     </div>
     <div class="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 max-w-xl">
       你选择的文本会发送到当前 Agent 绑定的 AI API，请确认 API 服务商可信。
     </div>
   </div>
 
-  <div class="flex gap-2 mb-5 overflow-x-auto pb-1 scrollbar-thin">
-    <button v-for="tab in tabs" :key="tab.id" @click="activeTab = tab.id"
+  <div class="sticky top-0 z-30 bg-pixiv-bg flex gap-2 mb-5 overflow-x-auto pb-1 pt-1 scrollbar-thin">
+    <button v-for="tab in tabs" :key="tab.id" @click="switchTab(tab.id)"
             class="px-4 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap flex-shrink-0"
             :class="activeTab === tab.id ? 'bg-brand-500 text-white shadow-sm' : 'bg-white text-gray-600 border border-gray-100 hover:bg-gray-50'">
       {{ tab.name }}
@@ -271,11 +271,82 @@
       <p v-if="!projectList.length" class="text-sm text-pixiv-gray text-center py-8">暂无项目，点击「新建项目」开始创作</p>
     </div>
     <div v-if="projectView === 'detail'" class="space-y-4">
-      <div class="flex items-center gap-2 text-sm text-pixiv-gray mb-2 cursor-pointer" @click="projectView = 'list'">
+      <div class="flex items-center gap-2 text-sm text-pixiv-gray cursor-pointer" @click="projectView = 'list'">
         <span class="hover:text-brand-500">写作项目</span> <span>/</span> <span class="text-gray-900 font-medium">{{ currentProject?.name }}</span>
       </div>
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+
+      <!-- 子tab 导航 -->
+      <div class="flex gap-1 border-b border-gray-100 overflow-x-auto">
+        <button v-for="t in projectDetailTabs" :key="t.id" @click="projectDetailTab = t.id"
+                class="px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 -mb-px transition-colors"
+                :class="projectDetailTab === t.id ? 'border-brand-500 text-brand-600' : 'border-transparent text-pixiv-gray hover:text-gray-900'">
+          {{ t.name }}
+        </button>
+      </div>
+
+      <!-- 概览 -->
+      <div v-show="projectDetailTab === 'overview'" class="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <div class="lg:col-span-2 space-y-4">
+          <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-3">
+            <h3 class="font-bold text-gray-900 text-sm">项目信息</h3>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1">项目名称</label>
+              <input v-model="projectMetaForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="项目名称">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1">项目描述</label>
+              <textarea v-model="projectMetaForm.description" rows="3" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="项目描述（可选）"></textarea>
+            </div>
+            <button @click="saveProjectMeta" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">保存信息</button>
+          </div>
+
+          <!-- 蒸馏内容套用（风格 / 小说档案） -->
+          <div class="bg-gradient-to-br from-indigo-50 to-purple-50 rounded-xl border border-indigo-100 shadow-sm p-5 space-y-3">
+            <div>
+              <h3 class="font-bold text-gray-900 text-sm">套用蒸馏内容</h3>
+              <p class="text-xs text-pixiv-gray mt-1">为本项目绑定蒸馏出的风格 / 角色模板 / 世界观档案。自动写作 Pipeline 续写时会自动注入这些设定，保持文风与设定一致。</p>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-medium text-pixiv-gray mb-1">风格档案（文风 / 笔触）</label>
+                <select v-model.number="projectMetaForm.style_profile_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+                  <option :value="0">不套用</option>
+                  <option v-for="p in styleProfiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-pixiv-gray mb-1">小说档案（角色 / 世界观 / 设定）</label>
+                <select v-model.number="projectMetaForm.novel_profile_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+                  <option :value="0">不套用</option>
+                  <option v-for="p in novelProfiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+                </select>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button @click="saveProjectProfiles" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm">保存套用</button>
+              <button @click="switchTab('distill')" class="text-xs text-indigo-600 hover:underline">去蒸馏档案页管理档案 →</button>
+            </div>
+          </div>
+        </div>
+        <div class="space-y-4">
+          <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+            <h3 class="font-bold text-gray-900 text-sm mb-3">项目概况</h3>
+            <div class="grid grid-cols-2 gap-2 text-xs">
+              <div class="rounded bg-gray-50 border border-gray-100 p-2">章节 {{ chapters.length }} 章</div>
+              <div class="rounded bg-gray-50 border border-gray-100 p-2">字数 {{ Math.round(chapters.reduce((s,c)=>s+(c.word_count||0),0)/1000) }}k</div>
+              <div class="rounded bg-gray-50 border border-gray-100 p-2">伏笔 {{ foreshadows.length }} 条</div>
+              <div class="rounded bg-gray-50 border border-gray-100 p-2">待回收 {{ foreshadows.filter(f=>f.status==='pending').length }}</div>
+            </div>
+            <div v-if="longformPlan.target_words || longformPlan.expected_chapter_count" class="mt-3 flex flex-wrap gap-1">
+              <span v-if="longformPlan.target_words" class="text-xs px-2 py-1 rounded-full bg-indigo-50 border border-indigo-100 text-indigo-700">目标 {{ Number(longformPlan.target_words).toLocaleString() }} 字</span>
+              <span v-if="longformPlan.expected_chapter_count" class="text-xs px-2 py-1 rounded-full bg-indigo-50 border border-indigo-100 text-indigo-700">预计 {{ longformPlan.expected_chapter_count }} 章</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 长篇规划 -->
+      <div v-show="projectDetailTab === 'longform'">
           <!-- 长篇规划 -->
           <div class="bg-gradient-to-br from-indigo-50 to-brand-50 rounded-xl border border-indigo-100 shadow-sm p-4 space-y-4">
             <div class="flex items-start justify-between gap-3">
@@ -310,7 +381,7 @@
                 <input type="number" min="1" v-model.number="longformPlanForm.chapter_words_reference" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white" placeholder="例如 4000">
               </div>
             </div>
-            <div class="flex justify-end">
+            <div class="flex justify-end gap-2">
               <button @click="openRawImportModal('longform_plan')" :disabled="!currentProject" class="px-3 py-2 bg-white border border-indigo-200 text-indigo-700 rounded-lg text-sm font-medium disabled:opacity-50">导入原始输出</button>
               <button @click="generateLongformPlan" :disabled="longformPlanning || !longformPlanForm.agent_id || !longformPlanForm.target_words" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium disabled:opacity-50">
                 {{ longformPlanning ? '规划中…' : '生成全书规划' }}
@@ -368,8 +439,10 @@
               </div>
             </div>
           </div>
+      </div>
 
-          <!-- 章节列表 -->
+      <!-- 章节 -->
+      <div v-show="projectDetailTab === 'chapters'">
           <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
             <div class="flex items-center justify-between mb-3">
               <h3 class="font-bold text-gray-900">章节</h3>
@@ -391,7 +464,10 @@
             </div>
             <p v-if="!chapters.length" class="text-sm text-pixiv-gray text-center py-4">暂无章节</p>
           </div>
-          <!-- 伏笔面板 -->
+      </div>
+
+      <!-- 伏笔 -->
+      <div v-show="projectDetailTab === 'foreshadow'">
           <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
             <div class="flex items-center justify-between mb-3">
               <h3 class="font-bold text-gray-900">伏笔追踪</h3>
@@ -431,24 +507,30 @@
               </div>
             </div>
           </div>
-        </div>
-        <!-- 右侧：状态记忆 + 搜索 -->
-        <div class="space-y-4">
-          <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4 space-y-3">
+      </div>
+
+      <!-- 状态记忆 -->
+      <div v-show="projectDetailTab === 'states'">
+          <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4 space-y-3 max-w-2xl">
             <h3 class="font-bold text-gray-900 text-sm">项目状态记忆</h3>
+            <p class="text-xs text-pixiv-gray">这些状态会作为上下文注入自动写作，帮助 AI 保持角色、剧情、世界观一致。</p>
             <div v-for="(label, key) in {character_state:'角色状态', plot_progress:'剧情进展', world_state:'世界观'}" :key="key">
               <label class="block text-xs font-medium text-pixiv-gray mb-1">{{ label }}</label>
-              <textarea v-model="projectStates[key]" rows="4" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" :placeholder="'记录' + label + '...'"></textarea>
+              <textarea v-model="projectStates[key]" rows="5" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" :placeholder="'记录' + label + '...'"></textarea>
             </div>
-            <button @click="saveProjectStates" class="w-full px-3 py-1.5 bg-brand-500 text-white rounded-lg text-xs">保存状态</button>
+            <button @click="saveProjectStates" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">保存状态</button>
           </div>
-          <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4 space-y-3">
+      </div>
+
+      <!-- 语义检索 -->
+      <div v-show="projectDetailTab === 'search'">
+          <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4 space-y-3 max-w-2xl">
             <h3 class="font-bold text-gray-900 text-sm">语义搜索</h3>
             <div class="flex gap-2">
               <input v-model="searchQuery" class="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="搜索历史片段..." @keyup.enter="searchProject">
               <button @click="searchProject" class="px-3 py-2 bg-gray-100 rounded-lg text-xs">搜索</button>
             </div>
-            <div v-if="searchResults.length" class="space-y-2 max-h-48 overflow-auto">
+            <div v-if="searchResults.length" class="space-y-2 max-h-96 overflow-auto">
               <div v-for="r in searchResults" :key="r.content" class="border border-gray-100 rounded p-2 text-xs">
                 <div class="flex items-center justify-between text-pixiv-gray mb-1">
                   <span>第{{ r.chapter_number }}章 · {{ r.entry_type }}</span>
@@ -457,10 +539,9 @@
                 <div class="text-gray-700">{{ r.content.substring(0, 150) }}</div>
               </div>
             </div>
+            <p v-else class="text-xs text-pixiv-gray">输入关键词搜索已索引的章节片段。</p>
           </div>
-        </div>
       </div>
-    </div>
     <div v-if="projectView === 'chapter'" class="space-y-4">
       <div class="flex items-center gap-2 text-sm text-pixiv-gray mb-2">
         <span class="cursor-pointer hover:text-brand-500" @click="projectView = 'list'">写作项目</span>
@@ -686,7 +767,27 @@
               </div>
             </div>
             <div>
-              <h3 class="text-sm font-bold text-gray-900 mb-2">② 指定每步 Agent</h3>
+              <h3 class="text-sm font-bold text-gray-900 mb-2">② 套用蒸馏档案</h3>
+              <div class="space-y-2 text-xs bg-white border border-indigo-100 rounded-lg p-3">
+                <p class="text-pixiv-gray">自动写作会把选中的风格、角色模板和世界观注入上下文。</p>
+                <div>
+                  <label class="block text-[11px] font-medium text-pixiv-gray mb-1">风格档案</label>
+                  <select v-model.number="projectMetaForm.style_profile_id" :disabled="pipelineRunning" class="w-full px-2 py-1.5 border border-gray-200 rounded bg-white">
+                    <option :value="0">不套用</option>
+                    <option v-for="p in styleProfiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-[11px] font-medium text-pixiv-gray mb-1">角色 / 世界观档案</label>
+                  <select v-model.number="projectMetaForm.novel_profile_id" :disabled="pipelineRunning" class="w-full px-2 py-1.5 border border-gray-200 rounded bg-white">
+                    <option :value="0">不套用</option>
+                    <option v-for="p in novelProfiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div>
+              <h3 class="text-sm font-bold text-gray-900 mb-2">③ 指定每步 Agent</h3>
               <div class="space-y-1.5">
                 <div v-for="s in pipelineAllSteps" :key="s.id" class="flex items-center gap-2 text-xs"
                      :class="pipelineSelectedSteps.includes(s.id) ? '' : 'opacity-40'">
@@ -709,7 +810,7 @@
             </div>
             <!-- 进度列表（带重试按钮） -->
             <div v-if="pipelineSteps.length">
-              <h3 class="text-sm font-bold text-gray-900 mb-2">③ 进度</h3>
+              <h3 class="text-sm font-bold text-gray-900 mb-2">④ 进度</h3>
               <div class="space-y-1.5">
                 <div v-for="(s, i) in pipelineSteps" :key="s.name + i" class="bg-white border border-gray-100 rounded-lg px-3 py-2 text-xs">
                   <div class="flex items-center gap-2">
@@ -753,531 +854,216 @@
     </div>
   </section>
 
-  <section v-show="activeTab === 'continue'" class="grid grid-cols-1 lg:grid-cols-3 gap-5">
-    <div class="lg:col-span-2 bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
-      <h2 class="text-lg font-bold text-gray-900">AI 续写</h2>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+  <section v-show="activeTab === 'distill'" class="space-y-5">
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+      <div class="lg:col-span-2 bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
         <div>
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">Agent</label>
-          <select v-model.number="continueForm.agent_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-            <option :value="0">请选择 Agent</option>
-            <option v-for="agent in continueAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option>
-          </select>
+          <h2 class="text-lg font-bold text-gray-900">蒸馏内容</h2>
+          <p class="text-xs text-pixiv-gray mt-1">独立管理文风、角色模板、世界观等档案，后续可在自动写作中套用。</p>
         </div>
-        <div>
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">输入来源</label>
-          <select v-model="continueForm.source_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-            <option value="manual">手动文本</option>
-            <option value="archive_novel">归档小说</option>
-            <option value="archive_series">归档系列</option>
-            <option value="document">上传文档</option>
-          </select>
-        </div>
-      </div>
-      <div v-if="continueForm.source_type === 'archive_novel'">
-        <novel-search v-model="continueForm.novel_id"></novel-search>
-      </div>
-      <div v-else-if="continueForm.source_type === 'archive_series'">
-        <series-search v-model="continueForm.series_id"></series-search>
-        <p class="text-xs text-pixiv-gray mt-1">选择系列后，将按顺序拼接系列内所有章节作为输入源。</p>
-      </div>
-      <div v-else-if="continueForm.source_type === 'document'" class="space-y-2">
-        <label class="block text-xs font-medium text-pixiv-gray mb-1.5">上传 .txt / .md</label>
-        <input type="file" accept=".txt,.md,text/plain,text/markdown" @change="uploadDocument($event, continueForm)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-        <p class="text-xs text-pixiv-gray">已选择文档 ID：{{ continueForm.document_id || '未上传' }}</p>
-      </div>
-      <div v-else>
-        <label class="block text-xs font-medium text-pixiv-gray mb-1.5">上下文文本</label>
-        <textarea v-model="continueForm.text" rows="12" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif" placeholder="粘贴小说上下文..."></textarea>
-      </div>
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div>
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">末尾上下文字数</label>
-          <input type="number" v-model.number="continueForm.context_chars" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-        </div>
-        <div>
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">目标输出字数</label>
-          <input type="number" v-model.number="continueForm.output_chars" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-        </div>
-        <div class="flex items-end gap-3">
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" v-model="continueForm.smart_context" class="rounded">
-            <span class="text-pixiv-gray">智能上下文</span>
-          </label>
-        </div>
-      </div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">风格档案（可选）</label>
-          <select v-model.number="continueForm.style_profile_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-            <option :value="0">不使用</option>
-            <option v-for="p in styleProfiles" :key="p.id" :value="p.id">{{ p.name }}</option>
-          </select>
-        </div>
-        <div>
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">小说档案（可选）</label>
-          <select v-model.number="continueForm.novel_profile_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-            <option :value="0">不使用</option>
-            <option v-for="p in novelProfiles" :key="p.id" :value="p.id">{{ p.name }}</option>
-          </select>
-        </div>
-      </div>
-      <div>
-        <label class="block text-xs font-medium text-pixiv-gray mb-1.5">续写指令</label>
-        <input v-model="continueForm.instruction" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="例如：自然延续，重点描写主角心理变化">
-      </div>
-      <div class="border border-amber-100 bg-amber-50 rounded-lg p-3 space-y-2">
-        <div class="flex items-center justify-between">
-          <label class="text-xs font-medium text-amber-700">写前构思（可选，提升续写连贯性）</label>
-          <div class="flex gap-2">
-            <select v-model.number="continueForm.plan_agent_id" class="px-2 py-1 border border-amber-200 rounded text-xs bg-white">
-              <option :value="0">选择构思 Agent</option>
-              <option v-for="agent in planAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-medium text-pixiv-gray mb-1.5">蒸馏类型</label>
+            <select v-model="distillForm.distill_type" @change="applyBestAgentDefaults(true)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+              <option value="style">风格蒸馏</option>
+              <option value="novel">角色 / 世界观 / 小说档案蒸馏</option>
             </select>
-            <button @click="startPlan" :disabled="streaming || !continueForm.plan_agent_id" class="px-3 py-1 bg-amber-500 text-white rounded text-xs disabled:opacity-50">
-              生成构思
-            </button>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-pixiv-gray mb-1.5">蒸馏 Agent</label>
+            <select v-model.number="distillForm.agent_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+              <option :value="0">自动选择最优 Agent</option>
+              <option v-for="agent in distillAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option>
+            </select>
           </div>
         </div>
-        <textarea v-model="continueForm.plan_text" rows="5" class="w-full px-2 py-1.5 border border-amber-200 rounded text-xs font-serif" placeholder="点击「生成构思」自动填充，或手动编写章节构思后再续写..."></textarea>
-      </div>
-      <button @click="startContinue" :disabled="streaming" class="px-5 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium disabled:opacity-50">
-        {{ streaming ? '生成中...' : '开始续写' }}
-      </button>
-    </div>
-    <output-panel title="续写结果" :text="streamOutput" :job-id="currentJobId" :streaming="streaming" :show-detect="true" @save="saveDraft('续写草稿', streamOutput)" @detect="detectAITells"></output-panel>
-  </section>
-
-  <section v-show="activeTab === 'rewrite'" class="grid grid-cols-1 lg:grid-cols-3 gap-5">
-    <div class="lg:col-span-2 bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
-      <h2 class="text-lg font-bold text-gray-900">AI 改写</h2>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">Agent</label>
-          <select v-model.number="rewriteForm.agent_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-            <option :value="0">请选择 Agent</option>
-            <option v-for="agent in rewriteAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option>
-          </select>
-        </div>
-        <div>
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">改写类型</label>
-          <select v-model="rewriteForm.rewrite_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-            <option value="polish">润色</option>
-            <option value="deai">去AI味</option>
-            <option value="expand">扩写</option>
-            <option value="shorten">缩写</option>
-            <option value="dialogue">改善对话</option>
-            <option value="literary">提高文学性</option>
-          </select>
-        </div>
-      </div>
-      <select v-model="rewriteForm.source_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-        <option value="manual">手动文本</option>
-        <option value="archive_novel">归档小说</option>
-        <option value="archive_series">归档系列</option>
-        <option value="document">上传文档</option>
-      </select>
-      <div v-if="rewriteForm.source_type === 'archive_novel'">
-        <novel-search v-model="rewriteForm.novel_id"></novel-search>
-      </div>
-      <div v-else-if="rewriteForm.source_type === 'archive_series'">
-        <series-search v-model="rewriteForm.series_id"></series-search>
-      </div>
-      <div v-else-if="rewriteForm.source_type === 'document'" class="space-y-2">
-        <input type="file" accept=".txt,.md,text/plain,text/markdown" @change="uploadDocument($event, rewriteForm)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-        <p class="text-xs text-pixiv-gray">已选择文档 ID：{{ rewriteForm.document_id || '未上传' }}</p>
-      </div>
-      <textarea v-else v-model="rewriteForm.text" rows="14" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif" placeholder="粘贴需要改写的文本..."></textarea>
-      <input v-model="rewriteForm.instruction" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="补充要求，例如：增强画面感但不要改变剧情">
-      <button @click="startRewrite" :disabled="streaming" class="px-5 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium disabled:opacity-50">
-        {{ streaming ? '生成中...' : '开始改写' }}
-      </button>
-    </div>
-    <output-panel title="改写结果" :text="streamOutput" :job-id="currentJobId" :streaming="streaming" @save="saveDraft('改写草稿', streamOutput)"></output-panel>
-  </section>
-
-  <section v-show="activeTab === 'providers'" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-3">
-      <h2 class="text-lg font-bold text-gray-900">API Provider</h2>
-      <input v-model="providerForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="名称">
-      <select v-model="providerForm.provider_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-        <option value="openai_compatible">OpenAI-compatible</option>
-        <option value="anthropic">Anthropic</option>
-        <option value="xai">xAI</option>
-      </select>
-      <input v-model="providerForm.base_url" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="base_url，可留空使用默认值">
-      <input v-model="providerForm.default_model" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="默认模型">
-      <input type="number" v-model.number="providerForm.context_window" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="上下文窗口(tokens)，例如 1000000">
-      <label class="flex items-center gap-2 text-sm text-gray-700">
-        <input type="checkbox" v-model="providerForm.stream_enabled" class="rounded border-gray-300">
-        启用流式输出（关闭后使用非流式调用，适合不支持 streaming 的网关）
-      </label>
-      <input v-model="providerForm.api_key" type="password" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="API key（只保存，不回显）">
-      <div class="flex gap-2">
-        <button @click="saveProvider" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">{{ providerForm.id ? '更新 Provider' : '保存 Provider' }}</button>
-        <button v-if="providerForm.id" @click="resetProviderForm" class="px-4 py-2 bg-gray-100 rounded-lg text-sm">取消编辑</button>
-      </div>
-    </div>
-    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-      <h2 class="text-lg font-bold text-gray-900 mb-3">已配置 Provider</h2>
-      <div class="space-y-2">
-        <div v-for="provider in providers" :key="provider.id" class="border border-gray-100 rounded-lg p-3 text-sm">
-          <div class="font-semibold text-gray-900">{{ provider.name }}</div>
-          <div class="text-xs text-pixiv-gray mt-1">{{ provider.provider_type }} · {{ provider.default_model || '未设置模型' }} · Key: {{ provider.has_api_key ? '已保存' : '未保存' }}</div>
-          <div class="flex gap-2 mt-2">
-            <button @click="editProvider(provider)" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">编辑</button>
-            <button @click="testProvider(provider.id)" class="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">测试</button>
-            <button @click="deleteProvider(provider.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-medium text-pixiv-gray mb-1.5">输入来源</label>
+            <select v-model="distillForm.source_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+              <option value="manual">手动文本</option>
+              <option value="archive_novel">归档小说</option>
+              <option value="archive_series">归档系列</option>
+              <option value="document">上传文档</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-pixiv-gray mb-1.5">分块大小（字符）</label>
+            <input type="number" v-model.number="distillForm.chunk_chars" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
           </div>
         </div>
+        <div v-if="distillForm.source_type === 'archive_novel'">
+          <novel-search v-model="distillForm.novel_id"></novel-search>
+        </div>
+        <div v-else-if="distillForm.source_type === 'archive_series'">
+          <series-search v-model="distillForm.series_id"></series-search>
+        </div>
+        <div v-else-if="distillForm.source_type === 'document'" class="space-y-2">
+          <input type="file" accept=".txt,.md,text/plain,text/markdown" @change="uploadDocument($event, distillForm)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+          <p class="text-xs text-pixiv-gray">已选择文档 ID：{{ distillForm.document_id || '未上传' }}</p>
+        </div>
+        <textarea v-else v-model="distillForm.text" rows="10" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif" placeholder="粘贴需要蒸馏的文本..."></textarea>
+        <label class="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" v-model="distillForm.full_text" class="rounded border-gray-300">
+          全文分析（分批 map-reduce，适合长篇系列）
+        </label>
+        <div v-if="distillForm.full_text" class="flex items-center gap-2">
+          <label class="text-xs text-pixiv-gray whitespace-nowrap">每批 chunks 数：</label>
+          <input type="number" v-model.number="distillForm.batch_size" min="1" max="50" class="w-24 px-2 py-1 border border-gray-200 rounded text-sm" placeholder="自动">
+          <span class="text-xs text-pixiv-gray">留空自动计算</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button @click="startDistill" :disabled="streaming" class="px-5 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+            {{ streaming ? '蒸馏中...' : '开始蒸馏' }}
+          </button>
+          <button v-if="streamOutput && !streaming" @click="saveDistillProfile" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm">保存为档案</button>
+        </div>
+      </div>
+      <output-panel title="蒸馏结果" :text="streamOutput" :job-id="currentJobId" :streaming="streaming" @save="saveDistillProfile"></output-panel>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-lg font-bold text-gray-900">风格档案</h2>
+          <button @click="loadStyleProfiles" class="text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">刷新</button>
+        </div>
+        <div class="space-y-2">
+          <div v-for="p in styleProfiles" :key="p.id" class="border border-gray-100 rounded-lg p-3 text-sm">
+            <div class="flex items-center justify-between gap-2">
+              <span class="font-semibold text-gray-900 truncate">{{ p.name }}</span>
+              <div class="flex gap-2 flex-shrink-0">
+                <button @click="selectedStyleProfile = p; selectedNovelProfile = null" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">查看</button>
+                <button @click="deleteStyleProfile(p.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
+              </div>
+            </div>
+            <div class="text-xs text-pixiv-gray mt-1">{{ p.source_type || 'distill' }} · {{ p.created_at }}</div>
+          </div>
+          <p v-if="!styleProfiles.length" class="text-sm text-pixiv-gray py-4 text-center">暂无风格档案，请先执行风格蒸馏。</p>
+        </div>
+      </div>
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-lg font-bold text-gray-900">小说 / 角色 / 世界观档案</h2>
+          <button @click="loadNovelProfiles" class="text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">刷新</button>
+        </div>
+        <div class="space-y-2">
+          <div v-for="p in novelProfiles" :key="p.id" class="border border-gray-100 rounded-lg p-3 text-sm">
+            <div class="flex items-center justify-between gap-2">
+              <span class="font-semibold text-gray-900 truncate">{{ p.name }}</span>
+              <div class="flex gap-2 flex-shrink-0">
+                <button @click="selectedNovelProfile = p; selectedStyleProfile = null" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">查看</button>
+                <button @click="deleteNovelProfile(p.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
+              </div>
+            </div>
+            <div class="text-xs text-pixiv-gray mt-1">{{ p.source_type || 'distill' }} · {{ p.created_at }}</div>
+          </div>
+          <p v-if="!novelProfiles.length" class="text-sm text-pixiv-gray py-4 text-center">暂无小说档案，请先执行小说蒸馏。</p>
+        </div>
+      </div>
+      <div v-if="selectedStyleProfile || selectedNovelProfile" class="lg:col-span-2 bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-bold text-gray-900">{{ selectedStyleProfile ? '风格档案详情' : '小说档案详情' }}</h3>
+          <button @click="selectedStyleProfile = null; selectedNovelProfile = null" class="text-xs text-pixiv-gray">关闭</button>
+        </div>
+        <pre class="whitespace-pre-wrap text-sm text-gray-700 font-mono bg-gray-50 rounded-lg p-3 border border-gray-100 max-h-96 overflow-auto">{{ JSON.stringify(selectedStyleProfile?.profile || selectedNovelProfile?.profile || selectedStyleProfile || selectedNovelProfile, null, 2) }}</pre>
       </div>
     </div>
   </section>
 
-  <section v-show="activeTab === 'agents'" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-3">
-      <h2 class="text-lg font-bold text-gray-900">Agent 设置</h2>
-      <div class="flex gap-2 mb-2">
-        <select v-model.number="seedProviderId" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
-          <option :value="0">选择 Provider 初始化默认 Agent</option>
-          <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
-        </select>
-        <button @click="seedAgents" :disabled="!seedProviderId" class="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-sm disabled:opacity-50">一键初始化</button>
-      </div>
-      <p class="text-xs text-pixiv-gray">初始化 10 个内置 Agent（续写/改写/去AI味/审计/蒸馏等），已有同名 Agent 不会重复创建。</p>
-      <input v-model="agentForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Agent 名称">
-      <select v-model="agentForm.task_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+  <section v-show="activeTab === 'jobs'" class="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-lg font-bold text-gray-900">任务历史</h2>
+      <span class="text-xs text-pixiv-gray">共 {{ jobsTotal }} 条 · 第 {{ jobsPage }}/{{ jobsTotalPages }} 页</span>
+    </div>
+    <div class="flex flex-wrap gap-2 mb-4">
+      <select v-model="jobFilter.task_type" @change="reloadJobs" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+        <option value="">全部类型</option>
+        <option value="chapter_continue">自动生成章节</option>
+        <option value="chapter_pipeline">自动写作 Pipeline</option>
+        <option value="longform_plan">全书规划</option>
+        <option value="longform_plan_details">详细梗概</option>
         <option value="continue">续写</option>
         <option value="rewrite">改写</option>
         <option value="audit">内容审计</option>
         <option value="plan">写前构思</option>
         <option value="distill_style">风格蒸馏</option>
         <option value="distill_novel">小说蒸馏</option>
-        <option value="general">通用</option>
+        <option value="chat">创作向导对话</option>
       </select>
-      <select v-model.number="agentForm.provider_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-        <option :value="0">选择 Provider</option>
-        <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option>
-      </select>
-      <input v-model="agentForm.model" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="模型，留空使用 Provider 默认模型">
-      <textarea v-model="agentForm.system_prompt" rows="8" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="System prompt"></textarea>
-      <div class="grid grid-cols-2 gap-3">
-        <input type="number" step="0.1" v-model.number="agentForm.temperature" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="temperature">
-        <input type="number" v-model.number="agentForm.max_tokens" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="max_tokens">
-      </div>
-      <div class="flex gap-2">
-        <button @click="saveAgent" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">{{ agentForm.id ? '更新 Agent' : '保存 Agent' }}</button>
-        <button v-if="agentForm.id" @click="resetAgentForm" class="px-4 py-2 bg-gray-100 rounded-lg text-sm">取消编辑</button>
-      </div>
-    </div>
-    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-      <h2 class="text-lg font-bold text-gray-900 mb-3">已配置 Agent</h2>
-      <div class="space-y-2">
-        <div v-for="agent in agents" :key="agent.id" class="border border-gray-100 rounded-lg p-3 text-sm">
-          <div class="font-semibold text-gray-900">{{ agent.name }}</div>
-          <div class="text-xs text-pixiv-gray mt-1">{{ agent.task_type }} · {{ agent.provider_name || 'Provider 不存在' }} · {{ agent.model || '默认模型' }}</div>
-          <div class="flex gap-2 mt-2">
-            <button @click="editAgent(agent)" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">编辑</button>
-            <button @click="deleteAgent(agent.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <section v-show="activeTab === 'drafts'" class="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-    <h2 class="text-lg font-bold text-gray-900 mb-3">草稿箱</h2>
-    <button @click="loadDrafts" class="mb-3 text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">刷新</button>
-    <div class="space-y-3">
-      <div v-for="draft in drafts" :key="draft.id" class="border border-gray-100 rounded-lg p-3">
-        <div class="flex items-center justify-between">
-          <div class="font-semibold text-gray-900 text-sm">{{ draft.title }}</div>
-          <div class="flex gap-2">
-            <button @click="showDraftHistory(draft.id)" class="text-xs px-2 py-1 rounded bg-purple-50 text-purple-600 hover:bg-purple-100">版本历史</button>
-            <button @click="forkDraft(draft.id)" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">创建新版本</button>
-            <button @click="deleteDraft(draft.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
-          </div>
-        </div>
-        <pre class="mt-2 whitespace-pre-wrap text-sm text-gray-700 font-serif max-h-48 overflow-auto">{{ draft.content }}</pre>
-      </div>
-    </div>
-    <div v-if="draftHistory.length" class="mt-5 border-t border-gray-100 pt-4">
-      <h3 class="text-sm font-bold text-gray-900 mb-3">版本历史</h3>
-      <div class="space-y-2">
-        <div v-for="(v, i) in draftHistory" :key="v.id" class="border border-gray-100 rounded-lg p-3 text-sm"
-             :class="i === 0 ? 'border-purple-200 bg-purple-50' : ''">
-          <div class="flex items-center justify-between">
-            <span class="font-medium text-gray-900">{{ v.title }}</span>
-            <span class="text-xs text-pixiv-gray">{{ v.created_at }}</span>
-          </div>
-          <pre class="mt-1 whitespace-pre-wrap text-xs text-gray-600 max-h-24 overflow-auto">{{ v.content?.substring(0, 200) }}{{ v.content?.length > 200 ? '...' : '' }}</pre>
-        </div>
-      </div>
-      <button @click="draftHistory = []" class="mt-2 text-xs text-pixiv-gray hover:text-gray-700">关闭历史</button>
-    </div>
-  </section>
-
-  <section v-show="activeTab === 'audit'" class="grid grid-cols-1 lg:grid-cols-3 gap-5">
-    <div class="lg:col-span-2 bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
-      <h2 class="text-lg font-bold text-gray-900">内容审计</h2>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">Agent</label>
-          <select v-model.number="auditForm.agent_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-            <option :value="0">请选择 Agent</option>
-            <option v-for="agent in auditAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option>
-          </select>
-        </div>
-        <div>
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">输入来源</label>
-          <select v-model="auditForm.source_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-            <option value="manual">手动文本</option>
-            <option value="archive_novel">归档小说</option>
-            <option value="archive_series">归档系列</option>
-            <option value="document">上传文档</option>
-          </select>
-        </div>
-      </div>
-      <div v-if="auditForm.source_type === 'archive_novel'">
-        <novel-search v-model="auditForm.novel_id"></novel-search>
-      </div>
-      <div v-else-if="auditForm.source_type === 'archive_series'">
-        <series-search v-model="auditForm.series_id"></series-search>
-      </div>
-      <div v-else-if="auditForm.source_type === 'document'" class="space-y-2">
-        <input type="file" accept=".txt,.md,text/plain,text/markdown" @change="uploadDocument($event, auditForm)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-        <p class="text-xs text-pixiv-gray">已选择文档 ID：{{ auditForm.document_id || '未上传' }}</p>
-      </div>
-      <textarea v-else v-model="auditForm.text" rows="12" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif" placeholder="粘贴需要审计的文本..."></textarea>
-      <div>
-        <label class="block text-xs font-medium text-pixiv-gray mb-1.5">重点审计维度（可选，留空则全面审查）</label>
-        <div class="flex flex-wrap gap-2">
-          <label v-for="dim in auditDimensions" :key="dim" class="flex items-center gap-1 text-xs">
-            <input type="checkbox" :value="dim" v-model="auditForm.audit_dimensions" class="rounded">
-            {{ dim }}
-          </label>
-        </div>
-      </div>
-      <button @click="startAudit" :disabled="streaming" class="px-5 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium disabled:opacity-50">
-        {{ streaming ? '审计中...' : '开始审计' }}
-      </button>
-    </div>
-    <output-panel title="审计结果" :text="streamOutput" :job-id="currentJobId" :streaming="streaming" @save="saveDraft('审计报告', streamOutput)"></output-panel>
-  </section>
-
-  <section v-show="activeTab === 'distill'" class="grid grid-cols-1 lg:grid-cols-3 gap-5">
-    <div class="lg:col-span-2 bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
-      <h2 class="text-lg font-bold text-gray-900">文本蒸馏</h2>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">蒸馏类型</label>
-          <select v-model="distillForm.distill_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-            <option value="style">风格蒸馏</option>
-            <option value="novel">小说蒸馏</option>
-          </select>
-        </div>
-        <div>
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">Agent</label>
-          <select v-model.number="distillForm.agent_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-            <option :value="0">请选择 Agent</option>
-            <option v-for="agent in distillAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option>
-          </select>
-        </div>
-      </div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">输入来源</label>
-          <select v-model="distillForm.source_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-            <option value="manual">手动文本</option>
-            <option value="archive_novel">归档小说</option>
-            <option value="archive_series">归档系列</option>
-            <option value="document">上传文档</option>
-          </select>
-        </div>
-        <div>
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">分块大小（字符）</label>
-          <input type="number" v-model.number="distillForm.chunk_chars" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-        </div>
-      </div>
-      <div v-if="distillForm.source_type === 'archive_novel'">
-        <novel-search v-model="distillForm.novel_id"></novel-search>
-      </div>
-      <div v-else-if="distillForm.source_type === 'archive_series'">
-        <series-search v-model="distillForm.series_id"></series-search>
-      </div>
-      <div v-else-if="distillForm.source_type === 'document'" class="space-y-2">
-        <input type="file" accept=".txt,.md,text/plain,text/markdown" @change="uploadDocument($event, distillForm)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-        <p class="text-xs text-pixiv-gray">已选择文档 ID：{{ distillForm.document_id || '未上传' }}</p>
-      </div>
-      <textarea v-else v-model="distillForm.text" rows="10" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif" placeholder="粘贴需要蒸馏的文本..."></textarea>
-      <label class="flex items-center gap-2 text-sm text-gray-700">
-        <input type="checkbox" v-model="distillForm.full_text" class="rounded border-gray-300">
-        全文分析（分批 map-reduce，适合长篇系列，耗时较长）
-      </label>
-      <div v-if="distillForm.full_text" class="flex items-center gap-2">
-        <label class="text-xs text-pixiv-gray whitespace-nowrap">每批 chunks 数：</label>
-        <input type="number" v-model.number="distillForm.batch_size" min="1" max="50" class="w-24 px-2 py-1 border border-gray-200 rounded text-sm" placeholder="自动">
-        <span class="text-xs text-pixiv-gray">（留空自动计算，越大每批文本越多）</span>
-      </div>
-      <button @click="startDistill" :disabled="streaming" class="px-5 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium disabled:opacity-50">
-        {{ streaming ? '蒸馏中...' : '开始蒸馏' }}
-      </button>
-    </div>
-    <output-panel title="蒸馏结果" :text="streamOutput" :job-id="currentJobId" :streaming="streaming" @save="saveDistillProfile"></output-panel>
-  </section>
-
-  <section v-show="activeTab === 'jobs'" class="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-    <h2 class="text-lg font-bold text-gray-900 mb-3">任务历史</h2>
-    <div class="flex flex-wrap gap-2 mb-4">
-      <select v-model="jobFilter.task_type" @change="loadJobs" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
-        <option value="">全部类型</option>
-        <option value="continue">续写</option>
-        <option value="rewrite">改写</option>
-        <option value="audit">审计</option>
-        <option value="plan">构思</option>
-        <option value="distill_style">风格蒸馏</option>
-        <option value="distill_novel">小说蒸馏</option>
-      </select>
-      <select v-model="jobFilter.status" @change="loadJobs" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+      <select v-model="jobFilter.status" @change="reloadJobs" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
         <option value="">全部状态</option>
         <option value="succeeded">成功</option>
         <option value="failed">失败</option>
         <option value="running">运行中</option>
         <option value="cancelled">已取消</option>
       </select>
-      <button @click="loadJobs" class="text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">刷新</button>
+      <button @click="reloadJobs" class="text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">刷新</button>
     </div>
     <div class="space-y-2">
-      <div v-for="job in jobs" :key="job.job_id" class="border border-gray-100 rounded-lg p-3 text-sm cursor-pointer hover:bg-gray-50" @click="selectedJob = job">
+      <div v-for="job in jobs" :key="job.job_id" class="border border-gray-100 rounded-lg p-3 text-sm cursor-pointer hover:bg-gray-50" @click="openJobDetail(job)">
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="font-medium text-gray-900 truncate">{{ taskTypeLabel(job.task_type) }}</span>
+            <span class="text-xs px-2 py-0.5 rounded flex-shrink-0" :class="jobStatusClass(job.status)">{{ jobStatusLabel(job.status) }}</span>
+          </div>
+          <span class="text-xs text-pixiv-gray flex-shrink-0">{{ job.created_at }}</span>
+        </div>
+        <div class="flex items-center gap-2 mt-1">
+          <span class="font-mono text-[10px] text-pixiv-gray">#{{ job.job_id?.substring(0, 8) }}</span>
+          <span v-if="job.output_text" class="text-xs text-gray-500 truncate flex-1">{{ job.output_text.substring(0, 80) }}</span>
+          <span v-else-if="job.error_message" class="text-xs text-red-500 truncate flex-1">{{ job.error_message }}</span>
+        </div>
+      </div>
+      <p v-if="!jobs.length" class="text-sm text-pixiv-gray text-center py-8">暂无任务记录</p>
+    </div>
+    <app-pagination v-if="jobsTotalPages > 1" :page="jobsPage" :pages="jobsTotalPages" @update:page="gotoJobsPage"></app-pagination>
+
+    <div v-if="selectedJob" class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" @click.self="selectedJob = null">
+      <div class="bg-white rounded-xl shadow-xl max-w-3xl w-full p-5 space-y-3 max-h-[85vh] flex flex-col">
         <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <span class="font-mono text-xs text-pixiv-gray">{{ job.job_id?.substring(0, 8) }}</span>
-            <span class="text-xs px-2 py-0.5 rounded" :class="{
-              'bg-blue-100 text-blue-700': job.task_type === 'continue',
-              'bg-green-100 text-green-700': job.task_type === 'rewrite',
-              'bg-orange-100 text-orange-700': job.task_type === 'audit',
-              'bg-purple-100 text-purple-700': job.task_type?.startsWith('distill'),
-            }">{{ job.task_type }}</span>
-            <span class="text-xs px-2 py-0.5 rounded" :class="{
-              'bg-green-100 text-green-700': job.status === 'succeeded',
-              'bg-red-100 text-red-700': job.status === 'failed',
-              'bg-yellow-100 text-yellow-700': job.status === 'running',
-              'bg-gray-100 text-gray-600': job.status === 'cancelled',
-            }">{{ job.status }}</span>
+          <div>
+            <h3 class="text-base font-bold text-gray-900">{{ taskTypeLabel(selectedJob.task_type) }}</h3>
+            <div class="flex items-center gap-2 mt-1">
+              <span class="text-xs px-2 py-0.5 rounded" :class="jobStatusClass(selectedJob.status)">{{ jobStatusLabel(selectedJob.status) }}</span>
+              <span class="font-mono text-[10px] text-pixiv-gray">#{{ selectedJob.job_id }}</span>
+            </div>
           </div>
-          <span class="text-xs text-pixiv-gray">{{ job.created_at }}</span>
+          <button @click="selectedJob = null" class="text-gray-400 hover:text-gray-600 p-1">
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
         </div>
-        <div v-if="job.output_text" class="mt-1 text-xs text-gray-500 truncate">{{ job.output_text.substring(0, 100) }}...</div>
-        <div v-if="job.error_message" class="mt-1 text-xs text-red-500">{{ job.error_message }}</div>
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+          <div class="rounded bg-gray-50 border border-gray-100 p-2">创建：{{ selectedJob.created_at || '-' }}</div>
+          <div class="rounded bg-gray-50 border border-gray-100 p-2">开始：{{ selectedJob.started_at || '-' }}</div>
+          <div class="rounded bg-gray-50 border border-gray-100 p-2">完成：{{ selectedJob.finished_at || '-' }}</div>
+        </div>
+        <div class="flex-1 min-h-0 overflow-y-auto space-y-3">
+          <div v-if="selectedJob.error_message" class="text-sm text-red-600 bg-red-50 rounded-lg p-3 border border-red-100">
+            <div class="font-bold mb-1">失败原因</div>{{ selectedJob.error_message }}
+          </div>
+          <div v-if="selectedJob.output_text">
+            <div class="text-xs font-bold text-gray-900 mb-1">输出内容（{{ selectedJob.output_text.length.toLocaleString() }} 字）</div>
+            <pre class="whitespace-pre-wrap text-sm text-gray-700 font-serif bg-gray-50 rounded-lg p-3 border border-gray-100 max-h-72 overflow-auto">{{ selectedJob.output_text }}</pre>
+          </div>
+          <div v-if="selectedJob.output">
+            <details class="border border-gray-100 rounded-lg" open>
+              <summary class="px-3 py-2 bg-gray-50 cursor-pointer text-xs font-medium">结构化结果</summary>
+              <pre class="p-3 whitespace-pre-wrap font-mono text-xs text-gray-600 max-h-64 overflow-auto">{{ JSON.stringify(selectedJob.output, null, 2) }}</pre>
+            </details>
+          </div>
+          <div v-if="selectedJob.input">
+            <details class="border border-gray-100 rounded-lg">
+              <summary class="px-3 py-2 bg-gray-50 cursor-pointer text-xs font-medium">输入参数</summary>
+              <pre class="p-3 whitespace-pre-wrap font-mono text-xs text-gray-600 max-h-48 overflow-auto">{{ JSON.stringify(selectedJob.input, null, 2) }}</pre>
+            </details>
+          </div>
+          <p v-if="!selectedJob.output_text && !selectedJob.error_message" class="text-sm text-pixiv-gray">该任务无输出内容。</p>
+        </div>
       </div>
-    </div>
-    <div v-if="selectedJob" class="mt-4 border-t border-gray-100 pt-4">
-      <div class="flex items-center justify-between mb-2">
-        <h3 class="text-sm font-bold text-gray-900">任务详情：{{ selectedJob.job_id?.substring(0, 8) }}</h3>
-        <button @click="selectedJob = null" class="text-xs text-pixiv-gray">关闭</button>
-      </div>
-      <pre v-if="selectedJob.output_text" class="whitespace-pre-wrap text-sm text-gray-700 font-serif bg-gray-50 rounded-lg p-3 border border-gray-100 max-h-64 overflow-auto">{{ selectedJob.output_text }}</pre>
-      <div v-if="selectedJob.error_message" class="mt-2 text-sm text-red-600 bg-red-50 rounded-lg p-3">{{ selectedJob.error_message }}</div>
     </div>
   </section>
 
-  <section v-show="activeTab === 'profiles'" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-      <h2 class="text-lg font-bold text-gray-900 mb-3">风格档案</h2>
-      <button @click="loadStyleProfiles" class="mb-3 text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">刷新</button>
-      <div class="space-y-2">
-        <div v-for="p in styleProfiles" :key="p.id" class="border border-gray-100 rounded-lg p-3 text-sm">
-          <div class="flex items-center justify-between">
-            <span class="font-semibold text-gray-900">{{ p.name }}</span>
-            <div class="flex gap-2">
-              <button @click="selectedStyleProfile = p" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">查看</button>
-              <button @click="deleteStyleProfile(p.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
-            </div>
-          </div>
-          <div class="text-xs text-pixiv-gray mt-1">{{ p.source_type }} · {{ p.created_at }}</div>
-        </div>
-        <p v-if="!styleProfiles.length" class="text-sm text-pixiv-gray">暂无风格档案，请先执行风格蒸馏。</p>
-      </div>
-    </div>
-    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-      <h2 class="text-lg font-bold text-gray-900 mb-3">小说档案</h2>
-      <button @click="loadNovelProfiles" class="mb-3 text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">刷新</button>
-      <div class="space-y-2">
-        <div v-for="p in novelProfiles" :key="p.id" class="border border-gray-100 rounded-lg p-3 text-sm">
-          <div class="flex items-center justify-between">
-            <span class="font-semibold text-gray-900">{{ p.name }}</span>
-            <div class="flex gap-2">
-              <button @click="selectedNovelProfile = p" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">查看</button>
-              <button @click="deleteNovelProfile(p.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
-            </div>
-          </div>
-          <div class="text-xs text-pixiv-gray mt-1">{{ p.source_type }} · {{ p.created_at }}</div>
-        </div>
-        <p v-if="!novelProfiles.length" class="text-sm text-pixiv-gray">暂无小说档案，请先执行小说蒸馏。</p>
-      </div>
-    </div>
-    <div v-if="selectedStyleProfile || selectedNovelProfile" class="lg:col-span-2 bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-      <div class="flex items-center justify-between mb-3">
-        <h3 class="text-sm font-bold text-gray-900">{{ selectedStyleProfile ? '风格档案详情' : '小说档案详情' }}</h3>
-        <button @click="selectedStyleProfile = null; selectedNovelProfile = null" class="text-xs text-pixiv-gray">关闭</button>
-      </div>
-      <pre class="whitespace-pre-wrap text-sm text-gray-700 font-mono bg-gray-50 rounded-lg p-3 border border-gray-100 max-h-96 overflow-auto">{{ JSON.stringify(selectedStyleProfile?.profile || selectedNovelProfile?.profile, null, 2) }}</pre>
-    </div>
-  </section>
-
-  <section v-show="activeTab === 'prompts'" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-3">
-      <h2 class="text-lg font-bold text-gray-900">Prompt 模板</h2>
-      <div class="flex gap-2">
-        <select v-model="promptFilter" @change="loadPromptTemplates" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
-          <option value="">全部分类</option>
-          <option value="continue">续写</option>
-          <option value="rewrite">改写</option>
-          <option value="audit">审计</option>
-          <option value="plan">构思</option>
-          <option value="distill">蒸馏</option>
-          <option value="summarize">摘要</option>
-          <option value="general">通用</option>
-        </select>
-        <button @click="seedPromptTemplates" class="text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">重置内置模板</button>
-      </div>
-      <input v-model="promptForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="模板名称">
-      <select v-model="promptForm.category" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-        <option value="general">通用</option>
-        <option value="continue">续写</option>
-        <option value="rewrite">改写</option>
-        <option value="audit">审计</option>
-        <option value="plan">构思</option>
-        <option value="distill">蒸馏</option>
-        <option value="summarize">摘要</option>
-      </select>
-      <input v-model="promptForm.description" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="描述（可选）">
-      <textarea v-model="promptForm.template" rows="6" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Prompt 模板内容"></textarea>
-      <div class="flex gap-2">
-        <button @click="savePromptTemplate" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">{{ promptForm.id ? '更新模板' : '保存模板' }}</button>
-        <button v-if="promptForm.id" @click="resetPromptForm" class="px-4 py-2 bg-gray-100 rounded-lg text-sm">取消</button>
-      </div>
-    </div>
-    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-      <h2 class="text-lg font-bold text-gray-900 mb-3">已保存模板</h2>
-      <div class="space-y-2">
-        <div v-for="t in promptTemplates" :key="t.id" class="border border-gray-100 rounded-lg p-3 text-sm">
-          <div class="flex items-center justify-between">
-            <div>
-              <span class="font-semibold text-gray-900">{{ t.name }}</span>
-              <span class="text-xs text-pixiv-gray ml-2">{{ t.category }}</span>
-              <span v-if="t.is_builtin" class="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 ml-1">内置</span>
-            </div>
-            <div class="flex gap-2">
-              <button @click="editPromptTemplate(t)" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">编辑</button>
-              <button v-if="!t.is_builtin" @click="deletePromptTemplate(t.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
-            </div>
-          </div>
-          <div v-if="t.description" class="text-xs text-pixiv-gray mt-1">{{ t.description }}</div>
-        </div>
-      </div>
-    </div>
-  </section>
 </div>
 {% endblock %}
 
@@ -1447,11 +1233,9 @@ window.initVueApp({
     const { ref, reactive, computed, onMounted } = Vue;
     const tabs = [
       { id: 'wizard', name: '创作向导' },
-      { id: 'projects', name: '写作项目' },
-      { id: 'continue', name: '续写' }, { id: 'rewrite', name: '改写' }, { id: 'audit', name: '内容审计' },
-      { id: 'distill', name: '蒸馏' }, { id: 'drafts', name: '草稿' }, { id: 'jobs', name: '任务历史' },
-      { id: 'profiles', name: '档案' }, { id: 'prompts', name: 'Prompt 模板' },
-      { id: 'agents', name: 'Agent 设置' }, { id: 'providers', name: 'API 设置' }
+      { id: 'projects', name: '自动写作' },
+      { id: 'distill', name: '蒸馏档案' },
+      { id: 'jobs', name: '任务历史' },
     ];
     const activeTab = ref('wizard');
     const providers = ref([]);
@@ -1460,6 +1244,9 @@ window.initVueApp({
     const draftHistory = ref([]);
     const jobs = ref([]);
     const selectedJob = ref(null);
+    const jobsPage = ref(1);
+    const jobsTotal = ref(0);
+    const jobsTotalPages = ref(1);
     const styleProfiles = ref([]);
     const novelProfiles = ref([]);
     const selectedStyleProfile = ref(null);
@@ -1477,6 +1264,16 @@ window.initVueApp({
 
     // ── 写作项目状态 ──────────────────────────────────────────
     const projectView = ref('list');
+    const projectDetailTab = ref('overview');
+    const projectDetailTabs = [
+      { id: 'overview', name: '项目总览' },
+      { id: 'longform', name: '全书规划' },
+      { id: 'chapters', name: '自动写作' },
+      { id: 'foreshadow', name: '伏笔' },
+      { id: 'states', name: '状态记忆' },
+      { id: 'search', name: '语义检索' },
+    ];
+    const projectMetaForm = reactive({ name: '', description: '', style_profile_id: 0, novel_profile_id: 0 });
     const projectList = ref([]);
     const currentProject = ref(null);
     const chapters = ref([]);
@@ -1551,7 +1348,7 @@ window.initVueApp({
     const agentForm = reactive({ id: 0, name: '', task_type: 'continue', provider_id: 0, model: '', system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
     const auditForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', audit_dimensions: [] });
     const distillForm = reactive({ agent_id: 0, distill_type: 'style', source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', chunk_chars: 4000, existing_profile_id: 0, full_text: false, batch_size: 0 });
-    const jobFilter = reactive({ task_type: '', status: '' });
+    const jobFilter = reactive({ task_type: '', status: '', page: 1 });
     const promptForm = reactive({ id: 0, name: '', category: 'general', template: '', description: '' });
     const seedProviderId = ref(0);
     const auditDimensions = ['角色一致性', '剧情连贯性', '文风统一性', '伏笔追踪', '节奏把控', '对话质量', '描写质量'];
@@ -1561,6 +1358,48 @@ window.initVueApp({
     const auditAgents = computed(() => agents.value.filter(a => ['audit', 'general'].includes(a.task_type)));
     const distillAgents = computed(() => agents.value.filter(a => ['distill_style', 'distill_novel', 'general'].includes(a.task_type)));
     const planAgents = computed(() => agents.value.filter(a => ['plan', 'general'].includes(a.task_type)));
+
+    const AGENT_PRIORITY = {
+      wizard: ['wizard', 'chat', 'general'],
+      continue: ['continue', 'general'],
+      rewrite: ['rewrite', 'general'],
+      audit: ['audit', 'general'],
+      distill_style: ['distill_style', 'general'],
+      distill_novel: ['distill_novel', 'general'],
+      plan: ['plan', 'general'],
+      summary: ['extract_summary', 'general'],
+      state: ['general', 'continue'],
+      foreshadow: ['resolve_foreshadow', 'general'],
+      polish_dialogue: ['polish_dialogue', 'rewrite', 'general'],
+      polish_psychology: ['polish_psychology', 'rewrite', 'general'],
+      deai: ['rewrite', 'general'],
+    };
+    function bestAgentId(kind) {
+      const priorities = AGENT_PRIORITY[kind] || [kind, 'general'];
+      const enabled = agents.value.filter(a => a.enabled !== false);
+      for (const type of priorities) {
+        const matched = enabled.find(a => a.task_type === type);
+        if (matched) return matched.id;
+      }
+      return enabled[0]?.id || 0;
+    }
+    function applyBestAgentDefaults(force = false) {
+      const assign = (target, key, kind) => {
+        if (force || !target[key]) target[key] = bestAgentId(kind);
+      };
+      assign(continueForm, 'agent_id', 'continue');
+      assign(continueForm, 'plan_agent_id', 'plan');
+      assign(rewriteForm, 'agent_id', 'rewrite');
+      assign(auditForm, 'agent_id', 'audit');
+      assign(longformPlanForm, 'agent_id', 'plan');
+      assign(longformDetailForm, 'agent_id', 'plan');
+      assign(distillForm, 'agent_id', distillForm.distill_type === 'novel' ? 'distill_novel' : 'distill_style');
+      if (force || !chapterContinueAgent.value) chapterContinueAgent.value = bestAgentId('continue');
+      for (const step of pipelineAllSteps || []) {
+        if (step.id === 'detect' || step.id === 'index') continue;
+        if (force || !pipelineAgentIds[step.id]) pipelineAgentIds[step.id] = bestAgentId(step.id);
+      }
+    }
 
     function resetProviderForm() {
       Object.assign(providerForm, { id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
@@ -1590,7 +1429,7 @@ window.initVueApp({
       return data.data;
     }
     async function loadProviders() { providers.value = await api('/api/dashboard/ai/providers'); }
-    async function loadAgents() { agents.value = await api('/api/dashboard/ai/agents'); }
+    async function loadAgents() { agents.value = await api('/api/dashboard/ai/agents'); applyBestAgentDefaults(); }
     async function loadDrafts() { const data = await api('/api/dashboard/ai/drafts'); drafts.value = data.items || []; }
 
     async function saveProvider() {
@@ -1707,11 +1546,42 @@ window.initVueApp({
     }
 
     // ── 任务历史 ──────────────────────────────────────────────
+    const JOB_TYPE_LABELS = {
+      chapter_continue: '自动生成章节', chapter_pipeline: '自动写作 Pipeline',
+      longform_plan: '全书规划', longform_plan_details: '详细梗概',
+      continue: '续写', rewrite: '改写', audit: '内容审计', plan: '写前构思',
+      distill_style: '风格蒸馏', distill_novel: '小说蒸馏', summarize: '摘要提取',
+      chat: '创作向导对话', state_update: '状态记忆更新', foreshadow_resolve: '伏笔回收', polish: '润色',
+    };
+    const JOB_STATUS_LABELS = { succeeded: '成功', done: '成功', completed: '成功', failed: '失败', error: '失败', running: '运行中', cancelled: '已取消' };
+    function taskTypeLabel(t) { return JOB_TYPE_LABELS[t] || t || '未知任务'; }
+    function jobStatusLabel(st) { return JOB_STATUS_LABELS[st] || st || '-'; }
+    function jobStatusClass(st) {
+      if (['succeeded', 'done', 'completed'].includes(st)) return 'bg-green-100 text-green-700';
+      if (['failed', 'error'].includes(st)) return 'bg-red-100 text-red-700';
+      if (st === 'running') return 'bg-yellow-100 text-yellow-700';
+      return 'bg-gray-100 text-gray-600';
+    }
     async function loadJobs() {
       const params = new URLSearchParams();
       if (jobFilter.task_type) params.set('task_type', jobFilter.task_type);
       if (jobFilter.status) params.set('status', jobFilter.status);
-      jobs.value = (await api('/api/dashboard/ai/jobs?' + params.toString())).items || [];
+      params.set('page', String(jobFilter.page || 1));
+      params.set('page_size', '10');
+      try {
+        const data = await api('/api/dashboard/ai/jobs?' + params.toString());
+        jobs.value = data.items || [];
+        jobsPage.value = data.page || 1;
+        jobsTotal.value = data.total || 0;
+        jobsTotalPages.value = data.total_pages || 1;
+      } catch (e) { showMessage(e.message, 'error'); }
+    }
+    function reloadJobs() { jobFilter.page = 1; loadJobs(); }
+    function gotoJobsPage(p) { jobFilter.page = p; loadJobs(); }
+    async function openJobDetail(job) {
+      selectedJob.value = job;
+      try { const full = await api('/api/dashboard/ai/jobs/' + job.job_id); if (full) selectedJob.value = full; }
+      catch (e) { /* 退化为列表数据 */ }
     }
 
     // ── 内容审计 ──────────────────────────────────────────────
@@ -1831,8 +1701,32 @@ window.initVueApp({
     async function openProject(p) {
       currentProject.value = p;
       syncLongformPlanFromProject(p);
+      Object.assign(projectMetaForm, {
+        name: p.name || '', description: p.description || '',
+        style_profile_id: p.style_profile_id || 0, novel_profile_id: p.novel_profile_id || 0,
+      });
+      projectDetailTab.value = 'overview';
       projectView.value = 'detail';
       await Promise.all([loadChapters(p.id), loadForeshadows(p.id), loadProjectStates(p.id)]);
+    }
+    async function saveProjectMeta() {
+      if (!currentProject.value) return;
+      try {
+        await api('/api/dashboard/ai/projects/' + currentProject.value.id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name: projectMetaForm.name, description: projectMetaForm.description }) });
+        currentProject.value.name = projectMetaForm.name;
+        currentProject.value.description = projectMetaForm.description;
+        await loadProjects();
+        showMessage('项目信息已保存');
+      } catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function saveProjectProfiles() {
+      if (!currentProject.value) return;
+      try {
+        await api('/api/dashboard/ai/projects/' + currentProject.value.id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ style_profile_id: projectMetaForm.style_profile_id || null, novel_profile_id: projectMetaForm.novel_profile_id || null }) });
+        currentProject.value.style_profile_id = projectMetaForm.style_profile_id || null;
+        currentProject.value.novel_profile_id = projectMetaForm.novel_profile_id || null;
+        showMessage('已保存套用的蒸馏档案，自动写作时将自动注入');
+      } catch (e) { showMessage(e.message, 'error'); }
     }
     async function loadChapters(pid) { try { chapters.value = await api('/api/dashboard/ai/projects/' + pid + '/chapters'); } catch { chapters.value = []; } }
     async function loadForeshadows(pid) { try { foreshadows.value = await api('/api/dashboard/ai/projects/' + pid + '/foreshadows'); } catch { foreshadows.value = []; } }
@@ -1968,9 +1862,11 @@ window.initVueApp({
     }
     async function openChapter(ch) {
       currentChapter.value = ch;
-      Object.assign(chapterEditForm, { title: ch.title || '', content: ch.content || '', outline: ch.outline || '', summary: ch.summary || '' });
+      Object.assign(chapterEditForm, { title: ch.title || '', content: ch.content || '', outline: ch.outline || '', summary: '' });
       chapterKeyEventsText.value = (ch.key_events || []).join('\n');
       chapterActionStatus.value = '';
+      if (!chapterContinueAgent.value) chapterContinueAgent.value = bestAgentId('continue');
+      applyBestAgentDefaults();
       projectView.value = 'chapter';
       // 同步加载产出面板
       try { chapterDashboard.value = await api('/api/dashboard/ai/chapters/' + ch.id + '/dashboard'); }
@@ -2129,8 +2025,8 @@ window.initVueApp({
       // 默认绑定第一个可用的 wizard agent，没有则提示
       const wa = wizardAgents.value;
       if (!wa.length) {
-        showMessage('还没有创作向导 Agent。请先在 API 设置/Agent 设置里创建 Provider，然后到 Agent 设置点"一键初始化"。', 'error');
-        activeTab.value = 'agents';
+        showMessage('还没有创作向导 Agent。请先到「设置 > AI API」创建 Provider，再到「AI Agent」点一键初始化。', 'error');
+        window.location.href = '/dashboard/settings#ai-agents';
         return;
       }
       const title = prompt('给这次创作起个名字：', '新作品 ' + new Date().toLocaleString('zh-CN', { hour12: false }).slice(5, 16));
@@ -2293,9 +2189,9 @@ window.initVueApp({
       if (!materialContent.value.trim()) return;
       const wa = wizardAgents.value;
       if (!wa.length) {
-        showMessage('请先在 Agent 设置里"一键初始化"创建创作向导 Agent', 'error');
+        showMessage('请先到「设置 > AI Agent」一键初始化创作向导 Agent', 'error');
         showImportMaterialModal.value = false;
-        activeTab.value = 'agents';
+        window.location.href = '/dashboard/settings#ai-agents';
         return;
       }
       materialImporting.value = true;
@@ -2408,16 +2304,14 @@ window.initVueApp({
       if (!currentChapter.value || pipelineRunning.value) return;
       const steps = pipelineSelectedSteps.value.slice();
       if (!steps.length) { showMessage('至少选择一个步骤', 'error'); return; }
+      await saveProjectProfiles();
+      applyBestAgentDefaults();
       // 自动填充未指定的 agent_id
       const agent_ids = {};
       for (const s of pipelineAllSteps) {
         if (!steps.includes(s.id)) continue;
         if (s.id === 'index' || s.id === 'detect') continue;
-        let aid = pipelineAgentIds[s.id];
-        if (!aid) {
-          const candidates = pipelineAgentsFor(s.id);
-          if (candidates.length) aid = candidates[0].id;
-        }
+        let aid = pipelineAgentIds[s.id] || bestAgentId(s.id);
         agent_ids[s.id] = aid || 0;
       }
       pipelineRunning.value = true;
@@ -2597,11 +2491,33 @@ window.initVueApp({
       });
     });
 
+    function switchTab(id) {
+      // 切换顶部 tab 时关闭所有遮罩，并退出章节明细，避免页面被章节创作状态锁住
+      showPipelineModal.value = false;
+      showRawImportModal.value = false;
+      showContextPreviewModal.value = false;
+      showImportModal.value = false;
+      showImportMaterialModal.value = false;
+      selectedJob.value = null;
+      activeTab.value = id;
+      if (projectView.value === 'chapter') {
+        projectView.value = currentProject.value && id === 'projects' ? 'detail' : 'list';
+        currentChapter.value = null;
+        chapterDashboard.value = null;
+      }
+      if (id === 'projects') applyBestAgentDefaults();
+      if (id === 'distill') { applyBestAgentDefaults(); loadStyleProfiles(); loadNovelProfiles(); }
+      if (id === 'jobs') { jobFilter.page = 1; loadJobs(); }
+    }
+
     onMounted(async () => {
-      await Promise.all([loadProviders(), loadAgents(), loadDrafts(), loadStyleProfiles(), loadNovelProfiles(), loadPromptTemplates(), loadProjects(), loadChatSessions()]);
+      await Promise.all([loadAgents(), loadStyleProfiles(), loadNovelProfiles(), loadProjects(), loadChatSessions(), loadJobs()]);
+      applyBestAgentDefaults();
     });
     const exported = { tabs, activeTab, providers, agents, drafts, draftHistory, jobs, selectedJob, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, toastMessage, toastType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, jobFilter, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, planAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, loadJobs, startAudit, startPlan, detectAITells, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents, projectView, projectList, currentProject, chapters, currentChapter, foreshadows, foreshadowFilter, filteredForeshadows, chapterForeshadowAlerts, projectStates, showCreateProject, showForeshadowForm, newProjectForm, newForeshadow, chapterEditForm, chapterKeyEventsText, chapterContinueAgent, chapterInstruction, chapterActionStatus, searchQuery, searchResults, longformPlanning, longformDetailPlanning, longformCreateCount, longformPlanForm, longformDetailForm, longformPlan, plannedChapterExists, missingPlannedChapters, generateLongformPlan, generateDetailedOutlines, createPlannedChapters, createNextPlannedChapter, loadProjects, createProject, deleteProject, openProject, createChapter, deleteChapter, openChapter, saveCurrentChapter, startChapterContinue, startChapterPlan, autoUpdateState, appendOutput, addForeshadow, resolveForeshadow, deleteForeshadow, searchProject, indexChapter, saveProjectStates, chatSessions, currentChatSession, chatMessages, chatInput, chatStreaming, chatStreamingText, chatLogRef, wizardSections, wizardSectionKeys, wizardAgents, showImportModal, importMode, importTargetProjectId, importOverwriteFields, importing, loadChatSessions, selectChatSession, openNewWizardSession, updateChatSessionAgent, renameWizardSession, deleteWizardSession, sendChatMessage, loadWizardPreview, openImportWizardModal, confirmImportWizard, showImportMaterialModal, materialTitle, materialContent, materialExtraInstruction, materialImporting, onMaterialFileSelected, confirmImportMaterial, pipelineAllSteps, pipelineExpanded, pipelineSelectedSteps, pipelineAgentIds, pipelineRunning, pipelineSteps, chapterDashboard, dashboardTab, dashboardTabs, pipelineAgentsFor, pipelineStepLabel, pipelineStatusBadge, stateLabel, loadChapterDashboard, startChapterPipeline, showPipelineModal, pipelineCurrentStep, pipelineOutputRef, openPipelineModal, onPipelineModalClose, retryPipelineStep, formatStepMeta, copyPipelineOutput, scrollPipelineOutputBottom };
     Object.assign(exported, { showRawImportModal, rawImportType, rawImportText, rawImportJobId, rawImporting, rawImportChapterId, rawImportTitle, openRawImportModal, confirmRawImport, importUseRawOutput, importRawOutput, showContextPreviewModal, contextPreview, contextPreviewLoading, previewChapterContext });
+    Object.assign(exported, { switchTab, jobsPage, jobsTotal, jobsTotalPages, reloadJobs, gotoJobsPage, openJobDetail, taskTypeLabel, jobStatusLabel, jobStatusClass });
+    Object.assign(exported, { projectDetailTab, projectDetailTabs, projectMetaForm, saveProjectMeta, saveProjectProfiles });
     return exported;
   }
 });
