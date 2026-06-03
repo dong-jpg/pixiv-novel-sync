@@ -629,7 +629,12 @@
                     <tr v-for="s in chapterDashboard.chapter.metadata.pipeline.steps || []" :key="s.name" class="border-b border-gray-50">
                       <td class="py-1 pr-2 text-gray-900">{{ pipelineStepLabel(s.name) }}</td>
                       <td class="py-1 px-2"><span class="px-1.5 py-0.5 rounded text-[10px]" :class="pipelineStatusBadge(s.status)">{{ s.status }}</span></td>
-                      <td class="py-1 pl-2 text-pixiv-gray">{{ s.error || s.reason || '' }}</td>
+                      <td class="py-1 pl-2 text-pixiv-gray break-all">
+                        <span :class="s.status === 'failed' ? 'text-red-600 font-medium' : ''">{{ s.error || s.reason || '' }}</span>
+                      </td>
+                      <td class="py-1 pl-2 text-right">
+                        <button v-if="s.status === 'failed' || s.status === 'skipped'" @click="retryPipelineStep(s.name)" :disabled="pipelineRunning" class="px-2 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-100 text-[10px] hover:bg-blue-100 disabled:opacity-50">重试此步</button>
+                      </td>
                     </tr>
                   </table>
                 </div>
@@ -736,7 +741,7 @@
               <span v-if="streamOutput" class="text-xs text-pixiv-gray ml-auto">{{ streamOutput.length.toLocaleString() }} 字</span>
               <button @click="streamOutput = ''" :disabled="pipelineRunning" class="text-xs text-pixiv-gray hover:text-gray-700 disabled:opacity-30">清空</button>
             </div>
-            <pre ref="pipelineOutputRef" class="flex-1 whitespace-pre-wrap text-sm text-gray-800 font-serif overflow-y-auto bg-gray-50 p-4 border-0 m-0">{{ streamOutput || (pipelineRunning ? '等待输出...' : '点击左侧"启动 Pipeline"开始') }}</pre>
+            <pre ref="pipelineOutputRef" class="flex-1 min-h-[520px] max-h-[calc(100vh-12rem)] whitespace-pre-wrap text-sm text-gray-800 font-serif overflow-y-auto bg-gray-50 p-4 border-0 m-0">{{ streamOutput || (pipelineRunning ? '等待输出...' : '点击左侧"启动 Pipeline"开始') }}</pre>
             <div class="px-5 py-2 border-t border-gray-100 flex items-center gap-2 flex-shrink-0 flex-wrap">
               <span class="text-xs text-pixiv-gray">所有产出已独立保存到章节，可在写作页查看</span>
               <button v-if="streamOutput" @click="copyPipelineOutput" class="ml-auto text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">复制</button>
@@ -2474,6 +2479,7 @@ window.initVueApp({
                 pipelineSteps.value[idx].statusLabel = '失败';
                 pipelineSteps.value[idx].error = data.error || '未知错误';
               }
+              dashboardTab.value = 'pipeline';
               showMessage('步骤"' + (data.label || data.step) + '"失败，已跳过并继续：' + (data.error || ''), 'warning');
             } else if (event === 'done') {
               const failed = pipelineSteps.value.filter(s => s.status === 'failed').map(s => s.name);

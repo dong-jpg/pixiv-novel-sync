@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Iterator
 from typing import Any
 
@@ -46,24 +47,35 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     def stream_response(chunks: Iterator) -> Response:
+        def drain_remaining() -> None:
+            try:
+                for _chunk in chunks:
+                    pass
+            except Exception:
+                pass
+
         def generate():
-            for chunk in chunks:
-                if chunk.type == "delta":
-                    yield sse("delta", {"text": chunk.text})
-                elif chunk.type == "progress":
-                    yield sse("progress", chunk.data or {})
-                elif chunk.type == "metadata":
-                    yield sse("metadata", chunk.data or {})
-                elif chunk.type == "done":
-                    yield sse("done", chunk.data or {})
-                elif chunk.type == "error":
-                    yield sse("error", chunk.data or {"message": "AI 任务失败"})
-                elif chunk.type == "custom":
-                    # pipeline 等多步骤场景的自定义事件，event 名取自 data.event
-                    data = chunk.data or {}
-                    event_name = data.get("event") or "custom"
-                    payload = {k: v for k, v in data.items() if k != "event"}
-                    yield sse(event_name, payload)
+            try:
+                for chunk in chunks:
+                    if chunk.type == "delta":
+                        yield sse("delta", {"text": chunk.text})
+                    elif chunk.type == "progress":
+                        yield sse("progress", chunk.data or {})
+                    elif chunk.type == "metadata":
+                        yield sse("metadata", chunk.data or {})
+                    elif chunk.type == "done":
+                        yield sse("done", chunk.data or {})
+                    elif chunk.type == "error":
+                        yield sse("error", chunk.data or {"message": "AI 任务失败"})
+                    elif chunk.type == "custom":
+                        # pipeline 等多步骤场景的自定义事件，event 名取自 data.event
+                        data = chunk.data or {}
+                        event_name = data.get("event") or "custom"
+                        payload = {k: v for k, v in data.items() if k != "event"}
+                        yield sse(event_name, payload)
+            except GeneratorExit:
+                threading.Thread(target=drain_remaining, daemon=True).start()
+                raise
 
         return Response(
             stream_with_context(generate()),
