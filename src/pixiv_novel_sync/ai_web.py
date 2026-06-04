@@ -561,6 +561,26 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
         except Exception as exc:
             return fail(exc)
 
+    @app.get("/api/dashboard/ai/projects/<int:project_id>/reader")
+    def writing_project_reader_api(project_id: int):
+        try:
+            return ok(service.get_writing_project_reader(project_id))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/projects/<int:project_id>/download")
+    def writing_project_download_api(project_id: int):
+        try:
+            filename, content = service.export_writing_project_text(project_id)
+            quoted = filename.replace('"', "")
+            return Response(
+                content,
+                mimetype="text/plain; charset=utf-8",
+                headers={"Content-Disposition": f'attachment; filename="{quoted}"'},
+            )
+        except Exception as exc:
+            return fail(exc)
+
     # ── 章节 ───────────────────────────────────────────────────
 
     @app.get("/api/dashboard/ai/projects/<int:project_id>/chapters")
@@ -828,6 +848,13 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
     def chapter_pipeline_stream_api():
         try:
             return stream_response(service.stream_chapter_pipeline(json_payload()))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/chapters/pipeline/batch/stream")
+    def chapter_pipeline_batch_stream_api():
+        try:
+            return stream_response(service.stream_chapters_pipeline(json_payload()))
         except Exception as exc:
             return fail(exc)
 

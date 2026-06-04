@@ -2872,7 +2872,7 @@ class AIWritingService:
             db.close()
 
     # ════════════════════════════════════════════════════════════════
-    # 章节自动 Pipeline：编排续写→润色→去AI味→审计→摘要→更新状态→回收伏笔→索引→检测
+    # 章节自动 Pipeline：编排续写→润色→去AI味→审计→摘要→更新状态→回收伏笔→检测→索引
     # ════════════════════════════════════════════════════════════════
 
     PIPELINE_STEP_ORDER = [
@@ -3258,6 +3258,119 @@ class AIWritingService:
             db.patch_ai_chapter_metadata(chapter_id, {"pipeline": pipeline})
         finally:
             db.close()
+
+    def stream_chapters_pipeline(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        project_id = int(payload.get("project_id") or 0)
+        if not project_id:
+            raise AIServiceError("缺少 project_id")
+        raw_ids = payload.get("chapter_ids") or []
+        chapter_ids = []
+        for raw in raw_ids:
+            try:
+                cid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if cid > 0 and cid not in chapter_ids:
+                chapter_ids.append(cid)
+        if not chapter_ids:
+            raise AIServiceError("请选择要生成的章节")
+
+        db = self._db()
+        try:
+            chapters = db.list_ai_chapters(project_id)
+        finally:
+            db.close()
+        allowed = {int(ch["id"]): ch for ch in chapters}
+        ordered = [allowed[cid] for cid in chapter_ids if cid in allowed]
+        ordered.sort(key=lambda ch: int(ch.get("chapter_number") or 0))
+        if not ordered:
+            raise AIServiceError("没有可生成的章节")
+
+        succeeded = 0
+        failed = 0
+        yield AIStreamChunk(type="custom", data={"event": "batch_start", "total": len(ordered)})
+        for index, chapter in enumerate(ordered, 1):
+            chapter_id = int(chapter["id"])
+            chapter_number = int(chapter.get("chapter_number") or index)
+            yield AIStreamChunk(type="custom", data={
+                "event": "chapter_start",
+                "chapter_id": chapter_id,
+                "chapter_number": chapter_number,
+                "title": chapter.get("title") or f"第{chapter_number}章",
+                "index": index,
+                "total": len(ordered),
+            })
+            chapter_failed = False
+            last_status = "running"
+            sub_payload = {**payload, "project_id": project_id, "chapter_id": chapter_id}
+            for chunk in self.stream_chapter_pipeline(sub_payload):
+                if chunk.type == "custom":
+                    data = dict(chunk.data or {})
+                    event_name = data.get("event") or "custom"
+                    data.update({"chapter_id": chapter_id, "chapter_number": chapter_number, "event": event_name})
+                    if event_name == "step_failed":
+                        chapter_failed = True
+                    yield AIStreamChunk(type="custom", data=data)
+                elif chunk.type == "metadata":
+                    data = dict(chunk.data or {})
+                    data.update({"chapter_id": chapter_id, "chapter_number": chapter_number})
+                    yield AIStreamChunk(type="metadata", data=data)
+                elif chunk.type == "done":
+                    last_status = str((chunk.data or {}).get("status") or "succeeded")
+                elif chunk.type == "error":
+                    chapter_failed = True
+                    failed += 1
+                    yield AIStreamChunk(type="custom", data={
+                        "event": "chapter_failed",
+                        "chapter_id": chapter_id,
+                        "chapter_number": chapter_number,
+                        "message": (chunk.data or {}).get("message") or "章节生成失败",
+                    })
+                    break
+                else:
+                    yield chunk
+            else:
+                if chapter_failed or last_status == "partial":
+                    failed += 1
+                else:
+                    succeeded += 1
+                yield AIStreamChunk(type="custom", data={
+                    "event": "chapter_done",
+                    "chapter_id": chapter_id,
+                    "chapter_number": chapter_number,
+                    "status": last_status,
+                    "partial": chapter_failed or last_status == "partial",
+                })
+        yield AIStreamChunk(type="done", data={"succeeded": succeeded, "failed": failed, "total": len(ordered)})
+
+    def get_writing_project_reader(self, project_id: int) -> dict[str, Any]:
+        db = self._db()
+        try:
+            project = db.get_ai_writing_project(project_id)
+            if not project:
+                raise AIServiceError("写作项目不存在")
+            chapters = db.list_ai_chapters(project_id)
+        finally:
+            db.close()
+        total_words = sum(int(ch.get("word_count") or len(ch.get("content") or "")) for ch in chapters)
+        return {"project": {**project, "total_words": total_words, "chapter_count": len(chapters)}, "chapters": chapters}
+
+    def export_writing_project_text(self, project_id: int) -> tuple[str, str]:
+        data = self.get_writing_project_reader(project_id)
+        project = data["project"]
+        chapters = data["chapters"]
+        title = str(project.get("name") or f"写作项目 {project_id}").strip()
+        safe_name = re.sub(r"[\\/:*?\"<>|\r\n]+", "_", title).strip("._ ") or f"writing-project-{project_id}"
+        parts = [title]
+        description = str(project.get("description") or "").strip()
+        if description:
+            parts.extend(["", description])
+        for chapter in chapters:
+            chapter_number = int(chapter.get("chapter_number") or 0)
+            chapter_title = str(chapter.get("title") or f"第{chapter_number}章").strip()
+            content = str(chapter.get("content") or "").strip()
+            parts.extend(["", "", f"第{chapter_number}章 {chapter_title}", "", content])
+        return safe_name + ".txt", "\n".join(parts).strip() + "\n"
 
     def get_chapter_dashboard(self, chapter_id: int) -> dict[str, Any]:
         """聚合产出面板数据。"""
