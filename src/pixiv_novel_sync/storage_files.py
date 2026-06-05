@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import Iterable
@@ -121,7 +122,65 @@ class FileStorage:
         safe_filename = Path(filename).name
         return novel_dir / "assets" / asset_type / safe_filename
 
+    def remove_novel_archive(self, novel_dirs: Iterable[Path], asset_paths: Iterable[Path] = ()) -> dict[str, int]:
+        """删除小说归档目录和已记录的散落资源文件。"""
+        stats = {"dirs_removed": 0, "files_removed": 0, "missing": 0, "skipped": 0}
+        removed_dirs: set[Path] = set()
+        seen_dirs: set[Path] = set()
+        for novel_dir in novel_dirs:
+            try:
+                dir_key = novel_dir.resolve() if novel_dir.exists() else novel_dir.parent.resolve() / novel_dir.name
+            except OSError:
+                stats["skipped"] += 1
+                continue
+            if dir_key in seen_dirs:
+                continue
+            seen_dirs.add(dir_key)
+            if not self._is_inside_storage(novel_dir):
+                stats["skipped"] += 1
+                logger.warning("Skip deleting archive outside storage roots: %s", novel_dir)
+                continue
+            if not novel_dir.exists():
+                stats["missing"] += 1
+                continue
+            resolved_dir = novel_dir.resolve()
+            if resolved_dir.is_dir():
+                shutil.rmtree(resolved_dir)
+                removed_dirs.add(resolved_dir)
+                stats["dirs_removed"] += 1
+            elif resolved_dir.is_file():
+                resolved_dir.unlink()
+                stats["files_removed"] += 1
+
+        for asset_path in asset_paths:
+            try:
+                asset_key = asset_path.resolve() if asset_path.exists() else asset_path.parent.resolve() / asset_path.name
+            except OSError:
+                stats["skipped"] += 1
+                continue
+            if any(asset_key.is_relative_to(directory) for directory in removed_dirs):
+                continue
+            if not self._is_inside_storage(asset_path):
+                stats["skipped"] += 1
+                logger.warning("Skip deleting asset outside storage roots: %s", asset_path)
+                continue
+            if not asset_path.exists():
+                stats["missing"] += 1
+                continue
+            resolved_asset = asset_path.resolve()
+            if resolved_asset.is_file():
+                resolved_asset.unlink()
+                stats["files_removed"] += 1
+        return stats
+
     def ensure_dirs(self, paths: Iterable[Path]) -> None:
         for path in paths:
             path.mkdir(parents=True, exist_ok=True)
 
+    def _is_inside_storage(self, path: Path) -> bool:
+        try:
+            candidate = path.resolve() if path.exists() else path.parent.resolve() / path.name
+        except OSError:
+            return False
+        roots = (self.settings.storage.public_dir.resolve(), self.settings.storage.private_dir.resolve())
+        return any(candidate == root or candidate.is_relative_to(root) for root in roots)

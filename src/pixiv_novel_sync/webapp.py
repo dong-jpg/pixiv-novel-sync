@@ -2354,8 +2354,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         try:
+            archive_refs = db.list_novel_archive_refs(novel_ids=[novel_id])
+            archive_cleanup = _remove_archive_files(current_settings, archive_refs)
             db.delete_novel(novel_id)
-            return jsonify({"ok": True, "message": "小说已删除"})
+            return jsonify({"ok": True, "message": "小说已删除", "archive_cleanup": archive_cleanup})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         finally:
@@ -2368,8 +2370,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         try:
+            archive_refs = db.list_novel_archive_refs(user_id=user_id)
+            archive_cleanup = _remove_archive_files(current_settings, archive_refs)
             db.delete_user(user_id)
-            return jsonify({"ok": True, "message": "用户及其相关数据已删除"})
+            return jsonify({"ok": True, "message": "用户及其相关数据已删除", "archive_cleanup": archive_cleanup})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         finally:
@@ -2497,15 +2501,21 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             item_type = record["item_type"]
             item_id = record["item_id"]
             if item_type == "novel":
+                archive_refs = db.list_novel_archive_refs(novel_ids=[item_id])
+                archive_cleanup = _remove_archive_files(current_settings, archive_refs)
                 db.delete_novel(item_id)
             elif item_type == "series":
+                archive_refs = db.list_novel_archive_refs(series_id=item_id)
+                archive_cleanup = _remove_archive_files(current_settings, archive_refs)
                 novel_rows = db.conn.execute(
                     "SELECT novel_id FROM novels WHERE series_id = ?", (item_id,)
                 ).fetchall()
                 for row in novel_rows:
                     db.delete_novel(row[0])
                 db.delete_series(item_id)
-            return jsonify({"ok": True, "message": "已确认删除"})
+            else:
+                archive_cleanup = {"dirs_removed": 0, "files_removed": 0, "missing": 0, "skipped": 0}
+            return jsonify({"ok": True, "message": "已确认删除", "archive_cleanup": archive_cleanup})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         finally:
@@ -2874,3 +2884,37 @@ def _check_series_status(api: Any, series_id: int) -> str:
     except Exception as e:
         logger.warning("Failed to check series %s status: %s", series_id, e)
         return "unknown"
+
+
+def _remove_archive_files(settings: Settings, archive_refs: list[dict[str, Any]]) -> dict[str, int]:
+    """Remove local archive files for DB rows that are about to be deleted."""
+    storage = FileStorage(settings)
+    novel_dirs: list[Path] = []
+    asset_paths: list[Path] = []
+    for ref in archive_refs:
+        try:
+            novel_id = int(ref.get("novel_id") or 0)
+            user_id = int(ref.get("user_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not novel_id:
+            continue
+        novel_dirs.append(
+            storage.novel_dir(
+                str(ref.get("restrict_value") or "public"),
+                user_id,
+                str(ref.get("author_name") or "unknown"),
+                novel_id,
+                str(ref.get("title") or f"novel_{novel_id}"),
+            )
+        )
+        for path in ref.get("asset_paths") or []:
+            if path:
+                asset_path = Path(path)
+                asset_paths.append(asset_path)
+                try:
+                    if asset_path.parent.parent.name == "assets":
+                        novel_dirs.append(asset_path.parent.parent.parent)
+                except IndexError:
+                    pass
+    return storage.remove_novel_archive(novel_dirs, asset_paths)

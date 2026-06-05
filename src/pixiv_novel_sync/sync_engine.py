@@ -76,7 +76,10 @@ class BookmarkNovelSyncService:
             progress_callback("phase", {"phase": f"检查 {len(all_novel_ids)} 本小说"})
         
         # 第二步：批量检查哪些已存在
-        existing_ids = self.db.get_existing_novel_ids(all_novel_ids)
+        existing_ids = self.db.get_existing_novel_ids(
+            all_novel_ids,
+            require_assets=self.settings.sync.download_assets,
+        )
         
         # 第三步：标记并保存结果
         for novel_id in all_novel_ids:
@@ -300,7 +303,10 @@ class BookmarkNovelSyncService:
         if progress_callback:
             progress_callback("phase", {"phase": f"检查 {len(all_novel_ids)} 本小说"})
         
-        existing_ids = self.db.get_existing_novel_ids(all_novel_ids)
+        existing_ids = self.db.get_existing_novel_ids(
+            all_novel_ids,
+            require_assets=self.settings.sync.download_assets,
+        )
         
         # 标记并保存结果
         for novel_id in all_novel_ids:
@@ -966,22 +972,25 @@ class BookmarkNovelSyncService:
                             logger.info("Synced series: %s (ID: %s, chapters: %s)", title, sid, total)
 
                             remote_total = int(total or 0)
-                            local_text_count = self.db.count_series_novel_texts(int(sid))
-                            if remote_total > 0 and local_text_count == remote_total:
+                            download_assets = self.settings.sync.download_assets
+                            local_complete_count = self.db.count_series_complete_novels(
+                                int(sid),
+                                require_assets=download_assets,
+                            )
+                            if remote_total > 0 and local_complete_count == remote_total:
                                 stats["skipped"] = stats.get("skipped", 0) + remote_total
                                 logger.info(
                                     "Skip full series %s: local chapters=%d matches remote total=%d",
                                     sid,
-                                    local_text_count,
+                                    local_complete_count,
                                     remote_total,
                                 )
                                 if progress_callback:
-                                    progress_callback("phase", {"phase": f"系列 {title or sid}: 本地 {local_text_count} 章与远端一致，跳过全系列"})
+                                    progress_callback("phase", {"phase": f"系列 {title or sid}: 本地 {local_complete_count} 章完整，跳过全系列"})
                                 continue
 
                             # 同步系列中的所有章节（含正文）
                             chapter_delay = self.settings.sync.delay_seconds_between_chapters
-                            download_assets = self.settings.sync.download_assets
                             write_markdown = self.settings.sync.write_markdown
                             write_raw_text = self.settings.sync.write_raw_text
 
@@ -1017,8 +1026,8 @@ class BookmarkNovelSyncService:
                                     if not novel_id:
                                         continue
 
-                                    # 检查是否已存在正文（只有有正文才跳过；仅有元数据时补同步）
-                                    if self.db.novel_text_exists(novel_id):
+                                    # 只有正文和必要资源都完整时才跳过；否则补同步。
+                                    if self.db.novel_archive_complete(novel_id, require_assets=download_assets):
                                         skipped_count += 1
                                         if progress_callback:
                                             progress_callback("phase", {"phase": f"  [{idx+1}/{len(all_novel_items)}] 跳过已存在: {novel_id}"})

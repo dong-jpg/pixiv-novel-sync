@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 from collections.abc import Iterator
 from typing import Any
 
@@ -63,13 +62,6 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     def stream_response(chunks: Iterator) -> Response:
-        def drain_remaining() -> None:
-            try:
-                for _chunk in chunks:
-                    pass
-            except Exception:
-                pass
-
         def generate():
             try:
                 for chunk in chunks:
@@ -90,7 +82,9 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
                         payload = {k: v for k, v in data.items() if k != "event"}
                         yield sse(event_name, payload)
             except GeneratorExit:
-                threading.Thread(target=drain_remaining, daemon=True).start()
+                close = getattr(chunks, "close", None)
+                if callable(close):
+                    close()
                 raise
 
         return Response(

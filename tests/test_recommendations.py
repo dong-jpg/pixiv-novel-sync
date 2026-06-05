@@ -115,9 +115,43 @@ def test_recommendation_item_upsert_and_mutes(tmp_path: Path):
 
     mute_id = db.create_recommendation_mute("tag", "甜文")
     state = db.get_recommendation_filter_state()
+    assert 1 in state["recommended_novel_ids"]
+    assert 1 not in state["dismissed_novel_ids"]
     assert "甜文" in state["muted_tags"]
     db.delete_recommendation_mute(mute_id)
     assert not db.list_recommendation_mutes()
+    db.close()
+
+
+def test_exclude_recommended_before_filters_any_previous_item(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    profile_id = db.create_preference_profile({"name": "p", "source_scope": {}, "stats": {}, "profile": {}})
+    run_id = db.create_recommendation_run(profile_id, {"queries": []})
+    db.upsert_recommendation_item({
+        "run_id": run_id,
+        "profile_id": profile_id,
+        "item_type": "novel",
+        "novel_id": 42,
+        "title": "已推荐",
+        "tags": [],
+        "score": 1,
+        "matched": {},
+        "status": "new",
+    })
+    service = RecommendationService(db, make_settings(tmp_path))
+    novel = SimpleNamespace(id=42, text_length=6000, title="已推荐", caption="", tags=[], user=SimpleNamespace(id=1, name="A"))
+
+    item = service._candidate_to_item(
+        None,
+        novel,
+        {"query": "x"},
+        {"profile": {}},
+        {"exclude_recommended_before": True},
+        db.get_recommendation_filter_state(),
+    )
+
+    assert item is None
     db.close()
 
 

@@ -121,7 +121,8 @@ class RecommendationService:
             return None
         if filters.get("exclude_archived", True) and novel_id in filter_state["archived_novel_ids"]:
             return None
-        if filters.get("exclude_recommended_before", True) and novel_id in filter_state["dismissed_novel_ids"]:
+        previously_recommended = filter_state.get("recommended_novel_ids") or filter_state.get("dismissed_novel_ids", set())
+        if filters.get("exclude_recommended_before", True) and novel_id in previously_recommended:
             return None
 
         series_id = self._series_id(novel)

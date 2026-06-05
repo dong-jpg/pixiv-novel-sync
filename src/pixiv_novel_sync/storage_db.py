@@ -300,6 +300,38 @@ class Database:
         row = self.conn.execute("SELECT 1 FROM novel_texts WHERE novel_id = ? LIMIT 1", (novel_id,)).fetchone()
         return row is not None
 
+    def novel_archive_complete(self, novel_id: int, require_assets: bool = False) -> bool:
+        """检查小说是否已达到可跳过同步的最低完整度。
+
+        元数据本身不足以代表归档完成；正文必须存在。启用资源下载时，
+        如果元数据里有封面 URL，还要求封面已成功记录到 assets 表。
+        """
+        row = self.conn.execute(
+            """
+            SELECT n.cover_url, nt.text_raw
+            FROM novels n
+            JOIN novel_texts nt ON nt.novel_id = n.novel_id
+            WHERE n.novel_id = ?
+            """,
+            (novel_id,),
+        ).fetchone()
+        if row is None or not str(row["text_raw"] or "").strip():
+            return False
+        cover_url = str(row["cover_url"] or "").strip()
+        if require_assets and cover_url:
+            asset = self.conn.execute(
+                """
+                SELECT 1
+                FROM assets
+                WHERE novel_id = ? AND remote_url = ? AND file_hash IS NOT NULL AND file_hash != ''
+                LIMIT 1
+                """,
+                (novel_id, cover_url),
+            ).fetchone()
+            if asset is None:
+                return False
+        return True
+
     def count_series_novel_texts(self, series_id: int) -> int:
         """统计本地已保存正文的系列章节数。"""
         row = self.conn.execute(
@@ -308,6 +340,35 @@ class Database:
             FROM novels n
             JOIN novel_texts nt ON nt.novel_id = n.novel_id
             WHERE n.series_id = ?
+            """,
+            (series_id,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def count_series_complete_novels(self, series_id: int, require_assets: bool = False) -> int:
+        """统计系列里达到可跳过同步完整度的章节数。"""
+        if not require_assets:
+            return self.count_series_novel_texts(series_id)
+        row = self.conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM novels n
+            JOIN novel_texts nt ON nt.novel_id = n.novel_id
+            WHERE n.series_id = ?
+              AND nt.text_raw IS NOT NULL
+              AND nt.text_raw != ''
+              AND (
+                    n.cover_url IS NULL
+                    OR n.cover_url = ''
+                    OR EXISTS (
+                        SELECT 1
+                        FROM assets a
+                        WHERE a.novel_id = n.novel_id
+                          AND a.remote_url = n.cover_url
+                          AND a.file_hash IS NOT NULL
+                          AND a.file_hash != ''
+                    )
+                  )
             """,
             (series_id,),
         ).fetchone()
@@ -551,6 +612,53 @@ class Database:
         data["novel_kind"] = "single" if data.get("series_id") is None else "series"
         data["raw_json"] = self._load_raw_json(str(data.get("raw_json") or "{}"))
         return data
+
+    def list_novel_archive_refs(
+        self,
+        novel_ids: list[int] | None = None,
+        user_id: int | None = None,
+        series_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """列出删除本地归档文件所需的小说元数据和已记录资源路径。"""
+        where_clauses: list[str] = []
+        params: list[Any] = []
+        if novel_ids is not None:
+            if not novel_ids:
+                return []
+            placeholders = ",".join(["?"] * len(novel_ids))
+            where_clauses.append(f"n.novel_id IN ({placeholders})")
+            params.extend(int(nid) for nid in novel_ids)
+        if user_id is not None:
+            where_clauses.append("n.user_id = ?")
+            params.append(int(user_id))
+        if series_id is not None:
+            where_clauses.append("n.series_id = ?")
+            params.append(int(series_id))
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        rows = self.conn.execute(
+            f"""
+            SELECT
+                n.novel_id,
+                n.restrict_value,
+                n.user_id,
+                COALESCE(u.name, 'unknown') AS author_name,
+                n.title,
+                GROUP_CONCAT(a.local_path, char(10)) AS asset_paths
+            FROM novels n
+            LEFT JOIN users u ON u.user_id = n.user_id
+            LEFT JOIN assets a ON a.novel_id = n.novel_id
+            {where_sql}
+            GROUP BY n.novel_id
+            """,
+            params,
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            raw_paths = str(item.get("asset_paths") or "")
+            item["asset_paths"] = [path for path in raw_paths.split("\n") if path]
+            result.append(item)
+        return result
 
     @staticmethod
     def _load_raw_json(raw_json: str) -> dict[str, Any]:
@@ -1358,8 +1466,8 @@ class Database:
         ).fetchall()
         return {row[0]: bool(row[1]) for row in rows}
 
-    def get_existing_novel_ids(self, novel_ids: list[int]) -> set[int]:
-        """批量检查小说是否已存在，返回已存在的 ID 集合（分批查询避免超出 SQLite 变量限制）"""
+    def get_existing_novel_ids(self, novel_ids: list[int], require_assets: bool = False) -> set[int]:
+        """批量检查小说是否已完整归档，返回可安全跳过的 ID 集合。"""
         if not novel_ids:
             return set()
         result: set[int] = set()
@@ -1367,10 +1475,42 @@ class Database:
         for i in range(0, len(novel_ids), batch_size):
             batch = novel_ids[i:i + batch_size]
             placeholders = ",".join(["?"] * len(batch))
-            rows = self.conn.execute(
-                f"SELECT novel_id FROM novels WHERE novel_id IN ({placeholders})",
-                batch,
-            ).fetchall()
+            if require_assets:
+                rows = self.conn.execute(
+                    f"""
+                    SELECT n.novel_id
+                    FROM novels n
+                    JOIN novel_texts nt ON nt.novel_id = n.novel_id
+                    WHERE n.novel_id IN ({placeholders})
+                      AND nt.text_raw IS NOT NULL
+                      AND nt.text_raw != ''
+                      AND (
+                            n.cover_url IS NULL
+                            OR n.cover_url = ''
+                            OR EXISTS (
+                                SELECT 1
+                                FROM assets a
+                                WHERE a.novel_id = n.novel_id
+                                  AND a.remote_url = n.cover_url
+                                  AND a.file_hash IS NOT NULL
+                                  AND a.file_hash != ''
+                            )
+                          )
+                    """,
+                    batch,
+                ).fetchall()
+            else:
+                rows = self.conn.execute(
+                    f"""
+                    SELECT n.novel_id
+                    FROM novels n
+                    JOIN novel_texts nt ON nt.novel_id = n.novel_id
+                    WHERE n.novel_id IN ({placeholders})
+                      AND nt.text_raw IS NOT NULL
+                      AND nt.text_raw != ''
+                    """,
+                    batch,
+                ).fetchall()
             result.update(row[0] for row in rows)
         return result
 
@@ -1722,10 +1862,12 @@ class Database:
 
     def get_recommendation_filter_state(self) -> dict[str, Any]:
         archived_ids = {int(row[0]) for row in self.conn.execute("SELECT novel_id FROM novels").fetchall()}
+        recommended_ids = {int(row[0]) for row in self.conn.execute("SELECT novel_id FROM recommendation_items WHERE novel_id IS NOT NULL").fetchall()}
         dismissed_ids = {int(row[0]) for row in self.conn.execute("SELECT novel_id FROM recommendation_items WHERE novel_id IS NOT NULL AND status IN ('dismissed', 'muted')").fetchall()}
         mutes = self.list_recommendation_mutes()
         return {
             "archived_novel_ids": archived_ids,
+            "recommended_novel_ids": recommended_ids,
             "dismissed_novel_ids": dismissed_ids,
             "muted_authors": {str(item["mute_value"]) for item in mutes if item["mute_type"] == "author"},
             "muted_tags": {str(item["mute_value"]) for item in mutes if item["mute_type"] == "tag"},
