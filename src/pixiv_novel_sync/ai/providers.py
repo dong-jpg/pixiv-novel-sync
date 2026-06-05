@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import codecs
 import json
+import re
+import time
 from collections.abc import Iterator
 from typing import Any
 
@@ -11,6 +14,55 @@ from .models import AIProviderConfig, AIStreamChunk
 
 class AIProviderError(RuntimeError):
     pass
+
+
+_SECRET_PATTERNS = [
+    re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{6,}"),
+    re.compile(r"sk-[A-Za-z0-9._\-]{8,}"),
+    re.compile(r"(?i)(x-api-key\"?\s*[:=]\s*\"?)[A-Za-z0-9._\-]{6,}"),
+    re.compile(r"(?i)(api[_-]?key\"?\s*[:=]\s*\"?)[A-Za-z0-9._\-]{6,}"),
+]
+
+
+def _redact_secrets(text: str) -> str:
+    """Strip credential-looking substrings from upstream error text.
+
+    Some gateways echo the request (including the ``Authorization`` header) in
+    4xx bodies. Those bodies flow into ``ai_jobs.error_message`` and the SSE
+    error event, so the decrypted key could leak; redact before surfacing.
+    """
+    if not text:
+        return text
+    for pat in _SECRET_PATTERNS:
+        text = pat.sub("[REDACTED]", text)
+    return text
+
+
+def _iter_sse_lines(response: requests.Response) -> Iterator[str]:
+    """Yield text lines from a streaming response with correct UTF-8 decoding.
+
+    ``requests.iter_lines(decode_unicode=True)`` decodes each network chunk
+    independently, so a multi-byte UTF-8 character split across a chunk boundary
+    becomes mojibake — very likely with Chinese output. We buffer raw bytes,
+    split on newlines ourselves, and decode through one incremental decoder.
+    """
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    buffer = ""
+    for chunk in response.iter_content(chunk_size=None):
+        if not chunk:
+            continue
+        buffer += decoder.decode(chunk)
+        while True:
+            idx = buffer.find("\n")
+            if idx == -1:
+                break
+            yield buffer[:idx]
+            buffer = buffer[idx + 1:]
+    tail = decoder.decode(b"", final=True)
+    if tail:
+        buffer += tail
+    if buffer:
+        yield buffer
 
 
 def _progress(phase: str, message: str, **data: Any) -> AIStreamChunk:
@@ -98,6 +150,7 @@ class OpenAICompatibleProvider(AIProvider):
     def _stream_chat_completions(self, url: str, headers: dict[str, str], payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
         max_retries = max(3, self.config.max_retries)
         last_error: str | None = None
+        produced_output = False
         for attempt in range(max_retries + 1):
             try:
                 with requests.post(
@@ -109,7 +162,7 @@ class OpenAICompatibleProvider(AIProvider):
                     proxies=self._proxies(),
                 ) as response:
                     if response.status_code in (500, 502, 503, 504, 408, 429):
-                        last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                        last_error = f"HTTP {response.status_code}: {_redact_secrets(response.text[:200])}"
                         if attempt < max_retries:
                             yield _progress(
                                 "retry",
@@ -119,15 +172,13 @@ class OpenAICompatibleProvider(AIProvider):
                                 attempt=attempt + 1,
                                 max_retries=max_retries,
                             )
-                            import time as _t
-                            _t.sleep(2 ** attempt)
+                            time.sleep(2 ** attempt)
                             continue
                         raise AIProviderError(f"AI API 网关错误 {response.status_code}（已重试 {max_retries} 次）：{last_error}")
                     if response.status_code >= 400:
                         raise AIProviderError(_safe_http_error(response))
-                    response.encoding = "utf-8"
                     emitted_delta = False
-                    for raw_line in response.iter_lines(decode_unicode=True):
+                    for raw_line in _iter_sse_lines(response):
                         if not raw_line:
                             continue
                         line = raw_line.strip()
@@ -156,6 +207,7 @@ class OpenAICompatibleProvider(AIProvider):
                         text = delta.get("content") or ""
                         if text:
                             emitted_delta = True
+                            produced_output = True
                             yield AIStreamChunk(type="delta", text=text)
                     if not emitted_delta:
                         yield _progress(
@@ -167,6 +219,10 @@ class OpenAICompatibleProvider(AIProvider):
                     return
             except requests.RequestException as exc:
                 last_error = str(exc)
+                if produced_output:
+                    # The stream already delivered partial text to the caller; retrying
+                    # re-sends the whole prompt and duplicates output in the saved job.
+                    raise AIProviderError(f"AI API 流式中断（已输出部分内容，不再重试）：{last_error}") from exc
                 if attempt < max_retries:
                     yield _progress(
                         "retry",
@@ -175,8 +231,7 @@ class OpenAICompatibleProvider(AIProvider):
                         attempt=attempt + 1,
                         max_retries=max_retries,
                     )
-                    import time as _t
-                    _t.sleep(2 ** attempt)
+                    time.sleep(2 ** attempt)
                     continue
                 raise AIProviderError(f"AI API 请求失败（已重试 {max_retries} 次）：{last_error}") from exc
 
@@ -203,8 +258,7 @@ class OpenAICompatibleProvider(AIProvider):
                 if response.status_code in (500, 502, 503, 504, 408, 429):
                     last_error = f"HTTP {response.status_code}"
                     if attempt < max_retries:
-                        import time as _t
-                        _t.sleep(2 ** attempt)
+                        time.sleep(2 ** attempt)
                         continue
                     raise AIProviderError(f"AI API 网关错误 {response.status_code}（已重试 {max_retries} 次）")
                 if response.status_code >= 400:
@@ -212,7 +266,7 @@ class OpenAICompatibleProvider(AIProvider):
                 data = response.json()
                 choices = data.get("choices") or []
                 if not choices:
-                    raise AIProviderError(f"AI API 返回空 choices（模型可能不支持此请求）: {str(data)[:200]}")
+                    raise AIProviderError(f"AI API 返回空 choices（模型可能不支持此请求）: {_redact_secrets(str(data)[:200])}")
                 message = choices[0].get("message", {})
                 text = message.get("content") or ""
                 if text:
@@ -222,8 +276,7 @@ class OpenAICompatibleProvider(AIProvider):
             except requests.RequestException as exc:
                 last_error = str(exc)
                 if attempt < max_retries:
-                    import time as _t
-                    _t.sleep(2 ** attempt)
+                    time.sleep(2 ** attempt)
                     continue
                 raise AIProviderError(f"AI API 请求失败（已重试 {max_retries} 次）：{last_error}") from exc
 
@@ -278,6 +331,7 @@ class AnthropicProvider(AIProvider):
             return
         max_retries = max(3, self.config.max_retries)
         last_error: str | None = None
+        produced_output = False
         for attempt in range(max_retries + 1):
             try:
                 with requests.post(
@@ -289,7 +343,7 @@ class AnthropicProvider(AIProvider):
                     proxies=self._proxies(),
                 ) as response:
                     if response.status_code in (500, 502, 503, 504, 408, 429):
-                        last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                        last_error = f"HTTP {response.status_code}: {_redact_secrets(response.text[:200])}"
                         if attempt < max_retries:
                             yield _progress(
                                 "retry",
@@ -299,15 +353,13 @@ class AnthropicProvider(AIProvider):
                                 attempt=attempt + 1,
                                 max_retries=max_retries,
                             )
-                            import time as _t
-                            _t.sleep(2 ** attempt)
+                            time.sleep(2 ** attempt)
                             continue
                         raise AIProviderError(f"Anthropic API 网关错误 {response.status_code}（已重试 {max_retries} 次）：{last_error}")
                     if response.status_code >= 400:
                         raise AIProviderError(_safe_http_error(response))
-                    response.encoding = "utf-8"
                     emitted_delta = False
-                    for raw_line in response.iter_lines(decode_unicode=True):
+                    for raw_line in _iter_sse_lines(response):
                         if not raw_line:
                             continue
                         line = raw_line.strip()
@@ -324,6 +376,7 @@ class AnthropicProvider(AIProvider):
                             text = delta.get("text") or ""
                             if text:
                                 emitted_delta = True
+                                produced_output = True
                                 yield AIStreamChunk(type="delta", text=text)
                         elif event_type == "message_stop":
                             if not emitted_delta:
@@ -338,7 +391,7 @@ class AnthropicProvider(AIProvider):
                             return
                         elif event_type == "error":
                             error = event.get("error") or {}
-                            raise AIProviderError(str(error.get("message") or "Anthropic API 返回错误"))
+                            raise AIProviderError(_redact_secrets(str(error.get("message") or "Anthropic API 返回错误")))
                     if not emitted_delta:
                         yield _progress(
                             "fallback",
@@ -349,6 +402,9 @@ class AnthropicProvider(AIProvider):
                     return
             except requests.RequestException as exc:
                 last_error = str(exc)
+                if produced_output:
+                    # Partial text already streamed to the caller; retrying would duplicate it.
+                    raise AIProviderError(f"Anthropic 流式中断（已输出部分内容，不再重试）：{last_error}") from exc
                 if attempt < max_retries:
                     yield _progress(
                         "retry",
@@ -357,8 +413,7 @@ class AnthropicProvider(AIProvider):
                         attempt=attempt + 1,
                         max_retries=max_retries,
                     )
-                    import time as _t
-                    _t.sleep(2 ** attempt)
+                    time.sleep(2 ** attempt)
                     continue
                 raise AIProviderError(f"AI API 请求失败（已重试 {max_retries} 次）：{last_error}") from exc
 
@@ -383,8 +438,7 @@ class AnthropicProvider(AIProvider):
                 )
                 if response.status_code in (500, 502, 503, 504, 408, 429):
                     if attempt < max_retries:
-                        import time as _t
-                        _t.sleep(2 ** attempt)
+                        time.sleep(2 ** attempt)
                         continue
                     raise AIProviderError(f"Anthropic API 网关错误 {response.status_code}（已重试 {max_retries} 次）")
                 if response.status_code >= 400:
@@ -402,8 +456,7 @@ class AnthropicProvider(AIProvider):
                 return
             except requests.RequestException as exc:
                 if attempt < max_retries:
-                    import time as _t
-                    _t.sleep(2 ** attempt)
+                    time.sleep(2 ** attempt)
                     continue
                 raise AIProviderError(f"Anthropic API 请求失败（已重试 {max_retries} 次）：{exc}") from exc
 
@@ -434,8 +487,8 @@ def _safe_http_error(response: requests.Response) -> str:
         else:
             message = None
         if message:
-            return f"AI API 返回错误 {response.status_code}：{message}"
+            return _redact_secrets(f"AI API 返回错误 {response.status_code}：{message}")
     except ValueError:
         pass
-    text = response.text[:500] if response.text else ""
+    text = _redact_secrets(response.text[:500]) if response.text else ""
     return f"AI API 返回错误 {response.status_code}：{text}"

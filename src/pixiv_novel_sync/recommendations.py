@@ -9,6 +9,9 @@ from .auth import PixivAuthManager
 from .settings import Settings
 from .storage_db import Database
 
+# 单个系列拉取章节时的安全翻页上限，避免异常或循环的 next_url 造成无限翻页
+_SERIES_PAGE_SAFETY_LIMIT = 50
+
 
 class RecommendationService:
     def __init__(self, db: Database, settings: Settings, api: AppPixivAPI | None = None) -> None:
@@ -77,7 +80,7 @@ class RecommendationService:
                     item["profile_id"] = int(profile["id"])
                     self.db.upsert_recommendation_item(item)
                     stats["saved"] += 1
-                time.sleep(float(getattr(self.settings.sync, "delay_seconds_between_pages", 1.0) or 1.0))
+                self._page_delay()
             self.db.update_recommendation_run(run_id, "succeeded", stats=stats)
             return {"run_id": run_id, "stats": stats, "items": self.db.list_recommendation_items(limit=100)}
         except Exception as exc:
@@ -89,6 +92,9 @@ class RecommendationService:
         api, _ = auth.login()
         return api
 
+    def _page_delay(self) -> None:
+        time.sleep(float(getattr(self.settings.sync, "delay_seconds_between_pages", 1.0) or 1.0))
+
     def _search_novels(self, api: AppPixivAPI, query: str, limit: int) -> list[Any]:
         results: list[Any] = []
         next_query: dict[str, Any] | None = {"word": query, "search_target": "partial_match_for_tags", "sort": "date_desc"}
@@ -98,7 +104,7 @@ class RecommendationService:
             results.extend(novels)
             next_query = api.parse_qs(getattr(response, "next_url", None))
             if next_query and len(results) < limit:
-                time.sleep(float(getattr(self.settings.sync, "delay_seconds_between_pages", 1.0) or 1.0))
+                self._page_delay()
         return results[:limit]
 
     def _candidate_to_item(
@@ -208,8 +214,10 @@ class RecommendationService:
     def _series_length(self, api: AppPixivAPI, series_id: int) -> tuple[int, int]:
         total_length = 0
         total_count = 0
+        pages = 0
         next_query: dict[str, Any] | None = {"series_id": series_id}
-        while next_query:
+        while next_query and pages < _SERIES_PAGE_SAFETY_LIMIT:
+            pages += 1
             try:
                 response = api.novel_series(**next_query)
             except TypeError:
@@ -219,8 +227,8 @@ class RecommendationService:
             total_length += sum(self._novel_text_length(item) for item in novels)
             next_url = response.get("next_url") if isinstance(response, dict) else getattr(response, "next_url", None)
             next_query = api.parse_qs(next_url)
-            if next_query:
-                time.sleep(float(getattr(self.settings.sync, "delay_seconds_between_pages", 1.0) or 1.0))
+            if next_query and pages < _SERIES_PAGE_SAFETY_LIMIT:
+                self._page_delay()
         return total_length, total_count
 
     def _extract_series_novels(self, response: Any) -> list[Any]:

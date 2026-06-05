@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from collections.abc import Iterator
 from typing import Any
@@ -11,9 +12,24 @@ from .ai.service import AIServiceError, AIWritingService
 from .ai.detection import detect_ai_tells
 from .settings import Settings
 
+logger = logging.getLogger(__name__)
+
 
 def register_ai_routes(app: Flask, settings: Settings) -> None:
     service = AIWritingService(settings.storage.db_path)
+
+    # 启动对账：把上次运行残留、客户端断连后卡在 'running' 的 AI job 标记为 failed，
+    # 否则前端会永久转圈，cleanup_ai_jobs 也不会回收这些幽灵任务。
+    try:
+        _startup_db = service._db()
+        try:
+            stale = _startup_db.fail_stale_ai_jobs(older_than_minutes=30)
+            if stale:
+                logger.info("启动对账：已修复 %d 个卡住的 AI job", stale)
+        finally:
+            _startup_db.close()
+    except Exception:
+        logger.warning("启动 AI job 对账失败", exc_info=True)
 
     def json_payload() -> dict[str, Any]:
         payload = request.get_json(silent=True)

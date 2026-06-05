@@ -40,7 +40,10 @@ class AIServiceError(RuntimeError):
 
 
 class AIWritingService:
-    _schema_initialized: bool = False
+    # Track which DB paths have had their schema initialized. A single class-wide
+    # bool would skip init_schema() for a second service pointing at a different
+    # path (tests, multiple DBs in one process), causing "no such table".
+    _initialized_paths: set[str] = set()
 
     def __init__(self, db_path: Path, secret_manager: AISecretManager | None = None) -> None:
         self.db_path = db_path
@@ -54,9 +57,10 @@ class AIWritingService:
 
     def _db(self) -> Database:
         db = Database(self.db_path)
-        if not AIWritingService._schema_initialized:
+        key = str(self.db_path)
+        if key not in AIWritingService._initialized_paths:
             db.init_schema()
-            AIWritingService._schema_initialized = True
+            AIWritingService._initialized_paths.add(key)
         return db
 
     def list_providers(self) -> list[dict[str, Any]]:
@@ -2719,11 +2723,18 @@ class AIWritingService:
         resolved_records: list[dict[str, Any]] = []
         still_pending: list[int] = []
         warnings: list[str] = []
+        # Only allow resolving foreshadows that actually belong to this project. The
+        # model output is driven by untrusted chapter text, so a hallucinated/echoed
+        # id from another project must not be flipped to "resolved" here.
+        project_foreshadow_ids = {int(f["id"]) for f in db.list_ai_foreshadows(project_id)}
         for r in parsed.get("resolved") or []:
             try:
                 fs_id = int(r.get("id"))
             except (TypeError, ValueError):
                 warnings.append("模型返回了无效的伏笔 id，已跳过")
+                continue
+            if fs_id not in project_foreshadow_ids:
+                warnings.append(f"模型返回的伏笔 id={fs_id} 不属于该项目，已跳过")
                 continue
             db.update_ai_foreshadow(fs_id, {
                 "status": "resolved",
@@ -3083,6 +3094,7 @@ class AIWritingService:
                     sub_payload = {"agent_id": int(agent_ids.get("foreshadow") or 0), "project_id": project_id, "chapter_id": chapter_id}
                     job_id = ""
                     resolved: list[dict[str, Any]] = []
+                    skipped_this = False
                     for chunk in self.stream_auto_resolve_foreshadows(sub_payload):
                         if chunk.type == "metadata":
                             job_id = (chunk.data or {}).get("job_id") or ""
@@ -3090,6 +3102,7 @@ class AIWritingService:
                                 skipped_steps += 1
                                 _emit_step(step, "skipped", reason=(chunk.data or {}).get("reason", ""))
                                 yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "skipped": True})
+                                skipped_this = True
                                 break
                         elif chunk.type == "delta":
                             yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
@@ -3097,11 +3110,14 @@ class AIWritingService:
                             resolved = (chunk.data or {}).get("resolved", []) or []
                         elif chunk.type == "error":
                             raise AIServiceError((chunk.data or {}).get("message", "伏笔回收失败"))
-                    else:
-                        step_meta = {"job_id": job_id, "resolved": len(resolved)}
-                        _emit_step(step, "done", finished_at=int(time.time()), **step_meta)
-                        yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "meta": step_meta})
+                    # 跳过和正常完成都必须 continue：否则会落到循环末尾的通用 done 分支，
+                    # 把刚标记为 skipped 的步骤又覆盖成 done，并重复发一个 step_done 事件。
+                    if skipped_this:
                         continue
+                    step_meta = {"job_id": job_id, "resolved": len(resolved)}
+                    _emit_step(step, "done", finished_at=int(time.time()), **step_meta)
+                    yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "meta": step_meta})
+                    continue
 
                 elif step == "audit":
                     sub_db = self._db()

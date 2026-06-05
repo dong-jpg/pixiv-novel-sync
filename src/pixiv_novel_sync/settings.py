@@ -3,10 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import logging
 import os
 
 import yaml
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -350,24 +353,40 @@ def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: s
     # 尝试导入时区库
     try:
         from zoneinfo import ZoneInfo
-        tz = ZoneInfo(timezone)
+        try:
+            tz = ZoneInfo(timezone)
+        except Exception:
+            # 无效时区名（ZoneInfoNotFoundError 不是 ImportError 的子类），回退 UTC，
+            # 否则异常会一路冒泡到调度循环，导致所有 cron 任务永远不触发。
+            logger.warning("未知时区 %r，回退到 UTC", timezone)
+            tz = ZoneInfo("UTC")
         base_dt = datetime.fromtimestamp(base_time, tz=tz)
     except ImportError:
         # Python < 3.9 或没有zoneinfo，尝试使用pytz
         try:
             import pytz
-            tz = pytz.timezone(timezone)
+            try:
+                tz = pytz.timezone(timezone)
+            except Exception:
+                logger.warning("未知时区 %r，回退到 UTC", timezone)
+                tz = pytz.UTC
             base_dt = datetime.fromtimestamp(base_time, tz=tz)
         except ImportError:
             # 没有时区库，使用本地时间（不推荐）
             base_dt = datetime.fromtimestamp(base_time)
-    
+
     # 简单实现：查找下一个匹配的时间
     # 这里使用简化的实现，实际项目中建议使用croniter库
     try:
         # 尝试导入croniter
         from croniter import croniter
-        cron = croniter(cron_expr, base_dt)
+        # 项目约定 6 段 cron 为 "秒 分 时 日 月 周"。croniter 默认把第 6 段当作
+        # 年份，必须显式 second_at_beginning=True，否则 6 段表达式会被解析到完全
+        # 错误的时间（且仍能通过校验，难以察觉）。
+        if len(cron_expr.split()) == 6:
+            cron = croniter(cron_expr, base_dt, second_at_beginning=True)
+        else:
+            cron = croniter(cron_expr, base_dt)
         next_dt = cron.get_next(datetime)
         return next_dt.timestamp()
     except ImportError:

@@ -29,6 +29,20 @@ logger = logging.getLogger(__name__)
 _service_start_time: float = time.time()
 
 
+def _atomic_write_yaml(path: Path, data: Any) -> None:
+    """Write YAML to ``path`` atomically (temp file in the same dir + os.replace).
+
+    Avoids truncating/corrupting config.yaml if the process crashes mid-write, and
+    keeps a single serialization style across every config writer.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as file:
+        yaml.safe_dump(data, file, allow_unicode=True, sort_keys=False)
+    os.replace(tmp, path)
+
+
 @dataclass(slots=True)
 class SyncJobState:
     job_id: str
@@ -1475,8 +1489,7 @@ class SettingsManager:
         sync_data["auto_sync_pending_detection_interval_hours"] = _save_int("auto_sync_pending_detection_interval_hours", 12)
         sync_data["auto_sync_pending_detection_cron"] = _save_cron("auto_sync_pending_detection_cron")
 
-        with config_path.open("w", encoding="utf-8") as file:
-            yaml.safe_dump(config_data, file, allow_unicode=True, sort_keys=False)
+        _atomic_write_yaml(config_path, config_data)
 
         self.invalidate()
         return _settings_to_dict(load_settings(config_path, None))
@@ -2224,8 +2237,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                     config_data = yaml.safe_load(f) or {}
                 sync_data = config_data.setdefault("sync", {})
                 sync_data["auto_sync_enabled"] = bool(enabled)
-                with config_path_obj.open("w", encoding="utf-8") as f:
-                    yaml.dump(config_data, f, allow_unicode=True, default_flow_style=False)
+                _atomic_write_yaml(config_path_obj, config_data)
         
         if enabled:
             auto_sync_scheduler.start()

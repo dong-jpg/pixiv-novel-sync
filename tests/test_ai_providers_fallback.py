@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
+import requests
+
 from pixiv_novel_sync.ai.models import AIProviderConfig
-from pixiv_novel_sync.ai.providers import AnthropicProvider, OpenAICompatibleProvider
+from pixiv_novel_sync.ai.providers import AIProviderError, AnthropicProvider, OpenAICompatibleProvider
 
 
 class FakeResponse:
@@ -20,6 +23,13 @@ class FakeResponse:
 
     def iter_lines(self, decode_unicode: bool = False):
         return iter(self.lines)
+
+    def iter_content(self, chunk_size=None):
+        # Mirror a streaming body: the providers now decode bytes incrementally
+        # via iter_content (correct multi-byte UTF-8 handling) instead of iter_lines.
+        body = "\n".join(self.lines)
+        if body:
+            yield body.encode("utf-8")
 
     def json(self):
         return self._payload
@@ -149,3 +159,48 @@ def test_anthropic_empty_stream_falls_back_to_non_stream(monkeypatch):
     assert [chunk.type for chunk in chunks] == ["progress", "delta", "done"]
     assert chunks[0].data and chunks[0].data["phase"] == "fallback"
     assert chunks[1].text == "ok"
+
+
+class _PartialThenError:
+    """Stream that delivers one delta then drops the connection mid-stream."""
+
+    status_code = 200
+    text = ""
+    encoding = "utf-8"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def iter_content(self, chunk_size=None):
+        yield b'data: {"choices":[{"delta":{"content":"hello"}}]}\n'
+        raise requests.ConnectionError("connection dropped")
+
+
+def test_openai_no_retry_after_partial_output(monkeypatch):
+    """Once partial text has been streamed, a mid-stream failure must NOT retry
+    (retrying re-sends the prompt and duplicates the saved output)."""
+    calls: list[dict] = []
+
+    def fake_post(*_args, **kwargs):
+        calls.append(kwargs)
+        return _PartialThenError()
+
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.post", fake_post)
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    provider = OpenAICompatibleProvider(make_config("openai_compatible"))
+    chunks = []
+    with pytest.raises(AIProviderError):
+        for chunk in provider.stream_generate(
+            [{"role": "user", "content": "hi"}],
+            model="model-a", temperature=0.7, top_p=0.9, max_tokens=100,
+        ):
+            chunks.append(chunk)
+
+    # exactly one request (no retry after partial), and the single delta was delivered once
+    assert len(calls) == 1
+    assert [c.type for c in chunks] == ["delta"]
+    assert chunks[0].text == "hello"

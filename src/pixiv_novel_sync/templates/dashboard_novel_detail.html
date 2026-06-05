@@ -421,7 +421,9 @@
       const formattedContent = computed(() => {
         if (!novel.value) return '';
         const text = novel.value.text_raw || novel.value.text_markdown || '';
-        if (text.includes('<p>')) return text;
+        // Always escape line-by-line. The body is untrusted Pixiv author content;
+        // returning it raw when it happened to contain "<p>" was a stored-XSS sink
+        // (this value is rendered via v-html below).
         return text.split('\n').map(line => {
           const t = line.trim();
           return t ? `<p>${escapeHtml(t)}</p>` : `<p class="empty-line"></p>`;

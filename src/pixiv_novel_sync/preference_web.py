@@ -168,10 +168,9 @@ def register_preference_routes(app: Flask, settings: Settings) -> None:
         payload = json_payload()
         instance = db()
         try:
-            items = [item for item in instance.list_recommendation_items(limit=1000) if item["id"] == item_id]
-            if not items:
+            item = instance.get_recommendation_item(item_id)
+            if not item:
                 return jsonify({"ok": False, "error": "推荐项不存在"}), 404
-            item = items[0]
             feedback_type = str(payload.get("feedback_type") or "").strip()
             if not feedback_type:
                 return jsonify({"ok": False, "error": "缺少 feedback_type"}), 400

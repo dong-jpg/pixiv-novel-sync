@@ -139,18 +139,6 @@
         return 'https://www.pixiv.net/novel/series/' + item.item_id;
       };
 
-      const updateGlobalBadge = (count) => {
-        const badge = document.getElementById("globalPendingBadge");
-        if (badge) {
-          if (count > 0) {
-            badge.textContent = count > 99 ? '99+' : count;
-            badge.classList.remove('hidden');
-          } else {
-            badge.classList.add('hidden');
-          }
-        }
-      };
-
       // Data fetching
       const loadPending = async (page, type) => {
         if (type === undefined) type = currentType.value;
@@ -166,7 +154,6 @@
           totalPages.value = data.total_pages || 1;
           totalItems.value = data.total || 0;
           currentType.value = type || '';
-          updateGlobalBadge(data.total || 0);
         } catch (err) {
           console.error('Failed to load pending deletions', err);
         } finally {

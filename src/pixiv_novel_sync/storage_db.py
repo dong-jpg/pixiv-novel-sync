@@ -1118,6 +1118,12 @@ class Database:
                 self.conn.execute("DELETE FROM sources WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM novel_fts WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM novels WHERE novel_id = ?", (novel_id,))
+                # Purge satellite rows so a deleted novel can't resurface as a
+                # "new" recommendation or linger in the preflight/pending tables.
+                self.conn.execute("DELETE FROM sync_check_list WHERE novel_id = ?", (novel_id,))
+                self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'novel' AND item_id = ?", (novel_id,))
+                self.conn.execute("DELETE FROM recommendation_items WHERE novel_id = ?", (novel_id,))
+                self.conn.execute("DELETE FROM recommendation_feedback WHERE novel_id = ?", (novel_id,))
                 self._commit_if_needed()
             except Exception:
                 self.conn.rollback()
@@ -1132,8 +1138,12 @@ class Database:
                 self.conn.execute("DELETE FROM assets WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
                 self.conn.execute("DELETE FROM sources WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
                 self.conn.execute("DELETE FROM novel_fts WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
+                self.conn.execute("DELETE FROM sync_check_list WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
+                self.conn.execute("DELETE FROM recommendation_items WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
                 self.conn.execute("DELETE FROM novels WHERE user_id = ?", (user_id,))
                 self.conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+                self.conn.execute("DELETE FROM recommendation_feedback WHERE author_id = ?", (user_id,))
+                self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'user' AND item_id = ?", (user_id,))
                 self._commit_if_needed()
             except Exception:
                 self.conn.rollback()
@@ -1145,6 +1155,9 @@ class Database:
             self.conn.execute("BEGIN IMMEDIATE")
             try:
                 self.conn.execute("UPDATE novels SET series_id = NULL WHERE series_id = ?", (series_id,))
+                self.conn.execute("DELETE FROM recommendation_items WHERE item_type = 'series' AND series_id = ?", (series_id,))
+                self.conn.execute("DELETE FROM recommendation_feedback WHERE series_id = ?", (series_id,))
+                self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'series' AND item_id = ?", (series_id,))
                 self.conn.execute("DELETE FROM series WHERE series_id = ?", (series_id,))
                 self._commit_if_needed()
             except Exception:
@@ -1203,7 +1216,7 @@ class Database:
                 (task_type, task_name, job_id, 1 if is_auto_sync else 0)
             )
             self._commit_if_needed()
-            return cursor.lastrowid
+            return int(cursor.lastrowid)
 
     def update_task_log(self, log_id: int, status: str, stats: dict[str, Any] | None = None,
                        error_message: str | None = None, logs: list[dict[str, Any]] | None = None) -> None:
@@ -1265,9 +1278,15 @@ class Database:
         for row in rows:
             item = dict(row)
             if item.get("stats_json"):
-                item["stats"] = json.loads(item["stats_json"])
+                try:
+                    item["stats"] = json.loads(item["stats_json"])
+                except (TypeError, ValueError):
+                    item["stats"] = None
             if item.get("logs_json"):
-                item["logs"] = json.loads(item["logs_json"])
+                try:
+                    item["logs"] = json.loads(item["logs_json"])
+                except (TypeError, ValueError):
+                    item["logs"] = None
             item["is_auto_sync"] = bool(item["is_auto_sync"])
             result.append(item)
         
@@ -1654,6 +1673,13 @@ class Database:
         params.append(max(1, int(limit)))
         rows = self.conn.execute(sql, params).fetchall()
         return [self._row_to_recommendation_item(row) for row in rows]
+
+    def get_recommendation_item(self, item_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM recommendation_items WHERE id = ?",
+            (int(item_id),),
+        ).fetchone()
+        return self._row_to_recommendation_item(row) if row else None
 
     def update_recommendation_item_status(self, item_id: int, status: str) -> None:
         with self._lock:
@@ -2160,7 +2186,7 @@ class Database:
             cur = self.conn.execute(
                 """
                 DELETE FROM ai_jobs
-                WHERE (status IN ('done', 'completed', 'success')
+                WHERE (status IN ('succeeded', 'done', 'completed', 'success')
                        AND created_at < datetime('now', ? || ' days'))
                    OR (status IN ('failed', 'error', 'cancelled')
                        AND created_at < datetime('now', ? || ' days'))
@@ -2170,6 +2196,28 @@ class Database:
             deleted = cur.rowcount or 0
             self._commit_if_needed()
         return int(deleted)
+
+    def fail_stale_ai_jobs(self, older_than_minutes: int = 30) -> int:
+        """把卡在 'running' 且早于阈值的 AI job 标记为 failed。
+
+        客户端断连/进程重启会让 SSE 任务永远停留在 'running'，UI 一直转圈且
+        cleanup_ai_jobs 也不会回收。建议在服务启动时调用一次做对账。返回修复行数。
+        """
+        with self._lock:
+            cur = self.conn.execute(
+                """
+                UPDATE ai_jobs
+                SET status = 'failed',
+                    error_message = COALESCE(NULLIF(error_message, ''), '任务中断（服务重启时检测到未完成）'),
+                    finished_at = CURRENT_TIMESTAMP
+                WHERE status = 'running'
+                  AND created_at < datetime('now', ? || ' minutes')
+                """,
+                (f"-{int(older_than_minutes)}",),
+            )
+            fixed = cur.rowcount or 0
+            self._commit_if_needed()
+        return int(fixed)
 
     # ── ai_style_profiles ───────────────────────────────────────
 

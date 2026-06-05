@@ -4,6 +4,10 @@
 
 {% block extra_head %}
 <style>
+  /* This page uses plain DOM JS, not initVueApp, so no Vue app mounts on #app to
+     clear the [v-cloak] attribute from base.html. Without this override the whole
+     login page (sidebar shell + form) stays display:none. */
+  #app[v-cloak] { display: block !important; }
   .login-card { background:#fff; border-radius:.75rem; border:1px solid #e8eaed; padding:1.5rem 2rem; transition:all .2s; }
   .login-card:hover { border-color:#bae0ff; }
   .status-box { display:none; margin-top:1rem; padding:.75rem 1rem; border-radius:.5rem; font-size:.8125rem; font-weight:500; border:1px solid; }

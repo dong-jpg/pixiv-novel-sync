@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from pixiv_novel_sync.recommendations import RecommendationService
+from pixiv_novel_sync.recommendations import RecommendationService, _SERIES_PAGE_SAFETY_LIMIT
 from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings
 from pixiv_novel_sync.storage_db import Database
 
@@ -118,4 +118,30 @@ def test_recommendation_item_upsert_and_mutes(tmp_path: Path):
     assert "甜文" in state["muted_tags"]
     db.delete_recommendation_mute(mute_id)
     assert not db.list_recommendation_mutes()
+    db.close()
+
+
+def test_series_length_caps_pagination(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    service = RecommendationService(db, make_settings(tmp_path))
+
+    class LoopingApi:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def novel_series(self, **kwargs):
+            self.calls += 1
+            return {"novels": [{"text_length": 1000}], "next_url": "https://example.test/next"}
+
+        def parse_qs(self, url):
+            return {"series_id": 1} if url else None
+
+    api = LoopingApi()
+    total_length, total_count = service._series_length(api, 1)
+
+    # 永远返回 next_url 的接口必须被安全上限截断，而不是无限翻页
+    assert api.calls == _SERIES_PAGE_SAFETY_LIMIT
+    assert total_count == _SERIES_PAGE_SAFETY_LIMIT
+    assert total_length == _SERIES_PAGE_SAFETY_LIMIT * 1000
     db.close()

@@ -20,6 +20,12 @@ from .utils_text import clean_caption, normalize_text, to_markdown
 
 logger = logging.getLogger(__name__)
 
+# Hard upper bound on pages walked per pagination loop in check_all_existence.
+# The preflight only collects IDs (no content download), but without a cap a
+# malformed/looping next_url echoed by Pixiv could spin forever. 2000 pages is
+# far beyond any real library yet still bounds the worst case.
+_CHECK_PAGE_SAFETY_LIMIT = 2000
+
 
 class BookmarkNovelSyncService:
     def __init__(self, api: AppPixivAPI, db: Database, storage: FileStorage, settings: Settings, sync_check_scope: str = "_") -> None:
@@ -120,9 +126,13 @@ class BookmarkNovelSyncService:
                 
                 next_query: dict[str, Any] | None = {"user_id": user_id, "restrict": restrict}
                 page_count = 0
-                
-                while next_query:
-                    result = self.api.user_bookmarks_novel(**next_query)
+
+                while next_query and page_count < _CHECK_PAGE_SAFETY_LIMIT:
+                    try:
+                        result = self.api.user_bookmarks_novel(**next_query)
+                    except Exception as exc:
+                        logger.warning("预检查收藏分页失败 (restrict=%s, page=%d): %s", restrict, page_count + 1, exc)
+                        break
                     page_count += 1
                     
                     if progress_callback:
@@ -152,33 +162,43 @@ class BookmarkNovelSyncService:
                 next_following_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
                 following_page_count = 0
                 
-                while next_following_query:
-                    following_result = self.api.user_following(**next_following_query)
+                while next_following_query and following_page_count < _CHECK_PAGE_SAFETY_LIMIT:
+                    try:
+                        following_result = self.api.user_following(**next_following_query)
+                    except Exception as exc:
+                        logger.warning("预检查关注列表分页失败 (page=%d): %s", following_page_count + 1, exc)
+                        break
                     following_page_count += 1
-                    
+
                     if progress_callback:
                         progress_callback("page", {"page": following_page_count})
-                    
+
                     users = getattr(following_result, "user_previews", []) or []
-                    
+
                     for user_preview in users:
                         user = getattr(user_preview, "user", user_preview)
                         author_id = getattr(user, "id", None)
                         if author_id is None:
                             continue
                         author_id = int(author_id)
-                        
+
                         # 获取该用户的小说
                         next_novel_query: dict[str, Any] | None = {"user_id": author_id}
-                        while next_novel_query:
-                            novels_result = self.api.user_novels(**next_novel_query)
+                        user_novel_page = 0
+                        while next_novel_query and user_novel_page < _CHECK_PAGE_SAFETY_LIMIT:
+                            try:
+                                novels_result = self.api.user_novels(**next_novel_query)
+                            except Exception as exc:
+                                logger.warning("预检查用户小说分页失败 (user=%d, page=%d): %s", author_id, user_novel_page + 1, exc)
+                                break
+                            user_novel_page += 1
                             novels = getattr(novels_result, "novels", []) or []
-                            
+
                             for novel in novels:
                                 novel_id = int(novel.id)
                                 following_ids.append(novel_id)
                                 all_novel_ids.append(novel_id)
-                            
+
                             next_novel_query = self.api.parse_qs(getattr(novels_result, "next_url", None))
                             if next_novel_query:
                                 time.sleep(self.settings.sync.delay_seconds_between_pages)
@@ -1548,6 +1568,18 @@ class BookmarkNovelSyncService:
         text_hash = sha256_text(body)
         markdown_text = to_markdown(title, user_name, caption, body) if write_markdown else None
 
+        # Write the archive files to disk BEFORE committing the DB rows. The
+        # skip/dedupe logic keys off the DB (novel_text_exists / sync_check_list),
+        # so if we committed first and the process died before writing files, the
+        # novel would be marked "synced" forever with no text on disk. Writing
+        # files first means a crash leaves the DB unmarked and the novel is retried.
+        novel_dir = self.storage.novel_dir(restrict, user_id, user_name, novel_id, title)
+        self.storage.write_text(novel_dir / "meta.json", json.dumps(meta_plain, ensure_ascii=False, indent=2))
+        if write_raw_text:
+            self.storage.write_text(novel_dir / "text.txt", body)
+        if write_markdown and markdown_text is not None:
+            self.storage.write_text(novel_dir / "text.md", markdown_text)
+
         with self.db.transaction():
             if user_id:
                 self.db.upsert_user(
@@ -1589,13 +1621,6 @@ class BookmarkNovelSyncService:
                 )
             )
             self.db.replace_fts(novel_id, title, caption, user_name, body)
-
-        novel_dir = self.storage.novel_dir(restrict, user_id, user_name, novel_id, title)
-        self.storage.write_text(novel_dir / "meta.json", json.dumps(meta_plain, ensure_ascii=False, indent=2))
-        if write_raw_text:
-            self.storage.write_text(novel_dir / "text.txt", body)
-        if write_markdown and markdown_text is not None:
-            self.storage.write_text(novel_dir / "text.md", markdown_text)
 
         assets_downloaded = 0
         if download_assets:
@@ -1685,6 +1710,20 @@ def _extract_novel_text(webview: Any) -> str:
     return ""
 
 
+def _is_pixiv_image_url(url: str) -> bool:
+    """True only when the URL host is exactly ``pximg.net`` or a ``*.pximg.net`` subdomain.
+
+    A plain substring test (``"pximg.net" in url``) also matches hostile hosts such
+    as ``pximg.net.evil.com`` or ``evil-pximg.net``, which would let attacker-controlled
+    novel content drive arbitrary downloads through the configured proxy (SSRF).
+    """
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "pximg.net" or host.endswith(".pximg.net")
+
+
 def _collect_asset_urls(novel: Any, webview: Any) -> list[tuple[str, str]]:
     results: list[tuple[str, str]] = []
     cover_url = _extract_cover_url(novel)
@@ -1694,7 +1733,7 @@ def _collect_asset_urls(novel: Any, webview: Any) -> list[tuple[str, str]]:
     plain_webview = _to_plain(webview)
     visited: set[str] = set()
     for url in _walk_urls(plain_webview):
-        if "pximg.net" in url and url not in visited:
+        if _is_pixiv_image_url(url) and url not in visited:
             visited.add(url)
             results.append(("inline_image", url))
     return results
