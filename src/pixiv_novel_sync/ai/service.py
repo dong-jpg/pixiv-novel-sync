@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 import uuid
@@ -49,10 +50,39 @@ class AIWritingService:
         self.db_path = db_path
         self.secret_manager = secret_manager or AISecretManager()
         self._retriever: BaseRetriever | None = None
+        self._retriever_config_key: tuple[str | None, str | None, str, int] | None = None
 
     def _get_retriever(self) -> BaseRetriever:
-        if self._retriever is None:
-            self._retriever = create_retriever(self.db_path)
+        embedding_base_url = (
+            os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_BASE_URL")
+            or os.getenv("QWEN_EMBEDDING_BASE_URL")
+        )
+        embedding_api_key = (
+            os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_API_KEY")
+            or os.getenv("QWEN_EMBEDDING_API_KEY")
+        )
+        embedding_model = (
+            os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_MODEL")
+            or os.getenv("QWEN_EMBEDDING_MODEL")
+            or "Qwen3-Embedding-8B"
+        )
+        timeout_raw = os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_TIMEOUT", "60")
+        try:
+            embedding_timeout = max(int(timeout_raw), 1)
+        except ValueError:
+            embedding_timeout = 60
+        config_key = (embedding_base_url, embedding_api_key, embedding_model, embedding_timeout)
+        if self._retriever is None or self._retriever_config_key != config_key:
+            if self._retriever is not None and hasattr(self._retriever, "close"):
+                self._retriever.close()  # type: ignore[attr-defined]
+            self._retriever = create_retriever(
+                self.db_path,
+                model_name=embedding_model,
+                api_base_url=embedding_base_url,
+                api_key=embedding_api_key,
+                api_timeout=embedding_timeout,
+            )
+            self._retriever_config_key = config_key
         return self._retriever
 
     def _db(self) -> Database:

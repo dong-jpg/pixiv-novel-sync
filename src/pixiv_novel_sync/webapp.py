@@ -15,12 +15,17 @@ import requests as http_requests
 import yaml
 from flask import Flask, Response, jsonify, redirect, render_template, request, session
 
+from .jobs.manager import JobManager
+from .jobs.models import JobSource, JobSpec, JobState, JobType
 from .jobs.quick_sync import run_bookmark_sync, run_check_bookmarks_task
+from .jobs.runner import JobRunner
+from .jobs.tasks import build_default_task_list, execute_task
 from .auth import PixivAuthManager
 from .oauth_helper import OAuthManager
 from .settings import Settings, load_settings
 from .storage_db import Database
 from .storage_files import FileStorage
+from .sync_check import build_sync_check_fingerprint
 from .sync_engine import BookmarkNovelSyncService
 
 logger = logging.getLogger(__name__)
@@ -41,6 +46,18 @@ def _atomic_write_yaml(path: Path, data: Any) -> None:
     with tmp.open("w", encoding="utf-8") as file:
         yaml.safe_dump(data, file, allow_unicode=True, sort_keys=False)
     os.replace(tmp, path)
+
+
+def _oauth_task_public_payload(task: Any, mode: str) -> dict[str, Any]:
+    return {
+        "task_id": task.task_id,
+        "status": task.status,
+        "message": task.message,
+        "has_refresh_token": bool(task.refresh_token),
+        "has_access_token": bool(task.access_token),
+        "user_id": task.user_id,
+        "mode": mode,
+    }
 
 
 @dataclass(slots=True)
@@ -1018,6 +1035,28 @@ class SyncJobManager:
             # 按 started_at 排序，而非字符串排序
             return max(self._jobs.values(), key=lambda j: j.started_at or 0)
 
+    def latest_matching_sync_check_scope(self, settings: Settings, user_id: int | None, task_type: str) -> tuple[str, str] | None:
+        fingerprint = build_sync_check_fingerprint(settings, user_id)
+        with self._lock:
+            jobs = sorted(
+                self._jobs.values(),
+                key=lambda job: job.finished_at or job.started_at or 0,
+                reverse=True,
+            )
+            for job in jobs:
+                if job.status != "succeeded":
+                    continue
+                scope = job.progress.get("sync_check_scope")
+                if not scope:
+                    continue
+                if job.progress.get("sync_check_fingerprint") != fingerprint:
+                    continue
+                task_types = job.progress.get("sync_check_task_types") or []
+                if task_type not in task_types:
+                    continue
+                return str(scope), job.job_id
+        return None
+
     def has_running_jobs(self) -> bool:
         with self._lock:
             return any(j.status == "running" for j in self._jobs.values())
@@ -1130,6 +1169,8 @@ class SyncJobManager:
         api, auth_result = auth.login()
         if auth_result.user_id is None:
             raise RuntimeError("Unable to determine PIXIV_USER_ID")
+        if settings.pixiv.user_id is None:
+            settings.pixiv.user_id = auth_result.user_id
         self.add_log(job_id, "success", f"登录成功, 用户ID: {auth_result.user_id}")
 
         db = Database(settings.storage.db_path)
@@ -1138,7 +1179,16 @@ class SyncJobManager:
         storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
 
         try:
-            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+            sync_check_scope = "_"
+            job = self.get_job(job_id)
+            if job and not job.is_auto_sync:
+                matched_scope = self.latest_matching_sync_check_scope(settings, auth_result.user_id, task_type)
+                if matched_scope:
+                    sync_check_scope, source_job_id = matched_scope
+                    job.progress["sync_check_scope"] = sync_check_scope
+                    job.progress["sync_check_source_job_id"] = source_job_id
+                    self.add_log(job_id, "info", f"使用预检查结果跳过已存在内容: {source_job_id}")
+            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings, sync_check_scope=sync_check_scope)
 
             def on_progress(event_type: str, data: dict[str, Any]) -> None:
                 if event_type == "novel_start":
@@ -1469,7 +1519,7 @@ class SettingsManager:
         sync_data["auto_sync_following_novels_enabled"] = bool(payload.get("auto_sync_following_novels_enabled", sync_data.get("auto_sync_following_novels_enabled", True)))
         sync_data["auto_sync_following_novels_interval_hours"] = _save_int("auto_sync_following_novels_interval_hours", 6)
         sync_data["auto_sync_following_novels_cron"] = _save_cron("auto_sync_following_novels_cron")
-        sync_data["auto_sync_following_novels_users_limit"] = max(_save_int("auto_sync_following_novels_users_limit", 0), 0)
+        sync_data["auto_sync_following_novels_users_limit"] = _save_int("auto_sync_following_novels_users_limit", 0, min_value=0)
         sync_data["auto_sync_user_status_enabled"] = bool(payload.get("auto_sync_user_status_enabled", sync_data.get("auto_sync_user_status_enabled", True)))
         sync_data["auto_sync_user_status_interval_hours"] = _save_int("auto_sync_user_status_interval_hours", 6)
         sync_data["auto_sync_user_status_cron"] = _save_cron("auto_sync_user_status_cron")
@@ -1495,27 +1545,37 @@ class SettingsManager:
         return _settings_to_dict(load_settings(config_path, None))
 
 
+def _load_or_create_flask_secret(env_path: str | None) -> str:
+    env_secret = os.getenv("PIXIV_FLASK_SECRET")
+    if env_secret:
+        return env_secret
+
+    path = Path(env_path or os.getenv("ENV_PATH", ".env"))
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    for line in lines:
+        if line.startswith("PIXIV_FLASK_SECRET="):
+            secret = line.split("=", 1)[1].strip()
+            if secret:
+                os.environ["PIXIV_FLASK_SECRET"] = secret
+                return secret
+
+    secret = os.urandom(32).hex()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines.append(f"PIXIV_FLASK_SECRET={secret}")
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(tmp_path, path)
+    os.environ["PIXIV_FLASK_SECRET"] = secret
+    return secret
+
+
+
 def create_app(config_path: str | None = None, env_path: str | None = None) -> Flask:
     app = Flask(__name__, template_folder="templates")
     # 修改 Jinja2 变量分隔符，避免与 Vue 3 的 {{ }} 冲突
     app.jinja_env.variable_start_string = "{["
     app.jinja_env.variable_end_string = "]}"
-    # 持久化 secret_key：优先环境变量；否则按数据目录派生稳定值，避免每次重启 session 失效
-    secret = os.getenv("PIXIV_FLASK_SECRET")
-    if not secret:
-        # 派生：使用 dashboard_token 或机器名 + db_path 派生（仅作 fallback；建议 .env 设置 PIXIV_FLASK_SECRET）
-        try:
-            _stable_settings = load_settings(config_path, env_path)
-            seed = (_stable_settings.dashboard_token or "") + str(_stable_settings.storage.db_path)
-        except Exception:
-            seed = "pixiv-novel-sync"
-        if seed:
-            import hashlib as _hashlib
-            secret = _hashlib.sha256(seed.encode("utf-8")).hexdigest()
-        else:
-            secret = os.urandom(24).hex()
-            logger.warning("Using ephemeral Flask secret_key; set PIXIV_FLASK_SECRET to persist sessions")
-    app.secret_key = secret
+    app.secret_key = _load_or_create_flask_secret(env_path)
     # 加固 cookie：HttpOnly + SameSite=Lax；如启用 HTTPS 可设置 SESSION_COOKIE_SECURE=true
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
@@ -1523,7 +1583,14 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         app.config["SESSION_COOKIE_SECURE"] = True
     settings_manager = SettingsManager(config_path)
     sync_job_manager = SyncJobManager(config_path=config_path, env_path=env_path)
-    oauth_manager = OAuthManager()
+    shared_job_manager = JobManager()
+
+    def run_web_task(task_type: str, context: dict[str, Any]) -> dict[str, Any] | None:
+        current_settings = settings_manager.load(env_path=env_path)
+        return execute_task(task_type, current_settings, context)
+
+    shared_job_runner = JobRunner(shared_job_manager, run_web_task)
+    oauth_manager = OAuthManager(env_path=env_path)
     auto_sync_scheduler = AutoSyncScheduler(config_path=config_path, env_path=env_path, sync_job_manager=sync_job_manager)
     
     # 启动定时同步调度器
@@ -1567,11 +1634,16 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         "/oauth/callback",
     }
 
+    def _is_local_request() -> bool:
+        return request.remote_addr in {"127.0.0.1", "::1", "localhost"}
+
     @app.before_request
     def _check_auth():
         token = settings_manager.load(env_path=env_path).dashboard_token
         if not token:
-            return  # 未配置 token，允许所有请求
+            if _is_local_request():
+                return
+            return jsonify({"error": "dashboard token required for non-local access"}), 403
         path = request.path
         if path in _AUTH_EXEMPT_PATHS:
             return
@@ -1584,7 +1656,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             return jsonify({"error": "unauthorized"}), 401
         return redirect("/api/auth/login")
 
-    current_settings_for_routes = settings_manager.load(env_path=env_path)
+    def current_settings_for_routes() -> Settings:
+        return settings_manager.load(env_path=env_path)
 
     from .ai_web import register_ai_routes
     register_ai_routes(app, current_settings_for_routes)
@@ -1734,17 +1807,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         task = oauth_manager.get_task(job_id)
         if task is None:
             return jsonify({"error": "task not found"}), 404
-        return jsonify(
-            {
-                "task_id": task.task_id,
-                "status": task.status,
-                "message": task.message,
-                "refresh_token": task.refresh_token,
-                "access_token": task.access_token,
-                "user_id": task.user_id,
-                "mode": "oauth",
-            }
-        )
+        return jsonify(_oauth_task_public_payload(task, mode="oauth"))
 
     @app.post("/api/save-token")
     def save_token():
@@ -1778,17 +1841,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         task = oauth_manager.get_task(task_id)
         if task is None:
             return jsonify({"error": "task not found"}), 404
-        return jsonify(
-            {
-                "task_id": task.task_id,
-                "status": task.status,
-                "message": task.message,
-                "refresh_token": task.refresh_token,
-                "access_token": task.access_token,
-                "user_id": task.user_id,
-                "mode": "oauth",
-            }
-        )
+        return jsonify(_oauth_task_public_payload(task, mode="oauth"))
 
     @app.get("/oauth/callback")
     def oauth_callback():
@@ -1847,7 +1900,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             task.status = "failed"
             task.message = f"token 交换失败：{exc}"
             return jsonify({"error": task.message}), 400
-        return jsonify({"ok": True, "message": task.message, "user_id": task.user_id, "refresh_token": task.refresh_token})
+        return jsonify({"ok": True, **_oauth_task_public_payload(task, mode="oauth")})
 
     @app.post("/oauth/save/<task_id>")
     def oauth_save(task_id: str):
@@ -2068,34 +2121,26 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.post("/api/dashboard/sync/start")
     def dashboard_sync_start():
         current_settings = settings_manager.load(env_path=env_path)
+        spec = _build_web_sync_job_spec(current_settings)
 
-        # 构建任务列表（使用内部类型名，与 _run_single_sync 分发匹配）
-        task_list = []
-        if current_settings.sync.sync_bookmarks:
-            task_list.append("bookmark")
-        if current_settings.sync.sync_following_users:
-            task_list.append("following_users")
-        if current_settings.sync.sync_following_novels:
-            task_list.append("following_novels")
-        if current_settings.sync.sync_subscribed_series:
-            task_list.append("subscribed_series")
-        
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         try:
-            job = sync_job_manager.start_job(task_list)
+            job = shared_job_manager.submit(spec)
             log_id = db.create_task_log(
                 task_type="manual",
                 task_name="全量手动同步",
                 job_id=job.job_id,
-                is_auto_sync=False
+                is_auto_sync=False,
             )
-            job.log_id = log_id
+            job.progress["log_id"] = log_id
+            thread = threading.Thread(target=shared_job_runner.run, args=(job.job_id,), daemon=True)
+            thread.start()
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
         finally:
             db.close()
-        return jsonify({"ok": True, "message": job.message, "job": _job_to_dict(job)})
+        return jsonify({"ok": True, "message": job.message, "job": _shared_job_to_dict(job)})
 
     @app.post("/api/dashboard/check-bookmarks")
     def dashboard_check_bookmarks():
@@ -2142,8 +2187,11 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.get("/api/dashboard/sync/status")
     def dashboard_sync_status():
         job_id = request.args.get("job_id", "").strip()
-        job = sync_job_manager.get_job(job_id) if job_id else sync_job_manager.latest_job()
-        return jsonify({"job": _job_to_dict(job)})
+        shared_job = shared_job_manager.get_job(job_id) if job_id else shared_job_manager.latest_job()
+        if shared_job is not None:
+            return jsonify({"job": _shared_job_to_dict(shared_job)})
+        legacy_job = sync_job_manager.get_job(job_id) if job_id else sync_job_manager.latest_job()
+        return jsonify({"job": _job_to_dict(legacy_job)})
 
     @app.post("/api/dashboard/sync/<task_type>")
     def dashboard_sync_single(task_type: str):
@@ -2730,6 +2778,42 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "auto_sync_pending_detection_interval_hours": settings.sync.auto_sync_pending_detection_interval_hours,
         "auto_sync_pending_detection_cron": settings.sync.auto_sync_pending_detection_cron,
     }
+
+
+def _shared_job_to_dict(job: JobState | None) -> dict[str, Any] | None:
+    if job is None:
+        return None
+    elapsed = None
+    if job.started_at:
+        end = job.finished_at or time.time()
+        elapsed = round(end - job.started_at, 1)
+    return {
+        "job_id": job.job_id,
+        "status": job.status.value,
+        "message": job.message,
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+        "elapsed": elapsed,
+        "stats": job.stats,
+        "error": job.error,
+        "progress": job.progress,
+        "logs": [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs],
+        "task_list": list(job.task_types),
+        "current_task_index": int(job.progress.get("current_task_index", 0) or 0),
+        "is_auto_sync": job.spec.source == JobSource.SCHEDULER,
+        "source": job.spec.source.value,
+        "job_type": job.spec.job_type.value,
+    }
+
+
+
+def _build_web_sync_job_spec(settings: Settings) -> JobSpec:
+    return JobSpec(
+        source=JobSource.WEB,
+        job_type=JobType.SYNC,
+        task_types=build_default_task_list(settings),
+    )
+
 
 
 def _job_to_dict(job: SyncJobState | None) -> dict[str, Any] | None:

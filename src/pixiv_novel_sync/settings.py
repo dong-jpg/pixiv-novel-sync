@@ -99,6 +99,7 @@ DEFAULT_CONFIG_PATH = Path("config/config.yaml")
 
 def load_settings(config_path: str | Path | None = None, env_path: str | Path | None = None) -> Settings:
     if env_path is not None:
+        os.environ["ENV_PATH"] = str(env_path)
         load_dotenv(env_path)
     else:
         load_dotenv()
