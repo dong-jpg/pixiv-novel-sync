@@ -910,7 +910,13 @@ class SyncJobManager:
                 task_stats = self._run_single_sync(settings, task_type, job_id)
                 if task_stats:
                     for key, val in task_stats.items():
-                        total_stats[key] = total_stats.get(key, 0) + val
+                        current = total_stats.get(key)
+                        if isinstance(val, bool):
+                            total_stats[key] = bool(current) or val
+                        elif isinstance(val, (int, float)):
+                            total_stats[key] = (current if isinstance(current, (int, float)) and not isinstance(current, bool) else 0) + val
+                        else:
+                            total_stats[key] = val
             stats = total_stats
             
             job.status = "succeeded"

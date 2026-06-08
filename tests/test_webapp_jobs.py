@@ -4,6 +4,60 @@ from pixiv_novel_sync.jobs.models import JobSource, JobType
 from pixiv_novel_sync.webapp import AutoSyncScheduler, SyncJobManager, SyncJobState, _web_job_spec
 
 
+class StubSyncJobManager(SyncJobManager):
+    def __init__(self, *args, task_stats=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.task_stats = task_stats or {}
+
+    def _run_single_sync(self, settings, task_type, current_job_id):
+        assert current_job_id == "job-1"
+        return self.task_stats[task_type]
+
+
+def _run_manager_job(monkeypatch, task_stats):
+    manager = StubSyncJobManager(config_path=None, env_path=None, task_stats=task_stats)
+    job_id = "job-1"
+    job = SyncJobState(job_id=job_id, status="running", task_list=list(task_stats))
+    manager._jobs[job_id] = job
+    assert manager._semaphore.acquire(blocking=False)
+    monkeypatch.setattr("pixiv_novel_sync.webapp.load_settings", lambda config_path, env_path: object())
+
+    manager._run_job(job_id)
+
+    return job
+
+
+def test_run_job_preserves_status_counts_stats_without_failing(monkeypatch):
+    job = _run_manager_job(
+        monkeypatch,
+        {
+            "novel_status": {"status_counts": {"exists": 2, "deleted": 1}, "stopped": False},
+        },
+    )
+
+    assert job.status == "succeeded"
+    assert job.error is None
+    assert job.stats == {"status_counts": {"exists": 2, "deleted": 1}, "stopped": False}
+
+
+def test_run_job_preserves_pending_detection_stats_without_failing(monkeypatch):
+    job = _run_manager_job(
+        monkeypatch,
+        {
+            "pending_deletion_detection": {
+                "bookmark": {},
+                "series": {},
+                "new_pending": 0,
+                "stopped": True,
+            },
+        },
+    )
+
+    assert job.status == "succeeded"
+    assert job.error is None
+    assert job.stats == {"bookmark": {}, "series": {}, "new_pending": 0, "stopped": True}
+
+
 def test_web_job_spec_for_sync_tasks():
     spec = _web_job_spec(["bookmark", "following_novels"])
 
