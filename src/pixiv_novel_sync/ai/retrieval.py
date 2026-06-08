@@ -439,7 +439,6 @@ class APIEmbeddingRetriever(BaseRetriever):
     def search(self, project_id: int, query: str, top_k: int = 5) -> list[RetrievalEntry]:
         if not query.strip():
             return []
-        query_embedding = self.client.embed([query])[0]
         with self._lock:
             rows = self.conn.execute(
                 """
@@ -449,6 +448,9 @@ class APIEmbeddingRetriever(BaseRetriever):
                 """,
                 (project_id, self.model_name),
             ).fetchall()
+        if not rows:
+            return []
+        query_embedding = self.client.embed([query])[0]
         results: list[RetrievalEntry] = []
         for row in rows:
             doc_embedding = _decode_float32_vector(row[4], int(row[6])) if row[4] is not None else [float(value) for value in json.loads(row[5])]

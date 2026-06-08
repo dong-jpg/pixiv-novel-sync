@@ -71,6 +71,26 @@ def test_api_embedding_retriever_uses_openai_compatible_endpoint(tmp_path, monke
     assert calls[0]["timeout"] == 12
 
 
+def test_api_embedding_retriever_empty_index_search_skips_api_call(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_post(url, headers, json, timeout):
+        calls.append(json["input"])
+        return FakeEmbeddingResponse({"data": []})
+
+    monkeypatch.setattr(retrieval.http_requests, "post", fake_post)
+    retriever = APIEmbeddingRetriever(
+        tmp_path / "main.db",
+        base_url="https://api.example.test/v1",
+        api_key="test-key",
+        model_name="Qwen3-Embedding-8B",
+    )
+
+    assert retriever.search(1, "secret") == []
+    assert calls == []
+
+
+
 def test_api_embedding_retriever_stores_vectors_as_blob(tmp_path, monkeypatch):
     def fake_post(url, headers, json, timeout):
         return FakeEmbeddingResponse({

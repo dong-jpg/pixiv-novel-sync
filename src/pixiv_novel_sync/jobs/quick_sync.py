@@ -42,7 +42,13 @@ def run_bookmark_sync(settings: Settings) -> dict[str, int]:
         db.close()
 
 
-def run_check_bookmarks_task(settings: Settings, job_manager: Any, job_id: str) -> None:
+def run_check_bookmarks_task(
+    settings: Settings,
+    job_manager: Any,
+    job_id: str,
+    release_semaphore: bool = True,
+    raise_on_error: bool = False,
+) -> None:
     """独立的预检查任务：扫描所有需要同步的内容，标记哪些已存在"""
     db = None
     try:
@@ -112,8 +118,11 @@ def run_check_bookmarks_task(settings: Settings, job_manager: Any, job_id: str) 
             job.status = "failed"
             job.message = f"预检查失败: {exc}"
             job.finished_at = time.time()
+        if raise_on_error:
+            raise
         return None
     finally:
         if db:
             db.close()
-        job_manager._semaphore.release()
+        if release_semaphore:
+            job_manager._semaphore.release()
