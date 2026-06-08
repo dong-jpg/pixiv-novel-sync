@@ -2214,7 +2214,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         try:
-            job = sync_job_manager.start_job([internal_type])
+            spec = _web_job_spec([internal_type])
+            job = sync_job_manager.start_job(spec.task_types)
             log_id = db.create_task_log(
                 task_type=internal_type,
                 task_name=task_name,
@@ -2243,7 +2244,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         try:
-            job = sync_job_manager.start_job(["subscribed_series"])
+            spec = _web_job_spec(["subscribed_series"])
+            job = sync_job_manager.start_job(spec.task_types)
             job.progress["series_limit"] = limit
             log_id = db.create_task_log(
                 task_type="subscribed_series",
@@ -2807,12 +2809,23 @@ def _shared_job_to_dict(job: JobState | None) -> dict[str, Any] | None:
 
 
 
+def _web_job_spec(task_list: list[str] | None) -> JobSpec:
+    tasks = list(task_list or [])
+    if len(tasks) == 1 and tasks[0].startswith("user_backup:"):
+        user_id = int(tasks[0].split(":", 1)[1])
+        return JobSpec(
+            source=JobSource.WEB,
+            job_type=JobType.USER_BACKUP,
+            task_types=tasks,
+            params={"user_id": user_id},
+        )
+    if tasks == ["sync_check"]:
+        return JobSpec(source=JobSource.WEB, job_type=JobType.SYNC_CHECK, task_types=tasks)
+    return JobSpec(source=JobSource.WEB, job_type=JobType.SYNC, task_types=tasks)
+
+
 def _build_web_sync_job_spec(settings: Settings) -> JobSpec:
-    return JobSpec(
-        source=JobSource.WEB,
-        job_type=JobType.SYNC,
-        task_types=build_default_task_list(settings),
-    )
+    return _web_job_spec(build_default_task_list(settings))
 
 
 
