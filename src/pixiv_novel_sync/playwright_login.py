@@ -238,7 +238,10 @@ class PlaywrightLoginHelper:
         if not url:
             return False
         parsed = urlparse(url)
-        return PIXIV_CALLBACK_HOST in parsed.hostname and "code=" in url
+        hostname = (parsed.hostname or "").lower()
+        if hostname != PIXIV_CALLBACK_HOST:
+            return False
+        return bool(parse_qs(parsed.query).get("code"))
 
     def _detect_captcha(self, page: Any) -> bool:
         """检测页面是否有 CAPTCHA。"""

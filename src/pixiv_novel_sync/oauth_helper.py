@@ -44,9 +44,10 @@ class OAuthTask:
 
 
 class OAuthManager:
-    def __init__(self) -> None:
+    def __init__(self, env_path: str | Path | None = None) -> None:
         self._tasks: dict[str, OAuthTask] = {}
         self._lock = threading.RLock()
+        self.env_path = Path(env_path) if env_path is not None else Path(os.getenv("ENV_PATH", ".env"))
 
     def create_task(self, external_base_url: str) -> OAuthTask:
         with self._lock:
@@ -124,7 +125,8 @@ class OAuthManager:
         return self.exchange_code(task, code)
 
     def save_to_env(self, refresh_token: str, user_id: int | None = None) -> None:
-        env_path = Path(".env")
+        env_path = self.env_path
+        env_path.parent.mkdir(parents=True, exist_ok=True)
         lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
         updates = {"PIXIV_REFRESH_TOKEN": refresh_token}
         if user_id is not None:
@@ -146,6 +148,9 @@ class OAuthManager:
         tmp_path = env_path.with_suffix(env_path.suffix + ".tmp")
         tmp_path.write_text("\n".join(result) + "\n", encoding="utf-8")
         os.replace(tmp_path, env_path)
+        os.environ["ENV_PATH"] = str(env_path)
+        for key, value in updates.items():
+            os.environ[key] = value
 
     def sync_state_from_callback_url(self, task: OAuthTask, callback_url: str) -> OAuthTask:
         parsed = urlparse(callback_url.strip())

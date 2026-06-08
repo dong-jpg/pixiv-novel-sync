@@ -21,6 +21,7 @@ from .oauth_helper import OAuthManager
 from .settings import Settings, load_settings
 from .storage_db import Database
 from .storage_files import FileStorage
+from .sync_check import build_sync_check_fingerprint
 from .sync_engine import BookmarkNovelSyncService
 
 logger = logging.getLogger(__name__)
@@ -1018,6 +1019,28 @@ class SyncJobManager:
             # 按 started_at 排序，而非字符串排序
             return max(self._jobs.values(), key=lambda j: j.started_at or 0)
 
+    def latest_matching_sync_check_scope(self, settings: Settings, user_id: int | None, task_type: str) -> tuple[str, str] | None:
+        fingerprint = build_sync_check_fingerprint(settings, user_id)
+        with self._lock:
+            jobs = sorted(
+                self._jobs.values(),
+                key=lambda job: job.finished_at or job.started_at or 0,
+                reverse=True,
+            )
+            for job in jobs:
+                if job.status != "succeeded":
+                    continue
+                scope = job.progress.get("sync_check_scope")
+                if not scope:
+                    continue
+                if job.progress.get("sync_check_fingerprint") != fingerprint:
+                    continue
+                task_types = job.progress.get("sync_check_task_types") or []
+                if task_type not in task_types:
+                    continue
+                return str(scope), job.job_id
+        return None
+
     def has_running_jobs(self) -> bool:
         with self._lock:
             return any(j.status == "running" for j in self._jobs.values())
@@ -1130,6 +1153,8 @@ class SyncJobManager:
         api, auth_result = auth.login()
         if auth_result.user_id is None:
             raise RuntimeError("Unable to determine PIXIV_USER_ID")
+        if settings.pixiv.user_id is None:
+            settings.pixiv.user_id = auth_result.user_id
         self.add_log(job_id, "success", f"登录成功, 用户ID: {auth_result.user_id}")
 
         db = Database(settings.storage.db_path)
@@ -1138,7 +1163,16 @@ class SyncJobManager:
         storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
 
         try:
-            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+            sync_check_scope = "_"
+            job = self.get_job(job_id)
+            if job and not job.is_auto_sync:
+                matched_scope = self.latest_matching_sync_check_scope(settings, auth_result.user_id, task_type)
+                if matched_scope:
+                    sync_check_scope, source_job_id = matched_scope
+                    job.progress["sync_check_scope"] = sync_check_scope
+                    job.progress["sync_check_source_job_id"] = source_job_id
+                    self.add_log(job_id, "info", f"使用预检查结果跳过已存在内容: {source_job_id}")
+            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings, sync_check_scope=sync_check_scope)
 
             def on_progress(event_type: str, data: dict[str, Any]) -> None:
                 if event_type == "novel_start":
@@ -1469,7 +1503,7 @@ class SettingsManager:
         sync_data["auto_sync_following_novels_enabled"] = bool(payload.get("auto_sync_following_novels_enabled", sync_data.get("auto_sync_following_novels_enabled", True)))
         sync_data["auto_sync_following_novels_interval_hours"] = _save_int("auto_sync_following_novels_interval_hours", 6)
         sync_data["auto_sync_following_novels_cron"] = _save_cron("auto_sync_following_novels_cron")
-        sync_data["auto_sync_following_novels_users_limit"] = max(_save_int("auto_sync_following_novels_users_limit", 0), 0)
+        sync_data["auto_sync_following_novels_users_limit"] = _save_int("auto_sync_following_novels_users_limit", 0, min_value=0)
         sync_data["auto_sync_user_status_enabled"] = bool(payload.get("auto_sync_user_status_enabled", sync_data.get("auto_sync_user_status_enabled", True)))
         sync_data["auto_sync_user_status_interval_hours"] = _save_int("auto_sync_user_status_interval_hours", 6)
         sync_data["auto_sync_user_status_cron"] = _save_cron("auto_sync_user_status_cron")
@@ -1523,7 +1557,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         app.config["SESSION_COOKIE_SECURE"] = True
     settings_manager = SettingsManager(config_path)
     sync_job_manager = SyncJobManager(config_path=config_path, env_path=env_path)
-    oauth_manager = OAuthManager()
+    oauth_manager = OAuthManager(env_path=env_path)
     auto_sync_scheduler = AutoSyncScheduler(config_path=config_path, env_path=env_path, sync_job_manager=sync_job_manager)
     
     # 启动定时同步调度器
@@ -1584,7 +1618,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             return jsonify({"error": "unauthorized"}), 401
         return redirect("/api/auth/login")
 
-    current_settings_for_routes = settings_manager.load(env_path=env_path)
+    def current_settings_for_routes() -> Settings:
+        return settings_manager.load(env_path=env_path)
 
     from .ai_web import register_ai_routes
     register_ai_routes(app, current_settings_for_routes)

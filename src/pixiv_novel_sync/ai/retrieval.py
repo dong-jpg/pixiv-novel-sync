@@ -15,10 +15,14 @@ import json
 import math
 import re
 import sqlite3
+import struct
 import threading
 from collections import Counter
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
+
+import requests as http_requests
 
 
 class RetrievalEntry:
@@ -294,7 +298,210 @@ class EmbeddingRetriever(BaseRetriever):
                 pass
 
 
-def create_retriever(db_path: Path, use_embeddings: bool = False, model_name: str | None = None) -> BaseRetriever:
+class OpenAICompatibleEmbeddingClient:
+    """Small client for OpenAI-compatible embedding APIs such as Qwen endpoints."""
+
+    def __init__(self, base_url: str, api_key: str, model_name: str, timeout: int = 60) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.model_name = model_name
+        self.timeout = timeout
+
+    @property
+    def endpoint(self) -> str:
+        if self.base_url.endswith("/embeddings"):
+            return self.base_url
+        return f"{self.base_url}/embeddings"
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        response = http_requests.post(
+            self.endpoint,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json={"model": self.model_name, "input": texts},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data")
+        if not isinstance(data, list):
+            raise RuntimeError("Embedding API response missing data list")
+        ordered = sorted(data, key=lambda item: int(item.get("index", 0)) if isinstance(item, dict) else 0)
+        vectors: list[list[float]] = []
+        for item in ordered:
+            if not isinstance(item, dict) or not isinstance(item.get("embedding"), list):
+                raise RuntimeError("Embedding API response contains invalid embedding item")
+            vectors.append([float(value) for value in item["embedding"]])
+        if len(vectors) != len(texts):
+            raise RuntimeError(f"Embedding API returned {len(vectors)} vectors for {len(texts)} inputs")
+        return vectors
+
+
+def _encode_float32_vector(vector: list[float]) -> bytes:
+    return struct.pack(f"<{len(vector)}f", *vector) if vector else b""
+
+
+def _decode_float32_vector(blob: bytes, dimension: int) -> list[float]:
+    if not blob or dimension <= 0:
+        return []
+    return list(struct.unpack(f"<{dimension}f", blob))
+
+
+class APIEmbeddingRetriever(BaseRetriever):
+    """SQLite-backed semantic retriever using a remote embedding API."""
+
+    def __init__(self, db_path: Path, base_url: str, api_key: str, model_name: str = "Qwen3-Embedding-8B", timeout: int = 60) -> None:
+        self.client = OpenAICompatibleEmbeddingClient(base_url=base_url, api_key=api_key, model_name=model_name, timeout=timeout)
+        self.model_name = model_name
+        self.db_path = db_path.parent / "ai_retrieval_api_vec.db"
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._lock = threading.Lock()
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS retrieval_api_vectors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                chapter_number INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                entry_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                dimension INTEGER NOT NULL,
+                embedding_blob BLOB,
+                embedding_json TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(retrieval_api_vectors)").fetchall()}
+        if "embedding_blob" not in columns:
+            self.conn.execute("ALTER TABLE retrieval_api_vectors ADD COLUMN embedding_blob BLOB")
+        if "embedding_json" not in columns:
+            self.conn.execute("ALTER TABLE retrieval_api_vectors ADD COLUMN embedding_json TEXT")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_api_vec_project_model ON retrieval_api_vectors(project_id, model)")
+        self.conn.commit()
+
+    def index_chapter(self, project_id: int, chapter_number: int, summary: str, key_events: list[str] | None = None) -> None:
+        texts: list[tuple[str, str]] = []
+        if summary and summary.strip():
+            texts.append((summary, "summary"))
+        if key_events:
+            for event in key_events:
+                if event and event.strip():
+                    texts.append((event, "key_event"))
+
+        desired_entries = [
+            (sha256(content.encode("utf-8")).hexdigest(), entry_type)
+            for content, entry_type in texts
+        ]
+        with self._lock:
+            existing_entries = self.conn.execute(
+                """
+                SELECT content_hash, entry_type
+                FROM retrieval_api_vectors
+                WHERE project_id = ? AND chapter_number = ? AND model = ?
+                ORDER BY id
+                """,
+                (project_id, chapter_number, self.model_name),
+            ).fetchall()
+        if existing_entries == desired_entries:
+            return
+
+        embeddings = self.client.embed([content for content, _entry_type in texts]) if texts else []
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM retrieval_api_vectors WHERE project_id = ? AND chapter_number = ? AND model = ?",
+                (project_id, chapter_number, self.model_name),
+            )
+            for (content, entry_type), embedding in zip(texts, embeddings):
+                self.conn.execute(
+                    """
+                    INSERT INTO retrieval_api_vectors
+                        (project_id, chapter_number, content, content_hash, entry_type, model, dimension, embedding_blob, embedding_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        project_id,
+                        chapter_number,
+                        content,
+                        sha256(content.encode("utf-8")).hexdigest(),
+                        entry_type,
+                        self.model_name,
+                        len(embedding),
+                        _encode_float32_vector(embedding),
+                        None,
+                    ),
+                )
+            self.conn.commit()
+
+    def search(self, project_id: int, query: str, top_k: int = 5) -> list[RetrievalEntry]:
+        if not query.strip():
+            return []
+        query_embedding = self.client.embed([query])[0]
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT project_id, chapter_number, content, entry_type, embedding_blob, embedding_json, dimension
+                FROM retrieval_api_vectors
+                WHERE project_id = ? AND model = ?
+                """,
+                (project_id, self.model_name),
+            ).fetchall()
+        results: list[RetrievalEntry] = []
+        for row in rows:
+            doc_embedding = _decode_float32_vector(row[4], int(row[6])) if row[4] is not None else [float(value) for value in json.loads(row[5])]
+            score = _cosine_similarity(query_embedding, doc_embedding)
+            if score > 0.25:
+                results.append(RetrievalEntry(
+                    project_id=row[0],
+                    chapter_number=row[1],
+                    content=row[2],
+                    entry_type=row[3],
+                    score=score,
+                ))
+        results.sort(key=lambda item: item.score, reverse=True)
+        return results[:top_k]
+
+    def delete_project(self, project_id: int) -> None:
+        with self._lock:
+            self.conn.execute("DELETE FROM retrieval_api_vectors WHERE project_id = ?", (project_id,))
+            self.conn.commit()
+
+    def delete_chapter(self, project_id: int, chapter_number: int) -> None:
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM retrieval_api_vectors WHERE project_id = ? AND chapter_number = ?",
+                (project_id, chapter_number),
+            )
+            self.conn.commit()
+
+    def close(self) -> None:
+        with self._lock:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right))
+    left_norm = math.sqrt(sum(a * a for a in left))
+    right_norm = math.sqrt(sum(b * b for b in right))
+    return dot / (left_norm * right_norm) if left_norm > 0 and right_norm > 0 else 0.0
+
+
+def create_retriever(
+    db_path: Path,
+    use_embeddings: bool = False,
+    model_name: str | None = None,
+    api_base_url: str | None = None,
+    api_key: str | None = None,
+    api_timeout: int = 60,
+) -> BaseRetriever:
     """创建检索器实例。
 
     Args:
@@ -305,6 +512,17 @@ def create_retriever(db_path: Path, use_embeddings: bool = False, model_name: st
     Returns:
         TFIDFRetriever（默认）或 EmbeddingRetriever
     """
+    if api_base_url and api_key:
+        try:
+            return APIEmbeddingRetriever(
+                db_path,
+                base_url=api_base_url,
+                api_key=api_key,
+                model_name=model_name or "Qwen3-Embedding-8B",
+                timeout=api_timeout,
+            )
+        except Exception:
+            pass
     if use_embeddings:
         try:
             return EmbeddingRetriever(db_path, model_name=model_name or "paraphrase-multilingual-MiniLM-L12-v2")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
@@ -14,8 +14,27 @@ from .settings import Settings
 logger = logging.getLogger(__name__)
 
 
-def register_ai_routes(app: Flask, settings: Settings) -> None:
-    service = AIWritingService(settings.storage.db_path)
+def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) -> None:
+    def current_settings() -> Settings:
+        return settings() if callable(settings) else settings
+
+    class CurrentAIWritingService:
+        def __init__(self) -> None:
+            self._services: dict[str, AIWritingService] = {}
+
+        def _current(self) -> AIWritingService:
+            db_path = current_settings().storage.db_path
+            key = str(db_path)
+            service = self._services.get(key)
+            if service is None:
+                service = AIWritingService(db_path)
+                self._services[key] = service
+            return service
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._current(), name)
+
+    service = CurrentAIWritingService()
 
     # 启动对账：把上次运行残留、客户端断连后卡在 'running' 的 AI job 标记为 failed，
     # 否则前端会永久转圈，cleanup_ai_jobs 也不会回收这些幽灵任务。
@@ -485,9 +504,7 @@ def register_ai_routes(app: Flask, settings: Settings) -> None:
             q = str(request.args.get("q", "") or "").strip()
             limit = parse_int(request.args.get("limit"), 10, "limit", min_value=1, max_value=20)
             from .storage_db import Database
-            from .settings import Settings
-            current_settings = settings
-            db = Database(current_settings.storage.db_path)
+            db = Database(current_settings().storage.db_path)
             db.init_schema()
             try:
                 search_pattern = f"%{q}%" if q else "%"

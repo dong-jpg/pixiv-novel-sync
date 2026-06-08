@@ -9,6 +9,7 @@ from ..auth import PixivAuthManager
 from ..settings import Settings
 from ..storage_db import Database
 from ..storage_files import FileStorage
+from ..sync_check import build_sync_check_fingerprint, sync_check_task_types
 from ..sync_engine import BookmarkNovelSyncService
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,8 @@ def run_check_bookmarks_task(settings: Settings, job_manager: Any, job_id: str) 
         api, auth_result = auth.login()
         if auth_result.user_id is None:
             raise RuntimeError("Unable to determine PIXIV_USER_ID. Set PIXIV_USER_ID in .env.")
+        if settings.pixiv.user_id is None:
+            settings.pixiv.user_id = auth_result.user_id
 
         job_manager.add_log(job_id, "success", f"登录成功, 用户ID: {auth_result.user_id}")
 
@@ -96,6 +99,9 @@ def run_check_bookmarks_task(settings: Settings, job_manager: Any, job_id: str) 
             job.message = "预检查完成"
             job.stats = check_stats
             job.progress["sync_check_scope"] = job_id
+            job.progress["sync_check_fingerprint"] = build_sync_check_fingerprint(settings, auth_result.user_id)
+            job.progress["sync_check_task_types"] = sync_check_task_types(settings)
+            job.progress["sync_check_user_id"] = auth_result.user_id
             job.finished_at = time.time()
 
         return check_stats

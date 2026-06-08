@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from flask import Flask, jsonify, render_template, request
@@ -10,7 +11,10 @@ from .settings import Settings
 from .storage_db import Database
 
 
-def register_preference_routes(app: Flask, settings: Settings) -> None:
+def register_preference_routes(app: Flask, settings: Settings | Callable[[], Settings]) -> None:
+    def current_settings() -> Settings:
+        return settings() if callable(settings) else settings
+
     def ok(data: Any = None):
         return jsonify({"ok": True, "data": data})
 
@@ -21,7 +25,7 @@ def register_preference_routes(app: Flask, settings: Settings) -> None:
         return request.get_json(silent=True) or {}
 
     def db() -> Database:
-        instance = Database(settings.storage.db_path)
+        instance = Database(current_settings().storage.db_path)
         instance.init_schema()
         return instance
 
@@ -117,7 +121,7 @@ def register_preference_routes(app: Flask, settings: Settings) -> None:
             profile = instance.get_preference_profile(int(profile_id)) if profile_id else instance.get_default_preference_profile()
             if not profile:
                 return jsonify({"ok": False, "error": "需要先生成偏好画像"}), 400
-            service = RecommendationService(instance, settings)
+            service = RecommendationService(instance, current_settings())
             return ok(service.build_search_plan(profile, payload.get("filters") or {}))
         except Exception as exc:
             return fail(exc)
@@ -129,7 +133,7 @@ def register_preference_routes(app: Flask, settings: Settings) -> None:
         payload = json_payload()
         instance = db()
         try:
-            service = RecommendationService(instance, settings)
+            service = RecommendationService(instance, current_settings())
             result = service.run(
                 profile_id=int(payload["profile_id"]) if payload.get("profile_id") else None,
                 search_plan=payload.get("search_plan"),
