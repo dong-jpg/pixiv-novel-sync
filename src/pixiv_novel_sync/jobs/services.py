@@ -7,6 +7,7 @@ import time
 from pixiv_novel_sync.auth import PixivAuthManager
 from pixiv_novel_sync.storage_db import Database
 from pixiv_novel_sync.storage_files import FileStorage
+from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
 
 
 class JobReporter:
@@ -34,7 +35,96 @@ def run_user_backup_task(
     reporter: JobReporter | None = None,
     stop_requested: StopRequested | None = None,
 ) -> dict[str, Any]:
-    return {}
+    if stop_requested is not None and stop_requested():
+        _report_log(reporter, "info", "用户全量备份已停止")
+        return {
+            "user_id": user_id,
+            "novels": 0,
+            "skipped": 0,
+            "assets_downloaded": 0,
+            "stopped": True,
+        }
+
+    api = _login(settings)
+    storage = _ensure_storage_dirs(settings)
+
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    try:
+        service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+        user_name = _lookup_user_name(db, user_id)
+        _report_log(reporter, "info", f"开始用户全量备份: {user_name} ({user_id})")
+
+        total_novels = 0
+        total_skipped = 0
+        total_assets = 0
+        total_failed = 0
+        processed = 0
+        total_seen = 0
+        stopped = False
+        next_query: dict[str, Any] | None = {"user_id": user_id}
+
+        _report_progress(reporter, phase="user_backup", current=0, total=0, current_novel=user_name, author=user_name)
+
+        while next_query:
+            if stop_requested is not None and stop_requested():
+                stopped = True
+                break
+
+            result = api.user_novels(**next_query)
+            novels = getattr(result, "novels", []) or []
+            total_seen += len(novels)
+            for novel in novels:
+                if stop_requested is not None and stop_requested():
+                    stopped = True
+                    break
+
+                counters = service._sync_novel(
+                    novel,
+                    "public",
+                    settings.sync.download_assets,
+                    settings.sync.write_markdown,
+                    settings.sync.write_raw_text,
+                    source_type="user_backup",
+                    source_key=str(user_id),
+                )
+                failed = counters.get("failed", 0)
+                if failed:
+                    total_failed += failed
+                    raise RuntimeError(f"User backup failed for user {user_id}: {total_failed} novel sync failures")
+                processed += 1
+                total_novels += counters.get("novels", 0)
+                total_skipped += counters.get("skipped", 0)
+                total_assets += counters.get("assets_downloaded", 0)
+                _report_progress(
+                    reporter,
+                    phase="user_backup",
+                    current=processed,
+                    total=total_seen,
+                    current_novel=str(getattr(novel, "title", getattr(novel, "id", ""))),
+                    author=user_name,
+                )
+
+            if stopped:
+                break
+
+            next_query = api.parse_qs(getattr(result, "next_url", None))
+            if next_query and settings.sync.delay_seconds_between_pages > 0:
+                time.sleep(settings.sync.delay_seconds_between_pages)
+
+        if stopped:
+            _report_log(reporter, "info", f"用户全量备份已停止: {user_name} ({user_id})")
+        else:
+            _report_log(reporter, "success", f"用户全量备份完成: {user_name} ({user_id}), 同步 {total_novels} 本")
+        return {
+            "user_id": user_id,
+            "novels": total_novels,
+            "skipped": total_skipped,
+            "assets_downloaded": total_assets,
+            "stopped": stopped,
+        }
+    finally:
+        db.close()
 
 
 def run_user_status_task(
@@ -185,9 +275,10 @@ def _login(settings: Any) -> Any:
     return api
 
 
-def _ensure_storage_dirs(settings: Any) -> None:
+def _ensure_storage_dirs(settings: Any) -> FileStorage:
     storage = FileStorage(settings)
     storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
+    return storage
 
 
 def _process_status_items(
@@ -245,6 +336,13 @@ def _list_all_users(db: Database) -> list[dict[str, Any]]:
             break
         page_num += 1
     return users
+
+
+def _lookup_user_name(db: Database, user_id: int) -> str:
+    row = db.conn.execute("SELECT name FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    if row and row[0]:
+        return str(row[0])
+    return str(user_id)
 
 
 def _check_pixiv_user_status(api: Any, user_id: int) -> str:

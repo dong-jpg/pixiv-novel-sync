@@ -19,6 +19,24 @@ class DummyReporter:
         self.progress_updates.append(kwargs)
 
 
+class FakeConn:
+    def __init__(self, users: list[tuple[int, str]]) -> None:
+        self.users = users
+        self.executed: list[tuple[str, tuple[object, ...]]] = []
+
+    def execute(self, query: str, params: tuple[object, ...] = ()):
+        self.executed.append((query, params))
+        if "SELECT user_id FROM users ORDER BY user_id" in query:
+            return SimpleNamespace(fetchall=lambda: [(user_id,) for user_id, _name in self.users])
+        if "SELECT name FROM users WHERE user_id = ?" in query:
+            target_id = int(params[0])
+            for user_id, name in self.users:
+                if user_id == target_id:
+                    return SimpleNamespace(fetchone=lambda: (name,))
+            return SimpleNamespace(fetchone=lambda: None)
+        raise AssertionError(f"Unexpected query: {query}")
+
+
 class FakeDatabase:
     def __init__(self, db_path) -> None:
         self.db_path = db_path
@@ -34,6 +52,9 @@ class FakeDatabase:
         self.novel_status_upserts: list[tuple[int, str]] = []
         self.series_ids = [31, 42]
         self.series_status_upserts: list[tuple[int, str]] = []
+        self.backup_users = [(101, "Alice"), (202, "Bob")]
+        self.conn = FakeConn(self.backup_users)
+        self.watermark_updates: list[tuple[str, dict[str, object]]] = []
 
     def init_schema(self) -> None:
         self.init_schema_called = True
@@ -60,6 +81,63 @@ class FakeDatabase:
     def upsert_series_status(self, series_id: int, status: str) -> None:
         self.series_status_upserts.append((series_id, status))
 
+    def update_watermark(self, key: str, value: dict[str, object]) -> None:
+        self.watermark_updates.append((key, value))
+
+
+class FakeBookmarkNovelSyncService:
+    def __init__(self, api, db, storage, settings) -> None:
+        self.api = api
+        self.db = db
+        self.storage = storage
+        self.settings = settings
+        self.calls: list[dict[str, object]] = []
+
+    def _sync_novel(
+        self,
+        novel,
+        restrict: str,
+        download_assets: bool,
+        write_markdown: bool,
+        write_raw_text: bool,
+        source_type: str,
+        source_key: str | None = None,
+    ) -> dict[str, int]:
+        call = {
+            "novel_id": int(novel.id),
+            "restrict": restrict,
+            "download_assets": download_assets,
+            "write_markdown": write_markdown,
+            "write_raw_text": write_raw_text,
+            "source_type": source_type,
+            "source_key": source_key,
+        }
+        self.calls.append(call)
+        return {"novels": 1, "assets_downloaded": 2}
+
+
+class FakeApi:
+    def __init__(self) -> None:
+        self.user_novels_calls: list[dict[str, object]] = []
+        self.user_novels_pages: dict[int, list[SimpleNamespace]] = {}
+        self.parse_qs_results: dict[object, dict[str, object] | None] = {}
+
+    def user_novels(self, **query):
+        self.user_novels_calls.append(dict(query))
+        user_id = int(query["user_id"])
+        page = int(query.get("page", 1))
+        novels = self.user_novels_pages.get(
+            page,
+            [SimpleNamespace(id=user_id * 10 + 1), SimpleNamespace(id=user_id * 10 + 2)],
+        )
+        next_url = None
+        if page < len(self.user_novels_pages):
+            next_url = f"page-{page + 1}"
+        return SimpleNamespace(novels=novels, next_url=next_url)
+
+    def parse_qs(self, next_url):
+        return self.parse_qs_results.get(next_url)
+
 
 class FakeStorage:
     def __init__(self, settings) -> None:
@@ -73,10 +151,12 @@ class FakeStorage:
 class FakeAuthManager:
     def __init__(self, pixiv_settings) -> None:
         self.pixiv_settings = pixiv_settings
-        self.api = SimpleNamespace(name="api")
+        self.api = FakeApi()
         self.auth_result = SimpleNamespace(user_id=999)
+        self.login_called = False
 
     def login(self):
+        self.login_called = True
         return self.api, self.auth_result
 
 
@@ -89,7 +169,14 @@ def settings(tmp_path):
             public_dir=tmp_path / "public",
             private_dir=tmp_path / "private",
         ),
-        sync=SimpleNamespace(delay_seconds_between_skips=0),
+        sync=SimpleNamespace(
+            delay_seconds_between_skips=0,
+            download_assets=True,
+            write_markdown=True,
+            write_raw_text=False,
+            delay_seconds_between_items=0,
+            delay_seconds_between_pages=0,
+        ),
     )
 
 
@@ -112,10 +199,16 @@ def service_env(monkeypatch):
         created["auth"] = auth
         return auth
 
+    def make_sync_service(api, db, storage, settings):
+        sync_service = FakeBookmarkNovelSyncService(api, db, storage, settings)
+        created["sync_service"] = sync_service
+        return sync_service
+
     monkeypatch.setattr(services, "Database", make_db)
     monkeypatch.setattr(services, "FileStorage", make_storage)
     monkeypatch.setattr(services, "PixivAuthManager", make_auth)
-    monkeypatch.setattr(services.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(services, "time", SimpleNamespace(sleep=lambda seconds: None))
+    monkeypatch.setattr(services, "BookmarkNovelSyncService", make_sync_service, raising=False)
     return created
 
 
@@ -215,3 +308,185 @@ def test_run_novel_status_task_accepts_missing_reporter(settings, service_env, m
 
     assert result["checked_count"] == 2
     assert result["stopped"] is False
+
+
+def test_run_user_backup_task_syncs_target_user_novels_with_expected_options(settings, service_env):
+    reporter = DummyReporter()
+
+    result = services.run_user_backup_task(settings, user_id=202, reporter=reporter)
+
+    auth = service_env["auth"]
+    db = service_env["db"]
+    storage = service_env["storage"]
+    sync_service = service_env["sync_service"]
+
+    assert settings.pixiv.user_id == 999
+    assert sync_service.api is auth.api
+    assert sync_service.db is db
+    assert sync_service.storage is storage
+    assert sync_service.settings is settings
+    assert auth.api.user_novels_calls == [{"user_id": 202}]
+    assert sync_service.calls == [
+        {
+            "novel_id": 2021,
+            "restrict": "public",
+            "download_assets": True,
+            "write_markdown": True,
+            "write_raw_text": False,
+            "source_type": "user_backup",
+            "source_key": "202",
+        },
+        {
+            "novel_id": 2022,
+            "restrict": "public",
+            "download_assets": True,
+            "write_markdown": True,
+            "write_raw_text": False,
+            "source_type": "user_backup",
+            "source_key": "202",
+        },
+    ]
+    assert db.closed is True
+    assert result == {
+        "user_id": 202,
+        "novels": 2,
+        "skipped": 0,
+        "assets_downloaded": 4,
+        "stopped": False,
+    }
+    assert reporter.progress_updates[-1]["current"] == 2
+    assert reporter.progress_updates[-1]["total"] == 2
+
+
+def test_run_user_backup_task_accepts_missing_reporter(settings, service_env):
+    result = services.run_user_backup_task(settings, user_id=101, reporter=None)
+
+    assert result["user_id"] == 101
+    assert result["novels"] == 2
+    assert result["stopped"] is False
+
+
+def test_run_user_backup_task_stops_before_initialization_when_requested(settings, service_env):
+    result = services.run_user_backup_task(settings, user_id=101, stop_requested=lambda: True)
+
+    assert "auth" not in service_env
+    assert "db" not in service_env
+    assert "storage" not in service_env
+    assert "sync_service" not in service_env
+    assert result == {
+        "user_id": 101,
+        "novels": 0,
+        "skipped": 0,
+        "assets_downloaded": 0,
+        "stopped": True,
+    }
+    assert settings.pixiv.user_id is None
+
+
+def test_run_user_backup_task_raises_on_failed_sync_counter_and_closes_db(settings, service_env, monkeypatch):
+    original_factory = services.BookmarkNovelSyncService
+
+    def make_sync_service(api, db, storage, settings):
+        sync_service = original_factory(api, db, storage, settings)
+
+        def fail_sync(*args, **kwargs):
+            return {"novels": 0, "skipped": 0, "assets_downloaded": 0, "failed": 1}
+
+        sync_service._sync_novel = fail_sync
+        service_env["sync_service"] = sync_service
+        return sync_service
+
+    monkeypatch.setattr(services, "BookmarkNovelSyncService", make_sync_service)
+
+    with pytest.raises(RuntimeError, match="novel sync failures"):
+        services.run_user_backup_task(settings, user_id=101)
+
+    assert service_env["db"].closed is True
+    assert service_env["auth"].api.user_novels_calls == [{"user_id": 101}]
+
+    monkeypatch.setattr(services, "BookmarkNovelSyncService", original_factory)
+
+
+
+
+def test_run_user_backup_task_closes_db_on_sync_error(settings, service_env, monkeypatch):
+    original_factory = services.BookmarkNovelSyncService
+
+    def make_sync_service(api, db, storage, settings):
+        sync_service = original_factory(api, db, storage, settings)
+
+        def raise_sync_error(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        sync_service._sync_novel = raise_sync_error
+        service_env["sync_service"] = sync_service
+        return sync_service
+
+    monkeypatch.setattr(services, "BookmarkNovelSyncService", make_sync_service)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        services.run_user_backup_task(settings, user_id=101)
+
+    assert service_env["db"].closed is True
+    assert service_env["auth"].api.user_novels_calls == [{"user_id": 101}]
+    assert settings.pixiv.user_id == 999
+    assert service_env["storage"].ensure_dirs_calls
+    assert service_env["db"].init_schema_called is True
+    assert service_env["db"].watermark_updates == []
+    assert service_env["db"].conn.executed[-1] == ("SELECT name FROM users WHERE user_id = ?", (101,))
+    assert service_env["auth"].api.parse_qs(None) is None
+    assert "sync_service" in service_env
+
+    monkeypatch.setattr(services, "BookmarkNovelSyncService", original_factory)
+
+
+
+def test_run_user_backup_task_closes_db_after_success(settings, service_env):
+    services.run_user_backup_task(settings, user_id=101)
+
+    assert service_env["db"].closed is True
+
+
+def test_run_user_backup_task_stops_before_syncing_next_page_and_closes_db(settings, service_env):
+    settings.pixiv.user_id = 999
+    auth = FakeAuthManager(settings.pixiv)
+    auth.api.user_novels_pages = {
+        1: [SimpleNamespace(id=1011), SimpleNamespace(id=1012)],
+        2: [SimpleNamespace(id=1013)],
+    }
+    auth.api.parse_qs_results = {"page-2": {"user_id": 101, "page": 2}}
+    service_env["auth"] = auth
+    services.PixivAuthManager = lambda pixiv_settings: auth
+    stop_calls = iter([False, False, False, False, True])
+
+    result = services.run_user_backup_task(settings, user_id=101, stop_requested=lambda: next(stop_calls))
+
+    assert result == {
+        "user_id": 101,
+        "novels": 2,
+        "skipped": 0,
+        "assets_downloaded": 4,
+        "stopped": True,
+    }
+    assert auth.api.user_novels_calls == [{"user_id": 101}]
+    assert [call["novel_id"] for call in service_env["sync_service"].calls] == [1011, 1012]
+    assert service_env["db"].closed is True
+
+
+
+def test_run_user_backup_task_stops_before_syncing_next_novel_and_closes_db(settings, service_env):
+    stop_calls = iter([False, False, False, True])
+
+    result = services.run_user_backup_task(settings, user_id=101, stop_requested=lambda: next(stop_calls))
+
+    assert result == {
+        "user_id": 101,
+        "novels": 1,
+        "skipped": 0,
+        "assets_downloaded": 2,
+        "stopped": True,
+    }
+    assert [call["novel_id"] for call in service_env["sync_service"].calls] == [1011]
+    assert service_env["db"].closed is True
+
+
