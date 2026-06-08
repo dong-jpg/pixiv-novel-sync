@@ -4,6 +4,8 @@ from collections.abc import Callable
 from numbers import Number
 from typing import Any
 
+from pixiv_novel_sync.jobs.services import JobReporter
+
 
 def _is_addable_number(value: Any) -> bool:
     return isinstance(value, Number) and not isinstance(value, bool)
@@ -22,8 +24,29 @@ _TASK_LABELS: dict[str, str] = {
 }
 
 
+
+def _job_reporter_from_context(context: dict[str, Any]) -> JobReporter:
+    return JobReporter(manager=context.get("manager"), job_id=context.get("job_id"))
+
+
+
+def _stop_requested_from_context(context: dict[str, Any]) -> Callable[[], bool]:
+    manager = context.get("manager")
+    job_id = context.get("job_id")
+
+    def stop_requested() -> bool:
+        if manager is None or not job_id or not hasattr(manager, "is_cancel_requested"):
+            return False
+        return bool(manager.is_cancel_requested(str(job_id)))
+
+    return stop_requested
+
+
+
 def execute_task(task_type: str, settings: Any, context: dict[str, Any] | None = None) -> dict[str, Any] | None:
     context = context or {}
+    reporter = _job_reporter_from_context(context)
+    stop_requested = _stop_requested_from_context(context)
 
     if task_type == "bookmark":
         from pixiv_novel_sync.jobs.quick_sync import run_bookmark_sync
@@ -49,16 +72,30 @@ def execute_task(task_type: str, settings: Any, context: dict[str, Any] | None =
         return _run_direct_sync_task(task_type, settings, context)
 
     if task_type.startswith("user_backup:"):
-        raise RuntimeError("user_backup CLI execution is not available yet")
+        from pixiv_novel_sync.jobs.services import run_user_backup_task
 
-    unavailable_tasks = {
-        "user_status": "user_status CLI execution is not available yet",
-        "novel_status": "novel_status CLI execution is not available yet",
-        "series_status": "series_status CLI execution is not available yet",
-        "pending_deletion_detection": "pending_deletion_detection CLI execution is not available yet",
-    }
-    if task_type in unavailable_tasks:
-        raise RuntimeError(unavailable_tasks[task_type])
+        user_id = int(task_type.split(":", 1)[1])
+        return run_user_backup_task(settings, user_id, reporter=reporter, stop_requested=stop_requested)
+
+    if task_type == "user_status":
+        from pixiv_novel_sync.jobs.services import run_user_status_task
+
+        return run_user_status_task(settings, reporter=reporter, stop_requested=stop_requested)
+
+    if task_type == "novel_status":
+        from pixiv_novel_sync.jobs.services import run_novel_status_task
+
+        return run_novel_status_task(settings, reporter=reporter, stop_requested=stop_requested)
+
+    if task_type == "series_status":
+        from pixiv_novel_sync.jobs.services import run_series_status_task
+
+        return run_series_status_task(settings, reporter=reporter, stop_requested=stop_requested)
+
+    if task_type == "pending_deletion_detection":
+        from pixiv_novel_sync.jobs.services import run_pending_deletion_detection_task
+
+        return run_pending_deletion_detection_task(settings, reporter=reporter, stop_requested=stop_requested)
 
     raise RuntimeError(f"Unsupported task type for CLI execution: {task_type}")
 
@@ -125,33 +162,38 @@ def _build_progress_callback(manager: Any, job_id: str | None) -> Callable[[str,
     if manager is None or not job_id:
         return None
 
+    def safe_add_log(level: str, message: str) -> None:
+        if hasattr(manager, "add_log"):
+            manager.add_log(job_id, level, message)
+
+    def safe_update_progress(**kwargs: Any) -> None:
+        if hasattr(manager, "update_progress"):
+            manager.update_progress(job_id, **kwargs)
+
     def on_progress(event_type: str, data: dict[str, Any]) -> None:
         if event_type == "page":
-            manager.add_log(job_id, "info", f"正在获取第 {data.get('page', '?')} 页...")
+            safe_add_log("info", f"正在获取第 {data.get('page', '?')} 页...")
         elif event_type == "rate_limit":
-            manager.add_log(job_id, "warning", f"等待 {data.get('seconds', 1)} 秒")
+            safe_add_log("warning", f"等待 {data.get('seconds', 1)} 秒")
         elif event_type == "phase":
-            manager.update_progress(job_id, phase=data.get("phase"), message=data.get("phase"))
+            safe_update_progress(phase=data.get("phase"), message=data.get("phase"))
         elif event_type == "user_synced":
-            manager.update_progress(job_id, phase="同步关注用户列表", current=data.get("total", 0), total=0)
+            safe_update_progress(phase="同步关注用户列表", current=data.get("total", 0), total=0)
         elif event_type == "user_start":
-            manager.update_progress(
-                job_id,
+            safe_update_progress(
                 phase=data.get("phase", "同步用户小说"),
                 current=data.get("current", 0),
                 total=data.get("total", 0) or 0,
                 author=data.get("author", ""),
             )
         elif event_type == "novel_start":
-            manager.update_progress(
-                job_id,
+            safe_update_progress(
                 phase=data.get("phase", "同步用户小说"),
                 current_novel=str(data.get("title", ""))[:40],
                 author=data.get("author", ""),
             )
         elif event_type == "series_start":
-            manager.update_progress(
-                job_id,
+            safe_update_progress(
                 phase="同步追更系列",
                 current=data.get("current", 0),
                 total=data.get("total", 0),
