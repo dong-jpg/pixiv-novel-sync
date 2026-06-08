@@ -92,6 +92,13 @@ class FakeBookmarkNovelSyncService:
         self.storage = storage
         self.settings = settings
         self.calls: list[dict[str, object]] = []
+        self.detection_calls: list[dict[str, object]] = []
+        self.detection_result: dict[str, object] = {
+            "bookmark": {"new_pending": 1},
+            "series": {"new_pending": 2},
+            "new_pending": 3,
+        }
+        self.detection_error: Exception | None = None
 
     def _sync_novel(
         self,
@@ -114,6 +121,21 @@ class FakeBookmarkNovelSyncService:
         }
         self.calls.append(call)
         return {"novels": 1, "assets_downloaded": 2}
+
+    def run_detection(self, user_id: int, restricts, progress_callback=None) -> dict[str, object]:
+        self.detection_calls.append(
+            {
+                "user_id": user_id,
+                "restricts": list(restricts),
+                "progress_callback": progress_callback,
+            }
+        )
+        if self.detection_error is not None:
+            raise self.detection_error
+        if progress_callback is not None:
+            progress_callback("phase", {"phase": "检测收藏状态"})
+            progress_callback("rate_limit", {"seconds": 1})
+        return dict(self.detection_result)
 
 
 class FakeApi:
@@ -143,9 +165,12 @@ class FakeStorage:
     def __init__(self, settings) -> None:
         self.settings = settings
         self.ensure_dirs_calls: list[list[object]] = []
+        self.ensure_dirs_error: Exception | None = None
 
     def ensure_dirs(self, dirs: list[object]) -> None:
         self.ensure_dirs_calls.append(dirs)
+        if self.ensure_dirs_error is not None:
+            raise self.ensure_dirs_error
 
 
 class FakeAuthManager:
@@ -366,6 +391,151 @@ def test_run_user_backup_task_accepts_missing_reporter(settings, service_env):
     assert result["stopped"] is False
 
 
+def test_run_pending_deletion_detection_task_calls_service_and_returns_stats(settings, service_env):
+    settings.sync.bookmark_restricts = ["public", "private"]
+    reporter = DummyReporter()
+
+    result = services.run_pending_deletion_detection_task(settings, reporter=reporter)
+
+    auth = service_env["auth"]
+    db = service_env["db"]
+    storage = service_env["storage"]
+    sync_service = service_env["sync_service"]
+
+    assert settings.pixiv.user_id == 999
+    assert sync_service.api is auth.api
+    assert sync_service.db is db
+    assert sync_service.storage is storage
+    assert sync_service.settings is settings
+    assert sync_service.detection_calls == [
+        {
+            "user_id": 999,
+            "restricts": ["public", "private"],
+            "progress_callback": sync_service.detection_calls[0]["progress_callback"],
+        }
+    ]
+    assert db.closed is True
+    assert result == {
+        "bookmark": {"new_pending": 1},
+        "series": {"new_pending": 2},
+        "new_pending": 3,
+        "stopped": False,
+    }
+    assert reporter.logs[0] == ("info", "=== 开始检测取消收藏/追更 ===")
+    assert reporter.logs[1] == ("success", "登录成功, 用户ID: 999")
+    assert reporter.logs[-1] == ("success", "检测完成: 发现 3 条新的待确认记录")
+    assert reporter.progress_updates == [{"phase": "pending_deletion_detection", "current": 0, "total": 0}]
+
+
+
+def test_run_pending_deletion_detection_task_preserves_existing_stopped_flag(settings, service_env, monkeypatch):
+    original_factory = services.BookmarkNovelSyncService
+
+    def make_sync_service(api, db, storage, settings):
+        sync_service = original_factory(api, db, storage, settings)
+        sync_service.detection_result = {
+            "bookmark": {"new_pending": 0},
+            "series": {"new_pending": 0},
+            "new_pending": 0,
+            "stopped": True,
+        }
+        service_env["sync_service"] = sync_service
+        return sync_service
+
+    monkeypatch.setattr(services, "BookmarkNovelSyncService", make_sync_service)
+
+    result = services.run_pending_deletion_detection_task(settings)
+
+    assert result["stopped"] is True
+    assert service_env["db"].closed is True
+
+    monkeypatch.setattr(services, "BookmarkNovelSyncService", original_factory)
+
+
+
+def test_run_pending_deletion_detection_task_returns_stopped_when_cancelled_during_detection(
+    settings, service_env
+):
+    stop_calls = iter([False, False, False, True])
+
+    result = services.run_pending_deletion_detection_task(settings, stop_requested=lambda: next(stop_calls))
+
+    assert result == {
+        "bookmark": {},
+        "series": {},
+        "new_pending": 0,
+        "stopped": True,
+    }
+    assert service_env["db"].closed is True
+
+
+
+def test_run_pending_deletion_detection_task_accepts_missing_reporter(settings, service_env):
+    result = services.run_pending_deletion_detection_task(settings, reporter=None)
+
+    assert result == {
+        "bookmark": {"new_pending": 1},
+        "series": {"new_pending": 2},
+        "new_pending": 3,
+        "stopped": False,
+    }
+    assert service_env["db"].closed is True
+
+
+
+def test_run_pending_deletion_detection_task_stops_before_initialization_when_requested(settings, service_env):
+    result = services.run_pending_deletion_detection_task(settings, stop_requested=lambda: True)
+
+    assert "auth" not in service_env
+    assert "db" not in service_env
+    assert "storage" not in service_env
+    assert "sync_service" not in service_env
+    assert result == {
+        "bookmark": {},
+        "series": {},
+        "new_pending": 0,
+        "stopped": True,
+    }
+    assert settings.pixiv.user_id is None
+
+
+
+def test_run_pending_deletion_detection_task_closes_db_when_storage_init_fails(settings, service_env, monkeypatch):
+    storage = service_env.setdefault("storage", FakeStorage(settings))
+    storage.ensure_dirs_error = RuntimeError("storage init failed")
+    monkeypatch.setattr(services, "FileStorage", lambda current_settings: storage)
+
+    with pytest.raises(RuntimeError, match="storage init failed"):
+        services.run_pending_deletion_detection_task(settings)
+
+    assert service_env["db"].init_schema_called is True
+    assert service_env["db"].closed is True
+    assert "sync_service" not in service_env
+    assert settings.pixiv.user_id == 999
+
+
+
+def test_run_pending_deletion_detection_task_closes_db_and_propagates_errors(settings, service_env, monkeypatch):
+    original_factory = services.BookmarkNovelSyncService
+
+    def make_sync_service(api, db, storage, settings):
+        sync_service = original_factory(api, db, storage, settings)
+        sync_service.detection_error = RuntimeError("boom")
+        service_env["sync_service"] = sync_service
+        return sync_service
+
+    monkeypatch.setattr(services, "BookmarkNovelSyncService", make_sync_service)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        services.run_pending_deletion_detection_task(settings)
+
+    assert service_env["db"].closed is True
+    assert settings.pixiv.user_id == 999
+
+    monkeypatch.setattr(services, "BookmarkNovelSyncService", original_factory)
+
+
+
 def test_run_user_backup_task_stops_before_initialization_when_requested(settings, service_env):
     result = services.run_user_backup_task(settings, user_id=101, stop_requested=lambda: True)
 
@@ -447,7 +617,7 @@ def test_run_user_backup_task_closes_db_after_success(settings, service_env):
     assert service_env["db"].closed is True
 
 
-def test_run_user_backup_task_stops_before_syncing_next_page_and_closes_db(settings, service_env):
+def test_run_user_backup_task_stops_before_syncing_next_page_and_closes_db(settings, service_env, monkeypatch):
     settings.pixiv.user_id = 999
     auth = FakeAuthManager(settings.pixiv)
     auth.api.user_novels_pages = {
@@ -456,7 +626,7 @@ def test_run_user_backup_task_stops_before_syncing_next_page_and_closes_db(setti
     }
     auth.api.parse_qs_results = {"page-2": {"user_id": 101, "page": 2}}
     service_env["auth"] = auth
-    services.PixivAuthManager = lambda pixiv_settings: auth
+    monkeypatch.setattr(services, "PixivAuthManager", lambda pixiv_settings: auth)
     stop_calls = iter([False, False, False, False, True])
 
     result = services.run_user_backup_task(settings, user_id=101, stop_requested=lambda: next(stop_calls))

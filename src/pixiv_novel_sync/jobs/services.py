@@ -188,7 +188,76 @@ def run_pending_deletion_detection_task(
     reporter: JobReporter | None = None,
     stop_requested: StopRequested | None = None,
 ) -> dict[str, Any]:
-    return {}
+    if stop_requested is not None and stop_requested():
+        _report_log(reporter, "info", "待删除检测已停止")
+        return {
+            "bookmark": {},
+            "series": {},
+            "new_pending": 0,
+            "stopped": True,
+        }
+
+    _report_log(reporter, "info", "=== 开始检测取消收藏/追更 ===")
+
+    api = _login(settings)
+    auth_user_id = settings.pixiv.user_id
+    _report_log(reporter, "success", f"登录成功, 用户ID: {auth_user_id}")
+
+    if stop_requested is not None and stop_requested():
+        _report_log(reporter, "info", "待删除检测已停止")
+        return {
+            "bookmark": {},
+            "series": {},
+            "new_pending": 0,
+            "stopped": True,
+        }
+
+    db = Database(settings.storage.db_path)
+    try:
+        db.init_schema()
+        storage = _ensure_storage_dirs(settings)
+        service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+
+        def on_progress(event_type: str, data: dict[str, Any]) -> None:
+            if stop_requested is not None and stop_requested():
+                raise InterruptedError("Task stopped by user")
+            if event_type == "phase":
+                _report_log(reporter, "info", str(data.get("phase", "")))
+            elif event_type == "rate_limit":
+                _report_log(reporter, "warning", f"等待 {data.get('seconds', 1)} 秒")
+
+        _report_progress(reporter, phase="pending_deletion_detection", current=0, total=0)
+
+        if stop_requested is not None and stop_requested():
+            _report_log(reporter, "info", "待删除检测已停止")
+            return {
+                "bookmark": {},
+                "series": {},
+                "new_pending": 0,
+                "stopped": True,
+            }
+
+        try:
+            result = service.run_detection(
+                user_id=auth_user_id,
+                restricts=getattr(settings.sync, "bookmark_restricts", ["public"]),
+                progress_callback=on_progress,
+            )
+        except InterruptedError:
+            _report_log(reporter, "info", "待删除检测已停止")
+            return {
+                "bookmark": {},
+                "series": {},
+                "new_pending": 0,
+                "stopped": True,
+            }
+
+        stats = dict(result)
+        stats.setdefault("stopped", False)
+        _report_log(reporter, "success", f"检测完成: 发现 {stats.get('new_pending', 0)} 条新的待确认记录")
+        return stats
+    finally:
+        db.close()
 
 
 def _run_user_status_like_task(
