@@ -15,6 +15,7 @@ import requests as http_requests
 import yaml
 from flask import Flask, Response, jsonify, redirect, render_template, request, session
 
+from .jobs import services as job_services
 from .jobs.manager import JobManager
 from .jobs.models import JobSource, JobSpec, JobState, JobType
 from .jobs.quick_sync import run_bookmark_sync, run_check_bookmarks_task
@@ -326,7 +327,20 @@ class AutoSyncScheduler:
     def _check_stop(self) -> bool:
         """检查是否需要停止"""
         return self._stop_current_task or not self._running
-    
+
+    def _job_reporter(self, job_id: str | None) -> job_services.JobReporter:
+        return job_services.JobReporter(manager=self.sync_job_manager, job_id=job_id)
+
+    def _stop_requested_for_job(self, job_id: str | None) -> job_services.StopRequested:
+        def stop_requested() -> bool:
+            if self._check_stop():
+                return True
+            if job_id and self.sync_job_manager and hasattr(self.sync_job_manager, "is_cancel_requested"):
+                return bool(self.sync_job_manager.is_cancel_requested(job_id))
+            return False
+
+        return stop_requested
+
     def _sync_bookmarks(self, settings: Settings, job_id: str | None) -> None:
         """同步收藏"""
         from .auth import PixivAuthManager
@@ -606,192 +620,34 @@ class AutoSyncScheduler:
     
     def _sync_user_status(self, settings: Settings, job_id: str | None) -> None:
         """同步关注用户的存续状态"""
-        from .auth import PixivAuthManager
-        
-        if job_id and self.sync_job_manager:
-            self.sync_job_manager.add_log(job_id, "info", "开始检查用户状态")
-        
-        auth = PixivAuthManager(settings.pixiv)
-        api, auth_result = auth.login()
-        if auth_result.user_id is None:
-            raise RuntimeError("Unable to determine user ID")
-        
-        if self._check_stop():
-            return
-        
-        db = Database(settings.storage.db_path)
-        db.init_schema()
-        
-        try:
-            # 获取所有关注的用户（分页遍历全部）
-            user_list: list[dict[str, Any]] = []
-            page_num = 1
-            while True:
-                page_data = db.list_users(page=page_num, page_size=500)
-                items = page_data.get("items", [])
-                if not items:
-                    break
-                user_list.extend(items)
-                if page_num >= page_data.get("total_pages", 1):
-                    break
-                page_num += 1
-
-            if job_id and self.sync_job_manager:
-                self.sync_job_manager.add_log(job_id, "info", f"共 {len(user_list)} 个用户需要检查")
-
-            checked_count = 0
-            for user in user_list:
-                if self._check_stop():
-                    return
-                
-                user_id = user.get("user_id")
-                if not user_id:
-                    continue
-                
-                try:
-                    status = _check_pixiv_user_status(api, user_id)
-                    db.upsert_user_status(user_id, status)
-                    checked_count += 1
-                    
-                    if job_id and self.sync_job_manager:
-                        self.sync_job_manager.add_log(job_id, "info", f"[{checked_count}/{len(user_list)}] 用户 {user.get('name', user_id)}: {status}")
-                    
-                    # 限速
-                    time.sleep(settings.sync.delay_seconds_between_skips)
-                except Exception as e:
-                    logger.warning("Failed to check user %s status: %s", user_id, e)
-            
-            if job_id and self.sync_job_manager:
-                self.sync_job_manager.add_log(job_id, "success", f"用户状态检查完成: {checked_count} 个用户")
-        finally:
-            db.close()
+        job_services.run_user_status_task(
+            settings,
+            reporter=self._job_reporter(job_id),
+            stop_requested=self._stop_requested_for_job(job_id),
+        )
 
     def _sync_novel_status(self, settings: Settings, job_id: str | None) -> None:
         """检查所有小说的存续状态"""
-        from .auth import PixivAuthManager
-
-        if job_id and self.sync_job_manager:
-            self.sync_job_manager.add_log(job_id, "info", "开始检查小说状态")
-
-        auth = PixivAuthManager(settings.pixiv)
-        api, auth_result = auth.login()
-        if auth_result.user_id is None:
-            raise RuntimeError("Unable to determine user ID")
-
-        if self._check_stop():
-            return
-
-        db = Database(settings.storage.db_path)
-        db.init_schema()
-
-        try:
-            novel_ids = db.get_all_novel_ids()
-            if job_id and self.sync_job_manager:
-                self.sync_job_manager.add_log(job_id, "info", f"共 {len(novel_ids)} 本小说需要检查")
-
-            checked_count = 0
-            status_counts: dict[str, int] = {}
-            for novel_id in novel_ids:
-                if self._check_stop():
-                    return
-
-                try:
-                    status = _check_novel_status(api, novel_id)
-                    db.upsert_novel_status(novel_id, status)
-                    checked_count += 1
-                    status_counts[status] = status_counts.get(status, 0) + 1
-
-                    if job_id and self.sync_job_manager:
-                        if status != "normal":
-                            self.sync_job_manager.add_log(job_id, "warning", f"[{checked_count}/{len(novel_ids)}] 小说 {novel_id}: {status}")
-                        elif checked_count % 50 == 0:
-                            self.sync_job_manager.add_log(job_id, "info", f"[{checked_count}/{len(novel_ids)}] 已检查...")
-
-                    time.sleep(settings.sync.delay_seconds_between_skips)
-                except Exception as e:
-                    logger.warning("Failed to check novel %s status: %s", novel_id, e)
-
-            summary = ", ".join(f"{k}: {v}" for k, v in status_counts.items())
-            if job_id and self.sync_job_manager:
-                self.sync_job_manager.add_log(job_id, "success", f"小说状态检查完成: {checked_count} 本 ({summary})")
-        finally:
-            db.close()
+        job_services.run_novel_status_task(
+            settings,
+            reporter=self._job_reporter(job_id),
+            stop_requested=self._stop_requested_for_job(job_id),
+        )
 
     def _sync_series_status(self, settings: Settings, job_id: str | None) -> None:
         """检查所有系列的存续状态"""
-        from .auth import PixivAuthManager
-
-        if job_id and self.sync_job_manager:
-            self.sync_job_manager.add_log(job_id, "info", "开始检查系列状态")
-
-        auth = PixivAuthManager(settings.pixiv)
-        api, auth_result = auth.login()
-        if auth_result.user_id is None:
-            raise RuntimeError("Unable to determine user ID")
-
-        if self._check_stop():
-            return
-
-        db = Database(settings.storage.db_path)
-        db.init_schema()
-
-        try:
-            series_ids = db.get_all_series_ids()
-            if job_id and self.sync_job_manager:
-                self.sync_job_manager.add_log(job_id, "info", f"共 {len(series_ids)} 个系列需要检查")
-
-            checked_count = 0
-            status_counts: dict[str, int] = {}
-            for series_id in series_ids:
-                if self._check_stop():
-                    return
-
-                try:
-                    status = _check_series_status(api, series_id)
-                    db.upsert_series_status(series_id, status)
-                    checked_count += 1
-                    status_counts[status] = status_counts.get(status, 0) + 1
-
-                    if job_id and self.sync_job_manager:
-                        if status != "normal":
-                            self.sync_job_manager.add_log(job_id, "warning", f"[{checked_count}/{len(series_ids)}] 系列 {series_id}: {status}")
-                        elif checked_count % 20 == 0:
-                            self.sync_job_manager.add_log(job_id, "info", f"[{checked_count}/{len(series_ids)}] 已检查...")
-
-                    time.sleep(settings.sync.delay_seconds_between_skips)
-                except Exception as e:
-                    logger.warning("Failed to check series %s status: %s", series_id, e)
-
-            summary = ", ".join(f"{k}: {v}" for k, v in status_counts.items())
-            if job_id and self.sync_job_manager:
-                self.sync_job_manager.add_log(job_id, "success", f"系列状态检查完成: {checked_count} 个 ({summary})")
-        finally:
-            db.close()
+        job_services.run_series_status_task(
+            settings,
+            reporter=self._job_reporter(job_id),
+            stop_requested=self._stop_requested_for_job(job_id),
+        )
 
     def _sync_user_backup(self, settings: Settings, job_id: str | None) -> None:
         """定时全量备份关注用户小说（按 users_limit 轮询）"""
-        from .auth import PixivAuthManager
-        from .sync_engine import BookmarkNovelSyncService
-
-        if job_id and self.sync_job_manager:
-            self.sync_job_manager.add_log(job_id, "info", "加载配置完成")
-
-        auth = PixivAuthManager(settings.pixiv)
-        api, auth_result = auth.login()
-        if auth_result.user_id is None:
-            raise RuntimeError("Unable to determine user ID")
-        if job_id and self.sync_job_manager:
-            self.sync_job_manager.add_log(job_id, "success", f"登录成功, 用户ID: {auth_result.user_id}")
-
         db = Database(settings.storage.db_path)
         db.init_schema()
-        storage = FileStorage(settings)
-        storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
 
         try:
-            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
-
-            # 获取所有关注用户 ID（按 user_id 排序，保证稳定顺序）
             all_user_ids = [r[0] for r in db.conn.execute("SELECT user_id FROM users ORDER BY user_id").fetchall()]
             total_users = len(all_user_ids)
             if total_users == 0:
@@ -799,7 +655,6 @@ class AutoSyncScheduler:
                     self.sync_job_manager.add_log(job_id, "info", "没有关注用户，跳过")
                 return
 
-            # 读取水位线偏移量
             watermark = db.get_watermark("user_backup_rotation")
             offset = watermark.get("offset", 0) if watermark else 0
             if offset >= total_users:
@@ -807,7 +662,7 @@ class AutoSyncScheduler:
 
             users_limit = settings.sync.auto_sync_following_novels_users_limit
             if users_limit <= 0:
-                users_limit = total_users  # 0 = 全部
+                users_limit = total_users
 
             batch = all_user_ids[offset:offset + users_limit]
             next_offset = offset + len(batch)
@@ -820,123 +675,48 @@ class AutoSyncScheduler:
             total_novels = 0
             total_skipped = 0
             total_assets = 0
-            item_delay = settings.sync.delay_seconds_between_items
-            skip_delay = settings.sync.delay_seconds_between_skips
-            page_delay = settings.sync.delay_seconds_between_pages
+            reporter = self._job_reporter(job_id)
+            stop_requested = self._stop_requested_for_job(job_id)
+            stopped = False
 
             for idx, uid in enumerate(batch):
-                if self._check_stop():
+                if stop_requested():
+                    stopped = True
+                    break
+                if job_id and self.sync_job_manager:
+                    self.sync_job_manager.update_progress(job_id, phase="全量备份", current=idx + 1, total=len(batch))
+                stats = job_services.run_user_backup_task(
+                    settings,
+                    int(uid),
+                    reporter=reporter,
+                    stop_requested=stop_requested,
+                )
+                total_novels += int(stats.get("novels", 0) or 0)
+                total_skipped += int(stats.get("skipped", 0) or 0)
+                total_assets += int(stats.get("assets_downloaded", 0) or 0)
+                if stats.get("stopped"):
+                    stopped = True
                     break
 
-                # 获取用户名
-                user_row = db.conn.execute("SELECT name FROM users WHERE user_id = ?", (uid,)).fetchone()
-                user_name = user_row[0] if user_row else str(uid)
-
-                if job_id and self.sync_job_manager:
-                    self.sync_job_manager.add_log(job_id, "info", f"[{idx+1}/{len(batch)}] {user_name} (ID: {uid})")
-                    self.sync_job_manager.update_progress(job_id, phase="全量备份", current=idx+1, total=len(batch), author=user_name)
-
-                # 逐页获取该用户所有小说并同步
-                next_query: dict[str, Any] | None = {"user_id": uid}
-                user_novels = 0
-                user_skipped = 0
-                while next_query:
-                    try:
-                        result = api.user_novels(**next_query)
-                    except Exception as exc:
-                        logger.error("user_novels API failed for user %s: %s", uid, exc)
-                        if job_id and self.sync_job_manager:
-                            self.sync_job_manager.add_log(job_id, "error", f"  获取小说列表失败: {exc}")
-                        break
-                    novels = getattr(result, "novels", []) or []
-                    for novel in novels:
-                        if self._check_stop():
-                            break
-                        counters = service._sync_novel(
-                            novel, "public",
-                            settings.sync.download_assets,
-                            settings.sync.write_markdown,
-                            settings.sync.write_raw_text,
-                            source_type="user_backup",
-                            source_key=str(uid),
-                        )
-                        if counters.get("skipped"):
-                            user_skipped += 1
-                            if skip_delay > 0:
-                                time.sleep(skip_delay)
-                        else:
-                            user_novels += 1
-                            total_assets += counters.get("assets_downloaded", 0)
-                            if item_delay > 0:
-                                time.sleep(item_delay)
-                    next_query = api.parse_qs(getattr(result, "next_url", None))
-                    if next_query and page_delay > 0:
-                        time.sleep(page_delay)
-
-                total_novels += user_novels
-                total_skipped += user_skipped
-                if job_id and self.sync_job_manager:
-                    self.sync_job_manager.add_log(job_id, "info", f"  同步 {user_novels} 本, 跳过 {user_skipped} 本")
-
-            # 更新水位线偏移量
             db.update_watermark("user_backup_rotation", {
                 "offset": next_offset,
                 "last_sync_time": datetime.now(timezone.utc).isoformat(),
             })
 
             if job_id and self.sync_job_manager:
-                self.sync_job_manager.add_log(job_id, "success", f"全量备份完成: 同步 {total_novels} 本, 跳过 {total_skipped} 本, 资源 {total_assets} 个")
+                level = "info" if stopped else "success"
+                suffix = "已停止" if stopped else "完成"
+                self.sync_job_manager.add_log(job_id, level, f"全量备份{suffix}: 同步 {total_novels} 本, 跳过 {total_skipped} 本, 资源 {total_assets} 个")
         finally:
             db.close()
 
     def _sync_pending_detection(self, settings: Settings, job_id: str | None) -> None:
         """检测取消收藏/追更"""
-        from .sync_engine import BookmarkNovelSyncService
-
-        if job_id and self.sync_job_manager:
-            self.sync_job_manager.add_log(job_id, "info", "=== 开始检测取消收藏/追更 ===")
-
-        auth = PixivAuthManager(settings.pixiv)
-        api, auth_result = auth.login()
-        if auth_result.user_id is None:
-            raise RuntimeError("Unable to determine user ID")
-
-        if job_id and self.sync_job_manager:
-            self.sync_job_manager.add_log(job_id, "success", f"登录成功, 用户ID: {auth_result.user_id}")
-
-        if self._check_stop():
-            return
-
-        db = Database(settings.storage.db_path)
-        db.init_schema()
-        storage = FileStorage(settings)
-
-        try:
-            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
-
-            def on_progress(event_type: str, data: dict[str, Any]) -> None:
-                if self._check_stop():
-                    raise InterruptedError("Task stopped by user")
-                if job_id and self.sync_job_manager:
-                    if event_type == "phase":
-                        self.sync_job_manager.add_log(job_id, "info", data.get("phase", ""))
-                    elif event_type == "rate_limit":
-                        self.sync_job_manager.add_log(job_id, "warning", f"等待 {data.get('seconds', 1)} 秒")
-
-            if self._check_stop():
-                return
-
-            result = service.run_detection(
-                user_id=auth_result.user_id,
-                restricts=settings.sync.bookmark_restricts,
-                progress_callback=on_progress,
-            )
-
-            if job_id and self.sync_job_manager:
-                self.sync_job_manager.add_log(job_id, "success",
-                    f"检测完成: 发现 {result.get('new_pending', 0)} 条新的待确认记录")
-        finally:
-            db.close()
+        job_services.run_pending_deletion_detection_task(
+            settings,
+            reporter=self._job_reporter(job_id),
+            stop_requested=self._stop_requested_for_job(job_id),
+        )
 
 
 @dataclass(slots=True)
@@ -1083,6 +863,22 @@ class SyncJobManager:
             job.progress.update(kwargs)
             job.message = kwargs.get("message", job.message)
 
+    def is_cancel_requested(self, job_id: str) -> bool:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return False
+            return bool(job.progress.get("cancel_requested", False))
+
+    def _job_reporter(self, job_id: str | None) -> job_services.JobReporter:
+        return job_services.JobReporter(manager=self, job_id=job_id)
+
+    def _stop_requested_for_job(self, job_id: str | None) -> job_services.StopRequested:
+        def stop_requested() -> bool:
+            return bool(job_id and self.is_cancel_requested(job_id))
+
+        return stop_requested
+
     def _run_job(self, job_id: str) -> None:
         job = self.get_job(job_id)
         if job is None:
@@ -1161,6 +957,24 @@ class SyncJobManager:
 
     def _run_single_sync(self, settings: Settings, task_type: str, job_id: str) -> dict[str, Any]:
         """根据 task_type 执行单个同步任务"""
+        reporter = self._job_reporter(job_id)
+        stop_requested = self._stop_requested_for_job(job_id)
+        if task_type == "user_status":
+            return job_services.run_user_status_task(settings, reporter=reporter, stop_requested=stop_requested)
+        if task_type == "novel_status":
+            return job_services.run_novel_status_task(settings, reporter=reporter, stop_requested=stop_requested)
+        if task_type == "series_status":
+            return job_services.run_series_status_task(settings, reporter=reporter, stop_requested=stop_requested)
+        if task_type == "pending_deletion_detection":
+            return job_services.run_pending_deletion_detection_task(settings, reporter=reporter, stop_requested=stop_requested)
+        if task_type.startswith("user_backup:"):
+            try:
+                target_uid = int(task_type.split(":", 1)[1])
+            except (ValueError, IndexError):
+                self.add_log(job_id, "error", f"非法的用户备份任务: {task_type}")
+                return {}
+            return job_services.run_user_backup_task(settings, target_uid, reporter=reporter, stop_requested=stop_requested)
+
         from .auth import PixivAuthManager
         from .sync_engine import BookmarkNovelSyncService
 
