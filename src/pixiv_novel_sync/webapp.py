@@ -1987,9 +1987,11 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         if _has_any_running_web_job() or not sync_job_manager._semaphore.acquire(blocking=False):
             return _running_job_error_response()
 
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = None
+        thread_started = False
         try:
+            db = Database(current_settings.storage.db_path)
+            db.init_schema()
             job = shared_job_manager.submit(spec)
             log_id = db.create_task_log(
                 task_type="manual",
@@ -2000,11 +2002,14 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             job.progress["log_id"] = log_id
             thread = threading.Thread(target=_run_shared_web_job, args=(job.job_id,), daemon=True)
             thread.start()
+            thread_started = True
         except Exception as exc:
-            sync_job_manager._semaphore.release()
+            if not thread_started:
+                sync_job_manager._semaphore.release()
             return jsonify({"error": str(exc)}), 400
         finally:
-            db.close()
+            if db is not None:
+                db.close()
         return jsonify({"ok": True, "message": job.message, "job": _shared_job_to_dict(job)})
 
     @app.post("/api/dashboard/check-bookmarks")

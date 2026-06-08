@@ -377,3 +377,50 @@ def test_shared_sync_failure_updates_task_log(tmp_path, monkeypatch):
             "logs": [{"time": RecordingDatabase.updated_logs[0]["logs"][0]["time"], "level": "error", "message": "boom"}],
         }
     ]
+
+
+class FailingOnceDatabase:
+    fail_init_once = True
+
+    def __init__(self, db_path: str) -> None:
+        self.db_path = db_path
+
+    def init_schema(self) -> None:
+        if FailingOnceDatabase.fail_init_once:
+            FailingOnceDatabase.fail_init_once = False
+            raise RuntimeError("schema unavailable")
+
+    def create_task_log(self, **kwargs) -> int:
+        return 123
+
+    def close(self) -> None:
+        pass
+
+
+def test_dashboard_sync_start_releases_gate_when_database_init_fails(tmp_path, monkeypatch):
+    ran = []
+
+    def fake_run(self, job_id):
+        ran.append(job_id)
+        self.manager.mark_running(job_id, "running")
+        self.manager.mark_succeeded(job_id, "succeeded")
+        return self.manager.get_job(job_id)
+
+    FailingOnceDatabase.fail_init_once = False
+    monkeypatch.setattr("pixiv_novel_sync.webapp.Database", FailingOnceDatabase)
+    monkeypatch.setattr("pixiv_novel_sync.webapp.JobRunner.run", fake_run)
+    app = _app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    FailingOnceDatabase.fail_init_once = True
+    failed = client.post("/api/dashboard/sync/start")
+    assert failed.status_code == 400
+    assert "schema unavailable" in failed.get_json()["error"]
+
+    retried = client.post("/api/dashboard/sync/start")
+
+    payload = retried.get_json()
+    assert retried.status_code == 200
+    assert payload["ok"] is True
+    assert payload["job"]["source"] == JobSource.WEB.value
+    assert ran == [payload["job"]["job_id"]]
