@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pixiv_novel_sync.jobs.models import JobSource, JobType
-from pixiv_novel_sync.webapp import AutoSyncScheduler, SyncJobManager, SyncJobState, _web_job_spec
+from pixiv_novel_sync.jobs.models import JobSource, JobStatus, JobType
+from pixiv_novel_sync.webapp import AutoSyncScheduler, SyncJobManager, SyncJobState, _web_job_spec, create_app
 
 
 class StubSyncJobManager(SyncJobManager):
@@ -255,3 +255,125 @@ def test_auto_sync_scheduler_delegates_user_backup_to_each_user(monkeypatch):
     assert all(call[2].job_id == "job-1" for call in calls)
     assert all(call[3] is not None for call in calls)
     assert all(call[3]() is False for call in calls)
+
+
+class SynchronousThread:
+    def __init__(self, target, args=(), kwargs=None, daemon=None):
+        self.target = target
+        self.args = args
+        self.kwargs = kwargs or {}
+        self.daemon = daemon
+
+    def start(self):
+        self.target(*self.args, **self.kwargs)
+
+
+class RecordingDatabase:
+    created_logs: list[dict] = []
+    updated_logs: list[dict] = []
+
+    def __init__(self, db_path):
+        self.db_path = db_path
+
+    def init_schema(self):
+        return None
+
+    def create_task_log(self, **kwargs):
+        self.created_logs.append(kwargs)
+        return len(self.created_logs)
+
+    def update_task_log(self, log_id, status, **kwargs):
+        self.updated_logs.append({"log_id": log_id, "status": status, **kwargs})
+
+    def close(self):
+        return None
+
+
+def _app(tmp_path, monkeypatch):
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    monkeypatch.setenv("FLASK_DEBUG", "1")
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    return create_app(env_path=str(env_path))
+
+
+def test_shared_sync_blocks_legacy_sync_routes(tmp_path, monkeypatch):
+    def keep_shared_job_running(self, job_id):
+        self.manager.mark_running(job_id, "running")
+        return self.manager.get_job(job_id)
+
+    def legacy_job_should_not_start(self, task_list=None):
+        raise AssertionError("legacy job should be blocked before start_job")
+
+    monkeypatch.setattr("pixiv_novel_sync.webapp.JobRunner.run", keep_shared_job_running)
+    monkeypatch.setattr("pixiv_novel_sync.webapp.SyncJobManager._run_job", lambda self, job_id: None)
+    monkeypatch.setattr("pixiv_novel_sync.webapp.SyncJobManager.start_job", legacy_job_should_not_start)
+
+    app = _app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    started = client.post("/api/dashboard/sync/start")
+    blocked = client.post("/api/dashboard/sync/user_status")
+
+    assert started.status_code == 200
+    assert blocked.status_code == 400
+    assert blocked.get_json()["error"] == "已有同步任务正在运行，请稍后再试"
+
+
+def test_shared_sync_success_updates_task_log(tmp_path, monkeypatch):
+    RecordingDatabase.created_logs = []
+    RecordingDatabase.updated_logs = []
+
+    def successful_run(self, job_id):
+        self.manager.mark_running(job_id, "running")
+        self.manager.add_log(job_id, "info", "done")
+        state = self.manager.get_job(job_id)
+        state.stats["novels"] = 2
+        self.manager.mark_succeeded(job_id, "succeeded")
+        return self.manager.get_job(job_id)
+
+    monkeypatch.setattr("pixiv_novel_sync.webapp.Database", RecordingDatabase)
+    monkeypatch.setattr("pixiv_novel_sync.webapp.threading.Thread", SynchronousThread)
+    monkeypatch.setattr("pixiv_novel_sync.webapp.JobRunner.run", successful_run)
+
+    app = _app(tmp_path, monkeypatch)
+    response = app.test_client().post("/api/dashboard/sync/start")
+
+    assert response.status_code == 200
+    assert RecordingDatabase.updated_logs == [
+        {
+            "log_id": 1,
+            "status": JobStatus.SUCCEEDED.value,
+            "stats": {"novels": 2},
+            "logs": [{"time": RecordingDatabase.updated_logs[0]["logs"][0]["time"], "level": "info", "message": "done"}],
+        }
+    ]
+
+
+def test_shared_sync_failure_updates_task_log(tmp_path, monkeypatch):
+    RecordingDatabase.created_logs = []
+    RecordingDatabase.updated_logs = []
+
+    def failed_run(self, job_id):
+        self.manager.mark_running(job_id, "running")
+        self.manager.add_log(job_id, "error", "boom")
+        self.manager.mark_failed(job_id, "boom")
+        return self.manager.get_job(job_id)
+
+    monkeypatch.setattr("pixiv_novel_sync.webapp.Database", RecordingDatabase)
+    monkeypatch.setattr("pixiv_novel_sync.webapp.threading.Thread", SynchronousThread)
+    monkeypatch.setattr("pixiv_novel_sync.webapp.JobRunner.run", failed_run)
+
+    app = _app(tmp_path, monkeypatch)
+    response = app.test_client().post("/api/dashboard/sync/start")
+
+    assert response.status_code == 200
+    assert RecordingDatabase.updated_logs == [
+        {
+            "log_id": 1,
+            "status": JobStatus.FAILED.value,
+            "error_message": "boom",
+            "logs": [{"time": RecordingDatabase.updated_logs[0]["logs"][0]["time"], "level": "error", "message": "boom"}],
+        }
+    ]

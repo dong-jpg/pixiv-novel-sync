@@ -17,7 +17,7 @@ from flask import Flask, Response, jsonify, redirect, render_template, request, 
 
 from .jobs import services as job_services
 from .jobs.manager import JobManager
-from .jobs.models import JobSource, JobSpec, JobState, JobType
+from .jobs.models import JobSource, JobSpec, JobState, JobStatus, JobType
 from .jobs.quick_sync import run_bookmark_sync, run_check_bookmarks_task
 from .jobs.runner import JobRunner
 from .jobs.tasks import build_default_task_list, execute_task
@@ -1410,6 +1410,47 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         return execute_task(task_type, current_settings, context)
 
     shared_job_runner = JobRunner(shared_job_manager, run_web_task)
+
+    def _has_active_shared_jobs() -> bool:
+        with shared_job_manager._lock:
+            return any(job.status in {JobStatus.QUEUED, JobStatus.RUNNING} for job in shared_job_manager._jobs.values())
+
+    def _has_any_running_web_job() -> bool:
+        return sync_job_manager.has_running_jobs() or _has_active_shared_jobs()
+
+    def _running_job_error_response():
+        return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
+
+    def _shared_job_logs_for_db(job: JobState) -> list[dict[str, Any]]:
+        return [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs]
+
+    def _run_shared_web_job(job_id: str) -> None:
+        try:
+            shared_job_runner.run(job_id)
+            job = shared_job_manager.get_job(job_id)
+            if job is None:
+                return
+            log_id = job.progress.get("log_id")
+            if not log_id:
+                return
+            current_settings = settings_manager.load(env_path=env_path)
+            db = Database(current_settings.storage.db_path)
+            try:
+                db.init_schema()
+                logs = _shared_job_logs_for_db(job)
+                if job.status == JobStatus.SUCCEEDED:
+                    db.update_task_log(log_id, JobStatus.SUCCEEDED.value, stats=job.stats, logs=logs)
+                elif job.status == JobStatus.FAILED:
+                    db.update_task_log(log_id, JobStatus.FAILED.value, error_message=job.error, logs=logs)
+                elif job.status == JobStatus.CANCELLED:
+                    db.update_task_log(log_id, JobStatus.CANCELLED.value, logs=logs)
+            except Exception as exc:
+                logger.error("更新共享任务日志失败：%s", exc)
+            finally:
+                db.close()
+        finally:
+            sync_job_manager._semaphore.release()
+
     oauth_manager = OAuthManager(env_path=env_path)
     auto_sync_scheduler = AutoSyncScheduler(config_path=config_path, env_path=env_path, sync_job_manager=sync_job_manager)
     
@@ -1900,7 +1941,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     def sync_user_novels(user_id: int):
         """触发某用户全部小说的后台备份任务，避免阻塞 HTTP 请求。"""
         current_settings = settings_manager.load(env_path=env_path)
-        if sync_job_manager.has_running_jobs():
+        if _has_active_shared_jobs():
             return jsonify({"ok": False, "error": "已有同步任务正在运行，请稍后再试"}), 400
         try:
             job = sync_job_manager.start_user_backup_job(user_id)
@@ -1943,6 +1984,9 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         current_settings = settings_manager.load(env_path=env_path)
         spec = _build_web_sync_job_spec(current_settings)
 
+        if _has_any_running_web_job() or not sync_job_manager._semaphore.acquire(blocking=False):
+            return _running_job_error_response()
+
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         try:
@@ -1954,9 +1998,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                 is_auto_sync=False,
             )
             job.progress["log_id"] = log_id
-            thread = threading.Thread(target=shared_job_runner.run, args=(job.job_id,), daemon=True)
+            thread = threading.Thread(target=_run_shared_web_job, args=(job.job_id,), daemon=True)
             thread.start()
         except Exception as exc:
+            sync_job_manager._semaphore.release()
             return jsonify({"error": str(exc)}), 400
         finally:
             db.close()
@@ -1968,12 +2013,12 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         current_settings = settings_manager.load(env_path=env_path)
         
         # 检查是否有任务正在运行
-        if sync_job_manager.has_running_jobs():
-            return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
-        
+        if _has_any_running_web_job():
+            return _running_job_error_response()
+
         # 创建一个专门的预检查任务（不通过 start_job，避免触发同步）
         if not sync_job_manager._semaphore.acquire(blocking=False):
-            return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
+            return _running_job_error_response()
         thread_started = False
         try:
             import uuid
@@ -2030,7 +2075,9 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         
         internal_type, task_name = task_map[task_type]
         current_settings = settings_manager.load(env_path=env_path)
-        
+        if _has_active_shared_jobs():
+            return _running_job_error_response()
+
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         try:
@@ -2058,8 +2105,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         limit = int(req_data.get("limit", 0) or 0)
 
         # 检查是否有任务正在运行
-        if sync_job_manager.has_running_jobs():
-            return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
+        if _has_active_shared_jobs():
+            return _running_job_error_response()
 
         db = Database(current_settings.storage.db_path)
         db.init_schema()
@@ -2326,10 +2373,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.post("/api/dashboard/pending-deletions/detect")
     def trigger_pending_detection():
         current_settings = settings_manager.load(env_path=env_path)
-        if sync_job_manager.has_running_jobs():
-            return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
+        if _has_any_running_web_job():
+            return _running_job_error_response()
         if not sync_job_manager._semaphore.acquire(blocking=False):
-            return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
+            return _running_job_error_response()
         thread_started = False
         try:
             import uuid
