@@ -96,3 +96,76 @@ def test_run_job_command_returns_success_and_json_output(monkeypatch, capsys):
     assert output["status"] == "succeeded"
     assert output["stats"] == {"novels": 3}
     assert output["error"] is None
+
+
+def test_cli_runner_status_check_dispatches_to_status_service(monkeypatch, capsys):
+    calls = []
+
+    def fake_run_user_status_task(settings, reporter=None, stop_requested=None):
+        calls.append((settings, reporter, stop_requested))
+        return {"checked_count": 7}
+
+    monkeypatch.setattr("pixiv_novel_sync.jobs.services.run_user_status_task", fake_run_user_status_task)
+    fake_settings = object()
+    parser = build_parser()
+    args = parser.parse_args(["status-check", "user_status"])
+
+    exit_code = run_job_command(args, fake_settings)
+
+    assert exit_code == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "succeeded"
+    assert output["stats"] == {"checked_count": 7}
+    assert calls[0][0] is fake_settings
+    assert calls[0][1] is not None
+    assert calls[0][2] is not None
+
+
+def test_cli_runner_user_backup_parses_and_passes_user_id_to_service(monkeypatch, capsys):
+    calls = []
+
+    def fake_run_user_backup_task(settings, user_id, reporter=None, stop_requested=None):
+        calls.append((settings, user_id, reporter, stop_requested))
+        return {"novels": 5}
+
+    monkeypatch.setattr("pixiv_novel_sync.jobs.services.run_user_backup_task", fake_run_user_backup_task)
+    fake_settings = object()
+    parser = build_parser()
+    args = parser.parse_args(["user-backup", "123"])
+
+    exit_code = run_job_command(args, fake_settings)
+
+    assert exit_code == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "succeeded"
+    assert output["stats"] == {"novels": 5}
+    assert calls[0][0] is fake_settings
+    assert calls[0][1] == 123
+    assert calls[0][2] is not None
+    assert calls[0][3] is not None
+
+
+def test_cli_runner_pending_deletion_dispatches_to_service(monkeypatch, capsys):
+    calls = []
+
+    def fake_run_pending_deletion_detection_task(settings, reporter=None, stop_requested=None):
+        calls.append((settings, reporter, stop_requested))
+        return {"new_pending": 4}
+
+    monkeypatch.setattr(
+        "pixiv_novel_sync.jobs.services.run_pending_deletion_detection_task",
+        fake_run_pending_deletion_detection_task,
+    )
+    fake_settings = object()
+    parser = build_parser()
+    args = parser.parse_args(["pending-deletion-detection"])
+
+    exit_code = run_job_command(args, fake_settings)
+
+    assert exit_code == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "succeeded"
+    assert output["stats"] == {"new_pending": 4}
+    assert calls[0][0] is fake_settings
+    assert calls[0][1] is not None
+    assert calls[0][2] is not None
