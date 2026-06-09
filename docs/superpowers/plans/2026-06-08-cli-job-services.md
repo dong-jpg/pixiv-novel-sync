@@ -1,6 +1,6 @@
 # CLI Job Services Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Extract shared job services so CLI `user-backup`, `status-check`, and `pending-deletion-detection` execute real logic instead of returning “not available yet”.
 
@@ -28,7 +28,7 @@
 - Modify: `tests/test_jobs_tasks.py`
 - Modify: `src/pixiv_novel_sync/jobs/tasks.py`
 
-- [ ] **Step 1: Write failing dispatch tests**
+- [x] **Step 1: Write failing dispatch tests**
 
 Append to `tests/test_jobs_tasks.py`:
 
@@ -100,7 +100,7 @@ def test_execute_task_dispatches_pending_deletion_detection_service(monkeypatch)
     assert calls[0][2] is not None
 ```
 
-- [ ] **Step 2: Run tests and verify they fail**
+- [x] **Step 2: Run tests and verify they fail**
 
 Run:
 
@@ -110,7 +110,7 @@ python -m pytest tests/test_jobs_tasks.py::test_execute_task_dispatches_user_bac
 
 Expected: FAIL because `pixiv_novel_sync.jobs.services` does not exist and `execute_task()` still raises “not available yet”.
 
-- [ ] **Step 3: Create minimal services module**
+- [x] **Step 3: Create minimal services module**
 
 Create `src/pixiv_novel_sync/jobs/services.py`:
 
@@ -167,7 +167,7 @@ def run_pending_deletion_detection_task(settings: Any, reporter: JobReporter | N
     return {}
 ```
 
-- [ ] **Step 4: Route `execute_task()` to services**
+- [x] **Step 4: Route `execute_task()` to services**
 
 In `src/pixiv_novel_sync/jobs/tasks.py`, add helper above `execute_task()`:
 
@@ -236,7 +236,7 @@ Replace the unavailable block in `execute_task()` with:
         return run_pending_deletion_detection_task(settings, _job_reporter_from_context(context), _stop_requested_from_context(context))
 ```
 
-- [ ] **Step 5: Run dispatch tests**
+- [x] **Step 5: Run dispatch tests**
 
 Run:
 
@@ -254,7 +254,7 @@ Expected: PASS.
 - Create/Modify: `src/pixiv_novel_sync/jobs/services.py`
 - Create: `tests/test_jobs_services.py`
 
-- [ ] **Step 1: Write failing service tests for status checks**
+- [x] **Step 1: Write failing service tests for status checks**
 
 Create `tests/test_jobs_services.py`:
 
@@ -378,7 +378,7 @@ def test_run_series_status_task_updates_each_series(monkeypatch):
     assert db.series_statuses == [(20, "normal")]
 ```
 
-- [ ] **Step 2: Run service tests and verify they fail**
+- [x] **Step 2: Run service tests and verify they fail**
 
 Run:
 
@@ -388,7 +388,7 @@ python -m pytest tests/test_jobs_services.py::test_run_user_status_task_updates_
 
 Expected: FAIL because service functions still return empty dicts and imports do not exist.
 
-- [ ] **Step 3: Implement status check imports and helpers**
+- [x] **Step 3: Implement status check imports and helpers**
 
 At top of `src/pixiv_novel_sync/jobs/services.py`, add:
 
@@ -473,7 +473,7 @@ def check_series_status(api: Any, series_id: int) -> str:
         return "unknown"
 ```
 
-- [ ] **Step 4: Implement status service functions**
+- [x] **Step 4: Implement status service functions**
 
 Replace empty status functions in `src/pixiv_novel_sync/jobs/services.py` with:
 
@@ -575,7 +575,7 @@ def run_series_status_task(settings: Any, reporter: JobReporter | None = None, s
         db.close()
 ```
 
-- [ ] **Step 5: Run status service tests**
+- [x] **Step 5: Run status service tests**
 
 Run:
 
@@ -593,7 +593,7 @@ Expected: PASS.
 - Modify: `src/pixiv_novel_sync/jobs/services.py`
 - Modify: `tests/test_jobs_services.py`
 
-- [ ] **Step 1: Write failing user backup service test**
+- [x] **Step 1: Write failing user backup service test**
 
 Append to `tests/test_jobs_services.py`:
 
@@ -696,7 +696,7 @@ def test_run_user_backup_task_uses_rotation_when_no_user_id(monkeypatch):
     assert db.updated_watermark[0] == "user_backup_rotation"
 ```
 
-- [ ] **Step 2: Run user backup tests and verify they fail**
+- [x] **Step 2: Run user backup tests and verify they fail**
 
 Run:
 
@@ -706,7 +706,7 @@ python -m pytest tests/test_jobs_services.py::test_run_user_backup_task_syncs_re
 
 Expected: FAIL because `run_user_backup_task()` still returns `{}`.
 
-- [ ] **Step 3: Add imports for storage and sync service**
+- [x] **Step 3: Add imports for storage and sync service**
 
 Add to `src/pixiv_novel_sync/jobs/services.py` imports:
 
@@ -717,7 +717,7 @@ from pixiv_novel_sync.storage_files import FileStorage
 from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
 ```
 
-- [ ] **Step 4: Implement `run_user_backup_task()`**
+- [x] **Step 4: Implement `run_user_backup_task()`**
 
 Replace the empty `run_user_backup_task()` with:
 
@@ -812,7 +812,7 @@ def run_user_backup_task(settings: Any, user_id: int | None = None, reporter: Jo
         db.close()
 ```
 
-- [ ] **Step 5: Run user backup service tests**
+- [x] **Step 5: Run user backup service tests**
 
 Run:
 
@@ -830,7 +830,7 @@ Expected: PASS.
 - Modify: `src/pixiv_novel_sync/jobs/services.py`
 - Modify: `tests/test_jobs_services.py`
 
-- [ ] **Step 1: Write failing pending detection service test**
+- [x] **Step 1: Write failing pending detection service test**
 
 Append to `tests/test_jobs_services.py`:
 
@@ -871,7 +871,7 @@ def test_run_pending_deletion_detection_task_uses_sync_service(monkeypatch):
     assert any("检测完成" in message for level, message in logs if level == "success")
 ```
 
-- [ ] **Step 2: Run pending detection test and verify it fails**
+- [x] **Step 2: Run pending detection test and verify it fails**
 
 Run:
 
@@ -881,7 +881,7 @@ python -m pytest tests/test_jobs_services.py::test_run_pending_deletion_detectio
 
 Expected: FAIL because `run_pending_deletion_detection_task()` still returns `{}`.
 
-- [ ] **Step 3: Implement `run_pending_deletion_detection_task()`**
+- [x] **Step 3: Implement `run_pending_deletion_detection_task()`**
 
 Replace the empty function in `src/pixiv_novel_sync/jobs/services.py` with:
 
@@ -919,7 +919,7 @@ def run_pending_deletion_detection_task(settings: Any, reporter: JobReporter | N
         db.close()
 ```
 
-- [ ] **Step 4: Run service tests**
+- [x] **Step 4: Run service tests**
 
 Run:
 
@@ -937,7 +937,7 @@ Expected: PASS.
 - Modify: `src/pixiv_novel_sync/webapp.py`
 - Modify: `tests/test_webapp_jobs.py`
 
-- [ ] **Step 1: Write failing Web delegation tests**
+- [x] **Step 1: Write failing Web delegation tests**
 
 Append to `tests/test_webapp_jobs.py`:
 
@@ -985,7 +985,7 @@ def test_sync_worker_pending_detection_delegates_to_service(monkeypatch):
     assert any(entry[2] == "pending service called" for entry in job.logs)
 ```
 
-- [ ] **Step 2: Run Web delegation tests and verify they fail**
+- [x] **Step 2: Run Web delegation tests and verify they fail**
 
 Run:
 
@@ -995,7 +995,7 @@ python -m pytest tests/test_webapp_jobs.py::test_sync_worker_user_status_delegat
 
 Expected: FAIL because Web worker methods still execute inline logic instead of monkeypatched services.
 
-- [ ] **Step 3: Add legacy reporter helper in `webapp.py`**
+- [x] **Step 3: Add legacy reporter helper in `webapp.py`**
 
 Near `AutoSyncScheduler` methods, add method inside the class:
 
@@ -1014,7 +1014,7 @@ Near `AutoSyncScheduler` methods, add method inside the class:
         return JobReporter(add_log=add_log, update_progress=update_progress)
 ```
 
-- [ ] **Step 4: Replace five worker methods with service delegation**
+- [x] **Step 4: Replace five worker methods with service delegation**
 
 Replace bodies of these methods in `src/pixiv_novel_sync/webapp.py`:
 
@@ -1047,7 +1047,7 @@ Replace bodies of these methods in `src/pixiv_novel_sync/webapp.py`:
 
 Keep `_check_pixiv_user_status`, `_check_novel_status`, `_check_series_status` top-level helpers for now if other code or tests still import them; do not remove them in this task.
 
-- [ ] **Step 5: Run Web delegation tests**
+- [x] **Step 5: Run Web delegation tests**
 
 Run:
 
@@ -1064,7 +1064,7 @@ Expected: PASS.
 **Files:**
 - Modify: `tests/test_cli_jobs.py`
 
-- [ ] **Step 1: Add CLI run test for status-check**
+- [x] **Step 1: Add CLI run test for status-check**
 
 Append to `tests/test_cli_jobs.py`:
 
@@ -1093,7 +1093,7 @@ def test_run_job_command_executes_status_check_task(monkeypatch, capsys):
     assert calls[0][2]
 ```
 
-- [ ] **Step 2: Run CLI tests**
+- [x] **Step 2: Run CLI tests**
 
 Run:
 
@@ -1110,7 +1110,7 @@ Expected: PASS. This may already pass because CLI uses injected `execute_task`; 
 **Files:**
 - Test only.
 
-- [ ] **Step 1: Run focused job tests**
+- [x] **Step 1: Run focused job tests**
 
 Run:
 
@@ -1120,7 +1120,7 @@ python -m pytest tests/test_jobs_tasks.py tests/test_jobs_services.py tests/test
 
 Expected: all tests PASS.
 
-- [ ] **Step 2: Run Web regression tests**
+- [x] **Step 2: Run Web regression tests**
 
 Run:
 
@@ -1130,7 +1130,7 @@ python -m pytest tests/test_webapp_jobs.py tests/test_webapp_security.py -q
 
 Expected: all tests PASS.
 
-- [ ] **Step 3: Run full test suite**
+- [x] **Step 3: Run full test suite**
 
 Run:
 
@@ -1140,7 +1140,7 @@ python -m pytest -q
 
 Expected: all tests PASS.
 
-- [ ] **Step 4: Run CLI smoke tests**
+- [x] **Step 4: Run CLI smoke tests**
 
 Run:
 
