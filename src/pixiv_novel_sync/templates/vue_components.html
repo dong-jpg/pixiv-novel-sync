@@ -1,12 +1,11 @@
 <!--
-  Global Vue 3 component definitions.
+  Library OS global Vue 3 component definitions.
   Included at bottom of base.html via Jinja include.
 -->
 <script>
 function registerGlobalComponents(app) {
-  const { ref, computed, onMounted } = Vue;
+  const { ref, onMounted } = Vue;
 
-  // ── SVG icon paths (reusable) ──
   const ICONS = {
     home: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>',
     book: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>',
@@ -19,14 +18,14 @@ function registerGlobalComponents(app) {
   };
 
   const NAV_ITEMS = [
-    { path: '/dashboard', label: '首页', icon: 'home', exact: true },
-    { path: '/dashboard/novels', label: '小说归档', icon: 'book' },
+    { path: '/dashboard', label: '控制台', icon: 'home', exact: true },
+    { path: '/dashboard/novels', label: '小说库', icon: 'book' },
     { path: '/dashboard/ai', label: 'AI 创作', icon: 'sparkles' },
-    { path: '/dashboard/preferences', label: '偏好分析', icon: 'heart' },
-    { path: '/dashboard/follows', label: '关注作者', icon: 'users' },
-    { type: 'divider', label: '系统' },
-    { path: '/dashboard/pending-deletions', label: '待确认', icon: 'trash', hasBadge: true },
-    { path: '/dashboard/logs', label: '任务日志', icon: 'clipboard' },
+    { path: '/dashboard/preferences', label: '偏好与推荐', icon: 'heart' },
+    { path: '/dashboard/follows', label: '作者与系列', icon: 'users' },
+    { type: 'divider', label: 'Operations' },
+    { path: '/dashboard/pending-deletions', label: '待确认删除', icon: 'trash', hasBadge: true },
+    { path: '/dashboard/logs', label: '同步日志', icon: 'clipboard' },
     { path: '/dashboard/settings', label: '设置', icon: 'cog' },
   ];
 
@@ -35,18 +34,17 @@ function registerGlobalComponents(app) {
     return currentPath.startsWith(item.path);
   }
 
-  // ── 1. Sidebar Navigation ──
   app.component('app-sidebar-nav', {
     props: ['currentPath'],
     template: `
       <template v-for="(item, i) in items" :key="i">
-        <div v-if="item.type === 'divider'" class="pt-3 pb-1 px-4">
-          <div class="text-[10px] font-bold text-gray-400 uppercase tracking-wider">{{ item.label }}</div>
+        <div v-if="item.type === 'divider'" class="pt-4 pb-1 px-3">
+          <div class="text-[10px] font-black text-gray-400 uppercase tracking-[.18em]">{{ item.label }}</div>
         </div>
-        <a v-else :href="item.path" :class="['sidebar-link', isActive(item) && 'active']">
+        <a v-else :href="item.path" :class="['library-nav-link sidebar-link', isActive(item) && 'active']">
           <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" v-html="icons[item.icon]"></svg>
           <span>{{ item.label }}</span>
-          <span v-if="item.hasBadge && pendingCount > 0" class="ml-auto bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none">
+          <span v-if="item.hasBadge && pendingCount > 0" class="ml-auto bg-red-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full leading-none">
             {{ pendingCount > 99 ? '99+' : pendingCount }}
           </span>
         </a>
@@ -54,36 +52,33 @@ function registerGlobalComponents(app) {
     `,
     setup(props) {
       const pendingCount = ref(0);
-      const items = NAV_ITEMS;
-      const icons = ICONS;
-      const _isActive = (item) => isActive(props.currentPath, item);
-
       onMounted(async () => {
         try {
           const res = await fetch('/api/dashboard/shell-data');
-          if (res.ok) { const d = await res.json(); pendingCount.value = d.pending_count || 0; }
+          if (res.ok) {
+            const d = await res.json();
+            pendingCount.value = d.pending_count || 0;
+          }
         } catch(e) {}
       });
-
-      return { items, icons, pendingCount, isActive: _isActive };
+      return { items: NAV_ITEMS, icons: ICONS, pendingCount, isActive: (item) => isActive(props.currentPath, item) };
     }
   });
 
-  // ── 2. Sidebar Footer (user + sync status) ──
   app.component('app-sidebar-footer', {
     template: `
-      <div>
-        <div v-if="user" class="flex items-center gap-2.5 mb-2">
-          <img v-if="user.avatar_url" :src="'/proxy/image?url=' + encodeURIComponent(user.avatar_url)" class="w-8 h-8 rounded-full object-cover border border-gray-100" @error="user.avatar_url = ''">
-          <div v-else class="w-8 h-8 rounded-full bg-brand-100 text-brand-600 flex items-center justify-center text-xs font-bold">{{ (user.name || 'U').substring(0,2) }}</div>
+      <div class="library-card !p-3 !rounded-2xl !shadow-none bg-white/70">
+        <div v-if="user" class="flex items-center gap-2.5 mb-3">
+          <img v-if="user.avatar_url" :src="'/proxy/image?url=' + encodeURIComponent(user.avatar_url)" class="w-9 h-9 rounded-2xl object-cover border border-gray-100" @error="user.avatar_url = ''">
+          <div v-else class="w-9 h-9 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center text-xs font-black">{{ (user.name || 'U').substring(0,2) }}</div>
           <div class="min-w-0 flex-1">
-            <div class="text-xs font-semibold text-gray-800 truncate">{{ user.name || '未绑定' }}</div>
-            <div class="text-[10px] text-pixiv-light truncate">ID {{ user.user_id || '-' }}</div>
+            <div class="text-xs font-black text-gray-900 truncate">{{ user.name || '未绑定用户' }}</div>
+            <div class="text-[10px] text-gray-400 truncate">ID {{ user.user_id || '-' }}</div>
           </div>
         </div>
-        <div class="flex items-center gap-2 text-[11px]">
+        <div class="flex items-center gap-2 text-[11px] font-bold">
           <span :class="['w-2 h-2 rounded-full flex-shrink-0', autoSyncRunning ? 'bg-green-400 pulse-soft' : 'bg-gray-300']"></span>
-          <span :class="autoSyncRunning ? 'text-green-600 font-medium' : 'text-gray-400'">{{ autoSyncRunning ? '定时同步已启用' : '定时同步未启用' }}</span>
+          <span :class="autoSyncRunning ? 'text-green-600' : 'text-gray-400'">{{ autoSyncRunning ? '定时同步已启用' : '定时同步未启用' }}</span>
         </div>
       </div>
     `,
@@ -104,7 +99,6 @@ function registerGlobalComponents(app) {
     }
   });
 
-  // ── 3. Mobile Bottom Bar ──
   app.component('app-mobile-bar', {
     props: ['currentPath'],
     template: `
@@ -116,35 +110,19 @@ function registerGlobalComponents(app) {
       </nav>
     `,
     setup(props) {
-      const mobileItems = NAV_ITEMS.filter(i => !i.type && !i.hasBadge && i.icon !== 'clipboard');
-      const icons = ICONS;
-      const _isActive = (item) => isActive(props.currentPath, item);
-      return { mobileItems, icons, isActive: _isActive };
+      const mobileItems = NAV_ITEMS.filter(i => !i.type && ['home','book','sparkles','heart','cog'].includes(i.icon));
+      return { mobileItems, icons: ICONS, isActive: (item) => isActive(props.currentPath, item) };
     }
   });
 
-  // ── 4. Pagination ──
   app.component('app-pagination', {
-    props: {
-      page: { type: Number, required: true },
-      pages: { type: Number, required: true },
-    },
+    props: { page: { type: Number, required: true }, pages: { type: Number, required: true } },
     emits: ['update:page'],
     template: `
       <div v-if="pages > 1" class="flex items-center justify-center gap-2 mt-8">
-        <button @click="go(page - 1)" :disabled="page <= 1"
-          class="px-3 py-1.5 rounded-lg border text-sm transition-colors"
-          :class="page <= 1 ? 'border-gray-200 text-gray-400 bg-white cursor-not-allowed' : 'border-gray-200 text-gray-700 bg-white hover:bg-gray-50'">
-          &larr;
-        </button>
-        <span class="text-sm text-gray-600 px-2">
-          第 <strong class="text-gray-900">{{ page }}</strong> / <strong class="text-gray-900">{{ pages }}</strong> 页
-        </span>
-        <button @click="go(page + 1)" :disabled="page >= pages"
-          class="px-3 py-1.5 rounded-lg border text-sm transition-colors"
-          :class="page >= pages ? 'border-gray-200 text-gray-400 bg-white cursor-not-allowed' : 'border-gray-200 text-gray-700 bg-white hover:bg-gray-50'">
-          &rarr;
-        </button>
+        <button @click="go(page - 1)" :disabled="page <= 1" class="library-btn !min-h-0 !py-1.5" :class="page <= 1 && 'opacity-40 cursor-not-allowed'">&larr;</button>
+        <span class="text-sm text-gray-500 px-2">第 <strong class="text-gray-900">{{ page }}</strong> / <strong class="text-gray-900">{{ pages }}</strong> 页</span>
+        <button @click="go(page + 1)" :disabled="page >= pages" class="library-btn !min-h-0 !py-1.5" :class="page >= pages && 'opacity-40 cursor-not-allowed'">&rarr;</button>
       </div>
     `,
     setup(props, { emit }) {
@@ -153,40 +131,40 @@ function registerGlobalComponents(app) {
     }
   });
 
-  // ── 5. Badge ──
   app.component('app-badge', {
     props: { type: { type: String, default: 'gray' } },
-    template: `<span :class="['inline-flex items-center px-2 py-0.5 rounded text-xs font-medium', cls]"><slot></slot></span>`,
+    template: `<span :class="['library-badge inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-black', cls]"><slot></slot></span>`,
     computed: {
       cls() {
-        const m = { blue:'bg-blue-50 text-blue-700', green:'bg-green-50 text-green-700', red:'bg-red-50 text-red-700', yellow:'bg-yellow-50 text-yellow-700', gray:'bg-gray-100 text-gray-700', brand:'bg-brand-50 text-brand-700' };
+        const m = {
+          blue:'bg-blue-50 text-blue-700', green:'bg-green-50 text-green-700', red:'bg-red-50 text-red-700',
+          yellow:'bg-amber-50 text-amber-700', gray:'bg-gray-100 text-gray-700', brand:'bg-blue-50 text-blue-700'
+        };
         return m[this.type] || m.gray;
       }
     }
   });
 
-  // ── 6. Modal ──
   app.component('app-modal', {
     props: { title: { type: String, required: true }, isOpen: { type: Boolean, required: true } },
     emits: ['close'],
     template: `
-      <div v-if="isOpen" class="fixed inset-0 z-[100] overflow-y-auto">
-        <div class="fixed inset-0 bg-gray-900/50 transition-opacity" @click="$emit('close')"></div>
+      <div v-if="isOpen" class="library-modal fixed inset-0 z-[100] overflow-y-auto">
+        <div class="fixed inset-0 bg-slate-950/45 backdrop-blur-sm transition-opacity" @click="$emit('close')"></div>
         <div class="flex min-h-screen items-center justify-center p-4">
-          <div class="relative bg-white rounded-xl shadow-xl w-full max-w-2xl overflow-hidden">
-            <div class="px-5 py-4 border-b border-gray-100 flex justify-between items-center">
-              <h3 class="text-base font-bold text-gray-900">{{ title }}</h3>
-              <button @click="$emit('close')" class="text-gray-400 hover:text-gray-600 p-1">
+          <div class="relative bg-white rounded-[24px] shadow-2xl w-full max-w-2xl overflow-hidden border border-gray-100">
+            <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-white to-blue-50/60">
+              <h3 class="text-base font-black text-gray-950">{{ title }}</h3>
+              <button @click="$emit('close')" class="text-gray-400 hover:text-gray-700 p-1 rounded-lg hover:bg-white">
                 <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
               </button>
             </div>
-            <div class="px-5 py-5 max-h-[70vh] overflow-y-auto"><slot></slot></div>
-            <div v-if="$slots.footer" class="px-5 py-3 border-t border-gray-100 bg-gray-50 flex justify-end gap-2"><slot name="footer"></slot></div>
+            <div class="px-6 py-5 max-h-[70vh] overflow-y-auto"><slot></slot></div>
+            <div v-if="$slots.footer" class="px-6 py-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-2"><slot name="footer"></slot></div>
           </div>
         </div>
       </div>
     `
   });
-
-} // end registerGlobalComponents
+}
 </script>

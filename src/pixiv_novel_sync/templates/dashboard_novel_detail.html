@@ -273,6 +273,8 @@
 {% endblock %}
 
 {% block content %}
+<div class="library-page library-reader-page">
+  <div class="library-page-header sr-only"><h1>小说详情</h1></div>
 <!-- Fixed top progress bar -->
 <div class="reading-progress-bar">
   <div class="bar-fill" :style="{ width: progressPercent + '%' }"></div>
@@ -354,6 +356,7 @@
     </div>
   </div>
 </template>
+</div>
 {% endblock %}
 
 {% block extra_scripts %}
