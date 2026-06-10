@@ -98,23 +98,29 @@ def run_check_bookmarks_task(
         
         job_manager.add_log(job_id, "info", "预检查结果已保存，后续同步将自动跳过已存在的小说")
 
-        # 标记任务完成
+        # 记录 sync_check 元数据到 progress（供正式同步复用预检查结果），两条路径都需要
         job = job_manager.get_job(job_id)
-        if job:
-            job.status = "succeeded"
-            job.message = "预检查完成"
-            job.stats = check_stats
+        if job is not None:
             job.progress["sync_check_scope"] = job_id
             job.progress["sync_check_fingerprint"] = build_sync_check_fingerprint(settings, auth_result.user_id)
             job.progress["sync_check_task_types"] = sync_check_task_types(settings)
             job.progress["sync_check_user_id"] = auth_result.user_id
-            job.finished_at = time.time()
+            # legacy SyncJobState 路径（webapp 后台线程）没有 JobRunner 管理终态，
+            # 需要在此显式标记完成；统一 JobState 路径（有 .spec）由 JobRunner 负责
+            # mark_succeeded + merge_stats，这里绝不能设置 job.stats，否则返回值会被
+            # 重复 merge 导致所有数值翻倍，也不能给枚举 status 赋字符串。
+            if not hasattr(job, "spec"):
+                job.status = "succeeded"
+                job.message = "预检查完成"
+                job.stats = dict(check_stats)
+                job.finished_at = time.time()
 
-        return check_stats
+        # 始终返回独立副本：JobRunner 把它当作增量 merge 进 state.stats
+        return dict(check_stats)
     except Exception as exc:
         job_manager.add_log(job_id, "error", f"预检查失败: {exc}")
         job = job_manager.get_job(job_id)
-        if job:
+        if job is not None and not hasattr(job, "spec"):
             job.status = "failed"
             job.message = f"预检查失败: {exc}"
             job.finished_at = time.time()

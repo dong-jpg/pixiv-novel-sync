@@ -164,3 +164,48 @@ def test_oauth_exchange_response_redacts_tokens(tmp_path, monkeypatch):
     assert payload["has_access_token"] is True
     assert "refresh_token" not in payload
     assert "access_token" not in payload
+
+
+def test_no_token_blocks_proxied_request_when_proxy_untrusted(tmp_path, monkeypatch):
+    """反代后 remote_addr 恒为 127.0.0.1；存在代理头但未信任代理时必须拒绝，
+    否则未配 token 的部署会把私密收藏暴露给全公网。"""
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    monkeypatch.delenv("DASHBOARD_TRUST_PROXY", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path))
+    client = app.test_client()
+
+    response = client.get(
+        "/dashboard",
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        headers={"X-Forwarded-For": "203.0.113.10"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_no_token_trusts_xff_localhost_when_proxy_trusted(tmp_path, monkeypatch):
+    """显式信任代理时，按 XFF 最左地址判定本机访问。"""
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    monkeypatch.setenv("DASHBOARD_TRUST_PROXY", "true")
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path))
+    client = app.test_client()
+
+    allowed = client.get(
+        "/api/health",
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        headers={"X-Forwarded-For": "127.0.0.1"},
+    )
+    blocked = client.get(
+        "/dashboard",
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        headers={"X-Forwarded-For": "203.0.113.10"},
+    )
+
+    assert allowed.status_code == 200
+    assert blocked.status_code == 403

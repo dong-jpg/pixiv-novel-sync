@@ -5,8 +5,9 @@ import logging
 import time
 import types
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, TypeVar
 from urllib.parse import urlparse
 
 from pixivpy3 import AppPixivAPI
@@ -26,6 +27,51 @@ logger = logging.getLogger(__name__)
 # far beyond any real library yet still bounds the worst case.
 _CHECK_PAGE_SAFETY_LIMIT = 2000
 
+T = TypeVar('T')
+
+
+def retry_on_pixiv_error(max_retries: int = 3, base_delay: float = 5.0) -> Callable[[Callable[..., T]], Callable[..., T]]:
+    """Pixiv API重试装饰器:捕获429/网络错误,指数退避重试。
+
+    Args:
+        max_retries: 最大重试次数(不含首次调用)
+        base_delay: 基础延迟(秒),429时翻倍退避,最长60s
+    """
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> T:
+            last_exc = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_exc = e
+                    # 429 或网络错误才重试
+                    is_rate_limit = False
+                    is_network = False
+                    err_str = str(e).lower()
+                    if "429" in err_str or "rate" in err_str:
+                        is_rate_limit = True
+                    elif any(k in err_str for k in ["connection", "timeout", "network", "unreachable"]):
+                        is_network = True
+
+                    if not (is_rate_limit or is_network):
+                        raise  # 非重试类错误立即抛出
+
+                    if attempt < max_retries:
+                        delay = min(base_delay * (2 ** attempt), 60.0) if is_rate_limit else base_delay
+                        logger.warning(
+                            f"{func.__name__} {'rate limited (429)' if is_rate_limit else 'network error'}, "
+                            f"retry {attempt+1}/{max_retries} after {delay:.1f}s: {e}"
+                        )
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"{func.__name__} failed after {max_retries} retries: {e}")
+
+            raise last_exc  # type: ignore
+        return wrapper
+    return decorator
+
 
 class BookmarkNovelSyncService:
     def __init__(self, api: AppPixivAPI, db: Database, storage: FileStorage, settings: Settings, sync_check_scope: str = "_") -> None:
@@ -34,6 +80,12 @@ class BookmarkNovelSyncService:
         self.storage = storage
         self.settings = settings
         self.sync_check_scope = sync_check_scope
+
+        # 动态包装API核心方法,自动处理429和网络错误重试
+        for method_name in ["user_bookmarks_novel", "user_following", "user_novels", "novel_detail", "novel_series", "novel_series_detail", "webview_novel"]:
+            if hasattr(self.api, method_name):
+                original = getattr(self.api, method_name)
+                setattr(self.api, method_name, retry_on_pixiv_error(max_retries=3, base_delay=5.0)(original))
 
     def check_bookmarks_existence(self, user_id: int, restricts: Iterable[str], progress_callback: Any = None) -> dict[str, int]:
         """预检查：获取全部收藏列表，标记哪些已存在本地"""
@@ -468,16 +520,21 @@ class BookmarkNovelSyncService:
         """同步关注用户列表（只更新用户信息，不同步小说）"""
         stats = {"users": 0, "following_users_scanned": 0}
         page_delay = self.settings.sync.delay_seconds_between_pages
-        
+        max_pages = self.settings.sync.max_pages_per_run
+
         logger.info("Syncing following user list")
         current_user_id = self.settings.pixiv.user_id
         if not current_user_id:
             raise RuntimeError("PIXIV_USER_ID is required to fetch following list")
-        
+
         next_following_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
         following_page_count = 0
-        
+        safety_limit = max_pages or 100  # 3.3翻页上限兜底
+
         while next_following_query:
+            if following_page_count >= safety_limit:
+                logger.info("Reached page safety limit=%s for following list, stopping pagination", safety_limit)
+                break
             following_result = self.api.user_following(**next_following_query)
             following_page_count += 1
             if progress_callback:
@@ -998,10 +1055,16 @@ class BookmarkNovelSyncService:
                                 all_novel_items = list(series_data.get("novels", []))
                                 # 处理分页
                                 next_url = series_data.get("next_url")
+                                series_page_count = 1
+                                series_safety_limit = self.settings.sync.max_pages_per_run or 100  # 3.3翻页上限兜底
                                 if progress_callback:
                                     progress_callback("phase", {"phase": f"系列 {title or sid}: 已获取 {len(all_novel_items)} 章"})
                                 while next_url:
+                                    if series_page_count >= series_safety_limit:
+                                        logger.info("Reached page safety limit=%s for series %s, stopping pagination", series_safety_limit, sid)
+                                        break
                                     try:
+                                        series_page_count += 1
                                         next_query = self.api.parse_qs(next_url) or {}
                                         last_order = next_query.get("last_order")
                                         next_data = self.api.novel_series(int(sid), last_order=last_order) if last_order else None
@@ -1250,14 +1313,22 @@ class BookmarkNovelSyncService:
             raise
 
         # 完整性 sanity check：如果远端结果异常少，宁可拒绝继续
-        if len(remote_ids) == 0:
-            local_count = self.db.conn.execute(
-                "SELECT COUNT(DISTINCT novel_id) FROM sources WHERE source_type LIKE 'bookmark_%'"
-            ).fetchone()[0]
-            if local_count > 0:
+        local_count = self.db.conn.execute(
+            "SELECT COUNT(DISTINCT novel_id) FROM sources WHERE source_type LIKE 'bookmark_%'"
+        ).fetchone()[0]
+
+        # 3.2误删防护:远端/本地数量骤降比例阈值
+        if local_count > 20:  # 本地有足够样本才检测
+            drop_ratio = (local_count - len(remote_ids)) / local_count if local_count > 0 else 0
+            if drop_ratio > 0.5:  # 骤降超50%
                 raise RuntimeError(
-                    f"Remote bookmark count is 0 but local has {local_count}; refusing to proceed (likely API failure)"
+                    f"Remote bookmark count {len(remote_ids)} vs local {local_count} (drop {drop_ratio:.1%}); "
+                    f"refusing to proceed to prevent mass deletion from API failure or account compromise"
                 )
+        elif len(remote_ids) == 0 and local_count > 0:
+            raise RuntimeError(
+                f"Remote bookmark count is 0 but local has {local_count}; refusing to proceed (likely API failure)"
+            )
 
         # 2. 清除已重新收藏的 pending 记录
         cleaned = self.db.cleanup_stale_pending(remote_ids, "novel")
@@ -1575,6 +1646,28 @@ class BookmarkNovelSyncService:
         webview = self.api.webview_novel(novel_id)
         body = normalize_text(_extract_novel_text(webview))
         text_hash = sha256_text(body)
+
+        # 3.5 hash增量:读旧hash比对,未变更跳过写盘写库
+        existing_row = self.db.conn.execute(
+            "SELECT meta_hash FROM novels WHERE novel_id = ?", (novel_id,)
+        ).fetchone()
+        existing_text_row = self.db.conn.execute(
+            "SELECT text_hash FROM novel_texts WHERE novel_id = ?", (novel_id,)
+        ).fetchone()
+        meta_unchanged = existing_row and existing_row[0] == meta_hash
+        text_unchanged = existing_text_row and existing_text_row[0] == text_hash
+
+        if meta_unchanged and text_unchanged:
+            # 元数据与正文均无变更,仅更新last_seen_at
+            self.db.touch_novel(novel_id)
+            self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
+            return {
+                "users": 0, "novels": 0, "texts_updated": 0, "assets_downloaded": 0,
+                "bookmarks": int(getattr(detail_novel, "total_bookmarks", 0) or 0),
+                "views": int(getattr(detail_novel, "total_view", 0) or 0),
+                "skipped": 1,
+            }
+
         markdown_text = to_markdown(title, user_name, caption, body) if write_markdown else None
 
         # Write the archive files to disk BEFORE committing the DB rows. The
@@ -1600,36 +1693,38 @@ class BookmarkNovelSyncService:
                     )
                 )
 
-            self.db.upsert_novel(
-                NovelRecord(
-                    novel_id=novel_id,
-                    user_id=user_id,
-                    series_id=series_id,
-                    title=title,
-                    caption=caption,
-                    visible=bool(getattr(detail_novel, "visible", True)),
-                    restrict=restrict,
-                    x_restrict=int(getattr(detail_novel, "x_restrict", 0) or 0),
-                    text_length=int(getattr(detail_novel, "text_length", 0) or 0),
-                    total_bookmarks=int(getattr(detail_novel, "total_bookmarks", 0) or 0),
-                    total_views=int(getattr(detail_novel, "total_view", 0) or 0),
-                    cover_url=cover_url,
-                    tags_json=tags_json,
-                    create_date=getattr(detail_novel, "create_date", None),
-                    raw_json=stable_json_dumps(meta_plain),
-                    meta_hash=meta_hash,
+            # 1.4 FTS原子化:upsert+FTS包进同一事务,消除漂移(一个成功一个失败)
+            with self.db.transaction():
+                self.db.upsert_novel(
+                    NovelRecord(
+                        novel_id=novel_id,
+                        user_id=user_id,
+                        series_id=series_id,
+                        title=title,
+                        caption=caption,
+                        visible=bool(getattr(detail_novel, "visible", True)),
+                        restrict=restrict,
+                        x_restrict=int(getattr(detail_novel, "x_restrict", 0) or 0),
+                        text_length=int(getattr(detail_novel, "text_length", 0) or 0),
+                        total_bookmarks=int(getattr(detail_novel, "total_bookmarks", 0) or 0),
+                        total_views=int(getattr(detail_novel, "total_view", 0) or 0),
+                        cover_url=cover_url,
+                        tags_json=tags_json,
+                        create_date=getattr(detail_novel, "create_date", None),
+                        raw_json=stable_json_dumps(meta_plain),
+                        meta_hash=meta_hash,
+                    )
                 )
-            )
-            self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
-            self.db.upsert_novel_text(
-                NovelTextRecord(
-                    novel_id=novel_id,
-                    text_raw=body,
-                    text_markdown=markdown_text,
-                    text_hash=text_hash,
+                self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
+                self.db.upsert_novel_text(
+                    NovelTextRecord(
+                        novel_id=novel_id,
+                        text_raw=body,
+                        text_markdown=markdown_text,
+                        text_hash=text_hash,
+                    )
                 )
-            )
-            self.db.replace_fts(novel_id, title, caption, user_name, body)
+                self.db.replace_fts(novel_id, title, caption, user_name, body)
 
         assets_downloaded = 0
         if download_assets:

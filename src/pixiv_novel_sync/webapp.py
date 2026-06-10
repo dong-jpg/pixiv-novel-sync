@@ -207,30 +207,31 @@ class AutoSyncScheduler:
                 for task_config in task_configs:
                     if not self._running:
                         break
-                    
+
                     task_name = task_config["name"]
-                    
+
                     if not getattr(settings.sync, task_config["setting_check"], False):
                         continue
-                    
+
                     cron_expr = getattr(settings.sync, task_config["cron_setting"], "")
                     task_interval_hours = getattr(settings.sync, task_config["interval_setting"], 6)
                     task_interval_seconds = task_interval_hours * 3600
-                    
-                    # 如果该任务还没有计算过下次运行时间，现在计算
-                    if task_name not in self._task_next_run:
-                        if cron_expr:
-                            from .settings import cron_to_next_run
-                            self._task_next_run[task_name] = cron_to_next_run(cron_expr, now, tz_name) or (now + task_interval_seconds)
-                        else:
-                            self._task_next_run[task_name] = now + task_interval_seconds
-                        logger.info("Task %s scheduled, next run: %s", task_name, 
-                                    datetime.fromtimestamp(self._task_next_run[task_name]).strftime('%Y-%m-%d %H:%M:%S'))
-                    
-                    next_run = self._task_next_run[task_name]
 
-                    if time.time() >= next_run:
-                        with self._lock:
+                    # 调度器竞态修复:_task_next_run 读写纳入锁,避免 KeyError/漏更新
+                    with self._lock:
+                        # 如果该任务还没有计算过下次运行时间，现在计算
+                        if task_name not in self._task_next_run:
+                            if cron_expr:
+                                from .settings import cron_to_next_run
+                                self._task_next_run[task_name] = cron_to_next_run(cron_expr, now, tz_name) or (now + task_interval_seconds)
+                            else:
+                                self._task_next_run[task_name] = now + task_interval_seconds
+                            logger.info("Task %s scheduled, next run: %s", task_name,
+                                        datetime.fromtimestamp(self._task_next_run[task_name]).strftime('%Y-%m-%d %H:%M:%S'))
+
+                        next_run = self._task_next_run[task_name]
+
+                        if time.time() >= next_run:
                             if self._current_task_job_id is not None:
                                 logger.info("Task %s skipped: another task is running (%s)", task_name, self._current_task_job_id)
                                 skip_now = time.time()
@@ -240,16 +241,22 @@ class AutoSyncScheduler:
                                 else:
                                     self._task_next_run[task_name] = skip_now + task_interval_seconds
                                 continue
-                        
-                        self._run_single_task(settings, task_name, task_config["sync_func"])
-                        
+                        else:
+                            # 未到运行时间,跳过
+                            continue
+
+                    # 锁外执行任务(避免阻塞其他任务调度检查)
+                    self._run_single_task(settings, task_name, task_config["sync_func"])
+
+                    # 任务完成后更新下次运行时间(加锁)
+                    with self._lock:
                         self._task_last_run[task_name] = time.time()
                         if cron_expr:
                             from .settings import cron_to_next_run
                             self._task_next_run[task_name] = cron_to_next_run(cron_expr, time.time(), tz_name) or (time.time() + task_interval_seconds)
                         else:
                             self._task_next_run[task_name] = time.time() + task_interval_seconds
-                        
+
                         logger.info("Task %s completed, next run: %s", task_name,
                                     datetime.fromtimestamp(self._task_next_run[task_name]).strftime('%Y-%m-%d %H:%M:%S'))
                 
@@ -1495,13 +1502,35 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         "/oauth/callback",
     }
 
+    # 是否信任反向代理注入的 X-Forwarded-For。仅当确实部署在可信反代（nginx 等）
+    # 之后才应开启；否则客户端可伪造该头绕过本机判定。
+    _trust_proxy = (os.getenv("DASHBOARD_TRUST_PROXY") or "").strip().lower() in {"1", "true", "yes", "on"}
+    _LOCAL_ADDRS = {"127.0.0.1", "::1", "localhost"}
+
+    def _client_addr() -> str:
+        """解析真实客户端地址。反代后 remote_addr 恒为 127.0.0.1，必须看 XFF。"""
+        if _trust_proxy:
+            xff = request.headers.get("X-Forwarded-For", "")
+            if xff:
+                # XFF 最左为最初客户端
+                return xff.split(",")[0].strip()
+        return request.remote_addr or ""
+
+    def _behind_proxy() -> bool:
+        return bool(request.headers.get("X-Forwarded-For") or request.headers.get("X-Real-IP"))
+
     def _is_local_request() -> bool:
-        return request.remote_addr in {"127.0.0.1", "::1", "localhost"}
+        return _client_addr() in _LOCAL_ADDRS
 
     @app.before_request
     def _check_auth():
         token = settings_manager.load(env_path=env_path).dashboard_token
         if not token:
+            # 安全加固：未配置 token 时仅允许真正的本机访问。
+            # 若检测到代理头但未显式信任代理，说明很可能暴露在反代后，
+            # 此时 remote_addr=127.0.0.1 不可信，一律拒绝，避免私密收藏泄漏。
+            if _behind_proxy() and not _trust_proxy:
+                return jsonify({"error": "dashboard token required when behind a proxy"}), 403
             if _is_local_request():
                 return
             return jsonify({"error": "dashboard token required for non-local access"}), 403
@@ -1516,6 +1545,13 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         if path.startswith("/api/"):
             return jsonify({"error": "unauthorized"}), 401
         return redirect("/api/auth/login")
+
+    # 启动期安全提示：未配置 dashboard_token 时给出明确告警。
+    if not (settings_manager.load(env_path=env_path).dashboard_token):
+        logger.warning(
+            "DASHBOARD_TOKEN 未配置：仅允许本机访问。若部署在反向代理后，"
+            "请设置 DASHBOARD_TOKEN，并仅在可信反代下设置 DASHBOARD_TRUST_PROXY=1。"
+        )
 
     def current_settings_for_routes() -> Settings:
         return settings_manager.load(env_path=env_path)
