@@ -7,6 +7,7 @@ from typing import Any
 from pixivpy3 import AppPixivAPI
 
 from .auth import PixivAuthManager
+from .rate_limiter import RateLimiter
 from .settings import Settings
 from .storage_db import Database
 
@@ -19,6 +20,9 @@ class RecommendationService:
         self.db = db
         self.settings = settings
         self.api = api
+        # Phase 3.4: 统一限速器
+        delay = float(getattr(self.settings.sync, "delay_seconds_between_pages", 1.0) or 1.0)
+        self.rate_limiter = RateLimiter(default_delay=delay)
 
     def build_search_plan(self, profile: dict[str, Any], filters: dict[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
@@ -107,7 +111,8 @@ class RecommendationService:
         return api
 
     def _page_delay(self) -> None:
-        time.sleep(float(getattr(self.settings.sync, "delay_seconds_between_pages", 1.0) or 1.0))
+        """Phase 3.4: 使用统一限速器"""
+        self.rate_limiter.wait()
 
     def _search_novels(self, api: AppPixivAPI, query: str, limit: int) -> list[Any]:
         results: list[Any] = []

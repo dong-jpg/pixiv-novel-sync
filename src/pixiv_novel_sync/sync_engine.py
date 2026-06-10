@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from pixivpy3 import AppPixivAPI
 
 from .models import NovelRecord, NovelTextRecord, SourceRecord, UserRecord
+from .rate_limiter import RateLimiter
 from .settings import Settings
 from .storage_db import Database
 from .storage_files import FileStorage
@@ -80,6 +81,8 @@ class BookmarkNovelSyncService:
         self.storage = storage
         self.settings = settings
         self.sync_check_scope = sync_check_scope
+        # Phase 3.4: 统一限速器
+        self.rate_limiter = RateLimiter(default_delay=self.settings.sync.delay_seconds_between_pages)
 
         # 动态包装API核心方法,自动处理429和网络错误重试
         for method_name in ["user_bookmarks_novel", "user_following", "user_novels", "novel_detail", "novel_series", "novel_series_detail", "webview_novel"]:
@@ -122,7 +125,7 @@ class BookmarkNovelSyncService:
                 
                 next_query = self.api.parse_qs(getattr(result, "next_url", None))
                 if next_query:
-                    time.sleep(self.settings.sync.delay_seconds_between_pages)
+                    self.rate_limiter.wait()  # Phase 3.4
         
         if progress_callback:
             progress_callback("phase", {"phase": f"检查 {len(all_novel_ids)} 本小说"})
@@ -201,7 +204,7 @@ class BookmarkNovelSyncService:
                     
                     next_query = self.api.parse_qs(getattr(result, "next_url", None))
                     if next_query:
-                        time.sleep(self.settings.sync.delay_seconds_between_pages)
+                        self.rate_limiter.wait()  # Phase 3.4
             
             stats["bookmarks"]["total"] = len(bookmark_ids)
             if progress_callback:
@@ -256,11 +259,11 @@ class BookmarkNovelSyncService:
 
                             next_novel_query = self.api.parse_qs(getattr(novels_result, "next_url", None))
                             if next_novel_query:
-                                time.sleep(self.settings.sync.delay_seconds_between_pages)
+                                self.rate_limiter.wait()  # Phase 3.4
                     
                     next_following_query = self.api.parse_qs(getattr(following_result, "next_url", None))
                     if next_following_query:
-                        time.sleep(self.settings.sync.delay_seconds_between_pages)
+                        self.rate_limiter.wait()  # Phase 3.4
             
             stats["following_novels"]["total"] = len(following_ids)
             if progress_callback:
@@ -1534,7 +1537,7 @@ class BookmarkNovelSyncService:
                     remote_ids.add(int(novel.id))
                 next_query = self.api.parse_qs(getattr(result, "next_url", None))
                 if next_query:
-                    time.sleep(self.settings.sync.delay_seconds_between_pages)
+                    self.rate_limiter.wait()  # Phase 3.4
         return remote_ids
 
     def _fetch_remote_subscribed_series_ids(self) -> set[int]:
