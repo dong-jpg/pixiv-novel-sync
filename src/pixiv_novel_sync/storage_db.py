@@ -207,6 +207,8 @@ class Database:
         self._migrate_preference_tables()
         # 迁移：创建 AI 写作项目（章节/伏笔/状态记忆）相关表
         self._migrate_ai_writing_tables()
+        # 迁移：创建阅读进度追踪表
+        self._migrate_reading_progress_table()
         self._commit_if_needed()
 
     def upsert_user(self, record: UserRecord) -> None:
@@ -578,10 +580,13 @@ class Database:
                 n.total_views,
                 n.last_seen_at,
                 n.first_seen_at,
-                CASE WHEN n.series_id IS NULL THEN 'single' ELSE 'series' END AS novel_kind
+                CASE WHEN n.series_id IS NULL THEN 'single' ELSE 'series' END AS novel_kind,
+                rp.status AS reading_status,
+                rp.progress AS reading_progress
             FROM novels AS n
             LEFT JOIN users AS u ON u.user_id = n.user_id
             {where_sql}
+            LEFT JOIN reading_progress AS rp ON rp.novel_id = n.novel_id
             ORDER BY {order_sql}
             LIMIT ? OFFSET ?
             """,
@@ -621,10 +626,14 @@ class Database:
                 n.last_checked_at,
                 nt.text_raw,
                 nt.text_markdown,
-                n.raw_json
+                n.raw_json,
+                rp.status AS reading_status,
+                rp.progress AS reading_progress,
+                rp.last_read_at
             FROM novels AS n
             LEFT JOIN users AS u ON u.user_id = n.user_id
             LEFT JOIN novel_texts AS nt ON nt.novel_id = n.novel_id
+            LEFT JOIN reading_progress AS rp ON rp.novel_id = n.novel_id
             WHERE n.novel_id = ?
             """,
             (novel_id,),
@@ -958,11 +967,14 @@ class Database:
                 n.novel_id, n.title, n.user_id, n.series_id,
                 u.name AS author_name, n.cover_url, n.restrict_value,
                 n.total_bookmarks, n.total_views, n.last_seen_at, n.first_seen_at,
-                CASE WHEN n.series_id IS NULL THEN 'single' ELSE 'series' END AS novel_kind
+                CASE WHEN n.series_id IS NULL THEN 'single' ELSE 'series' END AS novel_kind,
+                rp.status AS reading_status,
+                rp.progress AS reading_progress
             FROM novels AS n
             LEFT JOIN users AS u ON u.user_id = n.user_id
             LEFT JOIN sources AS s ON s.novel_id = n.novel_id
             {where_sql}
+            LEFT JOIN reading_progress AS rp ON rp.novel_id = n.novel_id
             ORDER BY {order_sql}
             LIMIT ? OFFSET ?
             """,
@@ -3437,3 +3449,51 @@ class Database:
             return json.loads(value)
         except (TypeError, ValueError):
             return default
+
+    # ══════════════════════════════════════════════════════════════
+    #  阅读进度追踪
+    # ══════════════════════════════════════════════════════════════
+
+    def _migrate_reading_progress_table(self) -> None:
+        """创建阅读进度追踪表。"""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS reading_progress (
+                novel_id INTEGER PRIMARY KEY,
+                progress INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'unread',
+                last_read_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_reading_progress_status ON reading_progress(status);
+            CREATE INDEX IF NOT EXISTS idx_reading_progress_last_read ON reading_progress(last_read_at DESC);
+            """
+        )
+
+    def upsert_reading_progress(self, novel_id: int, progress: int, status: str) -> None:
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO reading_progress (novel_id, progress, status, last_read_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(novel_id) DO UPDATE SET
+                    progress = excluded.progress,
+                    status = excluded.status,
+                    last_read_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (novel_id, progress, status),
+            )
+            self._commit_if_needed()
+
+    def get_reading_progress(self, novel_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM reading_progress WHERE novel_id = ?", (novel_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def delete_reading_progress(self, novel_id: int) -> None:
+        with self._lock:
+            self.conn.execute("DELETE FROM reading_progress WHERE novel_id = ?", (novel_id,))
+            self._commit_if_needed()

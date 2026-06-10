@@ -1889,6 +1889,46 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             return jsonify({"error": "novel not found"}), 404
         return jsonify(payload)
 
+    @app.get("/api/dashboard/novels/<int:novel_id>/progress")
+    def get_novel_progress(novel_id: int):
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            progress = db.get_reading_progress(novel_id)
+        finally:
+            db.close()
+        if progress is None:
+            return jsonify({"novel_id": novel_id, "progress": 0, "status": "unread"})
+        return jsonify(progress)
+
+    @app.post("/api/dashboard/novels/<int:novel_id>/progress")
+    def update_novel_progress(novel_id: int):
+        data = request.get_json() or {}
+        progress = max(0, min(100, _safe_int(data.get("progress", 0), 0)))
+        status = str(data.get("status", "reading") or "reading").strip()
+        if status not in {"unread", "reading", "completed"}:
+            return jsonify({"error": "invalid status"}), 400
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            db.upsert_reading_progress(novel_id, progress, status)
+        finally:
+            db.close()
+        return jsonify({"success": True})
+
+    @app.delete("/api/dashboard/novels/<int:novel_id>/progress")
+    def delete_novel_progress(novel_id: int):
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        try:
+            db.delete_reading_progress(novel_id)
+        finally:
+            db.close()
+        return jsonify({"success": True})
+
     @app.get("/api/dashboard/series/<int:series_id>")
     def dashboard_series_detail(series_id: int):
         current_settings = settings_manager.load(env_path=env_path)
