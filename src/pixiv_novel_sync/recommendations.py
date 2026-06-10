@@ -59,10 +59,14 @@ class RecommendationService:
             raise RuntimeError("需要先生成默认偏好画像")
         plan = search_plan or self.build_search_plan(profile)
         run_id = self.db.create_recommendation_run(int(profile["id"]), plan)
-        stats = {"searched": 0, "candidates": 0, "saved": 0, "filtered": 0, "errors": 0}
+        stats = {"searched": 0, "candidates": 0, "saved": 0, "filtered": 0, "errors": 0, "series_deduped": 0}
         try:
             api = self.api or self._login_api()
             filter_state = self.db.get_recommendation_filter_state()
+            # Phase 5.6: 系列去重+memo缓存
+            seen_series: set[int] = set()
+            series_length_cache: dict[int, tuple[int, int]] = {}
+
             for query in plan.get("queries") or []:
                 stats["searched"] += 1
                 try:
@@ -72,7 +76,17 @@ class RecommendationService:
                     continue
                 for novel in novels:
                     stats["candidates"] += 1
-                    item = self._candidate_to_item(api, novel, query, profile, plan.get("filters") or {}, filter_state)
+
+                    # Phase 5.6: 系列去重
+                    series_id = self._series_id(novel)
+                    if series_id and series_id in seen_series:
+                        stats["series_deduped"] += 1
+                        stats["filtered"] += 1
+                        continue
+                    if series_id:
+                        seen_series.add(series_id)
+
+                    item = self._candidate_to_item(api, novel, query, profile, plan.get("filters") or {}, filter_state, series_length_cache)
                     if item is None:
                         stats["filtered"] += 1
                         continue
@@ -120,6 +134,7 @@ class RecommendationService:
         profile: dict[str, Any],
         filters: dict[str, Any],
         filter_state: dict[str, Any],
+        series_length_cache: dict[int, tuple[int, int]] | None = None,
     ) -> dict[str, Any] | None:
         novel_id = int(getattr(novel, "id", 0) or 0)
         if not novel_id:
@@ -149,7 +164,13 @@ class RecommendationService:
         single_min_chars = max(5000, int(filters.get("single_min_chars") or 5000))
         series_min_total_chars = max(20000, int(filters.get("series_min_total_chars") or 20000))
         if series_id:
-            series_total_text_length, series_total_novels = self._series_length(api, series_id)
+            # Phase 5.6: 使用memo缓存避免重复API调用
+            if series_length_cache is not None and series_id in series_length_cache:
+                series_total_text_length, series_total_novels = series_length_cache[series_id]
+            else:
+                series_total_text_length, series_total_novels = self._series_length(api, series_id)
+                if series_length_cache is not None:
+                    series_length_cache[series_id] = (series_total_text_length, series_total_novels)
             if series_total_text_length < series_min_total_chars:
                 return None
         elif text_length < single_min_chars:
