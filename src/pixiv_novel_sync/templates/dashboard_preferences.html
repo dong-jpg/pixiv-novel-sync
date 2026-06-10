@@ -180,6 +180,23 @@ window.initVueApp({
       searchPlan.value = null;
     }
 
+    async function pollJob(jobId, maxWaitMs = 300000) {
+      const startTime = Date.now();
+      while (Date.now() - startTime < maxWaitMs) {
+        const res = await fetch(`/api/jobs/${jobId}`);
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || '获取任务状态失败');
+
+        const job = data.data;
+        if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+          return job;
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      throw new Error('任务超时');
+    }
+
     async function loadRecommendationItems() {
       const res = await fetch('/api/dashboard/recommendations/items?limit=100');
       const data = await res.json();
@@ -205,15 +222,27 @@ window.initVueApp({
       if (!searchPlan.value) await buildSearchPlan();
       recommendationLoading.value = true;
       try {
+        // Phase 7.6: 启动后台job
         const res = await fetch('/api/dashboard/recommendations/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ profile_id: selected.value.id, search_plan: searchPlan.value })
         });
         const data = await res.json();
-        if (!data.ok) throw new Error(data.error || '推书失败');
-        recommendationItems.value = data.data.items || [];
-        showMessage(`推书完成：保存 ${data.data.stats?.saved || 0} 条`);
+        if (!data.ok) throw new Error(data.error || '启动失败');
+
+        const jobId = data.data.job_id;
+        showMessage('正在生成推荐...');
+
+        // 轮询job状态
+        const result = await pollJob(jobId);
+        if (result.status === 'completed') {
+          await loadRecommendationItems();
+          const saved = result.result?.stats?.saved || 0;
+          showMessage(`推书完成：保存 ${saved} 条`);
+        } else {
+          throw new Error(result.message || '推书失败');
+        }
       } catch (e) {
         showMessage(e.message || String(e), 'error');
       } finally {
@@ -248,16 +277,26 @@ window.initVueApp({
     async function analyze() {
       loading.value = true;
       try {
+        // Phase 7.6: 启动后台job
         const res = await fetch('/api/dashboard/preferences/profiles/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: '本地偏好画像', is_default: true, scope: { min_text_length: 1000 } })
         });
         const data = await res.json();
-        if (!data.ok) throw new Error(data.error || '分析失败');
-        selected.value = data.data;
-        await loadProfiles();
-        showMessage('偏好画像已生成');
+        if (!data.ok) throw new Error(data.error || '启动失败');
+
+        const jobId = data.data.job_id;
+        showMessage('正在分析偏好...');
+
+        // 轮询job状态
+        const result = await pollJob(jobId);
+        if (result.status === 'completed') {
+          await loadProfiles();
+          showMessage('偏好画像已生成');
+        } else {
+          throw new Error(result.message || '分析失败');
+        }
       } catch (e) {
         showMessage(e.message || String(e), 'error');
       } finally {
