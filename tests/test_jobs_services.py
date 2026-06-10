@@ -568,7 +568,7 @@ def test_run_user_backup_task_raises_on_failed_sync_counter_and_closes_db(settin
 
     monkeypatch.setattr(services, "BookmarkNovelSyncService", make_sync_service)
 
-    with pytest.raises(RuntimeError, match="novel sync failures"):
+    with pytest.raises(RuntimeError, match="backup aborted.*threshold exceeded"):
         services.run_user_backup_task(settings, user_id=101)
 
     assert service_env["db"].closed is True

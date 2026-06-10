@@ -520,16 +520,21 @@ class BookmarkNovelSyncService:
         """同步关注用户列表（只更新用户信息，不同步小说）"""
         stats = {"users": 0, "following_users_scanned": 0}
         page_delay = self.settings.sync.delay_seconds_between_pages
-        
+        max_pages = self.settings.sync.max_pages_per_run
+
         logger.info("Syncing following user list")
         current_user_id = self.settings.pixiv.user_id
         if not current_user_id:
             raise RuntimeError("PIXIV_USER_ID is required to fetch following list")
-        
+
         next_following_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
         following_page_count = 0
-        
+        safety_limit = max_pages or 100  # 3.3翻页上限兜底
+
         while next_following_query:
+            if following_page_count >= safety_limit:
+                logger.info("Reached page safety limit=%s for following list, stopping pagination", safety_limit)
+                break
             following_result = self.api.user_following(**next_following_query)
             following_page_count += 1
             if progress_callback:
@@ -1050,10 +1055,16 @@ class BookmarkNovelSyncService:
                                 all_novel_items = list(series_data.get("novels", []))
                                 # 处理分页
                                 next_url = series_data.get("next_url")
+                                series_page_count = 1
+                                series_safety_limit = self.settings.sync.max_pages_per_run or 100  # 3.3翻页上限兜底
                                 if progress_callback:
                                     progress_callback("phase", {"phase": f"系列 {title or sid}: 已获取 {len(all_novel_items)} 章"})
                                 while next_url:
+                                    if series_page_count >= series_safety_limit:
+                                        logger.info("Reached page safety limit=%s for series %s, stopping pagination", series_safety_limit, sid)
+                                        break
                                     try:
+                                        series_page_count += 1
                                         next_query = self.api.parse_qs(next_url) or {}
                                         last_order = next_query.get("last_order")
                                         next_data = self.api.novel_series(int(sid), last_order=last_order) if last_order else None
@@ -1302,14 +1313,22 @@ class BookmarkNovelSyncService:
             raise
 
         # 完整性 sanity check：如果远端结果异常少，宁可拒绝继续
-        if len(remote_ids) == 0:
-            local_count = self.db.conn.execute(
-                "SELECT COUNT(DISTINCT novel_id) FROM sources WHERE source_type LIKE 'bookmark_%'"
-            ).fetchone()[0]
-            if local_count > 0:
+        local_count = self.db.conn.execute(
+            "SELECT COUNT(DISTINCT novel_id) FROM sources WHERE source_type LIKE 'bookmark_%'"
+        ).fetchone()[0]
+
+        # 3.2误删防护:远端/本地数量骤降比例阈值
+        if local_count > 20:  # 本地有足够样本才检测
+            drop_ratio = (local_count - len(remote_ids)) / local_count if local_count > 0 else 0
+            if drop_ratio > 0.5:  # 骤降超50%
                 raise RuntimeError(
-                    f"Remote bookmark count is 0 but local has {local_count}; refusing to proceed (likely API failure)"
+                    f"Remote bookmark count {len(remote_ids)} vs local {local_count} (drop {drop_ratio:.1%}); "
+                    f"refusing to proceed to prevent mass deletion from API failure or account compromise"
                 )
+        elif len(remote_ids) == 0 and local_count > 0:
+            raise RuntimeError(
+                f"Remote bookmark count is 0 but local has {local_count}; refusing to proceed (likely API failure)"
+            )
 
         # 2. 清除已重新收藏的 pending 记录
         cleaned = self.db.cleanup_stale_pending(remote_ids, "novel")
@@ -1627,6 +1646,28 @@ class BookmarkNovelSyncService:
         webview = self.api.webview_novel(novel_id)
         body = normalize_text(_extract_novel_text(webview))
         text_hash = sha256_text(body)
+
+        # 3.5 hash增量:读旧hash比对,未变更跳过写盘写库
+        existing_row = self.db.conn.execute(
+            "SELECT meta_hash FROM novels WHERE novel_id = ?", (novel_id,)
+        ).fetchone()
+        existing_text_row = self.db.conn.execute(
+            "SELECT text_hash FROM novel_texts WHERE novel_id = ?", (novel_id,)
+        ).fetchone()
+        meta_unchanged = existing_row and existing_row[0] == meta_hash
+        text_unchanged = existing_text_row and existing_text_row[0] == text_hash
+
+        if meta_unchanged and text_unchanged:
+            # 元数据与正文均无变更,仅更新last_seen_at
+            self.db.touch_novel(novel_id)
+            self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
+            return {
+                "users": 0, "novels": 0, "texts_updated": 0, "assets_downloaded": 0,
+                "bookmarks": int(getattr(detail_novel, "total_bookmarks", 0) or 0),
+                "views": int(getattr(detail_novel, "total_view", 0) or 0),
+                "skipped": 1,
+            }
+
         markdown_text = to_markdown(title, user_name, caption, body) if write_markdown else None
 
         # Write the archive files to disk BEFORE committing the DB rows. The
