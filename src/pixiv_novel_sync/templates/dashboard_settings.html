@@ -49,6 +49,10 @@
               <input type="checkbox" v-model="settings.sync_following_novels" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
               <span class="text-sm text-gray-700 group-hover:text-gray-900 transition-colors">同步关注用户的小说</span>
             </label>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.sync_subscribed_series" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 group-hover:text-gray-900 transition-colors">同步追更系列</span>
+            </label>
           </div>
         </div>
 
@@ -91,6 +95,9 @@
         <button @click="saveSettings('basic')" :disabled="saving" class="px-5 py-2 bg-brand-500 text-white hover:bg-brand-600 font-medium text-sm rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50">
           {{ saving ? '保存中...' : '保存基础设置' }}
         </button>
+        <a href="/api/dashboard/export/stats" download="pixiv-stats.json" class="px-5 py-2 bg-gray-100 text-gray-700 hover:bg-gray-200 font-medium text-sm rounded-lg transition-colors shadow-sm border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2">
+          导出统计数据
+        </a>
         <span v-if="saveMessage" class="text-sm font-medium" :class="saveSuccess ? 'text-green-600' : 'text-red-600'">{{ saveMessage }}</span>
       </div>
     </section>
@@ -475,6 +482,7 @@
         { id: 'bookmark', label: '同步收藏', class: 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 focus:ring-blue-500' },
         { id: 'following_users', label: '同步关注用户', class: 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100 focus:ring-indigo-500' },
         { id: 'following_novels', label: '同步关注小说', class: 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 focus:ring-emerald-500' },
+        { id: 'subscribed_series', label: '同步追更系列', class: 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100 focus:ring-purple-500' },
         { id: 'user_status', label: '检查用户状态', class: 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 focus:ring-amber-500' },
         { id: 'novel_status', label: '检查小说状态', class: 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100 focus:ring-rose-500' },
         { id: 'series_status', label: '检查系列状态', class: 'bg-cyan-50 text-cyan-700 border-cyan-200 hover:bg-cyan-100 focus:ring-cyan-500' }
