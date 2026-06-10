@@ -5,8 +5,9 @@ import logging
 import time
 import types
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, TypeVar
 from urllib.parse import urlparse
 
 from pixivpy3 import AppPixivAPI
@@ -26,6 +27,51 @@ logger = logging.getLogger(__name__)
 # far beyond any real library yet still bounds the worst case.
 _CHECK_PAGE_SAFETY_LIMIT = 2000
 
+T = TypeVar('T')
+
+
+def retry_on_pixiv_error(max_retries: int = 3, base_delay: float = 5.0) -> Callable[[Callable[..., T]], Callable[..., T]]:
+    """Pixiv API重试装饰器:捕获429/网络错误,指数退避重试。
+
+    Args:
+        max_retries: 最大重试次数(不含首次调用)
+        base_delay: 基础延迟(秒),429时翻倍退避,最长60s
+    """
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> T:
+            last_exc = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_exc = e
+                    # 429 或网络错误才重试
+                    is_rate_limit = False
+                    is_network = False
+                    err_str = str(e).lower()
+                    if "429" in err_str or "rate" in err_str:
+                        is_rate_limit = True
+                    elif any(k in err_str for k in ["connection", "timeout", "network", "unreachable"]):
+                        is_network = True
+
+                    if not (is_rate_limit or is_network):
+                        raise  # 非重试类错误立即抛出
+
+                    if attempt < max_retries:
+                        delay = min(base_delay * (2 ** attempt), 60.0) if is_rate_limit else base_delay
+                        logger.warning(
+                            f"{func.__name__} {'rate limited (429)' if is_rate_limit else 'network error'}, "
+                            f"retry {attempt+1}/{max_retries} after {delay:.1f}s: {e}"
+                        )
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"{func.__name__} failed after {max_retries} retries: {e}")
+
+            raise last_exc  # type: ignore
+        return wrapper
+    return decorator
+
 
 class BookmarkNovelSyncService:
     def __init__(self, api: AppPixivAPI, db: Database, storage: FileStorage, settings: Settings, sync_check_scope: str = "_") -> None:
@@ -34,6 +80,12 @@ class BookmarkNovelSyncService:
         self.storage = storage
         self.settings = settings
         self.sync_check_scope = sync_check_scope
+
+        # 动态包装API核心方法,自动处理429和网络错误重试
+        for method_name in ["user_bookmarks_novel", "user_following", "user_novels", "novel_detail", "novel_series", "novel_series_detail", "webview_novel"]:
+            if hasattr(self.api, method_name):
+                original = getattr(self.api, method_name)
+                setattr(self.api, method_name, retry_on_pixiv_error(max_retries=3, base_delay=5.0)(original))
 
     def check_bookmarks_existence(self, user_id: int, restricts: Iterable[str], progress_callback: Any = None) -> dict[str, int]:
         """预检查：获取全部收藏列表，标记哪些已存在本地"""
@@ -1600,36 +1652,38 @@ class BookmarkNovelSyncService:
                     )
                 )
 
-            self.db.upsert_novel(
-                NovelRecord(
-                    novel_id=novel_id,
-                    user_id=user_id,
-                    series_id=series_id,
-                    title=title,
-                    caption=caption,
-                    visible=bool(getattr(detail_novel, "visible", True)),
-                    restrict=restrict,
-                    x_restrict=int(getattr(detail_novel, "x_restrict", 0) or 0),
-                    text_length=int(getattr(detail_novel, "text_length", 0) or 0),
-                    total_bookmarks=int(getattr(detail_novel, "total_bookmarks", 0) or 0),
-                    total_views=int(getattr(detail_novel, "total_view", 0) or 0),
-                    cover_url=cover_url,
-                    tags_json=tags_json,
-                    create_date=getattr(detail_novel, "create_date", None),
-                    raw_json=stable_json_dumps(meta_plain),
-                    meta_hash=meta_hash,
+            # 1.4 FTS原子化:upsert+FTS包进同一事务,消除漂移(一个成功一个失败)
+            with self.db.transaction():
+                self.db.upsert_novel(
+                    NovelRecord(
+                        novel_id=novel_id,
+                        user_id=user_id,
+                        series_id=series_id,
+                        title=title,
+                        caption=caption,
+                        visible=bool(getattr(detail_novel, "visible", True)),
+                        restrict=restrict,
+                        x_restrict=int(getattr(detail_novel, "x_restrict", 0) or 0),
+                        text_length=int(getattr(detail_novel, "text_length", 0) or 0),
+                        total_bookmarks=int(getattr(detail_novel, "total_bookmarks", 0) or 0),
+                        total_views=int(getattr(detail_novel, "total_view", 0) or 0),
+                        cover_url=cover_url,
+                        tags_json=tags_json,
+                        create_date=getattr(detail_novel, "create_date", None),
+                        raw_json=stable_json_dumps(meta_plain),
+                        meta_hash=meta_hash,
+                    )
                 )
-            )
-            self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
-            self.db.upsert_novel_text(
-                NovelTextRecord(
-                    novel_id=novel_id,
-                    text_raw=body,
-                    text_markdown=markdown_text,
-                    text_hash=text_hash,
+                self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
+                self.db.upsert_novel_text(
+                    NovelTextRecord(
+                        novel_id=novel_id,
+                        text_raw=body,
+                        text_markdown=markdown_text,
+                        text_hash=text_hash,
+                    )
                 )
-            )
-            self.db.replace_fts(novel_id, title, caption, user_name, body)
+                self.db.replace_fts(novel_id, title, caption, user_name, body)
 
         assets_downloaded = 0
         if download_assets:
