@@ -98,11 +98,16 @@ class RecommendationService:
     def _search_novels(self, api: AppPixivAPI, query: str, limit: int) -> list[Any]:
         results: list[Any] = []
         next_query: dict[str, Any] | None = {"word": query, "search_target": "partial_match_for_tags", "sort": "date_desc"}
-        while next_query and len(results) < limit:
+        max_pages = 10  # 7.1: 翻页上限
+        page_count = 0
+        while next_query and len(results) < limit and page_count < max_pages:
             response = api.search_novel(**next_query)
             novels = list(getattr(response, "novels", []) or [])
+            if not novels:  # 7.1: 空页即停
+                break
             results.extend(novels)
             next_query = api.parse_qs(getattr(response, "next_url", None))
+            page_count += 1
             if next_query and len(results) < limit:
                 self._page_delay()
         return results[:limit]
@@ -119,9 +124,13 @@ class RecommendationService:
         novel_id = int(getattr(novel, "id", 0) or 0)
         if not novel_id:
             return None
-        if filters.get("exclude_archived", True) and novel_id in filter_state["archived_novel_ids"]:
+        # 7.3: 统一filter_state取值为.get(..., set())
+        if filters.get("exclude_archived", True) and novel_id in filter_state.get("archived_novel_ids", set()):
             return None
-        previously_recommended = filter_state.get("recommended_novel_ids") or filter_state.get("dismissed_novel_ids", set())
+        # 7.2: 修正空集回退语义 - 两个集合应该合并而非回退
+        recommended = filter_state.get("recommended_novel_ids", set())
+        dismissed = filter_state.get("dismissed_novel_ids", set())
+        previously_recommended = recommended | dismissed
         if filters.get("exclude_recommended_before", True) and novel_id in previously_recommended:
             return None
 
@@ -142,11 +151,13 @@ class RecommendationService:
         author = getattr(novel, "user", None)
         author_id = int(getattr(author, "id", 0) or 0) if author else 0
         author_name = str(getattr(author, "name", "") or "") if author else ""
-        if filters.get("exclude_muted_authors", True) and str(author_id) in filter_state["muted_authors"]:
+        # 7.3: 统一filter_state取值
+        if filters.get("exclude_muted_authors", True) and str(author_id) in filter_state.get("muted_authors", set()):
             return None
 
         tags = self._tags(novel)
-        if filters.get("exclude_muted_tags", True) and set(tags) & filter_state["muted_tags"]:
+        # 7.3: 统一filter_state取值
+        if filters.get("exclude_muted_tags", True) and set(tags) & filter_state.get("muted_tags", set()):
             return None
 
         score, matched = self._score(novel, tags, profile, series_total_text_length)
