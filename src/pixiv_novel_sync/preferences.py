@@ -114,7 +114,6 @@ class PreferenceAnalyzer:
                 "broad_queries": broad_queries,
                 "precise_queries": precise_queries[:12],
                 "experimental_queries": experimental_queries[:12],
-                "exclude_terms": [],
             },
             "reading_bias": {
                 "preferred_min_length": max(5000, int(stats.get("avg_text_length") or 0)),

@@ -35,7 +35,6 @@ class RecommendationService:
                     "query": query,
                     "type": query_type,
                     "expected_reason": "基于默认偏好画像生成",
-                    "exclude_terms": strategy.get("exclude_terms") or [],
                     "limit": int(filters.get("per_query_limit") or 30),
                 })
         single_min_chars = max(5000, int(filters.get("single_min_chars") or 5000))
@@ -198,21 +197,39 @@ class RecommendationService:
     def _score(self, novel: Any, tags: list[str], profile: dict[str, Any], series_total_text_length: int) -> tuple[float, dict[str, Any]]:
         profile_data = profile.get("profile") or {}
         positive = profile_data.get("positive_preferences") or {}
+        negative = profile_data.get("negative_preferences") or {}  # 7.5: 接入负向偏好
         search_strategy = profile_data.get("search_strategy") or {}
         preferred_tags = set(positive.get("tags") or []) | set(search_strategy.get("primary_tags") or [])
         preferred_keywords = set(positive.get("keywords") or [])
+        # 7.5: 负向偏好
+        disliked_tags = set(negative.get("tags") or [])
+        disliked_keywords = set(negative.get("keywords") or [])
+
         text = f"{getattr(novel, 'title', '')}\n{getattr(novel, 'caption', '')}"
         matched_tags = [tag for tag in tags if tag in preferred_tags]
         matched_keywords = [kw for kw in preferred_keywords if kw and kw in text]
+
+        # 7.5: 负向匹配
+        negative_tags = [tag for tag in tags if tag in disliked_tags]
+        negative_keywords = [kw for kw in disliked_keywords if kw and kw in text]
+
         score = 0.0
         score += len(matched_tags) * 12
         score += len(matched_keywords) * 6
-        score += min(15, int(getattr(novel, "total_bookmarks", 0) or 0) / 100)
+        # 7.5: 书签对数归一化(避免高书签作品权重过大)
+        import math
+        bookmarks = int(getattr(novel, "total_bookmarks", 0) or 0)
+        if bookmarks > 0:
+            score += min(15, math.log10(bookmarks + 1) * 5)
+        # 7.5: 负向惩罚
+        score -= len(negative_tags) * 20
+        score -= len(negative_keywords) * 10
+
         if series_total_text_length >= 20000:
             score += 10
         elif int(getattr(novel, "text_length", 0) or 0) >= 5000:
             score += 5
-        return round(score, 2), {"tags": matched_tags, "keywords": matched_keywords}
+        return round(score, 2), {"tags": matched_tags, "keywords": matched_keywords, "negative_tags": negative_tags, "negative_keywords": negative_keywords}
 
     def _series_id(self, novel: Any) -> int | None:
         series = getattr(novel, "series", None)
