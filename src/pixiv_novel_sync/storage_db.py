@@ -1034,6 +1034,7 @@ class Database:
                 CASE WHEN se.cover_url IS NOT NULL AND se.cover_url != '' THEN se.cover_url
                      ELSE (SELECT n2.cover_url FROM novels n2 WHERE n2.series_id = se.series_id AND n2.cover_url IS NOT NULL AND n2.cover_url != '' LIMIT 1)
                 END AS cover_url,
+                u.raw_json AS author_raw_json,
                 se.total_novels AS chapter_count,
                 se.last_seen_at AS last_updated,
                 COALESCE((SELECT SUM(n.text_length) FROM novels n WHERE n.series_id = se.series_id), 0) AS total_text_length
@@ -1046,6 +1047,13 @@ class Database:
             params_query,
         ).fetchall()
         items = [dict(row) for row in rows]
+        # 6.7: 提取作者头像
+        for item in items:
+            raw_json = item.pop("author_raw_json", None)
+            if raw_json:
+                item["author_avatar"] = self._extract_user_avatar(self._load_raw_json(raw_json))
+            else:
+                item["author_avatar"] = None
         return {
             "items": items,
             "page": page, "page_size": page_size,

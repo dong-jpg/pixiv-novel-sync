@@ -2690,16 +2690,19 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
     }
 
 
-def _shared_job_to_dict(job: JobState | None) -> dict[str, Any] | None:
+def _job_to_dict_unified(job: JobState | SyncJobState | None) -> dict[str, Any] | None:
+    """6.9: 统一两套job序列化"""
     if job is None:
         return None
     elapsed = None
     if job.started_at:
         end = job.finished_at or time.time()
         elapsed = round(end - job.started_at, 1)
-    return {
+
+    # 通用字段
+    result = {
         "job_id": job.job_id,
-        "status": job.status.value,
+        "status": job.status.value if hasattr(job.status, "value") else job.status,
         "message": job.message,
         "started_at": job.started_at,
         "finished_at": job.finished_at,
@@ -2707,14 +2710,34 @@ def _shared_job_to_dict(job: JobState | None) -> dict[str, Any] | None:
         "stats": job.stats,
         "error": job.error,
         "progress": job.progress,
-        "logs": [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs],
-        "task_list": list(job.task_types),
-        "current_task_index": int(job.progress.get("current_task_index", 0) or 0),
-        "is_auto_sync": job.spec.source == JobSource.SCHEDULER,
-        "source": job.spec.source.value,
-        "job_type": job.spec.job_type.value,
     }
 
+    # JobState专用字段
+    if isinstance(job, JobState):
+        result["logs"] = [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs]
+        result["task_list"] = list(job.task_types)
+        result["current_task_index"] = int(job.progress.get("current_task_index", 0) or 0)
+        result["is_auto_sync"] = job.spec.source == JobSource.SCHEDULER
+        result["source"] = job.spec.source.value
+        result["job_type"] = job.spec.job_type.value
+    # SyncJobState专用字段
+    else:
+        result["logs"] = job.logs
+        result["task_list"] = job.task_list
+        result["current_task_index"] = job.current_task_index
+        result["is_auto_sync"] = job.is_auto_sync
+
+    return result
+
+
+def _shared_job_to_dict(job: JobState | None) -> dict[str, Any] | None:
+    """向后兼容wrapper"""
+    return _job_to_dict_unified(job)
+
+
+def _job_to_dict(job: SyncJobState | None) -> dict[str, Any] | None:
+    """向后兼容wrapper"""
+    return _job_to_dict_unified(job)
 
 
 def _web_job_spec(task_list: list[str] | None) -> JobSpec:
@@ -2734,31 +2757,6 @@ def _web_job_spec(task_list: list[str] | None) -> JobSpec:
 
 def _build_web_sync_job_spec(settings: Settings) -> JobSpec:
     return _web_job_spec(build_default_task_list(settings))
-
-
-
-def _job_to_dict(job: SyncJobState | None) -> dict[str, Any] | None:
-    if job is None:
-        return None
-    elapsed = None
-    if job.started_at:
-        end = job.finished_at or time.time()
-        elapsed = round(end - job.started_at, 1)
-    return {
-        "job_id": job.job_id,
-        "status": job.status,
-        "message": job.message,
-        "started_at": job.started_at,
-        "finished_at": job.finished_at,
-        "elapsed": elapsed,
-        "stats": job.stats,
-        "error": job.error,
-        "progress": job.progress,
-        "logs": job.logs,
-        "task_list": job.task_list,
-        "current_task_index": job.current_task_index,
-        "is_auto_sync": job.is_auto_sync,
-    }
 
 
 def _load_yaml_file(path: Path) -> dict[str, Any]:
