@@ -20,6 +20,7 @@ dependencies = [
   "Flask>=3.0.3",
   "playwright>=1.48.0",
   "croniter>=2.0.0",
+  "ebooklib>=0.18",
 ]
 
 [project.optional-dependencies]

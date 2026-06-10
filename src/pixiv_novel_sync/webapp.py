@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 import requests as http_requests
 import yaml
-from flask import Flask, Response, jsonify, redirect, render_template, request, session
+from flask import Flask, Response, jsonify, redirect, render_template, request, session, send_file
 
 from .jobs import services as job_services
 from .jobs.manager import JobManager
@@ -1928,6 +1928,83 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         finally:
             db.close()
         return jsonify({"success": True})
+
+    @app.post("/api/dashboard/novels/export-epub")
+    def export_novels_to_epub():
+        from .epub_exporter import create_epub_from_novel
+        import zipfile
+        import io
+
+        data = request.get_json() or {}
+        novel_ids = data.get("novel_ids", [])
+        if not novel_ids or not isinstance(novel_ids, list):
+            return jsonify({"error": "novel_ids required"}), 400
+
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
+        db.init_schema()
+        storage = FileStorage(current_settings.storage)
+
+        try:
+            if len(novel_ids) == 1:
+                # 单本小说直接返回EPUB
+                novel_id = int(novel_ids[0])
+                novel_data = db.get_novel_detail(novel_id)
+                if not novel_data:
+                    return jsonify({"error": "novel not found"}), 404
+                text_content = novel_data.get("text_raw", "")
+                if not text_content:
+                    return jsonify({"error": "novel text not available"}), 400
+
+                # 查找封面路径
+                cover_path = None
+                if novel_data.get("cover_url"):
+                    cover_path = storage.get_novel_cover_path(
+                        novel_data["user_id"],
+                        novel_data["novel_id"],
+                        novel_data["restrict_value"]
+                    )
+
+                epub_bytes = create_epub_from_novel(novel_data, text_content, cover_path)
+                filename = f"{novel_data.get('title', str(novel_id))}.epub"
+
+                return send_file(
+                    io.BytesIO(epub_bytes),
+                    mimetype="application/epub+zip",
+                    as_attachment=True,
+                    download_name=filename
+                )
+            else:
+                # 多本小说打包为ZIP
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for novel_id in novel_ids[:50]:  # 限制最多50本
+                        novel_id = int(novel_id)
+                        novel_data = db.get_novel_detail(novel_id)
+                        if not novel_data or not novel_data.get("text_raw"):
+                            continue
+
+                        cover_path = None
+                        if novel_data.get("cover_url"):
+                            cover_path = storage.get_novel_cover_path(
+                                novel_data["user_id"],
+                                novel_data["novel_id"],
+                                novel_data["restrict_value"]
+                            )
+
+                        epub_bytes = create_epub_from_novel(novel_data, novel_data["text_raw"], cover_path)
+                        filename = f"{novel_data.get('title', str(novel_id))}.epub"
+                        zf.writestr(filename, epub_bytes)
+
+                zip_buffer.seek(0)
+                return send_file(
+                    zip_buffer,
+                    mimetype="application/zip",
+                    as_attachment=True,
+                    download_name="novels.zip"
+                )
+        finally:
+            db.close()
 
     @app.get("/api/dashboard/series/<int:series_id>")
     def dashboard_series_detail(series_id: int):
