@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import time
 from typing import Any
 
@@ -131,6 +132,13 @@ class RecommendationService:
         dismissed = filter_state.get("dismissed_novel_ids", set())
         previously_recommended = recommended | dismissed
         if filters.get("exclude_recommended_before", True) and novel_id in previously_recommended:
+            return None
+
+        # P1: 相似度去重
+        title = str(getattr(novel, "title", "") or "")
+        author_id = int(getattr(getattr(novel, "user", None), "id", 0) or 0)
+        tags = self._tags(novel)
+        if self._is_similar_to_existing(title, author_id, tags, filters):
             return None
 
         series_id = self._series_id(novel)
@@ -295,3 +303,26 @@ class RecommendationService:
             if value:
                 tags.append(value)
         return tags
+
+    def _is_similar_to_existing(self, title: str, author_id: int, tags: list[str], filters: dict[str, Any]) -> bool:
+        """检测与已推荐项目的相似度,避免重复推荐"""
+        threshold = float(filters.get("similarity_threshold", 0.8))
+        existing = self.db.get_recent_recommendation_items(limit=100, status="new")
+
+        for item in existing:
+            # 相同作者+高度相似标题
+            if item["author_id"] == author_id:
+                similarity = difflib.SequenceMatcher(None, title, item["title"]).ratio()
+                if similarity >= threshold:
+                    return True
+
+            # 相同作者+标签高度重合
+            if item["author_id"] == author_id:
+                existing_tags = set(item.get("tags") or [])
+                common_tags = set(tags) & existing_tags
+                if len(common_tags) >= 3 and len(existing_tags) > 0:
+                    overlap_ratio = len(common_tags) / len(existing_tags)
+                    if overlap_ratio >= 0.7:
+                        return True
+
+        return False

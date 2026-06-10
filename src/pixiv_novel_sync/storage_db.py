@@ -1849,6 +1849,10 @@ class Database:
         rows = self.conn.execute(sql, params).fetchall()
         return [self._row_to_recommendation_item(row) for row in rows]
 
+    def get_recent_recommendation_items(self, limit: int = 100, status: str | None = None) -> list[dict[str, Any]]:
+        """获取最近推荐项目用于相似度检测"""
+        return self.list_recommendation_items(status=status, limit=limit)
+
     def get_recommendation_item(self, item_id: int) -> dict[str, Any] | None:
         row = self.conn.execute(
             "SELECT * FROM recommendation_items WHERE id = ?",
