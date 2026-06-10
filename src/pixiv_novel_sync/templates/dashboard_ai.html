@@ -1017,7 +1017,10 @@
   <section v-show="activeTab === 'jobs'" class="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
     <div class="flex items-center justify-between mb-3">
       <h2 class="text-lg font-bold text-gray-900">任务历史</h2>
-      <span class="text-xs text-pixiv-gray">共 {{ jobsTotal }} 条 · 第 {{ jobsPage }}/{{ jobsTotalPages }} 页</span>
+      <div class="flex items-center gap-3">
+        <button @click="cleanupJobs" class="text-xs px-3 py-1.5 bg-red-50 text-red-700 border border-red-200 rounded-lg hover:bg-red-100">🗑️ 清理旧记录</button>
+        <span class="text-xs text-pixiv-gray">共 {{ jobsTotal }} 条 · 第 {{ jobsPage }}/{{ jobsTotalPages }} 页</span>
+      </div>
     </div>
     <div class="flex flex-wrap gap-2 mb-4">
       <select v-model="jobFilter.task_type" @change="reloadJobs" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
@@ -1715,6 +1718,14 @@ window.initVueApp({
     }
     function reloadJobs() { jobFilter.page = 1; loadJobs(); }
     function gotoJobsPage(p) { jobFilter.page = p; loadJobs(); }
+    async function cleanupJobs() {
+      if (!confirm('清理30天前的成功记录和7天前的失败记录？')) return;
+      try {
+        await api('/api/dashboard/ai/jobs/cleanup', { method: 'POST' });
+        showMessage('清理完成', 'success');
+        await reloadJobs();
+      } catch (e) { showMessage(e.message, 'error'); }
+    }
     async function openJobDetail(job) {
       selectedJob.value = job;
       try { const full = await api('/api/dashboard/ai/jobs/' + job.job_id); if (full) selectedJob.value = full; }
