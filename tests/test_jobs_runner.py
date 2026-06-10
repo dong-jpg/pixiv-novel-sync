@@ -82,3 +82,24 @@ def test_runner_does_not_start_pre_cancelled_job():
 
     assert calls == []
     assert result.status == JobStatus.CANCELLED
+
+
+def test_runner_does_not_double_stats_when_task_returns_same_object():
+    """回归测试：JobRunner 的 merge_stats 不应与任务内部对 job.stats 的赋值冲突。
+    P0 bug: run_check_bookmarks_task 曾让 job.stats = check_stats，然后 return check_stats，
+    导致 merge_stats(state.stats, task_stats) 对同一对象累加,所有数值翻倍。
+    修复后:返回独立副本,统一路径不应设 job.stats(legacy路径除外)。"""
+    manager = JobManager()
+    state = manager.submit(JobSpec(source=JobSource.CLI, task_types=["check"]))
+    
+    def executor(task_type, context):
+        # 模拟 check task 返回独立副本(不再是同一对象)
+        return {"total_checked": 10, "new": 3, "existing": 7}
+    
+    runner = JobRunner(manager=manager, executor=executor)
+    result = runner.run(state.job_id)
+    
+    assert result.status == JobStatus.SUCCEEDED
+    assert result.stats["total_checked"] == 10  # 不是 20
+    assert result.stats["new"] == 3  # 不是 6
+    assert result.stats["existing"] == 7  # 不是 14

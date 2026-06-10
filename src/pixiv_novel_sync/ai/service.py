@@ -2995,6 +2995,16 @@ class AIWritingService:
                         "context_chars": payload.get("context_chars"),
                         "auto_save": False,
                     }
+                    # 续写 prompt 要求模型“从锚点开始续写、不要重复已有内容”，
+                    # 因此 step_output 只是新生成片段。必须拼接章节已有正文后再写回，
+                    # 否则会用续写片段整段覆盖原文，造成不可逆的数据丢失（与单步
+                    # stream_chapter_continue 的 existing_content + generated 行为对齐）。
+                    pre_db = self._db()
+                    try:
+                        _pre_ch = pre_db.get_ai_chapter(chapter_id)
+                        existing_content = (_pre_ch.get("content") if _pre_ch else "") or ""
+                    finally:
+                        pre_db.close()
                     parts: list[str] = []
                     job_id = ""
                     for chunk in self.stream_chapter_continue(sub_payload):
@@ -3005,16 +3015,17 @@ class AIWritingService:
                             yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
                         elif chunk.type == "error":
                             raise AIServiceError((chunk.data or {}).get("message", "续写失败"))
-                    step_output = "".join(parts)
-                    if step_output:
+                    generated = "".join(parts)
+                    if generated:
+                        step_output = f"{existing_content}{generated}"
                         latest_text = step_output
-                        # 写回章节 content
+                        # 写回章节 content（已有正文 + 续写片段）
                         sub_db = self._db()
                         try:
                             sub_db.update_ai_chapter(chapter_id, {"content": step_output, "status": "draft"})
                         finally:
                             sub_db.close()
-                    step_meta = {"job_id": job_id, "chars": len(step_output)}
+                    step_meta = {"job_id": job_id, "chars": len(generated)}
 
                 elif step in ("polish_dialogue", "polish_psychology"):
                     sub_db = self._db()
