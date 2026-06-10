@@ -296,6 +296,8 @@ class Database:
             self._commit_if_needed()
 
     def replace_fts(self, novel_id: int, title: str, caption: str, author_name: str, body: str) -> None:
+        """更新FTS索引。注意:与upsert_novel分离调用时存在漂移风险(一个成功一个失败)。
+        Phase 5批量事务化后自然原子化。当前调用方(sync_engine.py:1632)未封装事务。"""
         with self._lock:
             self.conn.execute("DELETE FROM novel_fts WHERE novel_id = ?", (novel_id,))
             self.conn.execute(

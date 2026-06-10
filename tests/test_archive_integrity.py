@@ -94,3 +94,54 @@ def test_remove_archive_files_deletes_only_storage_paths(tmp_path: Path):
     assert not novel_dir.exists()
     assert outside.exists()
     db.close()
+
+
+def test_concurrent_read_write_with_thread_local_connections(tmp_path: Path):
+    """回归测试Phase 1.1: threading.local每线程连接,多线程并发读写不冲突。
+    旧bug: 共享单连接导致游标交错、ProgrammingError偶发崩溃。"""
+    import threading
+    import time
+    
+    settings = make_settings(tmp_path)
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    
+    errors = []
+    
+    def writer(base_id: int, count: int):
+        try:
+            for i in range(count):
+                novel_id = base_id + i
+                insert_novel(db, novel_id=novel_id, cover_url=f"https://example.com/{novel_id}.jpg")
+                db.upsert_novel_text(NovelTextRecord(
+                    novel_id=novel_id, text_raw=f"正文{novel_id}", 
+                    text_markdown=None, text_hash=f"hash{novel_id}"
+                ))
+                time.sleep(0.001)  # 模拟真实写入间隔
+        except Exception as e:
+            errors.append(f"writer-{base_id}: {e}")
+    
+    def reader(expected_min: int):
+        try:
+            for _ in range(20):
+                rows = db.conn.execute("SELECT COUNT(*) FROM novels").fetchone()
+                assert rows[0] >= 0, "读取novels表失败"
+                time.sleep(0.002)
+        except Exception as e:
+            errors.append(f"reader: {e}")
+    
+    # 3写1读并发
+    threads = [
+        threading.Thread(target=writer, args=(1000, 10)),
+        threading.Thread(target=writer, args=(2000, 10)),
+        threading.Thread(target=writer, args=(3000, 10)),
+        threading.Thread(target=reader, args=(0,)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    
+    assert not errors, f"并发错误: {errors}"
+    assert db.conn.execute("SELECT COUNT(*) FROM novels").fetchone()[0] == 30
+    db.close()
