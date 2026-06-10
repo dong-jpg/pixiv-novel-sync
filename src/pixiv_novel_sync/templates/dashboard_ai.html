@@ -497,7 +497,10 @@
           <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
             <div class="flex items-center justify-between mb-3">
               <h3 class="font-bold text-gray-900">伏笔追踪</h3>
-              <button @click="showForeshadowForm = !showForeshadowForm" class="text-xs px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg">添加伏笔</button>
+              <div class="flex gap-2">
+                <button @click="autoResolveForeshadows" class="text-xs px-3 py-1.5 bg-purple-50 text-purple-700 border border-purple-200 rounded-lg hover:bg-purple-100">🤖 AI自动回收</button>
+                <button @click="showForeshadowForm = !showForeshadowForm" class="text-xs px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg">添加伏笔</button>
+              </div>
             </div>
             <div class="flex gap-2 mb-3 flex-wrap">
               <button v-for="f in ['all','pending','approaching','resolved']" :key="f" @click="foreshadowFilter = f"
@@ -842,6 +845,10 @@
             </div>
             <div class="space-y-2">
               <button v-if="!pipelineRunning" @click="startChapterPipeline" :disabled="!currentChapter || !pipelineSelectedSteps.length" class="w-full px-4 py-2.5 bg-amber-500 text-white rounded-lg text-sm font-bold disabled:opacity-50">▶ 启动 Pipeline</button>
+              <div v-if="!pipelineRunning" class="grid grid-cols-2 gap-2">
+                <button @click="runSingleStep('extract-summary')" :disabled="!currentChapter" class="px-3 py-1.5 bg-blue-50 text-blue-700 border border-blue-200 rounded text-xs font-medium hover:bg-blue-100 disabled:opacity-50">📝 提取摘要</button>
+                <button @click="runSingleStep('polish')" :disabled="!currentChapter" class="px-3 py-1.5 bg-purple-50 text-purple-700 border border-purple-200 rounded text-xs font-medium hover:bg-purple-100 disabled:opacity-50">✨ 润色</button>
+              </div>
               <p v-else class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">运行中…右侧可看到实时输出。已完成的步骤已经独立写库，即使后续失败也不会丢。</p>
             </div>
             <!-- 进度列表（带重试按钮） -->
@@ -2230,6 +2237,43 @@ window.initVueApp({
       try { await api('/api/dashboard/ai/foreshadows/' + id, { method: 'DELETE' }); await loadForeshadows(currentProject.value?.id); }
       catch (e) { showMessage(e.message, 'error'); }
     }
+    async function autoResolveForeshadows() {
+      if (!currentProject.value) return;
+      if (pipelineRunning.value) { showMessage('Pipeline运行中,请稍后再试', 'error'); return; }
+      pipelineRunning.value = true;
+      streamOutput.value = '';
+      try {
+        const res = await fetch('/api/dashboard/ai/projects/' + currentProject.value.id + '/foreshadows/auto-resolve/stream', { method: 'POST' });
+        if (!res.ok || !res.body) throw new Error('自动回收请求失败');
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split('\n\n');
+          buffer = events.pop() || '';
+          for (const raw of events) {
+            const lines = raw.split('\n');
+            const event = (lines.find(l => l.startsWith('event:')) || '').slice(6).trim();
+            const dataLine = (lines.find(l => l.startsWith('data:')) || '').slice(5).trim();
+            if (!dataLine) continue;
+            const data = JSON.parse(dataLine);
+            if (event === 'delta') {
+              streamOutput.value += data.text || '';
+            } else if (event === 'done') {
+              showMessage('伏笔自动回收完成', 'success');
+              await loadForeshadows(currentProject.value.id);
+            }
+          }
+        }
+      } catch (e) {
+        showMessage(e.message, 'error');
+      } finally {
+        pipelineRunning.value = false;
+      }
+    }
     async function searchProject() {
       if (!searchQuery.value.trim() || !currentProject.value) return;
       try { searchResults.value = await api('/api/dashboard/ai/projects/' + currentProject.value.id + '/search?q=' + encodeURIComponent(searchQuery.value)); }
@@ -2668,6 +2712,49 @@ window.initVueApp({
       } finally {
         pipelineRunning.value = false;
         pipelineCurrentStep.value = '';
+      }
+    }
+
+    async function runSingleStep(stepName) {
+      if (!currentChapter.value || pipelineRunning.value) return;
+      const endpoint = `/api/dashboard/ai/chapters/${stepName}/stream`;
+      pipelineRunning.value = true;
+      streamOutput.value = '';
+      try {
+        const payload = {
+          project_id: currentProject.value.id,
+          chapter_id: currentChapter.value.id,
+          agent_id: 0,
+        };
+        const res = await fetch(endpoint, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        if (!res.ok || !res.body) throw new Error('请求失败');
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split('\n\n');
+          buffer = events.pop() || '';
+          for (const raw of events) {
+            const lines = raw.split('\n');
+            const event = (lines.find(l => l.startsWith('event:')) || '').slice(6).trim();
+            const dataLine = (lines.find(l => l.startsWith('data:')) || '').slice(5).trim();
+            if (!dataLine) continue;
+            const data = JSON.parse(dataLine);
+            if (event === 'delta') {
+              streamOutput.value += data.text || '';
+            } else if (event === 'done') {
+              showMessage(`${stepName === 'extract-summary' ? '摘要提取' : '润色'}完成`, 'success');
+              await openChapter(currentChapter.value);
+            }
+          }
+        }
+      } catch (e) {
+        showMessage(e.message, 'error');
+      } finally {
+        pipelineRunning.value = false;
       }
     }
 
