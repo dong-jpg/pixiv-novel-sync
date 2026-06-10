@@ -177,6 +177,7 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_novels_user_id ON novels(user_id);
             CREATE INDEX IF NOT EXISTS idx_novels_series_id ON novels(series_id);
+            CREATE INDEX IF NOT EXISTS idx_novels_last_seen_at ON novels(last_seen_at DESC);
             CREATE INDEX IF NOT EXISTS idx_sources_source_type ON sources(source_type);
 
             -- Phase 5性能:高频WHERE条件索引
@@ -1628,6 +1629,10 @@ class Database:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(mute_type, mute_value)
             );
+
+            CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_author_id ON recommendation_feedback(author_id);
+            CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_series_id ON recommendation_feedback(series_id);
+            CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_novel_id ON recommendation_feedback(novel_id);
             """
         )
 
@@ -2680,6 +2685,7 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_pending_deletions_status ON pending_deletions(status);
             CREATE INDEX IF NOT EXISTS idx_pending_deletions_detected_at ON pending_deletions(detected_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_pending_deletions_item_type_status ON pending_deletions(item_type, status);
             """
         )
 
