@@ -207,30 +207,31 @@ class AutoSyncScheduler:
                 for task_config in task_configs:
                     if not self._running:
                         break
-                    
+
                     task_name = task_config["name"]
-                    
+
                     if not getattr(settings.sync, task_config["setting_check"], False):
                         continue
-                    
+
                     cron_expr = getattr(settings.sync, task_config["cron_setting"], "")
                     task_interval_hours = getattr(settings.sync, task_config["interval_setting"], 6)
                     task_interval_seconds = task_interval_hours * 3600
-                    
-                    # 如果该任务还没有计算过下次运行时间，现在计算
-                    if task_name not in self._task_next_run:
-                        if cron_expr:
-                            from .settings import cron_to_next_run
-                            self._task_next_run[task_name] = cron_to_next_run(cron_expr, now, tz_name) or (now + task_interval_seconds)
-                        else:
-                            self._task_next_run[task_name] = now + task_interval_seconds
-                        logger.info("Task %s scheduled, next run: %s", task_name, 
-                                    datetime.fromtimestamp(self._task_next_run[task_name]).strftime('%Y-%m-%d %H:%M:%S'))
-                    
-                    next_run = self._task_next_run[task_name]
 
-                    if time.time() >= next_run:
-                        with self._lock:
+                    # 调度器竞态修复:_task_next_run 读写纳入锁,避免 KeyError/漏更新
+                    with self._lock:
+                        # 如果该任务还没有计算过下次运行时间，现在计算
+                        if task_name not in self._task_next_run:
+                            if cron_expr:
+                                from .settings import cron_to_next_run
+                                self._task_next_run[task_name] = cron_to_next_run(cron_expr, now, tz_name) or (now + task_interval_seconds)
+                            else:
+                                self._task_next_run[task_name] = now + task_interval_seconds
+                            logger.info("Task %s scheduled, next run: %s", task_name,
+                                        datetime.fromtimestamp(self._task_next_run[task_name]).strftime('%Y-%m-%d %H:%M:%S'))
+
+                        next_run = self._task_next_run[task_name]
+
+                        if time.time() >= next_run:
                             if self._current_task_job_id is not None:
                                 logger.info("Task %s skipped: another task is running (%s)", task_name, self._current_task_job_id)
                                 skip_now = time.time()
@@ -240,16 +241,22 @@ class AutoSyncScheduler:
                                 else:
                                     self._task_next_run[task_name] = skip_now + task_interval_seconds
                                 continue
-                        
-                        self._run_single_task(settings, task_name, task_config["sync_func"])
-                        
+                        else:
+                            # 未到运行时间,跳过
+                            continue
+
+                    # 锁外执行任务(避免阻塞其他任务调度检查)
+                    self._run_single_task(settings, task_name, task_config["sync_func"])
+
+                    # 任务完成后更新下次运行时间(加锁)
+                    with self._lock:
                         self._task_last_run[task_name] = time.time()
                         if cron_expr:
                             from .settings import cron_to_next_run
                             self._task_next_run[task_name] = cron_to_next_run(cron_expr, time.time(), tz_name) or (time.time() + task_interval_seconds)
                         else:
                             self._task_next_run[task_name] = time.time() + task_interval_seconds
-                        
+
                         logger.info("Task %s completed, next run: %s", task_name,
                                     datetime.fromtimestamp(self._task_next_run[task_name]).strftime('%Y-%m-%d %H:%M:%S'))
                 
