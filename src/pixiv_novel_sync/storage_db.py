@@ -654,11 +654,28 @@ class Database:
         series_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """列出删除本地归档文件所需的小说元数据和已记录资源路径。"""
-        where_clauses: list[str] = []
-        params: list[Any] = []
+        # Phase 5.4: novel_ids分批避免超过SQLite参数限制
         if novel_ids is not None:
             if not novel_ids:
                 return []
+            BATCH_SIZE = 900
+            results: list[dict[str, Any]] = []
+            for i in range(0, len(novel_ids), BATCH_SIZE):
+                batch = novel_ids[i:i + BATCH_SIZE]
+                results.extend(self._list_novel_archive_refs_batch(batch, user_id, series_id))
+            return results
+        return self._list_novel_archive_refs_batch(None, user_id, series_id)
+
+    def _list_novel_archive_refs_batch(
+        self,
+        novel_ids: list[int] | None,
+        user_id: int | None,
+        series_id: int | None,
+    ) -> list[dict[str, Any]]:
+        """内部批次查询"""
+        where_clauses: list[str] = []
+        params: list[Any] = []
+        if novel_ids is not None:
             placeholders = ",".join(["?"] * len(novel_ids))
             where_clauses.append(f"n.novel_id IN ({placeholders})")
             params.extend(int(nid) for nid in novel_ids)
@@ -1523,7 +1540,7 @@ class Database:
         if not novel_ids:
             return set()
         result: set[int] = set()
-        batch_size = 500
+        batch_size = 900  # Phase 5.4: 提升到900避免SQLite限制
         for i in range(0, len(novel_ids), batch_size):
             batch = novel_ids[i:i + batch_size]
             placeholders = ",".join(["?"] * len(batch))
@@ -2840,17 +2857,22 @@ class Database:
         if not remote_ids:
             return 0
         with self._lock:
-            # Phase 5.5: 批量UPDATE消除N+1
-            placeholders = ",".join("?" * len(remote_ids))
-            result = self.conn.execute(
-                f"UPDATE pending_deletions SET status = 'restored', restored_at = CURRENT_TIMESTAMP "
-                f"WHERE item_type = ? AND status = 'pending' AND item_id IN ({placeholders})",
-                (item_type, *remote_ids),
-            )
-            count = result.rowcount
-            if count:
+            # Phase 5.4: 分批避免超过SQLite参数限制(999)
+            BATCH_SIZE = 900
+            remote_list = list(remote_ids)
+            total_count = 0
+            for i in range(0, len(remote_list), BATCH_SIZE):
+                batch = remote_list[i:i + BATCH_SIZE]
+                placeholders = ",".join("?" * len(batch))
+                result = self.conn.execute(
+                    f"UPDATE pending_deletions SET status = 'restored', restored_at = CURRENT_TIMESTAMP "
+                    f"WHERE item_type = ? AND status = 'pending' AND item_id IN ({placeholders})",
+                    (item_type, *batch),
+                )
+                total_count += result.rowcount
+            if total_count:
                 self._commit_if_needed()
-            return count
+            return total_count
 
     # ══════════════════════════════════════════════════════════════
     # AI 写作项目 / 章节 / 伏笔 / 状态记忆
