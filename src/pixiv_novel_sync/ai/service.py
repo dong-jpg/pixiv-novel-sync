@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -51,39 +52,42 @@ class AIWritingService:
         self.secret_manager = secret_manager or AISecretManager()
         self._retriever: BaseRetriever | None = None
         self._retriever_config_key: tuple[str | None, str | None, str, int] | None = None
+        self._retriever_lock = threading.Lock()  # 7.7: 保护retriever缓存
 
     def _get_retriever(self) -> BaseRetriever:
-        embedding_base_url = (
-            os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_BASE_URL")
-            or os.getenv("QWEN_EMBEDDING_BASE_URL")
-        )
-        embedding_api_key = (
-            os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_API_KEY")
-            or os.getenv("QWEN_EMBEDDING_API_KEY")
-        )
-        embedding_model = (
-            os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_MODEL")
-            or os.getenv("QWEN_EMBEDDING_MODEL")
-            or "Qwen3-Embedding-8B"
-        )
-        timeout_raw = os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_TIMEOUT", "60")
-        try:
-            embedding_timeout = max(int(timeout_raw), 1)
-        except ValueError:
-            embedding_timeout = 60
-        config_key = (embedding_base_url, embedding_api_key, embedding_model, embedding_timeout)
-        if self._retriever is None or self._retriever_config_key != config_key:
-            if self._retriever is not None and hasattr(self._retriever, "close"):
-                self._retriever.close()  # type: ignore[attr-defined]
-            self._retriever = create_retriever(
-                self.db_path,
-                model_name=embedding_model,
-                api_base_url=embedding_base_url,
-                api_key=embedding_api_key,
-                api_timeout=embedding_timeout,
+        # 7.7: 加锁保护缓存逻辑,避免多线程竞态
+        with self._retriever_lock:
+            embedding_base_url = (
+                os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_BASE_URL")
+                or os.getenv("QWEN_EMBEDDING_BASE_URL")
             )
-            self._retriever_config_key = config_key
-        return self._retriever
+            embedding_api_key = (
+                os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_API_KEY")
+                or os.getenv("QWEN_EMBEDDING_API_KEY")
+            )
+            embedding_model = (
+                os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_MODEL")
+                or os.getenv("QWEN_EMBEDDING_MODEL")
+                or "Qwen3-Embedding-8B"
+            )
+            timeout_raw = os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_TIMEOUT", "60")
+            try:
+                embedding_timeout = max(int(timeout_raw), 1)
+            except ValueError:
+                embedding_timeout = 60
+            config_key = (embedding_base_url, embedding_api_key, embedding_model, embedding_timeout)
+            if self._retriever is None or self._retriever_config_key != config_key:
+                if self._retriever is not None and hasattr(self._retriever, "close"):
+                    self._retriever.close()  # type: ignore[attr-defined]
+                self._retriever = create_retriever(
+                    self.db_path,
+                    model_name=embedding_model,
+                    api_base_url=embedding_base_url,
+                    api_key=embedding_api_key,
+                    api_timeout=embedding_timeout,
+                )
+                self._retriever_config_key = config_key
+            return self._retriever
 
     def _db(self) -> Database:
         db = Database(self.db_path)
@@ -1497,9 +1501,21 @@ class AIWritingService:
         if fence_match:
             cleaned = fence_match.group(1).strip()
         start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start < 0 or end <= start:
+        if start < 0:
             raise AIServiceError("模型未返回有效 JSON 对象")
+        # 7.7: 括号配平,找到第一个完整JSON对象的结束位置
+        depth = 0
+        end = -1
+        for i in range(start, len(cleaned)):
+            if cleaned[i] == "{":
+                depth += 1
+            elif cleaned[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end < 0:
+            raise AIServiceError("模型未返回有效 JSON 对象(括号不配对)")
         json_text = cleaned[start:end + 1]
         try:
             data = json.loads(json_text)

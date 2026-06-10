@@ -35,7 +35,7 @@ class FakeResponse:
         return self._payload
 
 
-def make_config(provider_type: str) -> AIProviderConfig:
+def make_config(provider_type: str, max_retries: int = 3) -> AIProviderConfig:
     return AIProviderConfig(
         id=1,
         name="provider",
@@ -44,7 +44,7 @@ def make_config(provider_type: str) -> AIProviderConfig:
         api_key="key",
         default_model="model-a",
         timeout_seconds=1,
-        max_retries=2,
+        max_retries=max_retries,
         stream_enabled=True,
     )
 

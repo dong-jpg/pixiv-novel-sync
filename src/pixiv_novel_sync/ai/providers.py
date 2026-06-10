@@ -148,7 +148,8 @@ class OpenAICompatibleProvider(AIProvider):
             yield from self._non_stream_generate(url, headers, payload)
 
     def _stream_chat_completions(self, url: str, headers: dict[str, str], payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
-        max_retries = max(3, self.config.max_retries)
+        # 7.7: 尊重max_retries配置,不强制最小值3
+        max_retries = max(0, self.config.max_retries)
         last_error: str | None = None
         produced_output = False
         for attempt in range(max_retries + 1):
@@ -244,7 +245,8 @@ class OpenAICompatibleProvider(AIProvider):
     ) -> Iterator[AIStreamChunk]:
         """非流式调用：一次性获取完整响应。"""
         payload_copy = {**payload, "stream": False}
-        max_retries = max(0, max_retries_override) if max_retries_override is not None else max(3, self.config.max_retries)
+        # 7.7: 尊重max_retries配置,不强制最小值3
+        max_retries = max(0, max_retries_override) if max_retries_override is not None else max(0, self.config.max_retries)
         last_error: str | None = None
         for attempt in range(max_retries + 1):
             try:
@@ -329,7 +331,8 @@ class AnthropicProvider(AIProvider):
         if not self.config.stream_enabled:
             yield from self._non_stream_generate(url, headers, payload)
             return
-        max_retries = max(3, self.config.max_retries)
+        # 7.7: 尊重max_retries配置,不强制最小值3
+        max_retries = max(0, self.config.max_retries)
         last_error: str | None = None
         produced_output = False
         for attempt in range(max_retries + 1):
