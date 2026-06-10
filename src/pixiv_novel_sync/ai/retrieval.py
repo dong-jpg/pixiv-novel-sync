@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import functools
 import json
 import math
 import re
@@ -59,6 +60,8 @@ class TFIDFRetriever(BaseRetriever):
         self.db_path = db_path.parent / "ai_retrieval.db"
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._lock = threading.Lock()
+        # Phase 5.7: 手动缓存(LRU无法用于实例方法)
+        self._search_cache: dict[tuple[int, str, int], list[RetrievalEntry]] = {}
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS retrieval_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,6 +102,11 @@ class TFIDFRetriever(BaseRetriever):
             self.conn.commit()
 
     def search(self, project_id: int, query: str, top_k: int = 5) -> list[RetrievalEntry]:
+        # Phase 5.7: 检查缓存
+        cache_key = (project_id, query, top_k)
+        if cache_key in self._search_cache:
+            return self._search_cache[cache_key]
+
         query_tokens = self._tokenize(query)
         if not query_tokens:
             return []
@@ -154,12 +162,26 @@ class TFIDFRetriever(BaseRetriever):
                 ))
 
         results.sort(key=lambda x: x.score, reverse=True)
-        return results[:top_k]
+        top_results = results[:top_k]
+
+        # Phase 5.7: 存入缓存(限制缓存大小)
+        if len(self._search_cache) >= 128:
+            # 简单FIFO清理,删除最早的一半
+            keys_to_remove = list(self._search_cache.keys())[:64]
+            for k in keys_to_remove:
+                del self._search_cache[k]
+        self._search_cache[cache_key] = top_results
+
+        return top_results
 
     def delete_project(self, project_id: int) -> None:
         with self._lock:
             self.conn.execute("DELETE FROM retrieval_entries WHERE project_id = ?", (project_id,))
             self.conn.commit()
+            # Phase 5.7: 清除相关缓存
+            keys_to_remove = [k for k in self._search_cache.keys() if k[0] == project_id]
+            for k in keys_to_remove:
+                del self._search_cache[k]
 
     def delete_chapter(self, project_id: int, chapter_number: int) -> None:
         with self._lock:
@@ -168,6 +190,10 @@ class TFIDFRetriever(BaseRetriever):
                 (project_id, chapter_number),
             )
             self.conn.commit()
+            # Phase 5.7: 清除相关缓存
+            keys_to_remove = [k for k in self._search_cache.keys() if k[0] == project_id]
+            for k in keys_to_remove:
+                del self._search_cache[k]
 
     def close(self) -> None:
         with self._lock:
