@@ -1021,15 +1021,30 @@ class Database:
         if sort == "updated_desc":
             order_sql = "se.last_seen_at DESC"
         elif sort == "bookmarks_desc":
-            order_sql = """(SELECT COALESCE(SUM(n.total_bookmarks), 0) FROM novels n WHERE n.series_id = se.series_id) DESC"""
+            # Phase 5.5: 子查询改JOIN预聚合消除N+1
+            order_sql = "COALESCE(agg.total_bookmarks, 0) DESC"
         elif sort == "views_desc":
-            order_sql = """(SELECT COALESCE(SUM(n.total_views), 0) FROM novels n WHERE n.series_id = se.series_id) DESC"""
+            # Phase 5.5: 子查询改JOIN预聚合消除N+1
+            order_sql = "COALESCE(agg.total_views, 0) DESC"
 
         params_query: list[Any] = []
         if search:
             search_pattern = f"%{search}%"
             params_query.extend([search_pattern, search, search_pattern])
         params_query.extend([page_size, offset])
+
+        # Phase 5.5: 预聚合避免ORDER BY子查询
+        aggregation_join = ""
+        if sort in ("bookmarks_desc", "views_desc"):
+            aggregation_join = """
+            LEFT JOIN (
+                SELECT series_id,
+                       SUM(total_bookmarks) AS total_bookmarks,
+                       SUM(total_views) AS total_views
+                FROM novels
+                GROUP BY series_id
+            ) agg ON agg.series_id = se.series_id
+            """
 
         rows = self.conn.execute(
             f"""
@@ -1050,6 +1065,7 @@ class Database:
                 COALESCE((SELECT SUM(n.text_length) FROM novels n WHERE n.series_id = se.series_id), 0) AS total_text_length
             FROM series se
             LEFT JOIN users AS u ON u.user_id = se.user_id
+            {aggregation_join}
             WHERE {where_sql}
             ORDER BY {order_sql}
             LIMIT ? OFFSET ?
@@ -2824,15 +2840,14 @@ class Database:
         if not remote_ids:
             return 0
         with self._lock:
-            rows = self.conn.execute(
-                "SELECT id, item_id FROM pending_deletions WHERE item_type = ? AND status = 'pending'",
-                (item_type,),
-            ).fetchall()
-            count = 0
-            for row in rows:
-                if row[1] in remote_ids:
-                    self.conn.execute("UPDATE pending_deletions SET status = 'restored', restored_at = CURRENT_TIMESTAMP WHERE id = ?", (row[0],))
-                    count += 1
+            # Phase 5.5: 批量UPDATE消除N+1
+            placeholders = ",".join("?" * len(remote_ids))
+            result = self.conn.execute(
+                f"UPDATE pending_deletions SET status = 'restored', restored_at = CURRENT_TIMESTAMP "
+                f"WHERE item_type = ? AND status = 'pending' AND item_id IN ({placeholders})",
+                (item_type, *remote_ids),
+            )
+            count = result.rowcount
             if count:
                 self._commit_if_needed()
             return count
