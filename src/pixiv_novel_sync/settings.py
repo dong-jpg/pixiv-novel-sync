@@ -76,6 +76,9 @@ class SyncSettings:
     auto_sync_pending_detection_enabled: bool = True  # 检测取消收藏/追更
     auto_sync_pending_detection_interval_hours: int = 12  # 检测间隔（小时）
     auto_sync_pending_detection_cron: str = ""  # 检测cron表达式
+    # Phase 3.2: pending_deletions表清理配置
+    pending_deletion_grace_period_days: int = 30  # pending状态保留天数,给用户充足恢复时间
+    pending_deletion_cleanup_confirmed_days: int = 7  # 已确认记录清理天数
 
 
 @dataclass(slots=True)

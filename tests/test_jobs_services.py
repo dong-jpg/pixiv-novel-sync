@@ -84,6 +84,10 @@ class FakeDatabase:
     def update_watermark(self, key: str, value: dict[str, object]) -> None:
         self.watermark_updates.append((key, value))
 
+    def cleanup_old_pending_deletions(self, grace_period_days: int = 30, cleanup_confirmed_days: int = 7) -> dict[str, int]:
+        """Phase 3.2: Mock cleanup方法"""
+        return {"auto_confirmed": 0, "cleaned_up": 0}
+
 
 class FakeBookmarkNovelSyncService:
     def __init__(self, api, db, storage, settings) -> None:
@@ -420,6 +424,8 @@ def test_run_pending_deletion_detection_task_calls_service_and_returns_stats(set
         "series": {"new_pending": 2},
         "new_pending": 3,
         "stopped": False,
+        "auto_confirmed": 0,  # Phase 3.2: cleanup结果
+        "cleaned_up": 0,
     }
     assert reporter.logs[0] == ("info", "=== 开始检测取消收藏/追更 ===")
     assert reporter.logs[1] == ("success", "登录成功, 用户ID: 999")
@@ -478,6 +484,8 @@ def test_run_pending_deletion_detection_task_accepts_missing_reporter(settings, 
         "series": {"new_pending": 2},
         "new_pending": 3,
         "stopped": False,
+        "auto_confirmed": 0,  # Phase 3.2
+        "cleaned_up": 0,
     }
     assert service_env["db"].closed is True
 

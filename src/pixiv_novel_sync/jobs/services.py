@@ -257,6 +257,22 @@ def run_pending_deletion_detection_task(
         stats = dict(result)
         stats.setdefault("stopped", False)
         _report_log(reporter, "success", f"检测完成: 发现 {stats.get('new_pending', 0)} 条新的待确认记录")
+
+        # Phase 3.2: 清理过期的pending_deletions记录
+        try:
+            cleanup_result = db.cleanup_old_pending_deletions(
+                grace_period_days=getattr(settings.sync, "pending_deletion_grace_period_days", 30),
+                cleanup_confirmed_days=getattr(settings.sync, "pending_deletion_cleanup_confirmed_days", 7)
+            )
+            if cleanup_result["auto_confirmed"] > 0 or cleanup_result["cleaned_up"] > 0:
+                _report_log(
+                    reporter, "info",
+                    f"自动确认 {cleanup_result['auto_confirmed']} 条过期pending, 清理 {cleanup_result['cleaned_up']} 条旧记录"
+                )
+            stats.update(cleanup_result)
+        except Exception as e:
+            _report_log(reporter, "warning", f"清理过期记录失败: {e}")
+
         return stats
     finally:
         db.close()

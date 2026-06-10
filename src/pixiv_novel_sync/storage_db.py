@@ -2874,6 +2874,44 @@ class Database:
                 self._commit_if_needed()
             return total_count
 
+    def cleanup_old_pending_deletions(self, grace_period_days: int = 30, cleanup_confirmed_days: int = 7) -> dict[str, int]:
+        """Phase 3.2: 清理过期的pending_deletions记录
+
+        Args:
+            grace_period_days: pending状态保留天数,超过此时间自动确认删除
+            cleanup_confirmed_days: 已确认/已恢复记录保留天数,超过后清理
+
+        Returns:
+            {"auto_confirmed": 自动确认数, "cleaned_up": 清理数}
+        """
+        with self._lock:
+            # 自动确认超过grace period的pending记录
+            auto_confirmed = self.conn.execute(
+                """
+                UPDATE pending_deletions
+                SET status = 'confirmed', confirmed_at = CURRENT_TIMESTAMP
+                WHERE status = 'pending'
+                AND datetime(detected_at) < datetime('now', '-' || ? || ' days')
+                """,
+                (grace_period_days,)
+            ).rowcount
+
+            # 清理过期的已确认/已恢复记录
+            cleaned_up = self.conn.execute(
+                """
+                DELETE FROM pending_deletions
+                WHERE status IN ('confirmed', 'restored')
+                AND (
+                    (status = 'confirmed' AND datetime(confirmed_at) < datetime('now', '-' || ? || ' days'))
+                    OR (status = 'restored' AND datetime(restored_at) < datetime('now', '-' || ? || ' days'))
+                )
+                """,
+                (cleanup_confirmed_days, cleanup_confirmed_days)
+            ).rowcount
+
+            self.conn.commit()
+            return {"auto_confirmed": auto_confirmed, "cleaned_up": cleaned_up}
+
     # ══════════════════════════════════════════════════════════════
     # AI 写作项目 / 章节 / 伏笔 / 状态记忆
     # ══════════════════════════════════════════════════════════════
