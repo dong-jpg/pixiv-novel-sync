@@ -21,6 +21,8 @@ _TASK_LABELS: dict[str, str] = {
     "series_status": "系列状态检查",
     "pending_deletion_detection": "待删除检测",
     "user_backup": "用户全量备份",
+    "preference_analyze": "偏好分析",  # Phase 7.6
+    "recommendation_run": "生成推荐",  # Phase 7.6
 }
 
 
@@ -96,6 +98,12 @@ def execute_task(task_type: str, settings: Any, context: dict[str, Any] | None =
         from pixiv_novel_sync.jobs.services import run_pending_deletion_detection_task
 
         return run_pending_deletion_detection_task(settings, reporter=reporter, stop_requested=stop_requested)
+
+    if task_type == "preference_analyze":  # Phase 7.6
+        return _run_preference_analyze_task(settings, context)
+
+    if task_type == "recommendation_run":  # Phase 7.6
+        return _run_recommendation_run_task(settings, context)
 
     raise RuntimeError(f"Unsupported task type for CLI execution: {task_type}")
 
@@ -242,3 +250,78 @@ def merge_stats(total: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]
             total[key] = value
 
     return total
+
+
+def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict[str, Any]:
+    """Phase 7.6: 偏好分析长任务"""
+    from pixiv_novel_sync.storage_db import Database
+    from pixiv_novel_sync.preferences import PreferenceAnalyzer
+
+    reporter = _job_reporter_from_context(context)
+    reporter.log("info", "=== 开始分析本地偏好 ===")
+
+    db = Database(settings.storage.db_path)
+    try:
+        db.init_schema()
+        analyzer = PreferenceAnalyzer(db)
+        params = context.get("params", {})
+        scope = params.get("scope", {})
+
+        reporter.log("info", f"分析范围: {scope or '全部小说'}")
+        result = analyzer.analyze_local(scope)
+
+        # 保存profile到数据库
+        profile_id = db.create_preference_profile({
+            "name": params.get("name", "本地偏好画像"),
+            "description": params.get("description", "基于本地归档小说自动统计生成"),
+            "source_scope": result["source_scope"],
+            "stats": result["stats"],
+            "profile": result["profile"],
+            "is_default": bool(params.get("is_default", True)),
+        })
+
+        reporter.log("success", f"分析完成: 创建profile #{profile_id}, 发现 {len(result['profile'].get('positive_tags', []))} 个偏好标签")
+        return {"profile_id": profile_id, **result}
+    finally:
+        db.close()
+
+
+def _run_recommendation_run_task(settings: Any, context: dict[str, Any]) -> dict[str, Any]:
+    """Phase 7.6: 推荐运行长任务"""
+    from pixiv_novel_sync.storage_db import Database
+    from pixiv_novel_sync.recommendations import RecommendationService
+
+    reporter = _job_reporter_from_context(context)
+    stop_requested = _stop_requested_from_context(context)
+    reporter.log("info", "=== 开始生成推荐 ===")
+
+    db = Database(settings.storage.db_path)
+    try:
+        db.init_schema()
+        service = RecommendationService(db, settings)
+        params = context.get("params", {})
+        profile_id = params.get("profile_id")
+        search_plan = params.get("search_plan")
+
+        def progress_callback(event_type: str, data: dict[str, Any]) -> None:
+            if stop_requested():
+                raise InterruptedError("Task stopped by user")
+            if event_type == "phase":
+                reporter.log("info", str(data.get("phase", "")))
+            elif event_type == "rate_limit":
+                reporter.log("warning", f"等待 {data.get('seconds', 1)} 秒")
+
+        try:
+            result = service.run(
+                profile_id=profile_id,
+                search_plan=search_plan,
+                progress_callback=progress_callback,
+            )
+        except InterruptedError:
+            reporter.log("info", "推荐任务已停止")
+            return {"stopped": True, "discovered": 0}
+
+        reporter.log("success", f"推荐完成: 发现 {result.get('discovered', 0)} 部小说")
+        return result
+    finally:
+        db.close()

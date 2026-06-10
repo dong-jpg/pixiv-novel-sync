@@ -58,24 +58,28 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
 
     @app.post("/api/dashboard/preferences/profiles/analyze")
     def analyze_preference_profile():
+        """Phase 7.6: 改为后台job"""
+        from pixiv_novel_sync.jobs.models import JobType, JobSource, JobSpec
+
         payload = json_payload()
-        instance = db()
-        try:
-            analyzer = PreferenceAnalyzer(instance)
-            result = analyzer.analyze_local(payload.get("scope") or {})
-            profile_id = instance.create_preference_profile({
+        manager = app.config.get("job_manager")
+        if not manager:
+            return fail(RuntimeError("Job manager not available"))
+
+        # 启动后台job
+        spec = JobSpec(
+            source=JobSource.WEB,
+            task_types=["preference_analyze"],
+            job_type=JobType.PREFERENCE_ANALYZE,
+            params={
+                "scope": payload.get("scope", {}),
                 "name": payload.get("name") or "本地偏好画像",
                 "description": payload.get("description") or "基于本地归档小说自动统计生成",
-                "source_scope": result["source_scope"],
-                "stats": result["stats"],
-                "profile": result["profile"],
                 "is_default": bool(payload.get("is_default", True)),
-            })
-            return ok(instance.get_preference_profile(profile_id))
-        except Exception as exc:
-            return fail(exc)
-        finally:
-            instance.close()
+            },
+        )
+        job_id = manager.enqueue(spec)
+        return ok({"job_id": job_id})
 
     @app.put("/api/dashboard/preferences/profiles/<int:profile_id>")
     def update_preference_profile(profile_id: int):
@@ -130,19 +134,26 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
 
     @app.post("/api/dashboard/recommendations/run")
     def run_recommendations():
+        """Phase 7.6: 改为后台job"""
+        from pixiv_novel_sync.jobs.models import JobType, JobSource, JobSpec
+
         payload = json_payload()
-        instance = db()
-        try:
-            service = RecommendationService(instance, current_settings())
-            result = service.run(
-                profile_id=int(payload["profile_id"]) if payload.get("profile_id") else None,
-                search_plan=payload.get("search_plan"),
-            )
-            return ok(result)
-        except Exception as exc:
-            return fail(exc)
-        finally:
-            instance.close()
+        manager = app.config.get("job_manager")
+        if not manager:
+            return fail(RuntimeError("Job manager not available"))
+
+        # 启动后台job
+        spec = JobSpec(
+            source=JobSource.WEB,
+            task_types=["recommendation_run"],
+            job_type=JobType.RECOMMENDATION_RUN,
+            params={
+                "profile_id": int(payload["profile_id"]) if payload.get("profile_id") else None,
+                "search_plan": payload.get("search_plan"),
+            },
+        )
+        job_id = manager.enqueue(spec)
+        return ok({"job_id": job_id})
 
     @app.get("/api/dashboard/recommendations/runs")
     def list_recommendation_runs():

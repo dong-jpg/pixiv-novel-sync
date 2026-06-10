@@ -28,6 +28,8 @@ class JobType(str, Enum):
     STATUS_CHECK = "status_check"
     PENDING_DELETION_DETECTION = "pending_deletion_detection"
     USER_BACKUP = "user_backup"
+    PREFERENCE_ANALYZE = "preference_analyze"  # Phase 7.6
+    RECOMMENDATION_RUN = "recommendation_run"  # Phase 7.6
 
 
 @dataclass(slots=True)
