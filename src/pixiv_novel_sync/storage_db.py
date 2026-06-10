@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -14,12 +15,35 @@ class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # check_same_thread=False 允许在多个线程间共享连接（SQLite C 层是线程安全的）；
-        # 我们用显式 RLock 串行化所有写入。读不需要锁（WAL 模式允许并发读）。
-        self.conn = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
-        self.conn.row_factory = sqlite3.Row
-        self._lock: threading.RLock = threading.RLock()
-        self._transaction_depth = 0
+        # threading.local 每线程连接:消除共享单连接导致的游标交错/ProgrammingError。
+        # WAL 允许多个独立连接并发读,BEGIN IMMEDIATE 串行化写。
+        self._local = threading.local()
+        self._lock: threading.RLock = threading.RLock()  # 仅保护元状态(如 _all_conns)
+        self._all_conns: set[sqlite3.Connection] = set()  # 弱引用集合供 close() 关闭全部
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """当前线程的 SQLite 连接,首次访问时 lazy 创建并初始化 PRAGMA。"""
+        if not hasattr(self._local, "conn") or self._local.conn is None:
+            conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30.0)
+            conn.row_factory = sqlite3.Row
+            # 每个连接独立开启 WAL + 设置超时
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            self._local.conn = conn
+            with self._lock:
+                self._all_conns.add(conn)
+        return self._local.conn
+
+    @property
+    def _transaction_depth(self) -> int:
+        """当前线程的事务嵌套深度,thread-local 化避免跨线程串台。"""
+        return getattr(self._local, "transaction_depth", 0)
+
+    @_transaction_depth.setter
+    def _transaction_depth(self, value: int) -> None:
+        self._local.transaction_depth = value
 
     def _commit_if_needed(self) -> None:
         if self._transaction_depth == 0:
@@ -49,14 +73,8 @@ class Database:
                 self._transaction_depth -= 1
 
     def init_schema(self) -> None:
+        # PRAGMA 已在 conn property 中每连接执行,这里只建表
         with self._lock:
-            self.conn.executescript(
-                """
-                PRAGMA journal_mode=WAL;
-                PRAGMA synchronous=NORMAL;
-                PRAGMA busy_timeout=30000;
-                """
-            )
             self.conn.executescript(
                 """
 
@@ -717,7 +735,18 @@ class Database:
         return None
 
     def close(self) -> None:
-        self.conn.close()
+        """关闭所有线程的连接。多线程场景下,每线程都可能有独立连接。"""
+        with self._lock:
+            conns = list(self._all_conns)
+            self._all_conns.clear()
+        for conn in conns:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        # 清理当前线程的 local 状态
+        if hasattr(self._local, "conn"):
+            self._local.conn = None
 
     def __enter__(self):
         return self
@@ -1218,9 +1247,7 @@ class Database:
 
     def delete_novel(self, novel_id: int) -> None:
         """删除小说及其相关数据"""
-        with self._lock:
-            self.conn.execute("BEGIN IMMEDIATE")
-            try:
+        with self.transaction():
                 self.conn.execute("DELETE FROM novel_texts WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM assets WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM sources WHERE novel_id = ?", (novel_id,))
@@ -1232,16 +1259,10 @@ class Database:
                 self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'novel' AND item_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM recommendation_items WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM recommendation_feedback WHERE novel_id = ?", (novel_id,))
-                self._commit_if_needed()
-            except Exception:
-                self.conn.rollback()
-                raise
 
     def delete_user(self, user_id: int) -> None:
         """删除用户及其所有小说（单一事务，批量删除）"""
-        with self._lock:
-            self.conn.execute("BEGIN IMMEDIATE")
-            try:
+        with self.transaction():
                 self.conn.execute("DELETE FROM novel_texts WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
                 self.conn.execute("DELETE FROM assets WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
                 self.conn.execute("DELETE FROM sources WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
@@ -1252,25 +1273,15 @@ class Database:
                 self.conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
                 self.conn.execute("DELETE FROM recommendation_feedback WHERE author_id = ?", (user_id,))
                 self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'user' AND item_id = ?", (user_id,))
-                self._commit_if_needed()
-            except Exception:
-                self.conn.rollback()
-                raise
 
     def delete_series(self, series_id: int) -> None:
         """删除系列（不删除小说，只解除关联）"""
-        with self._lock:
-            self.conn.execute("BEGIN IMMEDIATE")
-            try:
+        with self.transaction():
                 self.conn.execute("UPDATE novels SET series_id = NULL WHERE series_id = ?", (series_id,))
                 self.conn.execute("DELETE FROM recommendation_items WHERE item_type = 'series' AND series_id = ?", (series_id,))
                 self.conn.execute("DELETE FROM recommendation_feedback WHERE series_id = ?", (series_id,))
                 self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'series' AND item_id = ?", (series_id,))
                 self.conn.execute("DELETE FROM series WHERE series_id = ?", (series_id,))
-                self._commit_if_needed()
-            except Exception:
-                self.conn.rollback()
-                raise
 
     def delete_bookmark(self, novel_id: int) -> None:
         """删除收藏记录"""
