@@ -178,6 +178,11 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_novels_user_id ON novels(user_id);
             CREATE INDEX IF NOT EXISTS idx_novels_series_id ON novels(series_id);
             CREATE INDEX IF NOT EXISTS idx_sources_source_type ON sources(source_type);
+
+            -- Phase 5性能:高频WHERE条件索引
+            CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+            CREATE INDEX IF NOT EXISTS idx_assets_novel_id ON assets(novel_id);
+            CREATE INDEX IF NOT EXISTS idx_sources_novel_id ON sources(novel_id);
             """
         )
         # 迁移：为旧版 users 表添加 status 和 last_checked_at 字段
