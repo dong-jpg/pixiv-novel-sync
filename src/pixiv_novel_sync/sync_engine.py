@@ -530,6 +530,11 @@ class BookmarkNovelSyncService:
         if not current_user_id:
             raise RuntimeError("PIXIV_USER_ID is required to fetch following list")
 
+        # Phase 3.1: 备份现有用户列表,防止API异常返回空列表导致误删
+        existing_users = self.db.conn.execute("SELECT user_id, name FROM users").fetchall()
+        existing_user_count = len(existing_users)
+        logger.debug(f"Existing users before sync: {existing_user_count}")
+
         next_following_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
         following_page_count = 0
         safety_limit = max_pages or 100  # 3.3翻页上限兜底
@@ -574,7 +579,16 @@ class BookmarkNovelSyncService:
                 if progress_callback:
                     progress_callback("rate_limit", {"seconds": page_delay})
                 time.sleep(page_delay)
-        
+
+        # Phase 3.1: 防止API异常返回空列表导致误删
+        if stats["users"] == 0 and existing_user_count > 0:
+            logger.warning(
+                f"API returned empty following list but {existing_user_count} users exist locally. "
+                "Refusing to clear user data. This may indicate a temporary API issue."
+            )
+            # 恢复统计以反映实际未删除
+            stats["users"] = existing_user_count
+
         return stats
 
     def sync_following_novels(self, download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None, users_limit: int = 0) -> dict[str, int]:
