@@ -542,9 +542,8 @@ class Database:
             empty_message = '当前还没有"关注用户小说列表"数据，请后续开启关注用户小说同步链路后再查看。'
 
         if search:
-            where_clauses.append("(n.title LIKE ? OR u.name LIKE ?)")
-            search_pattern = f"%{search}%"
-            params.extend([search_pattern, search_pattern])
+            where_clauses.append("n.novel_id IN (SELECT novel_id FROM novel_fts WHERE novel_fts MATCH ?)")
+            params.append(search)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         total = int(
@@ -927,9 +926,8 @@ class Database:
         where_clauses: list[str] = ["s.source_type LIKE 'bookmark_%'"]
         params_count: list[Any] = []
         if search:
-            where_clauses.append("(n.title LIKE ? OR u.name LIKE ?)")
-            search_pattern = f"%{search}%"
-            params_count.extend([search_pattern, search_pattern])
+            where_clauses.append("n.novel_id IN (SELECT novel_id FROM novel_fts WHERE novel_fts MATCH ?)")
+            params_count.append(search)
         where_sql = f"WHERE {' AND '.join(where_clauses)}"
         total = int(
             self.conn.execute(
@@ -951,8 +949,7 @@ class Database:
 
         params_query: list[Any] = []
         if search:
-            search_pattern = f"%{search}%"
-            params_query.extend([search_pattern, search_pattern])
+            params_query.append(search)
         params_query.extend([page_size, offset])
 
         rows = self.conn.execute(
@@ -986,15 +983,15 @@ class Database:
         where_clauses: list[str] = ["se.is_subscribed = 1"]
         params_count: list[Any] = []
         if search:
-            search_pattern = f"%{search}%"
             where_clauses.append(
                 """(se.title LIKE ? OR (
                    (se.title IS NULL OR se.title = '') AND EXISTS (
-                     SELECT 1 FROM novels n0 WHERE n0.series_id = se.series_id AND n0.title LIKE ?
+                     SELECT 1 FROM novels n0 WHERE n0.series_id = se.series_id AND n0.novel_id IN (SELECT novel_id FROM novel_fts WHERE novel_fts MATCH ?)
                    )
                    ) OR u.name LIKE ?)"""
             )
-            params_count.extend([search_pattern, search_pattern, search_pattern])
+            search_pattern = f"%{search}%"
+            params_count.extend([search_pattern, search, search_pattern])
 
         where_sql = " AND ".join(where_clauses)
         total = int(
@@ -1018,7 +1015,7 @@ class Database:
         params_query: list[Any] = []
         if search:
             search_pattern = f"%{search}%"
-            params_query.extend([search_pattern, search_pattern, search_pattern])
+            params_query.extend([search_pattern, search, search_pattern])
         params_query.extend([page_size, offset])
 
         rows = self.conn.execute(
