@@ -11,6 +11,32 @@ from typing import Any, Iterator
 from .models import AssetRecord, NovelRecord, NovelTextRecord, SourceRecord, UserRecord
 
 
+class _LazyNovelMembership:
+    """惰性成员判断:`novel_id in obj` 走主键索引的 EXISTS 单点查询,
+
+    避免把整张 novels 表(可能上万行)灌进内存 set。调用方仍用 `x in obj` 语义,
+    零改动。结果按 novel_id 短期缓存,同一次推荐运行内重复判断不重复打库。
+    """
+
+    def __init__(self, conn: sqlite3.Connection, sql: str) -> None:
+        self._conn = conn
+        self._sql = sql
+        self._cache: dict[int, bool] = {}
+
+    def __contains__(self, novel_id: object) -> bool:
+        try:
+            key = int(novel_id)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        row = self._conn.execute(self._sql, (key,)).fetchone()
+        result = row is not None
+        self._cache[key] = result
+        return result
+
+
 class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -1938,7 +1964,11 @@ class Database:
             self._commit_if_needed()
 
     def get_recommendation_filter_state(self) -> dict[str, Any]:
-        archived_ids = {int(row[0]) for row in self.conn.execute("SELECT novel_id FROM novels").fetchall()}
+        # 5.3: archived 判断走主键索引 EXISTS 惰性查询,不再 SELECT 全表灌进内存。
+        # recommendation_items 量级小(通常几百条),保留 set 即可。
+        archived_ids = _LazyNovelMembership(
+            self.conn, "SELECT 1 FROM novels WHERE novel_id = ? LIMIT 1"
+        )
         recommended_ids = {int(row[0]) for row in self.conn.execute("SELECT novel_id FROM recommendation_items WHERE novel_id IS NOT NULL").fetchall()}
         dismissed_ids = {int(row[0]) for row in self.conn.execute("SELECT novel_id FROM recommendation_items WHERE novel_id IS NOT NULL AND status IN ('dismissed', 'muted')").fetchall()}
         mutes = self.list_recommendation_mutes()
@@ -3112,17 +3142,12 @@ class Database:
             self._commit_if_needed()
 
     def delete_ai_writing_project(self, project_id: int) -> None:
-        with self._lock:
-            self.conn.execute("BEGIN IMMEDIATE")
-            try:
-                self.conn.execute("DELETE FROM ai_chapters WHERE project_id = ?", (project_id,))
-                self.conn.execute("DELETE FROM ai_foreshadows WHERE project_id = ?", (project_id,))
-                self.conn.execute("DELETE FROM ai_project_states WHERE project_id = ?", (project_id,))
-                self.conn.execute("DELETE FROM ai_writing_projects WHERE id = ?", (project_id,))
-                self.conn.commit()
-            except Exception:
-                self.conn.rollback()
-                raise
+        # 1.2: 统一用 transaction() 上下文,不再手写 BEGIN IMMEDIATE/commit/rollback。
+        with self.transaction() as conn:
+            conn.execute("DELETE FROM ai_chapters WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM ai_foreshadows WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM ai_project_states WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM ai_writing_projects WHERE id = ?", (project_id,))
 
     # ── ai_chapters CRUD ───────────────────────────────────────────
 

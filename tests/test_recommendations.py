@@ -179,3 +179,37 @@ def test_series_length_caps_pagination(tmp_path: Path):
     assert total_count == _SERIES_PAGE_SAFETY_LIMIT
     assert total_length == _SERIES_PAGE_SAFETY_LIMIT * 1000
     db.close()
+
+
+def test_archived_membership_is_lazy_and_correct(tmp_path: Path):
+    """5.3: archived_novel_ids 走主键索引 EXISTS 惰性判断,而非全表载入 set。"""
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    # 归档一本小说 novel_id=100
+    from pixiv_novel_sync.models import NovelRecord
+    db.upsert_novel(NovelRecord(
+        novel_id=100, user_id=1, series_id=None, title="已归档", caption=None,
+        visible=True, restrict="public", x_restrict=0, text_length=6000,
+        total_bookmarks=0, total_views=0, cover_url=None, tags_json="[]",
+        create_date=None, raw_json="{}", meta_hash="h",
+    ))
+
+    state = db.get_recommendation_filter_state()
+    archived = state["archived_novel_ids"]
+
+    # 不是真 set,但 `in` 语义照常工作
+    assert not isinstance(archived, set)
+    assert 100 in archived          # 已归档命中
+    assert 999 not in archived      # 未归档不命中
+    assert 100 in archived          # 命中结果走缓存,重复判断不重复打库
+    assert "bad" not in archived    # 非法值安全返回 False
+
+    # _candidate_to_item 应据此过滤掉已归档候选
+    service = RecommendationService(db, make_settings(tmp_path))
+    novel = SimpleNamespace(id=100, text_length=6000, title="t", caption="", tags=[], user=SimpleNamespace(id=1, name="A"))
+    item = service._candidate_to_item(
+        None, novel, {"query": "x"}, {"profile": {}},
+        {"exclude_archived": True}, state,
+    )
+    assert item is None
+    db.close()
