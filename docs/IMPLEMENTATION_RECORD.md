@@ -53,7 +53,36 @@
 
 ### 1.2 当前未完成事项
 
-旧实施方案中列出的明确未完成事项已清零。后续仅剩可选的结构性长期优化，例如继续拆分 `webapp.py`、`storage_db.py`、`sync_engine.py`，不再属于本轮未完成实施项。
+旧实施方案中列出的明确未完成事项已清零。
+
+### 1.3 模块化拆分（2026-06-15 进行中）
+
+**目标**：将巨型文件拆分为可维护的模块。
+
+**进度**：
+- ✅ **Batch 1 完成**：`storage_db.py` 连接层拆分（3742 → 3681 行，-61）
+  - 提交：`23e5a81`
+  - 提取 `DatabaseConnection` → `storage/connection.py`
+  - 提取 `_LazyNovelMembership` → `storage/utils.py`
+  - 测试：164 passed
+  
+- ✅ **Batch 2 完成**：`storage_db.py` Schema 层拆分（3681 → 2959 行，-722）
+  - 提交：`4ce7dcc`
+  - 提取 `SchemaMixin` (19个方法) → `storage/schema.py`
+  - 包含所有 init_schema / _migrate_* / _rebuild_* 方法
+  - 测试：164 passed
+  
+- ⏳ **Batch 3-5 待继续**：核心业务层和 AI 层拆分
+  - 已分析方法分类：novels(28), users(9), series(9), bookmarks(5), tasks(5)
+  - 需手动创建 5 个 mixin 模块（Workflow 自动化未完全成功）
+  - 预计进一步减少 1500+ 行
+  
+- ⏳ **Batch 6-10 待执行**：`webapp.py` 拆分（3011 行）
+- ⏳ **Batch 11-13 待执行**：`sync_engine.py` 拆分（1905 行）
+
+详见 `docs/MODULARIZATION_PLAN.md`。
+
+**下一步**：继续 Batch 3，手动创建业务层 mixin 模块。
 
 ## 2. 历史实施摘要
 
