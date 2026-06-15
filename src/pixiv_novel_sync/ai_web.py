@@ -31,6 +31,11 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
                 self._services[key] = service
             return service
 
+        def close(self) -> None:
+            for service in self._services.values():
+                service.close()
+            self._services.clear()
+
         def __getattr__(self, name: str) -> Any:
             return getattr(self._current(), name)
 

@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from pixivpy3 import AppPixivAPI
 
-from .models import NovelRecord, NovelTextRecord, SourceRecord, UserRecord
+from .models import AssetRecord, NovelRecord, NovelTextRecord, SourceRecord, UserRecord
 from .rate_limiter import RateLimiter
 from .settings import Settings
 from .storage_db import Database
@@ -137,15 +137,17 @@ class BookmarkNovelSyncService:
         )
         
         # 第三步：标记并保存结果
+        sync_items: list[tuple[int, bool]] = []
         for novel_id in all_novel_ids:
             exists = novel_id in existing_ids
-            self.db.upsert_sync_check_item(novel_id, exists, self.sync_check_scope)
+            sync_items.append((novel_id, exists))
             stats["total_checked"] += 1
             if exists:
                 stats["existing"] += 1
             else:
                 stats["new"] += 1
-        
+        self.db.upsert_sync_check_items(sync_items, self.sync_check_scope)
+
         if progress_callback:
             progress_callback("phase", {"phase": f"检查完成: {stats['new']} 本新小说, {stats['existing']} 本已存在"})
         
@@ -364,15 +366,17 @@ class BookmarkNovelSyncService:
         )
         
         # 标记并保存结果
+        sync_items: list[tuple[int, bool]] = []
         for novel_id in all_novel_ids:
             exists = novel_id in existing_ids
-            self.db.upsert_sync_check_item(novel_id, exists, self.sync_check_scope)
+            sync_items.append((novel_id, exists))
             stats["total_checked"] += 1
             if exists:
                 stats["existing"] += 1
             else:
                 stats["new"] += 1
-        
+        self.db.upsert_sync_check_items(sync_items, self.sync_check_scope)
+
         # 更新各分类统计
         stats["bookmarks"]["existing"] = len([nid for nid in bookmark_ids if nid in existing_ids])
         stats["bookmarks"]["new"] = stats["bookmarks"]["total"] - stats["bookmarks"]["existing"]
@@ -1674,12 +1678,19 @@ class BookmarkNovelSyncService:
         meta_unchanged = existing_row and existing_row[0] == meta_hash
         text_unchanged = existing_text_row and existing_text_row[0] == text_hash
 
+        expected_assets = _collect_asset_urls(detail_novel, webview) if download_assets else []
+        missing_assets = expected_assets
+        if expected_assets:
+            recorded_urls = self.db.get_recorded_asset_urls(novel_id)
+            missing_assets = [(asset_type, asset_url) for asset_type, asset_url in expected_assets if asset_url not in recorded_urls]
+
         if meta_unchanged and text_unchanged:
-            # 元数据与正文均无变更,仅更新last_seen_at
-            self.db.touch_novel(novel_id)
-            self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
+            with self.db.transaction():
+                self.db.touch_novel(novel_id)
+                self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
+            assets_downloaded = self._download_and_record_assets(novel_dir=None, restrict=restrict, user_id=user_id, user_name=user_name, novel_id=novel_id, title=title, assets=missing_assets)
             return {
-                "users": 0, "novels": 0, "texts_updated": 0, "assets_downloaded": 0,
+                "users": 0, "novels": 0, "texts_updated": 0, "assets_downloaded": assets_downloaded,
                 "bookmarks": int(getattr(detail_novel, "total_bookmarks", 0) or 0),
                 "views": int(getattr(detail_novel, "total_view", 0) or 0),
                 "skipped": 1,
@@ -1710,54 +1721,38 @@ class BookmarkNovelSyncService:
                     )
                 )
 
-            # 1.4 FTS原子化:upsert+FTS包进同一事务,消除漂移(一个成功一个失败)
-            with self.db.transaction():
-                self.db.upsert_novel(
-                    NovelRecord(
-                        novel_id=novel_id,
-                        user_id=user_id,
-                        series_id=series_id,
-                        title=title,
-                        caption=caption,
-                        visible=bool(getattr(detail_novel, "visible", True)),
-                        restrict=restrict,
-                        x_restrict=int(getattr(detail_novel, "x_restrict", 0) or 0),
-                        text_length=int(getattr(detail_novel, "text_length", 0) or 0),
-                        total_bookmarks=int(getattr(detail_novel, "total_bookmarks", 0) or 0),
-                        total_views=int(getattr(detail_novel, "total_view", 0) or 0),
-                        cover_url=cover_url,
-                        tags_json=tags_json,
-                        create_date=getattr(detail_novel, "create_date", None),
-                        raw_json=stable_json_dumps(meta_plain),
-                        meta_hash=meta_hash,
-                    )
+            self.db.upsert_novel(
+                NovelRecord(
+                    novel_id=novel_id,
+                    user_id=user_id,
+                    series_id=series_id,
+                    title=title,
+                    caption=caption,
+                    visible=bool(getattr(detail_novel, "visible", True)),
+                    restrict=restrict,
+                    x_restrict=int(getattr(detail_novel, "x_restrict", 0) or 0),
+                    text_length=int(getattr(detail_novel, "text_length", 0) or 0),
+                    total_bookmarks=int(getattr(detail_novel, "total_bookmarks", 0) or 0),
+                    total_views=int(getattr(detail_novel, "total_view", 0) or 0),
+                    cover_url=cover_url,
+                    tags_json=tags_json,
+                    create_date=getattr(detail_novel, "create_date", None),
+                    raw_json=stable_json_dumps(meta_plain),
+                    meta_hash=meta_hash,
                 )
-                self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
-                self.db.upsert_novel_text(
-                    NovelTextRecord(
-                        novel_id=novel_id,
-                        text_raw=body,
-                        text_markdown=markdown_text,
-                        text_hash=text_hash,
-                    )
+            )
+            self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
+            self.db.upsert_novel_text(
+                NovelTextRecord(
+                    novel_id=novel_id,
+                    text_raw=body,
+                    text_markdown=markdown_text,
+                    text_hash=text_hash,
                 )
-                self.db.replace_fts(novel_id, title, caption, user_name, body)
+            )
+            self.db.replace_fts(novel_id, title, caption, user_name, body)
 
-        assets_downloaded = 0
-        if download_assets:
-            for asset_type, asset_url in _collect_asset_urls(detail_novel, webview):
-                filename = _filename_from_url(asset_url)
-                target = self.storage.asset_path(novel_dir, asset_type, filename)
-                file_hash = self.storage.download_asset(
-                    asset_url,
-                    target,
-                    timeout=self.settings.pixiv.timeout,
-                    verify_ssl=self.settings.pixiv.verify_ssl,
-                    proxy=self.settings.pixiv.proxy,
-                )
-                if file_hash:
-                    self.db.record_asset(novel_id, asset_type, asset_url, str(target), file_hash)
-                    assets_downloaded += 1
+        assets_downloaded = self._download_and_record_assets(novel_dir=novel_dir, restrict=restrict, user_id=user_id, user_name=user_name, novel_id=novel_id, title=title, assets=missing_assets)
 
         return {
             "users": 1,
@@ -1767,6 +1762,36 @@ class BookmarkNovelSyncService:
             "bookmarks": int(getattr(detail_novel, "total_bookmarks", 0) or 0),
             "views": int(getattr(detail_novel, "total_view", 0) or 0),
         }
+
+    def _download_and_record_assets(
+        self,
+        novel_dir: Path | None,
+        restrict: str,
+        user_id: int,
+        user_name: str,
+        novel_id: int,
+        title: str,
+        assets: list[tuple[str, str]],
+    ) -> int:
+        if not assets:
+            return 0
+        if novel_dir is None:
+            novel_dir = self.storage.novel_dir(restrict, user_id, user_name, novel_id, title)
+        records: list[AssetRecord] = []
+        for asset_type, asset_url in assets:
+            filename = _filename_from_url(asset_url)
+            target = self.storage.asset_path(novel_dir, asset_type, filename)
+            file_hash = self.storage.download_asset(
+                asset_url,
+                target,
+                timeout=self.settings.pixiv.timeout,
+                verify_ssl=self.settings.pixiv.verify_ssl,
+                proxy=self.settings.pixiv.proxy,
+            )
+            if file_hash:
+                records.append(AssetRecord(novel_id, asset_type, asset_url, str(target), file_hash))
+        self.db.record_assets(records)
+        return len(records)
 
     @staticmethod
     def _empty_stats() -> dict[str, int]:

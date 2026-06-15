@@ -58,7 +58,7 @@ def test_openai_stream_fallback_uses_single_non_stream_attempt(monkeypatch):
             return FakeResponse(503, text="bad gateway")
         return FakeResponse(200, {"choices": [{"message": {"content": "ok"}}]})
 
-    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.post", fake_post)
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
 
     provider = OpenAICompatibleProvider(make_config("openai_compatible"))
@@ -87,7 +87,7 @@ def test_openai_empty_stream_falls_back_to_non_stream(monkeypatch):
             return FakeResponse(200, lines=['data: {"choices":[{"delta":{}}]}', 'data: [DONE]'])
         return FakeResponse(200, {"choices": [{"message": {"content": "ok"}}]})
 
-    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.post", fake_post)
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
 
     provider = OpenAICompatibleProvider(make_config("openai_compatible"))
     chunks = list(provider.stream_generate(
@@ -114,7 +114,7 @@ def test_anthropic_stream_fallback_uses_single_non_stream_attempt(monkeypatch):
             return FakeResponse(503, text="bad gateway")
         return FakeResponse(200, {"content": [{"type": "text", "text": "ok"}]})
 
-    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.post", fake_post)
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
 
     provider = AnthropicProvider(make_config("anthropic"))
@@ -143,7 +143,7 @@ def test_anthropic_empty_stream_falls_back_to_non_stream(monkeypatch):
             return FakeResponse(200, lines=['data: {"type":"message_start"}', 'data: {"type":"message_stop"}'])
         return FakeResponse(200, {"content": [{"type": "text", "text": "ok"}]})
 
-    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.post", fake_post)
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
 
     provider = AnthropicProvider(make_config("anthropic"))
     chunks = list(provider.stream_generate(
@@ -188,7 +188,7 @@ def test_openai_no_retry_after_partial_output(monkeypatch):
         calls.append(kwargs)
         return _PartialThenError()
 
-    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.post", fake_post)
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
 
     provider = OpenAICompatibleProvider(make_config("openai_compatible"))

@@ -186,6 +186,58 @@ def test_no_token_blocks_proxied_request_when_proxy_untrusted(tmp_path, monkeypa
     assert response.status_code == 403
 
 
+def test_security_headers_are_set(tmp_path, monkeypatch):
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path))
+    client = app.test_client()
+
+    response = client.get("/api/health", environ_base={"REMOTE_ADDR": "127.0.0.1"})
+
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+
+
+def test_csrf_required_for_authenticated_mutating_requests(tmp_path, monkeypatch):
+    monkeypatch.setenv("DASHBOARD_TOKEN", "secret-token")
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\nDASHBOARD_TOKEN=secret-token\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path))
+    client = app.test_client()
+
+    assert client.post("/api/auth/login", data={"token": "secret-token"}).status_code == 302
+    blocked = client.post("/api/auth/logout")
+    token_payload = client.get("/api/csrf-token").get_json()
+    allowed = client.post("/api/auth/logout", headers={"X-CSRF-Token": token_payload["csrf_token"]})
+
+    assert blocked.status_code == 403
+    assert allowed.status_code == 200
+
+
+def test_login_rate_limit_blocks_repeated_failures(tmp_path, monkeypatch):
+    monkeypatch.setenv("DASHBOARD_TOKEN", "secret-token")
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\nDASHBOARD_TOKEN=secret-token\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path))
+    client = app.test_client()
+
+    responses = [client.post("/api/auth/login", data={"token": "bad"}) for _ in range(6)]
+
+    assert [response.status_code for response in responses[:5]] == [401, 401, 401, 401, 401]
+    assert responses[5].status_code == 429
+
+
+def test_safe_name_strips_path_traversal_segments():
+    from pixiv_novel_sync.webapp import safe_name
+
+    assert safe_name('../bad:novel<>name', 'novel') == 'bad_novel_name'
+
+
 def test_no_token_trusts_xff_localhost_when_proxy_trusted(tmp_path, monkeypatch):
     """显式信任代理时，按 XFF 最左地址判定本机访问。"""
     monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)

@@ -35,7 +35,15 @@ class JobRunner:
                     self.manager.mark_cancelled(job_id)
                     return state
 
-                task_stats = self.executor(task_type, {"job": state, "job_id": job_id, "manager": self.manager})
+                task_stats = self.executor(
+                    task_type,
+                    {
+                        "job": state,
+                        "job_id": job_id,
+                        "manager": self.manager,
+                        "params": state.spec.params,
+                    },
+                )
                 if task_stats:
                     merge_stats(state.stats, task_stats)
 

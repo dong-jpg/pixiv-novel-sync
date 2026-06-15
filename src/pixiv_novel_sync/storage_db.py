@@ -57,6 +57,7 @@ class Database:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("PRAGMA foreign_keys=ON")
             self._local.conn = conn
             with self._lock:
                 self._all_conns.add(conn)
@@ -136,7 +137,7 @@ class Database:
             );
 
             CREATE TABLE IF NOT EXISTS novel_texts (
-                novel_id INTEGER PRIMARY KEY,
+                novel_id INTEGER PRIMARY KEY REFERENCES novels(novel_id) ON DELETE CASCADE,
                 text_raw TEXT NOT NULL,
                 text_markdown TEXT,
                 text_hash TEXT NOT NULL,
@@ -145,7 +146,7 @@ class Database:
 
             CREATE TABLE IF NOT EXISTS assets (
                 asset_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                novel_id INTEGER NOT NULL,
+                novel_id INTEGER NOT NULL REFERENCES novels(novel_id) ON DELETE CASCADE,
                 asset_type TEXT NOT NULL,
                 remote_url TEXT NOT NULL,
                 local_path TEXT NOT NULL,
@@ -155,7 +156,7 @@ class Database:
             );
 
             CREATE TABLE IF NOT EXISTS sources (
-                novel_id INTEGER NOT NULL,
+                novel_id INTEGER NOT NULL REFERENCES novels(novel_id) ON DELETE CASCADE,
                 source_type TEXT NOT NULL,
                 source_key TEXT NOT NULL,
                 discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -236,7 +237,101 @@ class Database:
         self._migrate_ai_writing_tables()
         # 迁移：创建阅读进度追踪表
         self._migrate_reading_progress_table()
+        self._migrate_core_foreign_keys()
         self._commit_if_needed()
+
+    def _has_foreign_key(self, table_name: str, column_name: str, target_table: str) -> bool:
+        return any(
+            row[3] == column_name and row[2] == target_table
+            for row in self.conn.execute(f"PRAGMA foreign_key_list({table_name})").fetchall()
+        )
+
+    def _migrate_core_foreign_keys(self) -> None:
+        if not self._has_foreign_key("novel_texts", "novel_id", "novels"):
+            self._rebuild_novel_texts_with_foreign_key()
+        if not self._has_foreign_key("assets", "novel_id", "novels"):
+            self._rebuild_assets_with_foreign_key()
+        if not self._has_foreign_key("sources", "novel_id", "novels"):
+            self._rebuild_sources_with_foreign_key()
+        self.conn.execute("PRAGMA foreign_keys=ON")
+        violations = self.conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise RuntimeError(f"SQLite foreign key check failed: {violations!r}")
+
+    def _rebuild_novel_texts_with_foreign_key(self) -> None:
+        self._rebuild_table_with_foreign_key(
+            "novel_texts",
+            """
+            CREATE TABLE novel_texts (
+                novel_id INTEGER PRIMARY KEY REFERENCES novels(novel_id) ON DELETE CASCADE,
+                text_raw TEXT NOT NULL,
+                text_markdown TEXT,
+                text_hash TEXT NOT NULL,
+                fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            INSERT INTO novel_texts (novel_id, text_raw, text_markdown, text_hash, fetched_at)
+            SELECT old.novel_id, old.text_raw, old.text_markdown, old.text_hash, old.fetched_at
+            FROM novel_texts_old old
+            JOIN novels n ON n.novel_id = old.novel_id
+            """,
+        )
+
+    def _rebuild_assets_with_foreign_key(self) -> None:
+        self._rebuild_table_with_foreign_key(
+            "assets",
+            """
+            CREATE TABLE assets (
+                asset_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                novel_id INTEGER NOT NULL REFERENCES novels(novel_id) ON DELETE CASCADE,
+                asset_type TEXT NOT NULL,
+                remote_url TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                file_hash TEXT,
+                downloaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(novel_id, asset_type, remote_url)
+            )
+            """,
+            """
+            INSERT OR IGNORE INTO assets (asset_id, novel_id, asset_type, remote_url, local_path, file_hash, downloaded_at)
+            SELECT old.asset_id, old.novel_id, old.asset_type, old.remote_url, old.local_path, old.file_hash, old.downloaded_at
+            FROM assets_old old
+            JOIN novels n ON n.novel_id = old.novel_id
+            """,
+        )
+
+    def _rebuild_sources_with_foreign_key(self) -> None:
+        self._rebuild_table_with_foreign_key(
+            "sources",
+            """
+            CREATE TABLE sources (
+                novel_id INTEGER NOT NULL REFERENCES novels(novel_id) ON DELETE CASCADE,
+                source_type TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (novel_id, source_type, source_key)
+            )
+            """,
+            """
+            INSERT OR IGNORE INTO sources (novel_id, source_type, source_key, discovered_at)
+            SELECT old.novel_id, old.source_type, old.source_key, old.discovered_at
+            FROM sources_old old
+            JOIN novels n ON n.novel_id = old.novel_id
+            """,
+        )
+
+    def _rebuild_table_with_foreign_key(self, table_name: str, create_sql: str, copy_sql: str) -> None:
+        old_name = f"{table_name}_old"
+        self.conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            self.conn.execute(f"DROP TABLE IF EXISTS {old_name}")
+            self.conn.execute(f"ALTER TABLE {table_name} RENAME TO {old_name}")
+            self.conn.execute(create_sql)
+            self.conn.execute(copy_sql)
+            self.conn.execute(f"DROP TABLE {old_name}")
+        finally:
+            self.conn.execute("PRAGMA foreign_keys=ON")
 
     def upsert_user(self, record: UserRecord) -> None:
         with self._lock:
@@ -470,6 +565,33 @@ class Database:
                 (novel_id, asset_type, remote_url, local_path, file_hash),
             )
             self._commit_if_needed()
+
+    def record_assets(self, records: list[AssetRecord]) -> None:
+        if not records:
+            return
+        with self.transaction():
+            self.conn.executemany(
+                """
+                INSERT INTO assets (novel_id, asset_type, remote_url, local_path, file_hash, downloaded_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(novel_id, asset_type, remote_url) DO UPDATE SET
+                    local_path = excluded.local_path,
+                    file_hash = excluded.file_hash,
+                    downloaded_at = CURRENT_TIMESTAMP
+                """,
+                [(record.novel_id, record.asset_type, record.remote_url, record.local_path, record.file_hash) for record in records],
+            )
+
+    def get_recorded_asset_urls(self, novel_id: int) -> set[str]:
+        rows = self.conn.execute(
+            """
+            SELECT remote_url
+            FROM assets
+            WHERE novel_id = ? AND file_hash IS NOT NULL AND file_hash != ''
+            """,
+            (novel_id,),
+        ).fetchall()
+        return {str(row[0]) for row in rows}
 
     def export_stats(self) -> str:
         row = self.conn.execute(
@@ -1332,24 +1454,17 @@ class Database:
     def delete_novel(self, novel_id: int) -> None:
         """删除小说及其相关数据"""
         with self.transaction():
-                self.conn.execute("DELETE FROM novel_texts WHERE novel_id = ?", (novel_id,))
-                self.conn.execute("DELETE FROM assets WHERE novel_id = ?", (novel_id,))
-                self.conn.execute("DELETE FROM sources WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM novel_fts WHERE novel_id = ?", (novel_id,))
-                self.conn.execute("DELETE FROM novels WHERE novel_id = ?", (novel_id,))
-                # Purge satellite rows so a deleted novel can't resurface as a
-                # "new" recommendation or linger in the preflight/pending tables.
                 self.conn.execute("DELETE FROM sync_check_list WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'novel' AND item_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM recommendation_items WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM recommendation_feedback WHERE novel_id = ?", (novel_id,))
+                self.conn.execute("DELETE FROM novels WHERE novel_id = ?", (novel_id,))
 
     def delete_user(self, user_id: int) -> None:
         """删除用户及其所有小说（单一事务，批量删除）"""
         with self.transaction():
-                self.conn.execute("DELETE FROM novel_texts WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
-                self.conn.execute("DELETE FROM assets WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
-                self.conn.execute("DELETE FROM sources WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
+                novel_ids = [row[0] for row in self.conn.execute("SELECT novel_id FROM novels WHERE user_id = ?", (user_id,)).fetchall()]
                 self.conn.execute("DELETE FROM novel_fts WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
                 self.conn.execute("DELETE FROM sync_check_list WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
                 self.conn.execute("DELETE FROM recommendation_items WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
@@ -1357,6 +1472,9 @@ class Database:
                 self.conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
                 self.conn.execute("DELETE FROM recommendation_feedback WHERE author_id = ?", (user_id,))
                 self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'user' AND item_id = ?", (user_id,))
+                for novel_id in novel_ids:
+                    self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'novel' AND item_id = ?", (novel_id,))
+                    self.conn.execute("DELETE FROM recommendation_feedback WHERE novel_id = ?", (novel_id,))
 
     def delete_series(self, series_id: int) -> None:
         """删除系列（不删除小说，只解除关联）"""
@@ -1552,6 +1670,21 @@ class Database:
                 (scope, novel_id, 1 if exists_local else 0),
             )
             self._commit_if_needed()
+
+    def upsert_sync_check_items(self, items: list[tuple[int, bool]], scope: str = "_") -> None:
+        if not items:
+            return
+        with self.transaction():
+            self.conn.executemany(
+                """
+                INSERT INTO sync_check_list (scope, novel_id, exists_local, checked_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(scope, novel_id) DO UPDATE SET
+                    exists_local = excluded.exists_local,
+                    checked_at = CURRENT_TIMESTAMP
+                """,
+                [(scope, novel_id, 1 if exists_local else 0) for novel_id, exists_local in items],
+            )
 
     def get_sync_check_list(self, scope: str = "_") -> dict[int, bool]:
         """获取同步检查列表，返回 {novel_id: exists_local}"""
@@ -2009,7 +2142,7 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 task_type TEXT NOT NULL,
-                provider_id INTEGER NOT NULL,
+                provider_id INTEGER NOT NULL REFERENCES ai_providers(id) ON DELETE RESTRICT,
                 model TEXT,
                 system_prompt TEXT NOT NULL,
                 temperature REAL NOT NULL DEFAULT 0.8,

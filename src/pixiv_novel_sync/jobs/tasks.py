@@ -116,6 +116,9 @@ def _run_direct_sync_task(task_type: str, settings: Any, context: dict[str, Any]
 
     manager = context.get("manager")
     job_id = context.get("job_id")
+    params = context.get("params", {})
+    series_limit = int(params.get("limit") or settings.sync.series_sync_limit or 0)
+    users_limit = int(params.get("users_limit") or settings.sync.auto_sync_following_novels_users_limit or 0)
 
     def add_log(level: str, message: str) -> None:
         if manager is not None and job_id:
@@ -147,7 +150,7 @@ def _run_direct_sync_task(task_type: str, settings: Any, context: dict[str, Any]
                 write_markdown=settings.sync.write_markdown,
                 write_raw_text=settings.sync.write_raw_text,
                 progress_callback=progress_callback,
-                users_limit=settings.sync.auto_sync_following_novels_users_limit or 0,
+                users_limit=users_limit,
             )
         if task_type == "subscribed_series":
             subscribed_series = service.sync_subscribed_series
@@ -157,9 +160,9 @@ def _run_direct_sync_task(task_type: str, settings: Any, context: dict[str, Any]
                     write_markdown=settings.sync.write_markdown,
                     write_raw_text=settings.sync.write_raw_text,
                     progress_callback=progress_callback,
-                    limit=settings.sync.series_sync_limit,
+                    limit=series_limit,
                 )
-            return subscribed_series(progress_callback=progress_callback, limit=settings.sync.series_sync_limit)
+            return subscribed_series(progress_callback=progress_callback, limit=series_limit)
     finally:
         db.close()
 

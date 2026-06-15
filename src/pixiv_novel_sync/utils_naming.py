@@ -11,6 +11,7 @@ WHITESPACE = re.compile(r"\s+")
 def safe_name(value: str, fallback: str = "untitled") -> str:
     cleaned = INVALID_CHARS.sub("_", value).strip()
     cleaned = WHITESPACE.sub(" ", cleaned)
+    cleaned = cleaned.strip(". _")
     return cleaned[:64] or fallback
 
 

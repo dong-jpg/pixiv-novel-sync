@@ -72,6 +72,10 @@ def _progress(phase: str, message: str, **data: Any) -> AIStreamChunk:
 class AIProvider:
     def __init__(self, config: AIProviderConfig) -> None:
         self.config = config
+        self.session = requests.Session()
+
+    def close(self) -> None:
+        self.session.close()
 
     def stream_generate(
         self,
@@ -154,7 +158,7 @@ class OpenAICompatibleProvider(AIProvider):
         produced_output = False
         for attempt in range(max_retries + 1):
             try:
-                with requests.post(
+                with self.session.post(
                     url,
                     headers=headers,
                     json=payload,
@@ -250,7 +254,7 @@ class OpenAICompatibleProvider(AIProvider):
         last_error: str | None = None
         for attempt in range(max_retries + 1):
             try:
-                response = requests.post(
+                response = self.session.post(
                     url,
                     headers=headers,
                     json=payload_copy,
@@ -337,7 +341,7 @@ class AnthropicProvider(AIProvider):
         produced_output = False
         for attempt in range(max_retries + 1):
             try:
-                with requests.post(
+                with self.session.post(
                     url,
                     headers=headers,
                     json=payload,
@@ -432,7 +436,7 @@ class AnthropicProvider(AIProvider):
         max_retries = max(0, max_retries_override) if max_retries_override is not None else max(3, self.config.max_retries)
         for attempt in range(max_retries + 1):
             try:
-                response = requests.post(
+                response = self.session.post(
                     url,
                     headers=headers,
                     json=payload_copy,

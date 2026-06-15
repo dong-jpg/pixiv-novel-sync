@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import logging
+import secrets
 import threading
 import time
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ from .storage_db import Database
 from .storage_files import FileStorage
 from .sync_check import build_sync_check_fingerprint
 from .sync_engine import BookmarkNovelSyncService
+from .utils_naming import safe_name
 
 logger = logging.getLogger(__name__)
 
@@ -1420,7 +1422,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
     def _has_active_shared_jobs() -> bool:
         with shared_job_manager._lock:
-            return any(job.status in {JobStatus.QUEUED, JobStatus.RUNNING} for job in shared_job_manager._jobs.values())
+            active_statuses = {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.CANCEL_REQUESTED}
+            return any(job.status in active_statuses for job in shared_job_manager._jobs.values())
 
     def _has_any_running_web_job() -> bool:
         return sync_job_manager.has_running_jobs() or _has_active_shared_jobs()
@@ -1432,31 +1435,59 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         return [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs]
 
     def _run_shared_web_job(job_id: str) -> None:
+        shared_job_runner.run(job_id)
+        job = shared_job_manager.get_job(job_id)
+        if job is None:
+            return
+        log_id = job.progress.get("log_id")
+        if not log_id:
+            return
+        current_settings = settings_manager.load(env_path=env_path)
+        db = Database(current_settings.storage.db_path)
         try:
-            shared_job_runner.run(job_id)
-            job = shared_job_manager.get_job(job_id)
-            if job is None:
-                return
-            log_id = job.progress.get("log_id")
-            if not log_id:
-                return
-            current_settings = settings_manager.load(env_path=env_path)
-            db = Database(current_settings.storage.db_path)
-            try:
-                db.init_schema()
-                logs = _shared_job_logs_for_db(job)
-                if job.status == JobStatus.SUCCEEDED:
-                    db.update_task_log(log_id, JobStatus.SUCCEEDED.value, stats=job.stats, logs=logs)
-                elif job.status == JobStatus.FAILED:
-                    db.update_task_log(log_id, JobStatus.FAILED.value, error_message=job.error, logs=logs)
-                elif job.status == JobStatus.CANCELLED:
-                    db.update_task_log(log_id, JobStatus.CANCELLED.value, logs=logs)
-            except Exception as exc:
-                logger.error("更新共享任务日志失败：%s", exc)
-            finally:
-                db.close()
+            db.init_schema()
+            logs = _shared_job_logs_for_db(job)
+            if job.status == JobStatus.SUCCEEDED:
+                db.update_task_log(log_id, JobStatus.SUCCEEDED.value, stats=job.stats, logs=logs)
+            elif job.status == JobStatus.FAILED:
+                db.update_task_log(log_id, JobStatus.FAILED.value, error_message=job.error, logs=logs)
+            elif job.status == JobStatus.CANCELLED:
+                db.update_task_log(log_id, JobStatus.CANCELLED.value, logs=logs)
+        except Exception as exc:
+            logger.error("更新共享任务日志失败：%s", exc)
         finally:
-            sync_job_manager._semaphore.release()
+            db.close()
+
+    def _submit_shared_web_job(
+        spec: JobSpec,
+        current_settings: Settings,
+        task_type: str,
+        task_name: str,
+        *,
+        is_auto_sync: bool = False,
+        progress: dict[str, Any] | None = None,
+    ) -> JobState:
+        if _has_any_running_web_job():
+            raise RuntimeError("已有同步任务正在运行，请稍后再试")
+
+        db = Database(current_settings.storage.db_path)
+        try:
+            db.init_schema()
+            job = shared_job_manager.submit(spec)
+            log_id = db.create_task_log(
+                task_type=task_type,
+                task_name=task_name,
+                job_id=job.job_id,
+                is_auto_sync=is_auto_sync,
+            )
+            job.progress["log_id"] = log_id
+            if progress:
+                job.progress.update(progress)
+            thread = threading.Thread(target=_run_shared_web_job, args=(job.job_id,), daemon=True)
+            thread.start()
+            return job
+        finally:
+            db.close()
 
     oauth_manager = OAuthManager(env_path=env_path)
     auto_sync_scheduler = AutoSyncScheduler(config_path=config_path, env_path=env_path, sync_job_manager=sync_job_manager)
@@ -1496,11 +1527,30 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     # /proxy/image 需要登录（防止开放代理）。OAuth 回调与健康检查路径必须豁免（无 cookie 场景）。
     _AUTH_EXEMPT_PATHS = {
         "/api/auth/login",
-        "/api/auth/logout",
+        "/api/csrf-token",
         "/nginx-health",
         "/api/health",
         "/oauth/callback",
     }
+
+    _CSRF_EXEMPT_PATHS = {
+        "/api/auth/login",
+        "/nginx-health",
+        "/api/health",
+        "/oauth/callback",
+    }
+    _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+    _login_failures: dict[str, list[float]] = {}
+
+    def _get_csrf_token() -> str:
+        token = session.get("csrf_token")
+        if not token:
+            token = secrets.token_urlsafe(32)
+            session["csrf_token"] = token
+        return str(token)
+
+    def _csrf_failed():
+        return jsonify({"error": "csrf token invalid"}), 403
 
     # 是否信任反向代理注入的 X-Forwarded-For。仅当确实部署在可信反代（nginx 等）
     # 之后才应开启；否则客户端可伪造该头绕过本机判定。
@@ -1540,11 +1590,23 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         if path.startswith("/static/"):
             return
         if session.get("authenticated"):
+            if request.method in _MUTATING_METHODS and path not in _CSRF_EXEMPT_PATHS:
+                submitted = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
+                if not submitted or not secrets.compare_digest(str(submitted), _get_csrf_token()):
+                    return _csrf_failed()
             return
         # API 请求返回 401，页面请求重定向到登录
         if path.startswith("/api/"):
             return jsonify({"error": "unauthorized"}), 401
         return redirect("/api/auth/login")
+
+    @app.after_request
+    def _add_security_headers(response):
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        return response
 
     # 启动期安全提示：未配置 dashboard_token 时给出明确告警。
     if not (settings_manager.load(env_path=env_path).dashboard_token):
@@ -1580,11 +1642,25 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                 content_type="text/html",
             )
         import hmac as _hmac
+        now = time.time()
+        client = _client_addr()
+        failures = [ts for ts in _login_failures.get(client, []) if now - ts < 300]
+        if len(failures) >= 5:
+            _login_failures[client] = failures
+            return jsonify({"error": "too many login attempts"}), 429
         input_token = request.form.get("token", "")
         if _hmac.compare_digest(input_token, token):
+            _login_failures.pop(client, None)
             session["authenticated"] = True
+            _get_csrf_token()
             return redirect("/")
+        failures.append(now)
+        _login_failures[client] = failures
         return Response("密码错误", status=401)
+
+    @app.get("/api/csrf-token")
+    def csrf_token():
+        return jsonify({"csrf_token": _get_csrf_token()})
 
     @app.route("/api/auth/logout", methods=["POST"])
     def auth_logout():
@@ -1966,7 +2042,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                     )
 
                 epub_bytes = create_epub_from_novel(novel_data, text_content, cover_path)
-                filename = f"{novel_data.get('title', str(novel_id))}.epub"
+                filename = f"{safe_name(str(novel_data.get('title') or novel_id), str(novel_id))}.epub"
 
                 return send_file(
                     io.BytesIO(epub_bytes),
@@ -1993,7 +2069,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                             )
 
                         epub_bytes = create_epub_from_novel(novel_data, novel_data["text_raw"], cover_path)
-                        filename = f"{novel_data.get('title', str(novel_id))}.epub"
+                        filename = f"{safe_name(str(novel_data.get('title') or novel_id), str(novel_id))}.epub"
                         zf.writestr(filename, epub_bytes)
 
                 zip_buffer.seek(0)
@@ -2093,30 +2169,15 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.post("/api/dashboard/users/<int:user_id>/sync")
     def sync_user_novels(user_id: int):
         """触发某用户全部小说的后台备份任务，避免阻塞 HTTP 请求。"""
-        current_settings = settings_manager.load(env_path=env_path)
         if _has_active_shared_jobs():
             return jsonify({"ok": False, "error": "已有同步任务正在运行，请稍后再试"}), 400
+        current_settings = settings_manager.load(env_path=env_path)
         try:
-            job = sync_job_manager.start_user_backup_job(user_id)
+            spec = _web_job_spec([f"user_backup:{user_id}"])
+            job = _submit_shared_web_job(spec, current_settings, "user_backup", f"用户 {user_id} 备份")
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 500
-        # 创建 DB 日志（best-effort）
-        db = Database(current_settings.storage.db_path)
-        try:
-            db.init_schema()
-            try:
-                log_id = db.create_task_log(
-                    task_type="user_backup",
-                    task_name=f"用户 {user_id} 备份",
-                    job_id=job.job_id,
-                    is_auto_sync=False,
-                )
-                job.log_id = log_id
-            except Exception as exc:
-                logger.warning("Failed to create task log for user backup: %s", exc)
-        finally:
-            db.close()
-        return jsonify({"ok": True, "job_id": job.job_id})
+        return jsonify({"ok": True, "job_id": job.job_id, "job": _shared_job_to_dict(job)})
 
     @app.get("/api/dashboard/settings")
     def dashboard_settings():
@@ -2137,32 +2198,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         current_settings = settings_manager.load(env_path=env_path)
         spec = _build_web_sync_job_spec(current_settings)
 
-        if _has_any_running_web_job() or not sync_job_manager._semaphore.acquire(blocking=False):
-            return _running_job_error_response()
-
-        db = None
-        thread_started = False
         try:
-            db = Database(current_settings.storage.db_path)
-            db.init_schema()
-            job = shared_job_manager.submit(spec)
-            log_id = db.create_task_log(
-                task_type="manual",
-                task_name="全量手动同步",
-                job_id=job.job_id,
-                is_auto_sync=False,
-            )
-            job.progress["log_id"] = log_id
-            thread = threading.Thread(target=_run_shared_web_job, args=(job.job_id,), daemon=True)
-            thread.start()
-            thread_started = True
+            job = _submit_shared_web_job(spec, current_settings, "manual", "全量手动同步")
         except Exception as exc:
-            if not thread_started:
-                sync_job_manager._semaphore.release()
             return jsonify({"error": str(exc)}), 400
-        finally:
-            if db is not None:
-                db.close()
         return jsonify({"ok": True, "message": job.message, "job": _shared_job_to_dict(job)})
 
     @app.post("/api/dashboard/check-bookmarks")
@@ -2170,42 +2209,13 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         """预检查：扫描所有需要同步的内容，标记哪些已存在"""
         current_settings = settings_manager.load(env_path=env_path)
         
-        # 检查是否有任务正在运行
-        if _has_any_running_web_job():
-            return _running_job_error_response()
-
-        # 创建一个专门的预检查任务（不通过 start_job，避免触发同步）
-        if not sync_job_manager._semaphore.acquire(blocking=False):
-            return _running_job_error_response()
-        thread_started = False
         try:
-            import uuid
-            job_id = f"check_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
-            job = SyncJobState(
-                job_id=job_id,
-                status="running",
-                message="预检查任务已启动",
-                started_at=time.time(),
-                task_list=["预检查所有内容"],
-            )
-            with sync_job_manager._lock:
-                sync_job_manager._jobs[job_id] = job
+            spec = _web_job_spec(["sync_check"])
+            job = _submit_shared_web_job(spec, current_settings, "sync_check", "预检查所有内容")
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
 
-            # 启动后台任务
-            import threading
-            thread = threading.Thread(
-                target=run_check_bookmarks_task,
-                args=(current_settings, sync_job_manager, job_id),
-                daemon=True,
-            )
-            thread.start()
-            thread_started = True
-        except Exception:
-            if not thread_started:
-                sync_job_manager._semaphore.release()
-            raise
-        
-        return jsonify({"ok": True, "message": "预检查任务已启动", "job": _job_to_dict(job)})
+        return jsonify({"ok": True, "message": "预检查任务已启动", "job": _shared_job_to_dict(job)})
 
     @app.get("/api/dashboard/sync/status")
     def dashboard_sync_status():
@@ -2233,26 +2243,12 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         
         internal_type, task_name = task_map[task_type]
         current_settings = settings_manager.load(env_path=env_path)
-        if _has_active_shared_jobs():
-            return _running_job_error_response()
-
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
         try:
             spec = _web_job_spec([internal_type])
-            job = sync_job_manager.start_job(spec.task_types)
-            log_id = db.create_task_log(
-                task_type=internal_type,
-                task_name=task_name,
-                job_id=job.job_id,
-                is_auto_sync=False
-            )
-            job.log_id = log_id
+            job = _submit_shared_web_job(spec, current_settings, internal_type, task_name)
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
-        finally:
-            db.close()
-        return jsonify({"ok": True, "message": "任务已启动", "job": _job_to_dict(job)})
+        return jsonify({"ok": True, "message": "任务已启动", "job": _shared_job_to_dict(job)})
 
     @app.post("/api/dashboard/sync/subscribed-series")
     def dashboard_sync_subscribed_series():
@@ -2262,28 +2258,18 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         req_data = request.get_json(silent=True) or {}
         limit = int(req_data.get("limit", 0) or 0)
 
-        # 检查是否有任务正在运行
-        if _has_active_shared_jobs():
-            return _running_job_error_response()
-
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
         try:
-            spec = _web_job_spec(["subscribed_series"])
-            job = sync_job_manager.start_job(spec.task_types)
-            job.progress["series_limit"] = limit
-            log_id = db.create_task_log(
-                task_type="subscribed_series",
-                task_name="同步追更系列",
-                job_id=job.job_id,
-                is_auto_sync=False
+            spec = _web_job_spec(["subscribed_series"], params={"limit": limit})
+            job = _submit_shared_web_job(
+                spec,
+                current_settings,
+                "subscribed_series",
+                "同步追更系列",
+                progress={"series_limit": limit},
             )
-            job.log_id = log_id
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
-        finally:
-            db.close()
-        return jsonify({"ok": True, "message": "任务已启动", "job": _job_to_dict(job)})
+        return jsonify({"ok": True, "message": "任务已启动", "job": _shared_job_to_dict(job)})
 
     @app.get("/api/dashboard/auto-sync/status")
     def auto_sync_status():
@@ -2531,38 +2517,12 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     @app.post("/api/dashboard/pending-deletions/detect")
     def trigger_pending_detection():
         current_settings = settings_manager.load(env_path=env_path)
-        if _has_any_running_web_job():
-            return _running_job_error_response()
-        if not sync_job_manager._semaphore.acquire(blocking=False):
-            return _running_job_error_response()
-        thread_started = False
         try:
-            import uuid
-            job_id = f"detect_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
-            job = SyncJobState(
-                job_id=job_id, status="running", message="检测任务已启动",
-                started_at=time.time(), task_list=["pending_deletion_detection"],
-            )
-            with sync_job_manager._lock:
-                sync_job_manager._jobs[job_id] = job
-            db = Database(current_settings.storage.db_path)
-            db.init_schema()
-            try:
-                log_id = db.create_task_log(
-                    task_type="pending_deletion_detection", task_name="检测取消收藏/追更",
-                    job_id=job_id, is_auto_sync=False,
-                )
-                job.log_id = log_id
-            finally:
-                db.close()
-            thread = threading.Thread(target=sync_job_manager._run_job, args=(job_id,), daemon=True)
-            thread.start()
-            thread_started = True
-        except Exception:
-            if not thread_started:
-                sync_job_manager._semaphore.release()
-            raise
-        return jsonify({"ok": True, "message": "检测任务已启动", "job": _job_to_dict(job)})
+            spec = _web_job_spec(["pending_deletion_detection"])
+            job = _submit_shared_web_job(spec, current_settings, "pending_deletion_detection", "检测取消收藏/追更")
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"ok": True, "message": "检测任务已启动", "job": _shared_job_to_dict(job)})
 
     @app.post("/api/dashboard/pending-deletions/<int:deletion_id>/confirm")
     def confirm_pending_deletion(deletion_id: int):
@@ -2857,19 +2817,30 @@ def _job_to_dict(job: SyncJobState | None) -> dict[str, Any] | None:
     return _job_to_dict_unified(job)
 
 
-def _web_job_spec(task_list: list[str] | None) -> JobSpec:
+def _web_job_spec(task_list: list[str] | None, params: dict[str, Any] | None = None) -> JobSpec:
     tasks = list(task_list or [])
+    job_params = dict(params or {})
     if len(tasks) == 1 and tasks[0].startswith("user_backup:"):
         user_id = int(tasks[0].split(":", 1)[1])
+        job_params.setdefault("user_id", user_id)
         return JobSpec(
             source=JobSource.WEB,
             job_type=JobType.USER_BACKUP,
             task_types=tasks,
-            params={"user_id": user_id},
+            params=job_params,
         )
     if tasks == ["sync_check"]:
-        return JobSpec(source=JobSource.WEB, job_type=JobType.SYNC_CHECK, task_types=tasks)
-    return JobSpec(source=JobSource.WEB, job_type=JobType.SYNC, task_types=tasks)
+        return JobSpec(source=JobSource.WEB, job_type=JobType.SYNC_CHECK, task_types=tasks, params=job_params)
+    if tasks == ["pending_deletion_detection"]:
+        return JobSpec(
+            source=JobSource.WEB,
+            job_type=JobType.PENDING_DELETION_DETECTION,
+            task_types=tasks,
+            params=job_params,
+        )
+    if len(tasks) == 1 and tasks[0] in {"user_status", "novel_status", "series_status"}:
+        return JobSpec(source=JobSource.WEB, job_type=JobType.STATUS_CHECK, task_types=tasks, params=job_params)
+    return JobSpec(source=JobSource.WEB, job_type=JobType.SYNC, task_types=tasks, params=job_params)
 
 
 def _build_web_sync_job_spec(settings: Settings) -> JobSpec:
