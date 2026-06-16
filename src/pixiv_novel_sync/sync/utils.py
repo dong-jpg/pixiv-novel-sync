@@ -170,3 +170,23 @@ def _filename_from_url(url: str) -> str:
     path = urlparse(url).path
     name = Path(path).name
     return name or "asset.bin"
+
+
+def _empty_stats() -> dict[str, int]:
+    """创建空的统计字典"""
+    return {
+        "users": 0,
+        "novels": 0,
+        "texts_updated": 0,
+        "assets_downloaded": 0,
+        "failed": 0,
+        "skipped": 0,
+        "following_users_scanned": 0,
+    }
+
+
+def _merge_stats(stats: dict[str, int], counters: dict[str, int]) -> None:
+    """合并统计计数"""
+    for key, value in counters.items():
+        stats[key] = stats.get(key, 0) + value
+

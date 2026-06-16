@@ -27,6 +27,8 @@ from .sync.utils import (
     _collect_asset_urls,
     _walk_urls,
     _filename_from_url,
+    _empty_stats,
+    _merge_stats,
 )
 from .utils_hashing import sha256_text, stable_json_dumps
 from .utils_text import clean_caption, normalize_text, to_markdown
@@ -361,7 +363,7 @@ class BookmarkNovelSyncService:
         return stats
 
     def sync(self, user_id: int, restricts: Iterable[str], download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None, phase_name: str = "同步中") -> dict[str, int]:
-        stats = self._empty_stats()
+        stats = _empty_stats()
         max_items = self.settings.sync.max_items_per_run
         max_pages = self.settings.sync.max_pages_per_run
         item_delay = self.settings.sync.delay_seconds_between_items
@@ -451,7 +453,7 @@ class BookmarkNovelSyncService:
                         if use_check_list:
                             self.db.upsert_sync_check_item(novel_id, True, self.sync_check_scope)
 
-                    self._merge_stats(stats, counters)
+                    _merge_stats(stats, counters)
 
                     # 只有实际同步（非跳过）才计入 synced_items
                     if not counters.get("skipped"):
@@ -564,7 +566,7 @@ class BookmarkNovelSyncService:
         return stats
 
     def sync_following_novels(self, download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None, users_limit: int = 0) -> dict[str, int]:
-        stats = self._empty_stats()
+        stats = _empty_stats()
         max_items = self.settings.sync.max_items_per_run
         max_pages = self.settings.sync.max_pages_per_run
         item_delay = self.settings.sync.delay_seconds_between_items
@@ -715,7 +717,7 @@ class BookmarkNovelSyncService:
                             if use_check_list:
                                 self.db.upsert_sync_check_item(novel_id, True, self.sync_check_scope)
                         
-                        self._merge_stats(stats, counters)
+                        _merge_stats(stats, counters)
 
                         # 只有实际同步（非跳过）才计入 synced_items
                         if counters.get("novels", 0) > 0:
@@ -1760,20 +1762,3 @@ class BookmarkNovelSyncService:
                 records.append(AssetRecord(novel_id, asset_type, asset_url, str(target), file_hash))
         self.db.record_assets(records)
         return len(records)
-
-    @staticmethod
-    def _empty_stats() -> dict[str, int]:
-        return {
-            "users": 0,
-            "novels": 0,
-            "texts_updated": 0,
-            "assets_downloaded": 0,
-            "failed": 0,
-            "skipped": 0,
-            "following_users_scanned": 0,
-        }
-
-    @staticmethod
-    def _merge_stats(stats: dict[str, int], counters: dict[str, int]) -> None:
-        for key, value in counters.items():
-            stats[key] = stats.get(key, 0) + value
