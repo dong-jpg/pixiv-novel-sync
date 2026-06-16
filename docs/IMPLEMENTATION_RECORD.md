@@ -55,12 +55,14 @@
 
 旧实施方案中列出的明确未完成事项已清零。
 
-### 1.3 模块化拆分（2026-06-15 完成） ✅
+### 1.3 模块化拆分（2026-06-15 ~ 2026-06-16） 
 
 **目标**：将巨型文件拆分为可维护的模块。
 
+#### ✅ storage_db.py 拆分完成（2026-06-15）
+
 **最终成果**：
-- ✅ **storage_db.py 拆分 100% 完成**
+- ✅ **100% 完成**
 - 从 3742 行减少到 52 行（**-98.6%**）
 - 提取 195 个方法到 14 个 mixin 模块
 - 所有 164 个测试保持通过
@@ -79,59 +81,63 @@
 
 **最终模块结构**：
 ```
-src/pixiv_novel_sync/storage/
+storage/
 ├── connection.py              # DatabaseConnection 基类
 ├── schema.py                  # SchemaMixin (19 methods)
 ├── utils.py                   # 辅助类
-├── novels.py                  # NovelsMixin (26 methods)
-├── users.py                   # UsersMixin (9 methods)
-├── series.py                  # SeriesMixin (9 methods)
-├── bookmarks.py               # BookmarksMixin (6 methods)
-├── tasks.py                   # TasksMixin (5 methods)
-├── pending_and_watermarks.py  # PendingAndWatermarksMixin (10 methods)
-├── reading_progress.py        # ReadingProgressMixin (3 methods)
-├── recommendations.py         # RecommendationsMixin (25 methods)
+├── novels.py                  # NovelsMixin (26)
+├── users.py                   # UsersMixin (9)
+├── series.py                  # SeriesMixin (9)
+├── bookmarks.py               # BookmarksMixin (6)
+├── tasks.py                   # TasksMixin (5)
+├── pending_and_watermarks.py  # PendingAndWatermarksMixin (10)
+├── reading_progress.py        # ReadingProgressMixin (3)
+├── recommendations.py         # RecommendationsMixin (25)
 └── ai/
-    ├── __init__.py
-    ├── core.py                # AiCoreMixin (19 methods)
-    ├── documents.py           # AiDocumentsMixin (27 methods)
-    └── writing.py             # AiWritingMixin (37 methods)
+    ├── core.py                # AiCoreMixin (19)
+    ├── documents.py           # AiDocumentsMixin (27)
+    └── writing.py             # AiWritingMixin (37)
 ```
 
-**storage_db.py 最终形态（52 行）**：
-```python
-class Database(
-    NovelsMixin,              # 小说 CRUD
-    UsersMixin,               # 用户 CRUD
-    SeriesMixin,              # 系列 CRUD
-    BookmarksMixin,           # 收藏和同步检查
-    TasksMixin,               # 任务日志
-    PendingAndWatermarksMixin, # 待删除项和水位线
-    ReadingProgressMixin,     # 阅读进度
-    RecommendationsMixin,     # 推荐系统
-    AiCoreMixin,              # AI providers/agents/jobs
-    AiDocumentsMixin,         # AI 文档和配置
-    AiWritingMixin,           # AI 创作项目
-    SchemaMixin,              # Schema 管理
-    DatabaseConnection,       # 连接管理
-):
-    def __init__(self, path: Path) -> None:
-        super().__init__(path)
-    
-    def export_stats(self) -> str:
-        """统计数据导出"""
-        ...
+#### ✅ webapp.py 拆分部分完成（2026-06-16）
+
+**当前成果**：
+- ✅ **Batch 6 完成**：管理器和工具类提取
+- webapp.py: 3040 → 1703 行（**-44%**）
+- 提取 3 个管理器类 + 19 个工具函数
+- 所有 164 个测试保持通过
+- 1 次提交
+
+**Batch 6 详情（提交 `df64f3d`）：**
+- 提取 `SyncJobState`, `AutoSyncScheduler`, `SyncJobManager`, `SettingsManager` → `web/managers.py` (1450 行)
+- 提取 19 个工具函数 → `web/utils.py` (350 行)
+- webapp.py 保留：`create_app` 函数和 61 个路由定义
+
+**新模块结构**：
+```
+web/
+├── __init__.py          (导出接口)
+├── managers.py          (1450 行)
+│   ├── SyncJobState     (同步任务状态)
+│   ├── AutoSyncScheduler (定时调度器)
+│   ├── SyncJobManager   (任务管理器)
+│   └── SettingsManager  (设置管理器)
+└── utils.py             (350 行)
+    └── 19 个工具函数
 ```
 
-**技术亮点**：
-1. **多继承 Mixin 模式**：清晰的职责分离，每个 mixin 独立可测
-2. **零破坏性变更**：所有测试始终通过，100% 向后兼容
-3. **渐进式重构**：5 个批次独立提交，风险可控
-4. **Ultracode 模式**：利用 Agent 并行提取大量方法
+**待完成（可选）**：
+- ⏳ **Batch 7-10**：路由拆分为 Blueprint（可选优化）
+  - 当前 webapp.py (1703 行) 已经比较合理
+  - 如需进一步拆分，可按功能域拆分路由：
+    * auth_routes.py (认证相关)
+    * api_routes.py (API 端点)
+    * dashboard_routes.py (Dashboard 页面)
 
-**下一步**：
-- ⏳ **Batch 6-10**：`webapp.py` 拆分（3011 行）
+#### ⏳ sync_engine.py 拆分待执行
+
 - ⏳ **Batch 11-13**：`sync_engine.py` 拆分（1905 行）
+  - 拆分同步逻辑到领域 mixin
 
 详见 `docs/MODULARIZATION_PLAN.md`。
 
