@@ -55,57 +55,85 @@
 
 旧实施方案中列出的明确未完成事项已清零。
 
-### 1.3 模块化拆分（2026-06-15 进行中）
+### 1.3 模块化拆分（2026-06-15 完成） ✅
 
 **目标**：将巨型文件拆分为可维护的模块。
 
-**进度**：
-- ✅ **Batch 1 完成**：`storage_db.py` 连接层拆分（3742 → 3681 行，-61）
-  - 提交：`23e5a81`
-  - 提取 `DatabaseConnection` → `storage/connection.py`
-  - 提取 `_LazyNovelMembership` → `storage/utils.py`
-  - 测试：164 passed
-  
-- ✅ **Batch 2 完成**：`storage_db.py` Schema 层拆分（3681 → 2959 行，-722）
-  - 提交：`4ce7dcc`
-  - 提取 `SchemaMixin` (19个方法) → `storage/schema.py`
-  - 包含所有 init_schema / _migrate_* / _rebuild_* 方法
-  - 测试：164 passed
-  
-- ✅ **Batch 3 完成**：`storage_db.py` 核心业务层拆分（2959 → 1675 行，-1284）
-  - 提交：`7ae1732`
-  - 提取 5 个业务 mixin（55 个方法）：
-    * NovelsMixin (26) → `storage/novels.py`
-    * UsersMixin (9) → `storage/users.py`
-    * SeriesMixin (9) → `storage/series.py`
-    * BookmarksMixin (6) → `storage/bookmarks.py`
-    * TasksMixin (5) → `storage/tasks.py`
-  - 测试：164 passed
+**最终成果**：
+- ✅ **storage_db.py 拆分 100% 完成**
+- 从 3742 行减少到 52 行（**-98.6%**）
+- 提取 195 个方法到 14 个 mixin 模块
+- 所有 164 个测试保持通过
+- 5 次提交，全部推送
 
-- ✅ **Batch 4 部分完成**：`storage_db.py` 实用层拆分（1675 → 1472 行，-203）
-  - 提交：`b23cfd6`
-  - 提取 2 个实用 mixin（13 个方法）：
-    * PendingAndWatermarksMixin (10) → `storage/pending_and_watermarks.py`
-    * ReadingProgressMixin (3) → `storage/reading_progress.py`
-  - 测试：164 passed
-  
-- ⏳ **Batch 4-5 待继续**：AI 业务层拆分（~100 个方法）
-  - 推荐系统（25 methods）
-  - AI providers/agents/jobs（40+ methods）
-  - AI writing projects（35+ methods）
-  - 预计再减少 800+ 行
+**批次详情**：
 
-**当前成果**：
-- storage_db.py: 3742 → 1472 行（**-61%**）
-- 新增模块：10 个，累计 1800+ 行
-- 测试覆盖：100%（164/164）
+| 批次 | 内容 | 提交 | 减少行数 | 状态 |
+|------|------|------|----------|------|
+| Batch 1 | 连接层 | `23e5a81` | -61 | ✅ |
+| Batch 2 | Schema 层（19 methods） | `4ce7dcc` | -722 | ✅ |
+| Batch 3 | 核心业务层（55 methods） | `7ae1732` | -1284 | ✅ |
+| Batch 4 | 实用层（13 methods） | `b23cfd6` | -203 | ✅ |
+| Batch 4-5 | AI 和推荐层（108 methods） | `d8f5bce` | -1420 | ✅ |
+| **总计** | **195 个方法** | **5 次提交** | **-3690 行** | **✅** |
 
-- ⏳ **Batch 6-10 待执行**：`webapp.py` 拆分（3011 行）
-- ⏳ **Batch 11-13 待执行**：`sync_engine.py` 拆分（1905 行）
+**最终模块结构**：
+```
+src/pixiv_novel_sync/storage/
+├── connection.py              # DatabaseConnection 基类
+├── schema.py                  # SchemaMixin (19 methods)
+├── utils.py                   # 辅助类
+├── novels.py                  # NovelsMixin (26 methods)
+├── users.py                   # UsersMixin (9 methods)
+├── series.py                  # SeriesMixin (9 methods)
+├── bookmarks.py               # BookmarksMixin (6 methods)
+├── tasks.py                   # TasksMixin (5 methods)
+├── pending_and_watermarks.py  # PendingAndWatermarksMixin (10 methods)
+├── reading_progress.py        # ReadingProgressMixin (3 methods)
+├── recommendations.py         # RecommendationsMixin (25 methods)
+└── ai/
+    ├── __init__.py
+    ├── core.py                # AiCoreMixin (19 methods)
+    ├── documents.py           # AiDocumentsMixin (27 methods)
+    └── writing.py             # AiWritingMixin (37 methods)
+```
+
+**storage_db.py 最终形态（52 行）**：
+```python
+class Database(
+    NovelsMixin,              # 小说 CRUD
+    UsersMixin,               # 用户 CRUD
+    SeriesMixin,              # 系列 CRUD
+    BookmarksMixin,           # 收藏和同步检查
+    TasksMixin,               # 任务日志
+    PendingAndWatermarksMixin, # 待删除项和水位线
+    ReadingProgressMixin,     # 阅读进度
+    RecommendationsMixin,     # 推荐系统
+    AiCoreMixin,              # AI providers/agents/jobs
+    AiDocumentsMixin,         # AI 文档和配置
+    AiWritingMixin,           # AI 创作项目
+    SchemaMixin,              # Schema 管理
+    DatabaseConnection,       # 连接管理
+):
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+    
+    def export_stats(self) -> str:
+        """统计数据导出"""
+        ...
+```
+
+**技术亮点**：
+1. **多继承 Mixin 模式**：清晰的职责分离，每个 mixin 独立可测
+2. **零破坏性变更**：所有测试始终通过，100% 向后兼容
+3. **渐进式重构**：5 个批次独立提交，风险可控
+4. **Ultracode 模式**：利用 Agent 并行提取大量方法
+
+**下一步**：
+- ⏳ **Batch 6-10**：`webapp.py` 拆分（3011 行）
+- ⏳ **Batch 11-13**：`sync_engine.py` 拆分（1905 行）
 
 详见 `docs/MODULARIZATION_PLAN.md`。
-
-**下一步**：继续 Batch 4-5，提取 AI 和推荐系统 mixin。
 
 ## 2. 历史实施摘要
 
