@@ -17,6 +17,17 @@ from .rate_limiter import RateLimiter
 from .settings import Settings
 from .storage_db import Database
 from .storage_files import FileStorage
+from .sync.utils import (
+    retry_on_pixiv_error,
+    _to_plain,
+    _extract_tags,
+    _extract_cover_url,
+    _extract_novel_text,
+    _is_pixiv_image_url,
+    _collect_asset_urls,
+    _walk_urls,
+    _filename_from_url,
+)
 from .utils_hashing import sha256_text, stable_json_dumps
 from .utils_text import clean_caption, normalize_text, to_markdown
 
@@ -29,49 +40,6 @@ logger = logging.getLogger(__name__)
 _CHECK_PAGE_SAFETY_LIMIT = 2000
 
 T = TypeVar('T')
-
-
-def retry_on_pixiv_error(max_retries: int = 3, base_delay: float = 5.0) -> Callable[[Callable[..., T]], Callable[..., T]]:
-    """Pixiv API重试装饰器:捕获429/网络错误,指数退避重试。
-
-    Args:
-        max_retries: 最大重试次数(不含首次调用)
-        base_delay: 基础延迟(秒),429时翻倍退避,最长60s
-    """
-    def decorator(func: Callable[..., T]) -> Callable[..., T]:
-        @wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> T:
-            last_exc = None
-            for attempt in range(max_retries + 1):
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    last_exc = e
-                    # 429 或网络错误才重试
-                    is_rate_limit = False
-                    is_network = False
-                    err_str = str(e).lower()
-                    if "429" in err_str or "rate" in err_str:
-                        is_rate_limit = True
-                    elif any(k in err_str for k in ["connection", "timeout", "network", "unreachable"]):
-                        is_network = True
-
-                    if not (is_rate_limit or is_network):
-                        raise  # 非重试类错误立即抛出
-
-                    if attempt < max_retries:
-                        delay = min(base_delay * (2 ** attempt), 60.0) if is_rate_limit else base_delay
-                        logger.warning(
-                            f"{func.__name__} {'rate limited (429)' if is_rate_limit else 'network error'}, "
-                            f"retry {attempt+1}/{max_retries} after {delay:.1f}s: {e}"
-                        )
-                        time.sleep(delay)
-                    else:
-                        logger.error(f"{func.__name__} failed after {max_retries} retries: {e}")
-
-            raise last_exc  # type: ignore
-        return wrapper
-    return decorator
 
 
 class BookmarkNovelSyncService:
@@ -1809,97 +1777,3 @@ class BookmarkNovelSyncService:
     def _merge_stats(stats: dict[str, int], counters: dict[str, int]) -> None:
         for key, value in counters.items():
             stats[key] = stats.get(key, 0) + value
-
-
-def _to_plain(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, list):
-        return [_to_plain(item) for item in value]
-    if isinstance(value, tuple):
-        return [_to_plain(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): _to_plain(item) for key, item in value.items()}
-    if hasattr(value, "__dict__"):
-        return {str(key): _to_plain(item) for key, item in vars(value).items() if not key.startswith("_")}
-    return str(value)
-
-
-def _extract_tags(tags: Any) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    for tag in tags or []:
-        results.append(_to_plain(tag))
-    return results
-
-
-def _extract_cover_url(novel: Any) -> str | None:
-    image_urls = getattr(novel, "image_urls", None)
-    for field in ("large", "medium", "square_medium"):
-        url = getattr(image_urls, field, None) if image_urls is not None else None
-        if url:
-            return str(url)
-    return None
-
-
-def _extract_novel_text(webview: Any) -> str:
-    for key in ("novel_text", "text", "body"):
-        value = getattr(webview, key, None)
-        if value:
-            return str(value)
-    if isinstance(webview, dict):
-        for key in ("novel_text", "text", "body"):
-            value = webview.get(key)
-            if value:
-                return str(value)
-    return ""
-
-
-def _is_pixiv_image_url(url: str) -> bool:
-    """True only when the URL host is exactly ``pximg.net`` or a ``*.pximg.net`` subdomain.
-
-    A plain substring test (``"pximg.net" in url``) also matches hostile hosts such
-    as ``pximg.net.evil.com`` or ``evil-pximg.net``, which would let attacker-controlled
-    novel content drive arbitrary downloads through the configured proxy (SSRF).
-    """
-    try:
-        host = (urlparse(url).hostname or "").lower()
-    except ValueError:
-        return False
-    return host == "pximg.net" or host.endswith(".pximg.net")
-
-
-def _collect_asset_urls(novel: Any, webview: Any) -> list[tuple[str, str]]:
-    results: list[tuple[str, str]] = []
-    cover_url = _extract_cover_url(novel)
-    if cover_url:
-        results.append(("cover", cover_url))
-
-    plain_webview = _to_plain(webview)
-    visited: set[str] = set()
-    for url in _walk_urls(plain_webview):
-        if _is_pixiv_image_url(url) and url not in visited:
-            visited.add(url)
-            results.append(("inline_image", url))
-    return results
-
-
-def _walk_urls(value: Any) -> list[str]:
-    urls: list[str] = []
-    if isinstance(value, str):
-        if value.startswith("http://") or value.startswith("https://"):
-            urls.append(value)
-    elif isinstance(value, dict):
-        for item in value.values():
-            urls.extend(_walk_urls(item))
-    elif isinstance(value, list):
-        for item in value:
-            urls.extend(_walk_urls(item))
-    return urls
-
-
-def _filename_from_url(url: str) -> str:
-    path = urlparse(url).path
-    name = Path(path).name
-    return name or "asset.bin"
