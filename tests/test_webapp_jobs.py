@@ -225,7 +225,7 @@ def test_auto_sync_scheduler_delegates_user_backup_to_each_user(monkeypatch):
         conn = Conn()
 
         def __init__(self, db_path):
-            assert db_path == "db.sqlite"
+            assert str(db_path) == "db.sqlite"
 
         def init_schema(self):
             pass
@@ -241,7 +241,7 @@ def test_auto_sync_scheduler_delegates_user_backup_to_each_user(monkeypatch):
             pass
 
     monkeypatch.setattr("pixiv_novel_sync.jobs.services.run_user_backup_task", fake_user_backup)
-    monkeypatch.setattr("pixiv_novel_sync.webapp.Database", FakeDatabase)
+    monkeypatch.setattr("pixiv_novel_sync.web.managers.Database", FakeDatabase)
     settings = Settings()
     settings.storage = type("Storage", (), {"db_path": "db.sqlite"})()
     scheduler = AutoSyncScheduler(config_path=None, env_path=None, sync_job_manager=Manager())
