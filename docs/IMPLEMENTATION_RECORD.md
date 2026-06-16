@@ -72,17 +72,40 @@
   - 包含所有 init_schema / _migrate_* / _rebuild_* 方法
   - 测试：164 passed
   
-- ⏳ **Batch 3-5 待继续**：核心业务层和 AI 层拆分
-  - 已分析方法分类：novels(28), users(9), series(9), bookmarks(5), tasks(5)
-  - 需手动创建 5 个 mixin 模块（Workflow 自动化未完全成功）
-  - 预计进一步减少 1500+ 行
+- ✅ **Batch 3 完成**：`storage_db.py` 核心业务层拆分（2959 → 1675 行，-1284）
+  - 提交：`7ae1732`
+  - 提取 5 个业务 mixin（55 个方法）：
+    * NovelsMixin (26) → `storage/novels.py`
+    * UsersMixin (9) → `storage/users.py`
+    * SeriesMixin (9) → `storage/series.py`
+    * BookmarksMixin (6) → `storage/bookmarks.py`
+    * TasksMixin (5) → `storage/tasks.py`
+  - 测试：164 passed
+
+- ✅ **Batch 4 部分完成**：`storage_db.py` 实用层拆分（1675 → 1472 行，-203）
+  - 提交：`b23cfd6`
+  - 提取 2 个实用 mixin（13 个方法）：
+    * PendingAndWatermarksMixin (10) → `storage/pending_and_watermarks.py`
+    * ReadingProgressMixin (3) → `storage/reading_progress.py`
+  - 测试：164 passed
   
+- ⏳ **Batch 4-5 待继续**：AI 业务层拆分（~100 个方法）
+  - 推荐系统（25 methods）
+  - AI providers/agents/jobs（40+ methods）
+  - AI writing projects（35+ methods）
+  - 预计再减少 800+ 行
+
+**当前成果**：
+- storage_db.py: 3742 → 1472 行（**-61%**）
+- 新增模块：10 个，累计 1800+ 行
+- 测试覆盖：100%（164/164）
+
 - ⏳ **Batch 6-10 待执行**：`webapp.py` 拆分（3011 行）
 - ⏳ **Batch 11-13 待执行**：`sync_engine.py` 拆分（1905 行）
 
 详见 `docs/MODULARIZATION_PLAN.md`。
 
-**下一步**：继续 Batch 3，手动创建业务层 mixin 模块。
+**下一步**：继续 Batch 4-5，提取 AI 和推荐系统 mixin。
 
 ## 2. 历史实施摘要
 
