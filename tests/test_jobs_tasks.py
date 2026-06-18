@@ -226,3 +226,52 @@ def test_execute_task_dispatches_pending_deletion_detection_service(monkeypatch)
     assert calls[0][0] is settings
     assert calls[0][1] is not None
     assert calls[0][2] is not None
+
+
+def test_preference_analyze_defaults_scope_limit(monkeypatch):
+    captured = {}
+
+    class FakeReporter:
+        def add_log(self, level, message):
+            pass
+
+    class FakeDb:
+        def init_schema(self):
+            pass
+
+        def create_preference_profile(self, data):
+            captured["profile"] = data
+            return 1
+
+        def close(self):
+            pass
+
+    class FakeAnalyzer:
+        def __init__(self, db):
+            self.db = db
+
+        def analyze_local(self, scope):
+            captured["scope"] = scope
+            return {
+                "source_scope": dict(scope),
+                "stats": {"novel_count": 1, "total_chars": 1000},
+                "profile": {"positive_preferences": {"tags": []}},
+            }
+
+    monkeypatch.setattr("pixiv_novel_sync.jobs.tasks._job_reporter_from_context", lambda context: FakeReporter())
+    monkeypatch.setattr("pixiv_novel_sync.jobs.tasks.Database", lambda path: FakeDb(), raising=False)
+    monkeypatch.setattr("pixiv_novel_sync.preferences.PreferenceAnalyzer", FakeAnalyzer)
+    monkeypatch.setattr("pixiv_novel_sync.jobs.tasks.PreferenceAnalyzer", FakeAnalyzer, raising=False)
+    monkeypatch.setattr("pixiv_novel_sync.storage_db.Database", lambda path: FakeDb())
+
+    settings = type("Settings", (), {"storage": type("Storage", (), {"db_path": "ignored"})()})()
+
+    result = execute_task(
+        "preference_analyze",
+        settings,
+        {"params": {"scope": {"min_text_length": 1000}, "is_default": True}},
+    )
+
+    assert result["profile_id"] == 1
+    assert captured["scope"]["min_text_length"] == 1000
+    assert captured["scope"]["limit"] == 1000

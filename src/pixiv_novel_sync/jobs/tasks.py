@@ -268,7 +268,9 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
         db.init_schema()
         analyzer = PreferenceAnalyzer(db)
         params = context.get("params", {})
-        scope = params.get("scope", {})
+        scope = dict(params.get("scope", {}) or {})
+        if not scope.get("limit"):
+            scope["limit"] = 1000
 
         reporter.add_log("info", f"分析范围: {scope or '全部小说'}")
         result = analyzer.analyze_local(scope)
