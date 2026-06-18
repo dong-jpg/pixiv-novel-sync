@@ -311,7 +311,11 @@ class AutoSyncScheduler:
                 with self._lock:
                     self._current_task_job_id = None
                     self._stop_current_task = False
-                self.sync_job_manager._semaphore.release()
+                # ✅ Bug #1 修复: 将信号量释放移入 finally 确保始终执行
+                try:
+                    self.sync_job_manager._semaphore.release()
+                except Exception as e:
+                    logger.error("Failed to release semaphore: %s", e)
         else:
             # 没有 job_manager，直接执行
             func = getattr(self, sync_func_name, None)
@@ -733,9 +737,13 @@ class SyncJobManager:
             del self._jobs[jid]
 
     def start_job(self, task_list: list[str] | None = None) -> SyncJobState:
-        if not self._semaphore.acquire(blocking=False):
-            raise RuntimeError("已有同步任务正在运行，请稍后再试")
+        # ✅ Bug #1 修复: 使用 acquired 标志追踪信号量状态
+        acquired = False
         try:
+            acquired = self._semaphore.acquire(blocking=False)
+            if not acquired:
+                raise RuntimeError("已有同步任务正在运行，请稍后再试")
+
             with self._lock:
                 import uuid
                 job_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
@@ -751,14 +759,19 @@ class SyncJobManager:
             thread.start()
             return job
         except Exception:
-            self._semaphore.release()
+            if acquired:
+                self._semaphore.release()
             raise
     
     def start_auto_job(self, task_name: str, task_label: str) -> SyncJobState | None:
         """启动定时任务"""
-        if not self._semaphore.acquire(blocking=False):
-            return None
+        # ✅ Bug #1 修复: 使用 acquired 标志追踪信号量状态
+        acquired = False
         try:
+            acquired = self._semaphore.acquire(blocking=False)
+            if not acquired:
+                return None
+
             with self._lock:
                 job_id = f"auto_{task_name}_{int(time.time() * 1000)}"
                 job = SyncJobState(
@@ -772,14 +785,19 @@ class SyncJobManager:
                 self._jobs[job_id] = job
                 return job
         except Exception:
-            self._semaphore.release()
+            if acquired:
+                self._semaphore.release()
             raise
 
     def start_user_backup_job(self, user_id: int) -> SyncJobState:
         """启动单用户全量备份后台任务"""
-        if not self._semaphore.acquire(blocking=False):
-            raise RuntimeError("已有同步任务正在运行，请稍后再试")
+        # ✅ Bug #1 修复: 使用 acquired 标志追踪信号量状态
+        acquired = False
         try:
+            acquired = self._semaphore.acquire(blocking=False)
+            if not acquired:
+                raise RuntimeError("已有同步任务正在运行，请稍后再试")
+
             with self._lock:
                 import uuid
                 job_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
@@ -795,7 +813,8 @@ class SyncJobManager:
             thread.start()
             return job
         except Exception:
-            self._semaphore.release()
+            if acquired:
+                self._semaphore.release()
             raise
 
     def get_job(self, job_id: str) -> SyncJobState | None:

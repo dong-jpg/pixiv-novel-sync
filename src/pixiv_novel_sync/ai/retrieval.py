@@ -102,10 +102,12 @@ class TFIDFRetriever(BaseRetriever):
             self.conn.commit()
 
     def search(self, project_id: int, query: str, top_k: int = 5) -> list[RetrievalEntry]:
-        # Phase 5.7: 检查缓存
-        cache_key = (project_id, query, top_k)
-        if cache_key in self._search_cache:
-            return self._search_cache[cache_key]
+        # ✅ Bug #2 修复: 缓存检查也需要在锁保护下
+        with self._lock:
+            # Phase 5.7: 检查缓存
+            cache_key = (project_id, query, top_k)
+            if cache_key in self._search_cache:
+                return self._search_cache[cache_key]
 
         query_tokens = self._tokenize(query)
         if not query_tokens:
@@ -164,13 +166,15 @@ class TFIDFRetriever(BaseRetriever):
         results.sort(key=lambda x: x.score, reverse=True)
         top_results = results[:top_k]
 
-        # Phase 5.7: 存入缓存(限制缓存大小)
-        if len(self._search_cache) >= 128:
-            # 简单FIFO清理,删除最早的一半
-            keys_to_remove = list(self._search_cache.keys())[:64]
-            for k in keys_to_remove:
-                del self._search_cache[k]
-        self._search_cache[cache_key] = top_results
+        # ✅ Bug #2 修复: 缓存写入也需要在锁保护下
+        with self._lock:
+            # Phase 5.7: 存入缓存(限制缓存大小)
+            if len(self._search_cache) >= 128:
+                # 简单FIFO清理,删除最早的一半
+                keys_to_remove = list(self._search_cache.keys())[:64]
+                for k in keys_to_remove:
+                    del self._search_cache[k]
+            self._search_cache[cache_key] = top_results
 
         return top_results
 
