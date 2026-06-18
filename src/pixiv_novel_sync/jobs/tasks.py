@@ -261,7 +261,7 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
     from pixiv_novel_sync.preferences import PreferenceAnalyzer
 
     reporter = _job_reporter_from_context(context)
-    reporter.log("info", "=== 开始分析本地偏好 ===")
+    reporter.add_log("info", "=== 开始分析本地偏好 ===")
 
     db = Database(settings.storage.db_path)
     try:
@@ -270,7 +270,7 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
         params = context.get("params", {})
         scope = params.get("scope", {})
 
-        reporter.log("info", f"分析范围: {scope or '全部小说'}")
+        reporter.add_log("info", f"分析范围: {scope or '全部小说'}")
         result = analyzer.analyze_local(scope)
 
         # 保存profile到数据库
@@ -283,7 +283,8 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
             "is_default": bool(params.get("is_default", True)),
         })
 
-        reporter.log("success", f"分析完成: 创建profile #{profile_id}, 发现 {len(result['profile'].get('positive_tags', []))} 个偏好标签")
+        positive_tags = (result.get("profile") or {}).get("positive_preferences", {}).get("tags", [])
+        reporter.add_log("success", f"分析完成: 创建profile #{profile_id}, 发现 {len(positive_tags)} 个偏好标签")
         return {"profile_id": profile_id, **result}
     finally:
         db.close()
@@ -296,7 +297,7 @@ def _run_recommendation_run_task(settings: Any, context: dict[str, Any]) -> dict
 
     reporter = _job_reporter_from_context(context)
     stop_requested = _stop_requested_from_context(context)
-    reporter.log("info", "=== 开始生成推荐 ===")
+    reporter.add_log("info", "=== 开始生成推荐 ===")
 
     db = Database(settings.storage.db_path)
     try:
@@ -310,9 +311,9 @@ def _run_recommendation_run_task(settings: Any, context: dict[str, Any]) -> dict
             if stop_requested():
                 raise InterruptedError("Task stopped by user")
             if event_type == "phase":
-                reporter.log("info", str(data.get("phase", "")))
+                reporter.add_log("info", str(data.get("phase", "")))
             elif event_type == "rate_limit":
-                reporter.log("warning", f"等待 {data.get('seconds', 1)} 秒")
+                reporter.add_log("warning", f"等待 {data.get('seconds', 1)} 秒")
 
         try:
             result = service.run(
@@ -321,10 +322,10 @@ def _run_recommendation_run_task(settings: Any, context: dict[str, Any]) -> dict
                 progress_callback=progress_callback,
             )
         except InterruptedError:
-            reporter.log("info", "推荐任务已停止")
+            reporter.add_log("info", "推荐任务已停止")
             return {"stopped": True, "discovered": 0}
 
-        reporter.log("success", f"推荐完成: 发现 {result.get('discovered', 0)} 部小说")
+        reporter.add_log("success", f"推荐完成: 发现 {result.get('discovered', 0)} 部小说")
         return result
     finally:
         db.close()

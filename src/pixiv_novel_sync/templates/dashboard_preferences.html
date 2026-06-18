@@ -183,12 +183,12 @@ window.initVueApp({
     async function pollJob(jobId, maxWaitMs = 300000) {
       const startTime = Date.now();
       while (Date.now() - startTime < maxWaitMs) {
-        const res = await fetch(`/api/jobs/${jobId}`);
+        const res = await fetch(`/api/dashboard/sync/status?job_id=${encodeURIComponent(jobId)}`);
         const data = await res.json();
-        if (!data.ok) throw new Error(data.error || '获取任务状态失败');
+        const job = data.job;
+        if (!job) throw new Error(data.error || '获取任务状态失败');
 
-        const job = data.data;
-        if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+        if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
           return job;
         }
 
@@ -236,7 +236,7 @@ window.initVueApp({
 
         // 轮询job状态
         const result = await pollJob(jobId);
-        if (result.status === 'completed') {
+        if (result.status === 'succeeded') {
           await loadRecommendationItems();
           const saved = result.result?.stats?.saved || 0;
           showMessage(`推书完成：保存 ${saved} 条`);
@@ -291,7 +291,7 @@ window.initVueApp({
 
         // 轮询job状态
         const result = await pollJob(jobId);
-        if (result.status === 'completed') {
+        if (result.status === 'succeeded') {
           await loadProfiles();
           showMessage('偏好画像已生成');
         } else {

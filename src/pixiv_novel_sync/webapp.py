@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import logging
@@ -105,6 +106,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     settings_manager = SettingsManager(config_path)
     sync_job_manager = SyncJobManager(config_path=config_path, env_path=env_path)
     shared_job_manager = JobManager()
+    app.config["job_manager"] = shared_job_manager
 
     def run_web_task(task_type: str, context: dict[str, Any]) -> dict[str, Any] | None:
         current_settings = settings_manager.load(env_path=env_path)
@@ -181,6 +183,9 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         finally:
             db.close()
 
+    app.config["job_manager"] = shared_job_manager
+    app.config["run_shared_job"] = _run_shared_web_job
+
     oauth_manager = OAuthManager(env_path=env_path)
     auto_sync_scheduler = AutoSyncScheduler(config_path=config_path, env_path=env_path, sync_job_manager=sync_job_manager)
     
@@ -249,6 +254,17 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     _trust_proxy = (os.getenv("DASHBOARD_TRUST_PROXY") or "").strip().lower() in {"1", "true", "yes", "on"}
     _LOCAL_ADDRS = {"127.0.0.1", "::1", "localhost"}
 
+    def _is_loopback_addr(addr: str) -> bool:
+        candidate = (addr or "").strip()
+        if not candidate:
+            return False
+        if candidate in _LOCAL_ADDRS:
+            return True
+        try:
+            return ipaddress.ip_address(candidate).is_loopback
+        except ValueError:
+            return False
+
     def _client_addr() -> str:
         """解析真实客户端地址。反代后 remote_addr 恒为 127.0.0.1，必须看 XFF。"""
         if _trust_proxy:
@@ -262,7 +278,18 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         return bool(request.headers.get("X-Forwarded-For") or request.headers.get("X-Real-IP"))
 
     def _is_local_request() -> bool:
-        return _client_addr() in _LOCAL_ADDRS
+        return _is_loopback_addr(_client_addr())
+
+    def _is_local_proxy_request() -> bool:
+        """Allow local reverse proxies without requiring DASHBOARD_TOKEN."""
+        if not _behind_proxy() or _trust_proxy:
+            return False
+        if not _is_loopback_addr(request.remote_addr or ""):
+            return False
+        forwarded_for = request.headers.get("X-Forwarded-For", "")
+        if forwarded_for:
+            return _is_loopback_addr(forwarded_for.split(",")[0].strip())
+        return _is_loopback_addr(request.headers.get("X-Real-IP", "").strip())
 
     @app.before_request
     def _check_auth():
@@ -272,6 +299,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             # 若检测到代理头但未显式信任代理，说明很可能暴露在反代后，
             # 此时 remote_addr=127.0.0.1 不可信，一律拒绝，避免私密收藏泄漏。
             if _behind_proxy() and not _trust_proxy:
+                if _is_local_proxy_request():
+                    return
                 return jsonify({"error": "dashboard token required when behind a proxy"}), 403
             if _is_local_request():
                 return

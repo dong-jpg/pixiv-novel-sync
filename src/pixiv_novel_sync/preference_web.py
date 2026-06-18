@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -63,8 +64,11 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
 
         payload = json_payload()
         manager = app.config.get("job_manager")
+        run_shared_job = app.config.get("run_shared_job")
         if not manager:
             return fail(RuntimeError("Job manager not available"))
+        if not callable(run_shared_job):
+            return fail(RuntimeError("Shared job runner not available"))
 
         # 启动后台job
         spec = JobSpec(
@@ -78,8 +82,9 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
                 "is_default": bool(payload.get("is_default", True)),
             },
         )
-        job_id = manager.enqueue(spec)
-        return ok({"job_id": job_id})
+        job = manager.submit(spec)
+        threading.Thread(target=run_shared_job, args=(job.job_id,), daemon=True).start()
+        return ok({"job_id": job.job_id})
 
     @app.put("/api/dashboard/preferences/profiles/<int:profile_id>")
     def update_preference_profile(profile_id: int):
@@ -139,8 +144,11 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
 
         payload = json_payload()
         manager = app.config.get("job_manager")
+        run_shared_job = app.config.get("run_shared_job")
         if not manager:
             return fail(RuntimeError("Job manager not available"))
+        if not callable(run_shared_job):
+            return fail(RuntimeError("Shared job runner not available"))
 
         # 启动后台job
         spec = JobSpec(
@@ -152,8 +160,9 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
                 "search_plan": payload.get("search_plan"),
             },
         )
-        job_id = manager.enqueue(spec)
-        return ok({"job_id": job_id})
+        job = manager.submit(spec)
+        threading.Thread(target=run_shared_job, args=(job.job_id,), daemon=True).start()
+        return ok({"job_id": job.job_id})
 
     @app.get("/api/dashboard/recommendations/runs")
     def list_recommendation_runs():
