@@ -54,9 +54,9 @@ class BookmarksMixin:
                 rp.progress AS reading_progress
             FROM novels AS n
             LEFT JOIN users AS u ON u.user_id = n.user_id
+            LEFT JOIN reading_progress AS rp ON rp.novel_id = n.novel_id
             LEFT JOIN sources AS s ON s.novel_id = n.novel_id
             {where_sql}
-            LEFT JOIN reading_progress AS rp ON rp.novel_id = n.novel_id
             ORDER BY {order_sql}
             LIMIT ? OFFSET ?
             """,
