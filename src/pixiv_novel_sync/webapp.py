@@ -327,6 +327,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        if response.mimetype == "text/html":
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
         return response
 
     # 启动期安全提示：未配置 dashboard_token 时给出明确告警。
