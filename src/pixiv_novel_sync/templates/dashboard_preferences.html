@@ -11,7 +11,7 @@
       <p class="text-sm text-pixiv-gray mt-1">基于本地归档小说生成偏好画像、搜索词和推书依据</p>
     </div>
     <button @click="analyze" :disabled="loading" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-brand-600">
-      {{ loading ? '分析中…' : '生成本地偏好画像' }}
+      {{ loading ? '增量分析中…' : '继续增量分析本地偏好' }}
     </button>
   </div>
 
@@ -303,19 +303,19 @@ window.initVueApp({
         const res = await fetchJson('/api/dashboard/preferences/profiles/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: '本地偏好画像', is_default: true, scope: { min_text_length: 1000 } })
+          body: JSON.stringify({ name: '本地偏好画像', is_default: true, scope: { min_text_length: 1000, max_batches: 10 } })
         });
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || '启动失败');
 
         const jobId = data.data.job_id;
-        showMessage('正在分析偏好...');
+        showMessage('正在增量分析本地偏好，本次会连续处理多批未分析小说...');
 
         // 轮询job状态
         const result = await pollJob(jobId);
         if (result.status === 'succeeded') {
           await loadProfiles();
-          showMessage('偏好画像已生成');
+          showMessage('本地偏好画像已增量更新');
         } else {
           throw new Error(result.message || '分析失败');
         }

@@ -77,6 +77,7 @@ TASK_LABELS = {
     "series_status": "检查系列状态",
     "user_backup": "全量备份关注用户小说",
     "pending_deletion_detection": "检测取消收藏/追更",
+    "preference_analyze": "增量分析本地偏好",
 }
 
 
@@ -155,6 +156,7 @@ class AutoSyncScheduler:
             {"name": "series_status", "setting_check": "auto_sync_series_status_enabled", "sync_func": "_sync_series_status", "interval_setting": "auto_sync_series_status_interval_hours", "cron_setting": "auto_sync_series_status_cron"},
             {"name": "user_backup", "setting_check": "auto_sync_user_backup_enabled", "sync_func": "_sync_user_backup", "interval_setting": "auto_sync_user_backup_interval_hours", "cron_setting": "auto_sync_user_backup_cron"},
             {"name": "pending_deletion_detection", "setting_check": "auto_sync_pending_detection_enabled", "sync_func": "_sync_pending_detection", "interval_setting": "auto_sync_pending_detection_interval_hours", "cron_setting": "auto_sync_pending_detection_cron"},
+            {"name": "preference_analyze", "setting_check": "auto_sync_preference_analyze_enabled", "sync_func": "_sync_preference_analyze", "interval_setting": "auto_sync_preference_analyze_interval_hours", "cron_setting": "auto_sync_preference_analyze_cron"},
         ]
         
         while self._running:
@@ -715,6 +717,59 @@ class AutoSyncScheduler:
             reporter=self._job_reporter(job_id),
             stop_requested=self._stop_requested_for_job(job_id),
         )
+
+    def _sync_preference_analyze(self, settings: Settings, job_id: str | None) -> None:
+        """增量分析本地偏好(纯本地 DB,无需 Pixiv 认证)。每次跑一批,跳过已分析。"""
+        from ..preferences import PreferenceAnalyzer
+
+        reporter = self._job_reporter(job_id)
+        reporter.add_log("info", "=== 开始增量分析本地偏好 ===")
+
+        db = Database(settings.storage.db_path)
+        try:
+            db.init_schema()
+            analyzer = PreferenceAnalyzer(db)
+            batch_size = int(getattr(settings.sync, "preference_analyze_batch_size", 200) or 200)
+
+            def progress(processed: int, remaining: int) -> None:
+                reporter.add_log("info", f"已分析 {processed} 篇, 剩余约 {remaining} 篇待分析")
+
+            # 定时任务每次只跑 1 批,少量多次
+            result = analyzer.analyze_incremental(
+                batch_size=batch_size,
+                max_batches=1,
+                progress=progress,
+            )
+
+            if result["processed_this_run"] == 0:
+                reporter.add_log("info", "暂无新的小说需要分析,跳过本次")
+                return
+
+            rebuilt = analyzer.rebuild_profile_from_accumulator()
+            existing = db.get_default_preference_profile()
+            payload = {
+                "name": "本地偏好画像",
+                "description": "基于本地归档小说增量统计生成",
+                "source_scope": rebuilt["source_scope"],
+                "stats": rebuilt["stats"],
+                "profile": rebuilt["profile"],
+                "is_default": True,
+            }
+            if existing:
+                db.update_preference_profile(int(existing["id"]), payload)
+                action = "更新"
+            else:
+                db.create_preference_profile(payload)
+                action = "创建"
+
+            reporter.add_log(
+                "success",
+                f"已{action}默认画像: 本次 {result['processed_this_run']} 篇, "
+                f"累计 {result['analyzed_total']} 篇, 剩余 {result['remaining']} 篇"
+                + ("  [全部分析完成]" if result["done"] else ""),
+            )
+        finally:
+            db.close()
 
 
 @dataclass(slots=True)
@@ -1371,6 +1426,10 @@ class SettingsManager:
         sync_data["auto_sync_pending_detection_enabled"] = bool(payload.get("auto_sync_pending_detection_enabled", sync_data.get("auto_sync_pending_detection_enabled", True)))
         sync_data["auto_sync_pending_detection_interval_hours"] = _save_int("auto_sync_pending_detection_interval_hours", 12)
         sync_data["auto_sync_pending_detection_cron"] = _save_cron("auto_sync_pending_detection_cron")
+        sync_data["auto_sync_preference_analyze_enabled"] = bool(payload.get("auto_sync_preference_analyze_enabled", sync_data.get("auto_sync_preference_analyze_enabled", False)))
+        sync_data["auto_sync_preference_analyze_interval_hours"] = _save_int("auto_sync_preference_analyze_interval_hours", 1)
+        sync_data["auto_sync_preference_analyze_cron"] = _save_cron("auto_sync_preference_analyze_cron", "*/30 * * * *")
+        sync_data["preference_analyze_batch_size"] = _save_int("preference_analyze_batch_size", 200, min_value=10)
 
         _atomic_write_yaml(config_path, config_data)
 
@@ -1429,6 +1488,10 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "auto_sync_pending_detection_enabled": settings.sync.auto_sync_pending_detection_enabled,
         "auto_sync_pending_detection_interval_hours": settings.sync.auto_sync_pending_detection_interval_hours,
         "auto_sync_pending_detection_cron": settings.sync.auto_sync_pending_detection_cron,
+        "auto_sync_preference_analyze_enabled": settings.sync.auto_sync_preference_analyze_enabled,
+        "auto_sync_preference_analyze_interval_hours": settings.sync.auto_sync_preference_analyze_interval_hours,
+        "auto_sync_preference_analyze_cron": settings.sync.auto_sync_preference_analyze_cron,
+        "preference_analyze_batch_size": settings.sync.preference_analyze_batch_size,
     }
 
 

@@ -256,12 +256,16 @@ def merge_stats(total: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]
 
 
 def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict[str, Any]:
-    """Phase 7.6: 偏好分析长任务"""
+    """Phase 7.6 / 增量重构: 偏好分析长任务。
+
+    增量累加: 每次只分析未处理的小说,跳过已分析,从累加器重建并更新默认画像。
+    手动按钮触发大批量(默认 2000 篇);定时任务每次跑少量(默认 200 篇)。
+    """
     from pixiv_novel_sync.storage_db import Database
     from pixiv_novel_sync.preferences import PreferenceAnalyzer
 
     reporter = _job_reporter_from_context(context)
-    reporter.add_log("info", "=== 开始分析本地偏好 ===")
+    reporter.add_log("info", "=== 开始增量分析本地偏好 ===")
 
     db = Database(settings.storage.db_path)
     try:
@@ -269,25 +273,56 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
         analyzer = PreferenceAnalyzer(db)
         params = context.get("params", {})
         scope = dict(params.get("scope", {}) or {})
-        if not scope.get("limit"):
-            scope["limit"] = 1000
 
-        reporter.add_log("info", f"分析范围: {scope or '全部小说'}")
-        result = analyzer.analyze_local(scope)
+        min_text_length = int(scope.get("min_text_length") or 1000)
+        batch_size = int(scope.get("batch_size") or getattr(settings.sync, "preference_analyze_batch_size", 200) or 200)
+        max_batches = int(scope.get("max_batches") or 10)  # 手动: 默认 10 批 ≈ 2000 篇
 
-        # 保存profile到数据库
-        profile_id = db.create_preference_profile({
+        # 可选: 重置后从头重算
+        if params.get("reset"):
+            reporter.add_log("info", "重置累加器,从头重新分析全部小说")
+            db.reset_preference_accumulator()
+
+        def progress(processed: int, remaining: int) -> None:
+            reporter.add_log("info", f"已分析 {processed} 篇 (本次), 剩余约 {remaining} 篇待分析")
+
+        result = analyzer.analyze_incremental(
+            batch_size=batch_size,
+            max_batches=max_batches,
+            min_text_length=min_text_length,
+            progress=progress,
+        )
+
+        # 从累加器重建画像
+        rebuilt = analyzer.rebuild_profile_from_accumulator()
+
+        # 更新单一默认画像(不存在则创建)
+        existing = db.get_default_preference_profile()
+        profile_payload = {
             "name": params.get("name", "本地偏好画像"),
-            "description": params.get("description", "基于本地归档小说自动统计生成"),
-            "source_scope": result["source_scope"],
-            "stats": result["stats"],
-            "profile": result["profile"],
-            "is_default": bool(params.get("is_default", True)),
-        })
+            "description": params.get("description", "基于本地归档小说增量统计生成"),
+            "source_scope": rebuilt["source_scope"],
+            "stats": rebuilt["stats"],
+            "profile": rebuilt["profile"],
+            "is_default": True,
+        }
+        if existing:
+            profile_id = int(existing["id"])
+            db.update_preference_profile(profile_id, profile_payload)
+            action = "更新"
+        else:
+            profile_id = db.create_preference_profile(profile_payload)
+            action = "创建"
 
-        positive_tags = (result.get("profile") or {}).get("positive_preferences", {}).get("tags", [])
-        reporter.add_log("success", f"分析完成: 创建profile #{profile_id}, 发现 {len(positive_tags)} 个偏好标签")
-        return {"profile_id": profile_id, **result}
+        positive_tags = (rebuilt.get("profile") or {}).get("positive_preferences", {}).get("tags", [])
+        reporter.add_log(
+            "success",
+            f"分析完成: {action} profile #{profile_id}, 本次处理 {result['processed_this_run']} 篇, "
+            f"累计已分析 {result['analyzed_total']} 篇, 剩余 {result['remaining']} 篇, "
+            f"发现 {len(positive_tags)} 个偏好标签"
+            + ("  [全部分析完成]" if result["done"] else ""),
+        )
+        return {"profile_id": profile_id, **result, **rebuilt}
     finally:
         db.close()
 

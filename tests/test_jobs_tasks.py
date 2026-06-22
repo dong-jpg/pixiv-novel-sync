@@ -239,9 +239,18 @@ def test_preference_analyze_defaults_scope_limit(monkeypatch):
         def init_schema(self):
             pass
 
+        def get_default_preference_profile(self):
+            return None  # 不存在 -> 走 create 分支
+
         def create_preference_profile(self, data):
             captured["profile"] = data
             return 1
+
+        def update_preference_profile(self, profile_id, data):
+            captured["updated"] = (profile_id, data)
+
+        def reset_preference_accumulator(self):
+            captured["reset"] = True
 
         def close(self):
             pass
@@ -250,12 +259,24 @@ def test_preference_analyze_defaults_scope_limit(monkeypatch):
         def __init__(self, db):
             self.db = db
 
-        def analyze_local(self, scope):
-            captured["scope"] = scope
+        def analyze_incremental(self, batch_size, max_batches, min_text_length=1000, progress=None):
+            captured["incremental"] = {
+                "batch_size": batch_size,
+                "max_batches": max_batches,
+                "min_text_length": min_text_length,
+            }
             return {
-                "source_scope": dict(scope),
-                "stats": {"novel_count": 1, "total_chars": 1000},
-                "profile": {"positive_preferences": {"tags": []}},
+                "processed_this_run": 5,
+                "analyzed_total": 5,
+                "remaining": 0,
+                "done": True,
+            }
+
+        def rebuild_profile_from_accumulator(self):
+            return {
+                "source_scope": {"min_text_length": 1000, "incremental": True},
+                "stats": {"novel_count": 5, "total_chars": 5000},
+                "profile": {"positive_preferences": {"tags": ["甜文"]}},
             }
 
     monkeypatch.setattr("pixiv_novel_sync.jobs.tasks._job_reporter_from_context", lambda context: FakeReporter())
@@ -264,7 +285,11 @@ def test_preference_analyze_defaults_scope_limit(monkeypatch):
     monkeypatch.setattr("pixiv_novel_sync.jobs.tasks.PreferenceAnalyzer", FakeAnalyzer, raising=False)
     monkeypatch.setattr("pixiv_novel_sync.storage_db.Database", lambda path: FakeDb())
 
-    settings = type("Settings", (), {"storage": type("Storage", (), {"db_path": "ignored"})()})()
+    sync_obj = type("Sync", (), {"preference_analyze_batch_size": 200})()
+    settings = type("Settings", (), {
+        "storage": type("Storage", (), {"db_path": "ignored"})(),
+        "sync": sync_obj,
+    })()
 
     result = execute_task(
         "preference_analyze",
@@ -273,5 +298,11 @@ def test_preference_analyze_defaults_scope_limit(monkeypatch):
     )
 
     assert result["profile_id"] == 1
-    assert captured["scope"]["min_text_length"] == 1000
-    assert captured["scope"]["limit"] == 1000
+    assert result["done"] is True
+    assert result["analyzed_total"] == 5
+    # 增量分析使用 settings 的 batch_size,手动触发默认跑多批
+    assert captured["incremental"]["batch_size"] == 200
+    assert captured["incremental"]["max_batches"] == 10
+    # 默认画像不存在时走创建分支,且标记为默认
+    assert captured["profile"]["is_default"] is True
+

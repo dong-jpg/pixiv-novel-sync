@@ -76,6 +76,11 @@ class SyncSettings:
     auto_sync_pending_detection_enabled: bool = True  # 检测取消收藏/追更
     auto_sync_pending_detection_interval_hours: int = 12  # 检测间隔（小时）
     auto_sync_pending_detection_cron: str = ""  # 检测cron表达式
+    # 增量偏好分析: 少量多次分析本地归档,跳过已分析,新增自动续
+    auto_sync_preference_analyze_enabled: bool = False  # 自动增量分析本地偏好
+    auto_sync_preference_analyze_interval_hours: int = 1  # 分析间隔（小时）
+    auto_sync_preference_analyze_cron: str = "*/30 * * * *"  # 分析cron表达式,默认每30分钟
+    preference_analyze_batch_size: int = 200  # 每批分析小说数量
     # Phase 3.2: pending_deletions表清理配置
     pending_deletion_grace_period_days: int = 30  # pending状态保留天数,给用户充足恢复时间
     pending_deletion_cleanup_confirmed_days: int = 7  # 已确认记录清理天数
@@ -194,6 +199,10 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             auto_sync_pending_detection_enabled=_coerce_bool(sync_raw.get("auto_sync_pending_detection_enabled"), True),
             auto_sync_pending_detection_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_pending_detection_interval_hours"), 12),
             auto_sync_pending_detection_cron=str(sync_raw.get("auto_sync_pending_detection_cron", "")),
+            auto_sync_preference_analyze_enabled=_coerce_bool(sync_raw.get("auto_sync_preference_analyze_enabled"), False),
+            auto_sync_preference_analyze_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_preference_analyze_interval_hours"), 1),
+            auto_sync_preference_analyze_cron=str(sync_raw.get("auto_sync_preference_analyze_cron", "*/30 * * * *")),
+            preference_analyze_batch_size=_coerce_positive_int(sync_raw.get("preference_analyze_batch_size"), 200),
         ),
         storage=StorageSettings(
             public_dir=public_dir,

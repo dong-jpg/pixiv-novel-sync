@@ -186,6 +186,24 @@ def test_no_token_blocks_proxied_request_when_proxy_untrusted(tmp_path, monkeypa
     assert response.status_code == 403
 
 
+def test_no_token_allows_local_proxy_request_when_forwarded_client_is_loopback(tmp_path, monkeypatch):
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    monkeypatch.delenv("DASHBOARD_TRUST_PROXY", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path))
+    client = app.test_client()
+
+    response = client.get(
+        "/dashboard",
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        headers={"X-Forwarded-For": "127.0.0.1"},
+    )
+
+    assert response.status_code == 200
+
+
 def test_security_headers_are_set(tmp_path, monkeypatch):
     monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
@@ -261,3 +279,4 @@ def test_no_token_trusts_xff_localhost_when_proxy_trusted(tmp_path, monkeypatch)
 
     assert allowed.status_code == 200
     assert blocked.status_code == 403
+

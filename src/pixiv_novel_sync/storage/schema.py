@@ -404,6 +404,36 @@ class SchemaMixin:
             CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_author_id ON recommendation_feedback(author_id);
             CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_series_id ON recommendation_feedback(series_id);
             CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_novel_id ON recommendation_feedback(novel_id);
+
+            -- 增量偏好分析累加器: 单行标量状态(id 固定为 1)
+            CREATE TABLE IF NOT EXISTS preference_accumulator (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                novel_count INTEGER NOT NULL DEFAULT 0,
+                series_novel_count INTEGER NOT NULL DEFAULT 0,
+                total_chars INTEGER NOT NULL DEFAULT 0,
+                length_buckets_json TEXT NOT NULL DEFAULT '{}',
+                source_dist_json TEXT NOT NULL DEFAULT '{}',
+                x_restrict_dist_json TEXT NOT NULL DEFAULT '{}',
+                min_text_length INTEGER NOT NULL DEFAULT 1000,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- 词项累计计数: 标签/共现对/关键词/标题词/简介词/作者
+            CREATE TABLE IF NOT EXISTS preference_term_counts (
+                term_type TEXT NOT NULL,
+                term TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (term_type, term)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_preference_term_counts_type_count
+              ON preference_term_counts(term_type, count DESC);
+
+            -- 已分析小说去重表
+            CREATE TABLE IF NOT EXISTS preference_analyzed_novels (
+                novel_id INTEGER PRIMARY KEY,
+                analyzed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
 

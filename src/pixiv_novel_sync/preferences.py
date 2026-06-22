@@ -9,8 +9,63 @@ from .storage_db import Database
 
 
 class PreferenceAnalyzer:
+    # 词项类型 -> (stats 键, top-N 数量)
+    TERM_TYPES = {
+        "tag": ("top_tags", 60),
+        "tag_pair": ("top_tag_pairs", 40),
+        "keyword": ("top_keywords", 80),
+        "title_kw": ("top_title_keywords", 40),
+        "caption_kw": ("top_caption_keywords", 40),
+        "author": ("top_authors", 40),
+    }
+    # 高基数词项类型(用于噪声清理)
+    HIGH_CARDINALITY_TYPES = ("keyword", "title_kw", "caption_kw", "tag_pair")
+    TERM_COUNTS_MAX_ROWS = 300000
+
     def __init__(self, db: Database) -> None:
         self.db = db
+
+    def _new_counters(self) -> dict[str, Any]:
+        """新建一组空累加容器(词项 Counter + 标量)。"""
+        return {
+            "terms": {term_type: Counter() for term_type in self.TERM_TYPES},
+            "length_buckets": Counter(),
+            "source_dist": Counter(),
+            "x_restrict_dist": Counter(),
+            "novel_count": 0,
+            "series_novel_count": 0,
+            "total_chars": 0,
+        }
+
+    def _accumulate_row(self, row: dict[str, Any], acc: dict[str, Any]) -> None:
+        """将单篇小说的统计并入累加容器。增量与全量共用。"""
+        terms = acc["terms"]
+        text_length = int(row.get("text_length") or 0)
+        acc["total_chars"] += text_length
+        acc["novel_count"] += 1
+        if row.get("series_id"):
+            acc["series_novel_count"] += 1
+        acc["length_buckets"][self._length_bucket(text_length)] += 1
+
+        author = str(row.get("author_name") or "").strip()
+        if author:
+            terms["author"][author] += 1
+        acc["x_restrict_dist"][str(row.get("x_restrict") or 0)] += 1
+        for source in str(row.get("source_types") or "").split(","):
+            source = source.strip()
+            if source:
+                acc["source_dist"][source] += 1
+
+        tags = self._parse_tags(row.get("tags_json"))
+        terms["tag"].update(tags)
+        for i, left in enumerate(tags):
+            for right in tags[i + 1:]:
+                key = " + ".join(sorted((left, right)))
+                terms["tag_pair"][key] += 1
+
+        terms["title_kw"].update(self._tokenize(row.get("title") or ""))
+        terms["caption_kw"].update(self._tokenize(row.get("caption") or ""))
+        terms["keyword"].update(self._tokenize(row.get("text_raw") or ""))
 
     def analyze_local(self, scope: dict[str, Any] | None = None) -> dict[str, Any]:
         scope = scope or {}
@@ -18,62 +73,109 @@ class PreferenceAnalyzer:
         limit = int(scope.get("limit") or 0)
         rows = self.db.fetch_preference_source_rows(min_text_length=min_text_length, limit=limit)
 
-        tag_counter: Counter[str] = Counter()
-        keyword_counter: Counter[str] = Counter()
-        title_keyword_counter: Counter[str] = Counter()
-        caption_keyword_counter: Counter[str] = Counter()
-        author_counter: Counter[str] = Counter()
-        source_counter: Counter[str] = Counter()
-        x_restrict_counter: Counter[str] = Counter()
-        tag_cooccurrence: Counter[str] = Counter()
-        length_buckets: Counter[str] = Counter()
-        series_count = 0
-        total_chars = 0
-
+        acc = self._new_counters()
         for row in rows:
-            text_length = int(row.get("text_length") or 0)
-            total_chars += text_length
-            if row.get("series_id"):
-                series_count += 1
-            length_buckets[self._length_bucket(text_length)] += 1
-            author = str(row.get("author_name") or "").strip()
-            if author:
-                author_counter[author] += 1
-            x_restrict_counter[str(row.get("x_restrict") or 0)] += 1
-            for source in str(row.get("source_types") or "").split(","):
-                source = source.strip()
-                if source:
-                    source_counter[source] += 1
+            self._accumulate_row(row, acc)
 
-            tags = self._parse_tags(row.get("tags_json"))
-            tag_counter.update(tags)
-            for i, left in enumerate(tags):
-                for right in tags[i + 1:]:
-                    key = " + ".join(sorted((left, right)))
-                    tag_cooccurrence[key] += 1
-
-            title_keyword_counter.update(self._tokenize(row.get("title") or ""))
-            caption_keyword_counter.update(self._tokenize(row.get("caption") or ""))
-            keyword_counter.update(self._tokenize(row.get("text_raw") or ""))
-
-        stats = {
-            "novel_count": len(rows),
-            "series_novel_count": series_count,
-            "single_novel_count": len(rows) - series_count,
-            "total_chars": total_chars,
-            "avg_text_length": int(total_chars / len(rows)) if rows else 0,
-            "top_tags": self._top(tag_counter, 60),
-            "top_tag_pairs": self._top(tag_cooccurrence, 40),
-            "top_keywords": self._top(keyword_counter, 80),
-            "top_title_keywords": self._top(title_keyword_counter, 40),
-            "top_caption_keywords": self._top(caption_keyword_counter, 40),
-            "top_authors": self._top(author_counter, 40),
-            "source_distribution": dict(source_counter),
-            "x_restrict_distribution": dict(x_restrict_counter),
-            "length_distribution": dict(length_buckets),
-        }
+        stats = self._stats_from_counters(acc)
         profile = self._build_profile(stats)
         return {"source_scope": {"min_text_length": min_text_length, "limit": limit}, "stats": stats, "profile": profile}
+
+    def _stats_from_counters(self, acc: dict[str, Any]) -> dict[str, Any]:
+        """从内存累加容器生成 stats(全量分析路径)。"""
+        terms = acc["terms"]
+        novel_count = acc["novel_count"]
+        stats: dict[str, Any] = {
+            "novel_count": novel_count,
+            "series_novel_count": acc["series_novel_count"],
+            "single_novel_count": novel_count - acc["series_novel_count"],
+            "total_chars": acc["total_chars"],
+            "avg_text_length": int(acc["total_chars"] / novel_count) if novel_count else 0,
+            "source_distribution": dict(acc["source_dist"]),
+            "x_restrict_distribution": dict(acc["x_restrict_dist"]),
+            "length_distribution": dict(acc["length_buckets"]),
+        }
+        for term_type, (stats_key, top_n) in self.TERM_TYPES.items():
+            stats[stats_key] = self._top(terms[term_type], top_n)
+        return stats
+
+    def analyze_incremental(self, batch_size: int = 200, max_batches: int = 1,
+                            min_text_length: int = 1000,
+                            progress: Any = None) -> dict[str, Any]:
+        """增量分析: 每批取 batch_size 篇未分析小说,累加入库。返回进度。
+
+        - batch_size: 单批小说数(控制内存/CPU)
+        - max_batches: 本次最多跑几批(手动按钮用大值,定时任务用 1)
+        - progress: 可选回调 progress(processed, remaining)
+        """
+        total_processed = 0
+        for _ in range(max(1, int(max_batches))):
+            rows = self.db.fetch_unanalyzed_preference_rows(min_text_length=min_text_length, batch_size=batch_size)
+            if not rows:
+                break
+
+            acc = self._new_counters()
+            analyzed_ids: list[int] = []
+            for row in rows:
+                self._accumulate_row(row, acc)
+                analyzed_ids.append(int(row.get("novel_id")))
+
+            term_deltas = {term_type: dict(counter) for term_type, counter in acc["terms"].items()}
+            scalar_deltas = {
+                "novel_count": acc["novel_count"],
+                "series_novel_count": acc["series_novel_count"],
+                "total_chars": acc["total_chars"],
+                "length_buckets": dict(acc["length_buckets"]),
+                "source_dist": dict(acc["source_dist"]),
+                "x_restrict_dist": dict(acc["x_restrict_dist"]),
+            }
+            self.db.merge_preference_batch(term_deltas, scalar_deltas, analyzed_ids, min_text_length)
+            total_processed += len(rows)
+
+            if callable(progress):
+                remaining = self.db.count_unanalyzed_preference_rows(min_text_length)
+                progress(total_processed, remaining)
+
+            # 词项表过大时清理低频噪声
+            self.db.prune_preference_term_noise(self.HIGH_CARDINALITY_TYPES, self.TERM_COUNTS_MAX_ROWS)
+
+            if len(rows) < batch_size:
+                break  # 已无更多
+
+        analyzed = self.db.count_analyzed_preference_rows()
+        remaining = self.db.count_unanalyzed_preference_rows(min_text_length)
+        return {
+            "processed_this_run": total_processed,
+            "analyzed_total": analyzed,
+            "remaining": remaining,
+            "done": remaining == 0,
+        }
+
+    def rebuild_profile_from_accumulator(self) -> dict[str, Any]:
+        """从持久化累加器读取 top-N 重建 stats 与 profile。"""
+        acc = self.db.get_preference_accumulator()
+        novel_count = int(acc.get("novel_count") or 0)
+        total_chars = int(acc.get("total_chars") or 0)
+        series_count = int(acc.get("series_novel_count") or 0)
+        stats: dict[str, Any] = {
+            "novel_count": novel_count,
+            "series_novel_count": series_count,
+            "single_novel_count": novel_count - series_count,
+            "total_chars": total_chars,
+            "avg_text_length": int(total_chars / novel_count) if novel_count else 0,
+            "source_distribution": acc.get("source_dist", {}),
+            "x_restrict_distribution": acc.get("x_restrict_dist", {}),
+            "length_distribution": acc.get("length_buckets", {}),
+        }
+        for term_type, (stats_key, top_n) in self.TERM_TYPES.items():
+            stats[stats_key] = self.db.top_preference_terms(term_type, top_n)
+        profile = self._build_profile(stats)
+        return {
+            "source_scope": {"min_text_length": int(acc.get("min_text_length") or 1000), "incremental": True},
+            "stats": stats,
+            "profile": profile,
+        }
+
 
     def _build_profile(self, stats: dict[str, Any]) -> dict[str, Any]:
         top_tags = [item["name"] for item in stats.get("top_tags", [])[:20]]
