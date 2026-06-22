@@ -150,26 +150,14 @@ class PendingAndWatermarksMixin:
             return total_count
 
     def cleanup_old_pending_deletions(self, grace_period_days: int = 30, cleanup_confirmed_days: int = 7) -> dict[str, int]:
-        """Phase 3.2: 清理过期的pending_deletions记录
+        """清理已确认/已恢复的历史记录。
 
-        Args:
-            grace_period_days: pending状态保留天数,超过此时间自动确认删除
-            cleanup_confirmed_days: 已确认/已恢复记录保留天数,超过后清理
-
-        Returns:
-            {"auto_confirmed": 自动确认数, "cleaned_up": 清理数}
+        pending 记录必须由用户手动确认或恢复；这里不再按时间自动确认，避免待确认列表静默消失。
+        grace_period_days 参数保留用于兼容旧调用。
         """
+        del grace_period_days
         with self._lock:
-            # 自动确认超过grace period的pending记录
-            auto_confirmed = self.conn.execute(
-                """
-                UPDATE pending_deletions
-                SET status = 'confirmed', confirmed_at = CURRENT_TIMESTAMP
-                WHERE status = 'pending'
-                AND datetime(detected_at) < datetime('now', '-' || ? || ' days')
-                """,
-                (grace_period_days,)
-            ).rowcount
+            auto_confirmed = 0
 
             # 清理过期的已确认/已恢复记录
             cleaned_up = self.conn.execute(

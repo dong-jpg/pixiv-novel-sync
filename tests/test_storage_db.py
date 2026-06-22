@@ -117,6 +117,31 @@ def test_delete_series_only_nulls_series_id(db: Database) -> None:
     assert db.conn.execute("SELECT 1 FROM series WHERE series_id = 9").fetchone() is None
 
 
+def test_cleanup_old_pending_deletions_does_not_auto_confirm_pending(db: Database) -> None:
+    db.conn.execute(
+        """
+        INSERT INTO pending_deletions (item_type, item_id, title, reason, status, detected_at)
+        VALUES ('novel', 200, 'old pending', 'missing', 'pending', datetime('now', '-365 days'))
+        """
+    )
+    db.conn.execute(
+        """
+        INSERT INTO pending_deletions (item_type, item_id, title, reason, status, confirmed_at)
+        VALUES ('novel', 201, 'old confirmed', 'missing', 'confirmed', datetime('now', '-30 days'))
+        """
+    )
+    db.conn.commit()
+
+    result = db.cleanup_old_pending_deletions(grace_period_days=1, cleanup_confirmed_days=7)
+
+    assert result["auto_confirmed"] == 0
+    assert result["cleaned_up"] == 1
+    pending = db.conn.execute("SELECT status FROM pending_deletions WHERE item_id = 200").fetchone()
+    assert pending is not None
+    assert pending[0] == "pending"
+    assert db.conn.execute("SELECT 1 FROM pending_deletions WHERE item_id = 201").fetchone() is None
+
+
 def test_batch_sync_check_upsert(db: Database) -> None:
     db.init_sync_check_table()
     db.upsert_sync_check_items([(1, True), (2, False), (3, True)], scope="scope")
