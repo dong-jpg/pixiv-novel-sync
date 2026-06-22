@@ -304,7 +304,7 @@ class AutoSyncScheduler:
                     try:
                         db = Database(settings.storage.db_path)
                         db.init_schema()
-                        db.update_task_log(job.log_id, job.status, stats=job.stats, logs=job.logs)
+                        db.update_task_log(job.log_id, job.status, stats=job.stats, error_message=job.error, logs=job.logs)
                     except Exception as e:
                         logger.warning("Failed to update task log: %s", e)
                     finally:

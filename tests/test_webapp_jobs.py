@@ -379,6 +379,34 @@ def test_shared_sync_failure_updates_task_log(tmp_path, monkeypatch):
     ]
 
 
+def test_auto_sync_failure_persists_error_message(monkeypatch):
+    RecordingDatabase.created_logs = []
+    RecordingDatabase.updated_logs = []
+
+    monkeypatch.setattr("pixiv_novel_sync.web.managers.Database", RecordingDatabase)
+
+    manager = SyncJobManager(config_path=None, env_path=None)
+    scheduler = AutoSyncScheduler(config_path=None, env_path=None, sync_job_manager=manager)
+
+    def failing_task(settings, job_id):
+        raise RuntimeError("auto boom")
+
+    scheduler._sync_failing_task = failing_task
+    settings = type("Settings", (), {"storage": type("Storage", (), {"db_path": "ignored"})()})()
+
+    scheduler._run_single_task(settings, "failing_task", "_sync_failing_task")
+
+    assert RecordingDatabase.updated_logs == [
+        {
+            "log_id": 1,
+            "status": "failed",
+            "stats": None,
+            "error_message": "auto boom",
+            "logs": [],
+        }
+    ]
+
+
 class FailingOnceDatabase:
     fail_init_once = True
 
