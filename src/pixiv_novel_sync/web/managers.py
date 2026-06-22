@@ -343,8 +343,8 @@ class AutoSyncScheduler:
 
     def _sync_bookmarks(self, settings: Settings, job_id: str | None) -> None:
         """同步收藏"""
-        from .auth import PixivAuthManager
-        from .sync_engine import BookmarkNovelSyncService
+        from ..auth import PixivAuthManager
+        from ..sync_engine import BookmarkNovelSyncService
         
         if job_id and self.sync_job_manager:
             self.sync_job_manager.add_log(job_id, "info", "=== 开始同步收藏小说 ===")
@@ -420,8 +420,8 @@ class AutoSyncScheduler:
     
     def _sync_following_list(self, settings: Settings, job_id: str | None) -> None:
         """同步关注用户列表"""
-        from .auth import PixivAuthManager
-        from .sync_engine import BookmarkNovelSyncService
+        from ..auth import PixivAuthManager
+        from ..sync_engine import BookmarkNovelSyncService
         
         if job_id and self.sync_job_manager:
             self.sync_job_manager.add_log(job_id, "info", "=== 开始同步关注用户列表 ===")
@@ -474,8 +474,8 @@ class AutoSyncScheduler:
     
     def _sync_following_novels(self, settings: Settings, job_id: str | None) -> None:
         """同步关注用户小说"""
-        from .auth import PixivAuthManager
-        from .sync_engine import BookmarkNovelSyncService
+        from ..auth import PixivAuthManager
+        from ..sync_engine import BookmarkNovelSyncService
         
         if job_id and self.sync_job_manager:
             self.sync_job_manager.add_log(job_id, "info", "=== 开始同步关注用户小说 ===")
@@ -558,8 +558,8 @@ class AutoSyncScheduler:
     
     def _sync_subscribed_series(self, settings: Settings, job_id: str | None) -> None:
         """同步追更系列"""
-        from .auth import PixivAuthManager
-        from .sync_engine import BookmarkNovelSyncService
+        from ..auth import PixivAuthManager
+        from ..sync_engine import BookmarkNovelSyncService
         
         if job_id and self.sync_job_manager:
             self.sync_job_manager.add_log(job_id, "info", "=== 开始同步追更系列 ===")
@@ -1049,8 +1049,8 @@ class SyncJobManager:
                 return {}
             return job_services.run_user_backup_task(settings, target_uid, reporter=reporter, stop_requested=stop_requested)
 
-        from .auth import PixivAuthManager
-        from .sync_engine import BookmarkNovelSyncService
+        from ..auth import PixivAuthManager
+        from ..sync_engine import BookmarkNovelSyncService
 
         auth = PixivAuthManager(settings.pixiv)
         self.add_log(job_id, "info", "正在登录 Pixiv...")
@@ -1128,9 +1128,9 @@ class SyncJobManager:
                         user = getattr(preview, "user", preview)
                         uid = int(getattr(user, "id", 0))
                         if uid:
-                            from .models import UserRecord
-                            from .utils_hashing import stable_json_dumps
-                            from .sync_engine import _to_plain
+                            from ..models import UserRecord
+                            from ..utils_hashing import stable_json_dumps
+                            from ..sync_engine import _to_plain
                             db.upsert_user(UserRecord(
                                 user_id=uid,
                                 name=getattr(user, "name", str(uid)),
@@ -1247,7 +1247,7 @@ class SyncJobManager:
 
             elif task_type == "pending_deletion_detection":
                 self.add_log(job_id, "info", "=== 开始检测取消收藏/追更 ===")
-                from .sync_engine import BookmarkNovelSyncService
+                from ..sync_engine import BookmarkNovelSyncService
                 service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
                 result = service.run_detection(
                     user_id=auth_result.user_id,
