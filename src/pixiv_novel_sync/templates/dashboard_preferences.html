@@ -19,35 +19,33 @@
     {{ message }}
   </div>
 
-  <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
-    <aside class="lg:col-span-4 bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-      <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-        <h2 class="text-sm font-bold text-gray-900">画像列表</h2>
-        <button @click="loadProfiles" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">刷新</button>
-      </div>
-      <div class="divide-y divide-gray-100 max-h-[70vh] overflow-y-auto">
-        <button v-for="p in profiles" :key="p.id" @click="selectProfile(p)" class="w-full text-left px-4 py-3 hover:bg-gray-50" :class="selected?.id === p.id ? 'bg-brand-50' : ''">
-          <div class="flex items-center gap-2">
-            <span class="text-sm font-semibold text-gray-900 truncate">{{ p.name }}</span>
-            <span v-if="p.is_default" class="text-[10px] px-1.5 py-0.5 rounded bg-brand-100 text-brand-700">默认</span>
+  <main class="space-y-4">
+      <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <h2 class="text-sm font-bold text-gray-900">增量分析进度</h2>
+            <p class="text-sm text-pixiv-gray mt-1">本地画像会持续更新同一个默认画像；定时任务每批处理未分析小说，已分析内容不会重复处理。</p>
           </div>
-          <p class="text-xs text-pixiv-gray mt-1 line-clamp-2">{{ p.profile?.summary || p.description || '暂无摘要' }}</p>
-          <div class="text-[10px] text-pixiv-light mt-1">{{ p.updated_at }}</div>
-        </button>
-        <p v-if="!profiles.length" class="px-4 py-8 text-sm text-pixiv-gray text-center">还没有偏好画像</p>
-      </div>
-    </aside>
-
-    <main class="lg:col-span-8 space-y-4">
+          <a href="/dashboard/logs" class="text-xs px-3 py-1.5 bg-gray-100 rounded hover:bg-gray-200 whitespace-nowrap">查看任务日志</a>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm mt-4">
+          <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-pixiv-gray">任务状态</div><div class="font-bold text-gray-900">{{ analysisJob?.status || '空闲' }}</div></div>
+          <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-pixiv-gray">本次处理</div><div class="font-bold text-gray-900">{{ analysisResult?.processed_this_run ?? '-' }}</div></div>
+          <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-pixiv-gray">累计已分析</div><div class="font-bold text-gray-900">{{ analysisResult?.analyzed_total ?? selected?.stats?.novel_count ?? 0 }}</div></div>
+          <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-pixiv-gray">剩余待分析</div><div class="font-bold text-gray-900">{{ analysisResult?.remaining ?? '-' }}</div></div>
+        </div>
+        <div v-if="analysisJob?.logs?.length" class="mt-4 bg-gray-900 rounded-lg p-3 max-h-40 overflow-y-auto font-mono text-xs text-gray-200 space-y-1">
+          <div v-for="(log, idx) in analysisJob.logs.slice(-8)" :key="idx">
+            <span class="text-gray-500">[{{ log.time }}]</span>
+            <span :class="log.level === 'error' ? 'text-red-300' : log.level === 'success' ? 'text-green-300' : 'text-gray-200'">{{ log.message }}</span>
+          </div>
+        </div>
+      </section>
       <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
         <div class="flex items-start justify-between gap-3 mb-3">
           <div>
-            <h2 class="text-lg font-bold text-gray-900">{{ selected?.name || '未选择画像' }}</h2>
-            <p class="text-sm text-pixiv-gray mt-1">{{ selected?.profile?.summary || '选择左侧画像，或先生成一个本地偏好画像。' }}</p>
-          </div>
-          <div v-if="selected" class="flex gap-2">
-            <button @click="setDefault" :disabled="selected.is_default" class="text-xs px-3 py-1.5 bg-brand-50 text-brand-700 rounded disabled:opacity-50">设为默认</button>
-            <button @click="deleteProfile" class="text-xs px-3 py-1.5 bg-red-50 text-red-600 rounded">删除</button>
+            <h2 class="text-lg font-bold text-gray-900">{{ selected?.name || '本地偏好画像' }}</h2>
+            <p class="text-sm text-pixiv-gray mt-1">{{ selected?.profile?.summary || '还没有生成本地偏好画像。点击上方按钮开始增量分析。' }}</p>
           </div>
         </div>
         <div v-if="selected" class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
@@ -135,7 +133,6 @@
         </div>
       </section>
     </main>
-  </div>
 </div>
 {% endblock %}
 
@@ -152,6 +149,8 @@ window.initVueApp({
     const recommendationItems = ref([]);
     const message = ref('');
     const messageType = ref('success');
+    const analysisJob = ref(null);
+    const analysisResult = ref(null);
     let csrfToken = '';
 
     const confidenceText = computed(() => {
@@ -191,24 +190,17 @@ window.initVueApp({
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || '加载失败');
       profiles.value = data.data || [];
-      if (!selected.value && profiles.value.length) selected.value = profiles.value[0];
-      if (selected.value) {
-        selected.value = profiles.value.find(p => p.id === selected.value.id) || profiles.value[0] || null;
-      }
+      selected.value = profiles.value.find(p => p.is_default) || profiles.value[0] || null;
     }
 
-    function selectProfile(profile) {
-      selected.value = profile;
-      searchPlan.value = null;
-    }
-
-    async function pollJob(jobId, maxWaitMs = 300000) {
+    async function pollJob(jobId, maxWaitMs = 300000, onUpdate = null) {
       const startTime = Date.now();
       while (Date.now() - startTime < maxWaitMs) {
         const res = await fetch(`/api/dashboard/sync/status?job_id=${encodeURIComponent(jobId)}`);
         const data = await res.json();
         const job = data.job;
         if (!job) throw new Error(data.error || '获取任务状态失败');
+        if (onUpdate) onUpdate(job);
 
         if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
           return job;
@@ -309,41 +301,26 @@ window.initVueApp({
         if (!data.ok) throw new Error(data.error || '启动失败');
 
         const jobId = data.data.job_id;
+        analysisResult.value = null;
         showMessage('正在增量分析本地偏好，本次会连续处理多批未分析小说...');
 
-        // 轮询job状态
-        const result = await pollJob(jobId);
+        const result = await pollJob(jobId, 300000, (job) => {
+          analysisJob.value = job;
+          if (job.stats) analysisResult.value = job.stats;
+        });
+        analysisJob.value = result;
+        if (result.stats) analysisResult.value = result.stats;
         if (result.status === 'succeeded') {
           await loadProfiles();
           showMessage('本地偏好画像已增量更新');
         } else {
-          throw new Error(result.message || '分析失败');
+          throw new Error(result.error || result.message || '分析失败');
         }
       } catch (e) {
         showMessage(e.message || String(e), 'error');
       } finally {
         loading.value = false;
       }
-    }
-
-    async function setDefault() {
-      if (!selected.value) return;
-      const res = await fetchJson(`/api/dashboard/preferences/profiles/${selected.value.id}/default`, { method: 'POST' });
-      const data = await res.json();
-      if (!data.ok) return showMessage(data.error || '设置失败', 'error');
-      await loadProfiles();
-      showMessage('已设为默认画像');
-    }
-
-    async function deleteProfile() {
-      if (!selected.value || !confirm('确认删除这个偏好画像？')) return;
-      const id = selected.value.id;
-      const res = await fetchJson(`/api/dashboard/preferences/profiles/${id}`, { method: 'DELETE' });
-      const data = await res.json();
-      if (!data.ok) return showMessage(data.error || '删除失败', 'error');
-      selected.value = null;
-      await loadProfiles();
-      showMessage('已删除');
     }
 
     onMounted(async () => {
@@ -355,8 +332,8 @@ window.initVueApp({
 
     return {
       profiles, selected, loading, recommendationLoading, searchPlan, recommendationItems,
-      message, messageType, confidenceText, loadProfiles, selectProfile, analyze, setDefault,
-      deleteProfile, buildSearchPlan, runRecommendations, loadRecommendationItems, feedback, muteAuthor,
+      message, messageType, analysisJob, analysisResult, confidenceText, loadProfiles, analyze,
+      buildSearchPlan, runRecommendations, loadRecommendationItems, feedback, muteAuthor,
     };
   }
 });
