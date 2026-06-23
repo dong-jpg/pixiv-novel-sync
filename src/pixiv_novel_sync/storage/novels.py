@@ -572,3 +572,17 @@ class NovelsMixin:
                 ).fetchall()
             result.update(row[0] for row in rows)
         return result
+
+    def upsert_novel_status(self, novel_id: int, status: str) -> None:
+        """更新小说状态（normal/deleted/restricted/private 等）。"""
+        with self._lock:
+            self.conn.execute(
+                """
+                UPDATE novels
+                SET status = ?,
+                    last_checked_at = CURRENT_TIMESTAMP
+                WHERE novel_id = ?
+                """,
+                (status, novel_id),
+            )
+            self.conn.commit()
