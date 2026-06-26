@@ -217,7 +217,7 @@
 1. ✅ **AUDIT_REPORT.md** - 完整审计报告（90+ 页）
 2. ✅ **CRITICAL_BUGS_FIX_PLAN.md** - 关键 Bug 修复计划
 3. ✅ **OPTIMIZATION_ROADMAP.md** - 详细优化路线图
-4. ✅ **README_NEW.md** - 全新项目介绍（含 Logo）
+4. ✅ **README.md** - 当前项目介绍（含 Logo）
 
 ### 🎨 设计资源
 5. ✅ **assets/logo.svg** - 项目 Logo（动画版）

@@ -1430,6 +1430,8 @@ class SettingsManager:
         sync_data["auto_sync_preference_analyze_interval_hours"] = _save_int("auto_sync_preference_analyze_interval_hours", 1)
         sync_data["auto_sync_preference_analyze_cron"] = _save_cron("auto_sync_preference_analyze_cron", "*/30 * * * *")
         sync_data["preference_analyze_batch_size"] = _save_int("preference_analyze_batch_size", 200, min_value=10)
+        sync_data["pending_deletion_grace_period_days"] = _save_int("pending_deletion_grace_period_days", 30)
+        sync_data["pending_deletion_cleanup_confirmed_days"] = _save_int("pending_deletion_cleanup_confirmed_days", 7)
 
         _atomic_write_yaml(config_path, config_data)
 
@@ -1492,6 +1494,8 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "auto_sync_preference_analyze_interval_hours": settings.sync.auto_sync_preference_analyze_interval_hours,
         "auto_sync_preference_analyze_cron": settings.sync.auto_sync_preference_analyze_cron,
         "preference_analyze_batch_size": settings.sync.preference_analyze_batch_size,
+        "pending_deletion_grace_period_days": settings.sync.pending_deletion_grace_period_days,
+        "pending_deletion_cleanup_confirmed_days": settings.sync.pending_deletion_cleanup_confirmed_days,
     }
 
 

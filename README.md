@@ -50,7 +50,7 @@
 <td width="50%">
 
 #### ⏰ 自动化管理
-- ✅ 8 个独立定时任务
+- ✅ 10 个独立定时任务
 - ✅ Cron 表达式自定义
 - ✅ 智能限速与顺延机制
 - ✅ 状态检查（用户/小说/系列）
@@ -218,16 +218,14 @@ python -m pixiv_novel_sync.webapp
 # Pixiv 认证（必需）
 PIXIV_REFRESH_TOKEN=your_refresh_token_here
 
-# Dashboard 密码保护（可选，推荐公网部署时启用）
+# Dashboard 密码保护（公网/反代部署必须配置；留空时仅允许本机访问）
 DASHBOARD_TOKEN=your_secure_password
 
-# Flask 密钥（自动生成）
+# Flask session 密钥（缺省时服务会生成随机值并写回 .env；生产建议手动固定）
 PIXIV_FLASK_SECRET=auto_generated
 
-# AI Provider API Keys（使用 AI 功能时需要）
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-MOONSHOT_API_KEY=sk-...
+# AI Provider API key 加密密钥（保存 AI Provider 前必须配置，并保持稳定）
+PIXIV_NOVEL_SYNC_AI_SECRET_KEY=your_stable_secret
 ```
 
 #### 同步配置 (`config/config.yaml`)
@@ -257,6 +255,10 @@ sync:
   auto_sync_following_novels_cron: "0 */6 * * *"    # 每6小时同步关注
   auto_sync_subscribed_series_cron: "0 */6 * * *"   # 每6小时同步追更
   auto_sync_user_status_cron: "0 0 * * *"           # 每天检查用户状态
+  auto_sync_user_backup_enabled: false              # 定时全量备份关注用户
+  auto_sync_preference_analyze_enabled: false       # 自动增量分析本地偏好
+  pending_deletion_grace_period_days: 30            # 待删除记录保留天数
+  pending_deletion_cleanup_confirmed_days: 7        # 已确认删除记录清理天数
 ```
 
 ### 常用操作
@@ -438,11 +440,11 @@ mypy src/
 <summary><strong>Q: 如何配置 AI Provider？</strong></summary>
 
 **A**: 
-1. 在 `.env` 中添加对应 API Key（如 `OPENAI_API_KEY`）
+1. 在 `.env` 中配置稳定的 `PIXIV_NOVEL_SYNC_AI_SECRET_KEY`
 2. 访问 Dashboard → AI 创作 → 设置
-3. 选择 Provider 并填入 API Key
+3. 选择 Provider，并在页面中填入对应 API Key
 4. 点击"测试连接"验证配置
-5. 可配置多个 Provider 作为 fallback
+5. 可配置多个 Provider 作为 fallback；API Key 会加密保存，不会在接口中回显
 </details>
 
 <details>

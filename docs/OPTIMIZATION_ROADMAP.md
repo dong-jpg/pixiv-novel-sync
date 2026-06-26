@@ -92,7 +92,7 @@
 - [ ] 添加常见问题排查指南
 
 **交付物**:
-- 新版 README.md（参考 README_NEW.md）
+- 新版 README.md（参考 README.md）
 - OpenAPI 3.0 规范文档
 - 用户手册（AI 创作/推荐系统）
 

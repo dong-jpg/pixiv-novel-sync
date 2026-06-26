@@ -22,7 +22,7 @@
 
 ### 📚 核心文档
 
-3. ✅ **全新 README** (`README_NEW.md`)
+3. ✅ **全新 README** (`README.md`)
    - 完整功能介绍（AI/推荐）
    - 精美排版与徽章
    - 快速开始指南
@@ -293,7 +293,7 @@ AI 创作工作台: ███████████████████░
 
 ### 项目资源
 - 🎨 **assets/logo.svg** - 项目 Logo
-- 📝 **README_NEW.md** - 新版 README
+- 📝 **README.md** - 新版 README
 
 ---
 

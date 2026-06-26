@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import yaml
 
-from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings
+from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings, load_settings
 from pixiv_novel_sync.sync_check import build_sync_check_fingerprint, sync_check_task_types
-from pixiv_novel_sync.webapp import SettingsManager, SyncJobManager, SyncJobState
+from pixiv_novel_sync.webapp import SettingsManager, SyncJobManager, SyncJobState, _settings_to_dict
 
 
 def make_settings(tmp_path) -> Settings:
@@ -54,6 +54,49 @@ def test_save_sync_settings_clamps_negative_following_novels_users_limit(tmp_pat
     )
 
     assert saved["auto_sync_following_novels_users_limit"] == 0
+
+
+def test_load_settings_reads_pending_deletion_cleanup_days(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "sync:\n"
+        "  pending_deletion_grace_period_days: 45\n"
+        "  pending_deletion_cleanup_confirmed_days: 9\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path=config_path, env_path=tmp_path / ".env")
+
+    assert settings.sync.pending_deletion_grace_period_days == 45
+    assert settings.sync.pending_deletion_cleanup_confirmed_days == 9
+
+
+def test_dashboard_settings_payload_includes_preference_and_pending_cleanup(tmp_path):
+    payload = _settings_to_dict(make_settings(tmp_path))
+
+    assert payload["auto_sync_preference_analyze_enabled"] is False
+    assert payload["auto_sync_preference_analyze_cron"] == "*/30 * * * *"
+    assert payload["preference_analyze_batch_size"] == 200
+    assert payload["pending_deletion_grace_period_days"] == 30
+    assert payload["pending_deletion_cleanup_confirmed_days"] == 7
+
+
+def test_save_sync_settings_persists_pending_cleanup_days(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("sync: {}\n", encoding="utf-8")
+
+    saved = SettingsManager(str(config_path)).save_sync_settings(
+        {
+            "pending_deletion_grace_period_days": 21,
+            "pending_deletion_cleanup_confirmed_days": 3,
+        }
+    )
+
+    assert saved["pending_deletion_grace_period_days"] == 21
+    assert saved["pending_deletion_cleanup_confirmed_days"] == 3
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["sync"]["pending_deletion_grace_period_days"] == 21
+    assert config["sync"]["pending_deletion_cleanup_confirmed_days"] == 3
 
 
 def test_latest_matching_sync_check_scope_requires_same_fingerprint_and_task(tmp_path):

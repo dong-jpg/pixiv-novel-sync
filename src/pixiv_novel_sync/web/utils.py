@@ -97,6 +97,12 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "auto_sync_pending_detection_enabled": settings.sync.auto_sync_pending_detection_enabled,
         "auto_sync_pending_detection_interval_hours": settings.sync.auto_sync_pending_detection_interval_hours,
         "auto_sync_pending_detection_cron": settings.sync.auto_sync_pending_detection_cron,
+        "auto_sync_preference_analyze_enabled": settings.sync.auto_sync_preference_analyze_enabled,
+        "auto_sync_preference_analyze_interval_hours": settings.sync.auto_sync_preference_analyze_interval_hours,
+        "auto_sync_preference_analyze_cron": settings.sync.auto_sync_preference_analyze_cron,
+        "preference_analyze_batch_size": settings.sync.preference_analyze_batch_size,
+        "pending_deletion_grace_period_days": settings.sync.pending_deletion_grace_period_days,
+        "pending_deletion_cleanup_confirmed_days": settings.sync.pending_deletion_cleanup_confirmed_days,
     }
 
 

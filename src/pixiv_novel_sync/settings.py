@@ -203,6 +203,8 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             auto_sync_preference_analyze_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_preference_analyze_interval_hours"), 1),
             auto_sync_preference_analyze_cron=str(sync_raw.get("auto_sync_preference_analyze_cron", "*/30 * * * *")),
             preference_analyze_batch_size=_coerce_positive_int(sync_raw.get("preference_analyze_batch_size"), 200),
+            pending_deletion_grace_period_days=_coerce_positive_int(sync_raw.get("pending_deletion_grace_period_days"), 30),
+            pending_deletion_cleanup_confirmed_days=_coerce_positive_int(sync_raw.get("pending_deletion_cleanup_confirmed_days"), 7),
         ),
         storage=StorageSettings(
             public_dir=public_dir,

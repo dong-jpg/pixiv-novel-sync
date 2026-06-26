@@ -1,10 +1,13 @@
 # 📚 项目审计文档索引
 
 **审计日期**: 2026-06-16  
+**索引更新**: 2026-06-26
 **项目**: Pixiv Novel Sync  
 **版本**: 0.1.0
 
 ---
+
+> 说明：本目录包含多份历史审计和阶段性计划文档。当前项目入口以 [README.md](../README.md) 为准，最新复查结论见 [OPTIMIZATION_REVIEW_2026-06-26.md](OPTIMIZATION_REVIEW_2026-06-26.md)。
 
 ## 🎯 从哪里开始？
 
@@ -135,8 +138,8 @@
 
 ### 📝 项目文档
 
-#### 9. [../README_NEW.md](../README_NEW.md)
-**新版 README**  
+#### 9. [../README.md](../README.md)
+**项目 README**
 - 完整功能介绍
 - AI 创作工作台
 - 智能推荐系统
@@ -144,7 +147,7 @@
 - API 文档预览
 - 常见问题
 
-**用途**: 替换当前 README.md
+**用途**: 当前项目入口文档
 
 ---
 
@@ -201,7 +204,7 @@
 2. 统一 API 错误格式 → [OPTIMIZATION_ROADMAP.md](OPTIMIZATION_ROADMAP.md#3-api-错误响应统一)
 
 ### 🟠 P1 - 重要改进（本月）
-3. 更新文档 → [README_NEW.md](../README_NEW.md)
+3. 更新文档 → [README.md](../README.md)
 4. 移动端优化 → [OPTIMIZATION_ROADMAP.md](OPTIMIZATION_ROADMAP.md#5-移动端体验优化)
 5. 首次配置向导 → [OPTIMIZATION_ROADMAP.md](OPTIMIZATION_ROADMAP.md#7-首次配置向导)
 
@@ -220,7 +223,7 @@
 ### 文档过时问题
 - [EXECUTIVE_SUMMARY.md](EXECUTIVE_SUMMARY.md) - 文档问题章节
 - [AUDIT_REPORT.md](AUDIT_REPORT.md) - 第三章 文档审查
-- [README_NEW.md](../README_NEW.md) - 新版 README
+- [README.md](../README.md) - 当前 README
 
 ### 性能优化建议
 - [OPTIMIZATION_ROADMAP.md](OPTIMIZATION_ROADMAP.md) - P2 性能优化
@@ -260,7 +263,7 @@
 - 如果卡住，可以问我要具体的代码补丁
 
 ### 关于文档更新
-- 参考 [README_NEW.md](../README_NEW.md)
+- 参考 [README.md](../README.md)
 - 需要帮助撰写特定章节时告诉我
 
 ### 关于优化方向
@@ -286,7 +289,7 @@
 ### 项目资源
 - [Logo (SVG)](../assets/logo.svg)
 - [Logo 设计说明](../assets/logo-design.md)
-- [新版 README](../README_NEW.md)
+- [项目 README](../README.md)
 
 ### 分析报告
 - [完成报告](COMPLETION_REPORT.md)

@@ -68,9 +68,22 @@ sync:
   auto_sync_subscribed_series_interval_hours: 6
   auto_sync_subscribed_series_cron: ""
 
+  auto_sync_user_backup_enabled: false
+  auto_sync_user_backup_interval_hours: 24
+  auto_sync_user_backup_cron: ""
+
   auto_sync_pending_detection_enabled: true
   auto_sync_pending_detection_interval_hours: 12
   auto_sync_pending_detection_cron: ""
+
+  auto_sync_preference_analyze_enabled: false
+  auto_sync_preference_analyze_interval_hours: 1
+  auto_sync_preference_analyze_cron: "*/30 * * * *"
+  preference_analyze_batch_size: 200
+
+  # pending_deletions 清理策略
+  pending_deletion_grace_period_days: 30
+  pending_deletion_cleanup_confirmed_days: 7
 
 storage:
   public_dir: ./data/library/public
