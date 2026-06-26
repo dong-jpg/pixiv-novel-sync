@@ -4,7 +4,8 @@ import yaml
 
 from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings, load_settings
 from pixiv_novel_sync.sync_check import build_sync_check_fingerprint, sync_check_task_types
-from pixiv_novel_sync.webapp import SettingsManager, SyncJobManager, SyncJobState, _settings_to_dict
+from pixiv_novel_sync.web.utils import _settings_to_dict
+from pixiv_novel_sync.webapp import SettingsManager, SyncJobManager, SyncJobState
 
 
 def make_settings(tmp_path) -> Settings:
@@ -54,6 +55,51 @@ def test_save_sync_settings_clamps_negative_following_novels_users_limit(tmp_pat
     )
 
     assert saved["auto_sync_following_novels_users_limit"] == 0
+
+
+def test_save_sync_settings_rejects_unknown_bookmark_restrict(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("sync:\n  bookmark_restricts:\n    - public\n", encoding="utf-8")
+
+    try:
+        SettingsManager(str(config_path)).save_sync_settings({"bookmark_restricts": ["public", "friends"]})
+    except ValueError as exc:
+        assert "bookmark_restricts" in str(exc)
+    else:
+        raise AssertionError("invalid bookmark_restricts should fail")
+
+
+def test_save_sync_settings_normalizes_bookmark_restricts(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("sync: {}\n", encoding="utf-8")
+
+    saved = SettingsManager(str(config_path)).save_sync_settings(
+        {"bookmark_restricts": ["Public", "private", "public"]}
+    )
+
+    assert saved["bookmark_restricts"] == ["public", "private"]
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["sync"]["bookmark_restricts"] == ["public", "private"]
+
+
+def test_save_sync_settings_clamps_negative_series_sync_limit(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("sync:\n  series_sync_limit: 5\n", encoding="utf-8")
+
+    saved = SettingsManager(str(config_path)).save_sync_settings({"series_sync_limit": -4})
+
+    assert saved["series_sync_limit"] == 0
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["sync"]["series_sync_limit"] == 0
+
+
+def test_save_sync_settings_uses_zero_for_invalid_series_sync_limit(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("sync:\n  series_sync_limit: 5\n", encoding="utf-8")
+
+    saved = SettingsManager(str(config_path)).save_sync_settings({"series_sync_limit": "invalid"})
+
+    assert saved["series_sync_limit"] == 0
 
 
 def test_load_settings_reads_pending_deletion_cleanup_days(tmp_path):

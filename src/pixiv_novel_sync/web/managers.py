@@ -30,6 +30,7 @@ from ..storage_files import FileStorage
 from ..sync_check import build_sync_check_fingerprint
 from ..sync_engine import BookmarkNovelSyncService, _to_plain
 from ..utils_hashing import stable_json_dumps
+from .utils import _settings_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -1347,7 +1348,14 @@ class SettingsManager:
         bookmark_restricts = payload.get("bookmark_restricts", sync_data.get("bookmark_restricts", ["public", "private"]))
         if not isinstance(bookmark_restricts, list) or not bookmark_restricts:
             raise ValueError("bookmark_restricts 必须为非空数组")
-        sync_data["bookmark_restricts"] = [str(item) for item in bookmark_restricts]
+        normalized_restricts: list[str] = []
+        for item in bookmark_restricts:
+            restrict = str(item).strip().lower()
+            if restrict not in {"public", "private"}:
+                raise ValueError("bookmark_restricts 只能包含 public 或 private")
+            if restrict not in normalized_restricts:
+                normalized_restricts.append(restrict)
+        sync_data["bookmark_restricts"] = normalized_restricts
 
         sync_data["max_items_per_run"] = _normalize_optional_int(payload.get("max_items_per_run", sync_data.get("max_items_per_run")))
         sync_data["max_pages_per_run"] = _normalize_optional_int(payload.get("max_pages_per_run", sync_data.get("max_pages_per_run")))
@@ -1368,7 +1376,7 @@ class SettingsManager:
         if series_limit_raw in (None, ""):
             sync_data["series_sync_limit"] = 0
         else:
-            sync_data["series_sync_limit"] = int(series_limit_raw)
+            sync_data["series_sync_limit"] = max(_normalize_int(series_limit_raw, 0), 0)
         
         # 系列限速设置
         sync_data["delay_seconds_between_series"] = _normalize_float(
@@ -1437,67 +1445,6 @@ class SettingsManager:
 
         self.invalidate()
         return _settings_to_dict(load_settings(config_path, None))
-
-
-
-def _settings_to_dict(settings: Settings) -> dict[str, Any]:
-    return {
-        "enabled": settings.sync.enabled,
-        "initial_manual_only": settings.sync.initial_manual_only,
-        "download_assets": settings.sync.download_assets,
-        "write_markdown": settings.sync.write_markdown,
-        "write_raw_text": settings.sync.write_raw_text,
-        "bookmark_restricts": settings.sync.bookmark_restricts,
-        "max_items_per_run": settings.sync.max_items_per_run,
-        "max_pages_per_run": settings.sync.max_pages_per_run,
-        "delay_seconds_between_items": settings.sync.delay_seconds_between_items,
-        "delay_seconds_between_pages": settings.sync.delay_seconds_between_pages,
-        "sync_bookmarks": settings.sync.sync_bookmarks,
-        "sync_following_users": settings.sync.sync_following_users,
-        "sync_following_novels": settings.sync.sync_following_novels,
-        "sync_subscribed_series": settings.sync.sync_subscribed_series,
-        "series_sync_limit": settings.sync.series_sync_limit,
-        "delay_seconds_between_series": settings.sync.delay_seconds_between_series,
-        "delay_seconds_between_chapters": settings.sync.delay_seconds_between_chapters,
-        "delay_seconds_between_skips": settings.sync.delay_seconds_between_skips,
-        "auto_sync_enabled": settings.sync.auto_sync_enabled,
-        "auto_sync_timezone": settings.sync.auto_sync_timezone,
-        "auto_sync_bookmarks_enabled": settings.sync.auto_sync_bookmarks_enabled,
-        "auto_sync_bookmarks_interval_hours": settings.sync.auto_sync_bookmarks_interval_hours,
-        "auto_sync_bookmarks_cron": settings.sync.auto_sync_bookmarks_cron,
-        "auto_sync_following_list_enabled": settings.sync.auto_sync_following_list_enabled,
-        "auto_sync_following_list_interval_hours": settings.sync.auto_sync_following_list_interval_hours,
-        "auto_sync_following_list_cron": settings.sync.auto_sync_following_list_cron,
-        "auto_sync_following_novels_enabled": settings.sync.auto_sync_following_novels_enabled,
-        "auto_sync_following_novels_interval_hours": settings.sync.auto_sync_following_novels_interval_hours,
-        "auto_sync_following_novels_cron": settings.sync.auto_sync_following_novels_cron,
-        "auto_sync_following_novels_users_limit": settings.sync.auto_sync_following_novels_users_limit,
-        "auto_sync_user_status_enabled": settings.sync.auto_sync_user_status_enabled,
-        "auto_sync_user_status_interval_hours": settings.sync.auto_sync_user_status_interval_hours,
-        "auto_sync_user_status_cron": settings.sync.auto_sync_user_status_cron,
-        "auto_sync_novel_status_enabled": settings.sync.auto_sync_novel_status_enabled,
-        "auto_sync_novel_status_interval_hours": settings.sync.auto_sync_novel_status_interval_hours,
-        "auto_sync_novel_status_cron": settings.sync.auto_sync_novel_status_cron,
-        "auto_sync_series_status_enabled": settings.sync.auto_sync_series_status_enabled,
-        "auto_sync_series_status_interval_hours": settings.sync.auto_sync_series_status_interval_hours,
-        "auto_sync_series_status_cron": settings.sync.auto_sync_series_status_cron,
-        "auto_sync_subscribed_series_enabled": settings.sync.auto_sync_subscribed_series_enabled,
-        "auto_sync_subscribed_series_interval_hours": settings.sync.auto_sync_subscribed_series_interval_hours,
-        "auto_sync_subscribed_series_cron": settings.sync.auto_sync_subscribed_series_cron,
-        "auto_sync_user_backup_enabled": settings.sync.auto_sync_user_backup_enabled,
-        "auto_sync_user_backup_interval_hours": settings.sync.auto_sync_user_backup_interval_hours,
-        "auto_sync_user_backup_cron": settings.sync.auto_sync_user_backup_cron,
-        "auto_sync_pending_detection_enabled": settings.sync.auto_sync_pending_detection_enabled,
-        "auto_sync_pending_detection_interval_hours": settings.sync.auto_sync_pending_detection_interval_hours,
-        "auto_sync_pending_detection_cron": settings.sync.auto_sync_pending_detection_cron,
-        "auto_sync_preference_analyze_enabled": settings.sync.auto_sync_preference_analyze_enabled,
-        "auto_sync_preference_analyze_interval_hours": settings.sync.auto_sync_preference_analyze_interval_hours,
-        "auto_sync_preference_analyze_cron": settings.sync.auto_sync_preference_analyze_cron,
-        "preference_analyze_batch_size": settings.sync.preference_analyze_batch_size,
-        "pending_deletion_grace_period_days": settings.sync.pending_deletion_grace_period_days,
-        "pending_deletion_cleanup_confirmed_days": settings.sync.pending_deletion_cleanup_confirmed_days,
-    }
-
 
 def _load_yaml_file(path: Path) -> dict[str, Any]:
     if not path.exists():
