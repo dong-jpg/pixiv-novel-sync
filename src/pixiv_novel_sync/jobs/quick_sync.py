@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 
 from ..auth import PixivAuthManager
@@ -14,8 +15,26 @@ from ..sync_engine import BookmarkNovelSyncService
 
 logger = logging.getLogger(__name__)
 
+StopRequested = Callable[[], bool]
 
-def run_bookmark_sync(settings: Settings) -> dict[str, int]:
+
+def _raise_if_stopped(stop_requested: StopRequested | None) -> None:
+    if stop_requested is not None and stop_requested():
+        raise InterruptedError("Task stopped by user")
+
+
+def _build_cancel_progress_callback(stop_requested: StopRequested | None) -> Callable[[str, dict[str, Any]], None] | None:
+    if stop_requested is None:
+        return None
+
+    def on_progress(event_type: str, data: dict[str, Any]) -> None:
+        _raise_if_stopped(stop_requested)
+
+    return on_progress
+
+
+def run_bookmark_sync(settings: Settings, stop_requested: StopRequested | None = None) -> dict[str, int]:
+    _raise_if_stopped(stop_requested)
     auth = PixivAuthManager(settings.pixiv)
     api, auth_result = auth.login()
     if auth_result.user_id is None:
@@ -34,6 +53,7 @@ def run_bookmark_sync(settings: Settings) -> dict[str, int]:
             download_assets=settings.sync.download_assets,
             write_markdown=settings.sync.write_markdown,
             write_raw_text=settings.sync.write_raw_text,
+            progress_callback=_build_cancel_progress_callback(stop_requested),
         )
         logger.info("Bookmark sync finished: %s", json.dumps(bookmark_stats, ensure_ascii=False))
         print(json.dumps(bookmark_stats, ensure_ascii=False, indent=2))
@@ -48,10 +68,12 @@ def run_check_bookmarks_task(
     job_id: str,
     release_semaphore: bool = True,
     raise_on_error: bool = False,
+    stop_requested: StopRequested | None = None,
 ) -> None:
     """独立的预检查任务：扫描所有需要同步的内容，标记哪些已存在"""
     db = None
     try:
+        _raise_if_stopped(stop_requested)
         auth = PixivAuthManager(settings.pixiv)
         job_manager.add_log(job_id, "info", "正在登录 Pixiv...")
         job_manager.update_progress(job_id, phase="登录", message="正在登录 Pixiv...")
@@ -71,6 +93,7 @@ def run_check_bookmarks_task(
         service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings, sync_check_scope=job_id)
 
         def on_progress(event_type: str, data: dict[str, Any]) -> None:
+            _raise_if_stopped(stop_requested)
             if event_type == "phase":
                 job_manager.add_log(job_id, "info", data.get("phase", ""))
             elif event_type == "page":
@@ -117,6 +140,9 @@ def run_check_bookmarks_task(
 
         # 始终返回独立副本：JobRunner 把它当作增量 merge 进 state.stats
         return dict(check_stats)
+    except InterruptedError:
+        # 用户主动停止：交由 JobRunner 标记 cancelled，不要记成预检查失败
+        raise
     except Exception as exc:
         job_manager.add_log(job_id, "error", f"预检查失败: {exc}")
         job = job_manager.get_job(job_id)

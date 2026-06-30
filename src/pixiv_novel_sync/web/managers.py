@@ -292,6 +292,12 @@ class AutoSyncScheduler:
                 func(settings, job.job_id)
                 job.status = "succeeded"
                 job.message = f"{_task_label(task_name)}完成"
+            except InterruptedError:
+                # 用户主动停止：标记为 cancelled，而非 failed
+                job.status = "cancelled"
+                job.message = "任务已停止"
+                job.error = None
+                logger.info("Auto sync task %s stopped by user", task_name)
             except Exception as e:
                 job.status = "failed"
                 job.message = f"任务失败: {str(e)}"
@@ -1000,6 +1006,24 @@ class SyncJobManager:
                     db = Database(settings.storage.db_path)
                     db.init_schema()
                     db.update_task_log(job.log_id, "succeeded", stats=stats, logs=job.logs)
+                except Exception as e:
+                    logger.error("更新任务日志失败：%s", e)
+                finally:
+                    if db:
+                        db.close()
+        except InterruptedError:
+            # 用户主动停止：标记为 cancelled，而非 failed
+            job.status = "cancelled"
+            job.message = "同步已停止"
+            job.error = None
+            self.add_log(job_id, "info", "同步已停止：用户主动取消")
+            if job.log_id:
+                db = None
+                try:
+                    settings = load_settings(self.config_path, self.env_path)
+                    db = Database(settings.storage.db_path)
+                    db.init_schema()
+                    db.update_task_log(job.log_id, "cancelled", logs=job.logs)
                 except Exception as e:
                     logger.error("更新任务日志失败：%s", e)
                 finally:

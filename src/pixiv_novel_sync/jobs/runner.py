@@ -52,6 +52,9 @@ class JobRunner:
             else:
                 self.manager.mark_succeeded(job_id)
             return state
+        except InterruptedError:
+            self.manager.mark_cancelled(job_id)
+            return state
         except Exception as exc:
             error = str(exc)
             self.manager.add_log(job_id, "error", error)

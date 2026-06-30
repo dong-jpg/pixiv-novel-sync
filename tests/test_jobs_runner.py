@@ -51,6 +51,20 @@ def test_runner_marks_failed_on_exception():
     assert any("boom" in entry.message for entry in result.logs)
 
 
+def test_runner_marks_cancelled_on_interrupted_error():
+    manager = JobManager()
+    state = manager.submit(JobSpec(source=JobSource.CLI, task_types=["a"]))
+
+    def executor(task_type, context):
+        raise InterruptedError("Task stopped by user")
+
+    runner = JobRunner(manager=manager, executor=executor)
+    result = runner.run(state.job_id)
+
+    assert result.status == JobStatus.CANCELLED
+    assert result.error is None
+
+
 def test_runner_stops_before_task_when_cancel_requested():
     manager = JobManager()
     state = manager.submit(JobSpec(source=JobSource.CLI, task_types=["a", "b"]))

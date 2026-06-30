@@ -668,3 +668,41 @@ def test_run_user_backup_task_stops_before_syncing_next_novel_and_closes_db(sett
     assert service_env["db"].closed is True
 
 
+def test_sleep_with_cancel_returns_true_when_cancel_requested(monkeypatch):
+    slept: list[float] = []
+    stop_calls = iter([False, True])
+    monkeypatch.setattr(services.time, "sleep", lambda seconds: slept.append(seconds))
+
+    result = services._sleep_with_cancel(1.0, lambda: next(stop_calls), interval=0.25)
+
+    assert result is True
+    assert slept == [0.25]
+
+
+def test_sleep_with_cancel_sleeps_remaining_time_without_cancel(monkeypatch):
+    slept: list[float] = []
+    monkeypatch.setattr(services.time, "sleep", lambda seconds: slept.append(seconds))
+
+    result = services._sleep_with_cancel(0.6, lambda: False, interval=0.25)
+
+    assert result is False
+    assert slept == [0.25, 0.25, 0.09999999999999998]
+
+
+def test_run_user_status_task_stops_when_cancelled_during_delay(settings, service_env, monkeypatch):
+    settings.sync.delay_seconds_between_skips = 1.0
+    monkeypatch.setattr(services, "_check_pixiv_user_status", lambda api, user_id: "normal")
+    monkeypatch.setattr(services.time, "sleep", lambda seconds: None)
+    stop_calls = iter([False, False, True])
+
+    result = services.run_user_status_task(settings, stop_requested=lambda: next(stop_calls))
+
+    db = service_env["db"]
+    assert db.user_status_upserts == [(101, "normal")]
+    assert result == {
+        "checked_count": 1,
+        "total_users": 2,
+        "status_counts": {"normal": 1},
+        "stopped": True,
+    }
+

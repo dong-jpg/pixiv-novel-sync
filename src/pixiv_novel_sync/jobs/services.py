@@ -29,6 +29,25 @@ class JobReporter:
 StopRequested = Callable[[], bool]
 
 
+def _sleep_with_cancel(
+    seconds: float,
+    stop_requested: StopRequested | None,
+    interval: float = 0.2,
+) -> bool:
+    if seconds <= 0:
+        return stop_requested is not None and stop_requested()
+
+    remaining = float(seconds)
+    while remaining > 0:
+        if stop_requested is not None and stop_requested():
+            return True
+        sleep_for = min(interval, remaining)
+        time.sleep(sleep_for)
+        remaining -= sleep_for
+
+    return stop_requested is not None and stop_requested()
+
+
 def run_user_backup_task(
     settings: Any,
     user_id: int,
@@ -112,7 +131,9 @@ def run_user_backup_task(
 
             next_query = api.parse_qs(getattr(result, "next_url", None))
             if next_query and settings.sync.delay_seconds_between_pages > 0:
-                time.sleep(settings.sync.delay_seconds_between_pages)
+                if _sleep_with_cancel(settings.sync.delay_seconds_between_pages, stop_requested):
+                    stopped = True
+                    break
 
         if stopped:
             _report_log(reporter, "info", f"用户全量备份已停止: {user_name} ({user_id})")
@@ -399,7 +420,9 @@ def _process_status_items(
 
         _report_log(reporter, "info", f"[{checked_count}/{total}] {item_label} {item_name(item)}: {status}")
         _report_progress(reporter, phase=item_label, current=checked_count, total=total, current_novel=item_name(item), author="")
-        time.sleep(settings.sync.delay_seconds_between_skips)
+        if _sleep_with_cancel(settings.sync.delay_seconds_between_skips, stop_requested):
+            stopped = True
+            break
 
     _report_log(reporter, "success", f"{item_label}状态检查完成: {checked_count} 个")
     return {

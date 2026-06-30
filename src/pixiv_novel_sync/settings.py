@@ -103,6 +103,7 @@ class Settings:
 
 
 DEFAULT_CONFIG_PATH = Path("config/config.yaml")
+ALLOWED_BOOKMARK_RESTRICTS = {"public", "private"}
 
 
 def load_settings(config_path: str | Path | None = None, env_path: str | Path | None = None) -> Settings:
@@ -155,7 +156,7 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             download_assets=_coerce_bool(sync_raw.get("download_assets"), True),
             write_markdown=_coerce_bool(sync_raw.get("write_markdown"), True),
             write_raw_text=_coerce_bool(sync_raw.get("write_raw_text"), True),
-            bookmark_restricts=list(sync_raw.get("bookmark_restricts", ["public", "private"])),
+            bookmark_restricts=_coerce_bookmark_restricts(sync_raw.get("bookmark_restricts")),
             max_items_per_run=_coerce_optional_int(sync_raw.get("max_items_per_run")),
             max_pages_per_run=_coerce_optional_int(sync_raw.get("max_pages_per_run")),
             delay_seconds_between_items=_coerce_float(sync_raw.get("delay_seconds_between_items"), 0.0),
@@ -164,7 +165,7 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             sync_following_users=_coerce_bool(sync_raw.get("sync_following_users"), True),
             sync_following_novels=_coerce_bool(sync_raw.get("sync_following_novels"), True),
             sync_subscribed_series=_coerce_bool(sync_raw.get("sync_subscribed_series"), True),
-            series_sync_limit=_coerce_int(sync_raw.get("series_sync_limit"), 0),
+            series_sync_limit=max(_coerce_int(sync_raw.get("series_sync_limit"), 0), 0),
             delay_seconds_between_series=_coerce_float(sync_raw.get("delay_seconds_between_series"), 3.0),
             delay_seconds_between_chapters=_coerce_float(sync_raw.get("delay_seconds_between_chapters"), 1.0),
             delay_seconds_between_skips=_coerce_float(sync_raw.get("delay_seconds_between_skips"), 0.1),
@@ -267,6 +268,24 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (ValueError, TypeError):
         return default
+
+
+def _coerce_bookmark_restricts(value: Any) -> list[str]:
+    if value in (None, ""):
+        return ["public", "private"]
+    if isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, list):
+        candidates = value
+    else:
+        return ["public", "private"]
+
+    normalized: list[str] = []
+    for item in candidates:
+        restrict = str(item).strip().lower()
+        if restrict in ALLOWED_BOOKMARK_RESTRICTS and restrict not in normalized:
+            normalized.append(restrict)
+    return normalized or ["public", "private"]
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:

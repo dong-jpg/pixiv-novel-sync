@@ -122,8 +122,14 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     def _has_any_running_web_job() -> bool:
         return sync_job_manager.has_running_jobs() or _has_active_shared_jobs()
 
+    def _api_error(error: str, status: int = 400, detail: Any | None = None):
+        payload: dict[str, Any] = {"ok": False, "error": error}
+        if detail is not None:
+            payload["detail"] = detail
+        return jsonify(payload), status
+
     def _running_job_error_response():
-        return jsonify({"error": "已有同步任务正在运行，请稍后再试"}), 400
+        return _api_error("已有同步任务正在运行，请稍后再试")
 
     def _shared_job_logs_for_db(job: JobState) -> list[dict[str, Any]]:
         return [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs]
@@ -895,13 +901,13 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     def sync_user_novels(user_id: int):
         """触发某用户全部小说的后台备份任务，避免阻塞 HTTP 请求。"""
         if _has_active_shared_jobs():
-            return jsonify({"ok": False, "error": "已有同步任务正在运行，请稍后再试"}), 400
+            return _api_error("已有同步任务正在运行，请稍后再试")
         current_settings = settings_manager.load(env_path=env_path)
         try:
             spec = _web_job_spec([f"user_backup:{user_id}"])
             job = _submit_shared_web_job(spec, current_settings, "user_backup", f"用户 {user_id} 备份")
         except Exception as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 500
+            return _api_error(str(exc), 500)
         return jsonify({"ok": True, "job_id": job.job_id, "job": _shared_job_to_dict(job)})
 
     @app.get("/api/dashboard/settings")
@@ -915,7 +921,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         try:
             saved = settings_manager.save_sync_settings(payload)
         except Exception as exc:
-            return jsonify({"error": f"保存设置失败：{exc}"}), 400
+            return _api_error("保存设置失败", detail=str(exc))
         return jsonify({"ok": True, "message": "设置已保存", "sync": saved})
 
     @app.post("/api/dashboard/sync/start")
@@ -926,7 +932,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         try:
             job = _submit_shared_web_job(spec, current_settings, "manual", "全量手动同步")
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 400
+            return _api_error(str(exc))
         return jsonify({"ok": True, "message": job.message, "job": _shared_job_to_dict(job)})
 
     @app.post("/api/dashboard/check-bookmarks")
@@ -938,7 +944,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             spec = _web_job_spec(["sync_check"])
             job = _submit_shared_web_job(spec, current_settings, "sync_check", "预检查所有内容")
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 400
+            return _api_error(str(exc))
 
         return jsonify({"ok": True, "message": "预检查任务已启动", "job": _shared_job_to_dict(job)})
 
@@ -964,7 +970,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         }
         
         if task_type not in task_map:
-            return jsonify({"error": "不支持的任务类型"}), 400
+            return _api_error("不支持的任务类型")
         
         internal_type, task_name = task_map[task_type]
         current_settings = settings_manager.load(env_path=env_path)
@@ -972,7 +978,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             spec = _web_job_spec([internal_type])
             job = _submit_shared_web_job(spec, current_settings, internal_type, task_name)
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 400
+            return _api_error(str(exc))
         return jsonify({"ok": True, "message": "任务已启动", "job": _shared_job_to_dict(job)})
 
     @app.post("/api/dashboard/sync/subscribed-series")
@@ -993,7 +999,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                 progress={"series_limit": limit},
             )
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 400
+            return _api_error(str(exc))
         return jsonify({"ok": True, "message": "任务已启动", "job": _shared_job_to_dict(job)})
 
     @app.get("/api/dashboard/auto-sync/status")

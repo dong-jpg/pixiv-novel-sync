@@ -1,7 +1,11 @@
 # 🚀 优化路线图
 
+> ⚠️ **本文档已被 [OPTIMIZATION_REVIEW_2026-06-26.md](OPTIMIZATION_REVIEW_2026-06-26.md) 取代。**
+> 该文档为 2026-06-16 的早期规划，部分任务已完成、部分优先级已调整，仅作历史参考。
+> 当前的优化现状与后续方向请以 `OPTIMIZATION_REVIEW_2026-06-26.md` 为准。
+
 **版本**: v0.2.0 规划  
-**更新日期**: 2026-06-16
+**更新日期**: 2026-06-16（已归档）
 
 ---
 
@@ -366,7 +370,7 @@ storage/
 
 想参与优化？查看当前进度和认领任务：
 
-1. 查看 [GitHub Projects](https://github.com/你的用户名/pixiv-novel-sync/projects)
+1. 查看 [GitHub Projects](https://github.com/dong-jpg/pixiv-novel-sync/projects)
 2. 选择感兴趣的任务
 3. 在 Issue 中留言认领
 4. Fork 仓库开始开发
@@ -374,6 +378,6 @@ storage/
 
 ---
 
-**维护者**: @你的用户名  
-**最后更新**: 2026-06-16  
-**下次审查**: 2026-07-01
+**维护者**: @dong-jpg
+**最后更新**: 2026-06-16（已归档，见 [OPTIMIZATION_REVIEW_2026-06-26.md](OPTIMIZATION_REVIEW_2026-06-26.md)）
+**下次审查**: 见最新优化评审文档

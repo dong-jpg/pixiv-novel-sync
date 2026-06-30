@@ -44,6 +44,46 @@ _CHECK_PAGE_SAFETY_LIMIT = 2000
 T = TypeVar('T')
 
 
+def _sleep_with_progress_cancel(
+    seconds: float,
+    progress_callback: Any = None,
+    interval: float = 0.2,
+) -> None:
+    if seconds <= 0:
+        return
+    if progress_callback is None:
+        time.sleep(seconds)
+        return
+
+    remaining = float(seconds)
+    while remaining > 0:
+        progress_callback("_cancel_check", {})
+        sleep_for = min(interval, remaining)
+        time.sleep(sleep_for)
+        remaining -= sleep_for
+    progress_callback("_cancel_check", {})
+
+
+def _stop_requested_from_progress(progress_callback: Any) -> Any:
+    """把进度回调桥接成 RateLimiter 可消费的 stop_requested 可调用对象。
+
+    进度回调在收到 "_cancel_check" 事件时会检查取消信号并在需要时抛
+    InterruptedError；这里捕获该异常并转成布尔返回值,供 RateLimiter.wait()
+    轮询。progress_callback 为 None 时返回 None,退化为普通 sleep。
+    """
+    if progress_callback is None:
+        return None
+
+    def _stop_requested() -> bool:
+        try:
+            progress_callback("_cancel_check", {})
+        except InterruptedError:
+            return True
+        return False
+
+    return _stop_requested
+
+
 class BookmarkNovelSyncService:
     def __init__(self, api: AppPixivAPI, db: Database, storage: FileStorage, settings: Settings, sync_check_scope: str = "_") -> None:
         self.api = api
@@ -95,7 +135,7 @@ class BookmarkNovelSyncService:
                 
                 next_query = self.api.parse_qs(getattr(result, "next_url", None))
                 if next_query:
-                    self.rate_limiter.wait()  # Phase 3.4
+                    self.rate_limiter.wait(stop_requested=_stop_requested_from_progress(progress_callback))  # Phase 3.4 可取消
         
         if progress_callback:
             progress_callback("phase", {"phase": f"检查 {len(all_novel_ids)} 本小说"})
@@ -176,7 +216,7 @@ class BookmarkNovelSyncService:
                     
                     next_query = self.api.parse_qs(getattr(result, "next_url", None))
                     if next_query:
-                        self.rate_limiter.wait()  # Phase 3.4
+                        self.rate_limiter.wait(stop_requested=_stop_requested_from_progress(progress_callback))  # Phase 3.4 可取消
             
             stats["bookmarks"]["total"] = len(bookmark_ids)
             if progress_callback:
@@ -231,11 +271,11 @@ class BookmarkNovelSyncService:
 
                             next_novel_query = self.api.parse_qs(getattr(novels_result, "next_url", None))
                             if next_novel_query:
-                                self.rate_limiter.wait()  # Phase 3.4
+                                self.rate_limiter.wait(stop_requested=_stop_requested_from_progress(progress_callback))  # Phase 3.4 可取消
                     
                     next_following_query = self.api.parse_qs(getattr(following_result, "next_url", None))
                     if next_following_query:
-                        self.rate_limiter.wait()  # Phase 3.4
+                        self.rate_limiter.wait(stop_requested=_stop_requested_from_progress(progress_callback))  # Phase 3.4 可取消
             
             stats["following_novels"]["total"] = len(following_ids)
             if progress_callback:
@@ -438,7 +478,7 @@ class BookmarkNovelSyncService:
                         if skip_delay > 0:
                             if progress_callback:
                                 progress_callback("rate_limit", {"seconds": skip_delay})
-                            time.sleep(skip_delay)
+                            _sleep_with_progress_cancel(skip_delay, progress_callback)
                     else:
                         # 不存在或无预检查结果，执行完整同步
                         counters = self._sync_novel(
@@ -474,7 +514,7 @@ class BookmarkNovelSyncService:
                     if counters.get("novels", 0) > 0 and item_delay > 0:
                         if progress_callback:
                             progress_callback("rate_limit", {"seconds": item_delay})
-                        time.sleep(item_delay)
+                        _sleep_with_progress_cancel(item_delay, progress_callback)
 
                 # 达到 max_items 限制，停止翻页
                 if reached_max_items:
@@ -484,7 +524,7 @@ class BookmarkNovelSyncService:
                 if next_query and page_delay > 0:
                     if progress_callback:
                         progress_callback("rate_limit", {"seconds": page_delay})
-                    time.sleep(page_delay)
+                    _sleep_with_progress_cancel(page_delay, progress_callback)
 
             # 记录本次同步时间（用于运维观察，不再用作 ID 提前终止条件）
             self.db.update_watermark(f"bookmark_{restrict}", {
@@ -552,7 +592,7 @@ class BookmarkNovelSyncService:
             if next_following_query and page_delay > 0:
                 if progress_callback:
                     progress_callback("rate_limit", {"seconds": page_delay})
-                time.sleep(page_delay)
+                _sleep_with_progress_cancel(page_delay, progress_callback)
 
         # Phase 3.1: 防止API异常返回空列表导致误删
         if stats["users"] == 0 and existing_user_count > 0:
@@ -702,7 +742,7 @@ class BookmarkNovelSyncService:
                             if skip_delay > 0:
                                 if progress_callback:
                                     progress_callback("rate_limit", {"seconds": skip_delay})
-                                time.sleep(skip_delay)
+                                _sleep_with_progress_cancel(skip_delay, progress_callback)
                         else:
                             existing_streak = 0
                             counters = self._sync_novel(
@@ -737,7 +777,7 @@ class BookmarkNovelSyncService:
                         if counters.get("novels", 0) > 0 and item_delay > 0:
                             if progress_callback:
                                 progress_callback("rate_limit", {"seconds": item_delay})
-                            time.sleep(item_delay)
+                            _sleep_with_progress_cancel(item_delay, progress_callback)
 
                     if stop_author_scan:
                         break
@@ -746,13 +786,13 @@ class BookmarkNovelSyncService:
                     if next_novel_query and page_delay > 0:
                         if progress_callback:
                             progress_callback("rate_limit", {"seconds": page_delay})
-                        time.sleep(page_delay)
+                        _sleep_with_progress_cancel(page_delay, progress_callback)
 
             next_following_query = self.api.parse_qs(getattr(following_result, "next_url", None))
             if next_following_query and page_delay > 0:
                 if progress_callback:
                     progress_callback("rate_limit", {"seconds": page_delay})
-                time.sleep(page_delay)
+                _sleep_with_progress_cancel(page_delay, progress_callback)
 
         # 更新水位线
         _save_watermark()
@@ -1086,7 +1126,7 @@ class BookmarkNovelSyncService:
                                         if progress_callback:
                                             progress_callback("phase", {"phase": f"  [{idx+1}/{len(all_novel_items)}] 跳过已存在: {novel_id}"})
                                         if skip_delay > 0:
-                                            time.sleep(skip_delay)
+                                            _sleep_with_progress_cancel(skip_delay, progress_callback)
                                         continue
 
                                     if progress_callback:
@@ -1106,7 +1146,7 @@ class BookmarkNovelSyncService:
                                     if counters.get("failed", 0):
                                         stats["failed"] = stats.get("failed", 0) + counters.get("failed", 0)
                                     if idx < len(all_novel_items) - 1 and chapter_delay > 0:
-                                        time.sleep(chapter_delay)
+                                        _sleep_with_progress_cancel(chapter_delay, progress_callback)
 
                                 if chapter_count:
                                     logger.info("  Synced %d chapters, skipped %d for series %s", chapter_count, skipped_count, sid)
@@ -1156,7 +1196,7 @@ class BookmarkNovelSyncService:
 
                 # 系列之间的延迟
                 if series_delay > 0 and queue_idx < len(series_queue):
-                    time.sleep(series_delay)
+                    _sleep_with_progress_cancel(series_delay, progress_callback)
             stats["series_synced"] = synced_series_count
             logger.info("Subscribed series sync completed: %d series, %d novels", synced_series_count, stats["novels"])
             return stats
@@ -1387,7 +1427,7 @@ class BookmarkNovelSyncService:
             stats["new_pending"] += 1
             if progress_callback:
                 progress_callback("phase", {"phase": f"发现取消收藏: {title[:30]}"})
-            time.sleep(self.settings.sync.delay_seconds_between_skips)
+            _sleep_with_progress_cancel(self.settings.sync.delay_seconds_between_skips, progress_callback)
 
         if progress_callback:
             progress_callback("phase", {"phase": f"收藏检测完成: 新增 {stats['new_pending']} 条待确认"})
@@ -1494,7 +1534,7 @@ class BookmarkNovelSyncService:
             stats["new_pending"] += 1
             if progress_callback:
                 progress_callback("phase", {"phase": f"发现取消追更: {title[:30]}"})
-            time.sleep(self.settings.sync.delay_seconds_between_skips)
+            _sleep_with_progress_cancel(self.settings.sync.delay_seconds_between_skips, progress_callback)
 
         if progress_callback:
             progress_callback("phase", {"phase": f"追更检测完成: 新增 {stats['new_pending']} 条待确认"})
@@ -1525,7 +1565,7 @@ class BookmarkNovelSyncService:
                     remote_ids.add(int(novel.id))
                 next_query = self.api.parse_qs(getattr(result, "next_url", None))
                 if next_query:
-                    self.rate_limiter.wait()  # Phase 3.4
+                    self.rate_limiter.wait(stop_requested=_stop_requested_from_progress(progress_callback))  # Phase 3.4 可取消
         return remote_ids
 
     def _fetch_remote_subscribed_series_ids(self) -> set[int]:
@@ -1598,6 +1638,8 @@ class BookmarkNovelSyncService:
         novel_id = int(novel.id)
         try:
             return self._sync_novel_inner(novel_id, novel, restrict, download_assets, write_markdown, write_raw_text, source_type, source_key)
+        except InterruptedError:
+            raise
         except Exception as e:
             logger.error("Failed to sync novel %d: %s", novel_id, e)
             return {"failed": 1, "bookmarks": 0, "views": 0, "assets_downloaded": 0}

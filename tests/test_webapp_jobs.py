@@ -58,6 +58,25 @@ def test_run_job_preserves_pending_detection_stats_without_failing(monkeypatch):
     assert job.stats == {"bookmark": {}, "series": {}, "new_pending": 0, "stopped": True}
 
 
+def test_run_job_marks_cancelled_on_interrupted_error(monkeypatch):
+    class CancelJobManager(SyncJobManager):
+        def _run_single_sync(self, settings, task_type, current_job_id):
+            raise InterruptedError("Task stopped by user")
+
+    manager = CancelJobManager(config_path=None, env_path=None)
+    job_id = "job-1"
+    job = SyncJobState(job_id=job_id, status="running", task_list=["bookmark"])
+    manager._jobs[job_id] = job
+    assert manager._semaphore.acquire(blocking=False)
+    monkeypatch.setattr("pixiv_novel_sync.web.managers.load_settings", lambda config_path, env_path: object())
+
+    manager._run_job(job_id)
+
+    assert job.status == "cancelled"
+    assert job.error is None
+    assert job.message == "同步已停止"
+
+
 def test_web_job_spec_for_sync_tasks():
     spec = _web_job_spec(["bookmark", "following_novels"])
 
@@ -442,8 +461,10 @@ def test_dashboard_sync_start_releases_gate_when_database_init_fails(tmp_path, m
 
     FailingOnceDatabase.fail_init_once = True
     failed = client.post("/api/dashboard/sync/start")
+    failed_payload = failed.get_json()
     assert failed.status_code == 400
-    assert "schema unavailable" in failed.get_json()["error"]
+    assert failed_payload["ok"] is False
+    assert "schema unavailable" in failed_payload["error"]
 
     retried = client.post("/api/dashboard/sync/start")
 

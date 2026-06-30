@@ -38,16 +38,19 @@
 #### 成功响应
 ```json
 {
-  "success": true,
-  "data": { ... }
+  "ok": true,
+  "...": "其余字段随接口而定（message / job / sync 等）"
 }
 ```
+> 绝大多数接口已统一为 `{ok: true, ...}`。个别旧接口（如阅读进度 POST/DELETE
+> `/api/dashboard/novels/<id>/progress`）仍返回 `{"success": true}`，后续会继续统一。
 
 #### 错误响应
 ```json
 {
-  "success": false,
-  "error": "错误消息"
+  "ok": false,
+  "error": "错误消息",
+  "detail": "可选的详细原因"
 }
 ```
 
@@ -80,12 +83,9 @@
 ```
 
 响应：
-```json
-{
-  "success": true,
-  "message": "登录成功"
-}
-```
+- 成功：HTTP 302 重定向到 `/`（设置 session）
+- 密码错误：HTTP 401，纯文本 `密码错误`
+- 触发限流（5 分钟内失败 ≥5 次）：HTTP 429，`{"error": "too many login attempts"}`
 
 ---
 
@@ -95,7 +95,7 @@
 响应：
 ```json
 {
-  "success": true
+  "ok": true
 }
 ```
 
@@ -1010,9 +1010,11 @@
 响应：
 ```json
 {
-  "success": true
+  "ok": true,
+  "message": "已写入 .env"
 }
 ```
+错误：HTTP 400，`{"error": "missing refresh_token"}`
 
 ---
 

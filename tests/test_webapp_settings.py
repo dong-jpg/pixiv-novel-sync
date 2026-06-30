@@ -5,7 +5,7 @@ import yaml
 from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings, load_settings
 from pixiv_novel_sync.sync_check import build_sync_check_fingerprint, sync_check_task_types
 from pixiv_novel_sync.web.utils import _settings_to_dict
-from pixiv_novel_sync.webapp import SettingsManager, SyncJobManager, SyncJobState
+from pixiv_novel_sync.webapp import SettingsManager, SyncJobManager, SyncJobState, create_app
 
 
 def make_settings(tmp_path) -> Settings:
@@ -69,6 +69,28 @@ def test_save_sync_settings_rejects_unknown_bookmark_restrict(tmp_path):
         raise AssertionError("invalid bookmark_restricts should fail")
 
 
+def test_dashboard_settings_save_returns_structured_error_for_invalid_payload(tmp_path, monkeypatch):
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    monkeypatch.setenv("FLASK_DEBUG", "1")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("sync:\n  bookmark_restricts:\n    - public\n", encoding="utf-8")
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(config_path=str(config_path), env_path=str(env_path))
+
+    response = app.test_client().post(
+        "/api/dashboard/settings",
+        json={"bookmark_restricts": ["public", "friends"]},
+    )
+
+    payload = response.get_json()
+    assert response.status_code == 400
+    assert payload["ok"] is False
+    assert payload["error"] == "保存设置失败"
+    assert "bookmark_restricts" in payload["detail"]
+
+
 def test_save_sync_settings_normalizes_bookmark_restricts(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("sync: {}\n", encoding="utf-8")
@@ -115,6 +137,47 @@ def test_load_settings_reads_pending_deletion_cleanup_days(tmp_path):
 
     assert settings.sync.pending_deletion_grace_period_days == 45
     assert settings.sync.pending_deletion_cleanup_confirmed_days == 9
+
+
+def test_load_settings_normalizes_bookmark_restricts(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "sync:\n"
+        "  bookmark_restricts:\n"
+        "    - Public\n"
+        "    - friends\n"
+        "    - private\n"
+        "    - public\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path=config_path, env_path=tmp_path / ".env")
+
+    assert settings.sync.bookmark_restricts == ["public", "private"]
+
+
+def test_load_settings_defaults_invalid_bookmark_restricts(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "sync:\n"
+        "  bookmark_restricts:\n"
+        "    - friends\n"
+        "    - invalid\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path=config_path, env_path=tmp_path / ".env")
+
+    assert settings.sync.bookmark_restricts == ["public", "private"]
+
+
+def test_load_settings_clamps_negative_series_sync_limit(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("sync:\n  series_sync_limit: -7\n", encoding="utf-8")
+
+    settings = load_settings(config_path=config_path, env_path=tmp_path / ".env")
+
+    assert settings.sync.series_sync_limit == 0
 
 
 def test_dashboard_settings_payload_includes_preference_and_pending_cleanup(tmp_path):

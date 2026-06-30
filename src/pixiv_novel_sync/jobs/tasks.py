@@ -53,7 +53,7 @@ def execute_task(task_type: str, settings: Any, context: dict[str, Any] | None =
     if task_type == "bookmark":
         from pixiv_novel_sync.jobs.quick_sync import run_bookmark_sync
 
-        return run_bookmark_sync(settings)
+        return run_bookmark_sync(settings, stop_requested=stop_requested)
 
     if task_type == "sync_check":
         from pixiv_novel_sync.jobs.quick_sync import run_check_bookmarks_task
@@ -68,10 +68,11 @@ def execute_task(task_type: str, settings: Any, context: dict[str, Any] | None =
             str(job_id),
             release_semaphore=False,
             raise_on_error=True,
+            stop_requested=stop_requested,
         )
 
     if task_type in {"following_users", "following_novels", "subscribed_series"}:
-        return _run_direct_sync_task(task_type, settings, context)
+        return _run_direct_sync_task(task_type, settings, context, stop_requested=stop_requested)
 
     if task_type.startswith("user_backup:"):
         from pixiv_novel_sync.jobs.services import run_user_backup_task
@@ -108,7 +109,12 @@ def execute_task(task_type: str, settings: Any, context: dict[str, Any] | None =
     raise RuntimeError(f"Unsupported task type for CLI execution: {task_type}")
 
 
-def _run_direct_sync_task(task_type: str, settings: Any, context: dict[str, Any]) -> dict[str, Any]:
+def _run_direct_sync_task(
+    task_type: str,
+    settings: Any,
+    context: dict[str, Any],
+    stop_requested: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
     from pixiv_novel_sync.auth import PixivAuthManager
     from pixiv_novel_sync.storage_db import Database
     from pixiv_novel_sync.storage_files import FileStorage
@@ -140,7 +146,11 @@ def _run_direct_sync_task(task_type: str, settings: Any, context: dict[str, Any]
 
     try:
         service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
-        progress_callback = _build_progress_callback(manager, str(job_id) if job_id else None)
+        progress_callback = _build_progress_callback(
+            manager,
+            str(job_id) if job_id else None,
+            stop_requested=stop_requested,
+        )
 
         if task_type == "following_users":
             return service.sync_following_list(progress_callback=progress_callback)
@@ -169,7 +179,11 @@ def _run_direct_sync_task(task_type: str, settings: Any, context: dict[str, Any]
     raise RuntimeError(f"Unsupported direct sync task: {task_type}")
 
 
-def _build_progress_callback(manager: Any, job_id: str | None) -> Callable[[str, dict[str, Any]], None] | None:
+def _build_progress_callback(
+    manager: Any,
+    job_id: str | None,
+    stop_requested: Callable[[], bool] | None = None,
+) -> Callable[[str, dict[str, Any]], None] | None:
     if manager is None or not job_id:
         return None
 
@@ -182,6 +196,9 @@ def _build_progress_callback(manager: Any, job_id: str | None) -> Callable[[str,
             manager.update_progress(job_id, **kwargs)
 
     def on_progress(event_type: str, data: dict[str, Any]) -> None:
+        if stop_requested is not None and stop_requested():
+            raise InterruptedError("Task stopped by user")
+
         if event_type == "page":
             safe_add_log("info", f"正在获取第 {data.get('page', '?')} 页...")
         elif event_type == "rate_limit":
