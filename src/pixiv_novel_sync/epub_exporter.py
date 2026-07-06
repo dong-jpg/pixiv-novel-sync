@@ -1,6 +1,7 @@
 """EPUB导出功能模块"""
 from __future__ import annotations
 
+import html
 import io
 from pathlib import Path
 from typing import Any
@@ -31,10 +32,12 @@ def create_epub_from_novel(novel_data: dict[str, Any], text_content: str, cover_
     # 创建章节
     chapter = epub.EpubHtml(title="Chapter 1", file_name="chap_01.xhtml", lang="ja")
 
-    # 转换文本为HTML段落
+    # 转换文本为HTML段落（对标题和正文做 XML 转义，防止破坏 XHTML 结构或注入）
     paragraphs = text_content.strip().split("\n")
-    html_content = "<h1>" + title + "</h1>\n"
-    html_content += "\n".join(f"<p>{p}</p>" if p.strip() else "<br/>" for p in paragraphs)
+    html_content = "<h1>" + html.escape(title) + "</h1>\n"
+    html_content += "\n".join(
+        f"<p>{html.escape(p)}</p>" if p.strip() else "<br/>" for p in paragraphs
+    )
 
     chapter.set_content(html_content)
     book.add_item(chapter)

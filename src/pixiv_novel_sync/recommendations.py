@@ -182,13 +182,11 @@ class RecommendationService:
             return None
 
         author = getattr(novel, "user", None)
-        author_id = int(getattr(author, "id", 0) or 0) if author else 0
         author_name = str(getattr(author, "name", "") or "") if author else ""
         # 7.3: 统一filter_state取值
         if filters.get("exclude_muted_authors", True) and str(author_id) in filter_state.get("muted_authors", set()):
             return None
 
-        tags = self._tags(novel)
         # 7.3: 统一filter_state取值
         if filters.get("exclude_muted_tags", True) and set(tags) & filter_state.get("muted_tags", set()):
             return None

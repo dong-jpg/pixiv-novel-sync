@@ -1,44 +1,56 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import re
-import threading
 import time
 import uuid
 from collections.abc import Iterator
-from pathlib import Path
 from typing import Any
 
 from ...storage_db import Database
-from ..chunking import estimate_token_count, get_tail_context, split_text_by_chars
-from ..crypto import AISecretManager
+from ..chunking import get_tail_context
 from ..detection import detect_ai_tells
-from ..models import AIAgentConfig, AIProviderConfig, AIStreamChunk
+from ..models import AIAgentConfig, AIStreamChunk
 from ..prompts import (
-    DEFAULT_WIZARD_PROMPT,
-    build_audit_messages,
     build_chapter_summary_messages,
-    build_chat_messages,
     build_continue_messages,
     build_foreshadow_resolve_messages,
     build_longform_detail_messages,
     build_longform_plan_messages,
-    build_novel_distill_messages,
-    build_plan_messages,
     build_polish_messages,
-    build_rewrite_messages,
-    build_style_distill_messages,
-    build_summarize_messages,
     safe_prompt_preview,
 )
-from ..providers import AIProvider, create_provider
-from ..retrieval import BaseRetriever, create_retriever
 from .core import AIServiceError
 
 
 class AIProjectsMixin:
+    # 章节 Pipeline 步骤的规范顺序与显示标签。stream_chapter_pipeline /
+    # stream_chapters_pipeline 会按此顺序对用户勾选的 steps 排序并展示标签。
+    PIPELINE_STEP_ORDER: tuple[str, ...] = (
+        "continue",
+        "polish_dialogue",
+        "polish_psychology",
+        "deai",
+        "summary",
+        "state",
+        "foreshadow",
+        "audit",
+        "detect",
+        "index",
+    )
+    PIPELINE_STEP_LABEL: dict[str, str] = {
+        "continue": "续写",
+        "polish_dialogue": "对话润色",
+        "polish_psychology": "心理描写润色",
+        "deai": "去AI味",
+        "summary": "章节摘要",
+        "state": "项目状态更新",
+        "foreshadow": "伏笔回收",
+        "audit": "内容审计",
+        "detect": "AI痕迹检测",
+        "index": "检索索引",
+    }
+
     def list_writing_projects(self, status: str | None = None) -> list[dict[str, Any]]:
         db = self._db()
         try:
@@ -1070,7 +1082,11 @@ class AIProjectsMixin:
             if current_type in ("character_state", "plot_progress"):
                 db.upsert_ai_project_state(project_id, current_type, section)
             elif current_type == "new_foreshadows":
-                # 解析伏笔列表
+                # 解析伏笔列表；按已有 description 去重，避免同章 pipeline 重跑后伏笔重复插入
+                existing_descs = {
+                    str(fs.get("description") or "").strip()
+                    for fs in db.list_ai_foreshadows(project_id)
+                }
                 for line in section.splitlines():
                     line = line.strip().lstrip("- •")
                     if not line:
@@ -1082,13 +1098,14 @@ class AIProjectsMixin:
                         imp = parts[1].strip().lower()
                         if imp in ("high", "normal", "low"):
                             importance = imp
-                    if description:
+                    if description and description not in existing_descs:
                         db.create_ai_foreshadow({
                             "project_id": project_id,
                             "description": description,
                             "planted_chapter": chapter.get("chapter_number"),
                             "importance": importance,
                         })
+                        existing_descs.add(description)
 
     def index_chapter_for_retrieval(self, project_id: int, chapter_id: int) -> None:
         """将章节摘要和关键事件索引到检索库。"""
@@ -1683,7 +1700,6 @@ class AIProjectsMixin:
                     finally:
                         db2.close()
                     step_meta = {"score": score, "issues": len(issues_dump)}
-                    yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "meta": step_meta})
 
                 elif step == "index":
                     try:

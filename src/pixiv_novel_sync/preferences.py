@@ -199,11 +199,7 @@ class PreferenceAnalyzer:
                 "tags": primary_tags,
                 "keywords": top_keywords[:25],
                 "themes": title_keywords[:10],
-                "relationship_dynamics": [],
                 "scenes_or_situations": caption_keywords[:10],
-                "tone": [],
-                "pacing": [],
-                "narrative_patterns": [],
             },
             "negative_preferences": {
                 "excluded_tags": [],

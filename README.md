@@ -163,7 +163,7 @@
 #### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/你的用户名/pixiv-novel-sync.git
+git clone https://github.com/dong-jpg/pixiv-novel-sync.git
 cd pixiv-novel-sync
 ```
 
@@ -201,7 +201,7 @@ cp .env.example .env
 #### 5. 启动服务
 
 ```bash
-python -m pixiv_novel_sync.webapp
+pixiv-novel-sync web-token-ui
 ```
 
 访问 `http://localhost:5010/dashboard` 开始使用！
@@ -518,6 +518,8 @@ server {
 - [x] Web 管理界面
 - [x] EPUB 导出
 - [x] 模块化架构重构
+- [x] 任务取消硬化(2026-07-02 审计修复:AI 幻觉 import / EPUB 注入 / 同步取消链 / 配置漂移,详见 [docs/AUDIT_REPORT_2026-07-02.md](docs/AUDIT_REPORT_2026-07-02.md))
+- [x] 死代码清理 + EPUB 回归修复 + 文档归档(2026-07-03 审计,详见 [docs/AUDIT_REPORT_2026-07-03.md](docs/AUDIT_REPORT_2026-07-03.md))
 
 ### 🚧 进行中
 - [ ] AI 偏好总结（推荐系统 Phase B）
@@ -538,8 +540,8 @@ server {
 
 感谢所有为本项目做出贡献的开发者！
 
-<a href="https://github.com/你的用户名/pixiv-novel-sync/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=你的用户名/pixiv-novel-sync" />
+<a href="https://github.com/dong-jpg/pixiv-novel-sync/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=dong-jpg/pixiv-novel-sync" />
 </a>
 
 ---
@@ -552,15 +554,15 @@ server {
 
 ## 💬 社区与支持
 
-- **问题反馈**: [GitHub Issues](https://github.com/你的用户名/pixiv-novel-sync/issues)
-- **功能建议**: [GitHub Discussions](https://github.com/你的用户名/pixiv-novel-sync/discussions)
-- **技术文档**: [Wiki](https://github.com/你的用户名/pixiv-novel-sync/wiki)
+- **问题反馈**: [GitHub Issues](https://github.com/dong-jpg/pixiv-novel-sync/issues)
+- **功能建议**: [GitHub Discussions](https://github.com/dong-jpg/pixiv-novel-sync/discussions)
+- **技术文档**: [Wiki](https://github.com/dong-jpg/pixiv-novel-sync/wiki)
 
 ---
 
 ## ⭐ Star 历史
 
-[![Star History Chart](https://api.star-history.com/svg?repos=你的用户名/pixiv-novel-sync&type=Date)](https://star-history.com/#你的用户名/pixiv-novel-sync&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=dong-jpg/pixiv-novel-sync&type=Date)](https://star-history.com/#dong-jpg/pixiv-novel-sync&Date)
 
 ---
 

@@ -163,16 +163,9 @@ def _run_direct_sync_task(
                 users_limit=users_limit,
             )
         if task_type == "subscribed_series":
-            subscribed_series = service.sync_subscribed_series
-            if _accepts_parameter(subscribed_series, "download_assets"):
-                return subscribed_series(
-                    download_assets=settings.sync.download_assets,
-                    write_markdown=settings.sync.write_markdown,
-                    write_raw_text=settings.sync.write_raw_text,
-                    progress_callback=progress_callback,
-                    limit=series_limit,
-                )
-            return subscribed_series(progress_callback=progress_callback, limit=series_limit)
+            # sync_subscribed_series 签名固定为 (progress_callback, limit)，
+            # 资源下载/写文件由内部按 settings 决定，此处无 download_assets 等参数。
+            return service.sync_subscribed_series(progress_callback=progress_callback, limit=series_limit)
     finally:
         db.close()
 
@@ -231,12 +224,6 @@ def _build_progress_callback(
     return on_progress
 
 
-def _accepts_parameter(func: Callable[..., Any], parameter_name: str) -> bool:
-    import inspect
-
-    return parameter_name in inspect.signature(func).parameters
-
-
 def build_default_task_list(settings: Any) -> list[str]:
     sync = settings.sync
     tasks: list[str] = []
@@ -282,6 +269,7 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
     from pixiv_novel_sync.preferences import PreferenceAnalyzer
 
     reporter = _job_reporter_from_context(context)
+    stop_requested = _stop_requested_from_context(context)
     reporter.add_log("info", "=== 开始增量分析本地偏好 ===")
 
     db = Database(settings.storage.db_path)
@@ -301,6 +289,9 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
             db.reset_preference_accumulator()
 
         def progress(processed: int, remaining: int) -> None:
+            # 每批结束后检查取消信号，让偏好分析任务可被中断
+            if stop_requested():
+                raise InterruptedError("Task stopped by user")
             reporter.add_log("info", f"已分析 {processed} 篇 (本次), 剩余约 {remaining} 篇待分析")
 
         result = analyzer.analyze_incremental(

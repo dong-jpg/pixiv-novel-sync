@@ -122,6 +122,28 @@ class FileStorage:
         safe_filename = Path(filename).name
         return novel_dir / "assets" / asset_type / safe_filename
 
+    def get_novel_cover_path(self, novel_data: dict) -> Path | None:
+        """根据 novel_data 重建封面文件路径。
+
+        novel_data 应包含 user_id / author_name / novel_id / title /
+        restrict_value / cover_url，与 db.get_novel_detail() 返回结构一致。
+        封面缺失或字段不全时返回 None。
+        """
+        cover_url = (novel_data.get("cover_url") or "").strip()
+        if not cover_url:
+            return None
+        user_id = novel_data.get("user_id")
+        user_name = novel_data.get("author_name") or "unknown"
+        novel_id = novel_data.get("novel_id")
+        title = novel_data.get("title") or ""
+        restrict = novel_data.get("restrict_value") or "public"
+        if user_id is None or novel_id is None:
+            return None
+        from .sync.utils import _filename_from_url
+        filename = _filename_from_url(cover_url)
+        novel_dir = self.novel_dir(restrict, int(user_id), str(user_name), int(novel_id), str(title))
+        return self.asset_path(novel_dir, "cover", filename)
+
     def remove_novel_archive(self, novel_dirs: Iterable[Path], asset_paths: Iterable[Path] = ()) -> dict[str, int]:
         """删除小说归档目录和已记录的散落资源文件。"""
         stats = {"dirs_removed": 0, "files_removed": 0, "missing": 0, "skipped": 0}

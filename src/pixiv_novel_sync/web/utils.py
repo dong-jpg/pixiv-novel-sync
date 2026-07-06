@@ -108,7 +108,7 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
 
 def _job_to_dict_unified(job: Any) -> dict[str, Any] | None:
     """6.9: 统一两套job序列化"""
-    from ..jobs.models import JobState
+    from ..jobs.models import JobSource, JobState
 
     if job is None:
         return None
@@ -135,7 +135,7 @@ def _job_to_dict_unified(job: Any) -> dict[str, Any] | None:
         result["logs"] = [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs]
         result["task_list"] = list(job.task_types)
         result["current_task_index"] = int(job.progress.get("current_task_index", 0) or 0)
-        result["is_auto_sync"] = job.spec.source.value == "scheduler"
+        result["is_auto_sync"] = job.spec.source == JobSource.SCHEDULER
         result["source"] = job.spec.source.value
         result["job_type"] = job.spec.job_type.value
     # SyncJobState专用字段
@@ -348,9 +348,8 @@ def _remove_archive_files(settings: Settings, archive_refs: list[dict[str, Any]]
             if path:
                 asset_path = Path(path)
                 asset_paths.append(asset_path)
-                try:
-                    if asset_path.parent.parent.name == "assets":
-                        novel_dirs.append(asset_path.parent.parent.parent)
-                except IndexError:
-                    pass
+                # pathlib.Path.parent 永不抛 IndexError——到根返回自身。
+                # 原 try/except IndexError 是死代码；直接计算即可。
+                if asset_path.parent.parent.name == "assets":
+                    novel_dirs.append(asset_path.parent.parent.parent)
     return storage.remove_novel_archive(novel_dirs, asset_paths)

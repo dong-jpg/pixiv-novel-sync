@@ -1568,7 +1568,7 @@ class BookmarkNovelSyncService:
                     self.rate_limiter.wait(stop_requested=_stop_requested_from_progress(progress_callback))  # Phase 3.4 可取消
         return remote_ids
 
-    def _fetch_remote_subscribed_series_ids(self) -> set[int]:
+    def _fetch_remote_subscribed_series_ids(self) -> set[int] | None:
         """获取 Pixiv 上当前全部追更系列的 series_id 集合。
 
         失败/无 cookie 时返回 None 表示"不完整"，调用方必须据此跳过取消检测，
@@ -1577,7 +1577,7 @@ class BookmarkNovelSyncService:
         web_cookie = self.settings.pixiv.web_cookie
         if not web_cookie:
             logger.info("No web_cookie, skipping remote series fetch")
-            return None  # type: ignore[return-value]
+            return None
         remote_ids: set[int] = set()
         try:
             import requests as http_requests
@@ -1600,10 +1600,10 @@ class BookmarkNovelSyncService:
                                                  timeout=self.settings.pixiv.timeout, verify=self.settings.pixiv.verify_ssl)
                 else:
                     logger.warning("Web Cookie 自动刷新失败")
-                    return None  # type: ignore[return-value]
+                    return None
             if response.status_code != 200:
                 logger.warning("Watchlist endpoint returned %s", response.status_code)
-                return None  # type: ignore[return-value]
+                return None
             data = response.json()
             body = data.get("body", {})
             page_info = body.get("page", {})
@@ -1616,13 +1616,13 @@ class BookmarkNovelSyncService:
                                                 timeout=self.settings.pixiv.timeout, verify=self.settings.pixiv.verify_ssl)
                 if paged_resp.status_code != 200:
                     logger.warning("Watchlist page %d returned %s; aborting (incomplete)", page_num, paged_resp.status_code)
-                    return None  # type: ignore[return-value]
+                    return None
                 paged_data = paged_resp.json()
                 paged_ids = paged_data.get("body", {}).get("page", {}).get("watchedSeriesIds", [])
                 remote_ids.update(int(sid) for sid in paged_ids)
         except Exception as e:
             logger.warning("Failed to fetch remote subscribed series: %s", e)
-            return None  # type: ignore[return-value]
+            return None
         return remote_ids
 
     def _sync_novel(

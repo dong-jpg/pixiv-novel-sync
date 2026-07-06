@@ -1,40 +1,22 @@
 from __future__ import annotations
 
-import hashlib
-import json
-import os
-import re
-import threading
 import time
 import uuid
 from collections.abc import Iterator
-from pathlib import Path
 from typing import Any
 
-from ...storage_db import Database
 from ..chunking import estimate_token_count, get_tail_context, split_text_by_chars
-from ..crypto import AISecretManager
 from ..detection import detect_ai_tells
-from ..models import AIAgentConfig, AIProviderConfig, AIStreamChunk
+from ..models import AIProviderConfig, AIStreamChunk
 from ..prompts import (
-    DEFAULT_WIZARD_PROMPT,
     build_audit_messages,
-    build_chapter_summary_messages,
-    build_chat_messages,
     build_continue_messages,
-    build_foreshadow_resolve_messages,
-    build_longform_detail_messages,
-    build_longform_plan_messages,
     build_novel_distill_messages,
     build_plan_messages,
-    build_polish_messages,
     build_rewrite_messages,
     build_style_distill_messages,
     build_summarize_messages,
-    safe_prompt_preview,
 )
-from ..providers import AIProvider, create_provider
-from ..retrieval import BaseRetriever, create_retriever
 from .core import AIServiceError
 
 
@@ -421,7 +403,7 @@ class AIGenerationMixin:
 
     def stream_plan(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
         """生成续写前的章节构思。"""
-        from .prompts import DEFAULT_PLAN_PROMPT
+        from ..prompts import DEFAULT_PLAN_PROMPT
         db = self._db()
         job_id = uuid.uuid4().hex
         output_parts: list[str] = []

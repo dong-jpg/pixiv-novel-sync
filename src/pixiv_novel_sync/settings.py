@@ -213,7 +213,13 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             db_path=db_path,
         ),
         log_level=log_level,
-        dashboard_token=os.getenv("DASHBOARD_TOKEN") or sync_raw.get("dashboard_token") or None,
+        dashboard_token=(
+            os.getenv("DASHBOARD_TOKEN")
+            or os.getenv("PIXIV_DASHBOARD_TOKEN")
+            or raw_config.get("dashboard_token")
+            or sync_raw.get("dashboard_token")  # 向后兼容：早期文档建议放在 sync 块下
+            or None
+        ),
     )
 
 

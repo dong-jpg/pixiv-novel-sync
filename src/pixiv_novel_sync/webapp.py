@@ -128,9 +128,6 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             payload["detail"] = detail
         return jsonify(payload), status
 
-    def _running_job_error_response():
-        return _api_error("已有同步任务正在运行，请稍后再试")
-
     def _shared_job_logs_for_db(job: JobState) -> list[dict[str, Any]]:
         return [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs]
 
@@ -750,7 +747,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         current_settings = settings_manager.load(env_path=env_path)
         db = Database(current_settings.storage.db_path)
         db.init_schema()
-        storage = FileStorage(current_settings.storage)
+        storage = FileStorage(current_settings)
 
         try:
             if len(novel_ids) == 1:
@@ -766,11 +763,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                 # 查找封面路径
                 cover_path = None
                 if novel_data.get("cover_url"):
-                    cover_path = storage.get_novel_cover_path(
-                        novel_data["user_id"],
-                        novel_data["novel_id"],
-                        novel_data["restrict_value"]
-                    )
+                    cover_path = storage.get_novel_cover_path(novel_data)
 
                 epub_bytes = create_epub_from_novel(novel_data, text_content, cover_path)
                 filename = f"{safe_name(str(novel_data.get('title') or novel_id), str(novel_id))}.epub"
@@ -793,11 +786,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
                         cover_path = None
                         if novel_data.get("cover_url"):
-                            cover_path = storage.get_novel_cover_path(
-                                novel_data["user_id"],
-                                novel_data["novel_id"],
-                                novel_data["restrict_value"]
-                            )
+                            cover_path = storage.get_novel_cover_path(novel_data)
 
                         epub_bytes = create_epub_from_novel(novel_data, novel_data["text_raw"], cover_path)
                         filename = f"{safe_name(str(novel_data.get('title') or novel_id), str(novel_id))}.epub"
@@ -1444,246 +1433,3 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
     return app
 
-
-def _job_to_dict_unified(job: JobState | SyncJobState | None) -> dict[str, Any] | None:
-    """6.9: 统一两套job序列化"""
-    if job is None:
-        return None
-    elapsed = None
-    if job.started_at:
-        end = job.finished_at or time.time()
-        elapsed = round(end - job.started_at, 1)
-
-    # 通用字段
-    result = {
-        "job_id": job.job_id,
-        "status": job.status.value if hasattr(job.status, "value") else job.status,
-        "message": job.message,
-        "started_at": job.started_at,
-        "finished_at": job.finished_at,
-        "elapsed": elapsed,
-        "stats": job.stats,
-        "error": job.error,
-        "progress": job.progress,
-    }
-
-    # JobState专用字段
-    if isinstance(job, JobState):
-        result["logs"] = [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs]
-        result["task_list"] = list(job.task_types)
-        result["current_task_index"] = int(job.progress.get("current_task_index", 0) or 0)
-        result["is_auto_sync"] = job.spec.source == JobSource.SCHEDULER
-        result["source"] = job.spec.source.value
-        result["job_type"] = job.spec.job_type.value
-    # SyncJobState专用字段
-    else:
-        result["logs"] = job.logs
-        result["task_list"] = job.task_list
-        result["current_task_index"] = job.current_task_index
-        result["is_auto_sync"] = job.is_auto_sync
-
-    return result
-
-
-def _shared_job_to_dict(job: JobState | None) -> dict[str, Any] | None:
-    """向后兼容wrapper"""
-    return _job_to_dict_unified(job)
-
-
-def _job_to_dict(job: SyncJobState | None) -> dict[str, Any] | None:
-    """向后兼容wrapper"""
-    return _job_to_dict_unified(job)
-
-
-def _web_job_spec(task_list: list[str] | None, params: dict[str, Any] | None = None) -> JobSpec:
-    tasks = list(task_list or [])
-    job_params = dict(params or {})
-    if len(tasks) == 1 and tasks[0].startswith("user_backup:"):
-        user_id = int(tasks[0].split(":", 1)[1])
-        job_params.setdefault("user_id", user_id)
-        return JobSpec(
-            source=JobSource.WEB,
-            job_type=JobType.USER_BACKUP,
-            task_types=tasks,
-            params=job_params,
-        )
-    if tasks == ["sync_check"]:
-        return JobSpec(source=JobSource.WEB, job_type=JobType.SYNC_CHECK, task_types=tasks, params=job_params)
-    if tasks == ["pending_deletion_detection"]:
-        return JobSpec(
-            source=JobSource.WEB,
-            job_type=JobType.PENDING_DELETION_DETECTION,
-            task_types=tasks,
-            params=job_params,
-        )
-    if len(tasks) == 1 and tasks[0] in {"user_status", "novel_status", "series_status"}:
-        return JobSpec(source=JobSource.WEB, job_type=JobType.STATUS_CHECK, task_types=tasks, params=job_params)
-    return JobSpec(source=JobSource.WEB, job_type=JobType.SYNC, task_types=tasks, params=job_params)
-
-
-def _build_web_sync_job_spec(settings: Settings) -> JobSpec:
-    return _web_job_spec(build_default_task_list(settings))
-
-
-def _load_yaml_file(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    with path.open("r", encoding="utf-8") as file:
-        data = yaml.safe_load(file) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"配置文件格式错误：{path}")
-    return data
-
-
-def _safe_int(value: Any, default: int) -> int:
-    """安全解析整数参数，无效值返回 default。"""
-    try:
-        return int(value) if value not in (None, "") else default
-    except (ValueError, TypeError):
-        return default
-
-
-def _normalize_optional_int(value: Any) -> int | None:
-    if value in (None, ""):
-        return None
-    result = int(value)
-    if result <= 0:
-        raise ValueError("整数值必须大于 0")
-    return result
-
-
-def _normalize_int(value: Any, default: int) -> int:
-    """容错地把任意输入转成整数；空串/None/非法输入返回 default。"""
-    if value in (None, ""):
-        return int(default)
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return int(default)
-
-
-def _normalize_float(value: Any, min_value: float = 0.0) -> float:
-    if value in (None, ""):
-        return float(min_value)
-    result = float(value)
-    if result < min_value:
-        raise ValueError(f"数值不能小于 {min_value}")
-    return result
-
-
-def _restricts_to_label(restricts: list[str]) -> str:
-    mapping = {"public": "公开收藏", "private": "私密收藏"}
-    labels = [mapping[item] for item in restricts if item in mapping]
-    return " / ".join(labels) if labels else "无"
-
-
-def _external_base_url(req) -> str:
-    forwarded_proto = req.headers.get("X-Forwarded-Proto")
-    forwarded_host = req.headers.get("X-Forwarded-Host")
-    if forwarded_proto and forwarded_host:
-        # 仅信任白名单中的 forwarded host，防止 OAuth 回调被劫持
-        trusted_hosts = os.environ.get("TRUSTED_FORWARDED_HOSTS", "")
-        if trusted_hosts:
-            allowed = {h.strip().lower() for h in trusted_hosts.split(",") if h.strip()}
-            if forwarded_host.lower() in allowed:
-                return f"{forwarded_proto}://{forwarded_host}"
-            logger.warning("Untrusted X-Forwarded-Host: %s (allowed: %s)", forwarded_host, allowed)
-
-    parsed = urlparse(req.base_url)
-    return f"{parsed.scheme}://{parsed.netloc}"
-
-
-def _check_pixiv_user_status(api: Any, user_id: int) -> str:
-    """检查 Pixiv 用户状态"""
-    try:
-        result = api.user_detail(user_id)
-        if result is None:
-            return "suspended"
-        user = getattr(result, "user", None)
-        if user is None:
-            return "suspended"
-        profile = getattr(result, "profile", None)
-        if profile:
-            total_novels = getattr(profile, "total_novels", 0) or 0
-            if total_novels == 0:
-                return "no_novels"
-        return "normal"
-    except Exception as e:
-        logger.warning("Failed to check user %s status: %s", user_id, e)
-        return "unknown"
-
-
-def _check_novel_status(api: Any, novel_id: int) -> str:
-    """检查小说状态：normal/deleted/restricted"""
-    try:
-        result = api.novel_detail(novel_id)
-        if result is None:
-            return "deleted"
-        novel = getattr(result, "novel", None)
-        if novel is None:
-            if isinstance(result, dict):
-                novel = result.get("novel")
-            if novel is None:
-                return "deleted"
-        visible = getattr(novel, "visible", True)
-        if isinstance(novel, dict):
-            visible = novel.get("visible", True)
-        if not visible:
-            return "restricted"
-        return "normal"
-    except Exception as e:
-        logger.warning("Failed to check novel %s status: %s", novel_id, e)
-        return "unknown"
-
-
-def _check_series_status(api: Any, series_id: int) -> str:
-    """检查系列状态：normal/deleted"""
-    try:
-        result = api.novel_series(series_id)
-        if result is None:
-            return "deleted"
-        detail = None
-        if isinstance(result, dict):
-            detail = result.get("novel_series_detail")
-        if detail is None:
-            detail = getattr(result, "novel_series_detail", None)
-        if detail is None:
-            return "deleted"
-        return "normal"
-    except Exception as e:
-        logger.warning("Failed to check series %s status: %s", series_id, e)
-        return "unknown"
-
-
-def _remove_archive_files(settings: Settings, archive_refs: list[dict[str, Any]]) -> dict[str, int]:
-    """Remove local archive files for DB rows that are about to be deleted."""
-    storage = FileStorage(settings)
-    novel_dirs: list[Path] = []
-    asset_paths: list[Path] = []
-    for ref in archive_refs:
-        try:
-            novel_id = int(ref.get("novel_id") or 0)
-            user_id = int(ref.get("user_id") or 0)
-        except (TypeError, ValueError):
-            continue
-        if not novel_id:
-            continue
-        novel_dirs.append(
-            storage.novel_dir(
-                str(ref.get("restrict_value") or "public"),
-                user_id,
-                str(ref.get("author_name") or "unknown"),
-                novel_id,
-                str(ref.get("title") or f"novel_{novel_id}"),
-            )
-        )
-        for path in ref.get("asset_paths") or []:
-            if path:
-                asset_path = Path(path)
-                asset_paths.append(asset_path)
-                try:
-                    if asset_path.parent.parent.name == "assets":
-                        novel_dirs.append(asset_path.parent.parent.parent)
-                except IndexError:
-                    pass
-    return storage.remove_novel_archive(novel_dirs, asset_paths)

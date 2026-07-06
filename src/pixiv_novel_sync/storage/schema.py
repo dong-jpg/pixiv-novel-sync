@@ -2,8 +2,12 @@
 
 本模块包含所有数据库表结构定义和迁移逻辑。
 """
+import logging
 import sqlite3
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 class SchemaMixin:
@@ -166,7 +170,14 @@ class SchemaMixin:
         self.conn.execute("PRAGMA foreign_keys=ON")
         violations = self.conn.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
-            raise RuntimeError(f"SQLite foreign key check failed: {violations!r}")
+            # 不再 RuntimeError：历史数据残留 FK 违规不应让全部路由 500。
+            # 记录警告并继续，让应用保持可用，运维侧可据日志清理数据。
+            logger.warning(
+                "SQLite foreign_key_check violations detected (count=%d): %r. "
+                "Application will continue to run; please clean up orphan rows.",
+                len(violations),
+                violations[:10],
+            )
 
     def _rebuild_novel_texts_with_foreign_key(self) -> None:
         self._rebuild_table_with_foreign_key(

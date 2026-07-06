@@ -1,40 +1,18 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import os
-import re
-import threading
 import time
-import uuid
-from collections.abc import Iterator
-from pathlib import Path
 from typing import Any
 
 from ...storage_db import Database
-from ..chunking import estimate_token_count, get_tail_context, split_text_by_chars
-from ..crypto import AISecretManager
-from ..detection import detect_ai_tells
-from ..models import AIAgentConfig, AIProviderConfig, AIStreamChunk
+from ..models import AIAgentConfig, AIProviderConfig
 from ..prompts import (
+    DEFAULT_CHAPTER_SUMMARY_PROMPT,
+    DEFAULT_FORESHADOW_RESOLVE_PROMPT,
+    DEFAULT_POLISH_DIALOGUE_PROMPT,
+    DEFAULT_POLISH_PSYCHOLOGY_PROMPT,
     DEFAULT_WIZARD_PROMPT,
-    build_audit_messages,
-    build_chapter_summary_messages,
-    build_chat_messages,
-    build_continue_messages,
-    build_foreshadow_resolve_messages,
-    build_longform_detail_messages,
-    build_longform_plan_messages,
-    build_novel_distill_messages,
-    build_plan_messages,
-    build_polish_messages,
-    build_rewrite_messages,
-    build_style_distill_messages,
-    build_summarize_messages,
-    safe_prompt_preview,
 )
-from ..providers import AIProvider, create_provider
-from ..retrieval import BaseRetriever, create_retriever
 from .core import AIServiceError
 
 
@@ -448,7 +426,7 @@ class AIAdminMixin:
 
     def seed_builtin_agents(self, provider_id: int) -> dict[str, int]:
         """初始化内置 Agent（幂等，同名则跳过）。返回 {name: id}。"""
-        from .prompts import DEAI_RULES
+        from ..prompts import DEAI_RULES
         agents = [
             {
                 "name": "通用续写助手",
@@ -549,7 +527,7 @@ class AIAdminMixin:
             {
                 "name": "章节摘要师",
                 "task_type": "extract_summary",
-                "system_prompt": _SUMMARY_AGENT_PROMPT,
+                "system_prompt": DEFAULT_CHAPTER_SUMMARY_PROMPT,
                 "temperature": 0.3,
                 "max_tokens": 2000,
                 "context_window": 16000,
@@ -557,7 +535,7 @@ class AIAdminMixin:
             {
                 "name": "伏笔追踪师",
                 "task_type": "resolve_foreshadow",
-                "system_prompt": _FORESHADOW_AGENT_PROMPT,
+                "system_prompt": DEFAULT_FORESHADOW_RESOLVE_PROMPT,
                 "temperature": 0.2,
                 "max_tokens": 2000,
                 "context_window": 16000,
@@ -565,7 +543,7 @@ class AIAdminMixin:
             {
                 "name": "对话润色师",
                 "task_type": "polish_dialogue",
-                "system_prompt": _POLISH_DIALOGUE_AGENT_PROMPT,
+                "system_prompt": DEFAULT_POLISH_DIALOGUE_PROMPT,
                 "temperature": 0.75,
                 "max_tokens": 6000,
                 "context_window": 16000,
@@ -573,7 +551,7 @@ class AIAdminMixin:
             {
                 "name": "心理描写润色师",
                 "task_type": "polish_psychology",
-                "system_prompt": _POLISH_PSYCHOLOGY_AGENT_PROMPT,
+                "system_prompt": DEFAULT_POLISH_PSYCHOLOGY_PROMPT,
                 "temperature": 0.75,
                 "max_tokens": 6000,
                 "context_window": 16000,
