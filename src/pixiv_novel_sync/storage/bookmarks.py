@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .utils import escape_fts_query
+
 
 class BookmarksMixin:
     """收藏和同步检查 mixin。
@@ -14,6 +16,8 @@ class BookmarksMixin:
                             search: str = "", sort: str = "") -> dict[str, Any]:
         page = max(page, 1)
         page_size = max(page_size, 1)
+        # 转义用户搜索词为 FTS5 短语，避免特殊字符导致 OperationalError（HTTP 500）
+        search = escape_fts_query(search)
         where_clauses: list[str] = ["s.source_type LIKE 'bookmark_%'"]
         params_count: list[Any] = []
         if search:

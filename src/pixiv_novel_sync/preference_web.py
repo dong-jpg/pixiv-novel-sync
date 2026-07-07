@@ -59,18 +59,14 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
 
     @app.post("/api/dashboard/preferences/profiles/analyze")
     def analyze_preference_profile():
-        """Phase 7.6: 改为后台job"""
+        """Phase 7.6: 改为后台job。经统一提交器写入 task_logs，纳入任务日志页。"""
         from pixiv_novel_sync.jobs.models import JobType, JobSource, JobSpec
 
         payload = json_payload()
-        manager = app.config.get("job_manager")
-        run_shared_job = app.config.get("run_shared_job")
-        if not manager:
-            return fail(RuntimeError("Job manager not available"))
-        if not callable(run_shared_job):
-            return fail(RuntimeError("Shared job runner not available"))
+        submit_shared_web_job = app.config.get("submit_shared_web_job")
+        if not callable(submit_shared_web_job):
+            return fail(RuntimeError("Shared job submitter not available"))
 
-        # 启动后台job
         spec = JobSpec(
             source=JobSource.WEB,
             task_types=["preference_analyze"],
@@ -82,8 +78,15 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
                 "is_default": bool(payload.get("is_default", True)),
             },
         )
-        job = manager.submit(spec)
-        threading.Thread(target=run_shared_job, args=(job.job_id,), daemon=True).start()
+        try:
+            job = submit_shared_web_job(
+                spec,
+                current_settings(),
+                task_type="preference_analyze",
+                task_name="增量分析本地偏好",
+            )
+        except RuntimeError as exc:
+            return fail(exc)
         return ok({"job_id": job.job_id})
 
     @app.put("/api/dashboard/preferences/profiles/<int:profile_id>")
@@ -139,18 +142,14 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
 
     @app.post("/api/dashboard/recommendations/run")
     def run_recommendations():
-        """Phase 7.6: 改为后台job"""
+        """Phase 7.6: 改为后台job。经统一提交器写入 task_logs，纳入任务日志页。"""
         from pixiv_novel_sync.jobs.models import JobType, JobSource, JobSpec
 
         payload = json_payload()
-        manager = app.config.get("job_manager")
-        run_shared_job = app.config.get("run_shared_job")
-        if not manager:
-            return fail(RuntimeError("Job manager not available"))
-        if not callable(run_shared_job):
-            return fail(RuntimeError("Shared job runner not available"))
+        submit_shared_web_job = app.config.get("submit_shared_web_job")
+        if not callable(submit_shared_web_job):
+            return fail(RuntimeError("Shared job submitter not available"))
 
-        # 启动后台job
         spec = JobSpec(
             source=JobSource.WEB,
             task_types=["recommendation_run"],
@@ -160,8 +159,15 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
                 "search_plan": payload.get("search_plan"),
             },
         )
-        job = manager.submit(spec)
-        threading.Thread(target=run_shared_job, args=(job.job_id,), daemon=True).start()
+        try:
+            job = submit_shared_web_job(
+                spec,
+                current_settings(),
+                task_type="recommendation_run",
+                task_name="生成推荐",
+            )
+        except RuntimeError as exc:
+            return fail(exc)
         return ok({"job_id": job.job_id})
 
     @app.get("/api/dashboard/recommendations/runs")

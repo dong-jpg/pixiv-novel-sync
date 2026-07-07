@@ -420,6 +420,11 @@ def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: s
     try:
         # 尝试导入croniter
         from croniter import croniter
+    except ImportError:
+        # 如果没有croniter，使用简化的实现
+        return _simple_cron_next_run(parsed, base_dt)
+
+    try:
         # 项目约定 6 段 cron 为 "秒 分 时 日 月 周"。croniter 默认把第 6 段当作
         # 年份，必须显式 second_at_beginning=True，否则 6 段表达式会被解析到完全
         # 错误的时间（且仍能通过校验，难以察觉）。
@@ -429,9 +434,13 @@ def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: s
             cron = croniter(cron_expr, base_dt)
         next_dt = cron.get_next(datetime)
         return next_dt.timestamp()
-    except ImportError:
-        # 如果没有croniter，使用简化的实现
-        return _simple_cron_next_run(parsed, base_dt)
+    except Exception as exc:
+        # croniter 对畸形表达式抛 CroniterNotAlphaError / CroniterBadCronError（构造时），
+        # 对语法合法但永不出现的日期（如 "0 0 30 2 *" 2月30日）抛 CroniterBadDateError
+        # （get_next 时）。这些都不是 ImportError，若放任冒泡会违反本函数「失败返回 None」
+        # 的契约：保存设置时用户会收到 500 而非友好校验提示，调度循环也会整轮中断。
+        logger.warning("无法解析 cron 表达式 %r: %s", cron_expr, exc)
+        return None
 
 
 def _simple_cron_next_run(parsed: dict[str, Any], base_dt: datetime) -> float | None:

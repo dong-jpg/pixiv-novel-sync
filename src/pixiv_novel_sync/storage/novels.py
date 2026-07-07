@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from ..models import AssetRecord, NovelRecord, NovelTextRecord, SourceRecord
+from .utils import escape_fts_query
 
 
 class NovelsMixin:
@@ -399,9 +400,10 @@ class NovelsMixin:
             where_clauses.append("EXISTS (SELECT 1 FROM sources s WHERE s.novel_id = n.novel_id AND (s.source_type = 'following_user_scan' OR s.source_type LIKE 'follow_feed_%'))")
             empty_message = '当前还没有"关注用户小说列表"数据，请后续开启关注用户小说同步链路后再查看。'
 
-        if search:
+        fts_query = escape_fts_query(search) if search else ""
+        if fts_query:
             where_clauses.append("n.novel_id IN (SELECT novel_id FROM novel_fts WHERE novel_fts MATCH ?)")
-            params.append(search)
+            params.append(fts_query)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         total = int(

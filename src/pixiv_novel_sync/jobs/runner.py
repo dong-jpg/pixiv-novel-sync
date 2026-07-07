@@ -5,7 +5,6 @@ from typing import Any
 
 from pixiv_novel_sync.jobs.manager import JobManager
 from pixiv_novel_sync.jobs.models import JobState
-from pixiv_novel_sync.jobs.tasks import merge_stats
 
 JobTaskExecutor = Callable[[str, dict[str, Any]], dict[str, Any] | None]
 
@@ -45,7 +44,7 @@ class JobRunner:
                     },
                 )
                 if task_stats:
-                    merge_stats(state.stats, task_stats)
+                    self.manager.merge_task_stats(job_id, task_stats)
 
             if self.manager.is_cancel_requested(job_id):
                 self.manager.mark_cancelled(job_id)

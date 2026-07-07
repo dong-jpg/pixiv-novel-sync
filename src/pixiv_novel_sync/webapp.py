@@ -7,8 +7,6 @@ import logging
 import secrets
 import threading
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -17,45 +15,34 @@ import requests as http_requests
 import yaml
 from flask import Flask, Response, jsonify, redirect, render_template, request, session, send_file
 
-from .jobs import services as job_services
 from .jobs.manager import JobManager
-from .jobs.models import JobSource, JobSpec, JobState, JobStatus, JobType
-from .jobs.quick_sync import run_bookmark_sync, run_check_bookmarks_task
+from .jobs.models import JobSpec, JobState, JobStatus
 from .jobs.runner import JobRunner
-from .jobs.tasks import build_default_task_list, execute_task
-from .auth import PixivAuthManager
+from .jobs.tasks import execute_task
 from .oauth_helper import OAuthManager
-from .settings import Settings, load_settings
+from .settings import Settings
 from .storage_db import Database
 from .storage_files import FileStorage
-from .sync_check import build_sync_check_fingerprint
-from .sync_engine import BookmarkNovelSyncService
 from .utils_naming import safe_name
 from .web.managers import (
-    SyncJobState,
+    SyncJobState,  # noqa: F401 - 经 webapp 重导出供 tests 使用
     AutoSyncScheduler,
     SyncJobManager,
     SettingsManager,
-    TASK_LABELS,
-    _task_label,
 )
 from .web.utils import (
     _atomic_write_yaml,
     _oauth_task_public_payload,
     _settings_to_dict,
-    _job_to_dict_unified,
     _shared_job_to_dict,
     _job_to_dict,
     _web_job_spec,
     _build_web_sync_job_spec,
-    _load_yaml_file,
     _safe_int,
-    _normalize_optional_int,
-    _normalize_int,
-    _normalize_float,
     _restricts_to_label,
     _external_base_url,
     _check_pixiv_user_status,
+    # _check_novel_status / _check_series_status: 经 webapp 再导出，jobs/services.py 依赖
     _check_novel_status,
     _check_series_status,
     _remove_archive_files,
@@ -188,6 +175,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
     app.config["job_manager"] = shared_job_manager
     app.config["run_shared_job"] = _run_shared_web_job
+    app.config["submit_shared_web_job"] = _submit_shared_web_job
 
     oauth_manager = OAuthManager(env_path=env_path)
     auto_sync_scheduler = AutoSyncScheduler(config_path=config_path, env_path=env_path, sync_job_manager=sync_job_manager)
@@ -564,7 +552,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         except Exception as exc:
             task.status = "failed"
             task.message = f"token 交换失败：{exc}"
-            return redirect(f"/token-login?error=token交换失败")
+            return redirect("/token-login?error=token交换失败")
 
         return redirect(f"/token-login?oauth_task={task.task_id}")
 
@@ -1036,13 +1024,18 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
     @app.get("/api/dashboard/logs")
     def get_logs():
-        """获取任务日志列表"""
+        """获取任务日志列表。
+
+        category=sync（默认）查 task_logs（同步/偏好/推荐）；category=ai 查 ai_jobs
+        （AI 创作任务，只读投影为统一结构）。两张表不合并存储，仅在此处按分类分流。
+        """
         try:
             page = request.args.get("page", 1, type=int)
             page_size = request.args.get("page_size", 20, type=int)
             task_type = request.args.get("task_type")
             is_auto = request.args.get("is_auto")
             days = request.args.get("days", 3, type=int)
+            category = request.args.get("category") or "sync"
 
             is_auto_sync = None
             if is_auto == "true":
@@ -1054,13 +1047,23 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             db = Database(current_settings.storage.db_path)
             db.init_schema()
             try:
-                result = db.get_task_logs(
-                    page=page,
-                    page_size=page_size,
-                    task_type=task_type,
-                    is_auto_sync=is_auto_sync,
-                    days=days
-                )
+                if category == "ai":
+                    result = db.get_ai_task_logs(
+                        page=page,
+                        page_size=page_size,
+                        task_type=task_type,
+                        days=days,
+                    )
+                else:
+                    result = db.get_task_logs(
+                        page=page,
+                        page_size=page_size,
+                        task_type=task_type,
+                        is_auto_sync=is_auto_sync,
+                        days=days
+                    )
+                    for item in result.get("items", []):
+                        item.setdefault("category", "sync")
             finally:
                 db.close()
             return jsonify(result)
@@ -1088,7 +1091,6 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
     @app.get("/api/cache/status")
     def cache_status():
-        import shutil
         cache_dir = Path("/var/cache/nginx/pixiv_img")
         if not cache_dir.exists():
             return jsonify({"exists": False, "size_bytes": 0, "size_human": "0B"})

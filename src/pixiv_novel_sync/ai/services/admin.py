@@ -9,6 +9,7 @@ from ..models import AIAgentConfig, AIProviderConfig
 from ..prompts import (
     DEFAULT_CHAPTER_SUMMARY_PROMPT,
     DEFAULT_FORESHADOW_RESOLVE_PROMPT,
+    DEFAULT_KEYWORD_CLEAN_PROMPT,
     DEFAULT_POLISH_DIALOGUE_PROMPT,
     DEFAULT_POLISH_PSYCHOLOGY_PROMPT,
     DEFAULT_WIZARD_PROMPT,
@@ -176,7 +177,7 @@ class AIAdminMixin:
             for key in ("name", "task_type", "provider_id", "system_prompt"):
                 if not data.get(key):
                     raise AIServiceError(f"缺少 Agent 字段：{key}")
-        if data.get("task_type") not in {None, "continue", "rewrite", "distill_style", "distill_novel", "audit", "general", "plan", "wizard", "chat", "extract_summary", "resolve_foreshadow", "polish_dialogue", "polish_psychology"}:
+        if data.get("task_type") not in {None, "continue", "rewrite", "distill_style", "distill_novel", "audit", "general", "plan", "wizard", "chat", "extract_summary", "resolve_foreshadow", "polish_dialogue", "polish_psychology", "keyword_clean"}:
             raise AIServiceError("不支持的 Agent 类型")
         return data
 
@@ -554,6 +555,14 @@ class AIAdminMixin:
                 "system_prompt": DEFAULT_POLISH_PSYCHOLOGY_PROMPT,
                 "temperature": 0.75,
                 "max_tokens": 6000,
+                "context_window": 16000,
+            },
+            {
+                "name": "关键词清洗师",
+                "task_type": "keyword_clean",
+                "system_prompt": DEFAULT_KEYWORD_CLEAN_PROMPT,
+                "temperature": 0.3,
+                "max_tokens": 2000,
                 "context_window": 16000,
             },
         ]

@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from .utils import escape_fts_query
+
 
 class SeriesMixin:
     """系列数据管理 Mixin"""
@@ -169,7 +171,7 @@ class SeriesMixin:
                    ) OR u.name LIKE ?)"""
             )
             search_pattern = f"%{search}%"
-            params_count.extend([search_pattern, search, search_pattern])
+            params_count.extend([search_pattern, escape_fts_query(search), search_pattern])
 
         where_sql = " AND ".join(where_clauses)
         total = int(
@@ -195,7 +197,7 @@ class SeriesMixin:
         params_query: list[Any] = []
         if search:
             search_pattern = f"%{search}%"
-            params_query.extend([search_pattern, search, search_pattern])
+            params_query.extend([search_pattern, escape_fts_query(search), search_pattern])
         params_query.extend([page_size, offset])
 
         # Phase 5.5: 预聚合避免ORDER BY子查询

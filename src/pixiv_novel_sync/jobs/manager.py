@@ -57,6 +57,21 @@ class JobManager:
                 state.message = message
             return True
 
+    def merge_task_stats(self, job_id: str, task_stats: dict) -> bool:
+        """在锁保护下把单个任务的增量 stats 合并进 job.stats。
+
+        worker 线程调用；与 Flask 请求线程读取 job.stats（序列化）互斥，
+        避免并发迭代/写入同一 dict 触发 RuntimeError。
+        """
+        from pixiv_novel_sync.jobs.tasks import merge_stats
+
+        with self._lock:
+            state = self._jobs.get(job_id)
+            if state is None:
+                return False
+            merge_stats(state.stats, task_stats)
+            return True
+
     def request_cancel(self, job_id: str) -> bool:
         with self._lock:
             state = self._jobs.get(job_id)

@@ -17,21 +17,22 @@
     <div class="flex flex-wrap items-center gap-3 sm:gap-4 flex-1">
 
       <div class="flex items-center gap-2">
-        <label class="text-xs font-medium text-pixiv-gray uppercase whitespace-nowrap">类型</label>
-        <select v-model="filters.task_type" class="pl-3 pr-8 py-1.5 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors custom-select min-w-[120px]">
-          <option value="">全部</option>
-          <option value="bookmarks">收藏同步</option>
-          <option value="following_list">关注列表</option>
-          <option value="following_novels">关注小说</option>
-          <option value="subscribed_series">追更系列</option>
-          <option value="user_status">检查用户状态</option>
-          <option value="novel_status">检查小说状态</option>
-          <option value="series_status">检查系列状态</option>
-          <option value="pending_deletion_detection">检测取消</option>
+        <label class="text-xs font-medium text-pixiv-gray uppercase whitespace-nowrap">分类</label>
+        <select v-model="filters.category" class="pl-3 pr-8 py-1.5 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors custom-select min-w-[120px]">
+          <option value="sync">同步任务</option>
+          <option value="ai">AI 创作任务</option>
         </select>
       </div>
 
       <div class="flex items-center gap-2">
+        <label class="text-xs font-medium text-pixiv-gray uppercase whitespace-nowrap">类型</label>
+        <select v-model="filters.task_type" class="pl-3 pr-8 py-1.5 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors custom-select min-w-[120px]">
+          <option value="">全部</option>
+          <option v-for="opt in taskTypeOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+        </select>
+      </div>
+
+      <div v-if="filters.category !== 'ai'" class="flex items-center gap-2">
         <label class="text-xs font-medium text-pixiv-gray uppercase whitespace-nowrap">来源</label>
         <select v-model="filters.source" class="pl-3 pr-8 py-1.5 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors custom-select min-w-[100px]">
           <option value="">全部</option>
@@ -95,7 +96,7 @@
               <p class="text-pixiv-gray text-sm">暂无相关的日志记录</p>
             </td>
           </tr>
-          <tr v-else v-for="log in items" :key="log.id" @click="showDetail(log.id)" class="hover:bg-gray-50/50 transition-colors cursor-pointer">
+          <tr v-else v-for="log in items" :key="log.job_id || log.id" @click="showDetail(log)" class="hover:bg-gray-50/50 transition-colors cursor-pointer">
             <td class="px-5 py-3 whitespace-nowrap text-sm">
               <span class="bg-gray-50 text-gray-700 border border-gray-100 px-2 py-1 rounded-md text-xs font-medium">{{ getTaskTypeName(log.task_type) }}</span>
             </td>
@@ -110,7 +111,7 @@
             <td class="px-5 py-3 whitespace-nowrap text-sm text-pixiv-gray">{{ formatDuration(log.duration_seconds) }}</td>
             <td class="px-5 py-3 whitespace-nowrap text-sm" v-html="formatResult(log)"></td>
             <td class="px-5 py-3 whitespace-nowrap text-right">
-              <button @click.stop="showDetail(log.id)" class="text-brand-500 hover:text-brand-600 font-medium text-sm transition-colors focus:outline-none">详情</button>
+              <button @click.stop="showDetail(log)" class="text-brand-500 hover:text-brand-600 font-medium text-sm transition-colors focus:outline-none">详情</button>
             </td>
           </tr>
         </tbody>
@@ -235,10 +236,48 @@
       const totalItems = ref(0);
 
       const filters = reactive({
+        category: 'sync',
         task_type: '',
         source: '',
         days: '3'
       });
+
+      // 两大分类下各自的 task_type 选项
+      const SYNC_TASK_OPTIONS = [
+        { value: 'bookmarks', label: '收藏同步' },
+        { value: 'following_list', label: '关注列表' },
+        { value: 'following_novels', label: '关注小说' },
+        { value: 'subscribed_series', label: '追更系列' },
+        { value: 'user_status', label: '检查用户状态' },
+        { value: 'novel_status', label: '检查小说状态' },
+        { value: 'series_status', label: '检查系列状态' },
+        { value: 'pending_deletion_detection', label: '检测取消' },
+        { value: 'preference_analyze', label: '增量分析本地偏好' },
+        { value: 'recommendation_run', label: '生成推荐' }
+      ];
+      const AI_TASK_OPTIONS = [
+        { value: 'chapter_continue', label: '自动生成章节' },
+        { value: 'chapter_pipeline', label: '自动写作 Pipeline' },
+        { value: 'longform_plan', label: '全书规划' },
+        { value: 'longform_plan_details', label: '详细梗概' },
+        { value: 'continue', label: '续写' },
+        { value: 'rewrite', label: '改写' },
+        { value: 'audit', label: '内容审计' },
+        { value: 'plan', label: '写前构思' },
+        { value: 'distill_style', label: '风格蒸馏' },
+        { value: 'distill_novel', label: '小说蒸馏' },
+        { value: 'extract_summary', label: '摘要提取' },
+        { value: 'chat', label: '创作向导对话' },
+        { value: 'update_state', label: '状态记忆更新' },
+        { value: 'resolve_foreshadow', label: '伏笔回收' },
+        { value: 'polish', label: '润色' }
+      ];
+      const taskTypeOptions = computed(() =>
+        filters.category === 'ai' ? AI_TASK_OPTIONS : SYNC_TASK_OPTIONS
+      );
+
+      // 切换分类时清空已选 task_type，避免残留跨类无效值
+      watch(() => filters.category, () => { filters.task_type = ''; });
       const autoRefresh = ref(false);
       let refreshInterval = null;
 
@@ -260,11 +299,14 @@
           const params = new URLSearchParams({
             page: page.value,
             page_size: 20,
-            days: filters.days
+            days: filters.days,
+            category: filters.category
           });
           if (filters.task_type) params.append('task_type', filters.task_type);
-          if (filters.source === 'manual') params.append('is_auto', 'false');
-          if (filters.source === 'auto') params.append('is_auto', 'true');
+          if (filters.category !== 'ai') {
+            if (filters.source === 'manual') params.append('is_auto', 'false');
+            if (filters.source === 'auto') params.append('is_auto', 'true');
+          }
 
           const res = await fetch(`/api/dashboard/logs?${params}`);
           if (!res.ok) throw new Error('网络请求失败');
@@ -284,10 +326,12 @@
       const silentFetchData = async () => {
         if (loading.value || modalOpen.value) return;
         try {
-          const params = new URLSearchParams({ page: page.value, page_size: 20, days: filters.days });
+          const params = new URLSearchParams({ page: page.value, page_size: 20, days: filters.days, category: filters.category });
           if (filters.task_type) params.append('task_type', filters.task_type);
-          if (filters.source === 'manual') params.append('is_auto', 'false');
-          if (filters.source === 'auto') params.append('is_auto', 'true');
+          if (filters.category !== 'ai') {
+            if (filters.source === 'manual') params.append('is_auto', 'false');
+            if (filters.source === 'auto') params.append('is_auto', 'true');
+          }
           const res = await fetch(`/api/dashboard/logs?${params}`);
           const data = await res.json();
           items.value = data.items || [];
@@ -296,12 +340,19 @@
         } catch(e) {}
       };
 
-      const showDetail = async (logId) => {
+      const showDetail = async (log) => {
         modalOpen.value = true;
-        detailLoading.value = true;
         selectedLog.value = null;
+        // AI 创作任务来自 ai_jobs 投影，没有 task_logs 行 id（id 为 null），
+        // 详情接口 /api/dashboard/logs/<int:id> 无法命中；直接用列表行数据展示。
+        if (!log || log.category === 'ai' || log.id === null || log.id === undefined) {
+          selectedLog.value = log;
+          detailLoading.value = false;
+          return;
+        }
+        detailLoading.value = true;
         try {
-          const res = await fetch(`/api/dashboard/logs/${logId}`);
+          const res = await fetch(`/api/dashboard/logs/${log.id}`);
           if (!res.ok) throw new Error('加载详情失败');
           selectedLog.value = await res.json();
         } catch(e) {
@@ -364,7 +415,16 @@
           'subscribed_series': '追更系列',
           'user_status': '检查用户状态', 'novel_status': '检查小说状态', 'series_status': '检查系列状态',
           'pending_deletion_detection': '检测取消',
-          'manual': '手工任务'
+          'preference_analyze': '增量分析本地偏好', 'recommendation_run': '生成推荐',
+          'manual': '手工任务',
+          // AI 创作任务（与后端 _AI_TASK_LABELS / dashboard_ai.html JOB_TYPE_LABELS 对齐）
+          'chapter_continue': '自动生成章节', 'chapter_pipeline': '自动写作 Pipeline',
+          'longform_plan': '全书规划', 'longform_plan_details': '详细梗概',
+          'continue': '续写', 'rewrite': '改写', 'audit': '内容审计', 'plan': '写前构思',
+          'distill_style': '风格蒸馏', 'distill_novel': '小说蒸馏',
+          'extract_summary': '摘要提取', 'summarize': '摘要提取', 'chat': '创作向导对话',
+          'update_state': '状态记忆更新', 'state_update': '状态记忆更新',
+          'resolve_foreshadow': '伏笔回收', 'foreshadow_resolve': '伏笔回收', 'polish': '润色'
         };
         return map[type] || type;
       };
@@ -405,6 +465,7 @@
 
       return {
         items, loading, error, page, totalPages, totalItems, filters, autoRefresh,
+        taskTypeOptions,
         modalOpen, detailLoading, selectedLog, modalTitle,
         applyFilter, handlePageChange, showDetail,
         formatDate, formatTime, formatDuration, getStatusConfig, getTaskTypeName, formatResult

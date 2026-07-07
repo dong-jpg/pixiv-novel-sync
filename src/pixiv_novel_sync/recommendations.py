@@ -57,7 +57,17 @@ class RecommendationService:
             },
         }
 
-    def run(self, profile_id: int | None = None, search_plan: dict[str, Any] | None = None) -> dict[str, Any]:
+    def run(
+        self,
+        profile_id: int | None = None,
+        search_plan: dict[str, Any] | None = None,
+        progress_callback: Any = None,
+    ) -> dict[str, Any]:
+        def _emit(event_type: str, data: dict[str, Any]) -> None:
+            # 进度回调兼具取消探询：回调内若检测到取消会抛 InterruptedError
+            if progress_callback:
+                progress_callback(event_type, data)
+
         profile = self.db.get_preference_profile(profile_id) if profile_id else self.db.get_default_preference_profile()
         if not profile:
             raise RuntimeError("需要先生成默认偏好画像")
@@ -65,16 +75,21 @@ class RecommendationService:
         run_id = self.db.create_recommendation_run(int(profile["id"]), plan)
         stats = {"searched": 0, "candidates": 0, "saved": 0, "filtered": 0, "errors": 0, "series_deduped": 0}
         try:
+            _emit("phase", {"phase": "登录 Pixiv"})
             api = self.api or self._login_api()
             filter_state = self.db.get_recommendation_filter_state()
             # Phase 5.6: 系列去重+memo缓存
             seen_series: set[int] = set()
             series_length_cache: dict[int, tuple[int, int]] = {}
 
-            for query in plan.get("queries") or []:
+            queries = plan.get("queries") or []
+            for query in queries:
+                _emit("phase", {"phase": f"搜索 [{stats['searched'] + 1}/{len(queries)}]: {query.get('query', '')}"})
                 stats["searched"] += 1
                 try:
-                    novels = self._search_novels(api, query["query"], int(query.get("limit") or 30))
+                    novels = self._search_novels(api, query["query"], int(query.get("limit") or 30), _emit)
+                except InterruptedError:
+                    raise
                 except Exception:
                     stats["errors"] += 1
                     continue
@@ -87,18 +102,19 @@ class RecommendationService:
                         stats["series_deduped"] += 1
                         stats["filtered"] += 1
                         continue
-                    if series_id:
-                        seen_series.add(series_id)
 
                     item = self._candidate_to_item(api, novel, query, profile, plan.get("filters") or {}, filter_state, series_length_cache)
                     if item is None:
                         stats["filtered"] += 1
                         continue
+                    # H3: 仅在候选项确实入选后才标记系列已见，避免首个成员被过滤时误杀整个系列
+                    if series_id:
+                        seen_series.add(series_id)
                     item["run_id"] = run_id
                     item["profile_id"] = int(profile["id"])
                     self.db.upsert_recommendation_item(item)
                     stats["saved"] += 1
-                self._page_delay()
+                self._page_delay(_emit)
             self.db.update_recommendation_run(run_id, "succeeded", stats=stats)
             return {"run_id": run_id, "stats": stats, "items": self.db.list_recommendation_items(limit=100)}
         except Exception as exc:
@@ -110,16 +126,20 @@ class RecommendationService:
         api, _ = auth.login()
         return api
 
-    def _page_delay(self) -> None:
-        """Phase 3.4: 使用统一限速器"""
+    def _page_delay(self, emit: Any = None) -> None:
+        """Phase 3.4: 使用统一限速器；emit 命中取消时抛 InterruptedError"""
+        if emit:
+            emit("_cancel_check", {})
         self.rate_limiter.wait()
 
-    def _search_novels(self, api: AppPixivAPI, query: str, limit: int) -> list[Any]:
+    def _search_novels(self, api: AppPixivAPI, query: str, limit: int, emit: Any = None) -> list[Any]:
         results: list[Any] = []
         next_query: dict[str, Any] | None = {"word": query, "search_target": "partial_match_for_tags", "sort": "date_desc"}
         max_pages = 10  # 7.1: 翻页上限
         page_count = 0
         while next_query and len(results) < limit and page_count < max_pages:
+            if emit:
+                emit("_cancel_check", {})
             response = api.search_novel(**next_query)
             novels = list(getattr(response, "novels", []) or [])
             if not novels:  # 7.1: 空页即停
@@ -128,7 +148,7 @@ class RecommendationService:
             next_query = api.parse_qs(getattr(response, "next_url", None))
             page_count += 1
             if next_query and len(results) < limit:
-                self._page_delay()
+                self._page_delay(emit)
         return results[:limit]
 
     def _candidate_to_item(
@@ -234,8 +254,10 @@ class RecommendationService:
         preferred_tags = set(positive.get("tags") or []) | set(search_strategy.get("primary_tags") or [])
         preferred_keywords = set(positive.get("keywords") or [])
         # 7.5: 负向偏好
-        disliked_tags = set(negative.get("tags") or [])
-        disliked_keywords = set(negative.get("keywords") or [])
+        # 规范 key 为 excluded_tags/excluded_keywords（见需求文档与 preferences._build_profile
+        # 的生产端）；旧的 tags/keywords 作向后兼容回退，避免历史 profile 数据失效。
+        disliked_tags = set(negative.get("excluded_tags") or negative.get("tags") or [])
+        disliked_keywords = set(negative.get("excluded_keywords") or negative.get("keywords") or [])
 
         text = f"{getattr(novel, 'title', '')}\n{getattr(novel, 'caption', '')}"
         matched_tags = [tag for tag in tags if tag in preferred_tags]

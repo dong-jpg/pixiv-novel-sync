@@ -83,6 +83,79 @@ DEAI_RULES = """
 - 情感表达要克制，不要动不动就"热泪盈眶"、"心如刀割" """
 
 
+# ── 项目级风格控制（#14）────────────────────────────────────────
+# 滑块维度：0-100。低/中/高分别渲染成不同强度的中文写作指令。
+# 只有明显偏离中间值（<35 或 >65）才注入指令，避免中庸值污染 prompt。
+STYLE_SLIDER_SPECS: dict[str, dict[str, Any]] = {
+    "explicitness": {
+        "label": "情色露骨度",
+        "low": "情欲场面点到为止，以暗示、留白和情绪张力为主，避免直接的器官与动作描写。",
+        "high": "情欲场面写得直接露骨，细致描写身体、动作与感官细节，不回避直白的性爱描写。",
+    },
+    "lyricism": {
+        "label": "抒情浓度",
+        "low": "行文克制冷静，少用比喻和抒情，以动作和对话推进，语言干净利落。",
+        "high": "行文抒情唯美，注重意象、情绪渲染和氛围营造，适度使用比喻与细腻的心理描写。",
+    },
+    "pacing": {
+        "label": "节奏",
+        "low": "放慢节奏，铺陈细节与情绪，给场景和人物心理充分展开的空间。",
+        "high": "加快节奏，情节紧凑，冲突和转折密集，减少冗余铺垫。",
+    },
+    "darkness": {
+        "label": "黑暗/压抑度",
+        "low": "基调明亮温暖，即便有冲突也保留希望感和治愈色彩。",
+        "high": "基调黑暗压抑，不回避痛苦、扭曲和沉重的情感，营造强烈的宿命感或绝望氛围。",
+    },
+    "vulgarity": {
+        "label": "粗俗/口语度",
+        "low": "用词讲究，保持书面语的雅致，避免粗口和低俗表达。",
+        "high": "允许粗口、脏话和市井口语，让对话和叙述更生猛、接地气、有街头感。",
+    },
+}
+
+
+def compose_style_control_prompt(style_control: dict[str, Any] | None) -> str | None:
+    """把项目级风格控制（滑块 + 标签 + 自定义）渲染成一段中文写作指令。
+
+    返回 None 表示无有效控制（全部滑块处于中庸区间且无标签/自定义）。
+    这段文本会拼进 build_continue_messages 的 style_prompt，从初期即控制生成风格。
+    """
+    if not isinstance(style_control, dict):
+        return None
+    lines: list[str] = []
+
+    sliders = style_control.get("sliders")
+    if isinstance(sliders, dict):
+        for key, spec in STYLE_SLIDER_SPECS.items():
+            raw = sliders.get(key)
+            if raw is None or raw == "":
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value < 35:
+                lines.append(f"- {spec['label']}：{spec['low']}")
+            elif value > 65:
+                lines.append(f"- {spec['label']}：{spec['high']}")
+            # 35-65 视为中庸，不注入指令
+
+    tags = style_control.get("tags")
+    if isinstance(tags, list):
+        clean_tags = [str(t).strip() for t in tags if str(t).strip()]
+        if clean_tags:
+            lines.append(f"- 风格标签：{('、'.join(clean_tags))}（请让文本贴合这些标签的调性）")
+
+    custom = style_control.get("custom")
+    if isinstance(custom, str) and custom.strip():
+        lines.append(f"- 额外要求：{custom.strip()}")
+
+    if not lines:
+        return None
+    return "【本作风格设定 - 请贯穿全文严格遵守】\n" + "\n".join(lines)
+
+
 def build_continue_messages(
     *,
     system_prompt: str | None,
@@ -840,5 +913,45 @@ def build_polish_messages(
     parts.append(f"【原章节文本】\n{text}")
     return [
         {"role": "system", "content": sys},
+        {"role": "user", "content": "\n\n".join(parts)},
+    ]
+
+
+# ── 关键词清洗（#10）────────────────────────────────────────────
+# 偏好分析用 bigram 滑窗分词，会产出大量口语噪声词（"她的"、"了一"、"身体"），
+# 无法用于搜索。这个 agent 把原始高频词清洗、归并、提炼成可用于 Pixiv 搜索的关键词。
+DEFAULT_KEYWORD_CLEAN_PROMPT = """你是专业的中文小说标签与搜索词提炼专家。
+
+用户会给你一批从小说正文里用机械分词统计出的"高频词"，其中混杂大量无意义的口语碎片、
+虚词、代词、通用动词（例如"她的""了一""起来""身体""知道"），这些无法用于内容检索。
+
+你的任务：从这批词里筛选、归并、提炼出真正能代表题材/设定/人物关系/情节的**可搜索关键词**。
+
+规则：
+1. 剔除：代词、虚词、通用动词、无实义的口语碎片、单纯的身体部位或动作词。
+2. 保留并提炼：题材设定词、人物关系词、情节/世界观标志词、能作为搜索标签的专有概念。
+3. 允许把零散的碎片归并成一个规范词（例如把散落的字词还原成完整题材词）。
+4. 如果某个高频词本身就是好标签，直接保留。
+5. 只输出 JSON，不要解释。
+
+输出格式（严格 JSON）：
+{
+  "keywords": ["提炼后的可搜索关键词，按相关性从高到低，最多 30 个"],
+  "dropped_sample": ["被剔除的噪声词举例，最多 10 个"]
+}"""
+
+
+def build_keyword_clean_messages(
+    *,
+    raw_keywords: list[str],
+    tags: list[str] | None = None,
+) -> list[dict[str, str]]:
+    """构造关键词清洗消息。raw_keywords 为原始高频词，tags 为已有高频标签（辅助上下文）。"""
+    parts = [f"【原始高频词（机械分词，含噪声）】\n{('、'.join(raw_keywords))}"]
+    if tags:
+        parts.append(f"【已有高频标签（可作为提炼参考）】\n{('、'.join(tags))}")
+    parts.append("请按规则清洗提炼，只输出 JSON。")
+    return [
+        {"role": "system", "content": DEFAULT_KEYWORD_CLEAN_PROMPT},
         {"role": "user", "content": "\n\n".join(parts)},
     ]

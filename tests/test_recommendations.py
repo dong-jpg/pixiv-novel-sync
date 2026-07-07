@@ -181,6 +181,73 @@ def test_series_length_caps_pagination(tmp_path: Path):
     db.close()
 
 
+def test_run_accepts_progress_callback_and_reports_progress(tmp_path: Path):
+    """C1: run() 必须接受 progress_callback（Web 推荐 job 走这条路径）。"""
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    profile_id = db.create_preference_profile({
+        "name": "default", "source_scope": {}, "stats": {},
+        "profile": {"search_strategy": {"primary_tags": ["甜文"]}},
+    })
+    service = RecommendationService(db, make_settings(tmp_path))
+
+    good = SimpleNamespace(
+        id=2, text_length=6000, title="温柔", caption="", tags=["甜文"],
+        user=SimpleNamespace(id=9, name="A"), total_bookmarks=200, series=None, series_id=None,
+    )
+
+    class FakeApi:
+        def search_novel(self, **kwargs):
+            return SimpleNamespace(novels=[good], next_url=None)
+
+        def parse_qs(self, url):
+            return None
+
+    service.api = FakeApi()
+
+    events: list[str] = []
+
+    def progress_callback(event_type, data):
+        events.append(event_type)
+
+    result = service.run(profile_id=profile_id, progress_callback=progress_callback)
+
+    assert "run_id" in result and "stats" in result
+    assert result["stats"]["saved"] == 1
+    # 至少发出过 phase 进度事件
+    assert "phase" in events
+    db.close()
+
+
+def test_run_progress_callback_can_cancel(tmp_path: Path):
+    """C1: progress_callback 抛 InterruptedError 时 run() 应中断并将 run 标记为 failed。"""
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    profile_id = db.create_preference_profile({
+        "name": "default", "source_scope": {}, "stats": {},
+        "profile": {"search_strategy": {"primary_tags": ["甜文", "冒险"]}},
+    })
+    service = RecommendationService(db, make_settings(tmp_path))
+
+    class FakeApi:
+        def search_novel(self, **kwargs):
+            return SimpleNamespace(novels=[], next_url=None)
+
+        def parse_qs(self, url):
+            return None
+
+    service.api = FakeApi()
+
+    def progress_callback(event_type, data):
+        # 首个 phase 事件即请求取消
+        raise InterruptedError("stop")
+
+    import pytest
+    with pytest.raises(InterruptedError):
+        service.run(profile_id=profile_id, progress_callback=progress_callback)
+    db.close()
+
+
 def test_archived_membership_is_lazy_and_correct(tmp_path: Path):
     """5.3: archived_novel_ids 走主键索引 EXISTS 惰性判断,而非全表载入 set。"""
     db = Database(tmp_path / "rec.db")

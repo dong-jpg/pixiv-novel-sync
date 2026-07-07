@@ -6,6 +6,7 @@ This module contains helper functions extracted from webapp.py for better modula
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import time
@@ -106,6 +107,24 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
     }
 
 
+def _safe_snapshot(value: Any) -> Any:
+    """对 worker 线程持续写入的 dict/list 取一份稳定快照。
+
+    worker 无锁写入 stats/progress 时，深拷贝在迭代途中可能撞上
+    "dictionary changed size during iteration"。写入是瞬时的，重试几次即可
+    拿到稳定快照；仍失败则退回浅拷贝（顶层 key 至少稳定），最终退回原值。
+    """
+    for _ in range(5):
+        try:
+            return copy.deepcopy(value)
+        except RuntimeError:
+            continue
+    try:
+        return dict(value) if isinstance(value, dict) else list(value)
+    except (RuntimeError, TypeError):
+        return value
+
+
 def _job_to_dict_unified(job: Any) -> dict[str, Any] | None:
     """6.9: 统一两套job序列化"""
     from ..jobs.models import JobSource, JobState
@@ -118,6 +137,10 @@ def _job_to_dict_unified(job: Any) -> dict[str, Any] | None:
         elapsed = round(end - job.started_at, 1)
 
     # 通用字段
+    # stats/progress 由 worker 线程持续写入，Flask 请求线程在此读取序列化。
+    # 用 deepcopy 取一次快照，避免 jsonify 迭代这两个 dict 时 worker 并发改动
+    # 触发 "dictionary changed size during iteration"（stats 含嵌套 dict，浅拷贝
+    # 不足以隔离子层）。
     result = {
         "job_id": job.job_id,
         "status": job.status.value if hasattr(job.status, "value") else job.status,
@@ -125,9 +148,9 @@ def _job_to_dict_unified(job: Any) -> dict[str, Any] | None:
         "started_at": job.started_at,
         "finished_at": job.finished_at,
         "elapsed": elapsed,
-        "stats": job.stats,
+        "stats": _safe_snapshot(job.stats),
         "error": job.error,
-        "progress": job.progress,
+        "progress": _safe_snapshot(job.progress),
     }
 
     # JobState专用字段

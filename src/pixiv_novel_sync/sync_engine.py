@@ -95,7 +95,7 @@ class BookmarkNovelSyncService:
         self.rate_limiter = RateLimiter(default_delay=self.settings.sync.delay_seconds_between_pages)
 
         # 动态包装API核心方法,自动处理429和网络错误重试
-        for method_name in ["user_bookmarks_novel", "user_following", "user_novels", "novel_detail", "novel_series", "novel_series_detail", "webview_novel"]:
+        for method_name in ["user_bookmarks_novel", "user_following", "user_novels", "novel_detail", "novel_series", "webview_novel"]:
             if hasattr(self.api, method_name):
                 original = getattr(self.api, method_name)
                 setattr(self.api, method_name, retry_on_pixiv_error(max_retries=3, base_delay=5.0)(original))
@@ -330,15 +330,11 @@ class BookmarkNovelSyncService:
                         body = data.get("body", {})
                         page_info = body.get("page", {})
                         watched_ids = page_info.get("watchedSeriesIds", [])
-                        
-                        # 获取每个系列的小说
-                        for series_id in watched_ids:
-                            series_detail = self.api.novel_series_detail(series_id)
-                            if hasattr(series_detail, "novel_series"):
-                                series = series_detail.novel_series
-                                # 系列中的小说会在同步时获取
-                                # 这里只记录系列 ID
-                                series_ids.append(series_id)
+
+                        # 这里只记录系列 ID，系列中的小说会在实际同步阶段获取。
+                        # 不调用任何 per-series 详情接口：AppPixivAPI 没有 novel_series_detail
+                        # 方法，之前的调用会抛 AttributeError 被外层 except 吞掉，导致计数恒为 0。
+                        series_ids.extend(watched_ids)
                         
                         # 处理分页
                         max_page = page_info.get("maxPage", 1)
@@ -989,6 +985,10 @@ class BookmarkNovelSyncService:
             while queue_idx < len(series_queue):
                 if limit > 0 and synced_series_count >= limit:
                     break
+                # 系列循环开头显式探询取消：即使 chapter_delay/series_delay 为 0
+                # 导致后续无可打断的 sleep，也能在此处响应停止信号。
+                if progress_callback:
+                    progress_callback("_cancel_check", {})
                 item = series_queue[queue_idx]
                 queue_idx += 1
                 series_idx = queue_idx
@@ -1114,6 +1114,10 @@ class BookmarkNovelSyncService:
                                 skipped_count = 0
 
                                 for idx, novel_item in enumerate(all_novel_items):
+                                    # 章节循环开头显式探询取消：即便 chapter_delay/skip_delay
+                                    # 为 0（无可打断的 sleep），用户的停止请求也能在此生效。
+                                    if progress_callback:
+                                        progress_callback("_cancel_check", {})
                                     if not isinstance(novel_item, dict):
                                         continue
                                     novel_id = int(novel_item.get("id", 0))
@@ -1180,6 +1184,11 @@ class BookmarkNovelSyncService:
                             if progress_callback:
                                 progress_callback("phase", {"phase": "连续获取系列详情为空，疑似触发 Pixiv 风控，已暂停追更系列同步"})
                             break
+                except InterruptedError:
+                    # 用户取消：不能被下面的 except Exception 吞掉（InterruptedError 是
+                    # Exception 子类）。章节间/跳过延迟里的 _sleep_with_progress_cancel
+                    # 会抛出它，必须原样上抛让 runner 标记任务已取消。
+                    raise
                 except Exception as e:
                     consecutive_fetch_failures += 1
                     logger.warning("Failed to fetch series %s: %s", sid, str(e))

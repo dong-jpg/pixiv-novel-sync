@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -19,34 +18,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-from ..auth import PixivAuthManager
 from ..jobs import services as job_services
-from ..models import SourceRecord, UserRecord
 from ..settings import Settings, load_settings
 from ..storage_db import Database
 from ..storage_files import FileStorage
 from ..sync_check import build_sync_check_fingerprint
-from ..sync_engine import BookmarkNovelSyncService, _to_plain
-from ..utils_hashing import stable_json_dumps
-from .utils import _settings_to_dict
+from .utils import (
+    _atomic_write_yaml,
+    _load_yaml_file,
+    _normalize_float,
+    _normalize_int,
+    _normalize_optional_int,
+    _settings_to_dict,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _atomic_write_yaml(path: Path, data: Any) -> None:
-    """Write YAML to ``path`` atomically (temp file in the same dir + os.replace).
-
-    Avoids truncating/corrupting config.yaml if the process crashes mid-write, and
-    keeps a single serialization style across every config writer.
-    """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as file:
-        yaml.safe_dump(data, file, allow_unicode=True, sort_keys=False)
-    os.replace(tmp, path)
 
 
 @dataclass(slots=True)
@@ -172,6 +158,8 @@ class AutoSyncScheduler:
                         db = Database(settings.storage.db_path)
                         db.init_schema()
                         db.cleanup_old_task_logs(days=3)
+                        # #12: AI 创作任务(ai_jobs)与同步日志统一保留 3 天
+                        db.cleanup_ai_jobs(keep_days=3)
                         self._last_cleanup_time = now_ts
                     except Exception as e:
                         logger.warning("Failed to cleanup old task logs: %s", e)
@@ -1027,40 +1015,3 @@ class SettingsManager:
 
         self.invalidate()
         return _settings_to_dict(load_settings(config_path, None))
-
-def _load_yaml_file(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    with path.open("r", encoding="utf-8") as file:
-        data = yaml.safe_load(file) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"配置文件格式错误：{path}")
-    return data
-
-
-def _normalize_optional_int(value: Any) -> int | None:
-    if value in (None, ""):
-        return None
-    result = int(value)
-    if result <= 0:
-        raise ValueError("整数值必须大于 0")
-    return result
-
-
-def _normalize_int(value: Any, default: int) -> int:
-    """容错地把任意输入转成整数；空串/None/非法输入返回 default。"""
-    if value in (None, ""):
-        return int(default)
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return int(default)
-
-
-def _normalize_float(value: Any, min_value: float = 0.0) -> float:
-    if value in (None, ""):
-        return float(min_value)
-    result = float(value)
-    if result < min_value:
-        raise ValueError(f"数值不能小于 {min_value}")
-    return result

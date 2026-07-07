@@ -304,6 +304,27 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
         # 从累加器重建画像
         rebuilt = analyzer.rebuild_profile_from_accumulator()
 
+        # #10 关键词清洗：机械分词的 top_keywords 含大量噪声口语词，用 AI 提炼成可搜索关键词。
+        # 优雅降级：未配置 AI / 调用失败时保留原始 top_keywords，不影响分析主流程。
+        try:
+            stats = rebuilt.get("stats") or {}
+            raw_keywords = [item["name"] for item in stats.get("top_keywords", [])[:80] if item.get("name")]
+            if raw_keywords:
+                from pixiv_novel_sync.ai.service import AIWritingService
+
+                ai_service = AIWritingService(settings.storage.db_path)
+                top_tags = [item["name"] for item in stats.get("top_tags", [])[:40] if item.get("name")]
+                cleaned = ai_service.clean_keywords(raw_keywords, tags=top_tags)
+                if cleaned and cleaned.get("keywords"):
+                    stats["refined_keywords"] = cleaned["keywords"]
+                    stats["refined_keywords_dropped_sample"] = cleaned.get("dropped_sample", [])
+                    rebuilt["stats"] = stats
+                    reporter.add_log("info", f"AI 关键词清洗完成，提炼出 {len(cleaned['keywords'])} 个可搜索关键词")
+                else:
+                    reporter.add_log("info", "未配置可用 AI 或清洗无结果，保留原始高频词")
+        except Exception as exc:
+            reporter.add_log("warning", f"关键词清洗跳过（{exc}）")
+
         # 更新单一默认画像(不存在则创建)
         existing = db.get_default_preference_profile()
         profile_payload = {
@@ -370,7 +391,8 @@ def _run_recommendation_run_task(settings: Any, context: dict[str, Any]) -> dict
             reporter.add_log("info", "推荐任务已停止")
             return {"stopped": True, "discovered": 0}
 
-        reporter.add_log("success", f"推荐完成: 发现 {result.get('discovered', 0)} 部小说")
+        saved = int((result.get("stats") or {}).get("saved", 0))
+        reporter.add_log("success", f"推荐完成: 发现 {saved} 部小说")
         return result
     finally:
         db.close()

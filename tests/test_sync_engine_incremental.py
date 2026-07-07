@@ -15,14 +15,18 @@ from pixiv_novel_sync.utils_text import normalize_text
 
 def _settings(tmp_path: Path) -> SimpleNamespace:
     return SimpleNamespace(
-        pixiv=SimpleNamespace(timeout=1, verify_ssl=True, proxy=None),
+        pixiv=SimpleNamespace(timeout=1, verify_ssl=True, proxy=None, web_cookie=None),
         sync=SimpleNamespace(
             delay_seconds_between_pages=0,
             delay_seconds_between_items=0,
             delay_seconds_between_skips=0,
+            delay_seconds_between_series=0,
+            delay_seconds_between_chapters=0,
             max_items_per_run=None,
             max_pages_per_run=None,
             download_assets=True,
+            write_markdown=True,
+            write_raw_text=True,
             sync_bookmarks=True,
             sync_following_novels=False,
             sync_subscribed_series=False,
@@ -279,3 +283,55 @@ def test_stop_requested_from_progress_returns_false_when_not_stopped() -> None:
     stop = sync_engine._stop_requested_from_progress(progress_callback)
     assert stop is not None
     assert stop() is False
+
+
+def test_sync_subscribed_series_propagates_interrupted_error(tmp_path: Path, monkeypatch) -> None:
+    """回归：章节循环里的取消必须上抛，不能被 series 的 except Exception 吞掉。
+
+    InterruptedError 是 Exception 子类；修复前它会落到 `except Exception` 分支，
+    被当成"获取系列失败"记 warning 并继续下一个系列，取消信号被彻底湮灭。
+    """
+    settings = _settings(tmp_path)
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    # DB fallback 里放一个订阅系列（web_cookie=None 会走 DB 分支）
+    db.conn.execute(
+        """
+        INSERT INTO series (series_id, title, user_id, cover_url, total_novels, is_subscribed)
+        VALUES (777, '测试系列', 1, '', 2, 1)
+        """
+    )
+    db.conn.commit()
+
+    class _SeriesApi:
+        def novel_series(self, series_id, **kwargs):
+            return {
+                "novel_series_detail": {
+                    "title": "测试系列",
+                    "caption": "",
+                    "user": {"id": 1, "name": "作者", "account": "acc"},
+                    "content_count": 2,
+                },
+                "novels": [{"id": 501}, {"id": 502}],
+                "next_url": None,
+            }
+
+        def parse_qs(self, url):
+            return None
+
+    service = BookmarkNovelSyncService(_SeriesApi(), db, _Storage(), settings)
+    # 章节实际同步时抛取消（模拟用户在系列同步中途点停止）
+    monkeypatch.setattr(
+        service,
+        "_sync_novel",
+        lambda *args, **kwargs: (_ for _ in ()).throw(InterruptedError("Task stopped by user")),
+    )
+    # 让本地判定为"未完整"，从而进入章节同步而非跳过
+    monkeypatch.setattr(db, "novel_archive_complete", lambda *a, **k: False)
+    monkeypatch.setattr(db, "count_series_complete_novels", lambda *a, **k: 0)
+
+    try:
+        with pytest.raises(InterruptedError, match="Task stopped by user"):
+            service.sync_subscribed_series(progress_callback=lambda event_type, data: None)
+    finally:
+        db.close()

@@ -121,13 +121,18 @@ def run_check_bookmarks_task(
         
         job_manager.add_log(job_id, "info", "预检查结果已保存，后续同步将自动跳过已存在的小说")
 
-        # 记录 sync_check 元数据到 progress（供正式同步复用预检查结果），两条路径都需要
+        # 记录 sync_check 元数据到 progress（供正式同步复用预检查结果），两条路径都需要。
+        # 统一 JobState 路径下 worker 线程写、Flask 线程读同一 progress dict，必须走
+        # update_progress（锁保护），避免与序列化并发迭代触发 RuntimeError。
+        job_manager.update_progress(
+            job_id,
+            sync_check_scope=job_id,
+            sync_check_fingerprint=build_sync_check_fingerprint(settings, auth_result.user_id),
+            sync_check_task_types=sync_check_task_types(settings),
+            sync_check_user_id=auth_result.user_id,
+        )
         job = job_manager.get_job(job_id)
         if job is not None:
-            job.progress["sync_check_scope"] = job_id
-            job.progress["sync_check_fingerprint"] = build_sync_check_fingerprint(settings, auth_result.user_id)
-            job.progress["sync_check_task_types"] = sync_check_task_types(settings)
-            job.progress["sync_check_user_id"] = auth_result.user_id
             # legacy SyncJobState 路径（webapp 后台线程）没有 JobRunner 管理终态，
             # 需要在此显式标记完成；统一 JobState 路径（有 .spec）由 JobRunner 负责
             # mark_succeeded + merge_stats，这里绝不能设置 job.stats，否则返回值会被

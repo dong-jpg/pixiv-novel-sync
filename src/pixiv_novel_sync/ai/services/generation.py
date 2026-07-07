@@ -11,6 +11,7 @@ from ..models import AIProviderConfig, AIStreamChunk
 from ..prompts import (
     build_audit_messages,
     build_continue_messages,
+    build_keyword_clean_messages,
     build_novel_distill_messages,
     build_plan_messages,
     build_rewrite_messages,
@@ -510,3 +511,82 @@ class AIGenerationMixin:
             yield f"【前文摘要】\n{summary}\n\n【最近原文】\n{tail}"
         else:
             yield tail
+
+    def clean_keywords(
+        self,
+        raw_keywords: list[str],
+        tags: list[str] | None = None,
+        agent_id: int | None = None,
+    ) -> dict[str, Any] | None:
+        """#10：用 AI 把机械分词得到的噪声高频词清洗成可搜索关键词（同步调用）。
+
+        优雅降级：未配置可用 Provider/Agent、调用失败或解析失败时返回 None，
+        调用方应保留原始 top_keywords 不受影响。返回
+        {"keywords": [...], "dropped_sample": [...]}。
+        """
+        import json
+        import re
+
+        raw_keywords = [str(k).strip() for k in (raw_keywords or []) if str(k).strip()]
+        if not raw_keywords:
+            return None
+
+        db = self._db()
+        try:
+            # 选 agent：优先 keyword_clean，其次 general，最后任意 enabled 且 provider 可用者
+            agent_row = None
+            agents = db.list_ai_agents()
+            enabled = [a for a in agents if a.get("enabled") and a.get("provider_id")]
+            if agent_id:
+                agent_row = next((a for a in enabled if int(a["id"]) == int(agent_id)), None)
+            if agent_row is None:
+                for pref in ("keyword_clean", "general"):
+                    agent_row = next((a for a in enabled if a.get("task_type") == pref), None)
+                    if agent_row:
+                        break
+            if agent_row is None and enabled:
+                agent_row = enabled[0]
+            if agent_row is None:
+                return None  # 无可用 agent，降级
+
+            agent = self._load_agent_config(db, int(agent_row["id"]))
+            provider_config = self._load_provider_config(db, agent.provider_id)
+            model = agent.model or provider_config.default_model
+            if not model:
+                return None
+
+            messages = build_keyword_clean_messages(raw_keywords=raw_keywords[:80], tags=(tags or [])[:40])
+            provider = self._get_provider(provider_config)
+            parts: list[str] = []
+            for chunk in provider.stream_generate(
+                messages, model=model, temperature=0.2, top_p=0.9, max_tokens=1500,
+            ):
+                if chunk.type == "delta":
+                    parts.append(chunk.text)
+            output = "".join(parts).strip()
+            if not output:
+                return None
+
+            # 解析 JSON：容忍 ```json 包裹或前后杂字
+            fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", output, re.DOTALL)
+            candidate = fenced.group(1) if fenced else output
+            if not fenced:
+                brace = re.search(r"\{.*\}", candidate, re.DOTALL)
+                if brace:
+                    candidate = brace.group(0)
+            try:
+                data = json.loads(candidate)
+            except (TypeError, ValueError):
+                return None
+            if not isinstance(data, dict):
+                return None
+
+            keywords = [str(k).strip() for k in (data.get("keywords") or []) if str(k).strip()]
+            dropped = [str(k).strip() for k in (data.get("dropped_sample") or []) if str(k).strip()]
+            if not keywords:
+                return None
+            return {"keywords": keywords[:30], "dropped_sample": dropped[:10]}
+        except Exception:
+            return None  # 任何异常都降级，不影响偏好分析主流程
+        finally:
+            db.close()

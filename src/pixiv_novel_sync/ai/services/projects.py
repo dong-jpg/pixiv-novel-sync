@@ -18,6 +18,7 @@ from ..prompts import (
     build_longform_detail_messages,
     build_longform_plan_messages,
     build_polish_messages,
+    compose_style_control_prompt,
     safe_prompt_preview,
 )
 from .core import AIServiceError
@@ -313,12 +314,12 @@ class AIProjectsMixin:
             overdue = db.get_overdue_foreshadows(project_id, current_chapter_number)
             if overdue:
                 lines = [f"- [超期] {f['description']}（第{f['planted_chapter']}章埋设，目标第{f['target_resolve_chapter']}章回收）" for f in overdue]
-                parts.append(f"【超期伏笔 - 急需回收】\n" + "\n".join(lines))
+                parts.append("【超期伏笔 - 急需回收】\n" + "\n".join(lines))
             if approaching:
                 non_overdue = [f for f in approaching if f not in overdue]
                 if non_overdue:
                     lines = [f"- {f['description']}（目标第{f['target_resolve_chapter']}章回收）" for f in non_overdue]
-                    parts.append(f"【即将到期伏笔】\n" + "\n".join(lines))
+                    parts.append("【即将到期伏笔】\n" + "\n".join(lines))
 
         # 4. 前几章摘要 + 上一章末尾
         chapters = db.list_ai_chapters(project_id)
@@ -331,7 +332,7 @@ class AIProjectsMixin:
                 for c in recent:
                     summary = c.get("summary") or "(无摘要)"
                     summary_lines.append(f"第{c['chapter_number']}章 {c.get('title') or ''}: {summary}")
-                parts.append(f"【前文摘要】\n" + "\n".join(summary_lines))
+                parts.append("【前文摘要】\n" + "\n".join(summary_lines))
 
             # 上一章末尾 500 字
             if prev_chapters:
@@ -808,6 +809,15 @@ class AIProjectsMixin:
             profile = db.get_ai_novel_profile(project["novel_profile_id"])
             if profile:
                 novel_prompt = profile.get("profile_json") or profile.get("profile")
+        # #14 项目级风格控制（滑块+标签+自定义）：从项目 settings 渲染成指令，
+        # 拼进 style_prompt，从初期即控制生成风格。即使已有风格档案也叠加。
+        if project_id and project is None:
+            project = db.get_ai_writing_project(project_id)
+        if project:
+            style_control = (project.get("settings") or {}).get("style_control")
+            control_prompt = compose_style_control_prompt(style_control)
+            if control_prompt:
+                style_prompt = f"{style_prompt}\n\n{control_prompt}" if style_prompt else control_prompt
         messages = build_continue_messages(
             system_prompt=agent.system_prompt,
             context=full_context,
