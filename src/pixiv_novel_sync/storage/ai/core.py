@@ -241,8 +241,8 @@ class AiCoreMixin:
             self.conn.execute("DELETE FROM ai_jobs WHERE job_id = ?", (job_id,))
             self._commit_if_needed()
 
-    def cleanup_ai_jobs(self, keep_days: int = 30, keep_failed_days: int | None = None) -> int:
-        """清理 ai_jobs：默认保留最近 30 天的已完成任务，失败任务可单独配置保留天数。
+    def cleanup_ai_jobs(self, keep_days: int = 3, keep_failed_days: int | None = None) -> int:
+        """清理 ai_jobs：与统一任务日志（task_logs）一致，默认保留最近 3 天，失败任务可单独配置保留天数。
 
         返回删除的行数。
         """

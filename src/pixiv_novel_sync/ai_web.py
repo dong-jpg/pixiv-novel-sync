@@ -305,7 +305,7 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     def cleanup_ai_jobs():
         try:
             payload = json_payload()
-            keep_days = parse_int(payload.get("keep_days"), 30, "keep_days", min_value=1)
+            keep_days = parse_int(payload.get("keep_days"), 3, "keep_days", min_value=1)
             keep_failed_days = payload.get("keep_failed_days")
             if keep_failed_days is not None:
                 keep_failed_days = parse_int(keep_failed_days, 0, "keep_failed_days", min_value=1)
