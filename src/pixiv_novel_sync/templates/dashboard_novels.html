@@ -39,7 +39,7 @@
 
   <!-- Tab Pills -->
   <div class="px-4 sm:px-6 pt-4 pb-2">
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2 flex-wrap">
       <button
         @click="filters.category = 'bookmark'"
         class="px-4 py-1.5 text-sm font-medium rounded-full transition-all duration-200"
@@ -56,8 +56,16 @@
           : 'bg-gray-100 text-gray-600 hover:bg-gray-200'">
         追更系列
       </button>
-      <span class="ml-3 text-xs text-gray-400" v-if="!loading">
-        共 <span class="font-semibold text-gray-600">{{ totalItems }}</span> {{ filters.category === 'following' ? '个系列' : '部作品' }}
+      <button
+        @click="filters.category = 'ai'"
+        class="px-4 py-1.5 text-sm font-medium rounded-full transition-all duration-200"
+        :class="filters.category === 'ai'
+          ? 'bg-brand-500 text-white shadow-sm'
+          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'">
+        AI 创作小说
+      </button>
+      <span class="ml-1 sm:ml-3 text-xs text-gray-400" v-if="!loading">
+        共 <span class="font-semibold text-gray-600">{{ totalItems }}</span> {{ filters.category === 'ai' ? '个 AI 作品' : (filters.category === 'following' ? '个系列' : '部作品') }}
       </span>
     </div>
   </div>
@@ -80,7 +88,7 @@
       <svg class="mx-auto h-14 w-14 text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
       </svg>
-      <p class="text-sm text-gray-400">{{ filters.category === 'following' ? '暂无追更系列' : '暂无收藏小说，请先执行一次同步' }}</p>
+      <p class="text-sm text-gray-400">{{ filters.category === 'ai' ? '暂无 AI 创作小说，请先在 AI 创作里创建项目' : (filters.category === 'following' ? '暂无追更系列' : '暂无收藏小说，请先执行一次同步') }}</p>
     </div>
 
     <!-- Loading Skeletons -->
@@ -164,7 +172,7 @@
     </div>
 
     <!-- Card Grid: Following Series -->
-    <div v-else class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 pt-2">
+    <div v-else-if="filters.category === 'following'" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 pt-2">
       <a v-for="item in items" :key="item.series_id"
          :href="'/dashboard/series/' + encodeURIComponent(item.series_id)"
          class="group bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden hover:shadow-md hover:-translate-y-0.5 transition-all duration-200">
@@ -212,6 +220,42 @@
           </div>
           <div class="text-[11px] text-gray-400">
             更新于 {{ formatDate(item.last_updated) }}
+          </div>
+        </div>
+      </a>
+    </div>
+
+    <!-- Card Grid: AI Writing Projects -->
+    <div v-else class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 pt-2">
+      <a v-for="item in items" :key="'ai-' + item.id"
+         :href="'/dashboard/novels/ai/' + encodeURIComponent(item.id)"
+         class="group bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden hover:shadow-md hover:-translate-y-0.5 transition-all duration-200">
+
+        <!-- Cover Area -->
+        <div class="aspect-[3/4] relative overflow-hidden">
+          <div class="absolute inset-0" :style="'background: linear-gradient(135deg, ' + getGradient(item.name || item.id) + ')' "></div>
+          <div class="absolute inset-0 flex items-center justify-center">
+            <span class="text-white/80 text-4xl font-bold select-none">{{ (item.name || '?').substring(0, 1) }}</span>
+          </div>
+          <div class="absolute top-2 left-2 z-10">
+            <span class="px-1.5 py-0.5 bg-rose-500 text-white text-[10px] font-bold rounded">AI 创作</span>
+          </div>
+          <div class="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-black/60 to-transparent"></div>
+          <div class="absolute bottom-2 left-2 right-2 flex items-center gap-3 z-10">
+            <span class="flex items-center gap-1 text-white/90 text-xs">{{ item.chapter_count || 0 }} 章</span>
+            <span class="text-white/90 text-xs">{{ formatTextLength(item.total_words || 0) }}</span>
+          </div>
+        </div>
+
+        <!-- Info Below Cover -->
+        <div class="p-3">
+          <h3 class="text-sm font-bold text-gray-900 group-hover:text-brand-600 transition-colors line-clamp-2 leading-snug mb-2" :title="item.name">
+            {{ item.name || '未命名 AI 作品' }}
+          </h3>
+          <div v-if="item.description" class="text-xs text-gray-500 line-clamp-2 mb-2">{{ item.description }}</div>
+          <div class="flex items-center justify-between text-[11px] text-gray-400">
+            <span>{{ item.status || 'draft' }}</span>
+            <span>{{ formatDate(item.updated_at) }}</span>
           </div>
         </div>
       </a>
@@ -275,7 +319,7 @@
       // Filters
       const initialCategory = new URLSearchParams(window.location.search).get('category');
       const filters = reactive({
-        category: ['bookmark', 'following'].includes(initialCategory) ? initialCategory : 'bookmark',
+        category: ['bookmark', 'following', 'ai'].includes(initialCategory) ? initialCategory : 'bookmark',
         search: '',
         sort: ''
       });
@@ -318,6 +362,31 @@
         fetchAbortController = new AbortController();
 
         try {
+          if (filters.category === 'ai') {
+            const res = await fetch('/api/dashboard/ai/projects', {
+              signal: fetchAbortController.signal
+            });
+
+            if (!res.ok) throw new Error('API Request Failed');
+
+            const data = await res.json();
+            let all = data.ok === false ? [] : (data.data || data.items || []);
+            const q = filters.search.trim().toLowerCase();
+            if (q) {
+              all = all.filter(item =>
+                String(item.name || '').toLowerCase().includes(q) ||
+                String(item.description || '').toLowerCase().includes(q)
+              );
+            }
+            all = all.slice().sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+            totalItems.value = all.length;
+            totalPages.value = Math.max(Math.ceil(all.length / pageSize.value), 1);
+            if (page.value > totalPages.value) page.value = totalPages.value;
+            const start = (page.value - 1) * pageSize.value;
+            items.value = all.slice(start, start + pageSize.value);
+            return;
+          }
+
           const params = new URLSearchParams({
             page: page.value.toString(),
             page_size: pageSize.value.toString(),

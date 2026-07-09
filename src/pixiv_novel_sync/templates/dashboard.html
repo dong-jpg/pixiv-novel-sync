@@ -160,7 +160,7 @@
     </div>
 
     <!-- ===== Two-Column Layout ===== -->
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-stretch">
 
       <!-- Left: 最近活动 Timeline (2/3) -->
       <div class="lg:col-span-2 flex">
@@ -286,6 +286,53 @@
 
     </div>
 
+    <!-- ===== Recent Recommendations ===== -->
+    <section class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-brand-200 transition-all p-5">
+      <div class="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <h2 class="text-sm font-bold text-gray-800">最近推书结果</h2>
+          <p class="text-xs text-pixiv-gray mt-1">来自「偏好与推荐」的最新搜书 / 推书结果，点击卡片可进入作品或系列详情。</p>
+        </div>
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <button @click="loadRecommendationItems" class="text-xs px-3 py-1.5 bg-gray-100 rounded-lg hover:bg-gray-200">刷新</button>
+          <a href="/dashboard/preferences" class="text-xs px-3 py-1.5 bg-brand-50 text-brand-600 rounded-lg hover:bg-brand-100">查看全部</a>
+        </div>
+      </div>
+
+      <div v-if="loadingRecommendations" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        <div v-for="n in 3" :key="n" class="border border-gray-100 rounded-xl p-4 animate-pulse">
+          <div class="h-4 bg-gray-100 rounded w-2/3 mb-3"></div>
+          <div class="h-3 bg-gray-50 rounded w-1/2 mb-2"></div>
+          <div class="h-3 bg-gray-50 rounded w-full mb-1.5"></div>
+          <div class="h-3 bg-gray-50 rounded w-4/5"></div>
+        </div>
+      </div>
+
+      <div v-else-if="recommendationItems.length" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        <a v-for="item in recommendationItems" :key="item.id" :href="recommendationItemUrl(item)"
+           class="group block border border-gray-100 rounded-xl p-4 hover:bg-gray-50 hover:border-brand-200 transition-all">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-sm font-bold text-gray-900 group-hover:text-brand-600 line-clamp-1">{{ item.title || '未命名作品' }}</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded" :class="item.item_type === 'series' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'">{{ item.item_type === 'series' ? '系列' : '单篇' }}</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{{ item.score || 0 }} 分</span>
+              </div>
+              <div class="text-xs text-pixiv-gray mt-1 truncate">{{ item.author_name || '未知作者' }} · {{ recommendationLengthText(item) }}</div>
+            </div>
+          </div>
+          <p class="text-xs text-gray-700 mt-2 line-clamp-2 min-h-[2.5rem]">{{ item.reason || item.caption || '暂无推荐理由' }}</p>
+          <div class="flex flex-wrap gap-1.5 mt-3">
+            <span v-for="tag in item.tags?.slice(0, 6) || []" :key="tag" class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{{ tag }}</span>
+          </div>
+        </a>
+      </div>
+
+      <div v-else class="text-sm text-pixiv-gray text-center py-8 border border-dashed border-gray-200 rounded-xl">
+        还没有推书结果。去「偏好与推荐」生成搜索计划并执行 Pixiv 推书后，会自动出现在这里。
+      </div>
+    </section>
+
   </div>
 </div>
 {% endblock %}
@@ -313,6 +360,9 @@
       const activityPage = ref(1);
       const activityTotalPages = ref(1);
       const loadingActivity = ref(true);
+
+      const recommendationItems = ref([]);
+      const loadingRecommendations = ref(true);
 
       const logContainer = ref(null);
 
@@ -486,6 +536,34 @@
         finally { loadingActivity.value = false; }
       };
 
+      const loadRecommendationItems = async () => {
+        loadingRecommendations.value = recommendationItems.value.length === 0;
+        try {
+          const res = await fetch('/api/dashboard/recommendations/items?limit=6');
+          if (!res.ok) throw new Error('推荐结果加载失败');
+          const data = await res.json();
+          recommendationItems.value = data.ok === false ? [] : (data.data || []);
+        } catch(e) {
+          console.error(e);
+          recommendationItems.value = [];
+        } finally {
+          loadingRecommendations.value = false;
+        }
+      };
+
+      const recommendationItemUrl = (item) => {
+        if (item?.item_type === 'series' && item.series_id) return '/dashboard/series/' + encodeURIComponent(item.series_id);
+        if (item?.novel_id) return '/dashboard/novels/' + encodeURIComponent(item.novel_id);
+        return '/dashboard/preferences';
+      };
+
+      const recommendationLengthText = (item) => {
+        const n = item?.item_type === 'series' ? (item.series_total_text_length || 0) : (item.text_length || 0);
+        if (!n) return item?.item_type === 'series' ? '系列' : '单篇';
+        if (n >= 10000) return (n / 10000).toFixed(1) + ' 万字';
+        return Number(n).toLocaleString('zh-CN') + ' 字';
+      };
+
       // ── Actions ──
       const startManualSync = async (type) => {
         if (isTaskRunning.value) return;
@@ -564,6 +642,7 @@
         fetchStatus();
         fetchAutoSync();
         loadActivity();
+        loadRecommendationItems();
         pollInterval = setInterval(fetchJobStatus, 3000);
         autoSyncInterval = setInterval(fetchAutoSync, 10000);
       });
@@ -579,6 +658,7 @@
         seriesSyncLimit, startManualSync,
         autoSyncStatus, loadingAutoSync, togglingAutoSync, autoTasksList, toggleAutoSync, stopAutoTask,
         activityList, activityPage, activityTotalPages, loadingActivity, loadActivity,
+        recommendationItems, loadingRecommendations, loadRecommendationItems, recommendationItemUrl, recommendationLengthText,
         taskPillClass, taskIcon, logLevelClass, logPrefix,
         logContainer,
       };

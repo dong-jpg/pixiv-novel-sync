@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}AI 创作 - Pixiv 小说同步器{% endblock %}
+{% block title %}{[ ai_page_title|default("AI 创作") ]} - Pixiv 小说同步器{% endblock %}
 
 {% block content %}
 <div class="library-page px-4 sm:px-6 lg:px-8 py-6 max-w-7xl mx-auto">
-  <div class="library-page-header sr-only"><h1>AI 创作</h1></div>
+  <div class="library-page-header sr-only"><h1>{[ ai_page_title|default("AI 创作") ]}</h1></div>
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
     <div>
-      <h1 class="text-2xl font-bold text-gray-900">AI 创作</h1>
-      <p class="text-sm text-pixiv-gray mt-1">创作向导规划 · 写作项目自动写作 · 任务历史</p>
+      <h1 class="text-2xl font-bold text-gray-900">{[ ai_page_title|default("AI 创作") ]}</h1>
+      <p class="text-sm text-pixiv-gray mt-1">{[ ai_page_subtitle|default("自动写作项目 · 长篇规划 · 章节 Pipeline") ]}</p>
     </div>
     <div class="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 max-w-xl">
       你选择的文本会发送到当前 Agent 绑定的 AI API，请确认 API 服务商可信。
@@ -119,12 +119,12 @@
     <div class="bg-white rounded-xl shadow-xl max-w-3xl w-full p-5 space-y-4 max-h-[90vh] flex flex-col">
       <div>
         <h3 class="text-lg font-bold text-gray-900">{{ rawImportTitle }}</h3>
-        <p class="text-xs text-pixiv-gray mt-1">可粘贴模型原始输出，也可只填 job_id 从任务历史读取 output_text。</p>
+        <p class="text-xs text-pixiv-gray mt-1">可粘贴模型原始输出，也可只填 job_id 从任务日志读取 output_text。</p>
       </div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label class="block text-xs font-medium text-pixiv-gray mb-1">job_id（可选）</label>
-          <input v-model="rawImportJobId" class="w-full px-3 py-2 border border-gray-200 rounded text-sm" placeholder="任务历史里的 job_id">
+          <input v-model="rawImportJobId" class="w-full px-3 py-2 border border-gray-200 rounded text-sm" placeholder="任务日志里的 job_id">
         </div>
         <div v-if="rawImportType === 'foreshadow'">
           <label class="block text-xs font-medium text-pixiv-gray mb-1">章节 ID</label>
@@ -278,11 +278,13 @@
 
       <!-- 子tab 导航 -->
       <div class="flex gap-1 border-b border-gray-100 overflow-x-auto">
-        <button v-for="t in projectDetailTabs" :key="t.id" @click="projectDetailTab = t.id"
-                class="px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 -mb-px transition-colors"
-                :class="projectDetailTab === t.id ? 'border-brand-500 text-brand-600' : 'border-transparent text-pixiv-gray hover:text-gray-900'">
-          {{ t.name }}
-        </button>
+        <template v-for="t in projectDetailTabs" :key="t.id">
+          <button v-if="!t.onlyIfSelected || currentChapter" @click="selectProjectDetailTab(t.id)"
+                  class="px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 -mb-px transition-colors"
+                  :class="projectDetailTab === t.id ? 'border-brand-500 text-brand-600' : 'border-transparent text-pixiv-gray hover:text-gray-900'">
+            {{ t.id === 'chapter' && currentChapter ? ('第' + (currentChapter.chapter_number || '?') + '章') : t.name }}
+          </button>
+        </template>
       </div>
 
       <!-- 概览 -->
@@ -325,7 +327,7 @@
             </div>
             <div class="flex items-center gap-2">
               <button @click="saveProjectProfiles" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm">保存套用</button>
-              <button @click="switchTab('distill')" class="text-xs text-indigo-600 hover:underline">去蒸馏档案页管理档案 →</button>
+              <a href="/dashboard/wizard?tab=distill" class="text-xs text-indigo-600 hover:underline">去创作向导页管理档案 →</a>
             </div>
           </div>
 
@@ -608,22 +610,17 @@
             <p v-else class="text-xs text-pixiv-gray">输入关键词搜索已索引的章节片段。</p>
           </div>
       </div>
-    </div><!-- /projectView==='detail' -->
-    <div v-if="projectView === 'chapter'" :key="currentChapter?.id" class="space-y-4">
-      <div class="sticky top-0 z-20 bg-pixiv-bg/95 backdrop-blur border-b border-gray-100 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 py-3">
-        <div class="flex items-center justify-between gap-3 flex-wrap">
-          <div class="flex items-center gap-2 text-sm text-pixiv-gray">
-            <span class="cursor-pointer hover:text-brand-500" @click="projectView = 'list'">自动写作</span>
-            <span>/</span>
-            <span class="cursor-pointer hover:text-brand-500" @click="backToChapterList">{{ currentProject?.name }}</span>
-            <span>/</span>
-            <span class="text-gray-900 font-medium">第{{ currentChapter?.chapter_number }}章 {{ currentChapter?.title || '未命名' }}</span>
-          </div>
-          <div class="flex gap-2 text-xs">
-            <button @click="backToChapterList" class="px-3 py-1.5 bg-white border border-gray-200 rounded-lg hover:bg-gray-50">返回章节列表</button>
-            <button @click="openAdjacentChapter(-1)" :disabled="!adjacentChapter(-1)" class="px-3 py-1.5 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40">上一章</button>
-            <button @click="openAdjacentChapter(1)" :disabled="!adjacentChapter(1)" class="px-3 py-1.5 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40">下一章</button>
-          </div>
+
+      <!-- 本章节（卡片样式，备份提示在下方） -->
+      <div v-show="projectDetailTab === 'chapter' && currentChapter" :key="currentChapter?.id" class="space-y-4">
+      <div class="flex items-center justify-between gap-3 flex-wrap">
+        <div class="flex items-center gap-2 text-sm text-pixiv-gray">
+          <span class="text-gray-900 font-medium">第{{ currentChapter?.chapter_number }}章 {{ currentChapter?.title || '未命名' }}</span>
+        </div>
+        <div class="flex gap-2 text-xs">
+          <button @click="backToChapterList" class="px-3 py-1.5 bg-white border border-gray-200 rounded-lg hover:bg-gray-50">返回章节列表</button>
+          <button @click="openAdjacentChapter(-1)" :disabled="!adjacentChapter(-1)" class="px-3 py-1.5 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40">上一章</button>
+          <button @click="openAdjacentChapter(1)" :disabled="!adjacentChapter(1)" class="px-3 py-1.5 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40">下一章</button>
         </div>
       </div>
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -811,7 +808,7 @@
           </div>
         </div>
       </div>
-    </div>
+    </div><!-- /projectDetailTab === 'chapter' -->
 
     <!-- ════ Pipeline 全屏 Modal（独立操作页） ════ -->
     <div v-if="showPipelineModal" class="fixed inset-0 bg-black/50 z-50 flex items-stretch justify-center p-2 sm:p-6" @click.self="onPipelineModalClose">
@@ -1299,13 +1296,17 @@ window.initVueApp({
   },
   setup() {
     const { ref, reactive, computed, onMounted } = Vue;
-    const tabs = [
-      { id: 'wizard', name: '创作向导' },
-      { id: 'projects', name: '自动写作' },
-      { id: 'distill', name: '蒸馏档案' },
-      { id: 'reader', name: '作品阅读' },
-    ];
-    const activeTab = ref('wizard');
+    const PAGE_MODE = '{[ ai_page_mode|default("ai") ]}';
+    const tabs = PAGE_MODE === 'wizard'
+      ? [
+          { id: 'wizard', name: '创作向导' },
+          { id: 'distill', name: '蒸馏档案' },
+        ]
+      : [
+          { id: 'projects', name: '自动写作' },
+        ];
+    const initialTab = new URLSearchParams(window.location.search).get('tab');
+    const activeTab = ref(tabs.some(t => t.id === initialTab) ? initialTab : tabs[0].id);
     let chapterDashboardReq = 0;  // 章节产出面板请求令牌，防止快速切章时旧请求覆盖新章节数据
     const providers = ref([]);
     const agents = ref([]);
@@ -1333,6 +1334,7 @@ window.initVueApp({
       { id: 'overview', name: '项目总览' },
       { id: 'longform', name: '全书规划' },
       { id: 'chapters', name: '自动写作' },
+      { id: 'chapter', name: '本章节', onlyIfSelected: true },
       { id: 'foreshadow', name: '伏笔' },
       { id: 'states', name: '状态记忆' },
       { id: 'search', name: '语义检索' },
@@ -1632,8 +1634,8 @@ window.initVueApp({
       catch (e) { showMessage(e.message, 'error'); }
     }
 
-    // ── 任务历史已迁移至「任务日志」统一日志页（/dashboard/logs，分类选「AI 创作任务」）。
-    // 移除本页内嵌的任务历史 tab，相关 state/函数不再需要，保留通用任务标签映射以备复用。
+    // ── AI 任务日志已迁移至「任务日志」统一日志页（/dashboard/logs，分类选「AI 创作任务」）。
+    // 移除本页内嵌的任务日志 tab，相关 state/函数不再需要，保留通用任务标签映射以备复用。
     const JOB_TYPE_LABELS = {
       chapter_continue: '自动生成章节', chapter_pipeline: '自动写作 Pipeline',
       longform_plan: '全书规划', longform_plan_details: '详细梗概',
@@ -2047,11 +2049,15 @@ window.initVueApp({
       if (ch) openChapter(ch);
     }
     function backToChapterList() {
-      projectView.value = 'detail';
+      // 返回章节列表 tab：保留 detail 视图，仅切子 tab
       projectDetailTab.value = 'chapters';
       currentChapter.value = null;
       resetChapterWorkspace();
-      Vue.nextTick(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
+    }
+    function selectProjectDetailTab(id) {
+      // 跳走「本章节」tab 时若当前章节已被清空，则回到自动写作 tab
+      if (id === 'chapter' && !currentChapter.value) { projectDetailTab.value = 'chapters'; return; }
+      projectDetailTab.value = id;
     }
     async function deleteChapter(id) {
       if (!confirm('确认删除此章节？')) return;
@@ -2065,9 +2071,8 @@ window.initVueApp({
       chapterKeyEventsText.value = (ch.key_events || []).join('\n');
       if (!chapterContinueAgent.value) chapterContinueAgent.value = bestAgentId('continue');
       applyBestAgentDefaults();
-      projectView.value = 'chapter';
+      projectDetailTab.value = 'chapter';
       await Vue.nextTick();
-      window.scrollTo({ top: 0, behavior: 'smooth' });
       // 同步加载产出面板（带请求令牌，防止快速切章时旧请求覆盖新章节数据）
       const reqId = ++chapterDashboardReq;
       const targetId = ch.id;
@@ -2405,7 +2410,11 @@ window.initVueApp({
         importUseRawOutput.value = false;
         await loadProjects();
         await loadChatSessions();
-        // 跳到项目 tab 并打开
+        // 跳到 AI 创作页并打开项目；创作向导已拆成一级页面，导入后回到自动写作。
+        if (PAGE_MODE === 'wizard') {
+          window.location.href = '/dashboard/ai?project_id=' + encodeURIComponent(res.project_id);
+          return;
+        }
         activeTab.value = 'projects';
         const project = projectList.value.find(p => p.id === res.project_id);
         if (project) await openProject(project);
@@ -2862,8 +2871,9 @@ window.initVueApp({
       showImportModal.value = false;
       showImportMaterialModal.value = false;
       activeTab.value = id;
-      if (projectView.value === 'chapter') {
-        projectView.value = currentProject.value && id === 'projects' ? 'detail' : 'list';
+      // 离开自动写作 tab 时退出章节明细，避免回到时仍停留在「本章节」tab
+      if (id !== 'projects' && projectDetailTab.value === 'chapter') {
+        projectDetailTab.value = currentProject.value ? 'chapters' : 'overview';
         currentChapter.value = null;
         chapterDashboard.value = null;
       }
@@ -2875,12 +2885,19 @@ window.initVueApp({
     onMounted(async () => {
       await Promise.all([loadAgents(), loadStyleProfiles(), loadNovelProfiles(), loadProjects(), loadChatSessions()]);
       applyBestAgentDefaults();
+      if (PAGE_MODE === 'ai') {
+        const projectId = Number(new URLSearchParams(window.location.search).get('project_id') || 0);
+        if (projectId) {
+          const project = projectList.value.find(p => Number(p.id) === projectId);
+          if (project) await openProject(project);
+        }
+      }
     });
     const exported = { tabs, activeTab, providers, agents, drafts, draftHistory, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, toastMessage, toastType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, planAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, startAudit, startPlan, detectAITells, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents, projectView, projectList, currentProject, chapters, currentChapter, foreshadows, foreshadowFilter, filteredForeshadows, chapterForeshadowAlerts, projectStates, showCreateProject, showForeshadowForm, newProjectForm, newForeshadow, chapterEditForm, chapterKeyEventsText, chapterContinueAgent, chapterInstruction, chapterActionStatus, searchQuery, searchResults, longformPlanning, longformDetailPlanning, longformCreateCount, longformPlanForm, longformDetailForm, longformPlan, plannedChapterExists, missingPlannedChapters, generateLongformPlan, generateDetailedOutlines, createPlannedChapters, createNextPlannedChapter, loadProjects, createProject, deleteProject, openProject, createChapter, deleteChapter, openChapter, saveCurrentChapter, startChapterContinue, startChapterPlan, autoUpdateState, appendOutput, addForeshadow, resolveForeshadow, deleteForeshadow, searchProject, indexChapter, saveProjectStates, chatSessions, currentChatSession, chatMessages, chatInput, chatStreaming, chatStreamingText, chatLogRef, wizardSections, wizardSectionKeys, wizardAgents, showImportModal, importMode, importTargetProjectId, importOverwriteFields, importing, loadChatSessions, selectChatSession, openNewWizardSession, updateChatSessionAgent, renameWizardSession, deleteWizardSession, sendChatMessage, loadWizardPreview, openImportWizardModal, confirmImportWizard, showImportMaterialModal, materialTitle, materialContent, materialExtraInstruction, materialImporting, onMaterialFileSelected, confirmImportMaterial, pipelineAllSteps, pipelineExpanded, pipelineSelectedSteps, pipelineAgentIds, pipelineRunning, pipelineSteps, chapterDashboard, dashboardTab, dashboardTabs, pipelineAgentsFor, pipelineStepLabel, pipelineStatusBadge, stateLabel, loadChapterDashboard, startChapterPipeline, showPipelineModal, pipelineCurrentStep, pipelineOutputRef, openPipelineModal, onPipelineModalClose, retryPipelineStep, formatStepMeta, copyPipelineOutput, scrollPipelineOutputBottom };
     Object.assign(exported, { showRawImportModal, rawImportType, rawImportText, rawImportJobId, rawImporting, rawImportChapterId, rawImportTitle, openRawImportModal, confirmRawImport, importUseRawOutput, importRawOutput, showContextPreviewModal, contextPreview, contextPreviewLoading, previewChapterContext });
     Object.assign(exported, { switchTab });
     Object.assign(exported, { projectDetailTab, projectDetailTabs, projectMetaForm, saveProjectMeta, saveProjectProfiles, STYLE_SLIDERS, styleTagInput, addStyleTag, removeStyleTag });
-    Object.assign(exported, { batchSelectedChapterIds, batchPipelineRunning, batchPipelineProgress, chapterGenerated, chapterPipelineSummary, toggleBatchChapter, selectEmptyChapters, selectAllChapters, clearBatchSelection, startBatchChapterPipeline, generateMissingChapters, adjacentChapter, openAdjacentChapter, backToChapterList });
+    Object.assign(exported, { batchSelectedChapterIds, batchPipelineRunning, batchPipelineProgress, chapterGenerated, chapterPipelineSummary, toggleBatchChapter, selectEmptyChapters, selectAllChapters, clearBatchSelection, startBatchChapterPipeline, generateMissingChapters, adjacentChapter, openAdjacentChapter, backToChapterList, selectProjectDetailTab });
     Object.assign(exported, { readerView, readerProjectId, readerProject, readerChapters, readerExpanded, readerLoading, loadReaderProjects, openReaderProject, backReaderList, toggleReaderChapter, coverGradient, readerFirstChar });
     return exported;
   }

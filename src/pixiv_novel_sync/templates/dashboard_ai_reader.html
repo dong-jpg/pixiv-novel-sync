@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+
+{% block title %}AI 创作小说阅读 - Pixiv 小说同步器{% endblock %}
+
+{% block extra_head %}
+<style>
+  body { background: #fff !important; }
+  .app-sidebar { display: none !important; }
+  .app-main { margin-left: 0 !important; }
+  .mobile-bottom-bar { display: none !important; }
+
+  .reading-progress-bar { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 9999; background: transparent; pointer-events: none; }
+  .reading-progress-bar .bar-fill { height: 100%; background: linear-gradient(90deg, #0096fa 0%, #00c8ff 50%, #0096fa 100%); transition: width 0.15s ease-out; border-radius: 0 2px 2px 0; }
+  .reader-top-nav { position: sticky; top: 0; z-index: 100; background: rgba(255,255,255,0.92); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-bottom: 1px solid rgba(0,0,0,0.06); }
+  .reader-top-nav-inner { max-width: 1080px; margin: 0 auto; padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .nav-back { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: #666; text-decoration: none; transition: color 0.15s; white-space: nowrap; flex-shrink: 0; }
+  .nav-back:hover { color: #0096fa; }
+  .nav-font-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid #e5e5e5; background: #fff; color: #666; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; flex-shrink: 0; user-select: none; }
+  .nav-font-btn:hover { border-color: #0096fa; color: #0096fa; background: #f0f8ff; }
+  .ai-cover { aspect-ratio: 3 / 4; border-radius: 18px; display: flex; align-items: center; justify-content: center; box-shadow: 0 18px 50px rgba(15,23,42,0.18); overflow: hidden; }
+  .reader-shell { max-width: 1080px; margin: 0 auto; padding: 28px 20px 96px; }
+  .reader-title { font-size: 1.75rem; font-weight: 800; color: #111827; line-height: 1.45; letter-spacing: 0.02em; }
+  .reader-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 0.8125rem; color: #8a8a8a; margin-top: 0.5rem; }
+  .catalog-list { max-height: calc(100vh - 220px); overflow-y: auto; }
+  .catalog-item { display: block; width: 100%; text-align: left; padding: 10px 12px; border-radius: 12px; font-size: 13px; color: #4b5563; transition: all .15s; }
+  .catalog-item:hover { background: #f3f8ff; color: #0096fa; }
+  .catalog-item.active { background: #eaf5ff; color: #0077cc; font-weight: 700; }
+  .reader-body-wrapper { max-width: 720px; margin: 0 auto; }
+  .reader-body { font-family: "BIZ UDMincho", "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP", "Noto Serif SC", "Source Han Serif SC", "SimSun", serif; font-size: var(--reader-font-size, 17px); line-height: 2; letter-spacing: 0.04em; color: #444; word-break: break-word; overflow-wrap: anywhere; }
+  .reader-body p { text-indent: 2em; margin-bottom: 0.25em; }
+  .reader-body p.empty-line { height: 1.5em; text-indent: 0; }
+  .chapter-bottom-bar { position: fixed; bottom: 0; left: 0; right: 0; z-index: 100; background: rgba(255,255,255,0.95); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-top: 1px solid rgba(0,0,0,0.06); }
+  .chapter-bottom-inner { max-width: 920px; margin: 0 auto; padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .chapter-nav-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: #666; background: #fff; border: 1px solid #e5e5e5; border-radius: 10px; padding: 8px 14px; text-decoration: none; cursor: pointer; transition: all .15s; }
+  .chapter-nav-btn:hover:not(:disabled) { border-color: #0096fa; color: #0096fa; background: #f0f8ff; }
+  .chapter-nav-btn:disabled { opacity: .35; cursor: not-allowed; }
+  @media (max-width: 1024px) { .reader-shell { max-width: 760px; } .catalog-column { display: none; } }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="ai-reader" class="min-h-screen bg-white" style="--reader-font-size: 17px;">
+  <div class="reading-progress-bar"><div class="bar-fill" :style="{ width: readingProgress + '%' }"></div></div>
+
+  <nav class="reader-top-nav">
+    <div class="reader-top-nav-inner">
+      <a href="/dashboard/novels?category=ai" class="nav-back">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+        返回 AI 创作小说
+      </a>
+      <div class="min-w-0 flex-1 text-center text-xs text-gray-400 truncate">{{ currentChapter ? ('第' + currentChapter.chapter_number + '章 · ' + (currentChapter.title || '未命名')) : (project?.name || '加载中…') }}</div>
+      <div class="flex items-center gap-2">
+        <button class="nav-font-btn" @click="changeFont(-1)">A-</button>
+        <button class="nav-font-btn" @click="changeFont(1)">A+</button>
+        <a v-if="projectId" class="nav-font-btn no-underline" :href="'/api/dashboard/ai/projects/' + projectId + '/download'" download>TXT</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="reader-shell">
+    <div v-if="loading" class="text-center py-24 text-gray-400 text-sm">加载中…</div>
+    <div v-else-if="error" class="text-center py-24 text-red-500 text-sm">{{ error }}</div>
+    <div v-else class="grid grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)] gap-10">
+      <aside class="catalog-column space-y-5">
+        <div class="ai-cover" :style="coverGradient(project?.name)">
+          <span class="text-7xl font-black text-white/90 drop-shadow select-none">{{ firstChar(project?.name) }}</span>
+        </div>
+        <div>
+          <h1 class="reader-title text-xl">{{ project?.name || '未命名 AI 作品' }}</h1>
+          <p v-if="project?.description" class="text-sm text-gray-500 mt-2 whitespace-pre-wrap line-clamp-4">{{ project.description }}</p>
+          <div class="reader-meta">
+            <span>{{ chapters.length }} 章</span>
+            <span>{{ formatTextLength(project?.total_words || totalWords) }}</span>
+            <span>AI 创作</span>
+          </div>
+        </div>
+        <div class="border border-gray-100 rounded-2xl p-2 bg-gray-50/60">
+          <div class="px-2 pt-1 pb-2 text-xs font-bold text-gray-500">目录</div>
+          <div class="catalog-list space-y-1">
+            <button v-for="ch in chapters" :key="ch.id" @click="selectChapter(ch.id)" class="catalog-item" :class="currentChapter?.id === ch.id ? 'active' : ''">
+              <span class="block truncate">第{{ ch.chapter_number }}章 {{ ch.title || '未命名' }}</span>
+              <span class="block text-[11px] opacity-60 mt-0.5">{{ formatTextLength(ch.word_count || (ch.content || '').length) }}</span>
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <article class="reader-body-wrapper">
+        <header class="novel-header text-center pb-6 border-b border-gray-100 mb-6">
+          <div class="lg:hidden ai-cover w-40 mx-auto mb-5" :style="coverGradient(project?.name)">
+            <span class="text-5xl font-black text-white/90 drop-shadow select-none">{{ firstChar(project?.name) }}</span>
+          </div>
+          <h1 class="reader-title">{{ project?.name || '未命名 AI 作品' }}</h1>
+          <p v-if="project?.description" class="text-sm text-gray-500 mt-3 whitespace-pre-wrap">{{ project.description }}</p>
+          <div class="reader-meta justify-center">
+            <span>{{ chapters.length }} 章</span>
+            <span>{{ formatTextLength(project?.total_words || totalWords) }}</span>
+            <span>AI 创作小说</span>
+          </div>
+        </header>
+
+        <section v-if="currentChapter" class="space-y-6">
+          <div class="text-center">
+            <div class="text-sm text-gray-400 mb-2">第{{ currentChapter.chapter_number }}章</div>
+            <h2 class="text-2xl font-bold text-gray-900 leading-relaxed">{{ currentChapter.title || '未命名' }}</h2>
+            <div class="text-xs text-gray-400 mt-2">{{ formatTextLength(currentChapter.word_count || (currentChapter.content || '').length) }}</div>
+          </div>
+          <div v-if="contentParagraphs.length" class="reader-body">
+            <p v-for="(line, idx) in contentParagraphs" :key="idx" :class="line ? '' : 'empty-line'">{{ line }}</p>
+          </div>
+          <p v-else class="text-center text-gray-400 py-16">本章暂无正文。</p>
+        </section>
+        <section v-else class="text-center text-gray-400 py-20">该作品暂无章节。</section>
+      </article>
+    </div>
+  </main>
+
+  <div class="chapter-bottom-bar" v-if="!loading && !error && chapters.length">
+    <div class="chapter-bottom-inner">
+      <button class="chapter-nav-btn" @click="goAdjacent(-1)" :disabled="!adjacentChapter(-1)">← 上一章</button>
+      <select v-model.number="currentChapterId" @change="selectChapter(currentChapterId)" class="max-w-[45vw] px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+        <option v-for="ch in chapters" :key="ch.id" :value="ch.id">第{{ ch.chapter_number }}章 {{ ch.title || '未命名' }}</option>
+      </select>
+      <button class="chapter-nav-btn" @click="goAdjacent(1)" :disabled="!adjacentChapter(1)">下一章 →</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+initVueApp({
+  setup() {
+    const { ref, computed, onMounted } = Vue;
+    const projectId = Number('{[ project_id ]}');
+    const project = ref(null);
+    const chapters = ref([]);
+    const currentChapterId = ref(0);
+    const loading = ref(true);
+    const error = ref('');
+    const readingProgress = ref(0);
+    const fontSize = ref(17);
+
+    const currentChapter = computed(() => chapters.value.find(ch => Number(ch.id) === Number(currentChapterId.value)) || chapters.value[0] || null);
+    const totalWords = computed(() => chapters.value.reduce((sum, ch) => sum + Number(ch.word_count || (ch.content || '').length || 0), 0));
+    const contentParagraphs = computed(() => String(currentChapter.value?.content || '').replace(/\r\n/g, '\n').split('\n'));
+
+    const gradientPairs = [
+      ['#667eea', '#764ba2'], ['#f093fb', '#f5576c'], ['#4facfe', '#00f2fe'], ['#43e97b', '#38f9d7'],
+      ['#fa709a', '#fee140'], ['#a18cd1', '#fbc2eb'], ['#fccb90', '#d57eeb'], ['#e0c3fc', '#8ec5fc'],
+    ];
+    function getGradient(str) {
+      let hash = 0;
+      const s = String(str || 'AI');
+      for (let i = 0; i < s.length; i++) hash = s.charCodeAt(i) + ((hash << 5) - hash);
+      return gradientPairs[Math.abs(hash) % gradientPairs.length];
+    }
+    function coverGradient(name) {
+      const pair = getGradient(name);
+      return `background: linear-gradient(135deg, ${pair[0]}, ${pair[1]})`;
+    }
+    function firstChar(name) { return String(name || '?').substring(0, 1); }
+    function formatTextLength(chars) {
+      const n = Number(chars || 0);
+      if (!n) return '0 字';
+      if (n >= 10000) return (n / 10000).toFixed(1) + ' 万字';
+      return n.toLocaleString('zh-CN') + ' 字';
+    }
+    async function loadReader() {
+      loading.value = true;
+      error.value = '';
+      try {
+        const res = await fetch('/api/dashboard/ai/projects/' + projectId + '/reader');
+        const data = await res.json();
+        if (!res.ok || data.ok === false) throw new Error(data.error || '加载失败');
+        project.value = data.data.project;
+        chapters.value = data.data.chapters || [];
+        currentChapterId.value = chapters.value[0]?.id || 0;
+      } catch (e) {
+        error.value = e.message || '加载失败';
+      } finally {
+        loading.value = false;
+      }
+    }
+    function selectChapter(chapterId) {
+      currentChapterId.value = Number(chapterId || 0);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    function adjacentChapter(delta) {
+      const idx = chapters.value.findIndex(ch => Number(ch.id) === Number(currentChapterId.value));
+      if (idx < 0) return null;
+      return chapters.value[idx + delta] || null;
+    }
+    function goAdjacent(delta) {
+      const target = adjacentChapter(delta);
+      if (target) selectChapter(target.id);
+    }
+    function changeFont(delta) {
+      fontSize.value = Math.min(24, Math.max(14, fontSize.value + delta));
+      document.getElementById('ai-reader')?.style.setProperty('--reader-font-size', fontSize.value + 'px');
+    }
+    function updateProgress() {
+      const doc = document.documentElement;
+      const max = Math.max(1, doc.scrollHeight - window.innerHeight);
+      readingProgress.value = Math.min(100, Math.max(0, Math.round((window.scrollY / max) * 100)));
+    }
+
+    onMounted(() => {
+      loadReader();
+      window.addEventListener('scroll', updateProgress, { passive: true });
+      updateProgress();
+    });
+
+    return {
+      projectId, project, chapters, currentChapterId, currentChapter, loading, error, readingProgress,
+      totalWords, contentParagraphs, coverGradient, firstChar, formatTextLength, selectChapter, adjacentChapter, goAdjacent, changeFont
+    };
+  }
+});
+</script>
+{% endblock %}

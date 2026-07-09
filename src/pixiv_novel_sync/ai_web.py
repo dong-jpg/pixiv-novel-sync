@@ -119,7 +119,25 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
 
     @app.get("/dashboard/ai")
     def dashboard_ai_page():
-        return render_template("dashboard_ai.html")
+        return render_template(
+            "dashboard_ai.html",
+            ai_page_mode="ai",
+            ai_page_title="AI 创作",
+            ai_page_subtitle="自动写作项目 · 长篇规划 · 章节 Pipeline",
+        )
+
+    @app.get("/dashboard/wizard")
+    def dashboard_wizard_page():
+        return render_template(
+            "dashboard_ai.html",
+            ai_page_mode="wizard",
+            ai_page_title="创作向导",
+            ai_page_subtitle="创作向导规划 · 蒸馏档案",
+        )
+
+    @app.get("/dashboard/novels/ai/<int:project_id>")
+    def dashboard_ai_project_reader_page(project_id: int):
+        return render_template("dashboard_ai_reader.html", project_id=project_id)
 
     @app.get("/api/dashboard/ai/providers")
     def list_ai_providers():
@@ -281,7 +299,7 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
         except Exception as exc:
             return fail(exc)
 
-    # ── 任务历史 ────────────────────────────────────────────────
+    # ── AI 任务日志（数据源迁移到统一任务日志页展示）───────────────────────
 
     @app.get("/api/dashboard/ai/jobs")
     def list_ai_jobs():
