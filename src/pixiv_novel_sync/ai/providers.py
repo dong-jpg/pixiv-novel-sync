@@ -6,12 +6,15 @@ import json
 import os
 import re
 import socket
+import threading
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from .models import AIProviderConfig, AIStreamChunk
 
@@ -36,15 +39,134 @@ def _is_blocked_ip(ip: ipaddress._BaseAddress, *, allow_private: bool) -> bool:
     blocked unless the operator opts in via ``PIXIV_AI_ALLOW_PRIVATE_HOSTS`` (for
     self-hosted local/LAN model servers).
     """
-    if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
-        return True
-    # IPv4-mapped IPv6 (::ffff:a.b.c.d) — unwrap and re-check
+    # IPv4-mapped IPv6 必须先展开，否则公网 IPv4 会被 IPv6 保留地址规则误拒。
     mapped = getattr(ip, "ipv4_mapped", None)
     if mapped is not None:
-        return _is_blocked_ip(mapped, allow_private=allow_private)
-    if allow_private:
+        ip = mapped
+    if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+        return True
+    if ip.is_global:
         return False
-    return ip.is_private or ip.is_loopback
+    if allow_private and (ip.is_private or ip.is_loopback):
+        return False
+    return True
+
+
+def _normalized_ip(ip: ipaddress._BaseAddress) -> ipaddress._BaseAddress:
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return mapped if mapped is not None else ip
+
+
+def _parse_provider_url(base_url: str | None) -> tuple[str, Any, str, int, ipaddress._BaseAddress | None]:
+    raw = (base_url or "").strip()
+    if not raw:
+        raise ProviderConfigError("base_url 不能为空")
+    parsed = urlparse(raw)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise ProviderConfigError("base_url 必须使用 http 或 https 协议")
+    host = parsed.hostname
+    if not host:
+        raise ProviderConfigError("base_url 缺少主机名")
+    try:
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except ValueError as exc:
+        raise ProviderConfigError("base_url 端口无效") from exc
+
+    try:
+        literal_ip: ipaddress._BaseAddress | None = _normalized_ip(ipaddress.ip_address(host))
+    except ValueError:
+        literal_ip = None
+    return raw.rstrip("/"), parsed, host, port, literal_ip
+
+
+@dataclass(frozen=True)
+class _ResolvedTarget:
+    url: str
+    hostname: str
+    port: int
+    host_header: str
+    ip: str
+
+
+def _resolve_target(base_url: str | None) -> _ResolvedTarget:
+    normalized_url, parsed, host, port, literal_ip = _parse_provider_url(base_url)
+    allow_private = _allow_private_hosts()
+    addresses: list[ipaddress._BaseAddress] = []
+
+    if literal_ip is not None:
+        addresses.append(literal_ip)
+    else:
+        try:
+            infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+        except OSError as exc:
+            raise ProviderConfigError(f"无法解析 base_url 主机名：{host}") from exc
+        for info in infos:
+            try:
+                address = _normalized_ip(ipaddress.ip_address(info[4][0]))
+            except ValueError:
+                continue
+            if address not in addresses:
+                addresses.append(address)
+
+    if not addresses:
+        raise ProviderConfigError(f"无法解析 base_url 主机名：{host}")
+    for address in addresses:
+        if _is_blocked_ip(address, allow_private=allow_private):
+            raise ProviderConfigError(
+                f"base_url 指向受限地址（{address}）；如需访问本机/内网模型服务，请设置 PIXIV_AI_ALLOW_PRIVATE_HOSTS=1"
+            )
+
+    scheme = parsed.scheme.lower()
+    if scheme != "https" and not all(address.is_loopback for address in addresses):
+        raise ProviderConfigError("base_url 必须使用 https（本机回环地址除外）")
+
+    default_port = 443 if scheme == "https" else 80
+    host_header = f"[{host}]" if ":" in host else host
+    if port != default_port:
+        host_header = f"{host_header}:{port}"
+    return _ResolvedTarget(
+        url=normalized_url,
+        hostname=host,
+        port=port,
+        host_header=host_header,
+        ip=str(addresses[0]),
+    )
+
+
+def _pinned_url(target: _ResolvedTarget) -> str:
+    parsed = urlparse(target.url)
+    ip = ipaddress.ip_address(target.ip)
+    authority = f"[{ip}]" if ip.version == 6 else str(ip)
+    authority = f"{authority}:{target.port}"
+    if "@" in parsed.netloc:
+        authority = f"{parsed.netloc.rsplit('@', 1)[0]}@{authority}"
+    return parsed._replace(netloc=authority).geturl()
+
+
+def _origin_prefix(url: str) -> str:
+    parsed = urlparse(url)
+    return f"{parsed.scheme.lower()}://{parsed.netloc}/"
+
+
+class _PinnedHostAdapter(HTTPAdapter):
+    def __init__(self, *, hostname: str, ip: str, **kwargs: Any) -> None:
+        self._hostname = hostname
+        self._ip = ip
+        super().__init__(**kwargs)
+
+    def build_connection_pool_key_attributes(
+        self,
+        request: requests.PreparedRequest,
+        verify: bool | str,
+        cert: Any = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        host_params, pool_kwargs = super().build_connection_pool_key_attributes(request, verify, cert)
+        host_params["host"] = self._ip
+        if host_params["scheme"] == "https":
+            pool_kwargs["assert_hostname"] = self._hostname
+            pool_kwargs["server_hostname"] = self._hostname
+        return host_params, pool_kwargs
 
 
 def validate_base_url(base_url: str | None, *, resolve: bool = True) -> str:
@@ -56,57 +178,17 @@ def validate_base_url(base_url: str | None, *, resolve: bool = True) -> str:
     (unless opted in). ``resolve=True`` is also used at request time to blunt DNS
     rebinding. Returns the normalized (rstrip'd) URL.
     """
-    raw = (base_url or "").strip()
-    if not raw:
-        raise ProviderConfigError("base_url 不能为空")
-    parsed = urlparse(raw)
-    scheme = (parsed.scheme or "").lower()
-    if scheme not in ("http", "https"):
-        raise ProviderConfigError("base_url 必须使用 http 或 https 协议")
-    host = parsed.hostname
-    if not host:
-        raise ProviderConfigError("base_url 缺少主机名")
+    if resolve:
+        return _resolve_target(base_url).url
 
-    allow_private = _allow_private_hosts()
-
-    # Determine whether the literal host is loopback (for the HTTPS requirement).
-    literal_ip: ipaddress._BaseAddress | None = None
-    try:
-        literal_ip = ipaddress.ip_address(host)
-    except ValueError:
-        literal_ip = None
-
+    normalized_url, parsed, host, _port, literal_ip = _parse_provider_url(base_url)
     host_is_loopback = (
         (literal_ip is not None and literal_ip.is_loopback)
         or host.lower() in ("localhost", "localhost.localdomain")
     )
-    if scheme != "https" and not host_is_loopback:
+    if parsed.scheme.lower() != "https" and not host_is_loopback:
         raise ProviderConfigError("base_url 必须使用 https（本机回环地址除外）")
-
-    if resolve:
-        addrs: list[ipaddress._BaseAddress] = []
-        if literal_ip is not None:
-            addrs = [literal_ip]
-        else:
-            try:
-                infos = socket.getaddrinfo(host, parsed.port or (443 if scheme == "https" else 80), proto=socket.IPPROTO_TCP)
-            except OSError as exc:
-                raise ProviderConfigError(f"无法解析 base_url 主机名：{host}") from exc
-            for info in infos:
-                sockaddr = info[4]
-                try:
-                    addrs.append(ipaddress.ip_address(sockaddr[0]))
-                except ValueError:
-                    continue
-        if not addrs:
-            raise ProviderConfigError(f"无法解析 base_url 主机名：{host}")
-        for ip in addrs:
-            if _is_blocked_ip(ip, allow_private=allow_private):
-                raise ProviderConfigError(
-                    f"base_url 指向受限地址（{ip}）；如需访问本机/内网模型服务，请设置 PIXIV_AI_ALLOW_PRIVATE_HOSTS=1"
-                )
-
-    return raw.rstrip("/")
+    return normalized_url
 
 
 _SECRET_PATTERNS = [
@@ -166,9 +248,13 @@ class AIProvider:
     def __init__(self, config: AIProviderConfig) -> None:
         self.config = config
         self.session = requests.Session()
+        self._adapter_lock = threading.Lock()
+        self._pinned_adapters: dict[str, _PinnedHostAdapter] = {}
 
     def close(self) -> None:
-        self.session.close()
+        with self._adapter_lock:
+            self.session.close()
+            self._pinned_adapters.clear()
 
     def stream_generate(
         self,
@@ -185,6 +271,27 @@ class AIProvider:
             return None
         return {"http": self.config.proxy, "https": self.config.proxy}
 
+    def _post(self, url: str, **kwargs: Any) -> requests.Response:
+        target = _resolve_target(url)
+        pinned_url = _pinned_url(target)
+        prefix = _origin_prefix(pinned_url)
+
+        supplied_headers = kwargs.pop("headers", None) or {}
+        headers = {key: value for key, value in supplied_headers.items() if key.lower() != "host"}
+        headers["Host"] = target.host_header
+        kwargs["allow_redirects"] = False
+        with self._adapter_lock:
+            adapter = self._pinned_adapters.get(prefix)
+            if adapter is None:
+                adapter = _PinnedHostAdapter(hostname=target.hostname, ip=target.ip)
+                self.session.mount(prefix, adapter)
+                self._pinned_adapters[prefix] = adapter
+            response = self.session.post(pinned_url, headers=headers, **kwargs)
+        if 300 <= response.status_code < 400:
+            response.close()
+            raise AIProviderError(f"AI API 拒绝重定向响应 {response.status_code}")
+        return response
+
 
 class OpenAICompatibleProvider(AIProvider):
     default_base_url = "https://api.openai.com/v1"
@@ -200,8 +307,6 @@ class OpenAICompatibleProvider(AIProvider):
         4. 否则自动拼 `/v1`（典型自建网关的根 URL）
         """
         base_url = (self.config.base_url or self.default_base_url).rstrip("/")
-        # 请求时再次解析校验，抵御 DNS rebinding / 存量未校验数据 (H1)
-        base_url = validate_base_url(base_url, resolve=True)
         if base_url.endswith("/v1") or "/v1/" in base_url:
             return base_url
         parsed = urlparse(base_url)
@@ -252,7 +357,7 @@ class OpenAICompatibleProvider(AIProvider):
         produced_output = False
         for attempt in range(max_retries + 1):
             try:
-                with self.session.post(
+                with self._post(
                     url,
                     headers=headers,
                     json=payload,
@@ -348,7 +453,7 @@ class OpenAICompatibleProvider(AIProvider):
         last_error: str | None = None
         for attempt in range(max_retries + 1):
             try:
-                response = self.session.post(
+                response = self._post(
                     url,
                     headers=headers,
                     json=payload_copy,
@@ -398,7 +503,7 @@ class AnthropicProvider(AIProvider):
     ) -> Iterator[AIStreamChunk]:
         if not self.config.api_key:
             raise AIProviderError("Provider 未配置 API key")
-        base_url = validate_base_url(self.config.base_url or self.default_base_url).rstrip("/")
+        base_url = (self.config.base_url or self.default_base_url).rstrip("/")
         url = f"{base_url}/v1/messages"
         system_parts: list[str] = []
         anthropic_messages: list[dict[str, str]] = []
@@ -435,7 +540,7 @@ class AnthropicProvider(AIProvider):
         produced_output = False
         for attempt in range(max_retries + 1):
             try:
-                with self.session.post(
+                with self._post(
                     url,
                     headers=headers,
                     json=payload,
@@ -530,7 +635,7 @@ class AnthropicProvider(AIProvider):
         max_retries = max(0, max_retries_override) if max_retries_override is not None else max(3, self.config.max_retries)
         for attempt in range(max_retries + 1):
             try:
-                response = self.session.post(
+                response = self._post(
                     url,
                     headers=headers,
                     json=payload_copy,
