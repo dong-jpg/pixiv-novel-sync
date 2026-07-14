@@ -265,11 +265,13 @@ class AIChatWizardMixin:
 
     @staticmethod
     def _normalize_wizard_payload(data: dict[str, Any], session: dict[str, Any]) -> dict[str, Any]:
-        proj = data.get("project") or {}
-        if not proj.get("name"):
-            proj["name"] = (session.get("title") or "未命名作品").strip()
-        chapters = data.get("chapters") or []
-        foreshadows = data.get("foreshadows") or []
+        proj = data.get("project")
+        if isinstance(proj, dict):
+            proj = dict(proj)
+            if not proj.get("name"):
+                proj["name"] = (session.get("title") or "未命名作品").strip()
+        chapters = data.get("chapters", [])
+        foreshadows = data.get("foreshadows", [])
         return {"project": proj, "chapters": chapters, "foreshadows": foreshadows, "_source": "ready_json"}
 
     def import_wizard_session(self, session_id: int, mode: str = "create",
@@ -319,82 +321,140 @@ class AIChatWizardMixin:
         target_project_id: int | None,
         overwrite_fields: list[str] | None,
     ) -> int:
-        proj = parsed.get("project") or {}
-        chapters = parsed.get("chapters") or []
-        foreshadows = parsed.get("foreshadows") or []
-        if mode == "create":
-            project_id = db.create_ai_writing_project({
-                "name": proj.get("name") or "未命名作品",
-                "description": proj.get("description"),
-                "outline": proj.get("outline"),
-                "settings": proj.get("settings") or {},
-            })
-        else:
-            project_id = int(target_project_id)
-            existing = db.get_ai_writing_project(project_id)
-            if not existing:
-                raise AIServiceError("目标项目不存在")
-            allow = set(overwrite_fields or [])
-            update_payload: dict[str, Any] = {}
-            for key in ("name", "description", "outline"):
-                new_val = proj.get(key)
-                if not new_val:
+        proj = parsed.get("project")
+        chapters = parsed.get("chapters", [])
+        foreshadows = parsed.get("foreshadows", [])
+        if not isinstance(proj, dict):
+            raise AIServiceError("project 必须是字典")
+        if not isinstance(chapters, list):
+            raise AIServiceError("chapters 必须是列表")
+        if not isinstance(foreshadows, list):
+            raise AIServiceError("foreshadows 必须是列表")
+        settings = proj.get("settings", {})
+        if not isinstance(settings, dict):
+            raise AIServiceError("settings 必须是字典")
+
+        normalized_project = {
+            "name": proj.get("name") or "未命名作品",
+            "description": proj.get("description"),
+            "outline": proj.get("outline"),
+            "settings": dict(settings),
+        }
+        normalized_chapters: list[dict[str, Any]] = []
+        seen_chapter_numbers: set[int] = set()
+        for index, chapter in enumerate(chapters, 1):
+            if not isinstance(chapter, dict):
+                raise AIServiceError(f"第 {index} 个章节必须是字典")
+            chapter_number = chapter.get("chapter_number")
+            if isinstance(chapter_number, bool) or not isinstance(chapter_number, int):
+                raise AIServiceError(f"第 {index} 个章节的 chapter_number 必须是整数")
+            if not 1 <= chapter_number <= 2147483647:
+                raise AIServiceError(f"第 {index} 个章节的 chapter_number 超出范围")
+            normalized_chapter = {
+                "chapter_number": chapter_number,
+                "title": _clip(chapter.get("title"), _MAX_CHAPTER_TITLE_LEN),
+                "outline": _clip(chapter.get("outline"), _MAX_CHAPTER_OUTLINE_LEN),
+            }
+            if chapter_number in seen_chapter_numbers:
+                continue
+            seen_chapter_numbers.add(chapter_number)
+            normalized_chapters.append(normalized_chapter)
+
+        normalized_foreshadows: list[dict[str, Any]] = []
+        seen_foreshadow_descs: set[str] = set()
+        for index, foreshadow in enumerate(foreshadows, 1):
+            if not isinstance(foreshadow, dict):
+                raise AIServiceError(f"第 {index} 个伏笔必须是字典")
+            description = str(foreshadow.get("description") or "").strip()
+            description = description[:_MAX_FORESHADOW_DESC_LEN]
+            normalized_foreshadow = {
+                "description": description,
+                "planted_chapter": foreshadow.get("planted_chapter"),
+                "target_resolve_chapter": foreshadow.get("target_resolve_chapter"),
+                "importance": foreshadow.get("importance") or "normal",
+                "notes": _clip(foreshadow.get("notes"), _MAX_FORESHADOW_DESC_LEN),
+            }
+            if not description or description in seen_foreshadow_descs:
+                continue
+            seen_foreshadow_descs.add(description)
+            normalized_foreshadows.append(normalized_foreshadow)
+
+        with db.transaction():
+            if mode == "create":
+                project_id = db.create_ai_writing_project({
+                    "name": normalized_project["name"],
+                    "description": normalized_project["description"],
+                    "outline": normalized_project["outline"],
+                    "settings": normalized_project["settings"],
+                })
+            else:
+                project_id = int(target_project_id)
+                existing = db.get_ai_writing_project(project_id)
+                if not existing:
+                    raise AIServiceError("目标项目不存在")
+                allow = set(overwrite_fields or [])
+                update_payload: dict[str, Any] = {}
+                for key in ("name", "description", "outline"):
+                    new_val = normalized_project[key]
+                    if not new_val:
+                        continue
+                    existing_val = existing.get(key)
+                    should_update = key in allow or not (existing_val or "").strip() if isinstance(existing_val, str) else key in allow
+                    if should_update:
+                        update_payload[key] = new_val
+                new_settings = normalized_project["settings"]
+                if new_settings:
+                    cur = existing.get("settings") or {}
+                    if isinstance(cur, dict):
+                        cur.update(new_settings)
+                        update_payload["settings"] = cur
+                    else:
+                        update_payload["settings"] = new_settings
+                if update_payload:
+                    db.update_ai_writing_project(project_id, update_payload)
+
+            existing_numbers = {c["chapter_number"] for c in db.list_ai_chapters(project_id)}
+            # M4: 限制单次导入新增章节数，抵御注入驱动的海量伪造写入
+            added_chapters = 0
+            for ch in normalized_chapters:
+                if added_chapters >= _MAX_IMPORT_CHAPTERS:
+                    break
+                num = ch["chapter_number"]
+                if num in existing_numbers:
                     continue
-                existing_val = existing.get(key)
-                should_update = key in allow or not (existing_val or "").strip() if isinstance(existing_val, str) else key in allow
-                if should_update:
-                    update_payload[key] = new_val
-            new_settings = proj.get("settings") or {}
-            if new_settings:
-                cur = existing.get("settings") or {}
-                if isinstance(cur, dict):
-                    cur.update(new_settings)
-                    update_payload["settings"] = cur
-                else:
-                    update_payload["settings"] = new_settings
-            if update_payload:
-                db.update_ai_writing_project(project_id, update_payload)
+                db.create_ai_chapter({
+                    "project_id": project_id,
+                    "chapter_number": num,
+                    "title": ch["title"],
+                    "outline": ch["outline"],
+                })
+                existing_numbers.add(num)
+                added_chapters += 1
 
-        existing_numbers = {c["chapter_number"] for c in db.list_ai_chapters(project_id)}
-        # M4: 限制单次导入新增章节数，抵御注入驱动的海量伪造写入
-        added_chapters = 0
-        for ch in chapters:
-            if added_chapters >= _MAX_IMPORT_CHAPTERS:
-                break
-            num = int(ch.get("chapter_number") or 0)
-            if not num or num in existing_numbers:
-                continue
-            db.create_ai_chapter({
-                "project_id": project_id,
-                "chapter_number": num,
-                "title": _clip(ch.get("title"), _MAX_CHAPTER_TITLE_LEN),
-                "outline": _clip(ch.get("outline"), _MAX_CHAPTER_OUTLINE_LEN),
+            existing_descs = {
+                str(item.get("description") or "").strip()[:_MAX_FORESHADOW_DESC_LEN]
+                for item in db.list_ai_foreshadows(project_id)
+            }
+            added_foreshadows = 0
+            for fs in normalized_foreshadows:
+                if added_foreshadows >= _MAX_IMPORT_FORESHADOWS:
+                    break
+                desc = fs["description"]
+                if not desc or desc in existing_descs:
+                    continue
+                db.create_ai_foreshadow({
+                    "project_id": project_id,
+                    "description": desc,
+                    "planted_chapter": fs["planted_chapter"],
+                    "target_resolve_chapter": fs["target_resolve_chapter"],
+                    "importance": fs["importance"],
+                    "notes": fs["notes"],
+                })
+                existing_descs.add(desc)
+                added_foreshadows += 1
+
+            db.update_ai_chat_session(session_id, {
+                "imported_project_id": project_id,
+                "status": "imported",
             })
-            existing_numbers.add(num)
-            added_chapters += 1
-
-        existing_descs = {f["description"] for f in db.list_ai_foreshadows(project_id)}
-        added_foreshadows = 0
-        for fs in foreshadows:
-            if added_foreshadows >= _MAX_IMPORT_FORESHADOWS:
-                break
-            desc = (fs.get("description") or "").strip()
-            if not desc or desc in existing_descs:
-                continue
-            desc = desc[:_MAX_FORESHADOW_DESC_LEN]
-            db.create_ai_foreshadow({
-                "project_id": project_id,
-                "description": desc,
-                "planted_chapter": fs.get("planted_chapter"),
-                "target_resolve_chapter": fs.get("target_resolve_chapter"),
-                "importance": fs.get("importance") or "normal",
-                "notes": _clip(fs.get("notes"), _MAX_FORESHADOW_DESC_LEN),
-            })
-            existing_descs.add(desc)
-            added_foreshadows += 1
-
-        db.update_ai_chat_session(session_id, {
-            "imported_project_id": project_id,
-            "status": "imported",
-        })
-        return project_id
+            return project_id

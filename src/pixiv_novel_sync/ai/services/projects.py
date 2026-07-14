@@ -1076,57 +1076,58 @@ class AIProjectsMixin:
         """解析 LLM 输出的状态更新并保存到数据库。"""
         sections = output.split("===")
         current_type = ""
-        for section in sections:
-            section = section.strip()
-            if not section:
-                continue
-            # 检查是否是标题行
-            if section in ("character_state", "plot_progress", "new_foreshadows"):
-                current_type = section
-                continue
-            # 尝试从 "xxx ===" 格式提取
-            for st in ("character_state", "plot_progress", "new_foreshadows"):
-                if st in section:
-                    current_type = st
-                    section = section.replace(st, "").strip()
-                    break
-
-            if not section or not current_type:
-                continue
-
-            if current_type in ("character_state", "plot_progress"):
-                db.upsert_ai_project_state(project_id, current_type, section)
-            elif current_type == "new_foreshadows":
-                # 解析伏笔列表；按已有 description 去重，避免同章 pipeline 重跑后伏笔重复插入
-                existing_descs = {
-                    str(fs.get("description") or "").strip()
-                    for fs in db.list_ai_foreshadows(project_id)
-                }
-                # M4: 章节正文可能夹带提示注入诱导模型吐出海量伏笔行，
-                # 单次解析的新增数量与单条长度设硬上限兜底。
-                added = 0
-                for line in section.splitlines():
-                    if added >= _MAX_STATE_FORESHADOWS:
+        added = 0
+        with db.transaction():
+            for section in sections:
+                section = section.strip()
+                if not section:
+                    continue
+                # 检查是否是标题行
+                if section in ("character_state", "plot_progress", "new_foreshadows"):
+                    current_type = section
+                    continue
+                # 尝试从 "xxx ===" 格式提取
+                for st in ("character_state", "plot_progress", "new_foreshadows"):
+                    if st in section:
+                        current_type = st
+                        section = section.replace(st, "").strip()
                         break
-                    line = line.strip().lstrip("- •")
-                    if not line:
-                        continue
-                    parts = line.split("|")
-                    description = parts[0].strip()[:_MAX_STATE_FORESHADOW_DESC_LEN]
-                    importance = "normal"
-                    if len(parts) > 1:
-                        imp = parts[1].strip().lower()
-                        if imp in ("high", "normal", "low"):
-                            importance = imp
-                    if description and description not in existing_descs:
-                        db.create_ai_foreshadow({
-                            "project_id": project_id,
-                            "description": description,
-                            "planted_chapter": chapter.get("chapter_number"),
-                            "importance": importance,
-                        })
-                        existing_descs.add(description)
-                        added += 1
+
+                if not section or not current_type:
+                    continue
+
+                if current_type in ("character_state", "plot_progress"):
+                    db.upsert_ai_project_state(project_id, current_type, section)
+                elif current_type == "new_foreshadows":
+                    # 解析伏笔列表；按已有 description 去重，避免同章 pipeline 重跑后伏笔重复插入
+                    existing_descs = {
+                        str(fs.get("description") or "").strip()
+                        for fs in db.list_ai_foreshadows(project_id)
+                    }
+                    # M4: 章节正文可能夹带提示注入诱导模型吐出海量伏笔行，
+                    # 单次解析的新增数量与单条长度设硬上限兜底。
+                    for line in section.splitlines():
+                        if added >= _MAX_STATE_NEW_FORESHADOWS:
+                            break
+                        line = line.strip().lstrip("- •")
+                        if not line:
+                            continue
+                        parts = line.split("|")
+                        description = parts[0].strip()[:_MAX_STATE_FORESHADOW_DESC_LEN]
+                        importance = "normal"
+                        if len(parts) > 1:
+                            imp = parts[1].strip().lower()
+                            if imp in ("high", "normal", "low"):
+                                importance = imp
+                        if description and description not in existing_descs:
+                            db.create_ai_foreshadow({
+                                "project_id": project_id,
+                                "description": description,
+                                "planted_chapter": chapter.get("chapter_number"),
+                                "importance": importance,
+                            })
+                            existing_descs.add(description)
+                            added += 1
 
     def index_chapter_for_retrieval(self, project_id: int, chapter_id: int) -> None:
         """将章节摘要和关键事件索引到检索库。"""
