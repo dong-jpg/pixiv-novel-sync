@@ -15,6 +15,14 @@
     </div>
   </div>
 
+  <div v-if="pageMode === 'wizard'" class="sticky top-0 z-30 bg-pixiv-bg flex gap-2 mb-5 overflow-x-auto pb-1 pt-1 scrollbar-thin">
+    <button v-for="tab in tabs" :key="tab.id" @click="switchTab(tab.id)"
+            class="px-4 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap flex-shrink-0"
+            :class="activeTab === tab.id ? 'bg-brand-500 text-white shadow-sm' : 'bg-white text-gray-600 border border-gray-100 hover:bg-gray-50'">
+      {{ tab.name }}
+    </button>
+  </div>
+
   <div v-if="pageMode === 'ai'" class="sticky top-0 z-30 bg-pixiv-bg flex items-center justify-between gap-3 mb-5 overflow-x-auto pb-1 pt-1 scrollbar-thin">
     <!-- 列表视图：写作项目标题 + 新建按钮；详情视图：返回按钮 -->
     <div class="flex items-center gap-2 text-sm whitespace-nowrap flex-shrink-0">

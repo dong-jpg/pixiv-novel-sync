@@ -294,17 +294,6 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     def _is_local_request() -> bool:
         return _is_loopback_addr(_client_addr())
 
-    def _is_local_proxy_request() -> bool:
-        """Allow local reverse proxies without requiring DASHBOARD_TOKEN."""
-        if not _behind_proxy() or _trust_proxy:
-            return False
-        if not _is_loopback_addr(request.remote_addr or ""):
-            return False
-        forwarded_for = request.headers.get("X-Forwarded-For", "")
-        if forwarded_for:
-            return _is_loopback_addr(forwarded_for.split(",")[0].strip())
-        return _is_loopback_addr(request.headers.get("X-Real-IP", "").strip())
-
     @app.before_request
     def _check_auth():
         token = settings_manager.load(env_path=env_path).dashboard_token
@@ -313,8 +302,6 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             # 若检测到代理头但未显式信任代理，说明很可能暴露在反代后，
             # 此时 remote_addr=127.0.0.1 不可信，一律拒绝，避免私密收藏泄漏。
             if _behind_proxy() and not _trust_proxy:
-                if _is_local_proxy_request():
-                    return
                 return jsonify({"error": "dashboard token required when behind a proxy"}), 403
             if _is_local_request():
                 return

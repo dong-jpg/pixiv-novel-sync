@@ -50,6 +50,14 @@ def test_dashboard_pages_are_marked_as_library_pages():
         assert "library-page-header" in html, page
 
 
+def test_dashboard_ai_wizard_has_section_navigation():
+    html = read(TEMPLATES / "dashboard_ai.html")
+
+    assert 'v-if="pageMode === \'wizard\'"' in html
+    assert 'v-for="tab in tabs"' in html
+    assert "switchTab(tab.id)" in html
+
+
 def test_frontend_contract_documents_exist_and_cover_core_topics():
     contract = read(DOCS / "frontend-api-contract.md")
     pages = read(DOCS / "frontend-pages.md")
