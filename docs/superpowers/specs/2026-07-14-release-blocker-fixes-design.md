@@ -1,93 +1,69 @@
-# Release Blocker Fixes Design
+# 发布阻断问题修复设计
 
-**Status:** Approved in conversation on 2026-07-14
+**状态：** 已于 2026-07-14 在对话中批准
 
-**Goal:** Make the two local commits safe to push by fixing confirmed security,
-transaction, UI, test-isolation, and documentation regressions without broad
-architectural restructuring.
+**目标：** 修复审计确认的安全、事务、界面、测试隔离和文档问题，使当前两个本地提交达到可安全推送状态，同时避免无关的大规模架构调整。
 
-## Scope
+## 修复范围
 
-This change fixes only release blockers found by the repository audit:
+本次只修复仓库审计发现的发布阻断问题：
 
-1. Reject unauthenticated requests carrying proxy headers unless proxy trust is
-   explicitly enabled; no untrusted X-Forwarded-For local-address bypass remains.
-2. Make AI state parsing and wizard import validated, bounded, and atomic.
-3. Bind AI Provider connections to the IP addresses that passed SSRF validation,
-   preserve the original Host/SNI for TLS, reject every non-global destination by
-   default, and never follow redirects carrying model requests or credentials.
-4. Preserve mode `0600` for every atomic `.env` writer through one shared helper.
-5. Restore wizard/distill navigation without reverting the approved AI project UI.
-6. Make the default pytest command independent of repository-local databases,
-   storage directories, and live DNS.
-7. Correct high-impact README/API/deployment claims, mark historical documents as
-   snapshots, add the declared MIT license, and use package version `0.1.0` as the
-   runtime version source.
+1. 除非明确启用可信反向代理，否则拒绝所有携带代理请求头的未认证请求，彻底删除利用不可信 `X-Forwarded-For` 伪装本机地址的认证绕过路径。
+2. 对 AI 状态解析和创作向导导入执行完整校验、数量限制和原子写入。
+3. 将 AI 提供商的实际连接固定到已通过 SSRF 校验的 IP 地址，同时保留原始主机名用于 HTTP `Host` 请求头、TLS SNI 和证书校验；默认拒绝所有非公网地址，并禁止模型请求或凭据跟随重定向。
+4. 通过一个共用工具，确保所有 `.env` 原子写入入口都保持 `0600` 权限。
+5. 恢复创作向导与蒸馏档案之间的页面内导航，同时保留已经批准的 AI 项目界面改版。
+6. 让默认 Pytest 命令不再依赖仓库中的本地数据库、存储目录或实时 DNS。
+7. 修正 README、API 和部署文档中的高影响错误；将旧文档明确标为历史快照；补齐项目已声明的 MIT 许可证；以包版本 `0.1.0` 作为运行时版本的唯一来源。
 
-The change does not split the large Vue template, regenerate a 173-endpoint API
-manual, rebuild the knowledge graph, or redesign the deployment architecture.
+本次不拆分大型 Vue 模板，不重新生成包含 173 个端点的完整 API 手册，不重建知识图谱，也不重新设计部署架构。
 
-## Architecture
+## 技术设计
 
-### Trusted Proxy Boundary
+### 可信反向代理边界
 
-When `DASHBOARD_TRUST_PROXY` is false, the presence of `X-Forwarded-For` or
-`X-Real-IP` makes an unauthenticated request non-local and therefore forbidden.
-When trust is true, `_client_addr()` remains the single source of the client IP and
-uses the configured right-to-left hop count. Tests cover both branches.
+当 `DASHBOARD_TRUST_PROXY` 为 false 时，只要请求包含 `X-Forwarded-For` 或 `X-Real-IP`，就不能将该未认证请求视为本机请求，必须拒绝访问。
 
-### Provider Transport
+当 `DASHBOARD_TRUST_PROXY` 为 true 时，继续由 `_client_addr()` 统一解析客户端 IP，并按照配置的可信代理层数从右向左取值。测试同时覆盖可信与不可信两条分支。
 
-URL parsing and DNS resolution produce a validated target containing the original
-hostname and one already-checked IP address. A Requests HTTP adapter connects the
-urllib3 pool to that IP while retaining the original hostname for the HTTP `Host`
-header, TLS SNI, and certificate verification. This removes the second DNS lookup
-that enabled rebinding. Every request attempt resolves and pins again, all 3xx
-responses are rejected, and automatic redirects are disabled.
+### AI 提供商出站传输
 
-By default an address is allowed only when `ipaddress.is_global` is true. The
-existing private-host opt-in permits only private and loopback destinations;
-link-local, multicast, unspecified, reserved, and shared non-global ranges remain
-blocked.
+URL 解析和 DNS 查询会生成一个已校验目标，其中包含原始主机名以及已经通过检查的 IP 地址。Requests 的 HTTP 适配器让 urllib3 连接池直接连接该 IP，同时继续使用原始主机名完成 HTTP `Host` 请求头、TLS SNI 和证书校验。这样可以消除实际连接阶段的第二次 DNS 查询，阻断 DNS 重绑定。
 
-### Atomic AI Persistence
+每次请求尝试都会重新解析、校验并固定目标。所有 3xx 响应都作为错误处理，并明确关闭自动重定向。
 
-State parsing keeps one foreshadow counter across all repeated sections and wraps
-state plus foreshadow writes in `Database.transaction()`. Wizard import validates
-the complete project/chapter/foreshadow payload before creating anything, clips
-before deduplication, then performs project creation, child writes, and session
-status update in one transaction. Invalid input leaves no partial records.
+默认情况下，只有 `ipaddress.is_global` 为 true 的地址可以访问。现有的私有地址开关只允许私有地址和回环地址；链路本地、多播、未指定、保留地址以及共享的非公网地址仍然始终禁止。
 
-### Secure Environment Writes
+### AI 数据原子写入
 
-A small utility performs atomic byte writes using a freshly created temporary file,
-mode `0600`, full-write semantics, `fsync`, `os.replace`, and final chmod. OAuth,
-Flask secret initialization, and Web Cookie persistence all use it. The helper does
-not follow a pre-created temporary symlink.
+状态解析在所有重复分段之间共用一个新增伏笔计数器，并通过 `Database.transaction()` 将状态与伏笔写入放在同一个事务中。
 
-### Test Isolation
+创作向导导入会在创建任何数据之前，完整校验项目、章节和伏笔内容；先裁剪字段再去重；然后在一个事务内完成项目创建、子记录写入和会话状态更新。任何无效输入都不能留下部分记录。
 
-An autouse pytest fixture points database and storage environment variables at each
-test's temporary directory. Provider fallback tests mock deterministic public DNS.
-Regression tests are added before production fixes and must be observed failing for
-the intended reason.
+### 安全写入环境文件
 
-## Documentation And Repository Hygiene
+新增一个小型共用工具，通过全新创建的临时文件执行原子字节写入。临时文件权限固定为 `0600`，写入过程保证完整写入，并执行 `fsync`、`os.replace` 和最终 `chmod`。OAuth、Flask 会话密钥初始化以及 Web Cookie 保存全部复用该工具。
 
-README examples will either match current authenticated APIs or direct users to the
-Dashboard/authoritative contract. `API_COMPLETE.md`, `KNOWLEDGE_GRAPH.md`, and the
-old AI implementation plan receive explicit historical-snapshot banners and the
-index stops presenting them as current truth. Deployment documentation identifies
-the root deployment script as canonical and corrects its public port. Shell/config
-files receive LF attributes and executable scripts receive executable Git modes.
+该工具不能跟随攻击者预先放置的临时符号链接。
 
-Local `.claude/`, `memory/`, and backup configuration files are ignored. Existing
-untracked user files and runtime databases are neither deleted nor committed.
+### 测试隔离
 
-## Verification
+新增自动启用的 Pytest 测试夹具，把每项测试使用的数据库和存储目录环境变量指向该测试自己的临时目录。AI 提供商回退测试使用固定的模拟公网 DNS 结果。
 
-Each fix follows red-green TDD with focused tests. Final verification runs in the
-isolated worktree with temporary storage and includes Python AST/compile checks,
-the complete pytest suite, Git whitespace/object checks, CLI help, Bash syntax, and
-a clean Git status review. The remote is fetched immediately before deciding to
-push; push is allowed only if all blocker tests and the full suite pass.
+每项生产代码修复都必须先增加回归测试，并确认测试因目标缺陷按预期失败，然后才能修改生产代码。
+
+## 文档与仓库卫生
+
+README 中的示例必须与当前认证接口一致，或者明确引导用户使用仪表盘和权威接口契约。`API_COMPLETE.md`、`KNOWLEDGE_GRAPH.md` 和旧 AI 实现计划会增加醒目的历史快照提示，文档索引不再把它们列为当前事实来源。
+
+部署文档会明确根目录部署脚本是唯一推荐入口，并修正对外端口说明。Shell 脚本和配置文件增加 LF 换行规则，需要直接执行的脚本在 Git 中设置可执行权限。
+
+本地 `.claude/`、`memory/` 和配置备份文件加入忽略规则。现有未跟踪用户文件和运行数据库既不会删除，也不会纳入提交。
+
+## 验证要求
+
+每项修复都按照测试驱动开发（TDD）的红灯、绿灯流程执行，并运行对应的聚焦测试。
+
+最终验证必须在隔离的 Git 工作树中进行，数据库和存储目录全部指向临时位置。验证内容包括 Python AST/编译检查、完整 Pytest 测试、Git 空白与对象完整性检查、CLI 帮助命令、Bash 语法检查以及最终 Git 状态复核。
+
+决定推送前必须立即刷新远端引用。只有全部阻断问题的回归测试和完整测试套件都通过后，才允许推送。
