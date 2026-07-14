@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import socket
+
 import pytest
 import requests
 
 from pixiv_novel_sync.ai.models import AIProviderConfig
 from pixiv_novel_sync.ai.providers import AIProviderError, AnthropicProvider, OpenAICompatibleProvider
+
+
+@pytest.fixture(autouse=True)
+def isolate_provider_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fixed_public_ipv4(_host, port, *_args, **_kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", port))]
+
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.socket.getaddrinfo", fixed_public_ipv4)
 
 
 class FakeResponse:
