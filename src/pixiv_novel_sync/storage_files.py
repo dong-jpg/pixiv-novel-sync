@@ -118,9 +118,11 @@ class FileStorage:
         return None
 
     def asset_path(self, novel_dir: Path, asset_type: str, filename: str) -> Path:
-        # 防止路径穿越
+        # 防止路径穿越：filename 取 basename，asset_type 也需消毒
+        # （当前调用点是代码常量，此处为防御未来接入外部输入 L6）。
         safe_filename = Path(filename).name
-        return novel_dir / "assets" / asset_type / safe_filename
+        safe_type = safe_name(asset_type, fallback="asset")
+        return novel_dir / "assets" / safe_type / safe_filename
 
     def get_novel_cover_path(self, novel_data: dict) -> Path | None:
         """根据 novel_data 重建封面文件路径。

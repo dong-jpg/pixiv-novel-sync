@@ -6,6 +6,7 @@ from typing import Any
 
 from ...storage_db import Database
 from ..models import AIAgentConfig, AIProviderConfig
+from ..providers import ProviderConfigError, validate_base_url
 from ..prompts import (
     DEFAULT_CHAPTER_SUMMARY_PROMPT,
     DEFAULT_FORESHADOW_RESOLVE_PROMPT,
@@ -162,6 +163,17 @@ class AIAdminMixin:
             for key in ("name", "provider_type"):
                 if not data.get(key):
                     raise AIServiceError(f"缺少 Provider 字段：{key}")
+        # H1: 校验 base_url，阻止 SSRF / 密钥外泄。写入时不做 DNS 解析（避免把
+        # 配置保存耦合到网络可达性），请求时再带解析校验抵御 rebinding。
+        if data.get("base_url") is not None:
+            base_url = str(data["base_url"]).strip()
+            if base_url:
+                try:
+                    data["base_url"] = validate_base_url(base_url, resolve=False)
+                except ProviderConfigError as exc:
+                    raise AIServiceError(str(exc)) from exc
+            else:
+                data["base_url"] = None
         if data.get("provider_type") not in {None, "openai_compatible", "anthropic", "xai"}:
             raise AIServiceError("不支持的 Provider 类型")
         api_key = str(payload.get("api_key") or "")
@@ -187,7 +199,14 @@ class AIAdminMixin:
             raise AIServiceError("Provider 不存在")
         if not bool(row.get("enabled")):
             raise AIServiceError("Provider 已禁用")
-        api_key = self.secret_manager.decrypt(row.get("api_key_encrypted"))
+        stored_cipher = row.get("api_key_encrypted")
+        api_key = self.secret_manager.decrypt(stored_cipher)
+        # L4: 若命中已废弃的 v1（无盐 SHA-256）KDF，解密成功后透明升级到 v2 回写。
+        if api_key and self.secret_manager.is_legacy_ciphertext(stored_cipher):
+            try:
+                db.update_ai_provider(provider_id, {"api_key_encrypted": self.secret_manager.encrypt(api_key)})
+            except Exception:
+                pass  # 升级失败不影响本次使用；下次再试
         return AIProviderConfig(
             id=int(row["id"]), name=row["name"], provider_type=row["provider_type"],
             base_url=row.get("base_url"), api_key=api_key, default_model=row.get("default_model"),

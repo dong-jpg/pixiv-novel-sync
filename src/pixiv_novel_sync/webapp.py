@@ -85,10 +85,18 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     app.jinja_env.variable_start_string = "{["
     app.jinja_env.variable_end_string = "]}"
     app.secret_key = _load_or_create_flask_secret(env_path)
-    # 加固 cookie：HttpOnly + SameSite=Lax；如启用 HTTPS 可设置 SESSION_COOKIE_SECURE=true
+    # 加固 cookie：HttpOnly + SameSite=Lax。
+    # L2: Secure 默认随部署形态推断——显式设 PIXIV_COOKIE_SECURE 优先；
+    # 未显式设置但启用了 DASHBOARD_TRUST_PROXY（典型 HTTPS 反代部署）时自动开启，
+    # 避免明文 HTTP 场景把会话 cookie 暴露在链路上。纯本机 HTTP 调试仍可显式关掉。
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-    if os.getenv("PIXIV_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes", "on"}:
+    _cookie_secure_raw = os.getenv("PIXIV_COOKIE_SECURE", "").strip().lower()
+    if _cookie_secure_raw in {"1", "true", "yes", "on"}:
+        app.config["SESSION_COOKIE_SECURE"] = True
+    elif _cookie_secure_raw in {"0", "false", "no", "off"}:
+        app.config["SESSION_COOKIE_SECURE"] = False
+    elif os.getenv("DASHBOARD_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes", "on"}:
         app.config["SESSION_COOKIE_SECURE"] = True
     settings_manager = SettingsManager(config_path)
     sync_job_manager = SyncJobManager(config_path=config_path, env_path=env_path)
@@ -243,6 +251,12 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     # 是否信任反向代理注入的 X-Forwarded-For。仅当确实部署在可信反代（nginx 等）
     # 之后才应开启；否则客户端可伪造该头绕过本机判定。
     _trust_proxy = (os.getenv("DASHBOARD_TRUST_PROXY") or "").strip().lower() in {"1", "true", "yes", "on"}
+    # 可信反代层数：真实客户端 IP 位于 X-Forwarded-For 右侧倒数第 hops 个条目。
+    # 默认 1（单层 nginx）。用于抵御伪造 XFF 绕过限流 / 本机判定 (M2)。
+    try:
+        _trusted_proxy_hops = max(1, int(os.getenv("DASHBOARD_TRUSTED_PROXY_HOPS", "1")))
+    except (ValueError, TypeError):
+        _trusted_proxy_hops = 1
     _LOCAL_ADDRS = {"127.0.0.1", "::1", "localhost"}
 
     def _is_loopback_addr(addr: str) -> bool:
@@ -257,12 +271,21 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             return False
 
     def _client_addr() -> str:
-        """解析真实客户端地址。反代后 remote_addr 恒为 127.0.0.1，必须看 XFF。"""
+        """解析真实客户端地址。反代后 remote_addr 恒为 127.0.0.1，必须看 XFF。
+
+        安全要点 (M2)：真实的反代把客户端 IP **追加**到 XFF 右侧，攻击者只能在
+        左侧伪造条目。因此取右数第 _trusted_proxy_hops 个条目（跳过我方可信代理层），
+        而非最左值 —— 否则轮换伪造的最左 IP 即可绕过登录限流与本机判定。
+        """
         if _trust_proxy:
             xff = request.headers.get("X-Forwarded-For", "")
             if xff:
-                # XFF 最左为最初客户端
-                return xff.split(",")[0].strip()
+                parts = [p.strip() for p in xff.split(",") if p.strip()]
+                if parts:
+                    idx = len(parts) - _trusted_proxy_hops
+                    if idx < 0:
+                        idx = 0
+                    return parts[idx]
         return request.remote_addr or ""
 
     def _behind_proxy() -> bool:

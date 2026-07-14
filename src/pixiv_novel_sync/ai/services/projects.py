@@ -23,6 +23,11 @@ from ..prompts import (
 )
 from .core import AIServiceError
 
+# M4: 状态解析的模型输出可能受源文本提示注入影响，诱导伪造海量伏笔。
+# 单次状态更新对新增伏笔数量与单条长度设硬上限，作为数据完整性兜底。
+_MAX_STATE_NEW_FORESHADOWS = 200
+_MAX_STATE_FORESHADOW_DESC_LEN = 2000
+
 
 class AIProjectsMixin:
     # 章节 Pipeline 步骤的规范顺序与显示标签。stream_chapter_pipeline /
@@ -1097,12 +1102,17 @@ class AIProjectsMixin:
                     str(fs.get("description") or "").strip()
                     for fs in db.list_ai_foreshadows(project_id)
                 }
+                # M4: 章节正文可能夹带提示注入诱导模型吐出海量伏笔行，
+                # 单次解析的新增数量与单条长度设硬上限兜底。
+                added = 0
                 for line in section.splitlines():
+                    if added >= _MAX_STATE_FORESHADOWS:
+                        break
                     line = line.strip().lstrip("- •")
                     if not line:
                         continue
                     parts = line.split("|")
-                    description = parts[0].strip()
+                    description = parts[0].strip()[:_MAX_STATE_FORESHADOW_DESC_LEN]
                     importance = "normal"
                     if len(parts) > 1:
                         imp = parts[1].strip().lower()
@@ -1116,6 +1126,7 @@ class AIProjectsMixin:
                             "importance": importance,
                         })
                         existing_descs.add(description)
+                        added += 1
 
     def index_chapter_for_retrieval(self, project_id: int, chapter_id: int) -> None:
         """将章节摘要和关键事件索引到检索库。"""

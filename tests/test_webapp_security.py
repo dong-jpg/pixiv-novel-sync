@@ -256,11 +256,12 @@ def test_safe_name_strips_path_traversal_segments():
     assert safe_name('../bad:novel<>name', 'novel') == 'bad_novel_name'
 
 
-def test_no_token_trusts_xff_localhost_when_proxy_trusted(tmp_path, monkeypatch):
-    """显式信任代理时，按 XFF 最左地址判定本机访问。"""
+def test_no_token_trusts_xff_client_when_proxy_trusted(tmp_path, monkeypatch):
+    """显式信任代理（默认 1 层）时，按 XFF 右数第 1 个地址（可信代理追加的真实客户端）判定本机访问。"""
     monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     monkeypatch.setenv("DASHBOARD_TRUST_PROXY", "true")
+    monkeypatch.delenv("DASHBOARD_TRUSTED_PROXY_HOPS", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
     app = create_app(env_path=str(env_path))
@@ -279,4 +280,50 @@ def test_no_token_trusts_xff_localhost_when_proxy_trusted(tmp_path, monkeypatch)
 
     assert allowed.status_code == 200
     assert blocked.status_code == 403
+
+
+def test_no_token_ignores_spoofed_leftmost_xff_when_proxy_trusted(tmp_path, monkeypatch):
+    """M2: 攻击者在 XFF 左侧伪造 127.0.0.1，真实客户端 IP 由可信代理追加在右侧。
+    必须按右数第 1 个（真实公网 IP）判定，拒绝访问——否则伪造最左值即可绕过本机判定。"""
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    monkeypatch.setenv("DASHBOARD_TRUST_PROXY", "true")
+    monkeypatch.delenv("DASHBOARD_TRUSTED_PROXY_HOPS", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path))
+    client = app.test_client()
+
+    response = client.get(
+        "/dashboard",
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        headers={"X-Forwarded-For": "127.0.0.1, 203.0.113.10"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_login_rate_limit_not_bypassed_by_rotating_spoofed_xff(tmp_path, monkeypatch):
+    """M2: 信任代理时，轮换 XFF 左侧伪造 IP 不应绕过限流——限流键取右数第 1 个真实客户端 IP。"""
+    monkeypatch.setenv("DASHBOARD_TOKEN", "secret-token")
+    monkeypatch.setenv("DASHBOARD_TRUST_PROXY", "true")
+    monkeypatch.delenv("DASHBOARD_TRUSTED_PROXY_HOPS", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\nDASHBOARD_TOKEN=secret-token\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path))
+    client = app.test_client()
+
+    # 真实客户端恒为 198.51.100.5（右侧），攻击者每次伪造不同的最左 IP
+    responses = [
+        client.post(
+            "/api/auth/login",
+            data={"token": "bad"},
+            headers={"X-Forwarded-For": f"10.0.0.{i}, 198.51.100.5"},
+        )
+        for i in range(6)
+    ]
+
+    assert [r.status_code for r in responses[:5]] == [401, 401, 401, 401, 401]
+    assert responses[5].status_code == 429
 

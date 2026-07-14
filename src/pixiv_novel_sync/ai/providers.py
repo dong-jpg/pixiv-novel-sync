@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import codecs
+import ipaddress
 import json
+import os
 import re
+import socket
 import time
 from collections.abc import Iterator
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -14,6 +18,95 @@ from .models import AIProviderConfig, AIStreamChunk
 
 class AIProviderError(RuntimeError):
     pass
+
+
+class ProviderConfigError(ValueError):
+    """Raised when a provider's ``base_url`` fails security validation."""
+
+
+def _allow_private_hosts() -> bool:
+    return os.getenv("PIXIV_AI_ALLOW_PRIVATE_HOSTS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_blocked_ip(ip: ipaddress._BaseAddress, *, allow_private: bool) -> bool:
+    """Return True if ``ip`` must never receive the decrypted API key.
+
+    Link-local (cloud metadata 169.254.169.254, fe80::/10), multicast, reserved
+    and unspecified addresses are always blocked. Loopback and private ranges are
+    blocked unless the operator opts in via ``PIXIV_AI_ALLOW_PRIVATE_HOSTS`` (for
+    self-hosted local/LAN model servers).
+    """
+    if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+        return True
+    # IPv4-mapped IPv6 (::ffff:a.b.c.d) — unwrap and re-check
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        return _is_blocked_ip(mapped, allow_private=allow_private)
+    if allow_private:
+        return False
+    return ip.is_private or ip.is_loopback
+
+
+def validate_base_url(base_url: str | None, *, resolve: bool = True) -> str:
+    """Validate a provider ``base_url`` before the decrypted key is sent to it.
+
+    Guards against SSRF / credential exfiltration (H1): rejects non-http(s)
+    schemes, requires HTTPS for non-loopback hosts, and — when ``resolve`` is set
+    — resolves the hostname and rejects link-local / private / loopback targets
+    (unless opted in). ``resolve=True`` is also used at request time to blunt DNS
+    rebinding. Returns the normalized (rstrip'd) URL.
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        raise ProviderConfigError("base_url 不能为空")
+    parsed = urlparse(raw)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise ProviderConfigError("base_url 必须使用 http 或 https 协议")
+    host = parsed.hostname
+    if not host:
+        raise ProviderConfigError("base_url 缺少主机名")
+
+    allow_private = _allow_private_hosts()
+
+    # Determine whether the literal host is loopback (for the HTTPS requirement).
+    literal_ip: ipaddress._BaseAddress | None = None
+    try:
+        literal_ip = ipaddress.ip_address(host)
+    except ValueError:
+        literal_ip = None
+
+    host_is_loopback = (
+        (literal_ip is not None and literal_ip.is_loopback)
+        or host.lower() in ("localhost", "localhost.localdomain")
+    )
+    if scheme != "https" and not host_is_loopback:
+        raise ProviderConfigError("base_url 必须使用 https（本机回环地址除外）")
+
+    if resolve:
+        addrs: list[ipaddress._BaseAddress] = []
+        if literal_ip is not None:
+            addrs = [literal_ip]
+        else:
+            try:
+                infos = socket.getaddrinfo(host, parsed.port or (443 if scheme == "https" else 80), proto=socket.IPPROTO_TCP)
+            except OSError as exc:
+                raise ProviderConfigError(f"无法解析 base_url 主机名：{host}") from exc
+            for info in infos:
+                sockaddr = info[4]
+                try:
+                    addrs.append(ipaddress.ip_address(sockaddr[0]))
+                except ValueError:
+                    continue
+        if not addrs:
+            raise ProviderConfigError(f"无法解析 base_url 主机名：{host}")
+        for ip in addrs:
+            if _is_blocked_ip(ip, allow_private=allow_private):
+                raise ProviderConfigError(
+                    f"base_url 指向受限地址（{ip}）；如需访问本机/内网模型服务，请设置 PIXIV_AI_ALLOW_PRIVATE_HOSTS=1"
+                )
+
+    return raw.rstrip("/")
 
 
 _SECRET_PATTERNS = [
@@ -107,9 +200,10 @@ class OpenAICompatibleProvider(AIProvider):
         4. 否则自动拼 `/v1`（典型自建网关的根 URL）
         """
         base_url = (self.config.base_url or self.default_base_url).rstrip("/")
+        # 请求时再次解析校验，抵御 DNS rebinding / 存量未校验数据 (H1)
+        base_url = validate_base_url(base_url, resolve=True)
         if base_url.endswith("/v1") or "/v1/" in base_url:
             return base_url
-        from urllib.parse import urlparse
         parsed = urlparse(base_url)
         host = parsed.hostname or ""
         official_hosts = ("api.openai.com", "api.deepseek.com", "api.x.ai", "api.anthropic.com")
@@ -304,7 +398,7 @@ class AnthropicProvider(AIProvider):
     ) -> Iterator[AIStreamChunk]:
         if not self.config.api_key:
             raise AIProviderError("Provider 未配置 API key")
-        base_url = (self.config.base_url or self.default_base_url).rstrip("/")
+        base_url = validate_base_url(self.config.base_url or self.default_base_url).rstrip("/")
         url = f"{base_url}/v1/messages"
         system_parts: list[str] = []
         anthropic_messages: list[dict[str, str]] = []

@@ -169,7 +169,11 @@ def _filename_from_url(url: str) -> str:
     """从 URL 中提取文件名，用于保存下载的资源。"""
     path = urlparse(url).path
     name = Path(path).name
-    return name or "asset.bin"
+    # L8: Path("/foo/..").name == ".."，直接落盘会造成一级目录穿越；
+    # 纯 . / .. 以及夹带分隔符的名字一律回退到安全默认名。
+    if name in ("", ".", "..") or "/" in name or "\\" in name:
+        return "asset.bin"
+    return name
 
 
 def _empty_stats() -> dict[str, int]:

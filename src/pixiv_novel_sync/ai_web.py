@@ -14,6 +14,28 @@ from .settings import Settings
 logger = logging.getLogger(__name__)
 
 
+def _content_disposition(filename: str, disposition: str = "attachment") -> str:
+    """Build a safe ``Content-Disposition`` header value (L5).
+
+    Strips CR/LF/other control chars (header-injection defense), emits an ASCII
+    ``filename=`` fallback plus an RFC 5987 ``filename*`` for non-ASCII names
+    (e.g. Chinese project titles) so the original text survives without letting
+    raw bytes into the header.
+    """
+    from urllib.parse import quote
+
+    raw = filename or "download"
+    # 去掉控制符（含 CR/LF）与引号/反斜杠，防止头注入与引号闭合逃逸
+    cleaned = "".join(ch for ch in raw if ch >= " " and ch not in '"\\').strip()
+    cleaned = cleaned or "download"
+    ascii_fallback = cleaned.encode("ascii", "ignore").decode("ascii").strip() or "download"
+    encoded = quote(cleaned, safe="")
+    return (
+        f"{disposition}; filename=\"{ascii_fallback}\"; "
+        f"filename*=UTF-8''{encoded}"
+    )
+
+
 def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) -> None:
     def current_settings() -> Settings:
         return settings() if callable(settings) else settings
@@ -622,11 +644,14 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     def writing_project_download_api(project_id: int):
         try:
             filename, content = service.export_writing_project_text(project_id)
-            quoted = filename.replace('"', "")
+            # L5: 文件名源自用户可改的项目标题。仅删 " 不足以防头注入
+            # （CR/LF、控制符）。_content_disposition 剥离控制符并生成合规头：
+            # 中文标题走 RFC 5987 filename*，并带一个 ASCII 回退。
+            disposition = _content_disposition(filename)
             return Response(
                 content,
                 mimetype="text/plain; charset=utf-8",
-                headers={"Content-Disposition": f'attachment; filename="{quoted}"'},
+                headers={"Content-Disposition": disposition},
             )
         except Exception as exc:
             return fail(exc)

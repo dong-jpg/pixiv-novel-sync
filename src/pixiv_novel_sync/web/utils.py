@@ -268,6 +268,15 @@ def _restricts_to_label(restricts: list[str]) -> str:
 
 
 def _external_base_url(req) -> str:
+    # L3: 显式配置的外部地址优先，彻底避免依赖客户端可控的 Host / base_url
+    # 构造 OAuth 回调（否则投毒 Host 头可劫持回调、泄露 code）。
+    explicit = os.environ.get("PIXIV_EXTERNAL_BASE_URL", "").strip()
+    if explicit:
+        parsed = urlparse(explicit if "://" in explicit else f"https://{explicit}")
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+        logger.warning("Invalid PIXIV_EXTERNAL_BASE_URL: %s (ignored)", explicit)
+
     forwarded_proto = req.headers.get("X-Forwarded-Proto")
     forwarded_host = req.headers.get("X-Forwarded-Host")
     if forwarded_proto and forwarded_host:

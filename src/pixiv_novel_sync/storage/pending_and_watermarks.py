@@ -172,5 +172,5 @@ class PendingAndWatermarksMixin:
                 (cleanup_confirmed_days, cleanup_confirmed_days)
             ).rowcount
 
-            self.conn.commit()
+            self._commit_if_needed()
             return {"auto_confirmed": auto_confirmed, "cleaned_up": cleaned_up}

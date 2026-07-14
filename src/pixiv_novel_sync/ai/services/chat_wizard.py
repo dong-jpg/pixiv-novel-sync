@@ -11,6 +11,21 @@ from ..prompts import (
 )
 from .core import AIServiceError
 
+# M4: LLM 产物直接落库，源文本（归档小说/聊天）可能夹带提示注入，诱导模型
+# 伪造海量章节/伏笔。持久化前对数量与长度设硬上限，作为数据完整性兜底。
+_MAX_IMPORT_CHAPTERS = 2000
+_MAX_IMPORT_FORESHADOWS = 500
+_MAX_FORESHADOW_DESC_LEN = 2000
+_MAX_CHAPTER_TITLE_LEN = 500
+_MAX_CHAPTER_OUTLINE_LEN = 20000
+
+
+def _clip(value: Any, limit: int) -> Any:
+    """把字符串裁剪到 limit；非字符串原样返回。"""
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit]
+    return value
+
 
 class AIChatWizardMixin:
     def list_chat_sessions(self, scope: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
@@ -341,32 +356,42 @@ class AIChatWizardMixin:
                 db.update_ai_writing_project(project_id, update_payload)
 
         existing_numbers = {c["chapter_number"] for c in db.list_ai_chapters(project_id)}
+        # M4: 限制单次导入新增章节数，抵御注入驱动的海量伪造写入
+        added_chapters = 0
         for ch in chapters:
+            if added_chapters >= _MAX_IMPORT_CHAPTERS:
+                break
             num = int(ch.get("chapter_number") or 0)
             if not num or num in existing_numbers:
                 continue
             db.create_ai_chapter({
                 "project_id": project_id,
                 "chapter_number": num,
-                "title": ch.get("title"),
-                "outline": ch.get("outline"),
+                "title": _clip(ch.get("title"), _MAX_CHAPTER_TITLE_LEN),
+                "outline": _clip(ch.get("outline"), _MAX_CHAPTER_OUTLINE_LEN),
             })
             existing_numbers.add(num)
+            added_chapters += 1
 
         existing_descs = {f["description"] for f in db.list_ai_foreshadows(project_id)}
+        added_foreshadows = 0
         for fs in foreshadows:
+            if added_foreshadows >= _MAX_IMPORT_FORESHADOWS:
+                break
             desc = (fs.get("description") or "").strip()
             if not desc or desc in existing_descs:
                 continue
+            desc = desc[:_MAX_FORESHADOW_DESC_LEN]
             db.create_ai_foreshadow({
                 "project_id": project_id,
                 "description": desc,
                 "planted_chapter": fs.get("planted_chapter"),
                 "target_resolve_chapter": fs.get("target_resolve_chapter"),
                 "importance": fs.get("importance") or "normal",
-                "notes": fs.get("notes"),
+                "notes": _clip(fs.get("notes"), _MAX_FORESHADOW_DESC_LEN),
             })
             existing_descs.add(desc)
+            added_foreshadows += 1
 
         db.update_ai_chat_session(session_id, {
             "imported_project_id": project_id,

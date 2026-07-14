@@ -587,4 +587,4 @@ class NovelsMixin:
                 """,
                 (status, novel_id),
             )
-            self.conn.commit()
+            self._commit_if_needed()
