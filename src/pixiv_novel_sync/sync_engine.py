@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import types
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from .rate_limiter import RateLimiter
 from .settings import Settings
 from .storage_db import Database
 from .storage_files import FileStorage
+from .utils_env import secure_atomic_write
 from .sync.utils import (
     retry_on_pixiv_error,
     _to_plain,
@@ -1300,9 +1302,6 @@ class BookmarkNovelSyncService:
 
     def _save_web_cookie_to_env(self, cookie_string: str) -> None:
         """将新的 Web Cookie 写入 .env 文件。"""
-        from pathlib import Path
-        import os
-
         # 查找 .env 文件路径
         env_path = Path(os.getenv("ENV_PATH", ".env"))
         if not env_path.exists():
@@ -1325,10 +1324,8 @@ class BookmarkNovelSyncService:
                     new_lines.append(line)
             if not found:
                 new_lines.append(f"PIXIV_WEB_COOKIE={cookie_string}")
-            # 原子写入
-            tmp_path = env_path.with_suffix(".env.tmp")
-            tmp_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-            os.replace(str(tmp_path), str(env_path))
+            payload = ("\n".join(new_lines) + "\n").encode("utf-8")
+            secure_atomic_write(env_path, payload)
             logger.info("Web Cookie 已保存到 %s", env_path)
         else:
             logger.warning("未找到 .env 文件，无法保存 Web Cookie")

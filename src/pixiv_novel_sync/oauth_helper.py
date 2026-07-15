@@ -15,6 +15,8 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 
+from .utils_env import secure_atomic_write
+
 logger = logging.getLogger(__name__)
 
 PIXIV_AUTH_BASE = "https://app-api.pixiv.net/web/v1/login"
@@ -144,25 +146,8 @@ class OAuthManager:
         for key, value in updates.items():
             if key not in seen:
                 result.append(f"{key}={value}")
-        # 原子写入：先写临时文件，再 rename，避免崩溃中途丢失 token。
-        # L1: .env 含长期 Pixiv refresh token，以 0600 创建（仅属主可读写），
-        # 避免多用户主机上被同机其他账号读取。Windows 上 chmod 基本为 no-op，无害。
-        tmp_path = env_path.with_suffix(env_path.suffix + ".tmp")
         payload = ("\n".join(result) + "\n").encode("utf-8")
-        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, payload)
-        finally:
-            os.close(fd)
-        try:
-            os.chmod(tmp_path, 0o600)
-        except OSError:
-            pass
-        os.replace(tmp_path, env_path)
-        try:
-            os.chmod(env_path, 0o600)
-        except OSError:
-            pass
+        secure_atomic_write(env_path, payload)
         os.environ["ENV_PATH"] = str(env_path)
         for key, value in updates.items():
             os.environ[key] = value

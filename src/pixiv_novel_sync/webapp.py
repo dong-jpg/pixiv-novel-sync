@@ -23,6 +23,7 @@ from .oauth_helper import OAuthManager
 from .settings import Settings
 from .storage_db import Database
 from .storage_files import FileStorage
+from .utils_env import secure_atomic_write
 from .utils_naming import safe_name
 from .web.managers import (
     SyncJobState,  # noqa: F401 - 经 webapp 重导出供 tests 使用
@@ -71,9 +72,8 @@ def _load_or_create_flask_secret(env_path: str | None) -> str:
     secret = os.urandom(32).hex()
     path.parent.mkdir(parents=True, exist_ok=True)
     lines.append(f"PIXIV_FLASK_SECRET={secret}")
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.replace(tmp_path, path)
+    payload = ("\n".join(lines) + "\n").encode("utf-8")
+    secure_atomic_write(path, payload)
     os.environ["PIXIV_FLASK_SECRET"] = secret
     return secret
 
