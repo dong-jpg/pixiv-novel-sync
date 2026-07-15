@@ -12,7 +12,12 @@ import requests
 
 from pixiv_novel_sync.ai.models import AIProviderConfig
 from pixiv_novel_sync.ai import providers as provider_module
-from pixiv_novel_sync.ai.providers import OpenAICompatibleProvider, ProviderConfigError, validate_base_url
+from pixiv_novel_sync.ai.providers import (
+    AIProviderError,
+    OpenAICompatibleProvider,
+    ProviderConfigError,
+    validate_base_url,
+)
 from pixiv_novel_sync.ai_web import _content_disposition
 from pixiv_novel_sync.ai.crypto import AISecretManager
 
@@ -80,6 +85,41 @@ def test_validate_base_url_allows_private_with_opt_in(monkeypatch):
         validate_base_url("https://169.254.169.254/v1", resolve=True)
     with pytest.raises(ProviderConfigError):
         validate_base_url("https://100.64.0.1/v1", resolve=True)
+
+
+def test_resolve_target_rejects_explicit_zero_port(monkeypatch):
+    def must_not_resolve(_host, port, *_args, **_kwargs):
+        pytest.fail(f"显式端口 0 被错误改写为 {port} 并进入 DNS 解析")
+
+    monkeypatch.setattr(provider_module.socket, "getaddrinfo", must_not_resolve)
+
+    with pytest.raises(ProviderConfigError, match="端口"):
+        provider_module._resolve_target("https://zero-port.test:0/v1")
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_port", "expected_host_header"),
+    [
+        ("https://ports.test:443/v1", 443, "ports.test"),
+        ("https://ports.test:8443/v1", 8443, "ports.test:8443"),
+    ],
+)
+def test_resolve_target_preserves_explicit_ports(monkeypatch, url, expected_port, expected_host_header):
+    resolved_ports: list[int] = []
+
+    def fixed_public(_host, port, *_args, **_kwargs):
+        resolved_ports.append(port)
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", port))]
+
+    monkeypatch.setattr(provider_module.socket, "getaddrinfo", fixed_public)
+
+    target = provider_module._resolve_target(url)
+
+    assert resolved_ports == [expected_port]
+    assert target.url == url
+    assert target.port == expected_port
+    assert target.host_header == expected_host_header
+    assert provider_module._pinned_url(target) == f"https://8.8.8.8:{expected_port}/v1"
 
 
 def test_pinned_adapter_uses_ip_for_pool_and_hostname_for_tls():
@@ -189,6 +229,51 @@ class _ForwardProxyHandler(BaseHTTPRequestHandler):
         return
 
 
+class _GatedRedirectHandler(BaseHTTPRequestHandler):
+    headers_sent = threading.Event()
+    release_body = threading.Event()
+    location = ""
+    request_count = 0
+
+    def do_POST(self) -> None:
+        type(self).request_count += 1
+        body = b"redirect body"
+        self.send_response(302)
+        self.send_header("Location", type(self).location)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.flush()
+        type(self).headers_sent.set()
+        if not type(self).release_body.wait(timeout=5):
+            return
+        try:
+            self.wfile.write(body)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def log_message(self, _format: str, *_args) -> None:
+        return
+
+
+class _RedirectTargetHandler(BaseHTTPRequestHandler):
+    request_count = 0
+
+    def _record_request(self) -> None:
+        type(self).request_count += 1
+        self.send_response(204)
+        self.end_headers()
+
+    def do_GET(self) -> None:
+        self._record_request()
+
+    def do_POST(self) -> None:
+        self._record_request()
+
+    def log_message(self, _format: str, *_args) -> None:
+        return
+
+
 def test_post_connects_to_validated_ip_and_preserves_host(monkeypatch):
     real_getaddrinfo = socket.getaddrinfo
     dns_queries: list[str] = []
@@ -212,6 +297,8 @@ def test_post_connects_to_validated_ip_and_preserves_host(monkeypatch):
         provider.session.trust_env = False
         try:
             response = provider._post(f"http://rebind.test:{port}/v1/messages", json={"test": True})
+            assert response.content == b'{"ok": true}'
+            assert response._content_consumed is True
             response.close()
         finally:
             provider.close()
@@ -252,6 +339,65 @@ def test_forward_proxy_receives_pinned_ip_target_and_original_host(monkeypatch):
     assert target.port == 8123
     assert "rebind.test" not in (_ForwardProxyHandler.seen_target or "")
     assert _ForwardProxyHandler.seen_host == "rebind.test:8123"
+
+
+def test_post_rejects_redirect_before_reading_body(monkeypatch):
+    real_getaddrinfo = socket.getaddrinfo
+
+    def fixed_loopback(host, port, *args, **kwargs):
+        if host == "redirect-body.test":
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", port))]
+        return real_getaddrinfo(host, port, *args, **kwargs)
+
+    monkeypatch.setenv("PIXIV_AI_ALLOW_PRIVATE_HOSTS", "1")
+    monkeypatch.setattr(provider_module.socket, "getaddrinfo", fixed_loopback)
+    _GatedRedirectHandler.headers_sent = threading.Event()
+    _GatedRedirectHandler.release_body = threading.Event()
+    _GatedRedirectHandler.request_count = 0
+    _RedirectTargetHandler.request_count = 0
+
+    provider = _make_provider()
+    provider.session.trust_env = False
+    errors: list[Exception] = []
+    request_finished = threading.Event()
+
+    def post_redirect() -> None:
+        try:
+            provider._post(redirect_url, json={"test": True}, timeout=3)
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            request_finished.set()
+
+    headers_arrived = False
+    finished_before_body = False
+    request_thread = threading.Thread(target=post_redirect, daemon=True)
+    try:
+        with _serve(_RedirectTargetHandler) as target_server:
+            target_port = target_server.server_address[1]
+            _GatedRedirectHandler.location = f"http://127.0.0.1:{target_port}/redirect-target"
+            with _serve(_GatedRedirectHandler) as redirect_server:
+                redirect_port = redirect_server.server_address[1]
+                redirect_url = f"http://redirect-body.test:{redirect_port}/v1/messages"
+                request_thread.start()
+                headers_arrived = _GatedRedirectHandler.headers_sent.wait(timeout=2)
+                if headers_arrived:
+                    finished_before_body = request_finished.wait(timeout=1)
+                _GatedRedirectHandler.release_body.set()
+                request_thread.join(timeout=2)
+    finally:
+        _GatedRedirectHandler.release_body.set()
+        request_thread.join(timeout=2)
+        provider.close()
+
+    assert headers_arrived, "本地重定向服务器未收到请求"
+    assert not request_thread.is_alive(), "Provider 请求线程未结束"
+    assert _GatedRedirectHandler.request_count == 1
+    assert _RedirectTargetHandler.request_count == 0
+    assert finished_before_body, "非流式 _post 在拒绝 3xx 前等待或读取了响应正文"
+    assert len(errors) == 1
+    assert isinstance(errors[0], AIProviderError)
+    assert "重定向" in str(errors[0])
 
 
 def test_post_reuses_origin_adapter_without_closing_active_pool(monkeypatch):

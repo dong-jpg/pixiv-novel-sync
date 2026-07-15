@@ -69,9 +69,13 @@ def _parse_provider_url(base_url: str | None) -> tuple[str, Any, str, int, ipadd
     if not host:
         raise ProviderConfigError("base_url 缺少主机名")
     try:
-        port = parsed.port or (443 if scheme == "https" else 80)
+        port = parsed.port
     except ValueError as exc:
         raise ProviderConfigError("base_url 端口无效") from exc
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    if port == 0:
+        raise ProviderConfigError("base_url 端口不能为 0")
 
     try:
         literal_ip: ipaddress._BaseAddress | None = _normalized_ip(ipaddress.ip_address(host))
@@ -275,11 +279,20 @@ class AIProvider:
         target = _resolve_target(url)
         pinned_url = _pinned_url(target)
         prefix = _origin_prefix(pinned_url)
+        requested_stream = bool(kwargs.get("stream", False))
+
+        def reject_redirect(response: requests.Response, *_args: Any, **_kwargs: Any) -> requests.Response:
+            if 300 <= response.status_code < 400:
+                response.close()
+                raise AIProviderError(f"AI API 拒绝重定向响应 {response.status_code}")
+            return response
 
         supplied_headers = kwargs.pop("headers", None) or {}
         headers = {key: value for key, value in supplied_headers.items() if key.lower() != "host"}
         headers["Host"] = target.host_header
         kwargs["allow_redirects"] = False
+        kwargs["hooks"] = {"response": reject_redirect}
+        kwargs["stream"] = True
         with self._adapter_lock:
             adapter = self._pinned_adapters.get(prefix)
             if adapter is None:
@@ -290,6 +303,8 @@ class AIProvider:
         if 300 <= response.status_code < 400:
             response.close()
             raise AIProviderError(f"AI API 拒绝重定向响应 {response.status_code}")
+        if not requested_stream:
+            _ = response.content
         return response
 
 

@@ -25,6 +25,12 @@ class FakeResponse:
         self.lines = lines or []
         self.encoding = "utf-8"
         self.closed = False
+        self.content_reads = 0
+
+    @property
+    def content(self):
+        self.content_reads += 1
+        return self.text.encode("utf-8")
 
     def __enter__(self):
         return self
@@ -62,6 +68,46 @@ def make_config(provider_type: str, max_retries: int = 3) -> AIProviderConfig:
         max_retries=max_retries,
         stream_enabled=True,
     )
+
+
+def test_post_forces_streaming_transport_and_buffers_non_stream_response(monkeypatch):
+    calls: list[dict] = []
+    fake_response = FakeResponse(200, {"ok": True})
+
+    def fake_post(*_args, **kwargs):
+        calls.append(kwargs)
+        return fake_response
+
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
+    provider = OpenAICompatibleProvider(make_config("openai_compatible"))
+    try:
+        response = provider._post("https://example.com/v1/messages", json={"test": True})
+    finally:
+        provider.close()
+
+    assert response is fake_response
+    assert calls[0]["stream"] is True
+    assert fake_response.content_reads == 1
+
+
+def test_post_keeps_streaming_response_body_lazy(monkeypatch):
+    calls: list[dict] = []
+    fake_response = FakeResponse(200, lines=['data: {"ok":true}'])
+
+    def fake_post(*_args, **kwargs):
+        calls.append(kwargs)
+        return fake_response
+
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
+    provider = OpenAICompatibleProvider(make_config("openai_compatible"))
+    try:
+        response = provider._post("https://example.com/v1/messages", json={"test": True}, stream=True)
+    finally:
+        provider.close()
+
+    assert response is fake_response
+    assert calls[0]["stream"] is True
+    assert fake_response.content_reads == 0
 
 
 def test_openai_stream_fallback_uses_single_non_stream_attempt(monkeypatch):
