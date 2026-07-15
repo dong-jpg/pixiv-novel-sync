@@ -1,5 +1,8 @@
 # Pixiv Novel Sync - 完整 API 文档
 
+> [!WARNING]
+> **历史快照，不是当前事实来源。** 本文档保留 2026-06-16 的接口记录，端点数量、字段和版本可能已经变化。当前前端依赖请查阅 [frontend-api-contract.md](frontend-api-contract.md)，最终行为以代码为准。
+
 **版本**: v0.2.0  
 **更新日期**: 2026-06-16  
 **端点总数**: 71

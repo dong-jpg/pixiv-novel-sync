@@ -26,11 +26,16 @@ Thumbs.db
 .env.*
 !.env.example
 config/config.yaml
+config/config.yaml.bak
 /data/
 /logs/
 *.db
 *.sqlite
 *.sqlite3
+
+# Local agent state
+/.claude/
+/memory/
 
 # Python tooling
 .pytest_cache/

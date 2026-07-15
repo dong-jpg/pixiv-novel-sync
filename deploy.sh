@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+umask 077
 
 # 颜色定义
 GREEN='\033[0;32m'
@@ -14,7 +15,7 @@ REPO_URL="https://github.com/dong-jpg/pixiv-novel-sync.git"
 INSTALL_DIR="${HOME}/pixiv-novel-sync"
 SERVICE_NAME="pixiv-novel-sync"
 FLASK_PORT=5011       # Flask 内部端口
-NGINX_PORT=5010       # Nginx 对外端口（用户访问）
+NGINX_PORT=80         # Nginx 对外端口（用户访问）
 
 # 检测是否已安装
 if [ -d "$INSTALL_DIR" ]; then
@@ -74,6 +75,7 @@ else
     : > .env
     echo -e "  ${YELLOW}.env.example 不存在，已创建空 .env，请手动填写${NC}"
 fi
+chmod 0600 .env
 
 if [ -f "config/config.yaml.bak" ]; then
     mv config/config.yaml.bak config/config.yaml

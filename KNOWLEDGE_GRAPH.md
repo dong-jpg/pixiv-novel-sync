@@ -1,5 +1,8 @@
 # pixiv-novel-sync 知识图谱
 
+> [!WARNING]
+> **历史快照，不是当前事实来源。** 本文档保留特定时间点的项目结构、模块和数据流描述，行数、模板数量与接口可能已经变化。当前入口请查阅 [README.md](README.md)，前端接口请查阅 [docs/frontend-api-contract.md](docs/frontend-api-contract.md)，最终行为以代码为准。
+
 > AI 友好的项目结构化文档，覆盖架构、模块、数据流、API 和关键决策。
 
 ---

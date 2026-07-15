@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 历史/高级入口：本脚本只安装旧的 systemd timer 同步任务。
+# Web 部署请使用仓库根目录 deploy.sh；不要将本脚本作为 Web 部署入口。
+
 APP_DIR=/opt/pixiv-novel-sync/app
 PYTHON_BIN=python3
 SERVICE_DIR=/etc/systemd/system

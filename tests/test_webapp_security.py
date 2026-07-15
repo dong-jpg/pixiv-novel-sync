@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
+import pixiv_novel_sync
 from pixiv_novel_sync.jobs.models import JobSource, JobStatus
 from pixiv_novel_sync.webapp import _oauth_task_public_payload, create_app
 
@@ -18,6 +19,7 @@ def test_no_dashboard_token_allows_localhost(tmp_path, monkeypatch):
     response = client.get("/api/health", environ_base={"REMOTE_ADDR": "127.0.0.1"})
 
     assert response.status_code == 200
+    assert response.get_json()["version"] == pixiv_novel_sync.__version__
 
 
 def test_no_dashboard_token_blocks_non_localhost(tmp_path, monkeypatch):

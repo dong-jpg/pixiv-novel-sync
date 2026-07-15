@@ -2,7 +2,7 @@
 
 **项目**: Pixiv Novel Sync
 **维护者**: dong-jpg
-**最近更新**: 2026-07-03
+**最近更新**: 2026-07-15
 
 ---
 
@@ -22,7 +22,6 @@
 
 | 文档 | 用途 |
 |------|------|
-| [API_COMPLETE.md](API_COMPLETE.md) | 完整后端 API 文档（71 端点） |
 | [frontend-api-contract.md](frontend-api-contract.md) | 前端依赖的后端端点契约 |
 | [frontend-pages.md](frontend-pages.md) | 前端页面/模板/路由清单 |
 | [library-os-style-guide.md](library-os-style-guide.md) | 前端视觉设计系统指南 |
@@ -31,7 +30,6 @@
 
 | 文档 | 用途 |
 |------|------|
-| [AI_WRITING_STUDIO_PLAN.md](AI_WRITING_STUDIO_PLAN.md) | AI 创作工台设计（注：§4 单文件布局描述与现有 `ai/services/` 包不符，以代码为准） |
 | [PREFERENCE_RECOMMENDER_REQUIREMENTS.md](PREFERENCE_RECOMMENDER_REQUIREMENTS.md) | 偏好推荐系统需求规格 |
 | [QWEN_EMBEDDING_INTEGRATION.md](QWEN_EMBEDDING_INTEGRATION.md) | Qwen embedding 检索配置指南 |
 
@@ -41,7 +39,17 @@
 |------|------|
 | [superpowers/plans/2026-06-26-job-cancellation-hardening.md](superpowers/plans/2026-06-26-job-cancellation-hardening.md) | 任务取消硬化计划（HEAD commit 依赖，当前权威） |
 
-## 历史归档
+## 历史参考与归档
+
+以下顶层文档是特定时间点的历史快照，不是当前事实来源。当前行为以代码、[README.md](../README.md) 和 [frontend-api-contract.md](frontend-api-contract.md) 为准。
+
+| 文档 | 历史用途 |
+|------|----------|
+| [API_COMPLETE.md](API_COMPLETE.md) | 2026-06-16 的完整 API 快照 |
+| [AI_WRITING_STUDIO_PLAN.md](AI_WRITING_STUDIO_PLAN.md) | AI 创作工作台的阶段性设计与实施记录 |
+| [../KNOWLEDGE_GRAPH.md](../KNOWLEDGE_GRAPH.md) | 旧项目结构、模块和数据流快照 |
+
+### `docs/archive/` 归档
 
 `docs/archive/` 存放已完成的阶段性文档（旧审计报告、一次性完成报告、优化路线图、拆分计划等）。这些文档描述的工作已经做完，不再维护，仅作归档参考。详见 [archive/README.md](archive/README.md)。
 

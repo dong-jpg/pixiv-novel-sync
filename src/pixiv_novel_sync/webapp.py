@@ -15,6 +15,7 @@ import requests as http_requests
 import yaml
 from flask import Flask, Response, jsonify, redirect, render_template, request, session, send_file
 
+from . import __version__
 from .jobs.manager import JobManager
 from .jobs.models import JobSpec, JobState, JobStatus
 from .jobs.runner import JobRunner
@@ -1343,7 +1344,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
         return jsonify({
             "status": "ok",
-            "version": "1.0.0",
+            "version": __version__,
             "uptime_seconds": uptime,
             "db_accessible": db_accessible,
             "running_jobs": running_jobs,

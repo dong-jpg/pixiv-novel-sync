@@ -189,11 +189,12 @@ source .venv/Scripts/activate
 pip install -e .
 ```
 
-#### 4. 配置环境变量
+#### 4. 创建本地配置
 
 ```bash
 cp .env.example .env
-# 编辑 .env 文件，填入你的 Pixiv refresh_token
+cp config/config.yaml.example config/config.yaml
+# 编辑 .env，至少填入 Pixiv refresh_token
 ```
 
 > 💡 **获取 Token**: 启动服务后访问 `http://localhost:5010/token-login`，通过 OAuth 授权自动获取
@@ -214,6 +215,8 @@ pixiv-novel-sync web-token-ui
 
 #### 环境变量 (`.env`)
 
+完整变量、用途与安全说明以 [`.env.example`](.env.example) 为准。首次使用先复制该文件，生产环境不要提交生成的 `.env`。
+
 ```env
 # Pixiv 认证（必需）
 PIXIV_REFRESH_TOKEN=your_refresh_token_here
@@ -230,35 +233,11 @@ PIXIV_NOVEL_SYNC_AI_SECRET_KEY=your_stable_secret
 
 #### 同步配置 (`config/config.yaml`)
 
-```yaml
-sync:
-  # 下载设置
-  download_assets: true           # 下载封面与插图
-  write_markdown: true             # 生成 Markdown 格式
-  write_raw_text: true             # 保存原始文本
-  
-  # 同步范围
-  bookmark_restricts:
-    - public                       # 同步公开收藏
-    - private                      # 同步私密收藏
-  
-  # 限速参数（避免触发 Pixiv 限流）
-  max_items_per_run: 50            # 单次最大同步数
-  max_pages_per_run: 5             # 单次最大页数
-  delay_seconds_between_items: 1.0 # 请求间隔
-  delay_seconds_between_pages: 1.0 # 翻页间隔
-  delay_seconds_between_skips: 0.1 # 跳过时延迟
-  
-  # 定时任务（Cron 表达式）
-  auto_sync_enabled: false
-  auto_sync_bookmarks_cron: "0 */6 * * *"           # 每6小时同步收藏
-  auto_sync_following_novels_cron: "0 */6 * * *"    # 每6小时同步关注
-  auto_sync_subscribed_series_cron: "0 */6 * * *"   # 每6小时同步追更
-  auto_sync_user_status_cron: "0 0 * * *"           # 每天检查用户状态
-  auto_sync_user_backup_enabled: false              # 定时全量备份关注用户
-  auto_sync_preference_analyze_enabled: false       # 自动增量分析本地偏好
-  pending_deletion_grace_period_days: 30            # 待删除记录保留天数
-  pending_deletion_cleanup_confirmed_days: 7        # 已确认删除记录清理天数
+配置结构、默认值与字段说明以 [`config/config.yaml.example`](config/config.yaml.example) 为准：
+
+```bash
+cp config/config.yaml.example config/config.yaml
+# 按需编辑 config/config.yaml
 ```
 
 ### 常用操作
@@ -266,14 +245,8 @@ sync:
 #### 手动同步
 
 ```bash
-# 同步收藏小说
-curl -X POST http://localhost:5010/api/dashboard/sync/bookmarks
-
-# 同步关注用户小说
-curl -X POST http://localhost:5010/api/dashboard/sync/following-novels
-
-# 同步追更系列
-curl -X POST http://localhost:5010/api/dashboard/sync/subscribed-series
+# 依次同步收藏、关注用户小说和订阅系列
+pixiv-novel-sync sync bookmark following_novels subscribed_series
 ```
 
 #### EPUB 导出
@@ -290,38 +263,24 @@ curl -X POST http://localhost:5010/api/dashboard/novels/export-epub \
   -d '{"novel_ids": [123456, 234567, 345678]}'
 ```
 
-#### AI 创作（API）
+#### AI 创作
 
-```bash
-# 续写小说
-curl -X POST http://localhost:5010/api/ai/drafts/continue \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_id": "your_agent_id",
-    "context": "小说前文...",
-    "instruction": "继续写下去，增加冲突"
-  }'
-```
+启动 Web 服务后访问 [`/dashboard/ai`](http://localhost:5010/dashboard/ai) 使用 AI 创作工作台。当前页面依赖的接口以 [`docs/frontend-api-contract.md`](docs/frontend-api-contract.md) 为准。
 
 ### 数据目录结构
 
 ```
 data/
 ├── library/               # 小说库
-│   ├── public/           # 公开收藏
-│   │   └── user_12345/
-│   │       └── novel_67890/
-│   │           ├── meta.json      # 元数据
-│   │           ├── text.txt       # 原始文本
-│   │           ├── text.md        # Markdown
-│   │           └── assets/        # 封面插图
-│   └── private/          # 私密收藏
-├── state/
-│   └── pixiv_sync.db    # SQLite 数据库
-└── ai/
-    ├── drafts/          # AI 草稿
-    ├── projects/        # 写作项目
-    └── retrieval/       # 检索索引
+│   ├── public/            # 公开收藏归档
+│   │   └── authors/<user_id>_<author>/novels/<novel_id>_<title_hash>/
+│   │       ├── meta.json
+│   │       ├── text.txt
+│   │       ├── text.md
+│   │       └── assets/
+│   └── private/           # 私密收藏归档，内部布局同 public
+└── state/
+    └── pixiv_sync.db      # SQLite 数据库（含 AI 创作数据）
 ```
 
 ---
@@ -451,6 +410,8 @@ mypy src/
 <summary><strong>Q: 数据库文件越来越大怎么办？</strong></summary>
 
 **A**: 
+以下维护命令需要先安装 `sqlite3` 命令行工具（例如 Debian/Ubuntu 使用 `sudo apt install sqlite3`）。操作前请停止服务并备份数据库。
+
 ```bash
 # 清理过期日志（保留最近 7 天）
 sqlite3 data/state/pixiv_sync.db "DELETE FROM task_logs WHERE created_at < datetime('now', '-7 days');"
@@ -466,22 +427,13 @@ curl -X POST http://localhost:5010/api/cache/clear
 <details>
 <summary><strong>Q: 可以在服务器上部署吗？</strong></summary>
 
-**A**: 可以！推荐使用反向代理：
+**A**: 可以。根目录 [`deploy.sh`](deploy.sh) 是推荐且唯一的 Web 部署入口，会配置虚拟环境、Nginx 和 systemd 服务：
 
-```nginx
-# Nginx 配置示例
-server {
-    listen 80;
-    server_name your-domain.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:5010;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
+```bash
+./deploy.sh
 ```
+
+[`scripts/install_server.sh`](scripts/install_server.sh) 仅保留给旧 timer 同步部署的历史/高级场景，不用于部署 Web 服务。
 
 **安全建议**:
 - 务必设置 `DASHBOARD_TOKEN` 环境变量
