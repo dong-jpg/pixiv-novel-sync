@@ -380,6 +380,9 @@ class AIChatWizardMixin:
             normalized_foreshadows.append(normalized_foreshadow)
 
         with db.transaction():
+            if not db.get_ai_chat_session(session_id):
+                raise AIServiceError("会话不存在")
+
             if mode == "create":
                 project_id = db.create_ai_writing_project({
                     "name": normalized_project["name"],
@@ -457,4 +460,11 @@ class AIChatWizardMixin:
                 "imported_project_id": project_id,
                 "status": "imported",
             })
+            updated_session = db.get_ai_chat_session(session_id)
+            if (
+                not updated_session
+                or updated_session.get("imported_project_id") != project_id
+                or updated_session.get("status") != "imported"
+            ):
+                raise AIServiceError("会话导入状态更新失败")
             return project_id

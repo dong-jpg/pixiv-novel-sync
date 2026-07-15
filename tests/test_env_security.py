@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import importlib
 import os
 import stat
@@ -150,8 +151,22 @@ def test_secure_atomic_write_does_not_follow_prebuilt_symlink(tmp_path, monkeypa
     candidate = target.with_name(".env.blocked.tmp")
     try:
         candidate.symlink_to(victim)
-    except (NotImplementedError, OSError) as exc:
+    except NotImplementedError as exc:
         pytest.skip(f"当前平台无法创建测试符号链接：{exc}")
+    except OSError as exc:
+        unsupported_errnos = {
+            value
+            for name in ("ENOSYS", "ENOTSUP", "EOPNOTSUPP")
+            if (value := getattr(errno, name, None)) is not None
+        }
+        permission_errnos = {errno.EACCES, errno.EPERM}
+        if (
+            isinstance(exc, PermissionError)
+            or exc.errno in permission_errnos | unsupported_errnos
+            or getattr(exc, "winerror", None) == 1314
+        ):
+            pytest.skip(f"当前平台无法创建测试符号链接：{exc}")
+        raise
 
     monkeypatch.setattr(module.secrets, "token_hex", lambda _size: "blocked")
 

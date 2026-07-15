@@ -264,6 +264,6 @@ class SeriesInfo:
 
 ## References
 
-- [storage_db.py](src/pixiv_novel_sync/storage_db.py) - 数据库访问层
-- [webapp.py](src/pixiv_novel_sync/webapp.py) - Flask 应用
-- [sync_engine.py](src/pixiv_novel_sync/sync_engine.py) - 同步引擎
+- [storage_db.py](../../../src/pixiv_novel_sync/storage_db.py) - 数据库访问层
+- [webapp.py](../../../src/pixiv_novel_sync/webapp.py) - Flask 应用
+- [sync_engine.py](../../../src/pixiv_novel_sync/sync_engine.py) - 同步引擎

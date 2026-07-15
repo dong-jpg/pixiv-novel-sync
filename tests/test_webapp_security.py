@@ -317,6 +317,43 @@ def test_no_token_trusts_xff_client_when_proxy_trusted(tmp_path, monkeypatch):
     assert blocked.status_code == 403
 
 
+def test_no_token_blocks_missing_xff_when_proxy_trusted(tmp_path, monkeypatch):
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    monkeypatch.setenv("DASHBOARD_TRUST_PROXY", "true")
+    monkeypatch.delenv("DASHBOARD_TRUSTED_PROXY_HOPS", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path))
+    client = app.test_client()
+
+    response = client.get(
+        "/dashboard",
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_no_token_blocks_short_xff_chain_when_proxy_trusted(tmp_path, monkeypatch):
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    monkeypatch.setenv("DASHBOARD_TRUST_PROXY", "true")
+    monkeypatch.setenv("DASHBOARD_TRUSTED_PROXY_HOPS", "2")
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path))
+    client = app.test_client()
+
+    response = client.get(
+        "/dashboard",
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        headers={"X-Forwarded-For": "127.0.0.1"},
+    )
+
+    assert response.status_code == 403
+
+
 def test_no_token_ignores_spoofed_leftmost_xff_when_proxy_trusted(tmp_path, monkeypatch):
     """M2: 攻击者在 XFF 左侧伪造 127.0.0.1，真实客户端 IP 由可信代理追加在右侧。
     必须按右数第 1 个（真实公网 IP）判定，拒绝访问——否则伪造最左值即可绕过本机判定。"""

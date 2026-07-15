@@ -280,13 +280,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         """
         if _trust_proxy:
             xff = request.headers.get("X-Forwarded-For", "")
-            if xff:
-                parts = [p.strip() for p in xff.split(",") if p.strip()]
-                if parts:
-                    idx = len(parts) - _trusted_proxy_hops
-                    if idx < 0:
-                        idx = 0
-                    return parts[idx]
+            parts = [p.strip() for p in xff.split(",") if p.strip()]
+            if len(parts) < _trusted_proxy_hops:
+                return ""
+            return parts[-_trusted_proxy_hops]
         return request.remote_addr or ""
 
     def _behind_proxy() -> bool:

@@ -337,6 +337,66 @@ def test_import_wizard_payload_rolls_back_mid_import_failure(
     assert _database_snapshot(db) == before
 
 
+def test_import_wizard_session_rechecks_session_after_initial_read(
+    db: Database,
+    service: AIWritingService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = _create_session(db)
+    snapshots_after_deletion: list[dict[str, list[tuple[object, ...]]]] = []
+    original_parse_wizard_session = service.parse_wizard_session
+
+    def parse_then_delete_session(current_session_id: int) -> dict[str, object]:
+        parsed = original_parse_wizard_session(current_session_id)
+        db.delete_ai_chat_session(current_session_id)
+        snapshots_after_deletion.append(_database_snapshot(db))
+        return parsed
+
+    monkeypatch.setattr(service, "parse_wizard_session", parse_then_delete_session)
+
+    with pytest.raises(AIServiceError, match="会话不存在"):
+        service.import_wizard_session(session_id)
+
+    assert len(snapshots_after_deletion) == 1
+    assert _database_snapshot(db) == snapshots_after_deletion[0]
+
+
+def test_import_wizard_payload_rolls_back_when_session_update_is_noop(
+    db: Database,
+    service: AIWritingService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _project_id, session_id = _seed_wizard_data(db)
+    before = _database_snapshot(db)
+
+    def ignore_session_update(_session_id: int, _payload: dict[str, object]) -> None:
+        return None
+
+    monkeypatch.setattr(db, "update_ai_chat_session", ignore_session_update)
+    parsed = {
+        "project": {
+            "name": "不会提交的项目",
+            "description": "不会提交的简介",
+            "outline": "不会提交的大纲",
+            "settings": {"tone": "tense"},
+        },
+        "chapters": [{"chapter_number": 2, "title": "不会提交的章节"}],
+        "foreshadows": [{"description": "不会提交的伏笔", "planted_chapter": 2}],
+    }
+
+    with pytest.raises(AIServiceError, match="会话导入状态更新失败"):
+        service._import_wizard_payload(
+            db,
+            parsed,
+            session_id,
+            "create",
+            None,
+            None,
+        )
+
+    assert _database_snapshot(db) == before
+
+
 def test_import_wizard_payload_deduplicates_foreshadows_after_clipping(
     db: Database,
     service: AIWritingService,
