@@ -224,8 +224,8 @@ PIXIV_REFRESH_TOKEN=your_refresh_token_here
 # Dashboard 密码保护（公网/反代部署必须配置；留空时仅允许本机访问）
 DASHBOARD_TOKEN=your_secure_password
 
-# Flask session 密钥（缺省时服务会生成随机值并写回 .env；生产建议手动固定）
-PIXIV_FLASK_SECRET=auto_generated
+# Flask session 密钥（留空时首次启动会安全生成随机值并写回 .env；生成后请保持稳定）
+PIXIV_FLASK_SECRET=
 
 # AI Provider API key 加密密钥（保存 AI Provider 前必须配置，并保持稳定）
 PIXIV_NOVEL_SYNC_AI_SECRET_KEY=your_stable_secret
@@ -418,9 +418,6 @@ sqlite3 data/state/pixiv_sync.db "DELETE FROM task_logs WHERE created_at < datet
 
 # 真空优化数据库
 sqlite3 data/state/pixiv_sync.db "VACUUM;"
-
-# 或使用 API
-curl -X POST http://localhost:5010/api/cache/clear
 ```
 </details>
 

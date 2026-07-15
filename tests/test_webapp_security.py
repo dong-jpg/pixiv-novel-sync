@@ -22,6 +22,21 @@ def test_no_dashboard_token_allows_localhost(tmp_path, monkeypatch):
     assert response.get_json()["version"] == pixiv_novel_sync.__version__
 
 
+def test_health_version_uses_package_version_source(tmp_path, monkeypatch):
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    monkeypatch.setattr("pixiv_novel_sync.webapp.__version__", "sentinel-package-version")
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path))
+    client = app.test_client()
+
+    response = client.get("/api/health", environ_base={"REMOTE_ADDR": "127.0.0.1"})
+
+    assert response.status_code == 200
+    assert response.get_json()["version"] == "sentinel-package-version"
+
+
 def test_no_dashboard_token_blocks_non_localhost(tmp_path, monkeypatch):
     monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
