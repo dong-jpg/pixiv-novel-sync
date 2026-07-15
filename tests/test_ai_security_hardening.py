@@ -308,6 +308,53 @@ def test_post_connects_to_validated_ip_and_preserves_host(monkeypatch):
     assert _ProviderHandler.seen_host == f"rebind.test:{port}"
 
 
+def test_post_preserves_request_response_hook(monkeypatch):
+    monkeypatch.setenv("PIXIV_AI_ALLOW_PRIVATE_HOSTS", "1")
+    hook_calls: list[requests.Response] = []
+
+    def record_response(response, *_args, **_kwargs):
+        hook_calls.append(response)
+        return response
+
+    with _serve(_ProviderHandler) as server:
+        port = server.server_address[1]
+        provider = _make_provider()
+        provider.session.trust_env = False
+        try:
+            response = provider._post(
+                f"http://127.0.0.1:{port}/v1/messages",
+                json={"test": True},
+                hooks={"response": [record_response]},
+            )
+            response.close()
+        finally:
+            provider.close()
+
+    assert hook_calls == [response]
+
+
+def test_post_preserves_session_response_hook(monkeypatch):
+    monkeypatch.setenv("PIXIV_AI_ALLOW_PRIVATE_HOSTS", "1")
+    hook_calls: list[requests.Response] = []
+
+    def record_response(response, *_args, **_kwargs):
+        hook_calls.append(response)
+        return response
+
+    with _serve(_ProviderHandler) as server:
+        port = server.server_address[1]
+        provider = _make_provider()
+        provider.session.trust_env = False
+        provider.session.hooks["response"].append(record_response)
+        try:
+            response = provider._post(f"http://127.0.0.1:{port}/v1/messages", json={"test": True})
+            response.close()
+        finally:
+            provider.close()
+
+    assert hook_calls == [response]
+
+
 def test_forward_proxy_receives_pinned_ip_target_and_original_host(monkeypatch):
     real_getaddrinfo = socket.getaddrinfo
 
@@ -341,7 +388,8 @@ def test_forward_proxy_receives_pinned_ip_target_and_original_host(monkeypatch):
     assert _ForwardProxyHandler.seen_host == "rebind.test:8123"
 
 
-def test_post_rejects_redirect_before_reading_body(monkeypatch):
+@pytest.mark.parametrize("hook_source", ["request", "session"])
+def test_post_rejects_redirect_before_reading_body_and_hooks(monkeypatch, hook_source):
     real_getaddrinfo = socket.getaddrinfo
 
     def fixed_loopback(host, port, *args, **kwargs):
@@ -360,10 +408,25 @@ def test_post_rejects_redirect_before_reading_body(monkeypatch):
     provider.session.trust_env = False
     errors: list[Exception] = []
     request_finished = threading.Event()
+    response_events: list[str] = []
+    original_response_close = requests.Response.close
+
+    def track_response_close(response):
+        response_events.append("close")
+        original_response_close(response)
+
+    def record_response(response, *_args, **_kwargs):
+        response_events.append("hook")
+        return response
+
+    monkeypatch.setattr(requests.Response, "close", track_response_close)
+    request_kwargs = {"hooks": {"response": [record_response]}} if hook_source == "request" else {}
+    if hook_source == "session":
+        provider.session.hooks["response"].append(record_response)
 
     def post_redirect() -> None:
         try:
-            provider._post(redirect_url, json={"test": True}, timeout=3)
+            provider._post(redirect_url, json={"test": True}, timeout=3, **request_kwargs)
         except Exception as exc:
             errors.append(exc)
         finally:
@@ -394,6 +457,7 @@ def test_post_rejects_redirect_before_reading_body(monkeypatch):
     assert not request_thread.is_alive(), "Provider 请求线程未结束"
     assert _GatedRedirectHandler.request_count == 1
     assert _RedirectTargetHandler.request_count == 0
+    assert response_events == ["close"]
     assert finished_before_body, "非流式 _post 在拒绝 3xx 前等待或读取了响应正文"
     assert len(errors) == 1
     assert isinstance(errors[0], AIProviderError)

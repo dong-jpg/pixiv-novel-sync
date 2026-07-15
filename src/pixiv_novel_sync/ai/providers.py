@@ -172,6 +172,28 @@ class _PinnedHostAdapter(HTTPAdapter):
             pool_kwargs["server_hostname"] = self._hostname
         return host_params, pool_kwargs
 
+    def send(
+        self,
+        request: requests.PreparedRequest,
+        stream: bool = False,
+        timeout: Any = None,
+        verify: bool | str = True,
+        cert: Any = None,
+        proxies: Any = None,
+    ) -> requests.Response:
+        response = super().send(
+            request,
+            stream=stream,
+            timeout=timeout,
+            verify=verify,
+            cert=cert,
+            proxies=proxies,
+        )
+        if 300 <= response.status_code < 400:
+            response.close()
+            raise AIProviderError(f"AI API 拒绝重定向响应 {response.status_code}")
+        return response
+
 
 def validate_base_url(base_url: str | None, *, resolve: bool = True) -> str:
     """Validate a provider ``base_url`` before the decrypted key is sent to it.
@@ -281,17 +303,10 @@ class AIProvider:
         prefix = _origin_prefix(pinned_url)
         requested_stream = bool(kwargs.get("stream", False))
 
-        def reject_redirect(response: requests.Response, *_args: Any, **_kwargs: Any) -> requests.Response:
-            if 300 <= response.status_code < 400:
-                response.close()
-                raise AIProviderError(f"AI API 拒绝重定向响应 {response.status_code}")
-            return response
-
         supplied_headers = kwargs.pop("headers", None) or {}
         headers = {key: value for key, value in supplied_headers.items() if key.lower() != "host"}
         headers["Host"] = target.host_header
         kwargs["allow_redirects"] = False
-        kwargs["hooks"] = {"response": reject_redirect}
         kwargs["stream"] = True
         with self._adapter_lock:
             adapter = self._pinned_adapters.get(prefix)
