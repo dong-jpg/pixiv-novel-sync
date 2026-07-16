@@ -89,7 +89,16 @@ class AiWritingMixin:
             return int(cursor.lastrowid)
 
     def update_ai_writing_project(self, project_id: int, data: dict[str, Any]) -> None:
-        allowed = {"name", "description", "outline", "style_profile_id", "novel_profile_id", "settings", "status"}
+        allowed = {
+            "name",
+            "description",
+            "outline",
+            "style_profile_id",
+            "novel_profile_id",
+            "settings",
+            "status",
+            "cover_path",
+        }
         fields: list[str] = []
         params: list[Any] = []
         for key in allowed:

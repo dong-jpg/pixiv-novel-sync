@@ -629,6 +629,7 @@ class SchemaMixin:
                 style_profile_id INTEGER,
                 novel_profile_id INTEGER,
                 settings_json TEXT,
+                cover_path TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -702,6 +703,11 @@ class SchemaMixin:
             CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_session ON ai_chat_messages(session_id);
             """
         )
+        project_cols = {
+            row[1] for row in self.conn.execute("PRAGMA table_info(ai_writing_projects)").fetchall()
+        }
+        if "cover_path" not in project_cols:
+            self.conn.execute("ALTER TABLE ai_writing_projects ADD COLUMN cover_path TEXT")
         # 给已有 ai_chapters 表补 metadata_json 列（老库迁移）
         try:
             cols = {row[1] for row in self.conn.execute("PRAGMA table_info(ai_chapters)").fetchall()}
