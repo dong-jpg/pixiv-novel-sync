@@ -58,6 +58,23 @@ def test_dashboard_ai_wizard_has_section_navigation():
     assert "switchTab(tab.id)" in html
 
 
+def test_task_logs_template_has_complete_ai_filters_and_details():
+    html = read(TEMPLATES / "dashboard_logs.html")
+
+    assert "filters.status" in html
+    assert "/api/dashboard/ai/jobs/" in html
+    assert "selectedLog.job_id || selectedLog.id" in html
+    assert '<option value="7">7 天</option>' not in html
+    assert "polish_dialogue" in html
+    assert "polish_psychology" in html
+    assert "keyword_clean" in html
+    assert "'cancelled': { label: '已取消'" in html
+    assert 'v-html="formatResult(log)"' not in html
+    assert "selectedLog.output_text" in html
+    assert "formatJson(selectedLog.input)" in html
+    assert "formatJson(selectedLog.output)" in html
+
+
 def test_frontend_contract_documents_exist_and_cover_core_topics():
     contract = read(DOCS / "frontend-api-contract.md")
     pages = read(DOCS / "frontend-pages.md")

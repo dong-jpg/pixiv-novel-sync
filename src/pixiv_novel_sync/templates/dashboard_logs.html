@@ -41,12 +41,22 @@
         </select>
       </div>
 
+      <div v-if="filters.category === 'ai'" class="flex items-center gap-2">
+        <label class="text-xs font-medium text-pixiv-gray uppercase whitespace-nowrap">状态</label>
+        <select v-model="filters.status" class="pl-3 pr-8 py-1.5 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors custom-select min-w-[100px]">
+          <option value="">全部</option>
+          <option value="running">运行中</option>
+          <option value="succeeded">成功</option>
+          <option value="failed">失败</option>
+          <option value="cancelled">已取消</option>
+        </select>
+      </div>
+
       <div class="flex items-center gap-2">
         <label class="text-xs font-medium text-pixiv-gray uppercase whitespace-nowrap">天数</label>
         <select v-model="filters.days" class="pl-3 pr-8 py-1.5 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors custom-select min-w-[80px]">
           <option value="1">1 天</option>
           <option value="3">3 天</option>
-          <option value="7">7 天</option>
         </select>
       </div>
     </div>
@@ -102,14 +112,14 @@
             </td>
             <td class="px-5 py-3 whitespace-nowrap text-sm text-gray-900 font-medium max-w-[200px] truncate">{{ log.task_name }}</td>
             <td class="px-5 py-3 whitespace-nowrap text-sm font-medium" :class="log.is_auto_sync ? 'text-brand-500' : 'text-pixiv-gray'">
-              {{ log.is_auto_sync ? '定时' : '手工' }}
+              {{ log.category === 'ai' ? 'AI 创作' : (log.is_auto_sync ? '定时' : '手工') }}
             </td>
             <td class="px-5 py-3 whitespace-nowrap">
               <app-badge :type="getStatusConfig(log.status).type">{{ getStatusConfig(log.status).label }}</app-badge>
             </td>
             <td class="px-5 py-3 whitespace-nowrap text-sm text-pixiv-gray">{{ formatDate(log.started_at) }}</td>
             <td class="px-5 py-3 whitespace-nowrap text-sm text-pixiv-gray">{{ formatDuration(log.duration_seconds) }}</td>
-            <td class="px-5 py-3 whitespace-nowrap text-sm" v-html="formatResult(log)"></td>
+            <td class="px-5 py-3 whitespace-nowrap text-xs font-medium" :class="resultClass(log)" :title="log.error_message || ''">{{ formatResult(log) }}</td>
             <td class="px-5 py-3 whitespace-nowrap text-right">
               <button @click.stop="showDetail(log)" class="text-brand-500 hover:text-brand-600 font-medium text-sm transition-colors focus:outline-none">详情</button>
             </td>
@@ -142,8 +152,8 @@
         <div>
           <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider mb-3 pb-2 border-b border-gray-100">基本信息</h3>
           <div class="space-y-2">
-            <div class="flex justify-between"><span class="text-pixiv-gray">任务 ID:</span> <span class="font-mono text-gray-900">{{ selectedLog.id }}</span></div>
-            <div class="flex justify-between"><span class="text-pixiv-gray">来源:</span> <span class="font-medium text-gray-900">{{ selectedLog.is_auto_sync ? '定时任务' : '手工任务' }}</span></div>
+            <div class="flex justify-between gap-4"><span class="text-pixiv-gray">任务 ID:</span> <span class="font-mono text-gray-900 break-all text-right">{{ selectedLog.job_id || selectedLog.id }}</span></div>
+            <div class="flex justify-between"><span class="text-pixiv-gray">来源:</span> <span class="font-medium text-gray-900">{{ selectedLog.category === 'ai' ? 'AI 创作任务' : (selectedLog.is_auto_sync ? '定时任务' : '手工任务') }}</span></div>
             <div class="flex justify-between items-center"><span class="text-pixiv-gray">状态:</span> <app-badge :type="getStatusConfig(selectedLog.status).type">{{ getStatusConfig(selectedLog.status).label }}</app-badge></div>
           </div>
         </div>
@@ -157,12 +167,40 @@
         </div>
       </div>
 
+      <div v-if="selectedLog.detail_error" class="mb-6 p-3 bg-amber-50 text-amber-700 rounded-lg border border-amber-100 text-sm">
+        {{ selectedLog.detail_error }}
+      </div>
+
       <!-- Error -->
       <div v-if="selectedLog.error_message" class="mb-6">
         <h3 class="text-xs font-medium text-red-500 uppercase tracking-wider mb-3 pb-2 border-b border-red-100">错误信息</h3>
         <div class="p-3 bg-red-50 text-red-700 rounded-lg border border-red-100 font-mono text-sm break-all">
           {{ selectedLog.error_message }}
         </div>
+      </div>
+
+      <div v-if="selectedLog.input" class="mb-6">
+        <div class="flex items-center justify-between mb-3 pb-2 border-b border-gray-100">
+          <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider">输入参数</h3>
+          <button @click="copyDetailText(selectedLog.input)" class="text-xs text-brand-600 hover:text-brand-700">复制</button>
+        </div>
+        <pre class="p-3 bg-gray-50 text-gray-700 rounded-lg border border-gray-100 font-mono text-xs whitespace-pre-wrap break-words max-h-64 overflow-y-auto">{{ formatJson(selectedLog.input) }}</pre>
+      </div>
+
+      <div v-if="selectedLog.output_text" class="mb-6">
+        <div class="flex items-center justify-between mb-3 pb-2 border-b border-gray-100">
+          <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider">文本输出</h3>
+          <button @click="copyDetailText(selectedLog.output_text)" class="text-xs text-brand-600 hover:text-brand-700">复制</button>
+        </div>
+        <pre class="p-3 bg-gray-50 text-gray-700 rounded-lg border border-gray-100 font-serif text-sm whitespace-pre-wrap break-words max-h-80 overflow-y-auto" v-text="selectedLog.output_text"></pre>
+      </div>
+
+      <div v-if="selectedLog.output" class="mb-6">
+        <div class="flex items-center justify-between mb-3 pb-2 border-b border-gray-100">
+          <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider">结构化输出</h3>
+          <button @click="copyDetailText(selectedLog.output)" class="text-xs text-brand-600 hover:text-brand-700">复制</button>
+        </div>
+        <pre class="p-3 bg-gray-50 text-gray-700 rounded-lg border border-gray-100 font-mono text-xs whitespace-pre-wrap break-words max-h-64 overflow-y-auto">{{ formatJson(selectedLog.output) }}</pre>
       </div>
 
       <!-- Stats -->
@@ -239,6 +277,7 @@
         category: 'sync',
         task_type: '',
         source: '',
+        status: '',
         days: '3'
       });
 
@@ -270,14 +309,20 @@
         { value: 'chat', label: '创作向导对话' },
         { value: 'update_state', label: '状态记忆更新' },
         { value: 'resolve_foreshadow', label: '伏笔回收' },
-        { value: 'polish', label: '润色' }
+        { value: 'polish', label: '润色' },
+        { value: 'polish_dialogue', label: '对话润色' },
+        { value: 'polish_psychology', label: '心理描写润色' },
+        { value: 'keyword_clean', label: '关键词清洗' }
       ];
       const taskTypeOptions = computed(() =>
         filters.category === 'ai' ? AI_TASK_OPTIONS : SYNC_TASK_OPTIONS
       );
 
       // 切换分类时清空已选 task_type，避免残留跨类无效值
-      watch(() => filters.category, () => { filters.task_type = ''; });
+      watch(() => filters.category, () => {
+        filters.task_type = '';
+        filters.status = '';
+      });
       const autoRefresh = ref(false);
       let refreshInterval = null;
 
@@ -303,7 +348,9 @@
             category: filters.category
           });
           if (filters.task_type) params.append('task_type', filters.task_type);
-          if (filters.category !== 'ai') {
+          if (filters.category === 'ai') {
+            if (filters.status) params.append('status', filters.status);
+          } else {
             if (filters.source === 'manual') params.append('is_auto', 'false');
             if (filters.source === 'auto') params.append('is_auto', 'true');
           }
@@ -328,7 +375,9 @@
         try {
           const params = new URLSearchParams({ page: page.value, page_size: 20, days: filters.days, category: filters.category });
           if (filters.task_type) params.append('task_type', filters.task_type);
-          if (filters.category !== 'ai') {
+          if (filters.category === 'ai') {
+            if (filters.status) params.append('status', filters.status);
+          } else {
             if (filters.source === 'manual') params.append('is_auto', 'false');
             if (filters.source === 'auto') params.append('is_auto', 'true');
           }
@@ -343,9 +392,25 @@
       const showDetail = async (log) => {
         modalOpen.value = true;
         selectedLog.value = null;
-        // AI 创作任务来自 ai_jobs 投影，没有 task_logs 行 id（id 为 null），
-        // 详情接口 /api/dashboard/logs/<int:id> 无法命中；直接用列表行数据展示。
-        if (!log || log.category === 'ai' || log.id === null || log.id === undefined) {
+        if (!log) {
+          modalOpen.value = false;
+          return;
+        }
+        if (log.category === 'ai') {
+          detailLoading.value = true;
+          try {
+            const res = await fetch('/api/dashboard/ai/jobs/' + encodeURIComponent(log.job_id));
+            const payload = await res.json();
+            if (!res.ok || payload.ok === false) throw new Error(payload.error || '加载详情失败');
+            selectedLog.value = { ...log, ...payload.data, category: 'ai' };
+          } catch (e) {
+            selectedLog.value = { ...log, detail_error: e.message || '详情已清理或不存在' };
+          } finally {
+            detailLoading.value = false;
+          }
+          return;
+        }
+        if (log.id === null || log.id === undefined) {
           selectedLog.value = log;
           detailLoading.value = false;
           return;
@@ -403,7 +468,8 @@
           'completed': { label: '完成', type: 'green' },
           'succeeded': { label: '成功', type: 'green' },
           'failed': { label: '失败', type: 'red' },
-          'stopped': { label: '停止', type: 'yellow' }
+          'stopped': { label: '停止', type: 'yellow' },
+          'cancelled': { label: '已取消', type: 'yellow' }
         };
         return map[status] || { label: status, type: 'gray' };
       };
@@ -424,7 +490,8 @@
           'distill_style': '风格蒸馏', 'distill_novel': '小说蒸馏',
           'extract_summary': '摘要提取', 'summarize': '摘要提取', 'chat': '创作向导对话',
           'update_state': '状态记忆更新', 'state_update': '状态记忆更新',
-          'resolve_foreshadow': '伏笔回收', 'foreshadow_resolve': '伏笔回收', 'polish': '润色'
+          'resolve_foreshadow': '伏笔回收', 'foreshadow_resolve': '伏笔回收', 'polish': '润色',
+          'polish_dialogue': '对话润色', 'polish_psychology': '心理描写润色', 'keyword_clean': '关键词清洗'
         };
         return map[type] || type;
       };
@@ -433,7 +500,7 @@
         if (log.status === 'running') return '-';
         if (log.status === 'failed') {
           const msg = log.error_message || '未知错误';
-          return `<span class="text-red-600 text-xs font-medium" title="${msg.replace(/"/g, '&quot;')}">失败: ${msg.substring(0, 20)}${msg.length > 20 ? '...' : ''}</span>`;
+          return `失败: ${msg.substring(0, 20)}${msg.length > 20 ? '...' : ''}`;
         }
         if (log.stats) {
           const s = log.stats;
@@ -442,9 +509,25 @@
           if (s.users_synced ?? s.users) parts.push(`${s.users_synced ?? s.users}人`);
           if (s.series_synced) parts.push(`${s.series_synced}系列`);
           if (s.assets_downloaded) parts.push(`${s.assets_downloaded}图`);
-          return parts.length ? `<span class="text-green-700 font-medium text-xs">${parts.join(', ')}</span>` : '<span class="text-pixiv-gray text-xs">完成</span>';
+          return parts.length ? parts.join(', ') : '完成';
         }
-        return '<span class="text-pixiv-gray text-xs">完成</span>';
+        return log.status === 'cancelled' ? '已取消' : '完成';
+      };
+
+      const resultClass = (log) => {
+        if (log.status === 'failed') return 'text-red-600';
+        if (['succeeded', 'completed', 'success'].includes(log.status)) return 'text-green-700';
+        return 'text-pixiv-gray';
+      };
+
+      const formatJson = (value) => {
+        try { return JSON.stringify(value, null, 2); }
+        catch { return String(value ?? ''); }
+      };
+
+      const copyDetailText = async (value) => {
+        const text = typeof value === 'string' ? value : formatJson(value);
+        if (text && window.navigator?.clipboard) await window.navigator.clipboard.writeText(text);
       };
 
       watch(autoRefresh, (val) => {
@@ -468,7 +551,8 @@
         taskTypeOptions,
         modalOpen, detailLoading, selectedLog, modalTitle,
         applyFilter, handlePageChange, showDetail,
-        formatDate, formatTime, formatDuration, getStatusConfig, getTaskTypeName, formatResult
+        formatDate, formatTime, formatDuration, getStatusConfig, getTaskTypeName,
+        formatResult, resultClass, formatJson, copyDetailText
       };
     }
   });
