@@ -20,6 +20,13 @@ def test_base_template_defines_library_os_design_system():
     assert "library-main" in html
 
 
+def test_library_main_can_shrink_to_mobile_viewport():
+    html = read(TEMPLATES / "base.html")
+    library_main_rule = html.split(".library-main {", 1)[1].split("}", 1)[0]
+
+    assert "min-width: 0" in library_main_rule
+
+
 def test_global_components_use_library_os_classes():
     html = read(TEMPLATES / "vue_components.html")
 
