@@ -123,6 +123,18 @@ def test_dashboard_cards_stretch_and_recommendations_have_error_state():
     assert "retryRecommendationItems" in html
 
 
+def test_current_frontend_docs_describe_task_logs_and_ai_pages():
+    readme = read(ROOT / "README.md")
+    contract = read(DOCS / "frontend-api-contract.md")
+
+    assert "默认保留 3 天" in readme
+    assert "保留最近 7 天" not in readme
+    assert "| `/dashboard/logs` | `dashboard_logs.html` | 任务日志 |" in contract
+    assert "/dashboard/wizard" in contract
+    assert "/dashboard/novels/ai/<project_id>" in contract
+    assert "/api/dashboard/ai/projects/<project_id>/cover" in contract
+
+
 def test_task_logs_template_has_complete_ai_filters_and_details():
     html = read(TEMPLATES / "dashboard_logs.html")
 

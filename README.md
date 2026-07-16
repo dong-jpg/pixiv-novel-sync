@@ -143,10 +143,16 @@
 | 📊 **Dashboard** | 系统状态、同步统计、快速操作 |
 | 📚 **小说库** | 浏览、搜索、排序、导出 EPUB |
 | 👥 **关注管理** | 关注用户列表、状态监控、单独备份 |
-| 🤖 **AI 创作** | 草稿管理、项目管理、模型配置 |
+| 🤖 **AI 创作** | 自动写作、创作向导、蒸馏档案、AI 小说阅读 |
 | 🎯 **偏好推荐** | 画像分析、推荐运行、结果浏览 |
 | 📋 **任务日志** | 实时日志、筛选、自动刷新 |
 | ⚙️ **设置中心** | 同步配置、定时任务、限速参数 |
+
+AI 功能入口：
+
+- `/dashboard/ai`：自动写作项目、全书规划、章节和 Pipeline。
+- `/dashboard/wizard`：创作向导与蒸馏档案。
+- `/dashboard/novels?category=ai`：AI 创作小说库。
 
 ---
 
@@ -413,8 +419,8 @@ mypy src/
 以下维护命令需要先安装 `sqlite3` 命令行工具（例如 Debian/Ubuntu 使用 `sudo apt install sqlite3`）。操作前请停止服务并备份数据库。
 
 ```bash
-# 清理过期日志（保留最近 7 天）
-sqlite3 data/state/pixiv_sync.db "DELETE FROM task_logs WHERE created_at < datetime('now', '-7 days');"
+# 清理过期日志（同步任务与 AI 创作任务默认保留 3 天）
+sqlite3 data/state/pixiv_sync.db "DELETE FROM task_logs WHERE created_at < datetime('now', '-3 days'); DELETE FROM ai_jobs WHERE created_at < datetime('now', '-3 days');"
 
 # 真空优化数据库
 sqlite3 data/state/pixiv_sync.db "VACUUM;"

@@ -23,10 +23,12 @@
 | `/dashboard/series/<series_id>` | `dashboard_series_detail.html` | 系列详情 |
 | `/dashboard/users/<user_id>` | `dashboard_user_detail.html` | 作者详情 |
 | `/dashboard/pending-deletions` | `dashboard_pending_deletions.html` | 待确认删除 |
-| `/dashboard/logs` | `dashboard_logs.html` | 同步日志 |
+| `/dashboard/logs` | `dashboard_logs.html` | 任务日志 |
 | `/dashboard/settings` | `dashboard_settings.html` | 设置 |
 | `/dashboard/preferences` | `dashboard_preferences.html` | 偏好画像与推荐 |
-| `/dashboard/ai` | `dashboard_ai.html` | AI 创作 |
+| `/dashboard/ai` | `dashboard_ai.html` | AI 自动写作 |
+| `/dashboard/wizard` | `dashboard_wizard.html` | 创作向导与蒸馏档案 |
+| `/dashboard/novels/ai/<project_id>` | `dashboard_ai_reader.html` | AI 创作小说阅读 |
 
 ## Shared shell APIs
 
@@ -193,17 +195,21 @@ Starts author sync.
 
 ### GET /api/dashboard/logs
 
-Used by: dashboard recent activity and logs page。
+Used by: dashboard recent activity and task logs page。同步任务与 AI 创作任务默认保留 3 天。
+
+请求示例：`GET /api/dashboard/logs?category=sync|ai&task_type=&status=&days=1|3`，其中竖线表示二选一。
 
 Query params:
 
 - `page`
 - `page_size`
-- `days`
+- `category=sync|ai`
+- `days=1|3`
 - `task_type`
-- `source`
+- `status`（AI 创作任务）
+- `is_auto=true|false`（同步任务）
 
-Expected response supports `items` or `logs`, plus pagination metadata.
+返回统一的 `items`、`page`、`page_size`、`total` 和 `total_pages`。每项包含任务标识、类型、名称、状态、开始/结束时间和 `category`；`category=ai` 时数据来自 `ai_jobs` 的只读投影，其他值按同步任务查询。
 
 ### GET /api/dashboard/logs/{log_id}
 
@@ -368,6 +374,10 @@ All AI configuration APIs generally return `{ ok, data }` or `{ ok, error }`.
 - `POST /api/dashboard/ai/prompt-templates/seed`
 - `GET /api/dashboard/ai/series/search`
 
+### GET /api/dashboard/ai/jobs/<job_id>
+
+返回 AI 任务完整详情，包括 `job_id`、`task_type`、`status`、`input`、`output_text`、`output`、`error_message` 和时间字段。任务不存在时返回 404。
+
 ## AI SSE stream contract
 
 The following endpoints return `text/event-stream`:
@@ -409,6 +419,9 @@ Frontend expects streams to terminate with `done` or `error`.
 - `POST /api/dashboard/ai/projects`
 - `PUT /api/dashboard/ai/projects/{project_id}`
 - `DELETE /api/dashboard/ai/projects/{project_id}`
+- `POST /api/dashboard/ai/projects/<project_id>/cover`
+- `GET /api/dashboard/ai/projects/<project_id>/cover`
+- `DELETE /api/dashboard/ai/projects/<project_id>/cover`
 - `GET /api/dashboard/ai/projects/{project_id}/reader`
 - `GET /api/dashboard/ai/projects/{project_id}/download`
 - `GET /api/dashboard/ai/projects/{project_id}/chapters`
@@ -426,6 +439,8 @@ Frontend expects streams to terminate with `done` or `error`.
 - `POST /api/dashboard/ai/projects/{project_id}/chapters/{chapter_id}/index`
 - `GET /api/dashboard/ai/projects/{project_id}/search`
 - `GET /api/dashboard/ai/chapters/{chapter_id}/dashboard`
+
+封面上传使用 `multipart/form-data` 的 `cover` 字段，支持 JPEG、PNG、WebP，最大 10 MiB；成功返回 `cover_url`。文件类型、扩展名或文件头不一致返回 400，项目或封面不存在返回 404。读取接口直接返回图片内容，删除成功返回 `cover_url: null`。
 
 ## AI chat/session APIs
 
