@@ -112,6 +112,17 @@ def test_wizard_preserves_distill_sources_and_merge_controls():
     assert "payload.overwrite_fields" in wizard
 
 
+def test_dashboard_cards_stretch_and_recommendations_have_error_state():
+    html = read(TEMPLATES / "dashboard.html")
+
+    assert 'data-dashboard-card="activity"' in html
+    assert 'data-dashboard-card="scheduler"' in html
+    assert html.count("h-full flex flex-col") >= 2
+    assert "recommendationError" in html
+    assert "推荐结果加载失败" in html
+    assert "retryRecommendationItems" in html
+
+
 def test_task_logs_template_has_complete_ai_filters_and_details():
     html = read(TEMPLATES / "dashboard_logs.html")
 
