@@ -1,0 +1,77 @@
+<script>
+function createAiSourceSearchComponent(config) {
+  return {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template: `
+      <div class="relative">
+        <label class="block text-xs font-medium text-pixiv-gray mb-1.5">{{ config.label }}</label>
+        <input v-model="query" @input="scheduleSearch" @focus="showDropdown = true"
+               class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+               :placeholder="config.placeholder">
+        <div v-if="selectedTitle" class="text-xs text-green-600 mt-1">已选择：{{ selectedTitle }}</div>
+        <div v-if="showDropdown && results.length" class="absolute z-20 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-auto">
+          <button v-for="item in results" :key="itemId(item)" @click="selectItem(item)" type="button"
+                  class="block w-full text-left px-3 py-2 text-sm hover:bg-blue-50 border-b border-gray-50 last:border-0">
+            <span class="block font-medium text-gray-900 truncate">{{ item.title }}</span>
+            <span class="block text-xs text-pixiv-gray">{{ config.describe(item) }}</span>
+          </button>
+        </div>
+        <div v-if="showDropdown && query && !results.length && !searching" class="absolute z-20 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-sm text-pixiv-gray">
+          未找到匹配结果
+        </div>
+      </div>`,
+    data() {
+      return { config, query: '', results: [], showDropdown: false, searching: false, selectedTitle: '', searchTimer: null };
+    },
+    methods: {
+      itemId(item) { return item[config.idKey]; },
+      scheduleSearch() {
+        clearTimeout(this.searchTimer);
+        if (!this.query.trim()) { this.results = []; return; }
+        this.searching = true;
+        this.searchTimer = setTimeout(() => this.search(), 300);
+      },
+      async search() {
+        try {
+          const res = await fetch(config.url(this.query));
+          const data = await res.json();
+          this.results = config.items(data);
+        } catch {
+          this.results = [];
+        } finally {
+          this.searching = false;
+        }
+      },
+      selectItem(item) {
+        this.selectedTitle = item.title;
+        this.showDropdown = false;
+        this.query = '';
+        this.results = [];
+        this.$emit('update:modelValue', item[config.idKey]);
+      }
+    },
+    watch: {
+      modelValue(value) { if (!value) this.selectedTitle = ''; }
+    }
+  };
+}
+
+window.aiNovelSearchComponent = createAiSourceSearchComponent({
+  label: '搜索归档小说',
+  placeholder: '输入小说标题搜索...',
+  idKey: 'novel_id',
+  url: query => '/api/dashboard/novels?search=' + encodeURIComponent(query) + '&page_size=10',
+  items: data => data.items || [],
+  describe: item => (item.author_name || '未知作者') + ' · ID: ' + item.novel_id,
+});
+
+window.aiSeriesSearchComponent = createAiSourceSearchComponent({
+  label: '搜索系列',
+  placeholder: '输入系列标题或作者名搜索...',
+  idKey: 'series_id',
+  url: query => '/api/dashboard/ai/series/search?q=' + encodeURIComponent(query) + '&limit=10',
+  items: data => data.data || [],
+  describe: item => (item.author_name || '未知作者') + ' · ' + (item.total_novels || '?') + ' 章',
+});
+</script>

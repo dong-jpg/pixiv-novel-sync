@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+
+{% block title %}创作向导 - Pixiv 小说同步器{% endblock %}
+
+{% block content %}
+<div class="library-page px-4 sm:px-6 lg:px-8 py-6 max-w-7xl mx-auto" data-page="writing-wizard">
+  <div class="library-page-header flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">创作向导</h1>
+      <p class="text-sm text-pixiv-gray mt-1">多轮构思与蒸馏档案</p>
+    </div>
+    <div class="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">文本会发送到当前 Agent 绑定的 AI API。</div>
+  </div>
+
+  <div class="flex gap-2 mb-5 border-b border-gray-100">
+    <button v-for="tab in tabs" :key="tab.id" @click="activeTab = tab.id"
+            class="px-4 py-2 text-sm font-medium border-b-2 -mb-px"
+            :class="activeTab === tab.id ? 'border-brand-500 text-brand-600' : 'border-transparent text-pixiv-gray'">
+      {{ tab.name }}
+    </button>
+  </div>
+
+  <div v-if="message" class="mb-4 px-4 py-3 rounded-lg text-sm border"
+       :class="messageType === 'error' ? 'bg-red-50 text-red-700 border-red-100' : 'bg-green-50 text-green-700 border-green-100'">{{ message }}</div>
+
+  <section v-show="activeTab === 'wizard'" class="grid grid-cols-1 lg:grid-cols-12 gap-4 min-h-[640px]">
+    <aside class="lg:col-span-3 bg-white border border-gray-100 shadow-sm rounded-lg flex flex-col overflow-hidden">
+      <div class="p-3 border-b border-gray-100 flex items-center gap-2">
+        <h2 class="text-sm font-bold text-gray-900 flex-1">会话</h2>
+        <button @click="openNewWizardSession" class="text-xs px-2 py-1 bg-brand-500 text-white rounded-lg">新建</button>
+        <button @click="showImportMaterialModal = true" class="text-xs px-2 py-1 bg-amber-500 text-white rounded-lg">导入素材</button>
+      </div>
+      <div class="flex-1 overflow-y-auto p-2 space-y-1">
+        <button v-for="session in chatSessions" :key="session.id" @click="selectChatSession(session.id)"
+                class="w-full text-left px-3 py-2 rounded-lg border text-sm"
+                :class="currentChatSession?.id === session.id ? 'bg-brand-50 border-brand-200' : 'border-transparent hover:bg-gray-50'">
+          <span class="block font-medium text-gray-900 truncate">{{ session.title || '未命名会话' }}</span>
+          <span class="block text-xs text-pixiv-gray mt-0.5">{{ session.message_count || 0 }} 条</span>
+        </button>
+        <p v-if="!chatSessions.length" class="text-xs text-pixiv-gray p-3">暂无会话</p>
+      </div>
+    </aside>
+
+    <main class="lg:col-span-6 bg-white border border-gray-100 shadow-sm rounded-lg flex flex-col overflow-hidden min-h-[640px]">
+      <div class="p-3 border-b border-gray-100 flex items-center gap-2" v-if="currentChatSession">
+        <input v-model="currentChatSession.title" @change="renameWizardSession" class="min-w-0 flex-1 px-2 py-1 border border-gray-200 rounded-lg text-sm font-medium">
+        <select v-model.number="currentChatSession.agent_id" @change="updateChatSessionAgent" class="max-w-44 px-2 py-1 border border-gray-200 rounded-lg text-xs bg-white">
+          <option v-for="agent in wizardAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option>
+        </select>
+        <button @click="openImportWizardModal" class="px-2 py-1 bg-green-50 text-green-700 rounded-lg text-xs">导入项目</button>
+        <button @click="deleteWizardSession" class="px-2 py-1 bg-red-50 text-red-600 rounded-lg text-xs">删除</button>
+      </div>
+      <div ref="chatLogRef" class="flex-1 overflow-y-auto p-4 space-y-4">
+        <div v-if="!currentChatSession" class="h-full flex items-center justify-center text-sm text-pixiv-gray">选择或新建会话</div>
+        <div v-for="item in chatMessages" :key="item.id" class="flex" :class="item.role === 'user' ? 'justify-end' : 'justify-start'">
+          <div class="max-w-[86%] px-3 py-2 rounded-lg whitespace-pre-wrap text-sm"
+               :class="item.role === 'user' ? 'bg-brand-500 text-white' : 'bg-gray-50 border border-gray-100 text-gray-800'">{{ item.content }}</div>
+        </div>
+        <div v-if="chatStreamingText" class="max-w-[86%] px-3 py-2 rounded-lg whitespace-pre-wrap text-sm bg-gray-50 border border-gray-100">{{ chatStreamingText }}</div>
+      </div>
+      <div class="p-3 border-t border-gray-100 flex gap-2">
+        <textarea v-model="chatInput" @keydown.ctrl.enter.prevent="sendChatMessage" rows="2" class="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm resize-none" placeholder="输入本轮想法"></textarea>
+        <button @click="sendChatMessage" :disabled="!currentChatSession || !chatInput.trim() || chatStreaming" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ chatStreaming ? '生成中…' : '发送' }}</button>
+      </div>
+    </main>
+
+    <aside class="lg:col-span-3 bg-white border border-gray-100 shadow-sm rounded-lg p-4 overflow-y-auto">
+      <h2 class="text-sm font-bold text-gray-900 mb-3">实时产物</h2>
+      <div v-if="wizardSectionKeys.length" class="space-y-3">
+        <div v-for="key in wizardSectionKeys" :key="key" class="border-b border-gray-100 pb-3">
+          <div class="text-xs font-medium text-brand-600 mb-1">{{ key }}</div>
+          <div class="text-xs text-gray-600 whitespace-pre-wrap">{{ wizardSections[key] }}</div>
+        </div>
+      </div>
+      <p v-else class="text-xs text-pixiv-gray">对话中整理出的设定会显示在这里。</p>
+    </aside>
+  </section>
+
+  <section v-show="activeTab === 'distill'" class="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+    <div class="space-y-4">
+      <div class="bg-white border border-gray-100 shadow-sm rounded-lg p-5 space-y-3">
+        <h2 class="text-sm font-bold text-gray-900">蒸馏档案</h2>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <select v-model="distillForm.distill_type" class="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+            <option value="style">风格档案</option><option value="novel">小说档案</option>
+          </select>
+          <select v-model.number="distillForm.agent_id" class="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+            <option :value="0">选择 Agent</option><option v-for="agent in distillAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option>
+          </select>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <select v-model="distillForm.source_type" class="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+            <option value="manual">手动文本</option>
+            <option value="archive_novel">归档小说</option>
+            <option value="archive_series">归档系列</option>
+            <option value="document">上传文档</option>
+          </select>
+          <input type="number" v-model.number="distillForm.chunk_chars" min="1000" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="分块字符数">
+        </div>
+        <novel-search v-if="distillForm.source_type === 'archive_novel'" v-model="distillForm.novel_id"></novel-search>
+        <series-search v-else-if="distillForm.source_type === 'archive_series'" v-model="distillForm.series_id"></series-search>
+        <div v-else-if="distillForm.source_type === 'document'" class="space-y-2">
+          <input type="file" accept=".txt,.md,text/plain,text/markdown" @change="uploadDistillDocument" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+          <p class="text-xs text-pixiv-gray">{{ distillForm.document_id ? '文档已上传' : '请选择 TXT 或 Markdown 文档' }}</p>
+        </div>
+        <textarea v-else v-model="distillForm.text" rows="12" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif" placeholder="粘贴需要蒸馏的小说正文或设定"></textarea>
+        <label class="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" v-model="distillForm.full_text" class="rounded border-gray-300">
+          全文分析
+        </label>
+        <div v-if="distillForm.full_text" class="flex items-center gap-2">
+          <label class="text-xs text-pixiv-gray">每批分块数</label>
+          <input type="number" v-model.number="distillForm.batch_size" min="0" max="50" class="w-24 px-2 py-1 border border-gray-200 rounded-lg text-sm" placeholder="自动">
+        </div>
+        <div class="flex justify-end gap-2">
+          <button @click="startDistill" :disabled="distillStreaming || !distillForm.agent_id || !distillSourceReady" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ distillStreaming ? '蒸馏中…' : '开始蒸馏' }}</button>
+        </div>
+      </div>
+      <output-panel title="蒸馏输出" :text="distillOutput" :streaming="distillStreaming" :job-id="distillJobId" @save="saveDistillProfile"></output-panel>
+    </div>
+    <div class="space-y-4">
+      <div class="bg-white border border-gray-100 shadow-sm rounded-lg p-5">
+        <h2 class="text-sm font-bold text-gray-900 mb-3">风格档案</h2>
+        <div class="space-y-2"><div v-for="profile in styleProfiles" :key="profile.id" class="flex items-center gap-2 p-2 border border-gray-100 rounded-lg"><span class="text-sm flex-1 truncate">{{ profile.name }}</span><button @click="deleteStyleProfile(profile.id)" class="text-xs text-red-600">删除</button></div><p v-if="!styleProfiles.length" class="text-xs text-pixiv-gray">暂无档案</p></div>
+      </div>
+      <div class="bg-white border border-gray-100 shadow-sm rounded-lg p-5">
+        <h2 class="text-sm font-bold text-gray-900 mb-3">小说档案</h2>
+        <div class="space-y-2"><div v-for="profile in novelProfiles" :key="profile.id" class="flex items-center gap-2 p-2 border border-gray-100 rounded-lg"><span class="text-sm flex-1 truncate">{{ profile.name }}</span><button @click="deleteNovelProfile(profile.id)" class="text-xs text-red-600">删除</button></div><p v-if="!novelProfiles.length" class="text-xs text-pixiv-gray">暂无档案</p></div>
+      </div>
+    </div>
+  </section>
+
+  <app-modal :open="showImportModal" title="导入到自动写作项目" size="lg" @close="showImportModal = false">
+    <div class="space-y-4">
+      <div class="flex gap-2"><button @click="importMode = 'create'" class="px-3 py-2 rounded-lg text-sm" :class="importMode === 'create' ? 'bg-brand-500 text-white' : 'bg-gray-100'">创建新项目</button><button @click="importMode = 'merge'" class="px-3 py-2 rounded-lg text-sm" :class="importMode === 'merge' ? 'bg-brand-500 text-white' : 'bg-gray-100'">合并到项目</button></div>
+      <select v-if="importMode === 'merge'" v-model.number="importTargetProjectId" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"><option :value="0">选择目标项目</option><option v-for="project in projectList" :key="project.id" :value="project.id">{{ project.name }}</option></select>
+      <div v-if="importMode === 'merge'" class="text-xs text-pixiv-gray">
+        合并模式默认只添加尚不存在的章节和伏笔。需要覆盖的项目字段：
+        <label v-for="field in ['name','description','outline']" :key="field" class="ml-2 inline-flex items-center gap-1">
+          <input type="checkbox" :value="field" v-model="importOverwriteFields" class="rounded">{{ field }}
+        </label>
+      </div>
+      <label class="flex items-center gap-2 text-sm"><input type="checkbox" v-model="importUseRawOutput">使用原始输出</label>
+      <textarea v-if="importUseRawOutput" v-model="importRawOutput" rows="8" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono" placeholder="粘贴 READY JSON"></textarea>
+      <div class="flex justify-end gap-2"><button @click="showImportModal = false" class="px-3 py-2 bg-gray-100 rounded-lg text-sm">取消</button><button @click="confirmImportWizard" :disabled="importing" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ importing ? '导入中…' : '确认导入' }}</button></div>
+    </div>
+  </app-modal>
+
+  <app-modal :open="showImportMaterialModal" title="导入已有素材" size="lg" @close="showImportMaterialModal = false">
+    <div class="space-y-3">
+      <input v-model="materialTitle" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="会话名称">
+      <input ref="materialFileInput" type="file" accept=".txt,.md,text/plain,text/markdown" class="hidden" @change="onMaterialFileSelected">
+      <button @click="$refs.materialFileInput.click()" class="px-3 py-2 bg-gray-100 rounded-lg text-sm">选择文本文件</button>
+      <textarea v-model="materialContent" rows="12" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif" placeholder="粘贴大纲、人物设定、聊天记录或剧情想法"></textarea>
+      <input v-model="materialExtraInstruction" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="额外整理要求（可选）">
+      <div class="flex justify-end gap-2"><button @click="showImportMaterialModal = false" class="px-3 py-2 bg-gray-100 rounded-lg text-sm">取消</button><button @click="confirmImportMaterial" :disabled="materialImporting || !materialContent.trim()" class="px-4 py-2 bg-amber-500 text-white rounded-lg text-sm disabled:opacity-50">{{ materialImporting ? '提交中…' : '提交整理' }}</button></div>
+    </div>
+  </app-modal>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+{% include "dashboard_ai_output_panel.html" %}
+{% include "dashboard_ai_source_search.html" %}
+<script>
+initVueApp({
+  components: {
+    'output-panel': window.aiOutputPanelComponent,
+    'novel-search': window.aiNovelSearchComponent,
+    'series-search': window.aiSeriesSearchComponent,
+  },
+  setup() {
+    const { ref, reactive, computed, onMounted, nextTick } = Vue;
+    const tabs = [{ id: 'wizard', name: '创作向导' }, { id: 'distill', name: '蒸馏档案' }];
+    const activeTab = ref(new URLSearchParams(location.search).get('tab') === 'distill' ? 'distill' : 'wizard');
+    const message = ref(''); const messageType = ref('success');
+    const agents = ref([]); const projectList = ref([]); const styleProfiles = ref([]); const novelProfiles = ref([]);
+    const chatSessions = ref([]); const currentChatSession = ref(null); const chatMessages = ref([]);
+    const chatInput = ref(''); const chatStreaming = ref(false); const chatStreamingText = ref(''); const chatLogRef = ref(null); const wizardSections = ref({});
+    const showImportModal = ref(false); const importMode = ref('create'); const importTargetProjectId = ref(0); const importOverwriteFields = ref([]); const importUseRawOutput = ref(false); const importRawOutput = ref(''); const importing = ref(false);
+    const showImportMaterialModal = ref(false); const materialTitle = ref(''); const materialContent = ref(''); const materialExtraInstruction = ref(''); const materialImporting = ref(false);
+    const distillForm = reactive({ agent_id: 0, distill_type: 'style', source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', chunk_chars: 4000, full_text: false, batch_size: 0 });
+    const distillOutput = ref(''); const distillStreaming = ref(false); const distillJobId = ref('');
+    let csrfToken = '';
+    const wizardAgents = computed(() => agents.value.filter(a => ['wizard', 'chat', 'general'].includes(a.task_type) && a.enabled !== false));
+    const distillAgents = computed(() => agents.value.filter(a => ['distill_style', 'distill_novel', 'general'].includes(a.task_type) && a.enabled !== false));
+    const distillSourceReady = computed(() => {
+      if (distillForm.source_type === 'archive_novel') return !!distillForm.novel_id;
+      if (distillForm.source_type === 'archive_series') return !!distillForm.series_id;
+      if (distillForm.source_type === 'document') return !!distillForm.document_id;
+      return !!distillForm.text.trim();
+    });
+    const wizardSectionKeys = computed(() => Object.keys(wizardSections.value || {}));
+    function showMessage(text, type = 'success') { message.value = text; messageType.value = type; setTimeout(() => { if (message.value === text) message.value = ''; }, 4000); }
+    async function ensureCsrfToken() { if (csrfToken) return csrfToken; const res = await fetch('/api/csrf-token'); const data = await res.json(); csrfToken = data.csrf_token || ''; return csrfToken; }
+    async function csrfFetch(url, options = {}) { const opts = { ...options }; const method = String(opts.method || 'GET').toUpperCase(); if (!['GET','HEAD','OPTIONS'].includes(method)) opts.headers = { ...(opts.headers || {}), 'X-CSRF-Token': await ensureCsrfToken() }; return fetch(url, opts); }
+    async function api(url, options = {}) { const res = await csrfFetch(url, options); const data = await res.json(); if (!res.ok || data.ok === false) throw new Error(data.error || '请求失败'); return data.data; }
+    async function loadAgents() { agents.value = await api('/api/dashboard/ai/agents'); if (!distillForm.agent_id) distillForm.agent_id = distillAgents.value[0]?.id || 0; }
+    async function loadProjects() { projectList.value = await api('/api/dashboard/ai/projects'); }
+    async function loadStyleProfiles() { styleProfiles.value = (await api('/api/dashboard/ai/style-profiles')).items || []; }
+    async function loadNovelProfiles() { novelProfiles.value = (await api('/api/dashboard/ai/novel-profiles')).items || []; }
+    async function loadChatSessions() { chatSessions.value = await api('/api/dashboard/ai/chat/sessions?scope=wizard'); }
+    async function selectChatSession(id) { const data = await api('/api/dashboard/ai/chat/sessions/' + id); currentChatSession.value = { id: data.id, agent_id: data.agent_id, title: data.title, status: data.status, metadata: data.metadata || {} }; chatMessages.value = data.messages || []; wizardSections.value = data.metadata?.collected_sections || {}; await scrollChatToBottom(); }
+    async function openNewWizardSession() { if (!wizardAgents.value.length) { showMessage('请先在设置页配置创作向导 Agent', 'error'); return; } const title = prompt('会话名称：', '新作品'); if (title === null) return; const data = await api('/api/dashboard/ai/chat/sessions', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ agent_id: wizardAgents.value[0].id, scope: 'wizard', title: title || '未命名作品' }) }); await loadChatSessions(); await selectChatSession(data.id); }
+    async function updateChatSessionAgent() { if (currentChatSession.value) await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ agent_id: currentChatSession.value.agent_id }) }); }
+    async function renameWizardSession() { if (currentChatSession.value) { await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ title: currentChatSession.value.title }) }); await loadChatSessions(); } }
+    async function deleteWizardSession() { if (!currentChatSession.value || !confirm('确认删除此会话？')) return; await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id, { method: 'DELETE' }); currentChatSession.value = null; chatMessages.value = []; wizardSections.value = {}; await loadChatSessions(); }
+    async function scrollChatToBottom() { await nextTick(); const el = chatLogRef.value; if (el) el.scrollTop = el.scrollHeight; }
+    async function readSse(res, onEvent) { if (!res.ok || !res.body) throw new Error('请求失败'); const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; while (true) { const { value, done } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); const events = buffer.split('\n\n'); buffer = events.pop() || ''; for (const raw of events) { const lines = raw.split('\n'); const event = (lines.find(x => x.startsWith('event:')) || '').slice(6).trim(); const line = (lines.find(x => x.startsWith('data:')) || '').slice(5).trim(); if (line) onEvent(event, JSON.parse(line)); } } }
+    async function sendChatText(text) { if (!currentChatSession.value || !text.trim() || chatStreaming.value) return; chatMessages.value.push({ id: Date.now(), role: 'user', content: text }); chatStreaming.value = true; chatStreamingText.value = ''; await scrollChatToBottom(); try { const res = await csrfFetch('/api/dashboard/ai/chat/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ session_id: currentChatSession.value.id, user_message: text }) }); await readSse(res, (event, data) => { if (event === 'delta') chatStreamingText.value += data.text || ''; if (event === 'error') throw new Error(data.message || '生成失败'); }); if (chatStreamingText.value) chatMessages.value.push({ id: Date.now() + 1, role: 'assistant', content: chatStreamingText.value }); await selectChatSession(currentChatSession.value.id); await loadChatSessions(); } catch (e) { showMessage(e.message, 'error'); } finally { chatStreaming.value = false; chatStreamingText.value = ''; } }
+    async function sendChatMessage() { const text = chatInput.value.trim(); chatInput.value = ''; await sendChatText(text); }
+    function openImportWizardModal() { importMode.value = 'create'; importTargetProjectId.value = 0; importOverwriteFields.value = []; showImportModal.value = true; }
+    async function confirmImportWizard() { if (!currentChatSession.value) return; importing.value = true; try { const payload = { mode: importMode.value }; if (importMode.value === 'merge') { if (!importTargetProjectId.value) throw new Error('请选择目标项目'); payload.target_project_id = importTargetProjectId.value; payload.overwrite_fields = importOverwriteFields.value; } if (importUseRawOutput.value) { if (!importRawOutput.value.trim()) throw new Error('请粘贴原始输出'); payload.output_text = importRawOutput.value; } const suffix = importUseRawOutput.value ? '/import-raw-to-project' : '/import-to-project'; const data = await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id + suffix, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) }); window.location.href = '/dashboard/ai?project_id=' + encodeURIComponent(data.project_id); } catch (e) { showMessage(e.message, 'error'); } finally { importing.value = false; } }
+    function onMaterialFileSelected(event) { const file = event.target.files?.[0]; if (!file) return; if (file.size > 5 * 1024 * 1024) { showMessage('文本不能超过 5 MiB', 'error'); return; } const reader = new FileReader(); reader.onload = () => { materialContent.value = String(reader.result || ''); if (!materialTitle.value) materialTitle.value = file.name.replace(/\.[^.]+$/, ''); }; reader.readAsText(file, 'utf-8'); event.target.value = ''; }
+    async function confirmImportMaterial() { if (!materialContent.value.trim() || materialImporting.value) return; materialImporting.value = true; try { if (!wizardAgents.value.length) throw new Error('请先配置创作向导 Agent'); const data = await api('/api/dashboard/ai/chat/sessions', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ agent_id: wizardAgents.value[0].id, scope: 'wizard', title: materialTitle.value || '素材整理' }) }); await loadChatSessions(); await selectChatSession(data.id); const text = '请整理以下素材，并在成熟后输出 READY JSON。\n\n' + materialContent.value + (materialExtraInstruction.value ? '\n\n额外要求：' + materialExtraInstruction.value : ''); showImportMaterialModal.value = false; await sendChatText(text); materialTitle.value = ''; materialContent.value = ''; materialExtraInstruction.value = ''; } catch (e) { showMessage(e.message, 'error'); } finally { materialImporting.value = false; } }
+    async function uploadDistillDocument(event) { const file = event.target.files?.[0]; if (!file) return; const form = new FormData(); form.append('file', file); try { const res = await csrfFetch('/api/dashboard/ai/documents/upload', { method: 'POST', body: form }); const data = await res.json(); if (!res.ok || data.ok === false) throw new Error(data.error || '文档上传失败'); distillForm.document_id = data.data.id; showMessage('文档已上传'); } catch (e) { distillForm.document_id = 0; showMessage(e.message, 'error'); } finally { event.target.value = ''; } }
+    async function startDistill() { distillStreaming.value = true; distillOutput.value = ''; distillJobId.value = ''; try { const url = distillForm.distill_type === 'style' ? '/api/dashboard/ai/distill/style/stream' : '/api/dashboard/ai/distill/novel/stream'; const res = await csrfFetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(distillForm) }); await readSse(res, (event, data) => { if (event === 'delta') distillOutput.value += data.text || ''; if (event === 'metadata') distillJobId.value = data.job_id || ''; if (event === 'error') throw new Error(data.message || '蒸馏失败'); }); } catch (e) { showMessage(e.message, 'error'); } finally { distillStreaming.value = false; } }
+    async function saveDistillProfile() { if (!distillOutput.value) return; const name = prompt('档案名称：'); if (!name) return; let profile; try { profile = JSON.parse(distillOutput.value); } catch { profile = { raw: distillOutput.value }; } const url = distillForm.distill_type === 'style' ? '/api/dashboard/ai/style-profiles/save' : '/api/dashboard/ai/novel-profiles/save'; await api(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, profile, source_type: 'distill' }) }); await Promise.all([loadStyleProfiles(), loadNovelProfiles()]); showMessage('档案已保存'); }
+    async function deleteStyleProfile(id) { if (confirm('确认删除此档案？')) { await api('/api/dashboard/ai/style-profiles/' + id, { method: 'DELETE' }); await loadStyleProfiles(); } }
+    async function deleteNovelProfile(id) { if (confirm('确认删除此档案？')) { await api('/api/dashboard/ai/novel-profiles/' + id, { method: 'DELETE' }); await loadNovelProfiles(); } }
+    function applyBestAgentDefaults() { if (!distillForm.agent_id) distillForm.agent_id = distillAgents.value[0]?.id || 0; }
+    onMounted(async () => { try { await Promise.all([loadAgents(), loadStyleProfiles(), loadNovelProfiles(), loadProjects(), loadChatSessions()]); applyBestAgentDefaults(); } catch (e) { showMessage(e.message, 'error'); } });
+    return { tabs, activeTab, message, messageType, agents, projectList, styleProfiles, novelProfiles, chatSessions, currentChatSession, chatMessages, chatInput, chatStreaming, chatStreamingText, chatLogRef, wizardSections, wizardSectionKeys, wizardAgents, distillAgents, distillSourceReady, showImportModal, importMode, importTargetProjectId, importOverwriteFields, importUseRawOutput, importRawOutput, importing, showImportMaterialModal, materialTitle, materialContent, materialExtraInstruction, materialImporting, distillForm, distillOutput, distillStreaming, distillJobId, loadChatSessions, selectChatSession, openNewWizardSession, updateChatSessionAgent, renameWizardSession, deleteWizardSession, sendChatMessage, openImportWizardModal, confirmImportWizard, onMaterialFileSelected, confirmImportMaterial, uploadDistillDocument, startDistill, saveDistillProfile, deleteStyleProfile, deleteNovelProfile };
+  }
+});
+</script>
+{% endblock %}

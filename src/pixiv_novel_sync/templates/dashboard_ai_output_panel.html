@@ -1,0 +1,39 @@
+<script>
+window.aiOutputPanelComponent = {
+  props: ['title', 'text', 'jobId', 'streaming', 'showDetect'],
+  emits: ['save', 'detect'],
+  template: `
+    <div v-if="text || streaming" class="bg-white border border-gray-100 shadow-sm p-5 flex flex-col rounded-lg">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <h2 class="text-sm font-bold text-gray-900">{{ title }}</h2>
+        <div class="flex items-center gap-2 text-xs text-pixiv-gray">
+          <span v-if="text">{{ text.length.toLocaleString() }} 字</span>
+          <span v-if="jobId" class="font-mono">{{ jobId.substring(0, 8) }}</span>
+        </div>
+      </div>
+      <pre ref="contentRef" class="whitespace-pre-wrap text-sm text-gray-800 font-serif overflow-y-auto bg-gray-50 p-3 border border-gray-100 rounded-lg max-h-[60vh] min-h-32">{{ text || '等待输出…' }}</pre>
+      <div class="flex gap-2 mt-3">
+        <button @click="$emit('save')" :disabled="!text" class="px-3 py-1.5 bg-brand-500 text-white rounded-lg text-xs disabled:opacity-50">保存草稿</button>
+        <button @click="copyText" :disabled="!text" class="px-3 py-1.5 bg-gray-100 rounded-lg text-xs disabled:opacity-50">复制</button>
+        <button v-if="showDetect" @click="$emit('detect')" :disabled="!text" class="px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg text-xs disabled:opacity-50">AI 痕迹检测</button>
+        <button v-if="text" @click="scrollToBottom" class="px-3 py-1.5 bg-gray-100 rounded-lg text-xs ml-auto" title="滚到底部">↓</button>
+      </div>
+    </div>`,
+  watch: {
+    text() { this.$nextTick(() => this.autoScroll()); }
+  },
+  methods: {
+    autoScroll() {
+      const el = this.$refs.contentRef;
+      if (el && this.streaming) el.scrollTop = el.scrollHeight;
+    },
+    scrollToBottom() {
+      const el = this.$refs.contentRef;
+      if (el) el.scrollTop = el.scrollHeight;
+    },
+    async copyText() {
+      if (this.text && window.navigator?.clipboard) await window.navigator.clipboard.writeText(this.text);
+    }
+  }
+};
+</script>

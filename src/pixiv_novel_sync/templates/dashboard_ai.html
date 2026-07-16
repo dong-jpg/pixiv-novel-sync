@@ -1,29 +1,21 @@
 {% extends "base.html" %}
 
-{% block title %}{[ ai_page_title|default("AI 创作") ]} - Pixiv 小说同步器{% endblock %}
+{% block title %}AI 创作 - Pixiv 小说同步器{% endblock %}
 
 {% block content %}
-<div class="library-page px-4 sm:px-6 lg:px-8 py-6 max-w-7xl mx-auto">
-  <div class="library-page-header sr-only"><h1>{[ ai_page_title|default("AI 创作") ]}</h1></div>
+<div class="library-page px-4 sm:px-6 lg:px-8 py-6 max-w-7xl mx-auto" data-page="ai-writing">
+  <div class="library-page-header sr-only"><h1>AI 创作</h1></div>
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
     <div>
-      <h1 class="text-2xl font-bold text-gray-900">{[ ai_page_title|default("AI 创作") ]}</h1>
-      <p class="text-sm text-pixiv-gray mt-1">{[ ai_page_subtitle|default("自动写作项目 · 长篇规划 · 章节 Pipeline") ]}</p>
+      <h1 class="text-2xl font-bold text-gray-900">AI 创作</h1>
+      <p class="text-sm text-pixiv-gray mt-1">自动写作项目 · 长篇规划 · 章节 Pipeline</p>
     </div>
     <div class="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 max-w-xl">
       你选择的文本会发送到当前 Agent 绑定的 AI API，请确认 API 服务商可信。
     </div>
   </div>
 
-  <div v-if="pageMode === 'wizard'" class="sticky top-0 z-30 bg-pixiv-bg flex gap-2 mb-5 overflow-x-auto pb-1 pt-1 scrollbar-thin">
-    <button v-for="tab in tabs" :key="tab.id" @click="switchTab(tab.id)"
-            class="px-4 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap flex-shrink-0"
-            :class="activeTab === tab.id ? 'bg-brand-500 text-white shadow-sm' : 'bg-white text-gray-600 border border-gray-100 hover:bg-gray-50'">
-      {{ tab.name }}
-    </button>
-  </div>
-
-  <div v-if="pageMode === 'ai'" class="sticky top-0 z-30 bg-pixiv-bg flex items-center justify-between gap-3 mb-5 overflow-x-auto pb-1 pt-1 scrollbar-thin">
+  <div class="sticky top-0 z-30 bg-pixiv-bg flex items-center justify-between gap-3 mb-5 overflow-x-auto pb-1 pt-1 scrollbar-thin">
     <!-- 列表视图：写作项目标题 + 新建按钮；详情视图：返回按钮 -->
     <div class="flex items-center gap-2 text-sm whitespace-nowrap flex-shrink-0">
       <span v-if="projectView === 'list'" class="text-lg font-bold text-gray-900">写作项目</span>
@@ -36,7 +28,7 @@
   </div>
 
   <!-- 详情视图：项目级子tab 直接放在顶部 sticky 行下方 -->
-  <div v-if="pageMode === 'ai' && projectView === 'detail'" class="flex gap-1 border-b border-gray-100 overflow-x-auto mb-4">
+  <div v-if="projectView === 'detail'" class="flex gap-1 border-b border-gray-100 overflow-x-auto mb-4">
     <template v-for="t in projectDetailTabs" :key="t.id">
       <button v-if="!t.onlyIfSelected || currentChapter" @click="selectProjectDetailTab(t.id)"
               class="px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 -mb-px transition-colors"
@@ -55,87 +47,6 @@
     <span class="font-bold">{{ toastType === 'error' ? '!' : (toastType === 'warning' ? '!' : '✓') }}</span>
     <span>{{ toastMessage }}</span>
   </div>
-
-  <!-- ═══ 创作向导 ═══ -->
-  <section v-show="activeTab === 'wizard'" class="grid grid-cols-1 lg:grid-cols-12 gap-4" style="height: calc(100vh - 220px); min-height: 600px;">
-    <!-- 左：会话列表 -->
-    <div class="lg:col-span-3 bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col overflow-hidden">
-      <div class="p-3 border-b border-gray-100 flex items-center gap-2 flex-wrap">
-        <span class="text-sm font-bold text-gray-900 flex-1">会话</span>
-        <button @click="openNewWizardSession" class="text-xs px-2 py-1 bg-brand-500 text-white rounded hover:bg-brand-600">+ 新建</button>
-        <button @click="showImportMaterialModal = true" class="text-xs px-2 py-1 bg-amber-500 text-white rounded hover:bg-amber-600" title="把已有大纲/设定/聊天记录直接喂给 AI">📥 导入素材</button>
-      </div>
-      <div class="flex-1 overflow-y-auto p-2 space-y-1">
-        <div v-for="s in chatSessions" :key="s.id" @click="selectChatSession(s.id)"
-             class="px-3 py-2 rounded-lg cursor-pointer text-sm border"
-             :class="currentChatSession?.id === s.id ? 'bg-brand-50 border-brand-200' : 'border-transparent hover:bg-gray-50'">
-          <div class="font-medium text-gray-900 truncate">{{ s.title || '未命名会话' }}</div>
-          <div class="text-xs text-pixiv-gray flex items-center gap-1 mt-0.5">
-            <span>{{ s.message_count || 0 }} 条</span>
-            <span v-if="s.status === 'imported'" class="ml-1 px-1.5 py-0.5 rounded bg-green-100 text-green-700 text-[10px]">已导入</span>
-          </div>
-        </div>
-        <p v-if="!chatSessions.length" class="text-xs text-pixiv-gray px-3 py-2">还没有会话</p>
-      </div>
-    </div>
-
-    <!-- 中：对话主区 -->
-    <div class="lg:col-span-6 bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col overflow-hidden">
-      <div class="p-3 border-b border-gray-100 flex items-center gap-2">
-        <span class="text-sm font-bold text-gray-900 flex-1 truncate">{{ currentChatSession ? (currentChatSession.title || '未命名会话') : '选择或新建会话' }}</span>
-        <select v-if="currentChatSession" v-model.number="currentChatSession.agent_id" @change="updateChatSessionAgent" class="text-xs px-2 py-1 border border-gray-200 rounded">
-          <option :value="0">选择向导 Agent</option>
-          <option v-for="a in wizardAgents" :key="a.id" :value="a.id">{{ a.name }}</option>
-        </select>
-        <button v-if="currentChatSession" @click="openImportWizardModal" class="text-xs px-2 py-1 bg-amber-500 text-white rounded hover:bg-amber-600">一键导入到项目</button>
-        <button v-if="currentChatSession" @click="renameWizardSession" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">重命名</button>
-        <button v-if="currentChatSession" @click="deleteWizardSession" class="text-xs px-2 py-1 bg-red-50 text-red-600 rounded hover:bg-red-100">删除</button>
-      </div>
-      <div ref="chatLogRef" class="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
-        <div v-for="m in chatMessages" :key="m.id" class="flex gap-2" :class="m.role === 'user' ? 'flex-row-reverse' : ''">
-          <div class="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold"
-               :class="m.role === 'user' ? 'bg-brand-500 text-white' : 'bg-amber-100 text-amber-700'">
-            {{ m.role === 'user' ? '你' : 'AI' }}
-          </div>
-          <div class="max-w-[85%] px-3 py-2 rounded-lg text-sm font-serif whitespace-pre-wrap break-words"
-               :class="m.role === 'user' ? 'bg-brand-500 text-white' : 'bg-white border border-gray-100 text-gray-800'">{{ m.content }}</div>
-        </div>
-        <div v-if="chatStreaming" class="flex gap-2">
-          <div class="flex-shrink-0 w-7 h-7 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center text-xs font-bold">AI</div>
-          <div class="max-w-[85%] px-3 py-2 rounded-lg text-sm font-serif whitespace-pre-wrap break-words bg-white border border-amber-200 text-gray-800">{{ chatStreamingText || '思考中…' }}</div>
-        </div>
-        <p v-if="!chatMessages.length && !chatStreaming" class="text-sm text-pixiv-gray text-center mt-10">向 AI 描述你想写的故事，编辑会逐步引导你产出完整素材。</p>
-      </div>
-      <div class="border-t border-gray-100 p-3 space-y-2">
-        <textarea v-model="chatInput" @keydown.enter.exact.prevent="sendChatMessage" rows="3"
-                  :placeholder="currentChatSession ? '描述你想写的故事或回答 AI 的问题（Enter 发送，Shift+Enter 换行）' : '请先在左侧选择或新建会话'"
-                  :disabled="!currentChatSession || chatStreaming"
-                  class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif resize-none disabled:bg-gray-50"></textarea>
-        <div class="flex items-center gap-2 justify-between">
-          <p class="text-xs text-pixiv-gray">{{ chatStreaming ? '生成中…' : '输入完按 Enter 发送' }}</p>
-          <button @click="sendChatMessage" :disabled="!currentChatSession || chatStreaming || !chatInput.trim()"
-                  class="px-4 py-1.5 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">发送</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 右：实时产物预览 -->
-    <div class="lg:col-span-3 bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col overflow-hidden">
-      <div class="p-3 border-b border-gray-100 flex items-center gap-2">
-        <span class="text-sm font-bold text-gray-900 flex-1">实时产物</span>
-        <button @click="loadWizardPreview" :disabled="!currentChatSession" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50">刷新</button>
-      </div>
-      <div class="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
-        <div v-if="wizardSectionKeys.length">
-          <details v-for="key in wizardSectionKeys" :key="key" class="border border-gray-100 rounded-lg" open>
-            <summary class="px-2.5 py-1.5 text-xs font-medium text-gray-900 cursor-pointer bg-gray-50 rounded-t-lg">{{ key }}</summary>
-            <pre class="px-2.5 py-2 whitespace-pre-wrap font-serif text-gray-700 max-h-72 overflow-auto">{{ wizardSections[key] }}</pre>
-          </details>
-        </div>
-        <p v-else class="text-pixiv-gray text-center mt-6">AI 输出 markdown 节段后会自动填充到这里。<br>当 AI 输出 <code class="text-amber-600">&lt;&lt;&lt;READY_FOR_IMPORT&gt;&gt;&gt;</code> 后即可一键导入。</p>
-      </div>
-    </div>
-  </section>
 
   <!-- ═══ Raw Output 导入弹窗 ═══ -->
   <div v-if="showRawImportModal" class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" @click.self="showRawImportModal = false">
@@ -193,78 +104,8 @@
     </div>
   </div>
 
-  <!-- ═══ 一键导入弹窗 ═══ -->
-  <div v-if="showImportModal" class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" @click.self="showImportModal = false">
-    <div class="bg-white rounded-xl shadow-xl max-w-md w-full p-5 space-y-4">
-      <h3 class="text-lg font-bold text-gray-900">一键导入到项目</h3>
-      <div class="space-y-2">
-        <label class="flex items-center gap-2 text-sm">
-          <input type="radio" v-model="importMode" value="create"> 新建项目（推荐）
-        </label>
-        <label class="flex items-center gap-2 text-sm">
-          <input type="radio" v-model="importMode" value="merge"> 合并到已有项目
-        </label>
-        <label class="flex items-center gap-2 text-sm">
-          <input type="checkbox" v-model="importUseRawOutput"> 使用原始 READY JSON 输出导入
-        </label>
-        <textarea v-if="importUseRawOutput" v-model="importRawOutput" rows="5" class="w-full px-3 py-2 border border-gray-200 rounded text-xs font-mono" placeholder="粘贴包含 <<<READY_FOR_IMPORT>>> 的完整输出，或只粘贴 JSON"></textarea>
-        <select v-if="importMode === 'merge'" v-model.number="importTargetProjectId" class="w-full px-3 py-2 border border-gray-200 rounded text-sm">
-          <option :value="0">选择目标项目</option>
-          <option v-for="p in projectList" :key="p.id" :value="p.id">{{ p.name }}</option>
-        </select>
-        <div v-if="importMode === 'merge'" class="text-xs text-pixiv-gray">
-          合并模式仅添加目标项目中尚不存在的章节/伏笔，settings 浅合并。如需强制覆盖某字段：
-          <label v-for="f in ['name','description','outline']" :key="f" class="ml-2 inline-flex items-center gap-1">
-            <input type="checkbox" :value="f" v-model="importOverwriteFields" class="rounded">{{ f }}
-          </label>
-        </div>
-      </div>
-      <p class="text-xs text-pixiv-gray border-t pt-2">导入后会跳到「写作项目」tab 直接打开新项目。</p>
-      <div class="flex justify-end gap-2">
-        <button @click="showImportModal = false" class="px-3 py-1.5 bg-gray-100 rounded text-sm">取消</button>
-        <button @click="confirmImportWizard" :disabled="importing || (importMode === 'merge' && !importTargetProjectId)" class="px-3 py-1.5 bg-brand-500 text-white rounded text-sm disabled:opacity-50">{{ importing ? '导入中…' : '确认导入' }}</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ═══ 素材一键导入弹窗 ═══ -->
-  <div v-if="showImportMaterialModal" class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" @click.self="showImportMaterialModal = false">
-    <div class="bg-white rounded-xl shadow-xl max-w-2xl w-full p-5 space-y-4 max-h-[90vh] flex flex-col">
-      <div>
-        <h3 class="text-lg font-bold text-gray-900">📥 从已有素材导入</h3>
-        <p class="text-xs text-pixiv-gray mt-1">把已有的大纲、人物设定、和别的 AI 的聊天记录、写作笔记直接喂给创作向导，让它整理成本系统的结构。</p>
-      </div>
-      <div class="space-y-2">
-        <label class="block text-xs font-medium text-pixiv-gray">作品名称（可选，留空 AI 自取）</label>
-        <input v-model="materialTitle" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="例如：沉溺">
-      </div>
-      <div class="space-y-2 flex-1 flex flex-col min-h-0">
-        <div class="flex items-center justify-between">
-          <label class="block text-xs font-medium text-pixiv-gray">素材内容</label>
-          <div class="flex gap-2 items-center">
-            <input ref="materialFileInputRef" type="file" accept=".txt,.md,text/plain,text/markdown" class="hidden" @change="onMaterialFileSelected">
-            <button @click="$refs.materialFileInputRef.click()" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">📂 上传 .txt/.md</button>
-            <span v-if="materialContent" class="text-xs text-pixiv-gray">{{ materialContent.length.toLocaleString() }} 字</span>
-          </div>
-        </div>
-        <textarea v-model="materialContent" rows="12" class="w-full flex-1 px-3 py-2 border border-gray-200 rounded-lg text-xs font-serif resize-none" placeholder="粘贴你的全部素材：大纲、人物设定、和其他 AI 的聊天记录、设定笔记、性癖描述、剧情想法都行，AI 会自动整理。"></textarea>
-      </div>
-      <div class="space-y-2">
-        <label class="block text-xs font-medium text-pixiv-gray">额外说明（可选）</label>
-        <input v-model="materialExtraInstruction" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="例如：把女主名字改成林瑾瑜，开篇直接改成面试相遇">
-      </div>
-      <div class="text-xs text-pixiv-gray bg-amber-50 border border-amber-100 rounded-lg p-2">
-        提交后会自动创建一个新会话，把素材+引导语一起发给创作向导。AI 整理完成会输出 <code class="text-amber-700">&lt;&lt;&lt;READY_FOR_IMPORT&gt;&gt;&gt;</code>，那时再点"一键导入到项目"。
-      </div>
-      <div class="flex justify-end gap-2">
-        <button @click="showImportMaterialModal = false" class="px-3 py-1.5 bg-gray-100 rounded text-sm">取消</button>
-        <button @click="confirmImportMaterial" :disabled="materialImporting || !materialContent.trim()" class="px-3 py-1.5 bg-amber-500 text-white rounded text-sm disabled:opacity-50">{{ materialImporting ? '提交中…' : '提交给 AI 整理' }}</button>
-      </div>
-    </div>
-  </div>
-
   <!-- ═══ 写作项目 ═══ -->
-  <section v-show="activeTab === 'projects'">
+  <section>
     <!-- 项目列表视图 -->
     <div v-if="projectView === 'list'" class="space-y-4">
       <div v-if="showCreateProject" class="bg-white rounded-xl border border-gray-100 shadow-sm p-4 space-y-3">
@@ -297,10 +138,10 @@
           <section data-overview-card class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-3 h-full order-1">
             <h3 class="font-bold text-gray-900 text-sm">项目信息</h3>
             <div class="flex flex-col sm:flex-row gap-4 pb-3 border-b border-gray-100">
-              <div class="relative w-28 aspect-[3/4] flex-shrink-0 overflow-hidden rounded-lg shadow-sm" :style="coverGradient(currentProject?.name)">
+              <div class="relative w-28 aspect-[3/4] flex-shrink-0 overflow-hidden rounded-lg shadow-sm" :style="projectCoverGradient(currentProject?.name)">
                 <img v-if="currentProject?.cover_url" :src="currentProject.cover_url" class="absolute inset-0 w-full h-full object-cover" @error="currentProject.cover_url = null">
                 <div v-else class="absolute inset-0 flex items-center justify-center">
-                  <span class="text-4xl font-black text-white/90 drop-shadow select-none">{{ readerFirstChar(currentProject?.name) }}</span>
+                  <span class="text-4xl font-black text-white/90 drop-shadow select-none">{{ projectFirstChar(currentProject?.name) }}</span>
                 </div>
               </div>
               <div class="flex flex-col items-start justify-end gap-2">
@@ -966,394 +807,20 @@
     </div>
   </section>
 
-  <section v-show="activeTab === 'distill'" class="space-y-5">
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
-      <div class="lg:col-span-2 bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
-        <div>
-          <h2 class="text-lg font-bold text-gray-900">蒸馏内容</h2>
-          <p class="text-xs text-pixiv-gray mt-1">独立管理文风、角色模板、世界观等档案，后续可在自动写作中套用。</p>
-        </div>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label class="block text-xs font-medium text-pixiv-gray mb-1.5">蒸馏类型</label>
-            <select v-model="distillForm.distill_type" @change="applyBestAgentDefaults(true)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-              <option value="style">风格蒸馏</option>
-              <option value="novel">角色 / 世界观 / 小说档案蒸馏</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-xs font-medium text-pixiv-gray mb-1.5">蒸馏 Agent</label>
-            <select v-model.number="distillForm.agent_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-              <option :value="0">自动选择最优 Agent</option>
-              <option v-for="agent in distillAgents" :key="agent.id" :value="agent.id">{{ agent.name }}</option>
-            </select>
-          </div>
-        </div>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label class="block text-xs font-medium text-pixiv-gray mb-1.5">输入来源</label>
-            <select v-model="distillForm.source_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-              <option value="manual">手动文本</option>
-              <option value="archive_novel">归档小说</option>
-              <option value="archive_series">归档系列</option>
-              <option value="document">上传文档</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-xs font-medium text-pixiv-gray mb-1.5">分块大小（字符）</label>
-            <input type="number" v-model.number="distillForm.chunk_chars" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-          </div>
-        </div>
-        <div v-if="distillForm.source_type === 'archive_novel'">
-          <novel-search v-model="distillForm.novel_id"></novel-search>
-        </div>
-        <div v-else-if="distillForm.source_type === 'archive_series'">
-          <series-search v-model="distillForm.series_id"></series-search>
-        </div>
-        <div v-else-if="distillForm.source_type === 'document'" class="space-y-2">
-          <input type="file" accept=".txt,.md,text/plain,text/markdown" @change="uploadDocument($event, distillForm)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-          <p class="text-xs text-pixiv-gray">已选择文档 ID：{{ distillForm.document_id || '未上传' }}</p>
-        </div>
-        <textarea v-else v-model="distillForm.text" rows="10" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif" placeholder="粘贴需要蒸馏的文本..."></textarea>
-        <label class="flex items-center gap-2 text-sm text-gray-700">
-          <input type="checkbox" v-model="distillForm.full_text" class="rounded border-gray-300">
-          全文分析（分批 map-reduce，适合长篇系列）
-        </label>
-        <div v-if="distillForm.full_text" class="flex items-center gap-2">
-          <label class="text-xs text-pixiv-gray whitespace-nowrap">每批 chunks 数：</label>
-          <input type="number" v-model.number="distillForm.batch_size" min="1" max="50" class="w-24 px-2 py-1 border border-gray-200 rounded text-sm" placeholder="自动">
-          <span class="text-xs text-pixiv-gray">留空自动计算</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <button @click="startDistill" :disabled="streaming" class="px-5 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium disabled:opacity-50">
-            {{ streaming ? '蒸馏中...' : '开始蒸馏' }}
-          </button>
-          <button v-if="streamOutput && !streaming" @click="saveDistillProfile" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm">保存为档案</button>
-        </div>
-      </div>
-      <output-panel title="蒸馏结果" :text="streamOutput" :job-id="currentJobId" :streaming="streaming" @save="saveDistillProfile"></output-panel>
-    </div>
-
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-        <div class="flex items-center justify-between mb-3">
-          <h2 class="text-lg font-bold text-gray-900">风格档案</h2>
-          <button @click="loadStyleProfiles" class="text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">刷新</button>
-        </div>
-        <div class="space-y-2">
-          <div v-for="p in styleProfiles" :key="p.id" class="border border-gray-100 rounded-lg p-3 text-sm">
-            <div class="flex items-center justify-between gap-2">
-              <span class="font-semibold text-gray-900 truncate">{{ p.name }}</span>
-              <div class="flex gap-2 flex-shrink-0">
-                <button @click="selectedStyleProfile = p; selectedNovelProfile = null" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">查看</button>
-                <button @click="deleteStyleProfile(p.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
-              </div>
-            </div>
-            <div class="text-xs text-pixiv-gray mt-1">{{ p.source_type || 'distill' }} · {{ p.created_at }}</div>
-          </div>
-          <p v-if="!styleProfiles.length" class="text-sm text-pixiv-gray py-4 text-center">暂无风格档案，请先执行风格蒸馏。</p>
-        </div>
-      </div>
-      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-        <div class="flex items-center justify-between mb-3">
-          <h2 class="text-lg font-bold text-gray-900">小说 / 角色 / 世界观档案</h2>
-          <button @click="loadNovelProfiles" class="text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">刷新</button>
-        </div>
-        <div class="space-y-2">
-          <div v-for="p in novelProfiles" :key="p.id" class="border border-gray-100 rounded-lg p-3 text-sm">
-            <div class="flex items-center justify-between gap-2">
-              <span class="font-semibold text-gray-900 truncate">{{ p.name }}</span>
-              <div class="flex gap-2 flex-shrink-0">
-                <button @click="selectedNovelProfile = p; selectedStyleProfile = null" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">查看</button>
-                <button @click="deleteNovelProfile(p.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
-              </div>
-            </div>
-            <div class="text-xs text-pixiv-gray mt-1">{{ p.source_type || 'distill' }} · {{ p.created_at }}</div>
-          </div>
-          <p v-if="!novelProfiles.length" class="text-sm text-pixiv-gray py-4 text-center">暂无小说档案，请先执行小说蒸馏。</p>
-        </div>
-      </div>
-      <div v-if="selectedStyleProfile || selectedNovelProfile" class="lg:col-span-2 bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-        <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-bold text-gray-900">{{ selectedStyleProfile ? '风格档案详情' : '小说档案详情' }}</h3>
-          <button @click="selectedStyleProfile = null; selectedNovelProfile = null" class="text-xs text-pixiv-gray">关闭</button>
-        </div>
-        <pre class="whitespace-pre-wrap text-sm text-gray-700 font-mono bg-gray-50 rounded-lg p-3 border border-gray-100 max-h-96 overflow-auto">{{ JSON.stringify(selectedStyleProfile?.profile || selectedNovelProfile?.profile || selectedStyleProfile || selectedNovelProfile, null, 2) }}</pre>
-      </div>
-    </div>
-  </section>
-
-  <!-- ═══ 作品阅读 ═══ -->
-  <section v-show="activeTab === 'reader'" class="space-y-5">
-    <!-- 列表视图：作品网格 -->
-    <div v-if="readerView === 'list'" class="space-y-4">
-      <div class="flex items-center justify-between">
-        <h2 class="text-lg font-bold text-gray-900">作品阅读</h2>
-        <button @click="loadProjects" class="text-xs px-3 py-1.5 bg-gray-100 rounded-lg hover:bg-gray-200">刷新</button>
-      </div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
-        <div v-for="p in projectList" :key="p.id"
-             class="group cursor-pointer rounded-xl overflow-hidden border border-gray-100 shadow-sm hover:shadow-lg transition-shadow bg-white"
-             @click="openReaderProject(p.id)">
-          <div class="h-40 flex items-center justify-center relative" :style="coverGradient(p.name)">
-            <span class="text-5xl font-black text-white/95 drop-shadow">{{ readerFirstChar(p.name) }}</span>
-            <span class="absolute bottom-2 right-2 text-[10px] px-2 py-0.5 rounded-full bg-black/25 text-white">{{ p.chapter_count || 0 }} 章</span>
-          </div>
-          <div class="p-4 space-y-1">
-            <div class="font-bold text-gray-900 truncate">{{ p.name }}</div>
-            <div v-if="p.description" class="text-xs text-pixiv-gray line-clamp-2">{{ p.description }}</div>
-            <div class="flex items-center gap-3 pt-1 text-xs text-pixiv-gray">
-              <span>{{ p.chapter_count || 0 }} 章</span>
-              <span>{{ Math.round((p.total_words || 0) / 1000) }}k 字</span>
-            </div>
-          </div>
-        </div>
-      </div>
-      <p v-if="!projectList.length" class="text-sm text-pixiv-gray text-center py-8">暂无作品。先在「自动写作」里创建项目并生成章节。</p>
-    </div>
-
-    <!-- 详情视图：大封面 + 章节逐章展开 -->
-    <div v-else-if="readerView === 'detail'" class="space-y-5">
-      <div class="flex items-center gap-2 text-sm text-pixiv-gray">
-        <span class="cursor-pointer hover:text-brand-500" @click="backReaderList">作品阅读</span>
-        <span>/</span>
-        <span class="text-gray-900 font-medium">{{ readerProject?.name || '加载中…' }}</span>
-      </div>
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        <div class="space-y-3">
-          <div class="rounded-xl overflow-hidden border border-gray-100 shadow-sm">
-            <div class="h-48 flex items-center justify-center" :style="coverGradient(readerProject?.name)">
-              <span class="text-6xl font-black text-white/95 drop-shadow">{{ readerFirstChar(readerProject?.name) }}</span>
-            </div>
-            <div class="p-4 space-y-2 bg-white">
-              <div class="font-bold text-gray-900 text-lg">{{ readerProject?.name }}</div>
-              <p v-if="readerProject?.description" class="text-xs text-pixiv-gray whitespace-pre-wrap">{{ readerProject.description }}</p>
-              <div class="flex items-center gap-3 text-xs text-pixiv-gray pt-1">
-                <span>{{ readerProject?.chapter_count || readerChapters.length }} 章</span>
-                <span>{{ Math.round((readerProject?.total_words || 0) / 1000) }}k 字</span>
-              </div>
-              <a v-if="readerProjectId" :href="'/api/dashboard/ai/projects/' + readerProjectId + '/download'" download
-                 class="block text-center mt-2 px-4 py-2 bg-brand-500 text-white rounded-lg text-sm hover:bg-brand-600">下载 TXT</a>
-              <button @click="backReaderList" class="w-full px-4 py-2 bg-gray-100 rounded-lg text-sm hover:bg-gray-200">返回列表</button>
-            </div>
-          </div>
-        </div>
-        <div class="lg:col-span-2 space-y-2">
-          <div v-if="readerLoading" class="text-sm text-pixiv-gray text-center py-8">加载中…</div>
-          <template v-else>
-            <div v-for="ch in readerChapters" :key="ch.id" class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-              <div class="flex items-center justify-between gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50" @click="toggleReaderChapter(ch.id)">
-                <div class="min-w-0">
-                  <span class="text-xs text-pixiv-gray mr-2">第{{ ch.chapter_number }}章</span>
-                  <span class="text-sm font-medium text-gray-900">{{ ch.title || '未命名' }}</span>
-                </div>
-                <div class="flex items-center gap-3 flex-shrink-0">
-                  <span class="text-xs text-pixiv-gray">{{ ch.word_count || (ch.content || '').length }} 字</span>
-                  <span class="text-xs text-pixiv-gray">{{ readerExpanded.includes(ch.id) ? '收起 ▲' : '展开 ▼' }}</span>
-                </div>
-              </div>
-              <div v-show="readerExpanded.includes(ch.id)" class="px-5 pb-5 pt-1 border-t border-gray-50">
-                <pre v-if="ch.content" class="whitespace-pre-wrap font-serif text-sm text-gray-800 leading-relaxed max-h-[70vh] overflow-auto">{{ ch.content }}</pre>
-                <p v-else class="text-xs text-pixiv-gray py-3">本章暂无正文。</p>
-              </div>
-            </div>
-            <p v-if="!readerChapters.length" class="text-sm text-pixiv-gray text-center py-8">该作品暂无章节。</p>
-          </template>
-        </div>
-      </div>
-    </div>
-  </section>
-
 </div>
 {% endblock %}
 
 {% block extra_scripts %}
+{% include "dashboard_ai_output_panel.html" %}
 <script>
 window.initVueApp({
-  components: {
-    'novel-search': {
-      props: ['modelValue'],
-      emits: ['update:modelValue'],
-      template: `
-        <div class="relative">
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">搜索归档小说</label>
-          <input type="text" v-model="query" @input="onSearch" @focus="showDropdown = true"
-                 class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
-                 placeholder="输入小说标题搜索...">
-          <div v-if="selectedTitle" class="text-xs text-green-600 mt-1">已选择：{{ selectedTitle }}</div>
-          <div v-if="showDropdown && results.length" class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-auto">
-            <div v-for="novel in results" :key="novel.novel_id" @click="selectNovel(novel)"
-                 class="px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 border-b border-gray-50 last:border-0">
-              <div class="font-medium text-gray-900 truncate">{{ novel.title }}</div>
-              <div class="text-xs text-pixiv-gray">{{ novel.author_name || '未知作者' }} · ID: {{ novel.novel_id }}</div>
-            </div>
-          </div>
-          <div v-if="showDropdown && query && !results.length && !searching" class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-sm text-pixiv-gray">
-            未找到匹配的小说
-          </div>
-        </div>
-      `,
-      data() {
-        return { query: '', results: [], showDropdown: false, searching: false, selectedTitle: '', searchTimer: null };
-      },
-      methods: {
-        onSearch() {
-          clearTimeout(this.searchTimer);
-          if (!this.query.trim()) { this.results = []; return; }
-          this.searching = true;
-          this.searchTimer = setTimeout(async () => {
-            try {
-              const res = await fetch('/api/dashboard/novels?search=' + encodeURIComponent(this.query) + '&page_size=10');
-              const data = await res.json();
-              this.results = data.items || [];
-            } catch { this.results = []; }
-            finally { this.searching = false; }
-          }, 300);
-        },
-        selectNovel(novel) {
-          this.selectedTitle = novel.title;
-          this.showDropdown = false;
-          this.query = '';
-          this.results = [];
-          this.$emit('update:modelValue', novel.novel_id);
-        }
-      },
-      watch: {
-        modelValue(val) {
-          if (!val) this.selectedTitle = '';
-        }
-      }
-    },
-    'series-search': {
-      props: ['modelValue'],
-      emits: ['update:modelValue'],
-      template: `
-        <div class="relative">
-          <label class="block text-xs font-medium text-pixiv-gray mb-1.5">搜索系列</label>
-          <input type="text" v-model="query" @input="onSearch" @focus="showDropdown = true"
-                 class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
-                 placeholder="输入系列标题或作者名搜索...">
-          <div v-if="selectedTitle" class="text-xs text-green-600 mt-1">已选择：{{ selectedTitle }}</div>
-          <div v-if="showDropdown && results.length" class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-auto">
-            <div v-for="s in results" :key="s.series_id" @click="selectSeries(s)"
-                 class="px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 border-b border-gray-50 last:border-0">
-              <div class="font-medium text-gray-900 truncate">{{ s.title }}</div>
-              <div class="text-xs text-pixiv-gray">{{ s.author_name || '未知作者' }} · {{ s.total_novels || '?' }} 章 · 约 {{ Math.round((s.total_text_length || 0) / 1000) }}k 字</div>
-            </div>
-          </div>
-          <div v-if="showDropdown && query && !results.length && !searching" class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-sm text-pixiv-gray">
-            未找到匹配的系列
-          </div>
-        </div>
-      `,
-      data() {
-        return { query: '', results: [], showDropdown: false, searching: false, selectedTitle: '', searchTimer: null };
-      },
-      methods: {
-        onSearch() {
-          clearTimeout(this.searchTimer);
-          if (!this.query.trim()) { this.results = []; return; }
-          this.searching = true;
-          this.searchTimer = setTimeout(async () => {
-            try {
-              const res = await fetch('/api/dashboard/ai/series/search?q=' + encodeURIComponent(this.query) + '&limit=10');
-              const data = await res.json();
-              this.results = data.data || [];
-            } catch { this.results = []; }
-            finally { this.searching = false; }
-          }, 300);
-        },
-        selectSeries(s) {
-          this.selectedTitle = s.title;
-          this.showDropdown = false;
-          this.query = '';
-          this.results = [];
-          this.$emit('update:modelValue', s.series_id);
-        }
-      },
-      watch: {
-        modelValue(val) {
-          if (!val) this.selectedTitle = '';
-        }
-      }
-    },
-    'output-panel': {
-      props: ['title', 'text', 'jobId', 'streaming', 'showDetect'],
-      emits: ['save', 'detect'],
-      template: `
-        <div v-if="text || streaming" class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 flex flex-col">
-          <div class="flex items-center justify-between mb-3">
-            <h2 class="text-lg font-bold text-gray-900">{{ title }}</h2>
-            <div class="flex items-center gap-2">
-              <span v-if="text" class="text-xs text-pixiv-gray">{{ text.length.toLocaleString() }} 字</span>
-              <span v-if="jobId" class="text-xs text-pixiv-gray">Job {{ jobId.substring(0, 8) }}</span>
-            </div>
-          </div>
-          <pre ref="contentRef" class="whitespace-pre-wrap text-sm text-gray-800 font-serif overflow-y-auto bg-gray-50 rounded-lg p-3 border border-gray-100"
-               style="max-height: 60vh; min-height: 8rem;">{{ text || '等待输出...' }}</pre>
-          <div class="flex gap-2 mt-3 flex-wrap">
-            <button @click="$emit('save')" :disabled="!text" class="px-3 py-1.5 bg-brand-500 text-white rounded-lg text-xs disabled:opacity-50">保存草稿</button>
-            <button @click="copyText" :disabled="!text" class="px-3 py-1.5 bg-gray-100 rounded-lg text-xs disabled:opacity-50">复制</button>
-            <button v-if="showDetect" @click="$emit('detect')" :disabled="!text" class="px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg text-xs disabled:opacity-50">AI 痕迹检测</button>
-            <button v-if="text" @click="scrollToBottom" class="px-3 py-1.5 bg-gray-100 rounded-lg text-xs ml-auto" title="滚到底部">↓ 底部</button>
-          </div>
-        </div>`,
-      watch: {
-        text() { this.$nextTick(() => this.autoScroll()); }
-      },
-      methods: {
-        autoScroll() {
-          const el = this.$refs.contentRef;
-          if (!el || !this.streaming) return;
-          if (this._userScrolled) return;
-          el.scrollTop = el.scrollHeight;
-        },
-        scrollToBottom() {
-          const el = this.$refs.contentRef;
-          if (el) { el.scrollTop = el.scrollHeight; this._userScrolled = false; }
-        },
-        async copyText() {
-          if (!this.text) return;
-          if (window.navigator && window.navigator.clipboard) {
-            await window.navigator.clipboard.writeText(this.text);
-          }
-        }
-      },
-      mounted() {
-        const el = this.$refs.contentRef;
-        if (el) {
-          el.addEventListener('scroll', () => {
-            this._userScrolled = (el.scrollHeight - el.scrollTop - el.clientHeight) > 100;
-          });
-        }
-      }
-    }
-  },
+  components: { 'output-panel': window.aiOutputPanelComponent },
   setup() {
     const { ref, reactive, computed, onMounted } = Vue;
-    const PAGE_MODE = '{[ ai_page_mode|default("ai") ]}';
-    const pageMode = ref(PAGE_MODE);
-    const tabs = PAGE_MODE === 'wizard'
-      ? [
-          { id: 'wizard', name: '创作向导' },
-          { id: 'distill', name: '蒸馏档案' },
-        ]
-      : [
-          { id: 'projects', name: '自动写作' },
-        ];
-    const initialTab = new URLSearchParams(window.location.search).get('tab');
-    const activeTab = ref(tabs.some(t => t.id === initialTab) ? initialTab : tabs[0].id);
     let chapterDashboardReq = 0;  // 章节产出面板请求令牌，防止快速切章时旧请求覆盖新章节数据
-    const providers = ref([]);
     const agents = ref([]);
-    const drafts = ref([]);
-    const draftHistory = ref([]);
     const styleProfiles = ref([]);
     const novelProfiles = ref([]);
-    const selectedStyleProfile = ref(null);
-    const selectedNovelProfile = ref(null);
-    const promptTemplates = ref([]);
-    const promptFilter = ref('');
     const message = ref('');
     const messageType = ref('success');
     const toastMessage = ref('');
@@ -1409,14 +876,6 @@ window.initVueApp({
     const batchSelectedChapterIds = ref([]);
     const batchPipelineRunning = ref(false);
     const batchPipelineProgress = reactive({ total: 0, succeeded: 0, failed: 0, currentLabel: '' });
-    // ── 作品阅读 ──────────────────────────────────────────────
-    const readerView = ref('list');           // 'list' | 'detail'
-    const readerProjectId = ref(0);
-    const readerProject = ref(null);
-    const readerChapters = ref([]);
-    const readerExpanded = ref([]);            // 已展开正文的章节 id
-    const readerLoading = ref(false);
-    let readerReq = 0;                         // 作品阅读详情请求令牌，防快速切项目串台
     const searchQuery = ref('');
     const searchResults = ref([]);
     const longformPlanning = ref(false);
@@ -1469,20 +928,7 @@ window.initVueApp({
     }
     const missingPlannedChapters = computed(() => longformPlan.chapters.filter(ch => !plannedChapterExists(ch.chapter_number)));
 
-    const continueForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', context_chars: 8000, output_chars: 3000, instruction: '', smart_context: true, style_profile_id: 0, novel_profile_id: 0, plan_agent_id: 0, plan_text: '' });
-    const rewriteForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', rewrite_type: 'polish', instruction: '' });
-    const providerForm = reactive({ id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
-    const agentForm = reactive({ id: 0, name: '', task_type: 'continue', provider_id: 0, model: '', system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
-    const auditForm = reactive({ agent_id: 0, source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', audit_dimensions: [] });
-    const distillForm = reactive({ agent_id: 0, distill_type: 'style', source_type: 'manual', novel_id: null, series_id: null, document_id: 0, text: '', chunk_chars: 4000, existing_profile_id: 0, full_text: false, batch_size: 0 });
-    const promptForm = reactive({ id: 0, name: '', category: 'general', template: '', description: '' });
-    const seedProviderId = ref(0);
-    const auditDimensions = ['角色一致性', '剧情连贯性', '文风统一性', '伏笔追踪', '节奏把控', '对话质量', '描写质量'];
-
     const continueAgents = computed(() => agents.value.filter(a => ['continue', 'general'].includes(a.task_type)));
-    const rewriteAgents = computed(() => agents.value.filter(a => ['rewrite', 'general'].includes(a.task_type)));
-    const auditAgents = computed(() => agents.value.filter(a => ['audit', 'general'].includes(a.task_type)));
-    const distillAgents = computed(() => agents.value.filter(a => ['distill_style', 'distill_novel', 'general'].includes(a.task_type)));
     const planAgents = computed(() => agents.value.filter(a => ['plan', 'general'].includes(a.task_type)));
 
     const AGENT_PRIORITY = {
@@ -1513,13 +959,8 @@ window.initVueApp({
       const assign = (target, key, kind) => {
         if (force || !target[key]) target[key] = bestAgentId(kind);
       };
-      assign(continueForm, 'agent_id', 'continue');
-      assign(continueForm, 'plan_agent_id', 'plan');
-      assign(rewriteForm, 'agent_id', 'rewrite');
-      assign(auditForm, 'agent_id', 'audit');
       assign(longformPlanForm, 'agent_id', 'plan');
       assign(longformDetailForm, 'agent_id', 'plan');
-      assign(distillForm, 'agent_id', distillForm.distill_type === 'novel' ? 'distill_novel' : 'distill_style');
       if (force || !chapterContinueAgent.value) chapterContinueAgent.value = bestAgentId('continue');
       for (const step of pipelineAllSteps || []) {
         if (step.id === 'detect' || step.id === 'index') continue;
@@ -1527,18 +968,6 @@ window.initVueApp({
       }
     }
 
-    function resetProviderForm() {
-      Object.assign(providerForm, { id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
-    }
-    function editProvider(provider) {
-      Object.assign(providerForm, { id: provider.id, name: provider.name || '', provider_type: provider.provider_type || 'openai_compatible', base_url: provider.base_url || '', default_model: provider.default_model || '', api_key: '', timeout_seconds: provider.timeout_seconds || 120, max_retries: provider.max_retries || 2, context_window: provider.context_window || 128000, stream_enabled: provider.stream_enabled !== false, enabled: provider.enabled !== false });
-    }
-    function resetAgentForm() {
-      Object.assign(agentForm, { id: 0, name: '', task_type: 'continue', provider_id: 0, model: '', system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
-    }
-    function editAgent(agent) {
-      Object.assign(agentForm, { id: agent.id, name: agent.name || '', task_type: agent.task_type || 'continue', provider_id: agent.provider_id || 0, model: agent.model || '', system_prompt: agent.system_prompt || '', temperature: agent.temperature || 0.8, top_p: agent.top_p || 0.9, max_tokens: agent.max_tokens || 4000, context_window: agent.context_window || 16000, enabled: agent.enabled !== false });
-    }
     function showMessage(text, type = 'success') {
       message.value = text;
       messageType.value = type;
@@ -1551,77 +980,29 @@ window.initVueApp({
     let csrfToken = '';
     async function ensureCsrfToken() {
       if (csrfToken) return csrfToken;
-      const res = await fetch('/api/csrf-token');
+      const res = await window.fetch('/api/csrf-token');
       const data = await res.json();
       if (!res.ok || !data.csrf_token) throw new Error(data.error || '获取安全令牌失败');
       csrfToken = data.csrf_token;
       return csrfToken;
     }
-    async function api(url, options = {}) {
+    async function csrfFetch(url, options = {}) {
       const opts = { ...options };
       const method = String(opts.method || 'GET').toUpperCase();
       if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
         const token = await ensureCsrfToken();
         opts.headers = { ...(opts.headers || {}), 'X-CSRF-Token': token };
       }
-      const res = await fetch(url, opts);
+      return window.fetch(url, opts);
+    }
+    async function api(url, options = {}) {
+      const res = await csrfFetch(url, options);
       const data = await res.json();
       if (!res.ok || data.ok === false) throw new Error(data.error || '请求失败');
       return data.data;
     }
-    async function loadProviders() { providers.value = await api('/api/dashboard/ai/providers'); }
     async function loadAgents() { agents.value = await api('/api/dashboard/ai/agents'); applyBestAgentDefaults(); }
-    async function loadDrafts() { const data = await api('/api/dashboard/ai/drafts'); drafts.value = data.items || []; }
 
-    async function saveProvider() {
-      try {
-        const payload = { ...providerForm };
-        const id = payload.id;
-        delete payload.id;
-        const url = id ? '/api/dashboard/ai/providers/' + id : '/api/dashboard/ai/providers';
-        await api(url, { method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-        await loadProviders(); resetProviderForm(); showMessage('Provider 已保存');
-      }
-      catch (e) { showMessage(e.message, 'error'); }
-    }
-    async function deleteProvider(id) { if (!confirm('确认删除 Provider？')) return; await api('/api/dashboard/ai/providers/' + id, { method: 'DELETE' }); await loadProviders(); }
-    async function testProvider(id) { try { const data = await api('/api/dashboard/ai/providers/' + id + '/test', { method: 'POST' }); showMessage('测试成功：' + (data.text || 'OK')); } catch (e) { showMessage(e.message, 'error'); } }
-    async function saveAgent() {
-      try {
-        const payload = { ...agentForm };
-        const id = payload.id;
-        delete payload.id;
-        const url = id ? '/api/dashboard/ai/agents/' + id : '/api/dashboard/ai/agents';
-        await api(url, { method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-        await loadAgents(); resetAgentForm(); showMessage('Agent 已保存');
-      } catch (e) { showMessage(e.message, 'error'); }
-    }
-    async function deleteAgent(id) {
-      if (!confirm('确认删除 Agent？')) return;
-      try {
-        await api('/api/dashboard/ai/agents/' + id, { method: 'DELETE' });
-        await loadAgents();
-        if (agentForm.id === id) resetAgentForm();
-        showMessage('Agent 已删除');
-      } catch (e) {
-        showMessage(e.message, 'error');
-      }
-    }
-
-    async function uploadDocument(event, targetForm) {
-      const file = event.target.files && event.target.files[0];
-      if (!file) return;
-      const formData = new FormData();
-      formData.append('file', file);
-      try {
-        const res = await fetch('/api/dashboard/ai/documents/upload', { method: 'POST', body: formData });
-        const data = await res.json();
-        if (!res.ok || data.ok === false) throw new Error(data.error || '上传失败');
-        targetForm.document_id = data.data.id;
-        showMessage('文档已上传');
-      } catch (e) { showMessage(e.message, 'error'); }
-      finally { event.target.value = ''; }
-    }
     async function readSSE(res) {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -1653,7 +1034,7 @@ window.initVueApp({
     async function startStream(url, payload) {
       streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
       try {
-        const res = await fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        const res = await csrfFetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         if (!res.ok || !res.body) throw new Error('流式请求失败');
         await readSSE(res);
         if (!streamOutput.value.trim()) {
@@ -1664,63 +1045,16 @@ window.initVueApp({
       } catch (e) { showMessage(e.message, 'error'); }
       finally { streaming.value = false; }
     }
-    function startContinue() { startStream('/api/dashboard/ai/continue/stream', continueForm); }
-    function startRewrite() { startStream('/api/dashboard/ai/rewrite/stream', rewriteForm); }
     async function saveDraft(title, content) {
-      try { await api('/api/dashboard/ai/drafts', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ title, content, source_job_id: currentJobId.value }) }); showMessage('草稿已保存'); await loadDrafts(); }
+      try { await api('/api/dashboard/ai/drafts', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ title, content, source_job_id: currentJobId.value }) }); showMessage('草稿已保存'); }
       catch (e) { showMessage(e.message, 'error'); }
-    }
-
-    // ── 草稿版本历史 ──────────────────────────────────────────
-    async function showDraftHistory(draftId) {
-      try { draftHistory.value = await api('/api/dashboard/ai/drafts/' + draftId + '/history'); }
-      catch (e) { showMessage(e.message, 'error'); }
-    }
-    async function forkDraft(draftId) {
-      try { const data = await api('/api/dashboard/ai/drafts/' + draftId + '/fork', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({}) }); showMessage('新版本已创建'); await loadDrafts(); }
-      catch (e) { showMessage(e.message, 'error'); }
-    }
-    async function deleteDraft(draftId) {
-      if (!confirm('确认删除此草稿？')) return;
-      try { await api('/api/dashboard/ai/drafts/' + draftId, { method: 'DELETE' }); await loadDrafts(); }
-      catch (e) { showMessage(e.message, 'error'); }
-    }
-
-    // ── AI 任务日志已迁移至「任务日志」统一日志页（/dashboard/logs，分类选「AI 创作任务」）。
-    // 移除本页内嵌的任务日志 tab，相关 state/函数不再需要，保留通用任务标签映射以备复用。
-    const JOB_TYPE_LABELS = {
-      chapter_continue: '自动生成章节', chapter_pipeline: '自动写作 Pipeline',
-      longform_plan: '全书规划', longform_plan_details: '详细梗概',
-      continue: '续写', rewrite: '改写', audit: '内容审计', plan: '写前构思',
-      distill_style: '风格蒸馏', distill_novel: '小说蒸馏', summarize: '摘要提取',
-      chat: '创作向导对话', state_update: '状态记忆更新', foreshadow_resolve: '伏笔回收', polish: '润色',
-      keyword_clean: '关键词清洗',
-    };
-    function taskTypeLabel(t) { return JOB_TYPE_LABELS[t] || t || '未知任务'; }
-
-    // ── 内容审计 ──────────────────────────────────────────────
-    function startAudit() { startStream('/api/dashboard/ai/audit/stream', auditForm); }
-
-    // ── 写前构思 ──────────────────────────────────────────────
-    async function startPlan() {
-      if (!continueForm.plan_agent_id) { showMessage('请先选择构思 Agent', 'error'); return; }
-      streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
-      const planPayload = { agent_id: continueForm.plan_agent_id, source_type: continueForm.source_type, novel_id: continueForm.novel_id, series_id: continueForm.series_id, document_id: continueForm.document_id, text: continueForm.text, instruction: continueForm.instruction, context_chars: continueForm.context_chars };
-      try {
-        const res = await fetch('/api/dashboard/ai/plan/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(planPayload) });
-        if (!res.ok || !res.body) throw new Error('构思请求失败');
-        await readSSE(res);
-        continueForm.plan_text = streamOutput.value;
-        showMessage('构思已生成，可直接续写或手动调整');
-      } catch (e) { showMessage(e.message, 'error'); }
-      finally { streaming.value = false; }
     }
 
     // ── AI 痕迹检测 ──────────────────────────────────────────
     async function detectAITells() {
       if (!streamOutput.value) return;
       try {
-        const res = await fetch('/api/dashboard/ai/detect-ai-tells', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: streamOutput.value }) });
+        const res = await csrfFetch('/api/dashboard/ai/detect-ai-tells', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: streamOutput.value }) });
         const data = await res.json();
         if (!res.ok || data.ok === false) throw new Error(data.error || '检测失败');
         const report = data.data;
@@ -1732,75 +1066,10 @@ window.initVueApp({
       } catch (e) { showMessage(e.message, 'error'); }
     }
 
-    // ── 蒸馏 ──────────────────────────────────────────────────
-    function startDistill() {
-      const url = distillForm.distill_type === 'style' ? '/api/dashboard/ai/distill/style/stream' : '/api/dashboard/ai/distill/novel/stream';
-      startStream(url, distillForm);
-    }
-    async function saveDistillProfile() {
-      if (!streamOutput.value) return;
-      const name = prompt('请输入档案名称：');
-      if (!name) return;
-      try {
-        let profileData;
-        try { profileData = JSON.parse(streamOutput.value); } catch { profileData = { raw: streamOutput.value }; }
-        const url = distillForm.distill_type === 'style' ? '/api/dashboard/ai/style-profiles/save' : '/api/dashboard/ai/novel-profiles/save';
-        await api(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, profile: profileData, source_type: 'distill' }) });
-        showMessage('档案已保存');
-      } catch (e) { showMessage(e.message, 'error'); }
-    }
-
     // ── 风格档案 ──────────────────────────────────────────────
     async function loadStyleProfiles() { styleProfiles.value = (await api('/api/dashboard/ai/style-profiles')).items || []; }
-    async function deleteStyleProfile(id) {
-      if (!confirm('确认删除此风格档案？')) return;
-      await api('/api/dashboard/ai/style-profiles/' + id, { method: 'DELETE' });
-      await loadStyleProfiles();
-    }
-
     // ── 小说档案 ──────────────────────────────────────────────
     async function loadNovelProfiles() { novelProfiles.value = (await api('/api/dashboard/ai/novel-profiles')).items || []; }
-    async function deleteNovelProfile(id) {
-      if (!confirm('确认删除此小说档案？')) return;
-      await api('/api/dashboard/ai/novel-profiles/' + id, { method: 'DELETE' });
-      await loadNovelProfiles();
-    }
-
-    // ── Prompt 模板 ───────────────────────────────────────────
-    async function loadPromptTemplates() {
-      const params = promptFilter.value ? '?category=' + promptFilter.value : '';
-      promptTemplates.value = await api('/api/dashboard/ai/prompt-templates' + params);
-    }
-    function resetPromptForm() { Object.assign(promptForm, { id: 0, name: '', category: 'general', template: '', description: '' }); }
-    function editPromptTemplate(t) { Object.assign(promptForm, { id: t.id, name: t.name || '', category: t.category || 'general', template: t.template || '', description: t.description || '' }); }
-    async function savePromptTemplate() {
-      try {
-        const payload = { ...promptForm };
-        const id = payload.id;
-        delete payload.id;
-        const url = id ? '/api/dashboard/ai/prompt-templates/' + id : '/api/dashboard/ai/prompt-templates';
-        await api(url, { method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-        await loadPromptTemplates(); resetPromptForm(); showMessage('模板已保存');
-      } catch (e) { showMessage(e.message, 'error'); }
-    }
-    async function deletePromptTemplate(id) {
-      if (!confirm('确认删除此模板？')) return;
-      await api('/api/dashboard/ai/prompt-templates/' + id, { method: 'DELETE' });
-      await loadPromptTemplates();
-    }
-    async function seedPromptTemplates() {
-      try { await api('/api/dashboard/ai/prompt-templates/seed', { method: 'POST' }); showMessage('内置模板已初始化'); await loadPromptTemplates(); }
-      catch (e) { showMessage(e.message, 'error'); }
-    }
-    async function seedAgents() {
-      if (!seedProviderId.value) return;
-      try {
-        const created = await api('/api/dashboard/ai/agents/seed', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ provider_id: seedProviderId.value }) });
-        const count = Object.keys(created).length;
-        await loadAgents(); showMessage(`已初始化 ${count} 个内置 Agent`);
-      } catch (e) { showMessage(e.message, 'error'); }
-    }
-
     // ── 写作项目函数 ──────────────────────────────────────────
     async function loadProjects() { try { projectList.value = await api('/api/dashboard/ai/projects'); } catch {} }
     async function createProject() {
@@ -2011,7 +1280,7 @@ window.initVueApp({
     }
 
     async function fetchStream(url, payload, fallbackError) {
-      const res = await fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const res = await csrfFetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
       if (!res.ok || !res.body) {
         let message = fallbackError;
         try {
@@ -2096,43 +1365,7 @@ window.initVueApp({
       if (!batchSelectedChapterIds.value.length) { showMessage('所有章节都已生成正文'); return; }
       await startBatchChapterPipeline();
     }
-    // ── 作品阅读 ──────────────────────────────────────────────
-    async function loadReaderProjects() {
-      if (!projectList.value.length) await loadProjects();   // 复用 projectList
-    }
-    async function openReaderProject(pid) {
-      readerProjectId.value = pid;
-      readerView.value = 'detail';
-      readerProject.value = null;
-      readerChapters.value = [];
-      readerExpanded.value = [];
-      readerLoading.value = true;
-      const reqId = ++readerReq;
-      try {
-        const data = await api('/api/dashboard/ai/projects/' + pid + '/reader');
-        if (reqId !== readerReq) return;                     // 已切到别的项目，丢弃
-        readerProject.value = data.project || null;
-        readerChapters.value = data.chapters || [];
-        if (readerChapters.value.length) readerExpanded.value = [readerChapters.value[0].id]; // 默认展开第一章
-      } catch (e) {
-        if (reqId === readerReq) showMessage(e.message, 'error');
-      } finally {
-        if (reqId === readerReq) readerLoading.value = false;
-      }
-    }
-    function backReaderList() {
-      readerView.value = 'list';
-      readerProjectId.value = 0;
-      readerProject.value = null;
-      readerChapters.value = [];
-      readerExpanded.value = [];
-    }
-    function toggleReaderChapter(chapterId) {
-      const i = readerExpanded.value.indexOf(chapterId);
-      if (i >= 0) readerExpanded.value.splice(i, 1);
-      else readerExpanded.value.push(chapterId);
-    }
-    function coverGradient(name) {           // 基于书名 hash 的稳定渐变
+    function projectCoverGradient(name) {    // 基于书名 hash 的稳定渐变
       const s = String(name || '?');
       let h = 0;
       for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) & 0xffffffff;
@@ -2140,7 +1373,7 @@ window.initVueApp({
       const hue2 = (hue + 40) % 360;
       return { background: 'linear-gradient(135deg, hsl(' + hue + ' 70% 55%), hsl(' + hue2 + ' 70% 42%))' };
     }
-    function readerFirstChar(name) {
+    function projectFirstChar(name) {
       const s = String(name || '').trim();
       return s ? Array.from(s)[0] : '书';   // Array.from 正确处理 CJK / emoji
     }
@@ -2264,7 +1497,7 @@ window.initVueApp({
       streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
       const payload = { agent_id: chapterContinueAgent.value, source_type: 'manual', text: chapterEditForm.content || '(空)', instruction: chapterInstruction.value, context_chars: 8000 };
       try {
-        const res = await fetch('/api/dashboard/ai/plan/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        const res = await csrfFetch('/api/dashboard/ai/plan/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         if (!res.ok || !res.body) throw new Error('构思请求失败');
         await readSSE(res);
         chapterEditForm.outline = streamOutput.value;
@@ -2279,7 +1512,7 @@ window.initVueApp({
       const payload = { agent_id: chapterContinueAgent.value, chapter_id: currentChapter.value?.id };
       streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
       try {
-        const res = await fetch('/api/dashboard/ai/projects/' + currentProject.value?.id + '/states/auto-update/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        const res = await csrfFetch('/api/dashboard/ai/projects/' + currentProject.value?.id + '/states/auto-update/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         if (!res.ok || !res.body) throw new Error('状态更新请求失败');
         await readSSE(res);
         await loadProjectStates(currentProject.value?.id);
@@ -2318,7 +1551,7 @@ window.initVueApp({
       pipelineRunning.value = true;
       streamOutput.value = '';
       try {
-        const res = await fetch('/api/dashboard/ai/projects/' + currentProject.value.id + '/foreshadows/auto-resolve/stream', { method: 'POST' });
+        const res = await csrfFetch('/api/dashboard/ai/projects/' + currentProject.value.id + '/foreshadows/auto-resolve/stream', { method: 'POST' });
         if (!res.ok || !res.body) throw new Error('自动回收请求失败');
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -2359,267 +1592,6 @@ window.initVueApp({
       await saveCurrentChapter();
       try { await api('/api/dashboard/ai/projects/' + currentProject.value.id + '/chapters/' + currentChapter.value.id + '/index', { method: 'POST' }); chapterActionStatus.value = '已保存并索引到检索库'; showMessage('已索引到检索库'); }
       catch (e) { showMessage(e.message, 'error'); }
-    }
-
-    // ── 创作向导（多轮对话） ──────────────────────────────────────
-    const chatSessions = ref([]);
-    const currentChatSession = ref(null);
-    const chatMessages = ref([]);
-    const chatInput = ref('');
-    const chatStreaming = ref(false);
-    const chatStreamingText = ref('');
-    const chatLogRef = ref(null);
-    const wizardSections = ref({});
-    const showImportModal = ref(false);
-    const importMode = ref('create');
-    const importTargetProjectId = ref(0);
-    const importOverwriteFields = ref([]);
-    const importUseRawOutput = ref(false);
-    const importRawOutput = ref('');
-    const importing = ref(false);
-    // ── 素材一键导入 ───────────────────────────────────────────────
-    const showImportMaterialModal = ref(false);
-    const materialTitle = ref('');
-    const materialContent = ref('');
-    const materialExtraInstruction = ref('');
-    const materialImporting = ref(false);
-    const wizardAgents = computed(() => agents.value.filter(a => ['wizard', 'general', 'chat'].includes(a.task_type)));
-    const wizardSectionKeys = computed(() => Object.keys(wizardSections.value || {}));
-
-    async function loadChatSessions() {
-      try { chatSessions.value = await api('/api/dashboard/ai/chat/sessions?scope=wizard'); }
-      catch (e) { showMessage(e.message, 'error'); }
-    }
-    async function selectChatSession(id) {
-      try {
-        const data = await api('/api/dashboard/ai/chat/sessions/' + id);
-        currentChatSession.value = { id: data.id, agent_id: data.agent_id, title: data.title, status: data.status, metadata: data.metadata };
-        chatMessages.value = data.messages || [];
-        wizardSections.value = (data.metadata && data.metadata.collected_sections) || {};
-        await scrollChatToBottom();
-      } catch (e) { showMessage(e.message, 'error'); }
-    }
-    async function openNewWizardSession() {
-      // 默认绑定第一个可用的 wizard agent，没有则提示
-      const wa = wizardAgents.value;
-      if (!wa.length) {
-        showMessage('还没有创作向导 Agent。请先到「设置 > AI API」创建 Provider，再到「AI Agent」点一键初始化。', 'error');
-        window.location.href = '/dashboard/settings#ai-agents';
-        return;
-      }
-      const title = prompt('给这次创作起个名字：', '新作品 ' + new Date().toLocaleString('zh-CN', { hour12: false }).slice(5, 16));
-      if (title === null) return;
-      try {
-        const res = await api('/api/dashboard/ai/chat/sessions', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ agent_id: wa[0].id, scope: 'wizard', title: title || '未命名作品' }) });
-        await loadChatSessions();
-        await selectChatSession(res.id);
-      } catch (e) { showMessage(e.message, 'error'); }
-    }
-    async function updateChatSessionAgent() {
-      if (!currentChatSession.value) return;
-      try { await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ agent_id: currentChatSession.value.agent_id }) }); }
-      catch (e) { showMessage(e.message, 'error'); }
-    }
-    async function renameWizardSession() {
-      if (!currentChatSession.value) return;
-      const title = prompt('修改会话名称：', currentChatSession.value.title || '');
-      if (title === null) return;
-      try {
-        await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ title }) });
-        currentChatSession.value.title = title;
-        await loadChatSessions();
-      } catch (e) { showMessage(e.message, 'error'); }
-    }
-    async function deleteWizardSession() {
-      if (!currentChatSession.value) return;
-      if (!confirm('确认删除这个会话？所有对话记录都会丢失。')) return;
-      try {
-        await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id, { method: 'DELETE' });
-        currentChatSession.value = null;
-        chatMessages.value = [];
-        wizardSections.value = {};
-        await loadChatSessions();
-      } catch (e) { showMessage(e.message, 'error'); }
-    }
-    async function scrollChatToBottom() {
-      await Vue.nextTick();
-      const el = chatLogRef.value;
-      if (el && el.scrollTo) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-    }
-    async function sendChatMessage() {
-      if (!currentChatSession.value || !chatInput.value.trim() || chatStreaming.value) return;
-      const text = chatInput.value.trim();
-      chatInput.value = '';
-      // 立即在前端追加 user 消息（乐观）
-      chatMessages.value.push({ id: Date.now(), role: 'user', content: text });
-      chatStreaming.value = true;
-      chatStreamingText.value = '';
-      await scrollChatToBottom();
-      try {
-        const res = await fetch('/api/dashboard/ai/chat/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ session_id: currentChatSession.value.id, user_message: text }) });
-        if (!res.ok || !res.body) throw new Error('请求失败');
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let readyToImport = false;
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const events = buffer.split('\n\n');
-          buffer = events.pop() || '';
-          for (const raw of events) {
-            const lines = raw.split('\n');
-            const event = (lines.find(l => l.startsWith('event:')) || '').slice(6).trim();
-            const dataLine = (lines.find(l => l.startsWith('data:')) || '').slice(5).trim();
-            if (!dataLine) continue;
-            const data = JSON.parse(dataLine);
-            if (event === 'delta') { chatStreamingText.value += data.text || ''; await scrollChatToBottom(); }
-            else if (event === 'done') { readyToImport = !!data.ready_to_import; }
-            else if (event === 'error') throw new Error(data.message || '生成失败');
-          }
-        }
-        // 把流式文本作为 assistant 消息
-        if (chatStreamingText.value) {
-          chatMessages.value.push({ id: Date.now() + 1, role: 'assistant', content: chatStreamingText.value });
-        }
-        chatStreamingText.value = '';
-        // 刷新预览节段
-        await loadWizardPreview(false);
-        await loadChatSessions();
-        if (readyToImport) {
-          showMessage('AI 标记内容已就绪，可点击"一键导入到项目"');
-        }
-      } catch (e) {
-        showMessage(e.message, 'error');
-      } finally {
-        chatStreaming.value = false;
-        await scrollChatToBottom();
-      }
-    }
-    async function loadWizardPreview(notify = true) {
-      if (!currentChatSession.value) return;
-      try {
-        // 重新拉取 session 以更新 metadata.collected_sections（chat stream 后端会自动 patch）
-        const data = await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id);
-        wizardSections.value = (data.metadata && data.metadata.collected_sections) || {};
-        if (notify) showMessage('已刷新');
-      } catch (e) { if (notify) showMessage(e.message, 'error'); }
-    }
-    function openImportWizardModal() {
-      if (!currentChatSession.value) return;
-      importMode.value = 'create';
-      importTargetProjectId.value = 0;
-      importOverwriteFields.value = [];
-      showImportModal.value = true;
-    }
-    async function confirmImportWizard() {
-      if (!currentChatSession.value) return;
-      importing.value = true;
-      try {
-        const payload = { mode: importMode.value };
-        if (importMode.value === 'merge') {
-          if (!importTargetProjectId.value) throw new Error('请选择目标项目');
-          payload.target_project_id = importTargetProjectId.value;
-          payload.overwrite_fields = importOverwriteFields.value;
-        }
-        if (importUseRawOutput.value) {
-          if (!importRawOutput.value.trim()) throw new Error('请粘贴原始输出');
-          payload.output_text = importRawOutput.value;
-        }
-        const res = await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id + (importUseRawOutput.value ? '/import-raw-to-project' : '/import-to-project'), {
-          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload),
-        });
-        showMessage('已导入到项目（id=' + res.project_id + '）');
-        showImportModal.value = false;
-        importRawOutput.value = '';
-        importUseRawOutput.value = false;
-        await loadProjects();
-        await loadChatSessions();
-        // 跳到 AI 创作页并打开项目；创作向导已拆成一级页面，导入后回到自动写作。
-        if (PAGE_MODE === 'wizard') {
-          window.location.href = '/dashboard/ai?project_id=' + encodeURIComponent(res.project_id);
-          return;
-        }
-        activeTab.value = 'projects';
-        const project = projectList.value.find(p => p.id === res.project_id);
-        if (project) await openProject(project);
-      } catch (e) {
-        showMessage(e.message, 'error');
-      } finally {
-        importing.value = false;
-      }
-    }
-
-    // 素材一键导入：自动建会话+套引导语+发送
-    function onMaterialFileSelected(event) {
-      const file = event.target.files && event.target.files[0];
-      if (!file) return;
-      if (file.size > 5 * 1024 * 1024) { showMessage('文件不能超过 5MB', 'error'); return; }
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        materialContent.value = String(e.target.result || '');
-        if (!materialTitle.value) {
-          materialTitle.value = file.name.replace(/\.(txt|md)$/i, '');
-        }
-      };
-      reader.onerror = () => showMessage('文件读取失败', 'error');
-      reader.readAsText(file, 'utf-8');
-      event.target.value = '';
-    }
-    async function confirmImportMaterial() {
-      if (!materialContent.value.trim()) return;
-      const wa = wizardAgents.value;
-      if (!wa.length) {
-        showMessage('请先到「设置 > AI Agent」一键初始化创作向导 Agent', 'error');
-        showImportMaterialModal.value = false;
-        window.location.href = '/dashboard/settings#ai-agents';
-        return;
-      }
-      materialImporting.value = true;
-      try {
-        // 1. 创建新会话
-        const title = (materialTitle.value || '').trim() || ('素材导入 ' + new Date().toLocaleString('zh-CN', { hour12: false }).slice(5, 16));
-        const sessionRes = await api('/api/dashboard/ai/chat/sessions', {
-          method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ agent_id: wa[0].id, scope: 'wizard', title }),
-        });
-        const newSessionId = sessionRes.id;
-        await loadChatSessions();
-        await selectChatSession(newSessionId);
-
-        // 2. 拼装引导消息
-        const extra = materialExtraInstruction.value.trim();
-        const prompt = [
-          '我已经有现成的创作素材（可能来自其他 AI 的聊天记录、自己写的大纲、人物设定等等）。',
-          '请你直接把这些素材整理成本系统需要的 7 块结构（梗概/卖点/人物/总纲/详细大纲/进度条/写作规范），按 markdown 节段输出，',
-          '同时立即在最后输出 <<<READY_FOR_IMPORT>>> 标记和完整的 JSON 块（含 project / chapters / foreshadows）。',
-          '不要反复确认，不要再问问题，直接整理输出。如果素材里某些细节缺失，用专业判断合理补全即可。',
-          extra ? `\n额外要求：${extra}` : '',
-          materialTitle.value.trim() ? `\n作品名称：${materialTitle.value.trim()}` : '',
-          '\n以下是素材原文：\n',
-          '═══════════════════════════════════════',
-          materialContent.value,
-          '═══════════════════════════════════════',
-        ].filter(Boolean).join('\n');
-
-        // 3. 关闭弹窗、切到向导 tab、设置输入框、自动发送
-        showImportMaterialModal.value = false;
-        activeTab.value = 'wizard';
-        chatInput.value = prompt;
-        await Vue.nextTick();
-        // 4. 触发发送
-        await sendChatMessage();
-        // 清空字段
-        materialContent.value = '';
-        materialTitle.value = '';
-        materialExtraInstruction.value = '';
-        showMessage('已提交给 AI，正在整理…');
-      } catch (e) {
-        showMessage(e.message, 'error');
-      } finally {
-        materialImporting.value = false;
-      }
     }
 
     // ── 章节自动 Pipeline + 产出面板 ──────────────────────────────
@@ -2720,7 +1692,7 @@ window.initVueApp({
           plan_text: chapterEditForm.outline,
           context_chars: 8000,
         };
-        const res = await fetch('/api/dashboard/ai/chapters/pipeline/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        const res = await csrfFetch('/api/dashboard/ai/chapters/pipeline/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         if (!res.ok || !res.body) throw new Error('请求失败');
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -2806,7 +1778,7 @@ window.initVueApp({
           chapter_id: currentChapter.value.id,
           agent_id: 0,
         };
-        const res = await fetch(endpoint, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        const res = await csrfFetch(endpoint, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         if (!res.ok || !res.body) throw new Error('请求失败');
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -2862,7 +1834,7 @@ window.initVueApp({
           output_chars: 3000,
           context_chars: 8000,
         };
-        const res = await fetch('/api/dashboard/ai/chapters/pipeline/batch/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        const res = await csrfFetch('/api/dashboard/ai/chapters/pipeline/batch/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         if (!res.ok || !res.body) throw new Error('批量生成请求失败');
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -2991,48 +1963,20 @@ window.initVueApp({
       });
     });
 
-    function switchTab(id) {
-      // 切换顶部 tab 时关闭所有遮罩，并退出章节明细，避免页面被章节创作状态锁住
-      showPipelineModal.value = false;
-      showRawImportModal.value = false;
-      showContextPreviewModal.value = false;
-      showImportModal.value = false;
-      showImportMaterialModal.value = false;
-      activeTab.value = id;
-      // 离开自动写作 tab 时退出章节明细，避免回到时仍停留在「本章节」tab
-      if (id !== 'projects' && projectDetailTab.value === 'chapter') {
-        projectDetailTab.value = currentProject.value ? 'chapters' : 'overview';
-        currentChapter.value = null;
-        chapterDashboard.value = null;
-      }
-      if (id === 'projects') applyBestAgentDefaults();
-      if (id === 'distill') { applyBestAgentDefaults(); loadStyleProfiles(); loadNovelProfiles(); }
-      if (id === 'reader') { readerView.value = 'list'; loadReaderProjects(); }
-    }
-
     onMounted(async () => {
-      await Promise.all([loadAgents(), loadStyleProfiles(), loadNovelProfiles(), loadProjects(), loadChatSessions()]);
+      await Promise.all([loadAgents(), loadStyleProfiles(), loadNovelProfiles(), loadProjects()]);
       applyBestAgentDefaults();
-      if (PAGE_MODE === 'wizard') {
-        applyBestAgentDefaults();
-        loadStyleProfiles();
-        loadNovelProfiles();
-      }
-      if (PAGE_MODE === 'ai') {
-        const projectId = Number(new URLSearchParams(window.location.search).get('project_id') || 0);
-        if (projectId) {
-          const project = projectList.value.find(p => Number(p.id) === projectId);
-          if (project) await openProject(project);
-        }
+      const projectId = Number(new URLSearchParams(window.location.search).get('project_id') || 0);
+      if (projectId) {
+        const project = projectList.value.find(p => Number(p.id) === projectId);
+        if (project) await openProject(project);
       }
     });
-    const exported = { tabs, activeTab, providers, agents, drafts, draftHistory, styleProfiles, novelProfiles, selectedStyleProfile, selectedNovelProfile, promptTemplates, promptFilter, message, messageType, toastMessage, toastType, streaming, streamOutput, currentJobId, continueForm, rewriteForm, providerForm, agentForm, auditForm, distillForm, promptForm, seedProviderId, auditDimensions, continueAgents, rewriteAgents, auditAgents, distillAgents, planAgents, resetProviderForm, editProvider, resetAgentForm, editAgent, saveProvider, deleteProvider, testProvider, saveAgent, deleteAgent, uploadDocument, startContinue, startRewrite, saveDraft, loadDrafts, showDraftHistory, forkDraft, deleteDraft, startAudit, startPlan, detectAITells, startDistill, saveDistillProfile, loadStyleProfiles, deleteStyleProfile, loadNovelProfiles, deleteNovelProfile, loadPromptTemplates, resetPromptForm, editPromptTemplate, savePromptTemplate, deletePromptTemplate, seedPromptTemplates, seedAgents, projectView, projectList, currentProject, chapters, currentChapter, foreshadows, foreshadowFilter, filteredForeshadows, chapterForeshadowAlerts, projectStates, showCreateProject, showForeshadowForm, newProjectForm, newForeshadow, chapterEditForm, chapterKeyEventsText, chapterContinueAgent, chapterInstruction, chapterActionStatus, searchQuery, searchResults, longformPlanning, longformDetailPlanning, longformCreateCount, longformPlanForm, longformDetailForm, longformPlan, plannedChapterExists, missingPlannedChapters, generateLongformPlan, generateDetailedOutlines, createPlannedChapters, createNextPlannedChapter, loadProjects, createProject, deleteProject, openProject, createChapter, deleteChapter, openChapter, saveCurrentChapter, startChapterContinue, startChapterPlan, autoUpdateState, appendOutput, addForeshadow, resolveForeshadow, deleteForeshadow, searchProject, indexChapter, saveProjectStates, chatSessions, currentChatSession, chatMessages, chatInput, chatStreaming, chatStreamingText, chatLogRef, wizardSections, wizardSectionKeys, wizardAgents, showImportModal, importMode, importTargetProjectId, importOverwriteFields, importing, loadChatSessions, selectChatSession, openNewWizardSession, updateChatSessionAgent, renameWizardSession, deleteWizardSession, sendChatMessage, loadWizardPreview, openImportWizardModal, confirmImportWizard, showImportMaterialModal, materialTitle, materialContent, materialExtraInstruction, materialImporting, onMaterialFileSelected, confirmImportMaterial, pipelineAllSteps, pipelineExpanded, pipelineSelectedSteps, pipelineAgentIds, pipelineRunning, pipelineSteps, chapterDashboard, dashboardTab, dashboardTabs, pipelineAgentsFor, pipelineStepLabel, pipelineStatusBadge, stateLabel, loadChapterDashboard, startChapterPipeline, showPipelineModal, pipelineCurrentStep, pipelineOutputRef, openPipelineModal, onPipelineModalClose, retryPipelineStep, formatStepMeta, copyPipelineOutput, scrollPipelineOutputBottom };
-    Object.assign(exported, { showRawImportModal, rawImportType, rawImportText, rawImportJobId, rawImporting, rawImportChapterId, rawImportTitle, openRawImportModal, confirmRawImport, importUseRawOutput, importRawOutput, showContextPreviewModal, contextPreview, contextPreviewLoading, previewChapterContext });
-    Object.assign(exported, { switchTab });
-    Object.assign(exported, { pageMode });
+    const exported = { agents, styleProfiles, novelProfiles, message, messageType, toastMessage, toastType, streaming, streamOutput, currentJobId, continueAgents, planAgents, saveDraft, detectAITells, loadStyleProfiles, loadNovelProfiles, projectView, projectList, currentProject, chapters, currentChapter, foreshadows, foreshadowFilter, filteredForeshadows, chapterForeshadowAlerts, projectStates, showCreateProject, showForeshadowForm, newProjectForm, newForeshadow, chapterEditForm, chapterKeyEventsText, chapterContinueAgent, chapterInstruction, chapterActionStatus, searchQuery, searchResults, longformPlanning, longformDetailPlanning, longformCreateCount, longformPlanForm, longformDetailForm, longformPlan, plannedChapterExists, missingPlannedChapters, generateLongformPlan, generateDetailedOutlines, createPlannedChapters, createNextPlannedChapter, loadProjects, createProject, deleteProject, openProject, createChapter, deleteChapter, openChapter, saveCurrentChapter, startChapterContinue, startChapterPlan, autoUpdateState, appendOutput, addForeshadow, resolveForeshadow, deleteForeshadow, searchProject, indexChapter, saveProjectStates, pipelineAllSteps, pipelineExpanded, pipelineSelectedSteps, pipelineAgentIds, pipelineRunning, pipelineSteps, chapterDashboard, dashboardTab, dashboardTabs, pipelineAgentsFor, pipelineStepLabel, pipelineStatusBadge, stateLabel, loadChapterDashboard, startChapterPipeline, showPipelineModal, pipelineCurrentStep, pipelineOutputRef, openPipelineModal, onPipelineModalClose, retryPipelineStep, formatStepMeta, copyPipelineOutput, scrollPipelineOutputBottom };
+    Object.assign(exported, { showRawImportModal, rawImportType, rawImportText, rawImportJobId, rawImporting, rawImportChapterId, rawImportTitle, openRawImportModal, confirmRawImport, showContextPreviewModal, contextPreview, contextPreviewLoading, previewChapterContext });
     Object.assign(exported, { projectDetailTab, projectDetailTabs, projectMetaForm, saveProjectMeta, saveProjectProfiles, saveProjectStyleControl, STYLE_SLIDERS, styleTagInput, addStyleTag, removeStyleTag, coverBusy, uploadProjectCover, deleteProjectCover });
     Object.assign(exported, { batchSelectedChapterIds, batchPipelineRunning, batchPipelineProgress, chapterGenerated, chapterPipelineSummary, toggleBatchChapter, selectEmptyChapters, selectAllChapters, clearBatchSelection, startBatchChapterPipeline, generateMissingChapters, adjacentChapter, openAdjacentChapter, backToChapterList, backToProjectList, selectProjectDetailTab });
-    Object.assign(exported, { readerView, readerProjectId, readerProject, readerChapters, readerExpanded, readerLoading, loadReaderProjects, openReaderProject, backReaderList, toggleReaderChapter, coverGradient, readerFirstChar });
+    Object.assign(exported, { projectCoverGradient, projectFirstChar });
     return exported;
   }
 });

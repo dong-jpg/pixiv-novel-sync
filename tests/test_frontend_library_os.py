@@ -42,6 +42,7 @@ def test_dashboard_pages_are_marked_as_library_pages():
         "dashboard_settings.html",
         "dashboard_preferences.html",
         "dashboard_ai.html",
+        "dashboard_wizard.html",
     ]
 
     for page in pages:
@@ -50,12 +51,65 @@ def test_dashboard_pages_are_marked_as_library_pages():
         assert "library-page-header" in html, page
 
 
-def test_dashboard_ai_wizard_has_section_navigation():
-    html = read(TEMPLATES / "dashboard_ai.html")
+def test_ai_and_wizard_templates_do_not_embed_other_workspace():
+    ai = read(TEMPLATES / "dashboard_ai.html")
+    wizard = read(TEMPLATES / "dashboard_wizard.html")
 
-    assert 'v-if="pageMode === \'wizard\'"' in html
-    assert 'v-for="tab in tabs"' in html
-    assert "switchTab(tab.id)" in html
+    assert "loadChatSessions" not in ai
+    assert "openNewWizardSession" not in ai
+    assert "/api/dashboard/ai/chat/" not in ai
+    assert "showImportMaterialModal" not in ai
+    assert "distillForm" not in ai
+    assert "readerView" not in ai
+    assert "providerForm" not in ai
+    assert "continueForm" not in ai
+    assert "auditForm" not in ai
+    assert "promptForm" not in ai
+    assert "'novel-search':" not in ai
+    assert "'series-search':" not in ai
+    assert "providerForm" not in ai
+    assert "continueForm" not in ai
+    assert "auditForm" not in ai
+    assert "promptForm" not in ai
+    assert "'novel-search':" not in ai
+    assert "'series-search':" not in ai
+    assert "providerForm" not in ai
+    assert "continueForm" not in ai
+    assert "auditForm" not in ai
+    assert "promptForm" not in ai
+    assert "'novel-search':" not in ai
+    assert "'series-search':" not in ai
+    assert 'v-if="false"' not in ai
+    assert "loadChapterDashboard" not in wizard
+    assert "startChapterPipeline" not in wizard
+    assert "pageMode" not in ai
+    assert "pageMode" not in wizard
+
+
+def test_ai_pages_share_complete_output_panel_component():
+    ai = read(TEMPLATES / "dashboard_ai.html")
+    wizard = read(TEMPLATES / "dashboard_wizard.html")
+    panel = read(TEMPLATES / "dashboard_ai_output_panel.html")
+
+    include = '{% include "dashboard_ai_output_panel.html" %}'
+    assert include in ai
+    assert include in wizard
+    assert "window.aiOutputPanelComponent" in ai
+    assert "window.aiOutputPanelComponent" in wizard
+    assert "emits: ['save', 'detect']" in panel
+    assert "showDetect" in panel
+
+
+def test_wizard_preserves_distill_sources_and_merge_controls():
+    wizard = read(TEMPLATES / "dashboard_wizard.html")
+
+    assert 'value="archive_novel"' in wizard
+    assert 'value="archive_series"' in wizard
+    assert 'value="document"' in wizard
+    assert "distillForm.full_text" in wizard
+    assert "distillForm.batch_size" in wizard
+    assert "importOverwriteFields" in wizard
+    assert "payload.overwrite_fields" in wizard
 
 
 def test_task_logs_template_has_complete_ai_filters_and_details():
@@ -94,8 +148,11 @@ def test_ai_dashboard_api_adds_csrf_to_mutating_requests():
     html = read(TEMPLATES / "dashboard_ai.html")
 
     assert "ensureCsrfToken" in html
+    assert "async function csrfFetch" in html
     assert "'/api/csrf-token'" in html
     assert "'X-CSRF-Token': token" in html
+    assert "return window.fetch(url, opts)" in html
+    assert "await fetch(" not in html
 
 
 def test_ai_project_overview_has_independent_style_save_and_balanced_grid():
