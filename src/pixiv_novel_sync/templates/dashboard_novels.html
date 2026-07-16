@@ -234,9 +234,13 @@
         <!-- Cover Area -->
         <div class="aspect-[3/4] relative overflow-hidden">
           <div class="absolute inset-0" :style="'background: linear-gradient(135deg, ' + getGradient(item.name || item.id) + ')' "></div>
-          <div class="absolute inset-0 flex items-center justify-center">
+          <div v-if="!item.cover_url" class="absolute inset-0 flex items-center justify-center">
             <span class="text-white/80 text-4xl font-bold select-none">{{ (item.name || '?').substring(0, 1) }}</span>
           </div>
+          <img v-if="item.cover_url"
+               :src="item.cover_url"
+               class="absolute inset-0 w-full h-full object-cover"
+               @error="item.cover_url = ''">
           <div class="absolute top-2 left-2 z-10">
             <span class="px-1.5 py-0.5 bg-rose-500 text-white text-[10px] font-bold rounded">AI 创作</span>
           </div>

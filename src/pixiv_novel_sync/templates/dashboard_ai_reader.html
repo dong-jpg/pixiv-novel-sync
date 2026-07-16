@@ -63,7 +63,8 @@
     <div v-else class="grid grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)] gap-10">
       <aside class="catalog-column space-y-5">
         <div class="ai-cover" :style="coverGradient(project?.name)">
-          <span class="text-7xl font-black text-white/90 drop-shadow select-none">{{ firstChar(project?.name) }}</span>
+          <img v-if="project?.cover_url" :src="project.cover_url" class="w-full h-full object-cover" @error="project.cover_url = null">
+          <span v-else class="text-7xl font-black text-white/90 drop-shadow select-none">{{ firstChar(project?.name) }}</span>
         </div>
         <div>
           <h1 class="reader-title text-xl">{{ project?.name || '未命名 AI 作品' }}</h1>
@@ -88,7 +89,8 @@
       <article class="reader-body-wrapper">
         <header class="novel-header text-center pb-6 border-b border-gray-100 mb-6">
           <div class="lg:hidden ai-cover w-40 mx-auto mb-5" :style="coverGradient(project?.name)">
-            <span class="text-5xl font-black text-white/90 drop-shadow select-none">{{ firstChar(project?.name) }}</span>
+            <img v-if="project?.cover_url" :src="project.cover_url" class="w-full h-full object-cover" @error="project.cover_url = null">
+            <span v-else class="text-5xl font-black text-white/90 drop-shadow select-none">{{ firstChar(project?.name) }}</span>
           </div>
           <h1 class="reader-title">{{ project?.name || '未命名 AI 作品' }}</h1>
           <p v-if="project?.description" class="text-sm text-gray-500 mt-3 whitespace-pre-wrap">{{ project.description }}</p>

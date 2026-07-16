@@ -298,6 +298,21 @@
         <div class="space-y-4">
           <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-3">
             <h3 class="font-bold text-gray-900 text-sm">项目信息</h3>
+            <div class="flex flex-col sm:flex-row gap-4 pb-3 border-b border-gray-100">
+              <div class="relative w-28 aspect-[3/4] flex-shrink-0 overflow-hidden rounded-lg shadow-sm" :style="coverGradient(currentProject?.name)">
+                <img v-if="currentProject?.cover_url" :src="currentProject.cover_url" class="absolute inset-0 w-full h-full object-cover" @error="currentProject.cover_url = null">
+                <div v-else class="absolute inset-0 flex items-center justify-center">
+                  <span class="text-4xl font-black text-white/90 drop-shadow select-none">{{ readerFirstChar(currentProject?.name) }}</span>
+                </div>
+              </div>
+              <div class="flex flex-col items-start justify-end gap-2">
+                <input ref="coverInput" type="file" accept="image/jpeg,image/png,image/webp" class="hidden" @change="uploadProjectCover">
+                <button @click="$refs.coverInput.click()" :disabled="coverBusy" class="px-3 py-1.5 bg-brand-500 text-white rounded-lg text-xs font-medium hover:bg-brand-600 disabled:opacity-50">
+                  {{ coverBusy ? '处理中…' : (currentProject?.cover_url ? '替换封面' : '上传封面') }}
+                </button>
+                <button v-if="currentProject?.cover_url" @click="deleteProjectCover" :disabled="coverBusy" class="px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-medium hover:bg-red-100 disabled:opacity-50">删除封面</button>
+              </div>
+            </div>
             <div>
               <label class="block text-xs font-medium text-pixiv-gray mb-1">项目名称</label>
               <input v-model="projectMetaForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="项目名称">
@@ -1379,6 +1394,7 @@ window.initVueApp({
     const styleTagInput = ref('');
     const projectList = ref([]);
     const currentProject = ref(null);
+    const coverBusy = ref(false);
     const chapters = ref([]);
     const currentChapter = ref(null);
     const foreshadows = ref([]);
@@ -1535,8 +1551,23 @@ window.initVueApp({
       toastTimer = setTimeout(() => { toastMessage.value = ''; }, 3200);
       setTimeout(() => { message.value = ''; }, 4000);
     }
+    let csrfToken = '';
+    async function ensureCsrfToken() {
+      if (csrfToken) return csrfToken;
+      const res = await fetch('/api/csrf-token');
+      const data = await res.json();
+      if (!res.ok || !data.csrf_token) throw new Error(data.error || '获取安全令牌失败');
+      csrfToken = data.csrf_token;
+      return csrfToken;
+    }
     async function api(url, options = {}) {
-      const res = await fetch(url, options);
+      const opts = { ...options };
+      const method = String(opts.method || 'GET').toUpperCase();
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+        const token = await ensureCsrfToken();
+        opts.headers = { ...(opts.headers || {}), 'X-CSRF-Token': token };
+      }
+      const res = await fetch(url, opts);
       const data = await res.json();
       if (!res.ok || data.ok === false) throw new Error(data.error || '请求失败');
       return data.data;
@@ -1812,6 +1843,53 @@ window.initVueApp({
         await loadProjects();
         showMessage('项目信息已保存');
       } catch (e) { showMessage(e.message, 'error'); }
+    }
+    async function uploadProjectCover(event) {
+      const input = event?.target;
+      const file = input?.files?.[0];
+      if (!file || !currentProject.value || coverBusy.value) return;
+      const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
+      if (!allowedTypes.has(file.type)) {
+        showMessage('封面仅支持 JPEG、PNG 或 WebP 格式', 'error');
+        input.value = '';
+        return;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        showMessage('封面不能超过 10 MiB', 'error');
+        input.value = '';
+        return;
+      }
+      coverBusy.value = true;
+      try {
+        const form = new FormData();
+        form.append('cover', file);
+        const data = await api('/api/dashboard/ai/projects/' + currentProject.value.id + '/cover', {
+          method: 'POST', body: form,
+        });
+        currentProject.value.cover_url = data.cover_url + '?v=' + Date.now();
+        await loadProjects();
+        showMessage('封面已保存');
+      } catch (e) {
+        showMessage(e.message, 'error');
+      } finally {
+        coverBusy.value = false;
+        input.value = '';
+      }
+    }
+    async function deleteProjectCover() {
+      if (!currentProject.value || coverBusy.value) return;
+      if (!confirm('确认删除当前封面？')) return;
+      coverBusy.value = true;
+      try {
+        await api('/api/dashboard/ai/projects/' + currentProject.value.id + '/cover', { method: 'DELETE' });
+        currentProject.value.cover_url = null;
+        await loadProjects();
+        showMessage('封面已删除');
+      } catch (e) {
+        showMessage(e.message, 'error');
+      } finally {
+        coverBusy.value = false;
+      }
     }
     async function saveProjectProfiles() {
       if (!currentProject.value) return;
@@ -2934,7 +3012,7 @@ window.initVueApp({
     Object.assign(exported, { showRawImportModal, rawImportType, rawImportText, rawImportJobId, rawImporting, rawImportChapterId, rawImportTitle, openRawImportModal, confirmRawImport, importUseRawOutput, importRawOutput, showContextPreviewModal, contextPreview, contextPreviewLoading, previewChapterContext });
     Object.assign(exported, { switchTab });
     Object.assign(exported, { pageMode });
-    Object.assign(exported, { projectDetailTab, projectDetailTabs, projectMetaForm, saveProjectMeta, saveProjectProfiles, STYLE_SLIDERS, styleTagInput, addStyleTag, removeStyleTag });
+    Object.assign(exported, { projectDetailTab, projectDetailTabs, projectMetaForm, saveProjectMeta, saveProjectProfiles, STYLE_SLIDERS, styleTagInput, addStyleTag, removeStyleTag, coverBusy, uploadProjectCover, deleteProjectCover });
     Object.assign(exported, { batchSelectedChapterIds, batchPipelineRunning, batchPipelineProgress, chapterGenerated, chapterPipelineSummary, toggleBatchChapter, selectEmptyChapters, selectAllChapters, clearBatchSelection, startBatchChapterPipeline, generateMissingChapters, adjacentChapter, openAdjacentChapter, backToChapterList, backToProjectList, selectProjectDetailTab });
     Object.assign(exported, { readerView, readerProjectId, readerProject, readerChapters, readerExpanded, readerLoading, loadReaderProjects, openReaderProject, backReaderList, toggleReaderChapter, coverGradient, readerFirstChar });
     return exported;

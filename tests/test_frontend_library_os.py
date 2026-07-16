@@ -75,6 +75,29 @@ def test_task_logs_template_has_complete_ai_filters_and_details():
     assert "formatJson(selectedLog.output)" in html
 
 
+def test_ai_project_pages_prefer_cover_url_with_gradient_fallback():
+    novels = read(TEMPLATES / "dashboard_novels.html")
+    reader = read(TEMPLATES / "dashboard_ai_reader.html")
+    studio = read(TEMPLATES / "dashboard_ai.html")
+
+    assert "item.cover_url" in novels
+    assert ":src=\"item.cover_url\"" in novels
+    assert "project?.cover_url" in reader
+    assert "currentProject?.cover_url" in studio
+    assert "coverGradient" in reader
+    assert "uploadProjectCover" in studio
+    assert "deleteProjectCover" in studio
+    assert "data.cover_url + '?v=' + Date.now()" in studio
+
+
+def test_ai_dashboard_api_adds_csrf_to_mutating_requests():
+    html = read(TEMPLATES / "dashboard_ai.html")
+
+    assert "ensureCsrfToken" in html
+    assert "'/api/csrf-token'" in html
+    assert "'X-CSRF-Token': token" in html
+
+
 def test_frontend_contract_documents_exist_and_cover_core_topics():
     contract = read(DOCS / "frontend-api-contract.md")
     pages = read(DOCS / "frontend-pages.md")
