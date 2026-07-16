@@ -176,10 +176,24 @@ class PreferenceAnalyzer:
             "profile": profile,
         }
 
+    def effective_keywords(self, stats: dict[str, Any]) -> list[str]:
+        refined = stats.get("refined_keywords")
+        if isinstance(refined, list):
+            cleaned = [str(item).strip() for item in refined if str(item).strip()]
+            if cleaned:
+                return cleaned
+        return [
+            str(item.get("name") or "").strip()
+            for item in stats.get("top_keywords", [])
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        ]
+
+    def build_profile(self, stats: dict[str, Any]) -> dict[str, Any]:
+        return self._build_profile(stats)
 
     def _build_profile(self, stats: dict[str, Any]) -> dict[str, Any]:
         top_tags = [item["name"] for item in stats.get("top_tags", [])[:20]]
-        top_keywords = [item["name"] for item in stats.get("top_keywords", [])[:30]]
+        top_keywords = self.effective_keywords(stats)[:30]
         title_keywords = [item["name"] for item in stats.get("top_title_keywords", [])[:15]]
         caption_keywords = [item["name"] for item in stats.get("top_caption_keywords", [])[:15]]
         primary_tags = top_tags[:10]

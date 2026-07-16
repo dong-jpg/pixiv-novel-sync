@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+from pixiv_novel_sync.preferences import PreferenceAnalyzer
 from pixiv_novel_sync.recommendations import RecommendationService, _SERIES_PAGE_SAFETY_LIMIT
 from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings
 from pixiv_novel_sync.storage_db import Database
@@ -47,6 +48,30 @@ def test_build_search_plan_from_profile(tmp_path: Path):
     assert plan["filters"]["series_min_total_chars"] == 20000
     assert [q["query"] for q in plan["queries"]] == ["甜文", "冒险", "甜文 温柔", "冒险 温柔"]
     assert all(q["limit"] == 5 for q in plan["queries"])
+    db.close()
+
+
+def test_search_plan_uses_profile_rebuilt_from_refined_keywords(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    analyzer = PreferenceAnalyzer(db)
+    stats = {
+        "novel_count": 5,
+        "total_chars": 50_000,
+        "series_novel_count": 0,
+        "single_novel_count": 5,
+        "avg_text_length": 10_000,
+        "top_tags": [{"name": "校园", "count": 5}],
+        "top_keywords": [{"name": "她的", "count": 20}],
+        "refined_keywords": ["秘密恋爱"],
+    }
+    profile = {"id": 1, "profile": analyzer.build_profile(stats)}
+
+    plan = RecommendationService(db, make_settings(tmp_path)).build_search_plan(profile)
+
+    queries = [item["query"] for item in plan["queries"]]
+    assert any("秘密恋爱" in query for query in queries)
+    assert all("她的" not in query for query in queries)
     db.close()
 
 

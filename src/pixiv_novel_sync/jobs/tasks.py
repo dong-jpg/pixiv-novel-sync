@@ -325,6 +325,8 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
         except Exception as exc:
             reporter.add_log("warning", f"关键词清洗跳过（{exc}）")
 
+        rebuilt["profile"] = analyzer.build_profile(rebuilt["stats"])
+
         # 更新单一默认画像(不存在则创建)
         existing = db.get_default_preference_profile()
         profile_payload = {

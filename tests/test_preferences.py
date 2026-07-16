@@ -44,6 +44,29 @@ def test_preference_analyzer_builds_profile(tmp_path: Path):
     db.close()
 
 
+def test_build_profile_prefers_refined_keywords(tmp_path: Path):
+    db = Database(tmp_path / "prefs.db")
+    db.init_schema()
+    analyzer = PreferenceAnalyzer(db)
+    stats = {
+        "novel_count": 10,
+        "total_chars": 100_000,
+        "series_novel_count": 0,
+        "single_novel_count": 10,
+        "avg_text_length": 10_000,
+        "top_tags": [{"name": "百合", "count": 8}],
+        "top_keywords": [{"name": "她的", "count": 50}, {"name": "了一", "count": 40}],
+        "refined_keywords": ["校园恋爱", "百合"],
+    }
+
+    profile = analyzer.build_profile(stats)
+
+    assert profile["positive_preferences"]["keywords"] == ["校园恋爱", "百合"]
+    assert "她的" not in profile["summary"]
+    assert all("她的" not in query for query in profile["search_strategy"]["precise_queries"])
+    db.close()
+
+
 def test_preference_profile_crud(tmp_path: Path):
     db = Database(tmp_path / "prefs.db")
     db.init_schema()
