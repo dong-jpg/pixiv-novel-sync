@@ -14,10 +14,13 @@
 | `/dashboard/series/<id>` | `src/pixiv_novel_sync/templates/dashboard_series_detail.html` | 系列详情 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/users/<id>` | `src/pixiv_novel_sync/templates/dashboard_user_detail.html` | 作者详情和作者小说 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/pending-deletions` | `src/pixiv_novel_sync/templates/dashboard_pending_deletions.html` | 待确认删除队列 | 已接入 `library-page` / `library-page-header` |
-| `/dashboard/logs` | `src/pixiv_novel_sync/templates/dashboard_logs.html` | 同步日志和详情 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/logs` | `src/pixiv_novel_sync/templates/dashboard_logs.html` | 同步任务与 AI 创作任务日志 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings` | `src/pixiv_novel_sync/templates/dashboard_settings.html` | 同步、缓存、AI provider/agent 设置 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/preferences` | `src/pixiv_novel_sync/templates/dashboard_preferences.html` | 偏好画像与推荐 | 已接入 `library-page` / `library-page-header` |
-| `/dashboard/ai` | `src/pixiv_novel_sync/templates/dashboard_ai.html` | AI 创作、项目、章节、chat、pipeline | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/ai` | `src/pixiv_novel_sync/templates/dashboard_ai.html` | AI 自动写作项目、章节和 Pipeline | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/wizard` | `src/pixiv_novel_sync/templates/dashboard_wizard.html` | 创作向导与蒸馏档案 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/novels?category=ai` | `src/pixiv_novel_sync/templates/dashboard_novels.html` | AI 创作小说库 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/novels/ai/<project_id>` | `dashboard_ai_reader.html` | AI 创作小说阅读 | 已接入 `library-page` / `library-page-header` |
 
 ## Shared layout
 
@@ -183,7 +186,7 @@ APIs:
 
 Template: `dashboard_logs.html`
 
-用途：任务日志列表和详情弹窗。
+用途：任务日志列表和详情弹窗。任务类型分为“同步任务”和“AI 创作任务”，默认保留最近 3 天；AI 任务支持类型、状态和时间筛选。
 
 APIs:
 
@@ -221,22 +224,31 @@ APIs:
 
 Template: `dashboard_ai.html`
 
-用途：AI 创作综合工作台。
-
-主要功能区：
-
-- 创作向导 chat sessions。
-- Provider/Agent 设置。
-- 草稿和任务历史。
-- 风格蒸馏/小说蒸馏/内容审计/构思。
-- 写作项目、章节、状态记忆、伏笔、语义检索。
-- 章节 pipeline。
+用途：AI 自动写作项目、全书规划、章节工作区、伏笔、状态记忆、语义检索和 Pipeline。
 
 关键约束：
 
-- 不改变 SSE endpoint 和 event names。
-- 不改变 payload keys。
-- Library OS 重写优先视觉层，不重构状态机。
+- 不初始化创作向导会话或蒸馏表单。
+- `/dashboard/ai?project_id=<id>` 可直接打开指定项目。
+- 流式写请求统一附加 CSRF Token。
+
+### `/dashboard/wizard`
+
+Template: `dashboard_wizard.html`
+
+用途：创作向导会话、素材导入、READY 项目导入和蒸馏档案管理。蒸馏来源支持手动文本、归档小说、归档系列和文档。
+
+### `/dashboard/novels?category=ai`
+
+Template: `dashboard_novels.html`
+
+用途：按小说库卡片样式展示 AI 创作小说，复用项目封面并进入统一阅读页。
+
+### `/dashboard/novels/ai/<project_id>`
+
+Template: `dashboard_ai_reader.html`
+
+用途：显示 AI 作品封面、目录和章节正文，视觉与小说库详情页一致。
 
 ### `/token-login`
 

@@ -135,6 +135,16 @@ def test_current_frontend_docs_describe_task_logs_and_ai_pages():
     assert "/api/dashboard/ai/projects/<project_id>/cover" in contract
 
 
+def test_frontend_pages_document_current_ai_boundaries():
+    pages = read(DOCS / "frontend-pages.md")
+    studio = read(DOCS / "AI_WRITING_STUDIO_PLAN.md")
+
+    assert "AI 创作小说" in pages
+    assert "`/dashboard/wizard`" in pages
+    assert "`dashboard_ai_reader.html`" in pages
+    assert "AI 创作任务已迁移到全局任务日志" in studio
+
+
 def test_task_logs_template_has_complete_ai_filters_and_details():
     html = read(TEMPLATES / "dashboard_logs.html")
 
