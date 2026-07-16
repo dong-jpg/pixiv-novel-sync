@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 from pixiv_novel_sync.jobs.models import JobStatus
+from pixiv_novel_sync.web.managers import AutoSyncScheduler
 from pixiv_novel_sync.webapp import create_app
 
 
@@ -80,3 +82,31 @@ def test_preference_analyze_writes_task_log(tmp_path, monkeypatch):
     matched = [r for r in rows if r.get("job_id") == job_id]
     assert matched, "偏好分析 job 未写入 task_logs"
     assert matched[0]["task_type"] == "preference_analyze"
+
+
+def test_scheduled_preference_analysis_uses_shared_task(tmp_path, monkeypatch):
+    class FakeSyncJobManager:
+        def add_log(self, _job_id, _level, _message):
+            return None
+
+        def is_cancel_requested(self, _job_id):
+            return False
+
+    calls = []
+    settings = SimpleNamespace(
+        storage=SimpleNamespace(db_path=tmp_path / "preferences.db"),
+        sync=SimpleNamespace(preference_analyze_batch_size=50),
+    )
+    manager = AutoSyncScheduler(config_path=None, env_path=None, sync_job_manager=FakeSyncJobManager())
+
+    def fake_execute(task_type, current_settings, context):
+        calls.append((task_type, current_settings, context))
+        return {"processed_this_run": 1}
+
+    monkeypatch.setattr("pixiv_novel_sync.web.managers.execute_task", fake_execute, raising=False)
+
+    manager._sync_preference_analyze(settings, "job-1")
+
+    assert calls[0][0] == "preference_analyze"
+    assert calls[0][1] is settings
+    assert calls[0][2]["params"]["scope"] == {"batch_size": 50, "max_batches": 1}

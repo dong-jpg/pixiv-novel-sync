@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import yaml
 
 from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings, load_settings
 from pixiv_novel_sync.sync_check import build_sync_check_fingerprint, sync_check_task_types
 from pixiv_novel_sync.web.utils import _settings_to_dict
 from pixiv_novel_sync.webapp import SettingsManager, SyncJobManager, SyncJobState, create_app
+
+
+def test_settings_template_exposes_keyword_clean_agent_type():
+    html = Path("src/pixiv_novel_sync/templates/dashboard_settings.html").read_text(encoding="utf-8")
+
+    assert html.count('<option value="keyword_clean">关键词清洗</option>') == 2
 
 
 def make_settings(tmp_path) -> Settings:

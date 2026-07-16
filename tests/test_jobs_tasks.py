@@ -305,6 +305,10 @@ def test_preference_analyze_defaults_scope_limit(monkeypatch):
                 "profile": {"positive_preferences": {"tags": ["甜文"]}},
             }
 
+        def build_profile(self, stats):
+            captured["rebuilt_stats"] = stats
+            return {"positive_preferences": {"tags": ["甜文"]}}
+
     monkeypatch.setattr("pixiv_novel_sync.jobs.tasks._job_reporter_from_context", lambda context: FakeReporter())
     monkeypatch.setattr("pixiv_novel_sync.jobs.tasks.Database", lambda path: FakeDb(), raising=False)
     monkeypatch.setattr("pixiv_novel_sync.preferences.PreferenceAnalyzer", FakeAnalyzer)

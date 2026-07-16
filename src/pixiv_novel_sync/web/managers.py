@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from ..jobs import services as job_services
+from ..jobs.tasks import execute_task
 from ..settings import Settings, load_settings
 from ..storage_db import Database
 from ..storage_files import FileStorage
@@ -714,57 +715,21 @@ class AutoSyncScheduler:
         )
 
     def _sync_preference_analyze(self, settings: Settings, job_id: str | None) -> None:
-        """增量分析本地偏好(纯本地 DB,无需 Pixiv 认证)。每次跑一批,跳过已分析。"""
-        from ..preferences import PreferenceAnalyzer
-
-        reporter = self._job_reporter(job_id)
-        reporter.add_log("info", "=== 开始增量分析本地偏好 ===")
-
-        db = Database(settings.storage.db_path)
-        try:
-            db.init_schema()
-            analyzer = PreferenceAnalyzer(db)
-            batch_size = int(getattr(settings.sync, "preference_analyze_batch_size", 200) or 200)
-
-            def progress(processed: int, remaining: int) -> None:
-                reporter.add_log("info", f"已分析 {processed} 篇, 剩余约 {remaining} 篇待分析")
-
-            # 定时任务每次只跑 1 批,少量多次
-            result = analyzer.analyze_incremental(
-                batch_size=batch_size,
-                max_batches=1,
-                progress=progress,
-            )
-
-            if result["processed_this_run"] == 0:
-                reporter.add_log("info", "暂无新的小说需要分析,跳过本次")
-                return
-
-            rebuilt = analyzer.rebuild_profile_from_accumulator()
-            existing = db.get_default_preference_profile()
-            payload = {
-                "name": "本地偏好画像",
-                "description": "基于本地归档小说增量统计生成",
-                "source_scope": rebuilt["source_scope"],
-                "stats": rebuilt["stats"],
-                "profile": rebuilt["profile"],
-                "is_default": True,
-            }
-            if existing:
-                db.update_preference_profile(int(existing["id"]), payload)
-                action = "更新"
-            else:
-                db.create_preference_profile(payload)
-                action = "创建"
-
-            reporter.add_log(
-                "success",
-                f"已{action}默认画像: 本次 {result['processed_this_run']} 篇, "
-                f"累计 {result['analyzed_total']} 篇, 剩余 {result['remaining']} 篇"
-                + ("  [全部分析完成]" if result["done"] else ""),
-            )
-        finally:
-            db.close()
+        """增量分析本地偏好。定时任务每次只处理一批。"""
+        execute_task(
+            "preference_analyze",
+            settings,
+            {
+                "manager": self.sync_job_manager,
+                "job_id": job_id,
+                "params": {
+                    "scope": {
+                        "batch_size": int(getattr(settings.sync, "preference_analyze_batch_size", 200) or 200),
+                        "max_batches": 1,
+                    }
+                },
+            },
+        )
 
 
 @dataclass(slots=True)
