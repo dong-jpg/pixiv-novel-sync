@@ -1041,6 +1041,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             page = request.args.get("page", 1, type=int)
             page_size = request.args.get("page_size", 20, type=int)
             task_type = request.args.get("task_type")
+            status = request.args.get("status") or None
             is_auto = request.args.get("is_auto")
             days = request.args.get("days", 3, type=int)
             category = request.args.get("category") or "sync"
@@ -1060,6 +1061,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                         page=page,
                         page_size=page_size,
                         task_type=task_type,
+                        status=status,
                         days=days,
                     )
                 else:

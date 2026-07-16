@@ -155,6 +155,9 @@ class TasksMixin:
         "resolve_foreshadow": "伏笔回收",
         "foreshadow_resolve": "伏笔回收",
         "polish": "润色",
+        "polish_dialogue": "对话润色",
+        "polish_psychology": "心理描写润色",
+        "keyword_clean": "关键词清洗",
     }
 
     def get_ai_task_logs(
@@ -162,6 +165,7 @@ class TasksMixin:
         page: int = 1,
         page_size: int = 20,
         task_type: str | None = None,
+        status: str | None = None,
         days: int = 3,
     ) -> dict[str, Any]:
         """把 ai_jobs 表映射成与 task_logs 相同的结构，供统一任务日志页消费。
@@ -176,6 +180,9 @@ class TasksMixin:
             if task_type:
                 conditions.append("task_type = ?")
                 params.append(task_type)
+            if status:
+                conditions.append("status = ?")
+                params.append(status)
             where_clause = " AND ".join(conditions)
 
             total = int(
@@ -201,7 +208,6 @@ class TasksMixin:
             for row in rows:
                 r = dict(row)
                 items.append({
-                    "id": None,
                     "job_id": r.get("job_id"),
                     "task_type": r.get("task_type"),
                     "task_name": self._AI_TASK_LABELS.get(r.get("task_type"), r.get("task_type")),

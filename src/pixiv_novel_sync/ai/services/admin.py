@@ -283,7 +283,7 @@ class AIAdminMixin:
         finally:
             db.close()
 
-    def cleanup_jobs(self, keep_days: int = 30, keep_failed_days: int | None = None) -> int:
+    def cleanup_jobs(self, keep_days: int = 3, keep_failed_days: int | None = None) -> int:
         """清理超期的 ai_jobs 历史记录，返回删除条数。"""
         db = self._db()
         try:
