@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pixiv_novel_sync.ai.prompts import compose_style_control_prompt
+from pixiv_novel_sync.ai.service import AIWritingService
 
 
 def test_none_and_empty_return_none():
@@ -49,3 +52,28 @@ def test_multiple_sliders_combined():
     assert "直接露骨" in out       # explicitness high
     assert "黑暗压抑" in out       # darkness high
     assert "保持书面语" in out     # vulgarity low
+
+
+def test_project_style_control_prompt_reads_project_settings(tmp_path: Path):
+    service = AIWritingService(tmp_path / "test.db")
+
+    class FakeDB:
+        @staticmethod
+        def get_ai_writing_project(project_id: int):
+            return {
+                "id": project_id,
+                "settings": {
+                    "style_control": {
+                        "sliders": {"explicitness": 90},
+                        "tags": ["第一人称"],
+                        "custom": "多用对话",
+                    }
+                },
+            }
+
+    prompt = service._project_style_control_prompt(FakeDB(), 7)
+
+    assert prompt is not None
+    assert "直接露骨" in prompt
+    assert "第一人称" in prompt
+    assert "多用对话" in prompt

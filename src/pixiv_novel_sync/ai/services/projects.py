@@ -67,6 +67,15 @@ class AIProjectsMixin:
         )
         return item
 
+    def _project_style_control_prompt(self, db: Database, project_id: int) -> str | None:
+        if not project_id:
+            return None
+        project = db.get_ai_writing_project(project_id)
+        if not project:
+            return None
+        settings = project.get("settings") or {}
+        return compose_style_control_prompt(settings.get("style_control"))
+
     def list_writing_projects(self, status: str | None = None) -> list[dict[str, Any]]:
         db = self._db()
         try:
@@ -639,6 +648,7 @@ class AIProjectsMixin:
                 target_words=target_words,
                 expected_chapters=expected_chapters,
                 chapter_words_reference=chapter_words_reference,
+                style_prompt=self._project_style_control_prompt(db, project_id),
             )
             db.create_ai_job(job_id, "longform_plan", agent.id, {
                 "project_id": project_id,
@@ -745,6 +755,7 @@ class AIProjectsMixin:
                 longform_plan=plan,
                 chapters=target_chapters,
                 instruction=payload.get("instruction"),
+                style_prompt=self._project_style_control_prompt(db, project_id),
             )
             db.create_ai_job(job_id, "longform_plan_details", agent.id, {
                 "project_id": project_id,
@@ -834,15 +845,9 @@ class AIProjectsMixin:
             profile = db.get_ai_novel_profile(project["novel_profile_id"])
             if profile:
                 novel_prompt = profile.get("profile_json") or profile.get("profile")
-        # #14 项目级风格控制（滑块+标签+自定义）：从项目 settings 渲染成指令，
-        # 拼进 style_prompt，从初期即控制生成风格。即使已有风格档案也叠加。
-        if project_id and project is None:
-            project = db.get_ai_writing_project(project_id)
-        if project:
-            style_control = (project.get("settings") or {}).get("style_control")
-            control_prompt = compose_style_control_prompt(style_control)
-            if control_prompt:
-                style_prompt = f"{style_prompt}\n\n{control_prompt}" if style_prompt else control_prompt
+        control_prompt = self._project_style_control_prompt(db, project_id)
+        if control_prompt:
+            style_prompt = f"{style_prompt}\n\n{control_prompt}" if style_prompt else control_prompt
         messages = build_continue_messages(
             system_prompt=agent.system_prompt,
             context=full_context,
@@ -1407,17 +1412,28 @@ class AIProjectsMixin:
             provider_config = self._load_provider_config(db, agent.provider_id)
             text = (payload.get("text") or "").strip()
             chapter_id = self._safe_int(payload.get("chapter_id"), 0, "chapter_id", min_value=0)
-            if not text and chapter_id:
-                ch = db.get_ai_chapter(chapter_id)
-                if ch:
-                    text = ch.get("content") or ""
+            chapter = db.get_ai_chapter(chapter_id) if chapter_id else None
+            if not text and chapter:
+                text = chapter.get("content") or ""
             if not text:
                 raise AIServiceError("没有可润色的文本")
+            instruction = str(payload.get("instruction") or "").strip()
+            if chapter:
+                style_instruction = self._project_style_control_prompt(
+                    db,
+                    int(chapter.get("project_id") or 0),
+                )
+                if style_instruction:
+                    instruction = (
+                        f"{instruction}\n\n{style_instruction}"
+                        if instruction
+                        else style_instruction
+                    )
             messages = build_polish_messages(
                 polish_type=polish_type,
                 text=text,
                 extra_context=payload.get("extra_context"),
-                instruction=payload.get("instruction"),
+                instruction=instruction or None,
             )
             task_type = "polish_dialogue" if polish_type == "dialogue" else "polish_psychology"
             db.create_ai_job(job_id, task_type, agent.id, {"chapter_id": chapter_id, "chars": len(text)})

@@ -190,6 +190,9 @@ def test_create_chapters_from_plan_uses_lightweight_chapter_refs(monkeypatch, tm
 def test_stream_longform_plan_is_registered_and_saves_plan(monkeypatch, tmp_path):
     service = make_service(tmp_path)
     fake_db = FakeDB()
+    fake_db.project["settings"] = {
+        "style_control": {"sliders": {"explicitness": 90}, "tags": [], "custom": ""}
+    }
     agent = AIAgentConfig(id=1, name="规划", task_type="plan", provider_id=2, model="m", system_prompt="s")
     provider_config = AIProviderConfig(id=2, name="p", provider_type="openai_compatible", base_url=None, api_key="k", default_model="m")
     output = '{"project_outline":"全书大纲","expected_chapter_count":1,"chapters":[{"chapter_number":1,"title":"第一章","outline":"开篇"}]}'
@@ -197,7 +200,8 @@ def test_stream_longform_plan_is_registered_and_saves_plan(monkeypatch, tmp_path
     monkeypatch.setattr(service, "_db", lambda: fake_db)
     monkeypatch.setattr(service, "_load_agent_config", lambda _db, _agent_id: agent)
     monkeypatch.setattr(service, "_load_provider_config", lambda _db, _provider_id: provider_config)
-    monkeypatch.setattr("pixiv_novel_sync.ai.service.create_provider", lambda _config: FakeProvider(output))
+    fake_provider = FakeProvider(output)
+    monkeypatch.setattr("pixiv_novel_sync.ai.service.create_provider", lambda _config: fake_provider)
 
     chunks = list(service.stream_longform_plan({"agent_id": 1, "project_id": 1, "target_words": 4000}))
 
@@ -205,12 +209,43 @@ def test_stream_longform_plan_is_registered_and_saves_plan(monkeypatch, tmp_path
     assert chunks[-1].type == "done"
     assert fake_db.updated_projects
     assert fake_db.project["settings"]["longform_plan"]["chapters"][0]["title"] == "第一章"
+    assert "直接露骨" in fake_provider.messages[-1]["content"]
+
+
+def test_stream_longform_plan_details_includes_project_style(monkeypatch, tmp_path):
+    service = make_service(tmp_path)
+    fake_db = FakeDB()
+    fake_db.project["settings"] = {
+        "style_control": {"sliders": {"lyricism": 90}, "tags": [], "custom": ""},
+        "longform_plan": {
+            "project_outline": "全书大纲",
+            "chapters": [{"chapter_number": 1, "title": "第一章", "outline": "开篇"}],
+        },
+    }
+    fake_db.list_ai_chapter_refs = lambda _project_id: []
+    fake_db.update_ai_chapters_outlines_and_metadata = lambda _updates: None
+    agent = AIAgentConfig(id=1, name="规划", task_type="plan", provider_id=2, model="m", system_prompt="s")
+    provider_config = AIProviderConfig(id=2, name="p", provider_type="openai_compatible", base_url=None, api_key="k", default_model="m")
+    output = '{"chapters":[{"chapter_number":1,"detailed_outline":"详细开篇"}]}'
+    fake_provider = FakeProvider(output)
+
+    monkeypatch.setattr(service, "_db", lambda: fake_db)
+    monkeypatch.setattr(service, "_load_agent_config", lambda _db, _agent_id: agent)
+    monkeypatch.setattr(service, "_load_provider_config", lambda _db, _provider_id: provider_config)
+    monkeypatch.setattr("pixiv_novel_sync.ai.service.create_provider", lambda _config: fake_provider)
+
+    chunks = list(service.stream_longform_plan_details({"agent_id": 1, "project_id": 1}))
+
+    assert chunks[-1].type == "done"
+    assert "抒情唯美" in fake_provider.messages[-1]["content"]
 
 
 class FakeProvider:
     def __init__(self, output: str) -> None:
         self.output = output
+        self.messages: list[dict] = []
 
-    def stream_generate(self, *_args, **_kwargs):
+    def stream_generate(self, messages, *_args, **_kwargs):
+        self.messages = messages
         yield AIStreamChunk(type="delta", text=self.output)
         yield AIStreamChunk(type="done")

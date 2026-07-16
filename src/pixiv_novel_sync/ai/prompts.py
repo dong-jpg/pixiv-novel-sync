@@ -483,6 +483,7 @@ def build_longform_plan_messages(
     target_words: int | None = None,
     expected_chapters: int | None = None,
     chapter_words_reference: int | None = None,
+    style_prompt: str | None = None,
 ) -> list[dict[str, str]]:
     parts = []
     parts.append(f"【项目名称】\n{project.get('name') or '未命名作品'}")
@@ -513,6 +514,8 @@ def build_longform_plan_messages(
         parts.append(f"【单章字数参考】\n用户希望单章约 {chapter_words_reference} 字；可根据高潮/过渡章节上下浮动。")
     if instruction:
         parts.append(f"【用户规划要求】\n{instruction}")
+    if style_prompt:
+        parts.append(f"【全书风格约束】\n{style_prompt}")
     return [
         {"role": "system", "content": system_prompt or DEFAULT_LONGFORM_PLAN_PROMPT},
         {"role": "user", "content": "\n\n".join(parts)},
@@ -561,6 +564,7 @@ def build_longform_detail_messages(
     longform_plan: dict[str, Any],
     chapters: list[dict[str, Any]],
     instruction: str | None = None,
+    style_prompt: str | None = None,
 ) -> list[dict[str, str]]:
     all_chapters = longform_plan.get("chapters") or []
     chapter_lines = []
@@ -590,6 +594,8 @@ def build_longform_detail_messages(
     parts.append("【本次需要扩写的章节】\n" + "\n\n".join(target_lines))
     if instruction:
         parts.append(f"【扩写要求】\n{instruction}")
+    if style_prompt:
+        parts.append(f"【全书风格约束】\n{style_prompt}")
     return [
         {"role": "system", "content": system_prompt or DEFAULT_LONGFORM_DETAIL_PROMPT},
         {"role": "user", "content": "\n\n".join(parts)},

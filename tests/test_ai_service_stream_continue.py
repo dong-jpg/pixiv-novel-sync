@@ -191,3 +191,42 @@ def test_stream_chapter_continue_autosaves_partial_on_failure(monkeypatch, tmp_p
     assert fake_db.updated_chapters[-1] == (3, {"content": "已有正文半截", "status": "draft"})
     assert fake_db.metadata_patches[-1][1]["continue_autosave"]["status"] == "failed"
     assert fake_db.updated_jobs[-1][1] == "failed"
+
+
+def test_stream_polish_injects_project_style(monkeypatch, tmp_path):
+    service = AIWritingService(Path(tmp_path / "test.db"))
+    fake_db = FakeChapterDB()
+    fake_db.get_ai_writing_project = lambda _project_id: {
+        "id": 4,
+        "settings": {
+            "style_control": {
+                "sliders": {"lyricism": 90},
+                "tags": [],
+                "custom": "",
+            }
+        },
+    }
+    agent = AIAgentConfig(
+        id=1,
+        name="润色",
+        task_type="polish_dialogue",
+        provider_id=2,
+        model="model-a",
+        system_prompt="system",
+    )
+    captured: dict = {}
+
+    def capture_messages(**kwargs):
+        captured.update(kwargs)
+        return [{"role": "user", "content": kwargs.get("instruction") or ""}]
+
+    monkeypatch.setattr(service, "_db", lambda: fake_db)
+    monkeypatch.setattr(service, "_load_agent_config", lambda _db, _agent_id: agent)
+    monkeypatch.setattr(service, "_load_provider_config", lambda _db, _provider_id: make_provider_config())
+    monkeypatch.setattr(service, "_get_provider", lambda _config: FakeProvider(["润色结果"]))
+    monkeypatch.setattr("pixiv_novel_sync.ai.services.projects.build_polish_messages", capture_messages)
+
+    chunks = list(service.stream_polish({"agent_id": 1, "chapter_id": 3, "text": "章节正文"}))
+
+    assert chunks[-1].type == "done"
+    assert "抒情唯美" in captured["instruction"]

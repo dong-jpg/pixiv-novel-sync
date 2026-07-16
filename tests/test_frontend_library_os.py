@@ -98,6 +98,26 @@ def test_ai_dashboard_api_adds_csrf_to_mutating_requests():
     assert "'X-CSRF-Token': token" in html
 
 
+def test_ai_project_overview_has_independent_style_save_and_balanced_grid():
+    html = read(TEMPLATES / "dashboard_ai.html")
+    overview = html.split('v-show="projectDetailTab === \'overview\'"', 1)[1].split(
+        "<!-- 长篇规划 -->",
+        1,
+    )[0]
+    profile_save = html.split("async function saveProjectProfiles()", 1)[1].split(
+        "function addStyleTag",
+        1,
+    )[0]
+
+    assert "items-stretch" in overview
+    assert overview.count("data-overview-card") == 4
+    assert overview.count("h-full") >= 4
+    assert '@click="saveProjectStyleControl"' in overview
+    assert "async function saveProjectStyleControl()" in html
+    assert "settings:" not in profile_save
+    assert html.count("await saveProjectStyleControl()") >= 2
+
+
 def test_frontend_contract_documents_exist_and_cover_core_topics():
     contract = read(DOCS / "frontend-api-contract.md")
     pages = read(DOCS / "frontend-pages.md")
