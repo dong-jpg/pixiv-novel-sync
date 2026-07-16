@@ -3,15 +3,81 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, jsonify, render_template, request, stream_with_context
+from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
 
 from .ai.service import AIServiceError, AIWritingService
 from .ai.detection import detect_ai_tells
 from .settings import Settings
+from .storage_files import FileStorage
 
 logger = logging.getLogger(__name__)
+
+_AI_COVER_MAX_BYTES = 10 * 1024 * 1024
+_AI_COVER_TYPES = {
+    ".jpg": ("image/jpeg", b"\xff\xd8\xff"),
+    ".jpeg": ("image/jpeg", b"\xff\xd8\xff"),
+    ".png": ("image/png", b"\x89PNG\r\n\x1a\n"),
+    ".webp": ("image/webp", b"RIFF"),
+}
+
+
+def _safe_ai_cover_target(public_dir: Path, project_id: int, suffix: str) -> Path:
+    root = public_dir.resolve()
+    target = (root / "ai_projects" / str(project_id) / f"cover{suffix}").resolve()
+    if not target.is_relative_to(root):
+        raise AIServiceError("封面路径无效")
+    return target
+
+
+def _safe_stored_ai_cover_path(public_dir: Path, project_id: int, cover_path: str) -> Path:
+    root = public_dir.resolve()
+    relative = Path(cover_path)
+    if relative.is_absolute():
+        raise AIServiceError("封面路径无效")
+    target = (root / relative).resolve()
+    if target == root or not target.is_relative_to(root):
+        raise AIServiceError("封面路径无效")
+    allowed_targets = {
+        _safe_ai_cover_target(root, project_id, suffix)
+        for suffix in _AI_COVER_TYPES
+    }
+    if target not in allowed_targets:
+        raise AIServiceError("封面路径无效")
+    return target
+
+
+def _validated_ai_cover(file: Any) -> tuple[str, bytes]:
+    filename = str(file.filename or "")
+    suffix = Path(filename).suffix.lower()
+    file_type = _AI_COVER_TYPES.get(suffix)
+    if file_type is None:
+        raise AIServiceError("封面仅支持 JPEG、PNG 或 WebP 格式")
+    expected_mime, signature = file_type
+    actual_mime = str(file.content_type or "").split(";", 1)[0].strip().lower()
+    if actual_mime != expected_mime:
+        raise AIServiceError("封面扩展名与 MIME 类型不一致")
+    payload = file.read(_AI_COVER_MAX_BYTES + 1)
+    if len(payload) > _AI_COVER_MAX_BYTES:
+        raise AIServiceError("封面不能超过 10 MiB")
+    if not payload.startswith(signature):
+        raise AIServiceError("封面文件头无效")
+    if suffix == ".webp" and (len(payload) < 12 or payload[8:12] != b"WEBP"):
+        raise AIServiceError("封面文件头无效")
+    return suffix, payload
+
+
+def _remove_ai_cover_file(public_dir: Path, project_id: int, cover_path: str | None) -> None:
+    if not cover_path:
+        return
+    target = _safe_stored_ai_cover_path(public_dir, project_id, cover_path)
+    target.unlink(missing_ok=True)
+    try:
+        target.parent.rmdir()
+    except OSError:
+        pass
 
 
 def _content_disposition(filename: str, disposition: str = "attachment") -> str:
@@ -620,15 +686,105 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     @app.put("/api/dashboard/ai/projects/<int:project_id>")
     def update_writing_project(project_id: int):
         try:
-            service.update_writing_project(project_id, json_payload())
+            payload = json_payload()
+            payload.pop("cover_path", None)
+            service.update_writing_project(project_id, payload)
             return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/projects/<int:project_id>/cover")
+    def upload_writing_project_cover(project_id: int):
+        try:
+            file = request.files.get("cover")
+            if file is None or not file.filename:
+                raise AIServiceError("请选择要上传的封面")
+            project = service.get_writing_project(project_id)
+            suffix, payload = _validated_ai_cover(file)
+            settings_now = current_settings()
+            public_dir = settings_now.storage.public_dir.resolve()
+            target = _safe_ai_cover_target(public_dir, project_id, suffix)
+            previous_path = project.get("cover_path")
+            previous_target = (
+                _safe_stored_ai_cover_path(public_dir, project_id, str(previous_path))
+                if previous_path else None
+            )
+            previous_payload = (
+                previous_target.read_bytes()
+                if previous_target == target and previous_target.exists()
+                else None
+            )
+            FileStorage(settings_now).write_bytes(target, payload)
+            relative = target.relative_to(public_dir).as_posix()
+            try:
+                service.update_writing_project_cover(project_id, relative)
+            except Exception:
+                if previous_payload is not None:
+                    FileStorage(settings_now).write_bytes(target, previous_payload)
+                else:
+                    target.unlink(missing_ok=True)
+                    try:
+                        target.parent.rmdir()
+                    except OSError:
+                        pass
+                raise
+            if previous_target is not None and previous_target != target:
+                try:
+                    _remove_ai_cover_file(public_dir, project_id, str(previous_path))
+                except (AIServiceError, OSError):
+                    logger.warning("清理旧 AI 项目封面失败：%s", previous_path, exc_info=True)
+            return ok({"cover_url": f"/api/dashboard/ai/projects/{project_id}/cover"})
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/projects/<int:project_id>/cover")
+    def get_writing_project_cover(project_id: int):
+        try:
+            project = service.get_writing_project(project_id)
+            cover_path = project.get("cover_path")
+            if not cover_path:
+                return fail(AIServiceError("封面不存在"), 404)
+            target = _safe_stored_ai_cover_path(
+                current_settings().storage.public_dir,
+                project_id,
+                str(cover_path),
+            )
+            if not target.is_file():
+                return fail(AIServiceError("封面不存在"), 404)
+            mimetype = _AI_COVER_TYPES.get(target.suffix.lower(), (None, b""))[0]
+            return send_file(target, mimetype=mimetype, conditional=True)
+        except Exception as exc:
+            return fail(exc)
+
+    @app.delete("/api/dashboard/ai/projects/<int:project_id>/cover")
+    def delete_writing_project_cover(project_id: int):
+        try:
+            project = service.get_writing_project(project_id)
+            cover_path = project.get("cover_path")
+            if cover_path:
+                public_dir = current_settings().storage.public_dir.resolve()
+                _safe_stored_ai_cover_path(public_dir, project_id, str(cover_path))
+                service.update_writing_project_cover(project_id, None)
+                _remove_ai_cover_file(public_dir, project_id, str(cover_path))
+            return ok({"cover_url": None})
         except Exception as exc:
             return fail(exc)
 
     @app.delete("/api/dashboard/ai/projects/<int:project_id>")
     def delete_writing_project(project_id: int):
         try:
+            project = service.get_writing_project(project_id)
+            cover_path = project.get("cover_path")
             service.delete_writing_project(project_id)
+            if cover_path:
+                try:
+                    _remove_ai_cover_file(
+                        current_settings().storage.public_dir,
+                        project_id,
+                        str(cover_path),
+                    )
+                except (AIServiceError, OSError):
+                    logger.warning("删除 AI 项目时清理封面失败：%s", cover_path, exc_info=True)
             return ok()
         except Exception as exc:
             return fail(exc)

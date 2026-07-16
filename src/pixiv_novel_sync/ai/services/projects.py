@@ -57,10 +57,23 @@ class AIProjectsMixin:
         "index": "检索索引",
     }
 
+    @staticmethod
+    def _with_project_cover_url(project: dict[str, Any]) -> dict[str, Any]:
+        item = dict(project)
+        item["cover_url"] = (
+            f"/api/dashboard/ai/projects/{int(item['id'])}/cover"
+            if item.get("cover_path")
+            else None
+        )
+        return item
+
     def list_writing_projects(self, status: str | None = None) -> list[dict[str, Any]]:
         db = self._db()
         try:
-            return db.list_ai_writing_projects(status=status)
+            return [
+                self._with_project_cover_url(project)
+                for project in db.list_ai_writing_projects(status=status)
+            ]
         finally:
             db.close()
 
@@ -70,7 +83,7 @@ class AIProjectsMixin:
             project = db.get_ai_writing_project(project_id)
             if not project:
                 raise AIServiceError("写作项目不存在")
-            return project
+            return self._with_project_cover_url(project)
         finally:
             db.close()
 
@@ -88,6 +101,13 @@ class AIProjectsMixin:
         db = self._db()
         try:
             db.update_ai_writing_project(project_id, payload)
+        finally:
+            db.close()
+
+    def update_writing_project_cover(self, project_id: int, cover_path: str | None) -> None:
+        db = self._db()
+        try:
+            db.update_ai_writing_project(project_id, {"cover_path": cover_path})
         finally:
             db.close()
 
@@ -1912,7 +1932,10 @@ class AIProjectsMixin:
         finally:
             db.close()
         total_words = sum(int(ch.get("word_count") or len(ch.get("content") or "")) for ch in chapters)
-        return {"project": {**project, "total_words": total_words, "chapter_count": len(chapters)}, "chapters": chapters}
+        reader_project = self._with_project_cover_url(
+            {**project, "total_words": total_words, "chapter_count": len(chapters)}
+        )
+        return {"project": reader_project, "chapters": chapters}
 
     def export_writing_project_text(self, project_id: int) -> tuple[str, str]:
         data = self.get_writing_project_reader(project_id)
