@@ -195,7 +195,7 @@ def test_ai_dashboard_api_adds_csrf_to_mutating_requests():
     assert "await fetch(" not in html
 
 
-def test_ai_project_overview_has_independent_style_save_and_balanced_grid():
+def test_ai_project_overview_uses_single_panel_and_preserves_independent_actions():
     html = read(TEMPLATES / "dashboard_ai.html")
     overview = html.split('v-show="projectDetailTab === \'overview\'"', 1)[1].split(
         "<!-- 长篇规划 -->",
@@ -206,10 +206,35 @@ def test_ai_project_overview_has_independent_style_save_and_balanced_grid():
         1,
     )[0]
 
-    assert "items-stretch" in overview
-    assert overview.count("data-overview-card") == 4
-    assert overview.count("h-full") >= 4
-    assert '@click="saveProjectStyleControl"' in overview
+    assert overview.count("data-overview-panel") == 1
+    assert overview.count("data-overview-section") == 3
+    assert 'data-overview-section="project"' in overview
+    assert 'data-overview-section="profiles"' in overview
+    assert 'data-overview-section="style"' in overview
+    assert "data-overview-card" not in overview
+    assert "items-stretch" not in overview
+    section_openings = [
+        overview.split(f'data-overview-section="{name}"', 1)[1].split(">", 1)[0]
+        for name in ("project", "profiles", "style")
+    ]
+    assert all("h-full" not in opening for opening in section_openings)
+
+    project_section = overview.split('data-overview-section="project"', 1)[1].split(
+        'data-overview-section="profiles"',
+        1,
+    )[0]
+    profiles_section = overview.split('data-overview-section="profiles"', 1)[1].split(
+        'data-overview-section="style"',
+        1,
+    )[0]
+    style_section = overview.split('data-overview-section="style"', 1)[1]
+
+    assert '@click="$refs.coverInput.click()"' in project_section
+    assert '@click="deleteProjectCover"' in project_section
+    assert '@click="saveProjectMeta"' in project_section
+    assert '@click="saveProjectProfiles"' in profiles_section
+    assert "/dashboard/wizard?tab=distill" in profiles_section
+    assert '@click="saveProjectStyleControl"' in style_section
     assert "async function saveProjectStyleControl()" in html
     assert "settings:" not in profile_save
     assert html.count("await saveProjectStyleControl()") >= 2

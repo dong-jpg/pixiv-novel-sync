@@ -134,111 +134,124 @@
     <div v-if="projectView === 'detail'" class="space-y-4">
 
       <!-- 概览 -->
-      <div v-show="projectDetailTab === 'overview'" class="grid grid-cols-1 lg:grid-cols-2 gap-5 items-stretch">
-          <section data-overview-card class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-3 h-full order-1">
-            <h3 class="font-bold text-gray-900 text-sm">项目信息</h3>
-            <div class="flex flex-col sm:flex-row gap-4 pb-3 border-b border-gray-100">
+      <div v-show="projectDetailTab === 'overview'" data-overview-panel class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+        <section data-overview-section="project" class="p-5 space-y-4">
+          <div>
+            <h3 class="font-bold text-gray-900 text-sm">作品资料与进度</h3>
+            <p class="text-xs text-pixiv-gray mt-1">集中维护作品资料，并查看当前写作进度与全书目标。</p>
+          </div>
+          <div class="grid grid-cols-1 xl:grid-cols-[7rem_minmax(0,1.35fr)_minmax(16rem,1fr)] gap-5 items-start">
+            <div class="space-y-2">
               <div class="relative w-28 aspect-[3/4] flex-shrink-0 overflow-hidden rounded-lg shadow-sm" :style="projectCoverGradient(currentProject?.name)">
                 <img v-if="currentProject?.cover_url" :src="currentProject.cover_url" class="absolute inset-0 w-full h-full object-cover" @error="currentProject.cover_url = null">
                 <div v-else class="absolute inset-0 flex items-center justify-center">
                   <span class="text-4xl font-black text-white/90 drop-shadow select-none">{{ projectFirstChar(currentProject?.name) }}</span>
                 </div>
               </div>
-              <div class="flex flex-col items-start justify-end gap-2">
-                <input ref="coverInput" type="file" accept="image/jpeg,image/png,image/webp" class="hidden" @change="uploadProjectCover">
+              <input ref="coverInput" type="file" accept="image/jpeg,image/png,image/webp" class="hidden" @change="uploadProjectCover">
+              <div class="flex flex-wrap gap-2">
                 <button @click="$refs.coverInput.click()" :disabled="coverBusy" class="px-3 py-1.5 bg-brand-500 text-white rounded-lg text-xs font-medium hover:bg-brand-600 disabled:opacity-50">
                   {{ coverBusy ? '处理中…' : (currentProject?.cover_url ? '替换封面' : '上传封面') }}
                 </button>
                 <button v-if="currentProject?.cover_url" @click="deleteProjectCover" :disabled="coverBusy" class="px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-medium hover:bg-red-100 disabled:opacity-50">删除封面</button>
               </div>
             </div>
-            <div>
-              <label class="block text-xs font-medium text-pixiv-gray mb-1">项目名称</label>
-              <input v-model="projectMetaForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="项目名称">
-            </div>
-            <div>
-              <label class="block text-xs font-medium text-pixiv-gray mb-1">项目描述</label>
-              <textarea v-model="projectMetaForm.description" rows="3" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="项目描述（可选）"></textarea>
-            </div>
-            <button @click="saveProjectMeta" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">保存信息</button>
-          </section>
 
-          <!-- 蒸馏内容套用（风格 / 小说档案） -->
-          <section data-overview-card class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-3 h-full order-3">
-            <div>
-              <h3 class="font-bold text-gray-900 text-sm">套用蒸馏内容</h3>
-              <p class="text-xs text-pixiv-gray mt-1">为本项目绑定蒸馏出的风格 / 角色模板 / 世界观档案。自动写作 Pipeline 续写时会自动注入这些设定，保持文风与设定一致。</p>
-            </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div class="space-y-3 min-w-0">
               <div>
-                <label class="block text-xs font-medium text-pixiv-gray mb-1">风格档案（文风 / 笔触）</label>
-                <select v-model.number="projectMetaForm.style_profile_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
-                  <option :value="0">不套用</option>
-                  <option v-for="p in styleProfiles" :key="p.id" :value="p.id">{{ p.name }}</option>
-                </select>
+                <label class="block text-xs font-medium text-pixiv-gray mb-1">项目名称</label>
+                <input v-model="projectMetaForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="项目名称">
               </div>
               <div>
-                <label class="block text-xs font-medium text-pixiv-gray mb-1">小说档案（角色 / 世界观 / 设定）</label>
-                <select v-model.number="projectMetaForm.novel_profile_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
-                  <option :value="0">不套用</option>
-                  <option v-for="p in novelProfiles" :key="p.id" :value="p.id">{{ p.name }}</option>
-                </select>
+                <label class="block text-xs font-medium text-pixiv-gray mb-1">项目描述</label>
+                <textarea v-model="projectMetaForm.description" rows="3" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="项目描述（可选）"></textarea>
+              </div>
+              <div class="flex justify-end">
+                <button @click="saveProjectMeta" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600">保存信息</button>
               </div>
             </div>
-            <div class="flex items-center gap-2">
-              <button @click="saveProjectProfiles" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">保存套用</button>
-              <a href="/dashboard/wizard?tab=distill" class="text-xs text-brand-600 hover:underline">去创作向导页管理档案 →</a>
-            </div>
-          </section>
 
-          <section data-overview-card class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-3 h-full order-2">
-            <h3 class="font-bold text-gray-900 text-sm">项目概况</h3>
-            <div class="grid grid-cols-2 gap-2 text-xs">
-              <div class="rounded bg-gray-50 border border-gray-100 p-2.5 text-center">
-                <div class="font-mono text-lg font-bold text-gray-900">{{ chapters.length }}</div>
-                <div class="text-pixiv-gray mt-0.5">章节</div>
+            <div class="space-y-3 min-w-0">
+              <h4 class="text-xs font-bold text-gray-700">项目概况</h4>
+              <div class="grid grid-cols-2 gap-2 text-xs">
+                <div class="rounded bg-gray-50 border border-gray-100 p-2.5 text-center">
+                  <div class="font-mono text-lg font-bold text-gray-900">{{ chapters.length }}</div>
+                  <div class="text-pixiv-gray mt-0.5">章节</div>
+                </div>
+                <div class="rounded bg-gray-50 border border-gray-100 p-2.5 text-center">
+                  <div class="font-mono text-lg font-bold text-gray-900">{{ Math.round(chapters.reduce((s,c)=>s+(c.word_count||0),0)/1000) }}k</div>
+                  <div class="text-pixiv-gray mt-0.5">字数</div>
+                </div>
+                <div class="rounded bg-gray-50 border border-gray-100 p-2.5 text-center">
+                  <div class="font-mono text-lg font-bold text-gray-900">{{ foreshadows.length }}</div>
+                  <div class="text-pixiv-gray mt-0.5">伏笔</div>
+                </div>
+                <div class="rounded bg-gray-50 border border-gray-100 p-2.5 text-center">
+                  <div class="font-mono text-lg font-bold text-gray-900">{{ foreshadows.filter(f=>f.status==='pending').length }}</div>
+                  <div class="text-pixiv-gray mt-0.5">待回收</div>
+                </div>
               </div>
-              <div class="rounded bg-gray-50 border border-gray-100 p-2.5 text-center">
-                <div class="font-mono text-lg font-bold text-gray-900">{{ Math.round(chapters.reduce((s,c)=>s+(c.word_count||0),0)/1000) }}k</div>
-                <div class="text-pixiv-gray mt-0.5">字数</div>
-              </div>
-              <div class="rounded bg-gray-50 border border-gray-100 p-2.5 text-center">
-                <div class="font-mono text-lg font-bold text-gray-900">{{ foreshadows.length }}</div>
-                <div class="text-pixiv-gray mt-0.5">伏笔</div>
-              </div>
-              <div class="rounded bg-gray-50 border border-gray-100 p-2.5 text-center">
-                <div class="font-mono text-lg font-bold text-gray-900">{{ foreshadows.filter(f=>f.status==='pending').length }}</div>
-                <div class="text-pixiv-gray mt-0.5">待回收</div>
+              <div v-if="longformPlan.target_words || longformPlan.expected_chapter_count" class="pt-2 border-t border-gray-100">
+                <div class="text-xs font-medium text-pixiv-gray mb-2">规划目标</div>
+                <div class="flex flex-wrap gap-1.5">
+                  <span v-if="longformPlan.target_words" class="text-xs px-2 py-1 rounded-full bg-brand-50 border border-brand-100 text-brand-700">目标 {{ Number(longformPlan.target_words).toLocaleString() }} 字</span>
+                  <span v-if="longformPlan.expected_chapter_count" class="text-xs px-2 py-1 rounded-full bg-brand-50 border border-brand-100 text-brand-700">预计 {{ longformPlan.expected_chapter_count }} 章</span>
+                </div>
               </div>
             </div>
-            <div v-if="longformPlan.target_words || longformPlan.expected_chapter_count" class="pt-2 border-t border-gray-100">
-              <div class="text-xs font-medium text-pixiv-gray mb-2">规划目标</div>
-              <div class="flex flex-wrap gap-1.5">
-                <span v-if="longformPlan.target_words" class="text-xs px-2 py-1 rounded-full bg-brand-50 border border-brand-100 text-brand-700">目标 {{ Number(longformPlan.target_words).toLocaleString() }} 字</span>
-                <span v-if="longformPlan.expected_chapter_count" class="text-xs px-2 py-1 rounded-full bg-brand-50 border border-brand-100 text-brand-700">预计 {{ longformPlan.expected_chapter_count }} 章</span>
-              </div>
-            </div>
-          </section>
+          </div>
+        </section>
 
-          <!-- 风格控制 -->
-          <section data-overview-card class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4 h-full order-4">
-            <div>
-              <h3 class="font-bold text-gray-900 text-sm">风格控制</h3>
-              <p class="text-xs text-pixiv-gray mt-1">设定本作的写作风格倾向。续写时会自动注入，贯穿全文。滑块居中（50）为不干预，向两端拉才生效。</p>
+        <!-- 蒸馏内容套用（风格 / 小说档案） -->
+        <section data-overview-section="profiles" class="p-5 border-t border-gray-100 space-y-3">
+          <div>
+            <h3 class="font-bold text-gray-900 text-sm">套用蒸馏内容</h3>
+            <p class="text-xs text-pixiv-gray mt-1">为本项目绑定文风、角色与世界观档案，自动写作时会持续注入。</p>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-3 items-end">
+            <div class="min-w-0">
+              <label class="block text-xs font-medium text-pixiv-gray mb-1">风格档案（文风 / 笔触）</label>
+              <select v-model.number="projectMetaForm.style_profile_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+                <option :value="0">不套用</option>
+                <option v-for="p in styleProfiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+              </select>
             </div>
-            <div class="space-y-3">
-              <div v-for="s in STYLE_SLIDERS" :key="s.key" class="space-y-1">
-                <div class="flex items-center justify-between text-xs">
+            <div class="min-w-0">
+              <label class="block text-xs font-medium text-pixiv-gray mb-1">小说档案（角色 / 世界观 / 设定）</label>
+              <select v-model.number="projectMetaForm.novel_profile_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+                <option :value="0">不套用</option>
+                <option v-for="p in novelProfiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+              </select>
+            </div>
+            <div class="flex flex-wrap items-center gap-2 xl:justify-end">
+              <a href="/dashboard/wizard?tab=distill" class="px-3 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50">管理档案</a>
+              <button @click="saveProjectProfiles" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600">保存套用</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 风格控制 -->
+        <section data-overview-section="style" class="p-5 border-t border-gray-100 space-y-4">
+          <div>
+            <h3 class="font-bold text-gray-900 text-sm">风格控制</h3>
+            <p class="text-xs text-pixiv-gray mt-1">滑块居中（50）时不干预；向两端调整后，续写会持续采用对应倾向。</p>
+          </div>
+          <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,3fr)_minmax(18rem,2fr)] gap-6 items-start">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 min-w-0">
+              <div v-for="(s, index) in STYLE_SLIDERS" :key="s.key" class="space-y-1" :class="STYLE_SLIDERS.length % 2 && index === STYLE_SLIDERS.length - 1 ? 'md:col-span-2' : ''">
+                <div class="flex items-center justify-between text-xs gap-3">
                   <span class="font-medium text-gray-700">{{ s.label }}</span>
                   <span class="font-mono text-pixiv-gray">{{ projectMetaForm.style_control.sliders[s.key] }}</span>
                 </div>
                 <input type="range" min="0" max="100" step="5" v-model.number="projectMetaForm.style_control.sliders[s.key]" class="w-full accent-brand-500">
-                <div class="flex justify-between text-[10px] text-gray-400">
-                  <span>{{ s.left }}</span><span>{{ s.right }}</span>
+                <div class="flex justify-between gap-3 text-[10px] text-gray-400">
+                  <span>{{ s.left }}</span><span class="text-right">{{ s.right }}</span>
                 </div>
               </div>
             </div>
-            <div>
+
+            <div class="space-y-4 min-w-0">
+              <div>
               <label class="block text-xs font-medium text-pixiv-gray mb-1">风格标签</label>
               <div class="flex flex-wrap gap-1.5 mb-2">
                 <span v-for="t in projectMetaForm.style_control.tags" :key="t" class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-brand-50 text-brand-700">
@@ -246,19 +259,21 @@
                 </span>
                 <span v-if="!projectMetaForm.style_control.tags.length" class="text-xs text-gray-400">未添加标签</span>
               </div>
-              <div class="flex gap-2">
-                <input v-model="styleTagInput" @keydown.enter.prevent="addStyleTag" class="flex-1 px-3 py-1.5 border border-gray-200 rounded-lg text-sm" placeholder="如：NTR、病娇、治愈、第一人称">
+              <div class="flex flex-col sm:flex-row gap-2">
+                <input v-model="styleTagInput" @keydown.enter.prevent="addStyleTag" class="flex-1 min-w-0 px-3 py-1.5 border border-gray-200 rounded-lg text-sm" placeholder="如：NTR、病娇、治愈、第一人称">
                 <button @click="addStyleTag" class="px-3 py-1.5 bg-brand-500 text-white rounded-lg text-sm hover:bg-brand-600">添加</button>
               </div>
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-pixiv-gray mb-1">额外要求（可选）</label>
+                <textarea v-model="projectMetaForm.style_control.custom" rows="3" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="补充的风格指令，如：用第一人称、多用对话推进、避免说教"></textarea>
+              </div>
+              <div class="flex justify-end">
+                <button @click="saveProjectStyleControl" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600">保存风格设定</button>
+              </div>
             </div>
-            <div>
-              <label class="block text-xs font-medium text-pixiv-gray mb-1">额外要求（可选）</label>
-              <textarea v-model="projectMetaForm.style_control.custom" rows="2" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="补充的风格指令，如：用第一人称、多用对话推进、避免说教"></textarea>
-            </div>
-            <div class="flex justify-end pt-1">
-              <button @click="saveProjectStyleControl" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600">保存风格设定</button>
-            </div>
-          </section>
+          </div>
+        </section>
       </div>
 
       <!-- 长篇规划 -->
