@@ -140,7 +140,7 @@
             <h3 class="font-bold text-gray-900 text-sm">作品资料与进度</h3>
             <p class="text-xs text-pixiv-gray mt-1">集中维护作品资料，并查看当前写作进度与全书目标。</p>
           </div>
-          <div class="grid grid-cols-1 xl:grid-cols-[7rem_minmax(0,1.35fr)_minmax(16rem,1fr)] gap-5 items-start">
+          <div class="grid grid-cols-1 lg:grid-cols-[7rem_minmax(0,1.35fr)_minmax(16rem,1fr)] gap-5 items-start">
             <div class="space-y-2">
               <div class="relative w-28 aspect-[3/4] flex-shrink-0 overflow-hidden rounded-lg shadow-sm" :style="projectCoverGradient(currentProject?.name)">
                 <img v-if="currentProject?.cover_url" :src="currentProject.cover_url" class="absolute inset-0 w-full h-full object-cover" @error="currentProject.cover_url = null">

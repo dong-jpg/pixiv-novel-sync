@@ -240,6 +240,20 @@ def test_ai_project_overview_uses_single_panel_and_preserves_independent_actions
     assert html.count("await saveProjectStyleControl()") >= 2
 
 
+def test_ai_project_overview_keeps_project_summary_compact_at_narrow_desktop():
+    html = read(TEMPLATES / "dashboard_ai.html")
+    overview = html.split('v-show="projectDetailTab === \'overview\'"', 1)[1].split(
+        "<!-- 长篇规划 -->",
+        1,
+    )[0]
+    project_section = overview.split('data-overview-section="project"', 1)[1].split(
+        'data-overview-section="profiles"',
+        1,
+    )[0]
+
+    assert "lg:grid-cols-[7rem_minmax(0,1.35fr)_minmax(16rem,1fr)]" in project_section
+
+
 def test_frontend_contract_documents_exist_and_cover_core_topics():
     contract = read(DOCS / "frontend-api-contract.md")
     pages = read(DOCS / "frontend-pages.md")
