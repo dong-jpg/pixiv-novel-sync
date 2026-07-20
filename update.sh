@@ -9,7 +9,7 @@ NC='\033[0m'
 INSTALL_DIR="${HOME}/pixiv-novel-sync"
 SERVICE_NAME="pixiv-novel-sync"
 FLASK_PORT=5011
-NGINX_PORT=80
+PUBLIC_URL="https://pixiv.dongboapp.com"
 BACKUP_SUFFIX="$(date +%Y%m%d_%H%M%S)"
 BACKUP_DIR="/tmp/pixiv-novel-sync-backup.${BACKUP_SUFFIX}"
 ENV_BACKUP="${BACKUP_DIR}/.env"
@@ -118,7 +118,7 @@ sleep 2
 if sudo systemctl is-active --quiet ${SERVICE_NAME}; then
     echo -e "${GREEN}=== 更新成功! ===${NC}"
     echo ""
-    echo "访问地址: http://$(hostname -I | awk '{print $1}'):${NGINX_PORT}"
+    echo "访问地址: ${PUBLIC_URL}"
     echo ""
     echo "缓存管理:"
     echo "  查看缓存大小: du -sh /var/cache/nginx/pixiv_img"

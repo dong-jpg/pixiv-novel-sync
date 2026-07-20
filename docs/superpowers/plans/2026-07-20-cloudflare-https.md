@@ -132,7 +132,7 @@ def test_nginx_config_enables_strict_https() -> None:
 
     assert config.count("server_name pixiv.dongboapp.com;") == 2
     assert "listen 80;" in config
-    assert "return 301 https://$host$request_uri;" in config
+    assert "return 301 https://pixiv.dongboapp.com$request_uri;" in config
     assert "listen 443 ssl;" in config
     assert "ssl_certificate /etc/ssl/certs/pixiv.dongboapp.com.pem;" in config
     assert "ssl_certificate_key /etc/ssl/private/pixiv.dongboapp.com.key;" in config
@@ -165,7 +165,7 @@ python -m pytest tests/test_deployment_config.py -q
 +server {
 +    listen 80;
 +    server_name pixiv.dongboapp.com;
-+    return 301 https://$host$request_uri;
++    return 301 https://pixiv.dongboapp.com$request_uri;
 +}
 +
  server {
