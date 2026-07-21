@@ -139,6 +139,8 @@ class SchemaMixin:
         self._fix_stale_running_logs()
         # 迁移：创建待确认删除表
         self._migrate_pending_deletions_table()
+        # 迁移：创建救援纠错和独立只读 Token 表
+        self._migrate_rescue_tables()
         # 迁移：创建同步水位线表
         self._migrate_sync_watermarks_table()
         # 迁移：创建/升级预检查表。旧服务端库可能已有无 scope 的 sync_check_list。
@@ -290,6 +292,33 @@ class SchemaMixin:
             self.conn.execute("ALTER TABLE novels ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'")
         if "last_checked_at" not in columns:
             self.conn.execute("ALTER TABLE novels ADD COLUMN last_checked_at TEXT")
+
+    def _migrate_rescue_tables(self) -> None:
+        """创建救援人工纠错和单例 API Token 表。"""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS rescue_overrides (
+                item_type TEXT NOT NULL CHECK (item_type IN ('novel', 'series')),
+                item_id INTEGER NOT NULL,
+                action TEXT NOT NULL CHECK (action IN ('include', 'exclude')),
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (item_type, item_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rescue_overrides_action
+                ON rescue_overrides(action);
+
+            CREATE TABLE IF NOT EXISTS rescue_api_token (
+                singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+                token_hash TEXT NOT NULL,
+                token_prefix TEXT NOT NULL,
+                rotated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        self._commit_if_needed()
 
     def _migrate_series_table(self) -> None:
         """为 series 表添加 is_subscribed、status、last_checked_at 字段"""

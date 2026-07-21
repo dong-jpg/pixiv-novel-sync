@@ -358,6 +358,10 @@ class NovelsMixin:
                 self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'novel' AND item_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM recommendation_items WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM recommendation_feedback WHERE novel_id = ?", (novel_id,))
+                self.conn.execute(
+                    "DELETE FROM rescue_overrides WHERE item_type = 'novel' AND item_id = ?",
+                    (novel_id,),
+                )
                 self.conn.execute("DELETE FROM novels WHERE novel_id = ?", (novel_id,))
 
     def delete_bookmark(self, novel_id: int) -> None:

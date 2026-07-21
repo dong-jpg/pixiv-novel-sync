@@ -17,6 +17,7 @@ from .storage.tasks import TasksMixin
 from .storage.pending_and_watermarks import PendingAndWatermarksMixin
 from .storage.reading_progress import ReadingProgressMixin
 from .storage.recommendations import RecommendationsMixin
+from .storage.rescue import RescueMixin
 from .storage.ai.core import AiCoreMixin
 from .storage.ai.documents import AiDocumentsMixin
 from .storage.ai.writing import AiWritingMixin
@@ -31,6 +32,7 @@ class Database(
     PendingAndWatermarksMixin,
     ReadingProgressMixin,
     RecommendationsMixin,
+    RescueMixin,
     AiCoreMixin,
     AiDocumentsMixin,
     AiWritingMixin,

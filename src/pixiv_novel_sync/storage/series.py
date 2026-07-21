@@ -263,6 +263,10 @@ class SeriesMixin:
             self.conn.execute("DELETE FROM recommendation_items WHERE item_type = 'series' AND series_id = ?", (series_id,))
             self.conn.execute("DELETE FROM recommendation_feedback WHERE series_id = ?", (series_id,))
             self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'series' AND item_id = ?", (series_id,))
+            self.conn.execute(
+                "DELETE FROM rescue_overrides WHERE item_type = 'series' AND item_id = ?",
+                (series_id,),
+            )
             self.conn.execute("DELETE FROM series WHERE series_id = ?", (series_id,))
 
     def get_all_series_ids(self) -> list[int]:
