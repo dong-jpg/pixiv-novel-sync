@@ -145,8 +145,12 @@ def register_rescue_routes(
 
     @app.after_request
     def _rescue_security_headers(response: Response):
-        if request.path.startswith("/api/rescue/v1/"):
+        public_rescue = request.path.startswith("/api/rescue/v1/")
+        token_management = request.path.startswith("/api/dashboard/rescue-token/")
+        if public_rescue or token_management:
             response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
+        if public_rescue:
             response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
             response.headers["X-Content-Type-Options"] = "nosniff"
         return response
@@ -246,7 +250,11 @@ def register_rescue_routes(
             }
         )
 
-    @app.get("/api/rescue/v1/novels/<int:novel_id>")
+    @app.route(
+        "/api/rescue/v1/novels/<int:novel_id>",
+        methods=["GET"],
+        provide_automatic_options=False,
+    )
     @public_auth
     def rescue_novel(novel_id: int):
         db = open_db()
@@ -280,7 +288,11 @@ def register_rescue_routes(
         data["source_notice"] = "内容来自私人备份，并非 Pixiv 官方恢复"
         return jsonify({"ok": True, "data": data})
 
-    @app.get("/api/rescue/v1/series/<int:series_id>")
+    @app.route(
+        "/api/rescue/v1/series/<int:series_id>",
+        methods=["GET"],
+        provide_automatic_options=False,
+    )
     @public_auth
     def rescue_series(series_id: int):
         db = open_db()
@@ -310,7 +322,11 @@ def register_rescue_routes(
         data["source_notice"] = "内容来自私人备份，并非 Pixiv 官方恢复"
         return jsonify({"ok": True, "data": data})
 
-    @app.get("/api/rescue/v1/series/<int:series_id>/chapters")
+    @app.route(
+        "/api/rescue/v1/series/<int:series_id>/chapters",
+        methods=["GET"],
+        provide_automatic_options=False,
+    )
     @public_auth
     def rescue_series_chapters(series_id: int):
         db = open_db()

@@ -273,6 +273,15 @@ class UsersMixin:
                 for novel_id in novel_ids:
                     self.conn.execute("DELETE FROM recommendation_feedback WHERE novel_id = ?", (novel_id,))
                     self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'novel' AND item_id = ?", (novel_id,))
+                # 2.4 清理多态救援纠错，避免作品重新导入后继承旧状态
+                self.conn.execute(
+                    """
+                    DELETE FROM rescue_overrides
+                    WHERE item_type = 'novel'
+                      AND item_id IN (SELECT novel_id FROM novels WHERE user_id = ?)
+                    """,
+                    (user_id,),
+                )
 
                 # 3. 删除小说主表
                 self.conn.execute("DELETE FROM novels WHERE user_id = ?", (user_id,))

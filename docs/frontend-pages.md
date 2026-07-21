@@ -9,7 +9,7 @@
 | `/token-login` | `src/pixiv_novel_sync/templates/token_login.html` | Token/OAuth 授权 | 待独立视觉适配 |
 | `/dashboard` | `src/pixiv_novel_sync/templates/dashboard.html` | 同步控制台、统计、任务状态 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/follows` | `src/pixiv_novel_sync/templates/dashboard_follows.html` | 关注作者列表 | 已接入 `library-page` / `library-page-header` |
-| `/dashboard/novels` | `src/pixiv_novel_sync/templates/dashboard_novels.html` | 小说库和追更系列列表 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/novels` | `src/pixiv_novel_sync/templates/dashboard_novels.html` | 小说库、追更系列、AI 创作与拯救成功列表 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/novels/<id>` | `src/pixiv_novel_sync/templates/dashboard_novel_detail.html` | 小说详情和阅读页 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/series/<id>` | `src/pixiv_novel_sync/templates/dashboard_series_detail.html` | 系列详情 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/users/<id>` | `src/pixiv_novel_sync/templates/dashboard_user_detail.html` | 作者详情和作者小说 | 已接入 `library-page` / `library-page-header` |
@@ -20,6 +20,7 @@
 | `/dashboard/ai` | `src/pixiv_novel_sync/templates/dashboard_ai.html` | AI 自动写作项目、章节和 Pipeline | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/wizard` | `src/pixiv_novel_sync/templates/dashboard_wizard.html` | 创作向导与蒸馏档案 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/novels?category=ai` | `src/pixiv_novel_sync/templates/dashboard_novels.html` | AI 创作小说库 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/novels?category=rescue` | `src/pixiv_novel_sync/templates/dashboard_novels.html` | 拯救成功小说与系列 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/novels/ai/<project_id>` | `dashboard_ai_reader.html` | AI 创作小说阅读 | 已接入 `library-page` / `library-page-header` |
 
 ## Shared layout
@@ -167,6 +168,10 @@ APIs:
 
 - `GET /api/dashboard/series/{series_id}`
 - `DELETE /api/dashboard/series/{series_id}`
+- `PUT /api/dashboard/rescue-overrides/series/{series_id}`
+- `DELETE /api/dashboard/rescue-overrides/series/{series_id}`
+
+小说和系列详情接口都附带 `rescue` 评估对象。详情页可将 Pixiv 可用性人工标记为 `include` 或 `exclude`，也可删除人工纠错并恢复自动判断；写请求必须携带 `X-CSRF-Token`。人工纠错只影响远端可用性判断，不能绕过本地正文完整性检查。
 
 ### `/dashboard/pending-deletions`
 
@@ -197,7 +202,7 @@ APIs:
 
 Template: `dashboard_settings.html`
 
-用途：同步设置、缓存管理、AI provider/agent 管理。
+用途：同步设置、缓存管理、救援 Token、AI provider/agent 管理。
 
 APIs:
 
@@ -207,7 +212,11 @@ APIs:
 - `GET /api/cache/status`
 - `POST /api/cache/clear`
 - `POST /api/dashboard/sync/{task_type}`
+- `GET /api/dashboard/rescue-token/status`
+- `POST /api/dashboard/rescue-token/rotate`
 - AI provider/agent APIs，详见 `frontend-api-contract.md`。
+
+“救援 API”设置页只展示 Token 前缀与轮换时间。完整救援 Token 只在生成或轮换成功后显示一次，关闭窗口时立即清空页面中的明文。
 
 ### `/dashboard/preferences`
 
@@ -243,6 +252,35 @@ Template: `dashboard_wizard.html`
 Template: `dashboard_novels.html`
 
 用途：按小说库卡片样式展示 AI 创作小说，复用项目封面并进入统一阅读页。
+
+### `/dashboard/novels?category=rescue`
+
+模板：`dashboard_novels.html`
+
+用途：展示本地已完整或部分备份、但 Pixiv 小说或系列已经失效的数据。系列按一个卡片展示，不把系列章节重复平铺成单篇卡片。
+
+筛选项：
+
+- 救援状态：`success`（完整救援）或 `partial`（部分救援）。
+- 内容类型：`novel` 或 `series`。
+- 标题/作者搜索、最近检查或最近更新排序。
+
+API：`GET /api/dashboard/rescues`。
+
+### Pixiv 救援油猴脚本
+
+文件：`userscripts/pixiv-rescue.user.js`。
+
+用途：当 Pixiv 原小说或系列页面明确删除、受限或不存在时，通过 `https://pixiv.dongboapp.com` 的只读救援 API 在原页面追加私人备份内容，并以“拯救数据”醒目标记来源。
+
+安全边界：
+
+- 正常可阅读的 Pixiv 页面不请求救援 API，也不改写原 DOM。
+- 救援 Token 存在油猴脚本存储中，只通过 `Authorization: Bearer` 请求头发送。
+- API 域名固定，不接受页面、响应或用户输入提供的其他来源地址。
+- 正文只通过 `textContent` 和新建文本节点渲染，不解释备份正文中的 HTML。
+- 系列先加载目录，超过 100 章时可继续加载后续目录页；只有点击某一章时才请求该章正文。
+- 接口失败时保留 Pixiv 原错误页面。
 
 ### `/dashboard/novels/ai/<project_id>`
 

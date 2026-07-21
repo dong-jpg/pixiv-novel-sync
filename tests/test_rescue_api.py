@@ -108,7 +108,9 @@ def test_rescue_public_api_uses_rescue_auth_for_non_local_request(client) -> Non
 
 
 def test_dashboard_rotates_single_active_token(client) -> None:
-    old_token = _rotate_token(client)
+    first = client.post("/api/dashboard/rescue-token/rotate")
+    assert first.headers["Cache-Control"] == "no-store"
+    old_token = str(first.get_json()["data"]["token"])
     new_token = _rotate_token(client)
 
     assert old_token != new_token
@@ -126,6 +128,9 @@ def test_dashboard_rotates_single_active_token(client) -> None:
     assert status["token_prefix"].startswith("rsq_")
     assert "token" not in status
     assert "token_hash" not in status
+
+    status_response = client.get("/api/dashboard/rescue-token/status")
+    assert status_response.headers["Cache-Control"] == "no-store"
 
 
 def test_rescue_novel_response_uses_field_whitelist_and_security_headers(client) -> None:
@@ -239,6 +244,21 @@ def test_rescue_public_api_is_read_only(client) -> None:
     )
 
     assert response.status_code == 405
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/rescue/v1/novels/10",
+        "/api/rescue/v1/series/20",
+        "/api/rescue/v1/series/20/chapters",
+    ],
+)
+def test_rescue_public_api_rejects_options(client, path: str) -> None:
+    response = client.open(path, method="OPTIONS")
+
+    assert response.status_code == 405
+    assert "no-store" in response.headers["Cache-Control"]
 
 
 def test_rescue_public_api_returns_429_when_limiter_rejects(app, client, monkeypatch) -> None:

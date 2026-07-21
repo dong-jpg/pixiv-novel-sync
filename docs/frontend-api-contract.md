@@ -18,7 +18,7 @@
 | `/token-login` | `token_login.html` | Token / OAuth 授权 |
 | `/dashboard` | `dashboard.html` | 控制台 |
 | `/dashboard/follows` | `dashboard_follows.html` | 作者列表 |
-| `/dashboard/novels` | `dashboard_novels.html` | 小说库 / 追更系列列表 |
+| `/dashboard/novels` | `dashboard_novels.html` | 小说库 / 追更系列 / AI 创作 / 拯救成功列表 |
 | `/dashboard/novels/<novel_id>` | `dashboard_novel_detail.html` | 小说详情 / 阅读页 |
 | `/dashboard/series/<series_id>` | `dashboard_series_detail.html` | 系列详情 |
 | `/dashboard/users/<user_id>` | `dashboard_user_detail.html` | 作者详情 |
@@ -162,12 +162,112 @@ Expected detail fields include:
 - `tags`
 - `cover_url`
 - bookmark/view counts where available。
+- `rescue`：实时救援评估、远端状态、完整度和人工纠错状态。
 
 ### GET /api/dashboard/series/{series_id}
 
 Used by: novel detail and series detail。
 
 Expected fields include series metadata and novels/chapters list.
+
+响应额外包含 `rescue`，其中 `expected_count`、`local_count`、`complete_count` 用于展示系列备份覆盖率。
+
+## 救援归档 API
+
+救援管理接口沿用 Dashboard 会话认证。所有 `PUT`、`POST`、`DELETE` 请求必须携带 `X-CSRF-Token`；返回格式为 `{ ok, data, error }`。
+
+### GET /api/dashboard/rescues
+
+查询拯救成功列表。
+
+查询参数：
+
+- `page`、`page_size`
+- `state=all|success|partial`
+- `item_type=all|novel|series`
+- `search`
+- `sort=checked_desc|updated_desc`
+
+列表项字段：`item_type`、`item_id`、`title`、`author_name`、`cover_url`、`rescue_state`、`remote_status`、`eligibility_reason`、`expected_count`、`local_count`、`complete_count`、`last_checked_at`、`updated_at`。
+
+### PUT /api/dashboard/rescue-overrides/<item_type>/<item_id>
+
+保存人工纠错。`item_type` 只能是 `novel` 或 `series`。
+
+```json
+{
+  "action": "include|exclude",
+  "note": "可选备注，最多 500 字"
+}
+```
+
+`include` 表示人工确认 Pixiv 已失效，`exclude` 表示人工确认仍可访问。人工动作不能绕过正文完整性检查。
+
+### DELETE /api/dashboard/rescue-overrides/<item_type>/<item_id>
+
+删除人工纠错并恢复自动判断。
+
+### GET /api/dashboard/rescue-token/status
+
+仅返回 `configured`、`token_prefix`、`rotated_at`，不返回完整 Token 或摘要。
+
+### POST /api/dashboard/rescue-token/rotate
+
+生成新的独立救援 Token，旧 Token 立即失效。完整 Token 只在本次响应的 `data.token` 中出现一次；数据库只保存 SHA-256 摘要和前缀。
+
+Token 状态与轮换响应均包含 `Cache-Control: no-store`，禁止浏览器或中间代理缓存。
+
+## 只读救援 API
+
+只读接口供 `userscripts/pixiv-rescue.user.js` 使用，与 `DASHBOARD_TOKEN` 完全隔离。
+
+认证头：
+
+```http
+Authorization: Bearer <救援 Token>
+```
+
+Token 不接受 URL 查询参数或 Cookie。只允许 `GET` / `HEAD`；每个来源地址与 Token 组合每分钟最多 120 次请求。
+
+### GET /api/rescue/v1/novels/<novel_id>
+
+返回可救援单篇或失效父系列中的完整章节。字段白名单包括：
+
+- `novel_id`、`title`、`caption`、`user_id`、`author_name`、`series_id`
+- `cover_url`、`tags`、`create_date`、`text_raw`
+- `rescue_state`、`remote_status`、`eligibility_reason`
+- `expected_count`、`local_count`、`complete_count`
+- `last_checked_at`、`updated_at`、`source_notice`
+
+### GET /api/rescue/v1/series/<series_id>
+
+返回系列元数据、救援状态和覆盖率，不在响应中展开章节正文。
+
+### GET /api/rescue/v1/series/<series_id>/chapters
+
+查询参数：`page`、`page_size`。返回有完整正文的章节目录；目录项只包含章节元数据与 `api_path`，正文通过小说接口按需读取。
+
+所有只读救援响应包含：
+
+```json
+{
+  "source_notice": "内容来自私人备份，并非 Pixiv 官方恢复"
+}
+```
+
+安全响应头：
+
+- `Cache-Control: no-store`
+- `X-Robots-Tag: noindex, nofollow, noarchive`
+- `X-Content-Type-Options: nosniff`
+
+状态码：
+
+- `401`：缺少或使用无效救援 Token。
+- `404`：对象不存在、不符合救援条件或正文不完整。
+- `405`：对只读接口使用写方法。
+- `429`：超过限流阈值。
+- `500`：读取异常；响应只返回通用中文错误，不泄露数据库路径或内部异常。
 
 ### GET /api/dashboard/users
 

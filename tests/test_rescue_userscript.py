@@ -116,6 +116,18 @@ def test_userscript_fixture_keeps_healthy_novel_untouched(rescue_browser) -> Non
     page.close()
 
 
+def test_userscript_fixture_leaves_unknown_page_untouched(rescue_browser) -> None:
+    page = rescue_browser.new_page()
+    html = "<main><div class='loading'>正在加载 Pixiv 内容…</div></main>"
+    _install_script(page, html, {})
+
+    page.wait_for_timeout(1800)
+    assert page.evaluate("window.__rescueRequests") == []
+    assert page.locator("[data-pixiv-rescue]").count() == 0
+    assert page.locator(".loading").count() == 1
+    page.close()
+
+
 def test_userscript_fixture_renders_deleted_novel_as_text(rescue_browser) -> None:
     page = rescue_browser.new_page()
     html = "<main><div class='error'>この作品は削除されています</div></main>"
@@ -172,4 +184,49 @@ def test_userscript_fixture_loads_only_clicked_series_chapter(rescue_browser) ->
     assert urls.count("https://pixiv.dongboapp.com/api/rescue/v1/novels/302") == 1
     assert "https://pixiv.dongboapp.com/api/rescue/v1/novels/301" not in urls
     assert "第二章正文" in page.locator("[data-pixiv-rescue]").inner_text()
+    page.close()
+
+
+def test_userscript_fixture_loads_additional_series_pages(rescue_browser) -> None:
+    page = rescue_browser.new_page()
+    html = "<main><div class='error'>このシリーズは削除されています</div></main>"
+    responses = {
+        "https://pixiv.dongboapp.com/api/rescue/v1/series/204": {
+            "series_id": 204,
+            "title": "长系列",
+            "source_notice": "内容来自私人备份，并非 Pixiv 官方恢复",
+            "rescue_state": "partial",
+        },
+        "https://pixiv.dongboapp.com/api/rescue/v1/series/204/chapters": {
+            "items": [{"novel_id": 401, "title": "第一百章"}],
+            "page": 1,
+            "total_pages": 2,
+        },
+        "https://pixiv.dongboapp.com/api/rescue/v1/series/204/chapters?page=2&page_size=100": {
+            "items": [{"novel_id": 402, "title": "第一百零一章"}],
+            "page": 2,
+            "total_pages": 2,
+        },
+    }
+    _install_script(page, html, responses, path="/novel/series/204")
+
+    page.get_by_role("button", name="加载目录").click()
+    page.get_by_role("button", name="加载更多章节").click()
+    page.get_by_role("button", name="第一百零一章").wait_for(state="visible")
+    urls = page.evaluate("window.__rescueRequests.map(item => item.url)")
+    assert urls.count(
+        "https://pixiv.dongboapp.com/api/rescue/v1/series/204/chapters?page=2&page_size=100"
+    ) == 1
+    assert not any("/api/rescue/v1/novels/" in url for url in urls)
+    page.close()
+
+
+def test_userscript_fixture_preserves_pixiv_error_when_api_fails(rescue_browser) -> None:
+    page = rescue_browser.new_page()
+    html = "<main><div class='error'>この作品は削除されています</div></main>"
+    _install_script(page, html, {}, path="/novel/show.php?id=999")
+
+    page.locator(".pixiv-rescue-error").wait_for(state="visible")
+    assert page.locator(".error").count() == 1
+    assert "この作品は削除されています" in page.locator(".error").inner_text()
     page.close()

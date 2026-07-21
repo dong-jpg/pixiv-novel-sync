@@ -376,16 +376,13 @@ class RescueMixin:
             LEFT JOIN rescue_overrides ro
               ON ro.item_type = 'novel' AND ro.item_id = n.novel_id
             WHERE TRIM(COALESCE(nt.text_raw, '')) != ''
-              AND ro.action != 'exclude'
-               OR (
-                    TRIM(COALESCE(nt.text_raw, '')) != ''
-                    AND ro.action IS NULL
-                    AND n.status IN ('deleted', 'restricted')
-                  )
-              OR (
-                    TRIM(COALESCE(nt.text_raw, '')) != ''
-                    AND ro.action = 'include'
-                  )
+              AND (
+                    ro.action = 'include'
+                    OR (
+                        ro.action IS NULL
+                        AND n.status IN ('deleted', 'restricted')
+                    )
+              )
             """
         ).fetchall()
         novel_items: list[dict[str, Any]] = []

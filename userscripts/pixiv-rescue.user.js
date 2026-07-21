@@ -122,6 +122,28 @@
       .some(hasSubstantialText);
   }
 
+  function waitForUnavailableState(healthyCheck) {
+    const deadline = Date.now() + 1200;
+    return new Promise(function (resolve) {
+      function inspect() {
+        if (healthyCheck()) {
+          resolve(false);
+          return;
+        }
+        if (pageSaysUnavailable()) {
+          resolve(true);
+          return;
+        }
+        if (Date.now() >= deadline) {
+          resolve(false);
+          return;
+        }
+        window.setTimeout(inspect, 100);
+      }
+      inspect();
+    });
+  }
+
   function addStyles() {
     if (document.querySelector('style[data-pixiv-rescue-styles]')) return;
     const style = document.createElement('style');
@@ -216,10 +238,14 @@
     renderText(viewer, data.text_raw || '备份正文为空');
   }
 
-  function renderChapterDirectory(panel, viewer, data) {
-    const existing = panel.querySelector('.pixiv-rescue-directory');
-    if (existing) existing.remove();
-    const list = element('ol', 'pixiv-rescue-directory');
+  function renderChapterDirectory(panel, viewer, data, seriesId) {
+    let list = panel.querySelector('.pixiv-rescue-directory');
+    if (!list) {
+      list = element('ol', 'pixiv-rescue-directory');
+      panel.insertBefore(list, viewer);
+    }
+    const existingMore = list.querySelector('[data-rescue-load-more]');
+    if (existingMore) existingMore.remove();
     const chapters = Array.isArray(data.items) ? data.items : [];
     chapters.forEach(function (chapter, index) {
       const item = element('li');
@@ -239,8 +265,34 @@
       item.append(button);
       list.append(item);
     });
-    if (!chapters.length) list.append(element('li', '', '备份中没有可读取的章节。'));
-    panel.insertBefore(list, viewer);
+    if (!chapters.length && !list.children.length) {
+      list.append(element('li', '', '备份中没有可读取的章节。'));
+    }
+
+    const currentPage = Math.max(1, Number(data.page || 1));
+    const totalPages = Math.max(currentPage, Number(data.total_pages || currentPage));
+    if (currentPage < totalPages) {
+      const moreItem = element('li');
+      moreItem.setAttribute('data-rescue-load-more', '');
+      const moreButton = element('button', 'pixiv-rescue-button', '加载更多章节');
+      moreButton.type = 'button';
+      moreButton.addEventListener('click', function () {
+        moreButton.disabled = true;
+        const nextPage = currentPage + 1;
+        const path = '/api/rescue/v1/series/' + encodeURIComponent(String(seriesId))
+          + '/chapters?page=' + encodeURIComponent(String(nextPage)) + '&page_size=100';
+        apiGet(path)
+          .then(function (nextDirectory) {
+            renderChapterDirectory(panel, viewer, nextDirectory, seriesId);
+          })
+          .catch(renderError)
+          .finally(function () {
+            moreButton.disabled = false;
+          });
+      });
+      moreItem.append(moreButton);
+      list.append(moreItem);
+    }
   }
 
   function renderSeries(data, seriesId) {
@@ -262,7 +314,7 @@
       loadButton.disabled = true;
       apiGet('/api/rescue/v1/series/' + encodeURIComponent(String(seriesId)) + '/chapters')
         .then(function (directory) {
-          renderChapterDirectory(panel, viewer, directory);
+          renderChapterDirectory(panel, viewer, directory, seriesId);
           loadButton.remove();
         })
         .catch(renderError)
@@ -289,20 +341,26 @@
     if (isNovelPageHealthy()) return;
     const novelId = novelIdFromPage();
     if (!novelId) return;
-    apiGet('/api/rescue/v1/novels/' + encodeURIComponent(novelId))
-      .then(renderNovel)
-      .catch(renderError);
+    waitForUnavailableState(isNovelPageHealthy).then(function (unavailable) {
+      if (!unavailable) return;
+      apiGet('/api/rescue/v1/novels/' + encodeURIComponent(novelId))
+        .then(renderNovel)
+        .catch(renderError);
+    });
   }
 
   function handleSeriesPage() {
     if (isSeriesPageHealthy()) return;
     const seriesId = seriesIdFromPage();
     if (!seriesId) return;
-    apiGet('/api/rescue/v1/series/' + encodeURIComponent(seriesId))
-      .then(function (data) {
-        renderSeries(data, seriesId);
-      })
-      .catch(renderError);
+    waitForUnavailableState(isSeriesPageHealthy).then(function (unavailable) {
+      if (!unavailable) return;
+      apiGet('/api/rescue/v1/series/' + encodeURIComponent(seriesId))
+        .then(function (data) {
+          renderSeries(data, seriesId);
+        })
+        .catch(renderError);
+    });
   }
 
   function start() {

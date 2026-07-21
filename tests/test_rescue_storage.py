@@ -123,6 +123,15 @@ def test_delete_series_cleans_rescue_override(db: Database) -> None:
     assert db.get_rescue_override("series", 9) is None
 
 
+def test_delete_user_cleans_owned_novel_rescue_overrides(db: Database) -> None:
+    _seed_novel(db, novel_id=14)
+    db.set_rescue_override("novel", 14, "include")
+
+    db.delete_user(2)
+
+    assert db.get_rescue_override("novel", 14) is None
+
+
 @pytest.mark.parametrize("status", ["deleted", "restricted"])
 def test_unavailable_novel_with_body_is_rescue_success(
     db: Database,

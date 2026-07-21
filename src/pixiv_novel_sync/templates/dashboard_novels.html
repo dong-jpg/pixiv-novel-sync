@@ -30,8 +30,8 @@
           class="w-auto pl-3 pr-8 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors appearance-none custom-select">
           <option value="">默认排序</option>
           <option value="updated_desc">更新时间倒序</option>
-          <option value="bookmarks_desc">收藏数倒序</option>
-          <option value="views_desc">浏览数倒序</option>
+          <option v-if="filters.category !== 'rescue'" value="bookmarks_desc">收藏数倒序</option>
+          <option v-if="filters.category !== 'rescue'" value="views_desc">浏览数倒序</option>
         </select>
       </div>
     </div>

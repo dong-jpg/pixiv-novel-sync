@@ -136,6 +136,8 @@ def test_current_frontend_docs_describe_task_logs_and_ai_pages():
 
     assert "默认保留 3 天" in readme
     assert "保留最近 7 天" not in readme
+    assert "/dashboard/novels?category=rescue" in readme
+    assert "userscripts/pixiv-rescue.user.js" in readme
     assert "| `/dashboard/logs` | `dashboard_logs.html` | 任务日志 |" in contract
     assert "/dashboard/wizard" in contract
     assert "/dashboard/novels/ai/<project_id>" in contract
@@ -262,6 +264,8 @@ def test_library_contains_rescue_tab_and_api_contract():
     assert "/api/dashboard/rescues" in html
     assert "rescueFilters.state" in html
     assert "rescueFilters.item_type" in html
+    assert '<option v-if="filters.category !== \'rescue\'" value="bookmarks_desc">' in html
+    assert '<option v-if="filters.category !== \'rescue\'" value="views_desc">' in html
     assert "完整救援" in html
     assert "部分救援" in html
     assert "来自私人备份" in html
@@ -322,3 +326,36 @@ def test_frontend_contract_documents_exist_and_cover_core_topics():
 
     for token in ["--library-bg", "--library-surface", "--library-accent", "library-card", "library-table"]:
         assert token in style
+
+
+def test_rescue_pages_and_api_contract_are_documented():
+    pages = read(DOCS / "frontend-pages.md")
+    contract = read(DOCS / "frontend-api-contract.md")
+
+    assert "/dashboard/novels?category=rescue" in pages
+    assert "userscripts/pixiv-rescue.user.js" in pages
+    assert "拯救成功" in pages
+    assert "救援 Token" in pages
+    for endpoint in [
+        "GET /api/dashboard/rescues",
+        "PUT /api/dashboard/rescue-overrides/<item_type>/<item_id>",
+        "DELETE /api/dashboard/rescue-overrides/<item_type>/<item_id>",
+        "GET /api/dashboard/rescue-token/status",
+        "POST /api/dashboard/rescue-token/rotate",
+        "GET /api/rescue/v1/novels/<novel_id>",
+        "GET /api/rescue/v1/series/<series_id>",
+        "GET /api/rescue/v1/series/<series_id>/chapters",
+    ]:
+        assert endpoint in contract
+    for security_term in [
+        "Authorization: Bearer",
+        "X-CSRF-Token",
+        "Cache-Control: no-store",
+        "X-Robots-Tag",
+        "401",
+        "404",
+        "405",
+        "429",
+        "source_notice",
+    ]:
+        assert security_term in contract

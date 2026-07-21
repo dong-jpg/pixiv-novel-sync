@@ -220,7 +220,7 @@ Tab 支持：
 {
   "ok": true,
   "data": {
-    "token": "rsq_example_token_returned_once",
+    "token": "<仅本次返回的救援 Token>",
     "token_prefix": "rsq_abcd",
     "rotated_at": "2026-07-21T00:00:00Z"
   }

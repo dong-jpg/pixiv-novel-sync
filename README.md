@@ -141,7 +141,7 @@
 | 页面 | 功能 |
 |------|------|
 | 📊 **Dashboard** | 系统状态、同步统计、快速操作 |
-| 📚 **小说库** | 浏览、搜索、排序、导出 EPUB |
+| 📚 **小说库** | 浏览、搜索、排序、导出 EPUB、查看拯救成功数据 |
 | 👥 **关注管理** | 关注用户列表、状态监控、单独备份 |
 | 🤖 **AI 创作** | 自动写作、创作向导、蒸馏档案、AI 小说阅读 |
 | 🎯 **偏好推荐** | 画像分析、推荐运行、结果浏览 |
@@ -153,6 +153,13 @@ AI 功能入口：
 - `/dashboard/ai`：自动写作项目、全书规划、章节和 Pipeline。
 - `/dashboard/wizard`：创作向导与蒸馏档案。
 - `/dashboard/novels?category=ai`：AI 创作小说库。
+- `/dashboard/novels?category=rescue`：完整或部分救援的 Pixiv 小说与系列。
+
+Pixiv 原站救援阅读：
+
+1. 在 `/dashboard/settings#rescue-api` 生成独立救援 Token；完整明文只显示一次。
+2. 本地安装 `userscripts/pixiv-rescue.user.js`，通过油猴菜单录入救援 Token。
+3. 脚本只在 Pixiv 小说或系列明确失效时读取私人备份；正常页面不请求救援 API，也不修改原内容。
 
 ---
 
