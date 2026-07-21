@@ -294,6 +294,9 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
     @app.before_request
     def _check_auth():
+        path = request.path
+        if path.startswith("/api/rescue/v1/"):
+            return
         token = settings_manager.load(env_path=env_path).dashboard_token
         if not token:
             # 安全加固：未配置 token 时仅允许真正的本机访问。
@@ -304,7 +307,6 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             if _is_local_request():
                 return
             return jsonify({"error": "dashboard token required for non-local access"}), 403
-        path = request.path
         if path in _AUTH_EXEMPT_PATHS:
             return
         if path.startswith("/static/"):
@@ -347,6 +349,9 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
     from .preference_web import register_preference_routes
     register_preference_routes(app, current_settings_for_routes)
+
+    from .rescue_web import register_rescue_routes
+    register_rescue_routes(app, current_settings_for_routes, _client_addr)
 
     @app.route("/api/auth/login", methods=["GET", "POST"])
     def auth_login():
