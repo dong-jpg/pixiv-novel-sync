@@ -360,7 +360,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             return redirect("/")
         if request.method == "GET":
             return Response(
-                '<!DOCTYPE html><html><head><title>Login</title>'
+                '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>Login</title>'
                 '<style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f5f5f5}'
                 'form{background:white;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1)}'
                 'input{display:block;margin:1rem 0;padding:0.5rem;width:250px}'
@@ -368,7 +368,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
                 '<body><form method="POST"><h2>Pixiv Novel Sync</h2>'
                 '<input name="token" type="password" placeholder="访问密码" autofocus>'
                 '<button type="submit">登录</button></form></body></html>',
-                content_type="text/html",
+                content_type="text/html; charset=utf-8",
             )
         import hmac as _hmac
         now = time.time()
@@ -385,7 +385,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
             return redirect("/")
         failures.append(now)
         _login_failures[client] = failures
-        return Response("密码错误", status=401)
+        return Response("密码错误", status=401, content_type="text/plain; charset=utf-8")
 
     @app.get("/api/csrf-token")
     def csrf_token():

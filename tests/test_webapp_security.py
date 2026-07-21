@@ -254,6 +254,25 @@ def test_security_headers_are_set(tmp_path, monkeypatch):
     assert response.headers["Referrer-Policy"] == "no-referrer"
 
 
+def test_login_page_declares_utf8_and_keeps_chinese_text(tmp_path, monkeypatch):
+    monkeypatch.setenv("DASHBOARD_TOKEN", "secret-token")
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\nDASHBOARD_TOKEN=secret-token\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path))
+    client = app.test_client()
+
+    response = client.get("/api/auth/login")
+
+    assert response.status_code == 200
+    assert response.mimetype == "text/html"
+    assert response.mimetype_params.get("charset", "").lower() == "utf-8"
+    body = response.get_data(as_text=True)
+    assert '<meta charset="utf-8">' in body
+    assert 'placeholder="访问密码"' in body
+    assert ">登录<" in body
+
+
 def test_csrf_required_for_authenticated_mutating_requests(tmp_path, monkeypatch):
     monkeypatch.setenv("DASHBOARD_TOKEN", "secret-token")
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
