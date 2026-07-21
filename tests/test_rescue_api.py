@@ -196,6 +196,41 @@ def test_dashboard_rescue_list_and_override_crud(client) -> None:
     ).get_json()["data"]["items"][0]["novel_id"] == 10
 
 
+def test_dashboard_novel_detail_includes_rescue_evaluation(client) -> None:
+    rescued = client.get("/api/dashboard/novels/10").get_json()
+    normal = client.get("/api/dashboard/novels/11").get_json()
+
+    assert rescued["rescue"]["rescue_state"] == "success"
+    assert rescued["rescue"]["remote_status"] == "deleted"
+    assert rescued["rescue"]["complete_count"] == 1
+    assert rescued["rescue"]["override_action"] is None
+    assert normal["rescue"]["rescue_state"] is None
+    assert normal["rescue"]["remote_status"] == "normal"
+
+
+def test_dashboard_series_detail_includes_rescue_coverage(client) -> None:
+    detail = client.get("/api/dashboard/series/20").get_json()
+
+    assert detail["rescue"]["rescue_state"] == "success"
+    assert detail["rescue"]["expected_count"] == 1
+    assert detail["rescue"]["local_count"] == 1
+    assert detail["rescue"]["complete_count"] == 1
+    assert detail["rescue"]["override_action"] is None
+
+
+def test_dashboard_detail_reflects_manual_rescue_override(client) -> None:
+    response = client.put(
+        "/api/dashboard/rescue-overrides/novel/11",
+        json={"action": "include", "note": "页面确认失效"},
+    )
+
+    assert response.status_code == 200
+    rescue = client.get("/api/dashboard/novels/11").get_json()["rescue"]
+    assert rescue["rescue_state"] == "success"
+    assert rescue["override_action"] == "include"
+    assert rescue["override_note"] == "页面确认失效"
+
+
 def test_rescue_public_api_is_read_only(client) -> None:
     token = _rotate_token(client)
     response = client.post(

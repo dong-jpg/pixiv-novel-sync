@@ -254,6 +254,48 @@ def test_ai_project_overview_keeps_project_summary_compact_at_narrow_desktop():
     assert "lg:grid-cols-[7rem_minmax(0,1.35fr)_minmax(16rem,1fr)]" in project_section
 
 
+def test_library_contains_rescue_tab_and_api_contract():
+    html = read(TEMPLATES / "dashboard_novels.html")
+
+    assert "filters.category = 'rescue'" in html
+    assert "['bookmark', 'following', 'ai', 'rescue']" in html
+    assert "/api/dashboard/rescues" in html
+    assert "rescueFilters.state" in html
+    assert "rescueFilters.item_type" in html
+    assert "完整救援" in html
+    assert "部分救援" in html
+    assert "来自私人备份" in html
+
+
+def test_rescue_detail_pages_support_manual_override_with_csrf():
+    novel = read(TEMPLATES / "dashboard_novel_detail.html")
+    series = read(TEMPLATES / "dashboard_series_detail.html")
+
+    for html, item_type in ((novel, "novel"), (series, "series")):
+        assert "rescueOverride" in html
+        assert "rescueMessage" in html
+        assert "ensureCsrfToken" in html
+        assert "X-CSRF-Token" in html
+        assert f"const itemType = '{item_type}'" in html
+        assert "/api/dashboard/rescue-overrides/" in html
+        assert "saveRescueOverride" in html
+        assert "clearRescueOverride" in html
+
+    assert "complete_count" in series
+    assert "expected_count" in series
+
+
+def test_settings_contains_rescue_token_rotation():
+    html = read(TEMPLATES / "dashboard_settings.html")
+
+    assert "rescue-api" in html
+    assert "/api/dashboard/rescue-token/status" in html
+    assert "/api/dashboard/rescue-token/rotate" in html
+    assert "rescueTokenPlaintext" in html
+    assert "closeRescueToken" in html
+    assert "copyRescueToken" in html
+
+
 def test_frontend_contract_documents_exist_and_cover_core_topics():
     contract = read(DOCS / "frontend-api-contract.md")
     pages = read(DOCS / "frontend-pages.md")

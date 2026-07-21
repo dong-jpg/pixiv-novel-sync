@@ -688,6 +688,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         db.init_schema()
         try:
             payload = db.get_novel_detail(novel_id)
+            if payload is not None:
+                payload["rescue"] = db.evaluate_rescue_novel(novel_id)
         finally:
             db.close()
         if payload is None:
@@ -810,6 +812,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         db.init_schema()
         try:
             payload = db.get_series_detail(series_id)
+            if payload is not None:
+                payload["rescue"] = db.evaluate_rescue_series(series_id)
         finally:
             db.close()
         if payload is None:

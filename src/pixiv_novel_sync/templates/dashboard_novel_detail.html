@@ -168,6 +168,19 @@
     background: #f0f0f0;
   }
 
+  .rescue-control-panel {
+    max-width: 680px;
+    margin: 0 auto 1.5rem;
+    padding: 0 20px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .rescue-control-inner {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #f9fafb;
+    padding: 14px 16px;
+  }
+
   /* ========== Reader Body ========== */
   .reader-body-wrapper {
     max-width: 680px;
@@ -268,6 +281,7 @@
     .reader-top-nav-inner { padding: 8px 16px; }
     .chapter-bottom-inner { padding: 8px 12px; }
     .chapter-nav-btn { padding: 6px 10px; font-size: 12px; }
+    .rescue-control-panel { padding: 0 16px; }
   }
 </style>
 {% endblock %}
@@ -332,6 +346,41 @@
       {{ seriesInfo.title || '系列' }} ({{ chapterIndex + 1 }}/{{ seriesInfo.total_novels }})
     </a>
   </div>
+  <section v-if="novel.rescue" class="rescue-control-panel" aria-label="救援状态与人工纠错">
+    <div class="rescue-control-inner">
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
+        <div>
+          <h2 class="text-sm font-bold text-gray-900">救援状态与人工纠错</h2>
+          <p class="text-xs text-gray-500 mt-1">
+            <span v-if="novel.rescue.rescue_state === 'success'">已完整救援，正文来自私人备份。</span>
+            <span v-else>当前未进入救援列表。</span>
+            Pixiv 状态：{{ novel.rescue.remote_status || 'unknown' }}
+          </p>
+        </div>
+        <span class="self-start px-2 py-1 rounded text-xs font-medium"
+              :class="novel.rescue.rescue_state === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-600'">
+          {{ novel.rescue.rescue_state === 'success' ? '完整救援' : '自动判断' }}
+        </span>
+      </div>
+      <input v-model="rescueOverride.note" maxlength="500" type="text" placeholder="纠错备注（可选）"
+             class="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+      <div class="flex flex-wrap gap-2 mt-3">
+        <button @click="saveRescueOverride('include')" :disabled="savingRescue"
+                class="px-3 py-2 bg-brand-500 text-white rounded-lg text-xs font-medium hover:bg-brand-600 disabled:opacity-50">
+          标记 Pixiv 已失效
+        </button>
+        <button @click="saveRescueOverride('exclude')" :disabled="savingRescue"
+                class="px-3 py-2 bg-white text-gray-700 border border-gray-200 rounded-lg text-xs font-medium hover:bg-gray-50 disabled:opacity-50">
+          标记仍可访问
+        </button>
+        <button v-if="rescueOverride.action" @click="clearRescueOverride" :disabled="savingRescue"
+                class="px-3 py-2 text-gray-500 rounded-lg text-xs font-medium hover:bg-gray-100 disabled:opacity-50">
+          恢复自动判断
+        </button>
+      </div>
+      <p v-if="rescueMessage" class="text-xs mt-2" :class="rescueMessageType === 'error' ? 'text-red-600' : 'text-emerald-700'">{{ rescueMessage }}</p>
+    </div>
+  </section>
   <div class="novel-header-divider"><hr></div>
 
   <!-- Novel body -->
@@ -366,6 +415,7 @@
       const { ref, computed, onMounted, onUnmounted, nextTick, watch } = Vue;
 
       const novelId = Number(location.pathname.split('/').pop() || 0);
+      const itemType = 'novel';
       const storageKey = `pixivNovelSync:reading:${novelId}`;
 
       // State
@@ -375,6 +425,78 @@
       const progressPercent = ref(0);
       const isScrolled = ref(false);
       const seriesInfo = ref(null);
+      const rescueOverride = Vue.reactive({ action: '', note: '' });
+      const rescueMessage = ref('');
+      const rescueMessageType = ref('success');
+      const savingRescue = ref(false);
+      let csrfToken = '';
+
+      const syncRescueOverride = (rescue) => {
+        rescueOverride.action = rescue?.override_action || '';
+        rescueOverride.note = rescue?.override_note || '';
+      };
+
+      const ensureCsrfToken = async () => {
+        if (csrfToken) return csrfToken;
+        const response = await fetch('/api/csrf-token');
+        const data = await response.json();
+        if (!response.ok || !data.csrf_token) throw new Error(data.error || '无法获取安全令牌');
+        csrfToken = data.csrf_token;
+        return csrfToken;
+      };
+
+      const refreshRescueState = async () => {
+        const response = await fetch(`/api/dashboard/novels/${encodeURIComponent(novelId)}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '刷新救援状态失败');
+        novel.value.rescue = data.rescue;
+        syncRescueOverride(data.rescue);
+      };
+
+      const saveRescueOverride = async (action) => {
+        savingRescue.value = true;
+        rescueMessage.value = '';
+        try {
+          const token = await ensureCsrfToken();
+          const response = await fetch(`/api/dashboard/rescue-overrides/${itemType}/${novelId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+            body: JSON.stringify({ action, note: rescueOverride.note })
+          });
+          const data = await response.json();
+          if (!response.ok || data.ok === false) throw new Error(data.error || '保存失败');
+          await refreshRescueState();
+          rescueMessageType.value = 'success';
+          rescueMessage.value = '人工纠错已保存';
+        } catch (e) {
+          rescueMessageType.value = 'error';
+          rescueMessage.value = e.message || '保存失败';
+        } finally {
+          savingRescue.value = false;
+        }
+      };
+
+      const clearRescueOverride = async () => {
+        savingRescue.value = true;
+        rescueMessage.value = '';
+        try {
+          const token = await ensureCsrfToken();
+          const response = await fetch(`/api/dashboard/rescue-overrides/${itemType}/${novelId}`, {
+            method: 'DELETE',
+            headers: { 'X-CSRF-Token': token }
+          });
+          const data = await response.json();
+          if (!response.ok || data.ok === false) throw new Error(data.error || '恢复失败');
+          await refreshRescueState();
+          rescueMessageType.value = 'success';
+          rescueMessage.value = '已恢复自动判断';
+        } catch (e) {
+          rescueMessageType.value = 'error';
+          rescueMessage.value = e.message || '恢复失败';
+        } finally {
+          savingRescue.value = false;
+        }
+      };
 
       // Font size cycling
       const fontSizes = ['small', 'normal', 'large', 'xlarge'];
@@ -497,6 +619,7 @@
           const data = await res.json();
           if (res.ok) {
             novel.value = data;
+            syncRescueOverride(data.rescue);
             if (data.title) document.title = `${data.title} - Pixiv 小说同步器`;
 
             // Fetch series info for chapter nav
@@ -549,7 +672,8 @@
         novel, loading, error, progressPercent, isScrolled,
         seriesInfo, chapterIndex, prevNovelId, nextNovelId,
         formattedContent, formatNumber, formatTextLength, formatDate,
-        fontSize, cycleFontSize
+        fontSize, cycleFontSize, rescueOverride, rescueMessage, rescueMessageType,
+        savingRescue, ensureCsrfToken, saveRescueOverride, clearRescueOverride
       };
     }
   });

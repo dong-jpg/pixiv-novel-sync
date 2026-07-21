@@ -180,23 +180,22 @@ class RescueMixin:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def _series_rescue_payload(self, row: dict[str, Any]) -> dict[str, Any] | None:
+    def _series_evaluation_payload(self, row: dict[str, Any]) -> dict[str, Any]:
         expected_count = int(row.get("expected_count") or 0)
         local_count = int(row.get("local_count") or 0)
         complete_count = int(row.get("complete_count") or 0)
         remote_status = str(row.get("remote_status") or "unknown")
+        remote_unavailable = self._remote_unavailable(
+            "series",
+            remote_status,
+            row.get("override_action"),
+        )
         state = self._series_state(
-            self._remote_unavailable(
-                "series",
-                remote_status,
-                row.get("override_action"),
-            ),
+            remote_unavailable,
             expected_count,
             local_count,
             complete_count,
         )
-        if state is None:
-            return None
         return {
             "item_type": "series",
             "item_id": int(row["series_id"]),
@@ -208,7 +207,8 @@ class RescueMixin:
             "cover_url": row.get("cover_url"),
             "rescue_state": state,
             "remote_status": remote_status,
-            "eligibility_reason": "series_unavailable",
+            "remote_unavailable": remote_unavailable,
+            "eligibility_reason": "series_unavailable" if state else None,
             "expected_count": expected_count if expected_count > 0 else None,
             "local_count": local_count,
             "complete_count": complete_count,
@@ -218,11 +218,21 @@ class RescueMixin:
             "override_note": str(row.get("override_note") or ""),
         }
 
-    def get_rescue_series(self, series_id: int) -> dict[str, Any] | None:
+    def _series_rescue_payload(self, row: dict[str, Any]) -> dict[str, Any] | None:
+        payload = self._series_evaluation_payload(row)
+        return payload if payload["rescue_state"] is not None else None
+
+    def evaluate_rescue_series(self, series_id: int) -> dict[str, Any] | None:
         rows = self._series_summary_rows(int(series_id))
         if not rows:
             return None
-        return self._series_rescue_payload(rows[0])
+        return self._series_evaluation_payload(rows[0])
+
+    def get_rescue_series(self, series_id: int) -> dict[str, Any] | None:
+        payload = self.evaluate_rescue_series(int(series_id))
+        if payload is None or payload["rescue_state"] is None:
+            return None
+        return payload
 
     @staticmethod
     def _decode_tags(value: Any) -> list[Any]:
@@ -232,7 +242,7 @@ class RescueMixin:
             return []
         return parsed if isinstance(parsed, list) else []
 
-    def get_rescue_novel(self, novel_id: int) -> dict[str, Any] | None:
+    def _novel_rescue_row(self, novel_id: int) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
             SELECT
@@ -260,12 +270,11 @@ class RescueMixin:
             """,
             (int(novel_id),),
         ).fetchone()
-        if row is None:
-            return None
-        data = dict(row)
+        return dict(row) if row else None
+
+    def _novel_evaluation_payload(self, data: dict[str, Any]) -> dict[str, Any]:
         text_raw = str(data.get("text_raw") or "")
-        if not text_raw.strip():
-            return None
+        body_complete = bool(text_raw.strip())
 
         remote_status = str(data.get("remote_status") or "unknown")
         own_unavailable = self._remote_unavailable(
@@ -274,17 +283,18 @@ class RescueMixin:
             data.get("override_action"),
         )
         parent: dict[str, Any] | None = None
-        eligibility_reason = "novel_unavailable"
-        rescue_state = "success"
-        if not own_unavailable:
+        eligibility_reason: str | None = None
+        rescue_state: str | None = None
+        if body_complete and own_unavailable:
+            eligibility_reason = "novel_unavailable"
+            rescue_state = "success"
+        elif body_complete:
             series_id = data.get("series_id")
-            if series_id is None:
-                return None
-            parent = self.get_rescue_series(int(series_id))
-            if parent is None:
-                return None
-            eligibility_reason = "parent_series_unavailable"
-            rescue_state = str(parent["rescue_state"])
+            if series_id is not None:
+                parent = self.get_rescue_series(int(series_id))
+                if parent is not None:
+                    eligibility_reason = "parent_series_unavailable"
+                    rescue_state = str(parent["rescue_state"])
 
         return {
             "item_type": "novel",
@@ -301,15 +311,37 @@ class RescueMixin:
             "text_raw": text_raw,
             "rescue_state": rescue_state,
             "remote_status": remote_status,
+            "remote_unavailable": own_unavailable,
+            "body_complete": body_complete,
             "eligibility_reason": eligibility_reason,
             "expected_count": parent.get("expected_count") if parent else None,
             "local_count": int(parent.get("local_count") or 0) if parent else 1,
-            "complete_count": int(parent.get("complete_count") or 0) if parent else 1,
+            "complete_count": int(parent.get("complete_count") or 0) if parent else int(body_complete),
             "last_checked_at": data.get("last_checked_at"),
             "updated_at": data.get("updated_at"),
             "override_action": data.get("override_action"),
             "override_note": str(data.get("override_note") or ""),
         }
+
+    def evaluate_rescue_novel(self, novel_id: int) -> dict[str, Any] | None:
+        data = self._novel_rescue_row(int(novel_id))
+        if data is None:
+            return None
+        payload = self._novel_evaluation_payload(data)
+        return {
+            key: value
+            for key, value in payload.items()
+            if key not in {"text_raw", "caption", "tags"}
+        }
+
+    def get_rescue_novel(self, novel_id: int) -> dict[str, Any] | None:
+        data = self._novel_rescue_row(int(novel_id))
+        if data is None:
+            return None
+        payload = self._novel_evaluation_payload(data)
+        if payload["rescue_state"] is None:
+            return None
+        return payload
 
     def list_rescues(
         self,
