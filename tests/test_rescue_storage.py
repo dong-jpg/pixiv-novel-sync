@@ -15,30 +15,57 @@ def db(tmp_path: Path):
     database.close()
 
 
-def _seed_novel(db: Database, novel_id: int = 1) -> None:
+def _seed_novel(
+    db: Database,
+    novel_id: int = 1,
+    *,
+    status: str = "unknown",
+    text: str | None = "正文",
+    series_id: int | None = None,
+    title: str = "小说",
+) -> None:
     db.conn.execute(
         "INSERT OR IGNORE INTO users (user_id, name, raw_json) VALUES (2, '作者', '{}')"
     )
     db.conn.execute(
         """
         INSERT INTO novels (
-            novel_id, user_id, title, visible, restrict_value, x_restrict,
+            novel_id, user_id, series_id, title, visible, restrict_value, x_restrict,
             text_length, total_bookmarks, total_views, tags_json, raw_json,
-            meta_hash
-        ) VALUES (?, 2, '小说', 1, 'public', 0, 1, 0, 0, '[]', '{}', 'h')
+            meta_hash, status
+        ) VALUES (?, 2, ?, ?, 1, 'public', 0, ?, 0, 0, '["标签"]', '{}', ?, ?)
         """,
-        (novel_id,),
+        (
+            novel_id,
+            series_id,
+            title,
+            len(text or ""),
+            f"h-{novel_id}",
+            status,
+        ),
     )
+    if text is not None:
+        db.conn.execute(
+            "INSERT INTO novel_texts (novel_id, text_raw, text_hash) VALUES (?, ?, ?)",
+            (novel_id, text, f"t-{novel_id}"),
+        )
     db.conn.commit()
 
 
-def _seed_series(db: Database, series_id: int = 9) -> None:
+def _seed_series(
+    db: Database,
+    series_id: int = 9,
+    *,
+    status: str = "unknown",
+    total_novels: int = 0,
+    title: str = "系列",
+) -> None:
     db.conn.execute(
         "INSERT OR IGNORE INTO users (user_id, name, raw_json) VALUES (2, '作者', '{}')"
     )
     db.conn.execute(
-        "INSERT INTO series (series_id, title, user_id) VALUES (?, '系列', 2)",
-        (series_id,),
+        "INSERT INTO series (series_id, title, user_id, total_novels, status) VALUES (?, ?, 2, ?, ?)",
+        (series_id, title, total_novels, status),
     )
     db.conn.commit()
 
@@ -94,3 +121,131 @@ def test_delete_series_cleans_rescue_override(db: Database) -> None:
     db.delete_series(9)
 
     assert db.get_rescue_override("series", 9) is None
+
+
+@pytest.mark.parametrize("status", ["deleted", "restricted"])
+def test_unavailable_novel_with_body_is_rescue_success(
+    db: Database,
+    status: str,
+) -> None:
+    _seed_novel(db, 10, status=status, text="救援正文")
+
+    item = db.get_rescue_novel(10)
+
+    assert item is not None
+    assert item["rescue_state"] == "success"
+    assert item["eligibility_reason"] == "novel_unavailable"
+    assert item["text_raw"] == "救援正文"
+    assert item["tags"] == ["标签"]
+
+
+@pytest.mark.parametrize("text", [None, "", "   \n"])
+def test_unavailable_novel_without_body_is_hidden(
+    db: Database,
+    text: str | None,
+) -> None:
+    _seed_novel(db, 11, status="deleted", text=text)
+
+    assert db.get_rescue_novel(11) is None
+
+
+def test_novel_override_changes_availability_but_not_completeness(db: Database) -> None:
+    _seed_novel(db, 12, status="normal", text="正文")
+    assert db.get_rescue_novel(12) is None
+
+    db.set_rescue_override("novel", 12, "include")
+    assert db.get_rescue_novel(12)["rescue_state"] == "success"
+
+    db.set_rescue_override("novel", 12, "exclude")
+    assert db.get_rescue_novel(12) is None
+
+    _seed_novel(db, 13, status="normal", text="")
+    db.set_rescue_override("novel", 13, "include")
+    assert db.get_rescue_novel(13) is None
+
+
+def test_series_strict_success_requires_all_expected_bodies(db: Database) -> None:
+    _seed_series(db, 20, status="deleted", total_novels=3)
+    _seed_novel(db, 21, series_id=20, text="一")
+    _seed_novel(db, 22, series_id=20, text="二")
+    _seed_novel(db, 23, series_id=20, text="三")
+
+    item = db.get_rescue_series(20)
+
+    assert item is not None
+    assert item["rescue_state"] == "success"
+    assert item["expected_count"] == 3
+    assert item["local_count"] == 3
+    assert item["complete_count"] == 3
+
+
+def test_series_is_partial_when_total_unknown_or_any_local_body_missing(
+    db: Database,
+) -> None:
+    _seed_series(db, 30, status="deleted", total_novels=0)
+    _seed_novel(db, 31, series_id=30, text="一")
+    assert db.get_rescue_series(30)["rescue_state"] == "partial"
+
+    _seed_series(db, 40, status="deleted", total_novels=2)
+    _seed_novel(db, 41, series_id=40, text="一")
+    _seed_novel(db, 42, series_id=40, text="")
+    item = db.get_rescue_series(40)
+    assert item["rescue_state"] == "partial"
+    assert item["local_count"] == 2
+    assert item["complete_count"] == 1
+
+
+def test_parent_series_allows_normal_chapter_and_exclude_blocks_it(db: Database) -> None:
+    _seed_series(db, 50, status="deleted", total_novels=1)
+    _seed_novel(db, 51, series_id=50, status="normal", text="章节")
+
+    item = db.get_rescue_novel(51)
+    assert item is not None
+    assert item["eligibility_reason"] == "parent_series_unavailable"
+
+    db.set_rescue_override("series", 50, "exclude")
+    assert db.get_rescue_novel(51) is None
+
+
+def test_rescue_list_deduplicates_series_chapters_and_filters(db: Database) -> None:
+    _seed_series(db, 60, status="deleted", total_novels=1, title="目标系列")
+    _seed_novel(db, 61, series_id=60, status="deleted", text="系列章节")
+    _seed_novel(db, 62, status="restricted", text="单篇", title="目标单篇")
+
+    payload = db.list_rescues(page=1, page_size=10)
+    identities = {(item["item_type"], item["item_id"]) for item in payload["items"]}
+    assert identities == {("series", 60), ("novel", 62)}
+
+    novels = db.list_rescues(
+        page=1,
+        page_size=10,
+        item_type="novel",
+        search="目标单篇",
+    )
+    assert [(item["item_type"], item["item_id"]) for item in novels["items"]] == [
+        ("novel", 62)
+    ]
+
+
+def test_rescue_series_chapters_are_paginated_without_bodies(db: Database) -> None:
+    _seed_series(db, 70, status="deleted", total_novels=2)
+    _seed_novel(db, 71, series_id=70, text="第一章")
+    _seed_novel(db, 72, series_id=70, text="第二章")
+
+    payload = db.list_rescue_series_chapters(70, page=2, page_size=1)
+
+    assert payload is not None
+    assert payload["total"] == 2
+    assert payload["items"][0]["novel_id"] == 72
+    assert "text_raw" not in payload["items"][0]
+
+
+def test_rescue_token_record_is_singleton(db: Database) -> None:
+    assert db.get_rescue_token_record() is None
+
+    first = db.save_rescue_token_record("hash-1", "rsq_one")
+    second = db.save_rescue_token_record("hash-2", "rsq_two")
+
+    assert first["token_hash"] == "hash-1"
+    assert second["token_hash"] == "hash-2"
+    assert db.conn.execute("SELECT COUNT(*) FROM rescue_api_token").fetchone()[0] == 1
