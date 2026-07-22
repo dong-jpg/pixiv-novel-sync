@@ -36,6 +36,7 @@ config/config.yaml.bak
 # Local agent state
 /.claude/
 /memory/
+/.superpowers/
 
 # Python tooling
 .pytest_cache/
