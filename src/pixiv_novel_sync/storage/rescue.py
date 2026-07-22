@@ -489,41 +489,76 @@ class RescueMixin:
             values,
         )
 
-    def _rescue_novel_series_ids(self, novel_id: int) -> set[int]:
-        """Return current and last-known parent series for one novel."""
-        ids: set[int] = set()
+    def _catalog_novel_series_ids(self, novel_ids: set[int]) -> set[int]:
+        """Return current and last-known parents for the given novels."""
+        if not novel_ids:
+            return set()
+        placeholders = ", ".join("?" for _ in novel_ids)
+        params = tuple(sorted(novel_ids))
         rows = self.conn.execute(
-            """
+            f"""
             SELECT series_id
             FROM novels
-            WHERE novel_id = ? AND series_id IS NOT NULL
+            WHERE novel_id IN ({placeholders}) AND series_id IS NOT NULL
             UNION
             SELECT series_id
             FROM rescue_catalog_memberships
-            WHERE novel_id = ?
+            WHERE novel_id IN ({placeholders})
             UNION
             SELECT series_id
             FROM rescue_catalog
-            WHERE item_type = 'novel' AND item_id = ? AND series_id IS NOT NULL
+            WHERE item_type = 'novel'
+              AND item_id IN ({placeholders})
+              AND series_id IS NOT NULL
             """,
-            (int(novel_id), int(novel_id), int(novel_id)),
+            (*params, *params, *params),
         ).fetchall()
-        ids.update(int(row["series_id"]) for row in rows if row["series_id"] is not None)
-        return ids
+        return {
+            int(row["series_id"])
+            for row in rows
+            if row["series_id"] is not None
+        }
 
-    def _catalog_membership_novel_ids(self, series_ids: set[int]) -> set[int]:
+    def _rescue_novel_series_ids(self, novel_id: int) -> set[int]:
+        return self._catalog_novel_series_ids({int(novel_id)})
+
+    def _catalog_series_novel_ids(self, series_ids: set[int]) -> set[int]:
+        """Return current and last-known members for the given series."""
         if not series_ids:
             return set()
         placeholders = ", ".join("?" for _ in series_ids)
+        params = tuple(sorted(series_ids))
         rows = self.conn.execute(
             f"""
             SELECT novel_id
+            FROM novels
+            WHERE series_id IN ({placeholders})
+            UNION
+            SELECT novel_id
             FROM rescue_catalog_memberships
             WHERE series_id IN ({placeholders})
+            UNION
+            SELECT item_id AS novel_id
+            FROM rescue_catalog
+            WHERE item_type = 'novel'
+              AND series_id IN ({placeholders})
             """,
-            tuple(sorted(series_ids)),
+            (*params, *params, *params),
         ).fetchall()
         return {int(row["novel_id"]) for row in rows}
+
+    def _expand_catalog_scope(
+        self,
+        series_ids: set[int],
+        novel_ids: set[int],
+    ) -> None:
+        """Expand current/snapshot relationships until the affected scope is stable."""
+        while True:
+            previous_size = (len(series_ids), len(novel_ids))
+            novel_ids.update(self._catalog_series_novel_ids(series_ids))
+            series_ids.update(self._catalog_novel_series_ids(novel_ids))
+            if previous_size == (len(series_ids), len(novel_ids)):
+                return
 
     def _refresh_catalog_memberships(
         self,
@@ -547,10 +582,10 @@ class RescueMixin:
             self.conn.execute(
                 f"""
                 INSERT INTO rescue_catalog_memberships (novel_id, series_id)
-                SELECT novel_id, series_id
-                FROM novels
-                WHERE series_id IS NOT NULL
-                  AND novel_id IN ({placeholders})
+                SELECT n.novel_id, n.series_id
+                FROM novels n
+                JOIN series se ON se.series_id = n.series_id
+                WHERE n.novel_id IN ({placeholders})
                 """,
                 tuple(sorted(novel_ids)),
             )
@@ -560,9 +595,9 @@ class RescueMixin:
         self.conn.execute(
             """
             INSERT INTO rescue_catalog_memberships (novel_id, series_id)
-            SELECT novel_id, series_id
-            FROM novels
-            WHERE series_id IS NOT NULL
+            SELECT n.novel_id, n.series_id
+            FROM novels n
+            JOIN series se ON se.series_id = n.series_id
             """
         )
 
@@ -650,37 +685,58 @@ class RescueMixin:
             else:
                 series_ids.add(normalized_id)
 
-            if series_ids:
-                placeholders = ", ".join("?" for _ in series_ids)
-                chapter_rows = self.conn.execute(
-                    f"SELECT novel_id FROM novels WHERE series_id IN ({placeholders})",
-                    tuple(sorted(series_ids)),
-                ).fetchall()
-                novel_ids.update(int(row["novel_id"]) for row in chapter_rows)
-                novel_ids.update(self._catalog_membership_novel_ids(series_ids))
+            self._expand_catalog_scope(
+                series_ids,
+                novel_ids,
+            )
 
             self._delete_catalog_scope(series_ids, novel_ids)
 
+            existing_series_ids: set[int] = set()
+            if series_ids:
+                placeholders = ", ".join("?" for _ in series_ids)
+                existing_rows = self.conn.execute(
+                    f"SELECT series_id FROM series WHERE series_id IN ({placeholders})",
+                    tuple(sorted(series_ids)),
+                ).fetchall()
+                existing_series_ids = {
+                    int(row["series_id"])
+                    for row in existing_rows
+                }
+
             rows: list[dict[str, Any]] = []
-            should_rebuild = target_exists or normalized_type == "novel"
+            should_rebuild = (
+                target_exists
+                or normalized_type == "novel"
+                or bool(existing_series_ids)
+            )
             if should_rebuild:
-                existing_series_ids: set[int] = set()
-                if series_ids:
-                    placeholders = ", ".join("?" for _ in series_ids)
-                    existing_rows = self.conn.execute(
-                        f"SELECT series_id FROM series WHERE series_id IN ({placeholders})",
-                        tuple(sorted(series_ids)),
-                    ).fetchall()
-                    existing_series_ids = {
-                        int(row["series_id"])
-                        for row in existing_rows
-                    }
                 series_rows = self._catalog_series_rows(existing_series_ids)
                 rescue_series_ids = {
                     int(row["series_id"])
                     for row in series_rows
                 }
-                novel_rows = self._catalog_novel_rows(rescue_series_ids, novel_ids)
+                rebuild_novel_ids = set(novel_ids)
+                if rebuild_novel_ids and series_ids:
+                    placeholders = ", ".join("?" for _ in rebuild_novel_ids)
+                    current_rows = self.conn.execute(
+                        f"""
+                        SELECT novel_id, series_id
+                        FROM novels
+                        WHERE novel_id IN ({placeholders})
+                        """,
+                        tuple(sorted(rebuild_novel_ids)),
+                    ).fetchall()
+                    rebuild_novel_ids = {
+                        int(row["novel_id"])
+                        for row in current_rows
+                        if row["series_id"] is None
+                        or int(row["series_id"]) in existing_series_ids
+                    }
+                novel_rows = self._catalog_novel_rows(
+                    rescue_series_ids,
+                    rebuild_novel_ids,
+                )
                 rows = series_rows + novel_rows
                 self._insert_catalog_rows(rows, refreshed_at)
 

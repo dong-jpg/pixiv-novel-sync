@@ -405,9 +405,9 @@ class SchemaMixin:
         self.conn.execute(
             """
             INSERT OR IGNORE INTO rescue_catalog_memberships (novel_id, series_id)
-            SELECT novel_id, series_id
-            FROM novels
-            WHERE series_id IS NOT NULL
+            SELECT n.novel_id, n.series_id
+            FROM novels n
+            JOIN series se ON se.series_id = n.series_id
             """
         )
         self._commit_if_needed()

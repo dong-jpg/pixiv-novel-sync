@@ -217,33 +217,60 @@ def test_refresh_failure_after_scope_delete_keeps_previous_snapshot(
     db: Database,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _seed_novel(db, 212, status="deleted", text="old body", title="old title")
+    _seed_series(db, 2012, status="normal", total_novels=1)
+    _seed_series(db, 2013, status="normal", total_novels=1)
+    _seed_novel(
+        db,
+        212,
+        series_id=2012,
+        status="deleted",
+        text="old body",
+        title="old title",
+    )
     db.upsert_source(SourceRecord(212, "bookmark_public", "1"))
     db.rebuild_rescue_catalog()
     before_item = db.get_rescue_catalog_item("novel", 212)
     before_sources = db.list_rescue_catalog_sources("novel", 212)
     before_meta = db.get_rescue_catalog_meta()
+    before_memberships = [
+        tuple(row)
+        for row in db.conn.execute(
+            "SELECT novel_id, series_id FROM rescue_catalog_memberships"
+        ).fetchall()
+    ]
 
-    db.conn.execute("UPDATE novels SET title = 'new title' WHERE novel_id = 212")
+    db.conn.execute(
+        "UPDATE novels SET title = 'new title', series_id = 2013 WHERE novel_id = 212"
+    )
     db.conn.execute("DELETE FROM sources WHERE novel_id = 212")
     db.conn.execute(
         "INSERT INTO sources (novel_id, source_type, source_key) "
         "VALUES (212, 'user_backup', '2')"
     )
     db.conn.commit()
-    original_insert = db._insert_catalog_rows
+    original_refresh_memberships = db._refresh_catalog_memberships
 
-    def fail_after_insert(rows, refreshed_at):
-        original_insert(rows, refreshed_at)
-        raise RuntimeError("boom after local insert")
+    def fail_after_membership_refresh(series_ids, novel_ids):
+        original_refresh_memberships(series_ids, novel_ids)
+        raise RuntimeError("boom after membership refresh")
 
-    monkeypatch.setattr(db, "_insert_catalog_rows", fail_after_insert)
-    with pytest.raises(RuntimeError, match="boom after local insert"):
+    monkeypatch.setattr(
+        db,
+        "_refresh_catalog_memberships",
+        fail_after_membership_refresh,
+    )
+    with pytest.raises(RuntimeError, match="boom after membership refresh"):
         db.refresh_rescue_item("novel", 212)
 
     assert db.get_rescue_catalog_item("novel", 212) == before_item
     assert db.list_rescue_catalog_sources("novel", 212) == before_sources
     assert db.get_rescue_catalog_meta() == before_meta
+    assert [
+        tuple(row)
+        for row in db.conn.execute(
+            "SELECT novel_id, series_id FROM rescue_catalog_memberships"
+        ).fetchall()
+    ] == before_memberships
 
 
 @pytest.mark.parametrize("mutation", ["detach", "delete"])
@@ -343,6 +370,64 @@ def test_refresh_novel_reclassifies_parent_and_all_chapters(db: Database) -> Non
     assert db.get_rescue_catalog_item("novel", 223) is not None
 
 
+def _seed_reparented_series_catalog(db: Database) -> None:
+    _seed_series(db, 270, status="normal", total_novels=2, title="series A")
+    _seed_novel(
+        db,
+        271,
+        series_id=270,
+        status="deleted",
+        text="moved chapter",
+    )
+    _seed_novel(db, 272, series_id=270, status="normal", text="chapter A")
+    _seed_series(db, 280, status="deleted", total_novels=2, title="series B")
+    _seed_novel(db, 281, series_id=280, status="normal", text="chapter B")
+    db.upsert_source(SourceRecord(271, "bookmark_public", "1"))
+    db.upsert_source(SourceRecord(281, "following_user_scan", "2"))
+    db.rebuild_rescue_catalog()
+    assert db.get_rescue_catalog_item("novel", 271) is not None
+    assert db.get_rescue_catalog_item("series", 280)["rescue_state"] == "partial"
+
+    db.conn.execute("UPDATE novels SET series_id = 280 WHERE novel_id = 271")
+    db.conn.commit()
+
+
+def _assert_reparented_series_catalog(db: Database) -> None:
+    assert db.get_rescue_catalog_item("series", 270) is None
+    target = db.get_rescue_catalog_item("series", 280)
+    assert target is not None
+    assert target["rescue_state"] == "success"
+    assert (target["local_count"], target["complete_count"]) == (2, 2)
+    assert db.get_rescue_catalog_item("novel", 271) is None
+    assert [
+        source["source_kind"]
+        for source in db.list_rescue_catalog_sources("series", 280)
+    ] == ["bookmark", "following_user"]
+    assert db.conn.execute(
+        "SELECT series_id FROM rescue_catalog_memberships WHERE novel_id = 271"
+    ).fetchone()[0] == 280
+
+
+def test_refresh_old_series_closes_over_reparented_novel_scope(db: Database) -> None:
+    _seed_reparented_series_catalog(db)
+
+    result = db.refresh_rescue_item("series", 270)
+
+    assert result["items"] == 1
+    assert result["sources"] == 2
+    _assert_reparented_series_catalog(db)
+
+
+def test_refresh_reparented_novel_closes_over_both_series(db: Database) -> None:
+    _seed_reparented_series_catalog(db)
+
+    result = db.refresh_rescue_item("novel", 271)
+
+    assert result["items"] == 1
+    assert result["sources"] == 2
+    _assert_reparented_series_catalog(db)
+
+
 def test_refresh_series_rebuilds_series_and_chapter_rows(db: Database) -> None:
     _seed_series(db, 230, status="normal", total_novels=2)
     _seed_novel(db, 231, series_id=230, status="deleted", text="可恢复章节")
@@ -437,6 +522,18 @@ def test_refresh_missing_series_cleans_catalog_and_sources(db: Database) -> None
     assert db.conn.execute(
         "SELECT COUNT(*) FROM rescue_catalog WHERE series_id = 260"
     ).fetchone()[0] == 0
+    assert db.conn.execute(
+        "SELECT COUNT(*) FROM rescue_catalog_memberships WHERE series_id = 260"
+    ).fetchone()[0] == 0
+    orphan = db.conn.execute(
+        """
+        SELECT n.series_id, nt.text_raw
+        FROM novels n
+        JOIN novel_texts nt ON nt.novel_id = n.novel_id
+        WHERE n.novel_id = 261
+        """
+    ).fetchone()
+    assert tuple(orphan) == (260, "章节")
 
 
 def test_rebuild_catalog_classifies_complete_and_partial_series(db: Database) -> None:
@@ -760,6 +857,36 @@ def test_delete_series_cleans_rescue_override(db: Database) -> None:
         source["source_kind"]
         for source in db.list_rescue_catalog_sources("novel", 10)
     ] == ["bookmark"]
+
+
+def test_delete_series_cleans_all_memberships_for_captured_chapters(
+    db: Database,
+) -> None:
+    _seed_series(db, 30, status="normal", total_novels=1, title="series A")
+    _seed_series(db, 40, status="normal", total_novels=1, title="series B")
+    _seed_novel(db, 31, series_id=40, status="deleted", text="kept body")
+    db.rebuild_rescue_catalog()
+    assert db.conn.execute(
+        "SELECT series_id FROM rescue_catalog_memberships WHERE novel_id = 31"
+    ).fetchone()[0] == 40
+    db.conn.execute("UPDATE novels SET series_id = 30 WHERE novel_id = 31")
+    db.conn.commit()
+
+    chapter_ids = db.delete_series(30)
+
+    assert chapter_ids == [31]
+    assert db.conn.execute(
+        "SELECT 1 FROM rescue_catalog_memberships WHERE novel_id = 31"
+    ).fetchone() is None
+    chapter = db.conn.execute(
+        """
+        SELECT n.series_id, nt.text_raw
+        FROM novels n
+        JOIN novel_texts nt ON nt.novel_id = n.novel_id
+        WHERE n.novel_id = 31
+        """
+    ).fetchone()
+    assert tuple(chapter) == (None, "kept body")
 
 
 def test_delete_user_cleans_owned_novel_rescue_overrides(db: Database) -> None:
