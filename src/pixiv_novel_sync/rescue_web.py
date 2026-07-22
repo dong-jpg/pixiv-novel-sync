@@ -7,12 +7,14 @@ import secrets
 import threading
 import time
 from collections import defaultdict, deque
+from datetime import datetime, timezone
 from functools import wraps
 from typing import Any, Callable
 
 from flask import Flask, Response, jsonify, request
 
 from .settings import Settings
+from .storage.rescue import CatalogNotReadyError
 from .storage_db import Database
 
 
@@ -87,6 +89,25 @@ def _safe_item_type(item_type: str) -> str:
     return normalized
 
 
+def _catalog_stale(refreshed_at: Any, settings: Settings) -> bool:
+    value = str(refreshed_at or "").strip()
+    if not value:
+        return True
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    threshold_hours = max(
+        24,
+        2 * max(
+            settings.sync.auto_sync_novel_status_interval_hours,
+            settings.sync.auto_sync_series_status_interval_hours,
+        ),
+    )
+    return (datetime.now(timezone.utc) - parsed).total_seconds() > threshold_hours * 3600
+
+
 def register_rescue_routes(
     app: Flask,
     settings: Callable[[], Settings],
@@ -137,6 +158,8 @@ def register_rescue_routes(
         def wrapped(*args, **kwargs):
             try:
                 return view(*args, **kwargs)
+            except CatalogNotReadyError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 503
             except Exception:
                 logger.exception("救援管理 API 失败：%s", request.path)
                 return jsonify({"ok": False, "error": "救援管理操作失败"}), 500
@@ -168,9 +191,15 @@ def register_rescue_routes(
                     item_type=str(request.args.get("item_type", "all")),
                     search=str(request.args.get("search", "")),
                     sort=str(request.args.get("sort", "checked_desc")),
+                    content_kind=str(request.args.get("content_kind", "all")),
+                    source_kind=str(request.args.get("source_kind", "all")),
                 )
             except ValueError as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 400
+            payload["stale"] = _catalog_stale(
+                payload.get("refreshed_at"),
+                current_settings(),
+            )
             return jsonify({"ok": True, "data": payload})
         finally:
             db.close()
@@ -203,7 +232,8 @@ def register_rescue_routes(
         db = open_db()
         try:
             try:
-                removed = db.delete_rescue_override(_safe_item_type(item_type), item_id)
+                item_type = _safe_item_type(item_type)
+                removed = db.delete_rescue_override(item_type, item_id)
             except ValueError as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 400
             return jsonify({"ok": True, "data": {"removed": removed}})

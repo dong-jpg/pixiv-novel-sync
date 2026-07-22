@@ -8,6 +8,14 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+def _sqlite_casefold(value: Any) -> str:
+    return str(value or "").casefold()
+
+
+class CatalogNotReadyError(RuntimeError):
+    """Raised when the rescue catalog has not completed its first rebuild."""
+
+
 class RescueMixin:
     """Storage operations for rescue overrides and derived rescue views."""
 
@@ -30,6 +38,11 @@ class RescueMixin:
         "eligibility_reason", "expected_count", "local_count", "complete_count",
         "last_checked_at", "updated_at", "refreshed_at",
     )
+    _CONTENT_KIND_LABELS = {
+        "series": "系列",
+        "series_chapter": "系列单章",
+        "standalone": "独立小说",
+    }
 
     @classmethod
     def _validate_rescue_item_type(cls, item_type: str) -> str:
@@ -1107,85 +1120,186 @@ class RescueMixin:
         item_type: str = "all",
         search: str = "",
         sort: str = "checked_desc",
+        content_kind: str = "all",
+        source_kind: str = "all",
     ) -> dict[str, Any]:
         normalized_state = str(state or "all").strip().lower()
         normalized_type = str(item_type or "all").strip().lower()
         normalized_sort = str(sort or "checked_desc").strip().lower()
+        normalized_content_kind = str(content_kind or "all").strip().lower()
+        normalized_source_kind = str(source_kind or "all").strip().lower()
         if normalized_state not in {"all", "success", "partial"}:
             raise ValueError("state 参数无效")
         if normalized_type not in {"all", "novel", "series"}:
             raise ValueError("item_type 参数无效")
         if normalized_sort not in {"checked_desc", "updated_desc"}:
             raise ValueError("sort 参数无效")
+        if normalized_content_kind not in {
+            "all", "series", "series_chapter", "standalone"
+        }:
+            raise ValueError("content_kind 参数无效")
+        if normalized_source_kind not in {
+            "all", "bookmark", "subscribed_series", "following_user", "user_backup"
+        }:
+            raise ValueError("source_kind 参数无效")
 
-        series_items = [
-            payload
-            for row in self._series_summary_rows()
-            if (payload := self._series_rescue_payload(row)) is not None
-        ]
-        rescue_series_ids = {int(item["series_id"]) for item in series_items}
-        novel_rows = self.conn.execute(
-            """
-            SELECT n.novel_id, n.series_id
-            FROM novels n
-            JOIN novel_texts nt ON nt.novel_id = n.novel_id
-            LEFT JOIN rescue_overrides ro
-              ON ro.item_type = 'novel' AND ro.item_id = n.novel_id
-            WHERE TRIM(COALESCE(nt.text_raw, '')) != ''
-              AND (
-                    ro.action = 'include'
-                    OR (
-                        ro.action IS NULL
-                        AND n.status IN ('deleted', 'restricted')
-                    )
-              )
-            """
-        ).fetchall()
-        novel_items: list[dict[str, Any]] = []
-        for row in novel_rows:
-            if row["series_id"] is not None and int(row["series_id"]) in rescue_series_ids:
-                continue
-            payload = self.get_rescue_novel(int(row["novel_id"]))
-            if payload is not None and payload["eligibility_reason"] == "novel_unavailable":
-                novel_items.append(payload)
+        meta = self.get_rescue_catalog_meta()
+        if meta is None:
+            raise CatalogNotReadyError("救援目录尚未生成")
 
-        items = series_items + novel_items
+        where_clauses: list[str] = []
+        params: list[Any] = []
         if normalized_state != "all":
-            items = [item for item in items if item["rescue_state"] == normalized_state]
-        if normalized_type != "all":
-            items = [item for item in items if item["item_type"] == normalized_type]
-        query = str(search or "").strip().casefold()
+            where_clauses.append("rc.rescue_state = ?")
+            params.append(normalized_state)
+        if normalized_content_kind != "all":
+            where_clauses.append("rc.content_kind = ?")
+            params.append(normalized_content_kind)
+        elif normalized_type != "all":
+            where_clauses.append("rc.item_type = ?")
+            params.append(normalized_type)
+        query = str(search or "").strip()
         if query:
-            items = [
-                item
-                for item in items
-                if query in str(item.get("title") or "").casefold()
-                or query in str(item.get("author_name") or "").casefold()
-            ]
+            self.conn.create_function(
+                "CASEFOLD",
+                1,
+                _sqlite_casefold,
+                deterministic=True,
+            )
+            folded_query = query.casefold()
+            where_clauses.append(
+                "(INSTR(CASEFOLD(rc.title), ?) > 0 "
+                "OR INSTR(CASEFOLD(rc.author_name), ?) > 0)"
+            )
+            params.extend((folded_query, folded_query))
+        if normalized_source_kind != "all":
+            where_clauses.append(
+                "EXISTS ("
+                "SELECT 1 FROM rescue_catalog_sources rcf "
+                "WHERE rcf.item_type = rc.item_type "
+                "AND rcf.item_id = rc.item_id "
+                "AND rcf.source_kind = ?"
+                ")"
+            )
+            params.append(normalized_source_kind)
 
-        primary_key = "last_checked_at" if normalized_sort == "checked_desc" else "updated_at"
-        items.sort(
-            key=lambda item: (
-                str(item.get(primary_key) or ""),
-                str(item.get("updated_at") or ""),
-                int(item["item_id"]),
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        order_sql = {
+            "checked_desc": (
+                "rc.last_checked_at DESC, rc.updated_at DESC, "
+                "rc.item_id DESC, rc.item_type DESC"
             ),
-            reverse=True,
+            "updated_desc": "rc.updated_at DESC, rc.item_id DESC, rc.item_type DESC",
+        }[normalized_sort]
+        total = int(
+            self.conn.execute(
+                f"SELECT COUNT(*) FROM rescue_catalog rc {where_sql}",
+                tuple(params),
+            ).fetchone()[0]
         )
 
         normalized_page = max(int(page), 1)
         normalized_size = max(int(page_size), 1)
-        total = len(items)
         total_pages = max((total + normalized_size - 1) // normalized_size, 1)
         normalized_page = min(normalized_page, total_pages)
         offset = (normalized_page - 1) * normalized_size
+        rows = self.conn.execute(
+            f"""
+            SELECT
+                rc.item_type, rc.item_id, rc.content_kind, rc.series_id,
+                rc.title, rc.user_id, rc.author_name, rc.cover_url,
+                rc.rescue_state, rc.remote_status, rc.eligibility_reason,
+                rc.expected_count, rc.local_count, rc.complete_count,
+                rc.last_checked_at, rc.updated_at
+            FROM rescue_catalog rc
+            {where_sql}
+            ORDER BY {order_sql}
+            LIMIT ? OFFSET ?
+            """,
+            (*params, normalized_size, offset),
+        ).fetchall()
+
+        items = [dict(row) for row in rows]
+        sources_by_item: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        if items:
+            page_predicates = " OR ".join(
+                "(item_type = ? AND item_id = ?)" for _item in items
+            )
+            source_params = tuple(
+                value
+                for item in items
+                for value in (str(item["item_type"]), int(item["item_id"]))
+            )
+            source_rows = self.conn.execute(
+                f"""
+                SELECT item_type, item_id, source_kind,
+                       source_user_id, source_user_name
+                FROM rescue_catalog_sources
+                WHERE {page_predicates}
+                ORDER BY
+                    CASE source_kind
+                        WHEN 'bookmark' THEN 0
+                        WHEN 'subscribed_series' THEN 1
+                        WHEN 'following_user' THEN 2
+                        WHEN 'user_backup' THEN 3
+                        ELSE 4
+                    END,
+                    source_user_name COLLATE NOCASE,
+                    source_user_id,
+                    source_key,
+                    source_type
+                """,
+                source_params,
+            ).fetchall()
+            for row in source_rows:
+                key = (str(row["item_type"]), int(row["item_id"]))
+                source_name = str(row["source_user_name"] or "") or None
+                source_user_id = (
+                    int(row["source_user_id"])
+                    if row["source_user_id"] is not None
+                    else None
+                )
+                source_kind_value = str(row["source_kind"])
+                if source_kind_value == "bookmark":
+                    label = "我的收藏"
+                elif source_kind_value == "subscribed_series":
+                    label = "我的追更"
+                elif source_kind_value == "following_user":
+                    label = f"关注用户：{source_name or source_user_id or '未知用户'}"
+                elif source_kind_value == "user_backup":
+                    label = f"用户备份：{source_name or source_user_id or '未知用户'}"
+                else:
+                    label = "其他来源"
+                sources_by_item.setdefault(key, []).append(
+                    {
+                        "kind": source_kind_value,
+                        "label": label,
+                        "user_id": source_user_id,
+                        "user_name": source_name,
+                    }
+                )
+
+        for item in items:
+            item_type_value = str(item["item_type"])
+            item_id_value = int(item["item_id"])
+            item["content_kind_label"] = self._CONTENT_KIND_LABELS[
+                str(item["content_kind"])
+            ]
+            item["sources"] = sources_by_item.get(
+                (item_type_value, item_id_value),
+                [],
+            )
+            if item_type_value == "novel":
+                item["novel_id"] = item_id_value
+
         return {
-            "items": items[offset:offset + normalized_size],
+            "items": items,
             "page": normalized_page,
             "page_size": normalized_size,
             "total": total,
             "total_pages": total_pages,
             "category": "rescue",
+            "refreshed_at": meta["refreshed_at"],
         }
 
     def list_rescue_series_chapters(

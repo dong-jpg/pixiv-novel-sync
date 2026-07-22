@@ -1004,6 +1004,7 @@ def test_rescue_list_deduplicates_series_chapters_and_filters(db: Database) -> N
     _seed_series(db, 60, status="deleted", total_novels=1, title="目标系列")
     _seed_novel(db, 61, series_id=60, status="deleted", text="系列章节")
     _seed_novel(db, 62, status="restricted", text="单篇", title="目标单篇")
+    db.rebuild_rescue_catalog()
 
     payload = db.list_rescues(page=1, page_size=10)
     identities = {(item["item_type"], item["item_id"]) for item in payload["items"]}
