@@ -53,6 +53,7 @@ class SchemaMixin:
             CREATE TABLE IF NOT EXISTS novel_texts (
                 novel_id INTEGER PRIMARY KEY REFERENCES novels(novel_id) ON DELETE CASCADE,
                 text_raw TEXT NOT NULL,
+                has_content INTEGER NOT NULL DEFAULT 0,
                 text_markdown TEXT,
                 text_hash TEXT NOT NULL,
                 fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -153,6 +154,8 @@ class SchemaMixin:
         self._migrate_ai_writing_tables()
         # 迁移：创建阅读进度追踪表
         self._migrate_reading_progress_table()
+        # 迁移：为旧版 novel_texts 表添加正文完整度辅助列
+        self._migrate_novel_texts_table()
         self._migrate_core_foreign_keys()
         self._commit_if_needed()
 
@@ -188,14 +191,15 @@ class SchemaMixin:
             CREATE TABLE novel_texts (
                 novel_id INTEGER PRIMARY KEY REFERENCES novels(novel_id) ON DELETE CASCADE,
                 text_raw TEXT NOT NULL,
+                has_content INTEGER NOT NULL DEFAULT 0,
                 text_markdown TEXT,
                 text_hash TEXT NOT NULL,
                 fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """,
             """
-            INSERT INTO novel_texts (novel_id, text_raw, text_markdown, text_hash, fetched_at)
-            SELECT old.novel_id, old.text_raw, old.text_markdown, old.text_hash, old.fetched_at
+            INSERT INTO novel_texts (novel_id, text_raw, has_content, text_markdown, text_hash, fetched_at)
+            SELECT old.novel_id, old.text_raw, old.has_content, old.text_markdown, old.text_hash, old.fetched_at
             FROM novel_texts_old old
             JOIN novels n ON n.novel_id = old.novel_id
             """,
@@ -292,6 +296,17 @@ class SchemaMixin:
             self.conn.execute("ALTER TABLE novels ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'")
         if "last_checked_at" not in columns:
             self.conn.execute("ALTER TABLE novels ADD COLUMN last_checked_at TEXT")
+
+    def _migrate_novel_texts_table(self) -> None:
+        """为旧版 novel_texts 表添加正文完整度辅助列并回填。"""
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(novel_texts)").fetchall()}
+        if "has_content" not in columns:
+            self.conn.execute(
+                "ALTER TABLE novel_texts ADD COLUMN has_content INTEGER NOT NULL DEFAULT 0"
+            )
+            self.conn.execute(
+                "UPDATE novel_texts SET has_content = CASE WHEN TRIM(text_raw) != '' THEN 1 ELSE 0 END"
+            )
 
     def _migrate_rescue_tables(self) -> None:
         """创建救援人工纠错和单例 API Token 表。"""

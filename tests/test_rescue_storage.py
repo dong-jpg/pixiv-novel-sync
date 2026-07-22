@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from pixiv_novel_sync.models import NovelTextRecord
 from pixiv_novel_sync.storage_db import Database
 
 
@@ -45,11 +46,78 @@ def _seed_novel(
         ),
     )
     if text is not None:
-        db.conn.execute(
-            "INSERT INTO novel_texts (novel_id, text_raw, text_hash) VALUES (?, ?, ?)",
-            (novel_id, text, f"t-{novel_id}"),
+        db.upsert_novel_text(
+            NovelTextRecord(
+                novel_id=novel_id,
+                text_raw=text,
+                text_markdown=None,
+                text_hash=f"t-{novel_id}",
+            )
         )
     db.conn.commit()
+
+
+def test_novel_text_maintains_has_content(db: Database) -> None:
+    _seed_novel(db, novel_id=90, text="正文")
+    assert db.conn.execute(
+        "SELECT has_content FROM novel_texts WHERE novel_id = 90"
+    ).fetchone()[0] == 1
+
+    _seed_novel(db, novel_id=91, text="  \n")
+    assert db.conn.execute(
+        "SELECT has_content FROM novel_texts WHERE novel_id = 91"
+    ).fetchone()[0] == 0
+
+    db.upsert_novel_text(
+        NovelTextRecord(
+            novel_id=90,
+            text_raw=" \t\n",
+            text_markdown=None,
+            text_hash="t-90-empty",
+        )
+    )
+    assert db.conn.execute(
+        "SELECT has_content FROM novel_texts WHERE novel_id = 90"
+    ).fetchone()[0] == 0
+
+
+def test_novel_text_migration_backfills_and_preserves_foreign_key(db: Database) -> None:
+    _seed_novel(db, novel_id=92, text="历史正文")
+    _seed_novel(db, novel_id=93, text="   ")
+
+    db.conn.executescript(
+        """
+        ALTER TABLE novel_texts RENAME TO novel_texts_current;
+        CREATE TABLE novel_texts (
+            novel_id INTEGER PRIMARY KEY,
+            text_raw TEXT NOT NULL,
+            text_markdown TEXT,
+            text_hash TEXT NOT NULL,
+            fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO novel_texts (novel_id, text_raw, text_markdown, text_hash, fetched_at)
+        SELECT novel_id, text_raw, text_markdown, text_hash, fetched_at
+        FROM novel_texts_current;
+        DROP TABLE novel_texts_current;
+        """
+    )
+    db.conn.commit()
+
+    db.init_schema()
+
+    rows = db.conn.execute(
+        """
+        SELECT novel_id, has_content
+        FROM novel_texts
+        WHERE novel_id IN (92, 93)
+        ORDER BY novel_id
+        """
+    ).fetchall()
+    assert [(row[0], row[1]) for row in rows] == [(92, 1), (93, 0)]
+    assert any(
+        row[2] == "novels" and row[3] == "novel_id"
+        for row in db.conn.execute("PRAGMA foreign_key_list(novel_texts)").fetchall()
+    )
 
 
 def _seed_series(

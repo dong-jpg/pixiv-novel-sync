@@ -62,15 +62,24 @@ class NovelsMixin:
         with self._lock:
             self.conn.execute(
                 """
-                INSERT INTO novel_texts (novel_id, text_raw, text_markdown, text_hash, fetched_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO novel_texts (
+                    novel_id, text_raw, has_content, text_markdown, text_hash, fetched_at
+                )
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(novel_id) DO UPDATE SET
                     text_raw = excluded.text_raw,
+                    has_content = excluded.has_content,
                     text_markdown = excluded.text_markdown,
                     text_hash = excluded.text_hash,
                     fetched_at = CURRENT_TIMESTAMP
                 """,
-                (record.novel_id, record.text_raw, record.text_markdown, record.text_hash),
+                (
+                    record.novel_id,
+                    record.text_raw,
+                    1 if record.text_raw.strip() else 0,
+                    record.text_markdown,
+                    record.text_hash,
+                ),
             )
             self._commit_if_needed()
 
