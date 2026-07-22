@@ -12,12 +12,17 @@ class FakeDb:
         self.db_path = db_path
         self.init_schema_called = False
         self.closed = False
+        self.rebuild_catalog_calls = 0
 
     def init_schema(self) -> None:
         self.init_schema_called = True
 
     def close(self) -> None:
         self.closed = True
+
+    def rebuild_rescue_catalog(self) -> dict[str, int]:
+        self.rebuild_catalog_calls += 1
+        return {"items": 4, "sources": 5}
 
 
 class FakeStorage:
@@ -162,12 +167,74 @@ def test_run_bookmark_sync_stops_before_login(settings, quick_sync_env):
     assert "auth" not in quick_sync_env
 
 
+def test_run_bookmark_sync_rebuilds_catalog_once_after_success(settings, quick_sync_env):
+    result = quick_sync.run_bookmark_sync(settings)
+
+    assert result["rescue_catalog_items"] == 4
+    assert result["rescue_catalog_sources"] == 5
+    assert quick_sync_env["db"].rebuild_catalog_calls == 1
+    assert quick_sync_env["db"].closed is True
+
+
+def test_run_bookmark_sync_keeps_stats_when_catalog_rebuild_fails(
+    settings, quick_sync_env, monkeypatch, caplog
+):
+    def fail_rebuild(self):
+        self.rebuild_catalog_calls += 1
+        raise RuntimeError("catalog boom")
+
+    monkeypatch.setattr(FakeDb, "rebuild_rescue_catalog", fail_rebuild)
+
+    result = quick_sync.run_bookmark_sync(settings)
+
+    assert result == {"novels": 1, "skipped": 0, "assets_downloaded": 0}
+    assert quick_sync_env["db"].rebuild_catalog_calls == 1
+    assert "救援目录刷新失败: catalog boom" in caplog.text
+
+
 def test_run_bookmark_sync_stops_from_progress_callback(settings, quick_sync_env):
     stop_calls = iter([False, True])
 
     with pytest.raises(InterruptedError, match="Task stopped by user"):
         quick_sync.run_bookmark_sync(settings, stop_requested=lambda: next(stop_calls))
 
+    assert quick_sync_env["db"].closed is True
+    assert quick_sync_env["db"].rebuild_catalog_calls == 0
+
+
+def test_run_bookmark_sync_propagates_business_failure_without_rebuild(
+    settings, quick_sync_env, monkeypatch
+):
+    def fail_sync(self, *args, **kwargs):
+        raise RuntimeError("sync boom")
+
+    monkeypatch.setattr(FakeSyncService, "sync", fail_sync)
+
+    with pytest.raises(RuntimeError, match="sync boom"):
+        quick_sync.run_bookmark_sync(settings)
+
+    assert quick_sync_env["db"].rebuild_catalog_calls == 0
+    assert quick_sync_env["db"].closed is True
+
+
+def test_run_bookmark_sync_skips_rebuild_when_cancelled_after_sync(
+    settings, quick_sync_env, monkeypatch
+):
+    cancelled = False
+    original_sync = FakeSyncService.sync
+
+    def sync_then_cancel(self, *args, **kwargs):
+        nonlocal cancelled
+        result = original_sync(self, *args, **kwargs)
+        cancelled = True
+        return result
+
+    monkeypatch.setattr(FakeSyncService, "sync", sync_then_cancel)
+
+    with pytest.raises(InterruptedError, match="Task stopped by user"):
+        quick_sync.run_bookmark_sync(settings, stop_requested=lambda: cancelled)
+
+    assert quick_sync_env["db"].rebuild_catalog_calls == 0
     assert quick_sync_env["db"].closed is True
 
 

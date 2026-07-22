@@ -4,7 +4,7 @@ from collections.abc import Callable
 from numbers import Number
 from typing import Any
 
-from pixiv_novel_sync.jobs.services import JobReporter
+from pixiv_novel_sync.jobs.services import JobReporter, _rebuild_rescue_catalog
 
 
 def _is_addable_number(value: Any) -> bool:
@@ -155,21 +155,26 @@ def _run_direct_sync_task(
         if task_type == "following_users":
             return service.sync_following_list(progress_callback=progress_callback)
         if task_type == "following_novels":
-            return service.sync_following_novels(
+            stats = service.sync_following_novels(
                 download_assets=settings.sync.download_assets,
                 write_markdown=settings.sync.write_markdown,
                 write_raw_text=settings.sync.write_raw_text,
                 progress_callback=progress_callback,
                 users_limit=users_limit,
             )
-        if task_type == "subscribed_series":
+        elif task_type == "subscribed_series":
             # sync_subscribed_series 签名固定为 (progress_callback, limit)，
             # 资源下载/写文件由内部按 settings 决定，此处无 download_assets 等参数。
-            return service.sync_subscribed_series(progress_callback=progress_callback, limit=series_limit)
+            stats = service.sync_subscribed_series(progress_callback=progress_callback, limit=series_limit)
+        else:
+            raise RuntimeError(f"Unsupported direct sync task: {task_type}")
+
+        if stop_requested is not None and stop_requested():
+            raise InterruptedError("Task stopped by user")
+        stats.update(_rebuild_rescue_catalog(db, _job_reporter_from_context(context)))
+        return stats
     finally:
         db.close()
-
-    raise RuntimeError(f"Unsupported direct sync task: {task_type}")
 
 
 def _build_progress_callback(
@@ -251,7 +256,9 @@ def task_label(task_type: str) -> str:
 def merge_stats(total: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
     for key, value in update.items():
         current = total.get(key)
-        if _is_addable_number(current) and _is_addable_number(value):
+        if key.startswith("rescue_catalog_"):
+            total[key] = value
+        elif _is_addable_number(current) and _is_addable_number(value):
             total[key] = current + value
         else:
             total[key] = value

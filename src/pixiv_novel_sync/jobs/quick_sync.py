@@ -12,6 +12,7 @@ from ..storage_db import Database
 from ..storage_files import FileStorage
 from ..sync_check import build_sync_check_fingerprint, sync_check_task_types
 from ..sync_engine import BookmarkNovelSyncService
+from .services import _rebuild_rescue_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,8 @@ def run_bookmark_sync(settings: Settings, stop_requested: StopRequested | None =
             write_raw_text=settings.sync.write_raw_text,
             progress_callback=_build_cancel_progress_callback(stop_requested),
         )
+        _raise_if_stopped(stop_requested)
+        bookmark_stats.update(_rebuild_rescue_catalog(db))
         logger.info("Bookmark sync finished: %s", json.dumps(bookmark_stats, ensure_ascii=False))
         print(json.dumps(bookmark_stats, ensure_ascii=False, indent=2))
         return bookmark_stats

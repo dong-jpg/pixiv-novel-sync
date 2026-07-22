@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+import logging
 import time
+from time import perf_counter
+from typing import Any
 
 from pixiv_novel_sync.auth import PixivAuthManager
 from pixiv_novel_sync.storage_db import Database
 from pixiv_novel_sync.storage_files import FileStorage
 from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
+
+logger = logging.getLogger(__name__)
 
 
 class JobReporter:
@@ -27,6 +31,41 @@ class JobReporter:
 
 
 StopRequested = Callable[[], bool]
+
+
+def _report_catalog_log(reporter: JobReporter | None, level: str, message: str) -> None:
+    if reporter is None:
+        return
+    try:
+        reporter.add_log(level, message)
+    except Exception as exc:
+        logger.warning("救援目录日志记录失败: %s", exc)
+
+
+def _rebuild_rescue_catalog(db: Any, reporter: JobReporter | None = None) -> dict[str, int]:
+    try:
+        started_at = perf_counter()
+        result = db.rebuild_rescue_catalog()
+        duration_ms = int(round((perf_counter() - started_at) * 1000))
+        stats = {
+            "rescue_catalog_items": int(result.get("items", 0) or 0),
+            "rescue_catalog_sources": int(result.get("sources", 0) or 0),
+            "rescue_catalog_duration_ms": duration_ms,
+        }
+        message = (
+            "救援目录刷新完成: "
+            f"条目 {stats['rescue_catalog_items']}, "
+            f"来源 {stats['rescue_catalog_sources']}, "
+            f"耗时 {duration_ms} ms"
+        )
+        logger.info(message)
+        _report_catalog_log(reporter, "success", message)
+        return stats
+    except Exception as exc:
+        message = f"救援目录刷新失败: {exc}"
+        logger.warning(message)
+        _report_catalog_log(reporter, "warning", message)
+        return {}
 
 
 def _sleep_with_cancel(
@@ -53,6 +92,8 @@ def run_user_backup_task(
     user_id: int,
     reporter: JobReporter | None = None,
     stop_requested: StopRequested | None = None,
+    *,
+    rebuild_catalog: bool = True,
 ) -> dict[str, Any]:
     if stop_requested is not None and stop_requested():
         _report_log(reporter, "info", "用户全量备份已停止")
@@ -139,13 +180,18 @@ def run_user_backup_task(
             _report_log(reporter, "info", f"用户全量备份已停止: {user_name} ({user_id})")
         else:
             _report_log(reporter, "success", f"用户全量备份完成: {user_name} ({user_id}), 同步 {total_novels} 本")
-        return {
+        stats = {
             "user_id": user_id,
             "novels": total_novels,
             "skipped": total_skipped,
             "assets_downloaded": total_assets,
             "stopped": stopped,
         }
+        if not stats.get("stopped") and stop_requested is not None and stop_requested():
+            stats["stopped"] = True
+        if rebuild_catalog and not stats.get("stopped"):
+            stats.update(_rebuild_rescue_catalog(db, reporter))
+        return stats
     finally:
         db.close()
 
@@ -185,6 +231,7 @@ def run_novel_status_task(
         check_status=_check_novel_status,
         upsert_status=lambda db, item_id, status: db.upsert_novel_status(item_id, status),
         total_key="total_novels",
+        rebuild_catalog=True,
     )
 
 
@@ -203,6 +250,7 @@ def run_series_status_task(
         check_status=_check_series_status,
         upsert_status=lambda db, item_id, status: db.upsert_series_status(item_id, status),
         total_key="total_series",
+        rebuild_catalog=True,
     )
 
 
@@ -347,6 +395,7 @@ def _run_status_task(
     check_status: Callable[[Any, int], str],
     upsert_status: Callable[[Database, int, str], None],
     total_key: str,
+    rebuild_catalog: bool = False,
 ) -> dict[str, Any]:
     api = _login(settings)
     _ensure_storage_dirs(settings)
@@ -357,7 +406,7 @@ def _run_status_task(
         item_ids = list_ids(db)
         _report_log(reporter, "info", f"开始{task_label}")
         _report_log(reporter, "info", f"共 {len(item_ids)} 个{total_label}需要检查")
-        return _process_status_items(
+        stats = _process_status_items(
             settings=settings,
             reporter=reporter,
             stop_requested=stop_requested,
@@ -369,6 +418,11 @@ def _run_status_task(
             item_name=lambda item_id: str(item_id),
             total_key=total_key,
         )
+        if not stats.get("stopped") and stop_requested is not None and stop_requested():
+            stats["stopped"] = True
+        if rebuild_catalog and not stats.get("stopped"):
+            stats.update(_rebuild_rescue_catalog(db, reporter))
+        return stats
     finally:
         db.close()
 

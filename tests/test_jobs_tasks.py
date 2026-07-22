@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from pixiv_novel_sync.jobs import tasks as tasks_module
 from pixiv_novel_sync.jobs.tasks import (
     _build_progress_callback,
     build_default_task_list,
@@ -9,6 +12,76 @@ from pixiv_novel_sync.jobs.tasks import (
     merge_stats,
     task_label,
 )
+
+
+@pytest.fixture
+def direct_sync_env(tmp_path, monkeypatch):
+    created = {}
+
+    class FakeAuthManager:
+        def __init__(self, pixiv_settings):
+            created["auth"] = self
+
+        def login(self):
+            return object(), SimpleNamespace(user_id=123)
+
+    class FakeDatabase:
+        def __init__(self, db_path):
+            self.rebuild_catalog_calls = 0
+            self.closed = False
+            created["db"] = self
+
+        def init_schema(self):
+            pass
+
+        def rebuild_rescue_catalog(self):
+            self.rebuild_catalog_calls += 1
+            return {"items": 6, "sources": 7}
+
+        def close(self):
+            self.closed = True
+
+    class FakeStorage:
+        def __init__(self, settings):
+            pass
+
+        def ensure_dirs(self, dirs):
+            pass
+
+    class FakeSyncService:
+        def __init__(self, api, db, storage, settings):
+            created["service"] = self
+
+        def sync_following_list(self, progress_callback=None):
+            return {"users": 1}
+
+        def sync_following_novels(self, **kwargs):
+            return {"novels": 2}
+
+        def sync_subscribed_series(self, **kwargs):
+            return {"series_synced": 3}
+
+    monkeypatch.setattr("pixiv_novel_sync.auth.PixivAuthManager", FakeAuthManager)
+    monkeypatch.setattr("pixiv_novel_sync.storage_db.Database", FakeDatabase)
+    monkeypatch.setattr("pixiv_novel_sync.storage_files.FileStorage", FakeStorage)
+    monkeypatch.setattr("pixiv_novel_sync.sync_engine.BookmarkNovelSyncService", FakeSyncService)
+
+    settings = SimpleNamespace(
+        pixiv=SimpleNamespace(user_id=None),
+        storage=SimpleNamespace(
+            db_path=tmp_path / "test.db",
+            public_dir=tmp_path / "public",
+            private_dir=tmp_path / "private",
+        ),
+        sync=SimpleNamespace(
+            series_sync_limit=0,
+            auto_sync_following_novels_users_limit=0,
+            download_assets=True,
+            write_markdown=True,
+            write_raw_text=False,
+        ),
+    )
+    return settings, created, FakeDatabase, FakeSyncService
 
 
 def test_build_default_task_list_uses_sync_settings():
@@ -45,6 +118,29 @@ def test_merge_stats_does_not_add_booleans():
     result = merge_stats(total, {"ok": True})
 
     assert result["ok"] is True
+
+
+def test_merge_stats_overwrites_rescue_catalog_snapshot_values():
+    total = {
+        "rescue_catalog_items": 2,
+        "rescue_catalog_sources": 3,
+        "rescue_catalog_duration_ms": 4,
+    }
+
+    result = merge_stats(
+        total,
+        {
+            "rescue_catalog_items": 5,
+            "rescue_catalog_sources": 6,
+            "rescue_catalog_duration_ms": 7,
+        },
+    )
+
+    assert result == {
+        "rescue_catalog_items": 5,
+        "rescue_catalog_sources": 6,
+        "rescue_catalog_duration_ms": 7,
+    }
 
 
 def test_execute_task_dispatches_bookmark(monkeypatch):
@@ -157,6 +253,101 @@ def test_direct_sync_progress_callback_raises_when_cancel_requested():
 def test_execute_task_rejects_unknown_task_with_clear_error():
     with pytest.raises(RuntimeError, match="Unsupported task type for CLI execution: custom_task"):
         execute_task("custom_task", object())
+
+
+@pytest.mark.parametrize(
+    ("task_type", "expected_business_key"),
+    [("following_novels", "novels"), ("subscribed_series", "series_synced")],
+)
+def test_direct_sync_tasks_rebuild_catalog_once_after_success(
+    task_type, expected_business_key, direct_sync_env
+):
+    settings, created, _fake_db, _fake_service = direct_sync_env
+
+    result = execute_task(task_type, settings)
+
+    assert expected_business_key in result
+    assert result["rescue_catalog_items"] == 6
+    assert result["rescue_catalog_sources"] == 7
+    assert created["db"].rebuild_catalog_calls == 1
+    assert created["db"].closed is True
+
+
+def test_following_users_direct_sync_does_not_rebuild_catalog(direct_sync_env):
+    settings, created, _fake_db, _fake_service = direct_sync_env
+
+    result = execute_task("following_users", settings)
+
+    assert result == {"users": 1}
+    assert created["db"].rebuild_catalog_calls == 0
+
+
+def test_direct_sync_keeps_stats_when_catalog_rebuild_fails(
+    direct_sync_env, monkeypatch, caplog
+):
+    settings, created, fake_db, _fake_service = direct_sync_env
+
+    def fail_rebuild(self):
+        self.rebuild_catalog_calls += 1
+        raise RuntimeError("catalog boom")
+
+    monkeypatch.setattr(fake_db, "rebuild_rescue_catalog", fail_rebuild)
+
+    result = execute_task("following_novels", settings)
+
+    assert result == {"novels": 2}
+    assert created["db"].rebuild_catalog_calls == 1
+    assert "救援目录刷新失败: catalog boom" in caplog.text
+
+
+@pytest.mark.parametrize("error", [RuntimeError("sync boom"), InterruptedError("cancelled")])
+def test_direct_sync_propagates_business_failure_without_rebuild(
+    error, direct_sync_env, monkeypatch
+):
+    settings, created, _fake_db, fake_service = direct_sync_env
+
+    def fail_sync(self, **kwargs):
+        raise error
+
+    monkeypatch.setattr(fake_service, "sync_following_novels", fail_sync)
+
+    with pytest.raises(type(error), match=str(error)):
+        execute_task("following_novels", settings)
+
+    assert created["db"].rebuild_catalog_calls == 0
+    assert created["db"].closed is True
+
+
+def test_direct_sync_skips_rebuild_when_cancelled_after_service_returns(
+    direct_sync_env, monkeypatch
+):
+    settings, created, _fake_db, fake_service = direct_sync_env
+
+    class Manager:
+        cancelled = False
+
+        def add_log(self, job_id, level, message):
+            pass
+
+        def update_progress(self, job_id, **kwargs):
+            pass
+
+        def is_cancel_requested(self, job_id):
+            return self.cancelled
+
+    manager = Manager()
+
+    def sync_then_cancel(self, **kwargs):
+        manager.cancelled = True
+        return {"novels": 2}
+
+    monkeypatch.setattr(fake_service, "sync_following_novels", sync_then_cancel)
+
+    with pytest.raises(InterruptedError, match="Task stopped by user"):
+        execute_task("following_novels", settings, {"manager": manager, "job_id": "job-1"})
+
+    assert created["db"].rebuild_catalog_calls == 0
+    assert created["db"].closed is True
 
 
 

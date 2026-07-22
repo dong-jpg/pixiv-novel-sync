@@ -19,6 +19,36 @@ class DummyReporter:
         self.progress_updates.append(kwargs)
 
 
+def test_rebuild_rescue_catalog_reports_chinese_stats(monkeypatch):
+    reporter = DummyReporter()
+    times = iter([10.0, 10.125])
+    monkeypatch.setattr(services, "perf_counter", lambda: next(times), raising=False)
+    db = SimpleNamespace(rebuild_rescue_catalog=lambda: {"items": 2, "sources": 3})
+
+    result = services._rebuild_rescue_catalog(db, reporter)
+
+    assert result == {
+        "rescue_catalog_items": 2,
+        "rescue_catalog_sources": 3,
+        "rescue_catalog_duration_ms": 125,
+    }
+    assert reporter.logs == [("success", "救援目录刷新完成: 条目 2, 来源 3, 耗时 125 ms")]
+
+
+def test_rebuild_rescue_catalog_ignores_reporter_failure(monkeypatch, caplog):
+    class FailingReporter:
+        def add_log(self, level, message):
+            raise RuntimeError("reporter boom")
+
+    monkeypatch.setattr(services, "perf_counter", lambda: 1.0)
+    db = SimpleNamespace(rebuild_rescue_catalog=lambda: {"items": 2, "sources": 3})
+
+    result = services._rebuild_rescue_catalog(db, FailingReporter())
+
+    assert result["rescue_catalog_items"] == 2
+    assert "救援目录日志记录失败: reporter boom" in caplog.text
+
+
 class FakeConn:
     def __init__(self, users: list[tuple[int, str]]) -> None:
         self.users = users
@@ -55,6 +85,7 @@ class FakeDatabase:
         self.backup_users = [(101, "Alice"), (202, "Bob")]
         self.conn = FakeConn(self.backup_users)
         self.watermark_updates: list[tuple[str, dict[str, object]]] = []
+        self.rebuild_catalog_calls = 0
 
     def init_schema(self) -> None:
         self.init_schema_called = True
@@ -87,6 +118,10 @@ class FakeDatabase:
     def cleanup_old_pending_deletions(self, grace_period_days: int = 30, cleanup_confirmed_days: int = 7) -> dict[str, int]:
         """Phase 3.2: Mock cleanup方法"""
         return {"auto_confirmed": 0, "cleaned_up": 0}
+
+    def rebuild_rescue_catalog(self) -> dict[str, int]:
+        self.rebuild_catalog_calls += 1
+        return {"items": 7, "sources": 8}
 
 
 class FakeBookmarkNovelSyncService:
@@ -237,6 +272,7 @@ def service_env(monkeypatch):
     monkeypatch.setattr(services, "FileStorage", make_storage)
     monkeypatch.setattr(services, "PixivAuthManager", make_auth)
     monkeypatch.setattr(services, "time", SimpleNamespace(sleep=lambda seconds: None))
+    monkeypatch.setattr(services, "perf_counter", lambda: 1.0)
     monkeypatch.setattr(services, "BookmarkNovelSyncService", make_sync_service, raising=False)
     return created
 
@@ -288,7 +324,52 @@ def test_run_novel_status_task_calls_novel_db_and_status_checker(settings, servi
         "total_novels": 2,
         "status_counts": {"normal": 1, "restricted": 1},
         "stopped": False,
+        "rescue_catalog_items": 7,
+        "rescue_catalog_sources": 8,
+        "rescue_catalog_duration_ms": 0,
     }
+    assert db.rebuild_catalog_calls == 1
+
+
+def test_novel_status_task_rebuilds_catalog_after_success(settings, service_env, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        services,
+        "_process_status_items",
+        lambda **kwargs: {"checked_novels": 1},
+    )
+    monkeypatch.setattr(
+        FakeDatabase,
+        "rebuild_rescue_catalog",
+        lambda self: calls.append(True) or {"items": 1},
+        raising=False,
+    )
+
+    result = services.run_novel_status_task(settings)
+
+    assert result["rescue_catalog_items"] == 1
+    assert calls == [True]
+
+
+def test_novel_status_task_keeps_stats_when_catalog_rebuild_fails(settings, service_env, monkeypatch):
+    reporter = DummyReporter()
+    monkeypatch.setattr(
+        services,
+        "_process_status_items",
+        lambda **kwargs: {"checked_novels": 1, "stopped": False},
+    )
+
+    def fail_rebuild(self):
+        raise RuntimeError("catalog boom")
+
+    monkeypatch.setattr(FakeDatabase, "rebuild_rescue_catalog", fail_rebuild, raising=False)
+
+    result = services.run_novel_status_task(settings, reporter=reporter)
+
+    assert result == {"checked_novels": 1, "stopped": False}
+    assert [log for log in reporter.logs if log[0] == "warning"] == [
+        ("warning", "救援目录刷新失败: catalog boom")
+    ]
 
 
 def test_run_series_status_task_calls_series_db_and_status_checker(settings, service_env, monkeypatch):
@@ -311,7 +392,79 @@ def test_run_series_status_task_calls_series_db_and_status_checker(settings, ser
         "total_series": 2,
         "status_counts": {"normal": 1, "deleted": 1},
         "stopped": False,
+        "rescue_catalog_items": 7,
+        "rescue_catalog_sources": 8,
+        "rescue_catalog_duration_ms": 0,
     }
+    assert db.rebuild_catalog_calls == 1
+
+
+def test_series_status_task_rebuilds_catalog_after_success(settings, service_env, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        services,
+        "_process_status_items",
+        lambda **kwargs: {"checked_series": 1},
+    )
+    monkeypatch.setattr(
+        FakeDatabase,
+        "rebuild_rescue_catalog",
+        lambda self: calls.append(True) or {"items": 2},
+        raising=False,
+    )
+
+    result = services.run_series_status_task(settings)
+
+    assert result["rescue_catalog_items"] == 2
+    assert calls == [True]
+
+
+@pytest.mark.parametrize("runner_name", ["run_novel_status_task", "run_series_status_task"])
+def test_status_tasks_do_not_rebuild_catalog_when_stopped(
+    runner_name, settings, service_env, monkeypatch
+):
+    monkeypatch.setattr(
+        services,
+        "_process_status_items",
+        lambda **kwargs: {"checked_count": 1, "stopped": True},
+    )
+
+    result = getattr(services, runner_name)(settings)
+
+    assert result["stopped"] is True
+    assert service_env["db"].rebuild_catalog_calls == 0
+
+
+@pytest.mark.parametrize("runner_name", ["run_novel_status_task", "run_series_status_task"])
+def test_status_tasks_skip_rebuild_when_cancelled_after_business_success(
+    runner_name, settings, service_env, monkeypatch
+):
+    monkeypatch.setattr(
+        services,
+        "_process_status_items",
+        lambda **kwargs: {"checked_count": 1, "stopped": False},
+    )
+
+    result = getattr(services, runner_name)(settings, stop_requested=lambda: True)
+
+    assert result["stopped"] is True
+    assert service_env["db"].rebuild_catalog_calls == 0
+
+
+@pytest.mark.parametrize("error", [RuntimeError("status boom"), InterruptedError("cancelled")])
+def test_novel_status_task_propagates_business_failure_without_rebuild(
+    error, settings, service_env, monkeypatch
+):
+    def fail_status_items(**kwargs):
+        raise error
+
+    monkeypatch.setattr(services, "_process_status_items", fail_status_items)
+
+    with pytest.raises(type(error), match=str(error)):
+        services.run_novel_status_task(settings)
+
+    assert service_env["db"].rebuild_catalog_calls == 0
+    assert service_env["db"].closed is True
 
 
 def test_run_user_status_task_stops_when_requested(settings, service_env, monkeypatch):
@@ -382,9 +535,44 @@ def test_run_user_backup_task_syncs_target_user_novels_with_expected_options(set
         "skipped": 0,
         "assets_downloaded": 4,
         "stopped": False,
+        "rescue_catalog_items": 7,
+        "rescue_catalog_sources": 8,
+        "rescue_catalog_duration_ms": 0,
     }
+    assert db.rebuild_catalog_calls == 1
     assert reporter.progress_updates[-1]["current"] == 2
     assert reporter.progress_updates[-1]["total"] == 2
+
+
+def test_user_backup_task_rebuilds_catalog_after_success(settings, service_env, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        FakeDatabase,
+        "rebuild_rescue_catalog",
+        lambda self: calls.append(True) or {"items": 4, "sources": 5},
+        raising=False,
+    )
+
+    result = services.run_user_backup_task(settings, user_id=202)
+
+    assert result["rescue_catalog_items"] == 4
+    assert result["rescue_catalog_sources"] == 5
+    assert calls == [True]
+
+
+def test_user_backup_skips_rebuild_when_cancelled_after_last_novel(
+    settings, service_env
+):
+    stop_calls = iter([False, False, False, False, True])
+
+    result = services.run_user_backup_task(
+        settings,
+        user_id=101,
+        stop_requested=lambda: next(stop_calls),
+    )
+
+    assert result["stopped"] is True
+    assert service_env["db"].rebuild_catalog_calls == 0
 
 
 def test_run_user_backup_task_accepts_missing_reporter(settings, service_env):
@@ -614,6 +802,7 @@ def test_run_user_backup_task_closes_db_on_sync_error(settings, service_env, mon
     assert service_env["db"].conn.executed[-1] == ("SELECT name FROM users WHERE user_id = ?", (101,))
     assert service_env["auth"].api.parse_qs(None) is None
     assert "sync_service" in service_env
+    assert service_env["db"].rebuild_catalog_calls == 0
 
     monkeypatch.setattr(services, "BookmarkNovelSyncService", original_factory)
 
@@ -649,6 +838,7 @@ def test_run_user_backup_task_stops_before_syncing_next_page_and_closes_db(setti
     assert auth.api.user_novels_calls == [{"user_id": 101}]
     assert [call["novel_id"] for call in service_env["sync_service"].calls] == [1011, 1012]
     assert service_env["db"].closed is True
+    assert service_env["db"].rebuild_catalog_calls == 0
 
 
 
@@ -666,6 +856,7 @@ def test_run_user_backup_task_stops_before_syncing_next_novel_and_closes_db(sett
     }
     assert [call["novel_id"] for call in service_env["sync_service"].calls] == [1011]
     assert service_env["db"].closed is True
+    assert service_env["db"].rebuild_catalog_calls == 0
 
 
 def test_sleep_with_cancel_returns_true_when_cancel_requested(monkeypatch):
@@ -705,4 +896,3 @@ def test_run_user_status_task_stops_when_cancelled_during_delay(settings, servic
         "status_counts": {"normal": 1},
         "stopped": True,
     }
-
