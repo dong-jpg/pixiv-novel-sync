@@ -291,9 +291,9 @@ class SeriesMixin:
                 sorted(catalog_keys),
             )
             self.conn.execute("UPDATE novels SET series_id = NULL WHERE series_id = ?", (series_id,))
-            self._refresh_catalog_memberships(
-                {int(series_id)},
-                set(chapter_ids),
+            self.conn.execute(
+                "DELETE FROM rescue_catalog_memberships WHERE series_id = ?",
+                (series_id,),
             )
             self.conn.execute("DELETE FROM recommendation_items WHERE item_type = 'series' AND series_id = ?", (series_id,))
             self.conn.execute("DELETE FROM recommendation_feedback WHERE series_id = ?", (series_id,))

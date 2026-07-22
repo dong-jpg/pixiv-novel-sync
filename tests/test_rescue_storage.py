@@ -859,13 +859,16 @@ def test_delete_series_cleans_rescue_override(db: Database) -> None:
     ] == ["bookmark"]
 
 
-def test_delete_series_cleans_all_memberships_for_captured_chapters(
+def test_delete_series_preserves_historical_membership_until_chapter_refresh(
     db: Database,
 ) -> None:
     _seed_series(db, 30, status="normal", total_novels=1, title="series A")
-    _seed_series(db, 40, status="normal", total_novels=1, title="series B")
+    _seed_series(db, 40, status="deleted", total_novels=1, title="series B")
     _seed_novel(db, 31, series_id=40, status="deleted", text="kept body")
+    db.upsert_source(SourceRecord(31, "bookmark_public", "1"))
     db.rebuild_rescue_catalog()
+    assert db.get_rescue_catalog_item("series", 40) is not None
+    assert db.get_rescue_catalog_item("novel", 31) is None
     assert db.conn.execute(
         "SELECT series_id FROM rescue_catalog_memberships WHERE novel_id = 31"
     ).fetchone()[0] == 40
@@ -876,8 +879,8 @@ def test_delete_series_cleans_all_memberships_for_captured_chapters(
 
     assert chapter_ids == [31]
     assert db.conn.execute(
-        "SELECT 1 FROM rescue_catalog_memberships WHERE novel_id = 31"
-    ).fetchone() is None
+        "SELECT series_id FROM rescue_catalog_memberships WHERE novel_id = 31"
+    ).fetchone()[0] == 40
     chapter = db.conn.execute(
         """
         SELECT n.series_id, nt.text_raw
@@ -887,6 +890,21 @@ def test_delete_series_cleans_all_memberships_for_captured_chapters(
         """
     ).fetchone()
     assert tuple(chapter) == (None, "kept body")
+
+    for novel_id in chapter_ids:
+        db.refresh_rescue_item("novel", novel_id)
+
+    assert db.get_rescue_catalog_item("series", 40) is None
+    restored = db.get_rescue_catalog_item("novel", 31)
+    assert restored is not None
+    assert restored["content_kind"] == "standalone"
+    assert [
+        source["source_kind"]
+        for source in db.list_rescue_catalog_sources("novel", 31)
+    ] == ["bookmark"]
+    assert db.conn.execute(
+        "SELECT 1 FROM rescue_catalog_memberships WHERE novel_id = 31"
+    ).fetchone() is None
 
 
 def test_delete_user_cleans_owned_novel_rescue_overrides(db: Database) -> None:
