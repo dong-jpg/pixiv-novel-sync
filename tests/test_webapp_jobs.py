@@ -1141,6 +1141,76 @@ def _app(tmp_path, monkeypatch):
     return create_app(env_path=str(env_path))
 
 
+@pytest.fixture
+def isolated_create_app_scheduler(monkeypatch, tmp_path):
+    import pixiv_novel_sync.webapp as webapp_module
+
+    db_path = tmp_path / "debug-env-scheduler.db"
+    registry_key = webapp_module._scheduler_registry_key(db_path)
+    start_calls = []
+
+    monkeypatch.setenv("PIXIV_FLASK_SECRET", "test-secret")
+    monkeypatch.setenv("PIXIV_REFRESH_TOKEN", "test-refresh-token")
+    monkeypatch.setenv("PIXIV_DB_PATH", str(db_path))
+    monkeypatch.delenv("FLASK_DEBUG", raising=False)
+    monkeypatch.delenv("WERKZEUG_SERVER_FD", raising=False)
+    monkeypatch.delenv("WERKZEUG_RUN_MAIN", raising=False)
+    monkeypatch.setattr(AutoSyncScheduler, "start", lambda scheduler: start_calls.append(scheduler))
+
+    with webapp_module._auto_sync_scheduler_registry_lock:
+        assert registry_key not in webapp_module._auto_sync_scheduler_registry
+
+    try:
+        yield start_calls
+    finally:
+        with webapp_module._auto_sync_scheduler_registry_lock:
+            owner = webapp_module._auto_sync_scheduler_registry.get(registry_key)
+        schedulers = list(start_calls)
+        if owner is not None and all(owner.scheduler is not scheduler for scheduler in schedulers):
+            schedulers.append(owner.scheduler)
+        for scheduler in schedulers:
+            scheduler.stop()
+            worker = scheduler._thread
+            if worker is not None:
+                worker.join(timeout=3)
+        with webapp_module._auto_sync_scheduler_registry_lock:
+            webapp_module._auto_sync_scheduler_registry.pop(registry_key, None)
+
+
+def test_create_app_starts_scheduler_when_flask_debug_is_zero(
+    monkeypatch,
+    isolated_create_app_scheduler,
+):
+    monkeypatch.setenv("FLASK_DEBUG", "0")
+
+    create_app()
+
+    assert len(isolated_create_app_scheduler) == 1
+
+
+def test_create_app_skips_scheduler_in_debug_reloader_parent(
+    monkeypatch,
+    isolated_create_app_scheduler,
+):
+    monkeypatch.setenv("FLASK_DEBUG", "1")
+
+    create_app()
+
+    assert isolated_create_app_scheduler == []
+
+
+def test_create_app_starts_scheduler_in_debug_reloader_child(
+    monkeypatch,
+    isolated_create_app_scheduler,
+):
+    monkeypatch.setenv("FLASK_DEBUG", "1")
+    monkeypatch.setenv("WERKZEUG_RUN_MAIN", "true")
+
+    create_app()
+
+    assert len(isolated_create_app_scheduler) == 1
+
+
 def test_create_app_shares_scheduler_owner_by_normalized_db_path_and_releases_on_stop(
     tmp_path,
     monkeypatch,

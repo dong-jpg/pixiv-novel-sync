@@ -250,7 +250,8 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     # 启动定时同步调度器
     # 在 Werkzeug debug reloader 下，主进程会先启动一次再 fork 子进程；只在子进程启动调度器，避免双开
     _is_werkzeug_reload = os.getenv("WERKZEUG_RUN_MAIN") == "true"
-    _is_debug = bool(os.getenv("FLASK_DEBUG")) or bool(os.getenv("WERKZEUG_SERVER_FD"))
+    _flask_debug_enabled = os.getenv("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+    _is_debug = _flask_debug_enabled or bool(os.getenv("WERKZEUG_SERVER_FD"))
     should_start_scheduler = not _is_debug or _is_werkzeug_reload
     if should_start_scheduler:
         registry_settings = settings_manager.load(env_path=env_path)
