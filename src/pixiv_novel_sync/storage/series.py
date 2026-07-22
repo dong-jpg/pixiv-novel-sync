@@ -259,6 +259,36 @@ class SeriesMixin:
         from .connection import DatabaseConnection
         # 使用基类的 transaction 方法
         with DatabaseConnection.transaction(self):
+            chapter_rows = self.conn.execute(
+                "SELECT novel_id FROM novels WHERE series_id = ?",
+                (series_id,),
+            ).fetchall()
+            catalog_rows = self.conn.execute(
+                """
+                SELECT item_type, item_id
+                FROM rescue_catalog
+                WHERE (item_type = 'series' AND item_id = ?)
+                   OR (item_type = 'novel' AND series_id = ?)
+                """,
+                (series_id, series_id),
+            ).fetchall()
+            catalog_keys = {("series", int(series_id))}
+            catalog_keys.update(
+                ("novel", int(row["novel_id"]))
+                for row in chapter_rows
+            )
+            catalog_keys.update(
+                (str(row["item_type"]), int(row["item_id"]))
+                for row in catalog_rows
+            )
+            self.conn.executemany(
+                "DELETE FROM rescue_catalog_sources WHERE item_type = ? AND item_id = ?",
+                sorted(catalog_keys),
+            )
+            self.conn.executemany(
+                "DELETE FROM rescue_catalog WHERE item_type = ? AND item_id = ?",
+                sorted(catalog_keys),
+            )
             self.conn.execute("UPDATE novels SET series_id = NULL WHERE series_id = ?", (series_id,))
             self.conn.execute("DELETE FROM recommendation_items WHERE item_type = 'series' AND series_id = ?", (series_id,))
             self.conn.execute("DELETE FROM recommendation_feedback WHERE series_id = ?", (series_id,))

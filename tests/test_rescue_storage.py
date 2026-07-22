@@ -163,6 +163,152 @@ def test_rebuild_catalog_classifies_items_and_sources(db: Database) -> None:
     }
 
 
+def test_catalog_refresh_failure_keeps_previous_snapshot(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_novel(db, 210, status="deleted", text="旧正文")
+    db.rebuild_rescue_catalog()
+    before = db.get_rescue_catalog_meta()
+
+    monkeypatch.setattr(
+        db,
+        "_catalog_novel_rows",
+        lambda _ids: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        db.rebuild_rescue_catalog()
+
+    assert db.get_rescue_catalog_meta() == before
+    item = db.get_rescue_catalog_item("novel", 210)
+    assert item is not None
+    assert item["rescue_state"] == "success"
+
+
+def test_refresh_novel_reclassifies_parent_and_all_chapters(db: Database) -> None:
+    _seed_series(db, 220, status="normal", total_novels=2)
+    _seed_novel(db, 221, series_id=220, status="normal", text="章节一")
+    _seed_novel(db, 222, series_id=220, status="normal", text="章节二")
+    _seed_novel(db, 223, status="deleted", text="无关独立篇")
+    db.rebuild_rescue_catalog()
+
+    db.conn.execute("UPDATE series SET status = 'deleted' WHERE series_id = 220")
+    db.conn.commit()
+    entered = db.refresh_rescue_item("novel", 221)
+
+    assert entered["items"] == 1
+    assert db.get_rescue_catalog_item("series", 220)["content_kind"] == "series"
+    assert db.get_rescue_catalog_item("novel", 221) is None
+    assert db.get_rescue_catalog_item("novel", 222) is None
+    assert db.get_rescue_catalog_item("novel", 223) is not None
+
+    db.conn.execute("UPDATE series SET status = 'normal' WHERE series_id = 220")
+    db.conn.commit()
+    exited = db.refresh_rescue_item("novel", 221)
+
+    assert exited["items"] == 0
+    assert db.get_rescue_catalog_item("series", 220) is None
+    assert db.get_rescue_catalog_item("novel", 221) is None
+    assert db.get_rescue_catalog_item("novel", 222) is None
+    assert db.get_rescue_catalog_item("novel", 223) is not None
+
+
+def test_refresh_series_rebuilds_series_and_chapter_rows(db: Database) -> None:
+    _seed_series(db, 230, status="normal", total_novels=2)
+    _seed_novel(db, 231, series_id=230, status="deleted", text="可恢复章节")
+    _seed_novel(db, 232, series_id=230, status="normal", text="普通章节")
+    db.rebuild_rescue_catalog()
+    assert db.get_rescue_catalog_item("novel", 231)["content_kind"] == "series_chapter"
+
+    db.conn.execute("UPDATE series SET status = 'deleted' WHERE series_id = 230")
+    db.conn.commit()
+    entered = db.refresh_rescue_item("series", 230)
+
+    assert entered["items"] == 1
+    assert db.get_rescue_catalog_item("series", 230) is not None
+    assert db.get_rescue_catalog_item("novel", 231) is None
+    assert db.get_rescue_catalog_item("novel", 232) is None
+
+    db.conn.execute("UPDATE series SET status = 'normal' WHERE series_id = 230")
+    db.conn.commit()
+    exited = db.refresh_rescue_item("series", 230)
+
+    assert exited["items"] == 1
+    assert db.get_rescue_catalog_item("series", 230) is None
+    assert db.get_rescue_catalog_item("novel", 231)["content_kind"] == "series_chapter"
+    assert db.get_rescue_catalog_item("novel", 232) is None
+
+
+def test_refresh_standalone_novel_updates_only_target_and_sources(db: Database) -> None:
+    _seed_novel(db, 240, status="deleted", text="目标正文", title="旧标题")
+    _seed_novel(db, 241, status="deleted", text="无关正文")
+    db.upsert_source(SourceRecord(240, "bookmark_public", "1"))
+    db.upsert_source(SourceRecord(241, "bookmark_public", "1"))
+    db.rebuild_rescue_catalog()
+    db.conn.execute(
+        "UPDATE rescue_catalog SET title = '局部刷新哨兵' "
+        "WHERE item_type = 'novel' AND item_id = 241"
+    )
+    db.conn.execute("UPDATE novels SET title = '新标题' WHERE novel_id = 240")
+    db.conn.execute("DELETE FROM sources WHERE novel_id = 240")
+    db.conn.execute(
+        "INSERT INTO sources (novel_id, source_type, source_key) "
+        "VALUES (240, 'user_backup', '2')"
+    )
+    db.conn.commit()
+
+    result = db.refresh_rescue_item("novel", 240)
+
+    assert result["items"] == 1
+    assert result["sources"] == 1
+    target = db.get_rescue_catalog_item("novel", 240)
+    assert target["title"] == "新标题"
+    assert target["content_kind"] == "standalone"
+    assert [
+        source["source_kind"]
+        for source in db.list_rescue_catalog_sources("novel", 240)
+    ] == ["user_backup"]
+    assert db.get_rescue_catalog_item("novel", 241)["title"] == "局部刷新哨兵"
+
+
+def test_refresh_missing_novel_cleans_catalog_and_sources(db: Database) -> None:
+    _seed_novel(db, 250, status="deleted", text="将被删除")
+    db.upsert_source(SourceRecord(250, "bookmark_public", "1"))
+    db.rebuild_rescue_catalog()
+    assert db.get_rescue_catalog_item("novel", 250) is not None
+    assert db.list_rescue_catalog_sources("novel", 250)
+
+    db.conn.execute("DELETE FROM novels WHERE novel_id = 250")
+    db.conn.commit()
+    result = db.refresh_rescue_item("novel", 250)
+
+    assert result["items"] == 0
+    assert result["sources"] == 0
+    assert db.get_rescue_catalog_item("novel", 250) is None
+    assert db.list_rescue_catalog_sources("novel", 250) == []
+
+
+def test_refresh_missing_series_cleans_catalog_and_sources(db: Database) -> None:
+    _seed_series(db, 260, status="deleted", total_novels=1)
+    _seed_novel(db, 261, series_id=260, status="deleted", text="章节")
+    db.upsert_source(SourceRecord(261, "following_user_scan", "2"))
+    db.rebuild_rescue_catalog()
+    assert db.get_rescue_catalog_item("series", 260) is not None
+    assert db.list_rescue_catalog_sources("series", 260)
+
+    db.conn.execute("DELETE FROM series WHERE series_id = 260")
+    db.conn.commit()
+    result = db.refresh_rescue_item("series", 260)
+
+    assert result["items"] == 0
+    assert result["sources"] == 0
+    assert db.get_rescue_catalog_item("series", 260) is None
+    assert db.list_rescue_catalog_sources("series", 260) == []
+    assert db.conn.execute(
+        "SELECT COUNT(*) FROM rescue_catalog WHERE series_id = 260"
+    ).fetchone()[0] == 0
+
+
 def test_rebuild_catalog_classifies_complete_and_partial_series(db: Database) -> None:
     _seed_series(db, 300, status="deleted", total_novels=2)
     _seed_novel(db, 301, series_id=300, text="一")
@@ -376,20 +522,51 @@ def test_rescue_override_rejects_invalid_values(
 
 def test_delete_novel_cleans_rescue_override(db: Database) -> None:
     _seed_novel(db)
+    db.upsert_source(SourceRecord(1, "bookmark_public", "1"))
     db.set_rescue_override("novel", 1, "include")
+    db.rebuild_rescue_catalog()
 
     db.delete_novel(1)
 
     assert db.get_rescue_override("novel", 1) is None
+    assert db.get_rescue_catalog_item("novel", 1) is None
+    assert db.list_rescue_catalog_sources("novel", 1) == []
 
 
 def test_delete_series_cleans_rescue_override(db: Database) -> None:
     _seed_series(db)
+    _seed_novel(db, novel_id=10, series_id=9, status="deleted", text="章节")
+    db.upsert_source(SourceRecord(10, "bookmark_public", "1"))
     db.set_rescue_override("series", 9, "exclude")
+    db.rebuild_rescue_catalog()
 
     db.delete_series(9)
 
     assert db.get_rescue_override("series", 9) is None
+    assert db.get_rescue_catalog_item("series", 9) is None
+    assert db.list_rescue_catalog_sources("series", 9) == []
+    assert db.conn.execute(
+        "SELECT COUNT(*) FROM rescue_catalog WHERE series_id = 9"
+    ).fetchone()[0] == 0
+    chapter = db.conn.execute(
+        """
+        SELECT n.series_id, nt.text_raw
+        FROM novels n
+        JOIN novel_texts nt ON nt.novel_id = n.novel_id
+        WHERE n.novel_id = 10
+        """
+    ).fetchone()
+    assert tuple(chapter) == (None, "章节")
+
+    db.refresh_rescue_item("novel", 10)
+
+    restored = db.get_rescue_catalog_item("novel", 10)
+    assert restored is not None
+    assert restored["content_kind"] == "standalone"
+    assert [
+        source["source_kind"]
+        for source in db.list_rescue_catalog_sources("novel", 10)
+    ] == ["bookmark"]
 
 
 def test_delete_user_cleans_owned_novel_rescue_overrides(db: Database) -> None:

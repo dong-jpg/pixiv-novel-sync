@@ -368,6 +368,14 @@ class NovelsMixin:
                 self.conn.execute("DELETE FROM recommendation_items WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM recommendation_feedback WHERE novel_id = ?", (novel_id,))
                 self.conn.execute(
+                    "DELETE FROM rescue_catalog_sources WHERE item_type = 'novel' AND item_id = ?",
+                    (novel_id,),
+                )
+                self.conn.execute(
+                    "DELETE FROM rescue_catalog WHERE item_type = 'novel' AND item_id = ?",
+                    (novel_id,),
+                )
+                self.conn.execute(
                     "DELETE FROM rescue_overrides WHERE item_type = 'novel' AND item_id = ?",
                     (novel_id,),
                 )

@@ -24,6 +24,12 @@ class RescueMixin:
         "user_backup": 3,
         "other": 4,
     }
+    _CATALOG_COLUMNS = (
+        "item_type", "item_id", "content_kind", "series_id", "title", "user_id",
+        "author_name", "cover_url", "rescue_state", "remote_status",
+        "eligibility_reason", "expected_count", "local_count", "complete_count",
+        "last_checked_at", "updated_at", "refreshed_at",
+    )
 
     @classmethod
     def _validate_rescue_item_type(cls, item_type: str) -> str:
@@ -116,10 +122,22 @@ class RescueMixin:
     def _catalog_timestamp() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-    def _catalog_series_rows(self) -> list[dict[str, Any]]:
+    def _catalog_series_rows(
+        self,
+        series_ids: set[int] | None = None,
+    ) -> list[dict[str, Any]]:
         """Return eligible series snapshots using only body completeness flags."""
+        normalized_ids = sorted({int(value) for value in series_ids or set()})
+        if series_ids is not None and not normalized_ids:
+            return []
+        where_sql = ""
+        params: tuple[int, ...] = ()
+        if normalized_ids:
+            placeholders = ", ".join("?" for _ in normalized_ids)
+            where_sql = f"WHERE se.series_id IN ({placeholders})"
+            params = tuple(normalized_ids)
         rows = self.conn.execute(
-            """
+            f"""
             SELECT
                 se.series_id,
                 se.title,
@@ -148,12 +166,14 @@ class RescueMixin:
             LEFT JOIN novel_texts nt ON nt.novel_id = n.novel_id
             LEFT JOIN rescue_overrides ro
               ON ro.item_type = 'series' AND ro.item_id = se.series_id
+            {where_sql}
             GROUP BY
                 se.series_id, se.title, se.user_id, u.name, se.cover_url,
                 se.total_novels, se.status, se.last_checked_at, se.last_seen_at,
                 ro.action
             ORDER BY se.series_id
-            """
+            """,
+            params,
         ).fetchall()
 
         result: list[dict[str, Any]] = []
@@ -200,10 +220,23 @@ class RescueMixin:
             )
         return result
 
-    def _catalog_novel_rows(self, rescue_series_ids: set[int]) -> list[dict[str, Any]]:
+    def _catalog_novel_rows(
+        self,
+        rescue_series_ids: set[int],
+        novel_ids: set[int] | None = None,
+    ) -> list[dict[str, Any]]:
         """Return eligible standalone/chapter snapshots in one set query."""
+        normalized_ids = sorted({int(value) for value in novel_ids or set()})
+        if novel_ids is not None and not normalized_ids:
+            return []
+        filter_sql = ""
+        params: tuple[int, ...] = ()
+        if normalized_ids:
+            placeholders = ", ".join("?" for _ in normalized_ids)
+            filter_sql = f"AND n.novel_id IN ({placeholders})"
+            params = tuple(normalized_ids)
         rows = self.conn.execute(
-            """
+            f"""
             SELECT
                 n.novel_id,
                 n.series_id,
@@ -226,8 +259,10 @@ class RescueMixin:
                     ro.action = 'include'
                     OR COALESCE(n.status, 'unknown') IN ('deleted', 'restricted')
               )
+              {filter_sql}
             ORDER BY n.novel_id
-            """
+            """,
+            params,
         ).fetchall()
 
         result: list[dict[str, Any]] = []
@@ -368,6 +403,107 @@ class RescueMixin:
             sources.sort(key=self._source_sort_key)
         return grouped
 
+    @classmethod
+    def _catalog_row_values(
+        cls,
+        row: dict[str, Any],
+        refreshed_at: str,
+    ) -> tuple[Any, ...]:
+        return tuple(
+            refreshed_at if column == "refreshed_at" else row[column]
+            for column in cls._CATALOG_COLUMNS
+        )
+
+    def _insert_catalog_rows(
+        self,
+        rows: list[dict[str, Any]],
+        refreshed_at: str,
+    ) -> None:
+        if not rows:
+            return
+        columns = ", ".join(self._CATALOG_COLUMNS)
+        placeholders = ", ".join("?" for _ in self._CATALOG_COLUMNS)
+        self.conn.executemany(
+            f"INSERT INTO rescue_catalog ({columns}) VALUES ({placeholders})",
+            [self._catalog_row_values(row, refreshed_at) for row in rows],
+        )
+
+    def _insert_catalog_sources_for_rows(
+        self,
+        rows: list[dict[str, Any]],
+    ) -> int:
+        values = [
+            (
+                row["item_type"],
+                row["item_id"],
+                source["source_kind"],
+                source["source_type"],
+                source["source_key"],
+                source["source_user_id"],
+                source["source_user_name"],
+            )
+            for row in rows
+            for source in self._catalog_sources(str(row["item_type"]), int(row["item_id"]))
+        ]
+        if values:
+            self.conn.executemany(
+                """
+                INSERT INTO rescue_catalog_sources (
+                    item_type, item_id, source_kind, source_type, source_key,
+                    source_user_id, source_user_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+        return len(values)
+
+    def _delete_catalog_scope(
+        self,
+        series_ids: set[int],
+        novel_ids: set[int],
+    ) -> None:
+        keys = {("series", int(value)) for value in series_ids}
+        keys.update(("novel", int(value)) for value in novel_ids)
+        if series_ids:
+            normalized_ids = sorted({int(value) for value in series_ids})
+            placeholders = ", ".join("?" for _ in normalized_ids)
+            rows = self.conn.execute(
+                f"""
+                SELECT item_type, item_id
+                FROM rescue_catalog
+                WHERE (item_type = 'series' AND item_id IN ({placeholders}))
+                   OR (item_type = 'novel' AND series_id IN ({placeholders}))
+                """,
+                (*normalized_ids, *normalized_ids),
+            ).fetchall()
+            keys.update((str(row["item_type"]), int(row["item_id"])) for row in rows)
+        if not keys:
+            return
+        values = sorted(keys)
+        self.conn.executemany(
+            "DELETE FROM rescue_catalog_sources WHERE item_type = ? AND item_id = ?",
+            values,
+        )
+        self.conn.executemany(
+            "DELETE FROM rescue_catalog WHERE item_type = ? AND item_id = ?",
+            values,
+        )
+
+    def _update_catalog_meta(self, refreshed_at: str, duration_ms: int) -> None:
+        item_count = int(self.conn.execute("SELECT COUNT(*) FROM rescue_catalog").fetchone()[0])
+        self.conn.execute(
+            """
+            INSERT INTO rescue_catalog_meta (
+                singleton_id, refreshed_at, item_count, duration_ms
+            ) VALUES (1, ?, ?, ?)
+            ON CONFLICT(singleton_id) DO UPDATE SET
+                refreshed_at = excluded.refreshed_at,
+                item_count = excluded.item_count,
+                duration_ms = excluded.duration_ms
+            """,
+            (refreshed_at, item_count, duration_ms),
+        )
+
     def rebuild_rescue_catalog(self) -> dict[str, int]:
         """Build the complete rescue catalog and source snapshot atomically."""
         started = time.perf_counter()
@@ -381,42 +517,7 @@ class RescueMixin:
             # this remains correct even for databases created before the FK pragma.
             self.conn.execute("DELETE FROM rescue_catalog_sources")
             self.conn.execute("DELETE FROM rescue_catalog")
-
-            columns = (
-                "item_type, item_id, content_kind, series_id, title, user_id, "
-                "author_name, cover_url, rescue_state, remote_status, eligibility_reason, "
-                "expected_count, local_count, complete_count, last_checked_at, updated_at, refreshed_at"
-            )
-            values = [
-                (
-                    row["item_type"], row["item_id"], row["content_kind"], row["series_id"],
-                    row["title"], row["user_id"], row["author_name"], row["cover_url"],
-                    row["rescue_state"], row["remote_status"], row["eligibility_reason"],
-                    row["expected_count"], row["local_count"], row["complete_count"],
-                    row["last_checked_at"], row["updated_at"], refreshed_at,
-                )
-                for row in series_rows
-            ]
-            if values:
-                self.conn.executemany(
-                    f"INSERT INTO rescue_catalog ({columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    values,
-                )
-            values = [
-                (
-                    row["item_type"], row["item_id"], row["content_kind"], row["series_id"],
-                    row["title"], row["user_id"], row["author_name"], row["cover_url"],
-                    row["rescue_state"], row["remote_status"], row["eligibility_reason"],
-                    row["expected_count"], row["local_count"], row["complete_count"],
-                    row["last_checked_at"], row["updated_at"], refreshed_at,
-                )
-                for row in novel_rows
-            ]
-            if values:
-                self.conn.executemany(
-                    f"INSERT INTO rescue_catalog ({columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    values,
-                )
+            self._insert_catalog_rows(series_rows + novel_rows, refreshed_at)
 
             grouped_sources = self._catalog_all_sources()
             source_values = [
@@ -444,24 +545,104 @@ class RescueMixin:
                 )
 
             duration_ms = max(0, int((time.perf_counter() - started) * 1000))
-            self.conn.execute(
-                """
-                INSERT INTO rescue_catalog_meta (
-                    singleton_id, refreshed_at, item_count, duration_ms
-                ) VALUES (1, ?, ?, ?)
-                ON CONFLICT(singleton_id) DO UPDATE SET
-                    refreshed_at = excluded.refreshed_at,
-                    item_count = excluded.item_count,
-                    duration_ms = excluded.duration_ms
-                """,
-                (refreshed_at, len(series_rows) + len(novel_rows), duration_ms),
-            )
+            self._update_catalog_meta(refreshed_at, duration_ms)
 
         return {
             "items": len(series_rows) + len(novel_rows),
             "sources": len(source_values),
             "duration_ms": duration_ms,
         }
+
+    def refresh_rescue_item(self, item_type: str, item_id: int) -> dict[str, int]:
+        """Atomically rebuild one item, its parent series, and affected chapters."""
+        normalized_type = self._validate_rescue_item_type(item_type)
+        normalized_id = int(item_id)
+        started = time.perf_counter()
+        refreshed_at = self._catalog_timestamp()
+
+        with self.transaction():
+            series_ids: set[int] = set()
+            novel_ids: set[int] = set()
+            target_exists = self._rescue_item_exists(normalized_type, normalized_id)
+
+            if normalized_type == "novel":
+                novel_ids.add(normalized_id)
+                current = self.conn.execute(
+                    "SELECT series_id FROM novels WHERE novel_id = ?",
+                    (normalized_id,),
+                ).fetchone()
+                previous = self.conn.execute(
+                    """
+                    SELECT series_id
+                    FROM rescue_catalog
+                    WHERE item_type = 'novel' AND item_id = ?
+                    """,
+                    (normalized_id,),
+                ).fetchone()
+                for row in (current, previous):
+                    if row is not None and row["series_id"] is not None:
+                        series_ids.add(int(row["series_id"]))
+            else:
+                series_ids.add(normalized_id)
+
+            if series_ids:
+                placeholders = ", ".join("?" for _ in series_ids)
+                chapter_rows = self.conn.execute(
+                    f"SELECT novel_id FROM novels WHERE series_id IN ({placeholders})",
+                    tuple(sorted(series_ids)),
+                ).fetchall()
+                novel_ids.update(int(row["novel_id"]) for row in chapter_rows)
+
+            self._delete_catalog_scope(series_ids, novel_ids)
+
+            rows: list[dict[str, Any]] = []
+            should_rebuild = target_exists or normalized_type == "novel"
+            if should_rebuild:
+                existing_series_ids: set[int] = set()
+                if series_ids:
+                    placeholders = ", ".join("?" for _ in series_ids)
+                    existing_rows = self.conn.execute(
+                        f"SELECT series_id FROM series WHERE series_id IN ({placeholders})",
+                        tuple(sorted(series_ids)),
+                    ).fetchall()
+                    existing_series_ids = {
+                        int(row["series_id"])
+                        for row in existing_rows
+                    }
+                series_rows = self._catalog_series_rows(existing_series_ids)
+                rescue_series_ids = {
+                    int(row["series_id"])
+                    for row in series_rows
+                }
+                novel_rows = self._catalog_novel_rows(rescue_series_ids, novel_ids)
+                rows = series_rows + novel_rows
+                self._insert_catalog_rows(rows, refreshed_at)
+
+            source_count = self._insert_catalog_sources_for_rows(rows)
+            duration_ms = max(0, int((time.perf_counter() - started) * 1000))
+            self._update_catalog_meta(refreshed_at, duration_ms)
+
+        return {
+            "items": len(rows),
+            "sources": source_count,
+            "duration_ms": duration_ms,
+        }
+
+    def get_rescue_catalog_item(
+        self,
+        item_type: str,
+        item_id: int,
+    ) -> dict[str, Any] | None:
+        normalized_type = self._validate_rescue_item_type(item_type)
+        row = self.conn.execute(
+            """
+            SELECT *
+            FROM rescue_catalog
+            WHERE item_type = ? AND item_id = ?
+            """,
+            (normalized_type, int(item_id)),
+        ).fetchone()
+        return dict(row) if row else None
 
     def get_rescue_catalog_meta(self) -> dict[str, Any] | None:
         row = self.conn.execute(
