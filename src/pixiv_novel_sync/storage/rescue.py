@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -15,6 +17,13 @@ class RescueMixin:
 
     _RESCUE_ITEM_TABLES = {"novel": "novels", "series": "series"}
     _RESCUE_ACTIONS = {"include", "exclude"}
+    _CATALOG_SOURCE_ORDER = {
+        "bookmark": 0,
+        "subscribed_series": 1,
+        "following_user": 2,
+        "user_backup": 3,
+        "other": 4,
+    }
 
     @classmethod
     def _validate_rescue_item_type(cls, item_type: str) -> str:
@@ -38,6 +47,450 @@ class RescueMixin:
             (item_id,),
         ).fetchone()
         return row is not None
+
+    @staticmethod
+    def _row_value(row: sqlite3.Row | dict[str, Any], key: str, default: Any = None) -> Any:
+        """Read a value from either sqlite3.Row or a test-friendly mapping."""
+        try:
+            return row[key]
+        except (IndexError, KeyError):
+            return default
+
+    @classmethod
+    def _normalize_source(cls, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        """Map raw source facts to the stable catalog source vocabulary."""
+        raw_type = str(cls._row_value(row, "source_type", "") or "").strip()
+        raw_key = str(cls._row_value(row, "source_key", "") or "").strip()
+
+        if raw_type.startswith("bookmark_"):
+            source_kind = "bookmark"
+            source_key = ""
+        elif raw_type == "subscribed_series":
+            source_kind = "subscribed_series"
+            source_key = ""
+        elif raw_type == "following_user_scan":
+            source_kind = "following_user"
+            source_key = raw_key
+        elif raw_type == "user_backup":
+            source_kind = "user_backup"
+            source_key = raw_key
+        else:
+            source_kind = "other"
+            # Keep distinct unknown facts distinct while still exposing one kind.
+            source_key = f"{raw_type}:{raw_key}" if raw_type or raw_key else ""
+
+        source_user_id = cls._row_value(row, "source_user_id")
+        if source_kind in {"following_user", "user_backup"}:
+            try:
+                source_user_id = int(source_user_id if source_user_id is not None else raw_key)
+            except (TypeError, ValueError):
+                source_user_id = None
+            if source_user_id is not None:
+                source_key = str(source_user_id)
+            source_user_name = cls._row_value(row, "source_user_name")
+            if source_user_name is not None:
+                source_user_name = str(source_user_name).strip() or None
+        else:
+            source_user_id = None
+            source_user_name = None
+
+        return {
+            "source_kind": source_kind,
+            "source_type": raw_type or source_kind,
+            "source_key": source_key,
+            "source_user_id": source_user_id,
+            "source_user_name": source_user_name,
+        }
+
+    @classmethod
+    def _source_sort_key(cls, source: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            cls._CATALOG_SOURCE_ORDER.get(str(source.get("source_kind") or "other"), 99),
+            str(source.get("source_user_name") or "").casefold(),
+            int(source.get("source_user_id") or 0),
+            str(source.get("source_key") or ""),
+            str(source.get("source_type") or ""),
+        )
+
+    @staticmethod
+    def _catalog_timestamp() -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _catalog_series_rows(self) -> list[dict[str, Any]]:
+        """Return eligible series snapshots using only body completeness flags."""
+        rows = self.conn.execute(
+            """
+            SELECT
+                se.series_id,
+                se.title,
+                se.user_id,
+                u.name AS author_name,
+                COALESCE(NULLIF(se.cover_url, ''), (
+                    SELECT n2.cover_url
+                    FROM novels n2
+                    WHERE n2.series_id = se.series_id
+                      AND n2.cover_url IS NOT NULL
+                      AND n2.cover_url != ''
+                    ORDER BY n2.create_date ASC, n2.novel_id ASC
+                    LIMIT 1
+                )) AS cover_url,
+                COALESCE(se.total_novels, 0) AS expected_count,
+                COUNT(n.novel_id) AS local_count,
+                COALESCE(SUM(CASE WHEN COALESCE(nt.has_content, 0) = 1 THEN 1 ELSE 0 END), 0)
+                    AS complete_count,
+                COALESCE(se.status, 'unknown') AS remote_status,
+                se.last_checked_at,
+                se.last_seen_at AS updated_at,
+                ro.action AS override_action
+            FROM series se
+            LEFT JOIN users u ON u.user_id = se.user_id
+            LEFT JOIN novels n ON n.series_id = se.series_id
+            LEFT JOIN novel_texts nt ON nt.novel_id = n.novel_id
+            LEFT JOIN rescue_overrides ro
+              ON ro.item_type = 'series' AND ro.item_id = se.series_id
+            GROUP BY
+                se.series_id, se.title, se.user_id, u.name, se.cover_url,
+                se.total_novels, se.status, se.last_checked_at, se.last_seen_at,
+                ro.action
+            ORDER BY se.series_id
+            """
+        ).fetchall()
+
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            if data.get("override_action") == "exclude":
+                continue
+            remote_status = str(data.get("remote_status") or "unknown")
+            remote_unavailable = (
+                data.get("override_action") == "include" or remote_status == "deleted"
+            )
+            expected_count = int(data.get("expected_count") or 0)
+            local_count = int(data.get("local_count") or 0)
+            complete_count = int(data.get("complete_count") or 0)
+            if not remote_unavailable or complete_count == 0:
+                continue
+            rescue_state = (
+                "success"
+                if expected_count > 0
+                and local_count >= expected_count
+                and complete_count == local_count
+                else "partial"
+            )
+            series_id = int(data["series_id"])
+            result.append(
+                {
+                    "item_type": "series",
+                    "item_id": series_id,
+                    "content_kind": "series",
+                    "series_id": series_id,
+                    "title": str(data.get("title") or f"系列 {series_id}"),
+                    "user_id": int(data.get("user_id") or 0),
+                    "author_name": str(data.get("author_name") or ""),
+                    "cover_url": data.get("cover_url"),
+                    "rescue_state": rescue_state,
+                    "remote_status": remote_status,
+                    "eligibility_reason": "series_unavailable",
+                    "expected_count": expected_count if expected_count > 0 else None,
+                    "local_count": local_count,
+                    "complete_count": complete_count,
+                    "last_checked_at": data.get("last_checked_at"),
+                    "updated_at": data.get("updated_at"),
+                }
+            )
+        return result
+
+    def _catalog_novel_rows(self, rescue_series_ids: set[int]) -> list[dict[str, Any]]:
+        """Return eligible standalone/chapter snapshots in one set query."""
+        rows = self.conn.execute(
+            """
+            SELECT
+                n.novel_id,
+                n.series_id,
+                n.title,
+                n.user_id,
+                u.name AS author_name,
+                n.cover_url,
+                COALESCE(n.status, 'unknown') AS remote_status,
+                n.last_checked_at,
+                n.last_seen_at AS updated_at,
+                ro.action AS override_action
+            FROM novels n
+            LEFT JOIN users u ON u.user_id = n.user_id
+            JOIN novel_texts nt ON nt.novel_id = n.novel_id
+            LEFT JOIN rescue_overrides ro
+              ON ro.item_type = 'novel' AND ro.item_id = n.novel_id
+            WHERE COALESCE(nt.has_content, 0) = 1
+              AND COALESCE(ro.action, '') != 'exclude'
+              AND (
+                    ro.action = 'include'
+                    OR COALESCE(n.status, 'unknown') IN ('deleted', 'restricted')
+              )
+            ORDER BY n.novel_id
+            """
+        ).fetchall()
+
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            series_value = data.get("series_id")
+            series_id = int(series_value) if series_value is not None else None
+            if series_id is not None and series_id in rescue_series_ids:
+                continue
+            novel_id = int(data["novel_id"])
+            result.append(
+                {
+                    "item_type": "novel",
+                    "item_id": novel_id,
+                    "content_kind": "series_chapter" if series_id is not None else "standalone",
+                    "series_id": series_id,
+                    "title": str(data.get("title") or f"小说 {novel_id}"),
+                    "user_id": int(data.get("user_id") or 0),
+                    "author_name": str(data.get("author_name") or ""),
+                    "cover_url": data.get("cover_url"),
+                    "rescue_state": "success",
+                    "remote_status": str(data.get("remote_status") or "unknown"),
+                    "eligibility_reason": "novel_unavailable",
+                    "expected_count": None,
+                    "local_count": 1,
+                    "complete_count": 1,
+                    "last_checked_at": data.get("last_checked_at"),
+                    "updated_at": data.get("updated_at"),
+                }
+            )
+        return result
+
+    @staticmethod
+    def _source_user_expr(alias: str = "s") -> str:
+        return (
+            f"CASE WHEN {alias}.source_type IN ('following_user_scan', 'user_backup') "
+            f"THEN CAST({alias}.source_key AS INTEGER) END"
+        )
+
+    def _catalog_source_fact_rows(
+        self,
+        item_type: str | None = None,
+        item_id: int | None = None,
+    ) -> list[sqlite3.Row]:
+        """Fetch raw source facts for one item or every current catalog item."""
+        user_expr = self._source_user_expr()
+        if item_type is None:
+            fact_user_expr = self._source_user_expr("fact")
+            rows = self.conn.execute(
+                f"""
+                WITH source_facts AS (
+                    SELECT rc.item_type, rc.item_id, s.source_type, s.source_key
+                    FROM rescue_catalog rc
+                    JOIN sources s ON s.novel_id = rc.item_id
+                    WHERE rc.item_type = 'novel'
+                    UNION ALL
+                    SELECT rc.item_type, rc.item_id, s.source_type, s.source_key
+                    FROM rescue_catalog rc
+                    JOIN novels n ON n.series_id = rc.item_id
+                    JOIN sources s ON s.novel_id = n.novel_id
+                    WHERE rc.item_type = 'series'
+                    UNION ALL
+                    SELECT rc.item_type, rc.item_id, 'subscribed_series', ''
+                    FROM rescue_catalog rc
+                    JOIN series se ON se.series_id = rc.item_id
+                    WHERE rc.item_type = 'series' AND se.is_subscribed = 1
+                )
+                SELECT fact.item_type, fact.item_id, fact.source_type, fact.source_key,
+                       {fact_user_expr} AS source_user_id, u.name AS source_user_name
+                FROM source_facts fact
+                LEFT JOIN users u ON u.user_id = {fact_user_expr}
+                ORDER BY fact.item_type, fact.item_id, fact.source_type, fact.source_key
+                """
+            ).fetchall()
+            return rows
+
+        normalized_type = self._validate_rescue_item_type(item_type)
+        normalized_id = int(item_id) if item_id is not None else None
+        if normalized_type == "novel":
+            rows = self.conn.execute(
+                f"""
+                SELECT 'novel' AS item_type, ? AS item_id, s.source_type, s.source_key,
+                       {user_expr} AS source_user_id, u.name AS source_user_name
+                FROM sources s
+                LEFT JOIN users u ON u.user_id = {user_expr}
+                WHERE s.novel_id = ?
+                ORDER BY s.source_type, s.source_key
+                """,
+                (normalized_id, normalized_id),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                f"""
+                SELECT 'series' AS item_type, ? AS item_id, s.source_type, s.source_key,
+                       {user_expr} AS source_user_id, u.name AS source_user_name
+                FROM novels n
+                JOIN sources s ON s.novel_id = n.novel_id
+                LEFT JOIN users u ON u.user_id = {user_expr}
+                WHERE n.series_id = ?
+                UNION ALL
+                SELECT 'series', ?, 'subscribed_series', '', NULL, NULL
+                FROM series se
+                WHERE se.series_id = ? AND se.is_subscribed = 1
+                ORDER BY source_type, source_key
+                """,
+                (normalized_id, normalized_id, normalized_id, normalized_id),
+            ).fetchall()
+        return rows
+
+    def _catalog_sources(self, item_type: str, item_id: int) -> list[dict[str, Any]]:
+        normalized_type = self._validate_rescue_item_type(item_type)
+        rows = self._catalog_source_fact_rows(normalized_type, int(item_id))
+        result: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            source = self._normalize_source(row)
+            key = (str(source["source_kind"]), str(source["source_key"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(source)
+        result.sort(key=self._source_sort_key)
+        return result
+
+    def _catalog_all_sources(self) -> dict[tuple[str, int], list[dict[str, Any]]]:
+        grouped: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        seen: set[tuple[str, int, str, str]] = set()
+        for row in self._catalog_source_fact_rows():
+            item_type = str(row["item_type"])
+            item_id = int(row["item_id"])
+            source = self._normalize_source(row)
+            key = (item_type, item_id, str(source["source_kind"]), str(source["source_key"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            grouped.setdefault((item_type, item_id), []).append(source)
+        for sources in grouped.values():
+            sources.sort(key=self._source_sort_key)
+        return grouped
+
+    def rebuild_rescue_catalog(self) -> dict[str, int]:
+        """Build the complete rescue catalog and source snapshot atomically."""
+        started = time.perf_counter()
+        refreshed_at = self._catalog_timestamp()
+        with self.transaction():
+            series_rows = self._catalog_series_rows()
+            rescue_series_ids = {int(row["series_id"]) for row in series_rows}
+            novel_rows = self._catalog_novel_rows(rescue_series_ids)
+
+            # Sources have a foreign key to the catalog; clear both explicitly so
+            # this remains correct even for databases created before the FK pragma.
+            self.conn.execute("DELETE FROM rescue_catalog_sources")
+            self.conn.execute("DELETE FROM rescue_catalog")
+
+            columns = (
+                "item_type, item_id, content_kind, series_id, title, user_id, "
+                "author_name, cover_url, rescue_state, remote_status, eligibility_reason, "
+                "expected_count, local_count, complete_count, last_checked_at, updated_at, refreshed_at"
+            )
+            values = [
+                (
+                    row["item_type"], row["item_id"], row["content_kind"], row["series_id"],
+                    row["title"], row["user_id"], row["author_name"], row["cover_url"],
+                    row["rescue_state"], row["remote_status"], row["eligibility_reason"],
+                    row["expected_count"], row["local_count"], row["complete_count"],
+                    row["last_checked_at"], row["updated_at"], refreshed_at,
+                )
+                for row in series_rows
+            ]
+            if values:
+                self.conn.executemany(
+                    f"INSERT INTO rescue_catalog ({columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    values,
+                )
+            values = [
+                (
+                    row["item_type"], row["item_id"], row["content_kind"], row["series_id"],
+                    row["title"], row["user_id"], row["author_name"], row["cover_url"],
+                    row["rescue_state"], row["remote_status"], row["eligibility_reason"],
+                    row["expected_count"], row["local_count"], row["complete_count"],
+                    row["last_checked_at"], row["updated_at"], refreshed_at,
+                )
+                for row in novel_rows
+            ]
+            if values:
+                self.conn.executemany(
+                    f"INSERT INTO rescue_catalog ({columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    values,
+                )
+
+            grouped_sources = self._catalog_all_sources()
+            source_values = [
+                (
+                    item_type,
+                    item_id,
+                    source["source_kind"],
+                    source["source_type"],
+                    source["source_key"],
+                    source["source_user_id"],
+                    source["source_user_name"],
+                )
+                for (item_type, item_id), sources in grouped_sources.items()
+                for source in sources
+            ]
+            if source_values:
+                self.conn.executemany(
+                    """
+                    INSERT INTO rescue_catalog_sources (
+                        item_type, item_id, source_kind, source_type, source_key,
+                        source_user_id, source_user_name
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    source_values,
+                )
+
+            duration_ms = max(0, int((time.perf_counter() - started) * 1000))
+            self.conn.execute(
+                """
+                INSERT INTO rescue_catalog_meta (
+                    singleton_id, refreshed_at, item_count, duration_ms
+                ) VALUES (1, ?, ?, ?)
+                ON CONFLICT(singleton_id) DO UPDATE SET
+                    refreshed_at = excluded.refreshed_at,
+                    item_count = excluded.item_count,
+                    duration_ms = excluded.duration_ms
+                """,
+                (refreshed_at, len(series_rows) + len(novel_rows), duration_ms),
+            )
+
+        return {
+            "items": len(series_rows) + len(novel_rows),
+            "sources": len(source_values),
+            "duration_ms": duration_ms,
+        }
+
+    def get_rescue_catalog_meta(self) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT refreshed_at, item_count, duration_ms
+            FROM rescue_catalog_meta
+            WHERE singleton_id = 1
+            """
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_rescue_catalog_sources(
+        self,
+        item_type: str,
+        item_id: int,
+    ) -> list[dict[str, Any]]:
+        normalized_type = self._validate_rescue_item_type(item_type)
+        rows = self.conn.execute(
+            """
+            SELECT source_kind, source_type, source_key,
+                   source_user_id, source_user_name
+            FROM rescue_catalog_sources
+            WHERE item_type = ? AND item_id = ?
+            """,
+            (normalized_type, int(item_id)),
+        ).fetchall()
+        result = [dict(row) for row in rows]
+        result.sort(key=self._source_sort_key)
+        return result
 
     def get_rescue_override(
         self,

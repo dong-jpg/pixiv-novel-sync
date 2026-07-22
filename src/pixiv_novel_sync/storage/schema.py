@@ -331,6 +331,63 @@ class SchemaMixin:
                 token_prefix TEXT NOT NULL,
                 rotated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS rescue_catalog (
+                item_type TEXT NOT NULL CHECK (item_type IN ('novel', 'series')),
+                item_id INTEGER NOT NULL,
+                content_kind TEXT NOT NULL CHECK (
+                    content_kind IN ('series', 'series_chapter', 'standalone')
+                ),
+                series_id INTEGER,
+                title TEXT NOT NULL,
+                user_id INTEGER NOT NULL DEFAULT 0,
+                author_name TEXT NOT NULL DEFAULT '',
+                cover_url TEXT,
+                rescue_state TEXT NOT NULL CHECK (rescue_state IN ('success', 'partial')),
+                remote_status TEXT NOT NULL,
+                eligibility_reason TEXT NOT NULL,
+                expected_count INTEGER,
+                local_count INTEGER NOT NULL DEFAULT 0,
+                complete_count INTEGER NOT NULL DEFAULT 0,
+                last_checked_at TEXT,
+                updated_at TEXT,
+                refreshed_at TEXT NOT NULL,
+                PRIMARY KEY (item_type, item_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS rescue_catalog_sources (
+                item_type TEXT NOT NULL,
+                item_id INTEGER NOT NULL,
+                source_kind TEXT NOT NULL CHECK (
+                    source_kind IN (
+                        'bookmark', 'subscribed_series', 'following_user',
+                        'user_backup', 'other'
+                    )
+                ),
+                source_type TEXT NOT NULL,
+                source_key TEXT NOT NULL DEFAULT '',
+                source_user_id INTEGER,
+                source_user_name TEXT,
+                PRIMARY KEY (item_type, item_id, source_kind, source_key),
+                FOREIGN KEY (item_type, item_id)
+                    REFERENCES rescue_catalog(item_type, item_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS rescue_catalog_meta (
+                singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+                refreshed_at TEXT NOT NULL,
+                item_count INTEGER NOT NULL,
+                duration_ms INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rescue_catalog_kind_state
+                ON rescue_catalog(content_kind, rescue_state);
+            CREATE INDEX IF NOT EXISTS idx_rescue_catalog_checked
+                ON rescue_catalog(last_checked_at DESC, item_id DESC);
+            CREATE INDEX IF NOT EXISTS idx_rescue_catalog_updated
+                ON rescue_catalog(updated_at DESC, item_id DESC);
+            CREATE INDEX IF NOT EXISTS idx_rescue_catalog_sources_kind
+                ON rescue_catalog_sources(source_kind, item_type, item_id);
             """
         )
         self._commit_if_needed()

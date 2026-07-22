@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from pixiv_novel_sync.models import NovelTextRecord
+from pixiv_novel_sync.models import NovelTextRecord, SourceRecord
 from pixiv_novel_sync.storage_db import Database
 
 
@@ -138,6 +138,189 @@ def _seed_series(
     db.conn.commit()
 
 
+def test_rebuild_catalog_classifies_items_and_sources(db: Database) -> None:
+    _seed_series(db, 200, status="deleted", total_novels=2)
+    _seed_novel(db, 201, series_id=200, status="normal", text="章节一")
+    _seed_novel(db, 202, series_id=200, status="normal", text="章节二")
+    _seed_novel(db, 203, series_id=None, status="deleted", text="独立篇")
+    db.upsert_source(SourceRecord(201, "following_user_scan", "2"))
+    db.upsert_source(SourceRecord(202, "subscribed_series", "200"))
+    db.upsert_source(SourceRecord(203, "bookmark_public", "1"))
+
+    result = db.rebuild_rescue_catalog()
+
+    assert result["items"] == 2
+    rows = db.conn.execute(
+        "SELECT item_type, item_id, content_kind FROM rescue_catalog ORDER BY item_id"
+    ).fetchall()
+    assert [(row[0], row[1], row[2]) for row in rows] == [
+        ("series", 200, "series"),
+        ("novel", 203, "standalone"),
+    ]
+    sources = db.list_rescue_catalog_sources("series", 200)
+    assert {item["source_kind"] for item in sources} == {
+        "following_user", "subscribed_series"
+    }
+
+
+def test_rebuild_catalog_classifies_complete_and_partial_series(db: Database) -> None:
+    _seed_series(db, 300, status="deleted", total_novels=2)
+    _seed_novel(db, 301, series_id=300, text="一")
+    _seed_novel(db, 302, series_id=300, text="二")
+
+    _seed_series(db, 310, status="deleted", total_novels=2)
+    _seed_novel(db, 311, series_id=310, text="一")
+    _seed_novel(db, 312, series_id=310, text="")
+
+    _seed_series(db, 320, status="deleted", total_novels=0)
+    _seed_novel(db, 321, series_id=320, text="一")
+
+    _seed_series(db, 330, status="deleted", total_novels=1)
+    _seed_novel(db, 331, series_id=330, text="")
+
+    _seed_series(db, 340, status="normal", total_novels=1)
+    _seed_novel(db, 341, series_id=340, text="一")
+    db.set_rescue_override("series", 340, "include")
+
+    _seed_series(db, 350, status="deleted", total_novels=1)
+    _seed_novel(db, 351, series_id=350, text="一")
+    db.set_rescue_override("series", 350, "exclude")
+
+    db.rebuild_rescue_catalog()
+
+    rows = db.conn.execute(
+        "SELECT item_id, rescue_state FROM rescue_catalog "
+        "WHERE item_type = 'series' ORDER BY item_id"
+    ).fetchall()
+    assert [(row[0], row[1]) for row in rows] == [
+        (300, "success"),
+        (310, "partial"),
+        (320, "partial"),
+        (340, "success"),
+    ]
+
+
+def test_rebuild_catalog_uses_parent_series_instead_of_duplicate_chapters(
+    db: Database,
+) -> None:
+    _seed_series(db, 400, status="deleted", total_novels=2)
+    _seed_novel(db, 401, series_id=400, status="deleted", text="一")
+    _seed_novel(db, 402, series_id=400, status="restricted", text="二")
+
+    db.rebuild_rescue_catalog()
+
+    rows = db.conn.execute(
+        "SELECT item_type, item_id FROM rescue_catalog ORDER BY item_type, item_id"
+    ).fetchall()
+    assert [(row[0], row[1]) for row in rows] == [("series", 400)]
+
+
+def test_rebuild_catalog_classifies_novel_eligibility(db: Database) -> None:
+    _seed_novel(db, 500, status="deleted", text="独立删除")
+    _seed_novel(db, 501, status="restricted", text="独立限制")
+
+    _seed_series(db, 510, status="normal", total_novels=1)
+    _seed_novel(db, 511, series_id=510, status="deleted", text="系列单章")
+
+    _seed_novel(db, 520, status="normal", text="人工纳入")
+    db.set_rescue_override("novel", 520, "include")
+
+    _seed_novel(db, 530, status="normal", text="普通小说")
+    _seed_novel(db, 540, status="deleted", text="")
+    _seed_novel(db, 550, status="deleted", text="人工排除")
+    db.set_rescue_override("novel", 550, "exclude")
+
+    db.rebuild_rescue_catalog()
+
+    rows = db.conn.execute(
+        "SELECT item_id, content_kind, rescue_state FROM rescue_catalog "
+        "WHERE item_type = 'novel' ORDER BY item_id"
+    ).fetchall()
+    assert [(row[0], row[1], row[2]) for row in rows] == [
+        (500, "standalone", "success"),
+        (501, "standalone", "success"),
+        (511, "series_chapter", "success"),
+        (520, "standalone", "success"),
+    ]
+
+
+def test_rebuild_catalog_normalizes_all_sources_and_author_names(db: Database) -> None:
+    db.conn.executemany(
+        "INSERT INTO users (user_id, name, raw_json) VALUES (?, ?, '{}')",
+        [(7, "关注作者"), (8, "备份作者")],
+    )
+    _seed_series(db, 600, status="deleted", total_novels=2)
+    _seed_novel(db, 601, series_id=600, text="一")
+    _seed_novel(db, 602, series_id=600, text="二")
+    db.conn.execute("UPDATE series SET is_subscribed = 1 WHERE series_id = 600")
+
+    for novel_id, source_type, source_key in [
+        (601, "bookmark_public", "1"),
+        (602, "bookmark_private", "2"),
+        (601, "subscribed_series", "600"),
+        (601, "following_user_scan", "7"),
+        (602, "following_user_scan", "7"),
+        (601, "user_backup", "8"),
+        (602, "user_backup", "8"),
+        (601, "mystery_feed", "mystery"),
+        (602, "mystery_feed", "mystery"),
+    ]:
+        db.upsert_source(SourceRecord(novel_id, source_type, source_key))
+
+    db.rebuild_rescue_catalog()
+
+    sources = db.list_rescue_catalog_sources("series", 600)
+    assert [source["source_kind"] for source in sources] == [
+        "bookmark",
+        "subscribed_series",
+        "following_user",
+        "user_backup",
+        "other",
+    ]
+    assert len(sources) == 5
+    following = next(source for source in sources if source["source_kind"] == "following_user")
+    assert following["source_key"] == "7"
+    assert following["source_user_id"] == 7
+    assert following["source_user_name"] == "关注作者"
+    backup = next(source for source in sources if source["source_kind"] == "user_backup")
+    assert backup["source_key"] == "8"
+    assert backup["source_user_id"] == 8
+    assert backup["source_user_name"] == "备份作者"
+
+
+def test_rebuild_catalog_adds_subscribed_series_without_chapter_source(
+    db: Database,
+) -> None:
+    _seed_series(db, 610, status="deleted", total_novels=1)
+    _seed_novel(db, 611, series_id=610, text="正文")
+    db.conn.execute("UPDATE series SET is_subscribed = 1 WHERE series_id = 610")
+    db.conn.commit()
+
+    db.rebuild_rescue_catalog()
+
+    assert [
+        source["source_kind"]
+        for source in db.list_rescue_catalog_sources("series", 610)
+    ] == ["subscribed_series"]
+
+
+def test_rebuild_catalog_updates_meta_and_avoids_text_raw(db: Database) -> None:
+    _seed_novel(db, 700, status="deleted", text="正文")
+    statements: list[str] = []
+    db.conn.set_trace_callback(statements.append)
+    try:
+        result = db.rebuild_rescue_catalog()
+    finally:
+        db.conn.set_trace_callback(None)
+
+    meta = db.get_rescue_catalog_meta()
+    assert meta is not None
+    assert meta["item_count"] == result["items"] == 1
+    assert meta["duration_ms"] == result["duration_ms"]
+    assert any("has_content" in statement for statement in statements)
+    assert all("text_raw" not in statement.lower() for statement in statements)
+
+
 def test_rescue_schema_and_override_crud(db: Database) -> None:
     tables = {
         str(row[0])
@@ -145,7 +328,25 @@ def test_rescue_schema_and_override_crud(db: Database) -> None:
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         ).fetchall()
     }
-    assert {"rescue_overrides", "rescue_api_token"} <= tables
+    assert {
+        "rescue_overrides",
+        "rescue_api_token",
+        "rescue_catalog",
+        "rescue_catalog_sources",
+        "rescue_catalog_meta",
+    } <= tables
+    indexes = {
+        str(row[0])
+        for row in db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'"
+        ).fetchall()
+    }
+    assert {
+        "idx_rescue_catalog_kind_state",
+        "idx_rescue_catalog_checked",
+        "idx_rescue_catalog_updated",
+        "idx_rescue_catalog_sources_kind",
+    } <= indexes
 
     _seed_novel(db)
     assert db.get_rescue_override("novel", 1) is None
