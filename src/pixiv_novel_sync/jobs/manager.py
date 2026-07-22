@@ -11,6 +11,26 @@ from pixiv_novel_sync.jobs.models import JobLogEntry, JobSpec, JobState, JobStat
 _TERMINAL_STATUSES = {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED}
 
 
+class FinalizationClaim:
+    __slots__ = ("_manager", "_job_id", "_token")
+
+    def __init__(self, manager: JobManager, job_id: str, token: object) -> None:
+        self._manager = manager
+        self._job_id = job_id
+        self._token = token
+
+    def finish(self, task_stats: dict, *, is_last_task: bool) -> bool:
+        return self._manager._finish_finalization(
+            self._job_id,
+            self._token,
+            task_stats,
+            is_last_task=is_last_task,
+        )
+
+    def abort(self) -> bool:
+        return self._manager._abort_finalization(self._job_id, self._token)
+
+
 class JobManager:
     def __init__(self, max_logs: int = 500, max_jobs: int = 50) -> None:
         self.max_logs = max_logs
@@ -18,6 +38,7 @@ class JobManager:
         self._jobs: OrderedDict[str, JobState] = OrderedDict()
         self._lock = threading.RLock()
         self._semaphore = threading.BoundedSemaphore(1)
+        self._active_finalizations: dict[str, object] = {}
 
     def submit(self, spec: JobSpec) -> JobState:
         with self._lock:
@@ -75,11 +96,28 @@ class JobManager:
     def request_cancel(self, job_id: str) -> bool:
         with self._lock:
             state = self._jobs.get(job_id)
-            if state is None or state.status in _TERMINAL_STATUSES:
+            if (
+                state is None
+                or state.status in _TERMINAL_STATUSES
+                or job_id in self._active_finalizations
+            ):
                 return False
             state.status = JobStatus.CANCEL_REQUESTED
             state.message = "cancel requested"
             return True
+
+    def try_begin_finalization(self, job_id: str) -> FinalizationClaim | None:
+        with self._lock:
+            state = self._jobs.get(job_id)
+            if (
+                state is None
+                or state.status != JobStatus.RUNNING
+                or job_id in self._active_finalizations
+            ):
+                return None
+            token = object()
+            self._active_finalizations[job_id] = token
+            return FinalizationClaim(self, job_id, token)
 
     def mark_running(self, job_id: str, message: str = "running") -> bool:
         with self._lock:
@@ -123,6 +161,41 @@ class JobManager:
                 if len(self._jobs) <= self.max_jobs:
                     break
                 self._jobs.pop(job_id, None)
+                self._active_finalizations.pop(job_id, None)
+
+    def _finish_finalization(
+        self,
+        job_id: str,
+        token: object,
+        task_stats: dict,
+        *,
+        is_last_task: bool,
+    ) -> bool:
+        from pixiv_novel_sync.jobs.tasks import merge_stats
+
+        with self._lock:
+            if self._active_finalizations.get(job_id) is not token:
+                return False
+            state = self._jobs.get(job_id)
+            if state is None or state.status != JobStatus.RUNNING:
+                self._active_finalizations.pop(job_id, None)
+                return False
+
+            merge_stats(state.stats, task_stats)
+            if is_last_task:
+                state.status = JobStatus.SUCCEEDED
+                state.message = "succeeded"
+                state.error = None
+                state.finished_at = time.time()
+            self._active_finalizations.pop(job_id, None)
+            return True
+
+    def _abort_finalization(self, job_id: str, token: object) -> bool:
+        with self._lock:
+            if self._active_finalizations.get(job_id) is not token:
+                return False
+            self._active_finalizations.pop(job_id, None)
+            return True
 
     def _mark_finished(
         self,

@@ -124,7 +124,13 @@ def test_cli_runner_status_check_dispatches_to_status_service(monkeypatch, capsy
 def test_cli_runner_user_backup_parses_and_passes_user_id_to_service(monkeypatch, capsys):
     calls = []
 
-    def fake_run_user_backup_task(settings, user_id, reporter=None, stop_requested=None):
+    def fake_run_user_backup_task(
+        settings,
+        user_id,
+        reporter=None,
+        stop_requested=None,
+        claim_finalization=None,
+    ):
         calls.append((settings, user_id, reporter, stop_requested))
         return {"novels": 5}
 

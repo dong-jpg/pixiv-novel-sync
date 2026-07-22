@@ -132,3 +132,70 @@ def test_run_slot_rejects_over_release():
         pass
     else:
         raise AssertionError("expected over-release to raise ValueError")
+
+
+def test_finalization_claim_blocks_cancel_and_finishes_last_task_atomically():
+    manager = JobManager()
+    state = manager.submit(JobSpec(source=JobSource.WEB, task_types=["bookmark"]))
+    assert manager.mark_running(state.job_id) is True
+
+    claim = manager.try_begin_finalization(state.job_id)
+
+    assert claim is not None
+    assert manager.request_cancel(state.job_id) is False
+    assert claim.finish({"rescue_catalog_items": 2}, is_last_task=True) is True
+    assert state.status == JobStatus.SUCCEEDED
+    assert state.stats["rescue_catalog_items"] == 2
+    assert state.finished_at is not None
+    assert manager.request_cancel(state.job_id) is False
+
+
+def test_cancel_before_finalization_prevents_claim():
+    manager = JobManager()
+    state = manager.submit(JobSpec(source=JobSource.WEB, task_types=["bookmark"]))
+    assert manager.mark_running(state.job_id) is True
+    assert manager.request_cancel(state.job_id) is True
+
+    assert manager.try_begin_finalization(state.job_id) is None
+    assert state.status == JobStatus.CANCEL_REQUESTED
+
+
+def test_aborted_finalization_accepts_cancel_again():
+    manager = JobManager()
+    state = manager.submit(JobSpec(source=JobSource.WEB, task_types=["bookmark"]))
+    assert manager.mark_running(state.job_id) is True
+    claim = manager.try_begin_finalization(state.job_id)
+    assert claim is not None
+
+    assert claim.abort() is True
+    assert manager.request_cancel(state.job_id) is True
+
+
+def test_non_last_finalization_releases_cancel_gate():
+    manager = JobManager()
+    state = manager.submit(JobSpec(source=JobSource.WEB, task_types=["bookmark", "novel_status"]))
+    assert manager.mark_running(state.job_id) is True
+    claim = manager.try_begin_finalization(state.job_id)
+    assert claim is not None
+
+    assert claim.finish({"novels": 1}, is_last_task=False) is True
+    assert state.status == JobStatus.RUNNING
+    assert state.stats["novels"] == 1
+    assert manager.request_cancel(state.job_id) is True
+
+
+def test_stale_finalization_abort_cannot_clear_new_claim():
+    manager = JobManager()
+    state = manager.submit(JobSpec(source=JobSource.WEB, task_types=["a", "b"]))
+    assert manager.mark_running(state.job_id) is True
+
+    first = manager.try_begin_finalization(state.job_id)
+    assert first is not None
+    assert first.finish({"a": 1}, is_last_task=False) is True
+
+    second = manager.try_begin_finalization(state.job_id)
+    assert second is not None
+    assert first.abort() is False
+    assert manager.request_cancel(state.job_id) is False
+    assert second.abort() is True
+    assert manager.request_cancel(state.job_id) is True

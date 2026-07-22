@@ -17,6 +17,7 @@ from .services import _rebuild_rescue_catalog
 logger = logging.getLogger(__name__)
 
 StopRequested = Callable[[], bool]
+ClaimFinalization = Callable[[], bool]
 
 
 def _raise_if_stopped(stop_requested: StopRequested | None) -> None:
@@ -34,7 +35,11 @@ def _build_cancel_progress_callback(stop_requested: StopRequested | None) -> Cal
     return on_progress
 
 
-def run_bookmark_sync(settings: Settings, stop_requested: StopRequested | None = None) -> dict[str, int]:
+def run_bookmark_sync(
+    settings: Settings,
+    stop_requested: StopRequested | None = None,
+    claim_finalization: ClaimFinalization | None = None,
+) -> dict[str, int]:
     _raise_if_stopped(stop_requested)
     auth = PixivAuthManager(settings.pixiv)
     api, auth_result = auth.login()
@@ -57,6 +62,8 @@ def run_bookmark_sync(settings: Settings, stop_requested: StopRequested | None =
             progress_callback=_build_cancel_progress_callback(stop_requested),
         )
         _raise_if_stopped(stop_requested)
+        if claim_finalization is not None and not claim_finalization():
+            raise InterruptedError("Task stopped by user")
         bookmark_stats.update(_rebuild_rescue_catalog(db))
         logger.info("Bookmark sync finished: %s", json.dumps(bookmark_stats, ensure_ascii=False))
         print(json.dumps(bookmark_stats, ensure_ascii=False, indent=2))

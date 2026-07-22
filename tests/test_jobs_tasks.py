@@ -161,6 +161,21 @@ def test_execute_task_dispatches_bookmark(monkeypatch):
     assert calls[0][1] is not None
 
 
+def test_execute_task_passes_finalization_claim_to_bookmark(monkeypatch):
+    observed = []
+    claim_finalization = lambda: True
+
+    def fake_run_bookmark_sync(settings, stop_requested=None, claim_finalization=None):
+        observed.append(claim_finalization)
+        return {"novels": 1}
+
+    monkeypatch.setattr("pixiv_novel_sync.jobs.quick_sync.run_bookmark_sync", fake_run_bookmark_sync)
+
+    execute_task("bookmark", object(), {"claim_finalization": claim_finalization})
+
+    assert observed == [claim_finalization]
+
+
 def test_execute_task_dispatches_sync_check_without_releasing_runner_slot(monkeypatch):
     calls = []
 
@@ -350,6 +365,25 @@ def test_direct_sync_skips_rebuild_when_cancelled_after_service_returns(
     assert created["db"].closed is True
 
 
+@pytest.mark.parametrize("task_type", ["following_novels", "subscribed_series"])
+def test_direct_sync_skips_rebuild_when_finalization_claim_is_rejected(
+    task_type, direct_sync_env
+):
+    settings, created, _fake_db, _fake_service = direct_sync_env
+    claim_calls = []
+
+    with pytest.raises(InterruptedError, match="Task stopped by user"):
+        execute_task(
+            task_type,
+            settings,
+            {"claim_finalization": lambda: claim_calls.append(True) or False},
+        )
+
+    assert claim_calls == [True]
+    assert created["db"].rebuild_catalog_calls == 0
+    assert created["db"].closed is True
+
+
 
 def test_execute_task_dispatches_user_backup_service(monkeypatch):
     calls = []
@@ -369,6 +403,54 @@ def test_execute_task_dispatches_user_backup_service(monkeypatch):
     assert calls[0][1] == 123
     assert calls[0][2] is not None
     assert calls[0][3] is not None
+
+
+def test_execute_task_passes_finalization_claim_to_rebuilding_services(monkeypatch):
+    observed = []
+    claim_finalization = lambda: True
+
+    def fake_user_backup(
+        settings,
+        user_id,
+        reporter=None,
+        stop_requested=None,
+        claim_finalization=None,
+    ):
+        observed.append(("user_backup", claim_finalization))
+        return {"novels": 1}
+
+    def fake_novel_status(
+        settings,
+        reporter=None,
+        stop_requested=None,
+        claim_finalization=None,
+    ):
+        observed.append(("novel_status", claim_finalization))
+        return {"checked_novels": 1}
+
+    def fake_series_status(
+        settings,
+        reporter=None,
+        stop_requested=None,
+        claim_finalization=None,
+    ):
+        observed.append(("series_status", claim_finalization))
+        return {"checked_series": 1}
+
+    monkeypatch.setattr("pixiv_novel_sync.jobs.services.run_user_backup_task", fake_user_backup)
+    monkeypatch.setattr("pixiv_novel_sync.jobs.services.run_novel_status_task", fake_novel_status)
+    monkeypatch.setattr("pixiv_novel_sync.jobs.services.run_series_status_task", fake_series_status)
+    context = {"claim_finalization": claim_finalization}
+
+    execute_task("user_backup:123", object(), context)
+    execute_task("novel_status", object(), context)
+    execute_task("series_status", object(), context)
+
+    assert observed == [
+        ("user_backup", claim_finalization),
+        ("novel_status", claim_finalization),
+        ("series_status", claim_finalization),
+    ]
 
 
 

@@ -238,6 +238,22 @@ def test_run_bookmark_sync_skips_rebuild_when_cancelled_after_sync(
     assert quick_sync_env["db"].closed is True
 
 
+def test_run_bookmark_sync_skips_rebuild_when_finalization_claim_is_rejected(
+    settings, quick_sync_env
+):
+    claim_calls = []
+
+    with pytest.raises(InterruptedError, match="Task stopped by user"):
+        quick_sync.run_bookmark_sync(
+            settings,
+            claim_finalization=lambda: claim_calls.append(True) or False,
+        )
+
+    assert claim_calls == [True]
+    assert quick_sync_env["db"].rebuild_catalog_calls == 0
+    assert quick_sync_env["db"].closed is True
+
+
 def test_run_check_bookmarks_task_stops_before_login(settings, quick_sync_env):
     manager = FakeJobManager()
 

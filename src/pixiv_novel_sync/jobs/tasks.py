@@ -49,11 +49,18 @@ def execute_task(task_type: str, settings: Any, context: dict[str, Any] | None =
     context = context or {}
     reporter = _job_reporter_from_context(context)
     stop_requested = _stop_requested_from_context(context)
+    claim_finalization = context.get("claim_finalization")
 
     if task_type == "bookmark":
         from pixiv_novel_sync.jobs.quick_sync import run_bookmark_sync
 
-        return run_bookmark_sync(settings, stop_requested=stop_requested)
+        if claim_finalization is None:
+            return run_bookmark_sync(settings, stop_requested=stop_requested)
+        return run_bookmark_sync(
+            settings,
+            stop_requested=stop_requested,
+            claim_finalization=claim_finalization,
+        )
 
     if task_type == "sync_check":
         from pixiv_novel_sync.jobs.quick_sync import run_check_bookmarks_task
@@ -78,7 +85,10 @@ def execute_task(task_type: str, settings: Any, context: dict[str, Any] | None =
         from pixiv_novel_sync.jobs.services import run_user_backup_task
 
         user_id = int(task_type.split(":", 1)[1])
-        return run_user_backup_task(settings, user_id, reporter=reporter, stop_requested=stop_requested)
+        kwargs = {"reporter": reporter, "stop_requested": stop_requested}
+        if claim_finalization is not None:
+            kwargs["claim_finalization"] = claim_finalization
+        return run_user_backup_task(settings, user_id, **kwargs)
 
     if task_type == "user_status":
         from pixiv_novel_sync.jobs.services import run_user_status_task
@@ -88,12 +98,18 @@ def execute_task(task_type: str, settings: Any, context: dict[str, Any] | None =
     if task_type == "novel_status":
         from pixiv_novel_sync.jobs.services import run_novel_status_task
 
-        return run_novel_status_task(settings, reporter=reporter, stop_requested=stop_requested)
+        kwargs = {"reporter": reporter, "stop_requested": stop_requested}
+        if claim_finalization is not None:
+            kwargs["claim_finalization"] = claim_finalization
+        return run_novel_status_task(settings, **kwargs)
 
     if task_type == "series_status":
         from pixiv_novel_sync.jobs.services import run_series_status_task
 
-        return run_series_status_task(settings, reporter=reporter, stop_requested=stop_requested)
+        kwargs = {"reporter": reporter, "stop_requested": stop_requested}
+        if claim_finalization is not None:
+            kwargs["claim_finalization"] = claim_finalization
+        return run_series_status_task(settings, **kwargs)
 
     if task_type == "pending_deletion_detection":
         from pixiv_novel_sync.jobs.services import run_pending_deletion_detection_task
@@ -123,6 +139,7 @@ def _run_direct_sync_task(
     manager = context.get("manager")
     job_id = context.get("job_id")
     params = context.get("params", {})
+    claim_finalization = context.get("claim_finalization")
     series_limit = int(params.get("limit") or settings.sync.series_sync_limit or 0)
     users_limit = int(params.get("users_limit") or settings.sync.auto_sync_following_novels_users_limit or 0)
 
@@ -170,6 +187,8 @@ def _run_direct_sync_task(
             raise RuntimeError(f"Unsupported direct sync task: {task_type}")
 
         if stop_requested is not None and stop_requested():
+            raise InterruptedError("Task stopped by user")
+        if claim_finalization is not None and not claim_finalization():
             raise InterruptedError("Task stopped by user")
         stats.update(_rebuild_rescue_catalog(db, _job_reporter_from_context(context)))
         return stats

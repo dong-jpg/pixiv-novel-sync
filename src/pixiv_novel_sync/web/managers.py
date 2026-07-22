@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,44 +91,50 @@ class AutoSyncScheduler:
     _task_crons: dict[str, str] = field(default_factory=dict)  # 每个任务的cron表达式
     _current_task_job_id: str | None = None  # 当前正在执行的定时任务 job id
     _stop_current_task: bool = False  # 停止当前任务的标志
+    _task_finalizing: bool = False
     _last_cleanup_time: float = 0.0  # 上次清理日志的时间
     _catalog_initialization_attempted: bool = False
+    _lifecycle_claim: Callable[[AutoSyncScheduler], bool] | None = field(default=None, repr=False)
+    _lifecycle_release: Callable[[AutoSyncScheduler], None] | None = field(default=None, repr=False)
     
     def start(self) -> None:
         """启动定时调度器"""
         while True:
             with self._lock:
+                if self._lifecycle_claim is not None and not self._lifecycle_claim(self):
+                    logger.warning("Auto sync scheduler start skipped: another owner is active")
+                    return
                 if self._running:
                     return
                 previous_thread = self._thread
                 if previous_thread is None or not previous_thread.is_alive():
                     self._running = True
                     self._stop_current_task = False
+                    self._task_finalizing = False
                     self._catalog_initialization_attempted = False
                     stop_event = threading.Event()
                     thread = threading.Thread(
-                        target=self._run_scheduler,
+                        target=self._run_scheduler_worker,
                         args=(stop_event,),
                         daemon=True,
                     )
                     self._stop_event = stop_event
                     self._thread = thread
-                    break
+                    try:
+                        thread.start()
+                    except BaseException:
+                        self._thread = None
+                        self._running = False
+                        stop_event.set()
+                        if self._lifecycle_release is not None:
+                            self._lifecycle_release(self)
+                        raise
+                    logger.info("Auto sync scheduler started")
+                    return
             previous_thread.join(timeout=SCHEDULER_STOP_JOIN_TIMEOUT_SECONDS)
             if previous_thread.is_alive():
                 logger.warning("旧调度线程仍在停止，拒绝重复启动")
                 return
-
-        try:
-            thread.start()
-        except BaseException:
-            with self._lock:
-                if self._thread is thread:
-                    self._thread = None
-                    self._running = False
-                    stop_event.set()
-            raise
-        logger.info("Auto sync scheduler started")
     
     def stop(self) -> None:
         """停止定时调度器"""
@@ -135,12 +142,26 @@ class AutoSyncScheduler:
             self._running = False
             self._stop_current_task = True
             self._stop_event.set()
+            thread = self._thread
             logger.info("Auto sync scheduler stopped")
+            if thread is None and self._lifecycle_release is not None:
+                self._lifecycle_release(self)
+        if thread is not None and thread is not threading.current_thread():
+            try:
+                thread.join(timeout=SCHEDULER_STOP_JOIN_TIMEOUT_SECONDS)
+            except RuntimeError:
+                pass
+        if thread is not None and not thread.is_alive():
+            with self._lock:
+                if self._thread is thread:
+                    self._thread = None
+                    if self._lifecycle_release is not None:
+                        self._lifecycle_release(self)
     
     def stop_current_task(self) -> bool:
         """停止当前正在执行的定时任务"""
         with self._lock:
-            if self._current_task_job_id:
+            if self._current_task_job_id and not self._task_finalizing:
                 self._stop_current_task = True
                 logger.info("Stopping current auto sync task: %s", self._current_task_job_id)
                 return True
@@ -164,13 +185,18 @@ class AutoSyncScheduler:
     def _run_scheduler(self, stop_event: threading.Event | None = None) -> None:
         """调度器主循环 - 每个任务独立检查和执行"""
         stop_event = stop_event or self._stop_event
+        self._run_scheduler_loop(stop_event)
+
+    def _run_scheduler_worker(self, stop_event: threading.Event) -> None:
         try:
-            self._run_scheduler_loop(stop_event)
+            self._run_scheduler(stop_event)
         finally:
             with self._lock:
                 if self._thread is threading.current_thread():
                     self._thread = None
                     self._running = False
+                    if self._lifecycle_release is not None:
+                        self._lifecycle_release(self)
 
     def _run_scheduler_loop(self, stop_event: threading.Event) -> None:
         task_configs = [
@@ -294,8 +320,9 @@ class AutoSyncScheduler:
         try:
             db = Database(settings.storage.db_path)
             db.init_schema()
-            if db.get_rescue_catalog_meta() is None:
-                job_services._rebuild_rescue_catalog(db)
+            with db.transaction():
+                if db.get_rescue_catalog_meta() is None:
+                    db.rebuild_rescue_catalog()
         except Exception as exc:
             logger.warning("救援目录初始化失败: %s", exc)
         finally:
@@ -315,7 +342,9 @@ class AutoSyncScheduler:
             if job is None:
                 logger.info("Auto sync task %s skipped: another sync task is running", task_name)
                 return
-            self._current_task_job_id = job.job_id
+            with self._lock:
+                self._current_task_job_id = job.job_id
+                self._task_finalizing = False
 
             # 创建数据库日志记录
             db = None
@@ -339,25 +368,34 @@ class AutoSyncScheduler:
                 # 执行对应的同步函数
                 func = getattr(self, sync_func_name)
                 result = func(settings, job.job_id)
-                if isinstance(result, dict):
-                    job.stats = result
-                if isinstance(result, dict) and result.get("stopped"):
+                with self._lock:
+                    if isinstance(result, dict):
+                        job.stats = result
+                    cancelled = (
+                        isinstance(result, dict) and result.get("stopped")
+                    ) or (self._stop_current_task and not self._task_finalizing)
+                    if cancelled:
+                        job.status = "cancelled"
+                        job.message = "任务已停止"
+                        job.error = None
+                    else:
+                        job.status = "succeeded"
+                        job.message = f"{_task_label(task_name)}完成"
+                    self._task_finalizing = False
+            except InterruptedError:
+                # 用户主动停止：标记为 cancelled，而非 failed
+                with self._lock:
                     job.status = "cancelled"
                     job.message = "任务已停止"
                     job.error = None
-                else:
-                    job.status = "succeeded"
-                    job.message = f"{_task_label(task_name)}完成"
-            except InterruptedError:
-                # 用户主动停止：标记为 cancelled，而非 failed
-                job.status = "cancelled"
-                job.message = "任务已停止"
-                job.error = None
+                    self._task_finalizing = False
                 logger.info("Auto sync task %s stopped by user", task_name)
             except Exception as e:
-                job.status = "failed"
-                job.message = f"任务失败: {str(e)}"
-                job.error = str(e)
+                with self._lock:
+                    job.status = "failed"
+                    job.message = f"任务失败: {str(e)}"
+                    job.error = str(e)
+                    self._task_finalizing = False
                 logger.error("Auto sync task %s failed: %s", task_name, str(e))
             finally:
                 job.finished_at = time.time()
@@ -376,6 +414,7 @@ class AutoSyncScheduler:
                 with self._lock:
                     self._current_task_job_id = None
                     self._stop_current_task = False
+                    self._task_finalizing = False
                 # ✅ Bug #1 修复: 将信号量释放移入 finally 确保始终执行
                 try:
                     self.sync_job_manager._semaphore.release()
@@ -390,6 +429,13 @@ class AutoSyncScheduler:
     def _check_stop(self) -> bool:
         """检查是否需要停止"""
         return self._stop_current_task or not self._running
+
+    def _claim_task_finalization(self) -> bool:
+        with self._lock:
+            if self._stop_current_task or not self._running:
+                return False
+            self._task_finalizing = True
+            return True
 
     def _job_reporter(self, job_id: str | None) -> job_services.JobReporter:
         return job_services.JobReporter(manager=self.sync_job_manager, job_id=job_id)
@@ -480,6 +526,9 @@ class AutoSyncScheduler:
                 time.sleep(settings.sync.delay_seconds_between_pages)
 
             if self._check_stop():
+                total_stats["stopped"] = True
+                return total_stats
+            if not self._claim_task_finalization():
                 total_stats["stopped"] = True
                 return total_stats
             if job_id and self.sync_job_manager:
@@ -625,6 +674,9 @@ class AutoSyncScheduler:
             if self._check_stop():
                 stats["stopped"] = True
                 return stats
+            if not self._claim_task_finalization():
+                stats["stopped"] = True
+                return stats
             if job_id and self.sync_job_manager:
                 self.sync_job_manager.add_log(job_id, "success", f"关注用户小说同步完成: 同步 {stats.get('novels', 0)} 本, 跳过 {stats.get('skipped', 0)} 本, 用户 {stats.get('following_users_scanned', 0)} 人")
             stats.update(job_services._rebuild_rescue_catalog(db, self._job_reporter(job_id)))
@@ -692,6 +744,9 @@ class AutoSyncScheduler:
             if self._check_stop():
                 stats["stopped"] = True
                 return stats
+            if not self._claim_task_finalization():
+                stats["stopped"] = True
+                return stats
             if job_id and self.sync_job_manager:
                 self.sync_job_manager.add_log(job_id, "success", f"追更系列同步完成: {stats.get('series_synced', 0)} 个系列")
             stats.update(job_services._rebuild_rescue_catalog(db, self._job_reporter(job_id)))
@@ -713,6 +768,7 @@ class AutoSyncScheduler:
             settings,
             reporter=self._job_reporter(job_id),
             stop_requested=self._stop_requested_for_job(job_id),
+            claim_finalization=self._claim_task_finalization,
         )
 
     def _sync_series_status(self, settings: Settings, job_id: str | None) -> dict[str, Any]:
@@ -721,6 +777,7 @@ class AutoSyncScheduler:
             settings,
             reporter=self._job_reporter(job_id),
             stop_requested=self._stop_requested_for_job(job_id),
+            claim_finalization=self._claim_task_finalization,
         )
 
     def _sync_user_backup(self, settings: Settings, job_id: str | None) -> dict[str, Any] | None:
@@ -741,11 +798,8 @@ class AutoSyncScheduler:
                 users_limit = total_users
 
             batch = all_user_ids[offset:offset + users_limit]
-            next_offset = offset + len(batch)
-            if next_offset >= total_users:
-                next_offset = 0
 
-            if job_id and self.sync_job_manager:
+            if batch and job_id and self.sync_job_manager:
                 self.sync_job_manager.add_log(job_id, "info", f"=== 全量备份关注用户小说: 用户 {offset+1}-{offset+len(batch)}/{total_users}, 本轮 {len(batch)} 人 ===")
 
             total_novels = 0
@@ -754,6 +808,7 @@ class AutoSyncScheduler:
             reporter = self._job_reporter(job_id)
             stop_requested = self._stop_requested_for_job(job_id)
             stopped = False
+            completed_users = 0
 
             for idx, uid in enumerate(batch):
                 if stop_requested():
@@ -774,9 +829,14 @@ class AutoSyncScheduler:
                 if stats.get("stopped"):
                     stopped = True
                     break
+                completed_users += 1
 
             if not stopped and stop_requested():
                 stopped = True
+
+            next_offset = offset + completed_users
+            if next_offset >= total_users:
+                next_offset = 0
 
             if total_users:
                 db.update_watermark("user_backup_rotation", {
@@ -791,7 +851,11 @@ class AutoSyncScheduler:
                 "stopped": stopped,
             }
             if not stopped:
-                batch_stats.update(job_services._rebuild_rescue_catalog(db, reporter))
+                if self._claim_task_finalization():
+                    batch_stats.update(job_services._rebuild_rescue_catalog(db, reporter))
+                else:
+                    stopped = True
+                    batch_stats["stopped"] = True
 
             if job_id and self.sync_job_manager and hasattr(self.sync_job_manager, "get_job"):
                 job = self.sync_job_manager.get_job(job_id)

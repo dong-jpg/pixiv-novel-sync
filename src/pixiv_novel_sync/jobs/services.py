@@ -31,6 +31,7 @@ class JobReporter:
 
 
 StopRequested = Callable[[], bool]
+ClaimFinalization = Callable[[], bool]
 
 
 def _report_catalog_log(reporter: JobReporter | None, level: str, message: str) -> None:
@@ -94,6 +95,7 @@ def run_user_backup_task(
     stop_requested: StopRequested | None = None,
     *,
     rebuild_catalog: bool = True,
+    claim_finalization: ClaimFinalization | None = None,
 ) -> dict[str, Any]:
     if stop_requested is not None and stop_requested():
         _report_log(reporter, "info", "用户全量备份已停止")
@@ -190,7 +192,10 @@ def run_user_backup_task(
         if not stats.get("stopped") and stop_requested is not None and stop_requested():
             stats["stopped"] = True
         if rebuild_catalog and not stats.get("stopped"):
-            stats.update(_rebuild_rescue_catalog(db, reporter))
+            if claim_finalization is not None and not claim_finalization():
+                stats["stopped"] = True
+            else:
+                stats.update(_rebuild_rescue_catalog(db, reporter))
         return stats
     finally:
         db.close()
@@ -220,6 +225,8 @@ def run_novel_status_task(
     settings: Any,
     reporter: JobReporter | None = None,
     stop_requested: StopRequested | None = None,
+    *,
+    claim_finalization: ClaimFinalization | None = None,
 ) -> dict[str, Any]:
     return _run_status_task(
         settings=settings,
@@ -232,6 +239,7 @@ def run_novel_status_task(
         upsert_status=lambda db, item_id, status: db.upsert_novel_status(item_id, status),
         total_key="total_novels",
         rebuild_catalog=True,
+        claim_finalization=claim_finalization,
     )
 
 
@@ -239,6 +247,8 @@ def run_series_status_task(
     settings: Any,
     reporter: JobReporter | None = None,
     stop_requested: StopRequested | None = None,
+    *,
+    claim_finalization: ClaimFinalization | None = None,
 ) -> dict[str, Any]:
     return _run_status_task(
         settings=settings,
@@ -251,6 +261,7 @@ def run_series_status_task(
         upsert_status=lambda db, item_id, status: db.upsert_series_status(item_id, status),
         total_key="total_series",
         rebuild_catalog=True,
+        claim_finalization=claim_finalization,
     )
 
 
@@ -396,6 +407,7 @@ def _run_status_task(
     upsert_status: Callable[[Database, int, str], None],
     total_key: str,
     rebuild_catalog: bool = False,
+    claim_finalization: ClaimFinalization | None = None,
 ) -> dict[str, Any]:
     api = _login(settings)
     _ensure_storage_dirs(settings)
@@ -421,7 +433,10 @@ def _run_status_task(
         if not stats.get("stopped") and stop_requested is not None and stop_requested():
             stats["stopped"] = True
         if rebuild_catalog and not stats.get("stopped"):
-            stats.update(_rebuild_rescue_catalog(db, reporter))
+            if claim_finalization is not None and not claim_finalization():
+                stats["stopped"] = True
+            else:
+                stats.update(_rebuild_rescue_catalog(db, reporter))
         return stats
     finally:
         db.close()

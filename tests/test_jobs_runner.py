@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from pixiv_novel_sync.jobs.manager import JobManager
 from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobStatus
 from pixiv_novel_sync.jobs.runner import JobRunner
@@ -117,3 +119,112 @@ def test_runner_does_not_double_stats_when_task_returns_same_object():
     assert result.stats["total_checked"] == 10  # 不是 20
     assert result.stats["new"] == 3  # 不是 6
     assert result.stats["existing"] == 7  # 不是 14
+
+
+def test_runner_provides_lazy_finalization_for_each_task():
+    manager = JobManager()
+    state = manager.submit(JobSpec(source=JobSource.WEB, task_types=["a", "b"]))
+    observed = []
+
+    def executor(task_type, context):
+        observed.append((task_type, context["is_last_task"]))
+        assert context["claim_finalization"]() is True
+        return {"task": task_type}
+
+    result = JobRunner(manager=manager, executor=executor).run(state.job_id)
+
+    assert observed == [("a", False), ("b", True)]
+    assert result.status == JobStatus.SUCCEEDED
+    assert result.stats["task"] == "b"
+
+
+def test_runner_rejects_cancel_after_last_task_claim():
+    manager = JobManager()
+    state = manager.submit(JobSpec(source=JobSource.WEB, task_types=["bookmark"]))
+    finalizing = threading.Event()
+    release = threading.Event()
+
+    def executor(task_type, context):
+        assert context["is_last_task"] is True
+        assert context["claim_finalization"]() is True
+        finalizing.set()
+        assert release.wait(timeout=3)
+        return {"rescue_catalog_items": 1}
+
+    thread = threading.Thread(target=lambda: JobRunner(manager, executor).run(state.job_id))
+    thread.start()
+    try:
+        assert finalizing.wait(timeout=3)
+        assert manager.request_cancel(state.job_id) is False
+        release.set()
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+    finally:
+        release.set()
+        thread.join(timeout=3)
+
+    assert state.status == JobStatus.SUCCEEDED
+    assert state.stats["rescue_catalog_items"] == 1
+
+
+def test_runner_cancels_when_request_wins_before_claim():
+    manager = JobManager()
+    state = manager.submit(JobSpec(source=JobSource.WEB, task_types=["bookmark"]))
+    executor_entered = threading.Event()
+    release = threading.Event()
+    side_effects = []
+
+    def executor(task_type, context):
+        executor_entered.set()
+        assert release.wait(timeout=3)
+        if not context["claim_finalization"]():
+            raise InterruptedError("cancelled before finalization")
+        side_effects.append("rebuild")
+        return {"rescue_catalog_items": 1}
+
+    thread = threading.Thread(target=lambda: JobRunner(manager, executor).run(state.job_id))
+    thread.start()
+    try:
+        assert executor_entered.wait(timeout=3)
+        assert manager.request_cancel(state.job_id) is True
+        release.set()
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+    finally:
+        release.set()
+        thread.join(timeout=3)
+
+    assert side_effects == []
+    assert state.status == JobStatus.CANCELLED
+
+
+def test_runner_fallback_claim_finishes_task_without_executor_claim():
+    manager = JobManager()
+    state = manager.submit(JobSpec(source=JobSource.CLI, task_types=["ordinary"]))
+
+    def executor(task_type, context):
+        assert callable(context["claim_finalization"])
+        return {"ordinary": 1}
+
+    result = JobRunner(manager=manager, executor=executor).run(state.job_id)
+
+    assert result.status == JobStatus.SUCCEEDED
+    assert result.stats["ordinary"] == 1
+
+
+def test_runner_succeeds_for_empty_task_list():
+    manager = JobManager()
+    state = manager.submit(JobSpec(source=JobSource.CLI, task_types=[]))
+    original_try_begin = manager.try_begin_finalization
+    claim_calls = []
+
+    def recording_try_begin(job_id):
+        claim_calls.append(job_id)
+        return original_try_begin(job_id)
+
+    manager.try_begin_finalization = recording_try_begin
+
+    result = JobRunner(manager=manager, executor=lambda task_type, context: None).run(state.job_id)
+
+    assert result.status == JobStatus.SUCCEEDED
+    assert claim_calls == [state.job_id]

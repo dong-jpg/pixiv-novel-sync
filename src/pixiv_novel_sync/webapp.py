@@ -7,6 +7,7 @@ import logging
 import secrets
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -54,6 +55,64 @@ logger = logging.getLogger(__name__)
 
 # 记录服务启动时间（用于健康检查 API 计算 uptime）
 _service_start_time: float = time.time()
+
+@dataclass(frozen=True, slots=True)
+class _AutoSyncSchedulerOwner:
+    scheduler: AutoSyncScheduler
+    sync_job_manager: SyncJobManager
+
+
+_auto_sync_scheduler_registry: dict[str, _AutoSyncSchedulerOwner] = {}
+_auto_sync_scheduler_registry_lock = threading.Lock()
+
+
+def _scheduler_registry_key(db_path: Path) -> str:
+    return os.path.normcase(str(Path(db_path).expanduser().resolve(strict=False)))
+
+
+def _claim_scheduler_owner(key: str, scheduler: AutoSyncScheduler) -> bool:
+    with _auto_sync_scheduler_registry_lock:
+        current = _auto_sync_scheduler_registry.get(key)
+        if current is not None and current.scheduler is not scheduler:
+            return False
+        if current is None:
+            _auto_sync_scheduler_registry[key] = _AutoSyncSchedulerOwner(
+                scheduler=scheduler,
+                sync_job_manager=scheduler.sync_job_manager,
+            )
+        return True
+
+
+def _release_scheduler_owner(key: str, scheduler: AutoSyncScheduler) -> None:
+    with _auto_sync_scheduler_registry_lock:
+        current = _auto_sync_scheduler_registry.get(key)
+        if current is not None and current.scheduler is scheduler:
+            _auto_sync_scheduler_registry.pop(key, None)
+
+
+def _get_or_create_scheduler_owner(
+    key: str,
+    *,
+    config_path: str | None,
+    env_path: str | None,
+    sync_job_manager: SyncJobManager,
+) -> tuple[AutoSyncScheduler, bool]:
+    with _auto_sync_scheduler_registry_lock:
+        existing = _auto_sync_scheduler_registry.get(key)
+        if existing is not None:
+            return existing.scheduler, False
+        scheduler = AutoSyncScheduler(
+            config_path=config_path,
+            env_path=env_path,
+            sync_job_manager=sync_job_manager,
+        )
+        scheduler._lifecycle_claim = lambda owner: _claim_scheduler_owner(key, owner)
+        scheduler._lifecycle_release = lambda owner: _release_scheduler_owner(key, owner)
+        _auto_sync_scheduler_registry[key] = _AutoSyncSchedulerOwner(
+            scheduler=scheduler,
+            sync_job_manager=sync_job_manager,
+        )
+        return scheduler, True
 
 
 def _load_or_create_flask_secret(env_path: str | None) -> str:
@@ -187,14 +246,30 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     app.config["submit_shared_web_job"] = _submit_shared_web_job
 
     oauth_manager = OAuthManager(env_path=env_path)
-    auto_sync_scheduler = AutoSyncScheduler(config_path=config_path, env_path=env_path, sync_job_manager=sync_job_manager)
-    
+
     # 启动定时同步调度器
     # 在 Werkzeug debug reloader 下，主进程会先启动一次再 fork 子进程；只在子进程启动调度器，避免双开
     _is_werkzeug_reload = os.getenv("WERKZEUG_RUN_MAIN") == "true"
     _is_debug = bool(os.getenv("FLASK_DEBUG")) or bool(os.getenv("WERKZEUG_SERVER_FD"))
-    if not _is_debug or _is_werkzeug_reload:
-        auto_sync_scheduler.start()
+    should_start_scheduler = not _is_debug or _is_werkzeug_reload
+    if should_start_scheduler:
+        registry_settings = settings_manager.load(env_path=env_path)
+        registry_key = _scheduler_registry_key(registry_settings.storage.db_path)
+        auto_sync_scheduler, scheduler_created = _get_or_create_scheduler_owner(
+            registry_key,
+            config_path=config_path,
+            env_path=env_path,
+            sync_job_manager=sync_job_manager,
+        )
+        sync_job_manager = auto_sync_scheduler.sync_job_manager
+        if scheduler_created or not auto_sync_scheduler.is_running():
+            auto_sync_scheduler.start()
+    else:
+        auto_sync_scheduler = AutoSyncScheduler(
+            config_path=config_path,
+            env_path=env_path,
+            sync_job_manager=sync_job_manager,
+        )
 
     def _auto_login_worker(task, username, password, proxy, timeout):
         """后台线程：用 Playwright 无头浏览器自动完成 Pixiv OAuth 登录"""

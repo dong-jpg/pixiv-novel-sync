@@ -451,6 +451,27 @@ def test_status_tasks_skip_rebuild_when_cancelled_after_business_success(
     assert service_env["db"].rebuild_catalog_calls == 0
 
 
+@pytest.mark.parametrize("runner_name", ["run_novel_status_task", "run_series_status_task"])
+def test_status_tasks_skip_rebuild_when_finalization_claim_is_rejected(
+    runner_name, settings, service_env, monkeypatch
+):
+    claim_calls = []
+    monkeypatch.setattr(
+        services,
+        "_process_status_items",
+        lambda **kwargs: {"checked_count": 1, "stopped": False},
+    )
+
+    result = getattr(services, runner_name)(
+        settings,
+        claim_finalization=lambda: claim_calls.append(True) or False,
+    )
+
+    assert result["stopped"] is True
+    assert claim_calls == [True]
+    assert service_env["db"].rebuild_catalog_calls == 0
+
+
 @pytest.mark.parametrize("error", [RuntimeError("status boom"), InterruptedError("cancelled")])
 def test_novel_status_task_propagates_business_failure_without_rebuild(
     error, settings, service_env, monkeypatch
@@ -572,6 +593,22 @@ def test_user_backup_skips_rebuild_when_cancelled_after_last_novel(
     )
 
     assert result["stopped"] is True
+    assert service_env["db"].rebuild_catalog_calls == 0
+
+
+def test_user_backup_skips_rebuild_when_finalization_claim_is_rejected(
+    settings, service_env
+):
+    claim_calls = []
+
+    result = services.run_user_backup_task(
+        settings,
+        user_id=101,
+        claim_finalization=lambda: claim_calls.append(True) or False,
+    )
+
+    assert result["stopped"] is True
+    assert claim_calls == [True]
     assert service_env["db"].rebuild_catalog_calls == 0
 
 
