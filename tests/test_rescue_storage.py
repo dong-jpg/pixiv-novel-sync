@@ -185,6 +185,136 @@ def test_catalog_refresh_failure_keeps_previous_snapshot(
     assert item["rescue_state"] == "success"
 
 
+def test_catalog_refresh_failure_after_replace_keeps_previous_snapshot(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_novel(db, 211, status="deleted", text="old body", title="old title")
+    db.upsert_source(SourceRecord(211, "bookmark_public", "1"))
+    db.rebuild_rescue_catalog()
+    before_item = db.get_rescue_catalog_item("novel", 211)
+    before_sources = db.list_rescue_catalog_sources("novel", 211)
+    before_meta = db.get_rescue_catalog_meta()
+
+    db.conn.execute("UPDATE novels SET title = 'new title' WHERE novel_id = 211")
+    db.conn.commit()
+    original_insert = db._insert_catalog_rows
+
+    def fail_after_insert(rows, refreshed_at):
+        original_insert(rows, refreshed_at)
+        raise RuntimeError("boom after catalog insert")
+
+    monkeypatch.setattr(db, "_insert_catalog_rows", fail_after_insert)
+    with pytest.raises(RuntimeError, match="boom after catalog insert"):
+        db.rebuild_rescue_catalog()
+
+    assert db.get_rescue_catalog_item("novel", 211) == before_item
+    assert db.list_rescue_catalog_sources("novel", 211) == before_sources
+    assert db.get_rescue_catalog_meta() == before_meta
+
+
+def test_refresh_failure_after_scope_delete_keeps_previous_snapshot(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_novel(db, 212, status="deleted", text="old body", title="old title")
+    db.upsert_source(SourceRecord(212, "bookmark_public", "1"))
+    db.rebuild_rescue_catalog()
+    before_item = db.get_rescue_catalog_item("novel", 212)
+    before_sources = db.list_rescue_catalog_sources("novel", 212)
+    before_meta = db.get_rescue_catalog_meta()
+
+    db.conn.execute("UPDATE novels SET title = 'new title' WHERE novel_id = 212")
+    db.conn.execute("DELETE FROM sources WHERE novel_id = 212")
+    db.conn.execute(
+        "INSERT INTO sources (novel_id, source_type, source_key) "
+        "VALUES (212, 'user_backup', '2')"
+    )
+    db.conn.commit()
+    original_insert = db._insert_catalog_rows
+
+    def fail_after_insert(rows, refreshed_at):
+        original_insert(rows, refreshed_at)
+        raise RuntimeError("boom after local insert")
+
+    monkeypatch.setattr(db, "_insert_catalog_rows", fail_after_insert)
+    with pytest.raises(RuntimeError, match="boom after local insert"):
+        db.refresh_rescue_item("novel", 212)
+
+    assert db.get_rescue_catalog_item("novel", 212) == before_item
+    assert db.list_rescue_catalog_sources("novel", 212) == before_sources
+    assert db.get_rescue_catalog_meta() == before_meta
+
+
+@pytest.mark.parametrize("mutation", ["detach", "delete"])
+def test_refresh_novel_rebuilds_suppressed_old_parent(
+    db: Database,
+    mutation: str,
+) -> None:
+    _seed_series(db, 214, status="deleted", total_novels=2)
+    _seed_novel(db, 215, series_id=214, status="normal", text="chapter one")
+    _seed_novel(db, 216, series_id=214, status="normal", text="chapter two")
+    db.rebuild_rescue_catalog()
+    assert db.get_rescue_catalog_item("novel", 215) is None
+    parent = db.get_rescue_catalog_item("series", 214)
+    assert (parent["local_count"], parent["complete_count"]) == (2, 2)
+
+    if mutation == "detach":
+        db.conn.execute("UPDATE novels SET series_id = NULL WHERE novel_id = 215")
+    else:
+        db.conn.execute("DELETE FROM novels WHERE novel_id = 215")
+    db.conn.commit()
+
+    result = db.refresh_rescue_item("novel", 215)
+
+    assert result["items"] == 1
+    parent = db.get_rescue_catalog_item("series", 214)
+    assert parent is not None
+    assert parent["rescue_state"] == "partial"
+    assert (parent["local_count"], parent["complete_count"]) == (1, 1)
+    assert db.get_rescue_catalog_item("novel", 216) is None
+    assert db.conn.execute(
+        "SELECT 1 FROM rescue_catalog_memberships WHERE novel_id = 215"
+    ).fetchone() is None
+
+
+def test_refresh_rescue_item_preserves_full_refresh_meta_and_unrelated_rows(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_novel(db, 217, status="deleted", text="target", title="old target")
+    _seed_novel(db, 218, status="deleted", text="unrelated", title="sentinel")
+    db.upsert_source(SourceRecord(217, "bookmark_public", "1"))
+    db.upsert_source(SourceRecord(218, "user_backup", "2"))
+    db.rebuild_rescue_catalog()
+    before_meta = db.get_rescue_catalog_meta()
+    before_unrelated = db.get_rescue_catalog_item("novel", 218)
+    before_unrelated_sources = db.list_rescue_catalog_sources("novel", 218)
+    db.conn.execute("UPDATE novels SET title = 'new target' WHERE novel_id = 217")
+    db.conn.commit()
+    monkeypatch.setattr(db, "_catalog_timestamp", lambda: "2099-01-01 00:00:00")
+
+    db.refresh_rescue_item("novel", 217)
+
+    target = db.get_rescue_catalog_item("novel", 217)
+    assert target["title"] == "new target"
+    assert target["refreshed_at"] == "2099-01-01 00:00:00"
+    assert db.get_rescue_catalog_meta() == before_meta
+    assert db.get_rescue_catalog_item("novel", 218) == before_unrelated
+    assert db.list_rescue_catalog_sources("novel", 218) == before_unrelated_sources
+
+
+def test_refresh_rescue_item_does_not_initialize_catalog_meta(db: Database) -> None:
+    _seed_novel(db, 219, status="deleted", text="body")
+    assert db.get_rescue_catalog_meta() is None
+
+    result = db.refresh_rescue_item("novel", 219)
+
+    assert result["items"] == 1
+    assert db.get_rescue_catalog_item("novel", 219) is not None
+    assert db.get_rescue_catalog_meta() is None
+
+
 def test_refresh_novel_reclassifies_parent_and_all_chapters(db: Database) -> None:
     _seed_series(db, 220, status="normal", total_novels=2)
     _seed_novel(db, 221, series_id=220, status="normal", text="章节一")
@@ -480,6 +610,7 @@ def test_rescue_schema_and_override_crud(db: Database) -> None:
         "rescue_catalog",
         "rescue_catalog_sources",
         "rescue_catalog_meta",
+        "rescue_catalog_memberships",
     } <= tables
     indexes = {
         str(row[0])
@@ -492,7 +623,11 @@ def test_rescue_schema_and_override_crud(db: Database) -> None:
         "idx_rescue_catalog_checked",
         "idx_rescue_catalog_updated",
         "idx_rescue_catalog_sources_kind",
+        "idx_rescue_catalog_memberships_series",
     } <= indexes
+    assert db.conn.execute(
+        "PRAGMA foreign_key_list(rescue_catalog_memberships)"
+    ).fetchall() == []
 
     _seed_novel(db)
     assert db.get_rescue_override("novel", 1) is None
@@ -501,6 +636,31 @@ def test_rescue_schema_and_override_crud(db: Database) -> None:
     assert db.get_rescue_override("novel", 1)["note"] == "页面已失效"
     assert db.delete_rescue_override("novel", 1) is True
     assert db.get_rescue_override("novel", 1) is None
+
+
+def test_rescue_membership_migration_backfills_existing_links_without_body_scan(
+    db: Database,
+) -> None:
+    _seed_series(db, 800, status="deleted", total_novels=1)
+    _seed_novel(db, 801, series_id=800, status="normal", text="kept body")
+    db.conn.execute("DROP TABLE rescue_catalog_memberships")
+    db.conn.commit()
+    statements: list[str] = []
+    db.conn.set_trace_callback(statements.append)
+    try:
+        db._migrate_rescue_tables()
+    finally:
+        db.conn.set_trace_callback(None)
+
+    rows = db.conn.execute(
+        "SELECT novel_id, series_id FROM rescue_catalog_memberships"
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [(801, 800)]
+    assert db.conn.execute(
+        "SELECT text_raw FROM novel_texts WHERE novel_id = 801"
+    ).fetchone()[0] == "kept body"
+    assert all("novel_texts" not in statement.lower() for statement in statements)
+    assert all("text_raw" not in statement.lower() for statement in statements)
 
 
 @pytest.mark.parametrize(
@@ -533,6 +693,35 @@ def test_delete_novel_cleans_rescue_override(db: Database) -> None:
     assert db.list_rescue_catalog_sources("novel", 1) == []
 
 
+def test_delete_novel_rebuilds_suppressed_parent_and_sources(db: Database) -> None:
+    _seed_series(db, 20, status="deleted", total_novels=2)
+    _seed_novel(db, novel_id=21, series_id=20, status="normal", text="one")
+    _seed_novel(db, novel_id=22, series_id=20, status="normal", text="two")
+    db.upsert_source(SourceRecord(21, "bookmark_public", "1"))
+    db.upsert_source(SourceRecord(22, "following_user_scan", "2"))
+    db.rebuild_rescue_catalog()
+    before_meta = db.get_rescue_catalog_meta()
+    assert {
+        source["source_kind"]
+        for source in db.list_rescue_catalog_sources("series", 20)
+    } == {"bookmark", "following_user"}
+
+    db.delete_novel(21)
+
+    parent = db.get_rescue_catalog_item("series", 20)
+    assert parent is not None
+    assert parent["rescue_state"] == "partial"
+    assert (parent["local_count"], parent["complete_count"]) == (1, 1)
+    assert [
+        source["source_kind"]
+        for source in db.list_rescue_catalog_sources("series", 20)
+    ] == ["following_user"]
+    assert db.get_rescue_catalog_meta() == before_meta
+    assert db.conn.execute(
+        "SELECT 1 FROM rescue_catalog_memberships WHERE novel_id = 21"
+    ).fetchone() is None
+
+
 def test_delete_series_cleans_rescue_override(db: Database) -> None:
     _seed_series(db)
     _seed_novel(db, novel_id=10, series_id=9, status="deleted", text="章节")
@@ -540,13 +729,17 @@ def test_delete_series_cleans_rescue_override(db: Database) -> None:
     db.set_rescue_override("series", 9, "exclude")
     db.rebuild_rescue_catalog()
 
-    db.delete_series(9)
+    chapter_ids = db.delete_series(9)
 
+    assert chapter_ids == [10]
     assert db.get_rescue_override("series", 9) is None
     assert db.get_rescue_catalog_item("series", 9) is None
     assert db.list_rescue_catalog_sources("series", 9) == []
     assert db.conn.execute(
         "SELECT COUNT(*) FROM rescue_catalog WHERE series_id = 9"
+    ).fetchone()[0] == 0
+    assert db.conn.execute(
+        "SELECT COUNT(*) FROM rescue_catalog_memberships WHERE series_id = 9"
     ).fetchone()[0] == 0
     chapter = db.conn.execute(
         """

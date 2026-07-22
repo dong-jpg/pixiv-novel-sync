@@ -489,6 +489,83 @@ class RescueMixin:
             values,
         )
 
+    def _rescue_novel_series_ids(self, novel_id: int) -> set[int]:
+        """Return current and last-known parent series for one novel."""
+        ids: set[int] = set()
+        rows = self.conn.execute(
+            """
+            SELECT series_id
+            FROM novels
+            WHERE novel_id = ? AND series_id IS NOT NULL
+            UNION
+            SELECT series_id
+            FROM rescue_catalog_memberships
+            WHERE novel_id = ?
+            UNION
+            SELECT series_id
+            FROM rescue_catalog
+            WHERE item_type = 'novel' AND item_id = ? AND series_id IS NOT NULL
+            """,
+            (int(novel_id), int(novel_id), int(novel_id)),
+        ).fetchall()
+        ids.update(int(row["series_id"]) for row in rows if row["series_id"] is not None)
+        return ids
+
+    def _catalog_membership_novel_ids(self, series_ids: set[int]) -> set[int]:
+        if not series_ids:
+            return set()
+        placeholders = ", ".join("?" for _ in series_ids)
+        rows = self.conn.execute(
+            f"""
+            SELECT novel_id
+            FROM rescue_catalog_memberships
+            WHERE series_id IN ({placeholders})
+            """,
+            tuple(sorted(series_ids)),
+        ).fetchall()
+        return {int(row["novel_id"]) for row in rows}
+
+    def _refresh_catalog_memberships(
+        self,
+        series_ids: set[int],
+        novel_ids: set[int],
+    ) -> None:
+        """Replace persisted links for the incrementally affected scope."""
+        if not series_ids and not novel_ids:
+            return
+        if series_ids:
+            self.conn.executemany(
+                "DELETE FROM rescue_catalog_memberships WHERE series_id = ?",
+                [(value,) for value in sorted(series_ids)],
+            )
+        if novel_ids:
+            self.conn.executemany(
+                "DELETE FROM rescue_catalog_memberships WHERE novel_id = ?",
+                [(value,) for value in sorted(novel_ids)],
+            )
+            placeholders = ", ".join("?" for _ in novel_ids)
+            self.conn.execute(
+                f"""
+                INSERT INTO rescue_catalog_memberships (novel_id, series_id)
+                SELECT novel_id, series_id
+                FROM novels
+                WHERE series_id IS NOT NULL
+                  AND novel_id IN ({placeholders})
+                """,
+                tuple(sorted(novel_ids)),
+            )
+
+    def _replace_catalog_memberships(self) -> None:
+        self.conn.execute("DELETE FROM rescue_catalog_memberships")
+        self.conn.execute(
+            """
+            INSERT INTO rescue_catalog_memberships (novel_id, series_id)
+            SELECT novel_id, series_id
+            FROM novels
+            WHERE series_id IS NOT NULL
+            """
+        )
+
     def _update_catalog_meta(self, refreshed_at: str, duration_ms: int) -> None:
         item_count = int(self.conn.execute("SELECT COUNT(*) FROM rescue_catalog").fetchone()[0])
         self.conn.execute(
@@ -544,6 +621,8 @@ class RescueMixin:
                     source_values,
                 )
 
+            self._replace_catalog_memberships()
+
             duration_ms = max(0, int((time.perf_counter() - started) * 1000))
             self._update_catalog_meta(refreshed_at, duration_ms)
 
@@ -567,21 +646,7 @@ class RescueMixin:
 
             if normalized_type == "novel":
                 novel_ids.add(normalized_id)
-                current = self.conn.execute(
-                    "SELECT series_id FROM novels WHERE novel_id = ?",
-                    (normalized_id,),
-                ).fetchone()
-                previous = self.conn.execute(
-                    """
-                    SELECT series_id
-                    FROM rescue_catalog
-                    WHERE item_type = 'novel' AND item_id = ?
-                    """,
-                    (normalized_id,),
-                ).fetchone()
-                for row in (current, previous):
-                    if row is not None and row["series_id"] is not None:
-                        series_ids.add(int(row["series_id"]))
+                series_ids.update(self._rescue_novel_series_ids(normalized_id))
             else:
                 series_ids.add(normalized_id)
 
@@ -592,6 +657,7 @@ class RescueMixin:
                     tuple(sorted(series_ids)),
                 ).fetchall()
                 novel_ids.update(int(row["novel_id"]) for row in chapter_rows)
+                novel_ids.update(self._catalog_membership_novel_ids(series_ids))
 
             self._delete_catalog_scope(series_ids, novel_ids)
 
@@ -619,8 +685,8 @@ class RescueMixin:
                 self._insert_catalog_rows(rows, refreshed_at)
 
             source_count = self._insert_catalog_sources_for_rows(rows)
+            self._refresh_catalog_memberships(series_ids, novel_ids)
             duration_ms = max(0, int((time.perf_counter() - started) * 1000))
-            self._update_catalog_meta(refreshed_at, duration_ms)
 
         return {
             "items": len(rows),

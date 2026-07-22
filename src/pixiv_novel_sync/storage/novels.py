@@ -362,6 +362,7 @@ class NovelsMixin:
     def delete_novel(self, novel_id: int) -> None:
         """删除小说及其相关数据"""
         with self.transaction():
+                old_series_ids = self._rescue_novel_series_ids(novel_id)
                 self.conn.execute("DELETE FROM novel_fts WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM sync_check_list WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'novel' AND item_id = ?", (novel_id,))
@@ -380,6 +381,8 @@ class NovelsMixin:
                     (novel_id,),
                 )
                 self.conn.execute("DELETE FROM novels WHERE novel_id = ?", (novel_id,))
+                for series_id in sorted(old_series_ids):
+                    self.refresh_rescue_item("series", series_id)
 
     def delete_bookmark(self, novel_id: int) -> None:
         """删除收藏记录"""

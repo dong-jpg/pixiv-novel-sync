@@ -254,7 +254,7 @@ class SeriesMixin:
             "total": total, "total_pages": total_pages, "category": "following",
         }
 
-    def delete_series(self, series_id: int) -> None:
+    def delete_series(self, series_id: int) -> list[int]:
         """删除系列（不删除小说，只解除关联）"""
         from .connection import DatabaseConnection
         # 使用基类的 transaction 方法
@@ -263,6 +263,7 @@ class SeriesMixin:
                 "SELECT novel_id FROM novels WHERE series_id = ?",
                 (series_id,),
             ).fetchall()
+            chapter_ids = [int(row["novel_id"]) for row in chapter_rows]
             catalog_rows = self.conn.execute(
                 """
                 SELECT item_type, item_id
@@ -290,6 +291,10 @@ class SeriesMixin:
                 sorted(catalog_keys),
             )
             self.conn.execute("UPDATE novels SET series_id = NULL WHERE series_id = ?", (series_id,))
+            self.conn.execute(
+                "DELETE FROM rescue_catalog_memberships WHERE series_id = ?",
+                (series_id,),
+            )
             self.conn.execute("DELETE FROM recommendation_items WHERE item_type = 'series' AND series_id = ?", (series_id,))
             self.conn.execute("DELETE FROM recommendation_feedback WHERE series_id = ?", (series_id,))
             self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'series' AND item_id = ?", (series_id,))
@@ -298,6 +303,7 @@ class SeriesMixin:
                 (series_id,),
             )
             self.conn.execute("DELETE FROM series WHERE series_id = ?", (series_id,))
+        return chapter_ids
 
     def get_all_series_ids(self) -> list[int]:
         rows = self.conn.execute("SELECT series_id FROM series ORDER BY series_id").fetchall()

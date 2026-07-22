@@ -380,6 +380,18 @@ class SchemaMixin:
                 duration_ms INTEGER NOT NULL
             );
 
+            -- Last known novel-to-series links let incremental refreshes recover
+            -- a parent after the visible chapter row is suppressed or deleted.
+            -- Deliberately no FK: a raw novel delete must leave the old link
+            -- available until refresh_rescue_item() consumes and removes it.
+            CREATE TABLE IF NOT EXISTS rescue_catalog_memberships (
+                novel_id INTEGER PRIMARY KEY,
+                series_id INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rescue_catalog_memberships_series
+                ON rescue_catalog_memberships(series_id, novel_id);
+
             CREATE INDEX IF NOT EXISTS idx_rescue_catalog_kind_state
                 ON rescue_catalog(content_kind, rescue_state);
             CREATE INDEX IF NOT EXISTS idx_rescue_catalog_checked
@@ -388,6 +400,14 @@ class SchemaMixin:
                 ON rescue_catalog(updated_at DESC, item_id DESC);
             CREATE INDEX IF NOT EXISTS idx_rescue_catalog_sources_kind
                 ON rescue_catalog_sources(source_kind, item_type, item_id);
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT OR IGNORE INTO rescue_catalog_memberships (novel_id, series_id)
+            SELECT novel_id, series_id
+            FROM novels
+            WHERE series_id IS NOT NULL
             """
         )
         self._commit_if_needed()
