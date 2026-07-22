@@ -43,6 +43,89 @@ def test_foreign_keys_enabled(db: Database) -> None:
     assert db.conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
 
 
+def test_read_transaction_joins_existing_write_transaction(db: Database) -> None:
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO users (user_id, name, raw_json) VALUES (901, '事务用户', '{}')"
+        )
+        with pytest.raises(RuntimeError, match="inner"):
+            with db.read_transaction() as read_conn:
+                assert read_conn is conn
+                assert read_conn.in_transaction
+                raise RuntimeError("inner")
+
+        assert conn.in_transaction
+        assert conn.execute(
+            "SELECT name FROM users WHERE user_id = 901"
+        ).fetchone()[0] == "事务用户"
+
+    assert not db.conn.in_transaction
+    assert db.conn.execute(
+        "SELECT name FROM users WHERE user_id = 901"
+    ).fetchone()[0] == "事务用户"
+
+
+def test_read_transaction_cleans_up_owned_transaction_after_error(db: Database) -> None:
+    with pytest.raises(KeyboardInterrupt):
+        with db.read_transaction() as conn:
+            assert conn.in_transaction
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+            raise KeyboardInterrupt
+
+    assert not db.conn.in_transaction
+    with db.read_transaction() as conn:
+        assert conn.execute("SELECT 2").fetchone()[0] == 2
+    assert not db.conn.in_transaction
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+def test_read_transaction_base_exception_rolls_back_outer_write(
+    db: Database,
+    interrupt: type[BaseException],
+) -> None:
+    with pytest.raises(interrupt):
+        with db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO users (user_id, name, raw_json) "
+                "VALUES (902, '中断用户', '{}')"
+            )
+            with db.read_transaction():
+                raise interrupt
+
+    assert db._transaction_depth == 0
+    assert not db.conn.in_transaction
+    assert db.conn.execute(
+        "SELECT 1 FROM users WHERE user_id = 902"
+    ).fetchone() is None
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO users (user_id, name, raw_json) "
+            "VALUES (903, '恢复用户', '{}')"
+        )
+    assert db.conn.execute(
+        "SELECT name FROM users WHERE user_id = 903"
+    ).fetchone()[0] == "恢复用户"
+
+
+def test_read_transaction_joins_implicit_write_transaction(db: Database) -> None:
+    db.conn.execute(
+        "INSERT INTO users (user_id, name, raw_json) "
+        "VALUES (904, '隐式事务用户', '{}')"
+    )
+    assert db._transaction_depth == 0
+    assert db.conn.in_transaction
+
+    with pytest.raises(RuntimeError, match="inner"):
+        with db.read_transaction():
+            raise RuntimeError("inner")
+
+    assert db.conn.in_transaction
+    db.conn.rollback()
+    assert db.conn.execute(
+        "SELECT 1 FROM users WHERE user_id = 904"
+    ).fetchone() is None
+
+
 def test_child_tables_reject_orphan_rows(db: Database) -> None:
     with pytest.raises(Exception):
         db.upsert_novel_text(NovelTextRecord(novel_id=999, text_raw="x", text_markdown=None, text_hash="h"))

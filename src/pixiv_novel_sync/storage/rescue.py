@@ -1123,6 +1123,29 @@ class RescueMixin:
         content_kind: str = "all",
         source_kind: str = "all",
     ) -> dict[str, Any]:
+        with self.read_transaction():
+            return self._list_rescues_snapshot(
+                page=page,
+                page_size=page_size,
+                state=state,
+                item_type=item_type,
+                search=search,
+                sort=sort,
+                content_kind=content_kind,
+                source_kind=source_kind,
+            )
+
+    def _list_rescues_snapshot(
+        self,
+        page: int = 1,
+        page_size: int = 12,
+        state: str = "all",
+        item_type: str = "all",
+        search: str = "",
+        sort: str = "checked_desc",
+        content_kind: str = "all",
+        source_kind: str = "all",
+    ) -> dict[str, Any]:
         normalized_state = str(state or "all").strip().lower()
         normalized_type = str(item_type or "all").strip().lower()
         normalized_sort = str(sort or "checked_desc").strip().lower()

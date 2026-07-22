@@ -53,6 +53,22 @@ class DatabaseConnection:
             self.conn.commit()
 
     @contextmanager
+    def read_transaction(self) -> Iterator[sqlite3.Connection]:
+        """让一组 SELECT 共享 DEFERRED 快照，并安全加入已有事务。"""
+        conn = self.conn
+        owns_transaction = not conn.in_transaction
+        if owns_transaction:
+            conn.execute("BEGIN DEFERRED")
+        try:
+            yield conn
+            if owns_transaction:
+                conn.commit()
+        except BaseException:
+            if owns_transaction and conn.in_transaction:
+                conn.rollback()
+            raise
+
+    @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         """显式事务上下文：with db.transaction() as conn: ... 在退出时统一 commit / rollback。
 
@@ -68,7 +84,7 @@ class DatabaseConnection:
                 yield self.conn
                 if outermost:
                     self.conn.commit()
-            except Exception:
+            except BaseException:
                 if outermost:
                     self.conn.rollback()
                 raise
