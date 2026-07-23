@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import unicodedata
 from typing import Any
 
 
@@ -462,6 +463,8 @@ def _create_model_routing_indexes(conn: sqlite3.Connection) -> None:
 
 def _valid_model_key(value: Any) -> bool:
     if not isinstance(value, str) or not 0 < len(value) <= 300:
+        return False
+    if any(unicodedata.category(character) == "Cc" for character in value):
         return False
     try:
         return len(value.encode("utf-8")) <= 1200

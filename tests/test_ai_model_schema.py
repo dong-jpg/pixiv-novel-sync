@@ -242,6 +242,61 @@ def test_old_model_list_imports_strings_and_object_ids_and_warns_per_skip(
         database.close()
 
 
+def test_old_model_list_skips_each_control_character_without_rewriting_valid_keys(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    database = make_old_ai_database(tmp_path / "control-models.db")
+    available_models = [
+        "nul\0model",
+        "newline\nmodel",
+        "c0-\u001f-model",
+        "c1-\u0085-model",
+        "del-\u007f-model",
+        " Mixed Model ",
+        "Cafe\u0301",
+        "MODEL",
+        "model",
+    ]
+    database.conn.execute(
+        """
+        INSERT INTO ai_providers (
+            id, name, provider_type, available_models_json, created_at, updated_at
+        ) VALUES (5, 'controls', 'openai', ?, '2024-07-01', '2024-07-02')
+        """,
+        (json.dumps(available_models),),
+    )
+    database.conn.commit()
+
+    try:
+        with caplog.at_level(logging.WARNING):
+            database.init_schema()
+
+        model_keys = {
+            row[0]
+            for row in database.conn.execute(
+                """
+                SELECT model_key
+                FROM ai_provider_models
+                WHERE provider_id = 5
+                """
+            ).fetchall()
+        }
+        assert model_keys == {" Mixed Model ", "Cafe\u0301", "MODEL", "model"}
+
+        skipped_messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "pixiv_novel_sync.storage.ai.model_schema"
+            and "provider_id=5" in record.getMessage()
+        ]
+        assert len(skipped_messages) == 5
+        for index in range(5):
+            assert any(f"index={index}" in message for message in skipped_messages)
+    finally:
+        database.close()
+
+
 def test_routing_schema_has_strict_pool_and_attempt_constraints(db: Database):
     tables = {
         row[0]
