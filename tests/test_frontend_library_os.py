@@ -271,6 +271,33 @@ def test_library_contains_rescue_tab_and_api_contract():
     assert "来自私人备份" in html
 
 
+def test_rescue_library_exposes_content_and_source_filters():
+    html = read(TEMPLATES / "dashboard_novels.html")
+
+    assert "rescueFilters.content_kind" in html
+    assert "rescueFilters.source_kind" in html
+    assert "item.content_kind_label" in html
+    assert "item.sources" in html
+    assert "data.refreshed_at" in html
+    assert "content_kind: rescueFilters.content_kind" in html
+    assert "source_kind: rescueFilters.source_kind" in html
+    assert "series_chapter" in html
+    assert "subscribed_series" in html
+    assert "h-10 overflow-hidden" in html
+    assert "source.label" in html
+    assert "rescueCatalog.stale" in html
+    assert "item.content_kind === 'series'" in html
+    assert "rescueFilters.item_type, rescueFilters.content_kind, rescueFilters.source_kind" in html
+
+
+def test_rescue_catalog_time_uses_local_display_and_surfaces_backend_error():
+    html = read(TEMPLATES / "dashboard_novels.html")
+
+    assert "toLocaleString('zh-CN'" in html
+    assert "error.value = displayError" in html
+    assert "err.message" in html
+
+
 def test_rescue_detail_pages_support_manual_override_with_csrf():
     novel = read(TEMPLATES / "dashboard_novel_detail.html")
     series = read(TEMPLATES / "dashboard_series_detail.html")

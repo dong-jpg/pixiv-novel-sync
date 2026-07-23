@@ -259,28 +259,31 @@ class SeriesMixin:
         from .connection import DatabaseConnection
         # 使用基类的 transaction 方法
         with DatabaseConnection.transaction(self):
-            chapter_rows = self.conn.execute(
-                "SELECT novel_id FROM novels WHERE series_id = ?",
-                (series_id,),
-            ).fetchall()
-            chapter_ids = [int(row["novel_id"]) for row in chapter_rows]
-            catalog_rows = self.conn.execute(
+            affected_rows = self.conn.execute(
                 """
-                SELECT item_type, item_id
-                FROM rescue_catalog
-                WHERE (item_type = 'series' AND item_id = ?)
-                   OR (item_type = 'novel' AND series_id = ?)
+                SELECT novel_id
+                FROM (
+                    SELECT novel_id
+                    FROM novels
+                    WHERE series_id = ?
+                    UNION
+                    SELECT novel_id
+                    FROM rescue_catalog_memberships
+                    WHERE series_id = ?
+                    UNION
+                    SELECT item_id AS novel_id
+                    FROM rescue_catalog
+                    WHERE item_type = 'novel' AND series_id = ?
+                )
+                ORDER BY novel_id
                 """,
-                (series_id, series_id),
+                (series_id, series_id, series_id),
             ).fetchall()
+            affected_chapter_ids = [int(row["novel_id"]) for row in affected_rows]
             catalog_keys = {("series", int(series_id))}
             catalog_keys.update(
-                ("novel", int(row["novel_id"]))
-                for row in chapter_rows
-            )
-            catalog_keys.update(
-                (str(row["item_type"]), int(row["item_id"]))
-                for row in catalog_rows
+                ("novel", novel_id)
+                for novel_id in affected_chapter_ids
             )
             self.conn.executemany(
                 "DELETE FROM rescue_catalog_sources WHERE item_type = ? AND item_id = ?",
@@ -303,7 +306,7 @@ class SeriesMixin:
                 (series_id,),
             )
             self.conn.execute("DELETE FROM series WHERE series_id = ?", (series_id,))
-        return chapter_ids
+        return affected_chapter_ids
 
     def get_all_series_ids(self) -> list[int]:
         rows = self.conn.execute("SELECT series_id FROM series ORDER BY series_id").fetchall()

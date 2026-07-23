@@ -907,6 +907,24 @@ def test_delete_series_preserves_historical_membership_until_chapter_refresh(
     ).fetchone() is None
 
 
+def test_delete_series_returns_historical_membership_without_unbinding_current_series(
+    db: Database,
+) -> None:
+    _seed_series(db, 30, status="normal", total_novels=1, title="当前系列")
+    _seed_series(db, 40, status="deleted", total_novels=1, title="历史系列")
+    _seed_novel(db, 31, series_id=40, status="deleted", text="历史正文")
+    db.rebuild_rescue_catalog()
+    db.conn.execute("UPDATE novels SET series_id = 30 WHERE novel_id = 31")
+    db.conn.commit()
+
+    chapter_ids = db.delete_series(40)
+
+    assert chapter_ids == [31]
+    assert db.conn.execute(
+        "SELECT series_id FROM novels WHERE novel_id = 31"
+    ).fetchone()[0] == 30
+
+
 def test_delete_user_cleans_owned_novel_rescue_overrides(db: Database) -> None:
     _seed_novel(db, novel_id=14)
     db.set_rescue_override("novel", 14, "include")

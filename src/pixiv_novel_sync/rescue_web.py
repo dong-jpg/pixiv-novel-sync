@@ -108,6 +108,33 @@ def _catalog_stale(refreshed_at: Any, settings: Settings) -> bool:
     return (datetime.now(timezone.utc) - parsed).total_seconds() > threshold_hours * 3600
 
 
+def _refresh_rescue_item_after_override(
+    db: Database,
+    item_type: str,
+    item_id: int,
+):
+    """刷新已提交的纠错，不隐藏写入成功后的目录刷新错误。
+
+    存储方法会在调用本辅助方法前提交纠错写入。若派生目录刷新失败，调用方
+    必须返回错误，但要保留已经提交的纠错，以便稍后重试。
+    """
+    try:
+        db.refresh_rescue_item(item_type, item_id)
+    except Exception:
+        logger.exception(
+            "救援纠错已保存，但目录增量刷新失败 item_type=%s item_id=%s",
+            item_type,
+            item_id,
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "error": "救援纠错已保存，但目录增量刷新失败",
+            }
+        ), 500
+    return None
+
+
 def register_rescue_routes(
     app: Flask,
     settings: Callable[[], Settings],
@@ -222,6 +249,13 @@ def register_rescue_routes(
                 )
             except (TypeError, ValueError) as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 400
+            refresh_error = _refresh_rescue_item_after_override(
+                db,
+                item_type,
+                item_id,
+            )
+            if refresh_error is not None:
+                return refresh_error
             return jsonify({"ok": True, "data": result})
         finally:
             db.close()
@@ -236,6 +270,13 @@ def register_rescue_routes(
                 removed = db.delete_rescue_override(item_type, item_id)
             except ValueError as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 400
+            refresh_error = _refresh_rescue_item_after_override(
+                db,
+                item_type,
+                item_id,
+            )
+            if refresh_error is not None:
+                return refresh_error
             return jsonify({"ok": True, "data": {"removed": removed}})
         finally:
             db.close()

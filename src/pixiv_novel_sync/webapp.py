@@ -90,6 +90,17 @@ def _release_scheduler_owner(key: str, scheduler: AutoSyncScheduler) -> None:
             _auto_sync_scheduler_registry.pop(key, None)
 
 
+def _refresh_rescue_chapters(db: Database, chapter_ids: list[int] | tuple[int, ...]) -> None:
+    """刷新系列解绑影响的每个章节。
+
+    ``delete_series`` 会保留章节记录并返回章节 ID。Web 层必须消费这些 ID，
+    让每个章节立即重新分类（包括历史父系列关系）。重复 ID 会被忽略，首次
+    出现的顺序保持不变。
+    """
+    for novel_id in dict.fromkeys(int(value) for value in chapter_ids):
+        db.refresh_rescue_item("novel", novel_id)
+
+
 def _get_or_create_scheduler_owner(
     key: str,
     *,
@@ -1264,7 +1275,9 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         try:
-            db.delete_series(series_id)
+            with db.transaction():
+                chapter_ids = db.delete_series(series_id)
+                _refresh_rescue_chapters(db, chapter_ids)
             return jsonify({"ok": True, "message": "系列已删除"})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
@@ -1347,26 +1360,32 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         db = Database(current_settings.storage.db_path)
         db.init_schema()
         try:
-            record = db.confirm_pending_deletion(deletion_id)
-            if record is None:
-                return jsonify({"error": "记录不存在或已处理"}), 404
-            item_type = record["item_type"]
-            item_id = record["item_id"]
-            if item_type == "novel":
-                archive_refs = db.list_novel_archive_refs(novel_ids=[item_id])
-                archive_cleanup = _remove_archive_files(current_settings, archive_refs)
-                db.delete_novel(item_id)
-            elif item_type == "series":
-                archive_refs = db.list_novel_archive_refs(series_id=item_id)
-                archive_cleanup = _remove_archive_files(current_settings, archive_refs)
-                novel_rows = db.conn.execute(
-                    "SELECT novel_id FROM novels WHERE series_id = ?", (item_id,)
-                ).fetchall()
-                for row in novel_rows:
-                    db.delete_novel(row[0])
-                db.delete_series(item_id)
-            else:
-                archive_cleanup = {"dirs_removed": 0, "files_removed": 0, "missing": 0, "skipped": 0}
+            archive_refs = []
+            with db.transaction():
+                record = db.confirm_pending_deletion(deletion_id)
+                if record is None:
+                    return jsonify({"error": "记录不存在或已处理"}), 404
+                item_type = record["item_type"]
+                item_id = record["item_id"]
+                if item_type == "novel":
+                    archive_refs = db.list_novel_archive_refs(novel_ids=[item_id])
+                    db.delete_novel(item_id)
+                elif item_type == "series":
+                    archive_refs = db.list_novel_archive_refs(series_id=item_id)
+                    current_chapter_rows = db.conn.execute(
+                        "SELECT novel_id FROM novels WHERE series_id = ? ORDER BY novel_id",
+                        (item_id,),
+                    ).fetchall()
+                    current_chapter_ids = [
+                        int(row["novel_id"]) for row in current_chapter_rows
+                    ]
+                    affected_chapter_ids = db.delete_series(item_id)
+                    # 外层 BEGIN IMMEDIATE 保证查询与删除共享同一写快照，
+                    # 历史关系只参与刷新，不会被误当成当前章节删除。
+                    for novel_id in current_chapter_ids:
+                        db.delete_novel(novel_id)
+                    _refresh_rescue_chapters(db, affected_chapter_ids)
+            archive_cleanup = _remove_archive_files(current_settings, archive_refs)
             return jsonify({"ok": True, "message": "已确认删除", "archive_cleanup": archive_cleanup})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500

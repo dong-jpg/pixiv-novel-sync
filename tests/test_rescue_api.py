@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -89,14 +90,6 @@ def _rotate_token(client) -> str:
     response = client.post("/api/dashboard/rescue-token/rotate")
     assert response.status_code == 200
     return str(response.get_json()["data"]["token"])
-
-
-def _rebuild_catalog(app) -> None:
-    db = Database(Path(app.config["PIXIV_DB_PATH"]))
-    try:
-        db.rebuild_rescue_catalog()
-    finally:
-        db.close()
 
 
 def _set_catalog_refreshed_at(app, refreshed_at: str) -> None:
@@ -408,15 +401,21 @@ def test_dashboard_rescue_list_rejects_invalid_catalog_filters(client, query) ->
 
 
 @pytest.mark.parametrize("action", ["put", "delete"])
-def test_dashboard_rescue_override_does_not_refresh_catalog_yet(
+def test_dashboard_rescue_override_refreshes_item_without_full_rebuild(
     client,
     monkeypatch,
     action,
 ) -> None:
+    calls: list[tuple[str, int]] = []
     monkeypatch.setattr(
         Database,
         "refresh_rescue_item",
-        lambda *_args: pytest.fail("增量刷新调用由任务 6 接入"),
+        lambda self, item_type, item_id: calls.append((item_type, item_id)) or {},
+    )
+    monkeypatch.setattr(
+        Database,
+        "rebuild_rescue_catalog",
+        lambda *_args: pytest.fail("纠错接口不得执行全量目录刷新"),
     )
 
     if action == "put":
@@ -428,6 +427,52 @@ def test_dashboard_rescue_override_does_not_refresh_catalog_yet(
         response = client.delete("/api/dashboard/rescue-overrides/novel/10")
 
     assert response.status_code == 200
+    assert calls == [("novel", 10)]
+
+
+@pytest.mark.parametrize("action", ["put", "delete"])
+def test_dashboard_rescue_override_keeps_change_when_incremental_refresh_fails(
+    app,
+    client,
+    monkeypatch,
+    caplog,
+    action,
+) -> None:
+    db_path = Path(app.config["PIXIV_DB_PATH"])
+    if action == "delete":
+        db = Database(db_path)
+        try:
+            db.set_rescue_override("novel", 10, "exclude", "待删除")
+        finally:
+            db.close()
+
+    def fail_refresh(self, item_type: str, item_id: int):
+        raise RuntimeError("refresh boom")
+
+    monkeypatch.setattr(Database, "refresh_rescue_item", fail_refresh)
+
+    with caplog.at_level(logging.ERROR, logger="pixiv_novel_sync.rescue_web"):
+        if action == "put":
+            response = client.put(
+                "/api/dashboard/rescue-overrides/novel/10",
+                json={"action": "exclude", "note": "保留纠错"},
+            )
+        else:
+            response = client.delete("/api/dashboard/rescue-overrides/novel/10")
+
+    assert response.status_code == 500
+    db = Database(db_path)
+    try:
+        override = db.get_rescue_override("novel", 10)
+    finally:
+        db.close()
+    if action == "put":
+        assert override is not None
+        assert override["action"] == "exclude"
+        assert override["note"] == "保留纠错"
+    else:
+        assert override is None
+    assert "救援纠错已保存，但目录增量刷新失败" in caplog.text
 
 
 def test_rescue_public_api_requires_bearer_token(client) -> None:
@@ -526,7 +571,7 @@ def test_rescue_parent_series_exposes_chapter_and_paginated_directory(client) ->
     assert chapter.get_json()["data"]["eligibility_reason"] == "parent_series_unavailable"
 
 
-def test_dashboard_rescue_list_and_override_crud(app, client) -> None:
+def test_dashboard_rescue_list_and_override_crud(client) -> None:
     listed = client.get("/api/dashboard/rescues?item_type=novel&state=success")
     assert listed.status_code == 200
     assert listed.get_json()["data"]["items"][0]["novel_id"] == 10
@@ -536,17 +581,401 @@ def test_dashboard_rescue_list_and_override_crud(app, client) -> None:
         json={"action": "exclude", "note": "仍然可访问"},
     )
     assert excluded.status_code == 200
-    _rebuild_catalog(app)
     assert client.get(
         "/api/dashboard/rescues?item_type=novel&state=success"
     ).get_json()["data"]["items"] == []
 
     restored = client.delete("/api/dashboard/rescue-overrides/novel/10")
     assert restored.status_code == 200
-    _rebuild_catalog(app)
     assert client.get(
         "/api/dashboard/rescues?item_type=novel&state=success"
     ).get_json()["data"]["items"][0]["novel_id"] == 10
+
+
+def test_delete_series_route_refreshes_unbound_chapters_and_historical_parent(
+    app,
+    client,
+    monkeypatch,
+) -> None:
+    db_path = Path(app.config["PIXIV_DB_PATH"])
+    db = Database(db_path)
+    try:
+        db.conn.execute(
+            "INSERT INTO series (series_id, title, user_id, total_novels, status) "
+            "VALUES (30, '当前系列', 1, 1, 'normal')"
+        )
+        db.conn.execute(
+            "INSERT INTO series (series_id, title, user_id, total_novels, status) "
+            "VALUES (40, '历史系列', 1, 1, 'deleted')"
+        )
+        db.conn.execute(
+            """
+            INSERT INTO novels (
+                novel_id, user_id, series_id, title, visible, restrict_value,
+                x_restrict, text_length, total_bookmarks, total_views, tags_json,
+                raw_json, meta_hash, status
+            ) VALUES (31, 1, 40, '历史章节', 1, 'public', 0, 4, 0, 0,
+                      '[]', '{}', 'h31', 'deleted')
+            """
+        )
+        db.conn.execute(
+            "INSERT INTO novel_texts (novel_id, text_raw, has_content, text_hash) "
+            "VALUES (31, '历史正文', 1, 't31')"
+        )
+        db.conn.commit()
+        db.rebuild_rescue_catalog()
+        assert db.get_rescue_catalog_item("series", 40) is not None
+        db.conn.execute("UPDATE novels SET series_id = 30 WHERE novel_id = 31")
+        db.conn.commit()
+    finally:
+        db.close()
+
+    monkeypatch.setattr(
+        Database,
+        "rebuild_rescue_catalog",
+        lambda *_args: pytest.fail("系列删除不得执行全量目录刷新"),
+    )
+
+    response = client.delete("/api/dashboard/series/30")
+
+    assert response.status_code == 200
+    db = Database(db_path)
+    try:
+        chapter = db.get_rescue_catalog_item("novel", 31)
+        assert chapter is not None
+        assert chapter["content_kind"] == "standalone"
+        assert db.get_rescue_catalog_item("series", 40) is None
+        assert db.conn.execute(
+            "SELECT series_id FROM novels WHERE novel_id = 31"
+        ).fetchone()[0] is None
+    finally:
+        db.close()
+
+
+def test_delete_historical_series_route_keeps_current_chapter_and_reclassifies(
+    app,
+    client,
+    monkeypatch,
+) -> None:
+    db_path = Path(app.config["PIXIV_DB_PATH"])
+    db = Database(db_path)
+    try:
+        db.conn.execute(
+            "INSERT INTO series (series_id, title, user_id, total_novels, status) "
+            "VALUES (30, '当前系列', 1, 1, 'normal')"
+        )
+        db.conn.execute(
+            "INSERT INTO series (series_id, title, user_id, total_novels, status) "
+            "VALUES (40, '历史系列', 1, 1, 'deleted')"
+        )
+        db.conn.execute(
+            """
+            INSERT INTO novels (
+                novel_id, user_id, series_id, title, visible, restrict_value,
+                x_restrict, text_length, total_bookmarks, total_views, tags_json,
+                raw_json, meta_hash, status
+            ) VALUES (31, 1, 40, '历史章节', 1, 'public', 0, 4, 0, 0,
+                      '[]', '{}', 'h31', 'deleted')
+            """
+        )
+        db.conn.execute(
+            "INSERT INTO novel_texts (novel_id, text_raw, has_content, text_hash) "
+            "VALUES (31, '历史正文', 1, 't31')"
+        )
+        db.conn.commit()
+        db.rebuild_rescue_catalog()
+        db.conn.execute("UPDATE novels SET series_id = 30 WHERE novel_id = 31")
+        db.conn.commit()
+    finally:
+        db.close()
+
+    monkeypatch.setattr(
+        Database,
+        "rebuild_rescue_catalog",
+        lambda *_args: pytest.fail("删除系列不得执行全量目录刷新"),
+    )
+
+    response = client.delete("/api/dashboard/series/40")
+
+    assert response.status_code == 200
+    db = Database(db_path)
+    try:
+        row = db.conn.execute(
+            "SELECT series_id FROM novels WHERE novel_id = 31"
+        ).fetchone()
+        assert row is not None
+        assert row["series_id"] == 30
+        chapter = db.get_rescue_catalog_item("novel", 31)
+        assert chapter is not None
+        assert chapter["content_kind"] == "series_chapter"
+        assert db.get_rescue_catalog_item("series", 40) is None
+    finally:
+        db.close()
+
+
+def test_confirm_pending_series_consumes_delete_series_chapter_ids(
+    app,
+    client,
+    monkeypatch,
+) -> None:
+    db_path = Path(app.config["PIXIV_DB_PATH"])
+    db = Database(db_path)
+    try:
+        db.conn.execute(
+            "INSERT INTO series (series_id, title, user_id, total_novels, status) "
+            "VALUES (50, '待删除系列', 1, 1, 'deleted')"
+        )
+        db.conn.execute(
+            """
+            INSERT INTO novels (
+                novel_id, user_id, series_id, title, visible, restrict_value,
+                x_restrict, text_length, total_bookmarks, total_views, tags_json,
+                raw_json, meta_hash, status
+            ) VALUES (51, 1, 50, '待删除章节', 1, 'public', 0, 4, 0, 0,
+                      '[]', '{}', 'h51', 'deleted')
+            """
+        )
+        db.conn.execute(
+            "INSERT INTO novel_texts (novel_id, text_raw, has_content, text_hash) "
+            "VALUES (51, '待删除正文', 1, 't51')"
+        )
+        db.add_pending_deletion("series", 50, "已取消追更", "待删除系列", "作者", "")
+        deletion_id = db.conn.execute(
+            "SELECT id FROM pending_deletions WHERE item_type = 'series' AND item_id = 50"
+        ).fetchone()[0]
+        db.conn.commit()
+    finally:
+        db.close()
+
+    deleted_ids: list[int] = []
+    refreshed_ids: list[int] = []
+    original_delete_series = Database.delete_series
+    original_refresh = Database.refresh_rescue_item
+
+    def capture_delete(self, series_id: int):
+        result = original_delete_series(self, series_id)
+        chapter = self.conn.execute(
+            "SELECT series_id FROM novels WHERE novel_id = 51"
+        ).fetchone()
+        assert chapter is not None
+        assert chapter["series_id"] is None
+        deleted_ids.extend(result)
+        return result
+
+    def capture_refresh(self, item_type: str, item_id: int):
+        if item_type == "novel":
+            assert self.conn.execute(
+                "SELECT 1 FROM novels WHERE novel_id = ?", (item_id,)
+            ).fetchone() is None
+            refreshed_ids.append(item_id)
+        return original_refresh(self, item_type, item_id)
+
+    monkeypatch.setattr(Database, "delete_series", capture_delete)
+    monkeypatch.setattr(Database, "refresh_rescue_item", capture_refresh)
+
+    response = client.post(f"/api/dashboard/pending-deletions/{deletion_id}/confirm")
+
+    assert response.status_code == 200
+    assert deleted_ids == [51]
+    assert refreshed_ids == [51]
+    db = Database(db_path)
+    try:
+        assert db.conn.execute(
+            "SELECT 1 FROM series WHERE series_id = 50"
+        ).fetchone() is None
+        assert db.conn.execute(
+            "SELECT 1 FROM novels WHERE novel_id = 51"
+        ).fetchone() is None
+        assert db.conn.execute(
+            "SELECT 1 FROM rescue_catalog_memberships WHERE novel_id = 51"
+        ).fetchone() is None
+    finally:
+        db.close()
+
+
+def test_confirm_pending_historical_series_does_not_delete_current_chapter(
+    app,
+    client,
+) -> None:
+    db_path = Path(app.config["PIXIV_DB_PATH"])
+    db = Database(db_path)
+    try:
+        db.conn.execute(
+            "INSERT INTO series (series_id, title, user_id, total_novels, status) "
+            "VALUES (30, '当前系列', 1, 1, 'normal')"
+        )
+        db.conn.execute(
+            "INSERT INTO series (series_id, title, user_id, total_novels, status) "
+            "VALUES (40, '历史系列', 1, 1, 'deleted')"
+        )
+        db.conn.execute(
+            """
+            INSERT INTO novels (
+                novel_id, user_id, series_id, title, visible, restrict_value,
+                x_restrict, text_length, total_bookmarks, total_views, tags_json,
+                raw_json, meta_hash, status
+            ) VALUES (31, 1, 40, '历史章节', 1, 'public', 0, 4, 0, 0,
+                      '[]', '{}', 'h31', 'deleted')
+            """
+        )
+        db.conn.execute(
+            "INSERT INTO novel_texts (novel_id, text_raw, has_content, text_hash) "
+            "VALUES (31, '历史正文', 1, 't31')"
+        )
+        db.conn.commit()
+        db.rebuild_rescue_catalog()
+        db.conn.execute("UPDATE novels SET series_id = 30 WHERE novel_id = 31")
+        db.conn.commit()
+        db.add_pending_deletion("series", 40, "已取消追更", "历史系列", "作者", "")
+        deletion_id = db.conn.execute(
+            "SELECT id FROM pending_deletions WHERE item_type = 'series' AND item_id = 40"
+        ).fetchone()[0]
+        db.conn.commit()
+    finally:
+        db.close()
+
+    response = client.post(f"/api/dashboard/pending-deletions/{deletion_id}/confirm")
+
+    assert response.status_code == 200
+    db = Database(db_path)
+    try:
+        row = db.conn.execute(
+            "SELECT series_id FROM novels WHERE novel_id = 31"
+        ).fetchone()
+        assert row is not None
+        assert row["series_id"] == 30
+        chapter = db.get_rescue_catalog_item("novel", 31)
+        assert chapter is not None
+        assert chapter["content_kind"] == "series_chapter"
+        assert db.get_rescue_catalog_item("series", 40) is None
+    finally:
+        db.close()
+
+
+def test_delete_series_refresh_failure_rolls_back_and_can_retry(
+    app,
+    client,
+    monkeypatch,
+) -> None:
+    db_path = Path(app.config["PIXIV_DB_PATH"])
+    db = Database(db_path)
+    try:
+        db.conn.execute(
+            "INSERT INTO series (series_id, title, user_id, total_novels, status) "
+            "VALUES (60, '可重试系列', 1, 2, 'deleted')"
+        )
+        for novel_id in (61, 62):
+            db.conn.execute(
+                """
+                INSERT INTO novels (
+                    novel_id, user_id, series_id, title, visible, restrict_value,
+                    x_restrict, text_length, total_bookmarks, total_views, tags_json,
+                    raw_json, meta_hash, status
+                ) VALUES (?, 1, 60, ?, 1, 'public', 0, 4, 0, 0,
+                          '[]', '{}', ?, 'deleted')
+                """,
+                (novel_id, f"章节 {novel_id}", f"h{novel_id}"),
+            )
+            db.conn.execute(
+                "INSERT INTO novel_texts (novel_id, text_raw, has_content, text_hash) "
+                "VALUES (?, ?, 1, ?)",
+                (novel_id, f"正文 {novel_id}", f"t{novel_id}"),
+            )
+        db.conn.commit()
+        db.rebuild_rescue_catalog()
+    finally:
+        db.close()
+
+    original_refresh = Database.refresh_rescue_item
+
+    def fail_on_second(self, item_type: str, item_id: int):
+        if item_type == "novel" and item_id == 62:
+            raise RuntimeError("第二章刷新失败")
+        return original_refresh(self, item_type, item_id)
+
+    monkeypatch.setattr(Database, "refresh_rescue_item", fail_on_second)
+    failed = client.delete("/api/dashboard/series/60")
+    assert failed.status_code == 500
+
+    db = Database(db_path)
+    try:
+        assert db.conn.execute(
+            "SELECT 1 FROM series WHERE series_id = 60"
+        ).fetchone() is not None
+        assert db.conn.execute(
+            "SELECT COUNT(*) FROM novels WHERE series_id = 60"
+        ).fetchone()[0] == 2
+        assert db.get_rescue_catalog_item("series", 60) is not None
+    finally:
+        db.close()
+
+    monkeypatch.setattr(Database, "refresh_rescue_item", original_refresh)
+    succeeded = client.delete("/api/dashboard/series/60")
+    assert succeeded.status_code == 200
+
+
+def test_confirm_pending_series_refresh_failure_keeps_pending_record(
+    app,
+    client,
+    monkeypatch,
+) -> None:
+    db_path = Path(app.config["PIXIV_DB_PATH"])
+    db = Database(db_path)
+    try:
+        db.conn.execute(
+            "INSERT INTO series (series_id, title, user_id, total_novels, status) "
+            "VALUES (70, '待确认可重试系列', 1, 1, 'deleted')"
+        )
+        db.conn.execute(
+            """
+            INSERT INTO novels (
+                novel_id, user_id, series_id, title, visible, restrict_value,
+                x_restrict, text_length, total_bookmarks, total_views, tags_json,
+                raw_json, meta_hash, status
+            ) VALUES (71, 1, 70, '待确认章节', 1, 'public', 0, 4, 0, 0,
+                      '[]', '{}', 'h71', 'deleted')
+            """
+        )
+        db.conn.execute(
+            "INSERT INTO novel_texts (novel_id, text_raw, has_content, text_hash) "
+            "VALUES (71, '待确认正文', 1, 't71')"
+        )
+        db.add_pending_deletion("series", 70, "已取消追更", "待确认可重试系列", "作者", "")
+        deletion_id = db.conn.execute(
+            "SELECT id FROM pending_deletions WHERE item_type = 'series' AND item_id = 70"
+        ).fetchone()[0]
+        db.conn.commit()
+        db.rebuild_rescue_catalog()
+    finally:
+        db.close()
+
+    original_refresh = Database.refresh_rescue_item
+    monkeypatch.setattr(
+        Database,
+        "refresh_rescue_item",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("待确认刷新失败")),
+    )
+
+    failed = client.post(f"/api/dashboard/pending-deletions/{deletion_id}/confirm")
+    assert failed.status_code == 500
+    db = Database(db_path)
+    try:
+        row = db.conn.execute(
+            "SELECT status FROM pending_deletions WHERE id = ?", (deletion_id,)
+        ).fetchone()
+        assert row is not None and row["status"] == "pending"
+        assert db.conn.execute(
+            "SELECT 1 FROM series WHERE series_id = 70"
+        ).fetchone() is not None
+        assert db.conn.execute(
+            "SELECT 1 FROM novels WHERE novel_id = 71"
+        ).fetchone() is not None
+    finally:
+        db.close()
+
+    monkeypatch.setattr(Database, "refresh_rescue_item", original_refresh)
+    succeeded = client.post(f"/api/dashboard/pending-deletions/{deletion_id}/confirm")
+    assert succeeded.status_code == 200
 
 
 def test_dashboard_novel_detail_includes_rescue_evaluation(client) -> None:

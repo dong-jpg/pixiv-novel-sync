@@ -82,12 +82,24 @@
         <option value="success">完整救援</option>
         <option value="partial">部分救援</option>
       </select>
-      <select v-model="rescueFilters.item_type" class="px-3 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+      <select v-model="rescueFilters.content_kind" class="px-3 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
         <option value="all">全部内容类型</option>
-        <option value="novel">单篇小说</option>
-        <option value="series">小说系列</option>
+        <option value="series">系列</option>
+        <option value="series_chapter">系列单章</option>
+        <option value="standalone">独立小说</option>
       </select>
-      <span class="text-xs text-gray-400">内容来自私人备份，并非 Pixiv 官方恢复</span>
+      <select v-model="rescueFilters.source_kind" class="px-3 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+        <option value="all">全部拯救来源</option>
+        <option value="bookmark">我的收藏</option>
+        <option value="subscribed_series">我的追更</option>
+        <option value="following_user">关注用户</option>
+        <option value="user_backup">用户备份</option>
+      </select>
+      <div class="w-full flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400">
+        <span>目录更新于 {{ formatCatalogDate(rescueCatalog.refreshed_at) }}</span>
+        <span v-if="rescueCatalog.stale" class="text-amber-600">数据可能已过期</span>
+        <span>内容来自私人备份，并非 Pixiv 官方恢复</span>
+      </div>
     </div>
   </div>
 
@@ -249,7 +261,7 @@
     <!-- Card Grid: Rescue Archive -->
     <div v-else-if="filters.category === 'rescue'" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 pt-2">
       <a v-for="item in items" :key="item.item_type + '-' + item.item_id"
-         :href="item.item_type === 'series' ? ('/dashboard/series/' + encodeURIComponent(item.item_id)) : ('/dashboard/novels/' + encodeURIComponent(item.item_id))"
+         :href="item.content_kind === 'series' ? ('/dashboard/series/' + encodeURIComponent(item.item_id)) : ('/dashboard/novels/' + encodeURIComponent(item.item_id))"
          class="group bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden hover:shadow-md hover:-translate-y-0.5 transition-all duration-200">
         <div class="aspect-[3/4] relative overflow-hidden">
           <div class="absolute inset-0" :style="'background: linear-gradient(135deg, ' + getGradient(item.title || item.item_id) + ')' "></div>
@@ -261,14 +273,14 @@
                class="absolute inset-0 w-full h-full object-cover"
                @error="item.cover_url = ''">
           <div class="absolute top-2 left-2 right-2 flex flex-wrap gap-1 z-10">
-            <span class="px-1.5 py-0.5 bg-gray-900/75 text-white text-[10px] font-bold rounded">{{ item.item_type === 'series' ? '系列' : '单篇' }}</span>
+            <span class="px-1.5 py-0.5 bg-gray-900/75 text-white text-[10px] font-bold rounded">{{ item.content_kind_label || (item.item_type === 'series' ? '系列' : '单篇') }}</span>
             <span class="px-1.5 py-0.5 text-white text-[10px] font-bold rounded" :class="item.rescue_state === 'success' ? 'bg-emerald-600' : 'bg-amber-500'">
               {{ item.rescue_state === 'success' ? '完整救援' : '部分救援' }}
             </span>
           </div>
           <div class="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-t from-black/70 to-transparent"></div>
           <div class="absolute bottom-2 left-2 right-2 z-10 text-white/90 text-xs">
-            <span v-if="item.item_type === 'series'">已备份 {{ item.complete_count || 0 }} / {{ item.expected_count || '?' }} 章</span>
+            <span v-if="item.content_kind === 'series'">已备份 {{ item.complete_count || 0 }} / {{ item.expected_count || '?' }} 章</span>
             <span v-else>正文已完整备份</span>
           </div>
         </div>
@@ -277,9 +289,19 @@
             {{ item.title || (item.item_type === 'series' ? '未命名系列' : '未命名小说') }}
           </h3>
           <div class="text-xs text-gray-500 truncate mb-1.5">{{ item.author_name || '未知作者' }}</div>
-          <div class="flex items-center justify-between gap-2 text-[11px] text-gray-400">
-            <span>来自私人备份</span>
-            <span>{{ formatDate(item.last_checked_at || item.updated_at) }}</span>
+          <div class="h-10 overflow-hidden mb-1.5 text-[11px] leading-5 text-gray-500"
+               :title="(item.sources || []).map(source => source.label).join('、') || '来源未记录'">
+            <div v-if="(item.sources || []).length" class="flex flex-wrap content-start gap-x-1">
+              <span v-for="source in (item.sources || [])"
+                    :key="source.kind + ':' + (source.user_id || '')"
+                    class="max-w-full truncate">
+                {{ source.label }}
+              </span>
+            </div>
+            <span v-else>来源未记录</span>
+          </div>
+          <div class="text-[11px] text-gray-400">
+            更新于 {{ formatDate(item.last_checked_at || item.updated_at) }}
           </div>
         </div>
       </a>
@@ -379,6 +401,7 @@
       const totalPages = ref(1);
       const loading = ref(true);
       const error = ref(null);
+      const rescueCatalog = reactive({ refreshed_at: '', stale: false });
 
       // Filters
       const initialCategory = new URLSearchParams(window.location.search).get('category');
@@ -387,7 +410,12 @@
         search: '',
         sort: ''
       });
-      const rescueFilters = reactive({ state: 'all', item_type: 'all' });
+      const rescueFilters = reactive({
+        state: 'all',
+        item_type: 'all',
+        content_kind: 'all',
+        source_kind: 'all'
+      });
 
       let fetchAbortController = null;
       let searchTimeout = null;
@@ -433,6 +461,8 @@
               page_size: String(pageSize.value),
               state: rescueFilters.state,
               item_type: rescueFilters.item_type,
+              content_kind: rescueFilters.content_kind,
+              source_kind: rescueFilters.source_kind,
               search: filters.search,
               sort: filters.sort === 'updated_desc' ? 'updated_desc' : 'checked_desc'
             });
@@ -446,6 +476,8 @@
             totalItems.value = data.total || 0;
             page.value = data.page || 1;
             totalPages.value = data.total_pages || 1;
+            rescueCatalog.refreshed_at = data.refreshed_at || '';
+            rescueCatalog.stale = Boolean(data.stale);
             return;
           }
 
@@ -497,7 +529,13 @@
         } catch (err) {
           if (err.name !== 'AbortError') {
             console.error(err);
-            error.value = '加载失败，请检查网络连接或稍后重试。';
+            const backendMessage = String(err.message || '').trim();
+            const displayError = backendMessage &&
+              backendMessage !== 'Failed to fetch' &&
+              backendMessage !== 'API Request Failed'
+              ? backendMessage
+              : '加载失败，请检查网络连接或稍后重试。';
+            error.value = displayError;
             items.value = [];
           }
         } finally {
@@ -536,6 +574,19 @@
         return dateStr.substring(0, 10);
       };
 
+      const formatCatalogDate = (dateStr) => {
+        if (!dateStr || dateStr === '-') return '-';
+        const raw = String(dateStr).trim();
+        const iso = raw.includes('T') ? raw : raw.replace(' ', 'T');
+        const withZone = /(?:Z|[+-]\\d{2}:?\\d{2})$/i.test(iso) ? iso : iso + 'Z';
+        const parsed = new Date(withZone);
+        if (Number.isNaN(parsed.getTime())) return raw.replace('T', ' ').substring(0, 19);
+        return parsed.toLocaleString('zh-CN', {
+          year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+        });
+      };
+
       // Watchers
       watch(() => filters.category, () => {
         page.value = 1;
@@ -545,7 +596,7 @@
         fetchData();
       });
 
-      watch(() => [rescueFilters.state, rescueFilters.item_type], () => {
+      watch(() => [rescueFilters.state, rescueFilters.item_type, rescueFilters.content_kind, rescueFilters.source_kind], () => {
         if (filters.category !== 'rescue') return;
         page.value = 1;
         fetchData();
@@ -569,8 +620,8 @@
       });
 
       return {
-        items, totalItems, page, pageSize, totalPages, loading, error, filters, rescueFilters,
-        handlePageChange, onPageSizeChange, formatTextLength, formatCount, formatDate, getGradient
+        items, totalItems, page, pageSize, totalPages, loading, error, filters, rescueFilters, rescueCatalog,
+        handlePageChange, onPageSizeChange, formatTextLength, formatCount, formatDate, formatCatalogDate, getGradient
       };
     }
   });
