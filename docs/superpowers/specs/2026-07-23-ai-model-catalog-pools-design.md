@@ -1,6 +1,6 @@
 # AI 模型目录与模型池设计
 
-> 状态：规格自审完成，等待用户书面确认后编写实施计划
+> 状态：规格已确认，实施计划已建立，正在实施
 > 日期：2026-07-23
 > 依赖：现有 `AIWritingService`、Provider/Agent 配置、SQLite、SSE 流式输出
 > 后续规格：[成人描写局部润色 Agent 设计](2026-07-23-adult-polish-agent-design.md)
