@@ -416,7 +416,7 @@ mypy src/
 2. 访问 Dashboard → AI 创作 → 设置
 3. 选择 Provider，并在页面中填入对应 API Key
 4. 点击"测试连接"验证配置
-5. 可配置多个 Provider 作为 fallback；API Key 会加密保存，不会在接口中回显
+5. 可以配置多个 Provider，但当前每个 Agent 只绑定一个 Provider（或该 Provider 下的固定模型）；尚不支持跨 Provider fallback。API Key 会加密保存，不会在接口中回显
 </details>
 
 <details>
