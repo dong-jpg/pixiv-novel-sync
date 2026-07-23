@@ -571,6 +571,8 @@ class SchemaMixin:
 
     def _migrate_ai_tables(self) -> None:
         """创建 AI 创作工作台相关表。"""
+        from .ai.model_schema import migrate_model_routing_schema
+
         self.conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS ai_providers (
@@ -698,6 +700,13 @@ class SchemaMixin:
             self.conn.commit()
         except Exception:
             pass
+
+        self.conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            with self.transaction():
+                migrate_model_routing_schema(self.conn)
+        finally:
+            self.conn.execute("PRAGMA foreign_keys=ON")
 
     def _migrate_pending_deletions_table(self) -> None:
         """创建待确认删除表"""
