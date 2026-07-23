@@ -1188,6 +1188,28 @@ def test_create_app_starts_scheduler_when_flask_debug_is_zero(
     assert len(isolated_create_app_scheduler) == 1
 
 
+def test_create_app_registers_ai_routes_before_starting_scheduler(
+    monkeypatch,
+    isolated_create_app_scheduler,
+):
+    import pixiv_novel_sync.ai_web as ai_web_module
+
+    observed_start_counts = []
+    original_register = ai_web_module.register_ai_routes
+
+    def recording_register(app, settings):
+        observed_start_counts.append(len(isolated_create_app_scheduler))
+        return original_register(app, settings)
+
+    monkeypatch.setenv("FLASK_DEBUG", "0")
+    monkeypatch.setattr(ai_web_module, "register_ai_routes", recording_register)
+
+    create_app()
+
+    assert observed_start_counts == [0]
+    assert len(isolated_create_app_scheduler) == 1
+
+
 def test_create_app_skips_scheduler_in_debug_reloader_parent(
     monkeypatch,
     isolated_create_app_scheduler,

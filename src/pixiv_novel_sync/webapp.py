@@ -264,6 +264,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     _flask_debug_enabled = os.getenv("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
     _is_debug = _flask_debug_enabled or bool(os.getenv("WERKZEUG_SERVER_FD"))
     should_start_scheduler = not _is_debug or _is_werkzeug_reload
+    start_auto_sync_scheduler = False
     if should_start_scheduler:
         registry_settings = settings_manager.load(env_path=env_path)
         registry_key = _scheduler_registry_key(registry_settings.storage.db_path)
@@ -275,7 +276,7 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
         )
         sync_job_manager = auto_sync_scheduler.sync_job_manager
         if scheduler_created or not auto_sync_scheduler.is_running():
-            auto_sync_scheduler.start()
+            start_auto_sync_scheduler = True
     else:
         auto_sync_scheduler = AutoSyncScheduler(
             config_path=config_path,
@@ -439,6 +440,9 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
 
     from .rescue_web import register_rescue_routes
     register_rescue_routes(app, current_settings_for_routes, _client_addr)
+
+    if start_auto_sync_scheduler:
+        auto_sync_scheduler.start()
 
     @app.route("/api/auth/login", methods=["GET", "POST"])
     def auth_login():
