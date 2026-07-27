@@ -336,13 +336,26 @@ class CatalogMixin:
                 f"metadata_json 超过 {_METADATA_MAX_BYTES} 字节上限"
             )
 
-        return {
+        normalized = {
             "model_key": normalize_model_key(model.get("model_key")),
             "display_name": display_name,
             "capabilities": list(normalize_capabilities(model.get("capabilities"))),
             "context_window": cls._validate_context_window(model.get("context_window")),
             "metadata_json": metadata_json,
         }
+        rebuild_input = dict(metadata)
+        rebuild_input["id"] = normalized["model_key"]
+        rebuild_input["name"] = normalized["display_name"]
+        if "capabilities" in metadata:
+            rebuild_input["capabilities"] = normalized["capabilities"]
+        if "context_window" in metadata:
+            rebuild_input["context_window"] = normalized["context_window"]
+        rebuilt = normalize_model_record(rebuild_input)
+        if rebuilt != normalized:
+            raise ModelCatalogValidationError(
+                "metadata_json 必须是 normalize_model_record 的 canonical 输出"
+            )
+        return rebuilt
 
     def upsert_discovered_models(
         self,

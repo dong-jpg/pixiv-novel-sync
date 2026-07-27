@@ -146,8 +146,10 @@ def test_catalog_upsert_preserves_manual_overrides_and_marks_missing_unavailable
     db.upsert_discovered_models(
         provider_id,
         [
-            {"model_key": "manual", "display_name": "上游名", "capabilities": ["streaming"]},
-            {"model_key": "new", "display_name": "新模型"},
+            normalize_model_record(
+                {"id": "manual", "name": "上游名", "capabilities": ["streaming"]}
+            ),
+            normalize_model_record({"id": "new", "name": "新模型"}),
         ],
         generation=1,
     )
@@ -253,6 +255,73 @@ def test_upsert_persists_every_normalized_discovered_field(db):
         (row["id"],),
     ).fetchone()[0]
     assert stored_metadata == normalized["metadata_json"]
+
+
+@pytest.mark.parametrize(
+    "metadata_json",
+    [
+        (
+            '{"api_key":"secret","capabilities":["streaming"],'
+            '"context_window":4096,"created":1,"owned_by":"owner",'
+            '"prompt":"private body"}'
+        ),
+        (
+            '{ "owned_by": "owner", "created": 1, "context_window": 4096, '
+            '"capabilities": ["streaming"] }'
+        ),
+        (
+            '{"capabilities":["json"],"context_window":4096,'
+            '"created":1,"owned_by":"owner"}'
+        ),
+        (
+            '{"capabilities":["streaming"],"context_window":8192,'
+            '"created":1,"owned_by":"owner"}'
+        ),
+    ],
+    ids=(
+        "non-whitelisted-secrets",
+        "non-canonical-json",
+        "capabilities-mismatch",
+        "context-window-mismatch",
+    ),
+)
+def test_upsert_rejects_noncanonical_normalized_metadata_before_writing(
+    db, metadata_json: str
+):
+    provider_id = seed_provider(db)
+    existing = normalize_model_record(
+        {"id": "existing", "name": "before", "owned_by": "original"}
+    )
+    db.upsert_discovered_models(provider_id, [existing], generation=1)
+    valid_new = normalize_model_record({"id": "valid-new", "owned_by": "safe"})
+    invalid = normalize_model_record(
+        {
+            "id": "invalid",
+            "capabilities": ["streaming"],
+            "context_window": 4096,
+            "created": 1,
+            "owned_by": "owner",
+        }
+    )
+    invalid["metadata_json"] = metadata_json
+
+    with pytest.raises(ModelCatalogValidationError, match="metadata_json"):
+        db.upsert_discovered_models(
+            provider_id,
+            [valid_new, invalid],
+            generation=2,
+        )
+
+    result = db.list_ai_provider_models(provider_id)
+    assert result["total"] == 1
+    assert result["discovered_available"] == 1
+    assert result["items"][0]["model_key"] == "existing"
+    assert result["items"][0]["discovered_display_name"] == "before"
+    stored_metadata = db.conn.execute(
+        "SELECT discovered_metadata_json FROM ai_provider_models WHERE provider_id = ?",
+        (provider_id,),
+    ).fetchone()[0]
+    assert stored_metadata == existing["metadata_json"]
 
 
 def test_duplicate_discovered_keys_upsert_one_row_with_last_value(db):
