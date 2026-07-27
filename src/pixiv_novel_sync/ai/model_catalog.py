@@ -156,16 +156,52 @@ def normalize_capabilities(
     return tuple(result)
 
 
-def _build_metadata(raw: Mapping[str, Any]) -> str:
-    """从白名单字段构造紧凑排序 JSON 元数据，校验序列化上限。"""
+def _normalize_metadata_string(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise ModelCatalogValidationError(f"{field} 必须是字符串")
+    normalized = unicodedata.normalize("NFC", value)
+    if _has_control_character(normalized):
+        raise ModelCatalogValidationError(f"{field} 不能包含控制字符")
+    return normalized
+
+
+def _build_metadata(
+    raw: Mapping[str, Any],
+    *,
+    capabilities: list[str],
+    context_window: int | None,
+) -> str:
+    """从白名单规范值构造紧凑排序 JSON 元数据并校验上限。"""
     metadata: dict[str, Any] = {}
-    for key in _METADATA_WHITELIST:
-        if key in raw and raw[key] is not None:
-            metadata[key] = raw[key]
-    serialized = json.dumps(
-        metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    if len(serialized.encode("utf-8")) > _METADATA_MAX_BYTES:
+
+    owned_by = raw.get("owned_by")
+    if owned_by is not None:
+        metadata["owned_by"] = _normalize_metadata_string(owned_by, "owned_by")
+
+    if raw.get("capabilities") is not None:
+        metadata["capabilities"] = capabilities
+
+    if raw.get("context_window") is not None:
+        metadata["context_window"] = context_window
+
+    created = raw.get("created")
+    if created is not None:
+        if isinstance(created, str):
+            metadata["created"] = _normalize_metadata_string(created, "created")
+        elif isinstance(created, int) and not isinstance(created, bool):
+            metadata["created"] = created
+        else:
+            raise ModelCatalogValidationError("created 必须是字符串或整数")
+
+    try:
+        serialized = json.dumps(
+            metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        serialized_bytes = serialized.encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise ModelCatalogValidationError("模型元数据无法序列化") from exc
+
+    if len(serialized_bytes) > _METADATA_MAX_BYTES:
         raise ModelCatalogValidationError(
             f"模型元数据序列化后超过 {_METADATA_MAX_BYTES} 字节上限"
         )
@@ -212,21 +248,35 @@ def normalize_model_record(raw: Mapping[str, Any]) -> dict[str, Any]:
             )
         item["context_window"] = context_window
 
-    item["metadata_json"] = _build_metadata(raw)
+    item["metadata_json"] = _build_metadata(
+        raw,
+        capabilities=item["capabilities"],
+        context_window=item["context_window"],
+    )
     return item
 
 
 def canonical_model_digest(models: Sequence[Mapping[str, Any]]) -> str:
-    """对按原始 model_key 排序、去重的模型列表计算 SHA-256 小写十六进制。
+    """对按原始 model_key 排序、去重的规范模型列表计算 SHA-256。
 
     摘要绑定空确认和 operation CAS，不包含 API Key 或响应正文。
     """
-    unique: dict[str, str] = {}
+    unique: dict[str, dict[str, Any]] = {}
     for model in models:
+        if not isinstance(model, Mapping):
+            raise ModelCatalogValidationError("模型记录必须是对象")
         key = normalize_model_key(model.get("model_key"))
-        unique[key] = key
-    ordered = sorted(unique)
-    serialized = json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
+        unique[key] = {
+            "model_key": key,
+            "display_name": model.get("display_name"),
+            "capabilities": model.get("capabilities", []),
+            "context_window": model.get("context_window"),
+            "metadata_json": model.get("metadata_json", "{}"),
+        }
+    ordered = [unique[key] for key in sorted(unique)]
+    serialized = json.dumps(
+        ordered, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
