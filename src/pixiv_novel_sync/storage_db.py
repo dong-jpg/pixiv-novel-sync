@@ -21,6 +21,7 @@ from .storage.rescue import RescueMixin
 from .storage.ai.core import AiCoreMixin
 from .storage.ai.documents import AiDocumentsMixin
 from .storage.ai.writing import AiWritingMixin
+from .storage.ai.catalog import CatalogMixin
 
 
 class Database(
@@ -36,6 +37,7 @@ class Database(
     AiCoreMixin,
     AiDocumentsMixin,
     AiWritingMixin,
+    CatalogMixin,
     SchemaMixin,
     DatabaseConnection,
 ):
