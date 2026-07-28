@@ -8,6 +8,14 @@
 
 **Tech Stack:** Python 3.10、Flask 3、SQLite/WAL、requests 2.32、Vue 3 CDN、SSE、pytest；不新增第三方依赖。
 
+## Current Execution Status
+
+- 已批准的收尾设计：`docs/superpowers/specs/2026-07-28-ai-model-routing-completion-design.md`。
+- Task 1 已由 `c31791d` 完成，并由 `16b8587` 补充 legacy model key 约束。
+- Task 2 已由 `816e690` 完成，并由 `9458cfe` 修正 canonical digest。
+- Task 3 已由 `6c3cc3a` 完成，并由 `c63ac95` 固化 canonical metadata 存储边界。
+- 当前执行起点为 Task 4；Task 4-22 尚未实施，必须继续按下方 TDD 步骤推进。
+
 ## Global Constraints
 
 - 只实施规格第一阶段；连续失败健康计数、跨任务冷却、后台定时模型刷新、权重轮询和成本排序不在本计划范围内。
@@ -131,7 +139,7 @@ def valid_continue_payload(parent_job_id: str, *, index: int) -> dict[str, Any]:
 
 ---
 
-### Task 1: Atomic Schema Migration and Routing Tables
+### Task 1: Atomic Schema Migration and Routing Tables (Completed)
 
 **Files:**
 - Create: `src/pixiv_novel_sync/storage/ai/model_schema.py`
@@ -142,7 +150,7 @@ def valid_continue_payload(parent_job_id: str, *, index: int) -> dict[str, Any]:
 - Produces `migrate_model_routing_schema(conn: sqlite3.Connection) -> None` and `assert_model_routing_foreign_keys(conn: sqlite3.Connection) -> None`.
 - `SchemaMixin._migrate_ai_tables()` calls the migration once after the existing AI base tables exist; the migration is idempotent and does not change existing fixed Agent IDs.
 
-- [ ] **Step 1: Write the failing migration tests**
+- [x] **Step 1: Write the failing migration tests**
 
 ```python
 def test_old_ai_database_migrates_fixed_agents_and_imports_available_models(tmp_path):
@@ -185,13 +193,13 @@ def test_failed_model_schema_migration_rolls_back(tmp_path):
     ).fetchone() is None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_model_schema.py -q`
 
 Expected: FAIL because the migration helper, routing tables, binding columns and old-list import do not exist.
 
-- [ ] **Step 3: Implement the single-transaction migration**
+- [x] **Step 3: Implement the single-transaction migration**
 
 Use `with self.transaction():` from `SchemaMixin` and issue individual `conn.execute()` calls; do not use `executescript()` inside the migration because it can commit before a later DDL error. Create these tables and constraints exactly:
 
@@ -234,20 +242,20 @@ Create `ai_model_sync_operations(operation_id TEXT PRIMARY KEY, provider_id INTE
 
 Import only valid strings or object `id` strings from old `available_models_json` into manual rows using the model-key validator; log one warning per skipped element and never set `discovered_available=1`. Finish with `PRAGMA foreign_keys=ON` and a non-empty `PRAGMA foreign_key_check` raising `RuntimeError`, so the transaction rolls back. Add `prepare_model_routing_downgrade(conn)` that raises `RuntimeError("存在模型池 Agent，请先转换为固定绑定")` when any `binding_type='pool'` row exists; otherwise it returns a read-only fixed-agent compatibility report rather than pretending a lossless downgrade.
 
-- [ ] **Step 4: Run migration tests to verify they pass**
+- [x] **Step 4: Run migration tests to verify they pass**
 
 Run: `python -m pytest tests/test_ai_model_schema.py -q`
 
 Expected: PASS, including rollback with no partially created routing tables and an empty foreign-key check.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/storage/ai/model_schema.py src/pixiv_novel_sync/storage/schema.py tests/test_ai_model_schema.py
 git commit -m "feat: add atomic model routing schema migration"
 ```
 
-### Task 2: Model Normalization and Shared Routing DTOs
+### Task 2: Model Normalization and Shared Routing DTOs (Completed)
 
 **Files:**
 - Create: `src/pixiv_novel_sync/ai/model_catalog.py`
@@ -259,7 +267,7 @@ git commit -m "feat: add atomic model routing schema migration"
 - `ModelListResult` has exactly `models: list[dict[str, Any]]`, `complete: bool`, `empty_authoritative: bool`, `pages: int`, `result_digest: str`, and `partial_reason: str | None` fields.
 - The domain-error contract is fixed across modules: `model_catalog.py` produces `ModelCatalogValidationError(ValueError)` and `ModelCatalogConflictError(RuntimeError)`, `model_pools.py` produces `ModelPoolValidationError(ValueError)` and `ModelPoolConflictError(RuntimeError)`, `model_sync.py` produces `ModelSyncConflictError(RuntimeError)`, and `model_router.py` produces `ModelRouteError(RuntimeError)` and `ModelRouteConflictError(ModelRouteError)`; storage/service layers translate conflict errors to `AIConflictError` rather than matching message strings.
 
-- [ ] **Step 1: Write the failing normalization tests**
+- [x] **Step 1: Write the failing normalization tests**
 
 ```python
 def test_model_key_is_opaque_but_display_fields_are_nfc_normalized():
@@ -285,30 +293,30 @@ def test_digest_deduplicates_by_original_model_key_and_is_stable():
         normalize_model_record({"id": "m\u0000"})
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_model_catalog.py -q`
 
 Expected: FAIL because normalization and `ModelListResult` are absent.
 
-- [ ] **Step 3: Implement exact validation rules**
+- [x] **Step 3: Implement exact validation rules**
 
 Use `unicodedata.normalize('NFC', value)` only for display names, capability labels and the whitelist metadata strings `owned_by`, `context_window`, `created`, and `capabilities`; keep model keys byte-for-byte unchanged. Reject NUL and every Unicode control category, enforce both code-point and UTF-8 byte limits, require a non-empty `id`/`model_key`, and reject non-object model records. Normalize capabilities by preserving first occurrence order and retaining unknown labels for display; `required_capabilities` uses a separate whitelist validator that rejects unknown labels and duplicates. Construct metadata from only `owned_by`, `capabilities`, `context_window`, and `created`, serialize with compact sorted JSON, and reject a serialized value over 8192 bytes. `canonical_model_digest` sorts by the original model key and hashes compact UTF-8 JSON with SHA-256 lowercase hex. Do not use heuristic secret filtering as a substitute for the whitelist.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_ai_model_catalog.py -q`
 
 Expected: PASS, including opaque Unicode key, NFC display normalization, unknown capability display and hard limits.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/model_catalog.py src/pixiv_novel_sync/ai/models.py tests/test_ai_model_catalog.py
 git commit -m "feat: add model catalog normalization contracts"
 ```
 
-### Task 3: Provider Model Catalog Storage
+### Task 3: Provider Model Catalog Storage (Completed)
 
 **Files:**
 - Create: `src/pixiv_novel_sync/storage/ai/catalog.py`
@@ -320,7 +328,7 @@ git commit -m "feat: add model catalog normalization contracts"
 - `Database.get_ai_provider_model(model_id: int) -> dict[str, Any] | None`, `create_ai_provider_model(data: Mapping[str, Any]) -> int`, `update_ai_provider_model(model_id: int, patch: Mapping[str, Any]) -> None`, `remove_ai_provider_model_manual(model_id: int) -> None`, and `upsert_discovered_models(provider_id: int, models: Sequence[Mapping[str, Any]], generation: int) -> dict[str, int]`.
 - Returned rows include derived `source` (`discovered`, `manual`, or `both`), `display_name`, effective `capabilities`, effective `context_window`, and `routable`; API responses never include encrypted Provider fields.
 
-- [ ] **Step 1: Write the failing storage tests**
+- [x] **Step 1: Write the failing storage tests**
 
 ```python
 def test_catalog_upsert_preserves_manual_overrides_and_marks_missing_unavailable(db):
@@ -350,23 +358,23 @@ def test_manual_model_delete_is_blocked_when_pool_member_references_it(db):
         db.remove_ai_provider_model_manual(model_id)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_model_catalog.py -q`
 
 Expected: FAIL because `CatalogMixin` and its tables/methods are not connected to `Database`.
 
-- [ ] **Step 3: Implement transaction-safe catalog CRUD**
+- [x] **Step 3: Implement transaction-safe catalog CRUD**
 
 Add `CatalogMixin` to `Database` without changing the order of existing AI mixins. `upsert_discovered_models` must run one `BEGIN IMMEDIATE`: insert new rows, update only discovered fields for existing rows, set all previously discovered rows not in the complete result to `discovered_available=0`, and leave `manual`, every `manual_*`, and `enabled` untouched. `remove_ai_provider_model_manual` clears `manual` and manual overrides; delete the row only when `discovered=0` and no pool member references it, otherwise retain the discovered row or return the Chinese conflict error. `list_ai_provider_models` computes the three counts independently: `total` all rows, `discovered_available` rows with that flag, and `routable` rows satisfying the effective-source and enabled conditions plus enabled Provider. Search uses a bound `LIKE` parameter and never returns `api_key_encrypted` or `available_models_json` as a source of truth.
 
-- [ ] **Step 4: Run storage tests to verify they pass**
+- [x] **Step 4: Run storage tests to verify they pass**
 
 Run: `python -m pytest tests/test_ai_model_catalog.py -q`
 
 Expected: PASS, including duplicate upsert, manual-field preservation, missing-model marking and reference protection.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/storage/ai/catalog.py src/pixiv_novel_sync/storage_db.py tests/test_ai_model_catalog.py
