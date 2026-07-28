@@ -14,7 +14,7 @@
 - Task 1 已由 `c31791d` 完成，并由 `16b8587` 补充 legacy model key 约束。
 - Task 2 已由 `816e690` 完成，并由 `9458cfe` 修正 canonical digest。
 - Task 3 已由 `6c3cc3a` 完成，并由 `c63ac95` 固化 canonical metadata 存储边界。
-- 当前执行起点为 Task 4；Task 4-22 尚未实施，必须继续按下方 TDD 步骤推进。
+- 当前先执行 Task 0 消除基线线程 warning，再从 Task 4 继续；Task 4-22 尚未实施，必须继续按下方 TDD 步骤推进。
 
 ## Global Constraints
 
@@ -138,6 +138,73 @@ def valid_continue_payload(parent_job_id: str, *, index: int) -> dict[str, Any]:
 `StreamingResponse`, `FakeProviderRegistry`, `FakeModelRouter`, `route_request`, `internal_request`, `route_context`, `fixed_agent`, `pool_agent`, `pool_agent_session`, and `chapter_db` are concrete classes/pytest fixtures local to the module that first uses them. `FakeModelRouter` must implement the same `resolve_candidates`, `execute`, and `execute_stream` signatures as Task 11, store `requests` and `provider_calls`, and return FIFO `RouteResult` values; it may not silently accept a different DTO shape.
 
 ---
+
+### Task 0: Isolate Scheduler Lifecycle in Web Tests
+
+**Files:**
+- Modify: `src/pixiv_novel_sync/webapp.py`
+- Modify: `tests/test_webapp_jobs.py`
+- Modify: `tests/test_rescue_api.py`
+
+**Interfaces:**
+- `create_app(config_path=None, env_path=None, *, start_scheduler: bool | None = None) -> Flask` keeps the existing production auto-detection when `start_scheduler is None`; `False` prevents scheduler startup for isolated tests and `True` starts it explicitly.
+- The rescue API fixture passes `start_scheduler=False`, so its monkeypatches cannot race with a background catalog initialization worker.
+
+- [ ] **Step 1: Write the failing scheduler-isolation test**
+
+```python
+def test_create_app_can_disable_scheduler(monkeypatch, tmp_path):
+    starts = []
+    monkeypatch.setattr(AutoSyncScheduler, "start", lambda self: starts.append(self))
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    create_app(env_path=str(env_path), start_scheduler=False)
+    assert starts == []
+```
+
+Update the `tests/test_rescue_api.py` app fixture to call `create_app(..., start_scheduler=False)`; do not suppress `PytestUnhandledThreadExceptionWarning` with a filter.
+
+- [ ] **Step 2: Run tests to verify the new API is absent and the warning is reproducible**
+
+Run:
+
+```powershell
+python -m pytest tests/test_webapp_jobs.py::test_create_app_can_disable_scheduler -q
+python -m pytest tests/test_rescue_api.py::test_dashboard_rescue_list_returns_503_before_first_refresh -q -W error::pytest.PytestUnhandledThreadExceptionWarning
+```
+
+Expected: the first command fails because `create_app` lacks `start_scheduler`; before fixture isolation, the second command fails when the scheduler worker observes the monkeypatched rebuild method.
+
+- [ ] **Step 3: Add the explicit scheduler startup override**
+
+Change only the startup decision:
+
+```python
+auto_start_scheduler = not _is_debug or _is_werkzeug_reload
+should_start_scheduler = (
+    auto_start_scheduler if start_scheduler is None else bool(start_scheduler)
+)
+```
+
+Keep registry ownership, production reloader detection and scheduler construction unchanged. Update the rescue fixture to pass `False`; do not add an environment-variable escape hatch.
+
+- [ ] **Step 4: Run focused and full tests with thread warnings promoted to errors**
+
+Run:
+
+```powershell
+python -m pytest tests/test_webapp_jobs.py tests/test_rescue_api.py -q -W error::pytest.PytestUnhandledThreadExceptionWarning
+python -m pytest -q -W error::pytest.PytestUnhandledThreadExceptionWarning
+```
+
+Expected: `608 passed, 4 skipped` or a higher pass count after adding the regression test, with no warning summary.
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add src/pixiv_novel_sync/webapp.py tests/test_webapp_jobs.py tests/test_rescue_api.py
+git commit -m "test: isolate scheduler lifecycle in web fixtures"
+```
 
 ### Task 1: Atomic Schema Migration and Routing Tables (Completed)
 
@@ -1674,6 +1741,8 @@ git diff --check
 ```
 
 Expected: all targeted and full tests pass, compileall emits no output, and `git diff --check` exits 0. Start the local Flask app with `pixiv-novel-sync web --port 5010`, open `/dashboard/settings#ai-api`, `/dashboard/settings#ai-model-pools`, `/dashboard/ai`, and `/dashboard/logs` in a browser, verify nonblank catalog/pool/log states and a failed-first-candidate switch with a fake Provider, then stop the server. Do not mark the plan complete until the old fixed-Agent migration, three Provider discovery paths, full AI call-chain AST gate, concurrency tests and privacy checks all pass.
+
+Run the complete suite with `-W error::pytest.PytestUnhandledThreadExceptionWarning` as an additional final gate. The Task 0 rescue scheduler regression must remain warning-free; do not hide it with warning filters.
 
 - [ ] **Step 5: Commit documentation and verification tests**
 
