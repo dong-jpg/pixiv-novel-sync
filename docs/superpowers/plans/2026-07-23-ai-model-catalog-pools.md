@@ -14,7 +14,7 @@
 - Task 1 已由 `c31791d` 完成，并由 `16b8587` 补充 legacy model key 约束。
 - Task 2 已由 `816e690` 完成，并由 `9458cfe` 修正 canonical digest。
 - Task 3 已由 `6c3cc3a` 完成，并由 `c63ac95` 固化 canonical metadata 存储边界。
-- 当前先执行 Task 0 消除基线线程 warning，再从 Task 4 继续；Task 4-22 尚未实施，必须继续按下方 TDD 步骤推进。
+- Task 0 已由 `0d881c1` 完成；当前从 Task 4 继续，Task 4-22 尚未实施，必须继续按下方 TDD 步骤推进。
 
 ## Global Constraints
 
@@ -150,7 +150,7 @@ def valid_continue_payload(parent_job_id: str, *, index: int) -> dict[str, Any]:
 - `create_app(config_path=None, env_path=None, *, start_scheduler: bool | None = None) -> Flask` keeps the existing production auto-detection when `start_scheduler is None`; `False` prevents scheduler startup for isolated tests and `True` starts it explicitly.
 - The rescue API fixture passes `start_scheduler=False`, so its monkeypatches cannot race with a background catalog initialization worker.
 
-- [ ] **Step 1: Write the failing scheduler-isolation test**
+- [x] **Step 1: Write the failing scheduler-isolation test**
 
 ```python
 def test_create_app_can_disable_scheduler(monkeypatch, tmp_path):
@@ -164,7 +164,7 @@ def test_create_app_can_disable_scheduler(monkeypatch, tmp_path):
 
 Update the `tests/test_rescue_api.py` app fixture to call `create_app(..., start_scheduler=False)`; do not suppress `PytestUnhandledThreadExceptionWarning` with a filter.
 
-- [ ] **Step 2: Run tests to verify the new API is absent and the warning is reproducible**
+- [x] **Step 2: Run tests to verify the new API is absent and the warning is reproducible**
 
 Run:
 
@@ -175,7 +175,7 @@ python -m pytest tests/test_rescue_api.py::test_dashboard_rescue_list_returns_50
 
 Expected: the first command fails because `create_app` lacks `start_scheduler`; before fixture isolation, the second command fails when the scheduler worker observes the monkeypatched rebuild method.
 
-- [ ] **Step 3: Add the explicit scheduler startup override**
+- [x] **Step 3: Add the explicit scheduler startup override**
 
 Change only the startup decision:
 
@@ -188,7 +188,7 @@ should_start_scheduler = (
 
 Keep registry ownership, production reloader detection and scheduler construction unchanged. Update the rescue fixture to pass `False`; do not add an environment-variable escape hatch.
 
-- [ ] **Step 4: Run focused and full tests with thread warnings promoted to errors**
+- [x] **Step 4: Run focused and full tests with thread warnings promoted to errors**
 
 Run:
 
@@ -199,7 +199,7 @@ python -m pytest -q -W error::pytest.PytestUnhandledThreadExceptionWarning
 
 Expected: `608 passed, 4 skipped` or a higher pass count after adding the regression test, with no warning summary.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/webapp.py tests/test_webapp_jobs.py tests/test_rescue_api.py
