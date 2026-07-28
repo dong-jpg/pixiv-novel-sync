@@ -75,7 +75,7 @@ def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("PIXIV_DB_PATH", str(db_path))
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    application = create_app(env_path=str(env_path))
+    application = create_app(env_path=str(env_path), start_scheduler=False)
     application.config.update(TESTING=True, PIXIV_DB_PATH=str(db_path))
     _seed_rescue_data(db_path)
     return application

@@ -150,7 +150,12 @@ def _load_or_create_flask_secret(env_path: str | None) -> str:
 
 
 
-def create_app(config_path: str | None = None, env_path: str | None = None) -> Flask:
+def create_app(
+    config_path: str | None = None,
+    env_path: str | None = None,
+    *,
+    start_scheduler: bool | None = None,
+) -> Flask:
     app = Flask(__name__, template_folder="templates")
     # 修改 Jinja2 变量分隔符，避免与 Vue 3 的 {{ }} 冲突
     app.jinja_env.variable_start_string = "{["
@@ -263,7 +268,10 @@ def create_app(config_path: str | None = None, env_path: str | None = None) -> F
     _is_werkzeug_reload = os.getenv("WERKZEUG_RUN_MAIN") == "true"
     _flask_debug_enabled = os.getenv("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
     _is_debug = _flask_debug_enabled or bool(os.getenv("WERKZEUG_SERVER_FD"))
-    should_start_scheduler = not _is_debug or _is_werkzeug_reload
+    auto_start_scheduler = not _is_debug or _is_werkzeug_reload
+    should_start_scheduler = (
+        auto_start_scheduler if start_scheduler is None else bool(start_scheduler)
+    )
     start_auto_sync_scheduler = False
     if should_start_scheduler:
         registry_settings = settings_manager.load(env_path=env_path)

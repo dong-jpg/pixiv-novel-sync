@@ -1188,6 +1188,15 @@ def test_create_app_starts_scheduler_when_flask_debug_is_zero(
     assert len(isolated_create_app_scheduler) == 1
 
 
+def test_create_app_can_disable_scheduler(monkeypatch, tmp_path):
+    starts = []
+    monkeypatch.setattr(AutoSyncScheduler, "start", lambda self: starts.append(self))
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    create_app(env_path=str(env_path), start_scheduler=False)
+    assert starts == []
+
+
 def test_create_app_registers_ai_routes_before_starting_scheduler(
     monkeypatch,
     isolated_create_app_scheduler,
