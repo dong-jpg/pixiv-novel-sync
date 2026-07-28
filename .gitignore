@@ -37,6 +37,7 @@ config/config.yaml.bak
 /.claude/
 /memory/
 /.superpowers/
+/.worktrees/
 
 # Python tooling
 .pytest_cache/
