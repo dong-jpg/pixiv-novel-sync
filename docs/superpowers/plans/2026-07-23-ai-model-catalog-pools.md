@@ -14,7 +14,7 @@
 - Task 1 已由 `c31791d` 完成，并由 `16b8587` 补充 legacy model key 约束。
 - Task 2 已由 `816e690` 完成，并由 `9458cfe` 修正 canonical digest。
 - Task 3 已由 `6c3cc3a` 完成，并由 `c63ac95` 固化 canonical metadata 存储边界。
-- Task 0 已由 `0d881c1` 完成；Task 4-7 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3` 完成；当前从 Task 8 继续，Task 8-22 必须按下方 TDD 步骤推进。
+- Task 0 已由 `0d881c1` 完成；Task 4-8 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f` 完成；当前从 Task 9 继续，Task 9-22 必须按下方 TDD 步骤推进。
 
 ## Global Constraints
 
