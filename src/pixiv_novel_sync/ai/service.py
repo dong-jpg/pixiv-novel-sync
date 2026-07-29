@@ -6,6 +6,7 @@ from .services import (
     AIChatWizardMixin,
     AIGenerationMixin,
     AIProjectsMixin,
+    AINotFoundError,
     AIConflictError,
     AIServiceCore,
     AIServiceError,
@@ -22,4 +23,9 @@ class AIWritingService(
     pass
 
 
-__all__ = ["AIWritingService", "AIServiceError", "AIConflictError"]
+__all__ = [
+    "AIWritingService",
+    "AIServiceError",
+    "AIConflictError",
+    "AINotFoundError",
+]

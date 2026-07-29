@@ -2,13 +2,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import time
+import unicodedata
 from typing import Any
 
 from ...storage.ai.core import AIProviderReferenceError
 from ...storage_db import Database
-from ..model_catalog import ModelCatalogValidationError, normalize_capabilities
-from ..model_pools import ModelPoolValidationError, expand_pool_ids
+from ..model_catalog import (
+    ModelCatalogConflictError,
+    ModelCatalogValidationError,
+    normalize_capabilities,
+)
+from ..model_pools import (
+    ModelPoolConflictError,
+    ModelPoolValidationError,
+    expand_pool_ids,
+)
+from ..model_sync import ModelSyncConflictError
 from ..models import AIAgentConfig, AIProviderConfig
 from ..providers import ProviderConfigError, validate_base_url
 from ..prompts import (
@@ -19,14 +30,119 @@ from ..prompts import (
     DEFAULT_POLISH_PSYCHOLOGY_PROMPT,
     DEFAULT_WIZARD_PROMPT,
 )
-from .core import AIConflictError, AIServiceError
+from .core import AINotFoundError, AIConflictError, AIServiceError
+
+
+_MANUAL_MODEL_CREATE_FIELDS = {
+    "model_key",
+    "enabled",
+    "manual_display_name",
+    "manual_capabilities",
+    "manual_context_window",
+}
+_MANUAL_MODEL_UPDATE_FIELDS = {
+    "enabled",
+    "manual_display_name",
+    "manual_capabilities",
+    "manual_context_window",
+}
+_MODEL_POOL_FIELDS = {
+    "name",
+    "description",
+    "pool_kind",
+    "fallback_pool_id",
+    "enabled",
+}
 
 
 class AIAdminMixin:
+    @staticmethod
+    def _reject_unknown_fields(
+        payload: dict[str, Any],
+        allowed: set[str],
+    ) -> None:
+        unknown = sorted(set(payload) - allowed)
+        if unknown:
+            raise AIServiceError(f"不允许提交字段：{', '.join(unknown)}")
+
+    @staticmethod
+    def _require_boolean(payload: dict[str, Any], field: str) -> None:
+        if field in payload and not isinstance(payload[field], bool):
+            raise AIServiceError(f"{field} 必须是布尔值")
+
+    @staticmethod
+    def _reject_control_text(value: Any, field: str, max_length: int) -> str:
+        if not isinstance(value, str):
+            raise AIServiceError(f"{field} 必须是字符串")
+        if any(unicodedata.category(character) == "Cc" for character in value):
+            raise AIServiceError(f"{field} 不能包含控制字符")
+        if len(value) > max_length:
+            raise AIServiceError(f"{field} 不能超过 {max_length} 个字符")
+        return value
+
+    @staticmethod
+    def _expected_version(payload: dict[str, Any]) -> int:
+        value = payload.get("expected_version")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise AIServiceError("expected_version 必须是非负整数")
+        return value
+
+    @classmethod
+    def _normalize_model_pool_payload(
+        cls,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized = dict(payload)
+        if "name" in normalized:
+            normalized["name"] = cls._reject_control_text(
+                normalized["name"],
+                "name",
+                100,
+            )
+        if "description" in normalized:
+            normalized["description"] = cls._reject_control_text(
+                normalized["description"],
+                "description",
+                2000,
+            )
+        if "fallback_pool_id" in normalized:
+            fallback_id = normalized["fallback_pool_id"]
+            if fallback_id is not None and (
+                isinstance(fallback_id, bool)
+                or not isinstance(fallback_id, int)
+                or fallback_id <= 0
+            ):
+                raise AIServiceError("fallback_pool_id 必须是正整数或 null")
+        return normalized
+
+    @staticmethod
+    def _require_provider_row(db: Database, provider_id: int) -> dict[str, Any]:
+        provider = db.get_ai_provider(provider_id)
+        if provider is None:
+            raise AINotFoundError("Provider 不存在")
+        return provider
+
+    @staticmethod
+    def _require_provider_model_row(db: Database, model_id: int) -> dict[str, Any]:
+        model = db.get_ai_provider_model(model_id)
+        if model is None:
+            raise AINotFoundError("Provider 模型不存在")
+        return model
+
+    @staticmethod
+    def _require_model_pool_row(db: Database, pool_id: int) -> dict[str, Any]:
+        pool = db.get_ai_model_pool(pool_id)
+        if pool is None:
+            raise AINotFoundError("模型池不存在")
+        return pool
+
     def list_providers(self) -> list[dict[str, Any]]:
         db = self._db()
         try:
-            return db.list_ai_providers()
+            providers = db.list_ai_providers()
+            for provider in providers:
+                provider.pop("models_sync_owner", None)
+            return providers
         finally:
             db.close()
 
@@ -80,6 +196,254 @@ class AIAdminMixin:
             if chunk.type == "delta":
                 text_parts.append(chunk.text)
         return {"ok": True, "model": model, "latency_ms": int((time.time() - started) * 1000), "text": "".join(text_parts).strip()[:100]}
+
+    def list_provider_models(
+        self,
+        provider_id: int,
+        *,
+        search: str | None = None,
+        routable_only: bool = False,
+        enabled_only: bool = False,
+    ) -> dict[str, Any]:
+        if search is not None:
+            search = self._reject_control_text(search, "search", 300)
+            if len(search.encode("utf-8")) > 1200:
+                raise AIServiceError("search 不能超过 1200 个 UTF-8 字节")
+        db = self._db()
+        try:
+            self._require_provider_row(db, provider_id)
+            return db.list_ai_provider_models(
+                provider_id,
+                search=search,
+                routable_only=bool(routable_only),
+                enabled_only=bool(enabled_only),
+            )
+        finally:
+            db.close()
+
+    def create_manual_model(
+        self,
+        provider_id: int,
+        payload: dict[str, Any],
+    ) -> int:
+        self._reject_unknown_fields(payload, _MANUAL_MODEL_CREATE_FIELDS)
+        self._require_boolean(payload, "enabled")
+        data = dict(payload)
+        data["provider_id"] = provider_id
+        db = self._db()
+        try:
+            self._require_provider_row(db, provider_id)
+            try:
+                return db.create_ai_provider_model(data)
+            except ModelCatalogValidationError as exc:
+                raise AIServiceError(str(exc)) from exc
+            except sqlite3.IntegrityError as exc:
+                raise AIServiceError("该 Provider 已存在同名模型") from exc
+        finally:
+            db.close()
+
+    def update_provider_model(
+        self,
+        model_id: int,
+        payload: dict[str, Any],
+    ) -> None:
+        self._reject_unknown_fields(payload, _MANUAL_MODEL_UPDATE_FIELDS)
+        if not payload:
+            raise AIServiceError("至少提交一个可写模型字段")
+        self._require_boolean(payload, "enabled")
+        db = self._db()
+        try:
+            self._require_provider_model_row(db, model_id)
+            try:
+                db.update_ai_provider_model(model_id, payload)
+            except ModelCatalogValidationError as exc:
+                raise AIServiceError(str(exc)) from exc
+        finally:
+            db.close()
+
+    def delete_provider_model(self, model_id: int) -> None:
+        db = self._db()
+        try:
+            self._require_provider_model_row(db, model_id)
+            try:
+                db.remove_ai_provider_model_manual(model_id)
+            except ModelCatalogConflictError as exc:
+                raise AIConflictError(str(exc)) from exc
+        finally:
+            db.close()
+
+    def start_model_sync(self, provider_id: int) -> dict[str, Any]:
+        db = self._db()
+        try:
+            self._require_provider_row(db, provider_id)
+        finally:
+            db.close()
+        try:
+            return super().start_model_sync(provider_id)
+        except ModelSyncConflictError as exc:
+            data = (
+                {"operation_id": exc.existing_operation_id}
+                if exc.existing_operation_id
+                else None
+            )
+            raise AIConflictError(str(exc), data=data) from exc
+
+    def get_model_sync_operation(self, operation_id: str) -> dict[str, Any]:
+        try:
+            return super().get_model_sync_operation(operation_id)
+        except ModelSyncConflictError as exc:
+            raise AINotFoundError("模型同步 operation 不存在") from exc
+
+    def cancel_model_sync(self, operation_id: str) -> bool:
+        self.get_model_sync_operation(operation_id)
+        return super().cancel_model_sync(operation_id)
+
+    def confirm_model_sync_empty(
+        self,
+        operation_id: str,
+        generation: int,
+        result_digest: str,
+    ) -> dict[str, int]:
+        self.get_model_sync_operation(operation_id)
+        try:
+            return super().confirm_model_sync_empty(
+                operation_id,
+                generation,
+                result_digest,
+            )
+        except ModelSyncConflictError as exc:
+            raise AIConflictError(str(exc)) from exc
+
+    def iter_model_sync_events(
+        self,
+        operation_id: str,
+        poll_interval: float = 0.25,
+    ):
+        self.get_model_sync_operation(operation_id)
+        return super().iter_model_sync_events(
+            operation_id,
+            poll_interval=poll_interval,
+        )
+
+    def list_model_pools(self) -> list[dict[str, Any]]:
+        db = self._db()
+        try:
+            return db.list_ai_model_pools()
+        finally:
+            db.close()
+
+    def get_model_pool(self, pool_id: int) -> dict[str, Any]:
+        db = self._db()
+        try:
+            return self._require_model_pool_row(db, pool_id)
+        finally:
+            db.close()
+
+    def create_model_pool(self, payload: dict[str, Any]) -> int:
+        self._reject_unknown_fields(payload, _MODEL_POOL_FIELDS)
+        self._require_boolean(payload, "enabled")
+        data = self._normalize_model_pool_payload(payload)
+        db = self._db()
+        try:
+            try:
+                return db.create_ai_model_pool(data)
+            except ModelPoolValidationError as exc:
+                raise AIServiceError(str(exc)) from exc
+            except sqlite3.IntegrityError as exc:
+                raise AIServiceError("模型池名称重复或引用无效") from exc
+        finally:
+            db.close()
+
+    def update_model_pool(
+        self,
+        pool_id: int,
+        payload: dict[str, Any],
+    ) -> int:
+        self._reject_unknown_fields(payload, _MODEL_POOL_FIELDS | {"expected_version"})
+        expected_version = self._expected_version(payload)
+        patch = {key: value for key, value in payload.items() if key != "expected_version"}
+        self._require_boolean(patch, "enabled")
+        patch = self._normalize_model_pool_payload(patch)
+        db = self._db()
+        try:
+            self._require_model_pool_row(db, pool_id)
+            try:
+                return db.update_ai_model_pool(pool_id, patch, expected_version)
+            except ModelPoolConflictError as exc:
+                raise AIConflictError(str(exc)) from exc
+            except ModelPoolValidationError as exc:
+                raise AIServiceError(str(exc)) from exc
+            except sqlite3.IntegrityError as exc:
+                raise AIServiceError("模型池名称重复或引用无效") from exc
+        finally:
+            db.close()
+
+    def replace_model_pool_members(
+        self,
+        pool_id: int,
+        payload: dict[str, Any],
+    ) -> int:
+        self._reject_unknown_fields(payload, {"expected_version", "members"})
+        expected_version = self._expected_version(payload)
+        members = payload.get("members")
+        if not isinstance(members, list):
+            raise AIServiceError("members 必须是数组")
+        normalized: list[dict[str, Any]] = []
+        for index, member in enumerate(members):
+            if not isinstance(member, dict):
+                raise AIServiceError(f"members[{index}] 必须是对象")
+            self._reject_unknown_fields(member, {"provider_model_id", "enabled"})
+            model_id = member.get("provider_model_id")
+            if isinstance(model_id, bool) or not isinstance(model_id, int) or model_id <= 0:
+                raise AIServiceError(
+                    f"members[{index}].provider_model_id 必须是正整数"
+                )
+            self._require_boolean(member, "enabled")
+            normalized.append(
+                {
+                    "provider_model_id": model_id,
+                    "enabled": member.get("enabled", True),
+                }
+            )
+        db = self._db()
+        try:
+            self._require_model_pool_row(db, pool_id)
+            try:
+                return db.replace_ai_model_pool_members(
+                    pool_id,
+                    normalized,
+                    expected_version,
+                )
+            except ModelPoolConflictError as exc:
+                raise AIConflictError(str(exc)) from exc
+            except ModelPoolValidationError as exc:
+                raise AIServiceError(str(exc)) from exc
+        finally:
+            db.close()
+
+    def delete_model_pool(self, pool_id: int) -> None:
+        db = self._db()
+        try:
+            self._require_model_pool_row(db, pool_id)
+            try:
+                db.delete_ai_model_pool(pool_id)
+            except ModelPoolConflictError as exc:
+                raise AIConflictError(str(exc)) from exc
+        finally:
+            db.close()
+
+    def list_model_pool_attempts(
+        self,
+        pool_id: int,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        db = self._db()
+        try:
+            self._require_model_pool_row(db, pool_id)
+            return db.list_ai_model_pool_attempts(pool_id, limit=limit)
+        finally:
+            db.close()
 
     def list_agents(self) -> list[dict[str, Any]]:
         db = self._db()

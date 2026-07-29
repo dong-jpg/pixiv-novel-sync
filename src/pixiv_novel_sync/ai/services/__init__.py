@@ -1,4 +1,4 @@
-from .core import AIConflictError, AIServiceCore, AIServiceError
+from .core import AINotFoundError, AIConflictError, AIServiceCore, AIServiceError
 from .admin import AIAdminMixin
 from .generation import AIGenerationMixin
 from .projects import AIProjectsMixin
@@ -8,6 +8,7 @@ __all__ = [
     "AIServiceCore",
     "AIServiceError",
     "AIConflictError",
+    "AINotFoundError",
     "AIAdminMixin",
     "AIGenerationMixin",
     "AIProjectsMixin",

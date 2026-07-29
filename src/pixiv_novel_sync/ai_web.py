@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
 
-from .ai.service import AIConflictError, AIServiceError, AIWritingService
+from .ai.service import (
+    AINotFoundError,
+    AIConflictError,
+    AIServiceError,
+    AIWritingService,
+)
 from .ai.detection import detect_ai_tells
 from .settings import Settings
 from .storage_files import FileStorage
@@ -109,25 +116,30 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     class CurrentAIWritingService:
         def __init__(self) -> None:
             self._services: dict[str, AIWritingService] = {}
+            self._lock = threading.Lock()
 
         def _current(self) -> AIWritingService:
             db_path = current_settings().storage.db_path
             key = str(db_path)
-            service = self._services.get(key)
-            if service is None:
-                service = AIWritingService(db_path)
-                self._services[key] = service
-            return service
+            with self._lock:
+                service = self._services.get(key)
+                if service is None:
+                    service = AIWritingService(db_path)
+                    self._services[key] = service
+                return service
 
         def close(self) -> None:
-            for service in self._services.values():
+            with self._lock:
+                services = list(self._services.values())
+                self._services.clear()
+            for service in services:
                 service.close()
-            self._services.clear()
 
         def __getattr__(self, name: str) -> Any:
             return getattr(self._current(), name)
 
     service = CurrentAIWritingService()
+    app.extensions["pixiv_novel_sync.ai_service"] = service
 
     # 启动对账：把上次运行残留、客户端断连后卡在 'running' 的 AI job 标记为 failed，
     # 否则前端会永久转圈，cleanup_ai_jobs 也不会回收这些幽灵任务。
@@ -142,9 +154,25 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     except Exception:
         logger.warning("启动 AI job 对账失败", exc_info=True)
 
+    try:
+        reconciled_syncs = service.reconcile_model_sync_operations()
+        if reconciled_syncs:
+            logger.info(
+                "启动对账：已修复 %d 个模型同步 operation",
+                reconciled_syncs,
+            )
+    except Exception:
+        logger.warning("启动模型同步 operation 对账失败", exc_info=True)
+
     def json_payload() -> dict[str, Any]:
         payload = request.get_json(silent=True)
         return payload if isinstance(payload, dict) else {}
+
+    def require_json_object() -> dict[str, Any]:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise AIServiceError("请求体必须是 JSON 对象")
+        return payload
 
     def ok(data: Any = None, **extra: Any):
         body = {"ok": True, **extra}
@@ -154,8 +182,16 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
 
     def fail(exc: Exception, status: int | None = None):
         if status is None:
-            status = 409 if isinstance(exc, AIConflictError) else 400
-        return jsonify({"ok": False, "error": str(exc)}), status
+            if isinstance(exc, AINotFoundError):
+                status = 404
+            elif isinstance(exc, AIConflictError):
+                status = 409
+            else:
+                status = 400
+        body: dict[str, Any] = {"ok": False, "error": str(exc)}
+        if isinstance(exc, AIConflictError) and exc.data is not None:
+            body["data"] = exc.data
+        return jsonify(body), status
 
     def parse_int(value: Any, default: int, name: str = "参数",
                   min_value: int | None = None, max_value: int | None = None) -> int:
@@ -174,6 +210,42 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
 
     def sse(event: str, data: dict[str, Any]) -> str:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def query_bool(name: str, default: bool = False) -> bool:
+        raw = request.args.get(name)
+        if raw is None or raw == "":
+            return default
+        value = raw.strip().lower()
+        if value in {"1", "true", "yes", "on"}:
+            return True
+        if value in {"0", "false", "no", "off"}:
+            return False
+        raise AIServiceError(f"{name} 必须是布尔值")
+
+    def model_sync_event_response(events: Iterator[dict[str, Any]]) -> Response:
+        allowed_events = {
+            "started",
+            "page",
+            "empty_confirmation_required",
+            "completed",
+            "failed",
+            "cancelled",
+        }
+
+        def generate():
+            for item in events:
+                event = item.get("event")
+                data = item.get("data")
+                if event not in allowed_events or not isinstance(data, dict):
+                    logger.warning("忽略无效模型同步 SSE 事件：%r", event)
+                    continue
+                yield sse(str(event), data)
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     def stream_response(chunks: Iterator) -> Response:
         def generate():
@@ -254,6 +326,172 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     def test_ai_provider(provider_id: int):
         try:
             return ok(service.test_provider(provider_id))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/providers/<int:provider_id>/models/sync")
+    def start_ai_provider_model_sync(provider_id: int):
+        try:
+            operation = service.start_model_sync(provider_id)
+            return ok(operation), 202
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/model-sync-operations/<operation_id>")
+    def get_ai_model_sync_operation(operation_id: str):
+        try:
+            return ok(service.get_model_sync_operation(operation_id))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/model-sync-operations/<operation_id>/events")
+    def stream_ai_model_sync_operation(operation_id: str):
+        try:
+            events = service.iter_model_sync_events(operation_id)
+            return model_sync_event_response(events)
+        except Exception as exc:
+            return fail(exc)
+
+    @app.delete("/api/dashboard/ai/model-sync-operations/<operation_id>")
+    def cancel_ai_model_sync_operation(operation_id: str):
+        try:
+            requested = service.cancel_model_sync(operation_id)
+            return ok({"cancel_requested": requested})
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post(
+        "/api/dashboard/ai/model-sync-operations/<operation_id>/confirm-empty"
+    )
+    def confirm_ai_model_sync_empty(operation_id: str):
+        try:
+            payload = require_json_object()
+            unknown = sorted(set(payload) - {"generation", "result_digest"})
+            if unknown:
+                raise AIServiceError(f"不允许提交字段：{', '.join(unknown)}")
+            generation = payload.get("generation")
+            if (
+                isinstance(generation, bool)
+                or not isinstance(generation, int)
+                or generation <= 0
+            ):
+                raise AIServiceError("generation 必须是正整数")
+            result_digest = payload.get("result_digest")
+            if not isinstance(result_digest, str) or re.fullmatch(
+                r"[0-9a-f]{64}", result_digest
+            ) is None:
+                raise AIServiceError("result_digest 必须是 64 位小写十六进制摘要")
+            return ok(
+                service.confirm_model_sync_empty(
+                    operation_id,
+                    generation,
+                    result_digest,
+                )
+            )
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/providers/<int:provider_id>/models")
+    def list_ai_provider_models(provider_id: int):
+        try:
+            return ok(
+                service.list_provider_models(
+                    provider_id,
+                    search=request.args.get("search") or None,
+                    routable_only=query_bool("routable_only"),
+                    enabled_only=query_bool("enabled_only"),
+                )
+            )
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/providers/<int:provider_id>/models")
+    def create_ai_provider_model(provider_id: int):
+        try:
+            model_id = service.create_manual_model(
+                provider_id,
+                require_json_object(),
+            )
+            return ok({"id": model_id})
+        except Exception as exc:
+            return fail(exc)
+
+    @app.put("/api/dashboard/ai/provider-models/<int:model_id>")
+    def update_ai_provider_model(model_id: int):
+        try:
+            service.update_provider_model(model_id, require_json_object())
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.delete("/api/dashboard/ai/provider-models/<int:model_id>")
+    def delete_ai_provider_model(model_id: int):
+        try:
+            service.delete_provider_model(model_id)
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/model-pools")
+    def list_ai_model_pools():
+        try:
+            return ok(service.list_model_pools())
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/model-pools")
+    def create_ai_model_pool():
+        try:
+            pool_id = service.create_model_pool(require_json_object())
+            return ok({"id": pool_id})
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/model-pools/<int:pool_id>")
+    def get_ai_model_pool(pool_id: int):
+        try:
+            return ok(service.get_model_pool(pool_id))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.put("/api/dashboard/ai/model-pools/<int:pool_id>")
+    def update_ai_model_pool(pool_id: int):
+        try:
+            version = service.update_model_pool(pool_id, require_json_object())
+            return ok({"version": version})
+        except Exception as exc:
+            return fail(exc)
+
+    @app.delete("/api/dashboard/ai/model-pools/<int:pool_id>")
+    def delete_ai_model_pool(pool_id: int):
+        try:
+            service.delete_model_pool(pool_id)
+            return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.put("/api/dashboard/ai/model-pools/<int:pool_id>/members")
+    def replace_ai_model_pool_members(pool_id: int):
+        try:
+            version = service.replace_model_pool_members(
+                pool_id,
+                require_json_object(),
+            )
+            return ok({"version": version})
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/model-pools/<int:pool_id>/attempts")
+    def list_ai_model_pool_attempts(pool_id: int):
+        try:
+            limit = parse_int(
+                request.args.get("limit"),
+                50,
+                "limit",
+                min_value=1,
+                max_value=200,
+            )
+            return ok(service.list_model_pool_attempts(pool_id, limit=limit))
         except Exception as exc:
             return fail(exc)
 

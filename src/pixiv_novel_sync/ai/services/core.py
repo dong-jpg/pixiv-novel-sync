@@ -18,6 +18,12 @@ class AIServiceError(RuntimeError):
 
 
 class AIConflictError(AIServiceError):
+    def __init__(self, message: str, *, data: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.data = data
+
+
+class AINotFoundError(AIServiceError):
     pass
 
 
