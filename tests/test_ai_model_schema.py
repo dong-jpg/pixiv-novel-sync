@@ -149,6 +149,8 @@ def test_old_ai_database_migrates_fixed_agents_and_imports_available_models(
         assert agent["binding_type"] == "fixed"
         assert agent["provider_id"] == 3
         assert agent["model"] == "legacy-model"
+        assert agent["required_capabilities"] == []
+        assert agent["binding_version"] == 1
         assert agent["name"] == "legacy-agent"
         assert agent["task_type"] == "general"
         assert agent["system_prompt"] == "legacy prompt"

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from flask import Flask
 
 import pixiv_novel_sync.ai_web as ai_web
+from pixiv_novel_sync.ai.service import AIConflictError
 
 
 class FakeService:
@@ -35,6 +36,9 @@ class FakeService:
     def search_project_context(self, project_id: int, query: str, top_k: int):
         self.calls.append(("search_project_context", {"project_id": project_id, "query": query, "top_k": top_k}))
         return []
+
+    def delete_provider(self, provider_id: int) -> None:
+        raise AIConflictError(f"Provider {provider_id} 仍被引用")
 
 
 class FakeDatabase:
@@ -128,3 +132,12 @@ def test_search_series_invalid_limit_returns_business_error(monkeypatch, tmp_pat
 
     assert response.status_code == 400
     assert response.get_json()["error"] == "limit 必须是整数"
+
+
+def test_provider_reference_conflict_returns_http_409(monkeypatch, tmp_path):
+    client, _service = make_client(monkeypatch, tmp_path)
+
+    response = client.delete("/api/dashboard/ai/providers/7")
+
+    assert response.status_code == 409
+    assert response.get_json()["error"] == "Provider 7 仍被引用"

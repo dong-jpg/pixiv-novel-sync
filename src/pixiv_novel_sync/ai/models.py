@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(slots=True)
@@ -25,7 +25,7 @@ class AIAgentConfig:
     id: int
     name: str
     task_type: str
-    provider_id: int
+    provider_id: int | None
     model: str | None
     system_prompt: str
     temperature: float = 0.8
@@ -33,6 +33,10 @@ class AIAgentConfig:
     max_tokens: int = 4000
     context_window: int = 16000
     enabled: bool = True
+    binding_type: Literal["fixed", "pool"] = "fixed"
+    model_pool_id: int | None = None
+    required_capabilities: tuple[str, ...] = ()
+    binding_version: int = 1
 
 
 @dataclass(slots=True)

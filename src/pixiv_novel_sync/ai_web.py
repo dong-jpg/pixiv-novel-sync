@@ -8,7 +8,7 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
 
-from .ai.service import AIServiceError, AIWritingService
+from .ai.service import AIConflictError, AIServiceError, AIWritingService
 from .ai.detection import detect_ai_tells
 from .settings import Settings
 from .storage_files import FileStorage
@@ -152,7 +152,9 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             body["data"] = data
         return jsonify(body)
 
-    def fail(exc: Exception, status: int = 400):
+    def fail(exc: Exception, status: int | None = None):
+        if status is None:
+            status = 409 if isinstance(exc, AIConflictError) else 400
         return jsonify({"ok": False, "error": str(exc)}), status
 
     def parse_int(value: Any, default: int, name: str = "参数",

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from typing import Any
 
+from ...storage.ai.core import AIProviderReferenceError
 from ...storage_db import Database
+from ..model_catalog import ModelCatalogValidationError, normalize_capabilities
+from ..model_pools import ModelPoolValidationError, expand_pool_ids
 from ..models import AIAgentConfig, AIProviderConfig
 from ..providers import ProviderConfigError, validate_base_url
 from ..prompts import (
@@ -15,7 +19,7 @@ from ..prompts import (
     DEFAULT_POLISH_PSYCHOLOGY_PROMPT,
     DEFAULT_WIZARD_PROMPT,
 )
-from .core import AIServiceError
+from .core import AIConflictError, AIServiceError
 
 
 class AIAdminMixin:
@@ -46,7 +50,10 @@ class AIAdminMixin:
     def delete_provider(self, provider_id: int) -> None:
         db = self._db()
         try:
-            db.delete_ai_provider(provider_id)
+            try:
+                db.delete_ai_provider(provider_id)
+            except AIProviderReferenceError as exc:
+                raise AIConflictError(str(exc)) from exc
             self._invalidate_provider(provider_id)
         finally:
             db.close()
@@ -85,7 +92,9 @@ class AIAdminMixin:
         data = self._normalize_agent_payload(payload)
         db = self._db()
         try:
-            return db.create_ai_agent(data)
+            with db.transaction():
+                self._validate_agent_binding(db, data)
+                return db.create_ai_agent(data)
         finally:
             db.close()
 
@@ -93,7 +102,32 @@ class AIAdminMixin:
         data = self._normalize_agent_payload(payload, partial=True)
         db = self._db()
         try:
-            db.update_ai_agent(agent_id, data)
+            with db.transaction():
+                existing = db.get_ai_agent(agent_id)
+                if not existing:
+                    raise AIServiceError("Agent 不存在")
+                merged = {**existing, **data}
+                binding_type = merged.get("binding_type") or "fixed"
+                update_data = dict(data)
+                update_data["binding_type"] = binding_type
+                if binding_type == "pool":
+                    if data.get("provider_id") is not None or data.get("model") is not None:
+                        raise AIServiceError("固定模型和模型池不能同时提交")
+                    merged["provider_id"] = None
+                    merged["model"] = None
+                    update_data["provider_id"] = None
+                    update_data["model"] = None
+                    if merged.get("model_pool_id") is None:
+                        raise AIServiceError("缺少 Agent 字段：model_pool_id")
+                else:
+                    if data.get("model_pool_id") is not None:
+                        raise AIServiceError("固定模型和模型池不能同时提交")
+                    merged["model_pool_id"] = None
+                    update_data["model_pool_id"] = None
+                    if merged.get("provider_id") is None:
+                        raise AIServiceError("缺少 Agent 字段：provider_id")
+                self._validate_agent_binding(db, merged)
+                db.update_ai_agent(agent_id, update_data)
         finally:
             db.close()
 
@@ -184,14 +218,130 @@ class AIAdminMixin:
         return data
 
     def _normalize_agent_payload(self, payload: dict[str, Any], partial: bool = False) -> dict[str, Any]:
-        data = {key: payload[key] for key in ("name", "task_type", "provider_id", "model", "system_prompt", "temperature", "top_p", "max_tokens", "context_window", "enabled") if key in payload}
+        data = {
+            key: payload[key]
+            for key in (
+                "name",
+                "task_type",
+                "binding_type",
+                "provider_id",
+                "model",
+                "model_pool_id",
+                "required_capabilities",
+                "system_prompt",
+                "temperature",
+                "top_p",
+                "max_tokens",
+                "context_window",
+                "enabled",
+            )
+            if key in payload
+        }
+        if (
+            "required_capabilities" not in data
+            and "required_capabilities_json" in payload
+        ):
+            try:
+                legacy_capabilities = json.loads(
+                    str(payload["required_capabilities_json"])
+                )
+            except (TypeError, ValueError) as exc:
+                raise AIServiceError("required_capabilities_json 必须是有效 JSON") from exc
+            data["required_capabilities"] = legacy_capabilities
+        binding_type = data.get("binding_type")
+        if binding_type is None and not partial:
+            binding_type = "fixed"
+            data["binding_type"] = binding_type
+        if binding_type is not None and binding_type not in {"fixed", "pool"}:
+            raise AIServiceError("不支持的 Agent 绑定类型")
+        if binding_type == "pool" and (
+            data.get("provider_id") is not None or data.get("model") is not None
+        ):
+            raise AIServiceError("固定模型和模型池不能同时提交")
+        if binding_type == "fixed" and data.get("model_pool_id") is not None:
+            raise AIServiceError("固定模型和模型池不能同时提交")
+        if "required_capabilities" in data:
+            try:
+                capabilities = normalize_capabilities(
+                    data["required_capabilities"],
+                    reject_unknown=True,
+                )
+            except ModelCatalogValidationError as exc:
+                raise AIServiceError(str(exc)) from exc
+            data["required_capabilities"] = sorted(capabilities)
         if not partial:
-            for key in ("name", "task_type", "provider_id", "system_prompt"):
+            for key in ("name", "task_type", "system_prompt"):
                 if not data.get(key):
                     raise AIServiceError(f"缺少 Agent 字段：{key}")
+            binding_key = "provider_id" if binding_type == "fixed" else "model_pool_id"
+            if not data.get(binding_key):
+                raise AIServiceError(f"缺少 Agent 字段：{binding_key}")
         if data.get("task_type") not in {None, "continue", "rewrite", "distill_style", "distill_novel", "audit", "general", "plan", "wizard", "chat", "extract_summary", "resolve_foreshadow", "polish_dialogue", "polish_psychology", "keyword_clean"}:
             raise AIServiceError("不支持的 Agent 类型")
         return data
+
+    def _validate_agent_binding(self, db: Database, data: dict[str, Any]) -> None:
+        if data.get("binding_type", "fixed") == "pool":
+            pool_id = int(data["model_pool_id"])
+            pools = db.list_ai_model_pools()
+            pools_by_id = {int(pool["id"]): pool for pool in pools}
+            pool = pools_by_id.get(pool_id)
+            if pool is None:
+                raise AIServiceError("绑定的模型池不存在")
+            if not bool(pool.get("enabled")):
+                raise AIServiceError("绑定的模型池必须启用")
+            try:
+                expanded_ids = expand_pool_ids(pool_id, pools_by_id)
+            except ModelPoolValidationError as exc:
+                raise AIServiceError(str(exc)) from exc
+
+            candidates: list[dict[str, Any]] = []
+            for expanded_id in expanded_ids:
+                expanded_pool = pools_by_id[expanded_id]
+                if not bool(expanded_pool.get("enabled")):
+                    raise AIServiceError("绑定链中的后备模型池必须启用")
+                for member in expanded_pool.get("members") or []:
+                    if not bool(member.get("enabled")):
+                        continue
+                    model = db.get_ai_provider_model(
+                        int(member["provider_model_id"])
+                    )
+                    if model and bool(model.get("routable")):
+                        candidates.append(model)
+            if not candidates:
+                raise AIServiceError("绑定的模型池不能为空或没有可用候选")
+
+            required = set(data.get("required_capabilities") or [])
+            if required and not any(
+                required.issubset(set(candidate["capabilities"]))
+                for candidate in candidates
+            ):
+                raise AIServiceError("模型池没有满足全部必需能力的可用候选")
+            return
+        provider_id = int(data["provider_id"])
+        provider = db.get_ai_provider(provider_id)
+        if not provider:
+            raise AIServiceError("Provider 不存在")
+        if not bool(provider.get("enabled")):
+            raise AIServiceError("Provider 已禁用")
+
+        required = set(data.get("required_capabilities") or [])
+        if not required:
+            return
+        model_key = data.get("model") or provider.get("default_model")
+        models = db.list_ai_provider_models(
+            provider_id,
+            routable_only=True,
+        )["items"]
+        catalog_model = next(
+            (item for item in models if item["model_key"] == model_key),
+            None,
+        )
+        if catalog_model is None:
+            raise AIServiceError("声明能力要求时，固定模型必须存在于可用模型目录")
+        missing = sorted(required.difference(catalog_model["capabilities"]))
+        if missing:
+            raise AIServiceError(f"固定模型缺少必需能力：{', '.join(missing)}")
 
     def _load_provider_config(self, db: Database, provider_id: int) -> AIProviderConfig:
         row = db.get_ai_provider(provider_id, include_secret=True)
@@ -222,11 +372,21 @@ class AIAdminMixin:
             raise AIServiceError("Agent 不存在")
         if not bool(row.get("enabled")):
             raise AIServiceError("Agent 已禁用")
+        provider_id = row.get("provider_id")
         return AIAgentConfig(
-            id=int(row["id"]), name=row["name"], task_type=row["task_type"], provider_id=int(row["provider_id"]),
+            id=int(row["id"]), name=row["name"], task_type=row["task_type"],
+            provider_id=int(provider_id) if provider_id is not None else None,
             model=row.get("model"), system_prompt=row["system_prompt"], temperature=float(row.get("temperature") or 0.8),
             top_p=float(row.get("top_p") or 0.9), max_tokens=int(row.get("max_tokens") or 4000),
             context_window=int(row.get("context_window") or 16000), enabled=bool(row.get("enabled")),
+            binding_type=row.get("binding_type") or "fixed",
+            model_pool_id=(
+                int(row["model_pool_id"])
+                if row.get("model_pool_id") is not None
+                else None
+            ),
+            required_capabilities=tuple(row.get("required_capabilities") or []),
+            binding_version=int(row.get("binding_version") or 1),
         )
 
     def _resolve_input_text(self, db: Database, payload: dict[str, Any]) -> str:

@@ -16,6 +16,10 @@ class AIServiceError(RuntimeError):
     pass
 
 
+class AIConflictError(AIServiceError):
+    pass
+
+
 class AIServiceCore:
     # Track which DB paths have had their schema initialized. A single class-wide
     # bool would skip init_schema() for a second service pointing at a different
