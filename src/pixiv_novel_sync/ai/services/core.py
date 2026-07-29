@@ -7,6 +7,7 @@ from typing import Any
 
 from ...storage_db import Database
 from ..crypto import AISecretManager
+from ..model_sync import ModelSyncCoordinator
 from ..models import AIProviderConfig
 from ..providers import AIProvider
 from ..retrieval import BaseRetriever, create_retriever
@@ -35,6 +36,9 @@ class AIServiceCore:
         self._provider_cache: dict[tuple[Any, ...], AIProvider] = {}
         self._provider_cache_by_id: dict[int, tuple[Any, ...]] = {}
         self._provider_lock = threading.Lock()
+        self._model_sync_lock = threading.Lock()
+        self._model_sync_coordinator: ModelSyncCoordinator | None = None
+        self._closed = False
 
     def _get_retriever(self) -> BaseRetriever:
         # 7.7: 加锁保护缓存逻辑,避免多线程竞态
@@ -120,7 +124,59 @@ class AIServiceCore:
             if provider is not None:
                 provider.close()
 
+    def _resolve_model_sync_provider(self, db: Database, provider_id: int) -> AIProvider:
+        config = self._load_provider_config(db, provider_id)
+        return self._get_provider(config)
+
+    def _model_sync(self) -> ModelSyncCoordinator:
+        with self._model_sync_lock:
+            if self._closed:
+                raise RuntimeError("AI 服务已关闭")
+            if self._model_sync_coordinator is None:
+                self._model_sync_coordinator = ModelSyncCoordinator(
+                    self.db_path,
+                    provider_resolver=self._resolve_model_sync_provider,
+                )
+            return self._model_sync_coordinator
+
+    def start_model_sync(self, provider_id: int) -> dict[str, Any]:
+        return self._model_sync().start(provider_id)
+
+    def get_model_sync_operation(self, operation_id: str) -> dict[str, Any]:
+        return self._model_sync().get(operation_id)
+
+    def cancel_model_sync(self, operation_id: str) -> bool:
+        return self._model_sync().cancel(operation_id)
+
+    def confirm_model_sync_empty(
+        self,
+        operation_id: str,
+        generation: int,
+        result_digest: str,
+    ) -> dict[str, int]:
+        return self._model_sync().confirm_empty(
+            operation_id,
+            generation,
+            result_digest,
+        )
+
+    def iter_model_sync_events(
+        self,
+        operation_id: str,
+        poll_interval: float = 0.25,
+    ):
+        return self._model_sync().events(operation_id, poll_interval=poll_interval)
+
+    def reconcile_model_sync_operations(self) -> int:
+        return self._model_sync().reconcile()
+
     def close(self) -> None:
+        with self._model_sync_lock:
+            self._closed = True
+            coordinator = self._model_sync_coordinator
+            self._model_sync_coordinator = None
+        if coordinator is not None:
+            coordinator.close()
         with self._provider_lock:
             providers = list(self._provider_cache.values())
             self._provider_cache.clear()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import time
 from urllib.parse import urlparse
 
 import pytest
@@ -203,6 +204,22 @@ def test_provider_lists_all_pages_with_canonical_digest(
         assert calls[1]["params"] == {"after": "next-1"}
 
 
+def test_model_discovery_caps_network_timeout_to_absolute_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider, calls = make_discovery_provider(
+        "openai_compatible",
+        monkeypatch,
+        pages=[discovery_page("openai_compatible", ["m-1"], has_more=False)],
+    )
+
+    result = provider.list_models(deadline=time.monotonic() + 2)
+
+    assert result.pages == 1
+    assert len(calls) == 1
+    assert 0 < calls[0]["timeout"] <= 2
+
+
 def test_model_list_body_limit_fires_before_json_decode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -218,6 +235,26 @@ def test_model_list_body_limit_fires_before_json_decode(
 
     assert response.json_calls == 0
     assert response.closed is True
+
+
+def test_model_discovery_http_error_does_not_persist_upstream_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = StreamingResponse.from_payload(
+        {"error": {"message": "secret upstream response body"}}
+    )
+    response.status_code = 401
+    provider, _calls = make_discovery_provider(
+        "openai_compatible",
+        monkeypatch,
+        responses=[response],
+    )
+
+    with pytest.raises(AIProviderError) as captured:
+        provider.list_models()
+
+    assert "401" in str(captured.value)
+    assert "secret upstream response body" not in str(captured.value)
 
 
 def test_model_list_cumulative_body_limit_is_shared_across_pages(

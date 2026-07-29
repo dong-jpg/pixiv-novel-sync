@@ -339,6 +339,7 @@ class AIProvider:
         *,
         max_body_bytes: int | None = None,
         byte_budget: ResponseByteBudget | None = None,
+        deadline: float | None = None,
         **kwargs: Any,
     ) -> requests.Response:
         normalized_method = str(method or "").strip().upper()
@@ -351,6 +352,9 @@ class AIProvider:
         ):
             raise ValueError("max_body_bytes 必须是正整数")
 
+        if deadline is not None and time.monotonic() >= deadline:
+            raise AIProviderError("模型目录同步超过截止时间")
+
         target = _resolve_target(url)
         pinned_url = _pinned_url(target)
         prefix = _origin_prefix(pinned_url)
@@ -362,6 +366,15 @@ class AIProvider:
         kwargs["allow_redirects"] = False
         kwargs["stream"] = True
         with self._adapter_lock:
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AIProviderError("模型目录同步超过截止时间")
+                configured_timeout = kwargs.get("timeout")
+                if isinstance(configured_timeout, (int, float)):
+                    kwargs["timeout"] = min(float(configured_timeout), remaining)
+                elif configured_timeout is None:
+                    kwargs["timeout"] = remaining
             adapter = self._pinned_adapters.get(prefix)
             if adapter is None:
                 adapter = _PinnedHostAdapter(hostname=target.hostname, ip=target.ip)
@@ -385,6 +398,8 @@ class AIProvider:
             body = bytearray()
             try:
                 for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise AIProviderError("模型目录同步超过截止时间")
                     if not chunk:
                         continue
                     if isinstance(chunk, str):
@@ -480,6 +495,7 @@ class AIProvider:
         *,
         on_page: Callable[[int, int], None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
+        deadline: float | None = None,
     ) -> ModelListResult:
         url, headers, cursor_param = self._model_discovery_request()
         budget = ResponseByteBudget()
@@ -504,6 +520,7 @@ class AIProvider:
                     url,
                     max_body_bytes=_MODEL_LIST_PAGE_BYTES,
                     byte_budget=budget,
+                    deadline=deadline,
                     **request_kwargs,
                 )
             except requests.RequestException as exc:
@@ -513,7 +530,9 @@ class AIProvider:
 
             with response:
                 if response.status_code >= 400:
-                    raise AIProviderError(_safe_http_error(response))
+                    raise AIProviderError(
+                        f"模型目录请求返回 HTTP {response.status_code}"
+                    )
                 payload = self._decode_model_page(response)
 
             raw_models = payload.get("data")
