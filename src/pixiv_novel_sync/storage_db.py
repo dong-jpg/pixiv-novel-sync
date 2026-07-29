@@ -22,6 +22,7 @@ from .storage.ai.core import AiCoreMixin
 from .storage.ai.documents import AiDocumentsMixin
 from .storage.ai.writing import AiWritingMixin
 from .storage.ai.catalog import CatalogMixin
+from .storage.ai.pools import PoolsMixin
 
 
 class Database(
@@ -38,6 +39,7 @@ class Database(
     AiDocumentsMixin,
     AiWritingMixin,
     CatalogMixin,
+    PoolsMixin,
     SchemaMixin,
     DatabaseConnection,
 ):
