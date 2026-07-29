@@ -8,7 +8,7 @@ import re
 import socket
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -16,7 +16,12 @@ from urllib.parse import urlparse
 import requests
 from requests.adapters import HTTPAdapter
 
-from .models import AIProviderConfig, AIStreamChunk
+from .model_catalog import (
+    ModelCatalogValidationError,
+    canonical_model_digest,
+    normalize_model_record,
+)
+from .models import AIProviderConfig, AIStreamChunk, ModelListResult
 
 
 class AIProviderError(RuntimeError):
@@ -25,6 +30,36 @@ class AIProviderError(RuntimeError):
 
 class ProviderConfigError(ValueError):
     """Raised when a provider's ``base_url`` fails security validation."""
+
+
+_MODEL_LIST_PAGE_BYTES = 4 * 1024 * 1024
+_MODEL_LIST_TOTAL_BYTES = 20 * 1024 * 1024
+_MODEL_LIST_MAX_PAGES = 100
+_MODEL_LIST_MAX_MODELS = 5000
+
+
+def _byte_limit_label(limit: int) -> str:
+    mib = 1024 * 1024
+    return f"{limit // mib} MiB" if limit % mib == 0 else f"{limit} 字节"
+
+
+class ResponseByteBudget:
+    """跨分页响应体字节预算。"""
+
+    def __init__(self, limit: int = _MODEL_LIST_TOTAL_BYTES) -> None:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError("响应体字节预算必须是正整数")
+        self.limit = limit
+        self.consumed = 0
+
+    def consume(self, count: int) -> None:
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError("响应体字节数必须是非负整数")
+        if self.consumed + count > self.limit:
+            raise AIProviderError(
+                f"模型目录响应累计超过 {_byte_limit_label(self.limit)} 上限"
+            )
+        self.consumed += count
 
 
 def _allow_private_hosts() -> bool:
@@ -297,7 +332,25 @@ class AIProvider:
             return None
         return {"http": self.config.proxy, "https": self.config.proxy}
 
-    def _post(self, url: str, **kwargs: Any) -> requests.Response:
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        max_body_bytes: int | None = None,
+        byte_budget: ResponseByteBudget | None = None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        normalized_method = str(method or "").strip().upper()
+        if not normalized_method:
+            raise ValueError("HTTP method 不能为空")
+        if max_body_bytes is not None and (
+            isinstance(max_body_bytes, bool)
+            or not isinstance(max_body_bytes, int)
+            or max_body_bytes <= 0
+        ):
+            raise ValueError("max_body_bytes 必须是正整数")
+
         target = _resolve_target(url)
         pinned_url = _pinned_url(target)
         prefix = _origin_prefix(pinned_url)
@@ -314,13 +367,200 @@ class AIProvider:
                 adapter = _PinnedHostAdapter(hostname=target.hostname, ip=target.ip)
                 self.session.mount(prefix, adapter)
                 self._pinned_adapters[prefix] = adapter
-            response = self.session.post(pinned_url, headers=headers, **kwargs)
+            request_method = getattr(self.session, normalized_method.lower(), None)
+            if callable(request_method):
+                response = request_method(pinned_url, headers=headers, **kwargs)
+            else:
+                response = self.session.request(
+                    normalized_method,
+                    pinned_url,
+                    headers=headers,
+                    **kwargs,
+                )
         if 300 <= response.status_code < 400:
             response.close()
             raise AIProviderError(f"AI API 拒绝重定向响应 {response.status_code}")
-        if not requested_stream:
+
+        if max_body_bytes is not None:
+            body = bytearray()
+            try:
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    if isinstance(chunk, str):
+                        chunk = chunk.encode("utf-8")
+                    elif not isinstance(chunk, (bytes, bytearray)):
+                        raise AIProviderError("模型目录响应包含无效字节块")
+                    if len(body) + len(chunk) > max_body_bytes:
+                        raise AIProviderError(
+                            "模型目录单页响应超过 "
+                            f"{_byte_limit_label(max_body_bytes)} 上限"
+                        )
+                    if byte_budget is not None:
+                        byte_budget.consume(len(chunk))
+                    body.extend(chunk)
+            except BaseException:
+                response.close()
+                raise
+            response._content = bytes(body)
+            response._content_consumed = True
+        elif not requested_stream:
             _ = response.content
         return response
+
+    def _post(self, url: str, **kwargs: Any) -> requests.Response:
+        return self._request("POST", url, **kwargs)
+
+    def _model_discovery_request(self) -> tuple[str, dict[str, str], str]:
+        raise NotImplementedError
+
+    @staticmethod
+    def _decode_model_page(response: requests.Response) -> Mapping[str, Any]:
+        try:
+            text = response.content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise AIProviderError("模型目录响应不是有效 UTF-8") from exc
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise AIProviderError("模型目录响应不是有效 JSON") from exc
+        if not isinstance(payload, Mapping):
+            raise AIProviderError("模型目录响应必须是 JSON 对象")
+        return payload
+
+    @staticmethod
+    def _model_page_cursor(
+        payload: Mapping[str, Any],
+    ) -> tuple[bool, str | None]:
+        for marker in ("partial", "truncated"):
+            if marker in payload:
+                value = payload[marker]
+                if not isinstance(value, bool):
+                    raise AIProviderError(f"模型目录 {marker} 标记类型无效")
+                if value:
+                    raise AIProviderError("模型目录分页结果不完整")
+        if "complete" in payload:
+            complete = payload["complete"]
+            if not isinstance(complete, bool):
+                raise AIProviderError("模型目录 complete 标记类型无效")
+            if not complete:
+                raise AIProviderError("模型目录分页结果不完整")
+
+        has_more_present = "has_more" in payload
+        raw_has_more = payload.get("has_more")
+        if has_more_present and not isinstance(raw_has_more, bool):
+            raise AIProviderError("模型目录 has_more 必须是布尔值")
+
+        cursors: list[str] = []
+        for key in ("next", "after", "last_id"):
+            if key not in payload:
+                continue
+            value = payload[key]
+            if value is not None and not isinstance(value, str):
+                raise AIProviderError("模型目录分页游标必须是字符串")
+            if isinstance(value, str) and value:
+                cursors.append(value)
+        if len(set(cursors)) > 1:
+            raise AIProviderError("模型目录分页游标字段冲突")
+        cursor = cursors[0] if cursors else None
+
+        forward_cursor = bool(payload.get("next") or payload.get("after"))
+        if not has_more_present:
+            has_more = bool(payload.get("next") or payload.get("after"))
+        else:
+            has_more = raw_has_more
+        if has_more is False and forward_cursor:
+            raise AIProviderError("模型目录分页状态与下一页游标冲突")
+        if has_more and not cursor:
+            raise AIProviderError("模型目录声明下一页但缺少分页游标")
+        return has_more, cursor
+
+    def list_models(
+        self,
+        *,
+        on_page: Callable[[int, int], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> ModelListResult:
+        url, headers, cursor_param = self._model_discovery_request()
+        budget = ResponseByteBudget()
+        models_by_key: dict[str, dict[str, Any]] = {}
+        seen_cursors: set[str] = set()
+        cursor: str | None = None
+        page_count = 0
+
+        while True:
+            if is_cancelled is not None and is_cancelled():
+                raise AIProviderError("模型目录发现已取消")
+            request_kwargs: dict[str, Any] = {
+                "headers": headers,
+                "timeout": self.config.timeout_seconds,
+                "proxies": self._proxies(),
+            }
+            if cursor is not None:
+                request_kwargs["params"] = {cursor_param: cursor}
+            try:
+                response = self._request(
+                    "GET",
+                    url,
+                    max_body_bytes=_MODEL_LIST_PAGE_BYTES,
+                    byte_budget=budget,
+                    **request_kwargs,
+                )
+            except requests.RequestException as exc:
+                raise AIProviderError(
+                    f"模型目录请求失败：{_redact_secrets(str(exc))}"
+                ) from exc
+
+            with response:
+                if response.status_code >= 400:
+                    raise AIProviderError(_safe_http_error(response))
+                payload = self._decode_model_page(response)
+
+            raw_models = payload.get("data")
+            if not isinstance(raw_models, list):
+                raise AIProviderError("模型目录响应缺少模型数组 data")
+            for raw_model in raw_models:
+                if not isinstance(raw_model, Mapping):
+                    raise AIProviderError("模型记录必须是对象")
+                try:
+                    model = normalize_model_record(raw_model)
+                except (ModelCatalogValidationError, UnicodeError) as exc:
+                    raise AIProviderError(f"模型记录无效：{exc}") from exc
+                models_by_key[model["model_key"]] = model
+                if len(models_by_key) > _MODEL_LIST_MAX_MODELS:
+                    raise AIProviderError(
+                        f"模型目录最多包含 {_MODEL_LIST_MAX_MODELS} 个模型"
+                    )
+
+            page_count += 1
+            has_more, next_cursor = self._model_page_cursor(payload)
+            if on_page is not None:
+                on_page(page_count, len(models_by_key))
+            if not has_more:
+                break
+            if len(models_by_key) >= _MODEL_LIST_MAX_MODELS:
+                raise AIProviderError(
+                    f"模型目录已达到 {_MODEL_LIST_MAX_MODELS} 个模型，不能继续分页"
+                )
+            if page_count >= _MODEL_LIST_MAX_PAGES:
+                raise AIProviderError(
+                    f"模型目录最多读取 {_MODEL_LIST_MAX_PAGES} 页"
+                )
+            assert next_cursor is not None
+            if next_cursor in seen_cursors:
+                raise AIProviderError("模型目录分页游标循环")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+
+        models = list(models_by_key.values())
+        return ModelListResult(
+            models=models,
+            complete=True,
+            empty_authoritative=False,
+            pages=page_count,
+            result_digest=canonical_model_digest(models),
+            partial_reason=None,
+        )
 
 
 class OpenAICompatibleProvider(AIProvider):
@@ -350,6 +590,18 @@ class OpenAICompatibleProvider(AIProvider):
             return base_url
         # 根 URL → 自动拼 /v1
         return f"{base_url}/v1"
+
+    def _model_discovery_request(self) -> tuple[str, dict[str, str], str]:
+        if not self.config.api_key:
+            raise AIProviderError("Provider 未配置 API key")
+        return (
+            f"{self._resolve_base_url()}/models",
+            {
+                "Authorization": f"Bearer {self.config.api_key}",
+                "Accept": "application/json",
+            },
+            "after",
+        )
 
     def stream_generate(
         self,
@@ -522,6 +774,25 @@ class XAIProvider(OpenAICompatibleProvider):
 
 class AnthropicProvider(AIProvider):
     default_base_url = "https://api.anthropic.com"
+
+    def _model_discovery_request(self) -> tuple[str, dict[str, str], str]:
+        if not self.config.api_key:
+            raise AIProviderError("Provider 未配置 API key")
+        base_url = (self.config.base_url or self.default_base_url).rstrip("/")
+        endpoint = (
+            f"{base_url}/models"
+            if base_url.endswith("/v1")
+            else f"{base_url}/v1/models"
+        )
+        return (
+            endpoint,
+            {
+                "x-api-key": self.config.api_key,
+                "anthropic-version": "2023-06-01",
+                "Accept": "application/json",
+            },
+            "after_id",
+        )
 
     def stream_generate(
         self,

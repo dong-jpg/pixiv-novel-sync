@@ -197,7 +197,7 @@ class _ProviderHandler(BaseHTTPRequestHandler):
     seen_host: str | None = None
     seen_destination_ip: str | None = None
 
-    def do_POST(self) -> None:
+    def _respond(self) -> None:
         type(self).seen_host = self.headers.get("Host")
         type(self).seen_destination_ip = self.connection.getsockname()[0]
         body = b'{"ok": true}'
@@ -206,6 +206,12 @@ class _ProviderHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        self._respond()
+
+    def do_POST(self) -> None:
+        self._respond()
 
     def log_message(self, _format: str, *_args) -> None:
         return
@@ -306,6 +312,52 @@ def test_post_connects_to_validated_ip_and_preserves_host(monkeypatch):
     assert dns_queries == ["rebind.test"]
     assert _ProviderHandler.seen_destination_ip == "127.0.0.1"
     assert _ProviderHandler.seen_host == f"rebind.test:{port}"
+
+
+def test_get_uses_same_dns_pinning_and_host_validation(monkeypatch):
+    real_getaddrinfo = socket.getaddrinfo
+    dns_queries: list[str] = []
+
+    def resolve_once(host, port, *args, **kwargs):
+        if host == "models-rebind.test":
+            dns_queries.append(host)
+            if len(dns_queries) > 1:
+                raise AssertionError("模型发现请求重复解析了原域名")
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    socket.IPPROTO_TCP,
+                    "",
+                    ("127.0.0.1", port),
+                )
+            ]
+        return real_getaddrinfo(host, port, *args, **kwargs)
+
+    monkeypatch.setenv("PIXIV_AI_ALLOW_PRIVATE_HOSTS", "1")
+    monkeypatch.setattr(provider_module.socket, "getaddrinfo", resolve_once)
+    _ProviderHandler.seen_host = None
+    _ProviderHandler.seen_destination_ip = None
+
+    with _serve(_ProviderHandler) as server:
+        port = server.server_address[1]
+        provider = _make_provider()
+        provider.session.trust_env = False
+        try:
+            response = provider._request(
+                "GET",
+                f"http://models-rebind.test:{port}/v1/models",
+                max_body_bytes=4 * 1024 * 1024,
+                byte_budget=provider_module.ResponseByteBudget(),
+            )
+            assert response.content == b'{"ok": true}'
+            response.close()
+        finally:
+            provider.close()
+
+    assert dns_queries == ["models-rebind.test"]
+    assert _ProviderHandler.seen_destination_ip == "127.0.0.1"
+    assert _ProviderHandler.seen_host == f"models-rebind.test:{port}"
 
 
 def test_post_preserves_request_response_hook(monkeypatch):

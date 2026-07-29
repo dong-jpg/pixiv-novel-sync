@@ -110,6 +110,34 @@ def test_post_keeps_streaming_response_body_lazy(monkeypatch):
     assert fake_response.content_reads == 0
 
 
+def test_post_remains_request_compatibility_wrapper(monkeypatch):
+    provider = OpenAICompatibleProvider(make_config("openai_compatible"))
+    response = FakeResponse(200, {"ok": True})
+    calls: list[tuple[str, str, dict]] = []
+
+    def fake_request(method: str, url: str, **kwargs):
+        calls.append((method, url, kwargs))
+        return response
+
+    monkeypatch.setattr(provider, "_request", fake_request)
+    try:
+        result = provider._post(
+            "https://example.com/v1/messages",
+            json={"test": True},
+        )
+    finally:
+        provider.close()
+
+    assert result is response
+    assert calls == [
+        (
+            "POST",
+            "https://example.com/v1/messages",
+            {"json": {"test": True}},
+        )
+    ]
+
+
 def test_openai_stream_fallback_uses_single_non_stream_attempt(monkeypatch):
     calls: list[dict] = []
 
