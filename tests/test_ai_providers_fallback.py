@@ -145,7 +145,7 @@ def test_openai_stream_fallback_uses_single_non_stream_attempt(monkeypatch):
         calls.append(kwargs)
         if len(calls) <= 3:
             return FakeResponse(503, text="bad gateway")
-        return FakeResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+        return FakeResponse(200, {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
     monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
@@ -175,7 +175,7 @@ def test_openai_empty_stream_falls_back_to_non_stream(monkeypatch):
         calls.append(kwargs)
         if kwargs["json"].get("stream"):
             return FakeResponse(200, lines=['data: {"choices":[{"delta":{}}]}', 'data: [DONE]'])
-        return FakeResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+        return FakeResponse(200, {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
     monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
 
@@ -203,7 +203,7 @@ def test_anthropic_stream_fallback_uses_single_non_stream_attempt(monkeypatch):
         calls.append(kwargs)
         if len(calls) <= 3:
             return FakeResponse(503, text="bad gateway")
-        return FakeResponse(200, {"content": [{"type": "text", "text": "ok"}]})
+        return FakeResponse(200, {"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"})
 
     monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
@@ -233,7 +233,7 @@ def test_anthropic_empty_stream_falls_back_to_non_stream(monkeypatch):
         calls.append(kwargs)
         if kwargs["json"].get("stream"):
             return FakeResponse(200, lines=['data: {"type":"message_start"}', 'data: {"type":"message_stop"}'])
-        return FakeResponse(200, {"content": [{"type": "text", "text": "ok"}]})
+        return FakeResponse(200, {"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"})
 
     monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
 
@@ -312,7 +312,7 @@ def test_openai_non_stream_reresolves_every_attempt(monkeypatch):
         calls.append(kwargs)
         if len(calls) == 1:
             return FakeResponse(503, text="bad gateway")
-        return FakeResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+        return FakeResponse(200, {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
     monkeypatch.setattr("pixiv_novel_sync.ai.providers.socket.getaddrinfo", resolve_public)
     monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)

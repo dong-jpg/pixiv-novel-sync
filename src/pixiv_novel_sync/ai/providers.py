@@ -3,6 +3,7 @@ from __future__ import annotations
 import codecs
 import ipaddress
 import json
+import math
 import os
 import re
 import socket
@@ -10,7 +11,9 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import requests
@@ -25,7 +28,28 @@ from .models import AIProviderConfig, AIStreamChunk, ModelListResult
 
 
 class AIProviderError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str = "unknown",
+        scope: Literal["model", "provider"] = "provider",
+        retry_after: float | None = None,
+        finish_reason: str | None = None,
+    ) -> None:
+        if scope not in {"model", "provider"}:
+            raise ValueError("AI Provider error scope 无效")
+        if retry_after is not None:
+            if isinstance(retry_after, bool) or not isinstance(retry_after, (int, float)):
+                raise ValueError("retry_after 必须是非负数")
+            retry_after = float(retry_after)
+            if retry_after < 0 or not math.isfinite(retry_after):
+                raise ValueError("retry_after 必须是非负数")
+        super().__init__(_redact_secrets(str(message)))
+        self.category = str(category or "unknown")
+        self.scope = scope
+        self.retry_after = retry_after
+        self.finish_reason = finish_reason
 
 
 class ProviderConfigError(ValueError):
@@ -305,6 +329,97 @@ def _progress(phase: str, message: str, **data: Any) -> AIStreamChunk:
     return AIStreamChunk(type="progress", data={"phase": phase, "message": message, **data})
 
 
+def _cancelled_error() -> AIProviderError:
+    return AIProviderError(
+        "AI 请求已取消",
+        category="cancelled",
+        scope="model",
+        finish_reason="cancelled",
+    )
+
+
+def _require_enabled(config: AIProviderConfig) -> None:
+    if not config.enabled:
+        raise AIProviderError(
+            "Provider 已禁用",
+            category="configuration",
+            scope="provider",
+        )
+
+
+def _runtime_config_error(error: ProviderConfigError) -> AIProviderError:
+    message = str(error)
+    category = "network" if "无法解析" in message else "configuration"
+    return AIProviderError(message, category=category, scope="provider")
+
+
+def _check_cancelled(is_cancelled: Callable[[], bool] | None) -> None:
+    if is_cancelled is not None and is_cancelled():
+        raise _cancelled_error()
+
+
+def _before_network_request(
+    request_guard: Callable[[], None] | None,
+    is_cancelled: Callable[[], bool] | None,
+) -> None:
+    _check_cancelled(is_cancelled)
+    if request_guard is not None:
+        request_guard()
+
+
+def _sleep_before_retry(
+    seconds: float,
+    is_cancelled: Callable[[], bool] | None,
+) -> None:
+    _check_cancelled(is_cancelled)
+    time.sleep(seconds)
+
+
+def _normalize_finish_reason(reason: Any) -> tuple[str, bool]:
+    if not isinstance(reason, str) or not reason.strip():
+        return "missing", False
+    normalized = reason.strip().lower()
+    if normalized == "stop":
+        return "stop", True
+    if normalized in {"complete", "end_turn", "stop_sequence"}:
+        return "complete", True
+    if normalized in {"length", "max_tokens", "max_output_tokens"}:
+        return "length", False
+    if normalized in {
+        "content_filter",
+        "content_filtered",
+        "refusal",
+        "safety",
+        "blocked",
+    }:
+        return "content_filter", False
+    return "missing", False
+
+
+def _completion_chunk(
+    reason: Any,
+    *,
+    output_present: bool,
+    provider_label: str,
+) -> AIStreamChunk:
+    finish_reason, normal = _normalize_finish_reason(reason)
+    if normal:
+        if not output_present:
+            raise AIProviderError(
+                f"{provider_label} 返回空响应",
+                category="empty_response",
+                scope="model",
+                finish_reason=finish_reason,
+            )
+        return AIStreamChunk(type="done", data={"finish_reason": finish_reason})
+    raise AIProviderError(
+        f"{provider_label} 未正常完成（finish_reason={finish_reason}）",
+        category="incomplete_response",
+        scope="model",
+        finish_reason=finish_reason,
+    )
+
+
 class AIProvider:
     def __init__(self, config: AIProviderConfig) -> None:
         self.config = config
@@ -324,6 +439,9 @@ class AIProvider:
         temperature: float,
         top_p: float,
         max_tokens: int,
+        *,
+        request_guard: Callable[[], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> Iterator[AIStreamChunk]:
         raise NotImplementedError
 
@@ -612,7 +730,11 @@ class OpenAICompatibleProvider(AIProvider):
 
     def _model_discovery_request(self) -> tuple[str, dict[str, str], str]:
         if not self.config.api_key:
-            raise AIProviderError("Provider 未配置 API key")
+            raise AIProviderError(
+                "Provider 未配置 API key",
+                category="configuration",
+                scope="provider",
+            )
         return (
             f"{self._resolve_base_url()}/models",
             {
@@ -629,9 +751,17 @@ class OpenAICompatibleProvider(AIProvider):
         temperature: float,
         top_p: float,
         max_tokens: int,
+        *,
+        request_guard: Callable[[], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> Iterator[AIStreamChunk]:
+        _require_enabled(self.config)
         if not self.config.api_key:
-            raise AIProviderError("Provider 未配置 API key")
+            raise AIProviderError(
+                "Provider 未配置 API key",
+                category="configuration",
+                scope="provider",
+            )
         base_url = self._resolve_base_url()
         url = f"{base_url}/chat/completions"
         payload = {
@@ -647,17 +777,37 @@ class OpenAICompatibleProvider(AIProvider):
             "Content-Type": "application/json",
         }
         if self.config.stream_enabled:
-            yield from self._stream_chat_completions(url, headers, payload)
+            yield from self._stream_chat_completions(
+                url,
+                headers,
+                payload,
+                request_guard=request_guard,
+                is_cancelled=is_cancelled,
+            )
         else:
-            yield from self._non_stream_generate(url, headers, payload)
+            yield from self._non_stream_generate(
+                url,
+                headers,
+                payload,
+                request_guard=request_guard,
+                is_cancelled=is_cancelled,
+            )
 
-    def _stream_chat_completions(self, url: str, headers: dict[str, str], payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+    def _stream_chat_completions(
+        self,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        *,
+        request_guard: Callable[[], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> Iterator[AIStreamChunk]:
         # 7.7: 尊重max_retries配置,不强制最小值3
         max_retries = max(0, self.config.max_retries)
-        last_error: str | None = None
         produced_output = False
         for attempt in range(max_retries + 1):
             try:
+                _before_network_request(request_guard, is_cancelled)
                 with self._post(
                     url,
                     headers=headers,
@@ -667,8 +817,12 @@ class OpenAICompatibleProvider(AIProvider):
                     proxies=self._proxies(),
                 ) as response:
                     if response.status_code in (500, 502, 503, 504, 408, 429):
-                        last_error = f"HTTP {response.status_code}: {_redact_secrets(response.text[:200])}"
+                        error = _http_provider_error(
+                            response,
+                            model=str(payload.get("model") or ""),
+                        )
                         if attempt < max_retries:
+                            _check_cancelled(is_cancelled)
                             yield _progress(
                                 "retry",
                                 f"流式请求返回 HTTP {response.status_code}，准备第 {attempt + 1} 次重试",
@@ -677,13 +831,18 @@ class OpenAICompatibleProvider(AIProvider):
                                 attempt=attempt + 1,
                                 max_retries=max_retries,
                             )
-                            time.sleep(2 ** attempt)
+                            _sleep_before_retry(2 ** attempt, is_cancelled)
                             continue
-                        raise AIProviderError(f"AI API 网关错误 {response.status_code}（已重试 {max_retries} 次）：{last_error}")
+                        raise error
                     if response.status_code >= 400:
-                        raise AIProviderError(_safe_http_error(response))
+                        raise _http_provider_error(
+                            response,
+                            model=str(payload.get("model") or ""),
+                        )
                     emitted_delta = False
+                    finish_reason: Any = None
                     for raw_line in _iter_sse_lines(response):
+                        _check_cancelled(is_cancelled)
                         if not raw_line:
                             continue
                         line = raw_line.strip()
@@ -692,43 +851,91 @@ class OpenAICompatibleProvider(AIProvider):
                         data = line[5:].strip()
                         if data == "[DONE]":
                             if not emitted_delta:
+                                _check_cancelled(is_cancelled)
                                 yield _progress(
                                     "fallback",
                                     "流式请求没有返回正文，切换为非流式请求",
                                     provider="openai_compatible",
                                 )
-                                yield from self._non_stream_generate(url, headers, payload, max_retries_override=3)
+                                yield from self._non_stream_generate(
+                                    url,
+                                    headers,
+                                    payload,
+                                    max_retries_override=3,
+                                    request_guard=request_guard,
+                                    is_cancelled=is_cancelled,
+                                )
                             else:
-                                yield AIStreamChunk(type="done")
+                                _check_cancelled(is_cancelled)
+                                yield _completion_chunk(
+                                    finish_reason,
+                                    output_present=True,
+                                    provider_label="OpenAI-compatible API",
+                                )
                             return
                         try:
                             event = json.loads(data)
                         except json.JSONDecodeError:
                             continue
+                        if not isinstance(event, Mapping):
+                            raise AIProviderError(
+                                "OpenAI-compatible API 流事件必须是 JSON 对象",
+                                category="invalid_response",
+                                scope="provider",
+                            )
                         choices = event.get("choices") or []
                         if not choices:
                             continue
-                        delta = choices[0].get("delta") or {}
+                        choice = choices[0]
+                        if not isinstance(choice, Mapping):
+                            continue
+                        if choice.get("finish_reason") is not None:
+                            finish_reason = choice.get("finish_reason")
+                        delta = choice.get("delta") or {}
+                        if not isinstance(delta, Mapping):
+                            continue
                         text = delta.get("content") or ""
                         if text:
                             emitted_delta = True
                             produced_output = True
+                            _check_cancelled(is_cancelled)
                             yield AIStreamChunk(type="delta", text=text)
                     if not emitted_delta:
+                        _check_cancelled(is_cancelled)
                         yield _progress(
                             "fallback",
                             "流式请求结束但没有返回正文，切换为非流式请求",
                             provider="openai_compatible",
                         )
-                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=3)
+                        yield from self._non_stream_generate(
+                            url,
+                            headers,
+                            payload,
+                            max_retries_override=3,
+                            request_guard=request_guard,
+                            is_cancelled=is_cancelled,
+                        )
+                    else:
+                        _check_cancelled(is_cancelled)
+                        yield _completion_chunk(
+                            finish_reason,
+                            output_present=True,
+                            provider_label="OpenAI-compatible API",
+                        )
                     return
+            except ProviderConfigError as exc:
+                raise _runtime_config_error(exc) from exc
             except requests.RequestException as exc:
-                last_error = str(exc)
+                error = _request_provider_error(
+                    exc,
+                    provider_label="OpenAI-compatible API",
+                )
                 if produced_output:
                     # The stream already delivered partial text to the caller; retrying
                     # re-sends the whole prompt and duplicates output in the saved job.
-                    raise AIProviderError(f"AI API 流式中断（已输出部分内容，不再重试）：{last_error}") from exc
+                    raise error from exc
                 if attempt < max_retries:
+                    _check_cancelled(is_cancelled)
                     yield _progress(
                         "retry",
                         f"流式请求失败，准备第 {attempt + 1} 次重试",
@@ -736,9 +943,9 @@ class OpenAICompatibleProvider(AIProvider):
                         attempt=attempt + 1,
                         max_retries=max_retries,
                     )
-                    time.sleep(2 ** attempt)
+                    _sleep_before_retry(2 ** attempt, is_cancelled)
                     continue
-                raise AIProviderError(f"AI API 请求失败（已重试 {max_retries} 次）：{last_error}") from exc
+                raise error from exc
 
     def _non_stream_generate(
         self,
@@ -746,14 +953,17 @@ class OpenAICompatibleProvider(AIProvider):
         headers: dict[str, str],
         payload: dict[str, Any],
         max_retries_override: int | None = None,
+        *,
+        request_guard: Callable[[], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> Iterator[AIStreamChunk]:
         """非流式调用：一次性获取完整响应。"""
         payload_copy = {**payload, "stream": False}
         # 7.7: 尊重max_retries配置,不强制最小值3
         max_retries = max(0, max_retries_override) if max_retries_override is not None else max(0, self.config.max_retries)
-        last_error: str | None = None
         for attempt in range(max_retries + 1):
             try:
+                _before_network_request(request_guard, is_cancelled)
                 response = self._post(
                     url,
                     headers=headers,
@@ -761,30 +971,62 @@ class OpenAICompatibleProvider(AIProvider):
                     timeout=self.config.timeout_seconds,
                     proxies=self._proxies(),
                 )
-                if response.status_code in (500, 502, 503, 504, 408, 429):
-                    last_error = f"HTTP {response.status_code}"
-                    if attempt < max_retries:
-                        time.sleep(2 ** attempt)
-                        continue
-                    raise AIProviderError(f"AI API 网关错误 {response.status_code}（已重试 {max_retries} 次）")
-                if response.status_code >= 400:
-                    raise AIProviderError(_safe_http_error(response))
-                data = response.json()
-                choices = data.get("choices") or []
-                if not choices:
-                    raise AIProviderError(f"AI API 返回空 choices（模型可能不支持此请求）: {_redact_secrets(str(data)[:200])}")
-                message = choices[0].get("message", {})
-                text = message.get("content") or ""
-                if text:
-                    yield AIStreamChunk(type="delta", text=text)
-                yield AIStreamChunk(type="done")
-                return
+                with response:
+                    if response.status_code in (500, 502, 503, 504, 408, 429):
+                        error = _http_provider_error(
+                            response,
+                            model=str(payload.get("model") or ""),
+                        )
+                        if attempt < max_retries:
+                            _sleep_before_retry(2 ** attempt, is_cancelled)
+                            continue
+                        raise error
+                    if response.status_code >= 400:
+                        raise _http_provider_error(
+                            response,
+                            model=str(payload.get("model") or ""),
+                        )
+                    try:
+                        data = response.json()
+                    except ValueError as exc:
+                        raise AIProviderError(
+                            "OpenAI-compatible API 返回无效 JSON",
+                            category="invalid_response",
+                            scope="provider",
+                        ) from exc
+                    choices = (data.get("choices") or []) if isinstance(data, Mapping) else []
+                    if not choices or not isinstance(choices[0], Mapping):
+                        raise AIProviderError(
+                            "OpenAI-compatible API 返回空 choices",
+                            category="empty_response",
+                            scope="model",
+                            finish_reason="missing",
+                        )
+                    choice = choices[0]
+                    message = choice.get("message") or {}
+                    text = (message.get("content") or "") if isinstance(message, Mapping) else ""
+                    if not isinstance(text, str):
+                        text = ""
+                    if text:
+                        _check_cancelled(is_cancelled)
+                        yield AIStreamChunk(type="delta", text=text)
+                    _check_cancelled(is_cancelled)
+                    yield _completion_chunk(
+                        choice.get("finish_reason"),
+                        output_present=bool(text),
+                        provider_label="OpenAI-compatible API",
+                    )
+                    return
+            except ProviderConfigError as exc:
+                raise _runtime_config_error(exc) from exc
             except requests.RequestException as exc:
-                last_error = str(exc)
                 if attempt < max_retries:
-                    time.sleep(2 ** attempt)
+                    _sleep_before_retry(2 ** attempt, is_cancelled)
                     continue
-                raise AIProviderError(f"AI API 请求失败（已重试 {max_retries} 次）：{last_error}") from exc
+                raise _request_provider_error(
+                    exc,
+                    provider_label="OpenAI-compatible API",
+                ) from exc
 
 
 class XAIProvider(OpenAICompatibleProvider):
@@ -796,7 +1038,11 @@ class AnthropicProvider(AIProvider):
 
     def _model_discovery_request(self) -> tuple[str, dict[str, str], str]:
         if not self.config.api_key:
-            raise AIProviderError("Provider 未配置 API key")
+            raise AIProviderError(
+                "Provider 未配置 API key",
+                category="configuration",
+                scope="provider",
+            )
         base_url = (self.config.base_url or self.default_base_url).rstrip("/")
         endpoint = (
             f"{base_url}/models"
@@ -820,9 +1066,17 @@ class AnthropicProvider(AIProvider):
         temperature: float,
         top_p: float,
         max_tokens: int,
+        *,
+        request_guard: Callable[[], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> Iterator[AIStreamChunk]:
+        _require_enabled(self.config)
         if not self.config.api_key:
-            raise AIProviderError("Provider 未配置 API key")
+            raise AIProviderError(
+                "Provider 未配置 API key",
+                category="configuration",
+                scope="provider",
+            )
         base_url = (self.config.base_url or self.default_base_url).rstrip("/")
         url = f"{base_url}/v1/messages"
         system_parts: list[str] = []
@@ -852,14 +1106,20 @@ class AnthropicProvider(AIProvider):
             "Content-Type": "application/json",
         }
         if not self.config.stream_enabled:
-            yield from self._non_stream_generate(url, headers, payload)
+            yield from self._non_stream_generate(
+                url,
+                headers,
+                payload,
+                request_guard=request_guard,
+                is_cancelled=is_cancelled,
+            )
             return
         # 7.7: 尊重max_retries配置,不强制最小值3
         max_retries = max(0, self.config.max_retries)
-        last_error: str | None = None
         produced_output = False
         for attempt in range(max_retries + 1):
             try:
+                _before_network_request(request_guard, is_cancelled)
                 with self._post(
                     url,
                     headers=headers,
@@ -869,8 +1129,9 @@ class AnthropicProvider(AIProvider):
                     proxies=self._proxies(),
                 ) as response:
                     if response.status_code in (500, 502, 503, 504, 408, 429):
-                        last_error = f"HTTP {response.status_code}: {_redact_secrets(response.text[:200])}"
+                        error = _http_provider_error(response, model=model)
                         if attempt < max_retries:
+                            _check_cancelled(is_cancelled)
                             yield _progress(
                                 "retry",
                                 f"Anthropic 流式请求返回 HTTP {response.status_code}，准备第 {attempt + 1} 次重试",
@@ -879,13 +1140,15 @@ class AnthropicProvider(AIProvider):
                                 attempt=attempt + 1,
                                 max_retries=max_retries,
                             )
-                            time.sleep(2 ** attempt)
+                            _sleep_before_retry(2 ** attempt, is_cancelled)
                             continue
-                        raise AIProviderError(f"Anthropic API 网关错误 {response.status_code}（已重试 {max_retries} 次）：{last_error}")
+                        raise error
                     if response.status_code >= 400:
-                        raise AIProviderError(_safe_http_error(response))
+                        raise _http_provider_error(response, model=model)
                     emitted_delta = False
+                    stop_reason: Any = None
                     for raw_line in _iter_sse_lines(response):
+                        _check_cancelled(is_cancelled)
                         if not raw_line:
                             continue
                         line = raw_line.strip()
@@ -896,42 +1159,91 @@ class AnthropicProvider(AIProvider):
                             event = json.loads(data)
                         except json.JSONDecodeError:
                             continue
+                        if not isinstance(event, Mapping):
+                            raise AIProviderError(
+                                "Anthropic API 流事件必须是 JSON 对象",
+                                category="invalid_response",
+                                scope="provider",
+                            )
                         event_type = event.get("type")
-                        if event_type == "content_block_delta":
+                        if event_type == "message_start":
+                            message = event.get("message") or {}
+                            if isinstance(message, Mapping) and message.get("stop_reason") is not None:
+                                stop_reason = message.get("stop_reason")
+                        elif event_type == "content_block_delta":
                             delta = event.get("delta") or {}
-                            text = delta.get("text") or ""
+                            text = (delta.get("text") or "") if isinstance(delta, Mapping) else ""
                             if text:
                                 emitted_delta = True
                                 produced_output = True
+                                _check_cancelled(is_cancelled)
                                 yield AIStreamChunk(type="delta", text=text)
+                        elif event_type == "message_delta":
+                            delta = event.get("delta") or {}
+                            if isinstance(delta, Mapping) and delta.get("stop_reason") is not None:
+                                stop_reason = delta.get("stop_reason")
                         elif event_type == "message_stop":
                             if not emitted_delta:
+                                _check_cancelled(is_cancelled)
                                 yield _progress(
                                     "fallback",
                                     "Anthropic 流式请求没有返回正文，切换为非流式请求",
                                     provider="anthropic",
                                 )
-                                yield from self._non_stream_generate(url, headers, payload, max_retries_override=3)
+                                yield from self._non_stream_generate(
+                                    url,
+                                    headers,
+                                    payload,
+                                    max_retries_override=3,
+                                    request_guard=request_guard,
+                                    is_cancelled=is_cancelled,
+                                )
                             else:
-                                yield AIStreamChunk(type="done")
+                                _check_cancelled(is_cancelled)
+                                yield _completion_chunk(
+                                    stop_reason,
+                                    output_present=True,
+                                    provider_label="Anthropic API",
+                                )
                             return
                         elif event_type == "error":
                             error = event.get("error") or {}
-                            raise AIProviderError(_redact_secrets(str(error.get("message") or "Anthropic API 返回错误")))
+                            raise _event_provider_error(error, provider_label="Anthropic API")
                     if not emitted_delta:
+                        _check_cancelled(is_cancelled)
                         yield _progress(
                             "fallback",
                             "Anthropic 流式请求结束但没有返回正文，切换为非流式请求",
                             provider="anthropic",
                         )
-                        yield from self._non_stream_generate(url, headers, payload, max_retries_override=3)
+                        yield from self._non_stream_generate(
+                            url,
+                            headers,
+                            payload,
+                            max_retries_override=3,
+                            request_guard=request_guard,
+                            is_cancelled=is_cancelled,
+                        )
+                    else:
+                        _check_cancelled(is_cancelled)
+                        yield _completion_chunk(
+                            stop_reason,
+                            output_present=True,
+                            provider_label="Anthropic API",
+                        )
                     return
+            except ProviderConfigError as exc:
+                raise _runtime_config_error(exc) from exc
             except requests.RequestException as exc:
-                last_error = str(exc)
+                error = _request_provider_error(
+                    exc,
+                    provider_label="Anthropic API",
+                )
                 if produced_output:
                     # Partial text already streamed to the caller; retrying would duplicate it.
-                    raise AIProviderError(f"Anthropic 流式中断（已输出部分内容，不再重试）：{last_error}") from exc
+                    raise error from exc
                 if attempt < max_retries:
+                    _check_cancelled(is_cancelled)
                     yield _progress(
                         "retry",
                         f"Anthropic 流式请求失败，准备第 {attempt + 1} 次重试",
@@ -939,9 +1251,9 @@ class AnthropicProvider(AIProvider):
                         attempt=attempt + 1,
                         max_retries=max_retries,
                     )
-                    time.sleep(2 ** attempt)
+                    _sleep_before_retry(2 ** attempt, is_cancelled)
                     continue
-                raise AIProviderError(f"AI API 请求失败（已重试 {max_retries} 次）：{last_error}") from exc
+                raise error from exc
 
     def _non_stream_generate(
         self,
@@ -949,12 +1261,16 @@ class AnthropicProvider(AIProvider):
         headers: dict[str, str],
         payload: dict[str, Any],
         max_retries_override: int | None = None,
+        *,
+        request_guard: Callable[[], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> Iterator[AIStreamChunk]:
         """非流式 fallback：关闭 stream 一次性获取完整响应。"""
         payload_copy = {**payload, "stream": False}
         max_retries = max(0, max_retries_override) if max_retries_override is not None else max(3, self.config.max_retries)
         for attempt in range(max_retries + 1):
             try:
+                _before_network_request(request_guard, is_cancelled)
                 response = self._post(
                     url,
                     headers=headers,
@@ -962,29 +1278,59 @@ class AnthropicProvider(AIProvider):
                     timeout=self.config.timeout_seconds,
                     proxies=self._proxies(),
                 )
-                if response.status_code in (500, 502, 503, 504, 408, 429):
-                    if attempt < max_retries:
-                        time.sleep(2 ** attempt)
-                        continue
-                    raise AIProviderError(f"Anthropic API 网关错误 {response.status_code}（已重试 {max_retries} 次）")
-                if response.status_code >= 400:
-                    raise AIProviderError(_safe_http_error(response))
-                data = response.json()
-                content_blocks = data.get("content") or []
-                text_parts: list[str] = []
-                for block in content_blocks:
-                    if block.get("type") == "text":
-                        text_parts.append(block.get("text") or "")
-                text = "".join(text_parts)
-                if text:
-                    yield AIStreamChunk(type="delta", text=text)
-                yield AIStreamChunk(type="done")
-                return
+                with response:
+                    if response.status_code in (500, 502, 503, 504, 408, 429):
+                        error = _http_provider_error(
+                            response,
+                            model=str(payload.get("model") or ""),
+                        )
+                        if attempt < max_retries:
+                            _sleep_before_retry(2 ** attempt, is_cancelled)
+                            continue
+                        raise error
+                    if response.status_code >= 400:
+                        raise _http_provider_error(
+                            response,
+                            model=str(payload.get("model") or ""),
+                        )
+                    try:
+                        data = response.json()
+                    except ValueError as exc:
+                        raise AIProviderError(
+                            "Anthropic API 返回无效 JSON",
+                            category="invalid_response",
+                            scope="provider",
+                        ) from exc
+                    content_blocks = (data.get("content") or []) if isinstance(data, Mapping) else []
+                    text_parts: list[str] = []
+                    for block in content_blocks:
+                        if not isinstance(block, Mapping):
+                            continue
+                        if block.get("type") == "text":
+                            text = block.get("text") or ""
+                            if isinstance(text, str):
+                                text_parts.append(text)
+                    text = "".join(text_parts)
+                    if text:
+                        _check_cancelled(is_cancelled)
+                        yield AIStreamChunk(type="delta", text=text)
+                    _check_cancelled(is_cancelled)
+                    yield _completion_chunk(
+                        data.get("stop_reason") if isinstance(data, Mapping) else None,
+                        output_present=bool(text),
+                        provider_label="Anthropic API",
+                    )
+                    return
+            except ProviderConfigError as exc:
+                raise _runtime_config_error(exc) from exc
             except requests.RequestException as exc:
                 if attempt < max_retries:
-                    time.sleep(2 ** attempt)
+                    _sleep_before_retry(2 ** attempt, is_cancelled)
                     continue
-                raise AIProviderError(f"Anthropic API 请求失败（已重试 {max_retries} 次）：{exc}") from exc
+                raise _request_provider_error(
+                    exc,
+                    provider_label="Anthropic API",
+                ) from exc
 
 
 def create_provider(config: AIProviderConfig) -> AIProvider:
@@ -995,26 +1341,214 @@ def create_provider(config: AIProviderConfig) -> AIProvider:
         return AnthropicProvider(config)
     if provider_type == "xai":
         return XAIProvider(config)
-    raise AIProviderError(f"不支持的 Provider 类型：{provider_type}")
+    raise AIProviderError(
+        f"不支持的 Provider 类型：{provider_type}",
+        category="configuration",
+        scope="provider",
+    )
 
 
-def _safe_http_error(response: requests.Response) -> str:
+def _response_error_details(response: requests.Response) -> tuple[str, str]:
     # 强制按 UTF-8 解码（很多上游网关 Content-Type 不带 charset，requests 会按 latin-1 解析导致中文乱码）
     if not response.encoding or response.encoding.lower() in ("iso-8859-1", "latin-1"):
         response.encoding = "utf-8"
+    detail_parts: list[str] = []
+    display_message = ""
     try:
         payload = response.json()
         if isinstance(payload, dict):
             err = payload.get("error")
             if isinstance(err, dict):
-                message = err.get("message") or err.get("type")
+                for key in ("type", "code", "param", "message"):
+                    value = err.get(key)
+                    if isinstance(value, str) and value:
+                        detail_parts.append(value)
+                display_message = str(err.get("message") or err.get("type") or "")
             else:
-                message = err or payload.get("message") or payload.get("detail")
-        else:
-            message = None
-        if message:
-            return _redact_secrets(f"AI API 返回错误 {response.status_code}：{message}")
+                for value in (err, payload.get("message"), payload.get("detail")):
+                    if isinstance(value, str) and value:
+                        detail_parts.append(value)
+                        if not display_message:
+                            display_message = value
     except ValueError:
         pass
-    text = _redact_secrets(response.text[:500]) if response.text else ""
-    return f"AI API 返回错误 {response.status_code}：{text}"
+    if not display_message:
+        try:
+            display_message = str(response.text or "")[:500]
+        except Exception:
+            display_message = ""
+        if display_message:
+            detail_parts.append(display_message)
+    safe_message = _redact_secrets(display_message)[:500]
+    safe_details = _redact_secrets(" ".join(detail_parts))[:2000].lower()
+    return safe_message, safe_details
+
+
+def _parse_retry_after(response: requests.Response) -> float | None:
+    headers = getattr(response, "headers", None) or {}
+    raw_value: Any = None
+    try:
+        raw_value = headers.get("Retry-After") or headers.get("retry-after")
+    except AttributeError:
+        return None
+    if not isinstance(raw_value, str) or not raw_value.strip():
+        return None
+    value = raw_value.strip()
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        seconds = (retry_at.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+    if not math.isfinite(seconds):
+        return None
+    return max(0.0, seconds)
+
+
+def _classify_provider_failure(
+    status_code: int,
+    details: str,
+    *,
+    model: str = "",
+) -> tuple[str, Literal["model", "provider"]]:
+    normalized = details.lower()
+    model_name = model.strip().lower()
+    model_tagged = "model" in normalized or bool(model_name and model_name in normalized)
+    if any(
+        marker in normalized
+        for marker in (
+            "insufficient_quota",
+            "quota exhausted",
+            "quota_exhausted",
+            "billing quota",
+            "account quota",
+        )
+    ) or status_code == 402:
+        return "quota_exhausted", "provider"
+    if status_code in {401, 403} or any(
+        marker in normalized
+        for marker in ("authentication_error", "invalid api key", "unauthorized")
+    ):
+        return "authentication", "provider"
+    if status_code == 429 or any(
+        marker in normalized for marker in ("rate_limit", "rate limit", "too many requests")
+    ):
+        return "rate_limited", "provider"
+    if any(
+        marker in normalized
+        for marker in (
+            "context_length",
+            "context length",
+            "maximum context",
+            "max context",
+            "too many tokens",
+            "prompt is too long",
+        )
+    ):
+        return "context_overflow", "model"
+    if model_tagged and any(
+        marker in normalized
+        for marker in (
+            "not found",
+            "not_found",
+            "does not exist",
+            "unknown model",
+            "unsupported model",
+            "model_not_found",
+        )
+    ):
+        return "model_not_found", "model"
+    if model_tagged and any(
+        marker in normalized
+        for marker in ("model_timeout", "timed out", "timeout")
+    ):
+        return "timeout", "model"
+    if model_tagged and any(
+        marker in normalized
+        for marker in (
+            "unavailable",
+            "overloaded",
+            "rejected",
+            "not supported",
+            "unsupported",
+        )
+    ):
+        return "model_rejected", "model"
+    if status_code == 404:
+        return "configuration", "provider"
+    if status_code in {408, 500, 502, 503, 504} or status_code >= 500:
+        return "gateway", "provider"
+    if status_code >= 400:
+        return "request_rejected", "provider"
+    return "upstream_error", "provider"
+
+
+def _http_provider_error(
+    response: requests.Response,
+    *,
+    model: str = "",
+) -> AIProviderError:
+    message, details = _response_error_details(response)
+    category, scope = _classify_provider_failure(
+        int(response.status_code),
+        details,
+        model=model,
+    )
+    suffix = f"：{message}" if message else ""
+    return AIProviderError(
+        f"AI API 返回错误 {response.status_code}{suffix}",
+        category=category,
+        scope=scope,
+        retry_after=_parse_retry_after(response),
+    )
+
+
+def _request_provider_error(
+    error: requests.RequestException,
+    *,
+    provider_label: str,
+) -> AIProviderError:
+    message = _redact_secrets(str(error))[:500]
+    normalized = message.lower()
+    if isinstance(error, requests.Timeout) and "model" in normalized:
+        category = "timeout"
+        scope: Literal["model", "provider"] = "model"
+    elif isinstance(error, requests.exceptions.SSLError):
+        category = "tls"
+        scope = "provider"
+    else:
+        category = "network"
+        scope = "provider"
+    return AIProviderError(
+        f"{provider_label} 请求失败：{message}",
+        category=category,
+        scope=scope,
+    )
+
+
+def _event_provider_error(error: Any, *, provider_label: str) -> AIProviderError:
+    if isinstance(error, Mapping):
+        parts = [
+            value
+            for value in (error.get("type"), error.get("code"), error.get("message"))
+            if isinstance(value, str) and value
+        ]
+    else:
+        parts = [str(error)] if error else []
+    details = _redact_secrets(" ".join(parts))[:2000]
+    category, scope = _classify_provider_failure(0, details)
+    return AIProviderError(
+        f"{provider_label} 返回错误：{details or '未知错误'}",
+        category=category,
+        scope=scope,
+    )
+
+
+def _safe_http_error(response: requests.Response) -> str:
+    message, _details = _response_error_details(response)
+    suffix = f"：{message}" if message else ""
+    return f"AI API 返回错误 {response.status_code}{suffix}"
