@@ -64,3 +64,17 @@ def test_get_ai_task_logs_empty(db: Database) -> None:
     result = db.get_ai_task_logs(days=3)
     assert result["items"] == []
     assert result["total"] == 0
+
+
+def test_partial_ai_job_has_terminal_label_and_status_filter(db: Database) -> None:
+    db.create_ai_job("partial", "continue", agent_id=1, input_data={})
+    db.update_ai_job("partial", "partial", output_text="半截")
+
+    result = db.get_ai_task_logs(status="partial", days=3)
+
+    assert len(result["items"]) == 1
+    row = result["items"][0]
+    assert row["status"] == "partial"
+    assert row["status_label"] == "部分完成"
+    assert row["is_running"] is False
+    assert row["finished_at"] is not None

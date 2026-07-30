@@ -1,7 +1,161 @@
 """AI providers/agents/jobs storage mixin."""
+from __future__ import annotations
+
+import hashlib
 import json
+import re
 import sqlite3
+import unicodedata
+from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+from ...ai.providers import _redact_secrets
+
+
+class AIJobConflictError(RuntimeError):
+    """AI job 不存在、已终结或 owner 不匹配。"""
+
+
+class AIRouteBudgetExhausted(AIJobConflictError):
+    """AI job 的候选或网络请求硬预算已耗尽。"""
+
+    error_category = "route_budget_exhausted"
+
+
+_JOB_STAGES = {"internal", "main", "validation"}
+_JOB_TERMINAL_STATUSES = {"succeeded", "failed", "partial", "cancelled"}
+_ATTEMPT_FIELDS = {
+    "pool_id",
+    "provider_id",
+    "provider_model_id",
+    "pool_version_snapshot",
+    "pool_position_snapshot",
+    "model_key",
+    "pool_name_snapshot",
+    "provider_name_snapshot",
+    "agent_config_hash",
+    "provider_config_hash",
+    "candidate_list_hash",
+    "stage",
+    "lease_until",
+}
+_ATTEMPT_FINISH_FIELDS = {
+    "error_scope",
+    "error_message",
+    "error_category",
+    "finish_reason",
+    "output_started",
+    "latency_ms",
+}
+_FORBIDDEN_SNAPSHOT_KEYS = {
+    "api_key",
+    "api_key_encrypted",
+    "messages",
+    "output_text",
+    "prompt",
+    "request_body",
+    "response_headers",
+}
+_HASH_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _sql_timestamp(value: datetime) -> str:
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _validate_timestamp(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > 64:
+        raise ValueError(f"{field} 必须是有效时间")
+    if any(unicodedata.category(character) == "Cc" for character in value):
+        raise ValueError(f"{field} 必须是有效时间")
+    candidate = value.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError as exc:
+        raise ValueError(f"{field} 必须是有效时间") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return _sql_timestamp(parsed)
+
+
+def _bounded_text(value: Any, field: str, limit: int) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} 必须是字符串")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"{field} 必须是有效 UTF-8 文本") from exc
+    text = value
+    if any(unicodedata.category(character) == "Cc" for character in text):
+        raise ValueError(f"{field} 不能包含控制字符")
+    if len(text) > limit:
+        raise ValueError(f"{field} 不能超过 {limit} 个字符")
+    return text
+
+
+def _safe_error_text(value: Any) -> str:
+    text = str(value or "").encode("utf-8", errors="replace").decode("utf-8")
+    text = "".join(
+        " " if unicodedata.category(character) == "Cc" else character
+        for character in text
+    )
+    return _redact_secrets(text)[:2000]
+
+
+def _validate_hash(value: Any, field: str) -> str:
+    if not isinstance(value, str) or _HASH_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"{field} 必须是 64 位小写十六进制摘要")
+    return value
+
+
+def _validate_snapshot_content(value: Any) -> None:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise ValueError("候选快照字段名必须是字符串")
+            _bounded_text(key, "候选快照字段名", 200)
+            if key.lower() in _FORBIDDEN_SNAPSHOT_KEYS:
+                raise ValueError("候选快照包含禁止保存的敏感字段")
+            _validate_snapshot_content(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            _validate_snapshot_content(child)
+    elif isinstance(value, str):
+        _bounded_text(value, "候选快照文本", 256 * 1024)
+
+
+def _canonical_snapshot(value: Any) -> tuple[str, str]:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("候选快照必须是有效 JSON 对象") from exc
+    else:
+        parsed = value
+    if not isinstance(parsed, Mapping):
+        raise ValueError("候选快照必须是 JSON 对象")
+    _validate_snapshot_content(parsed)
+    try:
+        serialized = json.dumps(
+            parsed,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        encoded = serialized.encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise ValueError("候选快照无法序列化") from exc
+    if len(encoded) > 256 * 1024:
+        raise ValueError("候选快照不能超过 256 KiB")
+    return serialized, hashlib.sha256(encoded).hexdigest()
 
 
 class AIProviderReferenceError(RuntimeError):
@@ -253,54 +407,203 @@ class AiCoreMixin:
             self.conn.execute("DELETE FROM ai_agents WHERE id = ?", (agent_id,))
             self._commit_if_needed()
 
-    def create_ai_job(self, job_id: str, task_type: str, agent_id: int | None, input_data: dict[str, Any]) -> None:
-        with self._lock:
-            self.conn.execute(
-                """
-                INSERT INTO ai_jobs (job_id, task_type, agent_id, status, input_json, started_at)
-                VALUES (?, ?, ?, 'running', ?, CURRENT_TIMESTAMP)
-                """,
-                (job_id, task_type, agent_id, json.dumps(input_data, ensure_ascii=False)),
-            )
-            self._commit_if_needed()
+    @staticmethod
+    def _attempt_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        item["attempt_index"] = int(item["attempt_index"])
+        item["output_started"] = bool(item.get("output_started"))
+        item.pop("owner_token", None)
+        item.pop("lease_until", None)
+        item.pop("heartbeat_at", None)
+        return item
 
-    def update_ai_job(self, job_id: str, status: str, output_text: str | None = None,
-                      output_json: dict[str, Any] | None = None, error_message: str | None = None) -> None:
-        with self._lock:
-            self.conn.execute(
+    def list_ai_job_model_attempts(self, job_id: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT * FROM ai_job_model_attempts
+            WHERE job_id = ?
+            ORDER BY attempt_index
+            """,
+            (job_id,),
+        ).fetchall()
+        return [self._attempt_from_row(row) for row in rows]
+
+    @staticmethod
+    def _route_summary(attempts: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not attempts:
+            return None
+        main_attempts = [attempt for attempt in attempts if attempt.get("stage") == "main"]
+        selected = (main_attempts or attempts)[-1]
+        return {
+            "attempt_index": selected["attempt_index"],
+            "stage": selected.get("stage"),
+            "status": selected.get("status"),
+            "pool_id": selected.get("pool_id"),
+            "pool_name": selected.get("pool_name_snapshot"),
+            "provider_id": selected.get("provider_id"),
+            "provider_name": selected.get("provider_name_snapshot"),
+            "provider_model_id": selected.get("provider_model_id"),
+            "model_key": selected.get("model_key"),
+        }
+
+    def _ai_job_from_row(
+        self,
+        row: sqlite3.Row,
+        *,
+        include_attempts: bool,
+    ) -> dict[str, Any]:
+        item = dict(row)
+        for raw_key, public_key in (
+            ("input_json", "input"),
+            ("output_json", "output"),
+            ("candidate_snapshot_json", "candidate_snapshot"),
+            ("prompt_budget_json", "prompt_budget"),
+        ):
+            raw_value = item.get(raw_key)
+            if raw_value:
+                try:
+                    item[public_key] = json.loads(raw_value)
+                except (TypeError, ValueError):
+                    item[public_key] = None
+            elif public_key in {"candidate_snapshot", "prompt_budget"}:
+                item[public_key] = None
+        item.pop("candidate_snapshot_json", None)
+        item.pop("prompt_budget_json", None)
+        item.pop("owner_token", None)
+        item.pop("lease_until", None)
+        item.pop("heartbeat_at", None)
+        for key in (
+            "next_attempt_index",
+            "network_request_count",
+            "candidate_attempt_count",
+        ):
+            item[key] = int(item.get(key) or 0)
+        if include_attempts:
+            attempts = self.list_ai_job_model_attempts(str(item["job_id"]))
+            item["attempts"] = attempts
+            item["route_summary"] = self._route_summary(attempts)
+        return item
+
+    def create_ai_job(
+        self,
+        job_id: str,
+        task_type: str,
+        agent_id: int | None,
+        input_data: dict[str, Any],
+        *,
+        owner_token: str | None = None,
+        stage: str = "main",
+        route_deadline_at: str | None = None,
+        parent_job_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> None:
+        if stage not in _JOB_STAGES:
+            raise ValueError("AI job stage 无效")
+        if owner_token is not None:
+            owner_token = _bounded_text(owner_token, "owner_token", 256)
+            if not owner_token:
+                raise ValueError("owner_token 不能为空")
+        if route_deadline_at is not None:
+            route_deadline_at = _validate_timestamp(
+                route_deadline_at,
+                "route_deadline_at",
+            )
+        if parent_job_id is not None:
+            parent_job_id = _bounded_text(parent_job_id, "parent_job_id", 128)
+        if idempotency_key is not None:
+            idempotency_key = _bounded_text(idempotency_key, "idempotency_key", 128)
+        try:
+            serialized_input = json.dumps(input_data, ensure_ascii=False)
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise ValueError("AI job input_data 无法序列化") from exc
+        now = _utc_now()
+        heartbeat_at = _sql_timestamp(now) if owner_token is not None else None
+        lease_until = (
+            _sql_timestamp(now + timedelta(seconds=45))
+            if owner_token is not None
+            else None
+        )
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO ai_jobs (
+                    job_id, task_type, agent_id, status, input_json,
+                    owner_token, lease_until, heartbeat_at, stage,
+                    route_deadline_at, parent_job_id, idempotency_key,
+                    started_at
+                ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    task_type,
+                    agent_id,
+                    serialized_input,
+                    owner_token,
+                    lease_until,
+                    heartbeat_at,
+                    stage,
+                    route_deadline_at,
+                    parent_job_id,
+                    idempotency_key,
+                    _sql_timestamp(now),
+                ),
+            )
+
+    def update_ai_job(
+        self,
+        job_id: str,
+        status: str,
+        output_text: str | None = None,
+        output_json: dict[str, Any] | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        serialized_output = (
+            json.dumps(output_json, ensure_ascii=False)
+            if output_json is not None
+            else None
+        )
+        safe_error = _safe_error_text(error_message) if error_message is not None else None
+        with self.transaction() as conn:
+            conn.execute(
                 """
                 UPDATE ai_jobs
                 SET status = ?, output_text = COALESCE(?, output_text),
                     output_json = COALESCE(?, output_json), error_message = ?,
-                    finished_at = CASE WHEN ? IN ('succeeded', 'failed', 'cancelled') THEN CURRENT_TIMESTAMP ELSE finished_at END
-                WHERE job_id = ?
+                    finished_at = CASE
+                        WHEN ? IN ('succeeded', 'failed', 'partial', 'cancelled')
+                        THEN CURRENT_TIMESTAMP ELSE finished_at END,
+                    lease_until = CASE
+                        WHEN ? IN ('succeeded', 'failed', 'partial', 'cancelled')
+                        THEN NULL ELSE lease_until END
+                WHERE job_id = ? AND status = 'running'
                 """,
                 (
                     status,
                     output_text,
-                    json.dumps(output_json, ensure_ascii=False) if output_json is not None else None,
-                    error_message,
+                    serialized_output,
+                    safe_error,
+                    status,
                     status,
                     job_id,
                 ),
             )
-            self._commit_if_needed()
 
     def get_ai_job(self, job_id: str) -> dict[str, Any] | None:
-        row = self.conn.execute("SELECT * FROM ai_jobs WHERE job_id = ?", (job_id,)).fetchone()
+        row = self.conn.execute(
+            "SELECT * FROM ai_jobs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
         if row is None:
             return None
-        item = dict(row)
-        for key in ("input_json", "output_json"):
-            if item.get(key):
-                try:
-                    item[key[:-5]] = json.loads(item[key])
-                except (TypeError, ValueError):
-                    item[key[:-5]] = None
-        return item
+        return self._ai_job_from_row(row, include_attempts=True)
 
-    def list_ai_jobs(self, task_type: str | None = None, status: str | None = None,
-                     page: int = 1, page_size: int = 20) -> dict[str, Any]:
+    def list_ai_jobs(
+        self,
+        task_type: str | None = None,
+        status: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict[str, Any]:
         page = max(page, 1)
         page_size = max(page_size, 1)
         conditions: list[str] = []
@@ -312,7 +615,12 @@ class AiCoreMixin:
             conditions.append("status = ?")
             params.append(status)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        total = int(self.conn.execute(f"SELECT COUNT(*) FROM ai_jobs {where}", params).fetchone()[0])
+        total = int(
+            self.conn.execute(
+                f"SELECT COUNT(*) FROM ai_jobs {where}",
+                params,
+            ).fetchone()[0]
+        )
         total_pages = max((total + page_size - 1) // page_size, 1)
         page = min(page, total_pages)
         offset = (page - 1) * page_size
@@ -320,17 +628,404 @@ class AiCoreMixin:
             f"SELECT * FROM ai_jobs {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
             [*params, page_size, offset],
         ).fetchall()
-        items: list[dict[str, Any]] = []
-        for row in rows:
-            item = dict(row)
-            for key in ("input_json", "output_json"):
-                if item.get(key):
-                    try:
-                        item[key[:-5]] = json.loads(item[key])
-                    except (TypeError, ValueError):
-                        item[key[:-5]] = None
-            items.append(item)
-        return {"items": items, "page": page, "page_size": page_size, "total": total, "total_pages": total_pages}
+        return {
+            "items": [
+                self._ai_job_from_row(row, include_attempts=False) for row in rows
+            ],
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+        }
+
+    def set_ai_job_candidate_snapshot(
+        self,
+        job_id: str,
+        owner_token: str,
+        snapshot_json: Any,
+        snapshot_hash: str,
+    ) -> bool:
+        serialized, computed_hash = _canonical_snapshot(snapshot_json)
+        expected_hash = _validate_hash(snapshot_hash, "候选快照摘要")
+        if computed_hash != expected_hash:
+            raise ValueError("候选快照摘要不匹配")
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE ai_jobs
+                SET candidate_snapshot_json = ?, candidate_snapshot_hash = ?
+                WHERE job_id = ? AND status = 'running' AND owner_token = ?
+                  AND candidate_snapshot_json IS NULL
+                  AND candidate_snapshot_hash IS NULL
+                """,
+                (serialized, expected_hash, job_id, owner_token),
+            )
+            return cursor.rowcount == 1
+
+    @staticmethod
+    def _attempt_value(
+        data: dict[str, Any],
+        field: str,
+        *,
+        positive: bool = True,
+    ) -> int | None:
+        value = data.get(field)
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{field} 必须是整数")
+        if positive and value <= 0:
+            raise ValueError(f"{field} 必须是正整数")
+        return value
+
+    def allocate_ai_model_attempt(
+        self,
+        job_id: str,
+        owner_token: str,
+        data: dict[str, Any],
+    ) -> int:
+        unknown = sorted(set(data) - _ATTEMPT_FIELDS)
+        if unknown:
+            raise ValueError(f"不允许提交 attempt 字段：{', '.join(unknown)}")
+        model_key = _bounded_text(data.get("model_key"), "model_key", 300)
+        if not model_key or len(model_key.encode("utf-8")) > 1200:
+            raise ValueError("model_key 不能为空且不能超过 1200 个 UTF-8 字节")
+        stage = data.get("stage", "main")
+        if stage not in _JOB_STAGES:
+            raise ValueError("attempt stage 无效")
+        provider_name = data.get("provider_name_snapshot")
+        if provider_name is not None:
+            provider_name = _bounded_text(
+                provider_name,
+                "provider_name_snapshot",
+                200,
+            )
+        pool_name = data.get("pool_name_snapshot")
+        if pool_name is not None:
+            pool_name = _bounded_text(pool_name, "pool_name_snapshot", 100)
+        lease_until = data.get("lease_until")
+        if lease_until is not None:
+            lease_until = _validate_timestamp(lease_until, "lease_until")
+        normalized = {
+            "pool_id": self._attempt_value(data, "pool_id"),
+            "provider_id": self._attempt_value(data, "provider_id"),
+            "provider_model_id": self._attempt_value(data, "provider_model_id"),
+            "pool_version_snapshot": self._attempt_value(
+                data,
+                "pool_version_snapshot",
+            ),
+            "pool_position_snapshot": self._attempt_value(
+                data,
+                "pool_position_snapshot",
+            ),
+            "model_key": model_key,
+            "pool_name_snapshot": pool_name,
+            "provider_name_snapshot": provider_name,
+            "agent_config_hash": _validate_hash(
+                data.get("agent_config_hash"),
+                "agent_config_hash",
+            ),
+            "provider_config_hash": _validate_hash(
+                data.get("provider_config_hash"),
+                "provider_config_hash",
+            ),
+            "candidate_list_hash": _validate_hash(
+                data.get("candidate_list_hash"),
+                "candidate_list_hash",
+            ),
+            "stage": stage,
+            "lease_until": lease_until,
+        }
+        if normalized["provider_id"] is None:
+            raise ValueError("provider_id 必须是正整数")
+        with self.transaction() as conn:
+            job = conn.execute(
+                """
+                SELECT status, owner_token, next_attempt_index,
+                       candidate_attempt_count, lease_until, stage
+                FROM ai_jobs WHERE job_id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+            if (
+                job is None
+                or job["status"] != "running"
+                or job["owner_token"] != owner_token
+            ):
+                raise AIJobConflictError("AI job 已终结或 owner 不匹配")
+            if int(job["candidate_attempt_count"] or 0) >= 16:
+                raise AIRouteBudgetExhausted("候选尝试次数已达到 16 次上限")
+            attempt_index = int(job["next_attempt_index"] or 0)
+            attempt_lease = normalized["lease_until"] or job["lease_until"]
+            conn.execute(
+                """
+                INSERT INTO ai_job_model_attempts (
+                    job_id, attempt_index, pool_id, provider_id,
+                    provider_model_id, pool_version_snapshot,
+                    pool_position_snapshot, model_key, pool_name_snapshot,
+                    provider_name_snapshot, agent_config_hash,
+                    provider_config_hash, candidate_list_hash, stage, status,
+                    output_started, owner_token, lease_until, heartbeat_at,
+                    started_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running',
+                    0, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """,
+                (
+                    job_id,
+                    attempt_index,
+                    normalized["pool_id"],
+                    normalized["provider_id"],
+                    normalized["provider_model_id"],
+                    normalized["pool_version_snapshot"],
+                    normalized["pool_position_snapshot"],
+                    normalized["model_key"],
+                    normalized["pool_name_snapshot"],
+                    normalized["provider_name_snapshot"],
+                    normalized["agent_config_hash"],
+                    normalized["provider_config_hash"],
+                    normalized["candidate_list_hash"],
+                    normalized["stage"],
+                    owner_token,
+                    attempt_lease,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE ai_jobs
+                SET next_attempt_index = next_attempt_index + 1,
+                    candidate_attempt_count = candidate_attempt_count + 1
+                WHERE job_id = ? AND status = 'running' AND owner_token = ?
+                """,
+                (job_id, owner_token),
+            )
+            return attempt_index
+
+    def claim_ai_job_network_request(
+        self,
+        job_id: str,
+        owner_token: str,
+    ) -> int:
+        with self.transaction() as conn:
+            job = conn.execute(
+                """
+                SELECT status, owner_token, network_request_count
+                FROM ai_jobs WHERE job_id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+            if (
+                job is None
+                or job["status"] != "running"
+                or job["owner_token"] != owner_token
+            ):
+                raise AIJobConflictError("AI job 已终结或 owner 不匹配")
+            current = int(job["network_request_count"] or 0)
+            if current >= 32:
+                raise AIRouteBudgetExhausted("网络请求次数已达到 32 次上限")
+            next_count = current + 1
+            conn.execute(
+                """
+                UPDATE ai_jobs SET network_request_count = ?
+                WHERE job_id = ? AND status = 'running' AND owner_token = ?
+                """,
+                (next_count, job_id, owner_token),
+            )
+            return next_count
+
+    def heartbeat_ai_job(
+        self,
+        job_id: str,
+        owner_token: str,
+        lease_until: str,
+    ) -> bool:
+        safe_lease = _validate_timestamp(lease_until, "lease_until")
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE ai_jobs
+                SET lease_until = ?, heartbeat_at = CURRENT_TIMESTAMP
+                WHERE job_id = ? AND status = 'running' AND owner_token = ?
+                """,
+                (safe_lease, job_id, owner_token),
+            )
+            if cursor.rowcount != 1:
+                return False
+            conn.execute(
+                """
+                UPDATE ai_job_model_attempts
+                SET lease_until = ?, heartbeat_at = CURRENT_TIMESTAMP
+                WHERE job_id = ? AND status = 'running' AND owner_token = ?
+                """,
+                (safe_lease, job_id, owner_token),
+            )
+            return True
+
+    def finish_ai_model_attempt(
+        self,
+        job_id: str,
+        attempt_index: int,
+        owner_token: str,
+        status: str,
+        **fields: Any,
+    ) -> bool:
+        if status not in _JOB_TERMINAL_STATUSES:
+            raise ValueError("attempt 终态无效")
+        unknown = sorted(set(fields) - _ATTEMPT_FINISH_FIELDS)
+        if unknown:
+            raise ValueError(f"不允许提交 attempt 终态字段：{', '.join(unknown)}")
+        assignments = ["status = ?"]
+        params: list[Any] = [status]
+        if "error_scope" in fields:
+            scope = fields["error_scope"]
+            if scope not in {None, "model", "provider"}:
+                raise ValueError("error_scope 无效")
+            assignments.append("error_scope = ?")
+            params.append(scope)
+        if "error_message" in fields:
+            assignments.append("error_message = ?")
+            params.append(_safe_error_text(fields["error_message"]))
+        if "error_category" in fields:
+            category = fields["error_category"]
+            if category is not None:
+                category = _bounded_text(category, "error_category", 100)
+            assignments.append("error_category = ?")
+            params.append(category)
+        if "finish_reason" in fields:
+            reason = fields["finish_reason"]
+            if reason not in {
+                None,
+                "stop",
+                "complete",
+                "length",
+                "content_filter",
+                "missing",
+                "cancelled",
+                "error",
+            }:
+                raise ValueError("finish_reason 无效")
+            assignments.append("finish_reason = ?")
+            params.append(reason)
+        if "output_started" in fields:
+            output_started = fields["output_started"]
+            if output_started not in {True, False, 0, 1}:
+                raise ValueError("output_started 必须是布尔值")
+            assignments.append("output_started = ?")
+            params.append(1 if output_started else 0)
+        if "latency_ms" in fields:
+            latency = fields["latency_ms"]
+            if isinstance(latency, bool) or not isinstance(latency, int) or latency < 0:
+                raise ValueError("latency_ms 必须是非负整数")
+            assignments.append("latency_ms = ?")
+            params.append(latency)
+        assignments.extend(
+            [
+                "finished_at = CURRENT_TIMESTAMP",
+                "lease_until = NULL",
+                "heartbeat_at = CURRENT_TIMESTAMP",
+            ]
+        )
+        with self.transaction() as conn:
+            if status == "partial":
+                attempt = conn.execute(
+                    """
+                    SELECT stage, output_started FROM ai_job_model_attempts
+                    WHERE job_id = ? AND attempt_index = ?
+                      AND status = 'running' AND owner_token = ?
+                    """,
+                    (job_id, int(attempt_index), owner_token),
+                ).fetchone()
+                if attempt is not None and attempt["stage"] != "main":
+                    raise ValueError("只有 main attempt 可以收口为 partial")
+                if attempt is not None:
+                    effective_output_started = fields.get(
+                        "output_started",
+                        bool(attempt["output_started"]),
+                    )
+                    if not bool(effective_output_started):
+                        raise ValueError("正文尚未开始，不能收口为 partial")
+            cursor = conn.execute(
+                f"""
+                UPDATE ai_job_model_attempts
+                SET {', '.join(assignments)}
+                WHERE job_id = ? AND attempt_index = ?
+                  AND status = 'running' AND owner_token = ?
+                  AND EXISTS (
+                      SELECT 1 FROM ai_jobs
+                      WHERE ai_jobs.job_id = ai_job_model_attempts.job_id
+                        AND ai_jobs.status = 'running'
+                        AND ai_jobs.owner_token = ?
+                  )
+                """,
+                [*params, job_id, int(attempt_index), owner_token, owner_token],
+            )
+            return cursor.rowcount == 1
+
+    def finish_ai_job_cas(
+        self,
+        job_id: str,
+        owner_token: str,
+        status: str,
+        **fields: Any,
+    ) -> bool:
+        if status not in _JOB_TERMINAL_STATUSES:
+            raise ValueError("AI job 终态无效")
+        allowed = {
+            "output_text",
+            "output_json",
+            "error_message",
+            "pinned_candidate_index",
+        }
+        unknown = sorted(set(fields) - allowed)
+        if unknown:
+            raise ValueError(f"不允许提交 AI job 终态字段：{', '.join(unknown)}")
+        assignments = ["status = ?"]
+        params: list[Any] = [status]
+        if "output_text" in fields:
+            assignments.append("output_text = ?")
+            params.append(fields["output_text"])
+        if "output_json" in fields:
+            try:
+                output_json = json.dumps(fields["output_json"], ensure_ascii=False)
+            except (TypeError, ValueError, UnicodeError) as exc:
+                raise ValueError("output_json 无法序列化") from exc
+            assignments.append("output_json = ?")
+            params.append(output_json)
+        if "error_message" in fields:
+            assignments.append("error_message = ?")
+            params.append(_safe_error_text(fields["error_message"]))
+        if "pinned_candidate_index" in fields:
+            pinned = fields["pinned_candidate_index"]
+            if isinstance(pinned, bool) or not isinstance(pinned, int) or pinned < 0:
+                raise ValueError("pinned_candidate_index 必须是非负整数")
+            assignments.append("pinned_candidate_index = ?")
+            params.append(pinned)
+        assignments.extend(["finished_at = CURRENT_TIMESTAMP", "lease_until = NULL"])
+        with self.transaction() as conn:
+            if status == "partial":
+                job = conn.execute(
+                    """
+                    SELECT stage, output_text FROM ai_jobs
+                    WHERE job_id = ? AND status = 'running' AND owner_token = ?
+                    """,
+                    (job_id, owner_token),
+                ).fetchone()
+                if job is not None and job["stage"] != "main":
+                    raise ValueError("只有 main job 可以收口为 partial")
+                if job is not None:
+                    effective_output = fields.get("output_text", job["output_text"])
+                    if not isinstance(effective_output, str) or not effective_output:
+                        raise ValueError("正文尚未开始，不能收口为 partial")
+            cursor = conn.execute(
+                f"""
+                UPDATE ai_jobs SET {', '.join(assignments)}
+                WHERE job_id = ? AND status = 'running' AND owner_token = ?
+                  AND (? != 'partial' OR stage = 'main')
+                """,
+                [*params, job_id, owner_token, status],
+            )
+            return cursor.rowcount == 1
 
     def delete_ai_job(self, job_id: str) -> None:
         with self._lock:
@@ -344,39 +1039,136 @@ class AiCoreMixin:
         """
         if keep_failed_days is None:
             keep_failed_days = keep_days
-        with self._lock:
-            cur = self.conn.execute(
+        with self.transaction() as conn:
+            cur = conn.execute(
                 """
                 DELETE FROM ai_jobs
-                WHERE (status IN ('succeeded', 'done', 'completed', 'success')
+                WHERE (status IN ('succeeded', 'partial', 'done', 'completed', 'success')
                        AND created_at < datetime('now', ? || ' days'))
                    OR (status IN ('failed', 'error', 'cancelled')
                        AND created_at < datetime('now', ? || ' days'))
                 """,
                 (f"-{int(keep_days)}", f"-{int(keep_failed_days)}"),
             )
-            deleted = cur.rowcount or 0
-            self._commit_if_needed()
-        return int(deleted)
+            return int(cur.rowcount or 0)
 
-    def fail_stale_ai_jobs(self, older_than_minutes: int = 30) -> int:
-        """把卡在 'running' 且早于阈值的 AI job 标记为 failed。
+    def fail_stale_ai_jobs(
+        self,
+        older_than_minutes: int = 30,
+        *,
+        now: datetime | None = None,
+        grace_seconds: int = 45,
+    ) -> int:
+        """按 owner lease/heartbeat 收口崩溃任务，并兼容旧 ownerless job。"""
 
-        客户端断连/进程重启会让 SSE 任务永远停留在 'running'，UI 一直转圈且
-        cleanup_ai_jobs 也不会回收。建议在服务启动时调用一次做对账。返回修复行数。
-        """
-        with self._lock:
-            cur = self.conn.execute(
+        current = now or _utc_now()
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        else:
+            current = current.astimezone(timezone.utc)
+        now_sql = _sql_timestamp(current)
+        heartbeat_cutoff = _sql_timestamp(
+            current - timedelta(seconds=max(1, int(grace_seconds)))
+        )
+        legacy_cutoff = _sql_timestamp(
+            current - timedelta(minutes=max(1, int(older_than_minutes)))
+        )
+        interrupted_message = "任务中断（owner 租约与 heartbeat 已失效）"
+        fixed = 0
+        with self.transaction() as conn:
+            jobs = conn.execute(
                 """
-                UPDATE ai_jobs
-                SET status = 'failed',
-                    error_message = COALESCE(NULLIF(error_message, ''), '任务中断（服务重启时检测到未完成）'),
-                    finished_at = CURRENT_TIMESTAMP
+                SELECT * FROM ai_jobs
                 WHERE status = 'running'
-                  AND created_at < datetime('now', ? || ' minutes')
+                  AND (
+                    (
+                      owner_token IS NOT NULL
+                      AND lease_until IS NOT NULL AND lease_until <= ?
+                      AND (heartbeat_at IS NULL OR heartbeat_at <= ?)
+                    )
+                    OR (
+                      owner_token IS NULL AND created_at <= ?
+                    )
+                  )
+                ORDER BY created_at, job_id
                 """,
-                (f"-{int(older_than_minutes)}",),
-            )
-            fixed = cur.rowcount or 0
-            self._commit_if_needed()
-        return int(fixed)
+                (now_sql, heartbeat_cutoff, legacy_cutoff),
+            ).fetchall()
+            for job in jobs:
+                owner = job["owner_token"]
+                if owner is None:
+                    owner_clause = "owner_token IS NULL"
+                    owner_params: list[Any] = []
+                else:
+                    owner_clause = "owner_token = ?"
+                    owner_params = [owner]
+                attempts = conn.execute(
+                    f"""
+                    SELECT attempt_index, stage, output_started, status
+                    FROM ai_job_model_attempts
+                    WHERE job_id = ? AND {owner_clause}
+                    ORDER BY attempt_index
+                    """,
+                    [job["job_id"], *owner_params],
+                ).fetchall()
+                output_started = any(
+                    attempt["stage"] == "main" and bool(attempt["output_started"])
+                    for attempt in attempts
+                )
+                for attempt in attempts:
+                    if attempt["status"] != "running":
+                        continue
+                    attempt_status = (
+                        "partial"
+                        if attempt["stage"] == "main"
+                        and bool(attempt["output_started"])
+                        else "failed"
+                    )
+                    conn.execute(
+                        f"""
+                        UPDATE ai_job_model_attempts
+                        SET status = ?, error_category = 'process_interrupted',
+                            error_message = ?, finish_reason = 'error',
+                            finished_at = ?, lease_until = NULL,
+                            heartbeat_at = ?
+                        WHERE job_id = ? AND attempt_index = ?
+                          AND status = 'running' AND {owner_clause}
+                        """,
+                        [
+                            attempt_status,
+                            interrupted_message,
+                            now_sql,
+                            now_sql,
+                            job["job_id"],
+                            attempt["attempt_index"],
+                            *owner_params,
+                        ],
+                    )
+                job_status = (
+                    "partial"
+                    if job["stage"] == "main" and output_started
+                    else "failed"
+                )
+                cursor = conn.execute(
+                    f"""
+                    UPDATE ai_jobs
+                    SET status = ?,
+                        error_message = COALESCE(
+                            NULLIF(error_message, ''), ?
+                        ),
+                        finished_at = ?, lease_until = NULL,
+                        heartbeat_at = ?
+                    WHERE job_id = ? AND status = 'running'
+                      AND {owner_clause}
+                    """,
+                    [
+                        job_status,
+                        interrupted_message,
+                        now_sql,
+                        now_sql,
+                        job["job_id"],
+                        *owner_params,
+                    ],
+                )
+                fixed += int(cursor.rowcount or 0)
+        return fixed

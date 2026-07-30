@@ -159,6 +159,13 @@ class TasksMixin:
         "polish_psychology": "心理描写润色",
         "keyword_clean": "关键词清洗",
     }
+    _AI_STATUS_LABELS = {
+        "running": "运行中",
+        "succeeded": "成功",
+        "failed": "失败",
+        "partial": "部分完成",
+        "cancelled": "已取消",
+    }
 
     def get_ai_task_logs(
         self,
@@ -212,6 +219,11 @@ class TasksMixin:
                     "task_type": r.get("task_type"),
                     "task_name": self._AI_TASK_LABELS.get(r.get("task_type"), r.get("task_type")),
                     "status": r.get("status"),
+                    "status_label": self._AI_STATUS_LABELS.get(
+                        r.get("status"),
+                        r.get("status"),
+                    ),
+                    "is_running": r.get("status") == "running",
                     "started_at": r.get("started_at") or r.get("created_at"),
                     "finished_at": r.get("finished_at"),
                     "duration_seconds": r.get("duration_seconds"),

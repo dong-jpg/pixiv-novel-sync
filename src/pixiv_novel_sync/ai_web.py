@@ -146,7 +146,7 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     try:
         _startup_db = service._db()
         try:
-            stale = _startup_db.fail_stale_ai_jobs(older_than_minutes=30)
+            stale = _startup_db.fail_stale_ai_jobs()
             if stale:
                 logger.info("启动对账：已修复 %d 个卡住的 AI job", stale)
         finally:
