@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -9,7 +8,7 @@ from ..models import AIStreamChunk
 from ..prompts import (
     build_chat_messages,
 )
-from .core import AIServiceError
+from .core import AIServiceError, RouteJobContext
 
 # M4: LLM 产物直接落库，源文本（归档小说/聊天）可能夹带提示注入，诱导模型
 # 伪造海量章节/伏笔。持久化前对数量与长度设硬上限，作为数据完整性兜底。
@@ -86,9 +85,8 @@ class AIChatWizardMixin:
         payload: { session_id, user_message, agent_id?(覆盖), max_history? }
         """
         db = self._db()
-        job_id = uuid.uuid4().hex
         output_parts: list[str] = []
-        job_created = False
+        route_context: RouteJobContext | None = None
         session_id = int(payload.get("session_id") or 0)
         user_message = (payload.get("user_message") or "").strip()
         try:
@@ -104,7 +102,6 @@ class AIChatWizardMixin:
             if not agent_id:
                 raise AIServiceError("会话未绑定 Agent")
             agent = self._load_agent_config(db, agent_id)
-            provider_config = self._load_provider_config(db, agent.provider_id)
 
             # 写入用户消息
             db.append_ai_chat_message(session_id, "user", user_message)
@@ -135,28 +132,32 @@ class AIChatWizardMixin:
                 extra_system_context=extra,
             )
 
-            db.create_ai_job(job_id, "chat", agent.id, {
-                "session_id": session_id, "history_count": len(history_msgs),
-            })
-            job_created = True
+            route_context = self._start_route_job(
+                db,
+                "chat",
+                agent,
+                {
+                    "session_id": session_id,
+                    "history_count": len(history_msgs),
+                },
+                messages=messages,
+                max_tokens=agent.max_tokens,
+            )
             yield AIStreamChunk(type="metadata", data={
-                "job_id": job_id, "session_id": session_id,
+                "job_id": route_context.job_id, "session_id": session_id,
                 "history_count": len(history_msgs),
             })
 
-            model = agent.model or provider_config.default_model
-            if not model:
-                raise AIServiceError("Agent 或 Provider 未配置模型")
-            provider = self._get_provider(provider_config)
-            for chunk in provider.stream_generate(
-                messages, model=model, temperature=agent.temperature,
-                top_p=agent.top_p, max_tokens=agent.max_tokens,
-            ):
-                if chunk.type == "delta":
-                    output_parts.append(chunk.text)
-                    yield chunk
+            result = yield from self._forward_route(
+                route_context,
+                messages,
+                output_parts,
+            )
+            if result.finish_state != "succeeded":
+                yield self._conclude_route(db, route_context, result)
+                return
 
-            output = "".join(output_parts)
+            output = result.output_text
             # 写入 assistant 消息
             db.append_ai_chat_message(session_id, "assistant", output)
 
@@ -168,16 +169,32 @@ class AIChatWizardMixin:
                 pass
 
             ready = "<<<READY_FOR_IMPORT>>>" in output
-            db.update_ai_job(job_id, "succeeded", output_text=output, output_json={"chars": len(output), "ready": ready})
-            yield AIStreamChunk(type="done", data={"job_id": job_id, "chars": len(output), "ready_to_import": ready})
+            self._finish_route_job(
+                db,
+                route_context,
+                "succeeded",
+                output,
+                output_json={"chars": len(output), "ready": ready},
+            )
+            yield AIStreamChunk(type="done", data={
+                "job_id": route_context.job_id,
+                "chars": len(output),
+                "ready_to_import": ready,
+            })
         except GeneratorExit:
-            if job_created:
-                db.update_ai_job(job_id, "cancelled", output_text="".join(output_parts), error_message="客户端断开连接")
+            if route_context is not None:
+                self._cancel_route_job(db, route_context, "客户端断开连接")
             raise
         except Exception as exc:
             msg = str(exc)
-            if job_created:
-                db.update_ai_job(job_id, "failed", output_text="".join(output_parts), error_message=msg)
+            if route_context is not None:
+                self._finish_route_job(
+                    db,
+                    route_context,
+                    "failed",
+                    "".join(output_parts),
+                    error_message=msg,
+                )
             yield AIStreamChunk(type="error", data={"message": msg})
         finally:
             db.close()

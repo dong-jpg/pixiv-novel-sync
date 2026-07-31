@@ -440,6 +440,24 @@ def collected_delta(chunks: list[AIStreamChunk]) -> str:
     return "".join(chunk.text for chunk in chunks if chunk.type == "delta")
 
 
+def create_pool_agent(db: Database, *, task_type: str) -> int:
+    pool_id = db.create_ai_model_pool(
+        {"name": f"{task_type}-pool", "pool_kind": "custom"}
+    )
+    return db.create_ai_agent(
+        {
+            "name": f"{task_type}-agent",
+            "task_type": task_type,
+            "binding_type": "pool",
+            "provider_id": None,
+            "model": None,
+            "model_pool_id": pool_id,
+            "system_prompt": f"{task_type}-prompt",
+            "enabled": True,
+        }
+    )
+
+
 def test_continue_uses_internal_route_then_main_without_internal_body(
     service: AIWritingService,
     fixed_agent: AIAgentConfig,
@@ -633,3 +651,298 @@ def test_generation_module_has_no_direct_provider_stream_calls() -> None:
     ]
 
     assert direct_calls == []
+
+
+def test_wizard_pool_agent_routes_without_provider_id(
+    service: AIWritingService,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    agent_id = create_pool_agent(db, task_type="chat")
+    session_id = db.create_ai_chat_session(
+        {
+            "agent_id": agent_id,
+            "scope": "wizard",
+            "title": "路由会话",
+        }
+    )
+    fake_router.queue_result(
+        success_result("pending", "回答"),
+        [AIStreamChunk(type="delta", text="回答")],
+    )
+
+    chunks = list(
+        service.stream_chat(
+            {"session_id": session_id, "user_message": "继续"}
+        )
+    )
+
+    assert collected_delta(chunks) == "回答"
+    assert chunks[-1].type == "done"
+    assert fake_router.requests[-1].stage == "main"
+    messages = db.list_ai_chat_messages(session_id)
+    assert messages[-1]["role"] == "assistant"
+    assert messages[-1]["content"] == "回答"
+
+
+def test_chapter_partial_autosave_uses_router_terminal_state(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    project_id = db.create_ai_writing_project(
+        {"name": "章节项目", "outline": "项目大纲"}
+    )
+    chapter_id = db.create_ai_chapter(
+        {
+            "project_id": project_id,
+            "chapter_number": 1,
+            "title": "第一章",
+            "outline": "章节大纲",
+            "content": "已有正文",
+            "status": "draft",
+        }
+    )
+    fake_router.queue_result(
+        partial_result(text="半截"),
+        [AIStreamChunk(type="delta", text="半截")],
+    )
+
+    chunks = list(
+        service.stream_chapter_continue(
+            {
+                "agent_id": fixed_agent.id,
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+            }
+        )
+    )
+
+    chapter = db.get_ai_chapter(chapter_id)
+    assert chapter["content"] == "已有正文半截"
+    assert chapter["status"] == "draft"
+    assert chapter["metadata"]["continue_autosave"]["status"] == "partial"
+    assert chunks[-1].type == "error"
+    assert len(fake_router.requests) == 1
+
+
+def test_longform_plan_uses_candidate_snapshot_and_normal_finish(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    project_id = db.create_ai_writing_project({"name": "长篇项目"})
+    output = json.dumps(
+        {
+            "project_outline": "全书大纲",
+            "expected_chapter_count": 1,
+            "chapters": [
+                {
+                    "chapter_number": 1,
+                    "title": "开篇",
+                    "outline": "故事开端",
+                    "target_words": 4000,
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    fake_router.queue_result(
+        success_result("pending", output),
+        [AIStreamChunk(type="delta", text=output)],
+    )
+
+    chunks = list(
+        service.stream_longform_plan(
+            {
+                "agent_id": fixed_agent.id,
+                "project_id": project_id,
+                "target_words": 4000,
+            }
+        )
+    )
+
+    assert fake_router.requests[-1].candidate_snapshot.snapshot_hash
+    assert fake_router.requests[-1].stage == "main"
+    assert chunks[-1].type == "done"
+    project = db.get_ai_writing_project(project_id)
+    assert project["settings"]["longform_plan"]["project_outline"] == "全书大纲"
+
+
+def test_longform_plan_caps_project_material_to_route_budget(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    project_id = db.create_ai_writing_project(
+        {
+            "name": "预算长篇",
+            "outline": "长篇开头标记" + "中段" * 5000 + "长篇结尾标记",
+        }
+    )
+    output = json.dumps(
+        {
+            "project_outline": "新大纲",
+            "expected_chapter_count": 1,
+            "chapters": [
+                {
+                    "chapter_number": 1,
+                    "title": "开篇",
+                    "outline": "故事开端",
+                    "target_words": 4000,
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    fake_router.budget = replace(fake_router.budget, input_budget=8000)
+    fake_router.queue_result(
+        success_result("pending", output),
+        [AIStreamChunk(type="delta", text=output)],
+    )
+
+    chunks = list(
+        service.stream_longform_plan(
+            {
+                "agent_id": fixed_agent.id,
+                "project_id": project_id,
+                "target_words": 4000,
+            }
+        )
+    )
+
+    prompt = "\n".join(
+        message["content"] for message in fake_router.requests[-1].messages
+    )
+    assert "长篇开头标记" not in prompt
+    assert "长篇结尾标记" in prompt
+    assert chunks[-1].type == "done"
+
+
+def test_chapter_context_uses_route_snapshot_budget(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    project_id = db.create_ai_writing_project({"name": "预算项目"})
+    chapter_id = db.create_ai_chapter(
+        {
+            "project_id": project_id,
+            "chapter_number": 1,
+            "title": "第一章",
+            "content": "早期内容" + "中" * 500 + "末尾锚点",
+        }
+    )
+    fake_router.budget = replace(
+        fake_router.budget,
+        input_budget=200,
+    )
+    fake_router.queue_result(
+        success_result("pending", "续写"),
+        [AIStreamChunk(type="delta", text="续写")],
+    )
+
+    chunks = list(
+        service.stream_chapter_continue(
+            {
+                "agent_id": fixed_agent.id,
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+                "auto_save": False,
+            }
+        )
+    )
+
+    prompt = "\n".join(
+        message["content"] for message in fake_router.requests[-1].messages
+    )
+    assert "早期内容" not in prompt
+    assert "末尾锚点" in prompt
+    assert chunks[-1].type == "done"
+
+
+def test_update_project_state_uses_main_route_and_persists_sections(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    project_id = db.create_ai_writing_project({"name": "状态项目"})
+    chapter_id = db.create_ai_chapter(
+        {
+            "project_id": project_id,
+            "chapter_number": 1,
+            "title": "第一章",
+            "content": "角色走进旧宅。",
+        }
+    )
+    output = (
+        "=== character_state ===\n角色保持警惕\n"
+        "=== plot_progress ===\n调查进入旧宅\n"
+        "=== new_foreshadows ===\n"
+    )
+    fake_router.budget = replace(
+        fake_router.budget,
+        input_budget=5000,
+        output_reserve=2000,
+    )
+    fake_router.queue_result(
+        success_result("pending", output),
+        [AIStreamChunk(type="delta", text=output)],
+    )
+
+    chunks = list(
+        service.stream_update_project_state(
+            {
+                "agent_id": fixed_agent.id,
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+            }
+        )
+    )
+
+    assert fake_router.requests[-1].stage == "main"
+    assert chunks[-1].type == "done"
+    states = db.get_all_project_states(project_id)
+    assert states["character_state"] == "角色保持警惕"
+    assert states["plot_progress"] == "调查进入旧宅"
+
+
+def test_task15_methods_have_no_direct_provider_stream_calls() -> None:
+    services_root = (
+        Path(__file__).parents[1]
+        / "src"
+        / "pixiv_novel_sync"
+        / "ai"
+        / "services"
+    )
+    targets = {
+        services_root / "chat_wizard.py": {"stream_chat"},
+        services_root / "projects.py": {
+            "stream_longform_plan",
+            "stream_longform_plan_details",
+            "stream_chapter_continue",
+            "stream_update_project_state",
+        },
+    }
+    offenders: list[str] = []
+    for path, method_names in targets.items():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name not in method_names:
+                continue
+            if any(
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Attribute)
+                and child.func.attr == "stream_generate"
+                for child in ast.walk(node)
+            ):
+                offenders.append(f"{path.name}:{node.name}")
+
+    assert offenders == []

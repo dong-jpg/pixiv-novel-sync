@@ -184,13 +184,81 @@ def make_provider_config() -> AIProviderConfig:
     )
 
 
+def wire_route(
+    monkeypatch,
+    service: AIWritingService,
+    fake_db: FakeDB,
+    chunks: list[str],
+    *,
+    finish_state: str = "succeeded",
+):
+    output = "".join(chunks)
+    route_context = SimpleNamespace(
+        job_id="chapter-route-job",
+        prompt_budget=PromptBudget(
+            effective_context_window=6000,
+            input_budget=1000,
+            output_reserve=4000,
+            message_overhead=744,
+            safety_margin=256,
+            estimator="utf8_bytes",
+        ),
+    )
+    route_calls = []
+
+    def start_route_job(_db, _task_type, _agent, _input_data, **_options):
+        return route_context
+
+    def stream_route(context, messages, **options):
+        route_calls.append((context, messages, options))
+        for text in chunks:
+            yield AIStreamChunk(type="delta", text=text)
+        return RouteResult(
+            job_id=context.job_id,
+            output_text=output,
+            candidate_snapshot_hash="f" * 64,
+            attempts=(),
+            finish_state=finish_state,
+        )
+
+    def finish_route_job(
+        _db,
+        context,
+        status,
+        output_text,
+        output_json=None,
+        error_message=None,
+    ):
+        fake_db.update_ai_job(
+            context.job_id,
+            status,
+            output_text=output_text,
+            output_json=output_json,
+            error_message=error_message,
+        )
+        return True
+
+    def cancel_route_job(_db, context, error_message=None):
+        fake_db.update_ai_job(
+            context.job_id,
+            "cancelled",
+            error_message=error_message,
+        )
+        return True
+
+    monkeypatch.setattr(service, "_start_route_job", start_route_job)
+    monkeypatch.setattr(service, "_stream_route", stream_route)
+    monkeypatch.setattr(service, "_finish_route_job", finish_route_job)
+    monkeypatch.setattr(service, "_cancel_route_job", cancel_route_job)
+    return route_calls
+
+
 def test_stream_chapter_continue_autosaves_final_content(monkeypatch, tmp_path):
     service = AIWritingService(Path(tmp_path / "test.db"))
     fake_db = FakeChapterDB()
     monkeypatch.setattr(service, "_db", lambda: fake_db)
     monkeypatch.setattr(service, "_load_agent_config", lambda _db, _agent_id: make_chapter_agent())
-    monkeypatch.setattr(service, "_load_provider_config", lambda _db, _provider_id: make_provider_config())
-    monkeypatch.setattr("pixiv_novel_sync.ai.service.create_provider", lambda _config: FakeProvider(["新", "内容"]))
+    route_calls = wire_route(monkeypatch, service, fake_db, ["新", "内容"])
 
     chunks = list(service.stream_chapter_continue({"agent_id": 1, "project_id": 4, "chapter_id": 3}))
 
@@ -199,6 +267,7 @@ def test_stream_chapter_continue_autosaves_final_content(monkeypatch, tmp_path):
     assert fake_db.metadata_patches[-1][1]["continue_autosave"]["status"] == "succeeded"
     assert fake_db.updated_jobs[-1][1] == "succeeded"
     assert fake_db.updated_jobs[-1][3]["autosaved"] is True
+    assert route_calls[-1][2] == {}
 
 
 def test_stream_chapter_continue_respects_auto_save_false(monkeypatch, tmp_path):
@@ -206,8 +275,7 @@ def test_stream_chapter_continue_respects_auto_save_false(monkeypatch, tmp_path)
     fake_db = FakeChapterDB()
     monkeypatch.setattr(service, "_db", lambda: fake_db)
     monkeypatch.setattr(service, "_load_agent_config", lambda _db, _agent_id: make_chapter_agent())
-    monkeypatch.setattr(service, "_load_provider_config", lambda _db, _provider_id: make_provider_config())
-    monkeypatch.setattr("pixiv_novel_sync.ai.service.create_provider", lambda _config: FakeProvider(["新内容"]))
+    wire_route(monkeypatch, service, fake_db, ["新内容"])
 
     chunks = list(service.stream_chapter_continue({"agent_id": 1, "project_id": 4, "chapter_id": 3, "auto_save": False}))
 
@@ -217,20 +285,105 @@ def test_stream_chapter_continue_respects_auto_save_false(monkeypatch, tmp_path)
     assert fake_db.updated_jobs[-1][3]["autosaved"] is False
 
 
-def test_stream_chapter_continue_autosaves_partial_on_failure(monkeypatch, tmp_path):
+def test_stream_chapter_continue_autosaves_router_partial(monkeypatch, tmp_path):
     service = AIWritingService(Path(tmp_path / "test.db"))
     fake_db = FakeChapterDB()
     monkeypatch.setattr(service, "_db", lambda: fake_db)
     monkeypatch.setattr(service, "_load_agent_config", lambda _db, _agent_id: make_chapter_agent())
-    monkeypatch.setattr(service, "_load_provider_config", lambda _db, _provider_id: make_provider_config())
-    monkeypatch.setattr("pixiv_novel_sync.ai.service.create_provider", lambda _config: FakeProvider(["半截"], fail_after=True))
+    wire_route(
+        monkeypatch,
+        service,
+        fake_db,
+        ["半截"],
+        finish_state="partial",
+    )
 
     chunks = list(service.stream_chapter_continue({"agent_id": 1, "project_id": 4, "chapter_id": 3}))
 
-    assert chunks[-1] == AIStreamChunk(type="error", data={"message": "生成失败"})
+    assert chunks[-1].type == "error"
+    assert chunks[-1].data == {"message": "生成结果不完整，已保留部分正文"}
     assert fake_db.updated_chapters[-1] == (3, {"content": "已有正文半截", "status": "draft"})
-    assert fake_db.metadata_patches[-1][1]["continue_autosave"]["status"] == "failed"
+    assert fake_db.metadata_patches[-1][1]["continue_autosave"]["status"] == "partial"
+    assert fake_db.updated_jobs[-1][1] == "partial"
+
+
+def test_stream_chapter_continue_closes_route_when_autosave_fails(
+    monkeypatch,
+    tmp_path,
+):
+    service = AIWritingService(Path(tmp_path / "test.db"))
+    fake_db = FakeChapterDB()
+    monkeypatch.setattr(service, "_db", lambda: fake_db)
+    monkeypatch.setattr(
+        service,
+        "_load_agent_config",
+        lambda _db, _agent_id: make_chapter_agent(),
+    )
+    wire_route(monkeypatch, service, fake_db, ["正文"])
+    closed = {"value": False}
+
+    def stream_route(_context, _messages, **_options):
+        try:
+            yield AIStreamChunk(type="delta", text="正" * 101)
+        finally:
+            closed["value"] = True
+
+    def fail_autosave(_chapter_id, _payload):
+        raise AIServiceError("自动保存失败")
+
+    monkeypatch.setattr(service, "_stream_route", stream_route)
+    fake_db.update_ai_chapter = fail_autosave
+
+    chunks = list(
+        service.stream_chapter_continue(
+            {
+                "agent_id": 1,
+                "project_id": 4,
+                "chapter_id": 3,
+                "auto_save_interval_chars": 100,
+            }
+        )
+    )
+
+    assert chunks[-1] == AIStreamChunk(
+        type="error",
+        data={"message": "自动保存失败"},
+    )
+    assert closed["value"] is True
     assert fake_db.updated_jobs[-1][1] == "failed"
+
+
+def test_stream_chapter_continue_cancel_saves_only_received_content(
+    monkeypatch,
+    tmp_path,
+):
+    service = AIWritingService(Path(tmp_path / "test.db"))
+    fake_db = FakeChapterDB()
+    monkeypatch.setattr(service, "_db", lambda: fake_db)
+    monkeypatch.setattr(
+        service,
+        "_load_agent_config",
+        lambda _db, _agent_id: make_chapter_agent(),
+    )
+    wire_route(monkeypatch, service, fake_db, ["半截", "不应保存"])
+    stream = service.stream_chapter_continue(
+        {"agent_id": 1, "project_id": 4, "chapter_id": 3}
+    )
+
+    assert next(stream).type == "metadata"
+    assert next(stream) == AIStreamChunk(type="delta", text="半截")
+    stream.close()
+
+    assert fake_db.updated_chapters[-1] == (
+        3,
+        {"content": "已有正文半截", "status": "draft"},
+    )
+    assert "不应保存" not in fake_db.updated_chapters[-1][1]["content"]
+    assert (
+        fake_db.metadata_patches[-1][1]["continue_autosave"]["status"]
+        == "cancelled"
+    )
+    assert fake_db.updated_jobs[-1][1] == "cancelled"
 
 
 def test_stream_polish_injects_project_style(monkeypatch, tmp_path):

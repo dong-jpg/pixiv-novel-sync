@@ -21,12 +21,48 @@ from ..prompts import (
     compose_style_control_prompt,
     safe_prompt_preview,
 )
-from .core import AIServiceError
+from .core import AIServiceError, RouteJobContext
 
 # M4: 状态解析的模型输出可能受源文本提示注入影响，诱导伪造海量伏笔。
 # 单次状态更新对新增伏笔数量与单条长度设硬上限，作为数据完整性兜底。
 _MAX_STATE_NEW_FORESHADOWS = 200
 _MAX_STATE_FORESHADOW_DESC_LEN = 2000
+
+
+def _utf8_tail(text: str, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return ""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[-max_bytes:].decode("utf-8", errors="ignore")
+
+
+def _fit_route_messages(
+    messages: list[dict[str, str]],
+    input_budget: int,
+) -> list[dict[str, str]]:
+    fitted = [dict(message) for message in messages]
+    if not fitted:
+        return fitted
+    total_bytes = sum(
+        len(str(message.get("content") or "").encode("utf-8"))
+        for message in fitted
+    )
+    if total_bytes <= input_budget:
+        return fitted
+    fixed_bytes = sum(
+        len(str(message.get("content") or "").encode("utf-8"))
+        for message in fitted[:-1]
+    )
+    remaining = input_budget - fixed_bytes
+    if remaining <= 0:
+        raise AIServiceError("Prompt 固定内容超过可用输入预算")
+    fitted[-1]["content"] = _utf8_tail(
+        str(fitted[-1].get("content") or ""),
+        remaining,
+    )
+    return fitted
 
 
 class AIProjectsMixin:
@@ -619,12 +655,10 @@ class AIProjectsMixin:
         if not project_id:
             raise AIServiceError("缺少 project_id")
         db = self._db()
-        job_id = uuid.uuid4().hex
         output_parts: list[str] = []
-        job_created = False
+        route_context: RouteJobContext | None = None
         try:
             agent = self._load_agent_config(db, agent_id)
-            provider_config = self._load_provider_config(db, agent.provider_id)
             project = db.get_ai_writing_project(project_id)
             if not project:
                 raise AIServiceError("写作项目不存在")
@@ -640,6 +674,29 @@ class AIProjectsMixin:
                 raise AIServiceError("目标总字数过大，请分阶段规划")
             if expected_chapters and expected_chapters > 2000:
                 raise AIServiceError("章节数参考过大")
+            style_prompt = self._project_style_control_prompt(db, project_id)
+            budget_messages = build_longform_plan_messages(
+                system_prompt=None,
+                project={"name": project.get("name")},
+                chapters=[],
+                target_words=target_words,
+                expected_chapters=expected_chapters,
+                chapter_words_reference=chapter_words_reference,
+            )
+            route_context = self._start_route_job(
+                db,
+                "longform_plan",
+                agent,
+                {
+                    "project_id": project_id,
+                    "target_words": target_words,
+                    "expected_chapters": expected_chapters,
+                    "chapter_words_reference": chapter_words_reference,
+                    "instruction": payload.get("instruction"),
+                },
+                messages=budget_messages,
+                max_tokens=agent.max_tokens,
+            )
             messages = build_longform_plan_messages(
                 system_prompt=None,
                 project=project,
@@ -648,46 +705,57 @@ class AIProjectsMixin:
                 target_words=target_words,
                 expected_chapters=expected_chapters,
                 chapter_words_reference=chapter_words_reference,
-                style_prompt=self._project_style_control_prompt(db, project_id),
+                style_prompt=style_prompt,
             )
-            db.create_ai_job(job_id, "longform_plan", agent.id, {
-                "project_id": project_id,
-                "target_words": target_words,
-                "expected_chapters": expected_chapters,
-                "chapter_words_reference": chapter_words_reference,
-                "instruction": payload.get("instruction"),
-            })
-            job_created = True
-            yield AIStreamChunk(type="metadata", data={"job_id": job_id})
-            model = agent.model or provider_config.default_model
-            if not model:
-                raise AIServiceError("Agent 或 Provider 未配置模型")
-            provider = self._get_provider(provider_config)
-            for chunk in provider.stream_generate(
-                messages, model=model, temperature=agent.temperature,
-                top_p=agent.top_p, max_tokens=agent.max_tokens,
-            ):
-                if chunk.type == "delta":
-                    output_parts.append(chunk.text)
-                    yield chunk
-            output = "".join(output_parts)
+            messages = _fit_route_messages(
+                messages,
+                route_context.prompt_budget.input_budget,
+            )
+            yield AIStreamChunk(
+                type="metadata",
+                data={"job_id": route_context.job_id},
+            )
+            result = yield from self._forward_route(
+                route_context,
+                messages,
+                output_parts,
+            )
+            if result.finish_state != "succeeded":
+                yield self._conclude_route(db, route_context, result)
+                return
+            output = result.output_text
             plan = self._normalize_longform_plan(
                 self._extract_json_object(output),
                 target_words=target_words,
                 chapter_words_reference=chapter_words_reference,
             )
             self._apply_longform_plan(db, project_id, plan)
-            db.update_ai_job(job_id, "succeeded", output_text=output, output_json=plan)
+            self._finish_route_job(
+                db,
+                route_context,
+                "succeeded",
+                output,
+                output_json=plan,
+            )
             yield AIStreamChunk(type="custom", data={"event": "longform_plan", "plan": plan})
-            yield AIStreamChunk(type="done", data={"job_id": job_id, "plan": plan})
+            yield AIStreamChunk(
+                type="done",
+                data={"job_id": route_context.job_id, "plan": plan},
+            )
         except GeneratorExit:
-            if job_created:
-                db.update_ai_job(job_id, "cancelled", output_text="".join(output_parts), error_message="客户端断开连接")
+            if route_context is not None:
+                self._cancel_route_job(db, route_context, "客户端断开连接")
             raise
         except Exception as exc:
             message = str(exc)
-            if job_created:
-                db.update_ai_job(job_id, "failed", output_text="".join(output_parts), error_message=message)
+            if route_context is not None:
+                self._finish_route_job(
+                    db,
+                    route_context,
+                    "failed",
+                    "".join(output_parts),
+                    error_message=message,
+                )
             yield AIStreamChunk(type="error", data={"message": message})
         finally:
             db.close()
@@ -718,12 +786,10 @@ class AIProjectsMixin:
         if not project_id:
             raise AIServiceError("缺少 project_id")
         db = self._db()
-        job_id = uuid.uuid4().hex
         output_parts: list[str] = []
-        job_created = False
+        route_context: RouteJobContext | None = None
         try:
             agent = self._load_agent_config(db, agent_id)
-            provider_config = self._load_provider_config(db, agent.provider_id)
             project = db.get_ai_writing_project(project_id)
             if not project:
                 raise AIServiceError("写作项目不存在")
@@ -749,50 +815,85 @@ class AIProjectsMixin:
                 target_chapters.append(ch)
             if not target_chapters:
                 raise AIServiceError("没有需要扩写的章节梗概")
+            style_prompt = self._project_style_control_prompt(db, project_id)
+            budget_messages = build_longform_detail_messages(
+                system_prompt=None,
+                project={"name": project.get("name")},
+                longform_plan={"chapters": []},
+                chapters=[],
+            )
+            route_context = self._start_route_job(
+                db,
+                "longform_plan_details",
+                agent,
+                {
+                    "project_id": project_id,
+                    "mode": mode,
+                    "chapter_numbers": [
+                        ch.get("chapter_number") for ch in target_chapters
+                    ],
+                    "instruction": payload.get("instruction"),
+                },
+                messages=budget_messages,
+                max_tokens=agent.max_tokens,
+            )
             messages = build_longform_detail_messages(
                 system_prompt=None,
                 project=project,
                 longform_plan=plan,
                 chapters=target_chapters,
                 instruction=payload.get("instruction"),
-                style_prompt=self._project_style_control_prompt(db, project_id),
+                style_prompt=style_prompt,
             )
-            db.create_ai_job(job_id, "longform_plan_details", agent.id, {
-                "project_id": project_id,
-                "mode": mode,
-                "chapter_numbers": [ch.get("chapter_number") for ch in target_chapters],
-                "instruction": payload.get("instruction"),
+            messages = _fit_route_messages(
+                messages,
+                route_context.prompt_budget.input_budget,
+            )
+            yield AIStreamChunk(type="metadata", data={
+                "job_id": route_context.job_id,
+                "chapters": len(target_chapters),
             })
-            job_created = True
-            yield AIStreamChunk(type="metadata", data={"job_id": job_id, "chapters": len(target_chapters)})
-            model = agent.model or provider_config.default_model
-            if not model:
-                raise AIServiceError("Agent 或 Provider 未配置模型")
-            provider = self._get_provider(provider_config)
-            for chunk in provider.stream_generate(
-                messages, model=model, temperature=agent.temperature,
-                top_p=agent.top_p, max_tokens=agent.max_tokens,
-            ):
-                if chunk.type == "delta":
-                    output_parts.append(chunk.text)
-                    yield chunk
-            output = "".join(output_parts)
+            result = yield from self._forward_route(
+                route_context,
+                messages,
+                output_parts,
+            )
+            if result.finish_state != "succeeded":
+                yield self._conclude_route(db, route_context, result)
+                return
+            output = result.output_text
             details = self._normalize_longform_detail_plan(self._extract_json_object(output))
             if not details:
                 raise AIServiceError("模型未返回可用详细梗概")
             applied = self._apply_longform_plan_details(db, project_id, details)
             plan = applied["plan"]
-            db.update_ai_job(job_id, "succeeded", output_text=output, output_json={"plan": plan, "updated": applied["updated"]})
+            self._finish_route_job(
+                db,
+                route_context,
+                "succeeded",
+                output,
+                output_json={"plan": plan, "updated": applied["updated"]},
+            )
             yield AIStreamChunk(type="custom", data={"event": "longform_plan_details", "plan": plan})
-            yield AIStreamChunk(type="done", data={"job_id": job_id, "plan": plan, "updated": len(details)})
+            yield AIStreamChunk(type="done", data={
+                "job_id": route_context.job_id,
+                "plan": plan,
+                "updated": len(details),
+            })
         except GeneratorExit:
-            if job_created:
-                db.update_ai_job(job_id, "cancelled", output_text="".join(output_parts), error_message="客户端断开连接")
+            if route_context is not None:
+                self._cancel_route_job(db, route_context, "客户端断开连接")
             raise
         except Exception as exc:
             message = str(exc)
-            if job_created:
-                db.update_ai_job(job_id, "failed", output_text="".join(output_parts), error_message=message)
+            if route_context is not None:
+                self._finish_route_job(
+                    db,
+                    route_context,
+                    "failed",
+                    "".join(output_parts),
+                    error_message=message,
+                )
             yield AIStreamChunk(type="error", data={"message": message})
         finally:
             db.close()
@@ -821,6 +922,7 @@ class AIProjectsMixin:
             full_context = existing_content
         if not full_context.strip():
             raise AIServiceError("没有可用的上下文（项目为空且未提供文本）")
+        raw_full_context = full_context
         context_chars = self._safe_int(payload.get("context_chars"), agent.context_window, "context_chars", min_value=1)
         original_context_chars = len(full_context)
         truncated = False
@@ -864,6 +966,7 @@ class AIProjectsMixin:
             "chapter_number": chapter_number,
             "project_context": project_context,
             "existing_content": existing_content,
+            "raw_full_context": raw_full_context,
             "full_context": full_context,
             "original_context_chars": original_context_chars,
             "context_chars": context_chars,
@@ -906,36 +1009,71 @@ class AIProjectsMixin:
     def stream_chapter_continue(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
         """基于项目上下文的章节续写。"""
         db = self._db()
-        job_id = uuid.uuid4().hex
         output_parts: list[str] = []
-        job_created = False
+        route_context: RouteJobContext | None = None
+        route_stream: Any = None
         agent_id = self._safe_int(payload.get("agent_id"), 0, "agent_id", min_value=0)
         project_id = self._safe_int(payload.get("project_id"), 0, "project_id", min_value=0)
         chapter_id = self._safe_int(payload.get("chapter_id"), 0, "chapter_id", min_value=0)
 
         try:
             agent = self._load_agent_config(db, agent_id)
-            provider_config = self._load_provider_config(db, agent.provider_id)
             built = self._build_chapter_continue_inputs(db, payload, agent)
             chapter_id = built["chapter_id"]
             project_id = built["project_id"]
             chapter = built["chapter"]
             chapter_number = built["chapter_number"]
             existing_content = built["existing_content"]
-            full_context = built["full_context"]
-            messages = built["messages"]
-
-            db.create_ai_job(job_id, "chapter_continue", agent.id, {
-                "project_id": project_id, "chapter_id": chapter_id,
-                "chapter_number": chapter_number, "context_chars": len(full_context),
+            budget_messages = build_continue_messages(
+                system_prompt=agent.system_prompt,
+                context="",
+                instruction=payload.get("instruction"),
+                output_chars=payload.get("output_chars"),
+                style_prompt=built["style_prompt"],
+                novel_prompt=built["novel_prompt"],
+                plan_text=built["plan_text"],
+            )
+            route_context = self._start_route_job(
+                db,
+                "chapter_continue",
+                agent,
+                {
+                    "project_id": project_id,
+                    "chapter_id": chapter_id,
+                    "chapter_number": chapter_number,
+                    "original_context_chars": built["original_context_chars"],
+                    "requested_context_chars": built["context_chars"],
+                },
+                messages=budget_messages,
+                max_tokens=agent.max_tokens,
+            )
+            context_limit = min(
+                built["context_chars"],
+                route_context.prompt_budget.input_budget,
+            )
+            full_context = get_tail_context(
+                built["raw_full_context"],
+                context_limit,
+            )
+            messages = build_continue_messages(
+                system_prompt=agent.system_prompt,
+                context=full_context,
+                instruction=payload.get("instruction"),
+                output_chars=payload.get("output_chars"),
+                style_prompt=built["style_prompt"],
+                novel_prompt=built["novel_prompt"],
+                plan_text=built["plan_text"],
+            )
+            messages = _fit_route_messages(
+                messages,
+                route_context.prompt_budget.input_budget,
+            )
+            yield AIStreamChunk(type="metadata", data={
+                "job_id": route_context.job_id,
+                "project_id": project_id,
+                "chapter_number": chapter_number,
             })
-            job_created = True
-            yield AIStreamChunk(type="metadata", data={"job_id": job_id, "project_id": project_id, "chapter_number": chapter_number})
 
-            model = agent.model or provider_config.default_model
-            if not model:
-                raise AIServiceError("Agent 或 Provider 未配置模型")
-            provider = self._get_provider(provider_config)
             auto_save = bool(chapter_id and payload.get("auto_save", True) is not False)
             auto_save_interval_chars = self._safe_int(
                 payload.get("auto_save_interval_chars"), 800, "auto_save_interval_chars", min_value=100, max_value=20000,
@@ -946,11 +1084,18 @@ class AIProjectsMixin:
             last_saved_chars = 0
             last_saved_at = time.time()
 
-            def save_generated(status: str) -> None:
+            def save_generated(
+                status: str,
+                generated_text: str | None = None,
+            ) -> None:
                 nonlocal last_saved_chars, last_saved_at
                 if not auto_save:
                     return
-                generated = "".join(output_parts)
+                generated = (
+                    "".join(output_parts)
+                    if generated_text is None
+                    else generated_text
+                )
                 if not generated and status not in {"succeeded", "cancelled", "failed"}:
                     return
                 content = f"{existing_content}{generated}"
@@ -960,17 +1105,20 @@ class AIProjectsMixin:
                 db.patch_ai_chapter_metadata(chapter_id, {
                     "continue_autosave": {
                         "status": status,
-                        "job_id": job_id,
+                        "job_id": route_context.job_id,
                         "saved_chars": len(generated),
                         "total_chars": len(content),
                         "saved_at": int(last_saved_at),
                     }
                 })
 
-            for chunk in provider.stream_generate(
-                messages, model=model, temperature=agent.temperature,
-                top_p=agent.top_p, max_tokens=agent.max_tokens,
-            ):
+            route_stream = self._stream_route(route_context, messages)
+            while True:
+                try:
+                    chunk = next(route_stream)
+                except StopIteration as stopped:
+                    result = stopped.value
+                    break
                 if chunk.type == "delta":
                     output_parts.append(chunk.text)
                     generated_chars = sum(len(part) for part in output_parts)
@@ -984,23 +1132,71 @@ class AIProjectsMixin:
                     ):
                         save_generated("running")
                     yield chunk
+                elif chunk.type == "progress":
+                    yield chunk
 
-            output = "".join(output_parts)
-            save_generated("succeeded")
-            db.update_ai_job(job_id, "succeeded", output_text=output, output_json={"chars": len(output), "autosaved": auto_save})
-            yield AIStreamChunk(type="done", data={"job_id": job_id, "chars": len(output), "autosaved": auto_save})
+            output = result.output_text
+            if result.finish_state == "succeeded":
+                save_generated("succeeded", output)
+                self._finish_route_job(
+                    db,
+                    route_context,
+                    "succeeded",
+                    output,
+                    output_json={"chars": len(output), "autosaved": auto_save},
+                )
+                yield AIStreamChunk(type="done", data={
+                    "job_id": route_context.job_id,
+                    "chars": len(output),
+                    "autosaved": auto_save,
+                })
+                return
+
+            autosave_status = (
+                "partial"
+                if result.finish_state == "partial"
+                else "cancelled"
+                if result.finish_state == "cancelled"
+                else "failed"
+            )
+            save_generated(autosave_status, output)
+            yield self._conclude_route(db, route_context, result)
         except GeneratorExit:
-            if job_created:
+            if route_context is not None:
+                if route_stream is not None:
+                    try:
+                        route_stream.close()
+                    except Exception:
+                        pass
                 if "save_generated" in locals():
-                    save_generated("cancelled")
-                db.update_ai_job(job_id, "cancelled", output_text="".join(output_parts), error_message="客户端断开连接")
+                    try:
+                        save_generated("cancelled")
+                    except Exception:
+                        pass
+                self._cancel_route_job(db, route_context, "客户端断开连接")
             raise
         except Exception as exc:
             message = str(exc)
-            if job_created:
+            if route_context is not None:
                 if "save_generated" in locals():
-                    save_generated("failed")
-                db.update_ai_job(job_id, "failed", output_text="".join(output_parts), error_message=message)
+                    try:
+                        save_generated("failed")
+                    except Exception:
+                        pass
+                try:
+                    self._finish_route_job(
+                        db,
+                        route_context,
+                        "failed",
+                        "".join(output_parts),
+                        error_message=message,
+                    )
+                finally:
+                    if route_stream is not None:
+                        try:
+                            route_stream.close()
+                        except Exception:
+                            pass
             yield AIStreamChunk(type="error", data={"message": message})
         finally:
             db.close()
@@ -1011,16 +1207,14 @@ class AIProjectsMixin:
         分析新章节内容，更新 character_state / plot_progress / pending_hooks。
         """
         db = self._db()
-        job_id = uuid.uuid4().hex
         output_parts: list[str] = []
-        job_created = False
+        route_context: RouteJobContext | None = None
         agent_id = self._safe_int(payload.get("agent_id"), 0, "agent_id", min_value=0)
         project_id = self._safe_int(payload.get("project_id"), 0, "project_id", min_value=0)
         chapter_id = self._safe_int(payload.get("chapter_id"), 0, "chapter_id", min_value=0)
 
         try:
             agent = self._load_agent_config(db, agent_id)
-            provider_config = self._load_provider_config(db, agent.provider_id)
 
             chapter = db.get_ai_chapter(chapter_id)
             if not chapter or not chapter.get("content"):
@@ -1063,36 +1257,71 @@ class AIProjectsMixin:
                 {"role": "user", "content": "\n\n".join(user_content_parts)},
             ]
 
-            db.create_ai_job(job_id, "update_state", agent.id, {"project_id": project_id, "chapter_id": chapter_id})
-            job_created = True
-            yield AIStreamChunk(type="metadata", data={"job_id": job_id})
+            budget_messages = [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": f"【第{chapter['chapter_number']}章内容】\n",
+                },
+            ]
+            route_context = self._start_route_job(
+                db,
+                "update_state",
+                agent,
+                {"project_id": project_id, "chapter_id": chapter_id},
+                messages=budget_messages,
+                max_tokens=2000,
+            )
+            messages = _fit_route_messages(
+                messages,
+                route_context.prompt_budget.input_budget,
+            )
+            yield AIStreamChunk(
+                type="metadata",
+                data={"job_id": route_context.job_id},
+            )
 
-            model = agent.model or provider_config.default_model
-            if not model:
-                raise AIServiceError("Agent 或 Provider 未配置模型")
-            provider = self._get_provider(provider_config)
-            for chunk in provider.stream_generate(
-                messages, model=model, temperature=0.3, top_p=0.9, max_tokens=2000,
-            ):
-                if chunk.type == "delta":
-                    output_parts.append(chunk.text)
-                    yield chunk
-
-            output = "".join(output_parts)
+            result = yield from self._forward_route(
+                route_context,
+                messages,
+                output_parts,
+                temperature=0.3,
+                top_p=0.9,
+                max_tokens=2000,
+            )
+            if result.finish_state != "succeeded":
+                yield self._conclude_route(db, route_context, result)
+                return
+            output = result.output_text
 
             # 解析输出并保存状态
             self._parse_and_save_state(db, project_id, chapter, output)
 
-            db.update_ai_job(job_id, "succeeded", output_text=output, output_json={"chars": len(output)})
-            yield AIStreamChunk(type="done", data={"job_id": job_id, "chars": len(output)})
+            self._finish_route_job(
+                db,
+                route_context,
+                "succeeded",
+                output,
+                output_json={"chars": len(output)},
+            )
+            yield AIStreamChunk(type="done", data={
+                "job_id": route_context.job_id,
+                "chars": len(output),
+            })
         except GeneratorExit:
-            if job_created:
-                db.update_ai_job(job_id, "cancelled", output_text="".join(output_parts), error_message="客户端断开连接")
+            if route_context is not None:
+                self._cancel_route_job(db, route_context, "客户端断开连接")
             raise
         except Exception as exc:
             message = str(exc)
-            if job_created:
-                db.update_ai_job(job_id, "failed", output_text="".join(output_parts), error_message=message)
+            if route_context is not None:
+                self._finish_route_job(
+                    db,
+                    route_context,
+                    "failed",
+                    "".join(output_parts),
+                    error_message=message,
+                )
             yield AIStreamChunk(type="error", data={"message": message})
         finally:
             db.close()
