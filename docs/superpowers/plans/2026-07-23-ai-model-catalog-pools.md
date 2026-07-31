@@ -14,7 +14,7 @@
 - Task 1 已由 `c31791d` 完成，并由 `16b8587` 补充 legacy model key 约束。
 - Task 2 已由 `816e690` 完成，并由 `9458cfe` 修正 canonical digest。
 - Task 3 已由 `6c3cc3a` 完成，并由 `c63ac95` 固化 canonical metadata 存储边界。
-- Task 0 已由 `0d881c1` 完成；Task 4-10 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a` 完成；当前从 Task 11 继续，Task 11-22 必须按下方 TDD 步骤推进。
+- Task 0 已由 `0d881c1` 完成；Task 4-11 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a`、`1e5e969` 完成；当前从 Task 12 继续，Task 12-22 必须按下方 TDD 步骤推进。
 
 ## Global Constraints
 
@@ -1034,7 +1034,7 @@ class RouteResult:
 - Produces `PromptBudget(effective_context_window, input_budget, output_reserve, message_overhead, safety_margin, estimator)` and `ModelRouter.resolve_candidates(agent, stage='main', snapshot=None) -> CandidateSnapshot`, `build_prompt_budget(agent, snapshot, messages, max_tokens) -> PromptBudget`, `execute(request) -> RouteResult`, and `execute_stream(request) -> Generator[AIStreamChunk, None, RouteResult]`.
 - `AIProvider.estimate_message_tokens(messages) -> int | None` defaults to `None`; adapters with a verified tokenizer may override it. `None` uses UTF-8 bytes plus the common message-overhead estimator.
 
-- [ ] **Step 1: Write failing resolution and budget tests**
+- [x] **Step 1: Write failing resolution and budget tests**
 
 ```python
 def test_fixed_agent_resolves_one_legacy_candidate(router, fixed_agent):
@@ -1069,25 +1069,25 @@ def test_prompt_budget_uses_smallest_candidate_window(router, pool_agent):
     assert budget.input_budget == 8000 - 1000 - budget.message_overhead - 256
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_model_router.py -q`
 
 Expected: FAIL because routing DTOs, resolver and budget do not exist.
 
-- [ ] **Step 3: Implement deterministic snapshot resolution**
+- [x] **Step 3: Implement deterministic snapshot resolution**
 
 `ModelRouter` receives `db_factory`, `_load_provider_config`, and `_get_provider` callbacks so it uses the service's decryption and Provider cache without duplicating secrets. Resolve all rows inside one `db.read_transaction()` snapshot. Fixed bindings produce exactly one candidate using Agent model or Provider default; when non-empty required capabilities are configured, require a matching structured catalog row. Pool bindings traverse enabled pools and members in stored order, skip disabled Provider/pool/member/model, skip invalid source rows, filter required capabilities, and deduplicate by `(provider_id, model_key)` before the 64-candidate check.
 
 Hash Agent effective configuration, Provider effective configuration (including an irreversible digest of encrypted-key ciphertext but never the key), pool IDs/versions/positions and ordered candidates using compact sorted canonical JSON. `snapshot_hash` must be reconstructable from stored fields and contain no Prompt/body. When `snapshot` is passed, re-read current pool versions, Agent `binding_version`/hash and every not-yet-attempted Provider config hash; mismatch raises `ModelRouteConflictError` before a Provider call. Build one immutable budget from the smallest effective candidate/Provider/Agent context window. `message_overhead = 4 * len(messages) + 2`; use a provider estimator only when it returns a positive integer, otherwise use total UTF-8 content bytes plus overhead. Reject invalid ranges or `input_budget <= 0` with a Chinese configuration error.
 
-- [ ] **Step 4: Run resolver tests**
+- [x] **Step 4: Run resolver tests**
 
 Run: `python -m pytest tests/test_ai_model_router.py -q`
 
 Expected: PASS for fixed compatibility, pool/fallback order, deduplication, capability filtering, stable hashes and conservative budget.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/model_router.py src/pixiv_novel_sync/ai/providers.py tests/test_ai_model_router.py
