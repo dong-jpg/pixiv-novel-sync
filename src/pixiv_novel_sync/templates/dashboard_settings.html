@@ -437,7 +437,84 @@
       </div>
     </section>
 
-    <!-- Section 8: AI Agent -->
+    <!-- Section 8: AI Model Pools -->
+    <section v-show="activeTab === 'ai-model-pools'" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-4">
+        <div>
+          <h2 class="text-xl font-bold text-gray-900">模型池编辑</h2>
+          <p class="text-sm text-pixiv-gray mt-1">按顺序配置候选模型和后备模型池。</p>
+        </div>
+        <input v-model="poolForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="模型池名称">
+        <textarea v-model="poolForm.description" rows="2" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="说明（可选）"></textarea>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <select v-model="poolForm.pool_kind" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+            <option value="primary">primary</option>
+            <option value="secondary">secondary</option>
+            <option value="grok">grok</option>
+            <option value="custom">custom</option>
+          </select>
+          <select v-model.number="poolForm.fallback_pool_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+            <option :value="null">无后备模型池</option>
+            <option v-for="pool in modelPools.filter(item => item.id !== poolForm.id)" :key="pool.id" :value="pool.id">{{ pool.name }}</option>
+          </select>
+        </div>
+        <label class="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" v-model="poolForm.enabled" class="rounded border-gray-300">
+          启用模型池
+        </label>
+        <div class="rounded border border-amber-100 bg-amber-50 p-3 text-xs text-amber-800 space-y-1">
+          <div>每个任务最多尝试 16 个候选；单池最多 64 个成员。</div>
+          <div>Prompt 可能发送给链中的 Provider：{{ poolProviderSummary(poolForm) || '尚未选择成员' }}</div>
+        </div>
+        <div class="space-y-2">
+          <div class="flex items-center justify-between gap-2"><h3 class="text-sm font-semibold text-gray-900">有序成员</h3><span class="text-xs text-gray-500">candidate {{ poolCandidateCount(poolForm) }} / 64</span></div>
+          <div v-for="(member, index) in poolForm.members" :key="member.provider_model_id" class="flex items-center gap-2 border border-gray-100 rounded-lg px-2 py-2 text-xs">
+            <span class="w-5 text-center text-gray-500">{{ index + 1 }}</span>
+            <div class="min-w-0 flex-1"><div class="font-medium text-gray-900 truncate">{{ member.model_key }}</div><div class="text-gray-500 truncate">{{ providerName(member.provider_id) }}</div></div>
+            <label class="flex items-center gap-1"><input type="checkbox" v-model="member.enabled">启用</label>
+            <button @click="movePoolMember(index, -1)" :disabled="index === 0" title="上移" class="w-7 h-7 rounded bg-gray-100 disabled:opacity-30">↑</button>
+            <button @click="movePoolMember(index, 1)" :disabled="index === poolForm.members.length - 1" title="下移" class="w-7 h-7 rounded bg-gray-100 disabled:opacity-30">↓</button>
+            <button @click="removePoolMember(index)" title="移除" class="w-7 h-7 rounded bg-red-50 text-red-600">×</button>
+          </div>
+          <div v-if="!poolForm.members.length" class="text-xs text-gray-500 py-3 text-center">尚未添加模型</div>
+        </div>
+        <div class="border-t border-gray-100 pt-3 space-y-2">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <select v-model.number="poolProviderFilter" class="px-2 py-1.5 border border-gray-200 rounded text-xs">
+              <option :value="0">全部 Provider</option>
+              <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option>
+            </select>
+            <input v-model="poolModelSearch" class="px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="搜索 Provider / model_key">
+          </div>
+          <div class="max-h-40 overflow-y-auto space-y-1">
+            <button v-for="model in availablePoolModels" :key="model.id" @click="addPoolMember(model)" class="w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded bg-gray-50 hover:bg-gray-100 text-xs text-left">
+              <span class="truncate">{{ model.provider_name }} / {{ model.model_key }}</span><span class="text-brand-600">添加</span>
+            </button>
+            <div v-if="!availablePoolModels.length" class="text-xs text-gray-500 py-2 text-center">没有可添加的目录模型</div>
+          </div>
+        </div>
+        <div v-if="poolForm.referenced_by_agents.length" class="text-xs text-gray-600">Agent 引用：{{ poolForm.referenced_by_agents.map(item => item.name).join('、') }}</div>
+        <p v-if="poolError" class="text-sm text-red-600">{{ poolError }}</p>
+        <div class="flex gap-2 flex-wrap">
+          <button @click="saveModelPool" :disabled="poolSaving || !poolForm.name || (poolForm.enabled && !poolForm.members.length)" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ poolForm.id ? '保存模型池' : '创建模型池' }}</button>
+          <button v-if="poolForm.id" @click="resetPoolForm" class="px-4 py-2 bg-gray-100 rounded-lg text-sm">新建</button>
+        </div>
+      </div>
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+        <div class="flex items-center justify-between mb-3"><h2 class="text-xl font-bold text-gray-900">模型池列表</h2><button @click="loadModelPools" class="text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">刷新</button></div>
+        <div class="space-y-2">
+          <div v-for="pool in modelPools" :key="pool.id" class="border border-gray-100 rounded-lg p-3 text-sm">
+            <div class="flex items-start justify-between gap-2"><div><div class="font-semibold text-gray-900">{{ pool.name }}</div><div class="text-xs text-gray-500 mt-1">{{ pool.pool_kind }} · version {{ pool.version }} · {{ pool.members.length }} 个成员</div></div><span class="text-xs px-2 py-1 rounded" :class="pool.enabled ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-600'">{{ pool.enabled ? '已启用' : '未启用' }}</span></div>
+            <div class="text-xs text-gray-500 mt-2">后备：{{ pool.fallback_pool_name || '无' }}</div>
+            <div class="text-xs text-gray-500">Agent 引用：{{ pool.referenced_by_agents.length }}</div>
+            <div class="flex gap-2 mt-2"><button @click="editModelPool(pool)" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600">编辑</button><button @click="deleteModelPool(pool)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600">删除</button></div>
+          </div>
+          <div v-if="!modelPools.length" class="text-sm text-gray-500 text-center py-8">暂无模型池</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 9: AI Agent -->
     <section v-show="activeTab === 'ai-agents'" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
       <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-3">
         <div>
@@ -465,11 +542,34 @@
           <option value="keyword_clean">关键词清洗</option>
           <option value="general">通用</option>
         </select>
-        <select v-model.number="agentForm.provider_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-          <option :value="0">选择 Provider</option>
-          <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option>
-        </select>
-        <input v-model="agentForm.model" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="模型，留空使用 Provider 默认模型">
+        <div class="grid grid-cols-2 rounded-lg bg-gray-100 p-1 text-sm">
+          <label class="flex items-center justify-center gap-2 px-3 py-2 rounded cursor-pointer" :class="agentForm.binding_type === 'fixed' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'"><input type="radio" v-model="agentForm.binding_type" value="fixed" class="sr-only">固定模型</label>
+          <label class="flex items-center justify-center gap-2 px-3 py-2 rounded cursor-pointer" :class="agentForm.binding_type === 'pool' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'"><input type="radio" v-model="agentForm.binding_type" value="pool" class="sr-only">模型池</label>
+        </div>
+        <div v-if="agentForm.binding_type === 'fixed'" class="space-y-2">
+          <select v-model.number="agentForm.provider_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+            <option :value="0">选择 Provider</option>
+            <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option>
+          </select>
+          <select v-model="agentForm.model" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+            <option value="">使用 Provider 默认模型</option>
+            <option v-for="model in agentProviderModels" :key="model.id" :value="model.model_key">{{ model.display_name || model.model_key }}</option>
+          </select>
+          <input v-model="agentForm.model" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="也可手工输入 model_key">
+        </div>
+        <div v-else class="space-y-2">
+          <select v-model.number="agentForm.model_pool_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+            <option :value="0">选择已启用模型池</option>
+            <option v-for="pool in modelPools.filter(item => item.enabled)" :key="pool.id" :value="pool.id">{{ pool.name }}（{{ pool.members.length }} 个成员）</option>
+          </select>
+          <div class="rounded border border-amber-100 bg-amber-50 p-3 text-xs text-amber-800">Prompt 可能发送给：{{ selectedAgentPoolSummary || '请选择模型池' }}</div>
+        </div>
+        <div>
+          <div class="text-xs font-medium text-gray-600 mb-2">必需能力 required_capabilities</div>
+          <div class="grid grid-cols-2 gap-2 text-xs">
+            <label v-for="capability in capabilityOptions" :key="capability" class="flex items-center gap-2"><input type="checkbox" v-model="agentForm.required_capabilities" :value="capability">{{ capability }}</label>
+          </div>
+        </div>
         <textarea v-model="agentForm.system_prompt" rows="8" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="System prompt"></textarea>
         <div class="grid grid-cols-2 gap-3">
           <input type="number" step="0.1" v-model.number="agentForm.temperature" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="temperature">
@@ -480,7 +580,7 @@
           启用 Agent
         </label>
         <div class="flex gap-2 flex-wrap">
-          <button @click="saveAgent" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">{{ agentForm.id ? '更新 Agent' : '保存 Agent' }}</button>
+          <button @click="saveAgent" :disabled="!agentBindingValid" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ agentForm.id ? '更新 Agent' : '保存 Agent' }}</button>
           <button v-if="agentForm.id" @click="resetAgentForm" class="px-4 py-2 bg-gray-100 rounded-lg text-sm">取消编辑</button>
         </div>
       </div>
@@ -506,7 +606,8 @@
               <div class="font-semibold text-gray-900 truncate">{{ agent.name }}</div>
               <span class="text-[10px] px-2 py-0.5 rounded" :class="agent.enabled === false ? 'bg-gray-100 text-gray-500' : 'bg-green-50 text-green-700'">{{ agent.enabled === false ? '停用' : '启用' }}</span>
             </div>
-            <div class="text-xs text-pixiv-gray mt-1">{{ agent.task_type }} · {{ agent.provider_name || 'Provider 不存在' }} · {{ agent.model || '默认模型' }}</div>
+            <div class="text-xs text-pixiv-gray mt-1">{{ agent.task_type }} · {{ agent.binding_summary }}</div>
+            <div v-if="agent.required_capabilities && agent.required_capabilities.length" class="text-xs text-pixiv-gray mt-1">能力：{{ agent.required_capabilities.join(', ') }}</div>
             <div class="flex gap-2 mt-2">
               <button @click="editAgent(agent)" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">编辑</button>
               <button @click="deleteAgent(agent.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
@@ -562,6 +663,7 @@
         { id: 'cache', name: '缓存', svg: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/>' },
         { id: 'rescue-api', name: '救援 API', svg: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a3 3 0 11-6 0 3 3 0 016 0zm-3 3v11m-4-4h8m-9-3h10"/>' },
         { id: 'ai-api', name: 'AI API', svg: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>' },
+        { id: 'ai-model-pools', name: '模型池', svg: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>' },
         { id: 'ai-agents', name: 'AI Agent', svg: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0"/>' },
       ];
       const activeTab = ref(window.location.hash ? window.location.hash.slice(1) : 'basic');
@@ -588,6 +690,13 @@
       const manualModelForms = reactive({});
       const modelSyncOperations = reactive({});
       const emptyConfirmations = reactive({});
+      const modelPools = ref([]);
+      const poolProviderModels = reactive({});
+      const poolProviderFilter = ref(0);
+      const poolModelSearch = ref('');
+      const poolSaving = ref(false);
+      const poolError = ref('');
+      const poolForm = reactive({ id: 0, name: '', description: '', pool_kind: 'custom', fallback_pool_id: null, enabled: false, original_enabled: false, version: 1, members: [], referenced_by_agents: [], referenced_by_pools: [] });
       const MODEL_SYNC_EVENTS = new Set(['started', 'page', 'empty_confirmation_required', 'completed', 'failed', 'cancelled']);
       const aiMessage = ref('');
       const aiMessageType = ref('success');
@@ -598,8 +707,14 @@
       const rotatingRescueToken = ref(false);
       let csrfToken = '';
       const providerForm = reactive({ id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
-      const agentForm = reactive({ id: 0, name: '', task_type: 'continue', provider_id: 0, model: '', system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
+      const capabilityOptions = ['streaming', 'json', 'vision', 'tools', 'long_context'];
+      const agentForm = reactive({ id: 0, name: '', task_type: 'continue', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0, required_capabilities: [], system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
       const filteredAgents = computed(() => agentFilter.value ? agents.value.filter(a => a.task_type === agentFilter.value) : agents.value);
+      const agentProviderModels = computed(() => {
+        const catalog = providerModels[agentForm.provider_id];
+        return catalog && Array.isArray(catalog.items) ? catalog.items.filter(model => model.routable) : [];
+      });
+      const agentBindingValid = computed(() => agentForm.binding_type === 'pool' ? agentForm.model_pool_id > 0 : agentForm.provider_id > 0);
 
       const schedulerTasks = [
         { key: 'bookmarks', label: '同步收藏小说', enableKey: 'auto_sync_bookmarks_enabled', intervalKey: 'auto_sync_bookmarks_interval_hours', cronKey: 'auto_sync_bookmarks_cron' },
@@ -774,7 +889,12 @@
         }
         const res = await fetch(url, { ...options, method, headers });
         const data = await res.json();
-        if (!res.ok || data.ok === false) throw new Error(data.error || '请求失败');
+        if (!res.ok || data.ok === false) {
+          const error = new Error(data.error || '请求失败');
+          error.status = res.status;
+          error.data = data.data;
+          throw error;
+        }
         return data.data;
       };
       const modelCatalog = (provider) => providerModels[provider.id] || { items: [], total: 0, discovered_available: 0, routable: 0 };
@@ -943,9 +1063,190 @@
           if (operationId) await loadModelSyncOperation(provider.id, operationId);
         }
       };
+      const providerName = (providerId) => {
+        const provider = providers.value.find(item => item.id === providerId);
+        return provider ? provider.name : `Provider #${providerId}`;
+      };
+      const loadPoolProviderModels = async () => {
+        await Promise.all(providers.value.map(async provider => {
+          try {
+            poolProviderModels[provider.id] = await aiApi(`/api/dashboard/ai/providers/${provider.id}/models`);
+          } catch (e) {
+            if (!poolProviderModels[provider.id]) poolProviderModels[provider.id] = { items: [] };
+          }
+        }));
+      };
+      const poolProviderSummary = (rootPool) => {
+        if (!rootPool) return '';
+        const names = [];
+        const seenProviders = new Set();
+        const seenPools = new Set();
+        let pool = rootPool;
+        while (pool && !seenPools.has(pool.id || `draft-${seenPools.size}`) && seenPools.size < 8) {
+          seenPools.add(pool.id || `draft-${seenPools.size}`);
+          (pool.members || []).forEach(member => {
+            if (!seenProviders.has(member.provider_id)) {
+              seenProviders.add(member.provider_id);
+              names.push(providerName(member.provider_id));
+            }
+          });
+          pool = pool.fallback_pool_id ? modelPools.value.find(item => item.id === pool.fallback_pool_id) : null;
+        }
+        return names.join('、');
+      };
+      const poolCandidateCount = (rootPool) => {
+        if (!rootPool) return 0;
+        const candidates = new Set();
+        const seenPools = new Set();
+        let pool = rootPool;
+        while (pool && !seenPools.has(pool.id || `draft-${seenPools.size}`) && seenPools.size < 8) {
+          seenPools.add(pool.id || `draft-${seenPools.size}`);
+          (pool.members || []).forEach(member => {
+            if (member.enabled !== false) candidates.add(`${member.provider_id}\u0000${member.model_key}`);
+          });
+          pool = pool.fallback_pool_id ? modelPools.value.find(item => item.id === pool.fallback_pool_id) : null;
+        }
+        return candidates.size;
+      };
+      const availablePoolModels = computed(() => {
+        const selected = new Set(poolForm.members.map(member => member.provider_model_id));
+        const search = poolModelSearch.value.trim().toLowerCase();
+        const items = [];
+        providers.value.forEach(provider => {
+          if (poolProviderFilter.value && provider.id !== poolProviderFilter.value) return;
+          const catalog = poolProviderModels[provider.id];
+          (catalog && catalog.items ? catalog.items : []).forEach(model => {
+            if (!model.routable || selected.has(model.id)) return;
+            const haystack = `${provider.name} ${model.model_key} ${model.display_name || ''}`.toLowerCase();
+            if (!search || haystack.includes(search)) items.push({ ...model, provider_name: provider.name });
+          });
+        });
+        return items;
+      });
+      const selectedAgentPoolSummary = computed(() => {
+        const selected = modelPools.value.find(pool => pool.id === agentForm.model_pool_id);
+        return poolProviderSummary(selected);
+      });
+      const resetPoolForm = () => Object.assign(poolForm, { id: 0, name: '', description: '', pool_kind: 'custom', fallback_pool_id: null, enabled: false, original_enabled: false, version: 1, members: [], referenced_by_agents: [], referenced_by_pools: [] });
+      const loadModelPools = async () => {
+        try {
+          modelPools.value = await aiApi('/api/dashboard/ai/model-pools');
+        } catch (e) {
+          poolError.value = e.message || '读取模型池失败';
+        }
+      };
+      const editModelPool = async (pool) => {
+        poolError.value = '';
+        try {
+          const detail = await aiApi(`/api/dashboard/ai/model-pools/${pool.id}`);
+          Object.assign(poolForm, {
+            id: detail.id,
+            name: detail.name || '',
+            description: detail.description || '',
+            pool_kind: detail.pool_kind || 'custom',
+            fallback_pool_id: detail.fallback_pool_id || null,
+            enabled: detail.enabled === true,
+            original_enabled: detail.enabled === true,
+            version: detail.version,
+            members: (detail.members || []).map(member => ({ ...member })),
+            referenced_by_agents: detail.referenced_by_agents || [],
+            referenced_by_pools: detail.referenced_by_pools || []
+          });
+        } catch (e) {
+          poolError.value = e.message || '读取模型池失败';
+        }
+      };
+      const addPoolMember = (model) => {
+        if (poolForm.members.length >= 64) {
+          poolError.value = '单个模型池最多包含 64 个成员';
+          return;
+        }
+        poolForm.members.push({ provider_model_id: model.id, provider_id: model.provider_id, model_key: model.model_key, enabled: true });
+      };
+      const removePoolMember = (index) => poolForm.members.splice(index, 1);
+      const movePoolMember = (index, direction) => {
+        const target = index + direction;
+        if (target < 0 || target >= poolForm.members.length) return;
+        const [member] = poolForm.members.splice(index, 1);
+        poolForm.members.splice(target, 0, member);
+      };
+      const replacePoolMembers = async (poolId, expectedVersion) => {
+        const result = await aiApi(`/api/dashboard/ai/model-pools/${poolId}/members`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            expected_version: expectedVersion,
+            members: poolForm.members.map(member => ({ provider_model_id: member.provider_model_id, enabled: member.enabled !== false }))
+          })
+        });
+        return result.version;
+      };
+      const saveModelPool = async () => {
+        if (!poolForm.name || (poolForm.enabled && !poolForm.members.length)) return;
+        poolSaving.value = true;
+        poolError.value = '';
+        let poolId = poolForm.id;
+        try {
+          if (!poolId) {
+            const created = await aiApi('/api/dashboard/ai/model-pools', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: poolForm.name, description: poolForm.description, pool_kind: poolForm.pool_kind, fallback_pool_id: poolForm.fallback_pool_id, enabled: false })
+            });
+            poolId = created.id;
+            const createdPool = await aiApi(`/api/dashboard/ai/model-pools/${poolId}`);
+            poolForm.version = createdPool.version;
+          } else {
+            const metadataPatch = { expected_version: poolForm.version, name: poolForm.name, description: poolForm.description, pool_kind: poolForm.pool_kind, fallback_pool_id: poolForm.fallback_pool_id };
+            if (poolForm.original_enabled && !poolForm.enabled) metadataPatch.enabled = false;
+            const updated = await aiApi(`/api/dashboard/ai/model-pools/${poolId}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(metadataPatch)
+            });
+            poolForm.version = updated.version;
+          }
+          poolForm.version = await replacePoolMembers(poolId, poolForm.version);
+          if (poolForm.enabled && !poolForm.original_enabled) {
+            const enabled = await aiApi(`/api/dashboard/ai/model-pools/${poolId}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ expected_version: poolForm.version, enabled: poolForm.enabled })
+            });
+            poolForm.version = enabled.version;
+          }
+          await loadModelPools();
+          await editModelPool({ id: poolId });
+          showAiMessage('模型池已保存');
+        } catch (e) {
+          if (e.status === 409 && poolId) {
+            await loadModelPools();
+            await editModelPool({ id: poolId });
+            poolError.value = '模型池版本冲突，已重新加载服务端数据';
+          } else {
+            poolError.value = e.message || '模型池保存失败';
+          }
+        } finally {
+          poolSaving.value = false;
+        }
+      };
+      const deleteModelPool = async (pool) => {
+        if (!confirm(`确认删除模型池“${pool.name}”？`)) return;
+        try {
+          await aiApi(`/api/dashboard/ai/model-pools/${pool.id}`, { method: 'DELETE' });
+          if (poolForm.id === pool.id) resetPoolForm();
+          await loadModelPools();
+          showAiMessage('模型池已删除');
+        } catch (e) {
+          poolError.value = e.message || '模型池删除失败';
+        }
+      };
       const loadProviders = async () => {
         providers.value = await aiApi('/api/dashboard/ai/providers');
-        await Promise.all(providers.value.map(provider => loadProviderModels(provider.id)));
+        await Promise.all([
+          ...providers.value.map(provider => loadProviderModels(provider.id)),
+          loadPoolProviderModels()
+        ]);
         await recoverModelSyncOperations();
       };
       const loadAgents = async () => { agents.value = await aiApi('/api/dashboard/ai/agents'); };
@@ -975,13 +1276,23 @@
           providerTestStatus[id] = { type: 'error', text: '测试失败：' + e.message };
         } finally { testingProviderId.value = 0; }
       };
-      const resetAgentForm = () => Object.assign(agentForm, { id: 0, name: '', task_type: 'continue', provider_id: 0, model: '', system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
-      const editAgent = (agent) => Object.assign(agentForm, { id: agent.id, name: agent.name || '', task_type: agent.task_type || 'continue', provider_id: agent.provider_id || 0, model: agent.model || '', system_prompt: agent.system_prompt || '', temperature: agent.temperature || 0.8, top_p: agent.top_p || 0.9, max_tokens: agent.max_tokens || 4000, context_window: agent.context_window || 16000, enabled: agent.enabled !== false });
+      const resetAgentForm = () => Object.assign(agentForm, { id: 0, name: '', task_type: 'continue', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0, required_capabilities: [], system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
+      const editAgent = (agent) => Object.assign(agentForm, { id: agent.id, name: agent.name || '', task_type: agent.task_type || 'continue', binding_type: agent.binding_type || 'fixed', provider_id: agent.provider_id || 0, model: agent.model || '', model_pool_id: agent.model_pool_id || 0, required_capabilities: [...(agent.required_capabilities || [])], system_prompt: agent.system_prompt || '', temperature: agent.temperature || 0.8, top_p: agent.top_p || 0.9, max_tokens: agent.max_tokens || 4000, context_window: agent.context_window || 16000, enabled: agent.enabled !== false });
       const saveAgent = async () => {
         try {
           const payload = { ...agentForm };
           const id = payload.id;
           delete payload.id;
+          payload.required_capabilities = [...agentForm.required_capabilities];
+          if (payload.binding_type === 'pool') {
+            delete payload.provider_id;
+            delete payload.model;
+            payload.model_pool_id = Number(agentForm.model_pool_id || 0);
+          } else {
+            delete payload.model_pool_id;
+            payload.provider_id = Number(agentForm.provider_id || 0);
+            payload.model = String(agentForm.model || '').trim() || null;
+          }
           await aiApi(id ? '/api/dashboard/ai/agents/' + id : '/api/dashboard/ai/agents', { method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
           await loadAgents(); resetAgentForm(); showAiMessage('Agent 已保存');
         } catch (e) { showAiMessage(e.message, 'error'); }
@@ -1022,6 +1333,7 @@
         fetchCacheStatus();
         loadRescueTokenStatus();
         loadProviders();
+        loadModelPools();
         loadAgents();
         window.addEventListener('hashchange', () => {
           const hash = window.location.hash.slice(1);
@@ -1040,7 +1352,12 @@
         modelCatalog, modelSyncBusy, loadProviderModels, loadModelSyncOperation,
         manualModelForm, createManualModel, deleteManualModel,
         syncProviderModels, confirmEmptyCatalog, recoverModelSyncOperations,
-        aiMessage, aiMessageType, providerForm, agentForm,
+        modelPools, poolProviderFilter, poolModelSearch, poolSaving, poolError, poolForm,
+        availablePoolModels, providerName, poolProviderSummary, poolCandidateCount, selectedAgentPoolSummary,
+        loadModelPools, resetPoolForm, editModelPool, addPoolMember, removePoolMember,
+        movePoolMember, replacePoolMembers, saveModelPool, deleteModelPool,
+        aiMessage, aiMessageType, providerForm, agentForm, capabilityOptions,
+        agentProviderModels, agentBindingValid,
         rescueTokenStatus, rescueTokenPlaintext, rescueTokenMessage, rescueTokenMessageType,
         rotatingRescueToken, loadRescueTokenStatus, rotateRescueToken, copyRescueToken, closeRescueToken,
         ensureCsrfToken,

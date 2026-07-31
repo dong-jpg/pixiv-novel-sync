@@ -62,3 +62,39 @@ def test_provider_catalog_supports_collapsing_and_manual_models():
         "model.capabilities",
     ):
         assert text in TEMPLATE
+
+
+def test_settings_template_contains_pool_editor_and_mutual_binding_controls():
+    for text in (
+        "ai-model-pools",
+        "fallback_pool_id",
+        "expected_version",
+        "binding_type",
+        "required_capabilities",
+        "streaming",
+        "long_context",
+        "隐私",
+    ):
+        assert text in TEMPLATE
+
+
+def test_pool_save_sends_complete_member_order_not_incremental_positions():
+    assert "/members" in TEMPLATE
+    assert "expected_version" in TEMPLATE
+    assert "members" in TEMPLATE
+    assert "movePoolMember" in TEMPLATE
+    assert "replacePoolMembers" in TEMPLATE
+
+
+def test_pool_editor_exposes_references_candidate_limit_and_provider_search():
+    for text in (
+        "referenced_by_agents",
+        "candidate",
+        "poolCandidateCount",
+        "64",
+        "16",
+        "poolModelSearch",
+        "availablePoolModels",
+        "provider_id",
+    ):
+        assert text in TEMPLATE
