@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pixiv_novel_sync.ai.model_router import PromptBudget, RouteResult
-from pixiv_novel_sync.ai.models import AIAgentConfig, AIProviderConfig, AIStreamChunk
+from pixiv_novel_sync.ai.models import AIAgentConfig, AIStreamChunk
 from pixiv_novel_sync.ai.service import AIServiceError, AIWritingService
 
 
@@ -148,19 +148,6 @@ class FakeChapterDB(FakeDB):
         return patch
 
 
-class FakeProvider:
-    def __init__(self, chunks: list[str], fail_after: bool = False) -> None:
-        self.chunks = chunks
-        self.fail_after = fail_after
-
-    def stream_generate(self, *_args, **_kwargs):
-        for text in self.chunks:
-            yield AIStreamChunk(type="delta", text=text)
-        if self.fail_after:
-            raise AIServiceError("生成失败")
-        yield AIStreamChunk(type="done")
-
-
 def make_chapter_agent() -> AIAgentConfig:
     return AIAgentConfig(
         id=1,
@@ -171,18 +158,6 @@ def make_chapter_agent() -> AIAgentConfig:
         system_prompt="system",
         context_window=1000,
     )
-
-
-def make_provider_config() -> AIProviderConfig:
-    return AIProviderConfig(
-        id=2,
-        name="provider",
-        provider_type="openai_compatible",
-        base_url="https://example.com/v1",
-        api_key="key",
-        default_model="model-a",
-    )
-
 
 def wire_route(
     monkeypatch,
@@ -415,8 +390,7 @@ def test_stream_polish_injects_project_style(monkeypatch, tmp_path):
 
     monkeypatch.setattr(service, "_db", lambda: fake_db)
     monkeypatch.setattr(service, "_load_agent_config", lambda _db, _agent_id: agent)
-    monkeypatch.setattr(service, "_load_provider_config", lambda _db, _provider_id: make_provider_config())
-    monkeypatch.setattr(service, "_get_provider", lambda _config: FakeProvider(["润色结果"]))
+    wire_route(monkeypatch, service, fake_db, ["润色结果"])
     monkeypatch.setattr("pixiv_novel_sync.ai.services.projects.build_polish_messages", capture_messages)
 
     chunks = list(service.stream_polish({"agent_id": 1, "chapter_id": 3, "text": "章节正文"}))

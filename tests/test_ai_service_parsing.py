@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from pixiv_novel_sync.ai.model_router import PromptBudget, RouteResult
-from pixiv_novel_sync.ai.models import AIAgentConfig, AIProviderConfig, AIStreamChunk
+from pixiv_novel_sync.ai.models import AIAgentConfig, AIStreamChunk
 from pixiv_novel_sync.ai.service import AIServiceError, AIWritingService
 
 
@@ -169,12 +169,10 @@ def test_auto_resolve_foreshadows_warns_on_bad_json(monkeypatch, tmp_path):
     service = make_service(tmp_path)
     fake_db = FakeDB()
     agent = AIAgentConfig(id=1, name="伏笔", task_type="resolve_foreshadow", provider_id=2, model="m", system_prompt="s")
-    provider_config = AIProviderConfig(id=2, name="p", provider_type="openai_compatible", base_url=None, api_key="k", default_model="m")
 
     monkeypatch.setattr(service, "_db", lambda: fake_db)
     monkeypatch.setattr(service, "_load_agent_config", lambda _db, _agent_id: agent)
-    monkeypatch.setattr(service, "_load_provider_config", lambda _db, _provider_id: provider_config)
-    monkeypatch.setattr("pixiv_novel_sync.ai.service.create_provider", lambda _config: FakeProvider("不是 JSON"))
+    wire_route(monkeypatch, service, fake_db, "不是 JSON")
 
     chunks = list(service.stream_auto_resolve_foreshadows({"agent_id": 1, "project_id": 1, "chapter_id": 1}))
 
@@ -189,13 +187,11 @@ def test_auto_resolve_foreshadows_updates_valid_json(monkeypatch, tmp_path):
     service = make_service(tmp_path)
     fake_db = FakeDB()
     agent = AIAgentConfig(id=1, name="伏笔", task_type="resolve_foreshadow", provider_id=2, model="m", system_prompt="s")
-    provider_config = AIProviderConfig(id=2, name="p", provider_type="openai_compatible", base_url=None, api_key="k", default_model="m")
     output = '{"resolved": [{"id": 7, "evidence": "证据"}], "still_pending": []}'
 
     monkeypatch.setattr(service, "_db", lambda: fake_db)
     monkeypatch.setattr(service, "_load_agent_config", lambda _db, _agent_id: agent)
-    monkeypatch.setattr(service, "_load_provider_config", lambda _db, _provider_id: provider_config)
-    monkeypatch.setattr("pixiv_novel_sync.ai.service.create_provider", lambda _config: FakeProvider(output))
+    wire_route(monkeypatch, service, fake_db, output)
 
     chunks = list(service.stream_auto_resolve_foreshadows({"agent_id": 1, "project_id": 1, "chapter_id": 1}))
 
@@ -291,14 +287,3 @@ def test_stream_longform_plan_details_includes_project_style(monkeypatch, tmp_pa
     assert chunks[-1].type == "done"
     assert "抒情唯美" in captured["messages"][-1]["content"]
     assert captured["task_type"] == "longform_plan_details"
-
-
-class FakeProvider:
-    def __init__(self, output: str) -> None:
-        self.output = output
-        self.messages: list[dict] = []
-
-    def stream_generate(self, messages, *_args, **_kwargs):
-        self.messages = messages
-        yield AIStreamChunk(type="delta", text=self.output)
-        yield AIStreamChunk(type="done")

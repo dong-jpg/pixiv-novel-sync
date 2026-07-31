@@ -946,3 +946,250 @@ def test_task15_methods_have_no_direct_provider_stream_calls() -> None:
                 offenders.append(f"{path.name}:{node.name}")
 
     assert offenders == []
+
+
+def test_extract_summary_uses_main_route_and_updates_chapter(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    project_id = db.create_ai_writing_project({"name": "摘要项目"})
+    chapter_id = db.create_ai_chapter(
+        {
+            "project_id": project_id,
+            "chapter_number": 1,
+            "title": "第一章",
+            "content": "角色抵达旧宅并发现密室。",
+        }
+    )
+    output = "=== summary ===\n抵达旧宅\n=== key_events ===\n- 发现密室"
+    fake_router.queue_result(
+        success_result("pending", output),
+        [AIStreamChunk(type="delta", text=output)],
+    )
+
+    chunks = list(
+        service.stream_extract_chapter_summary(
+            {"agent_id": fixed_agent.id, "chapter_id": chapter_id}
+        )
+    )
+
+    assert fake_router.requests[-1].stage == "main"
+    assert chunks[-1].type == "done"
+    chapter = db.get_ai_chapter(chapter_id)
+    assert chapter["summary"] == "抵达旧宅"
+    assert chapter["key_events"] == ["发现密室"]
+
+
+def test_foreshadow_parse_failure_keeps_warning_behavior(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    project_id = db.create_ai_writing_project({"name": "伏笔项目"})
+    chapter_id = db.create_ai_chapter(
+        {
+            "project_id": project_id,
+            "chapter_number": 2,
+            "title": "第二章",
+            "content": "角色打开旧信。",
+        }
+    )
+    foreshadow_id = db.create_ai_foreshadow(
+        {
+            "project_id": project_id,
+            "description": "旧信的来历",
+            "planted_chapter": 1,
+        }
+    )
+    fake_router.queue_result(
+        success_result("pending", "不是 JSON"),
+        [AIStreamChunk(type="delta", text="不是 JSON")],
+    )
+
+    chunks = list(
+        service.stream_auto_resolve_foreshadows(
+            {
+                "agent_id": fixed_agent.id,
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+            }
+        )
+    )
+
+    assert fake_router.requests[-1].stage == "main"
+    assert chunks[-1].type == "done"
+    assert chunks[-1].data["warnings"] == [
+        "模型返回的伏笔回收 JSON 无法解析，未更新伏笔状态"
+    ]
+    assert db.get_ai_foreshadow(foreshadow_id)["status"] == "pending"
+
+
+def test_foreshadow_partial_does_not_apply_structured_output(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    project_id = db.create_ai_writing_project({"name": "部分伏笔项目"})
+    chapter_id = db.create_ai_chapter(
+        {
+            "project_id": project_id,
+            "chapter_number": 2,
+            "title": "第二章",
+            "content": "角色解释旧信。",
+        }
+    )
+    foreshadow_id = db.create_ai_foreshadow(
+        {
+            "project_id": project_id,
+            "description": "旧信的来历",
+            "planted_chapter": 1,
+        }
+    )
+    partial_json = json.dumps(
+        {
+            "resolved": [{"id": foreshadow_id, "evidence": "旧信已解释"}],
+            "still_pending": [],
+        },
+        ensure_ascii=False,
+    )
+    fake_router.queue_result(
+        partial_result(text=partial_json),
+        [AIStreamChunk(type="delta", text=partial_json)],
+    )
+
+    chunks = list(
+        service.stream_auto_resolve_foreshadows(
+            {
+                "agent_id": fixed_agent.id,
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+            }
+        )
+    )
+
+    assert chunks[-1].type == "error"
+    assert db.get_ai_foreshadow(foreshadow_id)["status"] == "pending"
+    job = db.get_ai_job(fake_router.requests[-1].job_id)
+    assert job["status"] == "partial"
+
+
+def test_polish_uses_main_route_and_project_style(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    project_id = db.create_ai_writing_project(
+        {
+            "name": "润色项目",
+            "settings": {
+                "style_control": {
+                    "sliders": {"lyricism": 90},
+                    "tags": [],
+                    "custom": "",
+                }
+            },
+        }
+    )
+    chapter_id = db.create_ai_chapter(
+        {
+            "project_id": project_id,
+            "chapter_number": 1,
+            "title": "第一章",
+            "content": "原始正文",
+        }
+    )
+    fake_router.queue_result(
+        success_result("pending", "润色结果"),
+        [AIStreamChunk(type="delta", text="润色结果")],
+    )
+
+    chunks = list(
+        service.stream_polish(
+            {
+                "agent_id": fixed_agent.id,
+                "chapter_id": chapter_id,
+                "text": "原始正文",
+            }
+        )
+    )
+
+    assert fake_router.requests[-1].stage == "main"
+    prompt = "\n".join(
+        message["content"] for message in fake_router.requests[-1].messages
+    )
+    assert "抒情唯美" in prompt
+    assert collected_delta(chunks) == "润色结果"
+    assert chunks[-1].type == "done"
+
+
+def test_polish_preserves_project_style_when_text_is_truncated(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    project_id = db.create_ai_writing_project(
+        {
+            "name": "长文润色项目",
+            "settings": {
+                "style_control": {
+                    "sliders": {"lyricism": 90},
+                    "tags": [],
+                    "custom": "",
+                }
+            },
+        }
+    )
+    chapter_id = db.create_ai_chapter(
+        {
+            "project_id": project_id,
+            "chapter_number": 1,
+            "title": "第一章",
+            "content": "长文开头标记" + "中段" * 3000 + "长文结尾标记",
+        }
+    )
+    fake_router.budget = replace(fake_router.budget, input_budget=3000)
+    fake_router.queue_result(
+        success_result("pending", "润色结果"),
+        [AIStreamChunk(type="delta", text="润色结果")],
+    )
+
+    chunks = list(
+        service.stream_polish(
+            {"agent_id": fixed_agent.id, "chapter_id": chapter_id}
+        )
+    )
+
+    prompt = "\n".join(
+        message["content"] for message in fake_router.requests[-1].messages
+    )
+    assert "抒情唯美" in prompt
+    assert "长文开头标记" not in prompt
+    assert "长文结尾标记" in prompt
+    assert chunks[-1].type == "done"
+
+
+def test_projects_module_has_no_direct_provider_stream_calls() -> None:
+    path = (
+        Path(__file__).parents[1]
+        / "src"
+        / "pixiv_novel_sync"
+        / "ai"
+        / "services"
+        / "projects.py"
+    )
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    offenders = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "stream_generate"
+    ]
+
+    assert offenders == []
