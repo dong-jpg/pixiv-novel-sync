@@ -14,7 +14,7 @@
 - Task 1 已由 `c31791d` 完成，并由 `16b8587` 补充 legacy model key 约束。
 - Task 2 已由 `816e690` 完成，并由 `9458cfe` 修正 canonical digest。
 - Task 3 已由 `6c3cc3a` 完成，并由 `c63ac95` 固化 canonical metadata 存储边界。
-- Task 0 已由 `0d881c1` 完成；Task 4-14 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a`、`1e5e969`、`7d1f560`、`d225bc4`、`65a2e8a` 完成；当前从 Task 15 继续，Task 15-22 必须按下方 TDD 步骤推进。
+- Task 0 已由 `0d881c1` 完成；Task 4-15 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a`、`1e5e969`、`7d1f560`、`d225bc4`、`65a2e8a`、`9dda110` 完成；当前从 Task 16 继续，Task 16-22 必须按下方 TDD 步骤推进。
 
 ## Global Constraints
 
@@ -1299,7 +1299,7 @@ git commit -m "refactor: route core AI generation through ModelRouter"
 - Migrates `stream_chat`, `stream_longform_plan`, `stream_longform_plan_details`, `stream_chapter_continue`, and `stream_update_project_state` to the shared route adapter.
 - Chapter autosave uses router terminal state: `succeeded` writes final content, `partial` writes the preserved partial content with status `partial`, and `cancelled` writes only the already received content; no fallback candidate is used after body start.
 
-- [ ] **Step 1: Write failing behavior tests**
+- [x] **Step 1: Write failing behavior tests**
 
 ```python
 def test_wizard_pool_agent_routes_without_provider_id(service, fake_router, pool_agent_session):
@@ -1322,23 +1322,23 @@ def test_longform_plan_uses_candidate_snapshot_and_normal_finish(service, fake_r
     assert chunks[-1].type == "done"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_service_stream_continue.py tests/test_ai_model_router_integration.py -q`
 
 Expected: FAIL because these paths still resolve `agent.provider_id` and call a Provider directly.
 
-- [ ] **Step 3: Replace direct selection while preserving side effects**
+- [x] **Step 3: Replace direct selection while preserving side effects**
 
 For every method, load only the Agent and domain inputs first, create the route job, then execute messages through `_stream_route`. Preserve assistant-message writes, longform JSON parsing/apply transactions, project-state parsing and chapter autosave metadata. Do not expose Provider internal progress as assistant content. Use the route snapshot's conservative context window when calculating longform/chapter context size; do not read one Provider's context window before pool resolution. Add AST coverage for `chat_wizard.py` and the migrated project methods.
 
-- [ ] **Step 4: Run wizard and project tests**
+- [x] **Step 4: Run wizard and project tests**
 
 Run: `python -m pytest tests/test_ai_service_stream_continue.py tests/test_ai_service_parsing.py tests/test_ai_import_atomicity.py tests/test_ai_model_router_integration.py -q`
 
 Expected: PASS, including pool-bound chat sessions, partial autosave, longform parsing and transaction rollback.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/services/chat_wizard.py src/pixiv_novel_sync/ai/services/projects.py tests/test_ai_service_stream_continue.py tests/test_ai_model_router_integration.py
