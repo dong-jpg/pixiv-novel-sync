@@ -14,7 +14,7 @@
 - Task 1 已由 `c31791d` 完成，并由 `16b8587` 补充 legacy model key 约束。
 - Task 2 已由 `816e690` 完成，并由 `9458cfe` 修正 canonical digest。
 - Task 3 已由 `6c3cc3a` 完成，并由 `c63ac95` 固化 canonical metadata 存储边界。
-- Task 0 已由 `0d881c1` 完成；Task 4-11 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a`、`1e5e969` 完成；当前从 Task 12 继续，Task 12-22 必须按下方 TDD 步骤推进。
+- Task 0 已由 `0d881c1` 完成；Task 4-12 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a`、`1e5e969`、`7d1f560` 完成；当前从 Task 13 继续，Task 13-22 必须按下方 TDD 步骤推进。
 
 ## Global Constraints
 
@@ -1105,7 +1105,7 @@ git commit -m "feat: add deterministic model candidate resolution and budgets"
 - `ModelRouter.execute_stream(request)` yields Provider `progress` and user-visible `delta` chunks, invokes callbacks, and returns `RouteResult` through the generator return value; `execute(request)` consumes the same generator and returns the identical result for non-SSE callers such as the adult-polish plan.
 - Main-stage first success stores `pinned_candidate_index`; later main calls for the same job/owner use only that candidate. Internal and validation stages have independent attempts and never change the main pin.
 
-- [ ] **Step 1: Write failing routing state tests**
+- [x] **Step 1: Write failing routing state tests**
 
 ```python
 def test_failure_before_first_delta_switches_across_providers(router, route_request, fake_providers):
@@ -1142,13 +1142,13 @@ def test_internal_failure_never_creates_partial_or_pins_main(router, internal_re
     assert get_job(internal_request.job_id)["pinned_candidate_index"] is None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_model_router.py -q`
 
 Expected: FAIL because execution, attempt persistence and stage-aware state do not exist.
 
-- [ ] **Step 3: Implement the route loop and heartbeat**
+- [x] **Step 3: Implement the route loop and heartbeat**
 
 Start a daemon heartbeat helper per active `execute_stream` that opens its own `Database`, renews job and current-attempt leases every 15 seconds, and stops/join-with-timeout in `finally`. Before each candidate, check deadline, 16-attempt and 32-network limits; context-overflow candidates write a failed attempt without calling Provider. Allocate the attempt before Provider invocation and pass a storage-backed network `request_guard` into `stream_generate`.
 
@@ -1156,13 +1156,13 @@ For each chunk: forward `progress` unchanged; a first non-empty main `delta` ato
 
 On main failure after body start, finish attempt and job `partial` with preserved output and stop. On validation failure, finish job `failed` with `validation_failed` or `review_unavailable`; never convert it to partial. On internal exhaustion, return `failed_before_output` without closing the parent job so callers can apply their explicit fallback. On cancellation/GeneratorExit, close the current provider iterator, finish attempt/job `cancelled`, and never advance. On total main exhaustion, finish job `failed/route_exhausted`; on a hard resource limit, use `route_budget_exhausted`. Any late callback sees a terminal CAS failure and must discard its delta/result.
 
-- [ ] **Step 4: Run routing tests**
+- [x] **Step 4: Run routing tests**
 
 Run: `python -m pytest tests/test_ai_model_router.py tests/test_ai_job_routing_storage.py -q`
 
 Expected: PASS for pre-output switch, post-output partial, cancellation, provider short circuit, attempt/network/deadline limits, heartbeat and terminal races.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/model_router.py src/pixiv_novel_sync/storage/ai/core.py tests/test_ai_model_router.py
