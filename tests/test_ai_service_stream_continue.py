@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+from pixiv_novel_sync.ai.model_router import PromptBudget, RouteResult
 from pixiv_novel_sync.ai.models import AIAgentConfig, AIProviderConfig, AIStreamChunk
 from pixiv_novel_sync.ai.service import AIServiceError, AIWritingService
 
@@ -22,7 +24,7 @@ class FakeDB:
         self.closed = True
 
 
-def test_stream_continue_records_failed_job_when_smart_context_fails(monkeypatch, tmp_path):
+def test_stream_continue_completes_after_smart_context_fallback(monkeypatch, tmp_path):
     service = AIWritingService(Path(tmp_path / "test.db"))
     fake_db = FakeDB()
     agent = AIAgentConfig(
@@ -34,40 +36,78 @@ def test_stream_continue_records_failed_job_when_smart_context_fails(monkeypatch
         system_prompt="system",
         context_window=1000,
     )
-    provider = AIProviderConfig(
-        id=2,
-        name="provider",
-        provider_type="openai_compatible",
-        base_url="https://example.com/v1",
-        api_key="key",
-        default_model="model-a",
+    route_context = SimpleNamespace(
+        job_id="continue-job",
+        prompt_budget=PromptBudget(
+            effective_context_window=6000,
+            input_budget=1000,
+            output_reserve=4000,
+            message_overhead=744,
+            safety_margin=256,
+            estimator="utf8_bytes",
+        ),
     )
+    start_calls = []
+    finish_calls = []
 
     monkeypatch.setattr(service, "_db", lambda: fake_db)
     monkeypatch.setattr(service, "_load_agent_config", lambda _db, _agent_id: agent)
-    monkeypatch.setattr(service, "_load_provider_config", lambda _db, _provider_id: provider)
     monkeypatch.setattr(service, "_resolve_input_text", lambda _db, _payload: "原文" * 100)
 
-    def fail_smart_context(*_args, **_kwargs):
-        raise AIServiceError("摘要失败")
-        yield ""
+    def start_route_job(db, task_type, selected_agent, input_data, **options):
+        start_calls.append((db, task_type, selected_agent, input_data, options))
+        return route_context
 
-    monkeypatch.setattr(service, "_smart_context", fail_smart_context)
+    def fallback_smart_context(*_args, **_kwargs):
+        yield AIStreamChunk(type="progress", data={"message": "摘要候选已耗尽"})
+        yield "最近原文"
+
+    def stream_route(context, messages, **_options):
+        prompt = "\n".join(message["content"] for message in messages)
+        assert "最近原文" in prompt
+        yield AIStreamChunk(type="delta", text="续写正文")
+        return RouteResult(
+            job_id=context.job_id,
+            output_text="续写正文",
+            candidate_snapshot_hash="f" * 64,
+            attempts=(),
+            finish_state="succeeded",
+        )
+
+    def finish_route_job(
+        _db,
+        _context,
+        status,
+        output_text,
+        output_json=None,
+        error_message=None,
+    ):
+        finish_calls.append(
+            (status, output_text, output_json, error_message)
+        )
+        return True
+
+    monkeypatch.setattr(service, "_start_route_job", start_route_job)
+    monkeypatch.setattr(service, "_smart_context", fallback_smart_context)
+    monkeypatch.setattr(service, "_stream_route", stream_route)
+    monkeypatch.setattr(service, "_finish_route_job", finish_route_job)
 
     chunks = list(service.stream_continue({"agent_id": 1, "smart_context": True, "context_chars": 1000}))
 
     assert chunks[0].type == "metadata"
-    assert chunks[0].data and chunks[0].data["job_id"]
-    assert chunks[-1] == AIStreamChunk(type="error", data={"message": "摘要失败"})
-    assert len(fake_db.created_jobs) == 1
-    created = fake_db.created_jobs[0]
-    assert created[1] == "continue"
-    assert created[2] == 1
-    assert created[3]["input_context_chars"] == len("原文" * 100)
-    assert created[3]["smart_context"] is True
-    assert created[3]["requested_context_chars"] == 1000
-    assert fake_db.updated_jobs[-1][1] == "failed"
-    assert fake_db.updated_jobs[-1][4] == "摘要失败"
+    assert chunks[0].data == {"job_id": "continue-job"}
+    assert any(chunk.type == "progress" for chunk in chunks)
+    assert "".join(chunk.text for chunk in chunks if chunk.type == "delta") == "续写正文"
+    assert chunks[-1].type == "done"
+    assert start_calls[0][1] == "continue"
+    input_data = start_calls[0][3]
+    assert input_data["input_context_chars"] == len("原文" * 100)
+    assert input_data["smart_context"] is True
+    assert input_data["requested_context_chars"] == 1000
+    assert finish_calls[-1][0] == "succeeded"
+    assert finish_calls[-1][1] == "续写正文"
+
+
 class FakeChapterDB(FakeDB):
     def __init__(self) -> None:
         super().__init__()

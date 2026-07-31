@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 from collections.abc import Generator
-from dataclasses import asdict, fields
+from dataclasses import asdict, fields, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -37,13 +38,23 @@ def success_result(job_id: str, text: str = "正文") -> RouteResult:
     )
 
 
-def failed_before_output_result(job_id: str) -> RouteResult:
+def failed_before_output_result(job_id: str = "pending") -> RouteResult:
     return RouteResult(
         job_id=job_id,
         output_text="",
         candidate_snapshot_hash="f" * 64,
         attempts=(),
         finish_state="failed_before_output",
+    )
+
+
+def partial_result(job_id: str = "pending", text: str = "半截") -> RouteResult:
+    return RouteResult(
+        job_id=job_id,
+        output_text=text,
+        candidate_snapshot_hash="f" * 64,
+        attempts=(),
+        finish_state="partial",
     )
 
 
@@ -98,6 +109,14 @@ class FakeModelRouter:
     def close(self) -> None:
         self.closed = True
 
+    def queue_result(
+        self,
+        result: RouteResult,
+        chunks: list[AIStreamChunk] | None = None,
+    ) -> None:
+        self.results.append(result)
+        self.stream_chunks.append(list(chunks or []))
+
     def resolve_candidates(
         self,
         agent: AIAgentConfig,
@@ -147,7 +166,12 @@ class FakeModelRouter:
                 request.on_delta(chunk.text)
             yield chunk
         if self.results:
-            return self.results.pop(0)
+            result = self.results.pop(0)
+            return replace(
+                result,
+                job_id=request.job_id,
+                candidate_snapshot_hash=request.candidate_snapshot.snapshot_hash,
+            )
         return success_result(request.job_id)
 
 
@@ -400,3 +424,212 @@ def test_closed_service_rejects_new_route_dispatch(
     with pytest.raises(AIServiceError, match="已关闭"):
         next(service._stream_route(route_context, MESSAGES))
     assert fake_router.requests == []
+
+
+def long_text_payload(agent_id: int) -> dict[str, Any]:
+    return {
+        "agent_id": agent_id,
+        "source_type": "manual",
+        "text": "前文" * 1_000,
+        "smart_context": True,
+        "context_chars": 5_000,
+    }
+
+
+def collected_delta(chunks: list[AIStreamChunk]) -> str:
+    return "".join(chunk.text for chunk in chunks if chunk.type == "delta")
+
+
+def test_continue_uses_internal_route_then_main_without_internal_body(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    fake_router.budget = replace(fake_router.budget, input_budget=1_000)
+    fake_router.queue_result(
+        success_result("pending", "摘要"),
+        [AIStreamChunk(type="delta", text="摘要")],
+    )
+    fake_router.queue_result(
+        success_result("pending", "续写"),
+        [AIStreamChunk(type="delta", text="续写")],
+    )
+
+    chunks = list(service.stream_continue(long_text_payload(fixed_agent.id)))
+
+    assert [request.stage for request in fake_router.requests] == [
+        "internal",
+        "main",
+    ]
+    assert fake_router.requests[0].job_id == fake_router.requests[1].job_id
+    assert collected_delta(chunks) == "续写"
+    assert chunks[-1].type == "done"
+    job = db.get_ai_job(fake_router.requests[-1].job_id)
+    assert job["status"] == "succeeded"
+    assert job["pinned_candidate_index"] is None
+
+
+def test_internal_summary_exhaustion_falls_back_to_tail(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+) -> None:
+    fake_router.budget = replace(fake_router.budget, input_budget=1_000)
+    fake_router.queue_result(failed_before_output_result(), [])
+    fake_router.queue_result(
+        success_result("pending", "续写"),
+        [AIStreamChunk(type="delta", text="续写")],
+    )
+
+    chunks = list(service.stream_continue(long_text_payload(fixed_agent.id)))
+
+    assert [request.stage for request in fake_router.requests] == [
+        "internal",
+        "main",
+    ]
+    assert collected_delta(chunks) == "续写"
+    assert chunks[-1].type == "done"
+    main_prompt = "\n".join(
+        message["content"] for message in fake_router.requests[-1].messages
+    )
+    assert "前文" in main_prompt
+
+
+def test_smart_context_omits_summary_when_no_summary_budget_remains(
+    service: AIWritingService,
+    route_context: Any,
+    fake_router: FakeModelRouter,
+) -> None:
+    fake_router.queue_result(
+        success_result("pending", "不应进入主上下文的摘要"),
+        [AIStreamChunk(type="delta", text="不应进入主上下文的摘要")],
+    )
+    prompt_budget = replace(route_context.prompt_budget, input_budget=20)
+
+    items = list(
+        service._smart_context(
+            "前文" * 100,
+            prompt_budget,
+            route_context,
+        )
+    )
+
+    resolved_context = next(item for item in reversed(items) if isinstance(item, str))
+    assert "不应进入主上下文的摘要" not in resolved_context
+    assert "【前文摘要】" not in resolved_context
+    assert resolved_context.endswith("前文" * 3)
+
+
+def test_continue_partial_is_preserved_without_second_provider_call(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    fake_router.queue_result(
+        partial_result(text="半截"),
+        [AIStreamChunk(type="delta", text="半截")],
+    )
+    payload = {
+        "agent_id": fixed_agent.id,
+        "source_type": "manual",
+        "text": "短原文",
+        "smart_context": False,
+    }
+
+    chunks = list(service.stream_continue(payload))
+
+    assert len(fake_router.requests) == 1
+    assert collected_delta(chunks) == "半截"
+    assert chunks[-1].type == "error"
+    job = db.get_ai_job(fake_router.requests[0].job_id)
+    assert job["status"] == "partial"
+    assert job["output_text"] == "半截"
+
+
+@pytest.mark.parametrize(
+    "method_name,payload",
+    [
+        ("stream_rewrite", {"rewrite_type": "polish"}),
+        ("stream_audit", {}),
+        ("stream_plan", {}),
+    ],
+)
+def test_one_shot_generation_paths_use_main_route(
+    method_name: str,
+    payload: dict[str, Any],
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+) -> None:
+    fake_router.queue_result(
+        success_result("pending", "结果"),
+        [AIStreamChunk(type="delta", text="结果")],
+    )
+    method = getattr(service, method_name)
+
+    chunks = list(
+        method(
+            {
+                "agent_id": fixed_agent.id,
+                "source_type": "manual",
+                "text": "原文",
+                **payload,
+            }
+        )
+    )
+
+    assert fake_router.requests[-1].stage == "main"
+    assert collected_delta(chunks) == "结果"
+    assert chunks[-1].type == "done"
+
+
+def test_keyword_clean_pool_capable_agent_keeps_graceful_degradation(
+    service: AIWritingService,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    pool_id = db.create_ai_model_pool(
+        {"name": "关键词池", "pool_kind": "custom"}
+    )
+    agent_id = db.create_ai_agent(
+        {
+            "name": "关键词清洗",
+            "task_type": "keyword_clean",
+            "binding_type": "pool",
+            "provider_id": None,
+            "model": None,
+            "model_pool_id": pool_id,
+            "system_prompt": "关键词清洗提示词",
+            "enabled": True,
+        }
+    )
+    fake_router.queue_result(failed_before_output_result(), [])
+
+    assert service.clean_keywords(["噪声", "关键词"]) is None
+    assert fake_router.requests[-1].stage == "main"
+    job = db.get_ai_job(fake_router.requests[-1].job_id)
+    assert job["agent_id"] == agent_id
+    assert job["status"] == "failed"
+
+
+def test_generation_module_has_no_direct_provider_stream_calls() -> None:
+    path = (
+        Path(__file__).parents[1]
+        / "src"
+        / "pixiv_novel_sync"
+        / "ai"
+        / "services"
+        / "generation.py"
+    )
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    direct_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "stream_generate"
+    ]
+
+    assert direct_calls == []
