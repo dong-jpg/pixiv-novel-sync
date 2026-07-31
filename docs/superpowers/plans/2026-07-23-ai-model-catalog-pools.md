@@ -14,7 +14,7 @@
 - Task 1 已由 `c31791d` 完成，并由 `16b8587` 补充 legacy model key 约束。
 - Task 2 已由 `816e690` 完成，并由 `9458cfe` 修正 canonical digest。
 - Task 3 已由 `6c3cc3a` 完成，并由 `c63ac95` 固化 canonical metadata 存储边界。
-- Task 0 已由 `0d881c1` 完成；Task 4-15 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a`、`1e5e969`、`7d1f560`、`d225bc4`、`65a2e8a`、`9dda110` 完成；当前从 Task 16 继续，Task 16-22 必须按下方 TDD 步骤推进。
+- Task 0 已由 `0d881c1` 完成；Task 4-16 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a`、`1e5e969`、`7d1f560`、`d225bc4`、`65a2e8a`、`9dda110`、`ad52187` 完成；当前从 Task 17 继续，Task 17-22 必须按下方 TDD 步骤推进。
 
 ## Global Constraints
 
@@ -1356,7 +1356,7 @@ git commit -m "refactor: route wizard planning and chapter generation"
 - Migrates `stream_extract_chapter_summary`, `stream_auto_resolve_foreshadows`, `stream_polish`, and every LLM branch of `stream_chapter_pipeline` through `_stream_route`.
 - `stream_extract_chapter_summary` and `stream_auto_resolve_foreshadows` keep their existing parse/apply transactions; a route `validation` result is never treated as user正文 or as a main partial.
 
-- [ ] **Step 1: Write failing route-coverage tests**
+- [x] **Step 1: Write failing route-coverage tests**
 
 ```python
 @pytest.mark.parametrize(
@@ -1379,23 +1379,23 @@ def test_foreshadow_parse_failure_keeps_existing_warning_behavior(service, fake_
     assert chunks[-1].data["warnings"] == ["模型返回的伏笔回收 JSON 无法解析，未更新伏笔状态"]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_service_parsing.py tests/test_ai_model_router_integration.py -q`
 
 Expected: FAIL because these methods still call `provider.stream_generate` and require a single Provider config.
 
-- [ ] **Step 3: Migrate domain side effects after route completion**
+- [x] **Step 3: Migrate domain side effects after route completion**
 
 Build messages and create jobs exactly as today, then route them with the Agent's candidate snapshot. Keep `output_parts` separate from progress; only non-empty main delta is appended to user output. Run `_apply_foreshadow_resolution_output`, `_parse_summary_output`, `_parse_and_save_state`, chapter updates and warning construction only after a normal route result. If the route returns `partial`, do not parse or mutate structured project state from an incomplete response; store the partial job state and send the existing error event. Preserve the project style-control prompt and all current JSON warning text.
 
-- [ ] **Step 4: Run project path tests and static direct-call check**
+- [x] **Step 4: Run project path tests and static direct-call check**
 
 Run: `python -m pytest tests/test_ai_service_parsing.py tests/test_ai_import_atomicity.py tests/test_ai_model_router_integration.py -q`
 
 Expected: PASS; the AST test reports no `stream_generate` call in `projects.py`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/services/projects.py tests/test_ai_service_parsing.py tests/test_ai_model_router_integration.py
