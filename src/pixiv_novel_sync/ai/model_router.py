@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
+from ..storage.ai.core import (
+    AIJobConflictError,
+    AIRouteBudgetExhausted,
+)
 from .model_catalog import ModelCatalogValidationError, normalize_model_key
 from .model_sync import provider_model_sync_config_hash
 from .models import AIAgentConfig, AIProviderConfig, AIStreamChunk
-from .providers import AIProvider
+from .providers import AIProvider, AIProviderError
 
 
 _ROUTE_STAGES = {"internal", "main", "validation"}
@@ -21,6 +28,17 @@ _MAX_OUTPUT_TOKENS = 1_000_000
 _MAX_CANDIDATES = 64
 _MAX_POOL_NODES = 8
 _SAFETY_MARGIN = 256
+_HEARTBEAT_INTERVAL_SECONDS = 15.0
+_LEASE_SECONDS = 45
+_ATTEMPT_FINISH_REASONS = {
+    "stop",
+    "complete",
+    "length",
+    "content_filter",
+    "missing",
+    "cancelled",
+    "error",
+}
 
 
 class ModelRouteError(RuntimeError):
@@ -520,17 +538,691 @@ class ModelRouter:
             estimator=estimator,
         )
 
+    @staticmethod
+    def _lease_until() -> str:
+        return (
+            datetime.now(timezone.utc) + timedelta(seconds=_LEASE_SECONDS)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def _deadline_expired(value: Any) -> bool:
+        if not value:
+            return False
+        try:
+            deadline = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ModelRouteError("AI job 路由截止时间无效") from exc
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        else:
+            deadline = deadline.astimezone(timezone.utc)
+        return datetime.now(timezone.utc) >= deadline
+
+    def _active_route_state(self, db: Any, request: RouteRequest) -> dict[str, Any]:
+        state = db.get_ai_job_route_state(request.job_id, request.owner_token)
+        if state is None or state.get("status") != "running":
+            raise AIJobConflictError("AI job 已终结或 owner 不匹配")
+        stored_hash = state.get("candidate_snapshot_hash")
+        if stored_hash != request.candidate_snapshot.snapshot_hash:
+            raise ModelRouteConflictError("AI job 候选快照不匹配")
+        if self._deadline_expired(state.get("route_deadline_at")):
+            raise AIRouteBudgetExhausted("AI job 已超过路由截止时间")
+        return state
+
+    @staticmethod
+    def _check_candidate_budget(state: Mapping[str, Any]) -> None:
+        if int(state.get("candidate_attempt_count") or 0) >= 16:
+            raise AIRouteBudgetExhausted("候选尝试次数已达到 16 次上限")
+        if int(state.get("network_request_count") or 0) >= 32:
+            raise AIRouteBudgetExhausted("网络请求次数已达到 32 次上限")
+
+    def _validate_execution_snapshot(
+        self,
+        db: Any,
+        request: RouteRequest,
+        candidates: tuple[ModelCandidate, ...] | list[ModelCandidate],
+        state: Mapping[str, Any],
+    ) -> None:
+        agent_id = state.get("agent_id")
+        if agent_id is not None:
+            current_agent = db.get_ai_agent(int(agent_id))
+            if current_agent is None or not bool(current_agent.get("enabled")):
+                raise ModelRouteConflictError("Agent 已不存在或已禁用")
+            if int(current_agent.get("binding_version") or 1) != (
+                request.candidate_snapshot.binding_version
+            ):
+                raise ModelRouteConflictError("Agent 配置版本已变更")
+            if self._agent_config_hash(current_agent) != (
+                request.candidate_snapshot.agent_config_hash
+            ):
+                raise ModelRouteConflictError("Agent 配置已变更")
+
+        pool_versions: dict[int, int] = {}
+        provider_hashes: dict[int, str] = {}
+        for candidate in candidates:
+            if candidate.pool_id is not None:
+                pool_version = pool_versions.get(candidate.pool_id)
+                if pool_version is None:
+                    pool = db.get_ai_model_pool(candidate.pool_id)
+                    if pool is None or not bool(pool.get("enabled")):
+                        raise ModelRouteConflictError("模型池已不存在或已禁用")
+                    pool_version = int(pool["version"])
+                    pool_versions[candidate.pool_id] = pool_version
+                if pool_version != candidate.pool_version:
+                    raise ModelRouteConflictError("模型池配置已变更")
+
+            provider_hash = provider_hashes.get(candidate.provider_id)
+            if provider_hash is None:
+                provider = db.get_ai_provider(
+                    candidate.provider_id,
+                    include_secret=True,
+                )
+                if provider is None or not bool(provider.get("enabled")):
+                    raise ModelRouteConflictError("Provider 已不存在或已禁用")
+                provider_hash = provider_model_sync_config_hash(provider)
+                provider_hashes[candidate.provider_id] = provider_hash
+            if provider_hash != candidate.provider_config_hash:
+                raise ModelRouteConflictError("Provider 配置已变更")
+
+    def _start_heartbeat(
+        self,
+        request: RouteRequest,
+    ) -> tuple[threading.Event, threading.Thread]:
+        stopped = threading.Event()
+
+        def heartbeat() -> None:
+            while not stopped.is_set():
+                db = self._db_factory()
+                try:
+                    if not db.heartbeat_ai_job(
+                        request.job_id,
+                        request.owner_token,
+                        self._lease_until(),
+                    ):
+                        return
+                finally:
+                    db.close()
+                stopped.wait(_HEARTBEAT_INTERVAL_SECONDS)
+
+        thread = threading.Thread(
+            target=heartbeat,
+            name=f"ai-route-heartbeat-{request.job_id}",
+            daemon=True,
+        )
+        thread.start()
+        return stopped, thread
+
+    @staticmethod
+    def _route_progress(
+        request: RouteRequest,
+        candidate: ModelCandidate,
+        *,
+        action: str,
+        reason: str | None = None,
+    ) -> AIStreamChunk:
+        data: dict[str, Any] = {
+            "phase": "route",
+            "action": action,
+            "stage": request.stage,
+            "candidate_index": candidate.candidate_index,
+            "provider_id": candidate.provider_id,
+            "provider_name": candidate.provider_name,
+            "provider_model_id": candidate.provider_model_id,
+            "model_key": candidate.model_key,
+            "pool_id": candidate.pool_id,
+            "pool_name": candidate.pool_name,
+            "pool_position": candidate.pool_position,
+            "fallback_depth": candidate.fallback_depth,
+        }
+        if reason:
+            data["reason"] = reason
+        return AIStreamChunk(type="progress", data=data)
+
+    @staticmethod
+    def _emit_progress(
+        request: RouteRequest,
+        chunk: AIStreamChunk,
+    ) -> AIStreamChunk:
+        request.on_progress(dict(chunk.data or {}))
+        return chunk
+
+    @staticmethod
+    def _attempt_data(
+        request: RouteRequest,
+        candidate: ModelCandidate,
+    ) -> dict[str, Any]:
+        return {
+            "pool_id": candidate.pool_id,
+            "provider_id": candidate.provider_id,
+            "provider_model_id": candidate.provider_model_id,
+            "pool_version_snapshot": candidate.pool_version,
+            "pool_position_snapshot": candidate.pool_position,
+            "model_key": candidate.model_key,
+            "pool_name_snapshot": candidate.pool_name,
+            "provider_name_snapshot": candidate.provider_name,
+            "agent_config_hash": request.candidate_snapshot.agent_config_hash,
+            "provider_config_hash": candidate.provider_config_hash,
+            "candidate_list_hash": request.candidate_snapshot.snapshot_hash,
+            "stage": request.stage,
+        }
+
+    @staticmethod
+    def _finish_reason(error: AIProviderError) -> str:
+        reason = error.finish_reason
+        return reason if reason in _ATTEMPT_FINISH_REASONS else "error"
+
+    @staticmethod
+    def _candidate_fits(
+        request: RouteRequest,
+        candidate: ModelCandidate,
+    ) -> bool:
+        if candidate.context_window is None:
+            return True
+        overhead = 4 * len(request.messages) + 2
+        content_bytes = sum(
+            len(str(message.get("content", "")).encode("utf-8"))
+            for message in request.messages
+        )
+        return (
+            content_bytes + overhead + request.max_tokens + _SAFETY_MARGIN
+            <= candidate.context_window
+        )
+
+    def _claim_network_request(self, request: RouteRequest) -> None:
+        if request.is_cancelled is not None and request.is_cancelled():
+            raise AIProviderError(
+                "AI 请求已取消",
+                category="cancelled",
+                scope="model",
+                finish_reason="cancelled",
+            )
+        db = self._db_factory()
+        try:
+            self._active_route_state(db, request)
+            db.claim_ai_job_network_request(request.job_id, request.owner_token)
+        finally:
+            db.close()
+
+    @staticmethod
+    def _attempts(db: Any, job_id: str) -> tuple[dict[str, Any], ...]:
+        return tuple(db.list_ai_job_model_attempts(job_id))
+
+    def _result(
+        self,
+        db: Any,
+        request: RouteRequest,
+        output_text: str,
+        finish_state: Literal[
+            "succeeded",
+            "failed_before_output",
+            "partial",
+            "cancelled",
+        ],
+    ) -> RouteResult:
+        return RouteResult(
+            job_id=request.job_id,
+            output_text=output_text,
+            candidate_snapshot_hash=request.candidate_snapshot.snapshot_hash,
+            attempts=self._attempts(db, request.job_id),
+            finish_state=finish_state,
+        )
+
+    def _terminal_race_result(
+        self,
+        db: Any,
+        request: RouteRequest,
+    ) -> RouteResult:
+        job = db.get_ai_job(request.job_id)
+        if job is None:
+            return self._result(db, request, "", "cancelled")
+        status = job.get("status")
+        if status == "partial":
+            finish_state = "partial"
+        elif status == "succeeded":
+            finish_state = "succeeded"
+        elif status == "cancelled":
+            finish_state = "cancelled"
+        else:
+            finish_state = "failed_before_output"
+        return self._result(
+            db,
+            request,
+            str(job.get("output_text") or ""),
+            finish_state,
+        )
+
+    def _finish_job_failure(
+        self,
+        db: Any,
+        request: RouteRequest,
+        *,
+        message: str,
+        category: str,
+    ) -> RouteResult:
+        db.finish_ai_job_cas(
+            request.job_id,
+            request.owner_token,
+            "failed",
+            error_message=f"{category}: {message}",
+        )
+        return self._terminal_race_result(db, request)
+
     def execute(self, request: RouteRequest) -> RouteResult:
-        del request
-        raise NotImplementedError
+        stream = self.execute_stream(request)
+        while True:
+            try:
+                next(stream)
+            except StopIteration as stopped:
+                return stopped.value
 
     def execute_stream(
         self,
         request: RouteRequest,
     ) -> Generator[AIStreamChunk, None, RouteResult]:
-        del request
-        raise NotImplementedError
-        yield  # pragma: no cover
+        if request.stage not in _ROUTE_STAGES:
+            raise ModelRouteError("路由阶段无效")
+        if (
+            isinstance(request.resume_candidate_index, bool)
+            or not isinstance(request.resume_candidate_index, int)
+            or request.resume_candidate_index < 0
+        ):
+            raise ModelRouteError("resume_candidate_index 必须是非负整数")
+
+        db = self._db_factory()
+        heartbeat_stop, heartbeat_thread = self._start_heartbeat(request)
+        output_parts: list[str] = []
+        blocked_providers: set[int] = set()
+        current_attempt: int | None = None
+        current_iterator: Any = None
+        current_output_started = False
+        try:
+            state = self._active_route_state(db, request)
+            candidates = [
+                candidate
+                for candidate in request.candidate_snapshot.candidates
+                if candidate.candidate_index >= request.resume_candidate_index
+            ]
+            pinned = state.get("pinned_candidate_index")
+            if request.stage == "main" and pinned is not None:
+                candidates = [
+                    candidate
+                    for candidate in candidates
+                    if candidate.candidate_index == int(pinned)
+                ]
+            self._validate_execution_snapshot(db, request, candidates, state)
+
+            for candidate in candidates:
+                if candidate.provider_id in blocked_providers:
+                    yield self._emit_progress(
+                        request,
+                        self._route_progress(
+                            request,
+                            candidate,
+                            action="skipped",
+                            reason="provider_short_circuit",
+                        ),
+                    )
+                    continue
+                if request.is_cancelled is not None and request.is_cancelled():
+                    db.finish_ai_job_cas(
+                        request.job_id,
+                        request.owner_token,
+                        "cancelled",
+                    )
+                    return self._terminal_race_result(db, request)
+
+                current_state = self._active_route_state(db, request)
+                self._check_candidate_budget(current_state)
+                yield self._emit_progress(
+                    request,
+                    self._route_progress(request, candidate, action="attempt"),
+                )
+                try:
+                    current_state = self._active_route_state(db, request)
+                    self._validate_execution_snapshot(
+                        db,
+                        request,
+                        (candidate,),
+                        current_state,
+                    )
+                    current_attempt = db.allocate_ai_model_attempt(
+                        request.job_id,
+                        request.owner_token,
+                        self._attempt_data(request, candidate),
+                    )
+                except AIRouteBudgetExhausted as error:
+                    return self._finish_job_failure(
+                        db,
+                        request,
+                        message=str(error),
+                        category="route_budget_exhausted",
+                    )
+                except AIJobConflictError:
+                    return self._terminal_race_result(db, request)
+
+                started_at = time.monotonic()
+                current_output_started = False
+                if not self._candidate_fits(request, candidate):
+                    db.finish_ai_model_attempt(
+                        request.job_id,
+                        current_attempt,
+                        request.owner_token,
+                        "failed",
+                        error_scope="model",
+                        error_message="Prompt 超过候选模型上下文窗口",
+                        error_category="context_overflow",
+                        finish_reason="error",
+                        output_started=False,
+                        latency_ms=0,
+                    )
+                    current_attempt = None
+                    yield self._emit_progress(
+                        request,
+                        self._route_progress(
+                            request,
+                            candidate,
+                            action="switch",
+                            reason="context_overflow",
+                        ),
+                    )
+                    continue
+
+                try:
+                    try:
+                        config = self._load_provider_config(
+                            db,
+                            candidate.provider_id,
+                        )
+                        provider = self._get_provider(config)
+                    except AIProviderError:
+                        raise
+                    except Exception as error:
+                        raise AIProviderError(
+                            str(error),
+                            category="provider_configuration",
+                            scope="provider",
+                        ) from error
+                    current_iterator = iter(
+                        provider.stream_generate(
+                            request.messages,
+                            candidate.model_key,
+                            request.temperature,
+                            request.top_p,
+                            request.max_tokens,
+                            request_guard=lambda: self._claim_network_request(request),
+                            is_cancelled=request.is_cancelled,
+                        )
+                    )
+                    attempt_parts: list[str] = []
+                    saw_done = False
+                    finish_reason = "stop"
+                    for chunk in current_iterator:
+                        if request.is_cancelled is not None and request.is_cancelled():
+                            raise AIProviderError(
+                                "AI 请求已取消",
+                                category="cancelled",
+                                scope="model",
+                                finish_reason="cancelled",
+                            )
+                        if chunk.type == "progress":
+                            yield self._emit_progress(request, chunk)
+                            continue
+                        if chunk.type == "delta" and chunk.text:
+                            if request.stage == "main" and not current_output_started:
+                                if not db.mark_ai_job_output_started(
+                                    request.job_id,
+                                    current_attempt,
+                                    request.owner_token,
+                                    candidate.candidate_index,
+                                ):
+                                    return self._terminal_race_result(db, request)
+                                current_output_started = True
+                            attempt_parts.append(chunk.text)
+                            output_parts.append(chunk.text)
+                            request.on_delta(chunk.text)
+                            yield chunk
+                            continue
+                        if chunk.type == "done":
+                            saw_done = True
+                            raw_reason = (chunk.data or {}).get("finish_reason")
+                            if raw_reason in _ATTEMPT_FINISH_REASONS:
+                                finish_reason = str(raw_reason)
+                            if finish_reason not in {"stop", "complete"}:
+                                if finish_reason == "cancelled":
+                                    raise AIProviderError(
+                                        "Provider 请求已取消",
+                                        category="cancelled",
+                                        scope="model",
+                                        finish_reason="cancelled",
+                                    )
+                                raise AIProviderError(
+                                    "Provider 未正常完成"
+                                    f"（finish_reason={finish_reason}）",
+                                    category="incomplete_response",
+                                    scope="model",
+                                    finish_reason=finish_reason,
+                                )
+                            break
+
+                    if not saw_done:
+                        raise AIProviderError(
+                            "Provider 流缺少正常结束标记",
+                            category="incomplete_response",
+                            scope="model",
+                            finish_reason="missing",
+                        )
+                    if not attempt_parts:
+                        raise AIProviderError(
+                            "Provider 返回空响应",
+                            category="empty_response",
+                            scope="model",
+                            finish_reason=finish_reason,
+                        )
+                    if not db.finish_ai_model_attempt(
+                        request.job_id,
+                        current_attempt,
+                        request.owner_token,
+                        "succeeded",
+                        finish_reason=finish_reason,
+                        output_started=current_output_started,
+                        latency_ms=max(
+                            0,
+                            int((time.monotonic() - started_at) * 1000),
+                        ),
+                    ):
+                        return self._terminal_race_result(db, request)
+                    current_attempt = None
+                    return self._result(
+                        db,
+                        request,
+                        "".join(output_parts),
+                        "succeeded",
+                    )
+                except AIProviderError as error:
+                    latency_ms = max(
+                        0,
+                        int((time.monotonic() - started_at) * 1000),
+                    )
+                    cancelled = (
+                        error.category == "cancelled"
+                        or error.finish_reason == "cancelled"
+                    )
+                    if cancelled:
+                        db.finish_ai_model_attempt(
+                            request.job_id,
+                            current_attempt,
+                            request.owner_token,
+                            "cancelled",
+                            error_scope=error.scope,
+                            error_message=str(error),
+                            error_category=error.category,
+                            finish_reason="cancelled",
+                            output_started=current_output_started,
+                            latency_ms=latency_ms,
+                        )
+                        current_attempt = None
+                        db.finish_ai_job_cas(
+                            request.job_id,
+                            request.owner_token,
+                            "cancelled",
+                        )
+                        return self._terminal_race_result(db, request)
+
+                    if request.stage == "main" and current_output_started:
+                        db.finish_ai_model_attempt(
+                            request.job_id,
+                            current_attempt,
+                            request.owner_token,
+                            "partial",
+                            error_scope=error.scope,
+                            error_message=str(error),
+                            error_category=error.category,
+                            finish_reason=self._finish_reason(error),
+                            output_started=True,
+                            latency_ms=latency_ms,
+                        )
+                        current_attempt = None
+                        db.finish_ai_job_cas(
+                            request.job_id,
+                            request.owner_token,
+                            "partial",
+                            output_text="".join(output_parts),
+                            error_message=str(error),
+                        )
+                        return self._terminal_race_result(db, request)
+
+                    if not db.finish_ai_model_attempt(
+                        request.job_id,
+                        current_attempt,
+                        request.owner_token,
+                        "failed",
+                        error_scope=error.scope,
+                        error_message=str(error),
+                        error_category=error.category,
+                        finish_reason=self._finish_reason(error),
+                        output_started=False,
+                        latency_ms=latency_ms,
+                    ):
+                        return self._terminal_race_result(db, request)
+                    current_attempt = None
+                    if error.scope == "provider":
+                        blocked_providers.add(candidate.provider_id)
+                    yield self._emit_progress(
+                        request,
+                        self._route_progress(
+                            request,
+                            candidate,
+                            action="switch",
+                            reason=error.category,
+                        ),
+                    )
+                except AIRouteBudgetExhausted as error:
+                    if request.stage == "main" and current_output_started:
+                        db.finish_ai_model_attempt(
+                            request.job_id,
+                            current_attempt,
+                            request.owner_token,
+                            "partial",
+                            error_scope="provider",
+                            error_message=str(error),
+                            error_category="route_budget_exhausted",
+                            finish_reason="error",
+                            output_started=True,
+                            latency_ms=max(
+                                0,
+                                int((time.monotonic() - started_at) * 1000),
+                            ),
+                        )
+                        current_attempt = None
+                        db.finish_ai_job_cas(
+                            request.job_id,
+                            request.owner_token,
+                            "partial",
+                            output_text="".join(output_parts),
+                            error_message=str(error),
+                        )
+                        return self._terminal_race_result(db, request)
+                    db.finish_ai_model_attempt(
+                        request.job_id,
+                        current_attempt,
+                        request.owner_token,
+                        "failed",
+                        error_scope="provider",
+                        error_message=str(error),
+                        error_category="route_budget_exhausted",
+                        finish_reason="error",
+                        output_started=current_output_started,
+                        latency_ms=max(
+                            0,
+                            int((time.monotonic() - started_at) * 1000),
+                        ),
+                    )
+                    current_attempt = None
+                    return self._finish_job_failure(
+                        db,
+                        request,
+                        message=str(error),
+                        category="route_budget_exhausted",
+                    )
+                except AIJobConflictError:
+                    return self._terminal_race_result(db, request)
+                finally:
+                    if current_iterator is not None:
+                        close = getattr(current_iterator, "close", None)
+                        if callable(close):
+                            close()
+                        current_iterator = None
+
+            if request.stage == "internal":
+                return self._result(
+                    db,
+                    request,
+                    "".join(output_parts),
+                    "failed_before_output",
+                )
+            category = (
+                "validation_failed"
+                if request.stage == "validation"
+                else "route_exhausted"
+            )
+            return self._finish_job_failure(
+                db,
+                request,
+                message="所有候选模型均失败",
+                category=category,
+            )
+        except AIRouteBudgetExhausted as error:
+            return self._finish_job_failure(
+                db,
+                request,
+                message=str(error),
+                category="route_budget_exhausted",
+            )
+        except GeneratorExit:
+            if current_iterator is not None:
+                close = getattr(current_iterator, "close", None)
+                if callable(close):
+                    close()
+            if current_attempt is not None:
+                db.finish_ai_model_attempt(
+                    request.job_id,
+                    current_attempt,
+                    request.owner_token,
+                    "cancelled",
+                    error_category="cancelled",
+                    finish_reason="cancelled",
+                    output_started=current_output_started,
+                )
+            db.finish_ai_job_cas(
+                request.job_id,
+                request.owner_token,
+                "cancelled",
+            )
+            raise
+        finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=1.0)
+            db.close()
 
 
 __all__ = [

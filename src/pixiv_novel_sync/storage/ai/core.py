@@ -597,6 +597,32 @@ class AiCoreMixin:
             return None
         return self._ai_job_from_row(row, include_attempts=True)
 
+    def get_ai_job_route_state(
+        self,
+        job_id: str,
+        owner_token: str,
+    ) -> dict[str, Any] | None:
+        """Return the private execution state only to the matching owner."""
+
+        row = self.conn.execute(
+            """
+            SELECT status, stage, agent_id, pinned_candidate_index,
+                   network_request_count, candidate_attempt_count,
+                   route_deadline_at, candidate_snapshot_hash
+            FROM ai_jobs
+            WHERE job_id = ? AND owner_token = ?
+            """,
+            (job_id, owner_token),
+        ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        for key in ("network_request_count", "candidate_attempt_count"):
+            item[key] = int(item.get(key) or 0)
+        if item.get("pinned_candidate_index") is not None:
+            item["pinned_candidate_index"] = int(item["pinned_candidate_index"])
+        return item
+
     def list_ai_jobs(
         self,
         task_type: str | None = None,
@@ -861,6 +887,72 @@ class AiCoreMixin:
                 (safe_lease, job_id, owner_token),
             )
             return True
+
+    def mark_ai_job_output_started(
+        self,
+        job_id: str,
+        attempt_index: int,
+        owner_token: str,
+        candidate_index: int,
+    ) -> bool:
+        """Atomically mark the first main body delta and persist its pin."""
+
+        if (
+            isinstance(candidate_index, bool)
+            or not isinstance(candidate_index, int)
+            or candidate_index < 0
+        ):
+            raise ValueError("candidate_index 必须是非负整数")
+        with self.transaction() as conn:
+            job = conn.execute(
+                """
+                SELECT pinned_candidate_index
+                FROM ai_jobs
+                WHERE job_id = ? AND status = 'running' AND owner_token = ?
+                """,
+                (job_id, owner_token),
+            ).fetchone()
+            attempt = conn.execute(
+                """
+                SELECT stage
+                FROM ai_job_model_attempts
+                WHERE job_id = ? AND attempt_index = ?
+                  AND status = 'running' AND owner_token = ?
+                """,
+                (job_id, int(attempt_index), owner_token),
+            ).fetchone()
+            if job is None or attempt is None or attempt["stage"] != "main":
+                return False
+            pinned = job["pinned_candidate_index"]
+            if pinned is not None and int(pinned) != candidate_index:
+                return False
+            job_cursor = conn.execute(
+                """
+                UPDATE ai_jobs
+                SET pinned_candidate_index = COALESCE(
+                        pinned_candidate_index, ?
+                    ),
+                    heartbeat_at = CURRENT_TIMESTAMP
+                WHERE job_id = ? AND status = 'running' AND owner_token = ?
+                  AND (
+                      pinned_candidate_index IS NULL
+                      OR pinned_candidate_index = ?
+                  )
+                """,
+                (candidate_index, job_id, owner_token, candidate_index),
+            )
+            if job_cursor.rowcount != 1:
+                return False
+            attempt_cursor = conn.execute(
+                """
+                UPDATE ai_job_model_attempts
+                SET output_started = 1, heartbeat_at = CURRENT_TIMESTAMP
+                WHERE job_id = ? AND attempt_index = ?
+                  AND status = 'running' AND owner_token = ?
+                """,
+                (job_id, int(attempt_index), owner_token),
+            )
+            return attempt_cursor.rowcount == 1
 
     def finish_ai_model_attempt(
         self,
