@@ -14,7 +14,7 @@
 - Task 1 已由 `c31791d` 完成，并由 `16b8587` 补充 legacy model key 约束。
 - Task 2 已由 `816e690` 完成，并由 `9458cfe` 修正 canonical digest。
 - Task 3 已由 `6c3cc3a` 完成，并由 `c63ac95` 固化 canonical metadata 存储边界。
-- Task 0 已由 `0d881c1` 完成；Task 4-12 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a`、`1e5e969`、`7d1f560` 完成；当前从 Task 13 继续，Task 13-22 必须按下方 TDD 步骤推进。
+- Task 0 已由 `0d881c1` 完成；Task 4-13 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a`、`1e5e969`、`7d1f560`、`d225bc4` 完成；当前从 Task 14 继续，Task 14-22 必须按下方 TDD 步骤推进。
 
 ## Global Constraints
 
@@ -1181,7 +1181,7 @@ git commit -m "feat: execute model routes with stage-aware failover"
 - Produces `RouteJobContext(job_id, owner_token, agent, candidate_snapshot, prompt_budget)` and helpers `_start_route_job(db, task_type, agent, input_data, *, messages, max_tokens, parent_job_id=None, idempotency_key=None, snapshot=None, resume_candidate_index=0) -> RouteJobContext`, `_stream_route(context, messages, *, stage='main', temperature=None, top_p=None, max_tokens=None) -> Generator[AIStreamChunk, None, RouteResult]`, `_finish_route_job(db, context, status, output_text, output_json=None, error_message=None) -> bool`, and `_cancel_route_job(...)`.
 - `AIWritingService.model_router` is initialized once per service with the existing `_db`, `_load_provider_config`, and `_get_provider` callbacks; `close()` stops heartbeat/sync resources and cached Providers.
 
-- [ ] **Step 1: Write failing adapter tests**
+- [x] **Step 1: Write failing adapter tests**
 
 ```python
 def test_start_route_job_persists_snapshot_before_provider_call(service, db, fake_router):
@@ -1204,23 +1204,23 @@ def test_stream_route_forwards_progress_delta_and_result(service, route_context,
     assert chunks.return_value.finish_state == "succeeded"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_model_router_integration.py -q`
 
 Expected: FAIL because the facade has no shared router or route-job helper.
 
-- [ ] **Step 3: Implement the adapter without leaking owners**
+- [x] **Step 3: Implement the adapter without leaking owners**
 
 Generate a random owner token, create the job with a deadline no later than 30 minutes, resolve candidates, compute/persist the PromptBudget and candidate snapshot before the first network request, then return the context. Public `get_job` strips owner fields; only the in-memory context carries owner. `_stream_route` builds a `RouteRequest` with callbacks that preserve existing SSE behavior and returns `yield from model_router.execute_stream(request)`. `_finish_route_job` uses owner CAS and refuses to overwrite router-written partial/cancelled/failed terminal states. Keep a path for an internal stage to return failure without closing the job. Add no alternate Provider/model selection helper.
 
-- [ ] **Step 4: Run adapter and facade tests**
+- [x] **Step 4: Run adapter and facade tests**
 
 Run: `python -m pytest tests/test_ai_model_router_integration.py tests/test_ai_service_facade.py tests/test_ai_service_provider_cache.py -q`
 
 Expected: PASS with unchanged Provider cache invalidation and no owner token in API-facing rows.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/services/core.py src/pixiv_novel_sync/ai/service.py src/pixiv_novel_sync/ai/services/__init__.py tests/test_ai_model_router_integration.py
