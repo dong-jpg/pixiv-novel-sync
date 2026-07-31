@@ -14,7 +14,7 @@
 - Task 1 已由 `c31791d` 完成，并由 `16b8587` 补充 legacy model key 约束。
 - Task 2 已由 `816e690` 完成，并由 `9458cfe` 修正 canonical digest。
 - Task 3 已由 `6c3cc3a` 完成，并由 `c63ac95` 固化 canonical metadata 存储边界。
-- Task 0 已由 `0d881c1` 完成；Task 4-13 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a`、`1e5e969`、`7d1f560`、`d225bc4` 完成；当前从 Task 14 继续，Task 14-22 必须按下方 TDD 步骤推进。
+- Task 0 已由 `0d881c1` 完成；Task 4-14 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a`、`1e5e969`、`7d1f560`、`d225bc4`、`65a2e8a` 完成；当前从 Task 15 继续，Task 15-22 必须按下方 TDD 步骤推进。
 
 ## Global Constraints
 
@@ -1239,7 +1239,7 @@ git commit -m "feat: add shared AI route session adapter"
 - `stream_continue`, `stream_rewrite`, `stream_audit`, `stream_plan`, and `clean_keywords` call `_start_route_job`/`_stream_route` and never load a Provider directly.
 - `_smart_context(text, prompt_budget, route_context) -> Iterator[AIStreamChunk | str]` runs each summary through `stage='internal'`; all internal candidates failing returns the existing tail-truncated context rather than failing the main job.
 
-- [ ] **Step 1: Write failing integration tests**
+- [x] **Step 1: Write failing integration tests**
 
 ```python
 def test_continue_uses_internal_route_then_main_without_internal_pin(service, fake_router):
@@ -1262,25 +1262,25 @@ def test_keyword_clean_pool_agent_keeps_graceful_degradation(service, fake_route
     assert service.clean_keywords(["噪声", "关键词"]) is None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_service_stream_continue.py tests/test_keyword_clean.py tests/test_ai_model_router_integration.py -q`
 
 Expected: FAIL because generation methods still call `_load_provider_config` and `provider.stream_generate` directly.
 
-- [ ] **Step 3: Migrate the five paths**
+- [x] **Step 3: Migrate the five paths**
 
 Create each job before smart-context/model execution, emit the existing metadata event, and use the returned PromptBudget to cap/tail the input before building final messages. `_smart_context` emits only `progress` events for summary progress and never forwards internal summary delta as user body; one internal route call per segment may switch candidates independently. Preserve existing output parsing, rule detection, job `output_json`, GeneratorExit behavior and keyword-clean `None` degradation. A router `partial` result keeps the exact partial output in the job and sends one error/progress conclusion rather than a second Provider call.
 
 Add an AST assertion in `test_ai_model_router_integration.py` that rejects `.stream_generate(` in `generation.py`; the only service-layer exception in the repository remains `AIAdminMixin.test_provider`.
 
-- [ ] **Step 4: Run migrated generation tests**
+- [x] **Step 4: Run migrated generation tests**
 
 Run: `python -m pytest tests/test_ai_service_stream_continue.py tests/test_keyword_clean.py tests/test_ai_service_parsing.py tests/test_ai_model_router_integration.py -q`
 
 Expected: PASS for fixed and pool Agents, smart-context fallback, parsing and graceful keyword-clean failure.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/services/generation.py tests/test_ai_service_stream_continue.py tests/test_keyword_clean.py tests/test_ai_model_router_integration.py
