@@ -1193,3 +1193,86 @@ def test_projects_module_has_no_direct_provider_stream_calls() -> None:
     ]
 
     assert offenders == []
+
+
+def test_pipeline_forwards_child_route_progress_as_custom_event(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    project_id = db.create_ai_writing_project({"name": "Pipeline 项目"})
+    chapter_id = db.create_ai_chapter(
+        {
+            "project_id": project_id,
+            "chapter_number": 1,
+            "title": "第一章",
+            "content": "章节正文",
+        }
+    )
+    output = "=== summary ===\n摘要\n=== key_events ===\n- 事件"
+    fake_router.queue_result(
+        success_result("pending", output),
+        [
+            AIStreamChunk(
+                type="progress",
+                data={"phase": "route", "action": "attempt"},
+            ),
+            AIStreamChunk(type="delta", text=output),
+        ],
+    )
+
+    chunks = list(
+        service.stream_chapter_pipeline(
+            {
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+                "steps": ["summary"],
+                "agent_ids": {"summary": fixed_agent.id},
+            }
+        )
+    )
+
+    progress_events = [
+        chunk
+        for chunk in chunks
+        if chunk.type == "custom"
+        and (chunk.data or {}).get("event") == "progress"
+    ]
+    assert len(progress_events) == 1
+    assert progress_events[0].data["step"] == "summary"
+    assert progress_events[0].data["progress"] == {
+        "phase": "route",
+        "action": "attempt",
+    }
+    assert chunks[-1].type == "done"
+
+
+def test_generation_has_no_synthetic_batch_delta_calls() -> None:
+    path = (
+        Path(__file__).parents[1]
+        / "src"
+        / "pixiv_novel_sync"
+        / "ai"
+        / "services"
+        / "generation.py"
+    )
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name) or node.func.id != "AIStreamChunk":
+            continue
+        keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+        chunk_type = keywords.get("type")
+        text_value = keywords.get("text")
+        if (
+            isinstance(chunk_type, ast.Constant)
+            and chunk_type.value == "delta"
+            and isinstance(text_value, ast.Name)
+            and text_value.id == "progress_text"
+        ):
+            offenders.append(node)
+
+    assert offenders == []

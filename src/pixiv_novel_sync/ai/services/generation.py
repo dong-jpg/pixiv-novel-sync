@@ -346,11 +346,14 @@ class AIGenerationMixin:
                     text_chunks=batch_chunks,
                     existing_profile=existing_profile,
                 )
-                # 进度通知
-                if len(batches) > 1:
-                    progress_text = f"\n\n--- 正在分析第 {batch_idx + 1}/{len(batches)} 批 ---\n\n"
-                    yield AIStreamChunk(type="delta", text=progress_text)
-                    output_parts.append(progress_text)
+                yield AIStreamChunk(
+                    type="progress",
+                    data={
+                        "phase": "batch",
+                        "batch": batch_idx + 1,
+                        "total": len(batches),
+                    },
+                )
 
                 batch_output: list[str] = []
                 result = yield from self._forward_route(
@@ -372,8 +375,6 @@ class AIGenerationMixin:
                 if not is_last:
                     # 中间批次：用输出作为下一批的 existing_profile
                     existing_profile = batch_text
-                    output_parts.append(f"[批次 {batch_idx + 1} 完成，{len(batch_text)} 字]\n")
-                    yield AIStreamChunk(type="delta", text=f"[批次 {batch_idx + 1} 完成，{len(batch_text)} 字]\n")
                 else:
                     output_parts.append(batch_text)
 
@@ -472,10 +473,14 @@ class AIGenerationMixin:
                     text_chunks=batch_chunks,
                     existing_profile=existing_profile,
                 )
-                if len(batches) > 1:
-                    progress_text = f"\n\n--- 正在分析第 {batch_idx + 1}/{len(batches)} 批 ---\n\n"
-                    yield AIStreamChunk(type="delta", text=progress_text)
-                    output_parts.append(progress_text)
+                yield AIStreamChunk(
+                    type="progress",
+                    data={
+                        "phase": "batch",
+                        "batch": batch_idx + 1,
+                        "total": len(batches),
+                    },
+                )
 
                 batch_output: list[str] = []
                 result = yield from self._forward_route(
@@ -496,8 +501,6 @@ class AIGenerationMixin:
                 batch_text = result.output_text or "".join(batch_output)
                 if not is_last:
                     existing_profile = batch_text
-                    output_parts.append(f"[批次 {batch_idx + 1} 完成，{len(batch_text)} 字]\n")
-                    yield AIStreamChunk(type="delta", text=f"[批次 {batch_idx + 1} 完成，{len(batch_text)} 字]\n")
                 else:
                     output_parts.append(batch_text)
             output = "".join(output_parts)

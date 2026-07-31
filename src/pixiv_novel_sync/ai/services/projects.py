@@ -1864,6 +1864,19 @@ class AIProjectsMixin:
             patch = {"name": step_name, "status": status, **extra}
             self._patch_pipeline_step(chapter_id, step_name, patch)
 
+        def _progress_chunk(
+            step_name: str,
+            chunk: AIStreamChunk,
+        ) -> AIStreamChunk:
+            return AIStreamChunk(
+                type="custom",
+                data={
+                    "event": "progress",
+                    "step": step_name,
+                    "progress": dict(chunk.data or {}),
+                },
+            )
+
         failed_steps = 0
         skipped_steps = 0
         for idx, step in enumerate(steps):
@@ -1899,6 +1912,8 @@ class AIProjectsMixin:
                     for chunk in self.stream_chapter_continue(sub_payload):
                         if chunk.type == "metadata":
                             job_id = (chunk.data or {}).get("job_id") or ""
+                        elif chunk.type == "progress":
+                            yield _progress_chunk(step, chunk)
                         elif chunk.type == "delta":
                             parts.append(chunk.text)
                             yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
@@ -1939,6 +1954,8 @@ class AIProjectsMixin:
                     for chunk in self.stream_polish(sub_payload):
                         if chunk.type == "metadata":
                             job_id = (chunk.data or {}).get("job_id") or ""
+                        elif chunk.type == "progress":
+                            yield _progress_chunk(step, chunk)
                         elif chunk.type == "delta":
                             parts.append(chunk.text)
                             yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
@@ -1976,6 +1993,8 @@ class AIProjectsMixin:
                     for chunk in self.stream_rewrite(sub_payload):
                         if chunk.type == "metadata":
                             job_id = (chunk.data or {}).get("job_id") or ""
+                        elif chunk.type == "progress":
+                            yield _progress_chunk(step, chunk)
                         elif chunk.type == "delta":
                             parts.append(chunk.text)
                             yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
@@ -1999,6 +2018,8 @@ class AIProjectsMixin:
                     for chunk in self.stream_extract_chapter_summary(sub_payload):
                         if chunk.type == "metadata":
                             job_id = (chunk.data or {}).get("job_id") or ""
+                        elif chunk.type == "progress":
+                            yield _progress_chunk(step, chunk)
                         elif chunk.type == "delta":
                             yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
                         elif chunk.type == "done":
@@ -2014,6 +2035,8 @@ class AIProjectsMixin:
                     for chunk in self.stream_update_project_state(sub_payload):
                         if chunk.type == "metadata":
                             job_id = (chunk.data or {}).get("job_id") or ""
+                        elif chunk.type == "progress":
+                            yield _progress_chunk(step, chunk)
                         elif chunk.type == "delta":
                             yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
                         elif chunk.type == "error":
@@ -2034,6 +2057,8 @@ class AIProjectsMixin:
                                 yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "skipped": True})
                                 skipped_this = True
                                 break
+                        elif chunk.type == "progress":
+                            yield _progress_chunk(step, chunk)
                         elif chunk.type == "delta":
                             yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
                         elif chunk.type == "done":
@@ -2067,6 +2092,8 @@ class AIProjectsMixin:
                     for chunk in self.stream_audit(sub_payload):
                         if chunk.type == "metadata":
                             job_id = (chunk.data or {}).get("job_id") or ""
+                        elif chunk.type == "progress":
+                            yield _progress_chunk(step, chunk)
                         elif chunk.type == "delta":
                             parts.append(chunk.text)
                             yield AIStreamChunk(type="custom", data={"event": "delta", "step": step, "text": chunk.text})
