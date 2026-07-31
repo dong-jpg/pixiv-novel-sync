@@ -124,6 +124,22 @@ class ModelRouter:
         self._db_factory = db_factory
         self._load_provider_config = load_provider_config
         self._get_provider = get_provider
+        self._lifecycle_lock = threading.Lock()
+        self._closed = threading.Event()
+        self._heartbeat_workers: dict[
+            threading.Event,
+            threading.Thread,
+        ] = {}
+
+    def close(self) -> None:
+        self._closed.set()
+        with self._lifecycle_lock:
+            workers = list(self._heartbeat_workers.items())
+        for stopped, _thread in workers:
+            stopped.set()
+        for _stopped, thread in workers:
+            if thread is not threading.current_thread():
+                thread.join(timeout=1.0)
 
     @staticmethod
     def _canonical_hash(payload: Mapping[str, Any]) -> str:
@@ -649,8 +665,17 @@ class ModelRouter:
             name=f"ai-route-heartbeat-{request.job_id}",
             daemon=True,
         )
-        thread.start()
+        with self._lifecycle_lock:
+            if self._closed.is_set():
+                raise ModelRouteError("ModelRouter 已关闭")
+            self._heartbeat_workers[stopped] = thread
+            thread.start()
         return stopped, thread
+
+    def _request_cancelled(self, request: RouteRequest) -> bool:
+        return self._closed.is_set() or (
+            request.is_cancelled is not None and request.is_cancelled()
+        )
 
     @staticmethod
     def _route_progress(
@@ -729,7 +754,7 @@ class ModelRouter:
         )
 
     def _claim_network_request(self, request: RouteRequest) -> None:
-        if request.is_cancelled is not None and request.is_cancelled():
+        if self._request_cancelled(request):
             raise AIProviderError(
                 "AI 请求已取消",
                 category="cancelled",
@@ -819,6 +844,8 @@ class ModelRouter:
         self,
         request: RouteRequest,
     ) -> Generator[AIStreamChunk, None, RouteResult]:
+        if self._closed.is_set():
+            raise ModelRouteError("ModelRouter 已关闭")
         if request.stage not in _ROUTE_STAGES:
             raise ModelRouteError("路由阶段无效")
         if (
@@ -829,7 +856,11 @@ class ModelRouter:
             raise ModelRouteError("resume_candidate_index 必须是非负整数")
 
         db = self._db_factory()
-        heartbeat_stop, heartbeat_thread = self._start_heartbeat(request)
+        try:
+            heartbeat_stop, heartbeat_thread = self._start_heartbeat(request)
+        except BaseException:
+            db.close()
+            raise
         output_parts: list[str] = []
         blocked_providers: set[int] = set()
         current_attempt: int | None = None
@@ -863,7 +894,7 @@ class ModelRouter:
                         ),
                     )
                     continue
-                if request.is_cancelled is not None and request.is_cancelled():
+                if self._request_cancelled(request):
                     db.finish_ai_job_cas(
                         request.job_id,
                         request.owner_token,
@@ -950,14 +981,14 @@ class ModelRouter:
                             request.top_p,
                             request.max_tokens,
                             request_guard=lambda: self._claim_network_request(request),
-                            is_cancelled=request.is_cancelled,
+                            is_cancelled=lambda: self._request_cancelled(request),
                         )
                     )
                     attempt_parts: list[str] = []
                     saw_done = False
                     finish_reason = "stop"
                     for chunk in current_iterator:
-                        if request.is_cancelled is not None and request.is_cancelled():
+                        if self._request_cancelled(request):
                             raise AIProviderError(
                                 "AI 请求已取消",
                                 category="cancelled",
@@ -1222,6 +1253,8 @@ class ModelRouter:
         finally:
             heartbeat_stop.set()
             heartbeat_thread.join(timeout=1.0)
+            with self._lifecycle_lock:
+                self._heartbeat_workers.pop(heartbeat_stop, None)
             db.close()
 
 

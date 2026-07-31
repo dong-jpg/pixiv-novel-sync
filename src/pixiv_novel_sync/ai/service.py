@@ -10,6 +10,7 @@ from .services import (
     AIConflictError,
     AIServiceCore,
     AIServiceError,
+    RouteJobContext,
 )
 
 
@@ -28,4 +29,5 @@ __all__ = [
     "AIServiceError",
     "AIConflictError",
     "AINotFoundError",
+    "RouteJobContext",
 ]

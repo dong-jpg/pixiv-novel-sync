@@ -1,14 +1,27 @@
 from __future__ import annotations
 
+import json
 import os
+import secrets
 import threading
+import uuid
+from collections.abc import Generator
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ...storage_db import Database
 from ..crypto import AISecretManager
+from ..model_router import (
+    CandidateSnapshot,
+    ModelRouter,
+    PromptBudget,
+    RouteRequest,
+    RouteResult,
+)
 from ..model_sync import ModelSyncCoordinator
-from ..models import AIProviderConfig
+from ..models import AIAgentConfig, AIProviderConfig, AIStreamChunk
 from ..providers import AIProvider
 from ..retrieval import BaseRetriever, create_retriever
 
@@ -25,6 +38,16 @@ class AIConflictError(AIServiceError):
 
 class AINotFoundError(AIServiceError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class RouteJobContext:
+    job_id: str
+    owner_token: str
+    agent: AIAgentConfig
+    candidate_snapshot: CandidateSnapshot
+    prompt_budget: PromptBudget
+    resume_candidate_index: int = 0
 
 
 class AIServiceCore:
@@ -45,6 +68,11 @@ class AIServiceCore:
         self._model_sync_lock = threading.Lock()
         self._model_sync_coordinator: ModelSyncCoordinator | None = None
         self._closed = False
+        self.model_router = ModelRouter(
+            self._db,
+            self._load_provider_config,
+            self._get_provider,
+        )
 
     def _get_retriever(self) -> BaseRetriever:
         # 7.7: 加锁保护缓存逻辑,避免多线程竞态
@@ -134,6 +162,204 @@ class AIServiceCore:
         config = self._load_provider_config(db, provider_id)
         return self._get_provider(config)
 
+    @staticmethod
+    def _snapshot_payload(snapshot: CandidateSnapshot) -> dict[str, Any]:
+        return {
+            "agent_config_hash": snapshot.agent_config_hash,
+            "binding_version": snapshot.binding_version,
+            "candidates": [asdict(candidate) for candidate in snapshot.candidates],
+        }
+
+    @staticmethod
+    def _persist_prompt_budget(
+        db: Database,
+        job_id: str,
+        owner_token: str,
+        budget: PromptBudget,
+    ) -> bool:
+        serialized = json.dumps(
+            asdict(budget),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        with db.transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE ai_jobs
+                SET prompt_budget_json = ?
+                WHERE job_id = ? AND status = 'running' AND owner_token = ?
+                  AND prompt_budget_json IS NULL
+                """,
+                (serialized, job_id, owner_token),
+            )
+            return cursor.rowcount == 1
+
+    def _start_route_job(
+        self,
+        db: Database,
+        task_type: str,
+        agent: AIAgentConfig,
+        input_data: dict[str, Any],
+        *,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        parent_job_id: str | None = None,
+        idempotency_key: str | None = None,
+        snapshot: CandidateSnapshot | None = None,
+        resume_candidate_index: int = 0,
+    ) -> RouteJobContext:
+        if self._closed:
+            raise AIServiceError("AI 服务已关闭")
+        if (
+            isinstance(resume_candidate_index, bool)
+            or not isinstance(resume_candidate_index, int)
+            or resume_candidate_index < 0
+        ):
+            raise AIServiceError("resume_candidate_index 必须是非负整数")
+
+        job_id = uuid.uuid4().hex
+        owner_token = secrets.token_urlsafe(32)
+        deadline = (
+            datetime.now(timezone.utc) + timedelta(minutes=30)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        db.create_ai_job(
+            job_id,
+            task_type,
+            agent.id,
+            input_data,
+            owner_token=owner_token,
+            stage="main",
+            route_deadline_at=deadline,
+            parent_job_id=parent_job_id,
+            idempotency_key=idempotency_key,
+        )
+
+        try:
+            candidate_snapshot = self.model_router.resolve_candidates(
+                agent,
+                stage="main",
+                snapshot=snapshot,
+            )
+            prompt_budget = self.model_router.build_prompt_budget(
+                agent,
+                candidate_snapshot,
+                messages,
+                max_tokens,
+            )
+            if not db.set_ai_job_candidate_snapshot(
+                job_id,
+                owner_token,
+                self._snapshot_payload(candidate_snapshot),
+                candidate_snapshot.snapshot_hash,
+            ):
+                raise AIConflictError("AI job 候选快照保存冲突")
+            if not self._persist_prompt_budget(
+                db,
+                job_id,
+                owner_token,
+                prompt_budget,
+            ):
+                raise AIConflictError("AI job PromptBudget 保存冲突")
+        except Exception as error:
+            db.finish_ai_job_cas(
+                job_id,
+                owner_token,
+                "failed",
+                error_message=str(error),
+            )
+            raise
+
+        return RouteJobContext(
+            job_id=job_id,
+            owner_token=owner_token,
+            agent=agent,
+            candidate_snapshot=candidate_snapshot,
+            prompt_budget=prompt_budget,
+            resume_candidate_index=resume_candidate_index,
+        )
+
+    def _stream_route(
+        self,
+        context: RouteJobContext,
+        messages: list[dict[str, str]],
+        *,
+        stage: Literal["internal", "main", "validation"] = "main",
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+    ) -> Generator[AIStreamChunk, None, RouteResult]:
+        if self._closed:
+            raise AIServiceError("AI 服务已关闭")
+        output_reserve = (
+            context.prompt_budget.output_reserve
+            if max_tokens is None
+            else max_tokens
+        )
+        if (
+            isinstance(output_reserve, bool)
+            or not isinstance(output_reserve, int)
+            or output_reserve <= 0
+            or output_reserve > context.prompt_budget.output_reserve
+        ):
+            raise AIServiceError(
+                "max_tokens 必须为正整数且不能超过已保存的输出预算"
+            )
+        request = RouteRequest(
+            job_id=context.job_id,
+            stage=stage,
+            messages=messages,
+            candidate_snapshot=context.candidate_snapshot,
+            max_tokens=output_reserve,
+            owner_token=context.owner_token,
+            on_delta=lambda _text: None,
+            on_progress=lambda _data: None,
+            temperature=(
+                context.agent.temperature if temperature is None else temperature
+            ),
+            top_p=context.agent.top_p if top_p is None else top_p,
+            resume_candidate_index=context.resume_candidate_index,
+        )
+        return (yield from self.model_router.execute_stream(request))
+
+    @staticmethod
+    def _finish_route_job(
+        db: Database,
+        context: RouteJobContext,
+        status: str,
+        output_text: str,
+        output_json: dict[str, Any] | None = None,
+        error_message: str | None = None,
+    ) -> bool:
+        fields: dict[str, Any] = {"output_text": output_text}
+        if output_json is not None:
+            fields["output_json"] = output_json
+        if error_message is not None:
+            fields["error_message"] = error_message
+        return db.finish_ai_job_cas(
+            context.job_id,
+            context.owner_token,
+            status,
+            **fields,
+        )
+
+    @staticmethod
+    def _cancel_route_job(
+        db: Database,
+        context: RouteJobContext,
+        error_message: str | None = None,
+    ) -> bool:
+        fields: dict[str, Any] = {}
+        if error_message is not None:
+            fields["error_message"] = error_message
+        return db.finish_ai_job_cas(
+            context.job_id,
+            context.owner_token,
+            "cancelled",
+            **fields,
+        )
+
     def _model_sync(self) -> ModelSyncCoordinator:
         with self._model_sync_lock:
             if self._closed:
@@ -183,6 +409,9 @@ class AIServiceCore:
             self._model_sync_coordinator = None
         if coordinator is not None:
             coordinator.close()
+        close_router = getattr(self.model_router, "close", None)
+        if callable(close_router):
+            close_router()
         with self._provider_lock:
             providers = list(self._provider_cache.values())
             self._provider_cache.clear()

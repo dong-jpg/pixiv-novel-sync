@@ -5,6 +5,7 @@ import json
 import threading
 from collections.abc import Iterator
 from collections.abc import Generator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import Any, Generic, TypeVar
@@ -1542,3 +1543,54 @@ def test_main_exhaustion_finishes_job_with_route_exhausted(
     assert job["status"] == "failed"
     assert "route_exhausted" in job["error_message"]
     assert fake_providers.calls == [("p1", "m1"), ("p2", "m2"), ("p3", "m3")]
+
+
+def test_closed_router_rejects_new_execution_without_heartbeat(
+    route_router: ModelRouter,
+    route_request: RouteRequest,
+) -> None:
+    route_router.close()
+
+    with pytest.raises(ModelRouteError, match="已关闭"):
+        next(route_router.execute_stream(route_request))
+    assert not any(
+        thread.name == f"ai-route-heartbeat-{route_request.job_id}"
+        and thread.is_alive()
+        for thread in threading.enumerate()
+    )
+
+
+def test_router_close_cancels_active_route_and_stops_heartbeat(
+    route_router: ModelRouter,
+    route_request: RouteRequest,
+    fake_providers: FakeProviderRegistry,
+    db: Database,
+) -> None:
+    provider_entered = threading.Event()
+    release_provider = threading.Event()
+
+    def blocking_delta() -> AIStreamChunk:
+        provider_entered.set()
+        assert release_provider.wait(timeout=3)
+        return AIStreamChunk(type="delta", text="不应发送")
+
+    fake_providers.responses[("p1", None)] = [blocking_delta, normal_done()]
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(route_router.execute, route_request)
+        assert provider_entered.wait(timeout=3)
+        try:
+            route_router.close()
+            assert not any(
+                thread.name == f"ai-route-heartbeat-{route_request.job_id}"
+                and thread.is_alive()
+                for thread in threading.enumerate()
+            )
+        finally:
+            release_provider.set()
+        result = future.result(timeout=3)
+
+    assert result.finish_state == "cancelled"
+    assert result.output_text == ""
+    job = db.get_ai_job(route_request.job_id)
+    assert job["status"] == "cancelled"
+    assert job["attempts"][0]["status"] == "cancelled"
