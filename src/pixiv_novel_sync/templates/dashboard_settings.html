@@ -369,6 +369,62 @@
           <div v-for="provider in providers" :key="provider.id" class="border border-gray-100 rounded-lg p-3 text-sm">
             <div class="font-semibold text-gray-900">{{ provider.name }}</div>
             <div class="text-xs text-pixiv-gray mt-1">{{ provider.provider_type }} · {{ provider.default_model || '未设置模型' }} · Key: {{ provider.has_api_key ? '已保存' : '未保存' }}</div>
+            <div class="mt-3 border-t border-gray-100 pt-3 space-y-3">
+              <div class="flex items-center justify-between gap-2 flex-wrap">
+                <div class="text-xs font-semibold text-gray-700">模型目录</div>
+                <div class="flex items-center gap-2">
+                  <button @click="modelCatalogExpanded[provider.id] = !modelCatalogExpanded[provider.id]" class="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">{{ modelCatalogExpanded[provider.id] ? '收起' : '展开' }}</button>
+                  <button @click="loadProviderModels(provider.id)" class="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">刷新目录</button>
+                  <button @click="syncProviderModels(provider.id)" :disabled="modelSyncBusy(provider.id)" class="text-xs px-2 py-1 rounded bg-brand-50 text-brand-600 hover:bg-brand-100 disabled:opacity-50">
+                    {{ modelSyncBusy(provider.id) ? '同步中...' : '同步模型' }}
+                  </button>
+                </div>
+              </div>
+              <div class="grid grid-cols-3 gap-2 text-center text-xs">
+                <div class="rounded border border-gray-100 bg-gray-50 px-2 py-1.5"><div class="text-gray-500">总数</div><div class="font-semibold text-gray-900">{{ modelCatalog(provider).total }}</div></div>
+                <div class="rounded border border-gray-100 bg-gray-50 px-2 py-1.5"><div class="text-gray-500">已发现可用</div><div class="font-semibold text-gray-900">{{ modelCatalog(provider).discovered_available }}</div></div>
+                <div class="rounded border border-gray-100 bg-gray-50 px-2 py-1.5"><div class="text-gray-500">可路由</div><div class="font-semibold text-gray-900">{{ modelCatalog(provider).routable }}</div></div>
+              </div>
+              <div v-if="provider.models_synced_at" class="text-xs text-gray-500">最近成功：{{ provider.models_synced_at }}</div>
+              <div v-if="provider.models_sync_error" class="text-xs text-amber-700">最近同步错误：{{ provider.models_sync_error }}</div>
+              <div v-if="modelSyncOperations[provider.id] && ['failed', 'cancelled', 'timeout', 'timed_out'].includes(modelSyncOperations[provider.id].status)" class="text-xs text-amber-700">旧目录仍可使用</div>
+              <div class="text-xs text-amber-700">模型池发生故障转移时，Prompt 可能发送到链中的其他 Provider，请确认隐私边界。</div>
+              <div v-if="modelCatalogExpanded[provider.id]" class="space-y-3">
+                <div class="flex items-center gap-2">
+                  <input v-model="modelSearch[provider.id]" @keyup.enter="loadProviderModels(provider.id)" class="min-w-0 flex-1 px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="搜索模型">
+                  <button @click="loadProviderModels(provider.id)" class="text-xs px-2 py-1.5 rounded bg-gray-100 hover:bg-gray-200">查找</button>
+                </div>
+                <div v-if="modelCatalog(provider).items.length" class="space-y-1 max-h-48 overflow-y-auto">
+                  <div v-for="model in modelCatalog(provider).items" :key="model.id" class="flex items-start justify-between gap-2 rounded border border-gray-100 px-2 py-1.5 text-xs">
+                    <div class="min-w-0">
+                      <div class="font-medium text-gray-900 truncate">{{ model.display_name || model.model_key }}</div>
+                      <div class="text-gray-500 truncate">{{ model.model_key }} · {{ model.context_window || '未知窗口' }}</div>
+                      <div class="text-gray-500 truncate">{{ (model.capabilities || []).join(', ') || '无能力标签' }}</div>
+                    </div>
+                    <div class="flex-shrink-0 text-right space-y-1">
+                      <div class="text-gray-500">{{ model.source || 'catalog' }}</div>
+                      <button v-if="model.manual" @click="deleteManualModel(provider.id, model.id)" class="text-red-600 hover:text-red-700">删除人工记录</button>
+                    </div>
+                  </div>
+                </div>
+                <div v-else class="text-xs text-gray-500">暂无模型目录记录</div>
+                <div class="border-t border-gray-100 pt-3 space-y-2">
+                  <div class="text-xs font-semibold text-gray-700">人工补录模型</div>
+                  <input v-model="manualModelForm(provider.id).model_key" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="model_key">
+                  <input v-model="manualModelForm(provider.id).manual_display_name" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="显示名称（可选）">
+                  <input v-model="manualModelForm(provider.id).manual_capabilities" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="能力标签，逗号分隔">
+                  <input type="number" v-model.number="manualModelForm(provider.id).manual_context_window" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="上下文窗口（可选）">
+                  <button @click="createManualModel(provider.id)" class="text-xs px-2 py-1.5 rounded bg-gray-900 text-white">添加模型</button>
+                </div>
+              </div>
+              <div v-if="emptyConfirmations[provider.id]" role="dialog" class="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 space-y-2">
+                <div>本次同步返回空目录，是否确认覆盖发现状态？</div>
+                <div class="flex gap-2">
+                  <button @click="confirmEmptyCatalog(provider.id)" class="px-2 py-1 rounded bg-amber-600 text-white">确认空目录</button>
+                  <button @click="emptyConfirmations[provider.id] = null" class="px-2 py-1 rounded bg-white border border-amber-200">暂不确认</button>
+                </div>
+              </div>
+            </div>
             <div v-if="providerTestStatus[provider.id]" class="mt-2 text-xs px-2 py-1 rounded" :class="providerTestStatus[provider.id].type === 'error' ? 'bg-red-50 text-red-700' : (providerTestStatus[provider.id].type === 'warning' ? 'bg-amber-50 text-amber-700' : 'bg-green-50 text-green-700')">{{ providerTestStatus[provider.id].text }}</div>
             <div class="flex gap-2 mt-2 flex-wrap">
               <button @click="editProvider(provider)" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">编辑</button>
@@ -526,6 +582,13 @@
       const seedProviderId = ref(0);
       const testingProviderId = ref(0);
       const providerTestStatus = reactive({});
+      const providerModels = reactive({});
+      const modelSearch = reactive({});
+      const modelCatalogExpanded = reactive({});
+      const manualModelForms = reactive({});
+      const modelSyncOperations = reactive({});
+      const emptyConfirmations = reactive({});
+      const MODEL_SYNC_EVENTS = new Set(['started', 'page', 'empty_confirmation_required', 'completed', 'failed', 'cancelled']);
       const aiMessage = ref('');
       const aiMessageType = ref('success');
       const rescueTokenStatus = ref({ configured: false, token_prefix: '', rotated_at: '' });
@@ -704,12 +767,187 @@
         rescueTokenPlaintext.value = '';
       };
       const aiApi = async (url, options = {}) => {
-        const res = await fetch(url, options);
+        const method = String(options.method || 'GET').toUpperCase();
+        const headers = { ...(options.headers || {}) };
+        if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+          headers['X-CSRF-Token'] = await ensureCsrfToken();
+        }
+        const res = await fetch(url, { ...options, method, headers });
         const data = await res.json();
         if (!res.ok || data.ok === false) throw new Error(data.error || '请求失败');
         return data.data;
       };
-      const loadProviders = async () => { providers.value = await aiApi('/api/dashboard/ai/providers'); };
+      const modelCatalog = (provider) => providerModels[provider.id] || { items: [], total: 0, discovered_available: 0, routable: 0 };
+      const modelSyncBusy = (providerId) => {
+        const status = modelSyncOperations[providerId] && modelSyncOperations[providerId].status;
+        return status === 'queued' || status === 'running';
+      };
+      const modelSyncStorageKey = (providerId) => `pixiv-ai-model-sync:${providerId}`;
+      const updateModelSyncState = (providerId, patch) => {
+        modelSyncOperations[providerId] = { ...(modelSyncOperations[providerId] || {}), ...patch };
+      };
+      const loadProviderModels = async (providerId) => {
+        const search = String(modelSearch[providerId] || '').trim();
+        const query = search ? `?search=${encodeURIComponent(search)}` : '';
+        const previous = providerModels[providerId];
+        try {
+          const data = await aiApi(`/api/dashboard/ai/providers/${providerId}/models${query}`);
+          providerModels[providerId] = data || { items: [], total: 0, discovered_available: 0, routable: 0 };
+        } catch (e) {
+          if (!previous) providerModels[providerId] = { items: [], total: 0, discovered_available: 0, routable: 0 };
+          showAiMessage(e.message || '读取模型目录失败', 'error');
+        }
+      };
+      const manualModelForm = (providerId) => {
+        if (!manualModelForms[providerId]) {
+          manualModelForms[providerId] = { model_key: '', manual_display_name: '', manual_capabilities: '', manual_context_window: null };
+        }
+        return manualModelForms[providerId];
+      };
+      const createManualModel = async (providerId) => {
+        const form = manualModelForm(providerId);
+        const modelKey = String(form.model_key || '').trim();
+        if (!modelKey) {
+          showAiMessage('model_key 不能为空', 'error');
+          return;
+        }
+        const capabilities = String(form.manual_capabilities || '').split(',').map(item => item.trim()).filter(Boolean);
+        const contextWindow = Number(form.manual_context_window || 0);
+        try {
+          await aiApi(`/api/dashboard/ai/providers/${providerId}/models`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model_key: modelKey,
+              enabled: true,
+              manual_display_name: String(form.manual_display_name || '').trim() || null,
+              manual_capabilities: capabilities,
+              manual_context_window: contextWindow > 0 ? contextWindow : null
+            })
+          });
+          manualModelForms[providerId] = { model_key: '', manual_display_name: '', manual_capabilities: '', manual_context_window: null };
+          await loadProviderModels(providerId);
+          showAiMessage('人工模型已添加');
+        } catch (e) {
+          showAiMessage(e.message || '人工模型添加失败', 'error');
+        }
+      };
+      const deleteManualModel = async (providerId, modelId) => {
+        if (!confirm('确认删除该人工模型记录？')) return;
+        try {
+          await aiApi(`/api/dashboard/ai/provider-models/${modelId}`, { method: 'DELETE' });
+          await loadProviderModels(providerId);
+          showAiMessage('人工模型已删除');
+        } catch (e) {
+          showAiMessage(e.message || '人工模型删除失败', 'error');
+        }
+      };
+      const loadModelSyncOperation = async (providerId, operationId) => {
+        try {
+          const operation = await aiApi(`/api/dashboard/ai/model-sync-operations/${operationId}`);
+          updateModelSyncState(providerId, operation || {});
+          if (operation && operation.status === 'needs_empty_confirmation') {
+            emptyConfirmations[providerId] = operation;
+          } else if (operation && (operation.status === 'queued' || operation.status === 'running')) {
+            await consumeModelSyncEvents(providerId, operationId);
+          } else if (operation && ['succeeded', 'failed', 'cancelled'].includes(operation.status)) {
+            try { localStorage.removeItem(modelSyncStorageKey(providerId)); } catch (e) { /* storage unavailable */ }
+          }
+        } catch (e) {
+          updateModelSyncState(providerId, { status: 'failed', error_message: e.message || '读取同步状态失败' });
+        }
+      };
+      const parseModelSyncEvent = (providerId, block) => {
+        const lines = block.split(/\r?\n/);
+        const eventLine = lines.find(line => line.startsWith('event:'));
+        const dataLine = lines.find(line => line.startsWith('data:'));
+        if (!eventLine || !dataLine) return;
+        const eventName = eventLine.slice(6).trim();
+        if (!MODEL_SYNC_EVENTS.has(eventName)) return;
+        let data;
+        try { data = JSON.parse(dataLine.slice(5).trim()); } catch (e) { return; }
+        updateModelSyncState(providerId, data || {});
+        if (eventName === 'started') updateModelSyncState(providerId, { status: 'running' });
+        if (eventName === 'page') updateModelSyncState(providerId, { status: 'running', pages: data.pages, discovered_count: data.discovered_count });
+        if (eventName === 'empty_confirmation_required') {
+          updateModelSyncState(providerId, { status: 'needs_empty_confirmation' });
+          emptyConfirmations[providerId] = data;
+        }
+        if (eventName === 'completed') {
+          updateModelSyncState(providerId, { status: 'succeeded' });
+          emptyConfirmations[providerId] = null;
+          loadProviderModels(providerId);
+        }
+        if (eventName === 'failed' || eventName === 'cancelled') {
+          updateModelSyncState(providerId, { status: eventName, error_message: data.error_message || data.message || '' });
+          emptyConfirmations[providerId] = null;
+          showAiMessage('同步失败，旧目录仍可使用', 'warning');
+        }
+      };
+      const consumeModelSyncEvents = async (providerId, operationId) => {
+        const response = await fetch(`/api/dashboard/ai/model-sync-operations/${operationId}/events`);
+        if (!response.ok || !response.body) throw new Error('无法读取模型同步事件');
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+          const blocks = buffer.split(/\r?\n\r?\n/);
+          buffer = blocks.pop() || '';
+          blocks.forEach(block => parseModelSyncEvent(providerId, block));
+          if (done) break;
+        }
+        if (buffer.trim()) parseModelSyncEvent(providerId, buffer);
+        const finalStatus = modelSyncOperations[providerId] && modelSyncOperations[providerId].status;
+        if (['succeeded', 'failed', 'cancelled'].includes(finalStatus)) {
+          try { localStorage.removeItem(modelSyncStorageKey(providerId)); } catch (e) { /* storage unavailable */ }
+        }
+      };
+      const syncProviderModels = async (providerId) => {
+        if (modelSyncBusy(providerId)) return;
+        try {
+          updateModelSyncState(providerId, { status: 'queued', error_message: '' });
+          const operation = await aiApi(`/api/dashboard/ai/providers/${providerId}/models/sync`, { method: 'POST' });
+          const operationId = operation && operation.operation_id;
+          if (!operationId) throw new Error('同步响应缺少 operation_id');
+          updateModelSyncState(providerId, { ...operation, status: 'queued' });
+          try { localStorage.setItem(modelSyncStorageKey(providerId), operationId); } catch (e) { /* storage unavailable */ }
+          await consumeModelSyncEvents(providerId, operationId);
+        } catch (e) {
+          updateModelSyncState(providerId, { status: 'failed', error_message: e.message || '模型同步失败' });
+          showAiMessage('同步失败，旧目录仍可使用', 'warning');
+        }
+      };
+      const confirmEmptyCatalog = async (providerId) => {
+        const confirmation = emptyConfirmations[providerId];
+        if (!confirmation) return;
+        try {
+          await aiApi(`/api/dashboard/ai/model-sync-operations/${confirmation.operation_id}/confirm-empty`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ generation: confirmation.generation, result_digest: confirmation.result_digest })
+          });
+          emptyConfirmations[providerId] = null;
+          updateModelSyncState(providerId, { status: 'succeeded' });
+          await loadProviderModels(providerId);
+          showAiMessage('空目录已确认');
+        } catch (e) {
+          showAiMessage(e.message || '空目录确认失败', 'error');
+        }
+      };
+      const recoverModelSyncOperations = async () => {
+        for (const provider of providers.value) {
+          let operationId = '';
+          try { operationId = localStorage.getItem(modelSyncStorageKey(provider.id)) || ''; } catch (e) { operationId = ''; }
+          if (operationId) await loadModelSyncOperation(provider.id, operationId);
+        }
+      };
+      const loadProviders = async () => {
+        providers.value = await aiApi('/api/dashboard/ai/providers');
+        await Promise.all(providers.value.map(provider => loadProviderModels(provider.id)));
+        await recoverModelSyncOperations();
+      };
       const loadAgents = async () => { agents.value = await aiApi('/api/dashboard/ai/agents'); };
       const resetProviderForm = () => Object.assign(providerForm, { id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
       const editProvider = (provider) => Object.assign(providerForm, { id: provider.id, name: provider.name || '', provider_type: provider.provider_type || 'openai_compatible', base_url: provider.base_url || '', default_model: provider.default_model || '', api_key: '', timeout_seconds: provider.timeout_seconds || 120, max_retries: provider.max_retries || 2, context_window: provider.context_window || 128000, stream_enabled: provider.stream_enabled !== false, enabled: provider.enabled !== false });
@@ -797,6 +1035,11 @@
         loadingCache, clearingCache, cacheData, cacheMessage, cacheSuccess,
         saveSettings, triggerManualTask, fetchCacheStatus, clearCache,
         providers, agents, filteredAgents, agentFilter, seedProviderId, testingProviderId, providerTestStatus,
+        providerModels, modelSearch, modelCatalogExpanded, manualModelForms,
+        modelSyncOperations, emptyConfirmations,
+        modelCatalog, modelSyncBusy, loadProviderModels, loadModelSyncOperation,
+        manualModelForm, createManualModel, deleteManualModel,
+        syncProviderModels, confirmEmptyCatalog, recoverModelSyncOperations,
         aiMessage, aiMessageType, providerForm, agentForm,
         rescueTokenStatus, rescueTokenPlaintext, rescueTokenMessage, rescueTokenMessageType,
         rotatingRescueToken, loadRescueTokenStatus, rotateRescueToken, copyRescueToken, closeRescueToken,
