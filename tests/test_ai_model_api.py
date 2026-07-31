@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Iterator
+from dataclasses import asdict
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -13,7 +15,7 @@ from pixiv_novel_sync.ai.model_catalog import (
     canonical_model_digest,
     normalize_model_record,
 )
-from pixiv_novel_sync.ai.models import ModelListResult
+from pixiv_novel_sync.ai.models import AIStreamChunk, ModelListResult
 from pixiv_novel_sync.ai.providers import AIProviderError
 from pixiv_novel_sync.ai.service import AIWritingService
 from pixiv_novel_sync.ai_web import register_ai_routes
@@ -41,6 +43,34 @@ class BlockingDiscoveryProvider:
             result_digest=canonical_model_digest(models),
             partial_reason=None,
         )
+        self.generate_calls: list[str] = []
+
+    def estimate_message_tokens(
+        self,
+        messages: list[dict[str, str]],
+    ) -> None:
+        del messages
+        return None
+
+    def stream_generate(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        temperature: float,
+        top_p: float,
+        max_tokens: int,
+        *,
+        request_guard=None,
+        is_cancelled=None,
+    ) -> Iterator[AIStreamChunk]:
+        del messages, temperature, top_p, max_tokens
+        if is_cancelled is not None and is_cancelled():
+            raise AIProviderError("请求已取消")
+        self.generate_calls.append(model)
+        if request_guard is not None:
+            request_guard()
+        yield AIStreamChunk(type="delta", text="恢复生成正文")
+        yield AIStreamChunk(type="done", data={"finish_reason": "stop"})
 
     def list_models(self, *, on_page=None, is_cancelled=None, deadline=None):
         self.started.set()
@@ -673,9 +703,26 @@ def test_model_api_mutations_use_dashboard_csrf(tmp_path: Path, monkeypatch) -> 
         json={"name": "CSRF 池", "pool_kind": "custom"},
         headers={"X-CSRF-Token": csrf},
     )
+    continue_payload = {
+        "parent_job_id": "missing-parent",
+        "idempotency_key": "continue-00000003",
+        "candidate_snapshot_hash": "f" * 64,
+        "resume_candidate_index": 0,
+    }
+    blocked_continue = client.post(
+        "/api/dashboard/ai/jobs/missing-parent/continue",
+        json=continue_payload,
+    )
+    allowed_continue = client.post(
+        "/api/dashboard/ai/jobs/missing-parent/continue",
+        json=continue_payload,
+        headers={"X-CSRF-Token": csrf},
+    )
 
     assert blocked.status_code == 403
     assert allowed.status_code == 200
+    assert blocked_continue.status_code == 403
+    assert allowed_continue.status_code == 404
     manager = app.extensions.get("pixiv_novel_sync.ai_service")
     if manager is not None:
         manager.close()
@@ -735,3 +782,235 @@ def test_sync_reconciliation_still_runs_when_job_reconciliation_fails(
     manager = app.extensions["pixiv_novel_sync.ai_service"]
     assert sync_calls == [manager._current()]
     manager.close()
+
+
+def seed_api_partial_continue_job(api) -> SimpleNamespace:
+    provider_ids: list[int] = []
+    model_ids: list[int] = []
+    for index in range(2):
+        provider_id = api.db.create_ai_provider(
+            {
+                "name": f"continue-provider-{index + 1}",
+                "provider_type": "openai_compatible",
+                "base_url": f"https://continue-{index + 1}.example.test/v1",
+                "context_window": 16_000,
+                "enabled": True,
+            }
+        )
+        provider_ids.append(provider_id)
+        model_ids.append(
+            api.db.create_ai_provider_model(
+                {
+                    "provider_id": provider_id,
+                    "model_key": f"continue-model-{index + 1}",
+                    "manual_context_window": 16_000,
+                    "enabled": True,
+                }
+            )
+        )
+    pool_id = api.db.create_ai_model_pool(
+        {"name": "继续任务模型池", "pool_kind": "custom"}
+    )
+    version = api.db.replace_ai_model_pool_members(
+        pool_id,
+        [
+            {"provider_model_id": model_id, "enabled": True}
+            for model_id in model_ids
+        ],
+        expected_version=1,
+    )
+    api.db.update_ai_model_pool(
+        pool_id,
+        {"enabled": True},
+        expected_version=version,
+    )
+    agent_id = api.db.create_ai_agent(
+        {
+            "name": "继续任务 Agent",
+            "task_type": "continue",
+            "binding_type": "pool",
+            "provider_id": None,
+            "model": None,
+            "model_pool_id": pool_id,
+            "system_prompt": "继续写作",
+            "max_tokens": 1_000,
+            "context_window": 16_000,
+            "enabled": True,
+        }
+    )
+    service = api.app.extensions["pixiv_novel_sync.ai_service"]._current()
+    agent = service._load_agent_config(api.db, agent_id)
+    snapshot = service.model_router.resolve_candidates(agent)
+    parent_job_id = "api-partial-parent"
+    owner_token = "api-partial-owner"
+    api.db.create_ai_job(
+        parent_job_id,
+        "continue",
+        agent_id,
+        {
+            "agent_id": agent_id,
+            "source_type": "manual",
+            "text": "已有正文",
+            "smart_context": False,
+            "context_chars": 2_000,
+        },
+        owner_token=owner_token,
+        route_deadline_at="2099-01-01 00:00:00",
+    )
+    assert api.db.set_ai_job_candidate_snapshot(
+        parent_job_id,
+        owner_token,
+        {
+            "agent_config_hash": snapshot.agent_config_hash,
+            "binding_version": snapshot.binding_version,
+            "candidates": [asdict(candidate) for candidate in snapshot.candidates],
+        },
+        snapshot.snapshot_hash,
+    )
+    candidate = snapshot.candidates[0]
+    attempt_index = api.db.allocate_ai_model_attempt(
+        parent_job_id,
+        owner_token,
+        {
+            "pool_id": candidate.pool_id,
+            "provider_id": candidate.provider_id,
+            "provider_model_id": candidate.provider_model_id,
+            "pool_version_snapshot": candidate.pool_version,
+            "pool_position_snapshot": candidate.pool_position,
+            "model_key": candidate.model_key,
+            "pool_name_snapshot": candidate.pool_name,
+            "provider_name_snapshot": candidate.provider_name,
+            "agent_config_hash": snapshot.agent_config_hash,
+            "provider_config_hash": candidate.provider_config_hash,
+            "candidate_list_hash": snapshot.snapshot_hash,
+            "stage": "main",
+        },
+    )
+    assert api.db.mark_ai_job_output_started(
+        parent_job_id,
+        attempt_index,
+        owner_token,
+        candidate.candidate_index,
+    )
+    assert api.db.finish_ai_model_attempt(
+        parent_job_id,
+        attempt_index,
+        owner_token,
+        "partial",
+        output_started=True,
+        error_category="network",
+        error_message="连接中断",
+        finish_reason="error",
+    )
+    assert api.db.finish_ai_job_cas(
+        parent_job_id,
+        owner_token,
+        "partial",
+        output_text="半截",
+        error_message="连接中断",
+    )
+    return SimpleNamespace(
+        parent_job_id=parent_job_id,
+        snapshot=snapshot,
+        remaining_provider_id=provider_ids[1],
+        payload={
+            "parent_job_id": parent_job_id,
+            "idempotency_key": "continue-00000002",
+            "candidate_snapshot_hash": snapshot.snapshot_hash,
+            "resume_candidate_index": 1,
+        },
+    )
+
+
+def test_continue_endpoint_replays_child_idempotently(api) -> None:
+    seeded = seed_api_partial_continue_job(api)
+    path = f"/api/dashboard/ai/jobs/{seeded.parent_job_id}/continue"
+
+    first = api.client.post(
+        path,
+        json=seeded.payload,
+        headers={"X-CSRF-Token": api.csrf},
+    )
+    first_body = first.get_data(as_text=True)
+    calls_after_first = list(api.fake_provider.generate_calls)
+    second = api.client.post(
+        path,
+        json=seeded.payload,
+        headers={"X-CSRF-Token": api.csrf},
+    )
+
+    assert first.status_code == 200
+    assert first.mimetype == "text/event-stream"
+    assert "event: done" in first_body
+    assert calls_after_first == ["continue-model-2"]
+    assert api.fake_provider.generate_calls == calls_after_first
+    assert "event: done" in second.get_data(as_text=True)
+    children = api.db.conn.execute(
+        "SELECT job_id FROM ai_jobs WHERE parent_job_id = ?",
+        (seeded.parent_job_id,),
+    ).fetchall()
+    assert len(children) == 1
+
+
+def test_continue_rejects_snapshot_hash_before_opening_sse(api) -> None:
+    seeded = seed_api_partial_continue_job(api)
+    payload = {**seeded.payload, "candidate_snapshot_hash": "0" * 64}
+
+    response = api.client.post(
+        f"/api/dashboard/ai/jobs/{seeded.parent_job_id}/continue",
+        json=payload,
+        headers={"X-CSRF-Token": api.csrf},
+    )
+
+    assert response.status_code == 409
+    assert "候选快照" in response.get_json()["error"]
+
+
+def test_continue_rejects_remaining_provider_config_change_with_409(api) -> None:
+    seeded = seed_api_partial_continue_job(api)
+    api.db.update_ai_provider(
+        seeded.remaining_provider_id,
+        {"timeout_seconds": 31},
+    )
+
+    response = api.client.post(
+        f"/api/dashboard/ai/jobs/{seeded.parent_job_id}/continue",
+        json=seeded.payload,
+        headers={"X-CSRF-Token": api.csrf},
+    )
+
+    assert response.status_code == 409
+    assert "Provider 配置" in response.get_json()["error"]
+
+
+def test_continue_validates_exact_body_and_next_candidate_index(api) -> None:
+    seeded = seed_api_partial_continue_job(api)
+    path = f"/api/dashboard/ai/jobs/{seeded.parent_job_id}/continue"
+    invalid_payloads = [
+        ({**seeded.payload, "parent_job_id": "different-parent"}, 400),
+        ({**seeded.payload, "idempotency_key": "short"}, 400),
+        ({**seeded.payload, "candidate_snapshot_hash": "A" * 64}, 400),
+        ({**seeded.payload, "resume_candidate_index": 0}, 409),
+        ({**seeded.payload, "extra": True}, 400),
+    ]
+
+    for payload, expected_status in invalid_payloads:
+        response = api.client.post(
+            path,
+            json=payload,
+            headers={"X-CSRF-Token": api.csrf},
+        )
+        assert response.status_code == expected_status, response.get_data(as_text=True)
+
+    api.db.conn.execute(
+        "UPDATE ai_jobs SET status = 'running' WHERE job_id = ?",
+        (seeded.parent_job_id,),
+    )
+    api.db.conn.commit()
+    non_terminal = api.client.post(
+        path,
+        json=seeded.payload,
+        headers={"X-CSRF-Token": api.csrf},
+    )
+    assert non_terminal.status_code == 409
+    assert "终态" in non_terminal.get_json()["error"]

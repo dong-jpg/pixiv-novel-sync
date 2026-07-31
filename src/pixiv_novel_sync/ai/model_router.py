@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 import time
 from collections.abc import Callable, Generator, Mapping
@@ -39,6 +40,7 @@ _ATTEMPT_FINISH_REASONS = {
     "cancelled",
     "error",
 }
+_HASH_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class ModelRouteError(RuntimeError):
@@ -72,6 +74,14 @@ class CandidateSnapshot:
     snapshot_hash: str
     agent_config_hash: str
     binding_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class RouteResumeSpec:
+    parent_job_id: str
+    idempotency_key: str
+    candidate_snapshot_hash: str
+    resume_candidate_index: int
 
 
 @dataclass(slots=True)
@@ -194,6 +204,170 @@ class ModelRouter:
                 "candidates": [asdict(candidate) for candidate in candidates],
             }
         )
+
+    @staticmethod
+    def _snapshot_integer(
+        value: Any,
+        label: str,
+        *,
+        minimum: int = 0,
+        optional: bool = False,
+    ) -> int | None:
+        if value is None and optional:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ModelRouteConflictError(f"候选快照中的 {label} 无效")
+        return value
+
+    @classmethod
+    def candidate_snapshot_from_payload(
+        cls,
+        payload: Mapping[str, Any],
+        snapshot_hash: str,
+    ) -> CandidateSnapshot:
+        """从持久化且不含密钥的 JSON 重建强类型候选快照。"""
+
+        try:
+            if not isinstance(payload, Mapping):
+                raise ModelRouteConflictError("候选快照内容无效")
+            if set(payload) != {
+                "agent_config_hash",
+                "binding_version",
+                "candidates",
+            }:
+                raise ModelRouteConflictError("候选快照字段无效")
+            agent_config_hash = payload.get("agent_config_hash")
+            if (
+                not isinstance(agent_config_hash, str)
+                or _HASH_PATTERN.fullmatch(agent_config_hash) is None
+            ):
+                raise ModelRouteConflictError("候选快照中的 Agent 摘要无效")
+            binding_version = cls._snapshot_integer(
+                payload.get("binding_version"),
+                "binding_version",
+                minimum=1,
+            )
+            raw_candidates = payload.get("candidates")
+            if not isinstance(raw_candidates, list):
+                raise ModelRouteConflictError("候选快照中的 candidates 无效")
+
+            candidates: list[ModelCandidate] = []
+            candidate_fields = {
+                "provider_id",
+                "provider_name",
+                "model_key",
+                "provider_model_id",
+                "pool_id",
+                "pool_name",
+                "pool_version",
+                "pool_position",
+                "provider_config_hash",
+                "capabilities",
+                "context_window",
+                "fallback_depth",
+                "candidate_index",
+            }
+            for raw_candidate in raw_candidates:
+                if not isinstance(raw_candidate, Mapping) or set(raw_candidate) != candidate_fields:
+                    raise ModelRouteConflictError("候选快照中的候选字段无效")
+                provider_name = raw_candidate.get("provider_name")
+                model_key = raw_candidate.get("model_key")
+                pool_name = raw_candidate.get("pool_name")
+                provider_config_hash = raw_candidate.get("provider_config_hash")
+                capabilities = raw_candidate.get("capabilities")
+                if not isinstance(provider_name, str) or not provider_name:
+                    raise ModelRouteConflictError("候选快照中的 Provider 名称无效")
+                if not isinstance(model_key, str) or not model_key:
+                    raise ModelRouteConflictError("候选快照中的 model_key 无效")
+                if pool_name is not None and not isinstance(pool_name, str):
+                    raise ModelRouteConflictError("候选快照中的模型池名称无效")
+                if (
+                    not isinstance(provider_config_hash, str)
+                    or _HASH_PATTERN.fullmatch(provider_config_hash) is None
+                ):
+                    raise ModelRouteConflictError("候选快照中的 Provider 摘要无效")
+                if not isinstance(capabilities, (list, tuple)) or not all(
+                    isinstance(item, str) for item in capabilities
+                ):
+                    raise ModelRouteConflictError("候选快照中的能力列表无效")
+                context_window = cls._snapshot_integer(
+                    raw_candidate.get("context_window"),
+                    "context_window",
+                    minimum=_CONTEXT_WINDOW_MIN,
+                    optional=True,
+                )
+                candidates.append(
+                    ModelCandidate(
+                        provider_id=int(
+                            cls._snapshot_integer(
+                                raw_candidate.get("provider_id"),
+                                "provider_id",
+                                minimum=1,
+                            )
+                        ),
+                        provider_name=provider_name,
+                        model_key=model_key,
+                        provider_model_id=cls._snapshot_integer(
+                            raw_candidate.get("provider_model_id"),
+                            "provider_model_id",
+                            minimum=1,
+                            optional=True,
+                        ),
+                        pool_id=cls._snapshot_integer(
+                            raw_candidate.get("pool_id"),
+                            "pool_id",
+                            minimum=1,
+                            optional=True,
+                        ),
+                        pool_name=pool_name,
+                        pool_version=cls._snapshot_integer(
+                            raw_candidate.get("pool_version"),
+                            "pool_version",
+                            minimum=1,
+                            optional=True,
+                        ),
+                        pool_position=cls._snapshot_integer(
+                            raw_candidate.get("pool_position"),
+                            "pool_position",
+                            minimum=1,
+                            optional=True,
+                        ),
+                        provider_config_hash=provider_config_hash,
+                        capabilities=tuple(capabilities),
+                        context_window=context_window,
+                        fallback_depth=int(
+                            cls._snapshot_integer(
+                                raw_candidate.get("fallback_depth"),
+                                "fallback_depth",
+                            )
+                        ),
+                        candidate_index=int(
+                            cls._snapshot_integer(
+                                raw_candidate.get("candidate_index"),
+                                "candidate_index",
+                            )
+                        ),
+                    )
+                )
+            if not isinstance(snapshot_hash, str) or _HASH_PATTERN.fullmatch(snapshot_hash) is None:
+                raise ModelRouteConflictError("候选快照摘要无效")
+            snapshot = CandidateSnapshot(
+                candidates=tuple(candidates),
+                snapshot_hash=snapshot_hash,
+                agent_config_hash=agent_config_hash,
+                binding_version=int(binding_version),
+            )
+            if cls._snapshot_hash(
+                snapshot.candidates,
+                snapshot.agent_config_hash,
+                snapshot.binding_version,
+            ) != snapshot_hash:
+                raise ModelRouteConflictError("候选快照校验失败，请重新开始任务")
+            return snapshot
+        except ModelRouteConflictError:
+            raise
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ModelRouteConflictError("候选快照内容无效") from exc
 
     @staticmethod
     def _context_window(value: Any, label: str) -> int:
@@ -380,6 +554,8 @@ class ModelRouter:
         db: Any,
         agent: AIAgentConfig,
         snapshot: CandidateSnapshot,
+        *,
+        resume_candidate_index: int = 0,
     ) -> CandidateSnapshot:
         expected_hash = cls._snapshot_hash(
             snapshot.candidates,
@@ -394,6 +570,12 @@ class ModelRouter:
             range(len(snapshot.candidates))
         ):
             raise ModelRouteConflictError("候选快照顺序无效")
+        if (
+            isinstance(resume_candidate_index, bool)
+            or not isinstance(resume_candidate_index, int)
+            or not (0 <= resume_candidate_index < len(snapshot.candidates))
+        ):
+            raise ModelRouteConflictError("继续候选索引超出候选快照范围")
 
         current_agent = db.get_ai_agent(agent.id)
         if current_agent is None or not bool(current_agent.get("enabled")):
@@ -406,7 +588,7 @@ class ModelRouter:
 
         provider_hashes: dict[int, str] = {}
         pool_versions: dict[int, int] = {}
-        for candidate in snapshot.candidates:
+        for candidate in snapshot.candidates[resume_candidate_index:]:
             provider_hash = provider_hashes.get(candidate.provider_id)
             if provider_hash is None:
                 provider = db.get_ai_provider(
@@ -432,6 +614,24 @@ class ModelRouter:
             if pool_version != candidate.pool_version:
                 raise ModelRouteConflictError("模型池配置已变更，请重新开始任务")
         return snapshot
+
+    def validate_resume_snapshot(
+        self,
+        agent: AIAgentConfig,
+        snapshot: CandidateSnapshot,
+        resume_candidate_index: int,
+    ) -> CandidateSnapshot:
+        db = self._db_factory()
+        try:
+            with db.read_transaction():
+                return self._validate_saved_snapshot(
+                    db,
+                    agent,
+                    snapshot,
+                    resume_candidate_index=resume_candidate_index,
+                )
+        finally:
+            db.close()
 
     def resolve_candidates(
         self,

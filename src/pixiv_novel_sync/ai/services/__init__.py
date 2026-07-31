@@ -4,6 +4,7 @@ from .core import (
     AIServiceCore,
     AIServiceError,
     RouteJobContext,
+    RouteResumeSpec,
 )
 from .admin import AIAdminMixin
 from .generation import AIGenerationMixin
@@ -16,6 +17,7 @@ __all__ = [
     "AIConflictError",
     "AINotFoundError",
     "RouteJobContext",
+    "RouteResumeSpec",
     "AIAdminMixin",
     "AIGenerationMixin",
     "AIProjectsMixin",

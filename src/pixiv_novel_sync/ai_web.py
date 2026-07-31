@@ -637,6 +637,18 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
         except Exception as exc:
             return fail(exc)
 
+    @app.post("/api/dashboard/ai/jobs/<job_id>/continue")
+    def continue_ai_job_with_next_model(job_id: str):
+        try:
+            payload = require_json_object()
+            # 在建立 SSE 响应前同步校验，确保错误保持为 HTTP 4xx，
+            # 不会在响应开始后退化成 HTTP 200 的 SSE error。
+            return stream_response(
+                service.stream_job_with_next_model(job_id, payload)
+            )
+        except Exception as exc:
+            return fail(exc)
+
     @app.post("/api/dashboard/ai/jobs/cleanup")
     def cleanup_ai_jobs():
         try:

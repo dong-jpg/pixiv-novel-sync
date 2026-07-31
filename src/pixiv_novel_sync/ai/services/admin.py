@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import secrets
 import sqlite3
 import time
 import unicodedata
+import uuid
+from collections.abc import Iterator, Mapping
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from ...storage.ai.core import AIProviderReferenceError
+from ...storage.ai.core import AIJobConflictError, AIProviderReferenceError
 from ...storage_db import Database
 from ..model_catalog import (
     ModelCatalogConflictError,
@@ -19,8 +24,9 @@ from ..model_pools import (
     ModelPoolValidationError,
     expand_pool_ids,
 )
+from ..model_router import CandidateSnapshot, ModelRouteConflictError, ModelRouter
 from ..model_sync import ModelSyncConflictError
-from ..models import AIAgentConfig, AIProviderConfig
+from ..models import AIAgentConfig, AIProviderConfig, AIStreamChunk
 from ..providers import ProviderConfigError, validate_base_url
 from ..prompts import (
     DEFAULT_CHAPTER_SUMMARY_PROMPT,
@@ -30,7 +36,12 @@ from ..prompts import (
     DEFAULT_POLISH_PSYCHOLOGY_PROMPT,
     DEFAULT_WIZARD_PROMPT,
 )
-from .core import AINotFoundError, AIConflictError, AIServiceError
+from .core import (
+    AINotFoundError,
+    AIConflictError,
+    AIServiceError,
+    RouteResumeSpec,
+)
 
 
 _MANUAL_MODEL_CREATE_FIELDS = {
@@ -53,9 +64,244 @@ _MODEL_POOL_FIELDS = {
     "fallback_pool_id",
     "enabled",
 }
+_RESUME_FIELDS = {
+    "parent_job_id",
+    "idempotency_key",
+    "candidate_snapshot_hash",
+    "resume_candidate_index",
+}
+_RESUME_TASK_DISPATCH = {
+    "continue": "stream_continue",
+}
+_RESUME_HASH_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class AIAdminMixin:
+    @staticmethod
+    def _resume_request_payload(
+        parent_job_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(payload, Mapping):
+            raise AIServiceError("请求体必须是 JSON 对象")
+        data = dict(payload)
+        unknown = sorted(set(data) - _RESUME_FIELDS)
+        if unknown:
+            raise AIServiceError(f"不允许提交字段：{', '.join(unknown)}")
+        if set(data) != _RESUME_FIELDS:
+            missing = sorted(_RESUME_FIELDS - set(data))
+            raise AIServiceError(f"继续请求缺少字段：{', '.join(missing)}")
+        if not isinstance(parent_job_id, str) or not parent_job_id:
+            raise AIServiceError("父 AI job 标识无效")
+        body_parent = data["parent_job_id"]
+        if body_parent != parent_job_id:
+            raise AIServiceError("路径中的父 AI job 与请求体不一致")
+        if (
+            not isinstance(body_parent, str)
+            or len(body_parent) > 128
+            or any(ord(character) < 0x20 for character in body_parent)
+        ):
+            raise AIServiceError("父 AI job 标识无效")
+        idempotency_key = data["idempotency_key"]
+        if (
+            not isinstance(idempotency_key, str)
+            or not idempotency_key.isascii()
+            or not (16 <= len(idempotency_key) <= 128)
+            or any(not (0x21 <= ord(character) <= 0x7E) for character in idempotency_key)
+        ):
+            raise AIServiceError("idempotency_key 必须是 16-128 位 ASCII 字符")
+        snapshot_hash = data["candidate_snapshot_hash"]
+        if (
+            not isinstance(snapshot_hash, str)
+            or _RESUME_HASH_PATTERN.fullmatch(snapshot_hash) is None
+        ):
+            raise AIServiceError("candidate_snapshot_hash 必须是 64 位小写十六进制摘要")
+        resume_index = data["resume_candidate_index"]
+        if (
+            isinstance(resume_index, bool)
+            or not isinstance(resume_index, int)
+            or resume_index < 0
+        ):
+            raise AIServiceError("resume_candidate_index 必须是非负整数")
+        return {
+            "parent_job_id": body_parent,
+            "idempotency_key": idempotency_key,
+            "candidate_snapshot_hash": snapshot_hash,
+            "resume_candidate_index": resume_index,
+        }
+
+    @staticmethod
+    def _resume_next_candidate_index(
+        snapshot: CandidateSnapshot,
+        attempts: list[dict[str, Any]],
+    ) -> int:
+        attempted_indices: list[int] = []
+        for attempt in attempts:
+            if attempt.get("stage") != "main":
+                continue
+            if attempt.get("status") == "running":
+                raise AIConflictError("父 AI job 仍有未完成的模型尝试")
+            candidate_hash = attempt.get("candidate_list_hash")
+            if candidate_hash != snapshot.snapshot_hash:
+                raise AIConflictError("父 AI job 的尝试记录不属于当前候选快照")
+            provider_id = attempt.get("provider_id")
+            model_key = attempt.get("model_key")
+            provider_model_id = attempt.get("provider_model_id")
+            matches = [
+                candidate
+                for candidate in snapshot.candidates
+                if candidate.provider_id == provider_id
+                and candidate.model_key == model_key
+                and (
+                    provider_model_id is None
+                    or candidate.provider_model_id == provider_model_id
+                )
+            ]
+            if len(matches) != 1:
+                raise AIConflictError("父 AI job 的尝试无法匹配候选快照")
+            attempted_indices.append(matches[0].candidate_index)
+        next_index = max(attempted_indices, default=-1) + 1
+        if next_index >= len(snapshot.candidates):
+            raise AIConflictError("候选快照没有未尝试的模型")
+        return next_index
+
+    def _replay_resume_child(
+        self,
+        db: Database,
+        child_id: str,
+    ) -> Iterator[AIStreamChunk]:
+        child = db.get_ai_job(child_id)
+        if child is None:
+            raise AIConflictError("继续任务 child job 不存在")
+        return self._stream_replayed_route_job(child)
+
+    def stream_job_with_next_model(
+        self,
+        job_id: str,
+        payload: Mapping[str, Any],
+    ) -> Iterator[AIStreamChunk]:
+        """在返回 SSE 前校验并准备手动候选继续任务。"""
+
+        request_data = self._resume_request_payload(job_id, payload)
+        db = self._db()
+        try:
+            parent = db.get_ai_job(job_id)
+            if parent is None:
+                raise AINotFoundError("父 AI job 不存在")
+            if parent.get("status") not in {
+                "succeeded",
+                "failed",
+                "partial",
+                "cancelled",
+            }:
+                raise AIConflictError("父 AI job 尚未进入终态")
+            if parent.get("candidate_snapshot_hash") != request_data[
+                "candidate_snapshot_hash"
+            ]:
+                raise AIConflictError("候选快照摘要不匹配")
+            snapshot_payload = parent.get("candidate_snapshot")
+            if not isinstance(snapshot_payload, Mapping):
+                raise AIConflictError("父 AI job 缺少候选快照")
+            try:
+                snapshot = ModelRouter.candidate_snapshot_from_payload(
+                    snapshot_payload,
+                    request_data["candidate_snapshot_hash"],
+                )
+            except ModelRouteConflictError as exc:
+                raise AIConflictError(str(exc)) from exc
+            expected_index = self._resume_next_candidate_index(
+                snapshot,
+                parent.get("attempts") or [],
+            )
+            if request_data["resume_candidate_index"] != expected_index:
+                raise AIConflictError(
+                    f"resume_candidate_index 必须是 {expected_index}"
+                )
+
+            task_type = str(parent.get("task_type") or "")
+            dispatch_name = _RESUME_TASK_DISPATCH.get(task_type)
+            if dispatch_name is None:
+                raise AIConflictError("该任务类型暂不支持手动候选继续")
+            dispatch = getattr(self, dispatch_name, None)
+            if not callable(dispatch):
+                raise AIConflictError("该任务类型缺少继续处理器")
+
+            existing = db.get_ai_resume_job_execution_state(
+                job_id,
+                request_data["idempotency_key"],
+            )
+            if existing is not None:
+                if existing.get("candidate_snapshot_hash") != request_data[
+                    "candidate_snapshot_hash"
+                ] or (
+                    existing.get("input") or {}
+                ).get("resume_candidate_index") != request_data[
+                    "resume_candidate_index"
+                ]:
+                    raise AIConflictError("幂等键已用于不同的继续请求")
+                return self._replay_resume_child(db, str(existing["job_id"]))
+
+            agent_id = parent.get("agent_id")
+            if isinstance(agent_id, bool) or not isinstance(agent_id, int) or agent_id <= 0:
+                raise AIConflictError("父 AI job 缺少有效 Agent")
+            try:
+                agent = self._load_agent_config(db, agent_id)
+                self.model_router.validate_resume_snapshot(
+                    agent,
+                    snapshot,
+                    request_data["resume_candidate_index"],
+                )
+            except ModelRouteConflictError as exc:
+                raise AIConflictError(str(exc)) from exc
+            except AIServiceError as exc:
+                raise AIConflictError(str(exc)) from exc
+
+            parent_input = parent.get("input")
+            if not isinstance(parent_input, Mapping):
+                raise AIConflictError("父 AI job 输入不可恢复")
+            child_input = dict(parent_input)
+            # Agent 绑定是权威来源，不能信任旧 job 输入中缺失或过期的值。
+            child_input["agent_id"] = int(agent.id)
+            child_input["parent_job_id"] = job_id
+            child_input["candidate_snapshot_hash"] = request_data[
+                "candidate_snapshot_hash"
+            ]
+            child_input["resume_candidate_index"] = request_data[
+                "resume_candidate_index"
+            ]
+            child_id = uuid.uuid4().hex
+            owner_token = secrets.token_urlsafe(32)
+            deadline = (
+                datetime.now(timezone.utc) + timedelta(minutes=30)
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            child, created = db.create_or_get_ai_resume_job(
+                child_id,
+                task_type,
+                int(agent.id),
+                child_input,
+                owner_token=owner_token,
+                route_deadline_at=deadline,
+                parent_job_id=job_id,
+                idempotency_key=request_data["idempotency_key"],
+                candidate_snapshot=self._snapshot_payload(snapshot),
+                candidate_snapshot_hash=request_data["candidate_snapshot_hash"],
+                resume_candidate_index=request_data["resume_candidate_index"],
+            )
+            if not created:
+                return self._replay_resume_child(db, str(child["job_id"]))
+            resume_spec = RouteResumeSpec(
+                parent_job_id=job_id,
+                idempotency_key=request_data["idempotency_key"],
+                candidate_snapshot_hash=request_data["candidate_snapshot_hash"],
+                resume_candidate_index=request_data["resume_candidate_index"],
+            )
+            stream = dispatch(child_input)
+            return self._stream_with_route_resume(resume_spec, stream)
+        except AIJobConflictError as exc:
+            raise AIConflictError(str(exc)) from exc
+        finally:
+            db.close()
+
     @staticmethod
     def _reject_unknown_fields(
         payload: dict[str, Any],

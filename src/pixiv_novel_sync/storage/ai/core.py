@@ -549,6 +549,140 @@ class AiCoreMixin:
                 ),
             )
 
+    def create_or_get_ai_resume_job(
+        self,
+        job_id: str,
+        task_type: str,
+        agent_id: int,
+        input_data: dict[str, Any],
+        *,
+        owner_token: str,
+        route_deadline_at: str,
+        parent_job_id: str,
+        idempotency_key: str,
+        candidate_snapshot: Mapping[str, Any],
+        candidate_snapshot_hash: str,
+        resume_candidate_index: int,
+    ) -> tuple[dict[str, Any], bool]:
+        """原子创建幂等继续任务 child，存在时返回原记录。"""
+
+        job_id = _bounded_text(job_id, "job_id", 128)
+        task_type = _bounded_text(task_type, "task_type", 100)
+        parent_job_id = _bounded_text(parent_job_id, "parent_job_id", 128)
+        idempotency_key = _bounded_text(idempotency_key, "idempotency_key", 128)
+        owner_token = _bounded_text(owner_token, "owner_token", 256)
+        route_deadline_at = _validate_timestamp(
+            route_deadline_at,
+            "route_deadline_at",
+        )
+        if not job_id or not task_type or not parent_job_id or not idempotency_key:
+            raise ValueError("继续任务标识不能为空")
+        if not owner_token:
+            raise ValueError("owner_token 不能为空")
+        if isinstance(agent_id, bool) or not isinstance(agent_id, int) or agent_id <= 0:
+            raise ValueError("agent_id 必须是正整数")
+        if (
+            isinstance(resume_candidate_index, bool)
+            or not isinstance(resume_candidate_index, int)
+            or resume_candidate_index < 0
+        ):
+            raise ValueError("resume_candidate_index 必须是非负整数")
+        if input_data.get("resume_candidate_index") != resume_candidate_index:
+            raise ValueError("继续任务输入中的候选索引不匹配")
+        try:
+            serialized_input = json.dumps(
+                input_data,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise ValueError("AI job input_data 无法序列化") from exc
+        serialized_snapshot, computed_hash = _canonical_snapshot(candidate_snapshot)
+        expected_hash = _validate_hash(
+            candidate_snapshot_hash,
+            "候选快照摘要",
+        )
+        if computed_hash != expected_hash:
+            raise ValueError("候选快照摘要不匹配")
+
+        now = _utc_now()
+        heartbeat_at = _sql_timestamp(now)
+        lease_until = _sql_timestamp(now + timedelta(seconds=45))
+        with self.transaction() as conn:
+            existing = conn.execute(
+                """
+                SELECT * FROM ai_jobs
+                WHERE parent_job_id = ? AND idempotency_key = ?
+                """,
+                (parent_job_id, idempotency_key),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["task_type"] != task_type
+                    or existing["agent_id"] != agent_id
+                    or existing["candidate_snapshot_hash"] != expected_hash
+                    or existing["input_json"] != serialized_input
+                ):
+                    raise AIJobConflictError("幂等键已用于不同的继续请求")
+                return self._private_ai_job_from_row(existing), False
+
+            parent = conn.execute(
+                """
+                SELECT status, agent_id, candidate_snapshot_json,
+                       candidate_snapshot_hash
+                FROM ai_jobs WHERE job_id = ?
+                """,
+                (parent_job_id,),
+            ).fetchone()
+            if parent is None:
+                raise AIJobConflictError("父 AI job 不存在")
+            if parent["status"] not in _JOB_TERMINAL_STATUSES:
+                raise AIJobConflictError("父 AI job 尚未进入终态")
+            if parent["agent_id"] != agent_id:
+                raise AIJobConflictError("父 AI job 的 Agent 不匹配")
+            if (
+                parent["candidate_snapshot_hash"] != expected_hash
+                or parent["candidate_snapshot_json"] != serialized_snapshot
+            ):
+                raise AIJobConflictError("父 AI job 候选快照已变化")
+
+            conn.execute(
+                """
+                INSERT INTO ai_jobs (
+                    job_id, task_type, agent_id, status, input_json,
+                    candidate_snapshot_json, candidate_snapshot_hash,
+                    owner_token, lease_until, heartbeat_at, stage,
+                    route_deadline_at, parent_job_id, idempotency_key,
+                    started_at
+                ) VALUES (
+                    ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, 'main', ?, ?, ?, ?
+                )
+                """,
+                (
+                    job_id,
+                    task_type,
+                    agent_id,
+                    serialized_input,
+                    serialized_snapshot,
+                    expected_hash,
+                    owner_token,
+                    lease_until,
+                    heartbeat_at,
+                    route_deadline_at,
+                    parent_job_id,
+                    idempotency_key,
+                    heartbeat_at,
+                ),
+            )
+            created = conn.execute(
+                "SELECT * FROM ai_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if created is None:
+                raise RuntimeError("继续任务 child job 创建失败")
+            return self._private_ai_job_from_row(created), True
+
     def update_ai_job(
         self,
         job_id: str,
@@ -596,6 +730,28 @@ class AiCoreMixin:
         if row is None:
             return None
         return self._ai_job_from_row(row, include_attempts=True)
+
+    def _private_ai_job_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        owner_token = row["owner_token"]
+        item = self._ai_job_from_row(row, include_attempts=True)
+        item["owner_token"] = owner_token
+        return item
+
+    def get_ai_resume_job_execution_state(
+        self,
+        parent_job_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT * FROM ai_jobs
+            WHERE parent_job_id = ? AND idempotency_key = ?
+            """,
+            (parent_job_id, idempotency_key),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._private_ai_job_from_row(row)
 
     def get_ai_job_route_state(
         self,

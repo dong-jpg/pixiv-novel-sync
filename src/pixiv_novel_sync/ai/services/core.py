@@ -5,7 +5,8 @@ import os
 import secrets
 import threading
 import uuid
-from collections.abc import Generator
+from collections.abc import Generator, Iterator, Mapping
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from ..model_router import (
     ModelRouter,
     PromptBudget,
     RouteRequest,
+    RouteResumeSpec,
     RouteResult,
 )
 from ..model_sync import ModelSyncCoordinator
@@ -38,6 +40,12 @@ class AIConflictError(AIServiceError):
 
 class AINotFoundError(AIServiceError):
     pass
+
+
+_ROUTE_RESUME_CONTEXT: ContextVar[RouteResumeSpec | None] = ContextVar(
+    "pixiv_novel_sync_route_resume",
+    default=None,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,42 +227,110 @@ class AIServiceCore:
         ):
             raise AIServiceError("resume_candidate_index 必须是非负整数")
 
-        job_id = uuid.uuid4().hex
-        owner_token = secrets.token_urlsafe(32)
-        deadline = (
-            datetime.now(timezone.utc) + timedelta(minutes=30)
-        ).strftime("%Y-%m-%d %H:%M:%S")
-        db.create_ai_job(
-            job_id,
-            task_type,
-            agent.id,
-            input_data,
-            owner_token=owner_token,
-            stage="main",
-            route_deadline_at=deadline,
-            parent_job_id=parent_job_id,
-            idempotency_key=idempotency_key,
-        )
+        prepared_resume = _ROUTE_RESUME_CONTEXT.get()
+        if prepared_resume is None:
+            job_id = uuid.uuid4().hex
+            owner_token = secrets.token_urlsafe(32)
+            deadline = (
+                datetime.now(timezone.utc) + timedelta(minutes=30)
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            db.create_ai_job(
+                job_id,
+                task_type,
+                agent.id,
+                input_data,
+                owner_token=owner_token,
+                stage="main",
+                route_deadline_at=deadline,
+                parent_job_id=parent_job_id,
+                idempotency_key=idempotency_key,
+            )
+        else:
+            if (
+                parent_job_id is not None
+                or idempotency_key is not None
+                or snapshot is not None
+                or resume_candidate_index != 0
+            ):
+                raise AIServiceError("继续任务恢复上下文冲突")
+            resumed_job = db.get_ai_resume_job_execution_state(
+                prepared_resume.parent_job_id,
+                prepared_resume.idempotency_key,
+            )
+            if resumed_job is None:
+                raise AIConflictError("继续任务 child job 不存在")
+            if resumed_job.get("status") != "running":
+                raise AIConflictError("继续任务 child job 已终结")
+            if resumed_job.get("task_type") != task_type:
+                raise AIConflictError("继续任务类型不匹配")
+            if resumed_job.get("agent_id") != agent.id:
+                raise AIConflictError("继续任务 Agent 不匹配")
+            if (
+                resumed_job.get("candidate_snapshot_hash")
+                != prepared_resume.candidate_snapshot_hash
+            ):
+                raise AIConflictError("继续任务候选快照不匹配")
+            resumed_input = resumed_job.get("input")
+            if not isinstance(resumed_input, Mapping) or (
+                resumed_input.get("resume_candidate_index")
+                != prepared_resume.resume_candidate_index
+            ):
+                raise AIConflictError("继续任务候选索引不匹配")
+            snapshot_payload = resumed_job.get("candidate_snapshot")
+            if not isinstance(snapshot_payload, Mapping):
+                raise AIConflictError("继续任务缺少候选快照")
+            snapshot = ModelRouter.candidate_snapshot_from_payload(
+                snapshot_payload,
+                prepared_resume.candidate_snapshot_hash,
+            )
+            resume_candidate_index = prepared_resume.resume_candidate_index
+            job_id = str(resumed_job["job_id"])
+            owner_token = str(resumed_job.get("owner_token") or "")
+            if not owner_token:
+                raise AIConflictError("继续任务 owner 无效")
 
         try:
-            candidate_snapshot = self.model_router.resolve_candidates(
-                agent,
-                stage="main",
-                snapshot=snapshot,
-            )
+            if prepared_resume is None:
+                candidate_snapshot = self.model_router.resolve_candidates(
+                    agent,
+                    stage="main",
+                    snapshot=snapshot,
+                )
+            else:
+                candidate_snapshot = self.model_router.validate_resume_snapshot(
+                    agent,
+                    snapshot,
+                    resume_candidate_index,
+                )
+            budget_snapshot = candidate_snapshot
+            if resume_candidate_index:
+                remaining_candidates = tuple(
+                    candidate
+                    for candidate in candidate_snapshot.candidates
+                    if candidate.candidate_index >= resume_candidate_index
+                )
+                if not remaining_candidates:
+                    raise AIConflictError("继续任务没有剩余候选模型")
+                budget_snapshot = CandidateSnapshot(
+                    candidates=remaining_candidates,
+                    snapshot_hash=candidate_snapshot.snapshot_hash,
+                    agent_config_hash=candidate_snapshot.agent_config_hash,
+                    binding_version=candidate_snapshot.binding_version,
+                )
             prompt_budget = self.model_router.build_prompt_budget(
                 agent,
-                candidate_snapshot,
+                budget_snapshot,
                 messages,
                 max_tokens,
             )
-            if not db.set_ai_job_candidate_snapshot(
-                job_id,
-                owner_token,
-                self._snapshot_payload(candidate_snapshot),
-                candidate_snapshot.snapshot_hash,
-            ):
-                raise AIConflictError("AI job 候选快照保存冲突")
+            if prepared_resume is None:
+                if not db.set_ai_job_candidate_snapshot(
+                    job_id,
+                    owner_token,
+                    self._snapshot_payload(candidate_snapshot),
+                    candidate_snapshot.snapshot_hash,
+                ):
+                    raise AIConflictError("AI job 候选快照保存冲突")
             if not self._persist_prompt_budget(
                 db,
                 job_id,
@@ -279,6 +355,59 @@ class AIServiceCore:
             prompt_budget=prompt_budget,
             resume_candidate_index=resume_candidate_index,
         )
+
+    @staticmethod
+    def _stream_with_route_resume(
+        resume_spec: RouteResumeSpec,
+        chunks: Iterator[AIStreamChunk],
+    ) -> Iterator[AIStreamChunk]:
+        def generate() -> Iterator[AIStreamChunk]:
+            token = _ROUTE_RESUME_CONTEXT.set(resume_spec)
+            try:
+                yield from chunks
+            finally:
+                _ROUTE_RESUME_CONTEXT.reset(token)
+
+        return generate()
+
+    @staticmethod
+    def _stream_replayed_route_job(
+        job: Mapping[str, Any],
+    ) -> Iterator[AIStreamChunk]:
+        def generate() -> Iterator[AIStreamChunk]:
+            job_id = str(job["job_id"])
+            yield AIStreamChunk(
+                type="metadata",
+                data={
+                    "job_id": job_id,
+                    "parent_job_id": job.get("parent_job_id"),
+                    "replayed": True,
+                },
+            )
+            output_text = str(job.get("output_text") or "")
+            if output_text:
+                yield AIStreamChunk(type="delta", text=output_text)
+            status = str(job.get("status") or "")
+            if status == "succeeded":
+                yield AIStreamChunk(
+                    type="done",
+                    data={
+                        "job_id": job_id,
+                        "chars": len(output_text),
+                        "replayed": True,
+                    },
+                )
+                return
+            if status == "running":
+                message = "相同的继续请求正在执行"
+            else:
+                message = str(job.get("error_message") or "继续任务未成功完成")
+            yield AIStreamChunk(
+                type="error",
+                data={"job_id": job_id, "message": message, "replayed": True},
+            )
+
+        return generate()
 
     def _stream_route(
         self,

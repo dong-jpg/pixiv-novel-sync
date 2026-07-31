@@ -11,6 +11,7 @@ from .services import (
     AIServiceCore,
     AIServiceError,
     RouteJobContext,
+    RouteResumeSpec,
 )
 
 
@@ -30,4 +31,5 @@ __all__ = [
     "AIConflictError",
     "AINotFoundError",
     "RouteJobContext",
+    "RouteResumeSpec",
 ]

@@ -20,10 +20,13 @@ from pixiv_novel_sync.ai.model_router import (
     ModelRouter,
     PromptBudget,
     RouteRequest,
+    RouteResumeSpec,
     RouteResult,
 )
 from pixiv_novel_sync.ai.models import AIAgentConfig, AIProviderConfig, AIStreamChunk
 from pixiv_novel_sync.ai.providers import AIProvider, AIProviderError
+from pixiv_novel_sync.ai.service import AIConflictError, AIWritingService
+from pixiv_novel_sync.ai.services import core as service_core
 from pixiv_novel_sync.storage_db import Database
 
 
@@ -1594,3 +1597,209 @@ def test_router_close_cancels_active_route_and_stops_heartbeat(
     job = db.get_ai_job(route_request.job_id)
     assert job["status"] == "cancelled"
     assert job["attempts"][0]["status"] == "cancelled"
+
+
+def test_route_resume_spec_is_an_immutable_internal_contract() -> None:
+    resume_type = getattr(service_core, "RouteResumeSpec", None)
+
+    assert resume_type is RouteResumeSpec
+    assert [field.name for field in fields(resume_type)] == [
+        "parent_job_id",
+        "idempotency_key",
+        "candidate_snapshot_hash",
+        "resume_candidate_index",
+    ]
+    value = resume_type(
+        parent_job_id="parent",
+        idempotency_key="continue-00000001",
+        candidate_snapshot_hash="f" * 64,
+        resume_candidate_index=2,
+    )
+    with pytest.raises(FrozenInstanceError):
+        value.resume_candidate_index = 3
+
+
+@pytest.fixture
+def resume_service(
+    db: Database,
+    route_router: ModelRouter,
+) -> Iterator[AIWritingService]:
+    writing_service = AIWritingService(db.path)
+    writing_service.model_router.close()
+    writing_service.model_router = route_router
+    try:
+        yield writing_service
+    finally:
+        writing_service.close()
+
+
+def seed_partial_continue_parent(
+    db: Database,
+    route_router: ModelRouter,
+    pool_agent: AIAgentConfig,
+    fake_providers: FakeProviderRegistry,
+) -> tuple[str, CandidateSnapshot]:
+    snapshot = route_router.resolve_candidates(pool_agent)
+    parent_job_id = "partial-parent"
+    owner_token = "partial-parent-owner"
+    db.create_ai_job(
+        parent_job_id,
+        "continue",
+        pool_agent.id,
+        {
+            "agent_id": pool_agent.id,
+            "source_type": "manual",
+            "text": "已有正文",
+            "smart_context": False,
+            "context_chars": 2_000,
+        },
+        owner_token=owner_token,
+        stage="main",
+        route_deadline_at="2099-01-01 00:00:00",
+    )
+    assert db.set_ai_job_candidate_snapshot(
+        parent_job_id,
+        owner_token,
+        {
+            "agent_config_hash": snapshot.agent_config_hash,
+            "binding_version": snapshot.binding_version,
+            "candidates": [asdict(candidate) for candidate in snapshot.candidates],
+        },
+        snapshot.snapshot_hash,
+    )
+    fake_providers.fail(
+        "p1",
+        AIProviderError("首选不可用", category="gateway", scope="model"),
+    )
+    fake_providers.partial_then_fail(
+        "p2",
+        "半截",
+        AIProviderError("连接中断", category="network", scope="provider"),
+    )
+    result = route_router.execute(
+        RouteRequest(
+            job_id=parent_job_id,
+            stage="main",
+            messages=MESSAGES,
+            candidate_snapshot=snapshot,
+            max_tokens=1_000,
+            owner_token=owner_token,
+            on_delta=lambda _text: None,
+            on_progress=lambda _data: None,
+        )
+    )
+    assert result.finish_state == "partial"
+    assert [attempt["model_key"] for attempt in result.attempts] == ["m1", "m2"]
+    fake_providers.calls.clear()
+    fake_providers.network_calls.clear()
+    return parent_job_id, snapshot
+
+
+def valid_continue_payload(
+    parent_job_id: str,
+    snapshot: CandidateSnapshot,
+) -> dict[str, Any]:
+    return {
+        "parent_job_id": parent_job_id,
+        "idempotency_key": "continue-00000001",
+        "candidate_snapshot_hash": snapshot.snapshot_hash,
+        "resume_candidate_index": 2,
+    }
+
+
+def test_continue_uses_saved_snapshot_and_skips_attempted_candidates(
+    resume_service: AIWritingService,
+    db: Database,
+    route_router: ModelRouter,
+    pool_agent: AIAgentConfig,
+    fake_providers: FakeProviderRegistry,
+) -> None:
+    parent_job_id, snapshot = seed_partial_continue_parent(
+        db,
+        route_router,
+        pool_agent,
+        fake_providers,
+    )
+    attempted_provider_id = snapshot.candidates[0].provider_id
+    db.update_ai_provider(attempted_provider_id, {"timeout_seconds": 31})
+    fake_providers.succeed(
+        "p3",
+        [AIStreamChunk(type="delta", text="完整续写"), normal_done()],
+    )
+
+    chunks = list(
+        resume_service.stream_job_with_next_model(
+            parent_job_id,
+            valid_continue_payload(parent_job_id, snapshot),
+        )
+    )
+
+    assert fake_providers.calls == [("p3", "m3")]
+    assert chunks[-1].type == "done"
+    child_job_id = next(
+        str(chunk.data["job_id"])
+        for chunk in chunks
+        if chunk.type == "metadata" and chunk.data is not None
+    )
+    child = db.get_ai_job(child_job_id)
+    assert child is not None
+    assert child["parent_job_id"] == parent_job_id
+    assert child["candidate_snapshot_hash"] == snapshot.snapshot_hash
+    assert child["input"]["resume_candidate_index"] == 2
+    assert [attempt["model_key"] for attempt in child["attempts"]] == ["m3"]
+
+
+def test_duplicate_idempotency_key_does_not_call_provider_twice(
+    resume_service: AIWritingService,
+    db: Database,
+    route_router: ModelRouter,
+    pool_agent: AIAgentConfig,
+    fake_providers: FakeProviderRegistry,
+) -> None:
+    parent_job_id, snapshot = seed_partial_continue_parent(
+        db,
+        route_router,
+        pool_agent,
+        fake_providers,
+    )
+    fake_providers.succeed(
+        "p3",
+        [AIStreamChunk(type="delta", text="只生成一次"), normal_done()],
+    )
+    payload = valid_continue_payload(parent_job_id, snapshot)
+
+    first = list(resume_service.stream_job_with_next_model(parent_job_id, payload))
+    calls_after_first = list(fake_providers.calls)
+    second = list(resume_service.stream_job_with_next_model(parent_job_id, payload))
+
+    assert calls_after_first == [("p3", "m3")]
+    assert fake_providers.calls == calls_after_first
+    assert second[-1].type == "done"
+    assert next(chunk.data["job_id"] for chunk in first if chunk.type == "metadata") == next(
+        chunk.data["job_id"] for chunk in second if chunk.type == "metadata"
+    )
+
+
+def test_continue_rejects_changed_remaining_provider_before_iteration(
+    resume_service: AIWritingService,
+    db: Database,
+    route_router: ModelRouter,
+    pool_agent: AIAgentConfig,
+    fake_providers: FakeProviderRegistry,
+) -> None:
+    parent_job_id, snapshot = seed_partial_continue_parent(
+        db,
+        route_router,
+        pool_agent,
+        fake_providers,
+    )
+    db.update_ai_provider(
+        snapshot.candidates[2].provider_id,
+        {"timeout_seconds": 31},
+    )
+
+    with pytest.raises(AIConflictError, match="Provider 配置"):
+        resume_service.stream_job_with_next_model(
+            parent_job_id,
+            valid_continue_payload(parent_job_id, snapshot),
+        )
