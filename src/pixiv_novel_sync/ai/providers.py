@@ -432,6 +432,13 @@ class AIProvider:
             self.session.close()
             self._pinned_adapters.clear()
 
+    def estimate_message_tokens(
+        self,
+        messages: list[dict[str, str]],
+    ) -> int | None:
+        del messages
+        return None
+
     def stream_generate(
         self,
         messages: list[dict[str, str]],
