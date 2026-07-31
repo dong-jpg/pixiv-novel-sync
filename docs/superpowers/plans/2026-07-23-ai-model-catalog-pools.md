@@ -14,7 +14,7 @@
 - Task 1 已由 `c31791d` 完成，并由 `16b8587` 补充 legacy model key 约束。
 - Task 2 已由 `816e690` 完成，并由 `9458cfe` 修正 canonical digest。
 - Task 3 已由 `6c3cc3a` 完成，并由 `c63ac95` 固化 canonical metadata 存储边界。
-- Task 0 已由 `0d881c1` 完成；Task 4-16 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a`、`1e5e969`、`7d1f560`、`d225bc4`、`65a2e8a`、`9dda110`、`ad52187` 完成；当前从 Task 17 继续，Task 17-22 必须按下方 TDD 步骤推进。
+- Task 0 已由 `0d881c1` 完成；Task 4-17 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a`、`1e5e969`、`7d1f560`、`d225bc4`、`65a2e8a`、`9dda110`、`ad52187`、`2836a26` 完成；当前从 Task 18 继续，Task 18-22 必须按下方 TDD 步骤推进。
 
 ## Global Constraints
 
@@ -1414,7 +1414,7 @@ git commit -m "refactor: route project summaries state and polish"
 - A multi-batch main job creates one `RouteJobContext` and reuses its `CandidateSnapshot` for every batch; after the first non-empty main delta, `ModelRouter` pins that candidate for all later batches.
 - Batch status is emitted as `AIStreamChunk(type='progress', data={'phase':'batch','batch': n,'total': total})`; synthetic batch labels are never emitted as `delta` and never enter `output_text`.
 
-- [ ] **Step 1: Write failing multi-batch tests**
+- [x] **Step 1: Write failing multi-batch tests**
 
 ```python
 def test_distill_batches_pin_first_successful_main_candidate(service, fake_router):
@@ -1438,23 +1438,23 @@ def test_later_batch_failure_is_partial_without_fallback(service, fake_router):
     assert get_job_from_metadata(chunks)["status"] == "partial"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_multibatch_routing.py tests/test_ai_model_router_integration.py -q`
 
 Expected: FAIL because current distillation sends progress as delta, creates no persistent main pin and reuses no route session.
 
-- [ ] **Step 3: Reuse one route context across batches**
+- [x] **Step 3: Reuse one route context across batches**
 
 Move context creation and job start before the batch loop, pass the same context to every `_stream_route` call, and let the router enforce the pinned index. Internal summaries use a separate `stage='internal'` context and cannot pin main. Emit batch progress before each call and append only actual final/main output to `output_parts`; retain the existing intermediate profile reduction in memory. Apply the same rule to any future detailed-plan batch branch and add a code assertion that no `AIStreamChunk(type='delta', text=progress_text)` remains. Pipeline wrapper methods may continue to invoke already-migrated subservices, but must forward their `progress` events as pipeline custom progress events rather than relabeling them as正文 delta.
 
-- [ ] **Step 4: Run multi-batch and pipeline tests**
+- [x] **Step 4: Run multi-batch and pipeline tests**
 
 Run: `python -m pytest tests/test_ai_multibatch_routing.py tests/test_ai_model_router_integration.py tests/test_ai_service_stream_continue.py -q`
 
 Expected: PASS for pinning, post-output partial, progress semantics and unchanged pipeline step metadata.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/services/generation.py src/pixiv_novel_sync/ai/services/projects.py tests/test_ai_multibatch_routing.py tests/test_ai_model_router_integration.py
