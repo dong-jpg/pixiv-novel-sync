@@ -30,6 +30,20 @@ def test_get_ai_task_logs_projects_ai_jobs_to_unified_shape(db: Database) -> Non
     assert row["status"] == "succeeded"
     assert row["category"] == "ai"
     assert row["is_auto_sync"] is False
+
+
+def test_unified_ai_log_includes_partial_and_route_summary(db: Database) -> None:
+    db.create_ai_job("partial", "continue", 1, {})
+    db.update_ai_job("partial", "partial", output_text="半截")
+
+    row = db.get_ai_task_logs(status="partial", days=3)["items"][0]
+
+    assert row["status"] == "partial"
+    assert row["status_label"] == "部分完成"
+    assert row["task_name"] == "续写"
+    assert row["is_running"] is False
+    assert row["attempt_count"] == 0
+    assert row["route_summary"] is None
     assert row["started_at"] is not None  # 回退到 created_at
     assert "id" not in row
 

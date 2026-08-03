@@ -6,6 +6,9 @@ from pathlib import Path
 TEMPLATE = Path(
     "src/pixiv_novel_sync/templates/dashboard_settings.html"
 ).read_text(encoding="utf-8")
+LOG_TEMPLATE = Path(
+    "src/pixiv_novel_sync/templates/dashboard_logs.html"
+).read_text(encoding="utf-8")
 
 
 def test_settings_template_contains_catalog_counts_sync_and_empty_confirmation():
@@ -98,3 +101,17 @@ def test_pool_editor_exposes_references_candidate_limit_and_provider_search():
         "provider_id",
     ):
         assert text in TEMPLATE
+
+
+def test_logs_template_contains_attempts_budget_and_continue_endpoint():
+    for text in (
+        "attempts",
+        "candidate_snapshot_hash",
+        "input_budget",
+        "/continue",
+        "partial",
+        "attempt_count",
+        "route_summary",
+        "X-CSRF-Token",
+    ):
+        assert text in LOG_TEMPLATE

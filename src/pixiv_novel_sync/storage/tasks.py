@@ -214,6 +214,7 @@ class TasksMixin:
             items: list[dict[str, Any]] = []
             for row in rows:
                 r = dict(row)
+                attempts = self.list_ai_job_model_attempts(str(r["job_id"]))
                 items.append({
                     "job_id": r.get("job_id"),
                     "task_type": r.get("task_type"),
@@ -228,6 +229,8 @@ class TasksMixin:
                     "finished_at": r.get("finished_at"),
                     "duration_seconds": r.get("duration_seconds"),
                     "error_message": r.get("error_message"),
+                    "attempt_count": len(attempts),
+                    "route_summary": self._route_summary(attempts),
                     "is_auto_sync": False,
                     "category": "ai",
                 })

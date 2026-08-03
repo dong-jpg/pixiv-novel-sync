@@ -1638,15 +1638,18 @@ def seed_partial_continue_parent(
     route_router: ModelRouter,
     pool_agent: AIAgentConfig,
     fake_providers: FakeProviderRegistry,
+    *,
+    task_type: str = "continue",
+    input_data: dict[str, Any] | None = None,
 ) -> tuple[str, CandidateSnapshot]:
     snapshot = route_router.resolve_candidates(pool_agent)
     parent_job_id = "partial-parent"
     owner_token = "partial-parent-owner"
     db.create_ai_job(
         parent_job_id,
-        "continue",
+        task_type,
         pool_agent.id,
-        {
+        input_data or {
             "agent_id": pool_agent.id,
             "source_type": "manual",
             "text": "已有正文",
@@ -1803,3 +1806,43 @@ def test_continue_rejects_changed_remaining_provider_before_iteration(
             parent_job_id,
             valid_continue_payload(parent_job_id, snapshot),
         )
+
+
+def test_next_model_continuation_dispatches_original_rewrite_task(
+    resume_service: AIWritingService,
+    db: Database,
+    route_router: ModelRouter,
+    pool_agent: AIAgentConfig,
+    fake_providers: FakeProviderRegistry,
+) -> None:
+    parent_job_id, snapshot = seed_partial_continue_parent(
+        db,
+        route_router,
+        pool_agent,
+        fake_providers,
+        task_type="rewrite",
+        input_data={
+            "agent_id": pool_agent.id,
+            "source_type": "manual",
+            "text": "待改写正文",
+            "rewrite_type": "natural",
+        },
+    )
+    fake_providers.succeed(
+        "p3",
+        [AIStreamChunk(type="delta", text="改写结果"), normal_done()],
+    )
+
+    chunks = list(
+        resume_service.stream_job_with_next_model(
+            parent_job_id,
+            valid_continue_payload(parent_job_id, snapshot),
+        )
+    )
+
+    child_id = next(chunk.data["job_id"] for chunk in chunks if chunk.type == "metadata")
+    child = db.get_ai_job(child_id)
+    assert child is not None
+    assert child["task_type"] == "rewrite"
+    assert fake_providers.calls == [("p3", "m3")]
+    assert chunks[-1].type == "done"

@@ -72,6 +72,16 @@ _RESUME_FIELDS = {
 }
 _RESUME_TASK_DISPATCH = {
     "continue": "stream_continue",
+    "rewrite": "stream_rewrite",
+    "distill_style": "stream_distill_style",
+    "distill_novel": "stream_distill_novel",
+    "audit": "stream_audit",
+    "plan": "stream_plan",
+    "longform_plan": "stream_longform_plan",
+    "longform_plan_details": "stream_longform_plan_details",
+    "update_state": "stream_update_project_state",
+    "extract_summary": "stream_extract_chapter_summary",
+    "resolve_foreshadow": "stream_auto_resolve_foreshadows",
 }
 _RESUME_HASH_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 

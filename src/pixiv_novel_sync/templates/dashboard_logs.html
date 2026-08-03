@@ -48,6 +48,7 @@
           <option value="running">运行中</option>
           <option value="succeeded">成功</option>
           <option value="failed">失败</option>
+          <option value="partial">部分完成</option>
           <option value="cancelled">已取消</option>
         </select>
       </div>
@@ -169,6 +170,53 @@
 
       <div v-if="selectedLog.detail_error" class="mb-6 p-3 bg-amber-50 text-amber-700 rounded-lg border border-amber-100 text-sm">
         {{ selectedLog.detail_error }}
+      </div>
+
+      <div v-if="selectedLog.category === 'ai'" class="mb-6 space-y-4">
+        <div class="flex items-center justify-between gap-3 pb-2 border-b border-gray-100">
+          <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider">模型路由</h3>
+          <span class="text-xs text-gray-500">attempt_count: {{ selectedLog.attempt_count ?? (selectedLog.attempts || []).length }} / 16</span>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+          <div class="p-3 bg-gray-50 rounded-lg border border-gray-100 space-y-1">
+            <div class="text-gray-500">candidate_snapshot_hash</div>
+            <div class="font-mono text-gray-900 break-all">{{ selectedLog.candidate_snapshot_hash || '-' }}</div>
+          </div>
+          <div class="p-3 bg-gray-50 rounded-lg border border-gray-100 space-y-1">
+            <div class="text-gray-500">route_summary</div>
+            <div class="text-gray-900">{{ selectedLog.route_summary ? ((selectedLog.route_summary.provider_name || 'Provider') + ' / ' + (selectedLog.route_summary.model_key || 'model')) : '尚无模型尝试' }}</div>
+            <div v-if="selectedLog.route_summary && selectedLog.route_summary.pool_name" class="text-gray-500">模型池：{{ selectedLog.route_summary.pool_name }}</div>
+          </div>
+        </div>
+        <div v-if="selectedLog.prompt_budget" class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+          <div class="p-2 bg-gray-50 rounded border border-gray-100"><div class="text-gray-500">input_budget</div><div class="font-semibold text-gray-900">{{ selectedLog.prompt_budget.input_budget }}</div></div>
+          <div class="p-2 bg-gray-50 rounded border border-gray-100"><div class="text-gray-500">output_reserve</div><div class="font-semibold text-gray-900">{{ selectedLog.prompt_budget.output_reserve }}</div></div>
+          <div class="p-2 bg-gray-50 rounded border border-gray-100"><div class="text-gray-500">context_window</div><div class="font-semibold text-gray-900">{{ selectedLog.prompt_budget.effective_context_window }}</div></div>
+        </div>
+        <div v-if="selectedLog.attempts && selectedLog.attempts.length" class="overflow-x-auto border border-gray-100 rounded-lg">
+          <table class="min-w-full text-xs text-left">
+            <thead class="bg-gray-50 text-gray-500"><tr><th class="px-3 py-2">#</th><th class="px-3 py-2">Provider / 模型</th><th class="px-3 py-2">阶段 / 状态</th><th class="px-3 py-2">错误</th><th class="px-3 py-2">耗时</th></tr></thead>
+            <tbody class="divide-y divide-gray-100">
+              <tr v-for="attempt in selectedLog.attempts" :key="attempt.attempt_index">
+                <td class="px-3 py-2 font-mono">{{ attempt.attempt_index }}</td>
+                <td class="px-3 py-2"><div>{{ attempt.provider_name_snapshot || ('#' + attempt.provider_id) }}</div><div class="text-gray-500">{{ attempt.model_key }}<span v-if="attempt.pool_name_snapshot"> · {{ attempt.pool_name_snapshot }}</span></div></td>
+                <td class="px-3 py-2"><div>{{ attempt.stage }}</div><div class="text-gray-500">{{ attempt.status }}</div></td>
+                <td class="px-3 py-2 max-w-xs"><div>{{ attempt.error_scope || '-' }} / {{ attempt.error_category || '-' }}</div><div class="text-gray-500 whitespace-normal break-words">{{ attempt.error_message || '-' }}</div></td>
+                <td class="px-3 py-2">{{ attempt.latency_ms === null || attempt.latency_ms === undefined ? '-' : attempt.latency_ms + 'ms' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-if="continueCandidate" class="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-3">
+          <div class="text-xs text-amber-800">使用下一个模型继续（显式操作，不会自动重试）</div>
+          <select class="w-full px-3 py-2 border border-amber-200 rounded-lg text-sm bg-white" :value="continueCandidate.candidate_index" disabled>
+            <option :value="continueCandidate.candidate_index">{{ continueCandidate.provider_name }} / {{ continueCandidate.model_key }}</option>
+          </select>
+          <button @click="continueWithNextModel" :disabled="continueRunning" class="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm disabled:opacity-50">{{ continueRunning ? '继续生成中...' : '确认使用下一个模型' }}</button>
+          <div v-if="continueStatus" class="text-xs text-amber-800">{{ continueStatus }}</div>
+          <pre v-if="continueOutput" class="p-3 bg-white border border-amber-100 rounded text-sm whitespace-pre-wrap max-h-48 overflow-y-auto" v-text="continueOutput"></pre>
+          <div v-if="continueError" class="text-xs text-red-600">{{ continueError }}</div>
+        </div>
       </div>
 
       <!-- Error -->
@@ -330,6 +378,28 @@
       const modalOpen = ref(false);
       const detailLoading = ref(false);
       const selectedLog = ref(null);
+      const continueRunning = ref(false);
+      const continueStatus = ref('');
+      const continueOutput = ref('');
+      const continueError = ref('');
+      let csrfToken = '';
+      const RESUMABLE_TASK_TYPES = new Set(['continue', 'rewrite', 'distill_style', 'distill_novel', 'audit', 'plan', 'longform_plan', 'longform_plan_details', 'update_state', 'extract_summary', 'resolve_foreshadow']);
+
+      const continueCandidate = computed(() => {
+        const job = selectedLog.value;
+        if (!job || job.category !== 'ai' || !RESUMABLE_TASK_TYPES.has(job.task_type)) return null;
+        if (!['succeeded', 'failed', 'partial', 'cancelled'].includes(job.status)) return null;
+        const snapshot = job.candidate_snapshot;
+        const candidates = snapshot && Array.isArray(snapshot.candidates) ? snapshot.candidates : [];
+        if (!candidates.length || !job.candidate_snapshot_hash) return null;
+        const attempted = [];
+        (job.attempts || []).filter(attempt => attempt.stage === 'main').forEach(attempt => {
+          const candidate = candidates.find(item => item.provider_id === attempt.provider_id && item.model_key === attempt.model_key && (attempt.provider_model_id === null || attempt.provider_model_id === undefined || item.provider_model_id === attempt.provider_model_id));
+          if (candidate) attempted.push(candidate.candidate_index);
+        });
+        const nextIndex = attempted.length ? Math.max(...attempted) + 1 : 0;
+        return candidates.find(candidate => candidate.candidate_index === nextIndex) || null;
+      });
 
       const modalTitle = computed(() => {
         if (!selectedLog.value) return '任务详情';
@@ -392,6 +462,10 @@
       const showDetail = async (log) => {
         modalOpen.value = true;
         selectedLog.value = null;
+        continueRunning.value = false;
+        continueStatus.value = '';
+        continueOutput.value = '';
+        continueError.value = '';
         if (!log) {
           modalOpen.value = false;
           return;
@@ -425,6 +499,94 @@
           modalOpen.value = false;
         } finally {
           detailLoading.value = false;
+        }
+      };
+
+      const ensureCsrfToken = async () => {
+        if (csrfToken) return csrfToken;
+        const response = await fetch('/api/csrf-token');
+        const data = await response.json();
+        if (!response.ok || !data.csrf_token) throw new Error(data.error || '无法获取安全令牌');
+        csrfToken = data.csrf_token;
+        return csrfToken;
+      };
+
+      const refreshAiJobDetail = async (jobId) => {
+        const response = await fetch('/api/dashboard/ai/jobs/' + encodeURIComponent(jobId));
+        const payload = await response.json();
+        if (!response.ok || payload.ok === false) throw new Error(payload.error || '刷新任务详情失败');
+        selectedLog.value = { ...selectedLog.value, ...payload.data, job_id: jobId, category: 'ai', attempt_count: (payload.data.attempts || []).length };
+      };
+
+      const parseContinueEvent = (block, state) => {
+        const lines = block.split(/\r?\n/);
+        const eventLine = lines.find(line => line.startsWith('event:'));
+        const dataLine = lines.find(line => line.startsWith('data:'));
+        if (!eventLine || !dataLine) return;
+        const eventName = eventLine.slice(6).trim();
+        let data;
+        try { data = JSON.parse(dataLine.slice(5).trim()); } catch (e) { return; }
+        if (eventName === 'metadata' && data.job_id) {
+          state.childJobId = data.job_id;
+          continueStatus.value = '继续任务已创建';
+        } else if (eventName === 'progress') {
+          continueStatus.value = data.message || data.action || '正在切换模型';
+        } else if (eventName === 'delta') {
+          continueOutput.value += data.text || '';
+        } else if (eventName === 'done') {
+          state.completed = true;
+          continueStatus.value = '继续任务已完成';
+        } else if (eventName === 'error') {
+          state.failed = true;
+          continueError.value = data.message || '继续任务失败';
+        }
+      };
+
+      const continueWithNextModel = async () => {
+        const parent = selectedLog.value;
+        const candidate = continueCandidate.value;
+        if (!parent || !candidate || continueRunning.value) return;
+        continueRunning.value = true;
+        continueStatus.value = '正在提交继续任务';
+        continueOutput.value = '';
+        continueError.value = '';
+        try {
+          const token = await ensureCsrfToken();
+          const randomPart = window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          const response = await fetch(`/api/dashboard/ai/jobs/${encodeURIComponent(parent.job_id)}/continue`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+            body: JSON.stringify({
+              parent_job_id: parent.job_id,
+              idempotency_key: `continue-${randomPart}`,
+              candidate_snapshot_hash: parent.candidate_snapshot_hash,
+              resume_candidate_index: candidate.candidate_index
+            })
+          });
+          if (!response.ok) {
+            const payload = await response.json();
+            throw new Error(payload.error || '继续任务请求失败');
+          }
+          if (!response.body) throw new Error('浏览器不支持流式响应');
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          const state = { childJobId: '', completed: false, failed: false };
+          let buffer = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+            const blocks = buffer.split(/\r?\n\r?\n/);
+            buffer = blocks.pop() || '';
+            blocks.forEach(block => parseContinueEvent(block, state));
+            if (done) break;
+          }
+          if (buffer.trim()) parseContinueEvent(buffer, state);
+          if (state.childJobId) await refreshAiJobDetail(state.childJobId);
+          await fetchData();
+        } catch (e) {
+          continueError.value = e.message || '继续任务失败';
+        } finally {
+          continueRunning.value = false;
         }
       };
 
@@ -468,6 +630,7 @@
           'completed': { label: '完成', type: 'green' },
           'succeeded': { label: '成功', type: 'green' },
           'failed': { label: '失败', type: 'red' },
+          'partial': { label: '部分完成', type: 'yellow' },
           'stopped': { label: '停止', type: 'yellow' },
           'cancelled': { label: '已取消', type: 'yellow' }
         };
@@ -502,6 +665,7 @@
           const msg = log.error_message || '未知错误';
           return `失败: ${msg.substring(0, 20)}${msg.length > 20 ? '...' : ''}`;
         }
+        if (log.status === 'partial') return '部分结果已保留';
         if (log.stats) {
           const s = log.stats;
           const parts = [];
@@ -516,6 +680,7 @@
 
       const resultClass = (log) => {
         if (log.status === 'failed') return 'text-red-600';
+        if (log.status === 'partial') return 'text-amber-700';
         if (['succeeded', 'completed', 'success'].includes(log.status)) return 'text-green-700';
         return 'text-pixiv-gray';
       };
@@ -550,7 +715,8 @@
         items, loading, error, page, totalPages, totalItems, filters, autoRefresh,
         taskTypeOptions,
         modalOpen, detailLoading, selectedLog, modalTitle,
-        applyFilter, handlePageChange, showDetail,
+        continueCandidate, continueRunning, continueStatus, continueOutput, continueError,
+        applyFilter, handlePageChange, showDetail, continueWithNextModel,
         formatDate, formatTime, formatDuration, getStatusConfig, getTaskTypeName,
         formatResult, resultClass, formatJson, copyDetailText
       };
