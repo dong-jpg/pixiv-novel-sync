@@ -423,7 +423,7 @@ def test_manual_model_delete_is_blocked_when_pool_member_references_it(db):
     model_id = db.create_ai_provider_model(
         {"provider_id": provider_id, "model_key": "m", "manual_display_name": "x"}
     )
-    # 直接建池并加成员，避免依赖 Task 4 尚未实现的 pool API
+    # 直接使用存储层建池，保持本测试只覆盖目录引用语义。
     db.conn.execute(
         "INSERT INTO ai_model_pools(name, pool_kind, version) VALUES ('p', 'custom', 1)"
     )

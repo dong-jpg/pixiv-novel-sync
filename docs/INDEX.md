@@ -15,6 +15,7 @@
 | 文档 | 用途 |
 |------|------|
 | [../README.md](../README.md) | 项目入口：功能介绍、快速开始、配置说明 |
+| [UNIFIED_PROJECT_REQUIREMENTS.md](UNIFIED_PROJECT_REQUIREMENTS.md) | 全项目统一需求、实现状态与来源追溯 |
 | [AUDIT_REPORT_2026-07-02.md](AUDIT_REPORT_2026-07-02.md) | 上一轮审计：修复 8 类严重 bug + 5 类中等问题 |
 | [AUDIT_REPORT_2026-07-03.md](AUDIT_REPORT_2026-07-03.md) | 本轮审计：EPUB 回归修复 + 死代码清理 + 文档整改 |
 
@@ -38,6 +39,7 @@
 | 文档 | 状态 |
 |------|------|
 | [superpowers/specs/2026-07-23-ai-model-catalog-pools-design.md](superpowers/specs/2026-07-23-ai-model-catalog-pools-design.md) | AI 模型目录、模型池和故障转移设计（已实施） |
+| [superpowers/specs/2026-07-27-ai-model-catalog-pools-unified-requirements.md](superpowers/specs/2026-07-27-ai-model-catalog-pools-unified-requirements.md) | AI 模型目录与统一路由需求基线（第一阶段已完成） |
 | [superpowers/specs/2026-07-23-adult-polish-agent-design.md](superpowers/specs/2026-07-23-adult-polish-agent-design.md) | 成人描写局部润色 Agent 设计（已确认，等待模型池路由） |
 | [superpowers/plans/2026-07-23-ai-model-catalog-pools.md](superpowers/plans/2026-07-23-ai-model-catalog-pools.md) | AI 模型目录与模型池实施计划（已完成） |
 | [superpowers/plans/2026-07-23-adult-polish-agent.md](superpowers/plans/2026-07-23-adult-polish-agent.md) | 成人描写局部润色 Agent 实施计划 |

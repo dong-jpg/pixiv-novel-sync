@@ -12,6 +12,17 @@ API_CONTRACT = (ROOT / "docs" / "frontend-api-contract.md").read_text(
 FRONTEND_PAGES = (ROOT / "docs" / "frontend-pages.md").read_text(
     encoding="utf-8"
 )
+DOC_INDEX = (ROOT / "docs" / "INDEX.md").read_text(encoding="utf-8")
+UNIFIED_REQUIREMENTS = (
+    ROOT / "docs" / "UNIFIED_PROJECT_REQUIREMENTS.md"
+).read_text(encoding="utf-8")
+AI_UNIFIED_REQUIREMENTS = (
+    ROOT
+    / "docs"
+    / "superpowers"
+    / "specs"
+    / "2026-07-27-ai-model-catalog-pools-unified-requirements.md"
+).read_text(encoding="utf-8")
 
 
 def _enclosing_function(tree: ast.AST, target: ast.AST) -> str | None:
@@ -60,6 +71,19 @@ def test_frontend_docs_cover_model_routing_operations_and_privacy() -> None:
         "下一个模型",
     ):
         assert text in FRONTEND_PAGES
+
+
+def test_unified_requirements_record_completed_model_routing_line() -> None:
+    assert "AI 模型目录、模型池与统一路由第一阶段 Task 1-22 已完成" in (
+        UNIFIED_REQUIREMENTS
+    )
+    assert "当前状态：第一阶段 Task 1-22 已完成" in AI_UNIFIED_REQUIREMENTS
+    assert "Task 4（有序池、后备图、版本 CAS）是当前开发入口" not in (
+        UNIFIED_REQUIREMENTS
+    )
+    assert "代码处于 Task 4 起点" not in AI_UNIFIED_REQUIREMENTS
+    assert "UNIFIED_PROJECT_REQUIREMENTS.md" in DOC_INDEX
+    assert "2026-07-27-ai-model-catalog-pools-unified-requirements.md" in DOC_INDEX
 
 
 def test_only_router_provider_implementation_and_connection_test_call_provider() -> None:
