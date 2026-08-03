@@ -14,7 +14,8 @@
 - Task 1 已由 `c31791d` 完成，并由 `16b8587` 补充 legacy model key 约束。
 - Task 2 已由 `816e690` 完成，并由 `9458cfe` 修正 canonical digest。
 - Task 3 已由 `6c3cc3a` 完成，并由 `c63ac95` 固化 canonical metadata 存储边界。
-- Task 0 已由 `0d881c1` 完成；Task 4-17 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a`、`1e5e969`、`7d1f560`、`d225bc4`、`65a2e8a`、`9dda110`、`ad52187`、`2836a26` 完成；当前从 Task 18 继续，Task 18-22 必须按下方 TDD 步骤推进。
+- Task 0 已由 `0d881c1` 完成；Task 4-17 已分别由 `67beceb`、`b387578`、`3992bb8`、`c2b0fa3`、`b3c743f`、`58ae24b`、`16fc73a`、`1e5e969`、`7d1f560`、`d225bc4`、`65a2e8a`、`9dda110`、`ad52187`、`2836a26` 完成。
+- Task 18-21 已分别由 `2cdbd2b`、`03add4c`、`f6cb4f0`、`62e56d2` 完成；Task 22 的文档、静态门禁、全量测试和浏览器验收已完成，计划至此全部实施。
 
 ## Global Constraints
 
@@ -461,7 +462,7 @@ git commit -m "feat: add provider model catalog storage"
 - `Database.list_ai_model_pools()`, `get_ai_model_pool(pool_id)`, `create_ai_model_pool(data)`, `update_ai_model_pool(pool_id, data, expected_version)`, `delete_ai_model_pool(pool_id)`, `replace_ai_model_pool_members(pool_id, members, expected_version)`, and `list_ai_model_pool_attempts(pool_id, limit=50)`.
 - `replace_ai_model_pool_members` accepts a complete ordered list of `{provider_model_id, enabled}` and atomically rewrites positions `1..n`; it returns the incremented pool version.
 
-- [ ] **Step 1: Write the failing graph and CAS tests**
+- [x] **Step 1: Write the failing graph and CAS tests**
 
 ```python
 def test_pool_graph_rejects_direct_and_indirect_cycles(db):
@@ -497,23 +498,23 @@ def test_referenced_pool_cannot_be_disabled_or_deleted(db):
         db.delete_ai_model_pool(pool_id)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_model_pools.py -q`
 
 Expected: FAIL because graph validation, pool storage and conflict types do not exist.
 
-- [ ] **Step 3: Implement graph validation and storage transactions**
+- [x] **Step 3: Implement graph validation and storage transactions**
 
 In `model_pools.py`, traverse fallback edges with a `visiting` set and `visited` set, reject self-edge and any repeated node in the current path, reject depth greater than 8, count each pool's members and the deduplicated `(provider_id, model_key)` candidates across the expanded chain, and reject more than 64. Permit an empty disabled pool only; reject enabling, Agent binding or use as an enabled pool's fallback when empty. In `pools.py`, every create/update/fallback/member replacement starts `BEGIN IMMEDIATE`, re-reads all pools and members, validates the complete graph, checks `expected_version`, checks pool and model references, then writes members and `version = version + 1` in the same transaction. A referenced pool (Agent `model_pool_id` or another pool `fallback_pool_id`) cannot be deleted, disabled or emptied. `list_ai_model_pool_attempts` joins only immutable attempt snapshots and never requires current configuration rows.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_ai_model_pools.py -q`
 
 Expected: PASS, including depth/candidate limits, empty-pool rules, ordering, rollback and stale-version conflict.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/model_pools.py src/pixiv_novel_sync/storage/ai/pools.py src/pixiv_novel_sync/storage_db.py tests/test_ai_model_pools.py
@@ -535,7 +536,7 @@ git commit -m "feat: add ordered model pools and fallback graph validation"
 - `AIAdminMixin.create_agent`, `update_agent`, `_normalize_agent_payload`, and `_load_agent_config` accept/return the new fields and reject fixed+pool mixed payloads, invalid capability labels, duplicate labels, and more than 32 requirements.
 - `AIAdminMixin.delete_provider` checks fixed Agent references and pool/catalog references in one transaction and raises `AIConflictError` with a Chinese message before deletion.
 
-- [ ] **Step 1: Write the failing binding tests**
+- [x] **Step 1: Write the failing binding tests**
 
 ```python
 def test_pool_agent_cannot_submit_provider_or_model(service, db):
@@ -565,25 +566,25 @@ def test_old_agent_values_and_id_are_preserved_after_reload(tmp_path):
     assert row["required_capabilities"] == []
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_agent_bindings.py tests/test_ai_model_pools.py -q`
 
 Expected: FAIL because `AIAgentConfig` and Agent storage still require `provider_id` and do not validate binding type or capabilities.
 
-- [ ] **Step 3: Implement compatibility-aware Agent CRUD**
+- [x] **Step 3: Implement compatibility-aware Agent CRUD**
 
 Parse `required_capabilities` from either the new list field or legacy `required_capabilities_json`, canonicalize to a sorted unique tuple for storage, and retain an empty array for all migrated Agents. For `fixed`, require an existing enabled Provider, allow an unknown hand-entered model only when requirements are empty, and set `model_pool_id=NULL`. For `pool`, require an enabled non-empty pool whose expanded candidates cover every required capability, set `provider_id=NULL` and `model=NULL`, and increment `binding_version` on each update. Return `model_pool_name`, `binding_summary`, and parsed `required_capabilities` in list/get responses. Keep `seed_builtin_agents(provider_id)` fixed and preserve all existing task types.
 
 Implement `AIConflictError(AIServiceError)` in `ai/services/core.py`; make `ai_web.fail()` map it to HTTP 409 while retaining 400 for validation errors. Provider deletion must use one database transaction to query fixed Agents, pool members, and model rows; if any reference exists, return a conflict before attempting `DELETE`. Do not use a fake Provider ID for pool bindings.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_ai_agent_bindings.py tests/test_ai_model_pools.py tests/test_ai_service_facade.py -q`
 
 Expected: PASS, including legacy fixed Agent behavior, mutual exclusion, capability checks and Provider deletion conflicts.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/models.py src/pixiv_novel_sync/storage/ai/core.py src/pixiv_novel_sync/ai/services/admin.py src/pixiv_novel_sync/ai/services/core.py tests/test_ai_model_pools.py tests/test_ai_agent_bindings.py
@@ -604,7 +605,7 @@ git commit -m "feat: support fixed and model-pool Agent bindings"
 - `AIProvider.list_models(*, on_page: Callable[[int, int], None] | None = None, is_cancelled: Callable[[], bool] | None = None) -> ModelListResult` is callable with no arguments as required by the design.
 - `ResponseByteBudget(limit: int = 20 * 1024 * 1024)` exposes `consume(count: int) -> None`; a page passes `max_body_bytes=4 * 1024 * 1024`.
 
-- [ ] **Step 1: Write the failing discovery and security tests**
+- [x] **Step 1: Write the failing discovery and security tests**
 
 ```python
 @pytest.mark.parametrize("provider_type", ["openai_compatible", "xai", "anthropic"])
@@ -642,25 +643,25 @@ def test_cursor_loop_and_malformed_envelope_are_not_empty_success(monkeypatch):
         provider.list_models()
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_model_discovery.py tests/test_ai_security_hardening.py tests/test_ai_providers_fallback.py -q`
 
 Expected: FAIL because Providers have no GET/list interface and `_post` cannot enforce model-list byte budgets.
 
-- [ ] **Step 3: Refactor one safe request path and implement adapters**
+- [x] **Step 3: Refactor one safe request path and implement adapters**
 
 Move the existing target resolution, IP pinning, Host header, TLS hostname, proxy, timeout, response hook, lazy body handling and 3xx rejection into `_request`. Dispatch through `self.session.request` or the method-specific session function while retaining `_post` tests; always set `allow_redirects=False` and `stream=True` at transport level. When `max_body_bytes` is set, consume `iter_content` into a bounded `bytes` buffer, charge both the page and cumulative `ResponseByteBudget` before JSON decoding, close the response on overflow, and parse UTF-8 JSON only after the cap succeeds.
 
 For OpenAI-compatible and xAI, request `<resolved_base_url>/models` with Bearer auth and accept only an object containing a `data` array. For Anthropic, request `<base_url>/v1/models` with `x-api-key`, `anthropic-version: 2023-06-01`, and require its documented array envelope. Every array element must be an object with a valid string ID; any invalid element fails the whole sync page. Support explicit pagination fields `has_more`, `next`, `after`, and `last_id`; reject wrong types, partial markers, repeated cursor, more than 100 pages, more than 5000 normalized models, or an upstream next-page declaration at either limit. Default all three adapters to `empty_authoritative=False`; an adapter may return true only from an explicitly tested structured provider capability, never from list length. Call `on_page(page_count, discovered_count)` after each validated page and check `is_cancelled()` before every network request.
 
-- [ ] **Step 4: Run discovery and existing Provider tests**
+- [x] **Step 4: Run discovery and existing Provider tests**
 
 Run: `python -m pytest tests/test_ai_model_discovery.py tests/test_ai_security_hardening.py tests/test_ai_providers_fallback.py -q`
 
 Expected: PASS, including GET DNS pinning, redirect rejection before body read, cumulative 20 MiB cap, strict envelopes and all three Provider formats.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/providers.py src/pixiv_novel_sync/ai/models.py tests/test_ai_model_discovery.py tests/test_ai_security_hardening.py tests/test_ai_providers_fallback.py
@@ -682,7 +683,7 @@ git commit -m "feat: add secure paginated Provider model discovery"
 - `start` returns a queued operation immediately; one `ThreadPoolExecutor(max_workers=2, thread_name_prefix='ai-model-sync')` per `AIWritingService` runs workers and is closed by `AIServiceCore.close()`.
 - `AIServiceCore` exposes the coordinator through `start_model_sync`, `get_model_sync_operation`, `cancel_model_sync`, `confirm_model_sync_empty`, and `iter_model_sync_events`; Task 8 adds HTTP wrappers without changing these signatures.
 
-- [ ] **Step 1: Write the failing operation tests**
+- [x] **Step 1: Write the failing operation tests**
 
 ```python
 def test_sync_failure_preserves_previous_catalog_and_success_time(service, db, fake_provider):
@@ -718,25 +719,25 @@ def test_late_worker_cannot_overwrite_new_generation(db):
     assert db.get_model_sync_operation(second["operation_id"])["status"] == "queued"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_model_sync.py -q`
 
 Expected: FAIL because sync operation storage, worker and generation/owner CAS are absent.
 
-- [ ] **Step 3: Implement operation lifecycle and reconciliation**
+- [x] **Step 3: Implement operation lifecycle and reconciliation**
 
 Acquire a Provider lease in a short `BEGIN IMMEDIATE`: reject an unexpired queued/running operation with `ModelSyncConflictError(existing_operation_id)`, otherwise increment `models_sync_generation`, assign a random 32-byte URL-safe owner, set a 45-second lease, and insert `queued`. The worker claims only `queued -> running` with matching owner/generation, calls `list_models` outside transactions, updates page/count and heartbeat through callbacks, and enforces an absolute 10-minute deadline. Final success performs one CAS transaction that rechecks Provider config hash/generation/owner, upserts the complete directory, marks missing discovered rows unavailable, clears sync error, writes `models_synced_at`, and changes only `running -> succeeded`.
 
 For a complete non-authoritative empty result, write digest/config/generation and transition `running -> needs_empty_confirmation`, clear Provider owner/lease immediately, and do not mark anything missing. `confirm_empty` re-reads the exact operation and latest Provider config/generation under `BEGIN IMMEDIATE`; mismatch or a newer sync is 409. Cancellation sets `cancel_requested=1`; callbacks stop before a new page/request and terminal CAS writes `cancelled` without modifying the directory. Reconciliation marks queued rows older than 5 minutes `failed/queue_timeout`, and running rows whose lease and heartbeat exceed the grace period or whose Provider owner/generation no longer match `failed/process_interrupted`; terminal rows never change. Keep operation rows for 3 days and save no upstream body.
 
-- [ ] **Step 4: Run operation tests to verify they pass**
+- [x] **Step 4: Run operation tests to verify they pass**
 
 Run: `python -m pytest tests/test_ai_model_sync.py -q`
 
 Expected: PASS, including failure preservation, manual-field preservation, cancellation, empty confirmation, queue timeout, crashed worker and late CAS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/storage/ai/model_sync.py src/pixiv_novel_sync/ai/model_sync.py src/pixiv_novel_sync/storage_db.py src/pixiv_novel_sync/ai/services/core.py tests/test_ai_model_sync.py
@@ -756,7 +757,7 @@ git commit -m "feat: add leased asynchronous model sync operations"
 - Service exposes `list_provider_models`, `create_manual_model`, `update_provider_model`, `delete_provider_model`, `start_model_sync`, `get_model_sync_operation`, `cancel_model_sync`, `confirm_model_sync_empty`, `iter_model_sync_events`, pool CRUD/member methods, and `list_model_pool_attempts`.
 - Routes are exactly those in design sections 9.1 and 9.2; sync start returns HTTP 202, active-operation and version/reference conflicts return 409, missing IDs return 404, and validation errors return 400.
 
-- [ ] **Step 1: Write failing API contract tests**
+- [x] **Step 1: Write failing API contract tests**
 
 ```python
 def test_sync_start_is_202_and_duplicate_is_409(client, csrf, seeded_provider):
@@ -786,13 +787,13 @@ def test_pool_member_stale_version_returns_409(client, csrf, seeded_pool, seeded
     assert "版本" in response.get_json()["error"]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_model_api.py -q`
 
 Expected: FAIL with 404 because none of the model catalog, operation or pool endpoints are registered.
 
-- [ ] **Step 3: Add service validation and exact routes**
+- [x] **Step 3: Add service validation and exact routes**
 
 Register:
 
@@ -817,13 +818,13 @@ GET    /api/dashboard/ai/model-pools/<id>/attempts
 
 Use the existing response envelope and add `require_json_object()` that rejects non-object JSON instead of silently using `{}` for new write routes. `PUT provider-models` accepts only `enabled`, `manual_display_name`, `manual_capabilities`, and `manual_context_window`; reject any client `discovered_*` field. Sync SSE emits only `started`, `page`, `empty_confirmation_required`, `completed`, `failed`, and `cancelled`, and its empty event contains only operation ID, generation and digest. The service singleton starts one coordinator, calls job/sync reconciliation at startup, and `close()` stops the executor; do not start a duplicate worker per request.
 
-- [ ] **Step 4: Run API and CSRF tests**
+- [x] **Step 4: Run API and CSRF tests**
 
 Run: `python -m pytest tests/test_ai_model_api.py tests/test_webapp_security.py::test_csrf_required_for_authenticated_mutating_requests tests/test_ai_web_stream.py -q`
 
 Expected: PASS, including 202/409, exact writable fields, SSE event whitelist, CSRF enforcement and API-key redaction.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/services/admin.py src/pixiv_novel_sync/ai/services/__init__.py src/pixiv_novel_sync/ai/service.py src/pixiv_novel_sync/ai_web.py tests/test_ai_model_api.py
@@ -844,7 +845,7 @@ git commit -m "feat: expose model catalog sync and pool APIs"
 - Adds `set_ai_job_candidate_snapshot(job_id, owner_token, snapshot_json, snapshot_hash) -> bool`, `allocate_ai_model_attempt(job_id, owner_token, data) -> int`, `heartbeat_ai_job(job_id, owner_token, lease_until) -> bool`, `finish_ai_model_attempt(job_id, attempt_index, owner_token, status, **fields) -> bool`, `finish_ai_job_cas(job_id, owner_token, status, **fields) -> bool`, `list_ai_job_model_attempts(job_id)`, and owner-aware `fail_stale_ai_jobs()`.
 - `get_ai_job` returns `route_summary`, `attempts`, parsed `candidate_snapshot`, `candidate_snapshot_hash`, and `prompt_budget` without exposing `owner_token`.
 
-- [ ] **Step 1: Write failing owner/CAS tests**
+- [x] **Step 1: Write failing owner/CAS tests**
 
 ```python
 def test_attempt_indices_are_unique_under_concurrency(db):
@@ -874,25 +875,25 @@ def test_stale_recovery_maps_stage_and_output(stage, output_started, expected, d
     assert db.list_ai_job_model_attempts("job")[0]["error_category"] == "process_interrupted"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_job_routing_storage.py tests/test_unified_task_logs.py -q`
 
 Expected: FAIL because jobs do not own leases, allocate attempts or support `partial`.
 
-- [ ] **Step 3: Implement short transactions and monotonic terminal CAS**
+- [x] **Step 3: Implement short transactions and monotonic terminal CAS**
 
 Allocate attempts in one `BEGIN IMMEDIATE`: require `ai_jobs.status='running' AND owner_token=?`, read `next_attempt_index`, increment it, insert the attempt with the old value, and increment `candidate_attempt_count`; reject the 17th attempt with `route_budget_exhausted`. Network claims atomically increment `network_request_count` and reject the 33rd. Heartbeat updates only a running matching-owner row. Attempt/job terminal updates use `WHERE status='running' AND owner_token=?`; terminal states cannot overwrite one another. Sanitize error strings before storage and enforce snapshot/hash/length limits before SQL.
 
 Update `cleanup_ai_jobs` so `partial` follows the same 3-day retention as other terminal rows and cascades attempts. Rewrite stale recovery to require an expired lease plus heartbeat beyond grace, finish matching running attempts first, apply the exact stage mapping from the test, and preserve an already committed cancellation. Add `partial` to unified-log filtering/labels and stop treating it as running. The startup call in `ai_web.py` invokes the owner-aware function without the old creation-time-only threshold.
 
-- [ ] **Step 4: Run storage and log tests**
+- [x] **Step 4: Run storage and log tests**
 
 Run: `python -m pytest tests/test_ai_job_routing_storage.py tests/test_unified_task_logs.py tests/test_task_logs_routes.py -q`
 
 Expected: PASS, including parallel indices, owner mismatch, terminal races, partial cleanup and stale-stage mapping.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/storage/ai/core.py src/pixiv_novel_sync/storage/tasks.py src/pixiv_novel_sync/ai_web.py tests/test_ai_job_routing_storage.py tests/test_unified_task_logs.py
@@ -912,7 +913,7 @@ git commit -m "feat: add leased AI jobs and auditable model attempts"
 - `stream_generate(..., *, request_guard: Callable[[], None] | None = None, is_cancelled: Callable[[], bool] | None = None)` remains callable by old positional/keyword callers.
 - Every normal provider completion emits `AIStreamChunk(type='done', data={'finish_reason': 'stop'|'complete'})`; incomplete reasons are exposed as typed errors, not silently converted to success.
 
-- [ ] **Step 1: Write failing completion tests**
+- [x] **Step 1: Write failing completion tests**
 
 ```python
 @pytest.mark.parametrize("finish_reason", ["length", "content_filter", None])
@@ -945,25 +946,25 @@ def test_error_scope_is_structured(status, scope, monkeypatch):
     assert caught.value.scope == scope
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_provider_completion.py tests/test_ai_providers_fallback.py -q`
 
 Expected: FAIL because Provider errors have no category/scope and done events do not preserve finish reasons.
 
-- [ ] **Step 3: Implement completion and failure classification**
+- [x] **Step 3: Implement completion and failure classification**
 
 Call `request_guard()` immediately before every POST network request, including retries and stream-to-nonstream fallback; check `is_cancelled()` before requests, retry sleeps and yielded chunks, close the active response and raise `cancelled/model` when set. Parse OpenAI `choices[0].finish_reason` and Anthropic stop reasons; map `stop`, `complete`, `end_turn`, and `stop_sequence` to normal completion, `max_tokens` to `length`, refusal/content filters to `content_filter`, and no terminal marker to `missing`. An empty normal response raises `empty_response/model`.
 
 Classify 401/403, disabled/configuration failures, account quota, 429/`Retry-After`, DNS/certificate/connect errors, unscoped 5xx and unknown failures as Provider scope. Classify an explicit unsupported-model/not-found response, a model-tagged timeout, context overflow and model-specific gateway rejection as model scope. Keep existing no-retry-after-partial guarantee inside each Provider and redact all upstream messages before constructing the error.
 
-- [ ] **Step 4: Run Provider tests**
+- [x] **Step 4: Run Provider tests**
 
 Run: `python -m pytest tests/test_ai_provider_completion.py tests/test_ai_providers_fallback.py tests/test_ai_security_hardening.py -q`
 
 Expected: PASS with unchanged retry/fallback behavior plus structured finish and error metadata.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/providers.py src/pixiv_novel_sync/ai/models.py tests/test_ai_provider_completion.py tests/test_ai_providers_fallback.py
@@ -1476,7 +1477,7 @@ git commit -m "fix: pin multi-batch AI output and separate progress events"
 - `AIWritingService.stream_job_with_next_model(job_id: str, payload: Mapping[str, Any]) -> Iterator[AIStreamChunk]` validates the parent, creates/reuses an idempotent child job and dispatches the original task through the saved snapshot.
 - Adds `POST /api/dashboard/ai/jobs/<job_id>/continue`; request body must contain `parent_job_id`, `idempotency_key`, `candidate_snapshot_hash`, and `resume_candidate_index`; response is the normal SSE stream with metadata/progress/delta/done/error events.
 
-- [ ] **Step 1: Write failing continuation tests**
+- [x] **Step 1: Write failing continuation tests**
 
 ```python
 def test_continue_uses_saved_snapshot_and_skips_attempted_candidates(service, db, fake_router):
@@ -1512,23 +1513,23 @@ def test_duplicate_idempotency_key_does_not_call_provider_twice(service, db, fak
     assert len(fake_router.provider_calls) == calls_after_first
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_model_router.py tests/test_ai_model_api.py -q`
 
 Expected: FAIL because no continuation route, replay context or idempotency key exists.
 
-- [ ] **Step 3: Implement saved-snapshot replay and endpoint**
+- [x] **Step 3: Implement saved-snapshot replay and endpoint**
 
 Accept only a terminal parent job, an exact path/body `parent_job_id`, a 16-128 ASCII idempotency key, a matching lowercase 64-hex snapshot hash, and an index equal to the first candidate after all parent attempts and within the snapshot. Re-read the Agent binding version, every remaining pool version and each remaining Provider config hash; any mismatch is 409. In one transaction create a child job with `parent_job_id`, idempotency key, the parent candidate snapshot/hash, a copied immutable input reference and `resume_candidate_index`; repeated key returns the existing child without creating a Provider call. Dispatch only the migrated stream methods through an internal `RouteResumeSpec`; each method passes the saved snapshot and start index to `_start_route_job`, so it never reparses a changed pool or retries an attempted candidate. A partial parent body is read-only context and is not concatenated into the child output unless the task's existing prompt builder explicitly accepts it. Owner tokens and terminal states are never shared between parent and child.
 
-- [ ] **Step 4: Run continuation/API tests**
+- [x] **Step 4: Run continuation/API tests**
 
 Run: `python -m pytest tests/test_ai_model_router.py tests/test_ai_model_api.py tests/test_ai_web_stream.py -q`
 
 Expected: PASS for exact snapshot/config checks, idempotency, skipped candidates, CSRF and SSE cancellation.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/model_router.py src/pixiv_novel_sync/ai/services/core.py src/pixiv_novel_sync/ai/services/admin.py src/pixiv_novel_sync/ai_web.py tests/test_ai_model_router.py tests/test_ai_model_api.py
@@ -1545,7 +1546,7 @@ git commit -m "feat: add explicit next-model continuation"
 - Provider cards call the catalog endpoints and render `total`, `discovered_available`, `routable`, `models_synced_at`, `models_sync_error`, model search/filter, effective display name/capabilities/context, and `source` without rendering any secret.
 - The sync button disables while an operation is queued/running, consumes the six-event SSE whitelist, supports page refresh recovery via operation GET, and displays “旧目录仍可使用” after failure/cancel/timeout.
 
-- [ ] **Step 1: Write failing static UI tests**
+- [x] **Step 1: Write failing static UI tests**
 
 ```python
 def test_settings_template_contains_catalog_counts_sync_and_empty_confirmation():
@@ -1561,23 +1562,23 @@ def test_model_sync_mutations_use_csrf_fetch():
     assert "confirm-empty" in html
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_model_ui.py -q`
 
 Expected: FAIL because the current Provider card has only default-model text and no catalog/sync controls.
 
-- [ ] **Step 3: Add the Provider catalog controls**
+- [x] **Step 3: Add the Provider catalog controls**
 
 Extend the existing `ai-api` Vue state with `providerModels`, `modelSearch`, `modelSyncOperations`, and per-provider error/status fields. Add a “同步模型” control, counts with distinct labels, last-success/error display, a collapsible catalog list and manual-model form. Use the existing `ensureCsrfToken` helper for every POST/PUT/DELETE; update `aiApi` so mutating requests automatically attach `X-CSRF-Token`. Parse SSE `page` and terminal events, never display upstream response text, and keep the prior catalog/counts in state on any failure. A non-authoritative empty event opens a confirmation dialog that submits only operation ID/generation/digest. Escape model names with Vue interpolation and show the cross-Provider privacy warning from the API summary.
 
-- [ ] **Step 4: Run UI contract and page tests**
+- [x] **Step 4: Run UI contract and page tests**
 
 Run: `python -m pytest tests/test_ai_model_ui.py tests/test_ai_page_routes.py -q`
 
 Expected: PASS, including secret absence, CSRF usage, refresh recovery and old-directory messaging.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/templates/dashboard_settings.html tests/test_ai_model_ui.py
@@ -1594,7 +1595,7 @@ git commit -m "feat: add Provider model catalog controls"
 - Adds an `ai-model-pools` tab with pool list/editor, Provider/model search, member reorder controls, fallback selector, enabled/version state, Agent-reference summary, candidate count and privacy warning.
 - Agent form adds mutually exclusive `fixed`/`pool` binding controls, model catalog selection with hand-entry fallback, pool chain summary and required-capability checkboxes; Agent rows show binding summary and selected capabilities.
 
-- [ ] **Step 1: Write failing pool/Agent UI tests**
+- [x] **Step 1: Write failing pool/Agent UI tests**
 
 ```python
 def test_settings_template_contains_pool_editor_and_mutual_binding_controls():
@@ -1611,23 +1612,23 @@ def test_pool_save_sends_complete_member_order_not_incremental_positions():
     assert "members" in html
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_model_ui.py -q`
 
 Expected: FAIL because no pool tab, binding selector or capability controls exist.
 
-- [ ] **Step 3: Implement complete pool and Agent editing flows**
+- [x] **Step 3: Implement complete pool and Agent editing flows**
 
 Load pools, providers and models independently; keep a local ordered member array and submit the full list plus the server version in one PUT. Disable enable/save when the pool is empty or API reports cycle/depth/candidate/reference errors; on 409 reload the pool and show the Chinese conflict. Display every Provider that may receive the Prompt through the expanded chain and a fixed “每任务最多尝试 16 个候选” note. Agent fixed mode enables Provider/model fields and disables pool fields; pool mode does the reverse; the submitter sends only one valid binding, but the server remains authoritative. Render capability checkboxes from the fixed five-label whitelist and show the pool member count/chain summary in Agent rows. All mutating calls use CSRF and all values use Vue text interpolation.
 
-- [ ] **Step 4: Run UI tests**
+- [x] **Step 4: Run UI tests**
 
 Run: `python -m pytest tests/test_ai_model_ui.py tests/test_ai_model_api.py -q`
 
 Expected: PASS for complete member replacement, stale-version handling, mutual form state, capability labels and privacy disclosure.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/templates/dashboard_settings.html tests/test_ai_model_ui.py
@@ -1646,7 +1647,7 @@ git commit -m "feat: add model pool and Agent binding settings"
 - AI job detail displays route summary (final Provider/model/pool), immutable candidate snapshot hash, conservative PromptBudget, attempt index/status/scope/category/error/latency and the “最多尝试 16 个候选” limit.
 - `partial` has a distinct Chinese status and is not shown as running; when a terminal job has an untried candidate, the detail modal exposes a CSRF-protected “使用下一个模型继续” action that opens the continuation SSE endpoint.
 
-- [ ] **Step 1: Write failing log/UI tests**
+- [x] **Step 1: Write failing log/UI tests**
 
 ```python
 def test_unified_ai_log_includes_partial_and_route_summary(db):
@@ -1663,23 +1664,23 @@ def test_logs_template_contains_attempts_budget_and_continue_endpoint():
         assert text in html
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_unified_task_logs.py tests/test_ai_model_ui.py -q`
 
 Expected: FAIL because `partial` is not retained by the log projection and the modal only displays generic job fields.
 
-- [ ] **Step 3: Add route audit rendering and explicit continuation**
+- [x] **Step 3: Add route audit rendering and explicit continuation**
 
 Extend the AI projection with `route_summary` and `attempt_count` while retaining the existing pagination shape. In the modal, fetch `/api/dashboard/ai/jobs/<job_id>`, render attempts from the server response with escaped interpolation, display pool/provider/model snapshots and error scope, and add a candidate-index selector that only offers the first untried snapshot entry. Send a fresh idempotency key plus the exact hash/index, attach CSRF, stream SSE progress/delta/done/error and refresh detail after completion. Add `partial` to status labels/result colors and ensure a terminal job never displays the spinner or an auto-retry button.
 
-- [ ] **Step 4: Run logs and UI tests**
+- [x] **Step 4: Run logs and UI tests**
 
 Run: `python -m pytest tests/test_unified_task_logs.py tests/test_task_logs_routes.py tests/test_ai_model_ui.py -q`
 
 Expected: PASS for partial filtering, route/attempt display and explicit continuation only.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/templates/dashboard_logs.html src/pixiv_novel_sync/storage/tasks.py tests/test_unified_task_logs.py tests/test_ai_model_ui.py
@@ -1700,7 +1701,7 @@ git commit -m "feat: show AI route attempts in task logs"
 - Documentation states the model catalog/pool API and the exact first-phase limits, and no longer claims that each Agent only supports one Provider or that cross-Provider fallback is unsupported.
 - The static gate permits direct `provider.stream_generate()` only in `ai/providers.py`, `AIAdminMixin.test_provider`, and router internals; all other business service files fail the test.
 
-- [ ] **Step 1: Write failing documentation/static tests**
+- [x] **Step 1: Write failing documentation/static tests**
 
 ```python
 def test_readme_no_longer_describes_old_single_provider_fallback():
@@ -1719,17 +1720,17 @@ def test_no_business_service_selects_provider_directly():
     assert offenders == []
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_model_docs.py tests/test_ai_model_router_integration.py -q`
 
 Expected: FAIL because README still contains the old fallback sentence and service modules retain direct Provider calls.
 
-- [ ] **Step 3: Update docs and add release checks**
+- [x] **Step 3: Update docs and add release checks**
 
 Document Provider sync, empty confirmation, catalog counts, pool/fallback order, capability filtering, snapshot/attempt details, continuation input and privacy disclosure in the frontend contract/page docs. Replace the README setup paragraph with the fixed/pool binding behavior and exact limits; retain API-key encryption and manual-model compatibility. Add static checks for forbidden secret names in templates/log payloads and for `candidate_snapshot_json` not containing `prompt`, `messages`, `api_key`, or `output_text` keys. Add a migration test that runs `PRAGMA foreign_key_check` on a legacy fixture and a router test for 16/32/30-minute hard limits.
 
-- [ ] **Step 4: Run complete verification before claiming completion**
+- [x] **Step 4: Run complete verification before claiming completion**
 
 Run, in order:
 
@@ -1744,7 +1745,7 @@ Expected: all targeted and full tests pass, compileall emits no output, and `git
 
 Run the complete suite with `-W error::pytest.PytestUnhandledThreadExceptionWarning` as an additional final gate. The Task 0 rescue scheduler regression must remain warning-free; do not hide it with warning filters.
 
-- [ ] **Step 5: Commit documentation and verification tests**
+- [x] **Step 5: Commit documentation and verification tests**
 
 ```powershell
 git add README.md docs/frontend-api-contract.md docs/frontend-pages.md docs/INDEX.md tests/test_ai_model_docs.py tests/test_ai_model_router_integration.py

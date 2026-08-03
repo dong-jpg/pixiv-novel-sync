@@ -191,18 +191,20 @@ APIs:
 
 Template: `dashboard_logs.html`
 
-用途：任务日志列表和详情弹窗。任务类型分为“同步任务”和“AI 创作任务”，默认保留最近 3 天；AI 任务支持类型、状态和时间筛选。
+用途：任务日志列表和详情弹窗。任务类型分为“同步任务”和“AI 创作任务”，默认保留最近 3 天；AI 任务支持类型、状态和时间筛选。AI 详情展示候选快照 hash、PromptBudget、实际 Provider/模型、模型池、attempt 错误与耗时；`partial` 单独标记为“部分完成”。存在未尝试候选时，用户可显式选择“使用下一个模型继续”，页面不会自动重试。
 
 APIs:
 
 - `GET /api/dashboard/logs`
 - `GET /api/dashboard/logs/{log_id}`
+- `GET /api/dashboard/ai/jobs/<job_id>`
+- `POST /api/dashboard/ai/jobs/<job_id>/continue`
 
 ### `/dashboard/settings`
 
 Template: `dashboard_settings.html`
 
-用途：同步设置、缓存管理、救援 Token、AI provider/agent 管理。
+用途：同步设置、缓存管理、救援 Token、AI Provider 模型目录、模型池和 Agent 管理。`#ai-api` 展示目录计数、搜索、人工模型、同步 operation 与旧目录状态；`#ai-model-pools` 编辑有序成员、后备池、引用关系和 Agent 的 `fixed`/`pool` 绑定。
 
 APIs:
 
@@ -214,9 +216,15 @@ APIs:
 - `POST /api/dashboard/sync/{task_type}`
 - `GET /api/dashboard/rescue-token/status`
 - `POST /api/dashboard/rescue-token/rotate`
-- AI provider/agent APIs，详见 `frontend-api-contract.md`。
+- Provider/Agent CRUD。
+- `GET|POST /api/dashboard/ai/providers/<provider_id>/models`
+- `POST /api/dashboard/ai/providers/<provider_id>/models/sync`
+- `GET|DELETE /api/dashboard/ai/model-sync-operations/<operation_id>`
+- `GET /api/dashboard/ai/model-sync-operations/<operation_id>/events`
+- `POST /api/dashboard/ai/model-sync-operations/<operation_id>/confirm-empty`
+- 模型池 CRUD 与 `PUT /api/dashboard/ai/model-pools/<pool_id>/members`，详见 `frontend-api-contract.md`。
 
-“救援 API”设置页只展示 Token 前缀与轮换时间。完整救援 Token 只在生成或轮换成功后显示一次，关闭窗口时立即清空页面中的明文。
+“救援 API”设置页只展示 Token 前缀与轮换时间。完整救援 Token 只在生成或轮换成功后显示一次，关闭窗口时立即清空页面中的明文。AI 设置不回显 API Key；模型池编辑器列出所有可能接收 Prompt 的 Provider，并明确提示跨 Provider 故障转移的隐私范围。
 
 ### `/dashboard/preferences`
 

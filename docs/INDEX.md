@@ -2,7 +2,7 @@
 
 **项目**: Pixiv Novel Sync
 **维护者**: dong-jpg
-**最近更新**: 2026-07-23
+**最近更新**: 2026-08-03
 
 ---
 
@@ -37,9 +37,9 @@
 
 | 文档 | 状态 |
 |------|------|
-| [superpowers/specs/2026-07-23-ai-model-catalog-pools-design.md](superpowers/specs/2026-07-23-ai-model-catalog-pools-design.md) | AI 模型目录、模型池和故障转移设计（已确认，实施中） |
+| [superpowers/specs/2026-07-23-ai-model-catalog-pools-design.md](superpowers/specs/2026-07-23-ai-model-catalog-pools-design.md) | AI 模型目录、模型池和故障转移设计（已实施） |
 | [superpowers/specs/2026-07-23-adult-polish-agent-design.md](superpowers/specs/2026-07-23-adult-polish-agent-design.md) | 成人描写局部润色 Agent 设计（已确认，等待模型池路由） |
-| [superpowers/plans/2026-07-23-ai-model-catalog-pools.md](superpowers/plans/2026-07-23-ai-model-catalog-pools.md) | AI 模型目录与模型池实施计划 |
+| [superpowers/plans/2026-07-23-ai-model-catalog-pools.md](superpowers/plans/2026-07-23-ai-model-catalog-pools.md) | AI 模型目录与模型池实施计划（已完成） |
 | [superpowers/plans/2026-07-23-adult-polish-agent.md](superpowers/plans/2026-07-23-adult-polish-agent.md) | 成人描写局部润色 Agent 实施计划 |
 | [superpowers/plans/2026-06-26-job-cancellation-hardening.md](superpowers/plans/2026-06-26-job-cancellation-hardening.md) | 任务取消硬化计划（HEAD commit 依赖，当前权威） |
 

@@ -317,6 +317,77 @@ def test_start_route_job_persists_snapshot_budget_and_private_owner_before_call(
     assert fake_router.budget_calls[0][3] == 1_000
 
 
+def test_candidate_snapshot_excludes_prompt_content_and_secret_fields(
+    service: AIWritingService,
+    db: Database,
+    fixed_agent: AIAgentConfig,
+) -> None:
+    context = service._start_route_job(
+        db,
+        "continue",
+        fixed_agent,
+        {"source_type": "manual", "output_text": "不得进入快照"},
+        messages=[{"role": "user", "content": "私密正文"}],
+        max_tokens=1_000,
+    )
+    row = db.conn.execute(
+        "SELECT candidate_snapshot_json FROM ai_jobs WHERE job_id = ?",
+        (context.job_id,),
+    ).fetchone()
+    snapshot = json.loads(row["candidate_snapshot_json"])
+
+    def all_keys(value: Any) -> set[str]:
+        if isinstance(value, dict):
+            return set(value).union(*(all_keys(item) for item in value.values()))
+        if isinstance(value, list):
+            return set().union(*(all_keys(item) for item in value))
+        return set()
+
+    assert {
+        "api_key",
+        "api_key_encrypted",
+        "messages",
+        "output_text",
+        "prompt",
+    }.isdisjoint(all_keys(snapshot))
+    serialized = json.dumps(snapshot, ensure_ascii=False)
+    assert "私密正文" not in serialized
+    assert "secret prompt" not in serialized
+
+
+def test_route_job_hard_limits_are_16_32_and_30_minutes(
+    service: AIWritingService,
+    db: Database,
+    fixed_agent: AIAgentConfig,
+) -> None:
+    before = datetime.now(timezone.utc)
+    context = service._start_route_job(
+        db,
+        "continue",
+        fixed_agent,
+        {"source_type": "manual"},
+        messages=MESSAGES,
+        max_tokens=1_000,
+    )
+    row = db.conn.execute(
+        """
+        SELECT candidate_attempt_count, network_request_count, route_deadline_at
+        FROM ai_jobs WHERE job_id = ?
+        """,
+        (context.job_id,),
+    ).fetchone()
+    deadline = datetime.fromisoformat(row["route_deadline_at"]).replace(
+        tzinfo=timezone.utc
+    )
+
+    assert row["candidate_attempt_count"] == 0
+    assert row["network_request_count"] == 0
+    assert timedelta(minutes=29) < deadline - before <= timedelta(minutes=30)
+    router_source = (Path(__file__).parents[1] / "src" / "pixiv_novel_sync" / "ai" / "model_router.py").read_text(encoding="utf-8")
+    assert ">= 16" in router_source
+    assert ">= 32" in router_source
+
+
 def test_stream_route_forwards_progress_delta_and_result(
     service: AIWritingService,
     route_context: Any,

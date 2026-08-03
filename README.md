@@ -96,6 +96,8 @@
 - Moonshot
 - Qwen/通义千问
 - 自定义 Provider
+- Provider 模型目录同步与人工模型
+- 有序模型池与跨 Provider fallback
 
 </td>
 </tr>
@@ -243,6 +245,13 @@ PIXIV_FLASK_SECRET=
 # AI Provider API key 加密密钥（保存 AI Provider 前必须配置，并保持稳定）
 PIXIV_NOVEL_SYNC_AI_SECRET_KEY=your_stable_secret
 ```
+
+#### AI 模型目录与路由
+
+在 Dashboard → 设置 → AI API 中配置 Provider 后，可通过
+`POST /api/dashboard/ai/providers/<provider_id>/models/sync` 同步模型目录，也可保留手工录入模型。Agent 支持两种互斥绑定：`fixed` 固定到一个 Provider/模型，`pool` 按成员顺序和后备池展开候选；`required_capabilities` 会在调用前过滤不满足能力要求的模型。跨 Provider fallback 可能把同一 Prompt 发送给多个 Provider，保存配置前请确认数据范围。
+
+第一阶段硬限制：单个模型池及展开后的后备链最多 64 个有效候选，后备链深度最多 8；每个 job 最多尝试 16 个候选、发起 32 次网络请求、运行 30 分钟，候选快照最大 256 KiB。一次模型同步最多读取 100 页、5000 个模型、单页 4 MiB、累计 20 MiB，并在 10 分钟后终止。同步失败或非权威空结果不会删除旧目录；空结果必须在页面中二次确认。
 
 #### 同步配置 (`config/config.yaml`)
 
@@ -416,7 +425,8 @@ mypy src/
 2. 访问 Dashboard → AI 创作 → 设置
 3. 选择 Provider，并在页面中填入对应 API Key
 4. 点击"测试连接"验证配置
-5. 可以配置多个 Provider，但当前每个 Agent 只绑定一个 Provider（或该 Provider 下的固定模型）；尚不支持跨 Provider fallback。API Key 会加密保存，不会在接口中回显
+5. Agent 可选择 `fixed` 固定 Provider/模型，或选择有序模型池并按后备链执行跨 Provider fallback；没有目录数据时，`fixed` 模式仍兼容手工模型名
+6. API Key 会加密保存且不会在接口中回显；模型池可能把同一 Prompt 发送给多个 Provider，请只配置允许接收该内容的 Provider
 </details>
 
 <details>

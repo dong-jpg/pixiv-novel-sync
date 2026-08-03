@@ -439,18 +439,54 @@ Body:
 
 ## AI configuration APIs
 
-All AI configuration APIs generally return `{ ok, data }` or `{ ok, error }`.
+所有 AI 配置接口返回 `{ ok, data }` 或 `{ ok, error }`。写接口沿用 Dashboard 会话认证，并必须携带 `X-CSRF-Token`。Provider 响应只返回 `has_api_key`，不得返回 API Key 或密文。
+
+### Provider、模型目录与同步 operation
 
 - `GET /api/dashboard/ai/providers`
 - `POST /api/dashboard/ai/providers`
 - `PUT /api/dashboard/ai/providers/{provider_id}`
 - `DELETE /api/dashboard/ai/providers/{provider_id}`
 - `POST /api/dashboard/ai/providers/{provider_id}/test`
+- `GET /api/dashboard/ai/providers/<provider_id>/models?search=&routable_only=&enabled_only=`
+- `POST /api/dashboard/ai/providers/<provider_id>/models`：创建人工模型。
+- `PUT /api/dashboard/ai/provider-models/<model_id>`
+- `DELETE /api/dashboard/ai/provider-models/<model_id>`
+- `POST /api/dashboard/ai/providers/<provider_id>/models/sync`：返回 `202` 和 operation。
+- `GET /api/dashboard/ai/model-sync-operations/<operation_id>`
+- `GET /api/dashboard/ai/model-sync-operations/<operation_id>/events`：SSE 事件仅为 `started`、`page`、`empty_confirmation_required`、`completed`、`failed`、`cancelled`。
+- `DELETE /api/dashboard/ai/model-sync-operations/<operation_id>`：请求取消。
+- `POST /api/dashboard/ai/model-sync-operations/<operation_id>/confirm-empty`
+
+目录响应包含 `total`、`discovered_available`、`routable`、`models_synced_at`、`models_sync_error` 和模型的有效显示名、能力、上下文窗口及 `source`。人工字段不会被后续同步覆盖。同步失败、取消、超时或分页不完整时保留旧目录。非权威空结果进入 `needs_empty_confirmation`，确认请求必须原样提交 operation 返回的版本信息：
+
+```json
+{
+  "generation": 2,
+  "result_digest": "64 位小写十六进制摘要"
+}
+```
+
+发现阶段限制为单页 4 MiB、累计 20 MiB、100 页、5000 个模型和 10 分钟；超限时不写入部分目录。
+
+### 模型池与 Agent 绑定
+
+- `GET /api/dashboard/ai/model-pools`
+- `POST /api/dashboard/ai/model-pools`
+- `GET /api/dashboard/ai/model-pools/<pool_id>`
+- `PUT /api/dashboard/ai/model-pools/<pool_id>`
+- `DELETE /api/dashboard/ai/model-pools/<pool_id>`
+- `PUT /api/dashboard/ai/model-pools/<pool_id>/members`
+- `GET /api/dashboard/ai/model-pools/<pool_id>/attempts?limit=50`
 - `GET /api/dashboard/ai/agents`
 - `POST /api/dashboard/ai/agents`
 - `PUT /api/dashboard/ai/agents/{agent_id}`
 - `DELETE /api/dashboard/ai/agents/{agent_id}`
 - `POST /api/dashboard/ai/agents/seed`
+
+成员替换是全量、有序写入，body 为 `{"expected_version": 3, "members": [{"provider_model_id": 10, "enabled": true}]}`；陈旧版本返回 `409`。后备池按链顺序展开并按 `(provider_id, model_key)` 去重。Agent 的 `binding_type=fixed|pool` 互斥：`fixed` 提交 `provider_id`/`model`，`pool` 提交 `model_pool_id`。`required_capabilities` 只接受 `streaming`、`json`、`vision`、`tools`、`long_context`。
+
+单池和完整后备链最多 64 个候选，链深度最多 8；每个 job 最多尝试 16 个候选、32 次网络请求和 30 分钟。模型池可能把同一 Prompt 发送给多个 Provider，前端必须展示完整 Provider 范围及跨 Provider 隐私提示。
 
 ## AI content and job APIs
 
@@ -476,7 +512,22 @@ All AI configuration APIs generally return `{ ok, data }` or `{ ok, error }`.
 
 ### GET /api/dashboard/ai/jobs/<job_id>
 
-返回 AI 任务完整详情，包括 `job_id`、`task_type`、`status`、`input`、`output_text`、`output`、`error_message` 和时间字段。任务不存在时返回 404。
+返回 AI 任务完整详情，包括 `job_id`、`task_type`、`status`、`input`、`output_text`、`output`、`error_message`、`candidate_snapshot_hash`、`candidate_snapshot`、`prompt_budget`、`attempts`、`route_summary` 和时间字段。attempt 包含实际 Provider/模型、池快照、stage、状态、错误分类及耗时；快照和 attempt 不含 API Key、Prompt、正文或完整请求/响应。任务不存在时返回 404。
+
+### POST /api/dashboard/ai/jobs/<job_id>/continue
+
+从终态父 job 的不可变候选快照创建 child job，并从第一个未尝试候选继续。接口返回常规 AI SSE；重复 `idempotency_key` 复用同一 child job，不重复调用 Provider。
+
+```json
+{
+  "parent_job_id": "与路径 job_id 完全一致",
+  "idempotency_key": "16-128 位可打印 ASCII",
+  "candidate_snapshot_hash": "64 位小写十六进制摘要",
+  "resume_candidate_index": 2
+}
+```
+
+索引不是首个未尝试候选，或 Agent/池版本、剩余 Provider 配置已变化时返回 `409`。`partial` 表示正文已保留但任务不完整；不会自动切换模型，必须由用户显式执行“下一个模型继续”。
 
 ## AI SSE stream contract
 
