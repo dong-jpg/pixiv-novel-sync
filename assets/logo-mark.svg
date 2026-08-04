@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Pixiv Novel Sync mark</title>
+  <desc id="desc">Folded document and editing mark for the Writer's Desk identity.</desc>
+  <rect width="128" height="128" rx="28" fill="#FFF7EF"/>
+  <rect x="20" y="18" width="88" height="92" rx="24" fill="#F3DFD0"/>
+  <path d="M45 27h38l21 21v47c0 6-5 11-11 11H45c-6 0-11-5-11-11V38c0-6 5-11 11-11Z" fill="#FFFFFF" stroke="#2A211B" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M83 27v19c0 4 3 7 7 7h14" fill="none" stroke="#2A211B" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M49 62h34M49 77h26M49 91h18" stroke="#4A7C74" stroke-width="6" stroke-linecap="round"/>
+  <path d="M79 94l20-20 12 12-20 20-17 5 5-17Z" fill="#B75A3C" stroke="#2A211B" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M95 79l12 12" stroke="#FFF7EF" stroke-width="4" stroke-linecap="round"/>
+</svg>
