@@ -44,6 +44,7 @@
 | [superpowers/specs/2026-08-04-github-readme-and-logo-refresh-design.md](superpowers/specs/2026-08-04-github-readme-and-logo-refresh-design.md) | GitHub README 首屏与静态 Logo 刷新设计（已确认） |
 | [superpowers/plans/2026-07-23-ai-model-catalog-pools.md](superpowers/plans/2026-07-23-ai-model-catalog-pools.md) | AI 模型目录与模型池实施计划（已完成） |
 | [superpowers/plans/2026-07-23-adult-polish-agent.md](superpowers/plans/2026-07-23-adult-polish-agent.md) | 成人描写局部润色 Agent 实施计划 |
+| [superpowers/plans/2026-08-04-github-readme-and-logo-refresh.md](superpowers/plans/2026-08-04-github-readme-and-logo-refresh.md) | GitHub README 与静态 Logo 刷新实施计划 |
 | [superpowers/plans/2026-06-26-job-cancellation-hardening.md](superpowers/plans/2026-06-26-job-cancellation-hardening.md) | 任务取消硬化计划（HEAD commit 依赖，当前权威） |
 
 ## 历史参考与归档
