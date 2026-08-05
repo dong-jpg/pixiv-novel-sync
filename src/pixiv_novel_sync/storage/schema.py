@@ -503,6 +503,8 @@ class SchemaMixin:
                 reason TEXT,
                 matched_json TEXT NOT NULL,
                 source_query TEXT,
+                x_restrict INTEGER NOT NULL DEFAULT 0,
+                risk_notes_json TEXT NOT NULL DEFAULT '[]',
                 status TEXT NOT NULL DEFAULT 'new',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -568,6 +570,22 @@ class SchemaMixin:
             );
             """
         )
+        item_columns = {
+            row[1]
+            for row in self.conn.execute(
+                "PRAGMA table_info(recommendation_items)"
+            ).fetchall()
+        }
+        if "x_restrict" not in item_columns:
+            self.conn.execute(
+                "ALTER TABLE recommendation_items "
+                "ADD COLUMN x_restrict INTEGER NOT NULL DEFAULT 0"
+            )
+        if "risk_notes_json" not in item_columns:
+            self.conn.execute(
+                "ALTER TABLE recommendation_items "
+                "ADD COLUMN risk_notes_json TEXT NOT NULL DEFAULT '[]'"
+            )
 
     def _migrate_ai_tables(self) -> None:
         """创建 AI 创作工作台相关表。"""

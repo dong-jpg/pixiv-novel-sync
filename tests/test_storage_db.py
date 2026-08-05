@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,57 @@ def db(tmp_path: Path) -> Database:
     db = Database(tmp_path / "test.db")
     db.init_schema()
     return db
+
+
+def test_recommendation_item_migration_adds_risk_columns(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy-recommendations.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE recommendation_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                profile_id INTEGER NOT NULL,
+                item_type TEXT NOT NULL,
+                novel_id INTEGER,
+                series_id INTEGER,
+                title TEXT NOT NULL,
+                author_id INTEGER,
+                author_name TEXT,
+                caption TEXT,
+                tags_json TEXT NOT NULL,
+                text_length INTEGER NOT NULL DEFAULT 0,
+                series_total_text_length INTEGER NOT NULL DEFAULT 0,
+                series_total_novels INTEGER NOT NULL DEFAULT 0,
+                total_bookmarks INTEGER NOT NULL DEFAULT 0,
+                total_views INTEGER NOT NULL DEFAULT 0,
+                score REAL NOT NULL DEFAULT 0,
+                reason TEXT,
+                matched_json TEXT NOT NULL,
+                source_query TEXT,
+                status TEXT NOT NULL DEFAULT 'new',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO recommendation_items (
+                run_id, profile_id, item_type, novel_id, title, tags_json, matched_json
+            ) VALUES (1, 1, 'novel', 11, '旧推荐', '[]', '{}');
+            """
+        )
+
+    db = Database(db_path)
+    db.init_schema()
+    columns = {
+        row[1]
+        for row in db.conn.execute("PRAGMA table_info(recommendation_items)").fetchall()
+    }
+    row = db.conn.execute(
+        "SELECT x_restrict, risk_notes_json FROM recommendation_items WHERE id = 1"
+    ).fetchone()
+
+    assert {"x_restrict", "risk_notes_json"} <= columns
+    assert tuple(row) == (0, "[]")
+    db.close()
 
 
 def _insert_user_and_novel(db: Database, novel_id: int = 100, user_id: int = 1, series_id: int | None = None) -> None:

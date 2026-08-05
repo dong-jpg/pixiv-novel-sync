@@ -190,6 +190,14 @@ class RecommendationService:
             return None
 
         series_id = self._series_id(novel)
+        recommended_series = filter_state.get("recommended_series_ids", set())
+        dismissed_series = filter_state.get("dismissed_series_ids", set())
+        if (
+            filters.get("exclude_recommended_before", True)
+            and series_id
+            and series_id in (recommended_series | dismissed_series)
+        ):
+            return None
         text_length = int(getattr(novel, "text_length", 0) or 0)
         series_total_text_length = 0
         series_total_novels = 0
@@ -224,6 +232,21 @@ class RecommendationService:
         caption = str(getattr(novel, "caption", "") or "")
         matched_tags = matched.get("tags") or []
         matched_keywords = matched.get("keywords") or []
+        try:
+            x_restrict = max(0, int(getattr(novel, "x_restrict", 0) or 0))
+        except (TypeError, ValueError):
+            x_restrict = 0
+        risk_notes: list[str] = []
+        if x_restrict:
+            risk_notes.append("包含成人限制内容")
+        negative_tags = sorted({str(value) for value in matched.get("negative_tags") or []})
+        negative_keywords = sorted(
+            {str(value) for value in matched.get("negative_keywords") or []}
+        )
+        if negative_tags:
+            risk_notes.append("命中负向标签：" + "、".join(negative_tags))
+        if negative_keywords:
+            risk_notes.append("命中负向关键词：" + "、".join(negative_keywords))
         reason_parts = []
         if matched_tags:
             reason_parts.append("命中标签：" + "、".join(matched_tags[:6]))
@@ -242,6 +265,7 @@ class RecommendationService:
             "author_name": author_name,
             "caption": caption,
             "tags": tags,
+            "x_restrict": x_restrict,
             "text_length": text_length,
             "series_total_text_length": series_total_text_length,
             "series_total_novels": series_total_novels,
@@ -250,6 +274,7 @@ class RecommendationService:
             "score": score,
             "reason": "；".join(reason_parts),
             "matched": matched,
+            "risk_notes": risk_notes,
             "source_query": query.get("query"),
             "status": "new",
         }

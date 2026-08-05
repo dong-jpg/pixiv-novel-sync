@@ -170,6 +170,66 @@ def test_recommendation_item_upsert_and_mutes(tmp_path: Path):
     db.close()
 
 
+def test_recommendation_item_round_trips_restriction_and_risks(tmp_path: Path) -> None:
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    profile_id = db.create_preference_profile(
+        {"name": "p", "source_scope": {}, "stats": {}, "profile": {}}
+    )
+    run_id = db.create_recommendation_run(profile_id, {"queries": []})
+
+    item_id = db.upsert_recommendation_item(
+        {
+            "run_id": run_id,
+            "profile_id": profile_id,
+            "item_type": "novel",
+            "novel_id": 11,
+            "title": "受限内容",
+            "tags": [],
+            "score": 1,
+            "matched": {},
+            "x_restrict": 1,
+            "risk_notes": ["包含成人限制内容"],
+        }
+    )
+
+    item = db.get_recommendation_item(item_id)
+    assert item is not None
+    assert item["x_restrict"] == 1
+    assert item["risk_notes"] == ["包含成人限制内容"]
+    db.close()
+
+
+def test_filter_state_tracks_recommended_and_dismissed_series(tmp_path: Path) -> None:
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    profile_id = db.create_preference_profile(
+        {"name": "p", "source_scope": {}, "stats": {}, "profile": {}}
+    )
+    run_id = db.create_recommendation_run(profile_id, {"queries": []})
+    for novel_id, series_id, status in ((11, 99, "new"), (12, 100, "dismissed")):
+        db.upsert_recommendation_item(
+            {
+                "run_id": run_id,
+                "profile_id": profile_id,
+                "item_type": "series",
+                "novel_id": novel_id,
+                "series_id": series_id,
+                "title": f"系列 {series_id}",
+                "tags": [],
+                "score": 1,
+                "matched": {},
+                "status": status,
+            }
+        )
+
+    state = db.get_recommendation_filter_state()
+
+    assert state["recommended_series_ids"] == {99, 100}
+    assert state["dismissed_series_ids"] == {100}
+    db.close()
+
+
 def test_exclude_recommended_before_filters_any_previous_item(tmp_path: Path):
     db = Database(tmp_path / "rec.db")
     db.init_schema()
@@ -199,6 +259,126 @@ def test_exclude_recommended_before_filters_any_previous_item(tmp_path: Path):
     )
 
     assert item is None
+    db.close()
+
+
+def test_previous_series_filters_different_member_before_detail_lookup(tmp_path: Path) -> None:
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    profile_id = db.create_preference_profile(
+        {"name": "p", "source_scope": {}, "stats": {}, "profile": {}}
+    )
+    previous_run_id = db.create_recommendation_run(profile_id, {"queries": []})
+    db.upsert_recommendation_item(
+        {
+            "run_id": previous_run_id,
+            "profile_id": profile_id,
+            "item_type": "series",
+            "novel_id": 11,
+            "series_id": 99,
+            "title": "旧成员",
+            "author_id": 1,
+            "tags": [],
+            "score": 1,
+            "matched": {},
+        }
+    )
+    candidate = SimpleNamespace(
+        id=12,
+        text_length=6000,
+        title="不同的新成员",
+        caption="",
+        tags=[],
+        user=SimpleNamespace(id=2, name="B"),
+        total_bookmarks=10,
+        series=SimpleNamespace(id=99),
+    )
+
+    class FakeApi:
+        def __init__(self) -> None:
+            self.series_detail_calls = 0
+
+        def search_novel(self, **kwargs):
+            return SimpleNamespace(novels=[candidate], next_url=None)
+
+        def novel_series(self, **kwargs):
+            self.series_detail_calls += 1
+            return SimpleNamespace(
+                novels=[SimpleNamespace(text_length=25_000)],
+                next_url=None,
+            )
+
+        def parse_qs(self, url):
+            return None
+
+    api = FakeApi()
+    service = RecommendationService(db, make_settings(tmp_path), api=api)
+    result = service.run(
+        profile_id=profile_id,
+        search_plan={
+            "queries": [{"query": "新成员", "limit": 1}],
+            "filters": {
+                "exclude_archived": True,
+                "exclude_recommended_before": True,
+                "exclude_muted_authors": True,
+                "exclude_muted_tags": True,
+                "series_min_total_chars": 20_000,
+            },
+        },
+    )
+
+    assert result["stats"]["saved"] == 0
+    assert api.series_detail_calls == 0
+    db.close()
+
+
+def test_candidate_exposes_restriction_and_preference_risks(tmp_path: Path) -> None:
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    service = RecommendationService(db, make_settings(tmp_path))
+    profile = {
+        "profile": {
+            "negative_preferences": {
+                "excluded_tags": ["禁忌标签"],
+                "excluded_keywords": ["冲突情节"],
+            }
+        }
+    }
+    novel = SimpleNamespace(
+        id=22,
+        text_length=6000,
+        title="包含冲突情节的标题",
+        caption="",
+        tags=["禁忌标签"],
+        user=SimpleNamespace(id=3, name="C"),
+        total_bookmarks=0,
+        x_restrict=1,
+    )
+
+    item = service._candidate_to_item(
+        None,
+        novel,
+        {"query": "x"},
+        profile,
+        {"single_min_chars": 5000},
+        {
+            "archived_novel_ids": set(),
+            "recommended_novel_ids": set(),
+            "dismissed_novel_ids": set(),
+            "recommended_series_ids": set(),
+            "dismissed_series_ids": set(),
+            "muted_authors": set(),
+            "muted_tags": set(),
+        },
+    )
+
+    assert item is not None
+    assert item["x_restrict"] == 1
+    assert item["risk_notes"] == [
+        "包含成人限制内容",
+        "命中负向标签：禁忌标签",
+        "命中负向关键词：冲突情节",
+    ]
     db.close()
 
 

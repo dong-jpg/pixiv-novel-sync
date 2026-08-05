@@ -342,6 +342,17 @@ class RecommendationsMixin:
             except (TypeError, ValueError):
                 item[target] = fallback
             item.pop(source, None)
+        try:
+            risk_notes = json.loads(item.get("risk_notes_json") or "")
+        except (TypeError, ValueError):
+            risk_notes = []
+        item["risk_notes"] = (
+            [note for note in risk_notes if isinstance(note, str)]
+            if isinstance(risk_notes, list)
+            else []
+        )
+        item["x_restrict"] = int(item.get("x_restrict") or 0)
+        item.pop("risk_notes_json", None)
         return item
 
     def upsert_recommendation_item(self, data: dict[str, Any]) -> int:
@@ -355,6 +366,8 @@ class RecommendationsMixin:
             int(data.get("series_total_text_length") or 0), int(data.get("series_total_novels") or 0),
             int(data.get("total_bookmarks") or 0), int(data.get("total_views") or 0), float(data.get("score") or 0),
             data.get("reason"), json.dumps(data.get("matched") or {}, ensure_ascii=False), data.get("source_query"),
+            int(data.get("x_restrict") or 0),
+            json.dumps(data.get("risk_notes") or [], ensure_ascii=False),
             data.get("status") or "new",
         )
         with self._lock:
@@ -373,7 +386,8 @@ class RecommendationsMixin:
                         run_id = ?, profile_id = ?, item_type = ?, novel_id = ?, series_id = ?, title = ?,
                         author_id = ?, author_name = ?, caption = ?, tags_json = ?, text_length = ?,
                         series_total_text_length = ?, series_total_novels = ?, total_bookmarks = ?, total_views = ?,
-                        score = ?, reason = ?, matched_json = ?, source_query = ?, updated_at = CURRENT_TIMESTAMP
+                        score = ?, reason = ?, matched_json = ?, source_query = ?, x_restrict = ?,
+                        risk_notes_json = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
                     values[:-1] + (item_id,),
@@ -384,8 +398,9 @@ class RecommendationsMixin:
                     INSERT INTO recommendation_items (
                         run_id, profile_id, item_type, novel_id, series_id, title, author_id, author_name,
                         caption, tags_json, text_length, series_total_text_length, series_total_novels,
-                        total_bookmarks, total_views, score, reason, matched_json, source_query, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        total_bookmarks, total_views, score, reason, matched_json, source_query,
+                        x_restrict, risk_notes_json, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 )
@@ -462,11 +477,28 @@ class RecommendationsMixin:
         )
         recommended_ids = {int(row[0]) for row in self.conn.execute("SELECT novel_id FROM recommendation_items WHERE novel_id IS NOT NULL").fetchall()}
         dismissed_ids = {int(row[0]) for row in self.conn.execute("SELECT novel_id FROM recommendation_items WHERE novel_id IS NOT NULL AND status IN ('dismissed', 'muted')").fetchall()}
+        recommended_series_ids = {
+            int(row[0])
+            for row in self.conn.execute(
+                "SELECT series_id FROM recommendation_items WHERE series_id IS NOT NULL"
+            ).fetchall()
+        }
+        dismissed_series_ids = {
+            int(row[0])
+            for row in self.conn.execute(
+                """
+                SELECT series_id FROM recommendation_items
+                WHERE series_id IS NOT NULL AND status IN ('dismissed', 'muted')
+                """
+            ).fetchall()
+        }
         mutes = self.list_recommendation_mutes()
         return {
             "archived_novel_ids": archived_ids,
             "recommended_novel_ids": recommended_ids,
             "dismissed_novel_ids": dismissed_ids,
+            "recommended_series_ids": recommended_series_ids,
+            "dismissed_series_ids": dismissed_series_ids,
             "muted_authors": {str(item["mute_value"]) for item in mutes if item["mute_type"] == "author"},
             "muted_tags": {str(item["mute_value"]) for item in mutes if item["mute_type"] == "tag"},
         }
