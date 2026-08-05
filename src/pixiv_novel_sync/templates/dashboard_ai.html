@@ -96,6 +96,7 @@
         <div class="flex gap-2 flex-wrap">
           <span class="px-2 py-1 rounded bg-indigo-50 text-indigo-700">风格档案：{{ contextPreview.has_style_prompt ? '已注入' : '未注入' }}</span>
           <span class="px-2 py-1 rounded bg-purple-50 text-purple-700">小说档案：{{ contextPreview.has_novel_prompt ? '已注入' : '未注入' }}</span>
+          <span class="px-2 py-1 rounded bg-emerald-50 text-emerald-700">偏好画像：{{ contextPreview.preference_profile_id ? '已选择' : '未选择' }} / {{ contextPreview.preference_injection_strength || 'off' }}</span>
         </div>
         <details open class="border border-gray-100 rounded-lg"><summary class="px-3 py-2 bg-gray-50 cursor-pointer font-medium">Prompt 预览</summary><pre class="p-3 whitespace-pre-wrap font-mono max-h-72 overflow-auto">{{ contextPreview.prompt_preview }}</pre></details>
         <details class="border border-gray-100 rounded-lg"><summary class="px-3 py-2 bg-gray-50 cursor-pointer font-medium">项目上下文</summary><pre class="p-3 whitespace-pre-wrap font-serif max-h-72 overflow-auto">{{ contextPreview.project_context }}</pre></details>
@@ -226,6 +227,21 @@
             <div class="flex flex-wrap items-center gap-2 xl:justify-end">
               <a href="/dashboard/wizard?tab=distill" class="px-3 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50">管理档案</a>
               <button @click="saveProjectProfiles" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600">保存套用</button>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3 border-t border-gray-100">
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1">AI 偏好画像</label>
+              <select v-model.number="projectMetaForm.preference_profile_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+                <option :value="0">不注入画像</option>
+                <option v-for="profile in preferenceProfiles" :key="profile.id" :value="profile.id">{{ profile.name }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1">画像注入强度</label>
+              <select v-model="projectMetaForm.preference_injection_strength" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+                <option v-for="strength in preferenceStrengths" :key="strength.value" :value="strength.value">{{ strength.label }}</option>
+              </select>
             </div>
           </div>
         </section>
@@ -836,6 +852,13 @@ window.initVueApp({
     const agents = ref([]);
     const styleProfiles = ref([]);
     const novelProfiles = ref([]);
+    const preferenceProfiles = ref([]);
+    const preferenceStrengths = [
+      { value: 'off', label: '关闭' },
+      { value: 'light', label: '轻量' },
+      { value: 'standard', label: '标准' },
+      { value: 'strong', label: '强化' },
+    ];
     const message = ref('');
     const messageType = ref('success');
     const toastMessage = ref('');
@@ -859,6 +882,7 @@ window.initVueApp({
     ];
     const projectMetaForm = reactive({
       name: '', description: '', style_profile_id: 0, novel_profile_id: 0,
+      preference_profile_id: 0, preference_injection_strength: 'off',
       // #14 项目级风格控制：滑块 + 标签 + 自定义，注入续写 prompt
       style_control: { sliders: { explicitness: 50, lyricism: 50, pacing: 50, darkness: 50, vulgarity: 50 }, tags: [], custom: '' },
     });
@@ -1085,6 +1109,7 @@ window.initVueApp({
     async function loadStyleProfiles() { styleProfiles.value = (await api('/api/dashboard/ai/style-profiles')).items || []; }
     // ── 小说档案 ──────────────────────────────────────────────
     async function loadNovelProfiles() { novelProfiles.value = (await api('/api/dashboard/ai/novel-profiles')).items || []; }
+    async function loadPreferenceProfiles() { preferenceProfiles.value = await api('/api/dashboard/preferences/profiles'); }
     // ── 写作项目函数 ──────────────────────────────────────────
     async function loadProjects() { try { projectList.value = await api('/api/dashboard/ai/projects'); } catch {} }
     async function createProject() {
@@ -1109,6 +1134,8 @@ window.initVueApp({
       Object.assign(projectMetaForm, {
         name: p.name || '', description: p.description || '',
         style_profile_id: p.style_profile_id || 0, novel_profile_id: p.novel_profile_id || 0,
+        preference_profile_id: p.preference_profile_id || 0,
+        preference_injection_strength: p.preference_injection_strength || 'off',
         style_control: { sliders, tags: Array.isArray(sc.tags) ? [...sc.tags] : [], custom: sc.custom || '' },
       });
       projectDetailTab.value = 'overview';
@@ -1195,15 +1222,29 @@ window.initVueApp({
     async function saveProjectProfiles() {
       if (!currentProject.value) return false;
       try {
-        await api('/api/dashboard/ai/projects/' + currentProject.value.id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ style_profile_id: projectMetaForm.style_profile_id || null, novel_profile_id: projectMetaForm.novel_profile_id || null }) });
+        await api('/api/dashboard/ai/projects/' + currentProject.value.id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({
+          style_profile_id: projectMetaForm.style_profile_id || null,
+          novel_profile_id: projectMetaForm.novel_profile_id || null,
+          preference_profile_id: projectMetaForm.preference_profile_id || null,
+          preference_injection_strength: projectMetaForm.preference_injection_strength || 'off',
+        }) });
         currentProject.value.style_profile_id = projectMetaForm.style_profile_id || null;
         currentProject.value.novel_profile_id = projectMetaForm.novel_profile_id || null;
-        showMessage('蒸馏档案已保存');
+        currentProject.value.preference_profile_id = projectMetaForm.preference_profile_id || null;
+        currentProject.value.preference_injection_strength = projectMetaForm.preference_injection_strength || 'off';
+        showMessage('档案与偏好画像已保存');
         return true;
       } catch (e) {
         showMessage(e.message, 'error');
         return false;
       }
+    }
+    function preferencePayload(extra = {}) {
+      return {
+        ...extra,
+        preference_profile_id: projectMetaForm.preference_profile_id || null,
+        preference_injection_strength: projectMetaForm.preference_injection_strength || 'off',
+      };
     }
     // #14 风格标签增删
     function addStyleTag() {
@@ -1313,7 +1354,7 @@ window.initVueApp({
       if (!longformPlanForm.target_words) { showMessage('请填写目标总字数', 'error'); return; }
       longformPlanning.value = true; streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
       try {
-        const res = await fetchStream('/api/dashboard/ai/projects/' + pid + '/longform-plan/stream', longformPlanForm, '长篇规划请求失败');
+        const res = await fetchStream('/api/dashboard/ai/projects/' + pid + '/longform-plan/stream', preferencePayload(longformPlanForm), '长篇规划请求失败');
         const plan = await readSSE(res);
         if (!plan) throw new Error('模型未返回可用规划');
         Object.assign(longformPlan, { project_outline: plan.project_outline || '', target_words: plan.target_words || 0, expected_chapter_count: plan.expected_chapter_count || 0, average_chapter_words: plan.average_chapter_words || 0, structure_notes: plan.structure_notes || '', volumes: plan.volumes || [], chapters: plan.chapters || [], foreshadows: plan.foreshadows || [] });
@@ -1328,7 +1369,7 @@ window.initVueApp({
       if (!longformDetailForm.agent_id) { showMessage('请选择详细梗概 Agent', 'error'); return; }
       longformDetailPlanning.value = true; streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
       try {
-        const res = await fetchStream('/api/dashboard/ai/projects/' + pid + '/longform-plan/details/stream', longformDetailForm, '详细梗概扩写请求失败');
+        const res = await fetchStream('/api/dashboard/ai/projects/' + pid + '/longform-plan/details/stream', preferencePayload(longformDetailForm), '详细梗概扩写请求失败');
         const plan = await readSSE(res);
         if (!plan) throw new Error('模型未返回可用详细梗概');
         Object.assign(longformPlan, { project_outline: plan.project_outline || '', target_words: plan.target_words || 0, expected_chapter_count: plan.expected_chapter_count || 0, average_chapter_words: plan.average_chapter_words || 0, structure_notes: plan.structure_notes || '', volumes: plan.volumes || [], chapters: plan.chapters || [], foreshadows: plan.foreshadows || [] });
@@ -1479,13 +1520,13 @@ window.initVueApp({
         await saveCurrentChapter();
         contextPreview.value = await api('/api/dashboard/ai/projects/' + currentProject.value.id + '/context/preview', {
           method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({
+          body: JSON.stringify(preferencePayload({
             agent_id: chapterContinueAgent.value,
             chapter_id: currentChapter.value.id,
             instruction: chapterInstruction.value,
             context_chars: 8000,
             max_chars: 6000,
-          }),
+          })),
         });
         showContextPreviewModal.value = true;
       } catch (e) { showMessage(e.message, 'error'); }
@@ -1495,7 +1536,7 @@ window.initVueApp({
     async function startChapterContinue() {
       if (!chapterContinueAgent.value) { showMessage('请选择续写 Agent', 'error'); return; }
       await saveCurrentChapter();
-      const payload = { agent_id: chapterContinueAgent.value, project_id: currentProject.value?.id, chapter_id: currentChapter.value?.id, instruction: chapterInstruction.value };
+      const payload = preferencePayload({ agent_id: chapterContinueAgent.value, project_id: currentProject.value?.id, chapter_id: currentChapter.value?.id, instruction: chapterInstruction.value });
       await startStream('/api/dashboard/ai/chapters/continue/stream', payload);
       if (currentChapter.value) {
         try {
@@ -1510,7 +1551,7 @@ window.initVueApp({
     async function startChapterPlan() {
       if (!chapterContinueAgent.value) { showMessage('请选择 Agent', 'error'); return; }
       streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
-      const payload = { agent_id: chapterContinueAgent.value, source_type: 'manual', text: chapterEditForm.content || '(空)', instruction: chapterInstruction.value, context_chars: 8000 };
+      const payload = preferencePayload({ agent_id: chapterContinueAgent.value, source_type: 'manual', text: chapterEditForm.content || '(空)', instruction: chapterInstruction.value, context_chars: 8000 });
       try {
         const res = await csrfFetch('/api/dashboard/ai/plan/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         if (!res.ok || !res.body) throw new Error('构思请求失败');
@@ -1524,7 +1565,7 @@ window.initVueApp({
       if (!chapterContinueAgent.value) { showMessage('请选择 Agent', 'error'); return; }
       if (!chapterEditForm.content.trim()) { showMessage('章节内容为空', 'error'); return; }
       await saveCurrentChapter();
-      const payload = { agent_id: chapterContinueAgent.value, chapter_id: currentChapter.value?.id };
+      const payload = preferencePayload({ agent_id: chapterContinueAgent.value, project_id: currentProject.value?.id, chapter_id: currentChapter.value?.id });
       streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
       try {
         const res = await csrfFetch('/api/dashboard/ai/projects/' + currentProject.value?.id + '/states/auto-update/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
@@ -1566,7 +1607,7 @@ window.initVueApp({
       pipelineRunning.value = true;
       streamOutput.value = '';
       try {
-        const res = await csrfFetch('/api/dashboard/ai/projects/' + currentProject.value.id + '/foreshadows/auto-resolve/stream', { method: 'POST' });
+        const res = await csrfFetch('/api/dashboard/ai/projects/' + currentProject.value.id + '/foreshadows/auto-resolve/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(preferencePayload({ project_id: currentProject.value.id, chapter_id: currentChapter.value?.id })) });
         if (!res.ok || !res.body) throw new Error('自动回收请求失败');
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -1697,7 +1738,7 @@ window.initVueApp({
       pipelineSteps.value = steps.map(name => ({ name, label: pipelineStepLabel(name), status: 'pending', statusLabel: '等待' }));
       streamOutput.value = '';
       try {
-        const payload = {
+        const payload = preferencePayload({
           project_id: currentProject.value.id,
           chapter_id: currentChapter.value.id,
           steps,
@@ -1706,7 +1747,7 @@ window.initVueApp({
           output_chars: 3000,
           plan_text: chapterEditForm.outline,
           context_chars: 8000,
-        };
+        });
         const res = await csrfFetch('/api/dashboard/ai/chapters/pipeline/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         if (!res.ok || !res.body) throw new Error('请求失败');
         const reader = res.body.getReader();
@@ -1788,11 +1829,11 @@ window.initVueApp({
       pipelineRunning.value = true;
       streamOutput.value = '';
       try {
-        const payload = {
+        const payload = preferencePayload({
           project_id: currentProject.value.id,
           chapter_id: currentChapter.value.id,
           agent_id: 0,
-        };
+        });
         const res = await csrfFetch(endpoint, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         if (!res.ok || !res.body) throw new Error('请求失败');
         const reader = res.body.getReader();
@@ -1840,7 +1881,7 @@ window.initVueApp({
       batchPipelineRunning.value = true;
       Object.assign(batchPipelineProgress, { total: batchSelectedChapterIds.value.length, succeeded: 0, failed: 0, currentLabel: '准备开始' });
       try {
-        const payload = {
+        const payload = preferencePayload({
           project_id: currentProject.value.id,
           chapter_ids: batchSelectedChapterIds.value,
           steps,
@@ -1848,7 +1889,7 @@ window.initVueApp({
           instruction: chapterInstruction.value,
           output_chars: 3000,
           context_chars: 8000,
-        };
+        });
         const res = await csrfFetch('/api/dashboard/ai/chapters/pipeline/batch/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         if (!res.ok || !res.body) throw new Error('批量生成请求失败');
         const reader = res.body.getReader();
@@ -1979,7 +2020,7 @@ window.initVueApp({
     });
 
     onMounted(async () => {
-      await Promise.all([loadAgents(), loadStyleProfiles(), loadNovelProfiles(), loadProjects()]);
+      await Promise.all([loadAgents(), loadStyleProfiles(), loadNovelProfiles(), loadPreferenceProfiles(), loadProjects()]);
       applyBestAgentDefaults();
       const projectId = Number(new URLSearchParams(window.location.search).get('project_id') || 0);
       if (projectId) {
@@ -1987,9 +2028,9 @@ window.initVueApp({
         if (project) await openProject(project);
       }
     });
-    const exported = { agents, styleProfiles, novelProfiles, message, messageType, toastMessage, toastType, streaming, streamOutput, currentJobId, continueAgents, planAgents, saveDraft, detectAITells, loadStyleProfiles, loadNovelProfiles, projectView, projectList, currentProject, chapters, currentChapter, foreshadows, foreshadowFilter, filteredForeshadows, chapterForeshadowAlerts, projectStates, showCreateProject, showForeshadowForm, newProjectForm, newForeshadow, chapterEditForm, chapterKeyEventsText, chapterContinueAgent, chapterInstruction, chapterActionStatus, searchQuery, searchResults, longformPlanning, longformDetailPlanning, longformCreateCount, longformPlanForm, longformDetailForm, longformPlan, plannedChapterExists, missingPlannedChapters, generateLongformPlan, generateDetailedOutlines, createPlannedChapters, createNextPlannedChapter, loadProjects, createProject, deleteProject, openProject, createChapter, deleteChapter, openChapter, saveCurrentChapter, startChapterContinue, startChapterPlan, autoUpdateState, appendOutput, addForeshadow, resolveForeshadow, deleteForeshadow, searchProject, indexChapter, saveProjectStates, pipelineAllSteps, pipelineExpanded, pipelineSelectedSteps, pipelineAgentIds, pipelineRunning, pipelineSteps, chapterDashboard, dashboardTab, dashboardTabs, pipelineAgentsFor, pipelineStepLabel, pipelineStatusBadge, stateLabel, loadChapterDashboard, startChapterPipeline, showPipelineModal, pipelineCurrentStep, pipelineOutputRef, openPipelineModal, onPipelineModalClose, retryPipelineStep, formatStepMeta, copyPipelineOutput, scrollPipelineOutputBottom };
+    const exported = { agents, styleProfiles, novelProfiles, preferenceProfiles, preferenceStrengths, message, messageType, toastMessage, toastType, streaming, streamOutput, currentJobId, continueAgents, planAgents, saveDraft, detectAITells, loadStyleProfiles, loadNovelProfiles, loadPreferenceProfiles, projectView, projectList, currentProject, chapters, currentChapter, foreshadows, foreshadowFilter, filteredForeshadows, chapterForeshadowAlerts, projectStates, showCreateProject, showForeshadowForm, newProjectForm, newForeshadow, chapterEditForm, chapterKeyEventsText, chapterContinueAgent, chapterInstruction, chapterActionStatus, searchQuery, searchResults, longformPlanning, longformDetailPlanning, longformCreateCount, longformPlanForm, longformDetailForm, longformPlan, plannedChapterExists, missingPlannedChapters, generateLongformPlan, generateDetailedOutlines, createPlannedChapters, createNextPlannedChapter, loadProjects, createProject, deleteProject, openProject, createChapter, deleteChapter, openChapter, saveCurrentChapter, startChapterContinue, startChapterPlan, autoUpdateState, appendOutput, addForeshadow, resolveForeshadow, deleteForeshadow, searchProject, indexChapter, saveProjectStates, pipelineAllSteps, pipelineExpanded, pipelineSelectedSteps, pipelineAgentIds, pipelineRunning, pipelineSteps, chapterDashboard, dashboardTab, dashboardTabs, pipelineAgentsFor, pipelineStepLabel, pipelineStatusBadge, stateLabel, loadChapterDashboard, startChapterPipeline, showPipelineModal, pipelineCurrentStep, pipelineOutputRef, openPipelineModal, onPipelineModalClose, retryPipelineStep, formatStepMeta, copyPipelineOutput, scrollPipelineOutputBottom };
     Object.assign(exported, { showRawImportModal, rawImportType, rawImportText, rawImportJobId, rawImporting, rawImportChapterId, rawImportTitle, openRawImportModal, confirmRawImport, showContextPreviewModal, contextPreview, contextPreviewLoading, previewChapterContext });
-    Object.assign(exported, { projectDetailTab, projectDetailTabs, projectMetaForm, saveProjectMeta, saveProjectProfiles, saveProjectStyleControl, STYLE_SLIDERS, styleTagInput, addStyleTag, removeStyleTag, coverBusy, uploadProjectCover, deleteProjectCover });
+    Object.assign(exported, { projectDetailTab, projectDetailTabs, projectMetaForm, saveProjectMeta, saveProjectProfiles, saveProjectStyleControl, STYLE_SLIDERS, styleTagInput, addStyleTag, removeStyleTag, coverBusy, uploadProjectCover, deleteProjectCover, preferencePayload });
     Object.assign(exported, { batchSelectedChapterIds, batchPipelineRunning, batchPipelineProgress, chapterGenerated, chapterPipelineSummary, toggleBatchChapter, selectEmptyChapters, selectAllChapters, clearBatchSelection, startBatchChapterPipeline, generateMissingChapters, adjacentChapter, openAdjacentChapter, backToChapterList, backToProjectList, selectProjectDetailTab });
     Object.assign(exported, { projectCoverGradient, projectFirstChar });
     return exported;

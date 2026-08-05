@@ -17,6 +17,7 @@ from ..crypto import AISecretManager
 from ..preference_context import (
     PreferenceStrength,
     build_preference_context,
+    inject_preference_context,
     normalize_preference_strength,
 )
 from ..model_router import (
@@ -60,6 +61,7 @@ class RouteJobContext:
     agent: AIAgentConfig
     candidate_snapshot: CandidateSnapshot
     prompt_budget: PromptBudget
+    preference_context: str | None = None
     resume_candidate_index: int = 0
 
 
@@ -179,6 +181,75 @@ class AIServiceCore:
         context = build_preference_context(profile, strength)
         return profile_id, strength, context
 
+    @staticmethod
+    def _preference_project(
+        db: Database,
+        payload: Mapping[str, Any],
+        project: Mapping[str, Any] | None,
+    ) -> Mapping[str, Any] | None:
+        if project is not None:
+            return project
+
+        project_id: int | None = None
+        raw_project_id = payload.get("project_id")
+        if raw_project_id not in (None, "", 0) and not isinstance(raw_project_id, bool):
+            try:
+                parsed_project_id = int(raw_project_id)
+            except (TypeError, ValueError):
+                parsed_project_id = 0
+            if parsed_project_id > 0:
+                project_id = parsed_project_id
+
+        if project_id is None:
+            raw_chapter_id = payload.get("chapter_id")
+            if raw_chapter_id not in (None, "", 0) and not isinstance(raw_chapter_id, bool):
+                try:
+                    chapter_id = int(raw_chapter_id)
+                except (TypeError, ValueError):
+                    chapter_id = 0
+                if chapter_id > 0:
+                    chapter = db.get_ai_chapter(chapter_id)
+                    if chapter:
+                        project_id = int(chapter.get("project_id") or 0) or None
+
+        return db.get_ai_writing_project(project_id) if project_id else None
+
+    @staticmethod
+    def _fit_preference_messages(
+        messages: list[dict[str, str]],
+        input_budget: int,
+    ) -> list[dict[str, str]]:
+        total_bytes = sum(
+            len(str(message.get("content") or "").encode("utf-8"))
+            for message in messages
+        )
+        if total_bytes <= input_budget or not messages:
+            return messages
+
+        trim_index = next(
+            (
+                index
+                for index in range(len(messages) - 1, -1, -1)
+                if messages[index].get("role") != "system"
+            ),
+            -1,
+        )
+        if trim_index < 0:
+            raise AIServiceError("偏好画像与固定 Prompt 超过可用输入预算")
+        fixed_bytes = total_bytes - len(
+            str(messages[trim_index].get("content") or "").encode("utf-8")
+        )
+        remaining = input_budget - fixed_bytes
+        if remaining <= 0:
+            raise AIServiceError("偏好画像与固定 Prompt 超过可用输入预算")
+
+        encoded = str(messages[trim_index].get("content") or "").encode("utf-8")
+        messages[trim_index]["content"] = encoded[-remaining:].decode(
+            "utf-8",
+            errors="ignore",
+        )
+        return messages
+
     def _provider_cache_key(self, config: AIProviderConfig) -> tuple[Any, ...]:
         return (
             config.id,
@@ -267,6 +338,8 @@ class AIServiceCore:
         *,
         messages: list[dict[str, str]],
         max_tokens: int,
+        preference_payload: Mapping[str, Any] | None = None,
+        preference_project: Mapping[str, Any] | None = None,
         parent_job_id: str | None = None,
         idempotency_key: str | None = None,
         snapshot: CandidateSnapshot | None = None,
@@ -281,6 +354,25 @@ class AIServiceCore:
         ):
             raise AIServiceError("resume_candidate_index 必须是非负整数")
 
+        job_input_data = dict(input_data)
+        preference_context: str | None = None
+        budget_messages = [dict(message) for message in messages]
+        if preference_payload is not None:
+            project = self._preference_project(
+                db,
+                preference_payload,
+                preference_project,
+            )
+            profile_id, strength, preference_context = (
+                self._resolve_preference_context(db, preference_payload, project)
+            )
+            job_input_data["preference_profile_id"] = profile_id
+            job_input_data["preference_injection_strength"] = strength
+            budget_messages = inject_preference_context(
+                budget_messages,
+                preference_context,
+            )
+
         prepared_resume = _ROUTE_RESUME_CONTEXT.get()
         if prepared_resume is None:
             job_id = uuid.uuid4().hex
@@ -292,7 +384,7 @@ class AIServiceCore:
                 job_id,
                 task_type,
                 agent.id,
-                input_data,
+                job_input_data,
                 owner_token=owner_token,
                 stage="main",
                 route_deadline_at=deadline,
@@ -374,7 +466,7 @@ class AIServiceCore:
             prompt_budget = self.model_router.build_prompt_budget(
                 agent,
                 budget_snapshot,
-                messages,
+                budget_messages,
                 max_tokens,
             )
             if prepared_resume is None:
@@ -407,6 +499,7 @@ class AIServiceCore:
             agent=agent,
             candidate_snapshot=candidate_snapshot,
             prompt_budget=prompt_budget,
+            preference_context=preference_context,
             resume_candidate_index=resume_candidate_index,
         )
 
@@ -489,10 +582,20 @@ class AIServiceCore:
             raise AIServiceError(
                 "max_tokens 必须为正整数且不能超过已保存的输出预算"
             )
+        route_messages = [dict(message) for message in messages]
+        if stage == "main" and context.preference_context:
+            route_messages = inject_preference_context(
+                route_messages,
+                context.preference_context,
+            )
+            route_messages = self._fit_preference_messages(
+                route_messages,
+                context.prompt_budget.input_budget,
+            )
         request = RouteRequest(
             job_id=context.job_id,
             stage=stage,
-            messages=messages,
+            messages=route_messages,
             candidate_snapshot=context.candidate_snapshot,
             max_tokens=output_reserve,
             owner_token=context.owner_token,

@@ -146,6 +146,7 @@ class AIGenerationMixin:
                 },
                 messages=budget_messages,
                 max_tokens=agent.max_tokens,
+                preference_payload=payload,
             )
             yield AIStreamChunk(
                 type="metadata",
@@ -231,6 +232,7 @@ class AIGenerationMixin:
                 {**payload, "resolved_text_chars": len(text)},
                 messages=budget_messages,
                 max_tokens=agent.max_tokens,
+                preference_payload=payload,
             )
             yield AIStreamChunk(
                 type="metadata",
@@ -567,6 +569,7 @@ class AIGenerationMixin:
                 },
                 messages=budget_messages,
                 max_tokens=agent.max_tokens,
+                preference_payload=payload,
             )
             yield AIStreamChunk(type="metadata", data={
                 "job_id": route_context.job_id,
@@ -638,6 +641,7 @@ class AIGenerationMixin:
                 {**payload, "input_context_chars": len(context)},
                 messages=budget_messages,
                 max_tokens=agent.max_tokens,
+                preference_payload=payload,
             )
             yield AIStreamChunk(
                 type="metadata",

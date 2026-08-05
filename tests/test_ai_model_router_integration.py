@@ -271,6 +271,7 @@ def test_route_job_context_contract_field_order(route_context: Any) -> None:
         "agent",
         "candidate_snapshot",
         "prompt_budget",
+        "preference_context",
         "resume_candidate_index",
     ]
 
@@ -511,6 +512,113 @@ def collected_delta(chunks: list[AIStreamChunk]) -> str:
     return "".join(chunk.text for chunk in chunks if chunk.type == "delta")
 
 
+def create_preference_profile(db: Database, marker: str) -> int:
+    return db.create_preference_profile(
+        {
+            "name": marker,
+            "source_scope": {},
+            "stats": {"sample_text": "不得注入的画像样本"},
+            "profile": {
+                "summary": marker,
+                "positive_preferences": {"tags": [f"{marker}标签"]},
+                "negative_preferences": {"excluded_tags": [f"{marker}排除"]},
+                "sample_texts": ["不得注入的画像样本"],
+            },
+        }
+    )
+
+
+def rendered_request(fake_router: FakeModelRouter) -> str:
+    return "\n".join(
+        message["content"] for message in fake_router.requests[-1].messages
+    )
+
+
+@pytest.mark.parametrize(
+    ("method_name", "method_payload"),
+    [
+        ("stream_continue", {"text": "续写上下文", "smart_context": False}),
+        ("stream_rewrite", {"text": "待改写正文", "rewrite_type": "deai"}),
+        ("stream_audit", {"text": "待审计正文"}),
+        ("stream_plan", {"text": "构思上下文"}),
+    ],
+)
+def test_generic_ai_entrypoints_inject_request_preference_before_budget(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+    method_name: str,
+    method_payload: dict[str, Any],
+) -> None:
+    profile_id = create_preference_profile(db, "单次偏好")
+    payload = {
+        "agent_id": fixed_agent.id,
+        **method_payload,
+        "preference_profile_id": profile_id,
+        "preference_injection_strength": "standard",
+    }
+
+    chunks = list(getattr(service, method_name)(payload))
+
+    assert chunks[-1].type == "done"
+    assert "【用户偏好画像】" in rendered_request(fake_router)
+    assert "单次偏好标签" in rendered_request(fake_router)
+    assert "不得注入的画像样本" not in rendered_request(fake_router)
+    budget_prompt = "\n".join(
+        message["content"] for message in fake_router.budget_calls[-1][2]
+    )
+    assert "单次偏好标签" in budget_prompt
+    job = db.get_ai_job(fake_router.requests[-1].job_id)
+    assert job is not None
+    assert job["input"]["preference_profile_id"] == profile_id
+    assert job["input"]["preference_injection_strength"] == "standard"
+
+
+def test_preference_off_keeps_prompt_unchanged(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    profile_id = create_preference_profile(db, "关闭画像")
+
+    chunks = list(
+        service.stream_rewrite(
+            {
+                "agent_id": fixed_agent.id,
+                "text": "待改写正文",
+                "preference_profile_id": profile_id,
+                "preference_injection_strength": "off",
+            }
+        )
+    )
+
+    assert chunks[-1].type == "done"
+    assert "用户偏好画像" not in rendered_request(fake_router)
+
+
+def test_missing_preference_profile_fails_before_model_routing(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+) -> None:
+    chunks = list(
+        service.stream_audit(
+            {
+                "agent_id": fixed_agent.id,
+                "text": "待审计正文",
+                "preference_profile_id": 999_999,
+                "preference_injection_strength": "standard",
+            }
+        )
+    )
+
+    assert chunks[-1].type == "error"
+    assert "偏好画像不存在" in chunks[-1].data["message"]
+    assert fake_router.requests == []
+
+
 def create_pool_agent(db: Database, *, task_type: str) -> int:
     pool_id = db.create_ai_model_pool(
         {"name": f"{task_type}-pool", "pool_kind": "custom"}
@@ -730,6 +838,7 @@ def test_wizard_pool_agent_routes_without_provider_id(
     db: Database,
 ) -> None:
     agent_id = create_pool_agent(db, task_type="chat")
+    profile_id = create_preference_profile(db, "向导偏好")
     session_id = db.create_ai_chat_session(
         {
             "agent_id": agent_id,
@@ -744,13 +853,19 @@ def test_wizard_pool_agent_routes_without_provider_id(
 
     chunks = list(
         service.stream_chat(
-            {"session_id": session_id, "user_message": "继续"}
+            {
+                "session_id": session_id,
+                "user_message": "继续",
+                "preference_profile_id": profile_id,
+                "preference_injection_strength": "light",
+            }
         )
     )
 
     assert collected_delta(chunks) == "回答"
     assert chunks[-1].type == "done"
     assert fake_router.requests[-1].stage == "main"
+    assert "向导偏好标签" in rendered_request(fake_router)
     messages = db.list_ai_chat_messages(session_id)
     assert messages[-1]["role"] == "assistant"
     assert messages[-1]["content"] == "回答"
@@ -804,7 +919,14 @@ def test_longform_plan_uses_candidate_snapshot_and_normal_finish(
     fake_router: FakeModelRouter,
     db: Database,
 ) -> None:
-    project_id = db.create_ai_writing_project({"name": "长篇项目"})
+    profile_id = create_preference_profile(db, "长篇偏好")
+    project_id = db.create_ai_writing_project(
+        {
+            "name": "长篇项目",
+            "preference_profile_id": profile_id,
+            "preference_injection_strength": "standard",
+        }
+    )
     output = json.dumps(
         {
             "project_outline": "全书大纲",
@@ -837,9 +959,144 @@ def test_longform_plan_uses_candidate_snapshot_and_normal_finish(
 
     assert fake_router.requests[-1].candidate_snapshot.snapshot_hash
     assert fake_router.requests[-1].stage == "main"
+    assert "长篇偏好标签" in rendered_request(fake_router)
     assert chunks[-1].type == "done"
     project = db.get_ai_writing_project(project_id)
     assert project["settings"]["longform_plan"]["project_outline"] == "全书大纲"
+
+
+def test_longform_details_use_request_preference_override(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    project_profile_id = create_preference_profile(db, "项目默认")
+    request_profile_id = create_preference_profile(db, "细纲覆盖")
+    project_id = db.create_ai_writing_project(
+        {
+            "name": "细纲项目",
+            "preference_profile_id": project_profile_id,
+            "preference_injection_strength": "light",
+            "settings": {
+                "longform_plan": {
+                    "project_outline": "全书大纲",
+                    "chapters": [
+                        {
+                            "chapter_number": 1,
+                            "title": "开篇",
+                            "outline": "故事开端",
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    output = json.dumps(
+        {
+            "chapters": [
+                {"chapter_number": 1, "detailed_outline": "详细展开"}
+            ]
+        },
+        ensure_ascii=False,
+    )
+    fake_router.queue_result(
+        success_result("pending", output),
+        [AIStreamChunk(type="delta", text=output)],
+    )
+
+    chunks = list(
+        service.stream_longform_plan_details(
+            {
+                "agent_id": fixed_agent.id,
+                "project_id": project_id,
+                "preference_profile_id": request_profile_id,
+                "preference_injection_strength": "standard",
+            }
+        )
+    )
+
+    assert chunks[-1].type == "done"
+    assert "细纲覆盖标签" in rendered_request(fake_router)
+    assert "项目默认标签" not in rendered_request(fake_router)
+
+
+def test_chapter_continue_uses_project_preference(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    fake_router: FakeModelRouter,
+    db: Database,
+) -> None:
+    profile_id = create_preference_profile(db, "章节偏好")
+    project_id = db.create_ai_writing_project(
+        {
+            "name": "章节项目",
+            "preference_profile_id": profile_id,
+            "preference_injection_strength": "light",
+        }
+    )
+    chapter_id = db.create_ai_chapter(
+        {
+            "project_id": project_id,
+            "chapter_number": 1,
+            "title": "第一章",
+            "content": "已有正文",
+        }
+    )
+    fake_router.queue_result(
+        success_result("pending", "续写"),
+        [AIStreamChunk(type="delta", text="续写")],
+    )
+
+    chunks = list(
+        service.stream_chapter_continue(
+            {
+                "agent_id": fixed_agent.id,
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+                "auto_save": False,
+            }
+        )
+    )
+
+    assert chunks[-1].type == "done"
+    assert "章节偏好标签" in rendered_request(fake_router)
+
+
+def test_project_context_preview_reports_bounded_preference(
+    service: AIWritingService,
+    fixed_agent: AIAgentConfig,
+    db: Database,
+) -> None:
+    profile_id = create_preference_profile(db, "预览偏好")
+    project_id = db.create_ai_writing_project(
+        {
+            "name": "预览项目",
+            "preference_profile_id": profile_id,
+            "preference_injection_strength": "standard",
+        }
+    )
+    chapter_id = db.create_ai_chapter(
+        {
+            "project_id": project_id,
+            "chapter_number": 1,
+            "content": "已有正文",
+        }
+    )
+
+    preview = service.preview_project_context(
+        {
+            "agent_id": fixed_agent.id,
+            "project_id": project_id,
+            "chapter_id": chapter_id,
+        }
+    )
+
+    assert preview["preference_profile_id"] == profile_id
+    assert preview["preference_injection_strength"] == "standard"
+    assert "预览偏好标签" in preview["preference_context"]
+    assert "不得注入的画像样本" not in preview["preference_context"]
+    assert "预览偏好标签" in preview["prompt_preview"]
 
 
 def test_longform_plan_caps_project_material_to_route_budget(
@@ -1154,9 +1411,12 @@ def test_polish_uses_main_route_and_project_style(
     fake_router: FakeModelRouter,
     db: Database,
 ) -> None:
+    profile_id = create_preference_profile(db, "润色偏好")
     project_id = db.create_ai_writing_project(
         {
             "name": "润色项目",
+            "preference_profile_id": profile_id,
+            "preference_injection_strength": "standard",
             "settings": {
                 "style_control": {
                     "sliders": {"lyricism": 90},
@@ -1194,6 +1454,7 @@ def test_polish_uses_main_route_and_project_style(
         message["content"] for message in fake_router.requests[-1].messages
     )
     assert "抒情唯美" in prompt
+    assert "润色偏好标签" in prompt
     assert collected_delta(chunks) == "润色结果"
     assert chunks[-1].type == "done"
 
@@ -1272,7 +1533,15 @@ def test_pipeline_forwards_child_route_progress_as_custom_event(
     fake_router: FakeModelRouter,
     db: Database,
 ) -> None:
-    project_id = db.create_ai_writing_project({"name": "Pipeline 项目"})
+    project_profile_id = create_preference_profile(db, "Pipeline 默认")
+    request_profile_id = create_preference_profile(db, "Pipeline 覆盖")
+    project_id = db.create_ai_writing_project(
+        {
+            "name": "Pipeline 项目",
+            "preference_profile_id": project_profile_id,
+            "preference_injection_strength": "light",
+        }
+    )
     chapter_id = db.create_ai_chapter(
         {
             "project_id": project_id,
@@ -1300,6 +1569,8 @@ def test_pipeline_forwards_child_route_progress_as_custom_event(
                 "chapter_id": chapter_id,
                 "steps": ["summary"],
                 "agent_ids": {"summary": fixed_agent.id},
+                "preference_profile_id": request_profile_id,
+                "preference_injection_strength": "strong",
             }
         )
     )
@@ -1316,6 +1587,8 @@ def test_pipeline_forwards_child_route_progress_as_custom_event(
         "phase": "route",
         "action": "attempt",
     }
+    assert "Pipeline 覆盖标签" in rendered_request(fake_router)
+    assert "Pipeline 默认标签" not in rendered_request(fake_router)
     assert chunks[-1].type == "done"
 
 

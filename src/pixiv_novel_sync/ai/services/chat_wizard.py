@@ -142,6 +142,7 @@ class AIChatWizardMixin:
                 },
                 messages=messages,
                 max_tokens=agent.max_tokens,
+                preference_payload=payload,
             )
             yield AIStreamChunk(type="metadata", data={
                 "job_id": route_context.job_id, "session_id": session_id,

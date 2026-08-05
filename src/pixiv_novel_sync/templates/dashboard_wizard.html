@@ -50,6 +50,19 @@
         <button @click="openImportWizardModal" class="px-2 py-1 bg-green-50 text-green-700 rounded-lg text-xs">导入项目</button>
         <button @click="deleteWizardSession" class="px-2 py-1 bg-red-50 text-red-600 rounded-lg text-xs">删除</button>
       </div>
+      <div class="px-3 py-2 border-b border-gray-100 grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <label class="text-xs text-pixiv-gray">偏好画像
+          <select v-model.number="preferenceProfileId" class="ml-1 max-w-full px-2 py-1 border border-gray-200 rounded-lg text-xs bg-white">
+            <option :value="0">不注入</option>
+            <option v-for="profile in preferenceProfiles" :key="profile.id" :value="profile.id">{{ profile.name }}</option>
+          </select>
+        </label>
+        <label class="text-xs text-pixiv-gray">注入强度
+          <select v-model="preferenceInjectionStrength" class="ml-1 max-w-full px-2 py-1 border border-gray-200 rounded-lg text-xs bg-white">
+            <option v-for="strength in preferenceStrengths" :key="strength.value" :value="strength.value">{{ strength.label }}</option>
+          </select>
+        </label>
+      </div>
       <div ref="chatLogRef" class="flex-1 overflow-y-auto p-4 space-y-4">
         <div v-if="!currentChatSession" class="h-full flex items-center justify-center text-sm text-pixiv-gray">选择或新建会话</div>
         <div v-for="item in chatMessages" :key="item.id" class="flex" :class="item.role === 'user' ? 'justify-end' : 'justify-start'">
@@ -174,7 +187,14 @@ initVueApp({
     const tabs = [{ id: 'wizard', name: '创作向导' }, { id: 'distill', name: '蒸馏档案' }];
     const activeTab = ref(new URLSearchParams(location.search).get('tab') === 'distill' ? 'distill' : 'wizard');
     const message = ref(''); const messageType = ref('success');
-    const agents = ref([]); const projectList = ref([]); const styleProfiles = ref([]); const novelProfiles = ref([]);
+    const agents = ref([]); const projectList = ref([]); const styleProfiles = ref([]); const novelProfiles = ref([]); const preferenceProfiles = ref([]);
+    const preferenceStrengths = [
+      { value: 'off', label: '关闭' },
+      { value: 'light', label: '轻量' },
+      { value: 'standard', label: '标准' },
+      { value: 'strong', label: '强化' },
+    ];
+    const preferenceProfileId = ref(0); const preferenceInjectionStrength = ref('off');
     const chatSessions = ref([]); const currentChatSession = ref(null); const chatMessages = ref([]);
     const chatInput = ref(''); const chatStreaming = ref(false); const chatStreamingText = ref(''); const chatLogRef = ref(null); const wizardSections = ref({});
     const showImportModal = ref(false); const importMode = ref('create'); const importTargetProjectId = ref(0); const importOverwriteFields = ref([]); const importUseRawOutput = ref(false); const importRawOutput = ref(''); const importing = ref(false);
@@ -199,6 +219,7 @@ initVueApp({
     async function loadProjects() { projectList.value = await api('/api/dashboard/ai/projects'); }
     async function loadStyleProfiles() { styleProfiles.value = (await api('/api/dashboard/ai/style-profiles')).items || []; }
     async function loadNovelProfiles() { novelProfiles.value = (await api('/api/dashboard/ai/novel-profiles')).items || []; }
+    async function loadPreferenceProfiles() { preferenceProfiles.value = await api('/api/dashboard/preferences/profiles'); }
     async function loadChatSessions() { chatSessions.value = await api('/api/dashboard/ai/chat/sessions?scope=wizard'); }
     async function selectChatSession(id) { const data = await api('/api/dashboard/ai/chat/sessions/' + id); currentChatSession.value = { id: data.id, agent_id: data.agent_id, title: data.title, status: data.status, metadata: data.metadata || {} }; chatMessages.value = data.messages || []; wizardSections.value = data.metadata?.collected_sections || {}; await scrollChatToBottom(); }
     async function openNewWizardSession() { if (!wizardAgents.value.length) { showMessage('请先在设置页配置创作向导 Agent', 'error'); return; } const title = prompt('会话名称：', '新作品'); if (title === null) return; const data = await api('/api/dashboard/ai/chat/sessions', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ agent_id: wizardAgents.value[0].id, scope: 'wizard', title: title || '未命名作品' }) }); await loadChatSessions(); await selectChatSession(data.id); }
@@ -207,7 +228,7 @@ initVueApp({
     async function deleteWizardSession() { if (!currentChatSession.value || !confirm('确认删除此会话？')) return; await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id, { method: 'DELETE' }); currentChatSession.value = null; chatMessages.value = []; wizardSections.value = {}; await loadChatSessions(); }
     async function scrollChatToBottom() { await nextTick(); const el = chatLogRef.value; if (el) el.scrollTop = el.scrollHeight; }
     async function readSse(res, onEvent) { if (!res.ok || !res.body) throw new Error('请求失败'); const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; while (true) { const { value, done } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); const events = buffer.split('\n\n'); buffer = events.pop() || ''; for (const raw of events) { const lines = raw.split('\n'); const event = (lines.find(x => x.startsWith('event:')) || '').slice(6).trim(); const line = (lines.find(x => x.startsWith('data:')) || '').slice(5).trim(); if (line) onEvent(event, JSON.parse(line)); } } }
-    async function sendChatText(text) { if (!currentChatSession.value || !text.trim() || chatStreaming.value) return; chatMessages.value.push({ id: Date.now(), role: 'user', content: text }); chatStreaming.value = true; chatStreamingText.value = ''; await scrollChatToBottom(); try { const res = await csrfFetch('/api/dashboard/ai/chat/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ session_id: currentChatSession.value.id, user_message: text }) }); await readSse(res, (event, data) => { if (event === 'delta') chatStreamingText.value += data.text || ''; if (event === 'error') throw new Error(data.message || '生成失败'); }); if (chatStreamingText.value) chatMessages.value.push({ id: Date.now() + 1, role: 'assistant', content: chatStreamingText.value }); await selectChatSession(currentChatSession.value.id); await loadChatSessions(); } catch (e) { showMessage(e.message, 'error'); } finally { chatStreaming.value = false; chatStreamingText.value = ''; } }
+    async function sendChatText(text) { if (!currentChatSession.value || !text.trim() || chatStreaming.value) return; chatMessages.value.push({ id: Date.now(), role: 'user', content: text }); chatStreaming.value = true; chatStreamingText.value = ''; await scrollChatToBottom(); try { const res = await csrfFetch('/api/dashboard/ai/chat/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ session_id: currentChatSession.value.id, user_message: text, preference_profile_id: preferenceProfileId.value || null, preference_injection_strength: preferenceInjectionStrength.value || 'off' }) }); await readSse(res, (event, data) => { if (event === 'delta') chatStreamingText.value += data.text || ''; if (event === 'error') throw new Error(data.message || '生成失败'); }); if (chatStreamingText.value) chatMessages.value.push({ id: Date.now() + 1, role: 'assistant', content: chatStreamingText.value }); await selectChatSession(currentChatSession.value.id); await loadChatSessions(); } catch (e) { showMessage(e.message, 'error'); } finally { chatStreaming.value = false; chatStreamingText.value = ''; } }
     async function sendChatMessage() { const text = chatInput.value.trim(); chatInput.value = ''; await sendChatText(text); }
     function openImportWizardModal() { importMode.value = 'create'; importTargetProjectId.value = 0; importOverwriteFields.value = []; showImportModal.value = true; }
     async function confirmImportWizard() { if (!currentChatSession.value) return; importing.value = true; try { const payload = { mode: importMode.value }; if (importMode.value === 'merge') { if (!importTargetProjectId.value) throw new Error('请选择目标项目'); payload.target_project_id = importTargetProjectId.value; payload.overwrite_fields = importOverwriteFields.value; } if (importUseRawOutput.value) { if (!importRawOutput.value.trim()) throw new Error('请粘贴原始输出'); payload.output_text = importRawOutput.value; } const suffix = importUseRawOutput.value ? '/import-raw-to-project' : '/import-to-project'; const data = await api('/api/dashboard/ai/chat/sessions/' + currentChatSession.value.id + suffix, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) }); window.location.href = '/dashboard/ai?project_id=' + encodeURIComponent(data.project_id); } catch (e) { showMessage(e.message, 'error'); } finally { importing.value = false; } }
@@ -219,8 +240,8 @@ initVueApp({
     async function deleteStyleProfile(id) { if (confirm('确认删除此档案？')) { await api('/api/dashboard/ai/style-profiles/' + id, { method: 'DELETE' }); await loadStyleProfiles(); } }
     async function deleteNovelProfile(id) { if (confirm('确认删除此档案？')) { await api('/api/dashboard/ai/novel-profiles/' + id, { method: 'DELETE' }); await loadNovelProfiles(); } }
     function applyBestAgentDefaults() { if (!distillForm.agent_id) distillForm.agent_id = distillAgents.value[0]?.id || 0; }
-    onMounted(async () => { try { await Promise.all([loadAgents(), loadStyleProfiles(), loadNovelProfiles(), loadProjects(), loadChatSessions()]); applyBestAgentDefaults(); } catch (e) { showMessage(e.message, 'error'); } });
-    return { tabs, activeTab, message, messageType, agents, projectList, styleProfiles, novelProfiles, chatSessions, currentChatSession, chatMessages, chatInput, chatStreaming, chatStreamingText, chatLogRef, wizardSections, wizardSectionKeys, wizardAgents, distillAgents, distillSourceReady, showImportModal, importMode, importTargetProjectId, importOverwriteFields, importUseRawOutput, importRawOutput, importing, showImportMaterialModal, materialTitle, materialContent, materialExtraInstruction, materialImporting, distillForm, distillOutput, distillStreaming, distillJobId, loadChatSessions, selectChatSession, openNewWizardSession, updateChatSessionAgent, renameWizardSession, deleteWizardSession, sendChatMessage, openImportWizardModal, confirmImportWizard, onMaterialFileSelected, confirmImportMaterial, uploadDistillDocument, startDistill, saveDistillProfile, deleteStyleProfile, deleteNovelProfile };
+    onMounted(async () => { try { await Promise.all([loadAgents(), loadStyleProfiles(), loadNovelProfiles(), loadPreferenceProfiles(), loadProjects(), loadChatSessions()]); applyBestAgentDefaults(); } catch (e) { showMessage(e.message, 'error'); } });
+    return { tabs, activeTab, message, messageType, agents, projectList, styleProfiles, novelProfiles, preferenceProfiles, preferenceStrengths, preferenceProfileId, preferenceInjectionStrength, chatSessions, currentChatSession, chatMessages, chatInput, chatStreaming, chatStreamingText, chatLogRef, wizardSections, wizardSectionKeys, wizardAgents, distillAgents, distillSourceReady, showImportModal, importMode, importTargetProjectId, importOverwriteFields, importUseRawOutput, importRawOutput, importing, showImportMaterialModal, materialTitle, materialContent, materialExtraInstruction, materialImporting, distillForm, distillOutput, distillStreaming, distillJobId, loadChatSessions, selectChatSession, openNewWizardSession, updateChatSessionAgent, renameWizardSession, deleteWizardSession, sendChatMessage, openImportWizardModal, confirmImportWizard, onMaterialFileSelected, confirmImportMaterial, uploadDistillDocument, startDistill, saveDistillProfile, deleteStyleProfile, deleteNovelProfile };
   }
 });
 </script>

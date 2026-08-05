@@ -11,6 +11,7 @@ from ...storage_db import Database
 from ..chunking import get_tail_context
 from ..detection import detect_ai_tells
 from ..models import AIAgentConfig, AIStreamChunk
+from ..preference_context import inject_preference_context
 from ..prompts import (
     build_chapter_summary_messages,
     build_continue_messages,
@@ -720,6 +721,8 @@ class AIProjectsMixin:
                 },
                 messages=budget_messages,
                 max_tokens=agent.max_tokens,
+                preference_payload=payload,
+                preference_project=project,
             )
             messages = build_longform_plan_messages(
                 system_prompt=None,
@@ -860,6 +863,8 @@ class AIProjectsMixin:
                 },
                 messages=budget_messages,
                 max_tokens=agent.max_tokens,
+                preference_payload=payload,
+                preference_project=project,
             )
             messages = build_longform_detail_messages(
                 system_prompt=None,
@@ -1008,6 +1013,14 @@ class AIProjectsMixin:
             agent = self._load_agent_config(db, agent_id)
             built = self._build_chapter_continue_inputs(db, payload, agent)
             max_chars = self._safe_int(payload.get("max_chars"), 4000, "max_chars", min_value=100, max_value=50000)
+            project = self._preference_project(db, payload, None)
+            profile_id, preference_strength, preference_context = (
+                self._resolve_preference_context(db, payload, project)
+            )
+            preview_messages = inject_preference_context(
+                built["messages"],
+                preference_context,
+            )
             return {
                 "project_context": built["project_context"],
                 "existing_content_preview": get_tail_context(built["existing_content"], max_chars) if built["existing_content"] else "",
@@ -1015,7 +1028,10 @@ class AIProjectsMixin:
                 "plan_text": built["plan_text"],
                 "has_style_prompt": bool(built["style_prompt"]),
                 "has_novel_prompt": bool(built["novel_prompt"]),
-                "prompt_preview": safe_prompt_preview(built["messages"], max_chars=max_chars),
+                "preference_profile_id": profile_id,
+                "preference_injection_strength": preference_strength,
+                "preference_context": preference_context or "",
+                "prompt_preview": safe_prompt_preview(preview_messages, max_chars=max_chars),
                 "stats": {
                     "project_context_chars": len(built["project_context"]),
                     "existing_content_chars": len(built["existing_content"]),
@@ -1023,7 +1039,7 @@ class AIProjectsMixin:
                     "original_context_chars": built["original_context_chars"],
                     "context_limit_chars": built["context_chars"],
                     "truncated": built["truncated"],
-                    "messages": len(built["messages"]),
+                    "messages": len(preview_messages),
                     "chapter_number": built["chapter_number"],
                 },
             }
@@ -1074,6 +1090,7 @@ class AIProjectsMixin:
                 },
                 messages=budget_messages,
                 max_tokens=agent.max_tokens,
+                preference_payload=payload,
             )
             context_limit = min(
                 built["context_chars"],
@@ -1291,6 +1308,7 @@ class AIProjectsMixin:
                 {"project_id": project_id, "chapter_id": chapter_id},
                 messages=budget_messages,
                 max_tokens=2000,
+                preference_payload=payload,
             )
             messages = _fit_route_messages(
                 messages,
@@ -1467,6 +1485,7 @@ class AIProjectsMixin:
                 {"chapter_id": chapter_id},
                 messages=budget_messages,
                 max_tokens=agent.max_tokens,
+                preference_payload=payload,
             )
             messages = _fit_tail_text_messages(
                 build_route_messages,
@@ -1656,6 +1675,7 @@ class AIProjectsMixin:
                 },
                 messages=budget_messages,
                 max_tokens=agent.max_tokens,
+                preference_payload=payload,
             )
             messages = _fit_tail_text_messages(
                 build_route_messages,
@@ -1767,6 +1787,7 @@ class AIProjectsMixin:
                 {"chapter_id": chapter_id, "chars": len(text)},
                 messages=budget_messages,
                 max_tokens=agent.max_tokens,
+                preference_payload=payload,
             )
             messages = _fit_tail_text_messages(
                 build_route_messages,
@@ -1834,6 +1855,14 @@ class AIProjectsMixin:
         if not steps:
             raise AIServiceError("未选择任何步骤")
         agent_ids = payload.get("agent_ids") or {}
+        preference_fields = {
+            key: payload[key]
+            for key in (
+                "preference_profile_id",
+                "preference_injection_strength",
+            )
+            if key in payload
+        }
 
         pipeline_id = uuid.uuid4().hex
         started = time.time()
@@ -1896,6 +1925,7 @@ class AIProjectsMixin:
                         "plan_text": payload.get("plan_text"),
                         "context_chars": payload.get("context_chars"),
                         "auto_save": False,
+                        **preference_fields,
                     }
                     # 续写 prompt 要求模型“从锚点开始续写、不要重复已有内容”，
                     # 因此 step_output 只是新生成片段。必须拼接章节已有正文后再写回，
@@ -1948,6 +1978,7 @@ class AIProjectsMixin:
                         "polish_type": "dialogue" if step == "polish_dialogue" else "psychology",
                         "text": text, "chapter_id": chapter_id,
                         "instruction": payload.get("instruction"),
+                        **preference_fields,
                     }
                     parts = []
                     job_id = ""
@@ -1987,6 +2018,9 @@ class AIProjectsMixin:
                         "agent_id": int(agent_ids.get("deai") or 0),
                         "rewrite_type": "deai", "source_type": "manual", "text": text,
                         "instruction": payload.get("instruction"),
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        **preference_fields,
                     }
                     parts = []
                     job_id = ""
@@ -2011,7 +2045,11 @@ class AIProjectsMixin:
                     step_meta = {"job_id": job_id, "chars": len(step_output)}
 
                 elif step == "summary":
-                    sub_payload = {"agent_id": int(agent_ids.get("summary") or 0), "chapter_id": chapter_id}
+                    sub_payload = {
+                        "agent_id": int(agent_ids.get("summary") or 0),
+                        "chapter_id": chapter_id,
+                        **preference_fields,
+                    }
                     job_id = ""
                     summary = ""
                     key_events: list[str] = []
@@ -2030,7 +2068,12 @@ class AIProjectsMixin:
                     step_meta = {"job_id": job_id, "summary_chars": len(summary), "events": len(key_events)}
 
                 elif step == "state":
-                    sub_payload = {"agent_id": int(agent_ids.get("state") or 0), "project_id": project_id, "chapter_id": chapter_id}
+                    sub_payload = {
+                        "agent_id": int(agent_ids.get("state") or 0),
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        **preference_fields,
+                    }
                     job_id = ""
                     for chunk in self.stream_update_project_state(sub_payload):
                         if chunk.type == "metadata":
@@ -2044,7 +2087,12 @@ class AIProjectsMixin:
                     step_meta = {"job_id": job_id}
 
                 elif step == "foreshadow":
-                    sub_payload = {"agent_id": int(agent_ids.get("foreshadow") or 0), "project_id": project_id, "chapter_id": chapter_id}
+                    sub_payload = {
+                        "agent_id": int(agent_ids.get("foreshadow") or 0),
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        **preference_fields,
+                    }
                     job_id = ""
                     resolved: list[dict[str, Any]] = []
                     skipped_this = False
@@ -2086,7 +2134,14 @@ class AIProjectsMixin:
                         _emit_step(step, "skipped", reason="no_text")
                         yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "skipped": True})
                         continue
-                    sub_payload = {"agent_id": int(agent_ids.get("audit") or 0), "source_type": "manual", "text": text}
+                    sub_payload = {
+                        "agent_id": int(agent_ids.get("audit") or 0),
+                        "source_type": "manual",
+                        "text": text,
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        **preference_fields,
+                    }
                     parts = []
                     job_id = ""
                     for chunk in self.stream_audit(sub_payload):

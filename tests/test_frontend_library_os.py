@@ -386,3 +386,13 @@ def test_rescue_pages_and_api_contract_are_documented():
         "source_notice",
     ]:
         assert security_term in contract
+
+
+def test_ai_templates_expose_preference_profile_and_strength_controls() -> None:
+    for name in ("dashboard_ai.html", "dashboard_wizard.html"):
+        html = read(TEMPLATES / name)
+        assert "preference_profile_id" in html, name
+        assert "preference_injection_strength" in html, name
+        assert "/api/dashboard/preferences/profiles" in html, name
+        for strength in ("off", "light", "standard", "strong"):
+            assert strength in html, (name, strength)
