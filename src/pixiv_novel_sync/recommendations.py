@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import time
+from collections.abc import Callable
 from typing import Any
 
 from pixivpy3 import AppPixivAPI
@@ -16,10 +17,17 @@ _SERIES_PAGE_SAFETY_LIMIT = 50
 
 
 class RecommendationService:
-    def __init__(self, db: Database, settings: Settings, api: AppPixivAPI | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        settings: Settings,
+        api: AppPixivAPI | None = None,
+        stop_requested: Callable[[], bool] | None = None,
+    ) -> None:
         self.db = db
         self.settings = settings
         self.api = api
+        self.stop_requested = stop_requested
         # Phase 3.4: 统一限速器
         delay = float(getattr(self.settings.sync, "delay_seconds_between_pages", 1.0) or 1.0)
         self.rate_limiter = RateLimiter(default_delay=delay)
@@ -130,7 +138,7 @@ class RecommendationService:
         """Phase 3.4: 使用统一限速器；emit 命中取消时抛 InterruptedError"""
         if emit:
             emit("_cancel_check", {})
-        self.rate_limiter.wait()
+        self.rate_limiter.wait(stop_requested=self.stop_requested)
 
     def _search_novels(self, api: AppPixivAPI, query: str, limit: int, emit: Any = None) -> list[Any]:
         results: list[Any] = []

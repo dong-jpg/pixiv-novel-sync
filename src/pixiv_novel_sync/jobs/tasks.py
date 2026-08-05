@@ -162,7 +162,13 @@ def _run_direct_sync_task(
     storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
 
     try:
-        service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+        service = BookmarkNovelSyncService(
+            api=api,
+            db=db,
+            storage=storage,
+            settings=settings,
+        )
+        service.stop_requested = stop_requested
         progress_callback = _build_progress_callback(
             manager,
             str(job_id) if job_id else None,
@@ -397,6 +403,7 @@ def _run_recommendation_run_task(settings: Any, context: dict[str, Any]) -> dict
     try:
         db.init_schema()
         service = RecommendationService(db, settings)
+        service.stop_requested = stop_requested
         params = context.get("params", {})
         profile_id = params.get("profile_id")
         search_plan = params.get("search_plan")

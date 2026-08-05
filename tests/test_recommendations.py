@@ -26,6 +26,28 @@ def make_settings(tmp_path: Path) -> Settings:
     )
 
 
+def test_page_delay_forwards_stop_requested(tmp_path: Path, monkeypatch) -> None:
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    stop_requested = lambda: True
+    service = RecommendationService(
+        db,
+        make_settings(tmp_path),
+        stop_requested=stop_requested,
+    )
+    observed: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        service.rate_limiter,
+        "wait",
+        lambda **kwargs: observed.append(kwargs),
+    )
+
+    service._page_delay()
+
+    assert observed == [{"stop_requested": stop_requested}]
+    db.close()
+
+
 def test_build_search_plan_from_profile(tmp_path: Path):
     db = Database(tmp_path / "rec.db")
     db.init_schema()

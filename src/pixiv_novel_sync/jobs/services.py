@@ -113,7 +113,13 @@ def run_user_backup_task(
     db = Database(settings.storage.db_path)
     db.init_schema()
     try:
-        service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+        service = BookmarkNovelSyncService(
+            api=api,
+            db=db,
+            storage=storage,
+            settings=settings,
+        )
+        service.stop_requested = stop_requested
         user_name = _lookup_user_name(db, user_id)
         _report_log(reporter, "info", f"开始用户全量备份: {user_name} ({user_id})")
 
@@ -298,7 +304,13 @@ def run_pending_deletion_detection_task(
     try:
         db.init_schema()
         storage = _ensure_storage_dirs(settings)
-        service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+        service = BookmarkNovelSyncService(
+            api=api,
+            db=db,
+            storage=storage,
+            settings=settings,
+        )
+        service.stop_requested = stop_requested
 
         def on_progress(event_type: str, data: dict[str, Any]) -> None:
             if stop_requested is not None and stop_requested():

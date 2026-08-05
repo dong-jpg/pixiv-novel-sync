@@ -475,7 +475,14 @@ class AutoSyncScheduler:
         storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
         
         try:
-            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+            stop_requested = self._stop_requested_for_job(job_id)
+            service = BookmarkNovelSyncService(
+                api=api,
+                db=db,
+                storage=storage,
+                settings=settings,
+            )
+            service.stop_requested = stop_requested
             
             def on_progress(event_type: str, data: dict[str, Any]) -> None:
                 if self._check_stop():
@@ -523,7 +530,7 @@ class AutoSyncScheduler:
                 merge_stats(total_stats, stats)
                 if job_id and self.sync_job_manager:
                     self.sync_job_manager.add_log(job_id, "success", f"{restrict}收藏同步完成: 新增 {stats.get('novels', 0)} 本, 跳过 {stats.get('skipped', 0)} 本")
-                time.sleep(settings.sync.delay_seconds_between_pages)
+                service.rate_limiter.wait(stop_requested=stop_requested)
 
             if self._check_stop():
                 total_stats["stopped"] = True
@@ -563,7 +570,13 @@ class AutoSyncScheduler:
         storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
         
         try:
-            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+            service = BookmarkNovelSyncService(
+                api=api,
+                db=db,
+                storage=storage,
+                settings=settings,
+            )
+            service.stop_requested = self._stop_requested_for_job(job_id)
             
             def on_progress(event_type: str, data: dict[str, Any]) -> None:
                 if self._check_stop():
@@ -617,7 +630,13 @@ class AutoSyncScheduler:
         storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
         
         try:
-            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+            service = BookmarkNovelSyncService(
+                api=api,
+                db=db,
+                storage=storage,
+                settings=settings,
+            )
+            service.stop_requested = self._stop_requested_for_job(job_id)
             
             def on_progress(event_type: str, data: dict[str, Any]) -> None:
                 if self._check_stop():
@@ -709,7 +728,13 @@ class AutoSyncScheduler:
         storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
         
         try:
-            service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings)
+            service = BookmarkNovelSyncService(
+                api=api,
+                db=db,
+                storage=storage,
+                settings=settings,
+            )
+            service.stop_requested = self._stop_requested_for_job(job_id)
             
             def on_progress(event_type: str, data: dict[str, Any]) -> None:
                 if self._check_stop():

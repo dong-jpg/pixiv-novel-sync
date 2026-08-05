@@ -87,12 +87,21 @@ def _stop_requested_from_progress(progress_callback: Any) -> Any:
 
 
 class BookmarkNovelSyncService:
-    def __init__(self, api: AppPixivAPI, db: Database, storage: FileStorage, settings: Settings, sync_check_scope: str = "_") -> None:
+    def __init__(
+        self,
+        api: AppPixivAPI,
+        db: Database,
+        storage: FileStorage,
+        settings: Settings,
+        sync_check_scope: str = "_",
+        stop_requested: Callable[[], bool] | None = None,
+    ) -> None:
         self.api = api
         self.db = db
         self.storage = storage
         self.settings = settings
         self.sync_check_scope = sync_check_scope
+        self.stop_requested = stop_requested
         # Phase 3.4: 统一限速器
         self.rate_limiter = RateLimiter(default_delay=self.settings.sync.delay_seconds_between_pages)
 
@@ -100,7 +109,17 @@ class BookmarkNovelSyncService:
         for method_name in ["user_bookmarks_novel", "user_following", "user_novels", "novel_detail", "novel_series", "webview_novel"]:
             if hasattr(self.api, method_name):
                 original = getattr(self.api, method_name)
-                setattr(self.api, method_name, retry_on_pixiv_error(max_retries=3, base_delay=5.0)(original))
+                setattr(
+                    self.api,
+                    method_name,
+                    retry_on_pixiv_error(
+                        max_retries=3,
+                        base_delay=5.0,
+                        stop_requested=lambda: bool(
+                            self.stop_requested and self.stop_requested()
+                        ),
+                    )(original),
+                )
 
     def check_bookmarks_existence(self, user_id: int, restricts: Iterable[str], progress_callback: Any = None) -> dict[str, int]:
         """预检查：获取全部收藏列表，标记哪些已存在本地"""
@@ -123,7 +142,7 @@ class BookmarkNovelSyncService:
             next_query: dict[str, Any] | None = {"user_id": user_id, "restrict": restrict}
             page_count = 0
             
-            while next_query:
+            while next_query and page_count < _CHECK_PAGE_SAFETY_LIMIT:
                 result = self.api.user_bookmarks_novel(**next_query)
                 page_count += 1
                 
@@ -136,8 +155,14 @@ class BookmarkNovelSyncService:
                     all_novel_ids.append(novel_id)
                 
                 next_query = self.api.parse_qs(getattr(result, "next_url", None))
-                if next_query:
+                if next_query and page_count < _CHECK_PAGE_SAFETY_LIMIT:
                     self.rate_limiter.wait(stop_requested=_stop_requested_from_progress(progress_callback))  # Phase 3.4 可取消
+
+            if next_query:
+                logger.warning(
+                    "Bookmark existence pagination stopped at safety limit %d",
+                    _CHECK_PAGE_SAFETY_LIMIT,
+                )
         
         if progress_callback:
             progress_callback("phase", {"phase": f"检查 {len(all_novel_ids)} 本小说"})

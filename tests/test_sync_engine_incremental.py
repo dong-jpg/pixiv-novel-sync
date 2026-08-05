@@ -188,6 +188,54 @@ def test_check_bookmarks_existence_batches_sync_check_writes(tmp_path: Path) -> 
     assert db.scope == "scope"
 
 
+def test_check_bookmarks_existence_stops_at_page_safety_limit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class EndlessUntilThirdPageApi:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def user_bookmarks_novel(self, **kwargs):
+            self.calls += 1
+            return SimpleNamespace(
+                novels=[SimpleNamespace(id=100 + self.calls)],
+                next_url=f"page-{self.calls + 1}",
+            )
+
+        def parse_qs(self, next_url):
+            if self.calls >= 3:
+                return None
+            return {"user_id": 1, "restrict": "public", "page": self.calls + 1}
+
+    class FakeDb:
+        def init_sync_check_table(self):
+            pass
+
+        def clear_sync_check_list(self, scope):
+            pass
+
+        def get_existing_novel_ids(self, novel_ids, require_assets=False):
+            return set()
+
+        def upsert_sync_check_items(self, items, scope="_"):
+            pass
+
+    monkeypatch.setattr(sync_engine, "_CHECK_PAGE_SAFETY_LIMIT", 2)
+    api = EndlessUntilThirdPageApi()
+    service = BookmarkNovelSyncService(
+        api,
+        FakeDb(),
+        _Storage(),
+        _settings(tmp_path),
+    )
+
+    result = service.check_bookmarks_existence(1, ["public"])
+
+    assert api.calls == 2
+    assert result["total_checked"] == 2
+
+
 def test_sleep_with_progress_cancel_raises_when_progress_callback_requests_stop(monkeypatch) -> None:
     slept = []
     events = []

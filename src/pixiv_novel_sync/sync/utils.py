@@ -13,12 +13,18 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 from urllib.parse import urlparse
 
+from ..rate_limiter import cancellable_sleep
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
 
 
-def retry_on_pixiv_error(max_retries: int = 3, base_delay: float = 5.0) -> Callable[[Callable[..., T]], Callable[..., T]]:
+def retry_on_pixiv_error(
+    max_retries: int = 3,
+    base_delay: float = 5.0,
+    stop_requested: Callable[[], bool] | None = None,
+) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """Pixiv API重试装饰器:捕获429/网络错误,指数退避重试。
 
     Args:
@@ -52,7 +58,7 @@ def retry_on_pixiv_error(max_retries: int = 3, base_delay: float = 5.0) -> Calla
                             f"{func.__name__} {'rate limited (429)' if is_rate_limit else 'network error'}, "
                             f"retry {attempt+1}/{max_retries} after {delay:.1f}s: {e}"
                         )
-                        time.sleep(delay)
+                        cancellable_sleep(delay, stop_requested)
                     else:
                         logger.error(f"{func.__name__} failed after {max_retries} retries: {e}")
 
