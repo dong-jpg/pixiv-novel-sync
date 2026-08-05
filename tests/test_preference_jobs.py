@@ -4,7 +4,6 @@ import time
 from types import SimpleNamespace
 
 from pixiv_novel_sync.jobs.models import JobStatus
-from pixiv_novel_sync.web.managers import AutoSyncScheduler
 from pixiv_novel_sync.webapp import create_app
 
 
@@ -84,29 +83,22 @@ def test_preference_analyze_writes_task_log(tmp_path, monkeypatch):
     assert matched[0]["task_type"] == "preference_analyze"
 
 
-def test_scheduled_preference_analysis_uses_shared_task(tmp_path, monkeypatch):
-    class FakeSyncJobManager:
-        def add_log(self, _job_id, _level, _message):
-            return None
-
-        def is_cancel_requested(self, _job_id):
-            return False
-
-    calls = []
+def test_scheduled_preference_analysis_uses_single_shared_batch(tmp_path, monkeypatch):
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     settings = SimpleNamespace(
         storage=SimpleNamespace(db_path=tmp_path / "preferences.db"),
         sync=SimpleNamespace(preference_analyze_batch_size=50),
     )
-    manager = AutoSyncScheduler(config_path=None, env_path=None, sync_job_manager=FakeSyncJobManager())
+    scheduler = app.config["auto_sync_scheduler"]
+    scheduler.run_task = lambda _job_id: None
 
-    def fake_execute(task_type, current_settings, context):
-        calls.append((task_type, current_settings, context))
-        return {"processed_this_run": 1}
+    scheduler._run_single_task(settings, "preference_analyze")
 
-    monkeypatch.setattr("pixiv_novel_sync.web.managers.execute_task", fake_execute, raising=False)
-
-    manager._sync_preference_analyze(settings, "job-1")
-
-    assert calls[0][0] == "preference_analyze"
-    assert calls[0][1] is settings
-    assert calls[0][2]["params"]["scope"] == {"batch_size": 50, "max_batches": 1}
+    job = app.config["job_manager"].latest_job()
+    assert job is not None
+    assert job.spec.task_types == ["preference_analyze"]
+    assert job.spec.params["scope"] == {"batch_size": 50, "max_batches": 1}

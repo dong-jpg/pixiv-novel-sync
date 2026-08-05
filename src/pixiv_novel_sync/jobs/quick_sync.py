@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from ..auth import PixivAuthManager
@@ -12,7 +13,8 @@ from ..storage_db import Database
 from ..storage_files import FileStorage
 from ..sync_check import build_sync_check_fingerprint, sync_check_task_types
 from ..sync_engine import BookmarkNovelSyncService
-from .services import _rebuild_rescue_catalog
+from . import services as job_services
+from .services import JobReporter, _rebuild_rescue_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,98 @@ def run_bookmark_sync(
         logger.info("Bookmark sync finished: %s", json.dumps(bookmark_stats, ensure_ascii=False))
         print(json.dumps(bookmark_stats, ensure_ascii=False, indent=2))
         return bookmark_stats
+    finally:
+        db.close()
+
+
+def run_scheduled_user_backup(
+    settings: Settings,
+    reporter: JobReporter | None = None,
+    stop_requested: StopRequested | None = None,
+    claim_finalization: ClaimFinalization | None = None,
+) -> dict[str, Any]:
+    """Back up a rotating batch of followed users through the shared runner."""
+    db = Database(settings.storage.db_path)
+    try:
+        db.init_schema()
+        rows = db.conn.execute("SELECT user_id FROM users ORDER BY user_id").fetchall()
+        user_ids = [int(row[0]) for row in rows]
+        total_users = len(user_ids)
+        watermark = db.get_watermark("user_backup_rotation") or {}
+        offset = int(watermark.get("offset", 0) or 0)
+        if offset >= total_users:
+            offset = 0
+
+        users_limit = int(settings.sync.auto_sync_following_novels_users_limit or 0)
+        if users_limit <= 0:
+            users_limit = total_users
+        batch = user_ids[offset : offset + users_limit]
+
+        if reporter is not None and batch:
+            reporter.add_log(
+                "info",
+                "=== 全量备份关注用户小说: "
+                f"用户 {offset + 1}-{offset + len(batch)}/{total_users}, 本轮 {len(batch)} 人 ===",
+            )
+
+        totals = {"novels": 0, "skipped": 0, "assets_downloaded": 0}
+        stopped = False
+        completed_users = 0
+        for index, user_id in enumerate(batch):
+            if stop_requested is not None and stop_requested():
+                stopped = True
+                break
+            if reporter is not None:
+                reporter.update_progress(
+                    phase="全量备份",
+                    current=index + 1,
+                    total=len(batch),
+                )
+            stats = job_services.run_user_backup_task(
+                settings,
+                user_id,
+                reporter=reporter,
+                stop_requested=stop_requested,
+                rebuild_catalog=False,
+            )
+            for key in totals:
+                totals[key] += int(stats.get(key, 0) or 0)
+            if stats.get("stopped"):
+                stopped = True
+                break
+            completed_users += 1
+
+        if not stopped and stop_requested is not None and stop_requested():
+            stopped = True
+
+        next_offset = offset + completed_users
+        if next_offset >= total_users:
+            next_offset = 0
+        if total_users:
+            db.update_watermark(
+                "user_backup_rotation",
+                {
+                    "offset": next_offset,
+                    "last_sync_time": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+
+        result: dict[str, Any] = {**totals, "stopped": stopped}
+        if not stopped:
+            if claim_finalization is not None and not claim_finalization():
+                result["stopped"] = True
+            else:
+                result.update(_rebuild_rescue_catalog(db, reporter))
+
+        if reporter is not None:
+            level = "info" if result["stopped"] else "success"
+            suffix = "已停止" if result["stopped"] else "完成"
+            reporter.add_log(
+                level,
+                f"全量备份{suffix}: 同步 {totals['novels']} 本, "
+                f"跳过 {totals['skipped']} 本, 资源 {totals['assets_downloaded']} 个",
+            )
+        return result
     finally:
         db.close()
 

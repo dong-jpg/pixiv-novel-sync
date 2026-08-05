@@ -39,6 +39,7 @@ from .web.utils import (
     _settings_to_dict,
     _shared_job_to_dict,
     _job_to_dict,
+    _scheduler_job_spec,
     _web_job_spec,
     _build_web_sync_job_spec,
     _safe_int,
@@ -59,7 +60,12 @@ _service_start_time: float = time.time()
 @dataclass(frozen=True, slots=True)
 class _AutoSyncSchedulerOwner:
     scheduler: AutoSyncScheduler
-    sync_job_manager: SyncJobManager
+    job_manager: JobManager
+
+    @property
+    def sync_job_manager(self) -> JobManager:
+        """兼容旧测试/扩展读取；生产状态统一由 JobManager 持有。"""
+        return self.job_manager
 
 
 _auto_sync_scheduler_registry: dict[str, _AutoSyncSchedulerOwner] = {}
@@ -78,7 +84,7 @@ def _claim_scheduler_owner(key: str, scheduler: AutoSyncScheduler) -> bool:
         if current is None:
             _auto_sync_scheduler_registry[key] = _AutoSyncSchedulerOwner(
                 scheduler=scheduler,
-                sync_job_manager=scheduler.sync_job_manager,
+                job_manager=scheduler.shared_job_manager,
             )
         return True
 
@@ -106,7 +112,11 @@ def _get_or_create_scheduler_owner(
     *,
     config_path: str | None,
     env_path: str | None,
-    sync_job_manager: SyncJobManager,
+    job_manager: JobManager,
+    submit_task: Any = None,
+    run_task: Any = None,
+    get_task: Any = None,
+    cancel_task: Any = None,
 ) -> tuple[AutoSyncScheduler, bool]:
     with _auto_sync_scheduler_registry_lock:
         existing = _auto_sync_scheduler_registry.get(key)
@@ -115,13 +125,17 @@ def _get_or_create_scheduler_owner(
         scheduler = AutoSyncScheduler(
             config_path=config_path,
             env_path=env_path,
-            sync_job_manager=sync_job_manager,
+            shared_job_manager=job_manager,
+            submit_task=submit_task,
+            run_task=run_task,
+            get_task=get_task,
+            cancel_task=cancel_task,
         )
         scheduler._lifecycle_claim = lambda owner: _claim_scheduler_owner(key, owner)
         scheduler._lifecycle_release = lambda owner: _release_scheduler_owner(key, owner)
         _auto_sync_scheduler_registry[key] = _AutoSyncSchedulerOwner(
             scheduler=scheduler,
-            sync_job_manager=sync_job_manager,
+            job_manager=job_manager,
         )
         return scheduler, True
 
@@ -175,7 +189,6 @@ def create_app(
     elif os.getenv("DASHBOARD_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes", "on"}:
         app.config["SESSION_COOKIE_SECURE"] = True
     settings_manager = SettingsManager(config_path)
-    sync_job_manager = SyncJobManager(config_path=config_path, env_path=env_path)
     shared_job_manager = JobManager()
     app.config["job_manager"] = shared_job_manager
 
@@ -183,7 +196,7 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         return execute_task(task_type, current_settings, context)
 
-    shared_job_runner = JobRunner(shared_job_manager, run_web_task)
+    shared_job_runner: JobRunner | None = None
 
     def _has_active_shared_jobs() -> bool:
         with shared_job_manager._lock:
@@ -191,7 +204,7 @@ def create_app(
             return any(job.status in active_statuses for job in shared_job_manager._jobs.values())
 
     def _has_any_running_web_job() -> bool:
-        return sync_job_manager.has_running_jobs() or _has_active_shared_jobs()
+        return _has_active_shared_jobs()
 
     def _api_error(error: str, status: int = 400, detail: Any | None = None):
         payload: dict[str, Any] = {"ok": False, "error": error}
@@ -203,6 +216,8 @@ def create_app(
         return [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs]
 
     def _run_shared_web_job(job_id: str) -> None:
+        if shared_job_runner is None:
+            raise RuntimeError("shared job runner is not initialized")
         shared_job_runner.run(job_id)
         job = shared_job_manager.get_job(job_id)
         if job is None:
@@ -226,7 +241,7 @@ def create_app(
         finally:
             db.close()
 
-    def _submit_shared_web_job(
+    def _submit_shared_job(
         spec: JobSpec,
         current_settings: Settings,
         task_type: str,
@@ -234,6 +249,7 @@ def create_app(
         *,
         is_auto_sync: bool = False,
         progress: dict[str, Any] | None = None,
+        run_async: bool = True,
     ) -> JobState:
         if _has_any_running_web_job():
             raise RuntimeError("已有同步任务正在运行，请稍后再试")
@@ -250,16 +266,36 @@ def create_app(
             )
             job.progress["log_id"] = log_id
             if progress:
-                job.progress.update(progress)
-            thread = threading.Thread(target=_run_shared_web_job, args=(job.job_id,), daemon=True)
-            thread.start()
+                shared_job_manager.update_progress(job.job_id, **progress)
+            if run_async:
+                thread = threading.Thread(target=_run_shared_web_job, args=(job.job_id,), daemon=True)
+                thread.start()
             return job
         finally:
             db.close()
 
-    app.config["job_manager"] = shared_job_manager
-    app.config["run_shared_job"] = _run_shared_web_job
-    app.config["submit_shared_web_job"] = _submit_shared_web_job
+    def _submit_scheduler_task(task_settings: Settings, task_name: str) -> JobState | None:
+        params = None
+        if task_name == "preference_analyze":
+            params = {
+                "scope": {
+                    "batch_size": int(
+                        getattr(task_settings.sync, "preference_analyze_batch_size", 200)
+                        or 200
+                    ),
+                    "max_batches": 1,
+                }
+            }
+        spec = _scheduler_job_spec(task_name, params)
+        normalized_name = spec.task_types[0] if spec.task_types else task_name
+        return _submit_shared_job(
+            spec,
+            task_settings,
+            normalized_name,
+            task_name,
+            is_auto_sync=True,
+            run_async=False,
+        )
 
     oauth_manager = OAuthManager(env_path=env_path)
 
@@ -280,17 +316,32 @@ def create_app(
             registry_key,
             config_path=config_path,
             env_path=env_path,
-            sync_job_manager=sync_job_manager,
+            job_manager=shared_job_manager,
+            submit_task=_submit_scheduler_task,
+            run_task=_run_shared_web_job,
+            get_task=shared_job_manager.get_job,
+            cancel_task=shared_job_manager.request_cancel,
         )
-        sync_job_manager = auto_sync_scheduler.sync_job_manager
+        if auto_sync_scheduler.shared_job_manager is not None:
+            shared_job_manager = auto_sync_scheduler.shared_job_manager
         if scheduler_created or not auto_sync_scheduler.is_running():
             start_auto_sync_scheduler = True
     else:
         auto_sync_scheduler = AutoSyncScheduler(
             config_path=config_path,
             env_path=env_path,
-            sync_job_manager=sync_job_manager,
+            shared_job_manager=shared_job_manager,
+            submit_task=_submit_scheduler_task,
+            run_task=_run_shared_web_job,
+            get_task=shared_job_manager.get_job,
+            cancel_task=shared_job_manager.request_cancel,
         )
+
+    shared_job_runner = JobRunner(shared_job_manager, run_web_task)
+    app.config["job_manager"] = shared_job_manager
+    app.config["run_shared_job"] = _run_shared_web_job
+    app.config["submit_shared_web_job"] = _submit_shared_job
+    app.config["auto_sync_scheduler"] = auto_sync_scheduler
 
     def _auto_login_worker(task, username, password, proxy, timeout):
         """后台线程：用 Playwright 无头浏览器自动完成 Pixiv OAuth 登录"""
@@ -723,7 +774,7 @@ def create_app(
             current_user = db.get_user_summary(current_settings.pixiv.user_id)
         finally:
             db.close()
-        latest_job = sync_job_manager.latest_job()
+        latest_job = shared_job_manager.latest_job()
         return jsonify(
             {
                 "user_id": current_settings.pixiv.user_id,
@@ -998,7 +1049,7 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         try:
             spec = _web_job_spec([f"user_backup:{user_id}"])
-            job = _submit_shared_web_job(spec, current_settings, "user_backup", f"用户 {user_id} 备份")
+            job = _submit_shared_job(spec, current_settings, "user_backup", f"用户 {user_id} 备份")
         except Exception as exc:
             return _api_error(str(exc), 500)
         return jsonify({"ok": True, "job_id": job.job_id, "job": _shared_job_to_dict(job)})
@@ -1023,7 +1074,7 @@ def create_app(
         spec = _build_web_sync_job_spec(current_settings)
 
         try:
-            job = _submit_shared_web_job(spec, current_settings, "manual", "全量手动同步")
+            job = _submit_shared_job(spec, current_settings, "manual", "全量手动同步")
         except Exception as exc:
             return _api_error(str(exc))
         return jsonify({"ok": True, "message": job.message, "job": _shared_job_to_dict(job)})
@@ -1035,7 +1086,7 @@ def create_app(
         
         try:
             spec = _web_job_spec(["sync_check"])
-            job = _submit_shared_web_job(spec, current_settings, "sync_check", "预检查所有内容")
+            job = _submit_shared_job(spec, current_settings, "sync_check", "预检查所有内容")
         except Exception as exc:
             return _api_error(str(exc))
 
@@ -1047,8 +1098,7 @@ def create_app(
         shared_job = shared_job_manager.get_job(job_id) if job_id else shared_job_manager.latest_job()
         if shared_job is not None:
             return jsonify({"job": _shared_job_to_dict(shared_job)})
-        legacy_job = sync_job_manager.get_job(job_id) if job_id else sync_job_manager.latest_job()
-        return jsonify({"job": _job_to_dict(legacy_job)})
+        return jsonify({"job": None})
 
     @app.post("/api/dashboard/sync/<task_type>")
     def dashboard_sync_single(task_type: str):
@@ -1069,7 +1119,7 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         try:
             spec = _web_job_spec([internal_type])
-            job = _submit_shared_web_job(spec, current_settings, internal_type, task_name)
+            job = _submit_shared_job(spec, current_settings, internal_type, task_name)
         except Exception as exc:
             return _api_error(str(exc))
         return jsonify({"ok": True, "message": "任务已启动", "job": _shared_job_to_dict(job)})
@@ -1084,7 +1134,7 @@ def create_app(
 
         try:
             spec = _web_job_spec(["subscribed_series"], params={"limit": limit})
-            job = _submit_shared_web_job(
+            job = _submit_shared_job(
                 spec,
                 current_settings,
                 "subscribed_series",
@@ -1101,7 +1151,7 @@ def create_app(
         status = auto_sync_scheduler.get_status()
         # 如果有当前正在执行的任务，获取任务详情
         if status.get("current_task_job_id"):
-            job = sync_job_manager.get_job(status["current_task_job_id"])
+            job = shared_job_manager.get_job(status["current_task_job_id"])
             if job:
                 status["current_job"] = _job_to_dict(job)
         return jsonify(status)
@@ -1361,7 +1411,7 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         try:
             spec = _web_job_spec(["pending_deletion_detection"])
-            job = _submit_shared_web_job(spec, current_settings, "pending_deletion_detection", "检测取消收藏/追更")
+            job = _submit_shared_job(spec, current_settings, "pending_deletion_detection", "检测取消收藏/追更")
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
         return jsonify({"ok": True, "message": "检测任务已启动", "job": _shared_job_to_dict(job)})
@@ -1455,7 +1505,8 @@ def create_app(
                 db.close()
 
         # 当前运行中的任务数
-        running_jobs = sum(1 for j in list(sync_job_manager._jobs.values()) if j.status == "running")
+        with shared_job_manager._lock:
+            running_jobs = sum(1 for j in shared_job_manager._jobs.values() if j.status == JobStatus.RUNNING)
 
         return jsonify({
             "status": "ok",

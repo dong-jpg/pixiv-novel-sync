@@ -14,7 +14,9 @@ from .utils import (
     _job_to_dict_unified,
     _shared_job_to_dict,
     _job_to_dict,
+    _job_spec,
     _web_job_spec,
+    _scheduler_job_spec,
     _build_web_sync_job_spec,
     _load_yaml_file,
     _safe_int,
@@ -42,7 +44,9 @@ __all__ = [
     "_job_to_dict_unified",
     "_shared_job_to_dict",
     "_job_to_dict",
+    "_job_spec",
     "_web_job_spec",
+    "_scheduler_job_spec",
     "_build_web_sync_job_spec",
     "_load_yaml_file",
     "_safe_int",
@@ -56,4 +60,3 @@ __all__ = [
     "_check_series_status",
     "_remove_archive_files",
 ]
-

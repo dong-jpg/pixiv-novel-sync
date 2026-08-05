@@ -81,6 +81,16 @@ def execute_task(task_type: str, settings: Any, context: dict[str, Any] | None =
     if task_type in {"following_users", "following_novels", "subscribed_series"}:
         return _run_direct_sync_task(task_type, settings, context, stop_requested=stop_requested)
 
+    if task_type == "user_backup":
+        from pixiv_novel_sync.jobs.quick_sync import run_scheduled_user_backup
+
+        return run_scheduled_user_backup(
+            settings,
+            reporter=reporter,
+            stop_requested=stop_requested,
+            claim_finalization=claim_finalization,
+        )
+
     if task_type.startswith("user_backup:"):
         from pixiv_novel_sync.jobs.services import run_user_backup_task
 

@@ -405,6 +405,259 @@ def test_execute_task_dispatches_user_backup_service(monkeypatch):
     assert calls[0][3] is not None
 
 
+def test_execute_task_dispatches_scheduled_user_backup_batch(monkeypatch):
+    calls = []
+    claim_finalization = lambda: True
+
+    def fake_run_scheduled_user_backup(
+        settings,
+        reporter=None,
+        stop_requested=None,
+        claim_finalization=None,
+    ):
+        calls.append((settings, reporter, stop_requested, claim_finalization))
+        return {"novels": 3}
+
+    monkeypatch.setattr(
+        "pixiv_novel_sync.jobs.quick_sync.run_scheduled_user_backup",
+        fake_run_scheduled_user_backup,
+        raising=False,
+    )
+    settings = object()
+    manager = object()
+
+    result = execute_task(
+        "user_backup",
+        settings,
+        {
+            "manager": manager,
+            "job_id": "job-1",
+            "claim_finalization": claim_finalization,
+        },
+    )
+
+    assert result == {"novels": 3}
+    assert calls[0][0] is settings
+    assert calls[0][1] is not None
+    assert calls[0][2] is not None
+    assert calls[0][3] is claim_finalization
+
+
+def test_scheduled_user_backup_rotates_batch_and_rebuilds_catalog_once(monkeypatch):
+    from pixiv_novel_sync.jobs import quick_sync
+    from pixiv_novel_sync.jobs.services import JobReporter
+
+    run_batch = getattr(quick_sync, "run_scheduled_user_backup", None)
+    assert callable(run_batch)
+    calls = []
+    watermark_updates = []
+
+    class Connection:
+        def execute(self, sql):
+            assert "SELECT user_id FROM users ORDER BY user_id" in sql
+            return self
+
+        def fetchall(self):
+            return [(10,), (20,)]
+
+    class Database:
+        conn = Connection()
+        rebuild_calls = 0
+
+        def __init__(self, db_path):
+            pass
+
+        def init_schema(self):
+            pass
+
+        def get_watermark(self, key):
+            assert key == "user_backup_rotation"
+            return {"offset": 0}
+
+        def update_watermark(self, key, value):
+            assert key == "user_backup_rotation"
+            watermark_updates.append(value)
+
+        def rebuild_rescue_catalog(self):
+            type(self).rebuild_calls += 1
+            return {"items": 2, "sources": 3}
+
+        def close(self):
+            pass
+
+    def fake_user_backup(settings, user_id, **kwargs):
+        calls.append((user_id, kwargs.get("rebuild_catalog")))
+        return {"novels": 1, "skipped": 2, "assets_downloaded": 3, "stopped": False}
+
+    monkeypatch.setattr(quick_sync, "Database", Database)
+    monkeypatch.setattr("pixiv_novel_sync.jobs.services.run_user_backup_task", fake_user_backup)
+    settings = SimpleNamespace(
+        storage=SimpleNamespace(db_path="db.sqlite"),
+        sync=SimpleNamespace(auto_sync_following_novels_users_limit=0),
+    )
+
+    result = run_batch(
+        settings,
+        reporter=JobReporter(),
+        stop_requested=lambda: False,
+        claim_finalization=lambda: True,
+    )
+
+    assert calls == [(10, False), (20, False)]
+    assert result["novels"] == 2
+    assert result["skipped"] == 4
+    assert result["assets_downloaded"] == 6
+    assert result["stopped"] is False
+    assert result["rescue_catalog_items"] == 2
+    assert Database.rebuild_calls == 1
+    assert watermark_updates[-1]["offset"] == 0
+
+
+def test_scheduled_user_backup_watermark_only_advances_completed_users(monkeypatch):
+    from pixiv_novel_sync.jobs import quick_sync
+    from pixiv_novel_sync.jobs.services import JobReporter
+
+    run_batch = getattr(quick_sync, "run_scheduled_user_backup", None)
+    assert callable(run_batch)
+    stopped = False
+    watermark_updates = []
+
+    class Connection:
+        def execute(self, sql):
+            return self
+
+        def fetchall(self):
+            return [(10,), (20,)]
+
+    class Database:
+        conn = Connection()
+
+        def __init__(self, db_path):
+            pass
+
+        def init_schema(self):
+            pass
+
+        def get_watermark(self, key):
+            return {"offset": 0}
+
+        def update_watermark(self, key, value):
+            watermark_updates.append(value)
+
+        def rebuild_rescue_catalog(self):
+            raise AssertionError("cancelled batches must not rebuild the catalog")
+
+        def close(self):
+            pass
+
+    def fake_user_backup(settings, user_id, **kwargs):
+        nonlocal stopped
+        stopped = True
+        return {"novels": 1, "skipped": 0, "assets_downloaded": 0, "stopped": False}
+
+    monkeypatch.setattr(quick_sync, "Database", Database)
+    monkeypatch.setattr("pixiv_novel_sync.jobs.services.run_user_backup_task", fake_user_backup)
+    settings = SimpleNamespace(
+        storage=SimpleNamespace(db_path="db.sqlite"),
+        sync=SimpleNamespace(auto_sync_following_novels_users_limit=10),
+    )
+
+    result = run_batch(
+        settings,
+        reporter=JobReporter(),
+        stop_requested=lambda: stopped,
+        claim_finalization=lambda: pytest.fail("cancelled batch must not finalize"),
+    )
+
+    assert result["stopped"] is True
+    assert watermark_updates[-1]["offset"] == 1
+
+
+def test_scheduled_user_backup_empty_batch_has_no_inverted_range_log(monkeypatch):
+    from pixiv_novel_sync.jobs import quick_sync
+
+    logs = []
+
+    class Connection:
+        def execute(self, sql):
+            return self
+
+        def fetchall(self):
+            return []
+
+    class Database:
+        conn = Connection()
+
+        def __init__(self, db_path):
+            pass
+
+        def init_schema(self):
+            pass
+
+        def get_watermark(self, key):
+            return None
+
+        def update_watermark(self, key, value):
+            raise AssertionError("empty batches must not update the watermark")
+
+        def rebuild_rescue_catalog(self):
+            return {"items": 0, "sources": 0}
+
+        def close(self):
+            pass
+
+    class Reporter:
+        def add_log(self, level, message):
+            logs.append(message)
+
+        def update_progress(self, **kwargs):
+            raise AssertionError("empty batches have no per-user progress")
+
+    monkeypatch.setattr(quick_sync, "Database", Database)
+    settings = SimpleNamespace(
+        storage=SimpleNamespace(db_path="db.sqlite"),
+        sync=SimpleNamespace(auto_sync_following_novels_users_limit=10),
+    )
+
+    result = quick_sync.run_scheduled_user_backup(
+        settings,
+        reporter=Reporter(),
+        stop_requested=lambda: False,
+        claim_finalization=lambda: True,
+    )
+
+    assert result["stopped"] is False
+    assert logs
+    assert all("1-0/0" not in message for message in logs)
+
+
+def test_scheduled_user_backup_closes_database_when_schema_init_fails(monkeypatch):
+    from pixiv_novel_sync.jobs import quick_sync
+
+    class Database:
+        closed = False
+
+        def __init__(self, db_path):
+            pass
+
+        def init_schema(self):
+            raise RuntimeError("schema unavailable")
+
+        def close(self):
+            type(self).closed = True
+
+    monkeypatch.setattr(quick_sync, "Database", Database)
+    settings = SimpleNamespace(
+        storage=SimpleNamespace(db_path="db.sqlite"),
+        sync=SimpleNamespace(auto_sync_following_novels_users_limit=10),
+    )
+
+    with pytest.raises(RuntimeError, match="schema unavailable"):
+        quick_sync.run_scheduled_user_backup(settings)
+
+    assert Database.closed is True
+
+
 def test_execute_task_passes_finalization_claim_to_rebuilding_services(monkeypatch):
     observed = []
     claim_finalization = lambda: True

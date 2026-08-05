@@ -181,32 +181,58 @@ def _job_to_dict(job: Any) -> dict[str, Any] | None:
     return _job_to_dict_unified(job)
 
 
-def _web_job_spec(task_list: list[str] | None, params: dict[str, Any] | None = None) -> Any:
+def _job_spec(
+    task_list: list[str] | None,
+    source: Any,
+    params: dict[str, Any] | None = None,
+) -> Any:
     from ..jobs.models import JobSource, JobSpec, JobType
 
+    if not isinstance(source, JobSource):
+        source = JobSource(source)
     tasks = list(task_list or [])
     job_params = dict(params or {})
     if len(tasks) == 1 and tasks[0].startswith("user_backup:"):
         user_id = int(tasks[0].split(":", 1)[1])
         job_params.setdefault("user_id", user_id)
         return JobSpec(
-            source=JobSource.WEB,
+            source=source,
             job_type=JobType.USER_BACKUP,
             task_types=tasks,
             params=job_params,
         )
+    if tasks == ["user_backup"]:
+        return JobSpec(source=source, job_type=JobType.USER_BACKUP, task_types=tasks, params=job_params)
     if tasks == ["sync_check"]:
-        return JobSpec(source=JobSource.WEB, job_type=JobType.SYNC_CHECK, task_types=tasks, params=job_params)
+        return JobSpec(source=source, job_type=JobType.SYNC_CHECK, task_types=tasks, params=job_params)
     if tasks == ["pending_deletion_detection"]:
         return JobSpec(
-            source=JobSource.WEB,
+            source=source,
             job_type=JobType.PENDING_DELETION_DETECTION,
             task_types=tasks,
             params=job_params,
         )
+    if tasks == ["preference_analyze"]:
+        return JobSpec(source=source, job_type=JobType.PREFERENCE_ANALYZE, task_types=tasks, params=job_params)
     if len(tasks) == 1 and tasks[0] in {"user_status", "novel_status", "series_status"}:
-        return JobSpec(source=JobSource.WEB, job_type=JobType.STATUS_CHECK, task_types=tasks, params=job_params)
-    return JobSpec(source=JobSource.WEB, job_type=JobType.SYNC, task_types=tasks, params=job_params)
+        return JobSpec(source=source, job_type=JobType.STATUS_CHECK, task_types=tasks, params=job_params)
+    return JobSpec(source=source, job_type=JobType.SYNC, task_types=tasks, params=job_params)
+
+
+def _web_job_spec(task_list: list[str] | None, params: dict[str, Any] | None = None) -> Any:
+    from ..jobs.models import JobSource
+
+    return _job_spec(task_list, JobSource.WEB, params)
+
+
+def _scheduler_job_spec(task_type: str, params: dict[str, Any] | None = None) -> Any:
+    from ..jobs.models import JobSource
+
+    normalized_task = {
+        "bookmarks": "bookmark",
+        "following_list": "following_users",
+    }.get(task_type, task_type)
+    return _job_spec([normalized_task], JobSource.SCHEDULER, params)
 
 
 def _build_web_sync_job_spec(settings: Settings) -> Any:
