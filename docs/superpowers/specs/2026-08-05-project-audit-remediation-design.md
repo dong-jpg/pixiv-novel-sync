@@ -52,7 +52,7 @@
 ### 3.4 自动调度统一
 
 - `AutoSyncScheduler` 继续负责 cron/interval 计算、单实例生命周期、下次运行时间和任务启停，不再拥有同步业务实现。
-- 到期任务转换为 `JobSpec(source=JobSource.AUTO)` 并提交共享 `JobManager`；实际任务由 `JobRunner` 顺序调用 `execute_task`。
+- 到期任务转换为 `JobSpec(source=JobSource.SCHEDULER)` 并提交共享 `JobManager`；实际任务由 `JobRunner` 顺序调用 `execute_task`。
 - 自动任务保留当前任务名、`is_auto_sync` 日志标识、状态查询与取消 API 形状。状态适配层把共享 `JobState` 映射到已有 Dashboard 字段，避免前端迁移与后端执行迁移耦合。
 - 只有在所有自动任务类型都有共享 `execute_task` 实现和回归测试后，才删除 `_sync_bookmarks` 等 legacy 私有执行方法和生产零调用的 legacy worker 入口。
 - 调度器停止、任务取消、应用关闭和异常收口统一使用共享终态规则，不能把 `InterruptedError` 标成失败，也不能重复写终态日志。
@@ -105,7 +105,7 @@ Prompt 构造器必须保持事实、系统安全策略和任务输出格式高�
 - 循环与取消：分页上限、分页等待中取消、retry backoff 中取消、自动任务取消终态。
 - 推荐：迁移默认值、字段 round-trip、跨 run series ID 去重、同 run 去重及旧数据兼容。
 - 偏好注入：四种强度、画像缺失、全部指定 AI 入口、Pipeline 无画像降级、UI payload 与预览。
-- 调度：自动任务生成正确 `JobSpec`、使用 `JobSource.AUTO`、复用共享执行、状态映射、停止和重复调度保护。
+- 调度：自动任务生成正确 `JobSpec`、使用 `JobSource.SCHEDULER`、复用共享执行、状态映射、停止和重复调度保护。
 - 成人 Agent：沿用既有规格第 16 节的 domain、storage、routing、security、concurrency、SSE、apply 和页面测试矩阵，并增加偏好注入组合测试。
 - 文档：路由契约测试覆盖代码实际注册的前端依赖 API，避免主契约再次落后。
 
