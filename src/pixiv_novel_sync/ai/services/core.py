@@ -14,6 +14,11 @@ from typing import Any, Literal
 
 from ...storage_db import Database
 from ..crypto import AISecretManager
+from ..preference_context import (
+    PreferenceStrength,
+    build_preference_context,
+    normalize_preference_strength,
+)
 from ..model_router import (
     CandidateSnapshot,
     ModelRouter,
@@ -124,6 +129,55 @@ class AIServiceCore:
             db.init_schema()
             AIServiceCore._initialized_paths.add(key)
         return db
+
+    @staticmethod
+    def _resolve_preference_context(
+        db: Database,
+        payload: Mapping[str, Any],
+        project: Mapping[str, Any] | None = None,
+    ) -> tuple[int | None, PreferenceStrength, str | None]:
+        project = project or {}
+        raw_profile_id = (
+            payload.get("preference_profile_id")
+            if "preference_profile_id" in payload
+            else project.get("preference_profile_id")
+        )
+        raw_strength = (
+            payload.get("preference_injection_strength")
+            if "preference_injection_strength" in payload
+            else project.get("preference_injection_strength", "off")
+        )
+
+        if raw_strength is None or raw_strength == "":
+            strength = normalize_preference_strength("off")
+        else:
+            normalized_input = (
+                raw_strength.strip().lower()
+                if isinstance(raw_strength, str)
+                else ""
+            )
+            strength = normalize_preference_strength(raw_strength)
+            if normalized_input != strength:
+                raise AIServiceError(
+                    "偏好注入强度必须是 off、light、standard 或 strong"
+                )
+
+        if raw_profile_id in (None, "", 0):
+            return None, "off", None
+        if isinstance(raw_profile_id, bool):
+            raise AIServiceError("偏好画像 ID 无效")
+        try:
+            profile_id = int(raw_profile_id)
+        except (TypeError, ValueError) as exc:
+            raise AIServiceError("偏好画像 ID 无效") from exc
+        if profile_id <= 0:
+            raise AIServiceError("偏好画像 ID 无效")
+
+        profile = db.get_preference_profile(profile_id)
+        if profile is None:
+            raise AIServiceError("偏好画像不存在")
+        context = build_preference_context(profile, strength)
+        return profile_id, strength, context
 
     def _provider_cache_key(self, config: AIProviderConfig) -> tuple[Any, ...]:
         return (

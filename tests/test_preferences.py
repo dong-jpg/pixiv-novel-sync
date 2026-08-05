@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 from pixiv_novel_sync.models import NovelRecord, NovelTextRecord, SourceRecord, UserRecord
@@ -92,4 +93,76 @@ def test_preference_profile_crud(tmp_path: Path):
     assert db.get_default_preference_profile()["id"] == first_id
     db.delete_preference_profile(second_id)
     assert db.get_preference_profile(second_id) is None
+    db.close()
+
+
+def test_project_preference_fields_round_trip(tmp_path: Path) -> None:
+    db = Database(tmp_path / "prefs.db")
+    db.init_schema()
+    profile_id = db.create_preference_profile(
+        {
+            "name": "画像",
+            "source_scope": {},
+            "stats": {},
+            "profile": {},
+        }
+    )
+
+    project_id = db.create_ai_writing_project(
+        {
+            "name": "项目",
+            "preference_profile_id": profile_id,
+            "preference_injection_strength": "standard",
+        }
+    )
+    project = db.get_ai_writing_project(project_id)
+    assert project is not None
+    assert project["preference_profile_id"] == profile_id
+    assert project["preference_injection_strength"] == "standard"
+
+    db.update_ai_writing_project(
+        project_id,
+        {
+            "preference_profile_id": None,
+            "preference_injection_strength": "off",
+        },
+    )
+    project = db.get_ai_writing_project(project_id)
+    assert project is not None
+    assert project["preference_profile_id"] is None
+    assert project["preference_injection_strength"] == "off"
+    db.close()
+
+
+def test_project_preference_migration_preserves_old_projects(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy-project.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE ai_writing_projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT,
+                outline_json TEXT,
+                style_profile_id INTEGER,
+                novel_profile_id INTEGER,
+                settings_json TEXT,
+                cover_path TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO ai_writing_projects (id, name, settings_json)
+            VALUES (41, '旧项目', '{}');
+            """
+        )
+
+    db = Database(db_path)
+    db.init_schema()
+    project = db.get_ai_writing_project(41)
+
+    assert project is not None
+    assert project["name"] == "旧项目"
+    assert project["preference_profile_id"] is None
+    assert project["preference_injection_strength"] == "off"
     db.close()

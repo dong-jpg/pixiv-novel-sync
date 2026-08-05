@@ -74,14 +74,18 @@ class AiWritingMixin:
     def create_ai_writing_project(self, data: dict[str, Any]) -> int:
         with self._lock:
             cursor = self.conn.execute(
-                """INSERT INTO ai_writing_projects (name, description, outline_json, style_profile_id, novel_profile_id, settings_json)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO ai_writing_projects (
+                       name, description, outline_json, style_profile_id, novel_profile_id,
+                       preference_profile_id, preference_injection_strength, settings_json
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     data.get("name"),
                     data.get("description"),
                     json.dumps(data["outline"], ensure_ascii=False) if data.get("outline") else None,
                     data.get("style_profile_id"),
                     data.get("novel_profile_id"),
+                    data.get("preference_profile_id"),
+                    str(data.get("preference_injection_strength") or "off").strip().lower(),
                     json.dumps(data.get("settings") or {}, ensure_ascii=False),
                 ),
             )
@@ -95,6 +99,8 @@ class AiWritingMixin:
             "outline",
             "style_profile_id",
             "novel_profile_id",
+            "preference_profile_id",
+            "preference_injection_strength",
             "settings",
             "status",
             "cover_path",
@@ -110,6 +116,9 @@ class AiWritingMixin:
             elif key == "settings":
                 fields.append("settings_json = ?")
                 params.append(json.dumps(data[key] or {}, ensure_ascii=False))
+            elif key == "preference_injection_strength":
+                fields.append("preference_injection_strength = ?")
+                params.append(str(data[key] or "off").strip().lower())
             else:
                 fields.append(f"{key} = ?")
                 params.append(data[key])

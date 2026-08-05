@@ -776,6 +776,9 @@ class SchemaMixin:
                 outline_json TEXT,
                 style_profile_id INTEGER,
                 novel_profile_id INTEGER,
+                preference_profile_id INTEGER,
+                preference_injection_strength TEXT NOT NULL DEFAULT 'off'
+                    CHECK (preference_injection_strength IN ('off', 'light', 'standard', 'strong')),
                 settings_json TEXT,
                 cover_path TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
@@ -856,6 +859,17 @@ class SchemaMixin:
         }
         if "cover_path" not in project_cols:
             self.conn.execute("ALTER TABLE ai_writing_projects ADD COLUMN cover_path TEXT")
+        if "preference_profile_id" not in project_cols:
+            self.conn.execute(
+                "ALTER TABLE ai_writing_projects "
+                "ADD COLUMN preference_profile_id INTEGER"
+            )
+        if "preference_injection_strength" not in project_cols:
+            self.conn.execute(
+                "ALTER TABLE ai_writing_projects "
+                "ADD COLUMN preference_injection_strength TEXT NOT NULL DEFAULT 'off' "
+                "CHECK (preference_injection_strength IN ('off', 'light', 'standard', 'strong'))"
+            )
         # 给已有 ai_chapters 表补 metadata_json 列（老库迁移）
         try:
             cols = {row[1] for row in self.conn.execute("PRAGMA table_info(ai_chapters)").fetchall()}
