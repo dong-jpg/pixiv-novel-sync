@@ -341,26 +341,128 @@ class AdultStorageMixin:
         ).fetchall()
         result: dict[str, dict[str, Any]] = {}
         for row in rows:
-            item = dict(row)
-            enabled = bool(item.get("enabled"))
+            item = self._adult_review_binding_row(row)
+            enabled = bool(item["enabled"])
             if not enabled:
                 result[str(item["review_kind"])] = {"enabled": False}
                 continue
-            try:
-                capabilities = json.loads(item.get("required_capabilities_json") or "[]")
-            except (TypeError, ValueError):
-                capabilities = []
-            result[str(item["review_kind"])] = {
-                "enabled": True,
-                "binding_type": item.get("binding_type"),
-                "provider_id": item.get("provider_id"),
-                "model": item.get("model"),
-                "model_pool_id": item.get("model_pool_id"),
-                "required_capabilities": capabilities,
-                "version": int(item.get("version") or 1),
-                "updated_at": item.get("updated_at"),
-            }
+            result[str(item["review_kind"])] = item
         return result
+
+    @staticmethod
+    def _adult_review_binding_row(row: Any) -> dict[str, Any]:
+        item = dict(row)
+        try:
+            capabilities = json.loads(
+                item.pop("required_capabilities_json", "[]") or "[]"
+            )
+        except (TypeError, ValueError):
+            capabilities = []
+        item["enabled"] = bool(item.get("enabled"))
+        item["required_capabilities"] = (
+            capabilities if isinstance(capabilities, list) else []
+        )
+        item["version"] = int(item.get("version") or 1)
+        return item
+
+    def get_adult_review_binding(
+        self,
+        review_kind: str,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM ai_adult_review_bindings WHERE review_kind = ?",
+            (review_kind,),
+        ).fetchone()
+        return self._adult_review_binding_row(row) if row is not None else None
+
+    def cas_update_review_binding(
+        self,
+        review_kind: str,
+        *,
+        expected_version: int,
+        route: dict[str, Any],
+    ) -> dict[str, Any]:
+        if review_kind not in {"safety", "fact_guard"}:
+            raise ValueError("成人审查绑定类型无效")
+        allowed = {
+            "binding_type",
+            "provider_id",
+            "model",
+            "model_pool_id",
+            "enabled",
+        }
+        unknown = sorted(set(route) - allowed)
+        if unknown:
+            raise ValueError(f"成人审查绑定包含未知字段: {', '.join(unknown)}")
+        enabled = route.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled 必须是布尔值")
+
+        binding_type: str | None = None
+        provider_id: int | None = None
+        model: str | None = None
+        model_pool_id: int | None = None
+        if enabled:
+            binding_type = route.get("binding_type")
+            if binding_type not in {"fixed", "pool"}:
+                raise ValueError("成人审查绑定类型必须是 fixed 或 pool")
+            if binding_type == "fixed":
+                raw_provider_id = route.get("provider_id")
+                if (
+                    isinstance(raw_provider_id, bool)
+                    or not isinstance(raw_provider_id, int)
+                    or raw_provider_id <= 0
+                ):
+                    raise ValueError("固定成人审查绑定缺少 provider_id")
+                if route.get("model_pool_id") is not None:
+                    raise ValueError("固定模型和模型池不能同时提交")
+                raw_model = route.get("model")
+                if raw_model is not None and not isinstance(raw_model, str):
+                    raise ValueError("model 必须是字符串或 null")
+                provider_id = raw_provider_id
+                model = raw_model.strip() if isinstance(raw_model, str) else None
+                model = model or None
+            else:
+                raw_pool_id = route.get("model_pool_id")
+                if (
+                    isinstance(raw_pool_id, bool)
+                    or not isinstance(raw_pool_id, int)
+                    or raw_pool_id <= 0
+                ):
+                    raise ValueError("模型池成人审查绑定缺少 model_pool_id")
+                if route.get("provider_id") is not None or route.get("model") is not None:
+                    raise ValueError("固定模型和模型池不能同时提交")
+                model_pool_id = raw_pool_id
+
+        with self.transaction() as conn:
+            updated = conn.execute(
+                """
+                UPDATE ai_adult_review_bindings
+                SET binding_type = ?, provider_id = ?, model = ?,
+                    model_pool_id = ?, required_capabilities_json = '["json"]',
+                    enabled = ?, version = version + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE review_kind = ? AND version = ?
+                """,
+                (
+                    binding_type,
+                    provider_id,
+                    model,
+                    model_pool_id,
+                    1 if enabled else 0,
+                    review_kind,
+                    int(expected_version),
+                ),
+            )
+            if updated.rowcount != 1:
+                raise AdultConflictError("成人审查绑定 revision 已变化")
+            row = conn.execute(
+                "SELECT * FROM ai_adult_review_bindings WHERE review_kind = ?",
+                (review_kind,),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("成人审查绑定更新失败")
+            return self._adult_review_binding_row(row)
 
     def list_adult_policy_state(self) -> list[dict[str, Any]]:
         return [

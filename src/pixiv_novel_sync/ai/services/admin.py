@@ -84,6 +84,19 @@ _RESUME_TASK_DISPATCH = {
     "resolve_foreshadow": "stream_auto_resolve_foreshadows",
 }
 _RESUME_HASH_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+_INTERNAL_AGENT_TASK_TYPES = frozenset(
+    {"adult_safety_review", "adult_fact_guard"}
+)
+_FORBIDDEN_AGENT_POLICY_FIELDS = frozenset(
+    {
+        "policy_id",
+        "policy_text",
+        "output_schema",
+        "safety_policy_hash",
+        "validator_policy_hash",
+        "binding_version",
+    }
+)
 
 
 class AIAdminMixin:
@@ -704,7 +717,11 @@ class AIAdminMixin:
     def list_agents(self) -> list[dict[str, Any]]:
         db = self._db()
         try:
-            return db.list_ai_agents()
+            return [
+                row
+                for row in db.list_ai_agents()
+                if row.get("task_type") not in _INTERNAL_AGENT_TASK_TYPES
+            ]
         finally:
             db.close()
 
@@ -726,6 +743,8 @@ class AIAdminMixin:
                 existing = db.get_ai_agent(agent_id)
                 if not existing:
                     raise AIServiceError("Agent 不存在")
+                if existing.get("task_type") in _INTERNAL_AGENT_TASK_TYPES:
+                    raise AIServiceError("内部审查 Agent 不允许通过普通接口修改")
                 merged = {**existing, **data}
                 binding_type = merged.get("binding_type") or "fixed"
                 update_data = dict(data)
@@ -754,6 +773,11 @@ class AIAdminMixin:
     def delete_agent(self, agent_id: int) -> None:
         db = self._db()
         try:
+            existing = db.get_ai_agent(agent_id)
+            if not existing:
+                raise AIServiceError("Agent 不存在")
+            if existing.get("task_type") in _INTERNAL_AGENT_TASK_TYPES:
+                raise AIServiceError("内部审查 Agent 不允许通过普通接口删除")
             db.delete_ai_agent(agent_id)
         finally:
             db.close()
@@ -838,6 +862,14 @@ class AIAdminMixin:
         return data
 
     def _normalize_agent_payload(self, payload: dict[str, Any], partial: bool = False) -> dict[str, Any]:
+        forbidden = sorted(_FORBIDDEN_AGENT_POLICY_FIELDS.intersection(payload))
+        if forbidden:
+            raise AIServiceError(
+                f"内部策略字段不允许通过普通 Agent 接口提交：{', '.join(forbidden)}"
+            )
+        task_type = payload.get("task_type")
+        if task_type in _INTERNAL_AGENT_TASK_TYPES:
+            raise AIServiceError("内部审查 Agent 只能通过固定审查绑定配置")
         data = {
             key: payload[key]
             for key in (
@@ -896,7 +928,7 @@ class AIAdminMixin:
             binding_key = "provider_id" if binding_type == "fixed" else "model_pool_id"
             if not data.get(binding_key):
                 raise AIServiceError(f"缺少 Agent 字段：{binding_key}")
-        if data.get("task_type") not in {None, "continue", "rewrite", "distill_style", "distill_novel", "audit", "general", "plan", "wizard", "chat", "extract_summary", "resolve_foreshadow", "polish_dialogue", "polish_psychology", "keyword_clean"}:
+        if data.get("task_type") not in {None, "continue", "rewrite", "distill_style", "distill_novel", "audit", "general", "plan", "wizard", "chat", "extract_summary", "resolve_foreshadow", "polish_dialogue", "polish_psychology", "keyword_clean", "adult_polish"}:
             raise AIServiceError("不支持的 Agent 类型")
         return data
 
@@ -990,6 +1022,8 @@ class AIAdminMixin:
         row = db.get_ai_agent(agent_id)
         if not row:
             raise AIServiceError("Agent 不存在")
+        if row.get("task_type") in _INTERNAL_AGENT_TASK_TYPES:
+            raise AIServiceError("内部审查 Agent 不能作为普通写作 Agent 使用")
         if not bool(row.get("enabled")):
             raise AIServiceError("Agent 已禁用")
         provider_id = row.get("provider_id")

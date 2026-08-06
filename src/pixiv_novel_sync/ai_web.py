@@ -526,6 +526,47 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
         except Exception as exc:
             return fail(exc)
 
+    @app.post("/api/dashboard/ai/agents/adult-polish/seed")
+    def seed_adult_polish_agent():
+        try:
+            return ok(service.ensure_adult_polish_agent(require_json_object()))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/dashboard/ai/adult-review-bindings/<review_kind>")
+    def get_adult_review_binding(review_kind: str):
+        try:
+            bindings = service.list_adult_review_bindings()
+            binding = bindings.get(review_kind)
+            if binding is None:
+                raise AIServiceError("成人审查绑定类型无效")
+            return ok(binding)
+        except Exception as exc:
+            return fail(exc)
+
+    @app.put("/api/dashboard/ai/adult-review-bindings/<review_kind>")
+    def update_adult_review_binding(review_kind: str):
+        try:
+            payload = require_json_object()
+            if "expected_version" not in payload:
+                raise AIServiceError("缺少 expected_version")
+            expected_version = payload.pop("expected_version")
+            if (
+                isinstance(expected_version, bool)
+                or not isinstance(expected_version, int)
+                or expected_version <= 0
+            ):
+                raise AIServiceError("expected_version 必须是正整数")
+            return ok(
+                service.update_adult_review_binding(
+                    review_kind,
+                    payload,
+                    expected_version=expected_version,
+                )
+            )
+        except Exception as exc:
+            return fail(exc)
+
     @app.post("/api/dashboard/ai/documents/upload")
     def upload_ai_document():
         try:

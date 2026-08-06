@@ -540,6 +540,7 @@
           <option value="distill_style">风格蒸馏</option>
           <option value="distill_novel">小说蒸馏</option>
           <option value="keyword_clean">关键词清洗</option>
+          <option value="adult_polish">成人片段润色</option>
           <option value="general">通用</option>
         </select>
         <div class="grid grid-cols-2 rounded-lg bg-gray-100 p-1 text-sm">
@@ -597,6 +598,7 @@
             <option value="distill_style">风格蒸馏</option>
             <option value="distill_novel">小说蒸馏</option>
             <option value="keyword_clean">关键词清洗</option>
+            <option value="adult_polish">成人片段润色</option>
             <option value="general">通用</option>
           </select>
         </div>
@@ -614,6 +616,77 @@
             </div>
           </div>
           <p v-if="!filteredAgents.length" class="text-sm text-pixiv-gray text-center py-8">暂无匹配 Agent</p>
+        </div>
+      </div>
+
+      <div class="lg:col-span-2 border-t border-gray-200 pt-5 space-y-5">
+        <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto] gap-3 items-end">
+          <div>
+            <h2 class="text-lg font-bold text-gray-900">成人润色 Agent</h2>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-3">
+              <input v-model="adultAgentForm.name" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Agent 名称">
+              <select v-model="adultAgentForm.binding_type" class="px-3 py-2 border border-gray-200 rounded-lg text-sm">
+                <option value="fixed">固定模型</option>
+                <option value="pool">模型池</option>
+              </select>
+              <select v-if="adultAgentForm.binding_type === 'fixed'" v-model.number="adultAgentForm.provider_id" class="px-3 py-2 border border-gray-200 rounded-lg text-sm">
+                <option :value="0">选择 Provider</option>
+                <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option>
+              </select>
+              <select v-else v-model.number="adultAgentForm.model_pool_id" class="px-3 py-2 border border-gray-200 rounded-lg text-sm">
+                <option :value="0">选择已启用模型池</option>
+                <option v-for="pool in modelPools.filter(item => item.enabled)" :key="pool.id" :value="pool.id">{{ pool.name }}</option>
+              </select>
+            </div>
+            <input v-if="adultAgentForm.binding_type === 'fixed'" v-model="adultAgentForm.model" class="w-full mt-2 px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="model_key（留空使用 Provider 默认模型）">
+          </div>
+          <button @click="seedAdultPolishAgent" :disabled="adultAgentSaving || !adultAgentBindingValid" class="h-10 px-4 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">
+            {{ adultAgentSaving ? '保存中' : '保存成人润色 Agent' }}
+          </button>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <div v-for="kind in adultReviewKinds" :key="kind" class="border border-gray-200 rounded-lg p-4 min-w-0 space-y-3">
+            <div class="flex items-center justify-between gap-3">
+              <h3 class="text-sm font-bold text-gray-900">{{ kind === 'safety' ? '安全审查' : '事实保护' }}</h3>
+              <label class="flex items-center gap-2 text-sm text-gray-700">
+                <input type="checkbox" v-model="adultReviewBindings[kind].enabled" class="rounded border-gray-300">
+                启用
+              </label>
+            </div>
+            <dl class="text-xs text-gray-600 space-y-1 min-w-0">
+              <div><dt class="inline font-medium">Policy</dt><dd class="inline ml-2 break-all">{{ adultReviewBindings[kind].policy_id }}</dd></div>
+              <div><dt class="inline font-medium">Hash</dt><dd class="inline ml-2 font-mono break-all">{{ adultReviewBindings[kind].policy_hash }}</dd></div>
+              <div><dt class="inline font-medium">Prompt</dt><dd class="inline ml-2 font-mono break-all">{{ adultReviewBindings[kind].prompt_hash }}</dd></div>
+              <div><dt class="inline font-medium">Schema</dt><dd class="inline ml-2 font-mono break-all">{{ adultReviewBindings[kind].schema_hash }}</dd></div>
+              <div><dt class="inline font-medium">能力</dt><dd class="inline ml-2 font-mono">json</dd></div>
+            </dl>
+            <div class="grid grid-cols-2 rounded-lg bg-gray-100 p-1 text-sm">
+              <label class="flex items-center justify-center px-3 py-2 rounded cursor-pointer" :class="adultReviewBindings[kind].binding_type === 'fixed' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'">
+                <input type="radio" class="sr-only" value="fixed" v-model="adultReviewBindings[kind].binding_type">固定模型
+              </label>
+              <label class="flex items-center justify-center px-3 py-2 rounded cursor-pointer" :class="adultReviewBindings[kind].binding_type === 'pool' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'">
+                <input type="radio" class="sr-only" value="pool" v-model="adultReviewBindings[kind].binding_type">模型池
+              </label>
+            </div>
+            <div v-if="adultReviewBindings[kind].binding_type === 'fixed'" class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <select v-model.number="adultReviewBindings[kind].provider_id" class="px-3 py-2 border border-gray-200 rounded-lg text-sm min-w-0">
+                <option :value="0">选择 Provider</option>
+                <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option>
+              </select>
+              <input v-model="adultReviewBindings[kind].model" class="px-3 py-2 border border-gray-200 rounded-lg text-sm min-w-0" placeholder="JSON model_key">
+            </div>
+            <select v-else v-model.number="adultReviewBindings[kind].model_pool_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+              <option :value="0">选择已启用模型池</option>
+              <option v-for="pool in modelPools.filter(item => item.enabled)" :key="pool.id" :value="pool.id">{{ pool.name }}</option>
+            </select>
+            <div class="flex items-center justify-between gap-3">
+              <span class="text-xs" :class="adultReviewBindings[kind].stored_matches ? 'text-green-700' : 'text-red-600'">version {{ adultReviewBindings[kind].version }}</span>
+              <button @click="saveAdultReviewBinding(kind)" :disabled="adultReviewSaving[kind] || !adultReviewBindingValid(kind)" class="px-3 py-2 bg-gray-900 text-white rounded-lg text-sm disabled:opacity-50">
+                {{ adultReviewSaving[kind] ? '保存中' : '保存绑定' }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -709,12 +782,40 @@
       const providerForm = reactive({ id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
       const capabilityOptions = ['streaming', 'json', 'vision', 'tools', 'long_context'];
       const agentForm = reactive({ id: 0, name: '', task_type: 'continue', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0, required_capabilities: [], system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
+      const adultReviewKinds = ['safety', 'fact_guard'];
+      const adultReviewDefaults = (kind) => ({
+        review_kind: kind,
+        enabled: false,
+        binding_type: 'fixed',
+        provider_id: 0,
+        model: '',
+        model_pool_id: 0,
+        required_capabilities: ['json'],
+        version: 1,
+        policy_id: kind === 'safety' ? 'adult_safety_policy' : 'adult_fact_guard_policy',
+        policy_hash: '',
+        prompt_hash: '',
+        schema_hash: '',
+        stored_matches: false
+      });
+      const adultReviewBindings = reactive({ safety: adultReviewDefaults('safety'), fact_guard: adultReviewDefaults('fact_guard') });
+      const adultReviewSaving = reactive({ safety: false, fact_guard: false });
+      const adultAgentForm = reactive({ name: '成人描写润色', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0 });
+      const adultAgentSaving = ref(false);
       const filteredAgents = computed(() => agentFilter.value ? agents.value.filter(a => a.task_type === agentFilter.value) : agents.value);
       const agentProviderModels = computed(() => {
         const catalog = providerModels[agentForm.provider_id];
         return catalog && Array.isArray(catalog.items) ? catalog.items.filter(model => model.routable) : [];
       });
       const agentBindingValid = computed(() => agentForm.binding_type === 'pool' ? agentForm.model_pool_id > 0 : agentForm.provider_id > 0);
+      const adultAgentBindingValid = computed(() => adultAgentForm.binding_type === 'pool' ? adultAgentForm.model_pool_id > 0 : adultAgentForm.provider_id > 0);
+      const adultReviewBindingValid = (kind) => {
+        const binding = adultReviewBindings[kind];
+        if (!binding) return false;
+        if (binding.enabled === false) return true;
+        if (binding.stored_matches === false) return false;
+        return binding.binding_type === 'pool' ? binding.model_pool_id > 0 : binding.provider_id > 0;
+      };
 
       const schedulerTasks = [
         { key: 'bookmarks', label: '同步收藏小说', enableKey: 'auto_sync_bookmarks_enabled', intervalKey: 'auto_sync_bookmarks_interval_hours', cronKey: 'auto_sync_bookmarks_cron' },
@@ -1250,6 +1351,87 @@
         await recoverModelSyncOperations();
       };
       const loadAgents = async () => { agents.value = await aiApi('/api/dashboard/ai/agents'); };
+      const loadAdultReviewBinding = async (kind) => {
+        const data = await aiApi(`/api/dashboard/ai/adult-review-bindings/${kind}`);
+        Object.assign(adultReviewBindings[kind], adultReviewDefaults(kind), data || {}, {
+          binding_type: (data && data.binding_type) || 'fixed',
+          provider_id: Number((data && data.provider_id) || 0),
+          model: String((data && data.model) || ''),
+          model_pool_id: Number((data && data.model_pool_id) || 0),
+          required_capabilities: ['json']
+        });
+      };
+      const loadAdultReviewBindings = async () => {
+        try {
+          await Promise.all(adultReviewKinds.map(kind => loadAdultReviewBinding(kind)));
+        } catch (e) {
+          showAiMessage(e.message || '读取成人审查绑定失败', 'error');
+        }
+      };
+      const saveAdultReviewBinding = async (kind) => {
+        const binding = adultReviewBindings[kind];
+        if (!adultReviewBindingValid(kind)) return;
+        adultReviewSaving[kind] = true;
+        try {
+          const payload = {
+            enabled: binding.enabled === true,
+            expected_version: Number(binding.version)
+          };
+          if (payload.enabled && binding.binding_type === 'pool') {
+            payload.binding_type = 'pool';
+            payload.model_pool_id = Number(binding.model_pool_id || 0);
+          } else if (payload.enabled) {
+            payload.binding_type = 'fixed';
+            payload.provider_id = Number(binding.provider_id || 0);
+            payload.model = String(binding.model || '').trim() || null;
+          }
+          const saved = await aiApi(`/api/dashboard/ai/adult-review-bindings/${kind}`, {
+            method: 'PUT',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+          });
+          Object.assign(binding, saved || {}, {
+            binding_type: (saved && saved.binding_type) || 'fixed',
+            provider_id: Number((saved && saved.provider_id) || 0),
+            model: String((saved && saved.model) || ''),
+            model_pool_id: Number((saved && saved.model_pool_id) || 0),
+            required_capabilities: ['json']
+          });
+          showAiMessage('成人审查绑定已保存');
+        } catch (e) {
+          await loadAdultReviewBinding(kind).catch(() => {});
+          showAiMessage(e.message || '成人审查绑定保存失败', 'error');
+        } finally {
+          adultReviewSaving[kind] = false;
+        }
+      };
+      const seedAdultPolishAgent = async () => {
+        if (!adultAgentBindingValid.value) return;
+        adultAgentSaving.value = true;
+        try {
+          const payload = {
+            name: String(adultAgentForm.name || '').trim() || '成人描写润色',
+            binding_type: adultAgentForm.binding_type
+          };
+          if (adultAgentForm.binding_type === 'pool') {
+            payload.model_pool_id = Number(adultAgentForm.model_pool_id || 0);
+          } else {
+            payload.provider_id = Number(adultAgentForm.provider_id || 0);
+            payload.model = String(adultAgentForm.model || '').trim() || null;
+          }
+          await aiApi('/api/dashboard/ai/agents/adult-polish/seed', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+          });
+          await loadAgents();
+          showAiMessage('成人润色 Agent 已保存');
+        } catch (e) {
+          showAiMessage(e.message || '成人润色 Agent 保存失败', 'error');
+        } finally {
+          adultAgentSaving.value = false;
+        }
+      };
       const resetProviderForm = () => Object.assign(providerForm, { id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
       const editProvider = (provider) => Object.assign(providerForm, { id: provider.id, name: provider.name || '', provider_type: provider.provider_type || 'openai_compatible', base_url: provider.base_url || '', default_model: provider.default_model || '', api_key: '', timeout_seconds: provider.timeout_seconds || 120, max_retries: provider.max_retries || 2, context_window: provider.context_window || 128000, stream_enabled: provider.stream_enabled !== false, enabled: provider.enabled !== false });
       const saveProvider = async () => {
@@ -1335,6 +1517,7 @@
         loadProviders();
         loadModelPools();
         loadAgents();
+        loadAdultReviewBindings();
         window.addEventListener('hashchange', () => {
           const hash = window.location.hash.slice(1);
           if (tabs.find(t => t.id === hash)) activeTab.value = hash;
@@ -1358,11 +1541,14 @@
         movePoolMember, replacePoolMembers, saveModelPool, deleteModelPool,
         aiMessage, aiMessageType, providerForm, agentForm, capabilityOptions,
         agentProviderModels, agentBindingValid,
+        adultReviewKinds, adultReviewBindings, adultReviewSaving, adultReviewBindingValid,
+        adultAgentForm, adultAgentSaving, adultAgentBindingValid,
         rescueTokenStatus, rescueTokenPlaintext, rescueTokenMessage, rescueTokenMessageType,
         rotatingRescueToken, loadRescueTokenStatus, rotateRescueToken, copyRescueToken, closeRescueToken,
         ensureCsrfToken,
         loadProviders, loadAgents, resetProviderForm, editProvider, saveProvider, deleteProvider, testProvider,
-        resetAgentForm, editAgent, saveAgent, deleteAgent, seedAgents
+        resetAgentForm, editAgent, saveAgent, deleteAgent, seedAgents,
+        loadAdultReviewBindings, saveAdultReviewBinding, seedAdultPolishAgent
       };
     }
   });

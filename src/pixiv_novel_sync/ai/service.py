@@ -3,6 +3,7 @@ from __future__ import annotations
 from .providers import create_provider
 from .services import (
     AIAdminMixin,
+    AIAdultPolishMixin,
     AIChatWizardMixin,
     AIGenerationMixin,
     AIProjectsMixin,
@@ -16,6 +17,7 @@ from .services import (
 
 
 class AIWritingService(
+    AIAdultPolishMixin,
     AIChatWizardMixin,
     AIProjectsMixin,
     AIGenerationMixin,

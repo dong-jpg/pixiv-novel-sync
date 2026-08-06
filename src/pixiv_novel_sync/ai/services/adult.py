@@ -8,7 +8,13 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ...storage_db import Database
+from ..adult_policies import (
+    FACT_GUARD_POLICY,
+    SAFETY_POLICY,
+    verify_adult_policy_bundle,
+)
 from ..adult_types import AdultConflictError, canonical_sha256
+from ..adult_types import PolicyMismatchError, raw_sha256
 from .core import AIConflictError, AIServiceError
 
 
@@ -22,6 +28,30 @@ _CONFIRMATION_FIELDS = frozenset(
         "fictional_characters_confirmed",
         "character_ids",
     }
+)
+_ADULT_REVIEW_KINDS = ("safety", "fact_guard")
+_ADULT_REVIEW_FIELDS = frozenset(
+    {"binding_type", "provider_id", "model", "model_pool_id", "enabled"}
+)
+_ADULT_AGENT_FIELDS = frozenset(
+    {
+        "name",
+        "binding_type",
+        "provider_id",
+        "model",
+        "model_pool_id",
+        "required_capabilities",
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "context_window",
+        "enabled",
+    }
+)
+ADULT_POLISH_SYSTEM_PROMPT = (
+    "你负责润色服务器明确标记的单一目标片段。保持角色、剧情、事实、叙事视角和锁定词不变，"
+    "遵循项目继承风格与本次强度参数，不扩写目标边界之外的内容。只输出可直接使用的替换片段正文，"
+    "不得输出说明、标题、分析或代码块。"
 )
 
 
@@ -152,6 +182,250 @@ def build_project_facts_snapshot(
 
 
 class AIAdultPolishMixin:
+    @staticmethod
+    def _adult_policy_metadata(
+        rows: Mapping[str, Mapping[str, Any]],
+        kind: str,
+    ) -> dict[str, Any]:
+        bundle = SAFETY_POLICY if kind == "safety" else FACT_GUARD_POLICY
+        expected = {
+            "policy_id": bundle.policy_id,
+            "policy_version": bundle.version,
+            "policy_hash": bundle.expected_hash,
+            "prompt_hash": raw_sha256(bundle.prompt_template),
+            "schema_hash": canonical_sha256(bundle.output_schema),
+        }
+        stored = rows.get(kind)
+        matches = stored is not None and all(
+            stored.get(key) == value for key, value in expected.items()
+        )
+        return {**expected, "stored_matches": matches}
+
+    @classmethod
+    def _verify_adult_policy_state(cls, db: Database) -> None:
+        try:
+            verify_adult_policy_bundle()
+        except PolicyMismatchError as exc:
+            raise AIServiceError("固定成人审查策略代码校验失败") from exc
+        rows = {
+            str(row["policy_kind"]): row
+            for row in db.list_adult_policy_state()
+        }
+        for kind in _ADULT_REVIEW_KINDS:
+            if not cls._adult_policy_metadata(rows, kind)["stored_matches"]:
+                raise AIServiceError("固定成人审查策略存储状态不匹配")
+
+    @staticmethod
+    def _normalize_adult_review_route(
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        unknown = sorted(set(payload) - _ADULT_REVIEW_FIELDS)
+        if unknown:
+            raise AIServiceError(
+                f"成人审查绑定包含未知字段: {', '.join(unknown)}"
+            )
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            raise AIServiceError("enabled 必须是布尔值")
+        if not enabled:
+            return {
+                "binding_type": None,
+                "provider_id": None,
+                "model": None,
+                "model_pool_id": None,
+                "enabled": False,
+            }
+        binding_type = payload.get("binding_type")
+        if binding_type not in {"fixed", "pool"}:
+            raise AIServiceError("成人审查绑定类型必须是 fixed 或 pool")
+        if binding_type == "fixed":
+            provider_id = payload.get("provider_id")
+            if (
+                isinstance(provider_id, bool)
+                or not isinstance(provider_id, int)
+                or provider_id <= 0
+            ):
+                raise AIServiceError("固定成人审查绑定缺少 provider_id")
+            if payload.get("model_pool_id") is not None:
+                raise AIServiceError("固定模型和模型池不能同时提交")
+            model = payload.get("model")
+            if model is not None and not isinstance(model, str):
+                raise AIServiceError("model 必须是字符串或 null")
+            return {
+                "binding_type": "fixed",
+                "provider_id": provider_id,
+                "model": model.strip() or None if isinstance(model, str) else None,
+                "model_pool_id": None,
+                "enabled": True,
+            }
+        model_pool_id = payload.get("model_pool_id")
+        if (
+            isinstance(model_pool_id, bool)
+            or not isinstance(model_pool_id, int)
+            or model_pool_id <= 0
+        ):
+            raise AIServiceError("模型池成人审查绑定缺少 model_pool_id")
+        if payload.get("provider_id") is not None or payload.get("model") is not None:
+            raise AIServiceError("固定模型和模型池不能同时提交")
+        return {
+            "binding_type": "pool",
+            "provider_id": None,
+            "model": None,
+            "model_pool_id": model_pool_id,
+            "enabled": True,
+        }
+
+    def list_adult_review_bindings(self) -> dict[str, dict[str, Any]]:
+        db = self._db()
+        try:
+            policy_rows = {
+                str(row["policy_kind"]): row
+                for row in db.list_adult_policy_state()
+            }
+            result: dict[str, dict[str, Any]] = {}
+            for kind in _ADULT_REVIEW_KINDS:
+                binding = db.get_adult_review_binding(kind)
+                if binding is None:
+                    raise AIServiceError("成人审查绑定缺失")
+                result[kind] = {
+                    **binding,
+                    "required_capabilities": ["json"],
+                    **self._adult_policy_metadata(policy_rows, kind),
+                }
+            return result
+        finally:
+            db.close()
+
+    def update_adult_review_binding(
+        self,
+        review_kind: str,
+        payload: Mapping[str, Any],
+        expected_version: int,
+    ) -> dict[str, Any]:
+        if review_kind not in _ADULT_REVIEW_KINDS:
+            raise AIServiceError("成人审查绑定类型无效")
+        if not isinstance(payload, Mapping):
+            raise AIServiceError("成人审查绑定请求必须是对象")
+        if (
+            isinstance(expected_version, bool)
+            or not isinstance(expected_version, int)
+            or expected_version <= 0
+        ):
+            raise AIServiceError("expected_version 无效")
+
+        db = self._db()
+        try:
+            current = db.get_adult_review_binding(review_kind)
+            if current is None:
+                raise AIServiceError("成人审查绑定缺失")
+            if int(current["version"]) != expected_version:
+                raise AIConflictError("409: 成人审查绑定 revision 已变化")
+
+            try:
+                route = self._normalize_adult_review_route(payload)
+                if route["enabled"]:
+                    self._verify_adult_policy_state(db)
+                    self._validate_agent_binding(
+                        db,
+                        {
+                            **route,
+                            "required_capabilities": ["json"],
+                        },
+                    )
+            except Exception as exc:
+                try:
+                    db.cas_update_review_binding(
+                        review_kind,
+                        expected_version=expected_version,
+                        route={"enabled": False},
+                    )
+                except AdultConflictError as conflict:
+                    raise _service_conflict(conflict) from conflict
+                if isinstance(exc, (AIServiceError, ValueError)):
+                    raise AIServiceError(
+                        f"成人审查绑定配置无效: {exc}"
+                    ) from exc
+                raise AIServiceError("成人审查绑定配置无效") from exc
+
+            try:
+                saved = db.cas_update_review_binding(
+                    review_kind,
+                    expected_version=expected_version,
+                    route=route,
+                )
+            except AdultConflictError as exc:
+                raise _service_conflict(exc) from exc
+            policy_rows = {
+                str(row["policy_kind"]): row
+                for row in db.list_adult_policy_state()
+            }
+            return {
+                **saved,
+                "required_capabilities": ["json"],
+                **self._adult_policy_metadata(policy_rows, review_kind),
+            }
+        finally:
+            db.close()
+
+    def ensure_adult_polish_agent(
+        self,
+        binding: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(binding, Mapping):
+            raise AIServiceError("成人润色 Agent 绑定必须是对象")
+        unknown = sorted(set(binding) - _ADULT_AGENT_FIELDS)
+        if unknown:
+            raise AIServiceError(
+                f"成人润色 Agent 包含未知字段: {', '.join(unknown)}"
+            )
+        if binding.get("binding_type") not in {"fixed", "pool"}:
+            raise AIServiceError("成人润色 Agent 必须显式配置绑定类型")
+        name = _bounded_text(
+            binding.get("name", "成人描写润色"),
+            "Agent 名称",
+            200,
+        )
+        data = self._normalize_agent_payload(
+            {
+                **dict(binding),
+                "name": name,
+                "task_type": "adult_polish",
+                "system_prompt": ADULT_POLISH_SYSTEM_PROMPT,
+                "required_capabilities": list(
+                    binding.get("required_capabilities") or []
+                ),
+                "temperature": binding.get("temperature", 0.7),
+                "top_p": binding.get("top_p", 0.9),
+                "max_tokens": binding.get("max_tokens", 12_000),
+                "context_window": binding.get("context_window", 16_000),
+                "enabled": binding.get("enabled", True),
+            }
+        )
+        db = self._db()
+        try:
+            with db.transaction():
+                self._validate_agent_binding(db, data)
+                existing = next(
+                    (
+                        row
+                        for row in db.list_ai_agents()
+                        if row.get("task_type") == "adult_polish"
+                        and row.get("name") == name
+                    ),
+                    None,
+                )
+                if existing is None:
+                    agent_id = db.create_ai_agent(data)
+                else:
+                    agent_id = int(existing["id"])
+                    db.update_ai_agent(agent_id, data)
+                result = db.get_ai_agent(agent_id)
+                if result is None:
+                    raise RuntimeError("成人润色 Agent 初始化失败")
+                return result
+        finally:
+            db.close()
+
     def list_adult_characters(self, project_id: int) -> list[dict[str, Any]]:
         db = self._db()
         try:
@@ -346,4 +620,8 @@ class AIAdultPolishMixin:
             db.close()
 
 
-__all__ = ["AIAdultPolishMixin", "build_project_facts_snapshot"]
+__all__ = [
+    "ADULT_POLISH_SYSTEM_PROMPT",
+    "AIAdultPolishMixin",
+    "build_project_facts_snapshot",
+]

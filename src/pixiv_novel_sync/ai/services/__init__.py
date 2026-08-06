@@ -10,6 +10,7 @@ from .admin import AIAdminMixin
 from .generation import AIGenerationMixin
 from .projects import AIProjectsMixin
 from .chat_wizard import AIChatWizardMixin
+from .adult import AIAdultPolishMixin
 
 __all__ = [
     "AIServiceCore",
@@ -22,4 +23,5 @@ __all__ = [
     "AIGenerationMixin",
     "AIProjectsMixin",
     "AIChatWizardMixin",
+    "AIAdultPolishMixin",
 ]
