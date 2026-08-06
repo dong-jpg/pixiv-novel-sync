@@ -2,15 +2,17 @@ from __future__ import annotations
 
 from .providers import create_provider
 from .services import (
-    AIAdminMixin,
     AIAdultPolishMixin,
+    AIAdminMixin,
     AIChatWizardMixin,
-    AIGenerationMixin,
-    AIProjectsMixin,
-    AINotFoundError,
     AIConflictError,
+    AIGenerationMixin,
+    AINotFoundError,
+    AIProjectsMixin,
     AIServiceCore,
     AIServiceError,
+    AdultRouteRequest,
+    PreparedAdultJob,
     RouteJobContext,
     RouteResumeSpec,
 )
@@ -33,5 +35,7 @@ __all__ = [
     "AIConflictError",
     "AINotFoundError",
     "RouteJobContext",
+    "AdultRouteRequest",
+    "PreparedAdultJob",
     "RouteResumeSpec",
 ]

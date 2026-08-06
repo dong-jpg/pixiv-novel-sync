@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -545,6 +545,88 @@ class AdultStorageMixin:
                 (job_id,),
             ).fetchone()
             return self._ai_job_from_row(created, include_attempts=True)
+
+    def get_adult_job_execution(
+        self,
+        job_id: str,
+        owner_scope: str,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT * FROM ai_jobs
+            WHERE job_id = ? AND task_type = 'adult_polish' AND owner_scope = ?
+            """,
+            (job_id, owner_scope),
+        ).fetchone()
+        if row is None or not row["owner_token"]:
+            return None
+        item = self._ai_job_from_row(row, include_attempts=True)
+        item["owner_token"] = str(row["owner_token"])
+        return item
+
+    def cas_finish_adult_job(
+        self,
+        job_id: str,
+        owner_scope: str,
+        owner_token: str,
+        status: str,
+        *,
+        error_code: str,
+        error_message: str,
+        summary: Mapping[str, Any] | None = None,
+    ) -> bool:
+        if status not in {"failed", "partial", "cancelled"}:
+            raise ValueError("成人 job 终态无效")
+        if (
+            not isinstance(error_code, str)
+            or not error_code
+            or len(error_code) > 100
+            or any(
+                not ("a" <= char <= "z" or char.isdigit() or char == "_")
+                for char in error_code
+            )
+        ):
+            raise ValueError("成人 job 错误代码无效")
+        if not isinstance(error_message, str) or not error_message:
+            raise ValueError("成人 job 错误消息无效")
+        safe_message = "".join(
+            char for char in error_message[:500] if ord(char) >= 32
+        )
+        safe_summary = _safe_snapshot(dict(summary or {}))
+        output_json = _json({"code": error_code, **safe_summary})
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT status FROM ai_jobs
+                WHERE job_id = ? AND task_type = 'adult_polish'
+                  AND owner_scope = ? AND owner_token = ?
+                """,
+                (job_id, owner_scope, owner_token),
+            ).fetchone()
+            if row is None or row["status"] not in {"running", status}:
+                return False
+            cursor = conn.execute(
+                """
+                UPDATE ai_jobs
+                SET status = ?, output_text = NULL, output_json = ?,
+                    error_message = ?,
+                    finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP),
+                    lease_until = NULL
+                WHERE job_id = ? AND task_type = 'adult_polish'
+                  AND owner_scope = ? AND owner_token = ?
+                  AND status IN ('running', ?)
+                """,
+                (
+                    status,
+                    output_json,
+                    safe_message,
+                    job_id,
+                    owner_scope,
+                    owner_token,
+                    status,
+                ),
+            )
+            return cursor.rowcount == 1
 
     def save_candidate_application(self, data: dict[str, Any]) -> int:
         validation = _validation_payload(data.get("validation"))
