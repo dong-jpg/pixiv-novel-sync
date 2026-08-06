@@ -200,6 +200,7 @@ class AiWritingMixin:
                 params.append(data[key])
         if not fields:
             return
+        fields.append("chapter_revision = chapter_revision + 1")
         fields.append("updated_at = CURRENT_TIMESTAMP")
         params.append(chapter_id)
         with self._lock:
@@ -218,7 +219,13 @@ class AiWritingMixin:
                     current = {}
             current.update(patch or {})
             self.conn.execute(
-                "UPDATE ai_chapters SET metadata_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                """
+                UPDATE ai_chapters
+                SET metadata_json = ?,
+                    chapter_revision = chapter_revision + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
                 (json.dumps(current, ensure_ascii=False), chapter_id),
             )
             self._commit_if_needed()
@@ -235,7 +242,13 @@ class AiWritingMixin:
                 outline = item.get("outline")
                 metadata = item.get("metadata") or {}
                 self.conn.execute(
-                    "UPDATE ai_chapters SET outline = ?, metadata_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    """
+                    UPDATE ai_chapters
+                    SET outline = ?, metadata_json = ?,
+                        chapter_revision = chapter_revision + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
                     (outline, json.dumps(metadata, ensure_ascii=False), chapter_id),
                 )
             self._commit_if_needed()

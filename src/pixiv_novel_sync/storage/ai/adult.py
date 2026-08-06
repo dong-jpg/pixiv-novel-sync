@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
 from typing import Any
+
+from ...ai.adult_types import AdultConflictError, canonical_sha256
 
 
 _FORBIDDEN_SNAPSHOT_KEYS = {
@@ -54,6 +58,23 @@ def _validation_payload(value: Any) -> dict[str, Any]:
 
 
 class AdultStorageMixin:
+    @staticmethod
+    def _invalidate_adult_confirmation(conn: Any, project_id: int) -> None:
+        updated = conn.execute(
+            """
+            UPDATE ai_writing_projects
+            SET adult_characters_confirmed = 0,
+                fictional_characters_confirmed = 0,
+                adult_confirmation_revision = adult_confirmation_revision + 1,
+                adult_confirmation_updated_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (int(project_id),),
+        )
+        if updated.rowcount != 1:
+            raise ValueError("写作项目不存在")
+
     def _adult_character_row(self, row: Any) -> dict[str, Any]:
         item = dict(row)
         try:
@@ -65,6 +86,104 @@ class AdultStorageMixin:
         item["active"] = bool(item.get("active"))
         item["revision"] = int(item.get("revision") or 0)
         return item
+
+    def create_adult_character(self, data: dict[str, Any]) -> dict[str, Any]:
+        with self.transaction() as conn:
+            project_id = int(data["project_id"])
+            if conn.execute(
+                "SELECT 1 FROM ai_writing_projects WHERE id = ?",
+                (project_id,),
+            ).fetchone() is None:
+                raise ValueError("写作项目不存在")
+            conn.execute(
+                """
+                INSERT INTO ai_project_characters (
+                    character_id, project_id, revision, canonical_name,
+                    aliases_json, age_years, age_basis, fictional, active
+                ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    data["character_id"],
+                    project_id,
+                    data["canonical_name"],
+                    _json(data.get("aliases") or []),
+                    data.get("age_years"),
+                    data["age_basis"],
+                    1 if data["fictional"] else 0,
+                ),
+            )
+            self._invalidate_adult_confirmation(conn, project_id)
+            row = conn.execute(
+                "SELECT * FROM ai_project_characters WHERE character_id = ?",
+                (data["character_id"],),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("成人角色创建失败")
+            return self._adult_character_row(row)
+
+    def cas_update_adult_character(
+        self,
+        character_id: str,
+        expected_revision: int,
+        changes: dict[str, Any],
+    ) -> dict[str, Any]:
+        allowed = {
+            "canonical_name",
+            "aliases",
+            "age_years",
+            "age_basis",
+            "fictional",
+            "active",
+        }
+        unknown = sorted(set(changes) - allowed)
+        if unknown:
+            raise ValueError(f"成人角色包含未知字段: {', '.join(unknown)}")
+        if not changes:
+            raise ValueError("成人角色没有可更新字段")
+
+        assignments: list[str] = []
+        params: list[Any] = []
+        for key, value in changes.items():
+            if key == "aliases":
+                assignments.append("aliases_json = ?")
+                params.append(_json(value))
+            elif key in {"fictional", "active"}:
+                assignments.append(f"{key} = ?")
+                params.append(1 if value else 0)
+            else:
+                assignments.append(f"{key} = ?")
+                params.append(value)
+        assignments.extend(
+            ["revision = revision + 1", "updated_at = CURRENT_TIMESTAMP"]
+        )
+
+        with self.transaction() as conn:
+            current = conn.execute(
+                """
+                SELECT project_id FROM ai_project_characters
+                WHERE character_id = ? AND revision = ?
+                """,
+                (character_id, int(expected_revision)),
+            ).fetchone()
+            if current is None:
+                raise AdultConflictError("角色 revision 已变化")
+            updated = conn.execute(
+                f"""
+                UPDATE ai_project_characters SET {', '.join(assignments)}
+                WHERE character_id = ? AND revision = ?
+                """,
+                [*params, character_id, int(expected_revision)],
+            )
+            if updated.rowcount != 1:
+                raise AdultConflictError("角色 revision 已变化")
+            self._invalidate_adult_confirmation(conn, int(current["project_id"]))
+            row = conn.execute(
+                "SELECT * FROM ai_project_characters WHERE character_id = ?",
+                (character_id,),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("成人角色更新失败")
+            return self._adult_character_row(row)
 
     def list_adult_characters(
         self,
@@ -93,7 +212,7 @@ class AdultStorageMixin:
         if project is None:
             return None
         entries = project.get("adult_characters_json")
-        return {
+        confirmation = {
             "project_id": int(project_id),
             "adult_content_enabled": bool(project.get("adult_content_enabled")),
             "adult_characters_confirmed": bool(project.get("adult_characters_confirmed")),
@@ -108,6 +227,113 @@ class AdultStorageMixin:
                 "adult_confirmation_updated_at"
             ),
         }
+        confirmation["adult_characters_hash"] = canonical_sha256(
+            confirmation["adult_characters"]
+        )
+        return confirmation
+
+    def set_adult_confirmation(
+        self,
+        project_id: int,
+        expected_revision: int,
+        data: dict[str, Any],
+        character_ids: Sequence[str],
+    ) -> dict[str, Any]:
+        if len(character_ids) > 100:
+            raise ValueError("成人角色确认最多 100 个角色")
+        if len(set(character_ids)) != len(character_ids):
+            raise ValueError("成人角色 ID 不得重复")
+        for key in (
+            "adult_content_enabled",
+            "adult_characters_confirmed",
+            "fictional_characters_confirmed",
+        ):
+            if not isinstance(data.get(key), bool):
+                raise ValueError(f"{key} 必须是布尔值")
+
+        adult_confirmed = data["adult_characters_confirmed"]
+        fictional_confirmed = data["fictional_characters_confirmed"]
+        if adult_confirmed != fictional_confirmed:
+            raise ValueError("成人与虚构角色确认状态必须同时确认")
+        if adult_confirmed and not character_ids:
+            raise ValueError("成人角色确认至少需要一个角色")
+
+        with self.transaction() as conn:
+            project = conn.execute(
+                """
+                SELECT adult_confirmation_revision
+                FROM ai_writing_projects WHERE id = ?
+                """,
+                (int(project_id),),
+            ).fetchone()
+            if project is None:
+                raise ValueError("写作项目不存在")
+            if int(project["adult_confirmation_revision"] or 0) != int(
+                expected_revision
+            ):
+                raise AdultConflictError("成人确认 revision 已变化")
+
+            entries: list[dict[str, Any]] = []
+            if adult_confirmed:
+                rows = conn.execute(
+                    "SELECT * FROM ai_project_characters WHERE project_id = ?",
+                    (int(project_id),),
+                ).fetchall()
+                by_id = {str(row["character_id"]): row for row in rows}
+                confirmed_at = datetime.now(timezone.utc).replace(
+                    microsecond=0
+                ).isoformat()
+                for character_id in sorted(character_ids):
+                    row = by_id.get(character_id)
+                    if row is None:
+                        raise ValueError("成人角色不存在或不属于当前项目")
+                    if not bool(row["active"]):
+                        raise ValueError("成人角色已停用或不可用，不能确认")
+                    if row["age_years"] is None:
+                        raise ValueError("成人角色年龄必须明确")
+                    if int(row["age_years"]) < 18:
+                        raise ValueError("成人角色必须明确年满 18 岁")
+                    if not bool(row["fictional"]):
+                        raise ValueError("成人角色必须明确为虚构角色")
+                    entry = {
+                        "character_id": character_id,
+                        "character_revision": int(row["revision"]),
+                        "confirmed_at": confirmed_at,
+                    }
+                    if len(_json(entry).encode("utf-8")) > 2_048:
+                        raise ValueError("单个成人角色确认记录过大")
+                    entries.append(entry)
+
+            serialized = _json(entries)
+            if len(serialized.encode("utf-8")) > 65_536:
+                raise ValueError("成人角色确认记录总量过大")
+            updated = conn.execute(
+                """
+                UPDATE ai_writing_projects
+                SET adult_content_enabled = ?,
+                    adult_characters_confirmed = ?,
+                    fictional_characters_confirmed = ?,
+                    adult_characters_json = ?,
+                    adult_confirmation_revision = adult_confirmation_revision + 1,
+                    adult_confirmation_updated_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND adult_confirmation_revision = ?
+                """,
+                (
+                    1 if data["adult_content_enabled"] else 0,
+                    1 if adult_confirmed else 0,
+                    1 if fictional_confirmed else 0,
+                    serialized,
+                    int(project_id),
+                    int(expected_revision),
+                ),
+            )
+            if updated.rowcount != 1:
+                raise AdultConflictError("成人确认 revision 已变化")
+            result = self.get_adult_confirmation(int(project_id))
+            if result is None:
+                raise RuntimeError("成人角色确认保存失败")
+            return result
 
     def get_adult_review_bindings(self) -> dict[str, dict[str, Any]]:
         rows = self.conn.execute(
