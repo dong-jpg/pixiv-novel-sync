@@ -152,6 +152,9 @@ class SchemaMixin:
         self._migrate_preference_tables()
         # 迁移：创建 AI 写作项目（章节/伏笔/状态记忆）相关表
         self._migrate_ai_writing_tables()
+        # 成人润色依赖模型路由和写作表，必须在两者迁移完成后执行。
+        self._commit_if_needed()
+        self._migrate_adult_polish_tables()
         # 迁移：创建阅读进度追踪表
         self._migrate_reading_progress_table()
         # 迁移：为旧版 novel_texts 表添加正文完整度辅助列
@@ -877,6 +880,214 @@ class SchemaMixin:
                 self.conn.execute("ALTER TABLE ai_chapters ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
         except sqlite3.OperationalError:
             pass
+
+    def _migrate_adult_polish_tables(self) -> None:
+        """幂等创建成人润色的 fail-closed 存储边界。"""
+        from ..ai.adult_policies import FACT_GUARD_POLICY, SAFETY_POLICY
+        from ..ai.adult_types import canonical_sha256, raw_sha256
+
+        def columns(table: str) -> set[str]:
+            return {
+                str(row[1])
+                for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+
+        def add_column(table: str, name: str, declaration: str) -> None:
+            if name not in columns(table):
+                self.conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {name} {declaration}"
+                )
+
+        with self.transaction() as conn:
+            add_column(
+                "ai_writing_projects",
+                "adult_content_enabled",
+                "INTEGER NOT NULL DEFAULT 0 CHECK (adult_content_enabled IN (0,1))",
+            )
+            add_column(
+                "ai_writing_projects",
+                "adult_characters_confirmed",
+                "INTEGER NOT NULL DEFAULT 0 CHECK (adult_characters_confirmed IN (0,1))",
+            )
+            add_column(
+                "ai_writing_projects",
+                "fictional_characters_confirmed",
+                "INTEGER NOT NULL DEFAULT 0 CHECK (fictional_characters_confirmed IN (0,1))",
+            )
+            add_column(
+                "ai_writing_projects",
+                "adult_characters_json",
+                "TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(adult_characters_json))",
+            )
+            add_column(
+                "ai_writing_projects",
+                "adult_confirmation_revision",
+                "INTEGER NOT NULL DEFAULT 0 CHECK (adult_confirmation_revision >= 0)",
+            )
+            add_column(
+                "ai_writing_projects",
+                "adult_confirmation_updated_at",
+                "TEXT",
+            )
+            add_column(
+                "ai_chapters",
+                "chapter_revision",
+                "INTEGER NOT NULL DEFAULT 0 CHECK (chapter_revision >= 0)",
+            )
+            add_column("ai_jobs", "owner_scope", "TEXT")
+            add_column("ai_jobs", "idempotency_key_hash", "TEXT")
+
+            for statement in (
+                """
+                CREATE TABLE IF NOT EXISTS ai_project_characters (
+                    character_id TEXT PRIMARY KEY,
+                    project_id INTEGER NOT NULL REFERENCES ai_writing_projects(id) ON DELETE CASCADE,
+                    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+                    canonical_name TEXT NOT NULL,
+                    aliases_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(aliases_json)),
+                    age_years INTEGER CHECK(age_years >= 0),
+                    age_basis TEXT NOT NULL,
+                    fictional INTEGER NOT NULL CHECK(fictional IN (0,1)),
+                    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_ai_project_characters_project_active
+                    ON ai_project_characters(project_id, active)
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS ai_adult_review_bindings (
+                    review_kind TEXT PRIMARY KEY CHECK(review_kind IN ('safety','fact_guard')),
+                    binding_type TEXT CHECK(binding_type IN ('fixed','pool')),
+                    provider_id INTEGER REFERENCES ai_providers(id) ON DELETE RESTRICT,
+                    model TEXT,
+                    model_pool_id INTEGER REFERENCES ai_model_pools(id) ON DELETE RESTRICT,
+                    required_capabilities_json TEXT NOT NULL DEFAULT '["json"]'
+                        CHECK(json_valid(required_capabilities_json)),
+                    enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+                    version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS ai_adult_policy_state (
+                    policy_kind TEXT PRIMARY KEY CHECK(policy_kind IN ('safety','fact_guard')),
+                    policy_id TEXT NOT NULL UNIQUE,
+                    policy_version INTEGER NOT NULL CHECK(policy_version > 0),
+                    policy_hash TEXT NOT NULL,
+                    prompt_hash TEXT NOT NULL,
+                    schema_hash TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS ai_polish_applications (
+                    id INTEGER PRIMARY KEY,
+                    source_job_id TEXT NOT NULL UNIQUE,
+                    owner_scope TEXT NOT NULL,
+                    project_id INTEGER NOT NULL REFERENCES ai_writing_projects(id) ON DELETE CASCADE,
+                    chapter_id INTEGER NOT NULL REFERENCES ai_chapters(id) ON DELETE CASCADE,
+                    target_start INTEGER NOT NULL CHECK(target_start >= 0),
+                    target_end INTEGER NOT NULL CHECK(target_end > target_start),
+                    chapter_revision_before INTEGER NOT NULL CHECK(chapter_revision_before >= 0),
+                    chapter_hash_before TEXT NOT NULL,
+                    target_hash_before TEXT NOT NULL,
+                    project_facts_hash TEXT NOT NULL,
+                    adult_confirmation_revision INTEGER NOT NULL CHECK(adult_confirmation_revision >= 0),
+                    adult_characters_hash TEXT NOT NULL,
+                    participant_hash TEXT NOT NULL,
+                    provider_scope_hash TEXT NOT NULL,
+                    main_binding_hash TEXT NOT NULL DEFAULT '',
+                    safety_binding_hash TEXT NOT NULL DEFAULT '',
+                    fact_guard_binding_hash TEXT NOT NULL DEFAULT '',
+                    safety_policy_hash TEXT NOT NULL,
+                    safety_prompt_hash TEXT NOT NULL DEFAULT '',
+                    fact_guard_prompt_hash TEXT NOT NULL DEFAULT '',
+                    validator_policy_hash TEXT NOT NULL,
+                    validation_hash TEXT NOT NULL,
+                    warning_ack_hash TEXT NOT NULL DEFAULT '',
+                    access_token_hash TEXT NOT NULL,
+                    snapshots_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(snapshots_json)),
+                    validation_json TEXT NOT NULL CHECK(json_valid(validation_json)),
+                    applicable INTEGER NOT NULL CHECK(applicable IN (0,1)),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    applied_at TEXT,
+                    chapter_hash_after TEXT,
+                    chapter_revision_after INTEGER
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_ai_polish_applications_owner_job
+                    ON ai_polish_applications(owner_scope, source_job_id)
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_ai_polish_applications_chapter_created
+                    ON ai_polish_applications(project_id, chapter_id, created_at)
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS ai_chapter_derivative_invalidations (
+                    chapter_id INTEGER PRIMARY KEY REFERENCES ai_chapters(id) ON DELETE CASCADE,
+                    chapter_revision INTEGER NOT NULL,
+                    reason TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(status IN ('pending','queued','rebuilt')),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_ai_jobs_adult_owner_created
+                    ON ai_jobs(owner_scope, created_at)
+                """,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_jobs_adult_idempotency
+                    ON ai_jobs(owner_scope, idempotency_key_hash)
+                    WHERE task_type = 'adult_polish' AND idempotency_key_hash IS NOT NULL
+                """,
+            ):
+                conn.execute(statement)
+
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO ai_adult_review_bindings (
+                    review_kind, binding_type, provider_id, model, model_pool_id,
+                    required_capabilities_json, enabled, version
+                ) VALUES (?, NULL, NULL, NULL, NULL, '["json"]', 0, 1)
+                """,
+                (("safety",), ("fact_guard",)),
+            )
+            for kind, bundle in (
+                ("safety", SAFETY_POLICY),
+                ("fact_guard", FACT_GUARD_POLICY),
+            ):
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO ai_adult_policy_state (
+                        policy_kind, policy_id, policy_version, policy_hash,
+                        prompt_hash, schema_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        kind,
+                        bundle.policy_id,
+                        bundle.version,
+                        bundle.expected_hash,
+                        raw_sha256(bundle.prompt_template),
+                        canonical_sha256(bundle.output_schema),
+                    ),
+                )
+
+            adult_violations = [
+                row
+                for row in conn.execute("PRAGMA foreign_key_check").fetchall()
+                if str(row[0]).startswith("ai_")
+            ]
+            if adult_violations:
+                raise RuntimeError(
+                    f"成人润色迁移外键校验失败: {adult_violations[:5]!r}"
+                )
 
     def _migrate_reading_progress_table(self) -> None:
         """创建阅读进度追踪表。"""

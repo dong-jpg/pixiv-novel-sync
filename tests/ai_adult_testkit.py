@@ -125,6 +125,7 @@ def application_row(**overrides: Any) -> dict[str, Any]:
     row: dict[str, Any] = {
         "source_job_id": "adult-job",
         "owner_scope": "owner-a",
+        "owner_token": "lease-a",
         "project_id": 1,
         "chapter_id": 9,
         "target_start": 3,

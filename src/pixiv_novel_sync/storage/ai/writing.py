@@ -12,6 +12,30 @@ class AiWritingMixin:
 
     # ── ai_writing_projects CRUD ──────────────────────────────────
 
+    @staticmethod
+    def _row_to_writing_project(row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        for raw_key, public_key, default in (
+            ("outline_json", "outline", None),
+            ("settings_json", "settings", {}),
+            ("adult_characters_json", "adult_characters_json", []),
+        ):
+            raw_value = item.get(raw_key)
+            try:
+                item[public_key] = json.loads(raw_value) if raw_value else default
+            except (TypeError, ValueError):
+                item[public_key] = default
+            if raw_key != public_key:
+                item.pop(raw_key, None)
+        for key in (
+            "adult_content_enabled",
+            "adult_characters_confirmed",
+            "fictional_characters_confirmed",
+        ):
+            if key in item:
+                item[key] = bool(item[key])
+        return item
+
     def list_ai_writing_projects(self, status: str | None = None) -> list[dict[str, Any]]:
         if status:
             rows = self.conn.execute(
@@ -26,50 +50,13 @@ class AiWritingMixin:
                    (SELECT COALESCE(SUM(c.word_count), 0) FROM ai_chapters c WHERE c.project_id = p.id) AS total_words
                    FROM ai_writing_projects p ORDER BY p.updated_at DESC"""
             ).fetchall()
-        results = []
-        for row in rows:
-            item = dict(row)
-            if item.get("outline_json"):
-                try:
-                    item["outline"] = json.loads(item["outline_json"])
-                except (TypeError, ValueError):
-                    item["outline"] = None
-            else:
-                item["outline"] = None
-            item.pop("outline_json", None)
-            if item.get("settings_json"):
-                try:
-                    item["settings"] = json.loads(item["settings_json"])
-                except (TypeError, ValueError):
-                    item["settings"] = {}
-            else:
-                item["settings"] = {}
-            item.pop("settings_json", None)
-            results.append(item)
-        return results
+        return [self._row_to_writing_project(row) for row in rows]
 
     def get_ai_writing_project(self, project_id: int) -> dict[str, Any] | None:
         row = self.conn.execute("SELECT * FROM ai_writing_projects WHERE id = ?", (project_id,)).fetchone()
         if row is None:
             return None
-        item = dict(row)
-        if item.get("outline_json"):
-            try:
-                item["outline"] = json.loads(item["outline_json"])
-            except (TypeError, ValueError):
-                item["outline"] = None
-        else:
-            item["outline"] = None
-        item.pop("outline_json", None)
-        if item.get("settings_json"):
-            try:
-                item["settings"] = json.loads(item["settings_json"])
-            except (TypeError, ValueError):
-                item["settings"] = {}
-        else:
-            item["settings"] = {}
-        item.pop("settings_json", None)
-        return item
+        return self._row_to_writing_project(row)
 
     def create_ai_writing_project(self, data: dict[str, Any]) -> int:
         with self._lock:
