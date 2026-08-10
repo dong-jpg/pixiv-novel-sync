@@ -564,6 +564,51 @@ class AdultStorageMixin:
         item["owner_token"] = str(row["owner_token"])
         return item
 
+    def create_adult_review_job(
+        self,
+        *,
+        job_id: str,
+        parent_job_id: str,
+        review_kind: str,
+        input_data: dict[str, Any],
+        owner_scope: str,
+        owner_token: str,
+        parent_owner_token: str,
+    ) -> None:
+        if review_kind not in {"safety", "fact_guard"}:
+            raise ValueError("成人审查类型无效")
+        safe_input = _safe_snapshot(input_data)
+        if not isinstance(safe_input, dict):
+            raise ValueError("成人审查 job 输入必须是对象")
+        with self.transaction() as conn:
+            parent = conn.execute(
+                """
+                SELECT status FROM ai_jobs
+                WHERE job_id = ? AND task_type = 'adult_polish'
+                  AND owner_scope = ? AND owner_token = ?
+                """,
+                (parent_job_id, owner_scope, parent_owner_token),
+            ).fetchone()
+            if parent is None or parent["status"] != "running":
+                raise AdultConflictError("成人主生成任务已终结或 owner 不匹配")
+            self.create_ai_job(
+                job_id,
+                (
+                    "adult_safety_review"
+                    if review_kind == "safety"
+                    else "adult_fact_guard"
+                ),
+                None,
+                safe_input,
+                owner_token=owner_token,
+                stage="validation",
+                parent_job_id=parent_job_id,
+            )
+            conn.execute(
+                "UPDATE ai_jobs SET owner_scope = ? WHERE job_id = ?",
+                (owner_scope, job_id),
+            )
+
     def cas_finish_adult_job(
         self,
         job_id: str,
@@ -680,11 +725,16 @@ class AdultStorageMixin:
         }
         with self.transaction() as conn:
             existing = conn.execute(
-                "SELECT id FROM ai_polish_applications WHERE source_job_id = ?",
+                """
+                SELECT id, owner_scope FROM ai_polish_applications
+                WHERE source_job_id = ?
+                """,
                 (data["source_job_id"],),
             ).fetchone()
             if existing is not None:
-                return int(existing["id"])
+                if existing["owner_scope"] != data["owner_scope"]:
+                    raise ValueError("成人候选 application owner 不匹配")
+                raise ValueError("成人 job owner CAS 失败")
             cursor = conn.execute(
                 f"""
                 INSERT INTO ai_polish_applications ({', '.join(columns)})
@@ -702,7 +752,17 @@ class AdultStorageMixin:
                 """,
                 (
                     candidate,
-                    _json({"validation_hash": data["validation_hash"]}),
+                    _json(
+                        {
+                            "validation_hash": data["validation_hash"],
+                            "code": data.get("terminal_code")
+                            or (
+                                "succeeded"
+                                if data.get("applicable")
+                                else "validation_failed"
+                            ),
+                        }
+                    ),
                     "succeeded" if data.get("applicable") else "failed",
                     data["source_job_id"],
                     data["owner_scope"],
