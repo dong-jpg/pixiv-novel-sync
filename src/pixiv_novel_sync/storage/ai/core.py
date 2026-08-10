@@ -1288,17 +1288,23 @@ class AiCoreMixin:
         if keep_failed_days is None:
             keep_failed_days = keep_days
         with self.transaction() as conn:
+            deleted = self._cleanup_adult_jobs_locked(
+                conn,
+                keep_days,
+                keep_failed_days,
+            )
             cur = conn.execute(
                 """
                 DELETE FROM ai_jobs
-                WHERE (status IN ('succeeded', 'partial', 'done', 'completed', 'success')
+                WHERE task_type != 'adult_polish'
+                  AND ((status IN ('succeeded', 'partial', 'done', 'completed', 'success')
                        AND created_at < datetime('now', ? || ' days'))
                    OR (status IN ('failed', 'error', 'cancelled')
-                       AND created_at < datetime('now', ? || ' days'))
+                       AND created_at < datetime('now', ? || ' days')))
                 """,
                 (f"-{int(keep_days)}", f"-{int(keep_failed_days)}"),
             )
-            return int(cur.rowcount or 0)
+            return deleted + int(cur.rowcount or 0)
 
     def fail_stale_ai_jobs(
         self,
@@ -1324,6 +1330,24 @@ class AiCoreMixin:
         interrupted_message = "任务中断（owner 租约与 heartbeat 已失效）"
         fixed = 0
         with self.transaction() as conn:
+            repaired = conn.execute(
+                """
+                UPDATE ai_jobs
+                SET status = 'failed', output_text = NULL,
+                    output_json = '{"code":"orphaned_adult_candidate"}',
+                    error_message = '成人润色候选记录不完整，请重新生成',
+                    finished_at = COALESCE(finished_at, ?), lease_until = NULL,
+                    heartbeat_at = ?
+                WHERE task_type = 'adult_polish' AND status != 'running'
+                  AND output_text IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM ai_polish_applications AS application
+                    WHERE application.source_job_id = ai_jobs.job_id
+                  )
+                """,
+                (now_sql, now_sql),
+            )
+            fixed += int(repaired.rowcount or 0)
             jobs = conn.execute(
                 """
                 SELECT * FROM ai_jobs

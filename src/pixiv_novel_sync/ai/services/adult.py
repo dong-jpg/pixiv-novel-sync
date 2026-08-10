@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import secrets
 import unicodedata
@@ -27,12 +28,14 @@ from ..adult_types import (
     AdultCharacterFact,
     AdultConflictError,
     AdultInputError,
+    AdultIntensity,
     AdultPolishRequest,
     AdultValidationResult,
     PolicyMismatchError,
     canonical_sha256,
     parse_adult_request,
     raw_sha256,
+    warning_ack_hash,
 )
 from ..adult_validation import (
     VALIDATOR_POLICY_HASH,
@@ -169,6 +172,7 @@ class PreparedAdultJob:
     fact_guard_snapshot: CandidateSnapshot
     prompt_budget: PromptBudget
     job_input: Mapping[str, Any]
+    validation_parent_terminal: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +184,35 @@ class ReviewResult:
     binding_hash: str
     provider_snapshot: Mapping[str, Any]
     model_snapshot: str
+
+
+@dataclass(frozen=True, slots=True)
+class ApplySnapshot:
+    application_id: int
+    application_guard_hash: str
+    job_id: str
+    owner_scope: str
+    project_id: int
+    chapter_id: int
+    target_start: int
+    target_end: int
+    chapter_revision: int
+    chapter_hash: str
+    target_hash: str
+    project_facts_hash: str
+    adult_confirmation_revision: int
+    adult_characters_hash: str
+    participant_hash: str
+    provider_scope_hash: str
+    main_binding_hash: str
+    safety_binding_hash: str
+    fact_guard_binding_hash: str
+    safety_policy_hash: str
+    safety_prompt_hash: str
+    fact_guard_prompt_hash: str
+    validator_policy_hash: str
+    validation_hash: str
+    candidate_hash: str
 
 
 class AdultReviewUnavailable(AIServiceError):
@@ -645,6 +678,7 @@ class AIAdultPolishMixin:
                 owner_scope=prepared.owner_scope,
                 owner_token=child_owner_token,
                 parent_owner_token=prepared.owner_token,
+                allow_succeeded_parent=prepared.validation_parent_terminal,
             )
             if not db.set_ai_job_candidate_snapshot(
                 child_job_id,
@@ -950,6 +984,12 @@ class AIAdultPolishMixin:
                 "fact_guard": fact_result.policy_hash,
                 "validator": VALIDATOR_POLICY_HASH,
             },
+            "request_guard": {
+                "participant_character_ids": list(
+                    prepared.request.participant_character_ids
+                ),
+                "locked_terms": list(prepared.request.locked_terms),
+            },
         }
         db = self._db()
         try:
@@ -1239,6 +1279,583 @@ class AIAdultPolishMixin:
                 "validation_hash": finalized.validation_hash,
             },
         )
+
+    def _resolve_apply_routes(
+        self,
+        db: Database,
+        job: Mapping[str, Any],
+        job_input: Mapping[str, Any],
+    ) -> tuple[
+        AIAgentConfig,
+        AIAgentConfig,
+        AIAgentConfig,
+        CandidateSnapshot,
+        CandidateSnapshot,
+        CandidateSnapshot,
+    ]:
+        agent_id = job.get("agent_id") or job_input.get("agent_id")
+        if isinstance(agent_id, bool) or not isinstance(agent_id, int):
+            raise AdultConflictError("成人润色 Agent 快照缺失")
+        try:
+            agent = self._load_agent_config(db, agent_id)
+            bindings = {
+                kind: db.get_adult_review_binding(kind)
+                for kind in _ADULT_REVIEW_KINDS
+            }
+            if any(binding is None for binding in bindings.values()):
+                raise AIServiceError("成人审查绑定缺失")
+            safety_agent = _review_agent_config(
+                "safety",
+                bindings["safety"] or {},
+            )
+            fact_guard_agent = _review_agent_config(
+                "fact_guard",
+                bindings["fact_guard"] or {},
+            )
+            main_snapshot = self.model_router.resolve_candidates(
+                agent,
+                stage="main",
+            )
+            safety_snapshot = self.model_router.resolve_candidates(
+                safety_agent,
+                stage="validation",
+            )
+            fact_guard_snapshot = self.model_router.resolve_candidates(
+                fact_guard_agent,
+                stage="validation",
+            )
+        except Exception as exc:
+            raise AdultConflictError("Provider 范围或审查 binding 已变化") from exc
+        return (
+            agent,
+            safety_agent,
+            fact_guard_agent,
+            main_snapshot,
+            safety_snapshot,
+            fact_guard_snapshot,
+        )
+
+    def _build_apply_snapshot(
+        self,
+        db: Database,
+        application: Mapping[str, Any],
+        job: Mapping[str, Any],
+    ) -> ApplySnapshot:
+        if job.get("status") != "succeeded":
+            raise AdultConflictError("成人润色任务终态已变化")
+        job_input = job.get("input")
+        if not isinstance(job_input, Mapping):
+            raise AdultConflictError("成人润色任务快照缺失")
+        candidate = job.get("output_text")
+        if not isinstance(candidate, str) or not candidate:
+            raise AdultConflictError("成人润色候选已过期，请重新生成")
+
+        project_id = int(application["project_id"])
+        chapter_id = int(application["chapter_id"])
+        chapter = db.get_ai_chapter(chapter_id)
+        if chapter is None or int(chapter.get("project_id") or 0) != project_id:
+            raise AdultConflictError("章节或项目关系已变化")
+        chapter_content = chapter.get("content")
+        if not isinstance(chapter_content, str):
+            raise AdultConflictError("章节正文已变化")
+        target_start = int(application["target_start"])
+        target_end = int(application["target_end"])
+        if target_start < 0 or target_end <= target_start or target_end > len(
+            chapter_content
+        ):
+            raise AdultConflictError("目标片段范围已变化")
+
+        confirmation = db.get_adult_confirmation(project_id)
+        if confirmation is None:
+            raise AdultConflictError("成人角色确认已变化")
+        participant_ids = job_input.get("participant_character_ids")
+        if not isinstance(participant_ids, Sequence) or isinstance(
+            participant_ids,
+            (str, bytes),
+        ):
+            raise AdultConflictError("参与者快照缺失")
+        normalized_participant_ids = tuple(str(value) for value in participant_ids)
+        rows = db.list_adult_characters(project_id, include_inactive=True)
+        try:
+            _characters, _participants, participant_hash = (
+                self._confirmed_character_facts(
+                    confirmation,
+                    rows,
+                    normalized_participant_ids,
+                )
+            )
+            _project_facts, project_facts_hash = build_project_facts_snapshot(
+                db,
+                project_id,
+            )
+        except (AIServiceError, AdultConflictError) as exc:
+            raise AdultConflictError("项目事实或参与者已变化") from exc
+
+        (
+            _agent,
+            _safety_agent,
+            _fact_guard_agent,
+            main_snapshot,
+            safety_snapshot,
+            fact_guard_snapshot,
+        ) = self._resolve_apply_routes(db, job, job_input)
+
+        return ApplySnapshot(
+            application_id=int(application["id"]),
+            application_guard_hash=canonical_sha256(dict(application)),
+            job_id=str(application["source_job_id"]),
+            owner_scope=str(application["owner_scope"]),
+            project_id=project_id,
+            chapter_id=chapter_id,
+            target_start=target_start,
+            target_end=target_end,
+            chapter_revision=int(chapter.get("chapter_revision") or 0),
+            chapter_hash=raw_sha256(chapter_content),
+            target_hash=raw_sha256(chapter_content[target_start:target_end]),
+            project_facts_hash=project_facts_hash,
+            adult_confirmation_revision=int(
+                confirmation.get("adult_confirmation_revision") or 0
+            ),
+            adult_characters_hash=str(
+                confirmation.get("adult_characters_hash") or ""
+            ),
+            participant_hash=participant_hash,
+            provider_scope_hash=compute_provider_scope_hash(
+                {
+                    "main": main_snapshot,
+                    "safety": safety_snapshot,
+                    "fact_guard": fact_guard_snapshot,
+                }
+            ),
+            main_binding_hash=_review_binding_hash(main_snapshot),
+            safety_binding_hash=_review_binding_hash(safety_snapshot),
+            fact_guard_binding_hash=_review_binding_hash(fact_guard_snapshot),
+            safety_policy_hash=SAFETY_POLICY.expected_hash,
+            safety_prompt_hash=raw_sha256(SAFETY_POLICY.prompt_template),
+            fact_guard_prompt_hash=raw_sha256(FACT_GUARD_POLICY.prompt_template),
+            validator_policy_hash=VALIDATOR_POLICY_HASH,
+            validation_hash=str(application["validation_hash"]),
+            candidate_hash=raw_sha256(candidate),
+        )
+
+    @staticmethod
+    def _apply_policy_upgrade_required(
+        application: Mapping[str, Any],
+    ) -> bool:
+        snapshots = application.get("snapshots")
+        policy_hashes = (
+            snapshots.get("policy_hashes")
+            if isinstance(snapshots, Mapping)
+            else None
+        )
+        stored_fact_policy_hash = (
+            policy_hashes.get("fact_guard")
+            if isinstance(policy_hashes, Mapping)
+            else None
+        )
+        return any(
+            (
+                application.get("safety_policy_hash")
+                != SAFETY_POLICY.expected_hash,
+                application.get("safety_prompt_hash")
+                != raw_sha256(SAFETY_POLICY.prompt_template),
+                application.get("fact_guard_prompt_hash")
+                != raw_sha256(FACT_GUARD_POLICY.prompt_template),
+                application.get("validator_policy_hash")
+                != VALIDATOR_POLICY_HASH,
+                stored_fact_policy_hash != FACT_GUARD_POLICY.expected_hash,
+            )
+        )
+
+    @staticmethod
+    def _assert_revalidation_base_matches(
+        application: Mapping[str, Any],
+        snapshot: ApplySnapshot,
+    ) -> None:
+        comparisons = (
+            ("project_id", snapshot.project_id, "项目"),
+            ("chapter_id", snapshot.chapter_id, "章节"),
+            ("target_start", snapshot.target_start, "目标片段范围"),
+            ("target_end", snapshot.target_end, "目标片段范围"),
+            ("chapter_revision_before", snapshot.chapter_revision, "章节 revision"),
+            ("chapter_hash_before", snapshot.chapter_hash, "章节正文"),
+            ("target_hash_before", snapshot.target_hash, "目标片段"),
+            ("project_facts_hash", snapshot.project_facts_hash, "项目事实"),
+            (
+                "adult_confirmation_revision",
+                snapshot.adult_confirmation_revision,
+                "成人确认 revision",
+            ),
+            ("adult_characters_hash", snapshot.adult_characters_hash, "成人角色"),
+            ("participant_hash", snapshot.participant_hash, "参与者"),
+            ("provider_scope_hash", snapshot.provider_scope_hash, "Provider 范围"),
+            ("main_binding_hash", snapshot.main_binding_hash, "写作 binding"),
+            ("safety_binding_hash", snapshot.safety_binding_hash, "安全审查 binding"),
+            (
+                "fact_guard_binding_hash",
+                snapshot.fact_guard_binding_hash,
+                "事实审查 binding",
+            ),
+            ("validation_hash", snapshot.validation_hash, "校验结果"),
+        )
+        for key, current, label in comparisons:
+            if application.get(key) != current:
+                raise AdultConflictError(f"{label}已变化")
+        if not bool(application.get("applicable")):
+            raise AdultConflictError("成人润色候选包含阻断项，不能重审")
+
+    def _build_stored_revalidation_job(
+        self,
+        db: Database,
+        application: Mapping[str, Any],
+        job: Mapping[str, Any],
+        snapshot: ApplySnapshot,
+    ) -> tuple[PreparedAdultJob, str]:
+        job_input = job.get("input")
+        if not isinstance(job_input, Mapping):
+            raise AdultConflictError("成人润色任务快照缺失")
+        candidate = job.get("output_text")
+        if not isinstance(candidate, str) or not candidate:
+            raise AdultConflictError("成人润色候选已过期，请重新生成")
+        stored_snapshots = application.get("snapshots")
+        request_guard = (
+            stored_snapshots.get("request_guard")
+            if isinstance(stored_snapshots, Mapping)
+            else None
+        )
+        if not isinstance(request_guard, Mapping):
+            raise AdultConflictError("旧候选缺少重审快照，请重新生成")
+        raw_participant_ids = request_guard.get("participant_character_ids")
+        raw_locked_terms = request_guard.get("locked_terms")
+        if (
+            not isinstance(raw_participant_ids, list)
+            or any(not isinstance(value, str) for value in raw_participant_ids)
+            or not isinstance(raw_locked_terms, list)
+            or any(not isinstance(value, str) for value in raw_locked_terms)
+        ):
+            raise AdultConflictError("旧候选重审快照无效，请重新生成")
+        participant_ids = tuple(raw_participant_ids)
+        locked_terms = tuple(raw_locked_terms)
+
+        chapter = db.get_ai_chapter(snapshot.chapter_id)
+        project = db.get_ai_writing_project(snapshot.project_id)
+        confirmation = db.get_adult_confirmation(snapshot.project_id)
+        execution = db.get_adult_job_execution(snapshot.job_id, snapshot.owner_scope)
+        if (
+            chapter is None
+            or project is None
+            or confirmation is None
+            or execution is None
+        ):
+            raise AdultConflictError("成人润色重审上下文已变化")
+        chapter_content = chapter.get("content")
+        if not isinstance(chapter_content, str):
+            raise AdultConflictError("章节正文已变化")
+        target = chapter_content[snapshot.target_start : snapshot.target_end]
+        rows = db.list_adult_characters(snapshot.project_id, include_inactive=True)
+        try:
+            characters, participants, participant_hash = (
+                self._confirmed_character_facts(
+                    confirmation,
+                    rows,
+                    participant_ids,
+                )
+            )
+            project_facts, project_facts_hash = build_project_facts_snapshot(
+                db,
+                snapshot.project_id,
+            )
+        except (AIServiceError, AdultConflictError) as exc:
+            raise AdultConflictError("项目事实或参与者已变化") from exc
+        if (
+            participant_hash != snapshot.participant_hash
+            or project_facts_hash != snapshot.project_facts_hash
+        ):
+            raise AdultConflictError("项目事实或参与者已变化")
+        (
+            agent,
+            safety_agent,
+            fact_guard_agent,
+            main_snapshot,
+            safety_snapshot,
+            fact_guard_snapshot,
+        ) = self._resolve_apply_routes(db, job, job_input)
+        request = AdultPolishRequest(
+            project_id=snapshot.project_id,
+            chapter_id=snapshot.chapter_id,
+            agent_id=agent.id,
+            target_start=snapshot.target_start,
+            target_end=snapshot.target_end,
+            chapter_content_hash=snapshot.chapter_hash,
+            target_text_hash=snapshot.target_hash,
+            chapter_revision=snapshot.chapter_revision,
+            participant_character_ids=participant_ids,
+            adult_characters_confirmed=True,
+            intensity=AdultIntensity(0, 0, 0),
+            locked_terms=locked_terms,
+            instruction="",
+            idempotency_key=f"revalidation-{snapshot.job_id}",
+            provider_scope_hash=snapshot.provider_scope_hash,
+        )
+        prompt = AdultPrompt(
+            boundary="",
+            sections=MappingProxyType({}),
+            user_messages=[],
+            token_map=MappingProxyType({}),
+            protected_terms=locked_terms,
+        )
+        prepared = PreparedAdultJob(
+            request=request,
+            job_id=snapshot.job_id,
+            owner_scope=snapshot.owner_scope,
+            owner_token=str(execution["owner_token"]),
+            access_token="",
+            reused=True,
+            status="succeeded",
+            agent=agent,
+            safety_agent=safety_agent,
+            fact_guard_agent=fact_guard_agent,
+            project=MappingProxyType(dict(project)),
+            chapter_content=chapter_content,
+            target=target,
+            before=chapter_content[
+                max(0, snapshot.target_start - 4_000) : snapshot.target_start
+            ],
+            after=chapter_content[snapshot.target_end : snapshot.target_end + 4_000],
+            project_facts=MappingProxyType(project_facts),
+            project_facts_hash=project_facts_hash,
+            adult_characters_hash=snapshot.adult_characters_hash,
+            participant_hash=participant_hash,
+            characters=characters,
+            participant_characters=participants,
+            prompt=prompt,
+            main_snapshot=main_snapshot,
+            safety_snapshot=safety_snapshot,
+            fact_guard_snapshot=fact_guard_snapshot,
+            prompt_budget=PromptBudget(
+                effective_context_window=16_000,
+                input_budget=12_000,
+                output_reserve=2_000,
+                message_overhead=0,
+                safety_margin=256,
+                estimator="utf8_bytes",
+            ),
+            job_input=MappingProxyType(dict(job_input)),
+            validation_parent_terminal=True,
+        )
+        return prepared, candidate
+
+    def _run_stored_revalidation(
+        self,
+        prepared: PreparedAdultJob,
+        candidate: str,
+    ) -> tuple[AdultValidationResult, ReviewResult, ReviewResult]:
+        try:
+            local_result = run_local_adult_checks(
+                prepared.target,
+                candidate,
+                prepared.request,
+                prepared.prompt.protected_terms,
+                prepared.characters,
+            )
+        except Exception as exc:
+            raise AdultConflictError("成人润色本地重审不可用") from exc
+        if local_result.blocking_issues:
+            raise AdultConflictError("成人润色候选重审出现阻断项")
+        try:
+            safety_result = self.run_adult_safety_review(prepared, candidate)
+            if not safety_result.safe:
+                raise AdultConflictError("成人润色候选未通过安全重审")
+            fact_result = self.run_adult_fact_guard(
+                prepared,
+                prepared.target,
+                candidate,
+            )
+            if not fact_result.safe:
+                raise AdultConflictError("成人润色候选未通过事实重审")
+        except AdultReviewUnavailable as exc:
+            raise AdultConflictError("成人润色策略升级重审不可用") from exc
+        finalized = replace(local_result, applicable=True, validation_hash="")
+        finalized = replace(
+            finalized,
+            validation_hash=compute_validation_hash(finalized),
+        )
+        return finalized, safety_result, fact_result
+
+    def revalidate_stored_candidate(
+        self,
+        job_id: str,
+        owner_scope: str,
+    ) -> AdultValidationResult:
+        safe_job_id = _adult_owner_value(job_id, "job_id")
+        safe_owner_scope = _adult_owner_value(owner_scope, "owner_scope")
+        db = self._db()
+        try:
+            with db.transaction():
+                application = db.get_application_for_owner(
+                    safe_job_id,
+                    safe_owner_scope,
+                )
+                job = db.get_adult_job(safe_job_id, safe_owner_scope)
+                if application is None or job is None:
+                    raise AdultConflictError("成人润色候选不存在或 owner 不匹配")
+                db.assert_adult_application_validation(application)
+                snapshot = self._build_apply_snapshot(db, application, job)
+                self._assert_revalidation_base_matches(application, snapshot)
+                prepared, candidate = self._build_stored_revalidation_job(
+                    db,
+                    application,
+                    job,
+                    snapshot,
+                )
+            result, _safety, _fact = self._run_stored_revalidation(
+                prepared,
+                candidate,
+            )
+            return result
+        finally:
+            db.close()
+
+    def apply_adult_polish(
+        self,
+        job_id: str,
+        owner_scope: str,
+        warning_ack_hash: str | None,
+        access_token: str,
+    ) -> dict[str, Any]:
+        safe_job_id = _adult_owner_value(job_id, "job_id")
+        safe_owner_scope = _adult_owner_value(owner_scope, "owner_scope")
+        safe_access_token = _adult_owner_value(access_token, "access_token", 512)
+        if warning_ack_hash is None:
+            raise AIServiceError("warning_ack_hash 必须提供")
+        if not isinstance(warning_ack_hash, str) or len(warning_ack_hash) > 64:
+            raise AIServiceError("warning_ack_hash 无效")
+
+        db = self._db()
+        try:
+            phase1_snapshot: ApplySnapshot | None = None
+            prepared: PreparedAdultJob | None = None
+            candidate = ""
+            with db.transaction():
+                application = db.get_application_for_owner(
+                    safe_job_id,
+                    safe_owner_scope,
+                )
+                if application is None:
+                    raise AdultConflictError("成人润色候选不存在或 owner 不匹配")
+                db.assert_adult_application_validation(application)
+                if application.get("applied_at") is not None:
+                    return db.apply_adult_polish(
+                        safe_job_id,
+                        safe_owner_scope,
+                        warning_ack_hash,
+                        raw_sha256(safe_access_token),
+                        None,
+                    )
+                job = db.get_adult_job(safe_job_id, safe_owner_scope)
+                if job is None:
+                    raise AdultConflictError("成人润色任务不存在或 owner 不匹配")
+                snapshot = self._build_apply_snapshot(db, application, job)
+                access_hash = raw_sha256(safe_access_token)
+                if not hmac.compare_digest(
+                    str(application.get("access_token_hash") or ""),
+                    access_hash,
+                ):
+                    raise AdultConflictError("成人润色访问凭证无效")
+                if not self._apply_policy_upgrade_required(application):
+                    return db.apply_adult_polish(
+                        safe_job_id,
+                        safe_owner_scope,
+                        warning_ack_hash,
+                        access_hash,
+                        snapshot,
+                    )
+                self._assert_revalidation_base_matches(application, snapshot)
+                prepared, candidate = self._build_stored_revalidation_job(
+                    db,
+                    application,
+                    job,
+                    snapshot,
+                )
+                phase1_snapshot = snapshot
+
+            if prepared is None or phase1_snapshot is None:
+                raise AdultConflictError("成人润色策略升级快照缺失")
+            validation, safety_result, fact_result = self._run_stored_revalidation(
+                prepared,
+                candidate,
+            )
+
+            needs_warning_ack = bool(validation.warnings)
+            result: dict[str, Any] | None = None
+            with db.transaction():
+                application = db.get_application_for_owner(
+                    safe_job_id,
+                    safe_owner_scope,
+                )
+                job = db.get_adult_job(safe_job_id, safe_owner_scope)
+                if application is None or job is None:
+                    raise AdultConflictError("成人润色候选不存在或 owner 不匹配")
+                db.assert_adult_application_validation(application)
+                phase3_snapshot = self._build_apply_snapshot(
+                    db,
+                    application,
+                    job,
+                )
+                if phase3_snapshot != phase1_snapshot:
+                    raise AdultConflictError("成人润色重审期间快照已变化")
+                refreshed_snapshots = dict(application.get("snapshots") or {})
+                refreshed_snapshots.update(
+                    {
+                        "main_route": self._snapshot_payload(
+                            prepared.main_snapshot
+                        ),
+                        "safety_route": dict(safety_result.provider_snapshot),
+                        "fact_guard_route": dict(fact_result.provider_snapshot),
+                        "model_snapshots": {
+                            "safety": safety_result.model_snapshot,
+                            "fact_guard": fact_result.model_snapshot,
+                        },
+                        "policy_hashes": {
+                            "safety": safety_result.policy_hash,
+                            "fact_guard": fact_result.policy_hash,
+                            "validator": VALIDATOR_POLICY_HASH,
+                        },
+                    }
+                )
+                db.refresh_adult_application_validation(
+                    job_id=safe_job_id,
+                    owner_scope=safe_owner_scope,
+                    expected_validation_hash=phase1_snapshot.validation_hash,
+                    validation=validation,
+                    provider_scope_hash=phase3_snapshot.provider_scope_hash,
+                    main_binding_hash=phase3_snapshot.main_binding_hash,
+                    safety_binding_hash=safety_result.binding_hash,
+                    fact_guard_binding_hash=fact_result.binding_hash,
+                    safety_policy_hash=safety_result.policy_hash,
+                    safety_prompt_hash=safety_result.prompt_hash,
+                    fact_guard_prompt_hash=fact_result.prompt_hash,
+                    validator_policy_hash=VALIDATOR_POLICY_HASH,
+                    snapshots=refreshed_snapshots,
+                )
+                if not needs_warning_ack:
+                    result = db.apply_adult_polish(
+                        safe_job_id,
+                        safe_owner_scope,
+                        warning_ack_hash,
+                        raw_sha256(safe_access_token),
+                        replace(
+                            phase3_snapshot,
+                            validation_hash=validation.validation_hash,
+                        ),
+                    )
+            if needs_warning_ack:
+                raise AdultConflictError("策略升级后的 warning 需要重新确认")
+            if result is None:
+                raise AdultConflictError("成人润色策略升级应用失败")
+            return result
+        finally:
+            db.close()
 
     @staticmethod
     def _adult_error(
