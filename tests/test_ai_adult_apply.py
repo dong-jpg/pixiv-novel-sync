@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -299,6 +300,67 @@ def test_two_concurrent_apply_calls_replace_once(
     application = db.get_application_for_owner(job.job_id, "owner-a")
     assert application is not None
     assert application["chapter_revision_after"] == chapter["chapter_revision"]
+
+
+def test_two_concurrent_policy_upgrade_apply_calls_return_one_existing_success(
+    db: Database,
+    service: AIWritingService,
+    fake_router: ApplyRouter,
+    monkeypatch: pytest.MonkeyPatch,
+    prepared: tuple[Any, str],
+):
+    job, _candidate = prepared
+    db.conn.execute(
+        "UPDATE ai_polish_applications SET safety_policy_hash = ? WHERE source_job_id = ?",
+        ("0" * 64, job.job_id),
+    )
+    db.conn.commit()
+    phase2_barrier = threading.Barrier(2, timeout=5)
+    original_revalidation = service._run_stored_revalidation
+
+    def synchronized_revalidation(*args: Any):
+        result = original_revalidation(*args)
+        phase2_barrier.wait()
+        return result
+
+    monkeypatch.setattr(
+        service,
+        "_run_stored_revalidation",
+        synchronized_revalidation,
+    )
+    calls_before = fake_router.execute_count
+
+    results = run_concurrently(
+        lambda: service.apply_adult_polish(
+            job.job_id,
+            "owner-a",
+            "",
+            job.access_token,
+        ),
+        count=2,
+    )
+
+    assert all(isinstance(result, dict) for result in results), results
+    assert sorted(result["already_applied"] for result in results) == [False, True]
+    assert fake_router.execute_count == calls_before + 4
+    chapter = db.get_ai_chapter(job.request.chapter_id)
+    assert chapter["chapter_revision"] == job.request.chapter_revision + 1
+
+
+def test_revalidate_applied_candidate_fails_closed(
+    service: AIWritingService,
+    prepared: tuple[Any, str],
+):
+    job, _candidate = prepared
+    service.apply_adult_polish(
+        job.job_id,
+        "owner-a",
+        "",
+        job.access_token,
+    )
+
+    with pytest.raises(AdultConflictError, match="已应用"):
+        service.revalidate_stored_candidate(job.job_id, "owner-a")
 
 
 def test_apply_rejects_chapter_revision_aba_and_leaves_content(

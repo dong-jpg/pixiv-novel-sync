@@ -1699,6 +1699,8 @@ class AIAdultPolishMixin:
                 job = db.get_adult_job(safe_job_id, safe_owner_scope)
                 if application is None or job is None:
                     raise AdultConflictError("成人润色候选不存在或 owner 不匹配")
+                if application.get("applied_at") is not None:
+                    raise AdultConflictError("成人润色候选已应用，不能重新校验")
                 db.assert_adult_application_validation(application)
                 snapshot = self._build_apply_snapshot(db, application, job)
                 self._assert_revalidation_base_matches(application, snapshot)
@@ -1796,6 +1798,14 @@ class AIAdultPolishMixin:
                 job = db.get_adult_job(safe_job_id, safe_owner_scope)
                 if application is None or job is None:
                     raise AdultConflictError("成人润色候选不存在或 owner 不匹配")
+                if application.get("applied_at") is not None:
+                    return db.apply_adult_polish(
+                        safe_job_id,
+                        safe_owner_scope,
+                        warning_ack_hash,
+                        raw_sha256(safe_access_token),
+                        None,
+                    )
                 db.assert_adult_application_validation(application)
                 phase3_snapshot = self._build_apply_snapshot(
                     db,
