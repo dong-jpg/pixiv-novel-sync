@@ -13,6 +13,16 @@ from typing import Any
 from ...ai.providers import _redact_secrets
 
 
+ADULT_AI_TASK_TYPES = (
+    "adult_fact_guard",
+    "adult_polish",
+    "adult_safety_review",
+)
+_ADULT_AI_TASK_TYPES_SQL = ", ".join(
+    f"'{task_type}'" for task_type in ADULT_AI_TASK_TYPES
+)
+
+
 class AIJobConflictError(RuntimeError):
     """AI job 不存在、已终结或 owner 不匹配。"""
 
@@ -470,6 +480,7 @@ class AiCoreMixin:
         item.pop("candidate_snapshot_json", None)
         item.pop("prompt_budget_json", None)
         item.pop("owner_token", None)
+        item.pop("owner_scope", None)
         item.pop("lease_until", None)
         item.pop("heartbeat_at", None)
         for key in (
@@ -722,11 +733,22 @@ class AiCoreMixin:
                 ),
             )
 
-    def get_ai_job(self, job_id: str) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            "SELECT * FROM ai_jobs WHERE job_id = ?",
-            (job_id,),
-        ).fetchone()
+    def get_ai_job(
+        self,
+        job_id: str,
+        owner_scope: str | None = None,
+    ) -> dict[str, Any] | None:
+        if owner_scope is None:
+            query = "SELECT * FROM ai_jobs WHERE job_id = ?"
+            params = (job_id,)
+        else:
+            query = f"""
+                SELECT * FROM ai_jobs
+                WHERE job_id = ?
+                  AND (task_type NOT IN ({_ADULT_AI_TASK_TYPES_SQL}) OR owner_scope = ?)
+            """
+            params = (job_id, owner_scope)
+        row = self.conn.execute(query, params).fetchone()
         if row is None:
             return None
         return self._ai_job_from_row(row, include_attempts=True)
@@ -785,6 +807,7 @@ class AiCoreMixin:
         status: str | None = None,
         page: int = 1,
         page_size: int = 20,
+        owner_scope: str | None = None,
     ) -> dict[str, Any]:
         page = max(page, 1)
         page_size = max(page_size, 1)
@@ -796,6 +819,11 @@ class AiCoreMixin:
         if status:
             conditions.append("status = ?")
             params.append(status)
+        if owner_scope is not None:
+            conditions.append(
+                f"(task_type NOT IN ({_ADULT_AI_TASK_TYPES_SQL}) OR owner_scope = ?)"
+            )
+            params.append(owner_scope)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         total = int(
             self.conn.execute(
@@ -1280,7 +1308,12 @@ class AiCoreMixin:
             self.conn.execute("DELETE FROM ai_jobs WHERE job_id = ?", (job_id,))
             self._commit_if_needed()
 
-    def cleanup_ai_jobs(self, keep_days: int = 3, keep_failed_days: int | None = None) -> int:
+    def cleanup_ai_jobs(
+        self,
+        keep_days: int = 3,
+        keep_failed_days: int | None = None,
+        owner_scope: str | None = None,
+    ) -> int:
         """清理 ai_jobs：与统一任务日志（task_logs）一致，默认保留最近 3 天，失败任务可单独配置保留天数。
 
         返回删除的行数。
@@ -1288,15 +1321,53 @@ class AiCoreMixin:
         if keep_failed_days is None:
             keep_failed_days = keep_days
         with self.transaction() as conn:
-            deleted = self._cleanup_adult_jobs_locked(
-                conn,
-                keep_days,
-                keep_failed_days,
-            )
+            general_task_condition = "task_type != 'adult_polish'"
+            if owner_scope is None:
+                deleted = self._cleanup_adult_jobs_locked(
+                    conn,
+                    keep_days,
+                    keep_failed_days,
+                )
+            else:
+                conn.execute(
+                    """
+                    DELETE FROM ai_polish_applications
+                    WHERE owner_scope = ? AND applied_at IS NULL
+                      AND created_at < datetime('now', ? || ' days')
+                    """,
+                    (owner_scope, f"-{int(keep_days)}"),
+                )
+                adult_cursor = conn.execute(
+                    f"""
+                    DELETE FROM ai_jobs
+                    WHERE task_type IN ({_ADULT_AI_TASK_TYPES_SQL}) AND owner_scope = ?
+                      AND NOT EXISTS (
+                        SELECT 1 FROM ai_polish_applications AS application
+                        WHERE application.source_job_id = ai_jobs.job_id
+                          AND application.applied_at IS NULL
+                      )
+                      AND (
+                        (status IN ('succeeded', 'partial', 'done', 'completed', 'success')
+                         AND created_at < datetime('now', ? || ' days'))
+                        OR
+                        (status IN ('failed', 'error', 'cancelled')
+                         AND created_at < datetime('now', ? || ' days'))
+                      )
+                    """,
+                    (
+                        owner_scope,
+                        f"-{int(keep_days)}",
+                        f"-{int(keep_failed_days)}",
+                    ),
+                )
+                deleted = int(adult_cursor.rowcount or 0)
+                general_task_condition = (
+                    f"task_type NOT IN ({_ADULT_AI_TASK_TYPES_SQL})"
+                )
             cur = conn.execute(
-                """
+                f"""
                 DELETE FROM ai_jobs
-                WHERE task_type != 'adult_polish'
+                WHERE {general_task_condition}
                   AND ((status IN ('succeeded', 'partial', 'done', 'completed', 'success')
                        AND created_at < datetime('now', ? || ' days'))
                    OR (status IN ('failed', 'error', 'cancelled')
@@ -1305,6 +1376,103 @@ class AiCoreMixin:
                 (f"-{int(keep_days)}", f"-{int(keep_failed_days)}"),
             )
             return deleted + int(cur.rowcount or 0)
+
+    def request_adult_job_cancel(self, job_id: str, owner_scope: str) -> bool:
+        """Cancel an owner-scoped adult job without racing a committed candidate."""
+
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT owner_token FROM ai_jobs
+                WHERE job_id = ? AND task_type = 'adult_polish'
+                  AND owner_scope = ? AND status = 'running'
+                """,
+                (job_id, owner_scope),
+            ).fetchone()
+            if row is None:
+                return False
+            cursor = conn.execute(
+                """
+                UPDATE ai_jobs
+                SET status = 'cancelled', output_text = NULL,
+                    output_json = '{"code":"cancelled"}',
+                    error_message = '成人润色任务已取消',
+                    finished_at = CURRENT_TIMESTAMP, lease_until = NULL,
+                    heartbeat_at = CURRENT_TIMESTAMP
+                WHERE job_id = ? AND task_type = 'adult_polish'
+                  AND owner_scope = ? AND status = 'running'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM ai_polish_applications AS application
+                    WHERE application.source_job_id = ai_jobs.job_id
+                  )
+                """,
+                (job_id, owner_scope),
+            )
+            if cursor.rowcount != 1:
+                return False
+            owner_token = row["owner_token"]
+            if owner_token:
+                conn.execute(
+                    """
+                    UPDATE ai_job_model_attempts
+                    SET status = 'cancelled', error_category = 'cancelled',
+                        error_message = '成人润色任务已取消',
+                        finish_reason = 'cancelled',
+                        finished_at = CURRENT_TIMESTAMP, lease_until = NULL,
+                        heartbeat_at = CURRENT_TIMESTAMP
+                    WHERE job_id = ? AND owner_token = ? AND status = 'running'
+                    """,
+                    (job_id, owner_token),
+                )
+            return True
+
+    def bind_adult_application_access(
+        self,
+        job_id: str,
+        owner_scope: str,
+        access_token_hash: str,
+    ) -> dict[str, Any] | None:
+        """Bind a verified route token by hash without storing the token itself."""
+
+        safe_hash = _validate_hash(access_token_hash, "access_token_hash")
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT application.id, application.applied_at,
+                       application.chapter_revision_after,
+                       application.chapter_hash_after
+                FROM ai_polish_applications AS application
+                JOIN ai_jobs AS job
+                  ON job.job_id = application.source_job_id
+                WHERE application.source_job_id = ?
+                  AND application.owner_scope = ?
+                  AND job.task_type = 'adult_polish'
+                  AND job.owner_scope = ?
+                  AND job.status = 'succeeded'
+                """,
+                (job_id, owner_scope, owner_scope),
+            ).fetchone()
+            if row is None:
+                return None
+            if row["applied_at"] is not None:
+                return {
+                    "applied": True,
+                    "application_id": int(row["id"]),
+                    "chapter_revision_after": int(row["chapter_revision_after"]),
+                    "chapter_hash_after": str(row["chapter_hash_after"]),
+                }
+            cursor = conn.execute(
+                """
+                UPDATE ai_polish_applications
+                SET access_token_hash = ?
+                WHERE source_job_id = ? AND owner_scope = ?
+                  AND applied_at IS NULL AND applicable = 1
+                """,
+                (safe_hash, job_id, owner_scope),
+            )
+            if cursor.rowcount != 1:
+                return None
+            return {"applied": False, "application_id": int(row["id"])}
 
     def fail_stale_ai_jobs(
         self,

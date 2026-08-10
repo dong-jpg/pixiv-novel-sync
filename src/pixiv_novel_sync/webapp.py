@@ -531,6 +531,7 @@ def create_app(
         if _hmac.compare_digest(input_token, token):
             _login_failures.pop(client, None)
             session["authenticated"] = True
+            session["authenticated_at"] = int(now)
             _get_csrf_token()
             return redirect("/")
         failures.append(now)
@@ -544,6 +545,7 @@ def create_app(
     @app.route("/api/auth/logout", methods=["POST"])
     def auth_logout():
         session.pop("authenticated", None)
+        session.pop("authenticated_at", None)
         return jsonify({"ok": True})
 
     @app.get("/proxy/image")
@@ -1215,12 +1217,22 @@ def create_app(
             db.init_schema()
             try:
                 if category == "ai":
+                    from .ai.adult_auth import require_adult_owner
+                    from .storage.ai.core import ADULT_AI_TASK_TYPES
+
+                    try:
+                        owner_scope = require_adult_owner(current_settings).scope
+                    except PermissionError:
+                        if task_type in ADULT_AI_TASK_TYPES:
+                            return jsonify({"error": "adult authentication required"}), 403
+                        owner_scope = ""
                     result = db.get_ai_task_logs(
                         page=page,
                         page_size=page_size,
                         task_type=task_type,
                         status=status,
                         days=days,
+                        owner_scope=owner_scope,
                     )
                 else:
                     result = db.get_task_logs(

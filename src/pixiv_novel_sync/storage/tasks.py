@@ -4,6 +4,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .ai.core import ADULT_AI_TASK_TYPES
+
+
+_ADULT_AI_TASK_TYPES_SQL = ", ".join(
+    f"'{task_type}'" for task_type in ADULT_AI_TASK_TYPES
+)
+
 
 class TasksMixin:
     """任务日志管理 mixin。
@@ -158,6 +165,9 @@ class TasksMixin:
         "polish_dialogue": "对话润色",
         "polish_psychology": "心理描写润色",
         "keyword_clean": "关键词清洗",
+        "adult_polish": "成人描写润色",
+        "adult_safety_review": "成人安全审查",
+        "adult_fact_guard": "成人事实保护审查",
     }
     _AI_STATUS_LABELS = {
         "running": "运行中",
@@ -174,6 +184,7 @@ class TasksMixin:
         task_type: str | None = None,
         status: str | None = None,
         days: int = 3,
+        owner_scope: str | None = None,
     ) -> dict[str, Any]:
         """把 ai_jobs 表映射成与 task_logs 相同的结构，供统一任务日志页消费。
 
@@ -190,6 +201,11 @@ class TasksMixin:
             if status:
                 conditions.append("status = ?")
                 params.append(status)
+            if owner_scope is not None:
+                conditions.append(
+                    f"(task_type NOT IN ({_ADULT_AI_TASK_TYPES_SQL}) OR owner_scope = ?)"
+                )
+                params.append(owner_scope)
             where_clause = " AND ".join(conditions)
 
             total = int(

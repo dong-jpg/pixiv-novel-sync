@@ -304,9 +304,20 @@ def test_adult_admin_routes_forward_versioned_requests(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ai_web, "AIWritingService", factory)
     app = Flask(__name__, template_folder=str(tmp_path))
-    settings = type("Settings", (), {"storage": type("Storage", (), {"db_path": tmp_path / "x.db"})()})()
+    app.secret_key = "adult-admin-test-secret"
+    settings = type(
+        "Settings",
+        (),
+        {
+            "storage": type("Storage", (), {"db_path": tmp_path / "x.db"})(),
+            "dashboard_token": "adult-admin-dashboard-token",
+        },
+    )()
     ai_web.register_ai_routes(app, settings)
     client = app.test_client()
+    with client.session_transaction() as current_session:
+        current_session["authenticated"] = True
+        current_session["authenticated_at"] = 1
 
     listed = client.get("/api/dashboard/ai/adult-review-bindings/safety")
     updated = client.put(

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
+import secrets
 import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -17,7 +19,23 @@ from .ai.service import (
     AIWritingService,
 )
 from .ai.detection import detect_ai_tells
+from .ai.adult_auth import (
+    AdultOwner,
+    require_adult_owner,
+    sign_adult_access,
+    verify_adult_access,
+)
+from .ai.adult_types import (
+    AdultConflictError,
+    AdultInputError,
+    parse_adult_request,
+    raw_sha256,
+)
+from .ai.adult_validation import compute_provider_scope_hash
+from .ai.services.adult import _review_agent_config
+from .ai.models import AIStreamChunk
 from .settings import Settings
+from .storage.ai.core import ADULT_AI_TASK_TYPES
 from .storage_files import FileStorage
 
 logger = logging.getLogger(__name__)
@@ -210,6 +228,370 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
 
     def sse(event: str, data: dict[str, Any]) -> str:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def adult_owner() -> AdultOwner:
+        return require_adult_owner(current_settings())
+
+    def generic_adult_scope(*, required: bool = False) -> str:
+        try:
+            return adult_owner().scope
+        except PermissionError:
+            if required:
+                raise
+            return ""
+
+    def adult_fail(exc: Exception, status: int = 400):
+        message = str(exc) if isinstance(exc, AIServiceError) else "请求无法处理"
+        return jsonify({"ok": False, "error": message}), status
+
+    def adult_no_store(response: Response) -> Response:
+        response.headers.update(
+            {
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "X-Robots-Tag": "noindex, nofollow, noarchive",
+                "X-Content-Type-Options": "nosniff",
+            }
+        )
+        return response
+
+    def adult_route_fail(exc: Exception, context: str):
+        if isinstance(exc, PermissionError):
+            return adult_fail(exc, 403)
+        if isinstance(exc, AINotFoundError):
+            return adult_fail(exc, 404)
+        if isinstance(exc, (AIConflictError, AdultConflictError)):
+            return adult_fail(exc, 409)
+        if isinstance(exc, AdultInputError):
+            return adult_fail(exc, 422)
+        if isinstance(exc, AIServiceError):
+            return adult_fail(exc, 400)
+        logger.warning(context)
+        return adult_fail(RuntimeError(), 400)
+
+    def adult_job_for_owner(job_id: str, owner: AdultOwner) -> dict[str, Any] | None:
+        db = service._db()
+        try:
+            job = db.get_adult_job(job_id, owner.scope)
+            if job is None:
+                return None
+            job_input = job.get("input")
+            if not isinstance(job_input, dict):
+                return None
+            project_id = job_input.get("project_id")
+            chapter_id = job_input.get("chapter_id")
+            if (
+                isinstance(project_id, bool)
+                or not isinstance(project_id, int)
+                or isinstance(chapter_id, bool)
+                or not isinstance(chapter_id, int)
+            ):
+                return None
+            project = db.get_ai_writing_project(project_id)
+            chapter = db.get_ai_chapter(chapter_id)
+            if (
+                project is None
+                or chapter is None
+                or int(chapter.get("project_id") or 0) != project_id
+            ):
+                return None
+            return job
+        finally:
+            db.close()
+
+    def adult_public_job(job: dict[str, Any]) -> dict[str, Any]:
+        result = {
+            key: job.get(key)
+            for key in (
+                "job_id",
+                "task_type",
+                "status",
+                "stage",
+                "started_at",
+                "finished_at",
+                "created_at",
+                "error_message",
+            )
+        }
+        output = job.get("output")
+        if isinstance(output, dict):
+            result["output"] = output
+        candidate = job.get("output_text")
+        if job.get("status") == "succeeded" and isinstance(candidate, str):
+            result["candidate"] = candidate
+        return result
+
+    def generic_public_job(job: dict[str, Any]) -> dict[str, Any]:
+        if job.get("task_type") not in ADULT_AI_TASK_TYPES:
+            return job
+        result = adult_public_job(job)
+        result.pop("candidate", None)
+        return result
+
+    def adult_character_for_project(
+        project_id: int,
+        character_id: str,
+    ) -> dict[str, Any] | None:
+        db = service._db()
+        try:
+            if db.get_ai_writing_project(project_id) is None:
+                return None
+            character = db.get_adult_character(character_id)
+            if character is None or int(character.get("project_id") or 0) != project_id:
+                return None
+            return character
+        finally:
+            db.close()
+
+    def adult_candidate_group(snapshot: Any) -> list[dict[str, Any]]:
+        fields = (
+            "provider_id",
+            "provider_name",
+            "model_key",
+            "provider_model_id",
+            "pool_id",
+            "pool_name",
+            "pool_version",
+            "pool_position",
+            "capabilities",
+            "context_window",
+            "fallback_depth",
+            "candidate_index",
+        )
+        return [
+            {
+                key: (
+                    list(value)
+                    if key == "capabilities" and isinstance(value, tuple)
+                    else value
+                )
+                for key in fields
+                if (value := getattr(candidate, key, None)) is not None
+            }
+            for candidate in snapshot.candidates
+        ]
+
+    def adult_provider_snapshots(agent_id: int) -> dict[str, Any]:
+        db = service._db()
+        try:
+            agent = service._load_agent_config(db, agent_id)
+            if agent.task_type != "adult_polish":
+                raise AIServiceError("所选 Agent 不是成人描写润色 Agent")
+            safety_binding = db.get_adult_review_binding("safety")
+            fact_binding = db.get_adult_review_binding("fact_guard")
+            if safety_binding is None or fact_binding is None:
+                raise AIServiceError("成人审查绑定缺失")
+            safety_agent = _review_agent_config("safety", safety_binding)
+            fact_agent = _review_agent_config("fact_guard", fact_binding)
+        finally:
+            db.close()
+        return {
+            "main": service.model_router.resolve_candidates(agent, stage="main"),
+            "safety": service.model_router.resolve_candidates(
+                safety_agent,
+                stage="validation",
+            ),
+            "fact_guard": service.model_router.resolve_candidates(
+                fact_agent,
+                stage="validation",
+            ),
+        }
+
+    def validate_adult_stream_preflight(payload: dict[str, Any]) -> None:
+        parsed = parse_adult_request(payload)
+        db = service._db()
+        try:
+            project = db.get_ai_writing_project(parsed.project_id)
+            chapter = db.get_ai_chapter(parsed.chapter_id)
+            if project is None or chapter is None:
+                raise AIServiceError("写作项目或章节不存在")
+            if int(chapter.get("project_id") or 0) != parsed.project_id:
+                raise AIServiceError("章节不属于当前写作项目")
+            content = chapter.get("content")
+            if not isinstance(content, str):
+                raise AIServiceError("章节正文无效")
+            if int(chapter.get("chapter_revision") or 0) != parsed.chapter_revision:
+                raise AIConflictError("409: 章节 revision 已变化")
+            if raw_sha256(content) != parsed.chapter_content_hash:
+                raise AIConflictError("409: 章节正文已变化")
+            if parsed.target_end > len(content):
+                raise AIServiceError("目标片段超出章节正文范围")
+            target = content[parsed.target_start : parsed.target_end]
+            if raw_sha256(target) != parsed.target_text_hash:
+                raise AIConflictError("409: 目标片段已变化")
+        finally:
+            db.close()
+        snapshots = adult_provider_snapshots(parsed.agent_id)
+        if compute_provider_scope_hash(snapshots) != parsed.provider_scope_hash:
+            raise AIConflictError("409: Provider 范围已变化，请重新确认")
+
+    def adult_access_from_request(owner: AdultOwner, job_id: str) -> str:
+        token = request.headers.get("X-Adult-Access-Token") or request.args.get(
+            "access_token"
+        )
+        verify_adult_access(token, owner, job_id)
+        assert isinstance(token, str)
+        return token
+
+    def adult_stream_response(chunks: Iterator, owner: AdultOwner) -> Response:
+        allowed = {"metadata", "progress", "validation", "candidate", "done", "error"}
+        event_fields = {
+            "metadata": {"job_id", "parent_job_id", "replayed"},
+            "progress": {
+                "job_id",
+                "phase",
+                "action",
+                "stage",
+                "status",
+                "candidate_index",
+                "provider_id",
+                "provider_name",
+                "provider_model_id",
+                "model_key",
+                "pool_id",
+                "pool_name",
+                "pool_position",
+                "fallback_depth",
+                "error_category",
+                "finish_reason",
+                "reason",
+            },
+            "validation": {
+                "job_id",
+                "applicable",
+                "warnings",
+                "blocking_issues",
+                "protected_terms_missing",
+                "paragraph_delta",
+                "length_ratio",
+                "perspective_warning",
+                "new_number_tokens",
+                "diff_summary",
+                "validation_hash",
+            },
+            "candidate": {"job_id", "applicable", "validation_hash", "replayed"},
+            "done": {"job_id", "applicable", "validation_hash", "replayed"},
+            "error": {"job_id", "code", "message", "replayed"},
+        }
+        error_messages = {
+            "adult_polish_failed": "成人润色任务失败",
+            "cancelled": "成人润色任务已取消",
+            "generation_failed": "成人润色任务未成功完成",
+            "idempotent_in_progress": "相同的成人润色请求正在执行",
+            "output_too_large": "成人润色候选无效",
+            "partial": "生成结果不完整，候选已丢弃",
+            "preflight_failed": "成人润色前置校验失败",
+            "review_unavailable": "成人审查暂不可用",
+            "route_contract_error": "成人润色候选无效",
+            "route_unavailable": "成人润色模型暂不可用",
+            "safety_blocked": "成人润色候选未通过安全检查",
+            "validation_failed": "成人润色候选校验失败",
+        }
+
+        def generate():
+            access_token: str | None = None
+            job_id: str | None = None
+
+            def cancel_active_job() -> None:
+                if job_id is None:
+                    return
+                db = service._db()
+                try:
+                    db.request_adult_job_cancel(job_id, owner.scope)
+                finally:
+                    db.close()
+
+            try:
+                for chunk in chunks:
+                    event = str(getattr(chunk, "type", ""))
+                    if event == "delta" or event not in allowed:
+                        continue
+                    raw_data = getattr(chunk, "data", None)
+                    data = dict(raw_data) if isinstance(raw_data, dict) else {}
+                    event_job_id = data.get("job_id")
+                    if isinstance(event_job_id, str) and event_job_id:
+                        if job_id is not None and event_job_id != job_id:
+                            yield sse(
+                                "error",
+                                {"code": "route_contract_error", "message": "成人润色任务响应无效"},
+                            )
+                            return
+                        job_id = event_job_id
+                    data = {
+                        key: data[key]
+                        for key in event_fields[event]
+                        if key in data
+                    }
+                    if event == "metadata":
+                        if job_id is None:
+                            yield sse(
+                                "error",
+                                {"code": "route_contract_error", "message": "成人润色任务响应无效"},
+                            )
+                            return
+                        access_token = sign_adult_access(owner, job_id)
+                        data["access_token"] = access_token
+                    elif event == "candidate":
+                        candidate = getattr(chunk, "text", None)
+                        if job_id is None or access_token is None or not isinstance(candidate, str):
+                            yield sse(
+                                "error",
+                                {"code": "route_contract_error", "message": "成人润色候选响应无效"},
+                            )
+                            return
+                        data["candidate"] = candidate
+                        data["access_token"] = access_token
+                    elif event == "error":
+                        code = str(data.get("code") or "adult_polish_failed")
+                        if code not in error_messages:
+                            code = "adult_polish_failed"
+                        data = {
+                            "code": code,
+                            "message": error_messages[code],
+                            **(
+                                {"job_id": job_id}
+                                if job_id is not None
+                                else {}
+                            ),
+                            **(
+                                {"replayed": True}
+                                if data.get("replayed") is True
+                                else {}
+                            ),
+                        }
+                    yield sse(event, data)
+            except GeneratorExit:
+                cancel_active_job()
+                close = getattr(chunks, "close", None)
+                if callable(close):
+                    close()
+                raise
+            except Exception:
+                try:
+                    cancel_active_job()
+                except Exception:
+                    logger.warning("成人润色断连取消失败")
+                logger.warning("成人润色 SSE 输出失败")
+                yield sse(
+                    "error",
+                    {"code": "stream_failed", "message": "成人润色响应中断"},
+                )
+            finally:
+                close = getattr(chunks, "close", None)
+                if callable(close):
+                    close()
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "X-Robots-Tag": "noindex, nofollow, noarchive",
+                "X-Content-Type-Options": "nosniff",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     def query_bool(name: str, default: bool = False) -> bool:
         raw = request.args.get(name)
@@ -529,24 +911,27 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     @app.post("/api/dashboard/ai/agents/adult-polish/seed")
     def seed_adult_polish_agent():
         try:
+            adult_owner()
             return ok(service.ensure_adult_polish_agent(require_json_object()))
         except Exception as exc:
-            return fail(exc)
+            return adult_route_fail(exc, "创建成人润色 Agent 失败")
 
     @app.get("/api/dashboard/ai/adult-review-bindings/<review_kind>")
     def get_adult_review_binding(review_kind: str):
         try:
+            adult_owner()
             bindings = service.list_adult_review_bindings()
             binding = bindings.get(review_kind)
             if binding is None:
                 raise AIServiceError("成人审查绑定类型无效")
             return ok(binding)
         except Exception as exc:
-            return fail(exc)
+            return adult_route_fail(exc, "读取成人审查绑定失败")
 
     @app.put("/api/dashboard/ai/adult-review-bindings/<review_kind>")
     def update_adult_review_binding(review_kind: str):
         try:
+            adult_owner()
             payload = require_json_object()
             if "expected_version" not in payload:
                 raise AIServiceError("缺少 expected_version")
@@ -565,7 +950,115 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
                 )
             )
         except Exception as exc:
-            return fail(exc)
+            return adult_route_fail(exc, "更新成人审查绑定失败")
+
+    @app.post("/api/dashboard/ai/polish/adult/scope")
+    def get_ai_adult_provider_scope():
+        try:
+            adult_owner()
+            payload = require_json_object()
+            if set(payload) != {"agent_id"}:
+                raise AIServiceError("Provider 范围请求字段无效")
+            agent_id = payload.get("agent_id")
+            if isinstance(agent_id, bool) or not isinstance(agent_id, int) or agent_id <= 0:
+                raise AIServiceError("agent_id 必须是正整数")
+            snapshots = adult_provider_snapshots(agent_id)
+            return ok(
+                {
+                    "groups": {
+                        kind: adult_candidate_group(snapshot)
+                        for kind, snapshot in snapshots.items()
+                    },
+                    "provider_scope_hash": compute_provider_scope_hash(snapshots),
+                }
+            )
+        except Exception as exc:
+            return adult_route_fail(exc, "读取成人 Provider 范围失败")
+
+    @app.get("/api/dashboard/ai/projects/<int:project_id>/characters")
+    def list_ai_adult_characters(project_id: int):
+        try:
+            adult_owner()
+            return ok(service.list_adult_characters(project_id))
+        except Exception as exc:
+            return adult_route_fail(exc, "读取成人角色失败")
+
+    @app.post("/api/dashboard/ai/projects/<int:project_id>/characters")
+    def create_ai_adult_character(project_id: int):
+        try:
+            adult_owner()
+            return ok(service.create_adult_character(project_id, require_json_object()))
+        except Exception as exc:
+            return adult_route_fail(exc, "创建成人角色失败")
+
+    @app.put(
+        "/api/dashboard/ai/projects/<int:project_id>/characters/<character_id>"
+    )
+    def update_ai_adult_character(project_id: int, character_id: str):
+        try:
+            adult_owner()
+            if adult_character_for_project(project_id, character_id) is None:
+                return adult_fail(AINotFoundError("成人角色不存在"), 404)
+            payload = require_json_object()
+            expected_revision = payload.pop("expected_revision", None)
+            return ok(
+                service.update_adult_character(
+                    character_id,
+                    payload,
+                    expected_revision=expected_revision,
+                )
+            )
+        except Exception as exc:
+            return adult_route_fail(exc, "更新成人角色失败")
+
+    @app.delete(
+        "/api/dashboard/ai/projects/<int:project_id>/characters/<character_id>"
+    )
+    def delete_ai_adult_character(project_id: int, character_id: str):
+        try:
+            adult_owner()
+            if adult_character_for_project(project_id, character_id) is None:
+                return adult_fail(AINotFoundError("成人角色不存在"), 404)
+            payload = require_json_object()
+            unknown = sorted(set(payload) - {"expected_revision"})
+            if unknown:
+                raise AIServiceError("角色删除请求字段无效")
+            return ok(
+                service.deactivate_adult_character(
+                    character_id,
+                    expected_revision=payload.get("expected_revision"),
+                )
+            )
+        except Exception as exc:
+            return adult_route_fail(exc, "停用成人角色失败")
+
+    @app.get(
+        "/api/dashboard/ai/projects/<int:project_id>/adult-confirmation"
+    )
+    def get_ai_adult_confirmation(project_id: int):
+        try:
+            adult_owner()
+            return ok(service.get_adult_confirmation(project_id))
+        except Exception as exc:
+            return adult_route_fail(exc, "读取项目成人确认失败")
+
+    @app.put(
+        "/api/dashboard/ai/projects/<int:project_id>/adult-confirmation"
+    )
+    def update_ai_adult_confirmation(project_id: int):
+        try:
+            adult_owner()
+            payload = require_json_object()
+            expected_revision = payload.pop("expected_revision", None)
+            return ok(
+                service.update_adult_confirmation(
+                    project_id,
+                    payload,
+                    expected_revision=expected_revision,
+                )
+            )
+        except Exception as exc:
+            return adult_route_fail(exc, "更新项目成人确认失败")
 
     @app.post("/api/dashboard/ai/documents/upload")
     def upload_ai_document():
@@ -609,6 +1102,200 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             return stream_response(service.stream_rewrite(json_payload()))
         except Exception as exc:
             return fail(exc)
+
+    @app.post("/api/dashboard/ai/polish/adult/stream")
+    def stream_ai_adult_polish():
+        try:
+            owner = adult_owner()
+            payload = require_json_object()
+            validate_adult_stream_preflight(payload)
+            chunks = service.stream_adult_polish(
+                payload,
+                owner.scope,
+                secrets.token_urlsafe(32),
+            )
+            return adult_stream_response(chunks, owner)
+        except PermissionError as exc:
+            return adult_fail(exc, 403)
+        except AdultInputError as exc:
+            return adult_fail(exc, 422)
+        except AIConflictError as exc:
+            return adult_fail(exc, 409)
+        except AIServiceError as exc:
+            return adult_fail(exc, 400)
+        except Exception:
+            logger.warning("成人润色请求初始化失败")
+            return adult_fail(RuntimeError(), 400)
+
+    @app.get("/api/dashboard/ai/polish/adult/<job_id>")
+    def get_ai_adult_polish(job_id: str):
+        try:
+            owner = adult_owner()
+            job = adult_job_for_owner(job_id, owner)
+            if job is None:
+                return adult_fail(AINotFoundError("任务不存在"), 404)
+            adult_access_from_request(owner, job_id)
+            return adult_no_store(ok(adult_public_job(job)))
+        except PermissionError as exc:
+            return adult_fail(exc, 403)
+        except Exception:
+            logger.warning("读取成人润色任务失败")
+            return adult_fail(RuntimeError(), 404)
+
+    @app.get("/api/dashboard/ai/polish/adult/<job_id>/events")
+    def stream_ai_adult_polish_events(job_id: str):
+        try:
+            owner = adult_owner()
+            job = adult_job_for_owner(job_id, owner)
+            if job is None:
+                return adult_fail(AINotFoundError("任务不存在"), 404)
+            adult_access_from_request(owner, job_id)
+
+            def replay():
+                yield AIStreamChunk(
+                    type="metadata",
+                    data={"job_id": job_id, "replayed": True},
+                )
+                status = str(job.get("status") or "")
+                candidate = job.get("output_text")
+                if status == "succeeded" and isinstance(candidate, str):
+                    yield AIStreamChunk(
+                        type="candidate",
+                        text=candidate,
+                        data={"job_id": job_id, "replayed": True},
+                    )
+                    yield AIStreamChunk(
+                        type="done",
+                        data={"job_id": job_id, "replayed": True},
+                    )
+                elif status == "running":
+                    yield AIStreamChunk(
+                        type="progress",
+                        data={"job_id": job_id, "status": "running"},
+                    )
+                else:
+                    yield AIStreamChunk(
+                        type="error",
+                        data={
+                            "job_id": job_id,
+                            "code": str((job.get("output") or {}).get("code") or status or "failed"),
+                            "message": str(job.get("error_message") or "成人润色任务未成功完成"),
+                        },
+                    )
+
+            return adult_stream_response(replay(), owner)
+        except PermissionError as exc:
+            return adult_fail(exc, 403)
+        except Exception:
+            logger.warning("恢复成人润色事件失败")
+            return adult_fail(RuntimeError(), 404)
+
+    @app.post("/api/dashboard/ai/polish/adult/<job_id>/cancel")
+    def cancel_ai_adult_polish(job_id: str):
+        try:
+            owner = adult_owner()
+            job = adult_job_for_owner(job_id, owner)
+            if job is None:
+                return adult_fail(AINotFoundError("任务不存在"), 404)
+            adult_access_from_request(owner, job_id)
+            db = service._db()
+            try:
+                requested = db.request_adult_job_cancel(job_id, owner.scope)
+            finally:
+                db.close()
+            return ok({"cancel_requested": requested})
+        except PermissionError as exc:
+            return adult_fail(exc, 403)
+        except Exception:
+            logger.warning("取消成人润色任务失败")
+            return adult_fail(RuntimeError(), 404)
+
+    @app.post("/api/dashboard/ai/polish/adult/<job_id>/regenerate")
+    def regenerate_ai_adult_polish(job_id: str):
+        try:
+            owner = adult_owner()
+            job = adult_job_for_owner(job_id, owner)
+            if job is None:
+                return adult_fail(AINotFoundError("任务不存在"), 404)
+            adult_access_from_request(owner, job_id)
+            payload = require_json_object()
+            supplied_parent = payload.get("parent_job_id")
+            if supplied_parent not in {None, job_id}:
+                raise AIConflictError("409: 父成人润色任务不匹配")
+            payload["parent_job_id"] = job_id
+            validate_adult_stream_preflight(payload)
+            chunks = service.stream_adult_polish(
+                payload,
+                owner.scope,
+                secrets.token_urlsafe(32),
+            )
+            return adult_stream_response(chunks, owner)
+        except PermissionError as exc:
+            return adult_fail(exc, 403)
+        except AdultInputError as exc:
+            return adult_fail(exc, 422)
+        except (AIConflictError, AdultConflictError) as exc:
+            return adult_fail(exc, 409)
+        except AIServiceError as exc:
+            return adult_fail(exc, 400)
+        except Exception:
+            logger.warning("重新生成成人润色候选失败")
+            return adult_fail(RuntimeError(), 400)
+
+    @app.post("/api/dashboard/ai/polish/adult/<job_id>/apply")
+    def apply_ai_adult_polish(job_id: str):
+        try:
+            owner = adult_owner()
+            job = adult_job_for_owner(job_id, owner)
+            if job is None:
+                return adult_fail(AINotFoundError("任务不存在"), 404)
+            access_token = adult_access_from_request(owner, job_id)
+            payload = require_json_object()
+            if set(payload) != {"warning_ack_hash"}:
+                raise AIServiceError("apply 请求字段无效")
+            warning_ack_hash = payload.get("warning_ack_hash")
+            if not isinstance(warning_ack_hash, str) or len(warning_ack_hash) > 64:
+                raise AIServiceError("warning_ack_hash 无效")
+            access_hash = hashlib.sha256(access_token.encode("utf-8")).hexdigest()
+            db = service._db()
+            try:
+                binding = db.bind_adult_application_access(
+                    job_id,
+                    owner.scope,
+                    access_hash,
+                )
+            finally:
+                db.close()
+            if binding is None:
+                raise AIConflictError("409: 成人润色候选不可应用")
+            if binding["applied"]:
+                return ok(
+                    {
+                        "application_id": binding["application_id"],
+                        "chapter_revision_after": binding[
+                            "chapter_revision_after"
+                        ],
+                        "chapter_hash_after": binding["chapter_hash_after"],
+                        "idempotent": True,
+                    }
+                )
+            return ok(
+                service.apply_adult_polish(
+                    job_id,
+                    owner.scope,
+                    warning_ack_hash,
+                    access_token,
+                )
+            )
+        except PermissionError as exc:
+            return adult_fail(exc, 403)
+        except (AIConflictError, AdultConflictError) as exc:
+            return adult_fail(exc, 409)
+        except AIServiceError as exc:
+            return adult_fail(exc, 400)
+        except Exception:
+            logger.warning("应用成人润色候选失败")
+            return adult_fail(RuntimeError(), 400)
 
     @app.get("/api/dashboard/ai/drafts")
     def list_ai_drafts():
@@ -667,20 +1354,53 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             status = request.args.get("status") or None
             page = parse_int(request.args.get("page"), 1, "page", min_value=1)
             page_size = parse_int(request.args.get("page_size"), 20, "page_size", min_value=1, max_value=200)
-            return ok(service.list_jobs(task_type=task_type, status=status, page=page, page_size=page_size))
+            owner_scope = generic_adult_scope(
+                required=task_type in ADULT_AI_TASK_TYPES
+            )
+            db = service._db()
+            try:
+                result = db.list_ai_jobs(
+                    task_type=task_type,
+                    status=status,
+                    page=page,
+                    page_size=page_size,
+                    owner_scope=owner_scope,
+                )
+            finally:
+                db.close()
+            result["items"] = [
+                generic_public_job(item) for item in result.get("items", [])
+            ]
+            return ok(result)
+        except PermissionError as exc:
+            return adult_fail(exc, 403)
         except Exception as exc:
             return fail(exc)
 
     @app.get("/api/dashboard/ai/jobs/<job_id>")
     def get_ai_job(job_id: str):
         try:
-            return ok(service.get_job(job_id))
+            db = service._db()
+            try:
+                job = db.get_ai_job(job_id, owner_scope=generic_adult_scope())
+            finally:
+                db.close()
+            if job is None:
+                raise AINotFoundError("任务不存在")
+            return ok(generic_public_job(job))
         except Exception as exc:
             return fail(exc)
 
     @app.post("/api/dashboard/ai/jobs/<job_id>/continue")
     def continue_ai_job_with_next_model(job_id: str):
         try:
+            db = service._db()
+            try:
+                job = db.get_ai_job(job_id, owner_scope=generic_adult_scope())
+            finally:
+                db.close()
+            if job is None or job.get("task_type") in ADULT_AI_TASK_TYPES:
+                raise AINotFoundError("任务不存在")
             payload = require_json_object()
             # 在建立 SSE 响应前同步校验，确保错误保持为 HTTP 4xx，
             # 不会在响应开始后退化成 HTTP 200 的 SSE error。
@@ -698,7 +1418,15 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             keep_failed_days = payload.get("keep_failed_days")
             if keep_failed_days is not None:
                 keep_failed_days = parse_int(keep_failed_days, 0, "keep_failed_days", min_value=1)
-            deleted = service.cleanup_jobs(keep_days=keep_days, keep_failed_days=keep_failed_days)
+            db = service._db()
+            try:
+                deleted = db.cleanup_ai_jobs(
+                    keep_days=keep_days,
+                    keep_failed_days=keep_failed_days,
+                    owner_scope=generic_adult_scope(),
+                )
+            finally:
+                db.close()
             return ok({"deleted": deleted})
         except Exception as exc:
             return fail(exc)
