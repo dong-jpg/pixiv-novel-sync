@@ -540,7 +540,6 @@
           <option value="distill_style">风格蒸馏</option>
           <option value="distill_novel">小说蒸馏</option>
           <option value="keyword_clean">关键词清洗</option>
-          <option value="adult_polish">成人片段润色</option>
           <option value="general">通用</option>
         </select>
         <div class="grid grid-cols-2 rounded-lg bg-gray-100 p-1 text-sm">
@@ -598,7 +597,6 @@
             <option value="distill_style">风格蒸馏</option>
             <option value="distill_novel">小说蒸馏</option>
             <option value="keyword_clean">关键词清洗</option>
-            <option value="adult_polish">成人片段润色</option>
             <option value="general">通用</option>
           </select>
         </div>
@@ -620,29 +618,56 @@
       </div>
 
       <div class="lg:col-span-2 border-t border-gray-200 pt-5 space-y-5">
+        <div>
+          <h2 class="text-lg font-bold text-gray-900">成人审查绑定</h2>
+          <p class="mt-1 text-sm text-pixiv-gray">Policy、哈希与能力固定展示；此处只调整审查模型绑定。</p>
+        </div>
+
         <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto] gap-3 items-end">
           <div>
             <h2 class="text-lg font-bold text-gray-900">成人润色 Agent</h2>
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-3">
               <input v-model="adultAgentForm.name" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Agent 名称">
-              <select v-model="adultAgentForm.binding_type" class="px-3 py-2 border border-gray-200 rounded-lg text-sm">
-                <option value="fixed">固定模型</option>
-                <option value="pool">模型池</option>
-              </select>
-              <select v-if="adultAgentForm.binding_type === 'fixed'" v-model.number="adultAgentForm.provider_id" class="px-3 py-2 border border-gray-200 rounded-lg text-sm">
-                <option :value="0">选择 Provider</option>
-                <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option>
-              </select>
-              <select v-else v-model.number="adultAgentForm.model_pool_id" class="px-3 py-2 border border-gray-200 rounded-lg text-sm">
-                <option :value="0">选择已启用模型池</option>
-                <option v-for="pool in modelPools.filter(item => item.enabled)" :key="pool.id" :value="pool.id">{{ pool.name }}</option>
-              </select>
+              <select v-model="adultAgentForm.binding_type" class="px-3 py-2 border border-gray-200 rounded-lg text-sm"><option value="fixed">固定模型</option><option value="pool">模型池</option></select>
+              <select v-if="adultAgentForm.binding_type === 'fixed'" v-model.number="adultAgentForm.provider_id" class="px-3 py-2 border border-gray-200 rounded-lg text-sm"><option :value="0">选择 Provider</option><option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option></select>
+              <select v-else v-model.number="adultAgentForm.model_pool_id" class="px-3 py-2 border border-gray-200 rounded-lg text-sm"><option :value="0">选择已启用模型池</option><option v-for="pool in modelPools.filter(item => item.enabled)" :key="pool.id" :value="pool.id">{{ pool.name }}</option></select>
             </div>
             <input v-if="adultAgentForm.binding_type === 'fixed'" v-model="adultAgentForm.model" class="w-full mt-2 px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="model_key（留空使用 Provider 默认模型）">
           </div>
-          <button @click="seedAdultPolishAgent" :disabled="adultAgentSaving || !adultAgentBindingValid" class="h-10 px-4 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">
-            {{ adultAgentSaving ? '保存中' : '保存成人润色 Agent' }}
-          </button>
+          <button @click="seedAdultPolishAgent" :disabled="adultAgentSaving || !adultAgentBindingValid" class="h-10 px-4 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ adultAgentSaving ? '保存中' : '保存成人润色 Agent' }}</button>
+        </div>
+
+        <div class="border border-gray-200 rounded-lg p-4 space-y-4">
+          <div class="flex flex-col sm:flex-row sm:items-end gap-3">
+            <label class="text-sm text-gray-700 flex-1">项目 ID
+              <input v-model.number="adultProjectId" type="number" min="1" class="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg" aria-label="成人内容项目 ID">
+            </label>
+            <button @click="loadAdultProject" :disabled="!adultProjectId || adultProjectLoading" class="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm disabled:opacity-50">{{ adultProjectLoading ? '加载中' : '加载项目确认' }}</button>
+          </div>
+          <p v-if="adultProjectError" class="text-sm text-red-600" role="alert">{{ adultProjectError }}</p>
+          <div v-if="adultProjectId" class="space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label class="flex items-center gap-2 text-sm text-gray-700"><input v-model="adultConfirmation.adult_content_enabled" type="checkbox" class="rounded border-gray-300">启用成人内容</label>
+              <label class="flex items-center gap-2 text-sm text-gray-700"><input v-model="adultConfirmation.fictional_characters_confirmed" type="checkbox" class="rounded border-gray-300">我确认参与角色均为虚构成年人</label>
+            </div>
+            <label class="flex items-center gap-2 text-sm text-gray-700"><input v-model="adultConfirmation.adult_characters_confirmed" type="checkbox" class="rounded border-gray-300">我确认下列角色与版本</label>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+              <input v-model="adultCharacterForm.canonical_name" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="角色名">
+              <input v-model="adultCharacterForm.aliases" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="别名，逗号分隔">
+              <input v-model.number="adultCharacterForm.age_years" type="number" min="18" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="年龄">
+              <input v-model="adultCharacterForm.age_basis" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="年龄依据">
+              <button @click="saveAdultCharacter" :disabled="adultCharacterSaving || !adultCharacterForm.canonical_name" class="px-3 py-2 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ adultCharacterForm.character_id ? '保存角色' : '新增角色' }}</button>
+            </div>
+            <div class="overflow-x-auto border border-gray-100 rounded-lg">
+              <table class="w-full text-sm text-left"><thead class="bg-gray-50 text-gray-600"><tr><th class="px-3 py-2">角色</th><th class="px-3 py-2">年龄</th><th class="px-3 py-2">版本</th><th class="px-3 py-2">操作</th></tr></thead>
+                <tbody><tr v-for="character in sortedCharacters" :key="character.character_id" class="border-t border-gray-100"><td class="px-3 py-2">{{ character.canonical_name }}</td><td class="px-3 py-2">{{ character.age_years }}</td><td class="px-3 py-2">{{ character.revision }}</td><td class="px-3 py-2 whitespace-nowrap"><button @click="editAdultCharacter(character)" class="text-brand-600 mr-3">编辑</button><button @click="deactivateAdultCharacter(character)" class="text-red-600">停用</button></td></tr></tbody>
+              </table>
+            </div>
+            <div class="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between border-t border-gray-100 pt-3">
+              <p class="text-xs text-gray-500">确认版本 {{ adultConfirmation.adult_confirmation_revision || 0 }}。列表按角色 ID 排序后提交。</p>
+              <button @click="saveAdultConfirmation" :disabled="adultConfirmationSaving || !adultConfirmation.adult_content_enabled || !adultConfirmation.adult_characters_confirmed || !adultConfirmation.fictional_characters_confirmed" class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm disabled:opacity-50">{{ adultConfirmationSaving ? '保存中' : '保存确认' }}</button>
+            </div>
+          </div>
         </div>
 
         <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
@@ -802,7 +827,16 @@
       const adultReviewSaving = reactive({ safety: false, fact_guard: false });
       const adultAgentForm = reactive({ name: '成人描写润色', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0 });
       const adultAgentSaving = ref(false);
-      const filteredAgents = computed(() => agentFilter.value ? agents.value.filter(a => a.task_type === agentFilter.value) : agents.value);
+      const adultProjectId = ref(0);
+      const adultProjectLoading = ref(false);
+      const adultProjectError = ref('');
+      const adultCharacters = ref([]);
+      const adultConfirmation = reactive({ adult_content_enabled: false, adult_characters_confirmed: false, fictional_characters_confirmed: false, adult_confirmation_revision: 0, character_ids: [] });
+      const adultCharacterForm = reactive({ character_id: '', revision: 0, canonical_name: '', aliases: '', age_years: 18, age_basis: '', fictional: true });
+      const adultCharacterSaving = ref(false);
+      const adultConfirmationSaving = ref(false);
+      const sortedCharacters = computed(() => [...adultCharacters.value].sort((left, right) => String(left.character_id).localeCompare(String(right.character_id))));
+      const filteredAgents = computed(() => agents.value.filter(agent => agent.task_type !== 'adult_polish' && (!agentFilter.value || agent.task_type === agentFilter.value)));
       const agentProviderModels = computed(() => {
         const catalog = providerModels[agentForm.provider_id];
         return catalog && Array.isArray(catalog.items) ? catalog.items.filter(model => model.routable) : [];
@@ -1368,6 +1402,111 @@
           showAiMessage(e.message || '读取成人审查绑定失败', 'error');
         }
       };
+      const seedAdultPolishAgent = async () => {
+        if (!adultAgentBindingValid.value) return;
+        adultAgentSaving.value = true;
+        try {
+          const payload = { name: String(adultAgentForm.name || '').trim() || '成人描写润色', binding_type: adultAgentForm.binding_type };
+          if (adultAgentForm.binding_type === 'pool') {
+            payload.model_pool_id = Number(adultAgentForm.model_pool_id || 0);
+          } else {
+            payload.provider_id = Number(adultAgentForm.provider_id || 0);
+            payload.model = String(adultAgentForm.model || '').trim() || null;
+          }
+          await aiApi('/api/dashboard/ai/agents/adult-polish/seed', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+          await loadAgents();
+          showAiMessage('成人润色 Agent 已保存');
+        } catch (e) {
+          showAiMessage(e.message || '成人润色 Agent 保存失败', 'error');
+        } finally {
+          adultAgentSaving.value = false;
+        }
+      };
+      const resetAdultCharacterForm = () => Object.assign(adultCharacterForm, { character_id: '', revision: 0, canonical_name: '', aliases: '', age_years: 18, age_basis: '', fictional: true });
+      const loadAdultProject = async () => {
+        if (!adultProjectId.value) return;
+        adultProjectLoading.value = true;
+        adultProjectError.value = '';
+        try {
+          const [characters, confirmation] = await Promise.all([
+            aiApi(`/api/dashboard/ai/projects/${adultProjectId.value}/characters`),
+            aiApi(`/api/dashboard/ai/projects/${adultProjectId.value}/adult-confirmation`)
+          ]);
+          adultCharacters.value = Array.isArray(characters) ? characters : [];
+          Object.assign(adultConfirmation, { adult_content_enabled: false, adult_characters_confirmed: false, fictional_characters_confirmed: false, adult_confirmation_revision: 0, character_ids: [] }, confirmation || {});
+          resetAdultCharacterForm();
+        } catch (e) {
+          adultProjectError.value = e.message || '读取成人项目设置失败';
+        } finally {
+          adultProjectLoading.value = false;
+        }
+      };
+      const editAdultCharacter = (character) => Object.assign(adultCharacterForm, {
+        character_id: character.character_id,
+        revision: Number(character.revision || 0),
+        canonical_name: character.canonical_name || '',
+        aliases: Array.isArray(character.aliases) ? character.aliases.join(', ') : '',
+        age_years: Number(character.age_years || 18),
+        age_basis: character.age_basis || '',
+        fictional: character.fictional === true
+      });
+      const saveAdultCharacter = async () => {
+        if (!adultProjectId.value || !adultCharacterForm.canonical_name) return;
+        adultCharacterSaving.value = true;
+        adultProjectError.value = '';
+        const payload = {
+          canonical_name: adultCharacterForm.canonical_name.trim(),
+          aliases: adultCharacterForm.aliases.split(',').map(item => item.trim()).filter(Boolean),
+          age_years: Number(adultCharacterForm.age_years),
+          age_basis: adultCharacterForm.age_basis.trim(),
+          fictional: adultCharacterForm.fictional === true
+        };
+        try {
+          if (adultCharacterForm.character_id) {
+            payload.expected_revision = Number(adultCharacterForm.revision);
+            await aiApi(`/api/dashboard/ai/projects/${adultProjectId.value}/characters/${encodeURIComponent(adultCharacterForm.character_id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+          } else {
+            await aiApi(`/api/dashboard/ai/projects/${adultProjectId.value}/characters`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+          }
+          await loadAdultProject();
+        } catch (e) {
+          adultProjectError.value = e.message || '保存角色失败';
+        } finally {
+          adultCharacterSaving.value = false;
+        }
+      };
+      const deactivateAdultCharacter = async (character) => {
+        if (!adultProjectId.value || !confirm(`确认停用角色“${character.canonical_name}”？`)) return;
+        try {
+          await aiApi(`/api/dashboard/ai/projects/${adultProjectId.value}/characters/${encodeURIComponent(character.character_id)}`, {
+            method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ expected_revision: Number(character.revision) })
+          });
+          await loadAdultProject();
+        } catch (e) {
+          adultProjectError.value = e.message || '停用角色失败';
+        }
+      };
+      const saveAdultConfirmation = async () => {
+        if (!adultProjectId.value) return;
+        adultConfirmationSaving.value = true;
+        adultProjectError.value = '';
+        try {
+          await aiApi(`/api/dashboard/ai/projects/${adultProjectId.value}/adult-confirmation`, {
+            method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({
+              expected_revision: Number(adultConfirmation.adult_confirmation_revision || 0),
+              adult_content_enabled: adultConfirmation.adult_content_enabled === true,
+              adult_characters_confirmed: adultConfirmation.adult_characters_confirmed === true,
+              fictional_characters_confirmed: adultConfirmation.fictional_characters_confirmed === true,
+              character_ids: sortedCharacters.value.map(character => character.character_id)
+            })
+          });
+          await loadAdultProject();
+        } catch (e) {
+          adultProjectError.value = e.message || '保存成人确认失败';
+        } finally {
+          adultConfirmationSaving.value = false;
+        }
+      };
       const saveAdultReviewBinding = async (kind) => {
         const binding = adultReviewBindings[kind];
         if (!adultReviewBindingValid(kind)) return;
@@ -1403,33 +1542,6 @@
           showAiMessage(e.message || '成人审查绑定保存失败', 'error');
         } finally {
           adultReviewSaving[kind] = false;
-        }
-      };
-      const seedAdultPolishAgent = async () => {
-        if (!adultAgentBindingValid.value) return;
-        adultAgentSaving.value = true;
-        try {
-          const payload = {
-            name: String(adultAgentForm.name || '').trim() || '成人描写润色',
-            binding_type: adultAgentForm.binding_type
-          };
-          if (adultAgentForm.binding_type === 'pool') {
-            payload.model_pool_id = Number(adultAgentForm.model_pool_id || 0);
-          } else {
-            payload.provider_id = Number(adultAgentForm.provider_id || 0);
-            payload.model = String(adultAgentForm.model || '').trim() || null;
-          }
-          await aiApi('/api/dashboard/ai/agents/adult-polish/seed', {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify(payload)
-          });
-          await loadAgents();
-          showAiMessage('成人润色 Agent 已保存');
-        } catch (e) {
-          showAiMessage(e.message || '成人润色 Agent 保存失败', 'error');
-        } finally {
-          adultAgentSaving.value = false;
         }
       };
       const resetProviderForm = () => Object.assign(providerForm, { id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
@@ -1543,12 +1655,15 @@
         agentProviderModels, agentBindingValid,
         adultReviewKinds, adultReviewBindings, adultReviewSaving, adultReviewBindingValid,
         adultAgentForm, adultAgentSaving, adultAgentBindingValid,
+        adultProjectId, adultProjectLoading, adultProjectError, adultCharacters, adultConfirmation,
+        adultCharacterForm, adultCharacterSaving, adultConfirmationSaving, sortedCharacters,
         rescueTokenStatus, rescueTokenPlaintext, rescueTokenMessage, rescueTokenMessageType,
         rotatingRescueToken, loadRescueTokenStatus, rotateRescueToken, copyRescueToken, closeRescueToken,
         ensureCsrfToken,
         loadProviders, loadAgents, resetProviderForm, editProvider, saveProvider, deleteProvider, testProvider,
         resetAgentForm, editAgent, saveAgent, deleteAgent, seedAgents,
-        loadAdultReviewBindings, saveAdultReviewBinding, seedAdultPolishAgent
+        loadAdultReviewBindings, saveAdultReviewBinding, seedAdultPolishAgent, loadAdultProject, editAdultCharacter,
+        saveAdultCharacter, deactivateAdultCharacter, saveAdultConfirmation
       };
     }
   });
