@@ -465,6 +465,20 @@ def create_app(
                     return _csrf_failed()
             return
         # API 请求返回 401，页面请求重定向到登录
+        is_adult_api = (
+            path.startswith("/api/dashboard/ai/polish/adult")
+            or path.startswith("/api/dashboard/ai/adult-review-bindings/")
+            or path.startswith("/api/dashboard/ai/agents/adult-polish/")
+            or (
+                path.startswith("/api/dashboard/ai/projects/")
+                and (
+                    "/characters" in path
+                    or path.endswith("/adult-confirmation")
+                )
+            )
+        )
+        if is_adult_api:
+            return jsonify({"error": "forbidden"}), 403
         if path.startswith("/api/"):
             return jsonify({"error": "unauthorized"}), 401
         return redirect("/api/auth/login")
@@ -531,7 +545,7 @@ def create_app(
         if _hmac.compare_digest(input_token, token):
             _login_failures.pop(client, None)
             session["authenticated"] = True
-            session["authenticated_at"] = int(now)
+            session["authenticated_at"] = time.time_ns()
             _get_csrf_token()
             return redirect("/")
         failures.append(now)

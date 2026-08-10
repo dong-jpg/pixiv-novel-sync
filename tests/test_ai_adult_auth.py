@@ -66,9 +66,10 @@ def test_signed_adult_access_is_expiry_owner_and_job_bound(tmp_path, monkeypatch
 
     app = Flask(__name__)
     app.secret_key = "test-app-secret"
-    owner = AdultOwner(scope="a" * 64, authenticated_at=1_700_000_000)
-    other_owner = AdultOwner(scope="b" * 64, authenticated_at=1_700_000_000)
-    monkeypatch.setattr(adult_auth.time, "time", lambda: 1_700_000_000)
+    base_ns = 1_700_000_000 * 1_000_000_000
+    owner = AdultOwner(scope="a" * 64, authenticated_at=base_ns)
+    other_owner = AdultOwner(scope="b" * 64, authenticated_at=base_ns)
+    monkeypatch.setattr(adult_auth.time, "time_ns", lambda: base_ns)
     with app.app_context():
         token = adult_auth.sign_adult_access(owner, "job-1")
         adult_auth.verify_adult_access(token, owner, "job-1")
@@ -78,18 +79,48 @@ def test_signed_adult_access_is_expiry_owner_and_job_bound(tmp_path, monkeypatch
         with pytest.raises(PermissionError):
             adult_auth.verify_adult_access(token, owner, "job-2")
 
-        monkeypatch.setattr(adult_auth.time, "time", lambda: 1_700_000_001)
+        monkeypatch.setattr(
+            adult_auth.time,
+            "time_ns",
+            lambda: base_ns + 1_000_000_000,
+        )
         reauthenticated_owner = AdultOwner(
             scope=owner.scope,
-            authenticated_at=1_700_000_001,
+            authenticated_at=base_ns + 1_000_000_000,
         )
         with pytest.raises(PermissionError):
             adult_auth.verify_adult_access(token, reauthenticated_owner, "job-1")
 
-        monkeypatch.setattr(adult_auth.time, "time", lambda: 1_700_000_600)
+        monkeypatch.setattr(
+            adult_auth.time,
+            "time_ns",
+            lambda: base_ns + 600 * 1_000_000_000,
+        )
         with pytest.raises(PermissionError):
             adult_auth.verify_adult_access(token, owner, "job-1")
 
-        monkeypatch.setattr(adult_auth.time, "time", lambda: 1_700_001_000)
+
+def test_signed_access_reauthentication_in_same_second_invalidates_prior_token(
+    monkeypatch,
+):
+    from pixiv_novel_sync.ai import adult_auth
+    from pixiv_novel_sync.ai.adult_auth import AdultOwner
+
+    app = Flask(__name__)
+    app.secret_key = "test-app-secret"
+    second = 1_700_000_000
+    issued_ns = second * 1_000_000_000 + 100
+    monkeypatch.setattr(adult_auth.time, "time", lambda: second)
+    monkeypatch.setattr(adult_auth.time, "time_ns", lambda: issued_ns)
+    owner = AdultOwner(scope="a" * 64, authenticated_at=issued_ns - 1)
+
+    with app.app_context():
+        token = adult_auth.sign_adult_access(owner, "job-1")
+        adult_auth.verify_adult_access(token, owner, "job-1")
+
+        reauthenticated_owner = AdultOwner(
+            scope=owner.scope,
+            authenticated_at=issued_ns + 1,
+        )
         with pytest.raises(PermissionError):
-            adult_auth.verify_adult_access(token, owner, "job-1")
+            adult_auth.verify_adult_access(token, reauthenticated_owner, "job-1")

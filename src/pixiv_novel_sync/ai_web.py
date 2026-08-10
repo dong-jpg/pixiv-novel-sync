@@ -310,12 +310,29 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
                 "started_at",
                 "finished_at",
                 "created_at",
-                "error_message",
             )
         }
         output = job.get("output")
         if isinstance(output, dict):
-            result["output"] = output
+            public_output = {
+                key: output[key]
+                for key in (
+                    "applicable",
+                    "code",
+                    "replayed",
+                    "status",
+                    "terminal_code",
+                    "validation_hash",
+                    "warning_ack_hash",
+                )
+                if key in output
+                and (
+                    output[key] is None
+                    or isinstance(output[key], (bool, int, float, str))
+                )
+            }
+            if public_output:
+                result["output"] = public_output
         candidate = job.get("output_text")
         if job.get("status") == "succeeded" and isinstance(candidate, str):
             result["candidate"] = candidate
@@ -426,14 +443,16 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             raise AIConflictError("409: Provider 范围已变化，请重新确认")
 
     def adult_access_from_request(owner: AdultOwner, job_id: str) -> str:
-        token = request.headers.get("X-Adult-Access-Token") or request.args.get(
-            "access_token"
-        )
+        token = request.headers.get("X-Adult-Access-Token")
         verify_adult_access(token, owner, job_id)
         assert isinstance(token, str)
         return token
 
-    def adult_stream_response(chunks: Iterator, owner: AdultOwner) -> Response:
+    def adult_stream_response(
+        chunks: Iterator,
+        owner: AdultOwner,
+        execution_owner_token: str | None = None,
+    ) -> Response:
         allowed = {"metadata", "progress", "validation", "candidate", "done", "error"}
         event_fields = {
             "metadata": {"job_id", "parent_job_id", "replayed"},
@@ -493,11 +512,15 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             job_id: str | None = None
 
             def cancel_active_job() -> None:
-                if job_id is None:
+                if job_id is None or execution_owner_token is None:
                     return
                 db = service._db()
                 try:
-                    db.request_adult_job_cancel(job_id, owner.scope)
+                    db.request_adult_job_cancel(
+                        job_id,
+                        owner.scope,
+                        execution_owner_token,
+                    )
                 finally:
                     db.close()
 
@@ -1109,12 +1132,14 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             owner = adult_owner()
             payload = require_json_object()
             validate_adult_stream_preflight(payload)
+            execution_owner_token = secrets.token_urlsafe(32)
             chunks = service.stream_adult_polish(
                 payload,
                 owner.scope,
-                secrets.token_urlsafe(32),
+                execution_owner_token,
+                raise_preflight=True,
             )
-            return adult_stream_response(chunks, owner)
+            return adult_stream_response(chunks, owner, execution_owner_token)
         except PermissionError as exc:
             return adult_fail(exc, 403)
         except AdultInputError as exc:
@@ -1131,10 +1156,10 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     def get_ai_adult_polish(job_id: str):
         try:
             owner = adult_owner()
+            adult_access_from_request(owner, job_id)
             job = adult_job_for_owner(job_id, owner)
             if job is None:
                 return adult_fail(AINotFoundError("任务不存在"), 404)
-            adult_access_from_request(owner, job_id)
             return adult_no_store(ok(adult_public_job(job)))
         except PermissionError as exc:
             return adult_fail(exc, 403)
@@ -1146,10 +1171,10 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     def stream_ai_adult_polish_events(job_id: str):
         try:
             owner = adult_owner()
+            adult_access_from_request(owner, job_id)
             job = adult_job_for_owner(job_id, owner)
             if job is None:
                 return adult_fail(AINotFoundError("任务不存在"), 404)
-            adult_access_from_request(owner, job_id)
 
             def replay():
                 yield AIStreamChunk(
@@ -1194,10 +1219,10 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     def cancel_ai_adult_polish(job_id: str):
         try:
             owner = adult_owner()
+            adult_access_from_request(owner, job_id)
             job = adult_job_for_owner(job_id, owner)
             if job is None:
                 return adult_fail(AINotFoundError("任务不存在"), 404)
-            adult_access_from_request(owner, job_id)
             db = service._db()
             try:
                 requested = db.request_adult_job_cancel(job_id, owner.scope)
@@ -1214,22 +1239,24 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     def regenerate_ai_adult_polish(job_id: str):
         try:
             owner = adult_owner()
+            adult_access_from_request(owner, job_id)
             job = adult_job_for_owner(job_id, owner)
             if job is None:
                 return adult_fail(AINotFoundError("任务不存在"), 404)
-            adult_access_from_request(owner, job_id)
             payload = require_json_object()
             supplied_parent = payload.get("parent_job_id")
             if supplied_parent not in {None, job_id}:
                 raise AIConflictError("409: 父成人润色任务不匹配")
             payload["parent_job_id"] = job_id
             validate_adult_stream_preflight(payload)
+            execution_owner_token = secrets.token_urlsafe(32)
             chunks = service.stream_adult_polish(
                 payload,
                 owner.scope,
-                secrets.token_urlsafe(32),
+                execution_owner_token,
+                raise_preflight=True,
             )
-            return adult_stream_response(chunks, owner)
+            return adult_stream_response(chunks, owner, execution_owner_token)
         except PermissionError as exc:
             return adult_fail(exc, 403)
         except AdultInputError as exc:
@@ -1246,10 +1273,10 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     def apply_ai_adult_polish(job_id: str):
         try:
             owner = adult_owner()
+            access_token = adult_access_from_request(owner, job_id)
             job = adult_job_for_owner(job_id, owner)
             if job is None:
                 return adult_fail(AINotFoundError("任务不存在"), 404)
-            access_token = adult_access_from_request(owner, job_id)
             payload = require_json_object()
             if set(payload) != {"warning_ack_hash"}:
                 raise AIServiceError("apply 请求字段无效")

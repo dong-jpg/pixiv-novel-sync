@@ -1377,41 +1377,57 @@ class AiCoreMixin:
             )
             return deleted + int(cur.rowcount or 0)
 
-    def request_adult_job_cancel(self, job_id: str, owner_scope: str) -> bool:
+    def request_adult_job_cancel(
+        self,
+        job_id: str,
+        owner_scope: str,
+        owner_token: str | None = None,
+    ) -> bool:
         """Cancel an owner-scoped adult job without racing a committed candidate."""
 
+        if owner_token is not None and not owner_token:
+            return False
+
         with self.transaction() as conn:
+            token_condition = " AND owner_token = ?" if owner_token is not None else ""
+            params: tuple[Any, ...] = (
+                (job_id, owner_scope, owner_token)
+                if owner_token is not None
+                else (job_id, owner_scope)
+            )
             row = conn.execute(
-                """
+                f"""
                 SELECT owner_token FROM ai_jobs
                 WHERE job_id = ? AND task_type = 'adult_polish'
                   AND owner_scope = ? AND status = 'running'
+                  {token_condition}
                 """,
-                (job_id, owner_scope),
+                params,
             ).fetchone()
             if row is None:
                 return False
             cursor = conn.execute(
-                """
+                f"""
                 UPDATE ai_jobs
                 SET status = 'cancelled', output_text = NULL,
-                    output_json = '{"code":"cancelled"}',
+                    output_json = '{{"code":"cancelled"}}',
                     error_message = '成人润色任务已取消',
                     finished_at = CURRENT_TIMESTAMP, lease_until = NULL,
                     heartbeat_at = CURRENT_TIMESTAMP
                 WHERE job_id = ? AND task_type = 'adult_polish'
                   AND owner_scope = ? AND status = 'running'
+                  {token_condition}
                   AND NOT EXISTS (
                     SELECT 1 FROM ai_polish_applications AS application
                     WHERE application.source_job_id = ai_jobs.job_id
                   )
                 """,
-                (job_id, owner_scope),
+                params,
             )
             if cursor.rowcount != 1:
                 return False
-            owner_token = row["owner_token"]
-            if owner_token:
+            active_owner_token = row["owner_token"]
+            if active_owner_token:
                 conn.execute(
                     """
                     UPDATE ai_job_model_attempts
@@ -1422,7 +1438,7 @@ class AiCoreMixin:
                         heartbeat_at = CURRENT_TIMESTAMP
                     WHERE job_id = ? AND owner_token = ? AND status = 'running'
                     """,
-                    (job_id, owner_token),
+                    (job_id, active_owner_token),
                 )
             return True
 

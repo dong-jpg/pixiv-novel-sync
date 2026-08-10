@@ -50,6 +50,28 @@ def test_no_dashboard_token_blocks_non_localhost(tmp_path, monkeypatch):
     assert response.status_code == 403
 
 
+def test_configured_token_missing_session_returns_403_for_adult_api(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("DASHBOARD_TOKEN", "secret-token")
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "PIXIV_REFRESH_TOKEN=test\nDASHBOARD_TOKEN=secret-token\n",
+        encoding="utf-8",
+    )
+    app = create_app(env_path=str(env_path))
+
+    response = app.test_client().post(
+        "/api/dashboard/ai/polish/adult/stream",
+        json={},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert response.status_code == 403
+
+
 def test_flask_secret_fallback_persists_to_env(tmp_path, monkeypatch):
     monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)

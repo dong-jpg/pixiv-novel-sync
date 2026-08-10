@@ -2332,8 +2332,9 @@ class AIAdultPolishMixin:
         payload: Mapping[str, Any],
         owner_scope: str,
         owner_token: str,
+        *,
+        raise_preflight: bool = False,
     ) -> Iterator[AIStreamChunk]:
-        prepared: PreparedAdultJob | None = None
         try:
             prepared = self.prepare_adult_job(
                 payload,
@@ -2341,11 +2342,22 @@ class AIAdultPolishMixin:
                 owner_token=owner_token,
             )
         except (AIServiceError, AIConflictError) as exc:
-            yield self._adult_error("preflight_failed", str(exc))
-            return
+            if raise_preflight:
+                raise
+            return iter((self._adult_error("preflight_failed", str(exc)),))
         except Exception:
-            yield self._adult_error("preflight_failed", "成人润色前置校验失败")
-            return
+            if raise_preflight:
+                raise AIServiceError("成人润色前置校验失败") from None
+            return iter(
+                (self._adult_error("preflight_failed", "成人润色前置校验失败"),)
+            )
+
+        return self._stream_prepared_adult_polish(prepared)
+
+    def _stream_prepared_adult_polish(
+        self,
+        prepared: PreparedAdultJob,
+    ) -> Iterator[AIStreamChunk]:
 
         yield AIStreamChunk(
             type="metadata",

@@ -14,7 +14,7 @@ from flask import current_app, session
 from ..settings import Settings
 
 
-_ACCESS_TTL_SECONDS = 10 * 60
+_ACCESS_TTL_NS = 10 * 60 * 1_000_000_000
 _SCOPE_PREFIX = b"adult-owner:"
 _ACCESS_PREFIX = b"adult-access:"
 
@@ -85,9 +85,9 @@ def sign_adult_access(owner: AdultOwner, job_id: str) -> str:
     if not isinstance(owner, AdultOwner):
         raise PermissionError("成人访问 owner 无效")
     safe_job_id = _job_id(job_id)
-    issued_at = int(time.time())
+    issued_at = time.time_ns()
     payload = {
-        "exp": issued_at + _ACCESS_TTL_SECONDS,
+        "exp": issued_at + _ACCESS_TTL_NS,
         "iat": issued_at,
         "job": safe_job_id,
         "nonce": secrets.token_urlsafe(16),
@@ -136,7 +136,7 @@ def verify_adult_access(token: Any, owner: AdultOwner, job_id: str) -> None:
         issued_at = payload.get("iat")
         expires_at = payload.get("exp")
         authenticated_at = owner.authenticated_at
-        now = int(time.time())
+        now = time.time_ns()
         if (
             isinstance(issued_at, bool)
             or not isinstance(issued_at, int)
@@ -146,9 +146,9 @@ def verify_adult_access(token: Any, owner: AdultOwner, job_id: str) -> None:
             or not isinstance(authenticated_at, int)
             or authenticated_at <= 0
             or expires_at <= issued_at
-            or expires_at - issued_at > _ACCESS_TTL_SECONDS
+            or expires_at - issued_at > _ACCESS_TTL_NS
             or issued_at < authenticated_at
-            or issued_at > now + 30
+            or issued_at > now + 30 * 1_000_000_000
             or now >= expires_at
         ):
             raise ValueError("expired access token")

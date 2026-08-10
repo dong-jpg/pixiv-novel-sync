@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from flask import Flask
 
 from ai_adult_testkit import application_row, seed_adult_project, valid_adult_payload
-from pixiv_novel_sync.ai.service import AIWritingService
+from pixiv_novel_sync.ai.service import AIConflictError, AIWritingService
 from pixiv_novel_sync.ai.adult_auth import AdultOwner, sign_adult_access
 from pixiv_novel_sync.ai_web import register_ai_routes
 from pixiv_novel_sync.settings import Settings, StorageSettings
@@ -42,7 +42,7 @@ def _app(tmp_path: Path, dashboard_token: str | None = "dashboard-secret") -> Fl
 def _authenticate(client) -> None:
     with client.session_transaction() as current_session:
         current_session["authenticated"] = True
-        current_session["authenticated_at"] = int(time.time())
+        current_session["authenticated_at"] = time.time_ns()
 
 
 def _owner_scope(app: Flask, dashboard_token: str = "dashboard-secret") -> str:
@@ -58,7 +58,7 @@ def _owner_scope(app: Flask, dashboard_token: str = "dashboard-secret") -> str:
 def _access_token(app: Flask, job_id: str, scope: str) -> str:
     with app.app_context():
         return sign_adult_access(
-            AdultOwner(scope=scope, authenticated_at=int(time.time())),
+            AdultOwner(scope=scope, authenticated_at=time.time_ns()),
             job_id,
         )
 
@@ -237,7 +237,7 @@ def test_adult_sse_buffers_delta_and_sets_no_store_headers(
     tmp_path,
     monkeypatch,
 ):
-    def fake_stream(self, payload, owner_scope, owner_token):
+    def fake_stream(self, payload, owner_scope, owner_token, **kwargs):
         assert owner_scope
         assert owner_token
         yield SimpleNamespace(
@@ -335,6 +335,101 @@ def test_adult_detail_requires_access_token_and_sanitizes_candidate(tmp_path):
     assert allowed.headers["Pragma"] == "no-cache"
     assert allowed.headers["X-Robots-Tag"] == "noindex, nofollow, noarchive"
     assert allowed.headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_adult_access_token_query_parameter_is_rejected(tmp_path):
+    app = _app(tmp_path)
+    _project_id, _chapter_id, scope = _seed_adult_job(
+        tmp_path,
+        app,
+        job_id="adult-query-token",
+        status="succeeded",
+        candidate="candidate text",
+    )
+    client = app.test_client()
+    _authenticate(client)
+    token = _access_token(app, "adult-query-token", scope)
+
+    response = client.get(
+        "/api/dashboard/ai/polish/adult/adult-query-token",
+        query_string={"access_token": token},
+    )
+
+    assert response.status_code == 403
+    assert token not in response.get_data(as_text=True)
+
+
+def test_invalid_access_token_does_not_reveal_job_existence(tmp_path):
+    app = _app(tmp_path)
+    _seed_adult_job(
+        tmp_path,
+        app,
+        job_id="adult-existing-secret",
+        status="succeeded",
+        candidate="candidate text",
+    )
+    client = app.test_client()
+    _authenticate(client)
+    headers = {"X-Adult-Access-Token": "invalid-token"}
+
+    existing = client.get(
+        "/api/dashboard/ai/polish/adult/adult-existing-secret",
+        headers=headers,
+    )
+    missing = client.get(
+        "/api/dashboard/ai/polish/adult/adult-missing-secret",
+        headers=headers,
+    )
+
+    assert existing.status_code == missing.status_code == 403
+    assert existing.get_json() == missing.get_json()
+
+
+def test_adult_job_responses_filter_nested_output_metadata(tmp_path):
+    app = _app(tmp_path)
+    _project_id, _chapter_id, scope = _seed_adult_job(
+        tmp_path,
+        app,
+        job_id="adult-nested-output",
+        status="succeeded",
+        candidate="candidate text",
+    )
+    db = Database(_settings(tmp_path, "dashboard-secret").storage.db_path)
+    try:
+        db.conn.execute(
+            "UPDATE ai_jobs SET output_json = ? WHERE job_id = ?",
+            (
+                '{"code":"succeeded","validation_hash":"%s",'
+                '"provider_response":"nested-provider-secret",'
+                '"context":{"prompt":"nested-prompt-secret"},'
+                '"owner_token":"nested-owner-secret"}' % ("f" * 64),
+                "adult-nested-output",
+            ),
+        )
+        db.conn.commit()
+    finally:
+        db.close()
+    client = app.test_client()
+    _authenticate(client)
+
+    generic = client.get("/api/dashboard/ai/jobs/adult-nested-output")
+    dedicated = client.get(
+        "/api/dashboard/ai/polish/adult/adult-nested-output",
+        headers={
+            "X-Adult-Access-Token": _access_token(
+                app,
+                "adult-nested-output",
+                scope,
+            )
+        },
+    )
+
+    assert generic.status_code == dedicated.status_code == 200
+    for response in (generic, dedicated):
+        body = response.get_data(as_text=True)
+        assert "nested-provider-secret" not in body
+        assert "nested-prompt-secret" not in body
+        assert "nested-owner-secret" not in body
 
 
 def test_adult_events_require_bound_token_and_replay_only_committed_candidate(tmp_path):
@@ -914,7 +1009,7 @@ def test_adult_regenerate_requires_parent_access_and_injects_parent_job(
     )
     calls = []
 
-    def fake_stream(self, payload, owner_scope, owner_token):
+    def fake_stream(self, payload, owner_scope, owner_token, **kwargs):
         calls.append((payload, owner_scope, owner_token))
         yield SimpleNamespace(type="metadata", text=None, data={"job_id": "adult-child"})
         yield SimpleNamespace(
@@ -964,7 +1059,7 @@ def test_adult_regenerate_rejects_malformed_payload_before_stream(
     )
     calls = []
 
-    def fake_stream(self, payload, owner_scope, owner_token):
+    def fake_stream(self, payload, owner_scope, owner_token, **kwargs):
         calls.append((payload, owner_scope, owner_token))
         return iter(())
 
@@ -999,9 +1094,13 @@ def test_adult_stream_disconnect_cancels_only_running_owner_job(
         job_id="adult-disconnect",
         status="running",
     )
+    monkeypatch.setattr(
+        "pixiv_novel_sync.ai_web.secrets.token_urlsafe",
+        lambda _length: "execution-owner-token",
+    )
     closed = {"value": False}
 
-    def fake_stream(self, payload, owner_scope, owner_token):
+    def fake_stream(self, payload, owner_scope, owner_token, **kwargs):
         try:
             yield SimpleNamespace(
                 type="metadata",
@@ -1033,6 +1132,50 @@ def test_adult_stream_disconnect_cancels_only_running_owner_job(
     assert closed["value"] is True
 
 
+def test_adult_stream_disconnect_uses_execution_owner_token_cas(
+    tmp_path,
+    monkeypatch,
+):
+    app = _app(tmp_path)
+    captured: dict[str, str] = {}
+    cancel_calls: list[tuple[str, str, str]] = []
+
+    def fake_stream(self, payload, owner_scope, owner_token, **kwargs):
+        captured["owner_token"] = owner_token
+        yield SimpleNamespace(
+            type="metadata",
+            text=None,
+            data={"job_id": "adult-disconnect-cas"},
+        )
+        yield SimpleNamespace(type="progress", text=None, data={"phase": "main"})
+
+    def fake_cancel(self, job_id, owner_scope, owner_token):
+        cancel_calls.append((job_id, owner_scope, owner_token))
+        return True
+
+    monkeypatch.setattr(AIWritingService, "stream_adult_polish", fake_stream)
+    monkeypatch.setattr(Database, "request_adult_job_cancel", fake_cancel)
+    client = app.test_client()
+    _authenticate(client)
+    payload = _configured_adult_payload(tmp_path, app, client)
+    response = client.post(
+        "/api/dashboard/ai/polish/adult/stream",
+        json=payload,
+        buffered=False,
+    )
+    assert b"event: metadata" in next(response.response)
+
+    response.close()
+
+    assert cancel_calls == [
+        (
+            "adult-disconnect-cas",
+            _owner_scope(app),
+            captured["owner_token"],
+        )
+    ]
+
+
 def test_adult_stream_transport_failure_cancels_without_leaking_error(
     tmp_path,
     monkeypatch,
@@ -1044,8 +1187,12 @@ def test_adult_stream_transport_failure_cancels_without_leaking_error(
         job_id="adult-socket-failure",
         status="running",
     )
+    monkeypatch.setattr(
+        "pixiv_novel_sync.ai_web.secrets.token_urlsafe",
+        lambda _length: "execution-owner-token",
+    )
 
-    def fake_stream(self, payload, owner_scope, owner_token):
+    def fake_stream(self, payload, owner_scope, owner_token, **kwargs):
         yield SimpleNamespace(
             type="metadata",
             text=None,
@@ -1100,7 +1247,7 @@ def test_adult_stream_initialization_failure_does_not_log_raw_exception(
 
 
 def test_adult_stream_sanitizes_provider_error_event(tmp_path, monkeypatch):
-    def fake_stream(self, payload, owner_scope, owner_token):
+    def fake_stream(self, payload, owner_scope, owner_token, **kwargs):
         yield SimpleNamespace(
             type="metadata",
             text=None,
@@ -1146,7 +1293,7 @@ def test_adult_stream_late_disconnect_preserves_committed_candidate(
         candidate="committed candidate",
     )
 
-    def fake_stream(self, payload, owner_scope, owner_token):
+    def fake_stream(self, payload, owner_scope, owner_token, **kwargs):
         yield SimpleNamespace(
             type="metadata",
             text=None,
@@ -1194,6 +1341,28 @@ def test_adult_stream_maps_malformed_payload_to_422(tmp_path):
 
     assert response.status_code == 422
     assert "must not be accepted" not in response.get_data(as_text=True)
+
+
+def test_adult_stream_runs_complete_prepare_before_opening_sse(
+    tmp_path,
+    monkeypatch,
+):
+    app = _app(tmp_path)
+    client = app.test_client()
+    _authenticate(client)
+    payload = _configured_adult_payload(tmp_path, app, client)
+    def fail_prepare(self, payload, owner_scope, *, owner_token):
+        raise AIConflictError("409: participant snapshot changed")
+
+    monkeypatch.setattr(AIWritingService, "prepare_adult_job", fail_prepare)
+
+    response = client.post(
+        "/api/dashboard/ai/polish/adult/stream",
+        json=payload,
+        buffered=True,
+    )
+
+    assert response.status_code == 409
 
 
 def test_adult_stream_maps_stale_chapter_and_provider_scope_to_409(tmp_path):
