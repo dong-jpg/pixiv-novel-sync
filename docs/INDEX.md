@@ -61,6 +61,10 @@
 
 `docs/archive/` 存放已完成的阶段性文档（旧审计报告、一次性完成报告、优化路线图、拆分计划等）。这些文档描述的工作已经做完，不再维护，仅作归档参考。详见 [archive/README.md](archive/README.md)。
 
+## Active Implementation Plan
+
+当前实现与验收以 [Task 11 brief](../.superpowers/sdd/task-11-brief.md) 为活动清单，并以 [成人本地润色 Agent implementation plan](superpowers/plans/2026-07-23-adult-polish-agent.md) 的 fail-closed 约束为准。前端端点和页面契约分别维护在 [frontend-api-contract.md](frontend-api-contract.md) 与 [frontend-pages.md](frontend-pages.md)；历史审计文档不能覆盖这些当前契约。
+
 归档包含 14 份顶层文档 + 6 份 superpowers 已完成计划，涵盖：
 - 2026-06-16 全量审计系列（AUDIT_REPORT / EXECUTIVE_SUMMARY / COMPLETION_REPORT / CRITICAL_BUGS_FIX_PLAN / BUGS_FIXED_REPORT / ACTION_CHECKLIST）
 - 优化路线图系列（OPTIMIZATION_ROADMAP / OPTIMIZATION_REVIEW_2026-06-26 / OPTIMIZATION_PLAN_2026-06-30）

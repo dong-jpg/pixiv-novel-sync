@@ -488,6 +488,44 @@ Body:
 
 单池和完整后备链最多 64 个候选，链深度最多 8；每个 job 最多尝试 16 个候选、32 次网络请求和 30 分钟。模型池可能把同一 Prompt 发送给多个 Provider，前端必须展示完整 Provider 范围及跨 Provider 隐私提示。
 
+## 成人本地润色 API
+
+成人润色是独立的、需要 Dashboard 会话的 fail-closed 功能。所有成功响应都使用 `{ "ok": true, "data": ... }`；普通错误使用 `{ "ok": false, "error": "..." }`。除 scope、配置读取和普通 GET 外，写请求必须带 `X-CSRF-Token`。任务读取、事件恢复、取消、重新生成和应用还必须带当前 job 对应的 `X-Adult-Access-Token`；token 与 owner/job 不匹配时不会暴露任务内容。
+
+### 端点
+
+| 方法 | 路由 | 请求/响应约束 |
+| --- | --- | --- |
+| `GET` | `/api/dashboard/ai/projects/{project_id}/characters` | 返回当前项目角色数组；只读结构化字段，不返回正文。 |
+| `POST` | `/api/dashboard/ai/projects/{project_id}/characters` | 创建角色，要求 `canonical_name`、`aliases`、`age_years`、`age_basis`、`fictional`。 |
+| `PUT`/`DELETE` | `/api/dashboard/ai/projects/{project_id}/characters/{character_id}` | 必须提交 `expected_revision`，冲突返回 `409`。 |
+| `GET`/`PUT` | `/api/dashboard/ai/projects/{project_id}/adult-confirmation` | 读取或 CAS 更新成人开关、虚构成年人确认、角色 revision 列表；读取响应同时返回按确认顺序派生的 `character_ids`，供阅读页筛选可参与角色。 |
+| `GET`/`PUT` | `/api/dashboard/ai/adult-review-bindings/{review_kind}` | `review_kind` 为 `safety` 或 `fact_guard`；固定/池 binding 必须声明 `json` 能力和 `expected_version`。 |
+| `POST` | `/api/dashboard/ai/polish/adult/scope` | body 精确为 `{ "agent_id": number }`；返回 `groups` 与 `provider_scope_hash`。 |
+| `POST` | `/api/dashboard/ai/polish/adult/stream` | 提交无正文请求（见下方字段），返回成人 SSE。 |
+| `GET` | `/api/dashboard/ai/polish/adult/{job_id}` | 返回脱敏 job 元数据；成功候选只在未应用且仍保留时返回。 |
+| `GET` | `/api/dashboard/ai/polish/adult/{job_id}/events` | 使用 signed access token 恢复 SSE；只重放脱敏 metadata/validation/candidate/done/error；任务仍为 `running` 时重放当前 `progress` 状态，不重放正文或 Provider 原始响应。 |
+| `POST` | `/api/dashboard/ai/polish/adult/{job_id}/cancel` | 请求体为空对象；返回 `{ "cancel_requested": boolean }`。 |
+| `POST` | `/api/dashboard/ai/polish/adult/{job_id}/regenerate` | body 为新的无正文请求并带 `parent_job_id`；返回新的 SSE metadata/validation/candidate/done。 |
+| `POST` | `/api/dashboard/ai/polish/adult/{job_id}/apply` | body 精确为 `{ "warning_ack_hash": string }`；必须同时提供 signed access token，成功返回 application/revision/hash。 |
+
+stream/regenerate 的请求字段是 `project_id`、`chapter_id`、`agent_id`、`target_start`、`target_end`、`chapter_content_hash`、`target_text_hash`、`chapter_revision`、`participant_character_ids`、`adult_characters_confirmed`、`intensity`、`locked_terms`、`instruction`、`idempotency_key` 和 `provider_scope_hash`；重新生成另加 `parent_job_id`。`target_text`、`before`、`after`、Prompt、system prompt 和 Provider 原始响应均禁止提交、持久化或通过 API 返回。offset 使用 Unicode code point，前端必须从原始章节文本计算 hash，不得先规范化换行。
+
+### SSE 事件与脱敏
+
+成人 stream 只允许 `metadata`、`progress`、`validation`、`candidate`、`done`、`error` 六类事件。`metadata` 返回 `job_id`、`parent_job_id`、`replayed` 和短期 `access_token`；`progress` 只返回脱敏阶段/模型摘要，回放接口在任务仍运行时至少返回 `{ "job_id": "...", "status": "running" }`；`validation` 返回结构校验摘要、warning/blocking code、`validation_hash`，有 warning 时额外返回 scoped `warning_ack_hash`；`candidate` 事件的正文只出现在事件流文本，不进入公共 job JSON。任何 provider 错误都映射为固定中文错误码和消息。
+
+SSE 响应必须带：`Cache-Control: no-store, no-cache, must-revalidate, max-age=0`、`Pragma: no-cache`、`X-Robots-Tag: noindex, nofollow, noarchive`、`X-Content-Type-Options: nosniff` 和 `X-Accel-Buffering: no`。job JSON 读取同样使用 `no-store`、`Pragma`、`X-Robots-Tag` 和 `nosniff`。
+
+### 状态码、保留与重试
+
+- `403`：未登录、未配置 Dashboard token、signed access token 缺失/过期/跨 owner，或缺少 CSRF。
+- `404`：项目、章节、角色或 job 不存在；owner 不匹配也按 `404` 隐藏资源。
+- `409`：章节内容/revision、角色确认 revision、Provider scope、Agent/binding/policy snapshot、lease 或 warning 校验发生变化；必须重新获取 scope 并重新生成。
+- `422`：请求字段、范围、hash、参与角色或 idempotency key 格式非法；`400` 表示已认证但配置/路由不可用。
+
+未应用候选按三天清理策略保留；应用后章节正文只写入目标区间，任务 `output_text` 清理，应用记录仅保留 hash、校验摘要、策略和 Provider/model snapshot。应用不会自动成为普通 Pipeline step，也不会因网络/Provider 变化自动重试。成人路由始终要求 Dashboard token，即使请求来自 localhost；运行顺序和前置配置见 `frontend-pages.md` 的成人配置页说明。
+
 ## AI content and job APIs
 
 - `POST /api/dashboard/ai/documents/upload`

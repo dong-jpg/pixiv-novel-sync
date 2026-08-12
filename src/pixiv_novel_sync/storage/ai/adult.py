@@ -376,6 +376,12 @@ class AdultStorageMixin:
         confirmation["adult_characters_hash"] = canonical_sha256(
             confirmation["adult_characters"]
         )
+        confirmation["character_ids"] = [
+            str(entry["character_id"])
+            for entry in confirmation["adult_characters"]
+            if isinstance(entry, Mapping)
+            and isinstance(entry.get("character_id"), str)
+        ]
         return confirmation
 
     def set_adult_confirmation(

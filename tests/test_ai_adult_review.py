@@ -16,8 +16,13 @@ from ai_adult_testkit import (
     structural_validation,
     valid_adult_payload,
 )
-from pixiv_novel_sync.ai.adult_types import raw_sha256
-from pixiv_novel_sync.ai.adult_validation import compute_provider_scope_hash
+from pixiv_novel_sync.ai.adult_types import raw_sha256, warning_ack_hash
+from pixiv_novel_sync.ai.adult_validation import (
+    VALIDATOR_POLICY_HASH,
+    compute_provider_scope_hash,
+    compute_validation_hash,
+)
+from pixiv_novel_sync.ai.adult_policies import SAFETY_POLICY
 from pixiv_novel_sync.ai.model_router import (
     CandidateSnapshot,
     ModelCandidate,
@@ -492,6 +497,55 @@ def test_safe_candidate_is_committed_before_candidate_event(
         assert child is not None
         assert child["status"] == "succeeded"
         assert prepared.target not in (child.get("output_text") or "")
+
+
+def test_validation_event_exposes_scoped_warning_ack_hash_without_policy_material(
+    service: AIWritingService,
+):
+    result = replace(
+        safe_validation(),
+        warnings=("paragraph_changed",),
+        validation_hash="",
+    )
+    result = replace(result, validation_hash=compute_validation_hash(result))
+    safety_policy_hash = "b" * 64
+
+    event = service._validation_event_data(
+        "adult-warning",
+        result,
+        safety_policy_hash=safety_policy_hash,
+    )
+
+    assert event["warning_ack_hash"] == warning_ack_hash(
+        result.validation_hash,
+        safety_policy_hash,
+        VALIDATOR_POLICY_HASH,
+        result.warnings,
+    )
+    assert "safety_policy_hash" not in event
+    assert "validator_policy_hash" not in event
+
+
+def test_warning_candidate_event_contains_ack_hash_for_apply(
+    service: AIWritingService,
+    prepared: Any,
+):
+    events = list(
+        service.finish_adult_candidate(
+            prepared,
+            _raw_candidate(prepared, prepared.target + "2"),
+        )
+    )
+
+    validation_event = next(event for event in events if event.type == "validation")
+    assert validation_event.data is not None
+    assert validation_event.data["warnings"] == ["new_number"]
+    assert validation_event.data["warning_ack_hash"] == warning_ack_hash(
+        validation_event.data["validation_hash"],
+        SAFETY_POLICY.expected_hash,
+        VALIDATOR_POLICY_HASH,
+        validation_event.data["warnings"],
+    )
 
 
 def test_review_child_jobs_use_fixed_task_types(

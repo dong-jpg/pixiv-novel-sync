@@ -186,16 +186,19 @@
 function selectionToCodePointRange(root, selection) {
   if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) throw new Error('请选择连续片段');
   const range = selection.getRangeAt(0);
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let start = -1, end = -1, offset = 0, node;
-  while ((node = walker.nextNode())) {
-    const length = Array.from(node.nodeValue || '').length;
-    if (node === range.startContainer) start = offset + Array.from(node.nodeValue || '').slice(0, range.startOffset).length;
-    if (node === range.endContainer) end = offset + Array.from(node.nodeValue || '').slice(0, range.endOffset).length;
-    offset += length;
-  }
-  if (start < 0 || end <= start) throw new Error('请选择连续片段');
+  const start = boundaryCodePointOffset(root, range.startContainer, range.startOffset);
+  const end = boundaryCodePointOffset(root, range.endContainer, range.endOffset);
+  if (end <= start) throw new Error('请选择连续片段');
   return {start, end};
+}
+
+function boundaryCodePointOffset(root, container, offset) {
+  const inside = container === root || (typeof root.contains === 'function' && root.contains(container));
+  if (!inside) throw new Error('请选择当前章节内的连续片段');
+  const prefix = document.createRange();
+  prefix.selectNodeContents(root);
+  prefix.setEnd(container, offset);
+  return Array.from(prefix.toString()).length;
 }
 
 initVueApp({
@@ -250,23 +253,27 @@ initVueApp({
       if (!selectedRange.value) return '';
       return Array.from(String(currentChapter.value?.content || '')).slice(selectedRange.value.end, selectedRange.value.end + 160).join('');
     });
-    const availableAdultCharacters = computed(() => adultCharacters.value.filter(character => character.fictional === true && Number(character.age_years) >= 18));
+    const availableAdultCharacters = computed(() => adultCharacters.value.filter(character =>
+      character.fictional === true && Number(character.age_years) >= 18 &&
+      Array.isArray(adultConfirmation.value.character_ids) &&
+      adultConfirmation.value.character_ids.includes(character.character_id)
+    ));
     const providerScopeGroups = computed(() => Object.entries(providerScopes.value.groups || {}).map(([kind, group]) => ({
       kind,
       models: (group || []).map(item => [item.provider_name, item.model_key].filter(Boolean).join(' / '))
     })));
     const diffParts = computed(() => {
-      const before = selectedTargetText.value;
-      const after = candidate.value;
+      const before = Array.from(selectedTargetText.value);
+      const after = Array.from(candidate.value);
       let prefix = 0;
       while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix += 1;
       let suffix = 0;
       while (suffix < before.length - prefix && suffix < after.length - prefix && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix += 1;
       const parts = [];
-      if (prefix) parts.push({ kind: 'same', text: before.slice(0, prefix) });
-      if (before.length - prefix - suffix) parts.push({ kind: 'remove', text: before.slice(prefix, before.length - suffix) });
-      if (after.length - prefix - suffix) parts.push({ kind: 'add', text: after.slice(prefix, after.length - suffix) });
-      if (suffix) parts.push({ kind: 'same', text: before.slice(before.length - suffix) });
+      if (prefix) parts.push({ kind: 'same', text: before.slice(0, prefix).join('') });
+      if (before.length - prefix - suffix) parts.push({ kind: 'remove', text: before.slice(prefix, before.length - suffix).join('') });
+      if (after.length - prefix - suffix) parts.push({ kind: 'add', text: after.slice(prefix, after.length - suffix).join('') });
+      if (suffix) parts.push({ kind: 'same', text: before.slice(before.length - suffix).join('') });
       return parts;
     });
     const canGenerateAdult = computed(() => Boolean(
@@ -330,6 +337,8 @@ initVueApp({
       warningAcknowledged.value = false;
       warningAckHash.value = '';
       accessToken.value = '';
+      jobId.value = '';
+      adultStatus.value = 'idle';
       adultError.value = '';
     }
     function captureAdultSelection() {
@@ -402,7 +411,7 @@ initVueApp({
         adultError.value = data.message || data.code || '成人润色失败';
       }
     }
-    async function consumeAdultStream(response) {
+    async function consumeAdultEvents(response, requireTerminal = false) {
       if (!response.ok || !response.body) {
         const data = await response.json().catch(() => ({}));
         throw new Error(data.error || '成人润色请求失败');
@@ -410,6 +419,7 @@ initVueApp({
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let terminal = false;
       while (true) {
         const { value, done } = await reader.read();
         buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
@@ -418,10 +428,27 @@ initVueApp({
         for (const block of blocks) {
           const event = (block.match(/^event:\s*(.+)$/m) || [])[1];
           const json = (block.match(/^data:\s*(.+)$/m) || [])[1];
-          if (event && json) consumeAdultEvent(event, JSON.parse(json));
+          if (event && json) {
+            consumeAdultEvent(event, JSON.parse(json));
+            terminal = terminal || event === 'done' || event === 'error';
+          }
         }
         if (done) break;
       }
+      if (requireTerminal && !terminal) throw new Error('成人润色连接中断');
+      return terminal;
+    }
+    async function consumeAdultStream(response) {
+      return consumeAdultEvents(response, true);
+    }
+    async function recoverAdultEvents(recoveryJobId) {
+      if (!recoveryJobId || !accessToken.value) return false;
+      const response = await fetch('/api/dashboard/ai/polish/adult/' + encodeURIComponent(recoveryJobId) + '/events', {
+        headers: { 'X-Adult-Access-Token': accessToken.value }
+      });
+      const terminal = await consumeAdultEvents(response, false);
+      if (!terminal && adultStatus.value !== 'failed') adultStatus.value = 'running';
+      return true;
     }
     async function startAdultGeneration(url, parentJobId) {
       if (!canGenerateAdult.value) return;
@@ -435,6 +462,14 @@ initVueApp({
         });
         await consumeAdultStream(response);
       } catch (eventError) {
+        if (jobId.value && accessToken.value) {
+          try {
+            await recoverAdultEvents(jobId.value);
+            return;
+          } catch (_) {
+            // Fall through to the user-visible failure if recovery also fails.
+          }
+        }
         adultStatus.value = 'failed';
         adultError.value = eventError.message || '成人润色请求失败';
       }
@@ -460,6 +495,8 @@ initVueApp({
         });
         const data = await response.json();
         if (!response.ok || data.ok === false) throw new Error(data.error || '应用失败');
+        selectedRange.value = null;
+        resetAdultCandidate();
         adultStatus.value = 'applied';
         await loadReader();
       } catch (eventError) {

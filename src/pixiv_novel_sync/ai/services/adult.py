@@ -541,6 +541,8 @@ class AIAdultPolishMixin:
     def _validation_event_data(
         job_id: str,
         result: AdultValidationResult,
+        *,
+        safety_policy_hash: str,
     ) -> dict[str, Any]:
         return {
             "job_id": job_id,
@@ -554,6 +556,16 @@ class AIAdultPolishMixin:
             "new_number_tokens": list(result.new_number_tokens),
             "diff_summary": dict(result.diff_summary),
             "validation_hash": result.validation_hash,
+            "warning_ack_hash": (
+                warning_ack_hash(
+                    result.validation_hash,
+                    safety_policy_hash,
+                    VALIDATOR_POLICY_HASH,
+                    result.warnings,
+                )
+                if result.warnings
+                else ""
+            ),
         }
 
     @staticmethod
@@ -1260,7 +1272,11 @@ class AIAdultPolishMixin:
 
         yield AIStreamChunk(
             type="validation",
-            data=self._validation_event_data(prepared.job_id, finalized),
+            data=self._validation_event_data(
+                prepared.job_id,
+                finalized,
+                safety_policy_hash=safety_result.policy_hash,
+            ),
         )
         yield AIStreamChunk(
             type="candidate",

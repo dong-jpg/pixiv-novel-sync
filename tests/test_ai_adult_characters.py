@@ -151,6 +151,7 @@ def test_confirmation_is_sorted_hashed_and_invalidated_by_character_change(
 
     stored_ids = [item["character_id"] for item in confirmed["adult_characters"]]
     assert stored_ids == sorted(stored_ids)
+    assert confirmed["character_ids"] == stored_ids
     assert all(item["character_revision"] == 1 for item in confirmed["adult_characters"])
     assert len(confirmed["adult_characters_hash"]) == 64
     assert confirmed["adult_characters_confirmed"] is True

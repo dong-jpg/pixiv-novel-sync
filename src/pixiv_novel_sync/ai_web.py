@@ -30,6 +30,7 @@ from .ai.adult_types import (
     AdultInputError,
     parse_adult_request,
     raw_sha256,
+    warning_ack_hash,
 )
 from .ai.adult_validation import compute_provider_scope_hash
 from .ai.services.adult import _review_agent_config
@@ -487,6 +488,7 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
                 "new_number_tokens",
                 "diff_summary",
                 "validation_hash",
+                "warning_ack_hash",
             },
             "candidate": {"job_id", "applicable", "validation_hash", "replayed"},
             "done": {"job_id", "applicable", "validation_hash", "replayed"},
@@ -1183,15 +1185,124 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
                 )
                 status = str(job.get("status") or "")
                 candidate = job.get("output_text")
+                db = service._db()
+                try:
+                    application = db.get_application_for_owner(job_id, owner.scope)
+                finally:
+                    db.close()
+                if isinstance(application, dict):
+                    validation = application.get("validation")
+                    if not isinstance(validation, dict):
+                        yield AIStreamChunk(
+                            type="error",
+                            data={
+                                "job_id": job_id,
+                                "code": "route_contract_error",
+                                "message": "成人润色校验快照无效",
+                            },
+                        )
+                        return
+                    validation_fields = {
+                        key: validation[key]
+                        for key in (
+                            "applicable",
+                            "warnings",
+                            "blocking_issues",
+                            "protected_terms_missing",
+                            "paragraph_delta",
+                            "length_ratio",
+                            "perspective_warning",
+                            "new_number_tokens",
+                            "diff_summary",
+                            "validation_hash",
+                        )
+                        if key in validation
+                    }
+                    required_validation_fields = {
+                        "applicable",
+                        "warnings",
+                        "blocking_issues",
+                        "protected_terms_missing",
+                        "paragraph_delta",
+                        "length_ratio",
+                        "perspective_warning",
+                        "new_number_tokens",
+                        "diff_summary",
+                        "validation_hash",
+                    }
+                    if set(validation_fields) != required_validation_fields:
+                        yield AIStreamChunk(
+                            type="error",
+                            data={
+                                "job_id": job_id,
+                                "code": "route_contract_error",
+                                "message": "成人润色校验快照无效",
+                            },
+                        )
+                        return
+                    warnings = validation_fields["warnings"]
+                    if not isinstance(warnings, list) or any(
+                        not isinstance(code, str) for code in warnings
+                    ):
+                        yield AIStreamChunk(
+                            type="error",
+                            data={
+                                "job_id": job_id,
+                                "code": "route_contract_error",
+                                "message": "成人润色校验快照无效",
+                            },
+                        )
+                        return
+                    if warnings:
+                        try:
+                            replay_warning_ack = warning_ack_hash(
+                                str(validation_fields["validation_hash"]),
+                                str(application["safety_policy_hash"]),
+                                str(application["validator_policy_hash"]),
+                                warnings,
+                            )
+                        except (KeyError, TypeError, ValueError):
+                            replay_warning_ack = ""
+                    else:
+                        replay_warning_ack = ""
+                    validation_fields["job_id"] = job_id
+                    validation_fields["warning_ack_hash"] = replay_warning_ack
+                    yield AIStreamChunk(type="validation", data=validation_fields)
                 if status == "succeeded" and isinstance(candidate, str):
                     yield AIStreamChunk(
                         type="candidate",
                         text=candidate,
-                        data={"job_id": job_id, "replayed": True},
+                        data={
+                            "job_id": job_id,
+                            "applicable": bool(
+                                application.get("applicable")
+                                if isinstance(application, dict)
+                                else True
+                            ),
+                            "validation_hash": (
+                                application.get("validation_hash")
+                                if isinstance(application, dict)
+                                else job.get("output", {}).get("validation_hash")
+                            ),
+                            "replayed": True,
+                        },
                     )
                     yield AIStreamChunk(
                         type="done",
-                        data={"job_id": job_id, "replayed": True},
+                        data={
+                            "job_id": job_id,
+                            "applicable": bool(
+                                application.get("applicable")
+                                if isinstance(application, dict)
+                                else True
+                            ),
+                            "validation_hash": (
+                                application.get("validation_hash")
+                                if isinstance(application, dict)
+                                else job.get("output", {}).get("validation_hash")
+                            ),
+                            "replayed": True,
+                        },
                     )
                 elif status == "running":
                     yield AIStreamChunk(

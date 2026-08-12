@@ -226,6 +226,12 @@ APIs:
 
 “救援 API”设置页只展示 Token 前缀与轮换时间。完整救援 Token 只在生成或轮换成功后显示一次，关闭窗口时立即清空页面中的明文。AI 设置不回显 API Key；模型池编辑器列出所有可能接收 Prompt 的 Provider，并明确提示跨 Provider 故障转移的隐私范围。
 
+### 成人配置（`/dashboard/settings`）
+
+成人 Agent 不走普通 Agent 的生命周期入口。设置页先选择项目，维护结构化的虚构角色（年龄、年龄依据、别名和 revision），再在 adult confirmation 中打开成人内容并勾选当前角色 revision。`safety` 与 `fact_guard` 两个固定 review binding 必须分别绑定支持 `json` 的 Provider 模型或模型池；binding、角色或确认 revision 变化后，阅读页会要求重新获取 Provider scope。
+
+推荐配置顺序是 Provider 模型目录/模型池、`adult_polish` Agent、两个 JSON review binding、项目角色记录、成人确认。没有 `DASHBOARD_TOKEN` 时成人 API 即使来自 localhost 也返回 `403`；成人功能不是普通 Pipeline 的自动步骤。
+
 ### `/dashboard/preferences`
 
 Template: `dashboard_preferences.html`
@@ -294,7 +300,16 @@ API：`GET /api/dashboard/rescues`。
 
 Template: `dashboard_ai_reader.html`
 
-用途：显示 AI 作品封面、目录和章节正文，视觉与小说库详情页一致。
+用途：显示 AI 作品封面、目录和章节正文，视觉与小说库详情页一致。阅读页的“成人润色”页签只在原始正文上通过 `v-text` 提供连续片段选择，不提交正文或上下文；选择后依次确认 Provider scope、成人 Agent 和已确认的虚构成年人角色。
+
+成人润色交互顺序：
+
+1. 在原始章节文本中选择连续范围；范围以 Unicode code point 计数，中文、emoji 和组合字符不能被拆开。
+2. 调用 `POST /api/dashboard/ai/polish/adult/scope`，确认返回的完整 Provider/model 分组及 `provider_scope_hash`。
+3. 调用 stream，观察 `metadata`、`progress`、两阶段 `validation`、`candidate` 和 `done`；若连接中断，使用 signed `/events` 恢复同一 job 的 validation/candidate/done 状态；warning 候选只有拿到 scoped `warning_ack_hash` 后才允许应用。
+4. 仅对当前章节 revision、角色确认 revision、Provider scope 和校验 hash 都未变化的候选调用 apply。发生 `409` 时重新选择/确认并生成，不在前端重放旧正文。
+
+候选展示只提供只读前后文、原片段、Unicode-safe diff 和校验 code；应用成功后重新加载章节，后端只替换目标区间。未应用候选按三天清理，应用后不保留任务正文。
 
 ### `/token-login`
 

@@ -3,19 +3,26 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 from flask import Flask
 
-from ai_adult_testkit import application_row, seed_adult_project, valid_adult_payload
+from ai_adult_testkit import (
+    application_row,
+    safe_validation,
+    seed_adult_project,
+    valid_adult_payload,
+)
 from pixiv_novel_sync.ai.service import AIConflictError, AIWritingService
 from pixiv_novel_sync.ai.adult_auth import AdultOwner, sign_adult_access
 from pixiv_novel_sync.ai_web import register_ai_routes
 from pixiv_novel_sync.settings import Settings, StorageSettings
 from pixiv_novel_sync.storage_db import Database
 from pixiv_novel_sync.webapp import create_app
-from pixiv_novel_sync.ai.adult_types import raw_sha256
+from pixiv_novel_sync.ai.adult_types import raw_sha256, warning_ack_hash
+from pixiv_novel_sync.ai.adult_validation import compute_validation_hash
 
 
 def _settings(tmp_path: Path, dashboard_token: str | None) -> Settings:
@@ -464,6 +471,70 @@ def test_adult_events_require_bound_token_and_replay_only_committed_candidate(tm
     assert b"event: delta" not in allowed.data
     assert b"event: candidate" in allowed.data
     assert b"committed candidate" in allowed.data
+
+
+def test_adult_events_replay_validation_and_warning_ack_hash(tmp_path):
+    app = _app(tmp_path)
+    _project_id, _chapter_id, scope = _seed_adult_job(
+        tmp_path,
+        app,
+        job_id="adult-job-warning-replay",
+        status="running",
+        candidate="committed candidate",
+    )
+    db = Database(_settings(tmp_path, "dashboard-secret").storage.db_path)
+    try:
+        db.conn.execute(
+            "UPDATE ai_jobs SET owner_scope = ? WHERE job_id = ?",
+            (scope, "adult-job-warning-replay"),
+        )
+        db.conn.commit()
+        validation = replace(
+            safe_validation(),
+            warnings=("paragraph_changed",),
+            validation_hash="",
+        )
+        validation = replace(validation, validation_hash=compute_validation_hash(validation))
+        db.save_candidate_application(
+            application_row(
+                source_job_id="adult-job-warning-replay",
+                owner_scope=scope,
+                owner_token="execution-owner-token",
+                project_id=_project_id,
+                chapter_id=_chapter_id,
+                target_start=0,
+                target_end=1,
+                candidate="committed candidate",
+                validation=validation,
+                validation_hash=validation.validation_hash,
+                warning_ack_hash="",
+            )
+        )
+    finally:
+        db.close()
+    client = app.test_client()
+    _authenticate(client)
+    response = client.get(
+        "/api/dashboard/ai/polish/adult/adult-job-warning-replay/events",
+        headers={
+            "X-Adult-Access-Token": _access_token(
+                app,
+                "adult-job-warning-replay",
+                scope,
+            )
+        },
+        buffered=True,
+    )
+    assert response.status_code == 200
+    assert b"event: validation" in response.data
+    assert b'"warning_ack_hash": "' in response.data
+    expected_ack = warning_ack_hash(
+        validation.validation_hash,
+        "1" * 64,
+        "2" * 64,
+        validation.warnings,
+    )
+    assert expected_ack.encode("ascii") in response.data
 
 
 def test_adult_cancel_is_owner_scoped_and_cannot_overwrite_terminal_job(tmp_path):

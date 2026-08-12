@@ -114,7 +114,7 @@ class RouteResult:
 - Produces `load_adult_policy(kind: Literal['safety', 'fact_guard']) -> AdultPolicyBundle` and `verify_adult_policy_bundle() -> None`.
 - Produces shared test helpers `valid_adult_payload`, `application_row`, `character_fact`, `safe_validation`, `structural_validation`, `make_legacy_ai_database`, `seed_adult_project`, `FakeModelRouter`, and `run_concurrently`; later test modules import these names rather than redefining implicit fixtures.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_raw_hash_preserves_crlf_and_combining_characters():
@@ -141,13 +141,13 @@ def test_policy_hash_tamper_fails_closed(monkeypatch):
         verify_adult_policy_bundle()
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_adult_types.py tests/test_ai_adult_policies.py -q`
 
 Expected: FAIL because the DTO, parser and policy bundle do not exist.
 
-- [ ] **Step 3: Implement the domain layer**
+- [x] **Step 3: Implement the domain layer**
 
 Implement the following exact primitives in `adult_types.py`:
 
@@ -221,13 +221,13 @@ In `adult_policies.py`, define immutable `AdultPolicyBundle(policy_id, version, 
 
 Create `tests/ai_adult_testkit.py` with deterministic constructors. `valid_adult_payload` returns all request fields with a 20-code-point target and hashes computed by `raw_sha256`; `application_row` returns every non-null application field using fixed 64-hex hashes; `character_fact(name='安娜', age_years=25, fictional=True)` returns a stable UUID/revision record; `safe_validation()` and `structural_validation(code='length_ratio')` return concrete `AdultValidationResult` values. `make_legacy_ai_database(path)` creates the current pre-feature `ai_providers`/`ai_agents`/`ai_jobs`/project/chapter tables with fixed Agent ID 7 and chapter ID 9. `seed_adult_project(db)` inserts project ID 1, chapter ID 9, Agent ID 7, a running `adult-job` owned by `owner-a`, and the two confirmed character rows needed by `application_row()`. `FakeModelRouter` stores `CandidateSnapshot` objects and a FIFO list of `RouteResult` values, records every stage/message, invokes callbacks, and increments `execute_count`. `run_concurrently(callable_, count=2)` uses `threading.Barrier`, starts exactly `count` threads, joins them and returns values/exceptions in call order.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_ai_adult_types.py tests/test_ai_adult_policies.py -q`
 
 Expected: PASS, including CRLF/combining-character and policy-tamper cases.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/adult_types.py src/pixiv_novel_sync/ai/adult_policies.py tests/ai_adult_testkit.py tests/test_ai_adult_types.py tests/test_ai_adult_policies.py
@@ -247,7 +247,7 @@ git commit -m "feat: add adult polish domain contracts and fixed policies"
 - It also exposes `create_adult_character`, `cas_update_adult_character`, `set_adult_confirmation`, `cas_update_review_binding`, `find_job_by_idempotency`, `create_adult_job`, `cas_finish_adult_job`, `save_candidate_application`, `get_application_for_owner(source_job_id, owner_scope)`, and `cleanup_adult_jobs`.
 - Existing `Database` callers remain valid; `AdultStorageMixin` is added to `Database` without changing mixin order for existing methods.
 
-- [ ] **Step 1: Write the failing migration tests**
+- [x] **Step 1: Write the failing migration tests**
 
 ```python
 def test_adult_schema_defaults_are_fail_closed(db):
@@ -279,13 +279,13 @@ def test_old_database_migration_preserves_agent_and_chapter_ids(tmp_path):
     assert db.get_ai_chapter(9)["id"] == 9
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_adult_storage.py -q`
 
 Expected: FAIL because the adult columns/tables and `AdultStorageMixin` methods are absent.
 
-- [ ] **Step 3: Add the atomic schema migration and storage methods**
+- [x] **Step 3: Add the atomic schema migration and storage methods**
 
 Call `_migrate_adult_polish_tables()` from `SchemaMixin.init_schema()` after the model-pool migration. The migration must run in one `BEGIN IMMEDIATE` transaction, preserve existing IDs/timestamps, and execute `PRAGMA foreign_key_check` before commit. Rebuild `ai_writing_projects` and `ai_chapters` when SQLite cannot add the required checks in place. Add these exact fields:
 
@@ -311,13 +311,13 @@ Create `ai_chapter_derivative_invalidations(chapter_id INTEGER PRIMARY KEY REFER
 
 Add `owner_scope` (nullable for legacy jobs but required when `task_type='adult_polish'`), `idempotency_key_hash`, `parent_job_id`, and the model-router lease/snapshot columns supplied by the model-pool plan to `ai_jobs`; create the adult index `(owner_scope, created_at)`. `AdultStorageMixin` must serialize only scrubbed input metadata and validation summaries, never正文. `save_candidate_application` writes `ai_jobs.output_text`, application metadata and the owner-CAS job terminal state in one transaction; `cleanup_adult_jobs` deletes expired unapplied applications before their jobs and retains applied metadata while allowing the three-day job output cleanup.
 
-- [ ] **Step 4: Run migration and storage tests**
+- [x] **Step 4: Run migration and storage tests**
 
 Run: `python -m pytest tests/test_ai_adult_storage.py -q`
 
 Expected: PASS; old fixtures keep IDs/configuration, disabled bindings are present, `foreign_key_check` is empty, and deleting a job does not delete an application.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/storage/schema.py src/pixiv_novel_sync/storage_db.py src/pixiv_novel_sync/storage/ai/adult.py tests/test_ai_adult_storage.py
@@ -338,7 +338,7 @@ git commit -m "feat: add adult polish storage schema and migrations"
 - `update_adult_confirmation(project_id, payload, expected_revision) -> dict[str, Any]` and `get_adult_confirmation(project_id) -> dict[str, Any]`.
 - `build_project_facts_snapshot(db, project_id) -> tuple[dict[str, Any], str]` returns server-read facts and `project_facts_hash`; it never accepts client-supplied ages, names or relationship facts.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_character_id_is_server_generated_and_revision_is_cas(db, service):
@@ -365,13 +365,13 @@ def test_chapter_revision_increments_for_content_and_metadata(db):
     assert db.get_ai_chapter(chapter_id)["chapter_revision"] == 2
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_adult_characters.py -q`
 
 Expected: FAIL because character APIs, confirmation fields and `chapter_revision` updates do not exist.
 
-- [ ] **Step 3: Implement character and revision rules**
+- [x] **Step 3: Implement character and revision rules**
 
 Validate canonical names to 200 code points, aliases to at most 32 entries/100 code points each, non-empty `age_basis`, explicit boolean `fictional`, non-negative `age_years`, and server-generated UUID4 `character_id`. `update_adult_character` and confirmation use `WHERE character_id=? AND revision=?` or `WHERE project_id=? AND adult_confirmation_revision=?`; a zero-row update raises a conflict error. Any name/alias/age/basis/fictional/active change increments both character revision and project `adult_confirmation_revision`, clears `adult_characters_confirmed`, and sets `adult_confirmation_updated_at`.
 
@@ -379,13 +379,13 @@ Validate canonical names to 200 code points, aliases to at most 32 entries/100 c
 
 Change every chapter mutation path (`update_ai_chapter`, `patch_ai_chapter_metadata`, `update_ai_chapters_outlines_and_metadata`, and the adult apply path) to increment `chapter_revision` exactly once per transaction that changes content or related metadata. Preserve raw content and update `word_count`/`updated_at` in the same SQL statement. `build_project_facts_snapshot` includes project outline/settings, active character facts, project states and foreshadow rows in a sorted canonical object; it returns no正文.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_ai_adult_characters.py -q`
 
 Expected: PASS, including tombstone ID non-reuse, stale CAS rejection and revision invalidation.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/storage/ai/writing.py src/pixiv_novel_sync/ai/services/projects.py src/pixiv_novel_sync/ai/services/adult.py tests/test_ai_adult_characters.py
@@ -407,7 +407,7 @@ git commit -m "feat: add adult character confirmation and chapter revisions"
 - `list_adult_review_bindings() -> dict[str, dict[str, Any]]` and `update_adult_review_binding(review_kind, payload, expected_version) -> dict[str, Any]` edit only route fields.
 - Dedicated routes are `GET/PUT /api/dashboard/ai/adult-review-bindings/<review_kind>` and `POST /api/dashboard/ai/agents/adult-polish/seed`; ordinary Agent CRUD must reject internal task types and policy fields.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_normal_agent_crud_cannot_create_internal_review_agent(service):
@@ -428,25 +428,25 @@ def test_adult_agent_template_has_no_provider_default(service):
     assert "Provider" not in result["system_prompt"]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_adult_admin.py -q`
 
 Expected: FAIL because `adult_polish` is not an allowed task type and the dedicated binding methods/routes do not exist.
 
-- [ ] **Step 3: Implement isolated admin paths**
+- [x] **Step 3: Implement isolated admin paths**
 
 Add `adult_polish` to the user task-type allowlist with the fixed template constraints: preserve characters/plot/facts/perspective, process only the selected target, follow inherited style plus per-operation intensity, and output replacement text only. Reject `adult_safety_review` and `adult_fact_guard` in `_normalize_agent_payload`, ignore/deny `policy_id`, `policy_text`, `output_schema`, `safety_policy_hash`, `validator_policy_hash`, and `binding_version` in every ordinary CRUD payload. `delete_agent` and `update_agent` must refuse any row marked internal.
 
 `update_adult_review_binding` accepts only `binding_type`, `provider_id`, `model`, `model_pool_id`, `enabled`, and `expected_version`; it forces `required_capabilities_json='["json"]'`, validates fixed/pool mutual exclusion through the model-router capability resolver, and performs `UPDATE ai_adult_review_bindings SET binding_type=?, provider_id=?, model=?, model_pool_id=?, enabled=?, version=version+1, updated_at=CURRENT_TIMESTAMP WHERE review_kind=? AND version=?`. Disabled rows clear route fields. A missing route candidate or policy hash mismatch leaves the row disabled and raises a Chinese configuration error. Settings UI must show policy IDs/hashes and `json` as read-only text.
 
-- [ ] **Step 4: Run tests and route smoke checks**
+- [x] **Step 4: Run tests and route smoke checks**
 
 Run: `python -m pytest tests/test_ai_adult_admin.py -q`
 
 Expected: PASS; ordinary CRUD cannot mutate either policy, CAS conflicts return 409, and the template is provider-neutral.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/services/admin.py src/pixiv_novel_sync/ai/services/__init__.py src/pixiv_novel_sync/ai/service.py src/pixiv_novel_sync/ai_web.py src/pixiv_novel_sync/templates/dashboard_settings.html tests/test_ai_adult_admin.py
@@ -469,7 +469,7 @@ git commit -m "feat: isolate adult polish agent and review bindings"
 - `run_local_adult_checks(original, candidate, request, protected_terms, characters) -> AdultValidationResult`.
 - `compute_validation_hash(result) -> str` and `compute_provider_scope_hash(scopes) -> str`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_prompt_has_four_unambiguous_sections_and_random_boundary():
@@ -496,13 +496,13 @@ def test_local_checks_cover_terms_length_numbers_and_minor_risk():
     assert "minor_present" in blocked.blocking_issues
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_adult_prompt.py tests/test_ai_adult_validation.py -q`
 
 Expected: FAIL because prompt/placeholder/parser and local checks are absent.
 
-- [ ] **Step 3: Implement prompt and local validation**
+- [x] **Step 3: Implement prompt and local validation**
 
 Generate a fresh `secrets.token_hex(16)` boundary per request and retry if it occurs in raw chapter text, project facts or instruction. Replace every confirmed adult fictional canonical name and alias with a job-local ASCII token `ADULT_<128-bit-hex>_<ordinal>` before sending the writing prompt; maintain a one-to-one token map in memory only. Reject target/context names not present in the confirmed whitelist before any Provider call. Construct messages in this order: immutable system rules, canonical project facts, read-only before/after blocks, target block, and a separate user-instruction block that explicitly cannot override facts or output scope. Merge project slider values from `compose_style_control_prompt` with per-operation `explicitness`, `lyricism`, and `vulgarity` without mutating project settings.
 
@@ -513,13 +513,13 @@ Before Prompt construction, require every deduplicated `locked_term` to occur ex
 
 The local validator rule set has a fixed `VALIDATOR_POLICY_ID='adult_validator.v1'` and `VALIDATOR_POLICY_HASH` computed from its canonical rule/version object; Task 7 stores it as `validator_policy_hash` and treats any code/runtime mismatch as a blocking configuration error.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_ai_adult_prompt.py tests/test_ai_adult_validation.py -q`
 
 Expected: PASS, including Chinese, emoji, combining-character, CRLF/LF, placeholder and length-boundary cases.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/adult_prompt.py src/pixiv_novel_sync/ai/adult_validation.py tests/test_ai_adult_prompt.py tests/test_ai_adult_validation.py
@@ -540,7 +540,7 @@ git commit -m "feat: add adult prompt boundaries and deterministic validation"
 - `AdultRouteRequest` is a local DTO/protocol adapter containing `job_id`, `stage`, messages, immutable `CandidateSnapshot`, `max_tokens`, `owner_token`, and an `on_delta(text)` callback; it is converted to the model-pool `RouteRequest`.
 - `RouteResult` is consumed only through `output_text`, `candidate_snapshot_hash`, `attempts`, and `finish_state`; the service maps attempts to `progress` without exposing request bodies.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_preflight_failure_never_calls_router(monkeypatch, service, adult_payload):
@@ -568,13 +568,13 @@ def test_same_idempotency_key_reuses_job_without_second_execute(service, fake_ro
     assert fake_router.execute_count == 1
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_adult_generation.py -q`
 
 Expected: FAIL because `AIAdultPolishMixin`, preflight, idempotency and router adapter do not exist.
 
-- [ ] **Step 3: Implement preflight and buffered main routing**
+- [x] **Step 3: Implement preflight and buffered main routing**
 
 `prepare_adult_job` must use one consistent read snapshot to verify owner access to project/chapter/Agent, project/chapter relationship, enabled `adult_polish` Agent, enabled review bindings, valid policy hashes, adult project flags, active confirmed fictional characters and revisions, participant exact mapping, chapter/target raw hashes, valid offsets, and the client `provider_scope_hash`. It reads the chapter正文 itself and stores only lengths/hashes in `ai_jobs.input_json`. A failed check returns a Chinese configuration/validation error before `ModelRouter.resolve_candidates` or `execute` is called.
 
@@ -582,13 +582,13 @@ Create the job with a random `owner_token`, persistent HMAC `owner_scope`, idemp
 
 Pass an `AdultRouteRequest` to `ModelRouter.execute` for `stage='main'`. The callback appends each non-empty delta to a bounded in-memory buffer and flips `output_started`; it emits no `delta` event. Router progress becomes `AIStreamChunk(type='progress')` with candidate/provider/model names and attempt status only. If `finish_state='failed_before_output'`, continue according to the router snapshot; if `finish_state='partial'`, clear the buffer, CAS `running -> partial`, persist only error/attempt summaries and emit an error. A successful main result proceeds to Task 7 validation; it never writes the chapter.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_ai_adult_generation.py -q`
 
 Expected: PASS; preflight has zero Provider calls, partial output is invisible, and duplicate idempotency keys reuse one job.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/services/adult.py src/pixiv_novel_sync/ai/service.py tests/test_ai_adult_generation.py
@@ -609,7 +609,7 @@ git commit -m "feat: route adult polish generation through model router"
 - `finalize_adult_candidate(prepared, candidate, local_result, safety_result, fact_result) -> AdultValidationResult`.
 - `AdultStorageMixin.save_candidate_application(job_id: str, owner_scope: str, candidate: str | None, validation: AdultValidationResult, snapshots: Mapping[str, Any], terminal_status: Literal['succeeded', 'failed']) -> int` atomically stores a safe/structural result and changes `running` to `succeeded` or `failed` with owner CAS.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_safety_review_receives_restored_server_buffer_not_nonce(service, fake_router, prepared):
@@ -633,13 +633,13 @@ def test_structural_block_is_visible_but_not_applicable(service, db, prepared):
     assert db.get_application_for_owner(prepared.job_id, "owner-a")["applicable"] is False
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_adult_review.py -q`
 
 Expected: FAIL because validation-stage routing, strict schemas and atomic candidate persistence do not exist.
 
-- [ ] **Step 3: Implement both fixed validation stages**
+- [x] **Step 3: Implement both fixed validation stages**
 
 Restore the candidate only inside the service buffer before review, then pass the normalized candidate, ordered participant `character_id` list, `age_years`, `fictional`, allowed names/aliases, original target and project protection list to the review prompt. Never ask a generic writing Agent to perform either review. Parse JSON with `json.loads`, require exact object keys/types, `safe is True`, and reject any issue outside the fixed enum. Any timeout, router error, missing policy/hash mismatch, `safe=false`, minor/unknown-age/real-person/new-character issue, or fact-guard `unknown` becomes a blocking code.
 
@@ -647,13 +647,13 @@ Run local checks first, then safety review, then fact guard. A safety blocking r
 
 The transaction must use `WHERE status='running' AND owner_token=?`; terminal CAS failure discards the buffer and emits no candidate. `validation_json` contains only codes, counts, ratios and hashes; it never contains target/candidate/diff text. Enforce the 36,000-code-point/144,000-byte limits incrementally and discard the whole buffer on overflow.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_ai_adult_review.py -q`
 
 Expected: PASS; both review attempts are stage `validation`, strict schema failures fail closed, safe candidates are atomically persisted before SSE exposure, and structural blocks are non-applicable.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/services/adult.py src/pixiv_novel_sync/storage/ai/adult.py tests/test_ai_adult_review.py
@@ -674,7 +674,7 @@ git commit -m "feat: add fixed adult safety and fact validation stages"
 - `ApplySnapshot` contains the stored chapter/project/participant/provider/policy/validation hashes and revisions required by the storage method; `AdultConflictError` carries a public Chinese `code` and never includes正文.
 - `AdultStorageMixin.apply_adult_polish(job_id: str, owner_scope: str, warning_ack_hash: str | None, access_token_hash: str, expected_snapshot: ApplySnapshot) -> dict[str, Any]` returns `{application_id, chapter_revision_after, chapter_hash_after, already_applied}` and raises `AdultConflictError` for all 409 cases.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_apply_rejects_chapter_revision_aba_and_leaves_content(db, service, prepared):
@@ -699,13 +699,13 @@ def test_scope_or_binding_change_returns_409_without_provider_call(service, db, 
     assert fake_router.execute_count == 0
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_adult_apply.py -q`
 
 Expected: FAIL because no locked apply transaction, warning hash check or derivative invalidation exists.
 
-- [ ] **Step 3: Implement the write-lock transaction**
+- [x] **Step 3: Implement the write-lock transaction**
 
 For the normal unchanged-policy path, use one `with db.transaction() as conn` block: re-read application, job, chapter, project facts, current owner authorization, character revisions, policy hashes, review binding hashes and the three-stage provider scope, validate them, then apply. Validate job status `succeeded`, `applicable=1`, owner/access token, current chapter/project relationship, exact `chapter_revision`, raw chapter hash, target slice hash, offsets, project facts hash, adult confirmation revision/hash, participant hash, binding/policy/validator hashes and `warning_ack_hash`.
 
@@ -717,13 +717,13 @@ The apply JSON must contain the `warning_ack_hash` key: its value is `""` when t
 
 Update generic `cleanup_ai_jobs` to call the adult cleanup service: delete expired `ai_polish_applications` with `applied_at IS NULL` before their jobs, skip jobs referenced by unapplied applications, then apply the existing three-day policy to output text. Startup orphan repair must clear any legacy adult `output_text` lacking an application and mark its job failed.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_ai_adult_apply.py -q`
 
 Expected: PASS; ABA, stale target, warning hash, policy/provider scope, owner and concurrent apply cases are rejected safely, while one successful transaction updates only the target and queues derivative rebuild.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/storage/ai/adult.py src/pixiv_novel_sync/storage/ai/core.py src/pixiv_novel_sync/ai/services/adult.py tests/test_ai_adult_apply.py
@@ -748,7 +748,7 @@ git commit -m "feat: apply adult candidates with revision and derivative locks"
 - Add `POST /api/dashboard/ai/polish/adult/scope` to return the three sanitized Provider candidate groups plus their canonical `provider_scope_hash` before generation.
 - Add `GET/POST /api/dashboard/ai/projects/<project_id>/characters`, `PUT/DELETE /api/dashboard/ai/projects/<project_id>/characters/<character_id>`, `GET/PUT /api/dashboard/ai/projects/<project_id>/adult-confirmation`, and `GET/PUT /api/dashboard/ai/adult-review-bindings/<review_kind>`. Generic job list/detail/SSE/cancel/cleanup must pass owner scope when `task_type='adult_polish'`.
 
-- [ ] **Step 1: Write the failing route/security tests**
+- [x] **Step 1: Write the failing route/security tests**
 
 ```python
 def test_adult_route_requires_configured_token_even_from_loopback(client_without_token):
@@ -770,13 +770,13 @@ def test_adult_sse_buffers_delta_and_sets_no_store_headers(authenticated_client,
     assert response.headers["X-Robots-Tag"] == "noindex, nofollow, noarchive"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_adult_auth.py tests/test_ai_adult_web.py -q`
 
 Expected: FAIL because adult routes, owner scope and signed access tokens do not exist.
 
-- [ ] **Step 3: Implement route-level authorization and responses**
+- [x] **Step 3: Implement route-level authorization and responses**
 
 `require_adult_owner` must reject when `settings.dashboard_token` is empty, regardless of loopback, and reject a missing/false session authentication flag. Derive `scope = HMAC-SHA256(app.secret_key, b'adult-owner:' + configured_dashboard_token)`; do not persist the token or session cookie. Generate a signed, short-lived access token containing only owner scope, job ID, issue/expiry and a random nonce. Every candidate read, copy, retry, cancel, event resume and apply verifies both owner scope and project/chapter authorization; an unknown owner receives a non-enumerating 404.
 
@@ -786,13 +786,13 @@ On `GeneratorExit` or SSE socket failure, request cancellation only while the jo
 
 Extend `AiCoreMixin.list_ai_jobs`, `get_ai_job`, unified `TasksMixin.list_ai_task_logs`, cancellation and cleanup to add `owner_scope=?` whenever the task is adult; no existing non-adult job behavior changes. Startup `fail_stale_ai_jobs` must honor model-router owner/lease CAS and never overwrite terminal adult jobs.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_ai_adult_auth.py tests/test_ai_adult_web.py tests/test_webapp_security.py -q`
 
 Expected: PASS; tokenless loopback is denied for adult routes, CSRF and owner isolation hold, SSE never exposes raw delta/partial output, and generic logs do not cross owners.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/ai/adult_auth.py src/pixiv_novel_sync/ai_web.py src/pixiv_novel_sync/webapp.py src/pixiv_novel_sync/storage/ai/core.py src/pixiv_novel_sync/storage/tasks.py tests/test_ai_adult_web.py tests/test_ai_adult_auth.py
@@ -811,7 +811,7 @@ git commit -m "feat: secure adult polish routes with owner-scoped SSE"
 - Browser selection conversion is `selectionToCodePointRange(root: Node, selection: Selection) -> {start: number, end: number}`; it counts `Array.from(textContent)` code points and never UTF-16 units.
 - UI exposes one continuous target, read-only before/after context, intensity overrides, locked terms, explicit participant IDs, provider-scope confirmation, warning acknowledgment and one disabled-until-valid “应用到章节” control.
 
-- [ ] **Step 1: Write the failing frontend contract tests**
+- [x] **Step 1: Write the failing frontend contract tests**
 
 ```python
 def test_reader_contains_adult_tab_and_codepoint_conversion_contract():
@@ -835,13 +835,13 @@ def test_settings_shows_fixed_policy_hashes_and_binding_capability():
     assert "json" in html
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_ai_adult_frontend.py -q`
 
 Expected: FAIL because the reader and settings templates have no adult tab or binding controls.
 
-- [ ] **Step 3: Implement the reader interaction**
+- [x] **Step 3: Implement the reader interaction**
 
 Add a sibling tab beside正文/章节设置/普通润色 in `dashboard_ai_reader.html`. Render the chapter’s raw content in text nodes; do not call `replace`, `innerHTML`, or a normalizing formatter for selection. Implement the exact conversion algorithm:
 
@@ -866,13 +866,13 @@ On generate, submit only IDs, code-point offsets, client hashes/revision, partic
 
 In `dashboard_settings.html`, add adult content/fictional-character toggles, character CRUD with expected revision, sorted confirmation list, and a separate review-binding section that displays immutable policy IDs/hashes and fixed `json` capability. Do not expose policy text editing or internal Agent delete/disable controls.
 
-- [ ] **Step 4: Run frontend tests**
+- [x] **Step 4: Run frontend tests**
 
 Run: `python -m pytest tests/test_ai_adult_frontend.py tests/test_frontend_library_os.py -q`
 
 Expected: PASS; the page uses raw text nodes, code-point offsets, existing CSRF helpers and no unsafe HTML injection.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/pixiv_novel_sync/templates/dashboard_ai_reader.html src/pixiv_novel_sync/templates/dashboard_settings.html tests/test_ai_adult_frontend.py
@@ -892,7 +892,7 @@ git commit -m "feat: add adult polish chapter tab and confirmation controls"
 - Document exact adult routes, request/response envelopes, 403/404/409 semantics, no-store headers, retention and configuration prerequisites.
 - Integration fixture wires a fake `ModelRouter` through main/safety/fact stages and verifies the complete stream-to-apply lifecycle without a real Provider.
 
-- [ ] **Step 1: Write the failing integration test**
+- [x] **Step 1: Write the failing integration test**
 
 ```python
 def test_adult_polish_end_to_end_changes_only_target_and_records_snapshots(app, seeded_project, fake_router):
@@ -910,17 +910,17 @@ def test_adult_polish_end_to_end_changes_only_target_and_records_snapshots(app, 
     assert fake_router.stages == ["main", "validation", "validation"]
 ```
 
-- [ ] **Step 2: Run the integration test to verify it fails**
+- [x] **Step 2: Run the integration test to verify it fails**
 
 Run: `python -m pytest tests/test_ai_adult_integration.py -q`
 
 Expected: FAIL until all storage, service, route and UI contracts are wired together.
 
-- [ ] **Step 3: Document and close the contract**
+- [x] **Step 3: Document and close the contract**
 
 Document configuration order: configure Dashboard token; create/sync or manually add Provider models through the model-pool feature; create a fixed/pool `adult_polish` Agent; configure both review bindings with `json`; create structured fictional character records; enable adult content and confirm current character revisions. State explicitly that no adult route works in tokenless single-user mode, no automatic Pipeline step exists, output is retained for three days only when unapplied, applied metadata retains hashes/snapshots without正文, and all policy/provider-scope/revision conflicts require regeneration. Update the README’s old “single Provider/no fallback” wording to refer to the model-router contract while keeping the adult-specific fail-closed rules. Add endpoint tables and page navigation to `frontend-api-contract.md`/`frontend-pages.md`; mark this plan as the active implementation plan in `docs/INDEX.md`.
 
-- [ ] **Step 4: Run focused, full and static verification**
+- [x] **Step 4: Run focused, full and static verification**
 
 Run: `python -m pytest -q -k adult`
 
@@ -936,7 +936,7 @@ Expected: no whitespace errors. Also run `rg -n "stream_generate\\(" src/pixiv_n
 
 Start the local Flask app with a temporary database and configured Dashboard token, then use Playwright at desktop `1440x900` and mobile `390x844` to capture the chapter reader adult tab and settings binding view. Verify no overlap, clipped labels, nested cards, blank panels or horizontal overflow; exercise selection containing Chinese, emoji and a combining character, and confirm the submitted code-point range selects exactly the highlighted text. Stop the local server after verification.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add README.md docs/frontend-api-contract.md docs/frontend-pages.md docs/INDEX.md tests/test_ai_adult_integration.py
