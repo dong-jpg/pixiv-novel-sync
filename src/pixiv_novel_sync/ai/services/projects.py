@@ -364,17 +364,6 @@ class AIProjectsMixin:
         finally:
             db.close()
 
-    def build_project_context(self, project_id: int, current_chapter_number: int | None = None) -> str:
-        """构建项目级上下文，用于注入续写 prompt。
-
-        包含：项目大纲 + 状态记忆 + 伏笔提醒 + 前几章摘要 + 上一章末尾。
-        """
-        db = self._db()
-        try:
-            return self._build_project_context_with_db(db, project_id, current_chapter_number)
-        finally:
-            db.close()
-
     def _build_project_context_with_db(
         self,
         db: Database,

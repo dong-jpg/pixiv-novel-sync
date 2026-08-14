@@ -2,7 +2,7 @@
 
 **项目**: Pixiv Novel Sync
 **维护者**: dong-jpg
-**最近更新**: 2026-08-03
+**最近更新**: 2026-08-14
 
 ---
 
@@ -18,6 +18,7 @@
 | [UNIFIED_PROJECT_REQUIREMENTS.md](UNIFIED_PROJECT_REQUIREMENTS.md) | 全项目统一需求、实现状态与来源追溯 |
 | [AUDIT_REPORT_2026-07-02.md](AUDIT_REPORT_2026-07-02.md) | 上一轮审计：修复 8 类严重 bug + 5 类中等问题 |
 | [AUDIT_REPORT_2026-07-03.md](AUDIT_REPORT_2026-07-03.md) | 本轮审计：EPUB 回归修复 + 死代码清理 + 文档整改 |
+| [AUDIT_REPORT_2026-08-13.md](AUDIT_REPORT_2026-08-13.md) | 本轮全项目审计：任务终态、推荐发布、成人路由取消、分页边界与需求覆盖 |
 
 ### API 与前端契约
 
@@ -33,19 +34,54 @@
 |------|------|
 | [PREFERENCE_RECOMMENDER_REQUIREMENTS.md](PREFERENCE_RECOMMENDER_REQUIREMENTS.md) | 偏好推荐系统需求规格 |
 | [QWEN_EMBEDDING_INTEGRATION.md](QWEN_EMBEDDING_INTEGRATION.md) | Qwen embedding 检索配置指南 |
+| [ADULT_POLISH_USER_GUIDE.md](ADULT_POLISH_USER_GUIDE.md) | 成人局部润色 Agent 的配置、使用、恢复和故障排查 |
+| [MODEL_ROUTING_GUIDE.md](MODEL_ROUTING_GUIDE.md) | AI 模型目录/模型池/统一路由用户指南（发现、绑定、failover、排错） |
+| [RESCUE_USER_GUIDE.md](RESCUE_USER_GUIDE.md) | 救援功能用户指南（userscript、Token、目录筛选、只读 API、排错） |
+| [JOB_SYSTEM.md](JOB_SYSTEM.md) | 任务系统开发者文档（管线、状态机、取消协议、新增 task_type、auto_sync 配置） |
 
-## 开发计划
+## 开发计划（superpowers/）
 
-| 文档 | 状态 |
+归档口径说明：`superpowers/` 下的 plans/specs 一律**留在原目录**、在本索引标注状态（进行中 / 已完成），不再移动到 `archive/`；只有顶层一次性文档才进入 `archive/`。已完成条目仅作实施记录，当前行为仍以代码与活跃参考文档为准。
+
+### 进行中
+
+| 文档 | 说明 |
 |------|------|
-| [superpowers/specs/2026-07-23-ai-model-catalog-pools-design.md](superpowers/specs/2026-07-23-ai-model-catalog-pools-design.md) | AI 模型目录、模型池和故障转移设计（已实施） |
-| [superpowers/specs/2026-07-27-ai-model-catalog-pools-unified-requirements.md](superpowers/specs/2026-07-27-ai-model-catalog-pools-unified-requirements.md) | AI 模型目录与统一路由需求基线（第一阶段已完成） |
-| [superpowers/specs/2026-07-23-adult-polish-agent-design.md](superpowers/specs/2026-07-23-adult-polish-agent-design.md) | 成人描写局部润色 Agent 设计（已确认，等待模型池路由） |
-| [superpowers/specs/2026-08-04-github-readme-and-logo-refresh-design.md](superpowers/specs/2026-08-04-github-readme-and-logo-refresh-design.md) | GitHub README 首屏与静态 Logo 刷新设计（已确认） |
-| [superpowers/plans/2026-07-23-ai-model-catalog-pools.md](superpowers/plans/2026-07-23-ai-model-catalog-pools.md) | AI 模型目录与模型池实施计划（已完成） |
+| [superpowers/specs/2026-08-14-complete-audit-remediation-design.md](superpowers/specs/2026-08-14-complete-audit-remediation-design.md) | 2026-08-13 审计的完整整改设计（本轮主线） |
+| [superpowers/plans/2026-08-14-runtime-integrity-remediation.md](superpowers/plans/2026-08-14-runtime-integrity-remediation.md) | 运行时完整性整改实施计划 |
+| [superpowers/plans/2026-08-14-rescue-completion.md](superpowers/plans/2026-08-14-rescue-completion.md) | 救援目录收尾实施计划 |
+| [superpowers/plans/2026-08-14-recommendation-completion.md](superpowers/plans/2026-08-14-recommendation-completion.md) | 推荐系统收尾实施计划 |
+| [superpowers/plans/2026-08-14-ai-preference-adult-remediation.md](superpowers/plans/2026-08-14-ai-preference-adult-remediation.md) | AI 偏好注入与成人 Agent 整改实施计划 |
+
+### 已完成
+
+| 文档 | 说明 |
+|------|------|
+| [superpowers/plans/2026-06-26-job-cancellation-hardening.md](superpowers/plans/2026-06-26-job-cancellation-hardening.md) | 任务取消硬化计划（已实施，取消协议详见 [JOB_SYSTEM.md](JOB_SYSTEM.md)） |
+| [superpowers/specs/2026-07-14-release-blocker-fixes-design.md](superpowers/specs/2026-07-14-release-blocker-fixes-design.md) | 发布阻塞问题修复设计 |
+| [superpowers/plans/2026-07-14-release-blocker-fixes.md](superpowers/plans/2026-07-14-release-blocker-fixes.md) | 发布阻塞问题修复实施计划 |
+| [superpowers/specs/2026-07-16-nine-optimization-completion-design.md](superpowers/specs/2026-07-16-nine-optimization-completion-design.md) | 九项优化收尾设计 |
+| [superpowers/plans/2026-07-16-ai-cover-style-controls.md](superpowers/plans/2026-07-16-ai-cover-style-controls.md) | AI 封面与风格控制实施计划 |
+| [superpowers/plans/2026-07-16-ai-page-layout-refactor.md](superpowers/plans/2026-07-16-ai-page-layout-refactor.md) | AI 页面布局重构实施计划 |
+| [superpowers/plans/2026-07-16-documentation-cleanup-verification.md](superpowers/plans/2026-07-16-documentation-cleanup-verification.md) | 文档清理与核对实施计划 |
+| [superpowers/plans/2026-07-16-preference-task-log-closure.md](superpowers/plans/2026-07-16-preference-task-log-closure.md) | 偏好任务日志收口实施计划 |
+| [superpowers/specs/2026-07-17-ai-project-overview-single-panel-design.md](superpowers/specs/2026-07-17-ai-project-overview-single-panel-design.md) | AI 项目总览单面板设计 |
+| [superpowers/plans/2026-07-17-ai-project-overview-single-panel.md](superpowers/plans/2026-07-17-ai-project-overview-single-panel.md) | AI 项目总览单面板实施计划 |
+| [superpowers/plans/2026-07-20-cloudflare-https.md](superpowers/plans/2026-07-20-cloudflare-https.md) | Cloudflare HTTPS 部署实施计划 |
+| [superpowers/specs/2026-07-21-rescue-library-userscript-design.md](superpowers/specs/2026-07-21-rescue-library-userscript-design.md) | 救援库与 userscript 设计 |
+| [superpowers/plans/2026-07-21-rescue-library-userscript.md](superpowers/plans/2026-07-21-rescue-library-userscript.md) | 救援库与 userscript 实施计划 |
+| [superpowers/specs/2026-07-21-rescue-catalog-sources-design.md](superpowers/specs/2026-07-21-rescue-catalog-sources-design.md) | 救援目录来源筛选设计 |
+| [superpowers/plans/2026-07-22-rescue-catalog-sources.md](superpowers/plans/2026-07-22-rescue-catalog-sources.md) | 救援目录来源筛选实施计划 |
+| [superpowers/specs/2026-07-23-adult-polish-agent-design.md](superpowers/specs/2026-07-23-adult-polish-agent-design.md) | 成人描写局部润色 Agent 设计 |
 | [superpowers/plans/2026-07-23-adult-polish-agent.md](superpowers/plans/2026-07-23-adult-polish-agent.md) | 成人描写局部润色 Agent 实施计划 |
+| [superpowers/specs/2026-07-23-ai-model-catalog-pools-design.md](superpowers/specs/2026-07-23-ai-model-catalog-pools-design.md) | AI 模型目录、模型池和故障转移设计 |
+| [superpowers/plans/2026-07-23-ai-model-catalog-pools.md](superpowers/plans/2026-07-23-ai-model-catalog-pools.md) | AI 模型目录与模型池实施计划 |
+| [superpowers/specs/2026-07-27-ai-model-catalog-pools-unified-requirements.md](superpowers/specs/2026-07-27-ai-model-catalog-pools-unified-requirements.md) | AI 模型目录与统一路由需求基线 |
+| [superpowers/specs/2026-07-28-ai-model-routing-completion-design.md](superpowers/specs/2026-07-28-ai-model-routing-completion-design.md) | AI 模型统一路由收尾设计 |
+| [superpowers/specs/2026-08-04-github-readme-and-logo-refresh-design.md](superpowers/specs/2026-08-04-github-readme-and-logo-refresh-design.md) | GitHub README 首屏与静态 Logo 刷新设计 |
 | [superpowers/plans/2026-08-04-github-readme-and-logo-refresh.md](superpowers/plans/2026-08-04-github-readme-and-logo-refresh.md) | GitHub README 与静态 Logo 刷新实施计划 |
-| [superpowers/plans/2026-06-26-job-cancellation-hardening.md](superpowers/plans/2026-06-26-job-cancellation-hardening.md) | 任务取消硬化计划（HEAD commit 依赖，当前权威） |
+| [superpowers/specs/2026-08-05-project-audit-remediation-design.md](superpowers/specs/2026-08-05-project-audit-remediation-design.md) | 2026-08-05 项目审计整改设计 |
+| [superpowers/plans/2026-08-05-project-audit-remediation.md](superpowers/plans/2026-08-05-project-audit-remediation.md) | 2026-08-05 项目审计整改实施计划 |
 
 ## 历史参考与归档
 
@@ -61,9 +97,9 @@
 
 `docs/archive/` 存放已完成的阶段性文档（旧审计报告、一次性完成报告、优化路线图、拆分计划等）。这些文档描述的工作已经做完，不再维护，仅作归档参考。详见 [archive/README.md](archive/README.md)。
 
-## Active Implementation Plan
+## 当前状态说明
 
-当前实现与验收以 [Task 11 brief](../.superpowers/sdd/task-11-brief.md) 为活动清单，并以 [成人本地润色 Agent implementation plan](superpowers/plans/2026-07-23-adult-polish-agent.md) 的 fail-closed 约束为准。前端端点和页面契约分别维护在 [frontend-api-contract.md](frontend-api-contract.md) 与 [frontend-pages.md](frontend-pages.md)；历史审计文档不能覆盖这些当前契约。
+当前行为以代码、[README.md](../README.md)、[frontend-api-contract.md](frontend-api-contract.md) 和 [AUDIT_REPORT_2026-08-13.md](AUDIT_REPORT_2026-08-13.md) 为准。成人 Agent 的设计约束（fail-closed、Provider scope、角色确认等）以 [ADULT_POLISH_USER_GUIDE.md](ADULT_POLISH_USER_GUIDE.md) 与 [superpowers/specs/2026-08-14-complete-audit-remediation-design.md](superpowers/specs/2026-08-14-complete-audit-remediation-design.md) 为准；仓库中不存在的 `.superpowers/sdd/task-11-brief.md` 不再作为活动清单引用。
 
 归档包含 14 份顶层文档 + 6 份 superpowers 已完成计划，涵盖：
 - 2026-06-16 全量审计系列（AUDIT_REPORT / EXECUTIVE_SUMMARY / COMPLETION_REPORT / CRITICAL_BUGS_FIX_PLAN / BUGS_FIXED_REPORT / ACTION_CHECKLIST）

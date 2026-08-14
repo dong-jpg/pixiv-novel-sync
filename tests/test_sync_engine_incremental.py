@@ -383,3 +383,81 @@ def test_sync_subscribed_series_propagates_interrupted_error(tmp_path: Path, mon
             service.sync_subscribed_series(progress_callback=lambda event_type, data: None)
     finally:
         db.close()
+
+
+class _FollowingFakeDb:
+    """sync_following_novels 所需的最小 DB 假件。"""
+
+    def __init__(self) -> None:
+        self.watermark_updates: list[dict] = []
+
+    def get_sync_check_list(self, scope):
+        return {}
+
+    def get_watermark(self, key):
+        return None
+
+    def update_watermark(self, key, value):
+        self.watermark_updates.append(value)
+
+    def upsert_sync_check_item(self, novel_id, exists, scope):
+        pass
+
+
+def test_sync_following_novels_outer_pagination_has_safety_limit(tmp_path: Path) -> None:
+    """关注列表接口返回自引用 next_url 时，外层翻页必须在兜底上限处停止。"""
+
+    class EndlessFollowingApi:
+        def __init__(self) -> None:
+            self.following_calls = 0
+
+        def user_following(self, **kwargs):
+            self.following_calls += 1
+            return SimpleNamespace(user_previews=[], next_url="loop")
+
+        def parse_qs(self, next_url):
+            if next_url == "loop":
+                return {"user_id": 1, "restrict": "public", "page": self.following_calls + 1}
+            return None
+
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 1
+    assert settings.sync.max_pages_per_run is None  # 默认无限页数配置
+    api = EndlessFollowingApi()
+    service = BookmarkNovelSyncService(api, _FollowingFakeDb(), _Storage(), settings)
+
+    service.sync_following_novels()
+
+    assert api.following_calls == 100  # safety_limit 兜底
+
+
+def test_sync_following_novels_author_pagination_has_safety_limit(tmp_path: Path) -> None:
+    """单作者作品列表返回自引用 next_url 时，内层翻页必须在兜底上限处停止。"""
+
+    class EndlessAuthorNovelsApi:
+        def __init__(self) -> None:
+            self.user_novels_calls = 0
+
+        def user_following(self, **kwargs):
+            return SimpleNamespace(
+                user_previews=[SimpleNamespace(user=SimpleNamespace(id=7, name="作者"))],
+                next_url=None,
+            )
+
+        def user_novels(self, **kwargs):
+            self.user_novels_calls += 1
+            return SimpleNamespace(novels=[], next_url="loop")
+
+        def parse_qs(self, next_url):
+            if next_url == "loop":
+                return {"user_id": 7, "page": self.user_novels_calls + 1}
+            return None
+
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 1
+    api = EndlessAuthorNovelsApi()
+    service = BookmarkNovelSyncService(api, _FollowingFakeDb(), _Storage(), settings)
+
+    service.sync_following_novels()
+
+    assert api.user_novels_calls == 100  # safety_limit 兜底

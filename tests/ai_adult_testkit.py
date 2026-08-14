@@ -17,6 +17,7 @@ from pixiv_novel_sync.ai.model_router import (
     ModelCandidate,
     RouteResult,
 )
+from pixiv_novel_sync.ai.models import AIStreamChunk
 
 
 CHARACTER_A_ID = "11111111-1111-4111-8111-111111111111"
@@ -222,6 +223,19 @@ class FakeModelRouter:
         if result.output_text:
             request.on_delta(result.output_text)
         return result
+
+    def execute_stream(self, request: Any):
+        yield AIStreamChunk(
+            type="progress",
+            data={
+                "phase": "route",
+                "action": "attempt",
+                "stage": request.stage,
+                "provider_name": "fake",
+                "model_key": "fake-model",
+            },
+        )
+        return self.execute(request)
 
 
 def run_concurrently(callable_: Callable[[], Any], count: int = 2) -> list[Any]:

@@ -27,6 +27,7 @@ from pixiv_novel_sync.ai.model_router import (
     CandidateSnapshot,
     ModelCandidate,
     PromptBudget,
+    RouteRequest,
     RouteResult,
 )
 from pixiv_novel_sync.ai.service import AIWritingService
@@ -232,11 +233,15 @@ def test_safety_review_receives_restored_server_buffer_not_nonce(
     request = fake_router.validation_requests[-1]
     assert result.safe is True
     assert request.stage == "validation"
-    assert "安娜" in request.messages[-1]["content"]
-    assert "ADULT_" not in request.messages[-1]["content"]
-    assert request.participant_facts[0]["character_id"] == CHARACTER_A_ID
-    assert request.participant_facts[0]["age_years"] >= 18
-    assert request.participant_facts[0]["fictional"] is True
+    # 审查路径与主链路统一为 RouteRequest（不再直接传 AdultRouteRequest）
+    assert isinstance(request, RouteRequest)
+    content = request.messages[-1]["content"]
+    assert "安娜" in content
+    assert "ADULT_" not in content
+    assert f'"character_id":"{CHARACTER_A_ID}"' in content
+    age_match = re.search(r'"age_years":(\d+)', content)
+    assert age_match is not None and int(age_match.group(1)) >= 18
+    assert '"fictional":true' in content
 
 
 def test_fact_guard_receives_names_aliases_and_locked_terms(
@@ -251,11 +256,12 @@ def test_fact_guard_receives_names_aliases_and_locked_terms(
     )
 
     request = fake_router.validation_requests[-1]
-    participant = request.participant_facts[0]
-    assert participant["canonical_name"] == "安娜"
-    assert participant["aliases"] == ("安",)
-    assert {"安娜", "安"}.issubset(request.protected_terms)
-    assert '"aliases":["安"]' in request.messages[-1]["content"]
+    assert isinstance(request, RouteRequest)
+    content = request.messages[-1]["content"]
+    assert '"canonical_name":"安娜"' in content
+    assert '"aliases":["安"]' in content
+    # protected_terms 以 JSON 形式注入提示词
+    assert '"安娜"' in content and '"安"' in content
 
 
 def _raw_candidate(prepared: Any, candidate: str | None = None) -> str:
@@ -420,9 +426,8 @@ def test_fact_guard_unknown_blocks_without_candidate(
     fact_request = fake_router.validation_requests[-1]
     assert prepared.target in fact_request.messages[-1]["content"]
     assert "安娜" in fact_request.messages[-1]["content"]
-    assert set(prepared.prompt.protected_terms).issubset(
-        fact_request.protected_terms
-    )
+    for term in prepared.prompt.protected_terms:
+        assert json.dumps(term, ensure_ascii=False) in fact_request.messages[-1]["content"]
     assert events[-1].type == "error"
     assert events[-1].data and events[-1].data["code"] == "validation_failed"
     assert not any(event.type == "candidate" for event in events)
@@ -652,3 +657,45 @@ def test_main_stream_runs_both_reviews_without_exposing_delta(
     job = db.get_adult_job(job_id, "owner-a")
     assert job is not None
     assert job["status"] == "succeeded"
+
+
+def test_review_requests_carry_cancel_checker_and_staged_progress(
+    service: AIWritingService,
+    fake_router: ReviewRouter,
+    prepared: Any,
+):
+    original_execute = fake_router.execute
+
+    def execute_with_progress(request: Any) -> RouteResult:
+        request.on_progress(
+            {
+                "action": "attempt",
+                "stage": "validation",
+                "provider_name": "provider-x",
+                "secret": "must-not-leak",
+                "api_key": "sk-leak",
+            }
+        )
+        return original_execute(request)
+
+    fake_router.execute = execute_with_progress
+
+    events = list(
+        service.finish_adult_candidate(prepared, _raw_candidate(prepared))
+    )
+
+    assert events[-1].type == "done"
+    # 两个审查请求都必须带取消回调
+    assert len(fake_router.validation_requests) == 2
+    for request in fake_router.validation_requests:
+        assert isinstance(request, RouteRequest)
+        assert callable(request.is_cancelled)
+
+    progress = [event for event in events if event.type == "progress"]
+    stages = [event.data.get("stage") for event in progress if event.data]
+    # 审查进度标注 stage=safety/fact_guard 并经同一白名单过滤
+    assert "safety" in stages
+    assert "fact_guard" in stages
+    for event in progress:
+        assert "secret" not in (event.data or {})
+        assert "api_key" not in (event.data or {})

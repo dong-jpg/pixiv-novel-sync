@@ -166,3 +166,106 @@ def test_project_preference_migration_preserves_old_projects(tmp_path: Path) -> 
     assert project["preference_profile_id"] is None
     assert project["preference_injection_strength"] == "off"
     db.close()
+
+def test_build_profile_includes_muted_tags_as_negative_preferences(tmp_path: Path):
+    """负向偏好: 用户屏蔽的标签(mute_type=tag)必须并入 negative_preferences.excluded_tags。"""
+    db = Database(tmp_path / "prefs.db")
+    db.init_schema()
+    db.create_recommendation_mute("tag", "雷点标签")
+    db.create_recommendation_mute("tag", "另一个雷点")
+    db.create_recommendation_mute("author", "某作者")  # author 屏蔽不进标签
+
+    profile = PreferenceAnalyzer(db).build_profile({
+        "novel_count": 1, "total_chars": 6000,
+        "top_tags": [{"name": "甜文", "count": 1}],
+    })
+
+    assert set(profile["negative_preferences"]["excluded_tags"]) == {"雷点标签", "另一个雷点"}
+    assert profile["negative_preferences"]["excluded_keywords"] == []
+    db.close()
+
+
+def test_build_profile_negative_tags_empty_without_mutes(tmp_path: Path):
+    db = Database(tmp_path / "prefs.db")
+    db.init_schema()
+    profile = PreferenceAnalyzer(db).build_profile({"novel_count": 0, "total_chars": 0})
+    assert profile["negative_preferences"]["excluded_tags"] == []
+    db.close()
+
+
+def _make_feedback_app(tmp_path: Path):
+    from flask import Flask
+    from pixiv_novel_sync.preference_web import register_preference_routes
+    from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings
+
+    settings = Settings(
+        pixiv=PixivSettings(refresh_token="", access_token=None, proxy=None, timeout=30, verify_ssl=True, user_id=None),
+        sync=SyncSettings(
+            enabled=True,
+            initial_manual_only=False,
+            download_assets=False,
+            write_markdown=True,
+            write_raw_text=True,
+            bookmark_restricts=["public"],
+            max_items_per_run=None,
+            max_pages_per_run=None,
+            delay_seconds_between_items=0,
+            delay_seconds_between_pages=0,
+        ),
+        storage=StorageSettings(public_dir=tmp_path / "public", private_dir=tmp_path / "private", db_path=tmp_path / "prefs.db"),
+    )
+    app = Flask(__name__)
+    register_preference_routes(app, settings)
+    return app, settings
+
+
+def _seed_recommendation_item(db_path) -> int:
+    db = Database(db_path)
+    db.init_schema()
+    profile_id = db.create_preference_profile({"name": "p", "source_scope": {}, "stats": {}, "profile": {}})
+    run_id = db.create_recommendation_run(profile_id, {"queries": []})
+    item_id = db.upsert_recommendation_item({
+        "run_id": run_id, "profile_id": profile_id, "item_type": "novel",
+        "novel_id": 1, "title": "t", "tags": [], "score": 1, "matched": {},
+    })
+    db.close()
+    return item_id
+
+
+def test_feedback_rejects_invalid_feedback_type(tmp_path: Path):
+    """反馈接口必须校验枚举,非法值返回 400 且不写库。"""
+    app, settings = _make_feedback_app(tmp_path)
+    item_id = _seed_recommendation_item(settings.storage.db_path)
+    client = app.test_client()
+
+    resp = client.post(
+        f"/api/dashboard/recommendations/items/{item_id}/feedback",
+        json={"feedback_type": "totally_bogus"},
+    )
+    assert resp.status_code == 400
+    assert resp.get_json()["ok"] is False
+
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    assert db.conn.execute("SELECT COUNT(*) FROM recommendation_feedback").fetchone()[0] == 0
+    assert db.get_recommendation_item(item_id)["status"] == "new"
+    db.close()
+
+
+def test_feedback_accepts_allowed_enum_values(tmp_path: Path):
+    app, settings = _make_feedback_app(tmp_path)
+    item_id = _seed_recommendation_item(settings.storage.db_path)
+    client = app.test_client()
+
+    resp = client.post(
+        f"/api/dashboard/recommendations/items/{item_id}/feedback",
+        json={"feedback_type": "dismissed"},
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()["ok"] is True
+
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    assert db.get_recommendation_item(item_id)["status"] == "dismissed"
+    assert db.conn.execute("SELECT feedback_type FROM recommendation_feedback").fetchone()[0] == "dismissed"
+    db.close()

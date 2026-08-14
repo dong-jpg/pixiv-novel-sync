@@ -26,7 +26,7 @@ pytest -k "rescue"                        # by keyword
 
 `tests/conftest.py` has an autouse fixture that redirects `PIXIV_DB_PATH` / `PIXIV_PUBLIC_DIR` / `PIXIV_PRIVATE_DIR` to a tmp dir and clears `DASHBOARD_TOKEN`, so tests never touch real data. Rely on this rather than mocking paths manually.
 
-Note: the README lists `black`/`flake8`/`pylint`/`mypy`, but none are configured or declared as deps — do not assume they run.
+Note: `black`/`flake8`/`pylint`/`mypy` are not configured or declared as deps in this repo — do not assume they run.
 
 ## Architecture
 

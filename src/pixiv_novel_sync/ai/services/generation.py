@@ -19,7 +19,7 @@ from ..prompts import (
     build_style_distill_messages,
     build_summarize_messages,
 )
-from .core import AIServiceError, RouteJobContext
+from .core import RouteJobContext
 
 
 class AIGenerationMixin:

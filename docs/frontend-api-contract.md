@@ -30,6 +30,45 @@
 | `/dashboard/wizard` | `dashboard_wizard.html` | 创作向导与蒸馏档案 |
 | `/dashboard/novels/ai/<project_id>` | `dashboard_ai_reader.html` | AI 创作小说阅读 |
 
+## 认证与健康检查 APIs
+
+### GET/POST /api/auth/login
+
+Used by: 浏览器登录流程（配置 `DASHBOARD_TOKEN` 时）。
+
+- `GET`：返回内置登录表单 HTML；未配置 `DASHBOARD_TOKEN` 时直接重定向到 `/`。
+- `POST`：表单字段 `token`（`application/x-www-form-urlencoded`）。校验成功后写入会话并重定向到 `/`；失败返回 `401` 纯文本「密码错误」。同一客户端 5 分钟内失败 5 次后返回 `429` 与 `{ "error": "too many login attempts" }`。
+
+### POST /api/auth/logout
+
+清除登录会话。响应：
+
+```json
+{ "ok": true }
+```
+
+### GET /api/csrf-token
+
+Used by: 所有需要携带 `X-CSRF-Token` 的写请求前端封装。响应：
+
+```json
+{ "csrf_token": "..." }
+```
+
+### GET /api/health
+
+服务健康检查，无需认证前提以外的特殊参数。响应字段：
+
+```json
+{
+  "status": "ok",
+  "version": "x.y.z",
+  "uptime_seconds": 123.45,
+  "db_accessible": true,
+  "running_jobs": 0
+}
+```
+
 ## Shared shell APIs
 
 ### GET /api/dashboard/shell-data
@@ -131,6 +170,16 @@ Stops the active auto-sync task.
 
 ## Archive APIs
 
+### GET /api/dashboard/follows
+
+Used by: follows page（`/dashboard/follows`）。
+
+Query params:
+
+- `page`（页大小固定为 10，不接受 `page_size`）。
+
+返回 `db.list_followed_users` 的分页 payload（关注作者列表及分页元数据）。
+
 ### GET /api/dashboard/novels
 
 Used by: novels list, AI search widgets。
@@ -164,6 +213,67 @@ Expected detail fields include:
 - bookmark/view counts where available。
 - `rescue`：实时救援评估、远端状态、完整度和人工纠错状态。
 
+### GET /api/dashboard/novels/{novel_id}/progress
+
+Used by: 小说阅读页阅读进度恢复。
+
+无进度记录时返回默认值：
+
+```json
+{ "novel_id": 123, "progress": 0, "status": "unread" }
+```
+
+有记录时返回存储的进度对象（含 `progress`、`status` 等字段）。
+
+### POST /api/dashboard/novels/{novel_id}/progress
+
+保存阅读进度。Body：
+
+```json
+{ "progress": 42, "status": "unread|reading|completed" }
+```
+
+`progress` 会被裁剪到 0–100；`status` 非法时返回 `400 { "error": "invalid status" }`。成功返回 `{ "success": true }`。
+
+### DELETE /api/dashboard/novels/{novel_id}/progress
+
+删除阅读进度记录。成功返回 `{ "success": true }`。
+
+### POST /api/dashboard/novels/export-epub
+
+导出 EPUB。Body：
+
+```json
+{ "novel_ids": [123, 456] }
+```
+
+- `novel_ids` 缺失或不是数组时返回 `400 { "error": "novel_ids required" }`。
+- 单本：直接返回 `application/epub+zip` 附件；小说不存在返回 `404`，正文缺失返回 `400`。
+- 多本：最多处理前 50 本，跳过无正文条目，返回 `application/zip` 附件 `novels.zip`。
+
+### GET /api/dashboard/export/stats
+
+导出同步统计数据。响应字段：
+
+```json
+{
+  "total_novels": 100,
+  "total_users": 20,
+  "total_series": 8,
+  "novels_by_status": { "active": 90 },
+  "users_by_status": { "active": 18 },
+  "recent_tasks": [
+    {
+      "id": 1, "task_type": "...", "task_name": "...", "job_id": "...",
+      "status": "...", "is_auto_sync": false,
+      "started_at": "...", "finished_at": "...", "error_message": null
+    }
+  ]
+}
+```
+
+`recent_tasks` 为最近 10 条任务记录。查询失败返回 `500 { "error": "..." }`。
+
 ### GET /api/dashboard/series/{series_id}
 
 Used by: novel detail and series detail。
@@ -185,8 +295,14 @@ Expected fields include series metadata and novels/chapters list.
 - `page`、`page_size`
 - `state=all|success|partial`
 - `item_type=all|novel|series`
+- `content_kind=all|series|series_chapter|standalone`
+- `source_kind=all|bookmark|subscribed_series|following_user|user_backup`
 - `search`
 - `sort=checked_desc|updated_desc`
+
+参数取值非法时返回 `400 { "ok": false, "error": "..." }`。
+
+响应 `data` 除 `items` 与分页元数据外，还包含目录级 `stale` 布尔字段（依据 `refreshed_at` 与当前配置判定救援目录是否过期）。
 
 列表项字段：`item_type`、`item_id`、`title`、`author_name`、`cover_url`、`rescue_state`、`remote_status`、`eligibility_reason`、`expected_count`、`local_count`、`complete_count`、`last_checked_at`、`updated_at`。
 
@@ -290,6 +406,26 @@ Checks author status.
 ### POST /api/dashboard/users/{user_id}/sync
 
 Starts author sync.
+
+## 数据删除 APIs
+
+以下删除接口成功返回 `{ "ok": true, "message": "..." }`，失败返回 `500 { "error": "..." }`。
+
+### DELETE /api/dashboard/novels/{novel_id}
+
+删除小说记录并清理磁盘归档文件；响应额外包含 `archive_cleanup` 清理结果。
+
+### DELETE /api/dashboard/users/{user_id}
+
+删除用户及其所有小说与归档文件；响应额外包含 `archive_cleanup`。
+
+### DELETE /api/dashboard/series/{series_id}
+
+删除系列（事务内删除并刷新受影响章节的救援目录状态）。
+
+### DELETE /api/dashboard/bookmarks/{novel_id}
+
+仅删除收藏记录，不删除小说本体。
 
 ## Logs APIs
 
@@ -483,6 +619,7 @@ Body:
 - `PUT /api/dashboard/ai/agents/{agent_id}`
 - `DELETE /api/dashboard/ai/agents/{agent_id}`
 - `POST /api/dashboard/ai/agents/seed`
+- `POST /api/dashboard/ai/agents/adult-polish/seed`：创建/确保成人润色 Agent。要求成人 owner 会话与 JSON object body；成功返回 `{ ok, data }`（Agent 信息），失败按成人路由规则映射为固定中文错误（默认「创建成人润色 Agent 失败」）。
 
 成员替换是全量、有序写入，body 为 `{"expected_version": 3, "members": [{"provider_model_id": 10, "enabled": true}]}`；陈旧版本返回 `409`。后备池按链顺序展开并按 `(provider_id, model_key)` 去重。Agent 的 `binding_type=fixed|pool` 互斥：`fixed` 提交 `provider_id`/`model`，`pool` 提交 `model_pool_id`。`required_capabilities` 只接受 `streaming`、`json`、`vision`、`tools`、`long_context`。
 
@@ -504,7 +641,7 @@ Body:
 | `POST` | `/api/dashboard/ai/polish/adult/scope` | body 精确为 `{ "agent_id": number }`；返回 `groups` 与 `provider_scope_hash`。 |
 | `POST` | `/api/dashboard/ai/polish/adult/stream` | 提交无正文请求（见下方字段），返回成人 SSE。 |
 | `GET` | `/api/dashboard/ai/polish/adult/{job_id}` | 返回脱敏 job 元数据；成功候选只在未应用且仍保留时返回。 |
-| `GET` | `/api/dashboard/ai/polish/adult/{job_id}/events` | 使用 signed access token 恢复 SSE；只重放脱敏 metadata/validation/candidate/done/error；任务仍为 `running` 时重放当前 `progress` 状态，不重放正文或 Provider 原始响应。 |
+| `GET` | `/api/dashboard/ai/polish/adult/{job_id}/events` | 使用 signed access token 读取一次当前数据库快照；可重放白名单 metadata/validation/candidate/done/error，成功且未清理时 candidate 包含完整候选正文；任务仍为 `running` 时只返回当前 `progress` 状态后结束，不会续接原 Provider SSE。 |
 | `POST` | `/api/dashboard/ai/polish/adult/{job_id}/cancel` | 请求体为空对象；返回 `{ "cancel_requested": boolean }`。 |
 | `POST` | `/api/dashboard/ai/polish/adult/{job_id}/regenerate` | body 为新的无正文请求并带 `parent_job_id`；返回新的 SSE metadata/validation/candidate/done。 |
 | `POST` | `/api/dashboard/ai/polish/adult/{job_id}/apply` | body 精确为 `{ "warning_ack_hash": string }`；必须同时提供 signed access token，成功返回 application/revision/hash。 |
@@ -513,7 +650,7 @@ stream/regenerate 的请求字段是 `project_id`、`chapter_id`、`agent_id`、
 
 ### SSE 事件与脱敏
 
-成人 stream 只允许 `metadata`、`progress`、`validation`、`candidate`、`done`、`error` 六类事件。`metadata` 返回 `job_id`、`parent_job_id`、`replayed` 和短期 `access_token`；`progress` 只返回脱敏阶段/模型摘要，回放接口在任务仍运行时至少返回 `{ "job_id": "...", "status": "running" }`；`validation` 返回结构校验摘要、warning/blocking code、`validation_hash`，有 warning 时额外返回 scoped `warning_ack_hash`；`candidate` 事件的正文只出现在事件流文本，不进入公共 job JSON。任何 provider 错误都映射为固定中文错误码和消息。
+成人 stream 只允许 `metadata`、`progress`、`validation`、`candidate`、`done`、`error` 六类事件。`metadata` 返回 `job_id`、`parent_job_id`、`replayed` 和有效期 10 分钟的 `access_token`；`progress` 只返回脱敏阶段/模型摘要，状态重放接口在任务仍运行时至少返回 `{ "job_id": "...", "status": "running" }` 后结束；`validation` 返回结构校验摘要、warning/blocking code、`validation_hash`，有 warning 时额外返回 scoped `warning_ack_hash`；`candidate` 含完整候选正文，成功且未应用/未清理时也可从 owner/job token 保护的详情与状态重放接口读取，但不会进入通用 AI job JSON。任何 provider 错误都映射为固定中文错误码和消息。
 
 SSE 响应必须带：`Cache-Control: no-store, no-cache, must-revalidate, max-age=0`、`Pragma: no-cache`、`X-Robots-Tag: noindex, nofollow, noarchive`、`X-Content-Type-Options: nosniff` 和 `X-Accel-Buffering: no`。job JSON 读取同样使用 `no-store`、`Pragma`、`X-Robots-Tag` 和 `nosniff`。
 
@@ -524,7 +661,7 @@ SSE 响应必须带：`Cache-Control: no-store, no-cache, must-revalidate, max-a
 - `409`：章节内容/revision、角色确认 revision、Provider scope、Agent/binding/policy snapshot、lease 或 warning 校验发生变化；必须重新获取 scope 并重新生成。
 - `422`：请求字段、范围、hash、参与角色或 idempotency key 格式非法；`400` 表示已认证但配置/路由不可用。
 
-未应用候选按三天清理策略保留；应用后章节正文只写入目标区间，任务 `output_text` 清理，应用记录仅保留 hash、校验摘要、策略和 Provider/model snapshot。应用不会自动成为普通 Pipeline step，也不会因网络/Provider 变化自动重试。成人路由始终要求 Dashboard token，即使请求来自 localhost；运行顺序和前置配置见 `frontend-pages.md` 的成人配置页说明。
+未应用候选采用默认三天清理策略；后台 scheduler 启用时每小时检查，也可通过 AI job cleanup API 手工触发。应用后章节正文只写入目标区间，任务 `output_text` 清理，应用记录仅保留 hash、校验摘要、策略和 Provider/model snapshot。应用不会自动成为普通 Pipeline step，也不会因网络/Provider 变化自动重试。成人路由始终要求 Dashboard token，即使请求来自 localhost；运行顺序和前置配置见 `frontend-pages.md` 的成人配置页说明。
 
 ## AI content and job APIs
 
@@ -547,6 +684,23 @@ SSE 响应必须带：`Cache-Control: no-store, no-cache, must-revalidate, max-a
 - `DELETE /api/dashboard/ai/prompt-templates/{template_id}`
 - `POST /api/dashboard/ai/prompt-templates/seed`
 - `GET /api/dashboard/ai/series/search`
+
+### 蒸馏档案 APIs（style-profiles / novel-profiles）
+
+文风蒸馏档案与小说蒸馏档案接口结构一致，均返回 `{ ok, data }` / `{ ok, error }`：
+
+- `GET /api/dashboard/ai/style-profiles?page=&page_size=`：分页列表，`page` 最小 1，`page_size` 默认 20、最大 200。
+- `GET /api/dashboard/ai/style-profiles/{profile_id}`：档案详情。
+- `PUT /api/dashboard/ai/style-profiles/{profile_id}`：更新档案，body 为 JSON object，成功返回 `{ "ok": true }`。
+- `DELETE /api/dashboard/ai/style-profiles/{profile_id}`：删除档案。
+- `POST /api/dashboard/ai/style-profiles/save`：保存蒸馏结果为档案，成功返回 `{ "ok": true, "data": { "id": 1 } }`。
+- `GET /api/dashboard/ai/novel-profiles?page=&page_size=`
+- `GET /api/dashboard/ai/novel-profiles/{profile_id}`
+- `PUT /api/dashboard/ai/novel-profiles/{profile_id}`
+- `DELETE /api/dashboard/ai/novel-profiles/{profile_id}`
+- `POST /api/dashboard/ai/novel-profiles/save`：成功返回 `{ "ok": true, "data": { "id": 1 } }`。
+
+Used by: 创作向导 / 蒸馏档案页（`/dashboard/wizard`）。
 
 ### GET /api/dashboard/ai/jobs/<job_id>
 
@@ -628,6 +782,10 @@ Frontend expects streams to terminate with `done` or `error`.
 - `POST /api/dashboard/ai/projects/{project_id}/chapters/{chapter_id}/index`
 - `GET /api/dashboard/ai/projects/{project_id}/search`
 - `GET /api/dashboard/ai/chapters/{chapter_id}/dashboard`
+- `POST /api/dashboard/ai/projects/{project_id}/longform-plan/import-output`：把外部/流式生成的长篇规划输出导入项目，body 为 JSON payload，返回 `{ ok, data }`。
+- `POST /api/dashboard/ai/projects/{project_id}/longform-plan/details/import-output`：导入规划细化输出，格式同上。
+- `POST /api/dashboard/ai/projects/{project_id}/context/preview`：预览项目上下文组装结果；body 为 JSON object（`project_id` 由路径注入），返回 `{ ok, data }`。
+- `POST /api/dashboard/ai/projects/{project_id}/foreshadows/auto-resolve/import-output`：导入伏笔自动回收的生成输出，返回 `{ ok, data }`。
 
 封面上传使用 `multipart/form-data` 的 `cover` 字段，支持 JPEG、PNG、WebP，最大 10 MiB；成功返回 `cover_url`。文件类型、扩展名或文件头不一致返回 400，项目或封面不存在返回 404。读取接口直接返回图片内容，删除成功返回 `cover_url: null`。
 

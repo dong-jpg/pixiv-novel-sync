@@ -2,7 +2,7 @@
 
 > 版本：v1.1（文档整合与状态校准版）
 > 整合日期：2026-07-28
-> 状态更新：2026-08-03
+> 状态更新：2026-08-14
 > 项目：Pixiv Novel Sync
 > 文档性质：需求基线、现行契约索引、状态与来源追溯
 > 覆盖范围：整合输入为 56 份正式 Markdown 与 23 份补充 Markdown（共 79 份，不含本文）
@@ -174,7 +174,7 @@
 
 ### 8.2 API 约定
 
-- `MUST` 以 `docs/frontend-api-contract.md` 为当前端点和响应契约；旧 `API_COMPLETE.md` 中的 `/api/auth/login`、`/api/ai/*`、旧同步路径和旧响应字段标记为 `SUPERSEDED`。
+- `MUST` 以 `docs/frontend-api-contract.md` 为当前端点和响应契约；旧 `API_COMPLETE.md` 中的 `/api/ai/*`、旧同步路径和旧响应字段标记为 `SUPERSEDED`。注意：`/api/auth/login` **不属于** `SUPERSEDED`——它仍是 Dashboard 登录的必经路径（`webapp.py:484` 的登录页重定向依赖它），已收录进当前契约。
 - `MUST` API 使用统一的 JSON 成功/错误结构、分页、排序、状态码和 CSRF 约定；异步操作返回 job/operation 标识，不能假装同步完成。
 - `CURRENT` API 分为 shell/status、sync、archive、rescue、users、logs、settings/cache、pending deletions、preferences/recommendations、AI content/jobs/projects/chat、OAuth/token 等族群。
 - `MUST` 前端只依赖契约中公开字段；未认证、参数错误、资源不存在、冲突、过期目录和取消分别返回可区分结果。
@@ -198,7 +198,7 @@
 
 ### 9.2 预计算目录
 
-- `DONE/PARTIAL` 已有 `novel_texts.has_content`、`rescue_catalog`、`rescue_catalog_sources`、`rescue_catalog_meta` 和事务化重建/局部刷新基础；Task 6-8 的完整接线和验收仍需核对。
+- `DONE` 已有 `novel_texts.has_content`、`rescue_catalog`、`rescue_catalog_sources`、`rescue_catalog_meta` 和事务化重建/局部刷新基础；Task 6-8 的接线已核对完成（2026-08-14），触发点包括：同步任务成功后刷新（`jobs/services.py:204,451`）、快速同步（`jobs/quick_sync.py:69,154`）、任务执行器（`jobs/tasks.py:209`）、web 管理器（`web/managers.py:329`）、应用启动首次初始化（`webapp.py:107`）、正文写入（`storage/novels.py:385`）与救援上传（`rescue_web.py:111-122`）。
 - `MUST` 完整刷新和受影响对象增量刷新在事务内完成；失败时继续提供上一份目录和 meta。
 - `MUST` 列表使用 SQL 常数查询、分页、排序和筛选，不读取 `novel_texts.text_raw`，不先全量加载到 Python。
 - `MUST` 支持小说/系列、success/partial、类型、来源、搜索、stale 组合筛选；多来源筛选按包含关系，不用单一主来源覆盖其余来源。
@@ -231,7 +231,7 @@
 - `MUST` 推荐结果保存标题、作者、标签、限制等级、字数、热度、score、命中标签/关键词/偏好、风险说明、来源查询和状态。
 - `MUST` 规则分可解释：标签命中权重最高，标题/简介关键词次之，作者偏好和系列长度加分，热度只能轻微加分，负向冲突扣分或剔除；AI 只生成解释，不独占排序控制。
 - `MUST` 支持感兴趣、不感兴趣、屏蔽作者、屏蔽标签、加入待阅读/待同步、立即同步单篇/系列；反馈和屏蔽在下一次推荐中生效。
-- `PARTIAL` 当前推荐核心与任务日志已有实现证据，但 AI 偏好总结、创作注入、`x_restrict`/risk 字段、跨 run 系列去重、若干 stream 接口和部分前端操作仍是缺口。
+- `PARTIAL` 当前推荐核心与任务日志已有实现证据，但 AI 偏好总结、创作注入、若干 stream 接口和部分前端操作仍是缺口（`x_restrict`/risk 字段与跨 run 系列去重已实现于 `recommendations.py`，2026-08-14 复核结案）。
 
 ### 10.3 推荐与 AI 创作连接
 
@@ -268,7 +268,7 @@
 - `MUST` Provider 可安全发现并同步结构化模型目录，用户可建立有序 primary/secondary/grok/custom 模型池、后备池和 Agent 绑定。
 - `MUST` 既有固定 Agent 自动迁移为 `binding_type=fixed`；ID、Provider、模型、Prompt、参数、启用状态和既有固定调用语义不变。
 - `MUST` Agent 支持 fixed 与 pool 两种绑定；固定 Agent 不自动跨 Provider 切换，模型为空时使用 Provider default model，两者为空时在网络请求前返回中文配置错误。
-- `MUST` 所有 AI 生成通过单一 `ModelRouter` 入口，业务层不得直接调用 `provider.stream_generate()`。
+- `MUST` 所有 AI 生成通过单一 `ModelRouter` 入口，业务层不得直接调用 `provider.stream_generate()`。显式豁免：Provider 实现内部、Router 内部，以及 `ai/services/admin.py:458` 的 Provider 连通性测试（该测试的目的就是验证单一 Provider 的直连可用性，不应经过路由与故障转移）。
 
 ### 12.2 目录事实源和规范化
 
@@ -298,7 +298,7 @@
 
 ## 13. 成人描写局部润色 Agent
 
-- `PLANNED` 只处理用户明确选中的一个连续片段；前后文只读，不能整章、多片段或默认接入 Pipeline。
+- `DONE` 核心流程只处理用户明确选中的一个连续片段；前后文只读，不能整章、多片段或默认接入 Pipeline。实现覆盖 Dashboard 认证、角色确认、Provider scope、固定安全/事实审查、候选校验、乐观锁应用和脱敏存储。
 - `MUST` 只接受已认证 Dashboard 会话；未配置 token、未登录、owner 不匹配或可猜 job ID 均拒绝，不能使用 tokenless 单用户例外。
 - `MUST` 候选必须通过服务端固定的 `adult_safety_review` 和 `adult_fact_guard`；这两个阶段不是普通 Agent CRUD，也不能被用户编辑或跳过。
 - `MUST` 参与者必须是结构化确认的成年虚构人物；未成年人、年龄不明、现实人物、新人物或身份/关系/同意不确定时 fail-closed。
@@ -306,7 +306,8 @@
 - `MUST` 写作、`adult_safety_review`、`adult_fact_guard` 三个阶段可使用的 Provider 范围必须在启用功能前向用户明确展示并确认。
 - `MUST` Provider delta 只在服务端内存缓冲；完整事实、安全、差异和策略校验通过后才能发送候选，partial 缓冲必须丢弃。
 - `MUST` 应用时在 `BEGIN IMMEDIATE` 内重验章节 revision、正文和片段 hash、角色事实、策略、binding、owner 和 warning acknowledgment，再以乐观锁写回。
-- `MUST` 成人日志不得保存片段、上下文、完整 Prompt、候选副本或 API key。
+- `MUST` 成人审计输入、通用日志和应用记录不得保存原片段、上下文、完整 Prompt、Provider 原始响应、未完成/安全阻断候选或 API key；完整校验后的未应用候选只允许临时保存在 owner-scoped `ai_jobs.output_text`，应用或保留期清理后删除。
+- `PARTIAL` 当前成人请求虽然保留 `preference_profile_id` 与注入强度字段，但阅读页未发送、服务端未将画像注入成人 Prompt；取消回调也未传入 ModelRouter，progress 在同步路由完成后才发送。详见 `docs/AUDIT_REPORT_2026-08-13.md`。
 
 ## 14. 视觉、响应式与可访问性
 
@@ -316,7 +317,7 @@
 - `MUST` 共享组件、按钮、表单、表格、badge、modal、terminal/log block 和空状态遵循 `library-os-style-guide.md`；页面不能嵌套卡片制造多重容器。
 - `MUST` 交互控件提供键盘焦点、语义标签、足够对比度、可读错误、加载/空/失败/成功状态；不要把重要信息只放在颜色或 hover 中。
 - `MUST` 前端使用安全文本渲染，避免 `v-html`；SSE、任务取消、重试和过期数据均有明确状态。
-- `PLANNED` 品牌 Logo 提案应同时表达归档、AI 创作和推荐；现有文档推荐“三角融合”方向、蓝紫粉渐变、512px 方形图标和 1280x640 Social Preview。该提案尚不能当作已经采用的视觉事实。
+- `SUPERSEDED` 早期“三角融合”、蓝紫粉渐变 Logo 提案已被 2026-08-04 的 README/静态 Logo 刷新实施替代；当前 Logo 文件和 README 才是视觉事实。
 
 ## 15. 部署与运维
 
@@ -385,8 +386,8 @@
 ### 18.2 当前主线（`MUST/PLANNED`）
 
 1. 完成救援目录剩余纠错/删除接线、前端完整筛选、部署性能验收和全量回归。
-2. 完成偏好 AI 总结、跨 run 系列去重、推荐风险字段、stream 接口、立即同步和 AI 创作偏好注入。
-3. 基于已完成的统一模型路由实现成人局部润色 Agent，并保持固定安全审查与事实保护边界。
+2. 完成偏好 AI 总结、推荐失败/取消隔离、搜索计划 CRUD、屏蔽标签/待同步/立即同步和成人入口的偏好注入。
+3. 补齐成人局部润色的实时 progress、取消/断连传播和对应回归测试；核心安全审查与事实保护边界已实施。
 
 ### 18.3 后续体验改进
 

@@ -102,24 +102,6 @@ class AiDocumentsMixin:
         item.pop("metadata_json", None)
         return item
 
-    def list_ai_documents(self, page: int = 1, page_size: int = 20) -> dict[str, Any]:
-        page = max(page, 1)
-        page_size = max(page_size, 1)
-        total = int(self.conn.execute("SELECT COUNT(*) FROM ai_documents").fetchone()[0])
-        total_pages = max((total + page_size - 1) // page_size, 1)
-        page = min(page, total_pages)
-        offset = (page - 1) * page_size
-        rows = self.conn.execute(
-            "SELECT id, title, source_type, content_hash, created_at FROM ai_documents ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (page_size, offset),
-        ).fetchall()
-        return {"items": [dict(row) for row in rows], "page": page, "page_size": page_size, "total": total, "total_pages": total_pages}
-
-    def delete_ai_document(self, document_id: int) -> None:
-        with self._lock:
-            self.conn.execute("DELETE FROM ai_documents WHERE id = ?", (document_id,))
-            self._commit_if_needed()
-
     # ── ai_style_profiles ──────────────────────────────────────
 
     def _row_to_ai_style_profile(self, row: sqlite3.Row) -> dict[str, Any]:

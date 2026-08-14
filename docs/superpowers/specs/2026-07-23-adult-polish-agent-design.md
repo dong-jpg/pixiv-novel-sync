@@ -1,6 +1,6 @@
 # 成人描写局部润色 Agent 设计
 
-> 状态：规格已确认，实施计划已建立，等待模型池路由完成后实施
+> 状态：核心流程已实施（2026-08-06 至 2026-08-12）；偏好注入、实时 progress 和取消/断连传播仍待补齐。当前用户操作以 [../../ADULT_POLISH_USER_GUIDE.md](../../ADULT_POLISH_USER_GUIDE.md) 和 [../../frontend-api-contract.md](../../frontend-api-contract.md) 为准。
 > 日期：2026-07-23
 > 前置依赖：[AI 模型目录与模型池设计](2026-07-23-ai-model-catalog-pools-design.md)
 

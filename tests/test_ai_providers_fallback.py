@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import socket
 
 import pytest
@@ -362,3 +363,134 @@ def test_provider_rejects_redirect_without_second_request(monkeypatch, provider_
 
     assert len(calls) == 1
     assert calls[0]["allow_redirects"] is False
+
+
+def test_openai_empty_stream_fallback_respects_zero_max_retries(monkeypatch):
+    """max_retries=0 时空流 fallback 只允许一次非流式尝试。"""
+    calls: list[dict] = []
+
+    def fake_post(*_args, **kwargs):
+        calls.append(kwargs)
+        if kwargs["json"].get("stream"):
+            return FakeResponse(200, lines=['data: {"choices":[{"delta":{}}]}', 'data: [DONE]'])
+        return FakeResponse(503, text="unavailable")
+
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    provider = OpenAICompatibleProvider(make_config("openai_compatible", max_retries=0))
+    with pytest.raises(AIProviderError):
+        list(provider.stream_generate(
+            [{"role": "user", "content": "hello"}],
+            model="model-a",
+            temperature=0.7,
+            top_p=0.9,
+            max_tokens=100,
+        ))
+
+    # 1 次流式 + 1 次非流式 fallback，绝不再重试
+    assert len(calls) == 2
+    assert calls[-1]["json"]["stream"] is False
+
+
+def test_anthropic_empty_stream_fallback_respects_zero_max_retries(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_post(*_args, **kwargs):
+        calls.append(kwargs)
+        if kwargs["json"].get("stream"):
+            return FakeResponse(200, lines=['data: {"type":"message_start"}', 'data: {"type":"message_stop"}'])
+        return FakeResponse(503, text="unavailable")
+
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    provider = AnthropicProvider(make_config("anthropic", max_retries=0))
+    with pytest.raises(AIProviderError):
+        list(provider.stream_generate(
+            [{"role": "user", "content": "hello"}],
+            model="model-a",
+            temperature=0.7,
+            top_p=0.9,
+            max_tokens=100,
+        ))
+
+    assert len(calls) == 2
+    assert calls[-1]["json"]["stream"] is False
+
+
+def test_anthropic_non_stream_default_respects_config_max_retries(monkeypatch):
+    """Anthropic 非流式默认重试与 OpenAI 统一为 max(0, config)，不再强制最少 3 次。"""
+    calls: list[dict] = []
+
+    def fake_post(*_args, **kwargs):
+        calls.append(kwargs)
+        return FakeResponse(503, text="unavailable")
+
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    config = dataclasses.replace(make_config("anthropic", max_retries=0), stream_enabled=False)
+    provider = AnthropicProvider(config)
+    with pytest.raises(AIProviderError):
+        list(provider.stream_generate(
+            [{"role": "user", "content": "hello"}],
+            model="model-a",
+            temperature=0.7,
+            top_p=0.9,
+            max_tokens=100,
+        ))
+
+    assert len(calls) == 1
+
+
+def test_retry_backoff_is_clamped_to_60_seconds(monkeypatch):
+    sleeps: list[float] = []
+
+    def record_sleep(seconds, _is_cancelled=None):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers._sleep_before_retry", record_sleep)
+
+    def fake_post(*_args, **kwargs):
+        return FakeResponse(503, text="unavailable")
+
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
+
+    provider = OpenAICompatibleProvider(make_config("openai_compatible", max_retries=7))
+    with pytest.raises(AIProviderError):
+        list(provider.stream_generate(
+            [{"role": "user", "content": "hello"}],
+            model="model-a",
+            temperature=0.7,
+            top_p=0.9,
+            max_tokens=100,
+        ))
+
+    assert sleeps == [1, 2, 4, 8, 16, 32, 60]
+
+
+def test_sleep_before_retry_checks_cancellation_between_slices(monkeypatch):
+    from pixiv_novel_sync.ai.providers import _sleep_before_retry
+
+    slept: list[float] = []
+
+    def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.time.sleep", fake_sleep)
+
+    checks = {"count": 0}
+
+    def is_cancelled() -> bool:
+        checks["count"] += 1
+        # 首次（进入前）不取消，第一片 sleep 之后取消
+        return checks["count"] >= 2
+
+    with pytest.raises(AIProviderError) as excinfo:
+        _sleep_before_retry(30.0, is_cancelled)
+
+    assert excinfo.value.category == "cancelled"
+    # 只经历了一个分片（<= 0.5s），未整段休眠 30 秒
+    assert len(slept) == 1
+    assert slept[0] <= 0.5

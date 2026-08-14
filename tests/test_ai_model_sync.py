@@ -828,3 +828,37 @@ def test_service_core_reuses_and_closes_one_model_sync_coordinator(
         service.close()
 
     assert coordinator_instance._closed is True
+
+
+def test_events_stream_stops_at_total_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """events() 轮询必须有总时长上限，超时输出 failed 事件并结束。"""
+    monkeypatch.setattr(model_sync_module, "_MODEL_SYNC_DEADLINE_SECONDS", 0)
+
+    class ForeverRunningCoordinator:
+        def get(self, operation_id: str) -> dict:
+            return {
+                "operation_id": operation_id,
+                "provider_id": 1,
+                "generation": 1,
+                "status": "running",
+                "pages": 0,
+                "discovered_count": 0,
+                "result_digest": None,
+                "error_code": None,
+                "error_message": None,
+            }
+
+    events = list(
+        ModelSyncCoordinator.events(
+            ForeverRunningCoordinator(),
+            "op-timeout",
+            poll_interval=0.01,
+        )
+    )
+
+    assert events[0]["event"] == "started"
+    assert events[-1]["event"] == "failed"
+    assert events[-1]["data"]["error_code"] == "timeout"
+    assert events[-1]["data"]["operation_id"] == "op-timeout"

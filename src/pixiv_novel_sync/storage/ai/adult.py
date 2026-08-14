@@ -190,20 +190,6 @@ class AdultStorageMixin:
         )
         return int(deleted.rowcount or 0)
 
-    def cleanup_adult_jobs(
-        self,
-        keep_days: int = 3,
-        keep_failed_days: int | None = None,
-    ) -> int:
-        if keep_failed_days is None:
-            keep_failed_days = keep_days
-        with self.transaction() as conn:
-            return self._cleanup_adult_jobs_locked(
-                conn,
-                keep_days,
-                keep_failed_days,
-            )
-
     @staticmethod
     def _invalidate_adult_confirmation(conn: Any, project_id: int) -> None:
         updated = conn.execute(
@@ -488,6 +474,7 @@ class AdultStorageMixin:
             return result
 
     def get_adult_review_bindings(self) -> dict[str, dict[str, Any]]:
+        """保留：仅测试/兼容用途。"""
         rows = self.conn.execute(
             "SELECT * FROM ai_adult_review_bindings ORDER BY review_kind"
         ).fetchall()

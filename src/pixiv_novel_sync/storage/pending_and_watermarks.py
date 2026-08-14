@@ -39,15 +39,6 @@ class PendingAndWatermarksMixin:
             )
             self._commit_if_needed()
 
-    def clear_watermark(self, sync_type: str, key: str = "_") -> None:
-        """删除指定水位线"""
-        with self._lock:
-            self.conn.execute(
-                "DELETE FROM sync_watermarks WHERE sync_type = ? AND key = ?",
-                (sync_type, key),
-            )
-            self._commit_if_needed()
-
     def add_pending_deletion(self, item_type: str, item_id: int, reason: str,
                              title: str, author_name: str, cover_url: str,
                              source_type: str | None = None) -> None:
@@ -122,6 +113,48 @@ class PendingAndWatermarksMixin:
             )
             self._commit_if_needed()
             return dict(row)
+
+    def restore_pending_deletion_atomic(
+        self,
+        deletion_id: int,
+        *,
+        bookmark_source_key: str | None = None,
+    ) -> dict[str, Any] | None:
+        """单事务恢复：状态回写 + 来源补录 + 系列订阅恢复一并提交。
+
+        - novel 且带 source_type 时补录 sources 记录（source_key 用 bookmark_source_key）；
+        - series 时恢复 is_subscribed = 1。
+        任一步失败则整体回滚，避免出现"已 restored 但来源/订阅未恢复"的中间态。
+        """
+        with self.transaction():
+            row = self.conn.execute(
+                "SELECT * FROM pending_deletions WHERE id = ? AND status = 'pending'",
+                (deletion_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            record = dict(row)
+            self.conn.execute(
+                "UPDATE pending_deletions SET status = 'restored', restored_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (deletion_id,),
+            )
+            item_type = record["item_type"]
+            item_id = record["item_id"]
+            source_type = record.get("source_type")
+            if item_type == "novel" and source_type and bookmark_source_key is not None:
+                self.conn.execute(
+                    """
+                    INSERT OR IGNORE INTO sources (novel_id, source_type, source_key)
+                    VALUES (?, ?, ?)
+                    """,
+                    (item_id, source_type, bookmark_source_key),
+                )
+            elif item_type == "series":
+                self.conn.execute(
+                    "UPDATE series SET is_subscribed = 1 WHERE series_id = ?",
+                    (item_id,),
+                )
+            return record
 
     def get_pending_deletion_count(self) -> int:
         """获取 pending 状态的记录总数"""

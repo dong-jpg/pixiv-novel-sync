@@ -933,3 +933,44 @@ def test_run_user_status_task_stops_when_cancelled_during_delay(settings, servic
         "status_counts": {"normal": 1},
         "stopped": True,
     }
+
+
+def test_run_user_backup_task_pagination_has_safety_limit(settings, service_env, monkeypatch):
+    """user_novels 返回自引用 next_url 时，翻页应在兜底上限处停止而非死循环。"""
+
+    class EndlessApi:
+        def __init__(self) -> None:
+            self.user_novels_calls = 0
+
+        def user_novels(self, **query):
+            self.user_novels_calls += 1
+            return SimpleNamespace(novels=[], next_url="loop")
+
+        def parse_qs(self, next_url):
+            if next_url == "loop":
+                return {"user_id": 202, "page": self.user_novels_calls + 1}
+            return None
+
+    class EndlessAuthManager:
+        def __init__(self, pixiv_settings) -> None:
+            self.api = EndlessApi()
+
+        def login(self):
+            return self.api, SimpleNamespace(user_id=999)
+
+    created_auth: dict[str, object] = {}
+
+    def make_auth(pixiv_settings):
+        auth = EndlessAuthManager(pixiv_settings)
+        created_auth["auth"] = auth
+        return auth
+
+    monkeypatch.setattr(services, "PixivAuthManager", make_auth)
+    reporter = DummyReporter()
+
+    result = services.run_user_backup_task(settings, user_id=202, reporter=reporter)
+
+    api = created_auth["auth"].api
+    assert api.user_novels_calls == 200  # 默认兜底 200 页
+    assert result["stopped"] is False
+    assert any("翻页" in message for _level, message in reporter.logs)

@@ -131,6 +131,9 @@ def run_user_backup_task(
         total_seen = 0
         stopped = False
         next_query: dict[str, Any] | None = {"user_id": user_id}
+        # 翻页上限兜底：防止 API 返回自引用 next_url 导致死循环
+        max_pages = getattr(getattr(settings, "sync", None), "max_pages_per_run", None) or 200
+        page_count = 0
 
         _report_progress(reporter, phase="user_backup", current=0, total=0, current_novel=user_name, author=user_name)
 
@@ -138,8 +141,14 @@ def run_user_backup_task(
             if stop_requested is not None and stop_requested():
                 stopped = True
                 break
+            if page_count >= max_pages:
+                message = f"用户全量备份翻页达到兜底上限 {max_pages} 页，提前停止: {user_name} ({user_id})"
+                logger.warning(message)
+                _report_log(reporter, "warning", message)
+                break
 
             result = api.user_novels(**next_query)
+            page_count += 1
             novels = getattr(result, "novels", []) or []
             total_seen += len(novels)
             for novel in novels:

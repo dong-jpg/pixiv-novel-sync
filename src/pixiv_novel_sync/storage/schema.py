@@ -4,7 +4,6 @@
 """
 import logging
 import sqlite3
-from typing import Any
 
 
 logger = logging.getLogger(__name__)
@@ -136,8 +135,10 @@ class SchemaMixin:
         self._migrate_novels_table()
         # 迁移：为 series 表添加 is_subscribed、status、last_checked_at 字段
         self._migrate_series_table()
-        # 修复：将进程重启后遗留的 running 状态日志标记为 failed
-        self._fix_stale_running_logs()
+        # 注意：不再在 init_schema 常规路径里调用 _fix_stale_running_logs()，
+        # 否则 Web 请求并发打开数据库时会把正在运行的任务误标为 failed。
+        # 进程重启后的遗留 running 日志由应用启动时显式调用
+        # fail_stale_task_logs()（见 webapp.create_app）处理一次。
         # 迁移：创建待确认删除表
         self._migrate_pending_deletions_table()
         # 迁移：创建救援纠错和独立只读 Token 表
@@ -280,16 +281,24 @@ class SchemaMixin:
         except Exception:
             pass
 
-    def _fix_stale_running_logs(self) -> None:
-        """将进程重启后遗留的 running 状态日志标记为 failed"""
+    def fail_stale_task_logs(self) -> int:
+        """应用启动时显式调用：将进程重启后遗留的 running 日志标记为 failed。
+
+        返回受影响的行数。不要在 init_schema 常规路径调用（会误杀并发运行中的任务）。
+        """
         try:
-            self.conn.execute(
+            cursor = self.conn.execute(
                 "UPDATE task_logs SET status = 'failed', error_message = '进程重启，任务中断', "
                 "finished_at = CURRENT_TIMESTAMP WHERE status = 'running'"
             )
             self._commit_if_needed()
+            return int(cursor.rowcount or 0)
         except Exception:
-            pass
+            return 0
+
+    def _fix_stale_running_logs(self) -> None:
+        """将进程重启后遗留的 running 状态日志标记为 failed（兼容旧调用）"""
+        self.fail_stale_task_logs()
 
     def _migrate_novels_table(self) -> None:
         """为 novels 表添加 status 和 last_checked_at 字段"""

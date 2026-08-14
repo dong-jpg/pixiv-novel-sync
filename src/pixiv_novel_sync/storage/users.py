@@ -1,7 +1,6 @@
 """User CRUD operations."""
 from __future__ import annotations
 
-import json
 from typing import Any
 
 
@@ -282,6 +281,22 @@ class UsersMixin:
                     """,
                     (user_id,),
                 )
+                # 2.5 清理救援目录（比照 delete_novel 的做法）：目录项、来源、
+                # 成员快照一并删除，并记录受影响的父系列稍后刷新。
+                affected_series_ids = self._catalog_novel_series_ids(set(novel_ids))
+                for novel_id in novel_ids:
+                    self.conn.execute(
+                        "DELETE FROM rescue_catalog_sources WHERE item_type = 'novel' AND item_id = ?",
+                        (novel_id,),
+                    )
+                    self.conn.execute(
+                        "DELETE FROM rescue_catalog WHERE item_type = 'novel' AND item_id = ?",
+                        (novel_id,),
+                    )
+                    self.conn.execute(
+                        "DELETE FROM rescue_catalog_memberships WHERE novel_id = ?",
+                        (novel_id,),
+                    )
 
                 # 3. 删除小说主表
                 self.conn.execute("DELETE FROM novels WHERE user_id = ?", (user_id,))
@@ -292,3 +307,7 @@ class UsersMixin:
 
                 # 5. 最后删除用户主表
                 self.conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+
+                # 6. 刷新受影响的父系列救援条目
+                for series_id in sorted(affected_series_ids):
+                    self.refresh_rescue_item("series", series_id)
