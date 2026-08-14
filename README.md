@@ -142,7 +142,7 @@ pixiv-novel-sync sync bookmark following_novels subscribed_series
 
 ### 智能推荐
 
-/dashboard/preferences 提供偏好画像、搜索计划、推荐任务、结果反馈和屏蔽管理。推荐逻辑以本地统计和可解释规则为主，AI 用于补充总结和解释。
+/dashboard/preferences 提供偏好画像、搜索计划、推荐任务、结果反馈和屏蔽管理。当前推荐逻辑以本地统计和可解释规则为主；AI 仅用于关键词清洗，结构化偏好总结和 AI 推荐解释仍未接入。
 
 ### Pixiv 原站救援阅读
 

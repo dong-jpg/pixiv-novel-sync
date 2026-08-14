@@ -10,11 +10,6 @@ def estimate_token_count(text: str) -> int:
     return int(chinese_chars / 1.5 + other_chars / 4)
 
 
-def needs_summarization(text: str, context_window: int) -> bool:
-    """判断文本是否需要摘要处理。"""
-    return estimate_token_count(text) > context_window * 0.6
-
-
 def get_tail_context(text: str, context_chars: int) -> str:
     text = text or ""
     context_chars = max(int(context_chars or 0), 0)

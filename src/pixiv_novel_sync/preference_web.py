@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import threading
 from collections.abc import Callable
 from typing import Any
 
 from flask import Flask, jsonify, render_template, request
 
-from .preferences import PreferenceAnalyzer
 from .recommendations import RecommendationService
 from .settings import Settings
 from .storage_db import Database
@@ -193,6 +191,9 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
         finally:
             instance.close()
 
+    # 反馈类型固定枚举：与状态回写白名单一致，非法值直接 400，避免任意字符串写库
+    ALLOWED_FEEDBACK_TYPES = {"interested", "dismissed", "saved", "muted"}
+
     @app.post("/api/dashboard/recommendations/items/<int:item_id>/feedback")
     def create_recommendation_feedback(item_id: int):
         payload = json_payload()
@@ -204,6 +205,11 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
             feedback_type = str(payload.get("feedback_type") or "").strip()
             if not feedback_type:
                 return jsonify({"ok": False, "error": "缺少 feedback_type"}), 400
+            if feedback_type not in ALLOWED_FEEDBACK_TYPES:
+                return jsonify({
+                    "ok": False,
+                    "error": "feedback_type 无效，允许值: " + ", ".join(sorted(ALLOWED_FEEDBACK_TYPES)),
+                }), 400
             instance.create_recommendation_feedback({
                 "item_type": item["item_type"],
                 "novel_id": item.get("novel_id"),
@@ -212,8 +218,7 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
                 "feedback_type": feedback_type,
                 "note": payload.get("note"),
             })
-            if feedback_type in {"interested", "dismissed", "saved", "muted"}:
-                instance.update_recommendation_item_status(item_id, feedback_type)
+            instance.update_recommendation_item_status(item_id, feedback_type)
             return ok()
         except Exception as exc:
             return fail(exc)

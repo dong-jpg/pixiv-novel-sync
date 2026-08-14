@@ -571,7 +571,7 @@ def migrate_model_routing_schema(conn: sqlite3.Connection) -> None:
 def prepare_model_routing_downgrade(
     conn: sqlite3.Connection,
 ) -> dict[str, object]:
-    """Return a read-only legacy compatibility report for fixed agents."""
+    """保留：仅测试/兼容用途。Return a read-only legacy compatibility report for fixed agents."""
     if conn.execute(
         "SELECT 1 FROM ai_agents WHERE binding_type = 'pool' LIMIT 1"
     ).fetchone():

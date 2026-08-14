@@ -477,6 +477,14 @@ class RecommendationsMixin:
         )
         recommended_ids = {int(row[0]) for row in self.conn.execute("SELECT novel_id FROM recommendation_items WHERE novel_id IS NOT NULL").fetchall()}
         dismissed_ids = {int(row[0]) for row in self.conn.execute("SELECT novel_id FROM recommendation_items WHERE novel_id IS NOT NULL AND status IN ('dismissed', 'muted')").fetchall()}
+        # 独立的反馈记录(recommendation_feedback)同样计入排除:
+        # item 可能被后续 run 覆盖回 new,但 dismissed 反馈是用户明确表态,必须持续生效
+        dismissed_ids |= {
+            int(row[0])
+            for row in self.conn.execute(
+                "SELECT novel_id FROM recommendation_feedback WHERE novel_id IS NOT NULL AND feedback_type IN ('dismissed', 'muted')"
+            ).fetchall()
+        }
         recommended_series_ids = {
             int(row[0])
             for row in self.conn.execute(
@@ -490,6 +498,13 @@ class RecommendationsMixin:
                 SELECT series_id FROM recommendation_items
                 WHERE series_id IS NOT NULL AND status IN ('dismissed', 'muted')
                 """
+            ).fetchall()
+        }
+        # 系列同理并入 feedback 表中的 dismissed/muted 记录
+        dismissed_series_ids |= {
+            int(row[0])
+            for row in self.conn.execute(
+                "SELECT series_id FROM recommendation_feedback WHERE series_id IS NOT NULL AND feedback_type IN ('dismissed', 'muted')"
             ).fetchall()
         }
         mutes = self.list_recommendation_mutes()

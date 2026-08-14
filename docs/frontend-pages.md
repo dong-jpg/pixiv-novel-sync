@@ -325,6 +325,15 @@ APIs:
 - `POST /api/save-token`
 - OAuth APIs。
 
+## 共享 partial
+
+以下模板不是独立页面，而是被多个页面 `{% include %}` 的共享片段；修改时需同时回归所有引用页面：
+
+| Partial | 被引用于 | 用途 |
+| --- | --- | --- |
+| `dashboard_ai_output_panel.html` | `dashboard_ai.html`、`dashboard_wizard.html` | AI 生成输出面板（流式输出、阶段/进度展示、结果操作） |
+| `dashboard_ai_source_search.html` | `dashboard_wizard.html` | 创作向导的素材来源搜索面板 |
+
 ## Validation checklist
 
 每页改动后检查：

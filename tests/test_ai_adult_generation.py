@@ -310,3 +310,112 @@ def test_job_input_contains_only_metadata_hashes_and_lengths(
     )
     assert "messages" not in saved
     assert "prompt" not in saved
+
+
+def test_main_route_request_carries_cancel_checker(
+    service: AIWritingService,
+    fake_router: GenerationRouter,
+    adult_payload: dict[str, Any],
+):
+    events = list(
+        service.stream_adult_polish(adult_payload, "owner-a", "lease-a")
+    )
+
+    assert any(event.type == "metadata" for event in events)
+    request = fake_router.requests[0]
+    assert callable(request.is_cancelled)
+    # 未取消时回调返回 False
+    assert request.is_cancelled() is False
+
+
+def test_cancel_checker_reflects_db_cancel_flag(
+    db: Database,
+    service: AIWritingService,
+    adult_payload: dict[str, Any],
+):
+    prepared = service.prepare_adult_job(
+        adult_payload,
+        "owner-a",
+        owner_token="lease-a",
+    )
+    checker = service._adult_cancel_checker(
+        prepared.job_id,
+        "owner-a",
+        min_interval=0.0,
+    )
+    cached_checker = service._adult_cancel_checker(
+        prepared.job_id,
+        "owner-a",
+        min_interval=3600.0,
+    )
+    assert checker() is False
+    assert cached_checker() is False
+
+    assert db.request_adult_job_cancel(prepared.job_id, "owner-a", "lease-a")
+
+    # 最小间隔缓存：窗口内不再查库，仍返回 False（避免每 token 查库）
+    assert cached_checker() is False
+    # 无间隔限制的检查器立即看到取消标志，且此后保持 True
+    assert checker() is True
+    assert checker() is True
+
+
+def test_cancelled_route_result_discards_partial_output(
+    db: Database,
+    service: AIWritingService,
+    fake_router: GenerationRouter,
+    adult_payload: dict[str, Any],
+):
+    fake_router.result = RouteResult(
+        job_id="pending",
+        output_text="部分输出",
+        candidate_snapshot_hash="0" * 64,
+        attempts=(),
+        finish_state="cancelled",
+    )
+
+    events = list(
+        service.stream_adult_polish(adult_payload, "owner-a", "lease-a")
+    )
+
+    assert any(
+        event.type == "error" and event.data and event.data["code"] == "cancelled"
+        for event in events
+    )
+    assert not any(event.type in {"delta", "candidate"} for event in events)
+    job = db.get_adult_job(_job_id(events), "owner-a")
+    assert job is not None
+    assert job["status"] == "cancelled"
+    assert job.get("output_text") is None
+
+
+def test_progress_streams_before_route_completion(
+    service: AIWritingService,
+    fake_router: GenerationRouter,
+    adult_payload: dict[str, Any],
+):
+    stream = service.stream_adult_polish(adult_payload, "owner-a", "lease-a")
+    first = next(stream)
+    assert first.type == "metadata"
+    second = next(stream)
+    # execute_stream 的进度事件必须在路由完成前实时转发
+    assert second.type == "progress"
+    assert fake_router.execute_count == 0
+    rest = list(stream)
+    assert rest
+
+
+def test_progress_events_are_whitelisted(
+    service: AIWritingService,
+    adult_payload: dict[str, Any],
+):
+    from pixiv_novel_sync.ai.services.adult import _ADULT_PROGRESS_FIELDS
+
+    events = list(
+        service.stream_adult_polish(adult_payload, "owner-a", "lease-a")
+    )
+    progress = [event for event in events if event.type == "progress"]
+    assert progress
+    for event in progress:
+        assert set(event.data or {}) <= set(_ADULT_PROGRESS_FIELDS)
+    assert not any(event.type == "delta" for event in events)

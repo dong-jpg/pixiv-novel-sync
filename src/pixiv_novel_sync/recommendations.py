@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import difflib
-import time
 from collections.abc import Callable
 from typing import Any
 
@@ -82,6 +81,9 @@ class RecommendationService:
         plan = search_plan or self.build_search_plan(profile)
         run_id = self.db.create_recommendation_run(int(profile["id"]), plan)
         stats = {"searched": 0, "candidates": 0, "saved": 0, "filtered": 0, "errors": 0, "series_deduped": 0}
+        # 原子发布：先在内存收集全部候选，全部生成完成后再单事务写入。
+        # 中途异常/取消不落任何 item，不会用半截结果覆盖上一轮推荐。
+        pending_items: list[dict[str, Any]] = []
         try:
             _emit("phase", {"phase": "登录 Pixiv"})
             api = self.api or self._login_api()
@@ -111,7 +113,10 @@ class RecommendationService:
                         stats["filtered"] += 1
                         continue
 
-                    item = self._candidate_to_item(api, novel, query, profile, plan.get("filters") or {}, filter_state, series_length_cache)
+                    item = self._candidate_to_item(
+                        api, novel, query, profile, plan.get("filters") or {}, filter_state,
+                        series_length_cache, pending_items=pending_items,
+                    )
                     if item is None:
                         stats["filtered"] += 1
                         continue
@@ -120,11 +125,19 @@ class RecommendationService:
                         seen_series.add(series_id)
                     item["run_id"] = run_id
                     item["profile_id"] = int(profile["id"])
-                    self.db.upsert_recommendation_item(item)
+                    pending_items.append(item)
                     stats["saved"] += 1
                 self._page_delay(_emit)
-            self.db.update_recommendation_run(run_id, "succeeded", stats=stats)
+            # 单事务发布：全部 upsert + run 终态一起提交，失败则整体回滚
+            with self.db.transaction():
+                for item in pending_items:
+                    self.db.upsert_recommendation_item(item)
+                self.db.update_recommendation_run(run_id, "succeeded", stats=stats)
             return {"run_id": run_id, "stats": stats, "items": self.db.list_recommendation_items(limit=100)}
+        except InterruptedError:
+            # 用户取消：不写任何 item，仅把 run 标记为 cancelled
+            self.db.update_recommendation_run(run_id, "cancelled", stats=stats, error_message="用户取消")
+            raise
         except Exception as exc:
             self.db.update_recommendation_run(run_id, "failed", stats=stats, error_message=str(exc))
             raise
@@ -168,6 +181,7 @@ class RecommendationService:
         filters: dict[str, Any],
         filter_state: dict[str, Any],
         series_length_cache: dict[int, tuple[int, int]] | None = None,
+        pending_items: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         novel_id = int(getattr(novel, "id", 0) or 0)
         if not novel_id:
@@ -186,7 +200,7 @@ class RecommendationService:
         title = str(getattr(novel, "title", "") or "")
         author_id = int(getattr(getattr(novel, "user", None), "id", 0) or 0)
         tags = self._tags(novel)
-        if self._is_similar_to_existing(title, author_id, tags, filters):
+        if self._is_similar_to_existing(title, author_id, tags, filters, pending_items=pending_items):
             return None
 
         series_id = self._series_id(novel)
@@ -383,10 +397,21 @@ class RecommendationService:
                 tags.append(value)
         return tags
 
-    def _is_similar_to_existing(self, title: str, author_id: int, tags: list[str], filters: dict[str, Any]) -> bool:
-        """检测与已推荐项目的相似度,避免重复推荐"""
+    def _is_similar_to_existing(
+        self,
+        title: str,
+        author_id: int,
+        tags: list[str],
+        filters: dict[str, Any],
+        pending_items: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        """检测与已推荐项目的相似度,避免重复推荐
+
+        pending_items: 本轮尚未落库的内存候选（原子发布模式下同一轮内的去重依据）。
+        """
         threshold = float(filters.get("similarity_threshold", 0.8))
         existing = self.db.get_recent_recommendation_items(limit=100, status="new")
+        existing = list(existing) + list(pending_items or [])
 
         for item in existing:
             # 相同作者+高度相似标题

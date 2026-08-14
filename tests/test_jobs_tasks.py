@@ -862,3 +862,47 @@ def test_preference_analyze_defaults_scope_limit(monkeypatch):
     # 默认画像不存在时走创建分支,且标记为默认
     assert captured["profile"]["is_default"] is True
 
+
+def test_recommendation_run_task_propagates_interrupted_error(tmp_path, monkeypatch):
+    """用户取消推荐任务时 InterruptedError 必须向上传播,由 JobRunner 收口为 cancelled,
+    而不是被吞掉返回 {"stopped": True} 让任务显示成功。"""
+
+    class FakeService:
+        def __init__(self, db, settings):
+            self.stop_requested = None
+
+        def run(self, profile_id=None, search_plan=None, progress_callback=None):
+            raise InterruptedError("Task stopped by user")
+
+    monkeypatch.setattr("pixiv_novel_sync.recommendations.RecommendationService", FakeService)
+
+    settings = SimpleNamespace(storage=SimpleNamespace(db_path=tmp_path / "rec.db"))
+
+    with pytest.raises(InterruptedError, match="Task stopped by user"):
+        execute_task("recommendation_run", settings, {"params": {}})
+
+
+def test_recommendation_run_cancel_marks_job_cancelled(tmp_path, monkeypatch):
+    """端到端: 经 JobRunner 执行被取消的推荐任务,job 终态应为 cancelled。"""
+    from pixiv_novel_sync.jobs.manager import JobManager
+    from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobStatus, JobType
+    from pixiv_novel_sync.jobs.runner import JobRunner
+
+    class FakeService:
+        def __init__(self, db, settings):
+            self.stop_requested = None
+
+        def run(self, profile_id=None, search_plan=None, progress_callback=None):
+            raise InterruptedError("Task stopped by user")
+
+    monkeypatch.setattr("pixiv_novel_sync.recommendations.RecommendationService", FakeService)
+
+    settings = SimpleNamespace(storage=SimpleNamespace(db_path=tmp_path / "rec.db"))
+    manager = JobManager()
+    spec = JobSpec(source=JobSource.WEB, task_types=["recommendation_run"], job_type=JobType.RECOMMENDATION_RUN, params={})
+    state = manager.submit(spec)
+    runner = JobRunner(manager, lambda task_type, context: execute_task(task_type, settings, context))
+
+    runner.run(state.job_id)
+
+    assert manager.get_job(state.job_id).status == JobStatus.CANCELLED

@@ -5,7 +5,6 @@ from .managers import (
     SyncJobManager,
     SyncJobState,
     TASK_LABELS,
-    _task_label,
 )
 from .utils import (
     _atomic_write_yaml,
@@ -37,7 +36,6 @@ __all__ = [
     "SyncJobManager",
     "SyncJobState",
     "TASK_LABELS",
-    "_task_label",
     "_atomic_write_yaml",
     "_oauth_task_public_payload",
     "_settings_to_dict",

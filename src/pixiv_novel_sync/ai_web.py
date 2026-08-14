@@ -675,10 +675,14 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
                         payload = {k: v for k, v in data.items() if k != "event"}
                         yield sse(event_name, payload)
             except GeneratorExit:
+                raise
+            except Exception:
+                logger.warning("AI SSE 输出失败")
+                yield sse("error", {"message": "AI 响应中断"})
+            finally:
                 close = getattr(chunks, "close", None)
                 if callable(close):
                     close()
-                raise
 
         return Response(
             stream_with_context(generate()),
@@ -1556,15 +1560,11 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             keep_failed_days = payload.get("keep_failed_days")
             if keep_failed_days is not None:
                 keep_failed_days = parse_int(keep_failed_days, 0, "keep_failed_days", min_value=1)
-            db = service._db()
-            try:
-                deleted = db.cleanup_ai_jobs(
-                    keep_days=keep_days,
-                    keep_failed_days=keep_failed_days,
-                    owner_scope=generic_adult_scope(),
-                )
-            finally:
-                db.close()
+            deleted = service.cleanup_jobs(
+                keep_days=keep_days,
+                keep_failed_days=keep_failed_days,
+                owner_scope=generic_adult_scope(),
+            )
             return ok({"deleted": deleted})
         except Exception as exc:
             return fail(exc)

@@ -6,10 +6,8 @@ import os
 import time
 import types
 from datetime import datetime, timezone
-from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Iterable, TypeVar
-from urllib.parse import urlparse
 
 from pixivpy3 import AppPixivAPI
 
@@ -25,9 +23,7 @@ from .sync.utils import (
     _extract_tags,
     _extract_cover_url,
     _extract_novel_text,
-    _is_pixiv_image_url,
     _collect_asset_urls,
-    _walk_urls,
     _filename_from_url,
     _empty_stats,
     _merge_stats,
@@ -122,7 +118,7 @@ class BookmarkNovelSyncService:
                 )
 
     def check_bookmarks_existence(self, user_id: int, restricts: Iterable[str], progress_callback: Any = None) -> dict[str, int]:
-        """预检查：获取全部收藏列表，标记哪些已存在本地"""
+        """保留：仅测试/兼容用途。预检查：获取全部收藏列表，标记哪些已存在本地"""
         stats = {"total_checked": 0, "existing": 0, "new": 0}
         
         # 初始化检查表
@@ -667,10 +663,14 @@ class BookmarkNovelSyncService:
                 "user_max_ids": merged,
             })
 
+        safety_limit = max_pages or 100  # 翻页上限兜底，防止自引用 next_url 死循环
         while next_following_query:
-            # 检查是否达到最大页数限制
-            if max_pages is not None and following_page_count >= max_pages:
-                logger.info("Reached max_pages_per_run=%s, stopping pagination", max_pages)
+            # 检查是否达到最大页数限制（含默认兜底）
+            if following_page_count >= safety_limit:
+                logger.warning(
+                    "Reached page safety limit=%s for following list, stopping pagination",
+                    safety_limit,
+                )
                 _save_watermark()
                 return stats
             try:
@@ -720,6 +720,14 @@ class BookmarkNovelSyncService:
                 existing_streak = 0
                 stop_author_scan = False
                 while next_novel_query:
+                    # 单作者作品列表同样受翻页上限兜底约束
+                    if author_page_count >= safety_limit:
+                        logger.warning(
+                            "Reached page safety limit=%s for user %s novels, stopping pagination",
+                            safety_limit,
+                            author_id,
+                        )
+                        break
                     try:
                         novels_result = self.api.user_novels(**next_novel_query)
                     except Exception as e:
@@ -830,9 +838,6 @@ class BookmarkNovelSyncService:
         logger.info("Fetching subscribed series list (limit=%d)", limit)
         if progress_callback:
             progress_callback("phase", {"phase": "获取订阅系列"})
-        
-        # 不再清除旧的订阅标记，而是在最后统一更新
-        # self.db.clear_subscribed_series()
         
         series_list = []
         

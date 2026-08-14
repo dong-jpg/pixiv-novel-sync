@@ -987,10 +987,6 @@ class RescueMixin:
             "override_note": str(row.get("override_note") or ""),
         }
 
-    def _series_rescue_payload(self, row: dict[str, Any]) -> dict[str, Any] | None:
-        payload = self._series_evaluation_payload(row)
-        return payload if payload["rescue_state"] is not None else None
-
     def evaluate_rescue_series(self, series_id: int) -> dict[str, Any] | None:
         rows = self._series_summary_rows(int(series_id))
         if not rows:

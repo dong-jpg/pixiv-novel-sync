@@ -5,11 +5,13 @@ import json
 import os
 import logging
 import secrets
+import shutil
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 import requests as http_requests
@@ -27,12 +29,8 @@ from .storage_db import Database
 from .storage_files import FileStorage
 from .utils_env import secure_atomic_write
 from .utils_naming import safe_name
-from .web.managers import (
-    SyncJobState,  # noqa: F401 - 经 webapp 重导出供 tests 使用
-    AutoSyncScheduler,
-    SyncJobManager,
-    SettingsManager,
-)
+from .web.managers import AutoSyncScheduler, SettingsManager
+from .web.managers import SyncJobManager, SyncJobState  # noqa: F401 - 经 webapp 重导出供 tests 使用
 from .web.utils import (
     _atomic_write_yaml,
     _oauth_task_public_payload,
@@ -46,16 +44,231 @@ from .web.utils import (
     _restricts_to_label,
     _external_base_url,
     _check_pixiv_user_status,
-    # _check_novel_status / _check_series_status: 经 webapp 再导出，jobs/services.py 依赖
-    _check_novel_status,
-    _check_series_status,
-    _remove_archive_files,
 )
+
+# 经 webapp 再导出：jobs/services.py 依赖 _check_novel_status/_check_series_status，
+# tests/test_archive_integrity.py 依赖 _remove_archive_files
+from .web.utils import _check_novel_status, _check_series_status  # noqa: F401
+from .web.utils import _remove_archive_files  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
 # 记录服务启动时间（用于健康检查 API 计算 uptime）
 _service_start_time: float = time.time()
+
+# Nginx 图片缓存目录（可用环境变量覆盖，便于测试）与遍历上限
+_NGINX_CACHE_DIR_ENV = "PIXIV_NGINX_CACHE_DIR"
+_NGINX_CACHE_DIR_DEFAULT = "/var/cache/nginx/pixiv_img"
+_CACHE_SCAN_MAX_FILES = 50000
+
+
+def _nginx_cache_dir() -> Path:
+    return Path(os.getenv(_NGINX_CACHE_DIR_ENV) or _NGINX_CACHE_DIR_DEFAULT)
+
+
+def _open_database(current_settings: Settings) -> Database:
+    """创建 Database 并初始化 schema；init 失败时确保连接被关闭。
+
+    统一辅助：修复大量路由中 db.init_schema() 位于 try/finally 之外、
+    初始化抛异常时连接泄漏的问题。调用方仍负责 finally: db.close()。
+    """
+    db = Database(current_settings.storage.db_path)
+    try:
+        db.init_schema()
+    except BaseException:
+        db.close()
+        raise
+    return db
+
+
+class _LoginFailureTracker:
+    """登录失败限流：滑动窗口 + 条目上限（防止 dict 无界增长），读写加锁。"""
+
+    def __init__(
+        self,
+        max_entries: int = 2048,
+        window_seconds: float = 300.0,
+        max_failures: int = 5,
+    ) -> None:
+        self._lock = threading.Lock()
+        self._failures: dict[str, list[float]] = {}
+        self.max_entries = max_entries
+        self.window_seconds = window_seconds
+        self.max_failures = max_failures
+
+    def is_blocked(self, client: str, now: float | None = None) -> bool:
+        now = time.time() if now is None else now
+        with self._lock:
+            failures = [ts for ts in self._failures.get(client, []) if now - ts < self.window_seconds]
+            if failures:
+                self._failures[client] = failures
+            else:
+                self._failures.pop(client, None)
+            return len(failures) >= self.max_failures
+
+    def record_failure(self, client: str, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        with self._lock:
+            failures = [ts for ts in self._failures.get(client, []) if now - ts < self.window_seconds]
+            failures.append(now)
+            self._failures[client] = failures
+            if len(self._failures) > self.max_entries:
+                overflow = len(self._failures) - self.max_entries
+                for key in sorted(self._failures, key=lambda k: self._failures[k][-1])[:overflow]:
+                    self._failures.pop(key, None)
+
+    def clear(self, client: str) -> None:
+        with self._lock:
+            self._failures.pop(client, None)
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._failures)
+
+
+_EMPTY_ARCHIVE_STATS = {"dirs_removed": 0, "files_removed": 0, "missing": 0, "skipped": 0}
+
+
+class _ArchiveTrash:
+    """归档删除的"回收站"暂存：先把文件搬到同卷 .trash 目录，DB 提交成功后再清空。
+
+    修复原先"先删文件再写库"的顺序问题：DB 删除失败时可以把文件原样移回。
+    路径计算逻辑与 web.utils._remove_archive_files 保持一致。
+    """
+
+    def __init__(self, settings: Settings, archive_refs: list[dict[str, Any]]) -> None:
+        self._storage = FileStorage(settings)
+        self._trash_root = (
+            settings.storage.public_dir.parent / ".trash" / uuid.uuid4().hex
+        )
+        self._moves: list[tuple[Path, Path]] = []
+        self.stats = dict(_EMPTY_ARCHIVE_STATS)
+        novel_dirs: list[Path] = []
+        asset_paths: list[Path] = []
+        for ref in archive_refs:
+            try:
+                novel_id = int(ref.get("novel_id") or 0)
+                user_id = int(ref.get("user_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not novel_id:
+                continue
+            novel_dirs.append(
+                self._storage.novel_dir(
+                    str(ref.get("restrict_value") or "public"),
+                    user_id,
+                    str(ref.get("author_name") or "unknown"),
+                    novel_id,
+                    str(ref.get("title") or f"novel_{novel_id}"),
+                )
+            )
+            for path in ref.get("asset_paths") or []:
+                if path:
+                    asset_path = Path(path)
+                    asset_paths.append(asset_path)
+                    if asset_path.parent.parent.name == "assets":
+                        novel_dirs.append(asset_path.parent.parent.parent)
+        self._novel_dirs = novel_dirs
+        self._asset_paths = asset_paths
+
+    def _move_to_trash(self, source: Path) -> None:
+        self._trash_root.mkdir(parents=True, exist_ok=True)
+        dest = self._trash_root / str(len(self._moves))
+        shutil.move(str(source), str(dest))
+        self._moves.append((source, dest))
+
+    def stage(self) -> None:
+        """把所有待删文件/目录搬进 trash（尚未真正删除）。"""
+        moved_dirs: set[Path] = set()
+        seen_dirs: set[Path] = set()
+        for novel_dir in self._novel_dirs:
+            try:
+                dir_key = (
+                    novel_dir.resolve()
+                    if novel_dir.exists()
+                    else novel_dir.parent.resolve() / novel_dir.name
+                )
+            except OSError:
+                self.stats["skipped"] += 1
+                continue
+            if dir_key in seen_dirs:
+                continue
+            seen_dirs.add(dir_key)
+            if not self._storage._is_inside_storage(novel_dir):
+                self.stats["skipped"] += 1
+                logger.warning("Skip deleting archive outside storage roots: %s", novel_dir)
+                continue
+            if not novel_dir.exists():
+                self.stats["missing"] += 1
+                continue
+            resolved_dir = novel_dir.resolve()
+            was_dir = resolved_dir.is_dir()
+            self._move_to_trash(resolved_dir)
+            if was_dir:
+                moved_dirs.add(resolved_dir)
+                self.stats["dirs_removed"] += 1
+            else:
+                self.stats["files_removed"] += 1
+
+        for asset_path in self._asset_paths:
+            try:
+                asset_key = (
+                    asset_path.resolve()
+                    if asset_path.exists()
+                    else asset_path.parent.resolve() / asset_path.name
+                )
+            except OSError:
+                self.stats["skipped"] += 1
+                continue
+            if any(asset_key.is_relative_to(directory) for directory in moved_dirs):
+                continue
+            if not self._storage._is_inside_storage(asset_path):
+                self.stats["skipped"] += 1
+                logger.warning("Skip deleting asset outside storage roots: %s", asset_path)
+                continue
+            if not asset_path.exists():
+                self.stats["missing"] += 1
+                continue
+            resolved_asset = asset_path.resolve()
+            if resolved_asset.is_file():
+                self._move_to_trash(resolved_asset)
+                self.stats["files_removed"] += 1
+
+    def commit(self) -> dict[str, int]:
+        """DB 已提交：真正删除 trash 中的文件，返回统计。"""
+        shutil.rmtree(self._trash_root, ignore_errors=True)
+        return self.stats
+
+    def rollback(self) -> None:
+        """DB 失败：把文件移回原位。"""
+        for source, dest in reversed(self._moves):
+            try:
+                source.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(dest), str(source))
+            except Exception as exc:
+                logger.error("归档回收站回滚失败 %s -> %s: %s", dest, source, exc)
+        self._moves.clear()
+        shutil.rmtree(self._trash_root, ignore_errors=True)
+
+
+def _remove_archive_files_atomic(
+    settings: Settings,
+    archive_refs: list[dict[str, Any]],
+    db_delete: Callable[[], Any],
+) -> dict[str, int]:
+    """安全顺序删除：文件先入 trash → 执行 DB 删除并提交 → 清空 trash。
+
+    DB 删除抛异常时文件被移回原位，异常继续向上抛。
+    """
+    trash = _ArchiveTrash(settings, archive_refs)
+    trash.stage()
+    try:
+        db_delete()
+    except BaseException:
+        trash.rollback()
+        raise
+    return trash.commit()
+
 
 @dataclass(frozen=True, slots=True)
 class _AutoSyncSchedulerOwner:
@@ -64,7 +277,7 @@ class _AutoSyncSchedulerOwner:
 
     @property
     def sync_job_manager(self) -> JobManager:
-        """兼容旧测试/扩展读取；生产状态统一由 JobManager 持有。"""
+        """保留：仅测试/兼容用途。兼容旧测试/扩展读取；生产状态统一由 JobManager 持有。"""
         return self.job_manager
 
 
@@ -192,6 +405,19 @@ def create_app(
     shared_job_manager = JobManager()
     app.config["job_manager"] = shared_job_manager
 
+    # 应用启动时一次性清理进程重启遗留的 running 任务日志。
+    # 注意：不能放在 init_schema 常规路径（并发 Web 请求会误杀运行中任务）。
+    try:
+        _startup_db = _open_database(settings_manager.load(env_path=env_path))
+        try:
+            stale_count = _startup_db.fail_stale_task_logs()
+            if stale_count:
+                logger.info("启动时将 %d 条遗留 running 任务日志标记为 failed", stale_count)
+        finally:
+            _startup_db.close()
+    except Exception as exc:
+        logger.warning("启动清理遗留任务日志失败：%s", exc)
+
     def run_web_task(task_type: str, context: dict[str, Any]) -> dict[str, Any] | None:
         current_settings = settings_manager.load(env_path=env_path)
         return execute_task(task_type, current_settings, context)
@@ -251,28 +477,31 @@ def create_app(
         progress: dict[str, Any] | None = None,
         run_async: bool = True,
     ) -> JobState:
-        if _has_any_running_web_job():
-            raise RuntimeError("已有同步任务正在运行，请稍后再试")
+        # 原子化"无活跃任务则提交"：检查与 submit 同持 JobManager 锁，
+        # 消除并发请求同时通过检查导致双任务的 TOCTOU 窗口。
+        with shared_job_manager._lock:
+            if _has_any_running_web_job():
+                raise RuntimeError("已有同步任务正在运行，请稍后再试")
 
-        db = Database(current_settings.storage.db_path)
-        try:
-            db.init_schema()
-            job = shared_job_manager.submit(spec)
-            log_id = db.create_task_log(
-                task_type=task_type,
-                task_name=task_name,
-                job_id=job.job_id,
-                is_auto_sync=is_auto_sync,
-            )
-            job.progress["log_id"] = log_id
-            if progress:
-                shared_job_manager.update_progress(job.job_id, **progress)
-            if run_async:
-                thread = threading.Thread(target=_run_shared_web_job, args=(job.job_id,), daemon=True)
-                thread.start()
-            return job
-        finally:
-            db.close()
+            db = _open_database(current_settings)
+            try:
+                job = shared_job_manager.submit(spec)
+                log_id = db.create_task_log(
+                    task_type=task_type,
+                    task_name=task_name,
+                    job_id=job.job_id,
+                    is_auto_sync=is_auto_sync,
+                )
+                job.progress["log_id"] = log_id
+                if progress:
+                    shared_job_manager.update_progress(job.job_id, **progress)
+            finally:
+                db.close()
+        # 线程启动放在锁外，避免 worker 立即抢锁被阻塞
+        if run_async:
+            thread = threading.Thread(target=_run_shared_web_job, args=(job.job_id,), daemon=True)
+            thread.start()
+        return job
 
     def _submit_scheduler_task(task_settings: Settings, task_name: str) -> JobState | None:
         params = None
@@ -384,7 +613,8 @@ def create_app(
         "/oauth/callback",
     }
     _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-    _login_failures: dict[str, list[float]] = {}
+    _login_failures = _LoginFailureTracker()
+    app.config["login_failure_tracker"] = _login_failures
 
     def _get_csrf_token() -> str:
         token = session.get("csrf_token")
@@ -537,19 +767,16 @@ def create_app(
         import hmac as _hmac
         now = time.time()
         client = _client_addr()
-        failures = [ts for ts in _login_failures.get(client, []) if now - ts < 300]
-        if len(failures) >= 5:
-            _login_failures[client] = failures
+        if _login_failures.is_blocked(client, now):
             return jsonify({"error": "too many login attempts"}), 429
         input_token = request.form.get("token", "")
         if _hmac.compare_digest(input_token, token):
-            _login_failures.pop(client, None)
+            _login_failures.clear(client)
             session["authenticated"] = True
             session["authenticated_at"] = time.time_ns()
             _get_csrf_token()
             return redirect("/")
-        failures.append(now)
-        _login_failures[client] = failures
+        _login_failures.record_failure(client, now)
         return Response("密码错误", status=401, content_type="text/plain; charset=utf-8")
 
     @app.get("/api/csrf-token")
@@ -783,8 +1010,7 @@ def create_app(
     @app.get("/api/dashboard/status")
     def dashboard_status():
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             stats = json.loads(db.export_stats())
             current_user = db.get_user_summary(current_settings.pixiv.user_id)
@@ -814,8 +1040,7 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         page = max(_safe_int(request.args.get("page", 1), 1), 1)
         page_size = 10
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             payload = db.list_followed_users(page=page, page_size=page_size)
         finally:
@@ -834,8 +1059,7 @@ def create_app(
         sort = str(request.args.get("sort", "") or "").strip()
         if sort not in {"", "updated_desc", "bookmarks_desc", "views_desc"}:
             sort = ""
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             if category == "bookmark":
                 payload = db.list_bookmark_novels(page=page, page_size=page_size, search=search, sort=sort)
@@ -850,8 +1074,7 @@ def create_app(
     @app.get("/api/dashboard/novels/<int:novel_id>")
     def dashboard_novel_detail(novel_id: int):
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             payload = db.get_novel_detail(novel_id)
             if payload is not None:
@@ -865,8 +1088,7 @@ def create_app(
     @app.get("/api/dashboard/novels/<int:novel_id>/progress")
     def get_novel_progress(novel_id: int):
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             progress = db.get_reading_progress(novel_id)
         finally:
@@ -883,8 +1105,7 @@ def create_app(
         if status not in {"unread", "reading", "completed"}:
             return jsonify({"error": "invalid status"}), 400
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             db.upsert_reading_progress(novel_id, progress, status)
         finally:
@@ -894,8 +1115,7 @@ def create_app(
     @app.delete("/api/dashboard/novels/<int:novel_id>/progress")
     def delete_novel_progress(novel_id: int):
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             db.delete_reading_progress(novel_id)
         finally:
@@ -914,8 +1134,7 @@ def create_app(
             return jsonify({"error": "novel_ids required"}), 400
 
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         storage = FileStorage(current_settings)
 
         try:
@@ -974,8 +1193,7 @@ def create_app(
     @app.get("/api/dashboard/series/<int:series_id>")
     def dashboard_series_detail(series_id: int):
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             payload = db.get_series_detail(series_id)
             if payload is not None:
@@ -998,8 +1216,7 @@ def create_app(
         status = str(request.args.get("status", "all") or "all").strip().lower()
         if status not in {"all", "normal", "suspended", "cleared", "no_novels", "unknown"}:
             status = "all"
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             payload = db.list_users(page=page, page_size=page_size, status=status)
         finally:
@@ -1009,8 +1226,7 @@ def create_app(
     @app.get("/api/dashboard/users/<int:user_id>")
     def dashboard_user_detail(user_id: int):
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             payload = db.get_user_detail(user_id)
         finally:
@@ -1029,8 +1245,7 @@ def create_app(
         page = max(_safe_int(request.args.get("page", 1), 1), 1)
         page_size = 10
         category = request.args.get("category", "all")
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             if category == "series":
                 payload = db.list_user_series(user_id, page=page, page_size=page_size)
@@ -1046,8 +1261,7 @@ def create_app(
         from .auth import PixivAuthManager
         auth = PixivAuthManager(current_settings.pixiv)
         api, _ = auth.login()
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             status = _check_pixiv_user_status(api, user_id)
             db.upsert_user_status(user_id, status)
@@ -1227,8 +1441,7 @@ def create_app(
                 is_auto_sync = False
 
             current_settings = settings_manager.load(env_path=env_path)
-            db = Database(current_settings.storage.db_path)
-            db.init_schema()
+            db = _open_database(current_settings)
             try:
                 if category == "ai":
                     from .ai.adult_auth import require_adult_owner
@@ -1270,8 +1483,7 @@ def create_app(
         """获取单条任务日志详情"""
         try:
             current_settings = settings_manager.load(env_path=env_path)
-            db = Database(current_settings.storage.db_path)
-            db.init_schema()
+            db = _open_database(current_settings)
             try:
                 item = db.get_task_log_by_id(log_id)
             finally:
@@ -1285,15 +1497,20 @@ def create_app(
 
     @app.get("/api/cache/status")
     def cache_status():
-        cache_dir = Path("/var/cache/nginx/pixiv_img")
+        cache_dir = _nginx_cache_dir()
         if not cache_dir.exists():
             return jsonify({"exists": False, "size_bytes": 0, "size_human": "0B"})
         total_size = 0
         file_count = 0
+        truncated = False
         for f in cache_dir.rglob("*"):
             if f.is_file():
                 total_size += f.stat().st_size
                 file_count += 1
+                if file_count >= _CACHE_SCAN_MAX_FILES:
+                    # 遍历上限：超大缓存目录下避免无限扫描拖垮请求
+                    truncated = True
+                    break
         def human_size(size):
             for unit in ['B', 'KB', 'MB', 'GB']:
                 if size < 1024:
@@ -1304,13 +1521,14 @@ def create_app(
             "exists": True,
             "size_bytes": total_size,
             "size_human": human_size(total_size),
-            "file_count": file_count
+            "file_count": file_count,
+            "truncated": truncated
         })
 
     @app.post("/api/cache/clear")
     def cache_clear():
         import shutil
-        cache_dir = Path("/var/cache/nginx/pixiv_img")
+        cache_dir = _nginx_cache_dir()
         if not cache_dir.exists():
             return jsonify({"ok": True, "message": "缓存目录不存在"})
         try:
@@ -1328,12 +1546,12 @@ def create_app(
     def delete_novel(novel_id: int):
         """删除小说"""
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             archive_refs = db.list_novel_archive_refs(novel_ids=[novel_id])
-            archive_cleanup = _remove_archive_files(current_settings, archive_refs)
-            db.delete_novel(novel_id)
+            archive_cleanup = _remove_archive_files_atomic(
+                current_settings, archive_refs, lambda: db.delete_novel(novel_id)
+            )
             return jsonify({"ok": True, "message": "小说已删除", "archive_cleanup": archive_cleanup})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
@@ -1344,12 +1562,12 @@ def create_app(
     def delete_user(user_id: int):
         """删除用户及其所有小说"""
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             archive_refs = db.list_novel_archive_refs(user_id=user_id)
-            archive_cleanup = _remove_archive_files(current_settings, archive_refs)
-            db.delete_user(user_id)
+            archive_cleanup = _remove_archive_files_atomic(
+                current_settings, archive_refs, lambda: db.delete_user(user_id)
+            )
             return jsonify({"ok": True, "message": "用户及其相关数据已删除", "archive_cleanup": archive_cleanup})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
@@ -1360,8 +1578,7 @@ def create_app(
     def delete_series(series_id: int):
         """删除系列"""
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             with db.transaction():
                 chapter_ids = db.delete_series(series_id)
@@ -1376,8 +1593,7 @@ def create_app(
     def delete_bookmark(novel_id: int):
         """删除收藏记录"""
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             db.delete_bookmark(novel_id)
             return jsonify({"ok": True, "message": "收藏记录已删除"})
@@ -1398,8 +1614,7 @@ def create_app(
         item_type = request.args.get("item_type") or None
         if item_type not in (None, "novel", "series"):
             item_type = None
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             payload = db.list_pending_deletions(page=page, page_size=page_size, item_type=item_type)
         finally:
@@ -1410,8 +1625,7 @@ def create_app(
     def shell_data():
         """提供前端 Shell (Navbar 等) 需要的全局聚合数据"""
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             pending_count = db.get_pending_deletion_count()
             # 可以根据需要扩展用户信息等
@@ -1424,8 +1638,7 @@ def create_app(
     @app.get("/api/dashboard/pending-deletions/count")
     def pending_deletion_count():
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             count = db.get_pending_deletion_count()
         finally:
@@ -1445,10 +1658,9 @@ def create_app(
     @app.post("/api/dashboard/pending-deletions/<int:deletion_id>/confirm")
     def confirm_pending_deletion(deletion_id: int):
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
+        trash: _ArchiveTrash | None = None
         try:
-            archive_refs = []
             with db.transaction():
                 record = db.confirm_pending_deletion(deletion_id)
                 if record is None:
@@ -1457,9 +1669,14 @@ def create_app(
                 item_id = record["item_id"]
                 if item_type == "novel":
                     archive_refs = db.list_novel_archive_refs(novel_ids=[item_id])
+                    # 安全顺序：文件先入 trash，事务提交成功后再真正清除
+                    trash = _ArchiveTrash(current_settings, archive_refs)
+                    trash.stage()
                     db.delete_novel(item_id)
                 elif item_type == "series":
                     archive_refs = db.list_novel_archive_refs(series_id=item_id)
+                    trash = _ArchiveTrash(current_settings, archive_refs)
+                    trash.stage()
                     current_chapter_rows = db.conn.execute(
                         "SELECT novel_id FROM novels WHERE series_id = ? ORDER BY novel_id",
                         (item_id,),
@@ -1473,9 +1690,11 @@ def create_app(
                     for novel_id in current_chapter_ids:
                         db.delete_novel(novel_id)
                     _refresh_rescue_chapters(db, affected_chapter_ids)
-            archive_cleanup = _remove_archive_files(current_settings, archive_refs)
+            archive_cleanup = trash.commit() if trash is not None else dict(_EMPTY_ARCHIVE_STATS)
             return jsonify({"ok": True, "message": "已确认删除", "archive_cleanup": archive_cleanup})
         except Exception as exc:
+            if trash is not None:
+                trash.rollback()
             return jsonify({"error": str(exc)}), 500
         finally:
             db.close()
@@ -1483,24 +1702,15 @@ def create_app(
     @app.post("/api/dashboard/pending-deletions/<int:deletion_id>/restore")
     def restore_pending_deletion(deletion_id: int):
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
-            record = db.restore_pending_deletion(deletion_id)
+            # 单事务恢复：restore + 来源补录 + 系列订阅恢复一并提交（原子）
+            record = db.restore_pending_deletion_atomic(
+                deletion_id,
+                bookmark_source_key=str(current_settings.pixiv.user_id or 0),
+            )
             if record is None:
                 return jsonify({"error": "记录不存在或已处理"}), 404
-            item_type = record["item_type"]
-            item_id = record["item_id"]
-            source_type = record.get("source_type")
-            if item_type == "novel" and source_type:
-                from .models import SourceRecord
-                db.upsert_source(SourceRecord(
-                    novel_id=item_id, source_type=source_type,
-                    source_key=str(current_settings.pixiv.user_id or 0),
-                ))
-            elif item_type == "series":
-                db.conn.execute("UPDATE series SET is_subscribed = 1 WHERE series_id = ?", (item_id,))
-                db.conn.commit()
             return jsonify({"ok": True, "message": "已恢复"})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
@@ -1520,8 +1730,7 @@ def create_app(
         db = None
         try:
             current_settings = settings_manager.load(env_path=env_path)
-            db = Database(current_settings.storage.db_path)
-            db.init_schema()
+            db = _open_database(current_settings)
             db.conn.execute("SELECT 1")
             db_accessible = True
         except Exception:
@@ -1549,8 +1758,7 @@ def create_app(
     def dashboard_export_stats():
         """导出同步统计数据"""
         current_settings = settings_manager.load(env_path=env_path)
-        db = Database(current_settings.storage.db_path)
-        db.init_schema()
+        db = _open_database(current_settings)
         try:
             # 小说总数
             total_novels = db.conn.execute(

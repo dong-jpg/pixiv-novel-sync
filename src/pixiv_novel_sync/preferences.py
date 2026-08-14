@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 from typing import Any
 
 from .storage_db import Database
@@ -68,6 +68,7 @@ class PreferenceAnalyzer:
         terms["keyword"].update(self._tokenize(row.get("text_raw") or ""))
 
     def analyze_local(self, scope: dict[str, Any] | None = None) -> dict[str, Any]:
+        """保留：仅测试/兼容用途。"""
         scope = scope or {}
         min_text_length = int(scope.get("min_text_length") or 1000)
         limit = int(scope.get("limit") or 0)
@@ -192,6 +193,13 @@ class PreferenceAnalyzer:
         return self._build_profile(stats)
 
     def _build_profile(self, stats: dict[str, Any]) -> dict[str, Any]:
+        """从统计数据构建偏好画像。
+
+        negative_preferences 说明：本地统计只能产出正向信号，负向信号来自用户的
+        屏蔽操作——recommendation_mutes 中 mute_type=tag 的标签会自动并入
+        excluded_tags；excluded_keywords / avoid_themes 暂无本地信号来源，
+        需要用户手工编辑画像补充。
+        """
         top_tags = [item["name"] for item in stats.get("top_tags", [])[:20]]
         top_keywords = self.effective_keywords(stats)[:30]
         title_keywords = [item["name"] for item in stats.get("top_title_keywords", [])[:15]]
@@ -216,7 +224,7 @@ class PreferenceAnalyzer:
                 "scenes_or_situations": caption_keywords[:10],
             },
             "negative_preferences": {
-                "excluded_tags": [],
+                "excluded_tags": self._muted_tags(),
                 "excluded_keywords": [],
                 "avoid_themes": [],
             },
@@ -241,6 +249,18 @@ class PreferenceAnalyzer:
                 "based_on_total_chars": stats.get("total_chars", 0),
             },
         }
+
+    def _muted_tags(self) -> list[str]:
+        """读取用户屏蔽的标签(recommendation_mutes 中 mute_type=tag)作为负向偏好信号。"""
+        try:
+            mutes = self.db.list_recommendation_mutes()
+        except Exception:
+            return []
+        return sorted({
+            str(item.get("mute_value") or "").strip()
+            for item in mutes
+            if item.get("mute_type") == "tag" and str(item.get("mute_value") or "").strip()
+        })
 
     def _summary(self, stats: dict[str, Any], tags: list[str], keywords: list[str]) -> str:
         if not stats.get("novel_count"):

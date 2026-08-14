@@ -1,7 +1,7 @@
 # GitHub README 与 Logo 刷新设计
 
 > 日期：2026-08-04
-> 状态：已确认，等待实施计划
+> 状态：已实施（2026-08-04）。本文件保留设计决策；当前 README 与 `assets/logo.svg`、`assets/logo-mark.svg` 为事实来源。
 > 范围：GitHub 项目介绍页 README.md、主 Logo、备用 mark 与 Logo 说明文档
 
 ## 1. 背景

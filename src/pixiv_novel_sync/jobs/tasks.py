@@ -433,8 +433,10 @@ def _run_recommendation_run_task(settings: Any, context: dict[str, Any]) -> dict
                 progress_callback=progress_callback,
             )
         except InterruptedError:
+            # 用户主动取消：记录日志后向上传播，由 JobRunner 统一收口为 cancelled 终态，
+            # 不再吞掉异常返回"成功"结果（否则任务日志会显示成功）。
             reporter.add_log("info", "推荐任务已停止")
-            return {"stopped": True, "discovered": 0}
+            raise
 
         saved = int((result.get("stats") or {}).get("saved", 0))
         reporter.add_log("success", f"推荐完成: 发现 {saved} 部小说")

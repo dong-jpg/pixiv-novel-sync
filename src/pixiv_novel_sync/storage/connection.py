@@ -21,23 +21,45 @@ class DatabaseConnection:
         # WAL 允许多个独立连接并发读,BEGIN IMMEDIATE 串行化写。
         self._local = threading.local()
         self._lock: threading.RLock = threading.RLock()  # 仅保护元状态(如 _all_conns)
-        self._all_conns: set[sqlite3.Connection] = set()  # 弱引用集合供 close() 关闭全部
+        # generation 计数:close() 后其他线程持有的旧连接可被识别并重建。
+        self._generation: int = 0
+        # 连接 -> 所属线程,便于清理已死线程遗留的连接,避免泄漏。
+        self._all_conns: dict[sqlite3.Connection, threading.Thread] = {}
+
+    def _prune_dead_thread_conns_locked(self) -> None:
+        """清理所属线程已退出的连接(调用方必须已持有 _lock)。"""
+        for conn, thread in list(self._all_conns.items()):
+            if not thread.is_alive():
+                self._all_conns.pop(conn, None)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     @property
     def conn(self) -> sqlite3.Connection:
-        """当前线程的 SQLite 连接,首次访问时 lazy 创建并初始化 PRAGMA。"""
-        if not hasattr(self._local, "conn") or self._local.conn is None:
-            conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30.0)
-            conn.row_factory = sqlite3.Row
-            # 每个连接独立开启 WAL + 设置超时
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA busy_timeout=30000")
-            conn.execute("PRAGMA foreign_keys=ON")
-            self._local.conn = conn
-            with self._lock:
-                self._all_conns.add(conn)
-        return self._local.conn
+        """当前线程的 SQLite 连接,首次访问时 lazy 创建并初始化 PRAGMA。
+
+        close() 之后 generation 计数递增;其他线程若仍持有旧连接,
+        在此处检测到代际不一致会自动重建,避免使用已关闭的连接。
+        """
+        existing = getattr(self._local, "conn", None)
+        if existing is not None and getattr(self._local, "generation", -1) == self._generation:
+            return existing
+        conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        # 每个连接独立开启 WAL + 设置超时
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        self._local.conn = conn
+        self._local.transaction_depth = 0
+        with self._lock:
+            self._prune_dead_thread_conns_locked()
+            self._local.generation = self._generation
+            self._all_conns[conn] = threading.current_thread()
+        return conn
 
     @property
     def _transaction_depth(self) -> int:
@@ -73,27 +95,35 @@ class DatabaseConnection:
         """显式事务上下文：with db.transaction() as conn: ... 在退出时统一 commit / rollback。
 
         与 sqlite3 内置的隐式事务不同，使用显式 BEGIN IMMEDIATE 抢占写锁，
-        避免多线程下 SQLITE_BUSY。嵌套调用是安全的（RLock）。
+        避免多线程下 SQLITE_BUSY。嵌套调用是安全的（嵌套深度为 thread-local）。
+
+        注意：不再在 yield 期间持有进程内 RLock —— 写串行化交给
+        BEGIN IMMEDIATE + busy_timeout，其他线程的读/连接创建不会被阻塞。
         """
-        with self._lock:
-            self._transaction_depth += 1
-            outermost = self._transaction_depth == 1
-            try:
-                if outermost:
-                    self.conn.execute("BEGIN IMMEDIATE")
-                yield self.conn
-                if outermost:
-                    self.conn.commit()
-            except BaseException:
-                if outermost:
-                    self.conn.rollback()
-                raise
-            finally:
-                self._transaction_depth -= 1
+        conn = self.conn
+        self._transaction_depth += 1
+        outermost = self._transaction_depth == 1
+        try:
+            if outermost:
+                conn.execute("BEGIN IMMEDIATE")
+            yield conn
+            if outermost:
+                conn.commit()
+        except BaseException:
+            if outermost and conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            self._transaction_depth -= 1
 
     def close(self) -> None:
-        """关闭所有线程的连接。"""
+        """关闭所有线程的连接。
+
+        通过递增 generation 让其他线程的旧连接失效；它们下次访问
+        conn 属性时会自动重建，而不是拿到已关闭的连接。
+        """
         with self._lock:
+            self._generation += 1
             conns = list(self._all_conns)
             self._all_conns.clear()
         for conn in conns:
@@ -101,8 +131,8 @@ class DatabaseConnection:
                 conn.close()
             except Exception:
                 pass
-        if hasattr(self._local, "conn"):
-            self._local.conn = None
+        self._local.conn = None
+        self._local.transaction_depth = 0
 
     def __enter__(self):
         return self

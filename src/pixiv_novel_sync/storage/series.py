@@ -14,24 +14,6 @@ class SeriesMixin:
     _lock: Any
     _commit_if_needed: Any
 
-    def upsert_series(self, series_id: int, title: str, description: str, user_id: int, cover_url: str | None) -> None:
-        with self._lock:
-            self.conn.execute(
-                """
-                INSERT INTO series (series_id, title, description, user_id, cover_url, total_novels, last_seen_at)
-                VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
-                ON CONFLICT(series_id) DO UPDATE SET
-                    title = CASE WHEN excluded.title != '' THEN excluded.title ELSE series.title END,
-                    description = CASE WHEN excluded.description != '' THEN excluded.description ELSE series.description END,
-                    cover_url = CASE WHEN excluded.cover_url IS NOT NULL AND excluded.cover_url != '' THEN excluded.cover_url ELSE series.cover_url END,
-                    user_id = CASE WHEN excluded.user_id != 0 THEN excluded.user_id ELSE series.user_id END,
-                    total_novels = (SELECT COUNT(*) FROM novels WHERE series_id = ?),
-                    last_seen_at = CURRENT_TIMESTAMP
-                """,
-                (series_id, title, description, user_id, cover_url, series_id),
-            )
-            self._commit_if_needed()
-
     def upsert_series_status(self, series_id: int, status: str) -> None:
         with self._lock:
             self.conn.execute(
@@ -93,12 +75,6 @@ class SeriesMixin:
             )
             self._commit_if_needed()
             return cursor.rowcount if cursor.rowcount is not None else 0
-
-    def clear_subscribed_series(self) -> None:
-        """清除所有订阅标记"""
-        with self._lock:
-            self.conn.execute("UPDATE series SET is_subscribed = 0")
-            self._commit_if_needed()
 
     def get_series_detail(self, series_id: int) -> dict[str, Any] | None:
         series_row = self.conn.execute(

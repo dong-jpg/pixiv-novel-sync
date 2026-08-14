@@ -136,16 +136,6 @@ class NovelsMixin:
         ).fetchall()
         return {str(row[0]) for row in rows}
 
-    def novel_exists(self, novel_id: int) -> bool:
-        """检查小说是否已存在（有元数据或正文）"""
-        row = self.conn.execute("SELECT 1 FROM novels WHERE novel_id = ? UNION SELECT 1 FROM novel_texts WHERE novel_id = ? LIMIT 1", (novel_id, novel_id)).fetchone()
-        return row is not None
-
-    def novel_text_exists(self, novel_id: int) -> bool:
-        """检查小说正文是否已存在"""
-        row = self.conn.execute("SELECT 1 FROM novel_texts WHERE novel_id = ? LIMIT 1", (novel_id,)).fetchone()
-        return row is not None
-
     def novel_archive_complete(self, novel_id: int, require_assets: bool = False) -> bool:
         """检查小说是否已达到可跳过同步的最低完整度。
 
@@ -177,15 +167,6 @@ class NovelsMixin:
             if asset is None:
                 return False
         return True
-
-    def get_novel_text_hash(self, novel_id: int) -> str | None:
-        row = self.conn.execute("SELECT text_hash FROM novel_texts WHERE novel_id = ?", (novel_id,)).fetchone()
-        return str(row[0]) if row else None
-
-    def get_novel_meta_hash(self, novel_id: int) -> str | None:
-        """获取小说的 meta_hash，用于增量同步判断"""
-        row = self.conn.execute("SELECT meta_hash FROM novels WHERE novel_id = ?", (novel_id,)).fetchone()
-        return str(row[0]) if row else None
 
     def touch_novel(self, novel_id: int) -> None:
         """更新小说的 last_seen_at 时间戳"""

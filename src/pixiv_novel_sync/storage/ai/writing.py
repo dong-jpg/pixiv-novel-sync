@@ -147,15 +147,6 @@ class AiWritingMixin:
             return None
         return self._row_to_chapter(row)
 
-    def get_ai_chapter_by_number(self, project_id: int, chapter_number: int) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            "SELECT * FROM ai_chapters WHERE project_id = ? AND chapter_number = ?",
-            (project_id, chapter_number),
-        ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_chapter(row)
-
     def create_ai_chapter(self, data: dict[str, Any]) -> int:
         content = data.get("content") or ""
         with self._lock:
@@ -370,13 +361,6 @@ class AiWritingMixin:
 
     # ── ai_project_states CRUD ─────────────────────────────────────
 
-    def get_ai_project_state(self, project_id: int, state_type: str) -> str | None:
-        row = self.conn.execute(
-            "SELECT content FROM ai_project_states WHERE project_id = ? AND state_type = ?",
-            (project_id, state_type),
-        ).fetchone()
-        return str(row[0]) if row else None
-
     def get_all_project_states(self, project_id: int) -> dict[str, str]:
         rows = self.conn.execute(
             "SELECT state_type, content FROM ai_project_states WHERE project_id = ?",
@@ -392,14 +376,6 @@ class AiWritingMixin:
                    ON CONFLICT(project_id, state_type) DO UPDATE SET
                      content = excluded.content, updated_at = CURRENT_TIMESTAMP""",
                 (project_id, state_type, content),
-            )
-            self._commit_if_needed()
-
-    def delete_ai_project_state(self, project_id: int, state_type: str) -> None:
-        with self._lock:
-            self.conn.execute(
-                "DELETE FROM ai_project_states WHERE project_id = ? AND state_type = ?",
-                (project_id, state_type),
             )
             self._commit_if_needed()
 
@@ -529,16 +505,6 @@ class AiWritingMixin:
             self.conn.execute("UPDATE ai_chat_sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (session_id,))
             self._commit_if_needed()
             return int(cursor.lastrowid)
-
-    def delete_ai_chat_messages_after(self, session_id: int, message_id: int) -> int:
-        """删除指定消息（含）之后的所有消息，用于'重发'功能。返回删除条数。"""
-        with self._lock:
-            cursor = self.conn.execute(
-                "DELETE FROM ai_chat_messages WHERE session_id = ? AND id >= ?",
-                (session_id, message_id),
-            )
-            self._commit_if_needed()
-            return int(cursor.rowcount or 0)
 
     @staticmethod
     def _parse_json_field(value: Any, default: Any) -> Any:

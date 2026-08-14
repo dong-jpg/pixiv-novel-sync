@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 import secrets
+import time
 import unicodedata
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -43,7 +44,7 @@ from ..adult_validation import (
     compute_validation_hash,
     run_local_adult_checks,
 )
-from ..model_router import CandidateSnapshot, PromptBudget, RouteRequest
+from ..model_router import CandidateSnapshot, PromptBudget, RouteRequest, RouteResult
 from ..models import AIAgentConfig, AIStreamChunk
 from .core import AIConflictError, AIServiceError
 
@@ -82,6 +83,7 @@ _MAX_ADULT_OUTPUT_CODEPOINTS = 36_000
 _MAX_ADULT_OUTPUT_BYTES = 144_000
 _MAX_ADULT_REVIEW_CODEPOINTS = 16_000
 _MAX_ADULT_REVIEW_BYTES = 64_000
+_ADULT_CANCEL_POLL_INTERVAL_SECONDS = 0.5
 _ADULT_PROGRESS_FIELDS = frozenset(
     {
         "phase",
@@ -633,6 +635,42 @@ class AIAdultPolishMixin:
             raise AdultReviewUnavailable("成人审查 safe 与问题代码不一致")
         return safe, tuple(sorted(issues))
 
+    def _adult_cancel_checker(
+        self,
+        job_id: str,
+        owner_scope: str,
+        *,
+        min_interval: float = _ADULT_CANCEL_POLL_INTERVAL_SECONDS,
+    ) -> Callable[[], bool]:
+        """构造基于任务归属的取消检查回调。
+
+        取消状态写入 ai_jobs（request_adult_job_cancel），此回调查询该任务的
+        终态标志；带最小间隔缓存，避免每个 token 都查库。
+        """
+
+        state = {"next_check": 0.0, "cancelled": False}
+
+        def is_cancelled() -> bool:
+            if state["cancelled"]:
+                return True
+            now = time.monotonic()
+            if now < state["next_check"]:
+                return False
+            state["next_check"] = now + min_interval
+            try:
+                db = self._db()
+                try:
+                    job = db.get_ai_job(job_id, owner_scope)
+                finally:
+                    db.close()
+            except Exception:
+                return False
+            if job is not None and str(job.get("status") or "") == "cancelled":
+                state["cancelled"] = True
+            return bool(state["cancelled"])
+
+        return is_cancelled
+
     def _run_adult_review(
         self,
         prepared: PreparedAdultJob,
@@ -642,6 +680,8 @@ class AIAdultPolishMixin:
         candidate_hash: str,
         participant_facts: tuple[Mapping[str, Any], ...],
         protected_terms: tuple[str, ...] = (),
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> ReviewResult:
         if not isinstance(prepared, PreparedAdultJob):
             raise AdultReviewUnavailable("成人审查任务上下文无效")
@@ -741,6 +781,14 @@ class AIAdultPolishMixin:
             output_bytes = next_bytes
             output_codepoints = next_codepoints
 
+        def forward_progress(data: Mapping[str, Any]) -> None:
+            if on_progress is None:
+                return
+            # 与主链路共享同一进度白名单，并标注审查阶段名。
+            sanitized = _sanitize_progress(data if isinstance(data, Mapping) else {})
+            sanitized["stage"] = review_kind
+            on_progress(sanitized)
+
         route_request = AdultRouteRequest(
             job_id=child_job_id,
             stage="validation",
@@ -749,14 +797,15 @@ class AIAdultPolishMixin:
             max_tokens=agent.max_tokens,
             owner_token=child_owner_token,
             on_delta=on_delta,
-            on_progress=lambda _data: None,
+            on_progress=forward_progress,
             temperature=agent.temperature,
             top_p=agent.top_p,
             participant_facts=participant_facts,
             protected_terms=protected_terms,
+            is_cancelled=is_cancelled,
         )
         try:
-            result = self.model_router.execute(route_request)
+            result = self.model_router.execute(route_request.to_route_request())
             raw_output = "".join(output_parts)
             if (
                 output_invalid
@@ -835,6 +884,9 @@ class AIAdultPolishMixin:
         self,
         prepared: PreparedAdultJob,
         candidate: str,
+        *,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> ReviewResult:
         try:
             if not isinstance(candidate, str) or not candidate:
@@ -864,6 +916,8 @@ class AIAdultPolishMixin:
                 messages=messages,
                 candidate_hash=raw_sha256(candidate),
                 participant_facts=participant_facts,
+                on_progress=on_progress,
+                is_cancelled=is_cancelled,
             )
         except AdultReviewUnavailable:
             raise
@@ -875,6 +929,9 @@ class AIAdultPolishMixin:
         prepared: PreparedAdultJob,
         original: str,
         candidate: str,
+        *,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> ReviewResult:
         try:
             if (
@@ -922,6 +979,8 @@ class AIAdultPolishMixin:
                 candidate_hash=raw_sha256(candidate),
                 participant_facts=participant_facts,
                 protected_terms=protected_terms,
+                on_progress=on_progress,
+                is_cancelled=is_cancelled,
             )
         except AdultReviewUnavailable:
             raise
@@ -1162,9 +1221,27 @@ class AIAdultPolishMixin:
             )
             return
 
+        review_progress: list[dict[str, Any]] = []
+
+        def flush_review_progress() -> Iterator[AIStreamChunk]:
+            pending = list(review_progress)
+            review_progress.clear()
+            for data in pending:
+                yield AIStreamChunk(type="progress", data=data)
+
+        review_cancelled = self._adult_cancel_checker(
+            prepared.job_id,
+            prepared.owner_scope,
+        )
         try:
-            safety_result = self.run_adult_safety_review(prepared, candidate)
+            safety_result = self.run_adult_safety_review(
+                prepared,
+                candidate,
+                on_progress=review_progress.append,
+                is_cancelled=review_cancelled,
+            )
         except AdultReviewUnavailable:
+            yield from flush_review_progress()
             db = self._db()
             try:
                 self._finish_adult_failure(
@@ -1181,6 +1258,7 @@ class AIAdultPolishMixin:
                 prepared.job_id,
             )
             return
+        yield from flush_review_progress()
         if not safety_result.safe:
             db = self._db()
             try:
@@ -1204,8 +1282,11 @@ class AIAdultPolishMixin:
                 prepared,
                 prepared.target,
                 candidate,
+                on_progress=review_progress.append,
+                is_cancelled=review_cancelled,
             )
         except AdultReviewUnavailable:
+            yield from flush_review_progress()
             db = self._db()
             try:
                 self._finish_adult_failure(
@@ -1222,6 +1303,7 @@ class AIAdultPolishMixin:
                 prepared.job_id,
             )
             return
+        yield from flush_review_progress()
         if not fact_result.safe:
             db = self._db()
             try:
@@ -1703,6 +1785,7 @@ class AIAdultPolishMixin:
         job_id: str,
         owner_scope: str,
     ) -> AdultValidationResult:
+        """保留：仅测试/兼容用途。"""
         safe_job_id = _adult_owner_value(job_id, "job_id")
         safe_owner_scope = _adult_owner_value(owner_scope, "owner_scope")
         db = self._db()
@@ -2412,8 +2495,15 @@ class AIAdultPolishMixin:
             output_bytes = next_bytes
             output_codepoints = next_codepoints
 
+        executor = getattr(self.model_router, "execute_stream", None)
+        streaming_route = callable(executor)
+
         def on_progress(data: dict[str, Any]) -> None:
-            sanitized = _sanitize_progress(data)
+            # execute_stream 路径下进度事件由流直接转发，这里避免重复收集；
+            # 仅在旧式 execute 兼容路径下收集后补发。
+            if streaming_route:
+                return
+            sanitized = _sanitize_progress(data if isinstance(data, Mapping) else {})
             if sanitized:
                 progress_events.append(sanitized)
 
@@ -2428,9 +2518,35 @@ class AIAdultPolishMixin:
             on_progress=on_progress,
             temperature=prepared.agent.temperature,
             top_p=prepared.agent.top_p,
+            is_cancelled=self._adult_cancel_checker(
+                prepared.job_id,
+                prepared.owner_scope,
+            ),
         )
+        result: RouteResult | None = None
         try:
-            result = self.model_router.execute(route_request.to_route_request())
+            # 直接消费路由流：progress 白名单化后实时转发；delta 只进服务端有界
+            # 缓冲（on_delta），绝不进入浏览器。
+            if streaming_route:
+                stream = executor(route_request.to_route_request())
+                while True:
+                    try:
+                        chunk = next(stream)
+                    except StopIteration as stopped:
+                        result = stopped.value
+                        break
+                    if str(getattr(chunk, "type", "")) != "progress":
+                        continue
+                    raw = getattr(chunk, "data", None)
+                    sanitized = _sanitize_progress(
+                        raw if isinstance(raw, Mapping) else {}
+                    )
+                    if sanitized:
+                        yield AIStreamChunk(type="progress", data=sanitized)
+            else:
+                result = self.model_router.execute(route_request.to_route_request())
+            if result is None:
+                raise AIServiceError("成人润色路由未返回结果")
         except Exception:
             output_parts.clear()
             db = self._db()

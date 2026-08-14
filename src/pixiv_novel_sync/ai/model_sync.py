@@ -357,6 +357,8 @@ class ModelSyncCoordinator:
         interval = max(0.01, float(poll_interval))
         last_pages = -1
         started = False
+        # 与后台同步任务的总时长上限对齐，防止 SSE 轮询无限阻塞连接。
+        deadline = time.monotonic() + _MODEL_SYNC_DEADLINE_SECONDS
         while True:
             operation = self.get(operation_id)
             if not started:
@@ -417,6 +419,16 @@ class ModelSyncCoordinator:
                 yield {
                     "event": "cancelled",
                     "data": {"operation_id": operation_id},
+                }
+                return
+            if time.monotonic() >= deadline:
+                yield {
+                    "event": "failed",
+                    "data": {
+                        "operation_id": operation_id,
+                        "error_code": "timeout",
+                        "error_message": "模型同步事件流超时",
+                    },
                 }
                 return
             time.sleep(interval)

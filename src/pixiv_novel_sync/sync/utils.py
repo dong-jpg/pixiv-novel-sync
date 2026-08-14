@@ -7,7 +7,6 @@ code organization and reusability.
 from __future__ import annotations
 
 import logging
-import time
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -18,6 +17,27 @@ from ..rate_limiter import cancellable_sleep
 logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
+
+# 明确的限流标志：完整 token，避免 "rate" 子串误匹配 moderate/generate 等词
+_RATE_LIMIT_TOKENS = ("rate limit", "rate-limit", "ratelimit", "too many requests", "429")
+
+
+def _extract_status_code(exc: Exception) -> int | None:
+    """尽力从异常对象上取 HTTP 状态码。
+
+    pixivpy 的 PixivError 只有 reason/header/body，无状态码；
+    但底层 requests 异常（HTTPError 等）带 response.status_code。
+    """
+    for attr in ("status_code", "status", "code"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    if response is not None:
+        value = getattr(response, "status_code", None)
+        if isinstance(value, int):
+            return value
+    return None
 
 
 def retry_on_pixiv_error(
@@ -44,9 +64,13 @@ def retry_on_pixiv_error(
                     is_rate_limit = False
                     is_network = False
                     err_str = str(e).lower()
-                    if "429" in err_str or "rate" in err_str:
+                    status_code = _extract_status_code(e)
+                    if status_code is not None:
+                        # 有明确状态码时以状态码为准
+                        is_rate_limit = status_code == 429
+                    elif any(token in err_str for token in _RATE_LIMIT_TOKENS):
                         is_rate_limit = True
-                    elif any(k in err_str for k in ["connection", "timeout", "network", "unreachable"]):
+                    if not is_rate_limit and any(k in err_str for k in ["connection", "timeout", "network", "unreachable"]):
                         is_network = True
 
                     if not (is_rate_limit or is_network):

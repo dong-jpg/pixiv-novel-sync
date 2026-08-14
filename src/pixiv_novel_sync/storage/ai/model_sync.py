@@ -605,6 +605,7 @@ class ModelSyncStorageMixin:
         return reconciled
 
     def cleanup_model_sync_operations(self, keep_days: int = 3) -> int:
+        """保留：仅测试/兼容用途。"""
         days = max(0, int(keep_days))
         cutoff = _sql_timestamp(_utc_now() - timedelta(days=days))
         with self.transaction() as conn:

@@ -3,7 +3,6 @@
 包含:
 - SyncJobState: 同步任务状态数据类
 - TASK_LABELS: 任务标签字典
-- _task_label: 任务标签获取函数
 - AutoSyncScheduler: 定时同步调度器
 - SyncJobManager: 同步任务管理器
 - SettingsManager: 设置管理器
@@ -15,7 +14,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +32,8 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 SCHEDULER_STOP_JOIN_TIMEOUT_SECONDS = 1.0
+# submit 失败/被占用时的短退避（秒）：避免静默顺延整个周期
+SCHEDULER_SUBMIT_RETRY_SECONDS = 300.0
 
 
 @dataclass(slots=True)
@@ -66,10 +67,6 @@ TASK_LABELS = {
     "pending_deletion_detection": "检测取消收藏/追更",
     "preference_analyze": "增量分析本地偏好",
 }
-
-
-def _task_label(task_type: str) -> str:
-    return TASK_LABELS.get(task_type, task_type)
 
 
 @dataclass
@@ -244,12 +241,14 @@ class AutoSyncScheduler:
                 tz_name = settings.sync.auto_sync_timezone
 
                 # 更新所有任务的配置信息（用于前端显示）
-                for task_config in task_configs:
-                    task_name = task_config["name"]
-                    cron_expr = getattr(settings.sync, task_config["cron_setting"], "")
-                    task_interval_hours = getattr(settings.sync, task_config["interval_setting"], 6)
-                    self._task_intervals[task_name] = task_interval_hours
-                    self._task_crons[task_name] = cron_expr
+                # dict 写入纳入锁，避免与 get_status() 并发读写竞态
+                with self._lock:
+                    for task_config in task_configs:
+                        task_name = task_config["name"]
+                        cron_expr = getattr(settings.sync, task_config["cron_setting"], "")
+                        task_interval_hours = getattr(settings.sync, task_config["interval_setting"], 6)
+                        self._task_intervals[task_name] = task_interval_hours
+                        self._task_crons[task_name] = cron_expr
 
                 if not settings.sync.auto_sync_enabled:
                     stop_event.wait(60)
@@ -297,9 +296,17 @@ class AutoSyncScheduler:
                         else:
                             continue
 
-                    self._run_single_task(settings, task_name)
+                    submitted = self._run_single_task(settings, task_name)
 
                     with self._lock:
+                        if not submitted:
+                            # submit 失败/被占用：短退避后重试，而非顺延整个周期
+                            self._task_next_run[task_name] = time.time() + SCHEDULER_SUBMIT_RETRY_SECONDS
+                            logger.info(
+                                "Task %s submit failed, retry at: %s", task_name,
+                                datetime.fromtimestamp(self._task_next_run[task_name]).strftime('%Y-%m-%d %H:%M:%S'),
+                            )
+                            continue
                         self._task_last_run[task_name] = time.time()
                         if cron_expr:
                             from ..settings import cron_to_next_run
@@ -336,8 +343,12 @@ class AutoSyncScheduler:
                 except Exception as exc:
                     logger.warning("关闭救援目录初始化数据库失败: %s", exc)
     
-    def _run_single_task(self, settings: Settings, task_name: str) -> None:
-        """通过共享 JobManager/JobRunner 同步执行单个定时任务。"""
+    def _run_single_task(self, settings: Settings, task_name: str) -> bool:
+        """通过共享 JobManager/JobRunner 同步执行单个定时任务。
+
+        返回 True 表示任务已成功提交（并尝试执行）；返回 False 表示
+        提交失败或被占用，调用方应做短退避重试而非顺延整个周期。
+        """
         logger.info("Starting auto sync task: %s", task_name)
         submit_task = self.submit_task
         run_task = self.run_task
@@ -346,19 +357,19 @@ class AutoSyncScheduler:
                 "Auto sync task %s skipped: shared job callbacks are unavailable",
                 task_name,
             )
-            return
+            return False
 
         try:
             job = submit_task(settings, task_name)
         except Exception as exc:
             logger.error("Failed to submit auto sync task %s: %s", task_name, exc)
-            return
+            return False
         if job is None:
             logger.info(
                 "Auto sync task %s skipped: another sync task is running",
                 task_name,
             )
-            return
+            return False
 
         with self._lock:
             stopped_during_submit = self._stop_event.is_set()
@@ -375,7 +386,7 @@ class AutoSyncScheduler:
                         job.job_id,
                         exc,
                     )
-            return
+            return True
 
         try:
             run_task(job.job_id)
@@ -385,6 +396,7 @@ class AutoSyncScheduler:
             with self._lock:
                 if self._current_task_job_id == job.job_id:
                     self._current_task_job_id = None
+        return True
 
 
 @dataclass(slots=True)
@@ -396,41 +408,6 @@ class SyncJobManager:
     _semaphore: threading.Semaphore = field(default_factory=lambda: threading.Semaphore(1))
     MAX_LOGS: int = 50
     MAX_JOBS: int = 100  # 最多保留的任务数
-
-    def _cleanup_old_jobs(self) -> None:
-        """清理已完成的旧任务，保留最近 MAX_JOBS 个"""
-        if len(self._jobs) <= self.MAX_JOBS:
-            return
-        done_jobs = [(jid, j) for jid, j in self._jobs.items() if j.status != "running"]
-        done_jobs.sort(key=lambda x: x[1].finished_at or 0, reverse=True)
-        for jid, _ in done_jobs[self.MAX_JOBS:]:
-            del self._jobs[jid]
-
-    def start_auto_job(self, task_name: str, task_label: str) -> SyncJobState | None:
-        """启动定时任务"""
-        # ✅ Bug #1 修复: 使用 acquired 标志追踪信号量状态
-        acquired = False
-        try:
-            acquired = self._semaphore.acquire(blocking=False)
-            if not acquired:
-                return None
-
-            with self._lock:
-                job_id = f"auto_{task_name}_{int(time.time() * 1000)}"
-                job = SyncJobState(
-                    job_id=job_id,
-                    status="running",
-                    message=f"定时任务: {task_label}",
-                    started_at=time.time(),
-                    task_list=[task_label],
-                    is_auto_sync=True,
-                )
-                self._jobs[job_id] = job
-                return job
-        except Exception:
-            if acquired:
-                self._semaphore.release()
-            raise
 
     def get_job(self, job_id: str) -> SyncJobState | None:
         with self._lock:
@@ -444,6 +421,7 @@ class SyncJobManager:
             return max(self._jobs.values(), key=lambda j: j.started_at or 0)
 
     def latest_matching_sync_check_scope(self, settings: Settings, user_id: int | None, task_type: str) -> tuple[str, str] | None:
+        """保留：仅测试/兼容用途。"""
         fingerprint = build_sync_check_fingerprint(settings, user_id)
         with self._lock:
             jobs = sorted(
@@ -464,10 +442,6 @@ class SyncJobManager:
                     continue
                 return str(scope), job.job_id
         return None
-
-    def has_running_jobs(self) -> bool:
-        with self._lock:
-            return any(j.status == "running" for j in self._jobs.values())
 
     def add_log(self, job_id: str, level: str, message: str) -> None:
         with self._lock:

@@ -371,8 +371,15 @@ def _sleep_before_retry(
     seconds: float,
     is_cancelled: Callable[[], bool] | None,
 ) -> None:
+    """分片休眠退避：每片检查一次取消回调，保证取消能及时中断退避等待。"""
     _check_cancelled(is_cancelled)
-    time.sleep(seconds)
+    deadline = time.monotonic() + max(0.0, float(seconds))
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(0.5, remaining))
+        _check_cancelled(is_cancelled)
 
 
 def _normalize_finish_reason(reason: Any) -> tuple[str, bool]:
@@ -838,7 +845,7 @@ class OpenAICompatibleProvider(AIProvider):
                                 attempt=attempt + 1,
                                 max_retries=max_retries,
                             )
-                            _sleep_before_retry(2 ** attempt, is_cancelled)
+                            _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
                             continue
                         raise error
                     if response.status_code >= 400:
@@ -868,7 +875,7 @@ class OpenAICompatibleProvider(AIProvider):
                                     url,
                                     headers,
                                     payload,
-                                    max_retries_override=3,
+                                    max_retries_override=max(0, self.config.max_retries),
                                     request_guard=request_guard,
                                     is_cancelled=is_cancelled,
                                 )
@@ -918,7 +925,7 @@ class OpenAICompatibleProvider(AIProvider):
                             url,
                             headers,
                             payload,
-                            max_retries_override=3,
+                            max_retries_override=max(0, self.config.max_retries),
                             request_guard=request_guard,
                             is_cancelled=is_cancelled,
                         )
@@ -950,7 +957,7 @@ class OpenAICompatibleProvider(AIProvider):
                         attempt=attempt + 1,
                         max_retries=max_retries,
                     )
-                    _sleep_before_retry(2 ** attempt, is_cancelled)
+                    _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
                     continue
                 raise error from exc
 
@@ -985,7 +992,7 @@ class OpenAICompatibleProvider(AIProvider):
                             model=str(payload.get("model") or ""),
                         )
                         if attempt < max_retries:
-                            _sleep_before_retry(2 ** attempt, is_cancelled)
+                            _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
                             continue
                         raise error
                     if response.status_code >= 400:
@@ -1028,7 +1035,7 @@ class OpenAICompatibleProvider(AIProvider):
                 raise _runtime_config_error(exc) from exc
             except requests.RequestException as exc:
                 if attempt < max_retries:
-                    _sleep_before_retry(2 ** attempt, is_cancelled)
+                    _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
                     continue
                 raise _request_provider_error(
                     exc,
@@ -1147,7 +1154,7 @@ class AnthropicProvider(AIProvider):
                                 attempt=attempt + 1,
                                 max_retries=max_retries,
                             )
-                            _sleep_before_retry(2 ** attempt, is_cancelled)
+                            _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
                             continue
                         raise error
                     if response.status_code >= 400:
@@ -1201,7 +1208,7 @@ class AnthropicProvider(AIProvider):
                                     url,
                                     headers,
                                     payload,
-                                    max_retries_override=3,
+                                    max_retries_override=max(0, self.config.max_retries),
                                     request_guard=request_guard,
                                     is_cancelled=is_cancelled,
                                 )
@@ -1227,7 +1234,7 @@ class AnthropicProvider(AIProvider):
                             url,
                             headers,
                             payload,
-                            max_retries_override=3,
+                            max_retries_override=max(0, self.config.max_retries),
                             request_guard=request_guard,
                             is_cancelled=is_cancelled,
                         )
@@ -1258,7 +1265,7 @@ class AnthropicProvider(AIProvider):
                         attempt=attempt + 1,
                         max_retries=max_retries,
                     )
-                    _sleep_before_retry(2 ** attempt, is_cancelled)
+                    _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
                     continue
                 raise error from exc
 
@@ -1274,7 +1281,7 @@ class AnthropicProvider(AIProvider):
     ) -> Iterator[AIStreamChunk]:
         """非流式 fallback：关闭 stream 一次性获取完整响应。"""
         payload_copy = {**payload, "stream": False}
-        max_retries = max(0, max_retries_override) if max_retries_override is not None else max(3, self.config.max_retries)
+        max_retries = max(0, max_retries_override) if max_retries_override is not None else max(0, self.config.max_retries)
         for attempt in range(max_retries + 1):
             try:
                 _before_network_request(request_guard, is_cancelled)
@@ -1292,7 +1299,7 @@ class AnthropicProvider(AIProvider):
                             model=str(payload.get("model") or ""),
                         )
                         if attempt < max_retries:
-                            _sleep_before_retry(2 ** attempt, is_cancelled)
+                            _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
                             continue
                         raise error
                     if response.status_code >= 400:
@@ -1332,7 +1339,7 @@ class AnthropicProvider(AIProvider):
                 raise _runtime_config_error(exc) from exc
             except requests.RequestException as exc:
                 if attempt < max_retries:
-                    _sleep_before_retry(2 ** attempt, is_cancelled)
+                    _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
                     continue
                 raise _request_provider_error(
                     exc,
@@ -1553,9 +1560,3 @@ def _event_provider_error(error: Any, *, provider_label: str) -> AIProviderError
         category=category,
         scope=scope,
     )
-
-
-def _safe_http_error(response: requests.Response) -> str:
-    message, _details = _response_error_details(response)
-    suffix = f"：{message}" if message else ""
-    return f"AI API 返回错误 {response.status_code}{suffix}"
