@@ -13,6 +13,7 @@ from pixiv_novel_sync.webapp import (
     AutoSyncScheduler,
     SyncJobManager,
     SyncJobState,
+    _task_log_status_for_stats,
     _web_job_spec,
     create_app,
 )
@@ -1011,6 +1012,79 @@ def test_shared_sync_failure_updates_task_log(tmp_path, monkeypatch):
     ]
 
 
+# ── 熔断中止 / 本轮未跑完 → task_logs 必须记 partial ─────────────
+#
+# 生产事故：限流熔断只检查了 30/800 篇就中止，任务日志里却仍是绿色「成功·完成」，
+# 运维完全看不出这轮几乎什么都没检查。
+
+
+def test_task_log_status_for_stats_marks_aborted_run_partial():
+    assert _task_log_status_for_stats({"aborted_reason": "rate_limited"}) == "partial"
+    assert _task_log_status_for_stats({"aborted_reason": "suspicious_missing_streak"}) == "partial"
+
+
+def test_task_log_status_for_stats_marks_incomplete_run_partial():
+    """订阅系列被限流中止、关注作者只覆盖部分、分页截断都会置 incomplete。"""
+    assert _task_log_status_for_stats({"incomplete": True}) == "partial"
+    assert _task_log_status_for_stats({"novels": 3, "users_remaining": 48, "incomplete": True}) == "partial"
+
+
+def test_task_log_status_for_stats_keeps_succeeded_for_clean_run():
+    assert _task_log_status_for_stats({"novels": 3}) == JobStatus.SUCCEEDED.value
+    assert _task_log_status_for_stats({"incomplete": False, "remaining": 0}) == JobStatus.SUCCEEDED.value
+    assert _task_log_status_for_stats(None) == JobStatus.SUCCEEDED.value
+    assert _task_log_status_for_stats({}) == JobStatus.SUCCEEDED.value
+    # remaining 是小说状态检查的常规轮转字段，不能据此判未完成
+    assert _task_log_status_for_stats({"remaining": 6000}) == JobStatus.SUCCEEDED.value
+
+
+def test_shared_sync_aborted_by_rate_limit_updates_task_log_as_partial(tmp_path, monkeypatch):
+    RecordingDatabase.created_logs = []
+    RecordingDatabase.updated_logs = []
+
+    def rate_limited_run(self, job_id):
+        self.manager.mark_running(job_id, "running")
+        self.manager.add_log(job_id, "error", "疑似触发 Pixiv 限流，已中止本轮检查")
+        state = self.manager.get_job(job_id)
+        state.stats.update({"checked_count": 30, "total_novels": 800, "aborted_reason": "rate_limited"})
+        self.manager.mark_succeeded(job_id, "succeeded")
+        return self.manager.get_job(job_id)
+
+    monkeypatch.setattr("pixiv_novel_sync.webapp.Database", RecordingDatabase)
+    monkeypatch.setattr("pixiv_novel_sync.webapp.threading.Thread", SynchronousThread)
+    monkeypatch.setattr("pixiv_novel_sync.webapp.JobRunner.run", rate_limited_run)
+
+    app = _app(tmp_path, monkeypatch)
+    response = app.test_client().post("/api/dashboard/sync/novel_status")
+
+    assert response.status_code == 200
+    entry = RecordingDatabase.updated_logs[0]
+    assert entry["status"] == "partial"
+    assert entry["stats"]["aborted_reason"] == "rate_limited"
+
+
+def test_shared_sync_incomplete_run_updates_task_log_as_partial(tmp_path, monkeypatch):
+    RecordingDatabase.created_logs = []
+    RecordingDatabase.updated_logs = []
+
+    def incomplete_run(self, job_id):
+        self.manager.mark_running(job_id, "running")
+        state = self.manager.get_job(job_id)
+        state.stats.update({"novels": 2, "users_remaining": 48, "incomplete": True})
+        self.manager.mark_succeeded(job_id, "succeeded")
+        return self.manager.get_job(job_id)
+
+    monkeypatch.setattr("pixiv_novel_sync.webapp.Database", RecordingDatabase)
+    monkeypatch.setattr("pixiv_novel_sync.webapp.threading.Thread", SynchronousThread)
+    monkeypatch.setattr("pixiv_novel_sync.webapp.JobRunner.run", incomplete_run)
+
+    app = _app(tmp_path, monkeypatch)
+    response = app.test_client().post("/api/dashboard/sync/start")
+
+    assert response.status_code == 200
+    entry = RecordingDatabase.updated_logs[0]
+    assert entry["status"] == "partial"
+    assert entry["stats"]["incomplete"] is True
 
 
 class FailingOnceDatabase:

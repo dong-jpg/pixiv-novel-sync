@@ -318,65 +318,180 @@ def _external_base_url(req) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+# pixivpy 被限流时不抛异常，而是返回形如
+# {"error": {"user_message": "", "message": "Rate Limit", "reason": ""}} 的 JsonDict
+# （dict 子类），里面没有 novel/user 等目标键。历史事故：这种响应被当成「已删除」，
+# 一轮任务把 6971 篇小说中的 5499 篇误判为 deleted。
+#
+# 因此判定原则是 fail-safe：**宁可漏判删除，也绝不误判删除**——只有错误文本明确命中
+# 下面的「不存在/已删除」关键词才判定为删除，其余一切（限流、429、鉴权失效、空响应、
+# 结构异常）统统返回 unknown，交由上层熔断并保留数据库里的原状态。
+#
+# 注意：文案随请求的 lang 变化（生产实例带 lang=zh 时返回中文），所以中/日/英三套
+# 关键词必须并存。其中中文「尚无此页」相当泛，无法排除限流也复用该文案的可能，
+# 因此 jobs/services.py 里另有「连续大量 deleted」熔断作为兜底。
+_MISSING_ERROR_KEYWORDS: tuple[str, ...] = (
+    # 中文（lang=zh，生产实测）：
+    #   novel_detail/user_detail 不存在 → 「尚无此页」
+    #   novel_series 不存在 → 「抱歉，您所指定的系列已经从个人信息删除，或者不存在。」
+    "尚无此页",
+    "已经从个人信息删除",
+    "不存在",  # 同时覆盖「或者不存在」
+    "已删除",
+    # 日文：「該当作品は削除されたか、存在しない作品IDです。」
+    "削除",
+    "存在しない",
+    "存在しません",
+    # 英文接口偶尔返回的等价文案
+    "deleted",
+    "does not exist",
+    "doesn't exist",
+    "no longer exists",
+    "not found",
+)
+
+_VERDICT_OK = "ok"  # 拿到目标数据
+_VERDICT_MISSING = "missing"  # Pixiv 明确回复「不存在/已删除」
+_VERDICT_UNKNOWN = "unknown"  # 其余一切情况，不可据此改写状态
+
+# 限流/风控的错误特征。必须与 sync_engine._RATE_LIMIT_ERROR_TOKENS 保持一致
+# （tests/test_status_check_classification.py 里有防漂移断言），否则同一个响应
+# 会在两处得到相反结论：例如 {"user_message": "尚无此页", "message": "Rate Limit"}
+# 在 sync_engine 里被排除为临时故障，在这里却被判成「已删除」。
+_RATE_LIMIT_ERROR_TOKENS = ("rate limit", "rate-limit", "ratelimit", "too many requests", "429")
+
+
+def _response_field(result: Any, key: str) -> Any:
+    """读取 pixivpy 响应字段，兼容 dict 与属性两种访问方式。"""
+    if isinstance(result, dict):
+        # JsonDict 既是 dict 又支持属性访问，dict 取值已经覆盖；这里不再 getattr，
+        # 免得把 dict 自带的方法（items/keys 等）当成响应字段
+        return result.get(key)
+    try:
+        return getattr(result, key, None)
+    except Exception:  # pragma: no cover - 异常属性访问的兜底
+        return None
+
+
+def _pixiv_error_text(result: Any) -> str:
+    """拼接响应中的错误文案（user_message / message / reason），供关键词判定使用。"""
+    error = _response_field(result, "error")
+    if error is None:
+        return ""
+    if isinstance(error, str):
+        return error
+    parts: list[str] = []
+    for field in ("user_message", "message", "reason"):
+        value = _response_field(error, field)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    if parts:
+        return " ".join(parts)
+    return str(error)
+
+
+def _is_missing_error(error_text: str) -> bool:
+    """错误文案是否明确表示「作品/用户不存在或已被删除」。
+
+    限流特征优先：只要文本里出现 rate limit / 429 等，无论是否同时命中「尚无此页」
+    这类泛化文案，一律不判删除（返回 False → 上层落到 unknown）。
+    """
+    lowered = error_text.lower()
+    if any(token in lowered for token in _RATE_LIMIT_ERROR_TOKENS):
+        return False
+    return any(keyword in lowered for keyword in _MISSING_ERROR_KEYWORDS)
+
+
+def _classify_pixiv_response(result: Any, data_keys: tuple[str, ...]) -> tuple[str, Any]:
+    """判定 pixivpy 响应属于哪一类，返回 (判定, 目标数据)。
+
+    - 命中 ``data_keys`` 之一 → (``ok``, 该数据)
+    - 错误文案明确表示不存在 → (``missing``, None)
+    - 其余（含 result 为 None）→ (``unknown``, None)
+    """
+    if result is None:
+        return _VERDICT_UNKNOWN, None
+    for key in data_keys:
+        value = _response_field(result, key)
+        if value is not None:
+            return _VERDICT_OK, value
+    if _is_missing_error(_pixiv_error_text(result)):
+        return _VERDICT_MISSING, None
+    return _VERDICT_UNKNOWN, None
+
+
+def _log_unknown_status(label: str, item_id: int, result: Any) -> None:
+    detail = _pixiv_error_text(result) or "响应为空或缺少预期字段"
+    logger.warning("%s %s 状态无法判定，保持原状态: %s", label, item_id, detail[:200])
+
+
 def _check_pixiv_user_status(api: Any, user_id: int) -> str:
-    """检查 Pixiv 用户状态"""
+    """检查 Pixiv 用户状态：normal/no_novels/suspended/unknown。
+
+    只有 Pixiv 明确回复「用户不存在/已删除」才判 suspended，限流等一律 unknown。
+    """
     try:
         result = api.user_detail(user_id)
-        if result is None:
+        verdict, _user = _classify_pixiv_response(result, ("user",))
+        if verdict == _VERDICT_MISSING:
             return "suspended"
-        user = getattr(result, "user", None)
-        if user is None:
-            return "suspended"
-        profile = getattr(result, "profile", None)
+        if verdict != _VERDICT_OK:
+            _log_unknown_status("用户", user_id, result)
+            return "unknown"
+        profile = _response_field(result, "profile")
         if profile:
-            total_novels = getattr(profile, "total_novels", 0) or 0
+            try:
+                total_novels = int(_response_field(profile, "total_novels") or 0)
+            except (TypeError, ValueError):
+                total_novels = 0
             if total_novels == 0:
                 return "no_novels"
         return "normal"
     except Exception as e:
-        logger.warning("Failed to check user %s status: %s", user_id, e)
+        logger.warning("检查用户 %s 状态失败: %s", user_id, e)
         return "unknown"
 
 
 def _check_novel_status(api: Any, novel_id: int) -> str:
-    """检查小说状态：normal/deleted/restricted"""
+    """检查小说状态：normal/restricted/deleted/unknown。
+
+    只有 Pixiv 明确回复「作品不存在/已删除」才判 deleted，限流等一律 unknown。
+    """
     try:
         result = api.novel_detail(novel_id)
-        if result is None:
+        verdict, novel = _classify_pixiv_response(result, ("novel",))
+        if verdict == _VERDICT_MISSING:
             return "deleted"
-        novel = getattr(result, "novel", None)
-        if novel is None:
-            if isinstance(result, dict):
-                novel = result.get("novel")
-            if novel is None:
-                return "deleted"
-        visible = getattr(novel, "visible", True)
-        if isinstance(novel, dict):
-            visible = novel.get("visible", True)
+        if verdict != _VERDICT_OK:
+            _log_unknown_status("小说", novel_id, result)
+            return "unknown"
+        visible = _response_field(novel, "visible")
+        if visible is None:
+            visible = True
         if not visible:
             return "restricted"
         return "normal"
     except Exception as e:
-        logger.warning("Failed to check novel %s status: %s", novel_id, e)
+        logger.warning("检查小说 %s 状态失败: %s", novel_id, e)
         return "unknown"
 
 
 def _check_series_status(api: Any, series_id: int) -> str:
-    """检查系列状态：normal/deleted"""
+    """检查系列状态：normal/deleted/unknown。
+
+    只有 Pixiv 明确回复「系列不存在/已删除」才判 deleted，限流等一律 unknown。
+    """
     try:
         result = api.novel_series(series_id)
-        if result is None:
+        verdict, _detail = _classify_pixiv_response(result, ("novel_series_detail",))
+        if verdict == _VERDICT_MISSING:
             return "deleted"
-        detail = None
-        if isinstance(result, dict):
-            detail = result.get("novel_series_detail")
-        if detail is None:
-            detail = getattr(result, "novel_series_detail", None)
-        if detail is None:
-            return "deleted"
+        if verdict != _VERDICT_OK:
+            _log_unknown_status("系列", series_id, result)
+            return "unknown"
         return "normal"
     except Exception as e:
-        logger.warning("Failed to check series %s status: %s", series_id, e)
+        logger.warning("检查系列 %s 状态失败: %s", series_id, e)
         return "unknown"
 
 

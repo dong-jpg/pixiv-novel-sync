@@ -309,6 +309,27 @@ def _release_scheduler_owner(key: str, scheduler: AutoSyncScheduler) -> None:
             _auto_sync_scheduler_registry.pop(key, None)
 
 
+# task_logs 里表示「跑了但没跑完」的终态。前端 dashboard_logs.html 已把它渲染成
+# 黄色「部分完成」，这里复用同一取值。
+_TASK_LOG_STATUS_PARTIAL = "partial"
+
+
+def _task_log_status_for_stats(stats: dict[str, Any] | None) -> str:
+    """按任务 stats 判定写进 task_logs 的终态。
+
+    生产事故：状态检查被限流熔断，只检查了 30/800 篇就中止，任务日志里却仍是绿色
+    「成功」，运维根本看不出这轮几乎什么都没查。凡是 stats 里带 ``aborted_reason``
+    （熔断中止）或 ``incomplete``（订阅系列中止、关注作者只覆盖部分、分页触顶）的，
+    一律记 ``partial``，让它在任务日志里显示成黄色「部分完成」。
+
+    注意：``remaining`` / ``users_remaining`` 等是常规轮转字段（分批检查本来就有剩余），
+    不能作为判定依据，否则每一轮都会变成 partial。
+    """
+    if isinstance(stats, dict) and (stats.get("aborted_reason") or stats.get("incomplete")):
+        return _TASK_LOG_STATUS_PARTIAL
+    return JobStatus.SUCCEEDED.value
+
+
 def _refresh_rescue_chapters(db: Database, chapter_ids: list[int] | tuple[int, ...]) -> None:
     """刷新系列解绑影响的每个章节。
 
@@ -457,7 +478,14 @@ def create_app(
             db.init_schema()
             logs = _shared_job_logs_for_db(job)
             if job.status == JobStatus.SUCCEEDED:
-                db.update_task_log(log_id, JobStatus.SUCCEEDED.value, stats=job.stats, logs=logs)
+                # 熔断中止/本轮没跑完的任务不能记成 succeeded，否则风控事故在日志里
+                # 显示成绿色「成功」被彻底掩盖
+                db.update_task_log(
+                    log_id,
+                    _task_log_status_for_stats(job.stats),
+                    stats=job.stats,
+                    logs=logs,
+                )
             elif job.status == JobStatus.FAILED:
                 db.update_task_log(log_id, JobStatus.FAILED.value, error_message=job.error, logs=logs)
             elif job.status == JobStatus.CANCELLED:

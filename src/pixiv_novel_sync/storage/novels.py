@@ -6,6 +6,9 @@ from typing import Any
 from ..models import AssetRecord, NovelRecord, NovelTextRecord, SourceRecord
 from .utils import escape_fts_query
 
+# 状态检查拿不到可信结果时的占位状态：不允许写进 status 列覆盖已有状态
+UNKNOWN_STATUS = "unknown"
+
 
 class NovelsMixin:
     """小说相关数据库操作 Mixin"""
@@ -581,15 +584,60 @@ class NovelsMixin:
         return result
 
     def upsert_novel_status(self, novel_id: int, status: str) -> None:
-        """更新小说状态（normal/deleted/restricted/private 等）。"""
+        """更新小说状态（normal/deleted/restricted/private 等）。
+
+        status 为 "unknown" 时**只刷新 last_checked_at，不改写 status**：unknown 表示
+        本次检查没拿到可信结果（限流 / 网络错误 / 响应异常），用它覆盖已有状态会污染
+        数据。同时刷新 last_checked_at 可以让分批轮转继续推进，不会卡在同一批。
+        """
         with self._lock:
-            self.conn.execute(
-                """
-                UPDATE novels
-                SET status = ?,
-                    last_checked_at = CURRENT_TIMESTAMP
-                WHERE novel_id = ?
-                """,
-                (status, novel_id),
-            )
+            if status == UNKNOWN_STATUS:
+                self.conn.execute(
+                    "UPDATE novels SET last_checked_at = CURRENT_TIMESTAMP WHERE novel_id = ?",
+                    (novel_id,),
+                )
+            else:
+                self.conn.execute(
+                    """
+                    UPDATE novels
+                    SET status = ?,
+                        last_checked_at = CURRENT_TIMESTAMP
+                    WHERE novel_id = ?
+                    """,
+                    (status, novel_id),
+                )
             self._commit_if_needed()
+
+    def get_novel_ids_for_status_check(self, limit: int | None = None) -> list[int]:
+        """按 last_checked_at 升序返回待状态检查的小说 ID（从未检查过的排最前）。
+
+        全量检查 6971 篇需要约 4 小时，长时间高频调用正是 Pixiv 限流的诱因。状态检查
+        任务改为每轮只取一批（``limit``），多轮之间按 last_checked_at 自然轮转覆盖全库。
+        ``limit`` 为 None / 非正数时返回全部 ID（与 ``get_all_novel_ids`` 同一集合）。
+        """
+        sql = (
+            "SELECT novel_id FROM novels "
+            # (last_checked_at IS NOT NULL) 为 0/1，保证 NULL（从未检查）永远排最前
+            "ORDER BY (last_checked_at IS NOT NULL), last_checked_at, novel_id"
+        )
+        params: tuple[Any, ...] = ()
+        if limit is not None and int(limit) > 0:
+            sql += " LIMIT ?"
+            params = (int(limit),)
+        rows = self.conn.execute(sql, params).fetchall()
+        return [row[0] for row in rows]
+
+    def count_novels_pending_status_check(self, checked_before: str | None = None) -> int:
+        """统计仍待状态检查的小说数：从未检查过，或上次检查早于 ``checked_before``。
+
+        ``checked_before`` 用本轮起始时间（与 SQLite CURRENT_TIMESTAMP 同格式的 UTC
+        字符串），据此可算出「整库轮转还剩多少篇」。
+        """
+        if checked_before is None:
+            row = self.conn.execute("SELECT COUNT(*) FROM novels").fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM novels WHERE last_checked_at IS NULL OR last_checked_at < ?",
+                (str(checked_before),),
+            ).fetchone()
+        return int(row[0] or 0) if row else 0

@@ -5,6 +5,9 @@ from typing import Any
 
 from .utils import escape_fts_query
 
+# 与 novels 一致：unknown 表示本次检查没拿到可信结果，不得覆盖已有状态
+UNKNOWN_STATUS = "unknown"
+
 
 class SeriesMixin:
     """系列数据管理 Mixin"""
@@ -15,11 +18,18 @@ class SeriesMixin:
     _commit_if_needed: Any
 
     def upsert_series_status(self, series_id: int, status: str) -> None:
+        """更新系列状态；status 为 "unknown" 时只刷新 last_checked_at，不改写 status。"""
         with self._lock:
-            self.conn.execute(
-                "UPDATE series SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE series_id = ?",
-                (status, series_id),
-            )
+            if status == UNKNOWN_STATUS:
+                self.conn.execute(
+                    "UPDATE series SET last_checked_at = CURRENT_TIMESTAMP WHERE series_id = ?",
+                    (series_id,),
+                )
+            else:
+                self.conn.execute(
+                    "UPDATE series SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE series_id = ?",
+                    (status, series_id),
+                )
             self._commit_if_needed()
 
     def upsert_subscribed_series(self, series_id: int, title: str, description: str, user_id: int, cover_url: str | None, total_novels: int = 0) -> None:

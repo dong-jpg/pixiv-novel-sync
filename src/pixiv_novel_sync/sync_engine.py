@@ -39,6 +39,12 @@ logger = logging.getLogger(__name__)
 # far beyond any real library yet still bounds the worst case.
 _CHECK_PAGE_SAFETY_LIMIT = 2000
 
+# 关注列表枚举（user_following）专用的翻页上限，每页 30 人 ⇒ 50 页 = 1500 人。
+# 它只是自引用 next_url 死循环的兜底，绝不能复用 max_pages_per_run：后者的语义是
+# 「单轮同步的作品分页上限」，生产配成 2 会把关注候选集砍到 60 人，关注数一超过 60，
+# 第 61 位之后的作者就永远排除在轮转之外（等于换个位置重演"永远只同步最前面几个"）。
+FOLLOWING_LIST_MAX_PAGES = 50
+
 T = TypeVar('T')
 
 
@@ -80,6 +86,71 @@ def _stop_requested_from_progress(progress_callback: Any) -> Any:
         return False
 
     return _stop_requested
+
+
+# Pixiv 限流/风控时 error JSON 的 message 通常是 "Rate Limit"；这类失败是临时的，
+# 必须留在原有失败/重试路径里，绝不能被当成"正文不可获取"。
+_RATE_LIMIT_ERROR_TOKENS = ("rate limit", "rate-limit", "ratelimit", "too many requests", "429")
+
+
+def _parse_pixiv_error_json(exc: BaseException) -> dict[str, Any] | None:
+    """尽力从异常里解析出 Pixiv 返回的 ``{"error": {...}}`` 结构。
+
+    作品被删除或设为不可见时，webview 接口返回的是
+    ``{"error": {"user_message": "尚无此页", ...}}``；pixivpy 在 aapi.py 里用
+    ``re.search(...).groups()`` 抠正文 JSON，匹配不到就抛
+    ``PixivError("Extract novel content error: 'NoneType' object has no attribute 'groups'")``，
+    把真实原因藏进异常的 ``body`` 里。这里负责把它挖出来。
+
+    fail-safe：只有明确解析出 error 对象才返回 dict，其余一律返回 None。
+    """
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        return error if isinstance(error, dict) else None
+
+    candidates: list[Any] = []
+    if isinstance(body, (str, bytes, bytearray)):
+        candidates.append(body)
+    candidates.append(str(exc))
+
+    for raw in candidates:
+        if isinstance(raw, (bytes, bytearray)):
+            text = bytes(raw).decode("utf-8", "replace")
+        else:
+            text = str(raw)
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            continue
+        try:
+            data = json.loads(text[start : end + 1])
+        except (ValueError, TypeError):
+            continue
+        if isinstance(data, dict) and isinstance(data.get("error"), dict):
+            return data["error"]
+    return None
+
+
+def _pixiv_content_unavailable_reason(exc: BaseException) -> str | None:
+    """判断异常是否代表"正文确实不可获取"，是则返回可读的中文原因。
+
+    仅当 Pixiv 明确回了 error JSON 且带非空 ``user_message``（例如「尚无此页」）时才
+    判定为不可获取——这类失败没有重试价值。限流（message 含 Rate Limit）或鉴权失败
+    （user_message 为空）属于临时故障，返回 None 走原有失败路径继续重试。
+    """
+    error = _parse_pixiv_error_json(exc)
+    if error is None:
+        return None
+    user_message = str(error.get("user_message") or "").strip()
+    message = str(error.get("message") or "").strip()
+    reason = str(error.get("reason") or "").strip()
+    blob = " ".join((user_message, message, reason)).lower()
+    if any(token in blob for token in _RATE_LIMIT_ERROR_TOKENS):
+        return None
+    if not user_message:
+        return None
+    return user_message
 
 
 class BookmarkNovelSyncService:
@@ -450,6 +521,10 @@ class BookmarkNovelSyncService:
             while next_query:
                 if page_count >= safety_limit:
                     logger.info("Reached page safety limit=%s, stopping pagination", safety_limit)
+                    # 分页被上限截断：本轮并未取完远端列表。必须在 stats 里体现，否则
+                    # 调用方会把"只跑了 N 页"当成一次完整同步。
+                    stats["truncated"] = True
+                    stats["incomplete"] = True
                     break
                 try:
                     result = self.api.user_bookmarks_novel(**next_query)
@@ -556,7 +631,6 @@ class BookmarkNovelSyncService:
         """同步关注用户列表（只更新用户信息，不同步小说）"""
         stats = {"users": 0, "following_users_scanned": 0}
         page_delay = self.settings.sync.delay_seconds_between_pages
-        max_pages = self.settings.sync.max_pages_per_run
 
         logger.info("Syncing following user list")
         current_user_id = self.settings.pixiv.user_id
@@ -570,11 +644,14 @@ class BookmarkNovelSyncService:
 
         next_following_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
         following_page_count = 0
-        safety_limit = max_pages or 100  # 3.3翻页上限兜底
+        # 关注列表专用上限：复用 max_pages_per_run 会把关注人数截断在 60 人
+        safety_limit = FOLLOWING_LIST_MAX_PAGES
 
         while next_following_query:
             if following_page_count >= safety_limit:
                 logger.info("Reached page safety limit=%s for following list, stopping pagination", safety_limit)
+                stats["truncated"] = True
+                stats["incomplete"] = True
                 break
             following_result = self.api.user_following(**next_following_query)
             following_page_count += 1
@@ -624,6 +701,83 @@ class BookmarkNovelSyncService:
 
         return stats
 
+    def _collect_following_users(
+        self,
+        current_user_id: int,
+        safety_limit: int,
+        page_delay: float,
+        progress_callback: Any = None,
+    ) -> tuple[list[Any], bool]:
+        """整页取回关注列表（只收集用户对象，不同步任何作品）。
+
+        返回 (去重后的 user 列表, 是否不完整)。翻页触顶或接口报错都会把第二个
+        返回值置 True——此时列表是残缺的，调用方需要在 stats 里标记未取完。
+        """
+        collected: list[Any] = []
+        seen_ids: set[int] = set()
+        next_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
+        page_count = 0
+        incomplete = False
+
+        while next_query:
+            if page_count >= safety_limit:
+                logger.warning(
+                    "Reached page safety limit=%s for following list, stopping pagination",
+                    safety_limit,
+                )
+                incomplete = True
+                break
+            try:
+                following_result = self.api.user_following(**next_query)
+            except Exception as e:
+                logger.error("API call user_following failed: %s", e)
+                incomplete = True
+                break
+            page_count += 1
+            if progress_callback:
+                progress_callback("page", {"page": page_count})
+
+            for user_preview in (getattr(following_result, "user_previews", []) or []):
+                user = getattr(user_preview, "user", user_preview)
+                author_id = getattr(user, "id", None)
+                if author_id is None:
+                    continue
+                author_id = int(author_id)
+                if author_id in seen_ids:
+                    continue
+                seen_ids.add(author_id)
+                collected.append(user)
+
+            next_query = self.api.parse_qs(getattr(following_result, "next_url", None))
+            if next_query and page_delay > 0:
+                if progress_callback:
+                    progress_callback("rate_limit", {"seconds": page_delay})
+                _sleep_with_progress_cancel(page_delay, progress_callback)
+
+        return collected, incomplete
+
+    @staticmethod
+    def _order_following_users_for_rotation(
+        users: list[Any],
+        user_last_synced: dict[str, str],
+    ) -> list[Any]:
+        """按"最久未同步优先"给关注作者排序，实现跨轮次轮转。
+
+        Pixiv 的 user_following 顺序基本固定（按关注时间倒序），直接取前 N 个会让
+        排在后面的作者永远同步不到。排序键：水位线里没有记录的（从未同步过）排最前，
+        其余按上次同步时间升序；键相同时 sorted 的稳定性会保留关注列表原顺序。
+        """
+        def _rotation_key(user: Any) -> tuple[int, str]:
+            author_id = getattr(user, "id", None)
+            if author_id is None:
+                return (0, "")
+            last_synced = user_last_synced.get(str(int(author_id)))
+            if not last_synced:
+                return (0, "")
+            return (1, str(last_synced))
+
+        return sorted(users, key=_rotation_key)
+
     def sync_following_novels(self, download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None, users_limit: int = 0) -> dict[str, int]:
         stats = _empty_stats()
         max_items = self.settings.sync.max_items_per_run
@@ -637,193 +791,267 @@ class BookmarkNovelSyncService:
         current_user_id = self.settings.pixiv.user_id
         if not current_user_id:
             raise RuntimeError("PIXIV_USER_ID is required to fetch following list")
-        next_following_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
-        following_page_count = 0
 
         # 获取预检查结果
         check_list = self.db.get_sync_check_list(self.sync_check_scope)
         use_check_list = len(check_list) > 0
 
-        # 读取水位线：每个用户上次见到的最新 novel_id，仅用于观测，不作为硬停止条件
+        # 读取水位线：
+        # - user_max_ids：每个用户上次见到的最新 novel_id，仅用于观测，不作为硬停止条件；
+        # - user_last_synced：每个用户上次被本任务扫描的时间，用于 users_limit 轮转。
+        #   旧版本水位线没有这个键，缺失时按"从未同步"处理，绝不能崩。
         watermark = self.db.get_watermark("following_novels")
-        user_watermarks: dict[str, int] = watermark.get("user_max_ids", {}) if watermark else {}
+        if not isinstance(watermark, dict):
+            watermark = {}
+        raw_max_ids = watermark.get("user_max_ids")
+        user_watermarks: dict[str, int] = raw_max_ids if isinstance(raw_max_ids, dict) else {}
+        raw_last_synced = watermark.get("user_last_synced")
+        user_last_synced: dict[str, str] = (
+            {str(uid): str(ts) for uid, ts in raw_last_synced.items()}
+            if isinstance(raw_last_synced, dict)
+            else {}
+        )
         current_user_max_ids: dict[str, int] = {}
+        current_user_last_synced: dict[str, str] = {}
         existing_streak_limit = 30
 
         def _save_watermark():
-            if not current_user_max_ids:
+            # 即使本轮一本小说都没抓到（全跳过/作者没有作品），也必须落盘轮转时间，
+            # 否则下一轮又会挑中同一批作者。
+            if not current_user_max_ids and not current_user_last_synced:
                 return
             merged = dict(user_watermarks)
             for uid, new_max in current_user_max_ids.items():
                 old_max = merged.get(uid, 0)
                 if new_max > old_max:
                     merged[uid] = new_max
+            merged_last_synced = dict(user_last_synced)
+            merged_last_synced.update(current_user_last_synced)
             self.db.update_watermark("following_novels", {
                 "last_sync_time": datetime.now(timezone.utc).isoformat(),
                 "user_max_ids": merged,
+                "user_last_synced": merged_last_synced,
             })
 
-        safety_limit = max_pages or 100  # 翻页上限兜底，防止自引用 next_url 死循环
-        while next_following_query:
-            # 检查是否达到最大页数限制（含默认兜底）
-            if following_page_count >= safety_limit:
-                logger.warning(
-                    "Reached page safety limit=%s for following list, stopping pagination",
-                    safety_limit,
-                )
-                _save_watermark()
-                return stats
-            try:
-                following_result = self.api.user_following(**next_following_query)
-            except Exception as e:
-                logger.error("API call user_following failed: %s", e)
-                break
-            following_page_count += 1
+        safety_limit = max_pages or 100  # 单作者作品列表的翻页上限兜底，防止自引用 next_url 死循环
+        # 关注列表枚举必须与作品分页上限解耦：max_pages_per_run=2 时候选集会被砍到 60 人
+        following_list_page_limit = FOLLOWING_LIST_MAX_PAGES
+        user_progress_total = users_limit or 0
+
+        def _sync_author(user: Any) -> None:
+            """同步单个关注作者的作品列表（结果原地累加进 stats）。"""
+            nonlocal users_processed, synced_items
+
+            author_id = getattr(user, "id", None)
+            if author_id is None:
+                return
+            author_id = int(author_id)
+            author_name = getattr(user, "name", str(author_id))
+            stats["following_users_scanned"] = stats.get("following_users_scanned", 0) + 1
+            users_processed += 1
+            # 记录"本轮扫过该作者"，供下一轮按最久未同步轮转
+            current_user_last_synced[str(author_id)] = datetime.now(timezone.utc).isoformat()
+
+            logger.info("Syncing followed user novels for user_id=%s name=%s", author_id, author_name)
+
             if progress_callback:
-                progress_callback("page", {"page": following_page_count})
-            users = getattr(following_result, "user_previews", []) or []
+                progress_callback("user_start", {
+                    "current": users_processed,
+                    "total": user_progress_total,
+                    "author": author_name,
+                    "author_id": author_id,
+                    "phase": "同步用户小说",
+                })
 
-            for user_preview in users:
-                # 检查是否达到用户数限制
-                if users_limit > 0 and users_processed >= users_limit:
-                    logger.info("Reached users_limit=%d, stopping sync", users_limit)
-                    _save_watermark()
-                    return stats
-                # 检查是否达到实际同步数量限制
-                if max_items is not None and synced_items >= max_items:
-                    logger.info("Reached max_items_per_run=%s (synced), stopping sync", max_items)
-                    _save_watermark()
-                    return stats
-                
-                user = getattr(user_preview, "user", user_preview)
-                author_id = getattr(user, "id", None)
-                if author_id is None:
-                    continue
-                author_id = int(author_id)
-                author_name = getattr(user, "name", str(author_id))
-                stats["following_users_scanned"] = stats.get("following_users_scanned", 0) + 1
-                users_processed += 1
+            next_novel_query: dict[str, Any] | None = {"user_id": author_id}
+            author_page_count = 0
+            existing_streak = 0
+            stop_author_scan = False
+            while next_novel_query:
+                # 单作者作品列表同样受翻页上限兜底约束
+                if author_page_count >= safety_limit:
+                    logger.warning(
+                        "Reached page safety limit=%s for user %s novels, stopping pagination",
+                        safety_limit,
+                        author_id,
+                    )
+                    stats["truncated"] = True
+                    stats["incomplete"] = True
+                    break
+                try:
+                    novels_result = self.api.user_novels(**next_novel_query)
+                except Exception as e:
+                    logger.error("API call user_novels for user %s failed: %s", author_id, e)
+                    break
+                author_page_count += 1
+                novels = getattr(novels_result, "novels", []) or []
 
-                logger.info("Syncing followed user novels for user_id=%s name=%s", author_id, author_name)
+                for novel in novels:
+                    novel_id = int(novel.id)
+                    # 跟踪该用户本轮最大 novel_id
+                    prev_max = current_user_max_ids.get(str(author_id), 0)
+                    if novel_id > prev_max:
+                        current_user_max_ids[str(author_id)] = novel_id
 
-                if progress_callback:
-                    progress_callback("user_start", {
-                        "current": users_processed,
-                        "total": users_limit or 0,
-                        "author": author_name,
-                        "author_id": author_id,
-                        "phase": "同步用户小说",
-                    })
+                    title = getattr(novel, "title", f"novel_{novel_id}")
 
-                next_novel_query: dict[str, Any] | None = {"user_id": author_id}
-                author_page_count = 0
-                existing_streak = 0
-                stop_author_scan = False
-                while next_novel_query:
-                    # 单作者作品列表同样受翻页上限兜底约束
-                    if author_page_count >= safety_limit:
-                        logger.warning(
-                            "Reached page safety limit=%s for user %s novels, stopping pagination",
-                            safety_limit,
-                            author_id,
-                        )
-                        break
-                    try:
-                        novels_result = self.api.user_novels(**next_novel_query)
-                    except Exception as e:
-                        logger.error("API call user_novels for user %s failed: %s", author_id, e)
-                        break
-                    author_page_count += 1
-                    novels = getattr(novels_result, "novels", []) or []
+                    if progress_callback:
+                        progress_callback("novel_start", {
+                            "novel_id": novel_id,
+                            "title": title,
+                            "author": author_name,
+                            "phase": "同步用户小说",
+                        })
 
-                    for novel in novels:
-                        novel_id = int(novel.id)
-                        # 跟踪该用户本轮最大 novel_id
-                        prev_max = current_user_max_ids.get(str(author_id), 0)
-                        if novel_id > prev_max:
-                            current_user_max_ids[str(author_id)] = novel_id
+                    # 使用预检查结果判断是否跳过
+                    should_skip = False
+                    if use_check_list and novel_id in check_list:
+                        should_skip = check_list[novel_id]
 
-                        title = getattr(novel, "title", f"novel_{novel_id}")
-
-                        if progress_callback:
-                            progress_callback("novel_start", {
-                                "novel_id": novel_id,
-                                "title": title,
-                                "author": author_name,
-                                "phase": "同步用户小说",
-                            })
-
-                        # 使用预检查结果判断是否跳过
-                        should_skip = False
-                        if use_check_list and novel_id in check_list:
-                            should_skip = check_list[novel_id]
-
-                        if should_skip:
-                            # 已存在，跳过
-                            counters = {"skipped": 1, "bookmarks": 0, "views": 0, "assets_downloaded": 0}
-                            existing_streak += 1
-                            if author_page_count > 1 and existing_streak >= existing_streak_limit:
-                                logger.info(
-                                    "Stopping user %s scan after %d consecutive existing novels",
-                                    author_id,
-                                    existing_streak,
-                                )
-                                stop_author_scan = True
-                            skip_delay = self.settings.sync.delay_seconds_between_skips
-                            if skip_delay > 0:
-                                if progress_callback:
-                                    progress_callback("rate_limit", {"seconds": skip_delay})
-                                _sleep_with_progress_cancel(skip_delay, progress_callback)
-                        else:
-                            existing_streak = 0
-                            counters = self._sync_novel(
-                                novel,
-                                getattr(novel, "restrict", "public") or "public",
-                                download_assets,
-                                write_markdown,
-                                write_raw_text,
-                                source_type="following_user_scan",
-                                source_key=str(author_id),
+                    if should_skip:
+                        # 已存在，跳过
+                        counters = {"skipped": 1, "bookmarks": 0, "views": 0, "assets_downloaded": 0}
+                        existing_streak += 1
+                        if author_page_count > 1 and existing_streak >= existing_streak_limit:
+                            logger.info(
+                                "Stopping user %s scan after %d consecutive existing novels",
+                                author_id,
+                                existing_streak,
                             )
-                            if use_check_list:
-                                self.db.upsert_sync_check_item(novel_id, True, self.sync_check_scope)
-                        
-                        _merge_stats(stats, counters)
-
-                        # 只有实际同步（非跳过）才计入 synced_items
-                        if counters.get("novels", 0) > 0:
-                            synced_items += 1
-                        
-                        if progress_callback:
-                            progress_callback("novel_done", {
-                                "novel_id": novel_id,
-                                "title": title,
-                                "bookmarks": counters.get("bookmarks", 0),
-                                "views": counters.get("views", 0),
-                                "assets": counters.get("assets_downloaded", 0),
-                                "failed": counters.get("failed", 0),
-                            "skipped": counters.get("skipped", 0),
-                            })
-                        
-                        if counters.get("novels", 0) > 0 and item_delay > 0:
+                            stop_author_scan = True
+                        skip_delay = self.settings.sync.delay_seconds_between_skips
+                        # 已决定停止扫描时不再空等跳过间隔，直接收尾退出。
+                        if skip_delay > 0 and not stop_author_scan:
                             if progress_callback:
-                                progress_callback("rate_limit", {"seconds": item_delay})
-                            _sleep_with_progress_cancel(item_delay, progress_callback)
+                                progress_callback("rate_limit", {"seconds": skip_delay})
+                            _sleep_with_progress_cancel(skip_delay, progress_callback)
+                    else:
+                        existing_streak = 0
+                        counters = self._sync_novel(
+                            novel,
+                            getattr(novel, "restrict", "public") or "public",
+                            download_assets,
+                            write_markdown,
+                            write_raw_text,
+                            source_type="following_user_scan",
+                            source_key=str(author_id),
+                        )
+                        if use_check_list:
+                            self.db.upsert_sync_check_item(novel_id, True, self.sync_check_scope)
 
+                    _merge_stats(stats, counters)
+
+                    # 只有实际同步（非跳过）才计入 synced_items
+                    if counters.get("novels", 0) > 0:
+                        synced_items += 1
+
+                    if progress_callback:
+                        progress_callback("novel_done", {
+                            "novel_id": novel_id,
+                            "title": title,
+                            "bookmarks": counters.get("bookmarks", 0),
+                            "views": counters.get("views", 0),
+                            "assets": counters.get("assets_downloaded", 0),
+                            "failed": counters.get("failed", 0),
+                            "skipped": counters.get("skipped", 0),
+                        })
+
+                    if counters.get("novels", 0) > 0 and item_delay > 0:
+                        if progress_callback:
+                            progress_callback("rate_limit", {"seconds": item_delay})
+                        _sleep_with_progress_cancel(item_delay, progress_callback)
+
+                    # 命中"连续已存在"阈值后必须立刻退出本页循环。只置标记不 break
+                    # 会让本页剩余条目继续跑，并且每条都重复打印上面那句停止日志
+                    # （生产日志里同一用户从 48 一路打到 60 才真正退出）。
                     if stop_author_scan:
                         break
 
-                    next_novel_query = self.api.parse_qs(getattr(novels_result, "next_url", None))
-                    if next_novel_query and page_delay > 0:
-                        if progress_callback:
-                            progress_callback("rate_limit", {"seconds": page_delay})
-                        _sleep_with_progress_cancel(page_delay, progress_callback)
+                if stop_author_scan:
+                    break
 
-            next_following_query = self.api.parse_qs(getattr(following_result, "next_url", None))
-            if next_following_query and page_delay > 0:
+                next_novel_query = self.api.parse_qs(getattr(novels_result, "next_url", None))
+                if next_novel_query and page_delay > 0:
+                    if progress_callback:
+                        progress_callback("rate_limit", {"seconds": page_delay})
+                    _sleep_with_progress_cancel(page_delay, progress_callback)
+
+        if users_limit > 0:
+            # 限量模式：先取回完整关注列表，再按"最久未同步优先"挑本轮要跑的作者。
+            # 直接顺着 user_following 的顺序取前 N 个，会让后面的作者永远轮不到
+            # （生产上关注 53 人、users_limit=5，连续 9 轮都只同步了最前面 5 个）。
+            candidates, list_incomplete = self._collect_following_users(
+                current_user_id,
+                following_list_page_limit,
+                page_delay,
+                progress_callback,
+            )
+            if list_incomplete:
+                stats["truncated"] = True
+                stats["incomplete"] = True
+
+            selected = self._order_following_users_for_rotation(candidates, user_last_synced)[:users_limit]
+            user_progress_total = len(selected)
+            stats["users_total"] = len(candidates)
+
+            for user in selected:
+                # 检查是否达到实际同步数量限制
+                if max_items is not None and synced_items >= max_items:
+                    logger.info("Reached max_items_per_run=%s (synced), stopping sync", max_items)
+                    break
+                _sync_author(user)
+
+            remaining = max(len(candidates) - users_processed, 0)
+            stats["users_remaining"] = remaining
+            if remaining:
+                # 本轮只覆盖了部分关注作者：剩下的会在后续轮次按最久未同步优先补上，
+                # 但必须让调用方看出这轮不是全量。
+                stats["incomplete"] = True
+            logger.info(
+                "Following rotation: synced %d/%d users this run (users_limit=%d), %d remaining",
+                users_processed,
+                len(candidates),
+                users_limit,
+                remaining,
+            )
+        else:
+            # 不限量：保持原有的"边翻页边同步"行为
+            next_following_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
+            following_page_count = 0
+            while next_following_query:
+                # 检查是否达到关注列表翻页上限（自引用 next_url 兜底）
+                if following_page_count >= following_list_page_limit:
+                    logger.warning(
+                        "Reached page safety limit=%s for following list, stopping pagination",
+                        following_list_page_limit,
+                    )
+                    stats["truncated"] = True
+                    stats["incomplete"] = True
+                    _save_watermark()
+                    return stats
+                try:
+                    following_result = self.api.user_following(**next_following_query)
+                except Exception as e:
+                    logger.error("API call user_following failed: %s", e)
+                    break
+                following_page_count += 1
                 if progress_callback:
-                    progress_callback("rate_limit", {"seconds": page_delay})
-                _sleep_with_progress_cancel(page_delay, progress_callback)
+                    progress_callback("page", {"page": following_page_count})
+                users = getattr(following_result, "user_previews", []) or []
+
+                for user_preview in users:
+                    # 检查是否达到实际同步数量限制
+                    if max_items is not None and synced_items >= max_items:
+                        logger.info("Reached max_items_per_run=%s (synced), stopping sync", max_items)
+                        _save_watermark()
+                        return stats
+                    _sync_author(getattr(user_preview, "user", user_preview))
+
+                next_following_query = self.api.parse_qs(getattr(following_result, "next_url", None))
+                if next_following_query and page_delay > 0:
+                    if progress_callback:
+                        progress_callback("rate_limit", {"seconds": page_delay})
+                    _sleep_with_progress_cancel(page_delay, progress_callback)
 
         # 更新水位线
         _save_watermark()
@@ -1014,6 +1242,11 @@ class BookmarkNovelSyncService:
             queue_idx = 0
             consecutive_fetch_failures = 0
             max_consecutive_fetch_failures = 5
+            # 本轮"未跑完"的两类原因，最终必须体现在返回的 stats 里：
+            # aborted_reason —— 连续失败被迫中止（疑似风控/限流），剩余系列根本没跑；
+            # truncated_series —— 某些系列的章节分页被 max_pages_per_run 截断。
+            aborted_reason: str | None = None
+            truncated_series = 0
             while queue_idx < len(series_queue):
                 if limit > 0 and synced_series_count >= limit:
                     break
@@ -1125,6 +1358,11 @@ class BookmarkNovelSyncService:
                                 while next_url:
                                     if series_page_count >= series_safety_limit:
                                         logger.info("Reached page safety limit=%s for series %s, stopping pagination", series_safety_limit, sid)
+                                        # 该系列本轮没取全章节（配置的 max_pages_per_run 太小时
+                                        # 尤其明显），必须让调用方看到"未取完"。
+                                        truncated_series += 1
+                                        if progress_callback:
+                                            progress_callback("phase", {"phase": f"系列 {title or sid}: 已达单轮翻页上限 {series_safety_limit}，本轮未取完全部章节"})
                                         break
                                     try:
                                         series_page_count += 1
@@ -1181,6 +1419,13 @@ class BookmarkNovelSyncService:
                                         stats["novels"] += 1
                                     if counters.get("failed", 0):
                                         stats["failed"] = stats.get("failed", 0) + counters.get("failed", 0)
+                                    if counters.get("content_unavailable", 0):
+                                        # 正文确实已不可获取（作品删除/私密）：与临时失败分开计数，
+                                        # 避免每轮同步都当成普通 failed 反复重试。
+                                        stats["content_unavailable"] = (
+                                            stats.get("content_unavailable", 0)
+                                            + counters.get("content_unavailable", 0)
+                                        )
                                     if idx < len(all_novel_items) - 1 and chapter_delay > 0:
                                         _sleep_with_progress_cancel(chapter_delay, progress_callback)
 
@@ -1202,6 +1447,7 @@ class BookmarkNovelSyncService:
                                 )
                                 if progress_callback:
                                     progress_callback("phase", {"phase": "连续获取系列详情失败，疑似触发 Pixiv 风控，已暂停追更系列同步"})
+                                aborted_reason = "rate_limited"
                                 break
                     else:
                         consecutive_fetch_failures += 1
@@ -1215,6 +1461,7 @@ class BookmarkNovelSyncService:
                             )
                             if progress_callback:
                                 progress_callback("phase", {"phase": "连续获取系列详情为空，疑似触发 Pixiv 风控，已暂停追更系列同步"})
+                            aborted_reason = "rate_limited"
                             break
                 except InterruptedError:
                     # 用户取消：不能被下面的 except Exception 吞掉（InterruptedError 是
@@ -1233,13 +1480,35 @@ class BookmarkNovelSyncService:
                         )
                         if progress_callback:
                             progress_callback("phase", {"phase": "连续获取系列失败，疑似触发 Pixiv 风控，已暂停追更系列同步"})
+                        aborted_reason = "rate_limited"
                         break
 
                 # 系列之间的延迟
                 if series_delay > 0 and queue_idx < len(series_queue):
                     _sleep_with_progress_cancel(series_delay, progress_callback)
             stats["series_synced"] = synced_series_count
-            logger.info("Subscribed series sync completed: %d series, %d novels", synced_series_count, stats["novels"])
+            # 让调用方能判断"这轮到底跑完没有"：只看 series_synced 是看不出来的
+            # （中止时它同样是 0）。
+            stats["series_total"] = len(series_queue)
+            stats["series_processed"] = queue_idx
+            stats["series_remaining"] = max(len(series_queue) - queue_idx, 0)
+            if truncated_series:
+                stats["truncated"] = True
+                stats["truncated_series"] = truncated_series
+                stats["incomplete"] = True
+            if aborted_reason:
+                stats["aborted_reason"] = aborted_reason
+                stats["incomplete"] = True
+                logger.warning(
+                    "Subscribed series sync aborted (%s): processed %d/%d series, synced %d series, %d novels",
+                    aborted_reason,
+                    queue_idx,
+                    len(series_queue),
+                    synced_series_count,
+                    stats["novels"],
+                )
+            else:
+                logger.info("Subscribed series sync completed: %d series, %d novels", synced_series_count, stats["novels"])
             return stats
         
         # 方式2: 从已同步的小说中提取系列元数据（兼容旧数据）
@@ -1677,6 +1946,23 @@ class BookmarkNovelSyncService:
         except InterruptedError:
             raise
         except Exception as e:
+            unavailable_reason = _pixiv_content_unavailable_reason(e)
+            if unavailable_reason:
+                # 正文确实不可获取（作品已删除或设为不可见）：重试没有意义，单独计数，
+                # 并输出清晰中文日志，不再把 pixivpy 内部那句误导性的
+                # "'NoneType' object has no attribute 'groups'" 抛给用户。
+                logger.warning(
+                    "小说 %d 正文不可获取：%s（可能已被删除或设为私密），跳过且无需重试",
+                    novel_id,
+                    unavailable_reason,
+                )
+                return {
+                    "content_unavailable": 1,
+                    "failed": 0,
+                    "bookmarks": 0,
+                    "views": 0,
+                    "assets_downloaded": 0,
+                }
             logger.error("Failed to sync novel %d: %s", novel_id, e)
             return {"failed": 1, "bookmarks": 0, "views": 0, "assets_downloaded": 0}
 

@@ -171,6 +171,28 @@ def test_task_logs_template_has_complete_ai_filters_and_details():
     assert "formatJson(selectedLog.output)" in html
 
 
+def test_task_logs_template_surfaces_abort_and_incomplete_markers():
+    """限流熔断/本轮没跑完必须在详情页统计面板里露出来。
+
+    生产事故：状态检查被限流熔断，只查了 30/800 篇就中止，统计面板是白名单渲染，
+    aborted_reason 一个字都不显示，运维看到的只有绿色「成功·完成」。
+    """
+    html = read(TEMPLATES / "dashboard_logs.html")
+
+    assert "selectedLog.stats.aborted_reason" in html
+    assert "中止原因" in html
+    assert "selectedLog.stats.incomplete" in html
+    assert "本轮未完成" in html
+    assert "selectedLog.stats.remaining" in html
+    assert "剩余待检查" in html
+    assert "selectedLog.stats.users_remaining" in html
+    assert "selectedLog.stats.series_remaining" in html
+    assert "selectedLog.stats.truncated" in html
+    # 中止原因要翻成中文，别把 rate_limited 直接甩给运维
+    assert "rate_limited" in html
+    assert "suspicious_missing_streak" in html
+
+
 def test_ai_project_pages_prefer_cover_url_with_gradient_fallback():
     novels = read(TEMPLATES / "dashboard_novels.html")
     reader = read(TEMPLATES / "dashboard_ai_reader.html")

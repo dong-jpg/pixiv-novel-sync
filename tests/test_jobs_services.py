@@ -80,6 +80,9 @@ class FakeDatabase:
         self.user_status_upserts: list[tuple[int, str]] = []
         self.novel_ids = [11, 22]
         self.novel_status_upserts: list[tuple[int, str]] = []
+        self.status_batch_calls: list[int | None] = []
+        self.pending_count_calls: list[str | None] = []
+        self.pending_status_remaining = 0
         self.series_ids = [31, 42]
         self.series_status_upserts: list[tuple[int, str]] = []
         self.backup_users = [(101, "Alice"), (202, "Bob")]
@@ -102,6 +105,15 @@ class FakeDatabase:
 
     def get_all_novel_ids(self) -> list[int]:
         return list(self.novel_ids)
+
+    def get_novel_ids_for_status_check(self, limit: int | None = None) -> list[int]:
+        self.status_batch_calls.append(limit)
+        ids = list(self.novel_ids)
+        return ids[: int(limit)] if limit else ids
+
+    def count_novels_pending_status_check(self, checked_before: str | None = None) -> int:
+        self.pending_count_calls.append(checked_before)
+        return self.pending_status_remaining
 
     def upsert_novel_status(self, novel_id: int, status: str) -> None:
         self.novel_status_upserts.append((novel_id, status))
@@ -324,11 +336,89 @@ def test_run_novel_status_task_calls_novel_db_and_status_checker(settings, servi
         "total_novels": 2,
         "status_counts": {"normal": 1, "restricted": 1},
         "stopped": False,
+        "batch_size": services.NOVEL_STATUS_BATCH_SIZE,
+        "remaining": 0,
         "rescue_catalog_items": 7,
         "rescue_catalog_sources": 8,
         "rescue_catalog_duration_ms": 0,
     }
     assert db.rebuild_catalog_calls == 1
+
+
+def test_novel_status_task_checks_one_batch_per_round(settings, service_env, monkeypatch):
+    """每轮只取一批，避免全量扫描把任务槽占满并触发限流。"""
+    monkeypatch.setattr(services, "_check_novel_status", lambda api, novel_id: "normal")
+    monkeypatch.setattr(
+        FakeDatabase,
+        "count_novels_pending_status_check",
+        lambda self, checked_before=None: 4242,
+        raising=False,
+    )
+    reporter = DummyReporter()
+
+    result = services.run_novel_status_task(settings, reporter=reporter)
+
+    db = service_env["db"]
+    assert db.status_batch_calls == [services.NOVEL_STATUS_BATCH_SIZE]
+    assert result["batch_size"] == services.NOVEL_STATUS_BATCH_SIZE
+    assert result["remaining"] == 4242
+    assert any("待轮转检查" in message for _level, message in reporter.logs)
+
+
+def test_novel_status_task_batch_size_comes_from_settings(settings, service_env, monkeypatch):
+    settings.sync.novel_status_batch_size = 1
+    monkeypatch.setattr(services, "_check_novel_status", lambda api, novel_id: "normal")
+
+    result = services.run_novel_status_task(settings)
+
+    assert service_env["db"].status_batch_calls == [1]
+    assert result["batch_size"] == 1
+
+
+def test_novel_status_task_aborts_and_skips_catalog_when_rate_limited(settings, service_env, monkeypatch):
+    """连续 unknown 触发熔断：中止本轮、标记原因，且不重建救援目录。"""
+    monkeypatch.setattr(services, "_check_novel_status", lambda api, novel_id: "unknown")
+    monkeypatch.setattr(
+        FakeDatabase,
+        "get_novel_ids_for_status_check",
+        lambda self, limit=None: list(range(1, 11)),
+        raising=False,
+    )
+    reporter = DummyReporter()
+
+    result = services.run_novel_status_task(settings, reporter=reporter)
+
+    db = service_env["db"]
+    assert result["aborted_reason"] == "rate_limited"
+    assert result["stopped"] is True
+    assert result["checked_count"] == services.MAX_CONSECUTIVE_UNKNOWN
+    assert result["status_counts"] == {"unknown": services.MAX_CONSECUTIVE_UNKNOWN}
+    assert len(db.novel_status_upserts) == services.MAX_CONSECUTIVE_UNKNOWN
+    assert db.rebuild_catalog_calls == 0
+    assert any("疑似触发 Pixiv 限流" in message for level, message in reporter.logs if level == "error")
+
+
+def test_novel_status_task_aborts_and_skips_catalog_on_deleted_streak(settings, service_env, monkeypatch):
+    """连续大量 deleted 疑似限流伪装成「不存在」：中止本轮，且不重建救援目录。"""
+    monkeypatch.setattr(services, "_check_novel_status", lambda api, novel_id: "deleted")
+    monkeypatch.setattr(
+        FakeDatabase,
+        "get_novel_ids_for_status_check",
+        lambda self, limit=None: list(range(1, services.MAX_CONSECUTIVE_MISSING + 20)),
+        raising=False,
+    )
+    reporter = DummyReporter()
+
+    result = services.run_novel_status_task(settings, reporter=reporter)
+
+    db = service_env["db"]
+    assert result["aborted_reason"] == "suspicious_missing_streak"
+    assert result["stopped"] is True
+    assert result["checked_count"] == services.MAX_CONSECUTIVE_MISSING
+    assert db.rebuild_catalog_calls == 0
+    assert any(
+        "疑似 API 限流伪装成不存在" in message for level, message in reporter.logs if level == "error"
+    )
 
 
 def test_novel_status_task_rebuilds_catalog_after_success(settings, service_env, monkeypatch):
@@ -366,7 +456,12 @@ def test_novel_status_task_keeps_stats_when_catalog_rebuild_fails(settings, serv
 
     result = services.run_novel_status_task(settings, reporter=reporter)
 
-    assert result == {"checked_novels": 1, "stopped": False}
+    assert result == {
+        "checked_novels": 1,
+        "stopped": False,
+        "batch_size": services.NOVEL_STATUS_BATCH_SIZE,
+        "remaining": 0,
+    }
     assert [log for log in reporter.logs if log[0] == "warning"] == [
         ("warning", "救援目录刷新失败: catalog boom")
     ]

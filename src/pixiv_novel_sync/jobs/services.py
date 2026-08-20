@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timezone
 import logging
 import time
 from time import perf_counter
@@ -12,6 +13,27 @@ from pixiv_novel_sync.storage_files import FileStorage
 from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
 
 logger = logging.getLogger(__name__)
+
+# 连续多少个条目判定为 unknown 就认定「疑似被限流」并中止整轮检查。
+# 背景：pixivpy 被限流时不抛异常而是返回错误响应，历史事故里限流持续 3 小时，
+# 每一批 290 篇全部被误判。中止后本轮未检查的条目保持原状态，等下一轮再补。
+MAX_CONSECUTIVE_UNKNOWN = 5
+
+# 连续多少个条目判定为「已删除」就认定异常并中止整轮检查。
+# 这是判定关键词的兜底：中文文案「尚无此页」很泛，无法排除限流也复用它，一旦如此，
+# 限流就会伪装成「不存在」绕过 unknown 熔断，重演 5499 篇误判。
+# 阈值依据生产实测：正常 10 分钟分桶里是 152~279 篇 normal 混着 8~85 篇 deleted，
+# 零星分布不会出现长连续段；限流时则是连续 290/290 全 deleted。连续 30 篇全删除
+# 是极强的异常信号，正常情况下（哪怕某作者整批作品被删）也很难连续命中。
+MAX_CONSECUTIVE_MISSING = 30
+
+# 判定为「不存在/已删除」的状态取值：小说/系列是 deleted，用户是 suspended，
+# 三者共用同一套熔断逻辑。
+MISSING_STATUSES = frozenset({"deleted", "suspended"})
+
+# 小说状态检查每轮的批大小。全量 6971 篇（每篇间隔 2 秒）单轮要跑满 4 小时，
+# 既占死任务槽又是限流诱因；分批后单轮耗时可控，多轮按 last_checked_at 轮转覆盖全库。
+NOVEL_STATUS_BATCH_SIZE = 800
 
 
 class JobReporter:
@@ -243,18 +265,33 @@ def run_novel_status_task(
     *,
     claim_finalization: ClaimFinalization | None = None,
 ) -> dict[str, Any]:
+    batch_size = _resolve_novel_status_batch_size(settings)
+    # 本轮起始时间用于统计「还剩多少篇没轮到」，与 SQLite CURRENT_TIMESTAMP 同格式
+    started_at = _db_utc_now()
+
+    def finalize_stats(db: Database, stats: dict[str, Any]) -> None:
+        remaining = int(db.count_novels_pending_status_check(started_at))
+        stats["batch_size"] = batch_size
+        stats["remaining"] = remaining
+        _report_log(
+            reporter,
+            "info",
+            f"本轮批次上限 {batch_size} 篇，全库仍有 {remaining} 篇待轮转检查",
+        )
+
     return _run_status_task(
         settings=settings,
         reporter=reporter,
         stop_requested=stop_requested,
         task_label="小说状态检查",
         total_label="小说",
-        list_ids=lambda db: db.get_all_novel_ids(),
+        list_ids=lambda db: db.get_novel_ids_for_status_check(limit=batch_size),
         check_status=_check_novel_status,
         upsert_status=lambda db, item_id, status: db.upsert_novel_status(item_id, status),
         total_key="total_novels",
         rebuild_catalog=True,
         claim_finalization=claim_finalization,
+        finalize_stats=finalize_stats,
     )
 
 
@@ -429,6 +466,7 @@ def _run_status_task(
     total_key: str,
     rebuild_catalog: bool = False,
     claim_finalization: ClaimFinalization | None = None,
+    finalize_stats: Callable[[Database, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     api = _login(settings)
     _ensure_storage_dirs(settings)
@@ -451,6 +489,12 @@ def _run_status_task(
             item_name=lambda item_id: str(item_id),
             total_key=total_key,
         )
+        if finalize_stats is not None:
+            # 批次统计只是运维观测信息，失败不应拖垮整轮任务
+            try:
+                finalize_stats(db, stats)
+            except Exception as exc:
+                logger.warning("%s批次统计失败: %s", task_label, exc)
         if not stats.get("stopped") and stop_requested is not None and stop_requested():
             stats["stopped"] = True
         if rebuild_catalog and not stats.get("stopped"):
@@ -461,6 +505,21 @@ def _run_status_task(
         return stats
     finally:
         db.close()
+
+
+def _resolve_novel_status_batch_size(settings: Any) -> int:
+    """批大小优先读 settings.sync.novel_status_batch_size，缺省用模块常量。"""
+    raw = getattr(getattr(settings, "sync", None), "novel_status_batch_size", None)
+    try:
+        value = int(raw) if raw not in (None, "") else 0
+    except (TypeError, ValueError):
+        value = 0
+    return value if value > 0 else NOVEL_STATUS_BATCH_SIZE
+
+
+def _db_utc_now() -> str:
+    """返回与 SQLite CURRENT_TIMESTAMP 同格式的 UTC 时间串，用于比较 last_checked_at。"""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _login(settings: Any) -> Any:
@@ -494,6 +553,9 @@ def _process_status_items(
     checked_count = 0
     status_counts: dict[str, int] = {}
     stopped = False
+    consecutive_unknown = 0
+    consecutive_missing = 0
+    aborted_reason: str | None = None
     total = len(items)
 
     _report_progress(reporter, phase=item_label, current=0, total=total)
@@ -510,17 +572,56 @@ def _process_status_items(
 
         _report_log(reporter, "info", f"[{checked_count}/{total}] {item_label} {item_name(item)}: {status}")
         _report_progress(reporter, phase=item_label, current=checked_count, total=total, current_novel=item_name(item), author="")
+
+        # 两个熔断计数各自独立：任一状态只要不属于该类，就把该类计数清零
+        consecutive_unknown = consecutive_unknown + 1 if status == "unknown" else 0
+        consecutive_missing = consecutive_missing + 1 if status in MISSING_STATUSES else 0
+
+        # unknown 说明这次调用没拿到可信结果；连续多次即认定被限流，立刻收手，
+        # 否则会顶着限流把剩余条目全部刷成无效结果（还会进一步加重限流）。
+        if consecutive_unknown >= MAX_CONSECUTIVE_UNKNOWN:
+            message = (
+                f"连续 {consecutive_unknown} 个{item_label}状态无法判定，疑似触发 Pixiv 限流，"
+                f"已中止本轮检查（已检查 {checked_count}/{total}，未检查的保持原状态）"
+            )
+            logger.warning(message)
+            # error 级别：任务日志里会标红，别让风控中止淹没在一片 info 里
+            _report_log(reporter, "error", message)
+            aborted_reason = "rate_limited"
+            stopped = True
+            break
+
+        # 删除判定的兜底：正常情况下 deleted 是零星分布的，连续一大段全是删除，
+        # 更可能是 API 限流伪装成「不存在」，而不是真有这么多作品同时消失。
+        if consecutive_missing >= MAX_CONSECUTIVE_MISSING:
+            message = (
+                f"连续 {consecutive_missing} 个{item_label}判定为已删除，疑似 API 限流伪装成不存在，"
+                f"已中止本轮检查以防误判（已检查 {checked_count}/{total}）"
+            )
+            logger.warning(message)
+            _report_log(reporter, "error", message)
+            aborted_reason = "suspicious_missing_streak"
+            stopped = True
+            break
+
         if _sleep_with_cancel(settings.sync.delay_seconds_between_skips, stop_requested):
             stopped = True
             break
 
-    _report_log(reporter, "success", f"{item_label}状态检查完成: {checked_count} 个")
-    return {
+    if aborted_reason:
+        _report_log(reporter, "error", f"{item_label}状态检查提前中止: 已检查 {checked_count} 个")
+    else:
+        _report_log(reporter, "success", f"{item_label}状态检查完成: {checked_count} 个")
+    stats: dict[str, Any] = {
         "checked_count": checked_count,
         total_key: total,
+        # status_counts 里含 unknown 计数，运维据此判断限流影响面
         "status_counts": status_counts,
         "stopped": stopped,
     }
+    if aborted_reason:
+        stats["aborted_reason"] = aborted_reason
+    return stats
 
 
 def _list_all_users(db: Database) -> list[dict[str, Any]]:

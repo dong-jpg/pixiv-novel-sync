@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from typing import Any
 
+# 与 novels 一致：unknown 表示本次检查没拿到可信结果，不得覆盖已有状态
+UNKNOWN_STATUS = "unknown"
+
 
 class UsersMixin:
     """用户管理 mixin。
@@ -28,11 +31,18 @@ class UsersMixin:
             self._commit_if_needed()
 
     def upsert_user_status(self, user_id: int, status: str) -> None:
+        """更新用户状态；status 为 "unknown" 时只刷新 last_checked_at，不改写 status。"""
         with self._lock:
-            self.conn.execute(
-                "UPDATE users SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE user_id = ?",
-                (status, user_id),
-            )
+            if status == UNKNOWN_STATUS:
+                self.conn.execute(
+                    "UPDATE users SET last_checked_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+                    (user_id,),
+                )
+            else:
+                self.conn.execute(
+                    "UPDATE users SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+                    (status, user_id),
+                )
             self._commit_if_needed()
 
     def get_user_summary(self, user_id: int | None) -> dict[str, Any] | None:

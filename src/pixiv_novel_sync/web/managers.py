@@ -14,7 +14,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,70 @@ logger = logging.getLogger(__name__)
 SCHEDULER_STOP_JOIN_TIMEOUT_SECONDS = 1.0
 # submit 失败/被占用时的短退避（秒）：避免静默顺延整个周期
 SCHEDULER_SUBMIT_RETRY_SECONDS = 300.0
+
+# --- 重启补偿（从 task_logs 恢复上次执行时间）相关常量 ---
+# 回溯查询 task_logs 的最长窗口（天）。task_logs 本身默认只保留 3 天
+# （见 cleanup_old_task_logs），这里放宽到 7 天纯粹是冗余保护。
+SCHEDULER_HISTORY_LOOKBACK_DAYS = 7
+# 单个 task_type 最多扫描多少条日志去找最后一次执行：足够跨过最近的失败/取消记录。
+SCHEDULER_HISTORY_SCAN_LIMIT = 50
+# 恢复上次执行时间时认哪些终态。partial = 熔断中止/本轮没跑完，它同样代表"这个时间点
+# 跑过一轮"，必须计入，否则轮转类任务（每轮都 incomplete）重启后会白白顺延一个周期。
+_SCHEDULER_COMPLETED_STATUSES = frozenset({"succeeded", "partial"})
+# 已经错过执行窗口的任务不立刻触发，先等待这段启动宽限（秒），让服务先稳定下来。
+SCHEDULER_STARTUP_GRACE_SECONDS = 60.0
+# 多个逾期任务之间再按配置顺序依次错开这段时间（秒），避免重启瞬间惊群打 Pixiv 接口。
+SCHEDULER_STARTUP_STAGGER_SECONDS = 60.0
+
+# 调度器内部任务名 → task_logs.task_type 的别名。
+# webapp 提交定时任务时写入 task_logs 的是 _scheduler_job_spec() 归一化后的
+# task_types[0]，这里必须保持同一套映射，否则按任务名查不到任何历史记录。
+SCHEDULER_TASK_TYPE_ALIASES = {
+    "bookmarks": "bookmark",
+    "following_list": "following_users",
+}
+
+# 定时任务清单：调度主循环与重启补偿共用，避免两处走样。
+SCHEDULER_TASK_CONFIGS: tuple[dict[str, str], ...] = (
+    {"name": "bookmarks", "setting_check": "auto_sync_bookmarks_enabled", "interval_setting": "auto_sync_bookmarks_interval_hours", "cron_setting": "auto_sync_bookmarks_cron"},
+    {"name": "following_list", "setting_check": "auto_sync_following_list_enabled", "interval_setting": "auto_sync_following_list_interval_hours", "cron_setting": "auto_sync_following_list_cron"},
+    {"name": "following_novels", "setting_check": "auto_sync_following_novels_enabled", "interval_setting": "auto_sync_following_novels_interval_hours", "cron_setting": "auto_sync_following_novels_cron"},
+    {"name": "subscribed_series", "setting_check": "auto_sync_subscribed_series_enabled", "interval_setting": "auto_sync_subscribed_series_interval_hours", "cron_setting": "auto_sync_subscribed_series_cron"},
+    {"name": "user_status", "setting_check": "auto_sync_user_status_enabled", "interval_setting": "auto_sync_user_status_interval_hours", "cron_setting": "auto_sync_user_status_cron"},
+    {"name": "novel_status", "setting_check": "auto_sync_novel_status_enabled", "interval_setting": "auto_sync_novel_status_interval_hours", "cron_setting": "auto_sync_novel_status_cron"},
+    {"name": "series_status", "setting_check": "auto_sync_series_status_enabled", "interval_setting": "auto_sync_series_status_interval_hours", "cron_setting": "auto_sync_series_status_cron"},
+    {"name": "user_backup", "setting_check": "auto_sync_user_backup_enabled", "interval_setting": "auto_sync_user_backup_interval_hours", "cron_setting": "auto_sync_user_backup_cron"},
+    {"name": "pending_deletion_detection", "setting_check": "auto_sync_pending_detection_enabled", "interval_setting": "auto_sync_pending_detection_interval_hours", "cron_setting": "auto_sync_pending_detection_cron"},
+    {"name": "preference_analyze", "setting_check": "auto_sync_preference_analyze_enabled", "interval_setting": "auto_sync_preference_analyze_interval_hours", "cron_setting": "auto_sync_preference_analyze_cron"},
+)
+
+
+def scheduler_task_log_type(task_name: str) -> str:
+    """把调度器任务名映射成它在 task_logs 中记录的 task_type。"""
+    return SCHEDULER_TASK_TYPE_ALIASES.get(task_name, task_name)
+
+
+def _parse_db_timestamp(value: Any) -> float | None:
+    """把 task_logs 的时间文本解析成 epoch 秒；无法解析时返回 None。
+
+    task_logs 由 SQLite 的 datetime('now') 写入，格式是 UTC 的
+    'YYYY-MM-DD HH:MM:SS' 且不带时区标记，因此裸时间一律按 UTC 处理，
+    不能交给本地时区解析（否则会整体偏移一个时区差）。
+    """
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
 @dataclass(slots=True)
@@ -90,6 +154,7 @@ class AutoSyncScheduler:
     _current_task_job_id: str | None = None  # 当前正在执行的定时任务 job id
     _last_cleanup_time: float = 0.0  # 上次清理日志的时间
     _catalog_initialization_attempted: bool = False
+    _schedule_restored: bool = False  # 是否已从 task_logs 做过一次重启补偿
     _lifecycle_claim: Callable[[AutoSyncScheduler], bool] | None = field(default=None, repr=False)
     _lifecycle_release: Callable[[AutoSyncScheduler], None] | None = field(default=None, repr=False)
     
@@ -106,6 +171,7 @@ class AutoSyncScheduler:
                 if previous_thread is None or not previous_thread.is_alive():
                     self._running = True
                     self._catalog_initialization_attempted = False
+                    self._schedule_restored = False
                     stop_event = threading.Event()
                     thread = threading.Thread(
                         target=self._run_scheduler_worker,
@@ -200,18 +266,7 @@ class AutoSyncScheduler:
                         self._lifecycle_release(self)
 
     def _run_scheduler_loop(self, stop_event: threading.Event) -> None:
-        task_configs = [
-            {"name": "bookmarks", "setting_check": "auto_sync_bookmarks_enabled", "interval_setting": "auto_sync_bookmarks_interval_hours", "cron_setting": "auto_sync_bookmarks_cron"},
-            {"name": "following_list", "setting_check": "auto_sync_following_list_enabled", "interval_setting": "auto_sync_following_list_interval_hours", "cron_setting": "auto_sync_following_list_cron"},
-            {"name": "following_novels", "setting_check": "auto_sync_following_novels_enabled", "interval_setting": "auto_sync_following_novels_interval_hours", "cron_setting": "auto_sync_following_novels_cron"},
-            {"name": "subscribed_series", "setting_check": "auto_sync_subscribed_series_enabled", "interval_setting": "auto_sync_subscribed_series_interval_hours", "cron_setting": "auto_sync_subscribed_series_cron"},
-            {"name": "user_status", "setting_check": "auto_sync_user_status_enabled", "interval_setting": "auto_sync_user_status_interval_hours", "cron_setting": "auto_sync_user_status_cron"},
-            {"name": "novel_status", "setting_check": "auto_sync_novel_status_enabled", "interval_setting": "auto_sync_novel_status_interval_hours", "cron_setting": "auto_sync_novel_status_cron"},
-            {"name": "series_status", "setting_check": "auto_sync_series_status_enabled", "interval_setting": "auto_sync_series_status_interval_hours", "cron_setting": "auto_sync_series_status_cron"},
-            {"name": "user_backup", "setting_check": "auto_sync_user_backup_enabled", "interval_setting": "auto_sync_user_backup_interval_hours", "cron_setting": "auto_sync_user_backup_cron"},
-            {"name": "pending_deletion_detection", "setting_check": "auto_sync_pending_detection_enabled", "interval_setting": "auto_sync_pending_detection_interval_hours", "cron_setting": "auto_sync_pending_detection_cron"},
-            {"name": "preference_analyze", "setting_check": "auto_sync_preference_analyze_enabled", "interval_setting": "auto_sync_preference_analyze_interval_hours", "cron_setting": "auto_sync_preference_analyze_cron"},
-        ]
+        task_configs = SCHEDULER_TASK_CONFIGS
 
         while not stop_event.is_set():
             try:
@@ -253,6 +308,12 @@ class AutoSyncScheduler:
                 if not settings.sync.auto_sync_enabled:
                     stop_event.wait(60)
                     continue
+
+                # 重启补偿：调度真正开始工作时做一次，从 task_logs 恢复上次执行时间，
+                # 避免进程重启把每个任务都顺延一个完整周期。
+                if not self._schedule_restored:
+                    self._schedule_restored = True
+                    self._restore_schedule_from_task_logs(settings)
 
                 for task_config in task_configs:
                     if stop_event.is_set():
@@ -343,6 +404,111 @@ class AutoSyncScheduler:
                 except Exception as exc:
                     logger.warning("关闭救援目录初始化数据库失败: %s", exc)
     
+    def _last_success_finish_time(self, db: Any, task_log_type: str) -> float | None:
+        """查询某个 task_type 最近一次跑完的时间（epoch 秒），没有则返回 None。
+
+        task_logs 已经记录了每次任务的 task_type/status/started_at/finished_at，
+        直接复用，不额外建表。手动触发的同一任务也算数——它同样刷新了数据，
+        没必要紧接着再跑一次定时同步。
+
+        ``partial``（熔断中止/本轮没跑完）同样算「跑过了」：排程只关心"上次什么时候
+        跑的"，不关心跑得全不全。关注小说这类轮转任务每轮都是 partial，若只认
+        succeeded，重启后就永远恢复不出上次运行时间，白白顺延一个周期。
+        """
+        result = db.get_task_logs(
+            page=1,
+            page_size=SCHEDULER_HISTORY_SCAN_LIMIT,
+            task_type=task_log_type,
+            days=SCHEDULER_HISTORY_LOOKBACK_DAYS,
+        )
+        # get_task_logs 按 started_at 倒序，第一条已跑完的记录即最近一次
+        for item in result.get("items", []):
+            if item.get("status") not in _SCHEDULER_COMPLETED_STATUSES:
+                continue
+            timestamp = _parse_db_timestamp(item.get("finished_at"))
+            if timestamp is None:
+                # 极少数历史脏数据没有 finished_at，退化用 started_at
+                timestamp = _parse_db_timestamp(item.get("started_at"))
+            if timestamp is not None:
+                return timestamp
+        return None
+
+    def _restore_schedule_from_task_logs(self, settings: Settings) -> None:
+        """重启补偿：按 task_logs 里的上次成功完成时间重建各任务的下次运行时间。
+
+        进程重启后 _task_next_run 是空的，原逻辑会把每个任务排到「现在 + 完整间隔」，
+        于是每次部署都白白顺延一个周期（生产实测 12 小时的收藏同步变成 15-17 小时）。
+        这里改成「上次成功完成时间 + 间隔」，与运行期语义一致——运行期也是任务跑完
+        之后才写 _task_last_run / _task_next_run。
+
+        规则：
+        - 只处理「已启用 + 未配置 cron」的任务；cron 是绝对时间点，本来就不会被顺延。
+        - 没有历史记录（首次部署）时不写入，沿用原来的「现在 + 间隔」。
+        - 已经错过窗口的任务不立刻触发，而是按任务清单顺序依次错开
+          （启动宽限 + 序号 × 错峰间隔），避免重启瞬间所有逾期任务连着跑。
+        - 任何异常都只记警告并放弃恢复，退回原有行为，绝不影响调度启动。
+        """
+        pending: list[tuple[str, str, float]] = []
+        for task_config in SCHEDULER_TASK_CONFIGS:
+            task_name = task_config["name"]
+            if not getattr(settings.sync, task_config["setting_check"], False):
+                continue
+            if getattr(settings.sync, task_config["cron_setting"], ""):
+                continue
+            with self._lock:
+                if task_name in self._task_next_run:
+                    continue
+            interval_hours = getattr(settings.sync, task_config["interval_setting"], 6)
+            pending.append(
+                (task_name, scheduler_task_log_type(task_name), float(interval_hours) * 3600)
+            )
+
+        if not pending:
+            return
+
+        restored: list[tuple[str, float, float]] = []
+        db = None
+        try:
+            db = Database(settings.storage.db_path)
+            db.init_schema()
+            now = time.time()
+            overdue_index = 0
+            for task_name, task_log_type, interval_seconds in pending:
+                last_success = self._last_success_finish_time(db, task_log_type)
+                if last_success is None:
+                    continue
+                next_run = last_success + interval_seconds
+                if next_run <= now:
+                    next_run = (
+                        now
+                        + SCHEDULER_STARTUP_GRACE_SECONDS
+                        + overdue_index * SCHEDULER_STARTUP_STAGGER_SECONDS
+                    )
+                    overdue_index += 1
+                restored.append((task_name, last_success, next_run))
+        except Exception as exc:
+            logger.warning("从任务日志恢复定时任务进度失败：%s", exc)
+            return
+        finally:
+            if db is not None:
+                try:
+                    db.close()
+                except Exception as exc:
+                    logger.warning("关闭恢复定时任务进度的数据库失败：%s", exc)
+
+        with self._lock:
+            for task_name, last_success, next_run in restored:
+                if task_name in self._task_next_run:
+                    continue
+                self._task_last_run[task_name] = last_success
+                self._task_next_run[task_name] = next_run
+                logger.info(
+                    "Task %s restored from task logs, last success: %s, next run: %s",
+                    task_name,
+                    datetime.fromtimestamp(last_success).strftime('%Y-%m-%d %H:%M:%S'),
+                    datetime.fromtimestamp(next_run).strftime('%Y-%m-%d %H:%M:%S'),
+                )
+
     def _run_single_task(self, settings: Settings, task_name: str) -> bool:
         """通过共享 JobManager/JobRunner 同步执行单个定时任务。
 
