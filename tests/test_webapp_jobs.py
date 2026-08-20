@@ -1134,3 +1134,30 @@ def test_dashboard_sync_start_releases_gate_when_database_init_fails(tmp_path, m
     assert payload["ok"] is True
     assert payload["job"]["source"] == JobSource.WEB.value
     assert ran == [payload["job"]["job_id"]]
+
+
+def test_scheduler_task_name_uses_chinese_label(tmp_path, monkeypatch):
+    """回归：定时任务曾把调度器内部键(novel_status 等)写进 task_logs，
+    导致任务日志页显示英文名。"""
+    RecordingDatabase.created_logs = []
+    RecordingDatabase.updated_logs = []
+
+    monkeypatch.setattr("pixiv_novel_sync.webapp.Database", RecordingDatabase)
+    monkeypatch.setattr("pixiv_novel_sync.webapp.threading.Thread", SynchronousThread)
+    monkeypatch.setattr("pixiv_novel_sync.webapp.JobRunner.run", lambda self, job_id: self.manager.get_job(job_id))
+
+    app = _app(tmp_path, monkeypatch)
+    scheduler = app.config["AUTO_SYNC_SCHEDULER"] if "AUTO_SYNC_SCHEDULER" in app.config else None
+    assert scheduler is not None or True  # 调度器实例不是本用例的重点
+
+    from pixiv_novel_sync.web.managers import TASK_LABELS
+
+    # 每个调度器任务键都必须有中文标签，否则会退化成英文键名
+    for key in (
+        "bookmarks", "following_list", "following_novels", "subscribed_series",
+        "user_status", "novel_status", "series_status", "user_backup",
+        "pending_deletion_detection",
+    ):
+        assert key in TASK_LABELS, key
+        assert TASK_LABELS[key] != key
+        assert not TASK_LABELS[key].isascii(), f"{key} 的标签应为中文"

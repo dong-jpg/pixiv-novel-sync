@@ -29,7 +29,7 @@ from .storage_db import Database
 from .storage_files import FileStorage
 from .utils_env import secure_atomic_write
 from .utils_naming import safe_name
-from .web.managers import AutoSyncScheduler, SettingsManager
+from .web.managers import AutoSyncScheduler, SettingsManager, TASK_LABELS
 from .web.managers import SyncJobManager, SyncJobState  # noqa: F401 - 经 webapp 重导出供 tests 使用
 from .web.utils import (
     _atomic_write_yaml,
@@ -545,11 +545,14 @@ def create_app(
             }
         spec = _scheduler_job_spec(task_name, params)
         normalized_name = spec.task_types[0] if spec.task_types else task_name
+        # task_name 是调度器内部键（novel_status / bookmarks / ...），直接写进
+        # task_logs 会让任务日志页显示英文键名。这里翻成中文标签，与手动任务一致。
+        display_name = TASK_LABELS.get(task_name) or TASK_LABELS.get(normalized_name) or task_name
         return _submit_shared_job(
             spec,
             task_settings,
             normalized_name,
-            task_name,
+            display_name,
             is_auto_sync=True,
             run_async=False,
         )

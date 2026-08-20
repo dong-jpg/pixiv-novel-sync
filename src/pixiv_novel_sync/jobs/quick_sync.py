@@ -22,6 +22,20 @@ StopRequested = Callable[[], bool]
 ClaimFinalization = Callable[[], bool]
 
 
+def _save_self_profile(db: Database, auth_result: Any) -> None:
+    """把本人账号资料（含会员状态）落库，供侧边栏展示。
+
+    users 表只存被关注的作者，本人账号不在其中；只有 auth 响应里带 is_premium
+    这类本人专属字段，所以每次登录成功都顺带刷新一次。失败不影响同步任务。
+    """
+    try:
+        profile = auth_result.self_profile() if hasattr(auth_result, "self_profile") else None
+        if profile:
+            db.save_self_profile(profile)
+    except Exception:  # pragma: no cover - 落库失败不能影响同步主流程
+        logger.debug("保存本人账号资料失败", exc_info=True)
+
+
 def _raise_if_stopped(stop_requested: StopRequested | None) -> None:
     if stop_requested is not None and stop_requested():
         raise InterruptedError("Task stopped by user")
@@ -50,6 +64,7 @@ def run_bookmark_sync(
 
     db = Database(settings.storage.db_path)
     db.init_schema()
+    _save_self_profile(db, auth_result)
     storage = FileStorage(settings)
     storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
 
@@ -192,6 +207,7 @@ def run_check_bookmarks_task(
 
         db = Database(settings.storage.db_path)
         db.init_schema()
+        _save_self_profile(db, auth_result)
         storage = FileStorage(settings)
         storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
         service = BookmarkNovelSyncService(api=api, db=db, storage=storage, settings=settings, sync_check_scope=job_id)

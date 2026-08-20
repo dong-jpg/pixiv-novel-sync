@@ -6,41 +6,82 @@
 <div class="library-page flex flex-col min-h-screen">
   <div class="library-page-header sr-only"><h1>控制台</h1></div>
 
-  <!-- ===== Sticky Top Header Bar ===== -->
+  <!-- ===== Sticky Top Header Bar：标题 + 四项核心统计 ===== -->
+  <!-- 统计从下方卡片区上移到横条；原来的手动同步控件已移除 -->
   <header class="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-gray-100">
     <div class="px-6 lg:px-8 py-4">
-      <div class="flex items-center justify-between">
-        <div>
-          <h1 class="text-xl font-bold text-gray-900 leading-tight">控制台</h1>
+      <div class="flex items-start justify-between gap-4 flex-wrap">
+        <div class="flex-shrink-0">
+          <div class="flex items-center gap-2.5">
+            <h1 class="text-xl font-bold text-gray-900 leading-tight">控制台</h1>
+            <!-- 任务运行中的轻量提示（详细日志请到「任务日志」查看） -->
+            <a v-if="isTaskRunning" href="/dashboard/logs"
+              class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-brand-50 border border-brand-200
+                     text-[11px] font-bold text-brand-600 hover:bg-brand-100 transition-colors">
+              <span class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse"></span>
+              任务执行中
+              <span v-if="progressPercent" class="font-mono opacity-80">{{ progressPercent }}%</span>
+            </a>
+          </div>
           <p class="text-xs text-gray-400 mt-0.5">管理同步任务，查看数据归档统计</p>
         </div>
-        <div class="flex items-center gap-2 flex-shrink-0">
-          <div class="hidden sm:flex items-center gap-1.5 mr-1">
-            <label class="text-xs text-gray-400 whitespace-nowrap">系列限制</label>
-            <input type="number" v-model.number="seriesSyncLimit" min="0"
-              class="w-16 px-2 py-1.5 border border-gray-200 rounded-lg text-xs text-center
-                     focus:ring-2 focus:ring-brand-400 focus:border-brand-400 outline-none bg-gray-50">
-          </div>
-          <button @click="startManualSync('check-bookmarks')" :disabled="isTaskRunning"
-            class="hidden sm:inline-flex items-center gap-1.5 px-3.5 py-2 border border-gray-200 bg-white text-gray-700
-                   rounded-lg text-sm font-medium hover:bg-gray-50 hover:border-gray-300
-                   disabled:opacity-40 disabled:pointer-events-none transition-all">
-            预检查
-          </button>
-          <button @click="startManualSync('subscribed-series')" :disabled="isTaskRunning"
-            class="hidden sm:inline-flex items-center gap-1.5 px-3.5 py-2 border border-gray-200 bg-white text-gray-700
-                   rounded-lg text-sm font-medium hover:bg-gray-50 hover:border-gray-300
-                   disabled:opacity-40 disabled:pointer-events-none transition-all">
-            同步追更
-          </button>
-          <button @click="startManualSync('start')" :disabled="isTaskRunning"
-            class="inline-flex items-center gap-1.5 px-5 py-2 bg-brand-500 text-white
-                   rounded-lg text-sm font-semibold hover:bg-brand-600
-                   focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1
-                   disabled:opacity-40 disabled:pointer-events-none transition-all shadow-sm shadow-brand-200">
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-            开始同步
-          </button>
+
+        <div class="grid grid-cols-2 sm:flex sm:items-stretch gap-2 sm:gap-2.5 w-full sm:w-auto">
+          <!-- 小说总数 -->
+          <a href="/dashboard/novels"
+            class="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-gray-100 bg-white
+                   hover:border-brand-200 hover:shadow-sm transition-all min-w-0">
+            <div class="w-8 h-8 rounded-lg bg-brand-50 flex items-center justify-center flex-shrink-0">
+              <svg class="w-4 h-4 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+            </div>
+            <div class="min-w-0">
+              <div class="text-[10px] font-medium text-gray-400 whitespace-nowrap">小说总数</div>
+              <div v-if="loadingStats" class="animate-pulse h-5 w-12 bg-gray-100 rounded mt-0.5"></div>
+              <div v-else class="text-lg font-black text-gray-900 leading-tight">{{ stats.novels_count.toLocaleString() }}</div>
+            </div>
+          </a>
+
+          <!-- 关注作者 -->
+          <a href="/dashboard/follows"
+            class="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-gray-100 bg-white
+                   hover:border-blue-200 hover:shadow-sm transition-all min-w-0">
+            <div class="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
+              <svg class="w-4 h-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            </div>
+            <div class="min-w-0">
+              <div class="text-[10px] font-medium text-gray-400 whitespace-nowrap">关注作者</div>
+              <div v-if="loadingStats" class="animate-pulse h-5 w-12 bg-gray-100 rounded mt-0.5"></div>
+              <div v-else class="text-lg font-black text-gray-900 leading-tight">{{ stats.users_count.toLocaleString() }}</div>
+            </div>
+          </a>
+
+          <!-- 追更系列 -->
+          <a href="/dashboard/novels?category=following"
+            class="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-gray-100 bg-white
+                   hover:border-violet-200 hover:shadow-sm transition-all min-w-0">
+            <div class="w-8 h-8 rounded-lg bg-violet-50 flex items-center justify-center flex-shrink-0">
+              <svg class="w-4 h-4 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+            </div>
+            <div class="min-w-0">
+              <div class="text-[10px] font-medium text-gray-400 whitespace-nowrap">追更系列</div>
+              <div v-if="loadingStats" class="animate-pulse h-5 w-12 bg-gray-100 rounded mt-0.5"></div>
+              <div v-else class="text-lg font-black text-gray-900 leading-tight">{{ stats.series_count.toLocaleString() }}</div>
+            </div>
+          </a>
+
+          <!-- 待确认 -->
+          <a href="/dashboard/pending-deletions"
+            class="flex items-center gap-2.5 px-3 py-2 rounded-xl border bg-white hover:shadow-sm transition-all min-w-0"
+            :class="stats.pending_count > 0 ? 'border-amber-200 hover:border-amber-300' : 'border-gray-100 hover:border-amber-200'">
+            <div class="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center flex-shrink-0">
+              <svg class="w-4 h-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+            </div>
+            <div class="min-w-0">
+              <div class="text-[10px] font-medium text-gray-400 whitespace-nowrap">待确认</div>
+              <div v-if="loadingStats" class="animate-pulse h-5 w-12 bg-gray-100 rounded mt-0.5"></div>
+              <div v-else class="text-lg font-black leading-tight" :class="stats.pending_count > 0 ? 'text-amber-600' : 'text-gray-900'">{{ stats.pending_count.toLocaleString() }}</div>
+            </div>
+          </a>
         </div>
       </div>
     </div>
@@ -49,115 +90,60 @@
   <!-- ===== Page Body ===== -->
   <div class="flex-1 px-6 lg:px-8 py-6 space-y-6">
 
-    <!-- ===== Stat Cards Grid ===== -->
-    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-      <!-- 小说总数 -->
-      <div class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-brand-200 transition-all p-5">
-        <div class="flex items-center justify-between mb-3">
-          <span class="text-sm font-bold text-gray-800">小说总数</span>
-          <div class="w-9 h-9 rounded-lg bg-brand-50 flex items-center justify-center">
-            <svg class="w-5 h-5 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
-          </div>
-        </div>
-        <div v-if="loadingStats" class="animate-pulse h-8 bg-gray-100 rounded-lg w-1/2"></div>
-        <div v-else class="text-3xl font-black text-gray-900">{{ stats.novels_count.toLocaleString() }}</div>
-      </div>
+    <!-- 统计已上移至顶部横条；运行中任务的实时日志框已移除，
+         详细执行日志请到「任务日志」页点开详情查看 -->
 
-      <!-- 关注作者 -->
-      <div class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-blue-200 transition-all p-5">
-        <div class="flex items-center justify-between mb-3">
-          <span class="text-sm font-bold text-gray-800">关注作者</span>
-          <div class="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center">
-            <svg class="w-5 h-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-          </div>
+    <!-- ===== Recent Recommendations（置于页面上方） ===== -->
+    <section class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-brand-200 transition-all p-5">
+      <div class="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <h2 class="text-sm font-bold text-gray-800">最近推书结果</h2>
+          <p class="text-xs text-pixiv-gray mt-1">来自「偏好与推荐」的最新搜书 / 推书结果，点击卡片可进入作品或系列详情。</p>
         </div>
-        <div v-if="loadingStats" class="animate-pulse h-8 bg-gray-100 rounded-lg w-1/2"></div>
-        <div v-else class="text-3xl font-black text-gray-900">{{ stats.users_count.toLocaleString() }}</div>
-      </div>
-
-      <!-- 追更系列 -->
-      <div class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-violet-200 transition-all p-5">
-        <div class="flex items-center justify-between mb-3">
-          <span class="text-sm font-bold text-gray-800">追更系列</span>
-          <div class="w-9 h-9 rounded-lg bg-violet-50 flex items-center justify-center">
-            <svg class="w-5 h-5 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
-          </div>
-        </div>
-        <div v-if="loadingStats" class="animate-pulse h-8 bg-gray-100 rounded-lg w-1/2"></div>
-        <div v-else class="text-3xl font-black text-gray-900">{{ stats.series_count.toLocaleString() }}</div>
-      </div>
-
-      <!-- 待确认 -->
-      <div class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-amber-200 transition-all p-5">
-        <div class="flex items-center justify-between mb-3">
-          <span class="text-sm font-bold text-gray-800">待确认</span>
-          <div class="w-9 h-9 rounded-lg bg-amber-50 flex items-center justify-center">
-            <svg class="w-5 h-5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-          </div>
-        </div>
-        <div v-if="loadingStats" class="animate-pulse h-8 bg-gray-100 rounded-lg w-1/2"></div>
-        <div v-else>
-          <span class="text-3xl font-black" :class="stats.pending_count > 0 ? 'text-amber-600' : 'text-gray-900'">{{ stats.pending_count.toLocaleString() }}</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- ===== Running Task Section (shown when a job is running) ===== -->
-    <div v-if="latestJob && latestJob.status === 'running'" class="bg-white rounded-xl border border-brand-200 shadow-sm p-5 space-y-4">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <div class="w-2.5 h-2.5 rounded-full bg-brand-500 animate-pulse"></div>
-          <span class="text-sm font-bold text-gray-800">任务执行中</span>
-          <span class="font-mono text-[11px] text-gray-400 bg-gray-50 px-2 py-0.5 rounded-md">{{ latestJob.job_id?.substring(0,8) }}</span>
-        </div>
-        <app-badge type="blue">
-          <span class="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 mr-1.5 animate-pulse"></span>
-          {{ latestJob.message || '运行中' }}
-          <span v-if="latestJob.elapsed" class="ml-1 opacity-80">({{ latestJob.elapsed }}s)</span>
-        </app-badge>
-      </div>
-
-      <!-- Sub-task list -->
-      <div v-if="latestJob.task_list?.length" class="flex flex-wrap gap-2">
-        <div v-for="(task, index) in latestJob.task_list" :key="index"
-          class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg border transition-colors"
-          :class="taskPillClass(index, latestJob.current_task_index, latestJob.status)">
-          <span v-html="taskIcon(index, latestJob.current_task_index, latestJob.status)"></span>
-          <span>{{ task }}</span>
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <button @click="loadRecommendationItems" class="text-xs px-3 py-1.5 bg-gray-100 rounded-lg hover:bg-gray-200">刷新</button>
+          <a href="/dashboard/preferences" class="text-xs px-3 py-1.5 bg-brand-50 text-brand-600 rounded-lg hover:bg-brand-100">查看全部</a>
         </div>
       </div>
 
-      <!-- Progress bar -->
-      <div v-if="latestJob.progress">
-        <div class="flex justify-between items-center mb-1.5">
-          <span class="text-xs font-semibold text-gray-600">{{ latestJob.progress.phase || '同步中' }}</span>
-          <span class="text-[11px] text-gray-400 font-mono">{{ progressPercent }}% ({{ latestJob.progress.current || 0 }}/{{ latestJob.progress.total || 0 }})</span>
-        </div>
-        <div class="h-2 bg-brand-100 rounded-full overflow-hidden">
-          <div class="h-full bg-brand-500 rounded-full transition-all duration-500 ease-out" :style="{ width: progressPercent + '%' }"></div>
-        </div>
-        <div class="text-[11px] text-gray-400 mt-1.5 truncate">
-          {{ latestJob.progress.current_novel ? `当前: ${latestJob.progress.current_novel}` : '准备中...' }}
+      <div v-if="loadingRecommendations" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        <div v-for="n in 3" :key="n" class="border border-gray-100 rounded-xl p-4 animate-pulse">
+          <div class="h-4 bg-gray-100 rounded w-2/3 mb-3"></div>
+          <div class="h-3 bg-gray-50 rounded w-1/2 mb-2"></div>
+          <div class="h-3 bg-gray-50 rounded w-full mb-1.5"></div>
+          <div class="h-3 bg-gray-50 rounded w-4/5"></div>
         </div>
       </div>
 
-      <!-- Mini log terminal -->
-      <div v-if="latestJob.logs?.length">
-        <div class="bg-gray-900 rounded-lg overflow-hidden">
-          <div class="flex items-center justify-between px-3 py-1.5 bg-gray-800/50">
-            <span class="text-[10px] font-mono text-gray-400">LOGS</span>
-            <span class="text-[10px] font-mono text-gray-500">{{ latestJob.logs.length }} entries</span>
-          </div>
-          <div class="h-48 overflow-y-auto p-3 font-mono text-[11px] leading-relaxed" ref="logContainer">
-            <div v-for="(log, i) in latestJob.logs" :key="i" class="mb-0.5 break-words" :class="logLevelClass(log.level)">
-              <span class="text-gray-600 mr-1.5">[{{ log.time.split(' ')[1] || log.time }}]</span>
-              <span v-html="logPrefix(log.level)" class="mr-1"></span>
-              {{ log.message }}
+      <div v-else-if="recommendationError" class="text-center py-8 border border-red-100 bg-red-50 rounded-xl">
+        <p class="text-sm text-red-600">{{ recommendationError }}</p>
+        <button @click="retryRecommendationItems" class="mt-3 px-3 py-1.5 bg-white border border-red-200 text-red-600 rounded-lg text-xs hover:bg-red-50">重试</button>
+      </div>
+
+      <div v-else-if="recommendationItems.length" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        <a v-for="item in recommendationItems" :key="item.id" :href="recommendationItemUrl(item)"
+           class="group block border border-gray-100 rounded-xl p-4 hover:bg-gray-50 hover:border-brand-200 transition-all">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-sm font-bold text-gray-900 group-hover:text-brand-600 line-clamp-1">{{ item.title || '未命名作品' }}</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded" :class="item.item_type === 'series' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'">{{ item.item_type === 'series' ? '系列' : '单篇' }}</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{{ item.score || 0 }} 分</span>
+              </div>
+              <div class="text-xs text-pixiv-gray mt-1 truncate">{{ item.author_name || '未知作者' }} · {{ recommendationLengthText(item) }}</div>
             </div>
           </div>
-        </div>
+          <p class="text-xs text-gray-700 mt-2 line-clamp-2 min-h-[2.5rem]">{{ item.reason || item.caption || '暂无推荐理由' }}</p>
+          <div class="flex flex-wrap gap-1.5 mt-3">
+            <span v-for="tag in item.tags?.slice(0, 6) || []" :key="tag" class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{{ tag }}</span>
+          </div>
+        </a>
       </div>
-    </div>
+
+      <div v-else class="text-sm text-pixiv-gray text-center py-8 border border-dashed border-gray-200 rounded-xl">
+        还没有推书结果。去「偏好与推荐」生成搜索计划并执行 Pixiv 推书后，会自动出现在这里。
+      </div>
+    </section>
 
     <!-- ===== Two-Column Layout ===== -->
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-stretch">
@@ -286,58 +272,6 @@
 
     </div>
 
-    <!-- ===== Recent Recommendations ===== -->
-    <section class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-brand-200 transition-all p-5">
-      <div class="flex items-start justify-between gap-3 mb-4">
-        <div>
-          <h2 class="text-sm font-bold text-gray-800">最近推书结果</h2>
-          <p class="text-xs text-pixiv-gray mt-1">来自「偏好与推荐」的最新搜书 / 推书结果，点击卡片可进入作品或系列详情。</p>
-        </div>
-        <div class="flex items-center gap-2 flex-shrink-0">
-          <button @click="loadRecommendationItems" class="text-xs px-3 py-1.5 bg-gray-100 rounded-lg hover:bg-gray-200">刷新</button>
-          <a href="/dashboard/preferences" class="text-xs px-3 py-1.5 bg-brand-50 text-brand-600 rounded-lg hover:bg-brand-100">查看全部</a>
-        </div>
-      </div>
-
-      <div v-if="loadingRecommendations" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-        <div v-for="n in 3" :key="n" class="border border-gray-100 rounded-xl p-4 animate-pulse">
-          <div class="h-4 bg-gray-100 rounded w-2/3 mb-3"></div>
-          <div class="h-3 bg-gray-50 rounded w-1/2 mb-2"></div>
-          <div class="h-3 bg-gray-50 rounded w-full mb-1.5"></div>
-          <div class="h-3 bg-gray-50 rounded w-4/5"></div>
-        </div>
-      </div>
-
-      <div v-else-if="recommendationError" class="text-center py-8 border border-red-100 bg-red-50 rounded-xl">
-        <p class="text-sm text-red-600">{{ recommendationError }}</p>
-        <button @click="retryRecommendationItems" class="mt-3 px-3 py-1.5 bg-white border border-red-200 text-red-600 rounded-lg text-xs hover:bg-red-50">重试</button>
-      </div>
-
-      <div v-else-if="recommendationItems.length" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-        <a v-for="item in recommendationItems" :key="item.id" :href="recommendationItemUrl(item)"
-           class="group block border border-gray-100 rounded-xl p-4 hover:bg-gray-50 hover:border-brand-200 transition-all">
-          <div class="flex items-start justify-between gap-3">
-            <div class="min-w-0">
-              <div class="flex items-center gap-2 flex-wrap">
-                <span class="text-sm font-bold text-gray-900 group-hover:text-brand-600 line-clamp-1">{{ item.title || '未命名作品' }}</span>
-                <span class="text-[10px] px-1.5 py-0.5 rounded" :class="item.item_type === 'series' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'">{{ item.item_type === 'series' ? '系列' : '单篇' }}</span>
-                <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{{ item.score || 0 }} 分</span>
-              </div>
-              <div class="text-xs text-pixiv-gray mt-1 truncate">{{ item.author_name || '未知作者' }} · {{ recommendationLengthText(item) }}</div>
-            </div>
-          </div>
-          <p class="text-xs text-gray-700 mt-2 line-clamp-2 min-h-[2.5rem]">{{ item.reason || item.caption || '暂无推荐理由' }}</p>
-          <div class="flex flex-wrap gap-1.5 mt-3">
-            <span v-for="tag in item.tags?.slice(0, 6) || []" :key="tag" class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{{ tag }}</span>
-          </div>
-        </a>
-      </div>
-
-      <div v-else class="text-sm text-pixiv-gray text-center py-8 border border-dashed border-gray-200 rounded-xl">
-        还没有推书结果。去「偏好与推荐」生成搜索计划并执行 Pixiv 推书后，会自动出现在这里。
-      </div>
-    </section>
-
   </div>
 </div>
 {% endblock %}
@@ -346,7 +280,21 @@
 <script>
   initVueApp({
     setup() {
-      const { ref, computed, onMounted, onUnmounted, nextTick } = Vue;
+      const { ref, computed, onMounted, onUnmounted } = Vue;
+
+      // 任务类型 → 中文名。与后端 web/managers.py TASK_LABELS、
+      // dashboard_logs.html getTaskTypeName 对齐；「最近活动」与「定时任务」共用。
+      const TASK_TYPE_LABELS = {
+        bookmark: '同步收藏小说', bookmarks: '同步收藏小说',
+        following_users: '同步关注列表', following_list: '同步关注列表',
+        following_novels: '同步关注小说', subscribed_series: '同步追更系列',
+        user_backup: '全量备份用户', user_status: '检查用户状态',
+        novel_status: '检查小说状态', series_status: '检查系列状态',
+        pending_deletion_detection: '检测取消收藏',
+        sync_check: '预检查', manual: '手工同步',
+        preference_analyze: '增量分析本地偏好', recommendation_run: '生成推荐',
+      };
+
 
       // ── State ──
       const stats = ref({ novels_count: 0, users_count: 0, series_count: 0, pending_count: 0 });
@@ -354,8 +302,6 @@
 
       const latestJob = ref(null);
       const loadingJob = ref(true);
-
-      const seriesSyncLimit = ref(0);
 
       const autoSyncStatus = ref({ running: false });
       const loadingAutoSync = ref(true);
@@ -369,8 +315,6 @@
       const recommendationItems = ref([]);
       const loadingRecommendations = ref(true);
       const recommendationError = ref('');
-
-      const logContainer = ref(null);
 
       let pollInterval = null;
       let autoSyncInterval = null;
@@ -388,13 +332,7 @@
       const autoTasksList = computed(() => {
         if (!autoSyncStatus.value || !autoSyncStatus.value.task_intervals) return [];
         const data = autoSyncStatus.value;
-        const labels = {
-          bookmarks: '同步收藏小说', following_list: '同步关注列表',
-          following_novels: '同步关注小说', subscribed_series: '同步追更系列',
-          user_backup: '全量备份用户', user_status: '检查用户状态',
-          novel_status: '检查小说状态', series_status: '检查系列状态',
-          pending_deletion_detection: '检测取消收藏',
-        };
+        const labels = TASK_TYPE_LABELS;
 
         const keys = Object.keys(data.task_intervals);
         const ordered = ['bookmarks','following_list','following_novels','subscribed_series','user_backup','user_status','novel_status','series_status','pending_deletion_detection'];
@@ -442,10 +380,6 @@
               pending_count: s.pending_count || 0,
             };
 
-            if (data.series_sync_limit !== undefined && seriesSyncLimit.value === 0) {
-              seriesSyncLimit.value = data.series_sync_limit;
-            }
-
             if (data.latest_job) {
               updateJob(data.latest_job);
             }
@@ -466,15 +400,9 @@
         } catch(e) { console.error(e); }
       };
 
+      // 首页只保留运行状态与进度百分比，日志不再在此渲染
       const updateJob = (jobData) => {
         latestJob.value = jobData;
-        if (jobData.logs?.length) {
-          nextTick(() => {
-            if (logContainer.value) {
-              logContainer.value.scrollTop = logContainer.value.scrollHeight;
-            }
-          });
-        }
       };
 
       const fetchAutoSync = async () => {
@@ -528,7 +456,9 @@
               const status = item.status || 'info';
               const color = statusColorMap[status] || 'gray';
               return {
-                title: item.task_name || item.message || item.job_type || '任务',
+                // 历史记录里定时任务的 task_name 曾是英文内部键（novel_status 等），
+                // 这里优先按 task_type 取中文标签，兜底才用 task_name
+                title: TASK_TYPE_LABELS[item.task_type] || item.task_name || item.message || item.job_type || '任务',
                 detail: item.message || item.detail || null,
                 timeText: formatTime(item.created_at || item.start_time || item.timestamp),
                 dotColor: color,
@@ -573,17 +503,6 @@
       };
 
       // ── Actions ──
-      const startManualSync = async (type) => {
-        if (isTaskRunning.value) return;
-        try {
-          const url = type === 'check-bookmarks' ? '/api/dashboard/check-bookmarks' :
-                      type === 'subscribed-series' ? '/api/dashboard/sync/subscribed-series' : '/api/dashboard/sync/start';
-          const body = type === 'subscribed-series' ? JSON.stringify({ limit: seriesSyncLimit.value }) : '{}';
-          await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
-          fetchStatus();
-        } catch(e) { console.error(e); }
-      };
-
       const toggleAutoSync = async () => {
         togglingAutoSync.value = true;
         try {
@@ -601,48 +520,6 @@
           await fetch('/api/dashboard/auto-sync/stop-task', { method: 'POST' });
           setTimeout(fetchAutoSync, 1000);
         } catch(e) {}
-      };
-
-      // ── UI Helpers ──
-      const taskPillClass = (idx, curr, status) => {
-        if (status === 'running') {
-          if (idx < curr) return 'bg-green-50 border-green-200 text-green-700';
-          if (idx === curr) return 'bg-brand-50 border-brand-300 text-brand-700 font-semibold';
-          return 'bg-gray-50 border-gray-200 text-gray-400';
-        }
-        if (status === 'succeeded') return 'bg-green-50 border-green-200 text-green-700';
-        if (status === 'failed' && idx === curr) return 'bg-red-50 border-red-200 text-red-700';
-        return 'bg-gray-50 border-gray-200 text-gray-400';
-      };
-
-      const taskIcon = (idx, curr, status) => {
-        const check = `<svg class="w-3 h-3 text-green-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>`;
-        const err = `<svg class="w-3 h-3 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path></svg>`;
-        const run = `<div class="w-2.5 h-2.5 rounded-full bg-brand-500 flex-shrink-0 animate-pulse"></div>`;
-        const wait = `<div class="w-2.5 h-2.5 rounded-full border-2 border-gray-300 flex-shrink-0"></div>`;
-
-        if (status === 'running') {
-          if (idx < curr) return check;
-          if (idx === curr) return run;
-          return wait;
-        }
-        if (status === 'succeeded') return check;
-        if (status === 'failed' && idx === curr) return err;
-        return wait;
-      };
-
-      const logLevelClass = (lvl) => {
-        if (lvl === 'error') return 'text-red-400';
-        if (lvl === 'success') return 'text-green-400';
-        if (lvl === 'warning') return 'text-yellow-400';
-        return 'text-gray-300';
-      };
-
-      const logPrefix = (lvl) => {
-        if (lvl === 'error') return `<span class="text-red-500 font-bold">ERR</span>`;
-        if (lvl === 'success') return `<span class="text-green-500 font-bold">OK</span>`;
-        if (lvl === 'warning') return `<span class="text-yellow-500 font-bold">WRN</span>`;
-        return `<span class="text-brand-400">---</span>`;
       };
 
       // ── Lifecycle ──
@@ -663,12 +540,9 @@
       return {
         stats, loadingStats,
         latestJob, loadingJob, isTaskRunning, progressPercent,
-        seriesSyncLimit, startManualSync,
         autoSyncStatus, loadingAutoSync, togglingAutoSync, autoTasksList, toggleAutoSync, stopAutoTask,
         activityList, activityPage, activityTotalPages, loadingActivity, loadActivity,
         recommendationItems, loadingRecommendations, recommendationError, loadRecommendationItems, retryRecommendationItems, recommendationItemUrl, recommendationLengthText,
-        taskPillClass, taskIcon, logLevelClass, logPrefix,
-        logContainer,
       };
     }
   });

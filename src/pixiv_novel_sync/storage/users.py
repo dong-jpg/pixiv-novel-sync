@@ -45,7 +45,41 @@ class UsersMixin:
                 )
             self._commit_if_needed()
 
+    # 本人账号资料的水位线存储键。users 表只存「被关注的作者」，本人账号不在其中，
+    # 所以侧边栏不能靠 users 表取自己的信息（会退化成"最近同步的作者"）。
+    SELF_PROFILE_WATERMARK = "self_profile"
+
+    def save_self_profile(self, profile: dict[str, Any]) -> None:
+        """保存本人账号资料（登录时从 Pixiv auth 响应写入）。"""
+        self.update_watermark(self.SELF_PROFILE_WATERMARK, profile)
+
+    def get_self_profile(self) -> dict[str, Any] | None:
+        """读取已保存的本人账号资料，未保存过返回 None。"""
+        data = self.get_watermark(self.SELF_PROFILE_WATERMARK)
+        return data if isinstance(data, dict) else None
+
     def get_user_summary(self, user_id: int | None) -> dict[str, Any] | None:
+        """返回侧边栏展示用的本人账号信息。
+
+        优先级：已保存的本人资料 → users 表中的同 ID 记录 → None。
+        **不再回退到"最近同步的用户"**：那会把某个被关注的作者显示成"我的账号"。
+        """
+        self_profile = self.get_self_profile()
+        if self_profile and (not user_id or int(self_profile.get("user_id") or 0) == int(user_id)):
+            return {
+                "user_id": self_profile.get("user_id") or user_id,
+                "name": self_profile.get("name"),
+                "account": self_profile.get("account"),
+                "avatar_url": self_profile.get("avatar_url"),
+                "is_premium": self_profile.get("is_premium"),
+                "x_restrict": self_profile.get("x_restrict"),
+                "mail_authorized": self_profile.get("mail_authorized"),
+                "total_follow_users": self_profile.get("total_follow_users"),
+                "updated_at": self_profile.get("updated_at"),
+                "is_self": True,
+                "is_fallback": False,
+            }
+
         if user_id:
             row = self.conn.execute(
                 "SELECT user_id, name, account, raw_json, updated_at FROM users WHERE user_id = ?",
@@ -59,29 +93,22 @@ class UsersMixin:
                     "account": row["account"],
                     "avatar_url": self._extract_user_avatar(raw),
                     "updated_at": row["updated_at"],
+                    "is_self": True,
                     "is_fallback": False,
                 }
 
-        fallback = self.conn.execute(
-            """
-            SELECT user_id, name, account, raw_json, updated_at
-            FROM users
-            ORDER BY updated_at DESC, user_id DESC
-            LIMIT 1
-            """
-        ).fetchone()
-        if fallback is None:
-            return None
-        raw = self._load_raw_json(fallback["raw_json"])
-        return {
-            "user_id": user_id or fallback["user_id"],
-            "resolved_user_id": fallback["user_id"],
-            "name": fallback["name"],
-            "account": fallback["account"],
-            "avatar_url": self._extract_user_avatar(raw),
-            "updated_at": fallback["updated_at"],
-            "is_fallback": True,
-        }
+        # 拿不到本人资料时返回仅含 ID 的占位，让前端提示"同步后显示"，
+        # 而不是拿一个被关注的作者冒充本人。
+        if user_id:
+            return {
+                "user_id": user_id,
+                "name": None,
+                "account": None,
+                "avatar_url": None,
+                "is_self": True,
+                "is_fallback": True,
+            }
+        return None
 
     def list_followed_users(self, page: int = 1, page_size: int = 10) -> dict[str, Any]:
         page = max(page, 1)

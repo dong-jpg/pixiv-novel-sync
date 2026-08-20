@@ -418,3 +418,60 @@ def test_ai_templates_expose_preference_profile_and_strength_controls() -> None:
         assert "/api/dashboard/preferences/profiles" in html, name
         for strength in ("off", "light", "standard", "strong"):
             assert strength in html, (name, strength)
+
+
+def test_dashboard_header_holds_stats_without_manual_sync_controls():
+    """统计上移到顶部横条；系列限制输入与三个同步按钮已移除。"""
+    html = read(TEMPLATES / "dashboard.html")
+
+    # 四项统计在 header 内
+    header = html.split("</header>")[0]
+    for label in ("小说总数", "关注作者", "追更系列", "待确认"):
+        assert label in header, label
+
+    # 已移除的控件
+    assert "seriesSyncLimit" not in html
+    assert "startManualSync" not in html
+    assert "系列限制" not in html
+    assert "开始同步" not in html
+    assert "预检查</button>" not in html
+
+
+def test_dashboard_drops_inline_running_log_terminal():
+    """运行中任务的实时日志框已移除，改为跳转任务日志页。"""
+    html = read(TEMPLATES / "dashboard.html")
+
+    assert "logContainer" not in html
+    assert "logLevelClass" not in html
+    assert "logPrefix" not in html
+    assert "latestJob.logs" not in html
+    # 保留轻量运行提示并指向任务日志页
+    assert 'href="/dashboard/logs"' in html
+    assert "任务执行中" in html
+
+
+def test_dashboard_puts_recommendations_above_activity():
+    """推书结果展示框位于「最近活动」之前。"""
+    html = read(TEMPLATES / "dashboard.html")
+
+    assert html.count("最近推书结果") == 1
+    assert html.index("最近推书结果") < html.index("最近活动")
+
+
+def test_dashboard_activity_titles_use_chinese_task_labels():
+    """最近活动的任务名按 task_type 映射成中文，不再显示英文内部键。"""
+    html = read(TEMPLATES / "dashboard.html")
+
+    assert "TASK_TYPE_LABELS" in html
+    assert "TASK_TYPE_LABELS[item.task_type]" in html
+    assert "novel_status: '检查小说状态'" in html
+
+
+def test_sidebar_footer_shows_own_account_with_premium_badge():
+    """侧边栏展示本人账号与会员状态，而不是最近同步的作者。"""
+    html = read(TEMPLATES / "vue_components.html")
+
+    assert "user.is_premium" in html
+    assert "PREMIUM" in html
+    assert "普通账号" in html
+    assert "未绑定用户" not in html

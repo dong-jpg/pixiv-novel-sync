@@ -15,6 +15,36 @@ class AuthResult:
     user_id: int | None
     raw: dict[str, Any]
 
+    def self_profile(self) -> dict[str, Any] | None:
+        """从 auth 响应里提取本人账号资料（含会员状态）。
+
+        Pixiv 的 auth 响应里带 is_premium / x_restrict 等本人专属字段，而 users 表
+        只存被关注的作者，所以这里单独抽出来供侧边栏展示。
+        """
+        user = self.raw.get("user") if isinstance(self.raw, dict) else None
+        if not isinstance(user, dict):
+            return None
+        user_id = _coerce_user_id(user.get("id")) or self.user_id
+        if user_id is None:
+            return None
+        avatars = user.get("profile_image_urls")
+        avatar_url = None
+        if isinstance(avatars, dict):
+            for key in ("px_170x170", "px_50x50", "px_16x16"):
+                value = avatars.get(key)
+                if isinstance(value, str) and value:
+                    avatar_url = value
+                    break
+        return {
+            "user_id": user_id,
+            "name": user.get("name"),
+            "account": user.get("account"),
+            "avatar_url": avatar_url,
+            "is_premium": bool(user.get("is_premium")),
+            "x_restrict": user.get("x_restrict"),
+            "mail_authorized": bool(user.get("is_mail_authorized")),
+        }
+
 
 class PixivAuthError(RuntimeError):
     """Raised when Pixiv authentication fails."""

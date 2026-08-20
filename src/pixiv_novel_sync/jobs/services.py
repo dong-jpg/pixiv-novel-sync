@@ -529,7 +529,28 @@ def _login(settings: Any) -> Any:
         raise RuntimeError("Unable to determine user ID")
     if getattr(settings.pixiv, "user_id", None) is None:
         settings.pixiv.user_id = auth_result.user_id
+    _persist_self_profile(settings, auth_result)
     return api
+
+
+def _persist_self_profile(settings: Any, auth_result: Any) -> None:
+    """登录成功后刷新本人账号资料（含会员状态），供侧边栏展示。
+
+    users 表只存被关注的作者，本人账号不在其中，因此侧边栏必须依赖这份数据。
+    落库失败不影响同步任务本身。
+    """
+    try:
+        profile = auth_result.self_profile() if hasattr(auth_result, "self_profile") else None
+        if not profile:
+            return
+        db = Database(settings.storage.db_path)
+        try:
+            db.init_schema()
+            db.save_self_profile(profile)
+        finally:
+            db.close()
+    except Exception:  # pragma: no cover - 落库失败不能影响同步主流程
+        logger.debug("保存本人账号资料失败", exc_info=True)
 
 
 def _ensure_storage_dirs(settings: Any) -> FileStorage:

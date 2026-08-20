@@ -74,10 +74,19 @@ function registerGlobalComponents(app) {
           <img v-if="user.avatar_url" :src="'/proxy/image?url=' + encodeURIComponent(user.avatar_url)" class="w-9 h-9 rounded-2xl object-cover border border-gray-100" @error="user.avatar_url = ''">
           <div v-else class="w-9 h-9 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center text-xs font-black">{{ (user.name || 'U').substring(0,2) }}</div>
           <div class="min-w-0 flex-1">
-            <div class="text-xs font-black text-gray-900 truncate">{{ user.name || '未绑定用户' }}</div>
-            <div class="text-[10px] text-gray-400 truncate">ID {{ user.user_id || '-' }}</div>
+            <div class="flex items-center gap-1.5">
+              <div class="text-xs font-black text-gray-900 truncate">{{ user.name || '待同步' }}</div>
+              <span v-if="user.is_premium"
+                class="flex-shrink-0 text-[9px] font-black px-1.5 py-0.5 rounded-md bg-gradient-to-r from-amber-400 to-orange-400 text-white"
+                title="Pixiv Premium 会员">PREMIUM</span>
+            </div>
+            <div class="text-[10px] text-gray-400 truncate">
+              <span v-if="user.account">@{{ user.account }}</span>
+              <span v-else>ID {{ user.user_id || '-' }}</span>
+            </div>
           </div>
         </div>
+        <div v-if="user && !user.is_premium && user.user_id" class="text-[10px] text-gray-400 mb-2 -mt-1">普通账号</div>
         <div class="flex items-center gap-2 text-[11px] font-bold">
           <span :class="['w-2 h-2 rounded-full flex-shrink-0', autoSyncRunning ? 'bg-green-400 pulse-soft' : 'bg-gray-300']"></span>
           <span :class="autoSyncRunning ? 'text-green-600' : 'text-gray-400'">{{ autoSyncRunning ? '定时同步已启用' : '定时同步未启用' }}</span>
