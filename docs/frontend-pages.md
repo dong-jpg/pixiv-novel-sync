@@ -273,28 +273,44 @@ Template: `dashboard_novels.html`
 
 用途：展示本地已完整或部分备份、但 Pixiv 小说或系列已经失效的数据。系列按一个卡片展示，不把系列章节重复平铺成单篇卡片。
 
-筛选项：
+筛选项（页面共三个下拉，均在变化时重置分页）：
 
-- 救援状态：`success`（完整救援）或 `partial`（部分救援）。
-- 内容类型：`novel` 或 `series`。
-- 标题/作者搜索、最近检查或最近更新排序。
+- 救援状态 `state`：`all` / `success`（完整救援）/ `partial`（部分救援）。
+- 内容类型 `content_kind`：`all` / `series`（系列）/ `series_chapter`（系列单章）/ `standalone`（独立小说）。
+- 救援来源 `source_kind`：`all` / `bookmark`（我的收藏）/ `subscribed_series`（我的追更）/ `following_user`（关注用户）/ `user_backup`（用户备份）。
+- 标题/作者搜索 `search`，排序 `sort` 取 `checked_desc`（最近检查，默认）或 `updated_desc`（最近更新）；救援分类下不提供收藏数/浏览数排序。
+
+接口另外支持 `item_type`（`novel` / `series`），但仅在未指定 `content_kind` 时生效；页面固定发送 `content_kind`，因此 `item_type` 实际不参与筛选。
+
+页面还展示目录的 `refreshed_at`，`stale` 为真时提示「数据可能已过期」。
 
 API：`GET /api/dashboard/rescues`。
 
 ### Pixiv 救援油猴脚本
 
-文件：`userscripts/pixiv-rescue.user.js`。
+文件：`userscripts/pixiv-rescue.user.js`（v0.1.0，380 行，无外部依赖）。
 
-用途：当 Pixiv 原小说或系列页面明确删除、受限或不存在时，通过 `https://pixiv.dongboapp.com` 的只读救援 API 在原页面追加私人备份内容，并以“拯救数据”醒目标记来源。
+用途：当 Pixiv 原小说或系列页面明确删除、受限或不存在时，通过只读救援 API 在原页面追加私人备份内容，并以“拯救数据”醒目标记来源。
+
+生效范围与部署：
+
+- `@match` 限定 `https://www.pixiv.net/novel/show.php*` 与 `https://www.pixiv.net/novel/series/*`。
+- 脚本内 `API_ORIGIN` 常量硬编码为 `https://pixiv.dongboapp.com`。**换域名部署时必须同时改 `API_ORIGIN`、`@connect` 和 `@namespace`**，否则 Tampermonkey 会拦截跨域请求。
+- 通过油猴菜单「设置或更新救援 Token」/「清除救援 Token」维护 Token，存在 `GM_setValue`（键 `pixivRescueToken`）。
+
+失效判定（保守策略，正常页面不介入）：
+
+- 页面文本命中 `UNAVAILABLE_MARKERS`（中/日/英三套文案，如「この作品は削除されています」「该作品已被删除」「Page not found」）。
+- 且在约 1.2 秒轮询窗口内始终没有渲染出正常正文（`.novel-text`、`article` 等选择器下 ≥12 字符）或章节链接。
 
 安全边界：
 
 - 正常可阅读的 Pixiv 页面不请求救援 API，也不改写原 DOM。
-- 救援 Token 存在油猴脚本存储中，只通过 `Authorization: Bearer` 请求头发送。
+- 救援 Token 只通过 `Authorization: Bearer` 请求头发送，不写入页面或 Cookie。
 - API 域名固定，不接受页面、响应或用户输入提供的其他来源地址。
 - 正文只通过 `textContent` 和新建文本节点渲染，不解释备份正文中的 HTML。
 - 系列先加载目录，超过 100 章时可继续加载后续目录页；只有点击某一章时才请求该章正文。
-- 接口失败时保留 Pixiv 原错误页面。
+- 请求超时 15 秒；接口失败时保留 Pixiv 原错误页面。
 
 ### `/dashboard/novels/ai/<project_id>`
 

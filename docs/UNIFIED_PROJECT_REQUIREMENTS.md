@@ -30,7 +30,7 @@
 
 当文档互相矛盾时，按下面两条链分别判断：
 
-1. **当前事实链**：代码与测试 > `README.md` > `docs/frontend-api-contract.md` > `docs/frontend-pages.md`、`docs/library-os-style-guide.md` > `CLAUDE.md`、`AGENTS.md`。
+1. **当前事实链**：代码与测试 > `README.md` > `docs/frontend-api-contract.md` > `docs/frontend-pages.md`、`docs/library-os-style-guide.md` > `CLAUDE.md`。
 2. **目标需求链**：最新已确认的统一需求 > 最新设计规格 > 对应实施计划和任务报告 > 旧计划与归档报告。
 
 `docs/INDEX.md` 认定 `API_COMPLETE.md`、`KNOWLEDGE_GRAPH.md` 和 `AI_WRITING_STUDIO_PLAN.md` 是历史快照；它们可以帮助理解演进，但不能覆盖当前接口或数据结构。无法判定的冲突必须保留来源并标记为“待核实”，不能静默选择。
@@ -414,9 +414,9 @@
 
 | 来源组 | 文件 |
 |--------|------|
-| 根目录与开发指导 | `README.md`、`CLAUDE.md`、`AGENTS.md`、`KNOWLEDGE_GRAPH.md`、`assets/logo-design.md` |
-| 当前参考 | `docs/INDEX.md`、`docs/AUDIT_REPORT_2026-07-02.md`、`docs/AUDIT_REPORT_2026-07-03.md`、`docs/frontend-api-contract.md`、`docs/frontend-pages.md`、`docs/library-os-style-guide.md`、`docs/PREFERENCE_RECOMMENDER_REQUIREMENTS.md`、`docs/QWEN_EMBEDDING_INTEGRATION.md` |
-| 历史顶层快照 | `docs/API_COMPLETE.md`、`docs/AI_WRITING_STUDIO_PLAN.md` |
+| 根目录与开发指导 | `README.md`、`CLAUDE.md`、`assets/logo-design.md` |
+| 当前参考 | `docs/INDEX.md`、`docs/AUDIT_REPORT_2026-07-02.md`、`docs/AUDIT_REPORT_2026-07-03.md`、`docs/AUDIT_REPORT_2026-08-13.md`、`docs/frontend-api-contract.md`、`docs/frontend-pages.md`、`docs/library-os-style-guide.md`、`docs/JOB_SYSTEM.md`、`docs/MODEL_ROUTING_GUIDE.md`、`docs/RESCUE_USER_GUIDE.md`、`docs/ADULT_POLISH_USER_GUIDE.md`、`docs/PREFERENCE_RECOMMENDER_REQUIREMENTS.md`、`docs/QWEN_EMBEDDING_INTEGRATION.md` |
+| 历史顶层快照 | `docs/API_COMPLETE.md`、`docs/AI_WRITING_STUDIO_PLAN.md`、`KNOWLEDGE_GRAPH.md` |
 | 活跃规格与计划 | `docs/superpowers/specs/` 与 `docs/superpowers/plans/`；AI 模型第一阶段以 `2026-07-27-ai-model-catalog-pools-unified-requirements.md` 和已完成实施计划为追溯基线 |
 | 归档顶层 | `docs/archive/` 下审计、完成报告、优化路线图和模块拆分文档 |
 | 归档 superpowers | `docs/archive/superpowers/plans/` 与 `docs/archive/superpowers/specs/` 下 Qwen embedding、CLI/Web Job、统一任务队列文档 |

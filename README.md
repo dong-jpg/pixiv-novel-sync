@@ -144,6 +144,8 @@ pixiv-novel-sync sync bookmark following_novels subscribed_series
 
 /dashboard/preferences 提供偏好画像、搜索计划、推荐任务、结果反馈和屏蔽管理。当前推荐逻辑以本地统计和可解释规则为主；AI 仅用于关键词清洗，结构化偏好总结和 AI 推荐解释仍未接入。
 
+推荐既可在页面手动触发，也可在 /dashboard/settings#scheduler 配置定时执行（`auto_sync_recommendation_run_*`，默认关闭）。启用前需先生成默认偏好画像，否则任务会失败；定时推荐与其他同步任务共用同一个任务队列，不会并行抢 Pixiv 搜索配额。
+
 ### Pixiv 原站救援阅读
 
 1. 在 /dashboard/settings#rescue-api 生成独立救援 Token，明文只显示一次。
@@ -195,7 +197,8 @@ git diff --check
 - [统一项目需求](docs/UNIFIED_PROJECT_REQUIREMENTS.md)：现行需求、状态和来源追溯。
 - [前端 API 契约](docs/frontend-api-contract.md)：Dashboard 页面依赖的 API 形状。
 - [页面清单](docs/frontend-pages.md)：路由、模板和前端入口。
-- [贡献指南](AGENTS.md)：目录结构、命令、测试和 PR 约定。
+- [任务系统](docs/JOB_SYSTEM.md)：Job 管线、状态机、取消协议和 auto_sync 配置。
+- [开发约定](CLAUDE.md)：目录结构、命令、测试和代码约定。
 
 ## Deploy
 

@@ -88,6 +88,33 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 因此新任务实现**必须**定期调用 `stop_requested()`,否则无法被取消(manager/job_id 缺失时该闭包恒返回 False,CLI 裸调用也能安全运行)。
 
+## 3.5 partial 终态、熔断与分批轮转
+
+`JobStatus` 只有 `SUCCEEDED/FAILED/CANCELLED` 三个终态,但**持久化到 `task_logs` 的状态多一个 `partial`**。两者不是一一对应:
+
+- `webapp.py:_task_log_status_for_stats(stats)` 在 job 成功收尾时判定写入 `task_logs` 的状态。stats 里带 `aborted_reason`(熔断中止)或 `incomplete`(订阅系列中止、关注作者只覆盖部分、分页触顶)的,一律记 `partial`,前端「任务日志」页显示黄色「部分完成」并展示中止原因。
+- **`remaining` / `users_remaining` 不作为判定依据**——分批轮转任务每轮本来就有剩余,否则每轮都会变成 partial。
+
+这个设计来自一次生产事故:状态检查被限流熔断,只检查了 30/800 篇就中止,任务日志却仍是绿色「成功」,看不出这轮几乎什么都没查。
+
+### 状态检查的双熔断(`jobs/services.py`)
+
+`novel_status` / `series_status` / `user_status` 共用一个检查循环,两个计数器各自独立(状态不属于该类即清零):
+
+| 常量 | 值 | 触发条件 | `aborted_reason` |
+|---|---|---|---|
+| `MAX_CONSECUTIVE_UNKNOWN` | 5 | 连续 5 次状态无法判定,认定被限流 | `rate_limited` |
+| `MAX_CONSECUTIVE_MISSING` | 30 | 连续 30 次判定为删除(`MISSING_STATUSES = {deleted, suspended}`),疑似限流伪装成「不存在」 | `suspicious_missing_streak` |
+
+熔断时写 error 级日志、置 `stopped=True` 并 break,未检查的条目**保持原状态**;最坏情况每轮误判上限 30 条。熔断中止还会跳过救援目录重建。`unknown` 不覆盖已有状态,只刷新 `last_checked_at` 以推进轮转。
+
+### 分批轮转与分页上限
+
+- `NOVEL_STATUS_BATCH_SIZE = 800`:`novel_status` 每轮按 `last_checked_at` 最久优先取一批,不再单次占满整个周期把其他任务挤后。
+- `FOLLOWING_LIST_MAX_PAGES = 50`(`sync_engine.py`):关注列表枚举与作品分页上限解耦,避免 `max_pages_per_run` 把候选集截断。
+- 关注作者同步按「最久未同步」优先轮转,watermark 兼容旧格式。
+- 调度器从 `task_logs` 恢复上次完成时间,重启不再把所有任务推迟一整个周期;逾期任务错峰补偿。
+
 ## 4. 新增 task_type 的步骤
 
 以字符串 `"my_task"` 为例:
@@ -124,5 +151,19 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 | user_backup | False | 24 | "" | |
 | pending_deletion_detection(设置字段名为 `auto_sync_pending_detection_*`) | True | 12 | "" | |
 | preference_analyze | False | 1 | `"*/30 * * * *"` | `preference_analyze_batch_size`(默认 200);scheduler 提交时强制 `max_batches=1` |
+| recommendation_run | False | 24 | "" | 依赖已存在的默认偏好画像;没有画像时任务抛 `RuntimeError("需要先生成默认偏好画像")` |
 
 注意:preference_analyze 是唯一自带默认 cron 的任务;手动触发(web 按钮)默认 `max_batches=10`(≈2000 篇),定时触发每轮只跑 1 批。
+
+`recommendation_run` 默认关闭:它会消耗 Pixiv 搜索配额,且必须先有默认偏好画像。启用后仍与其他同步任务共用同一个 JobManager,天然互斥,不会和收藏同步并行抢配额。手动入口 `POST /api/dashboard/recommendations/run` 保持不变。
+
+### 5.1 两个标签字典是独立的
+
+`recommendation_run` 的接线跨了两个互不相干的标签字典,新增 task_type 时两处都要加:
+
+- `jobs/tasks.py:_TASK_LABELS` —— 供 job 内部日志渲染(`task_label()`)。
+- `web/managers.py:TASK_LABELS` —— 供**调度器**把内部任务名翻成中文写进 `task_logs`。缺失时任务日志页会显示英文键名。
+
+手动路由 `POST /api/dashboard/recommendations/run` 提交时显式传 `task_name="生成推荐"`,不依赖任何字典;而定时触发走 `_submit_scheduler_task` → `TASK_LABELS.get(task_name)`。所以**只补一个字典时,手动能显示中文、定时却会显示英文键名**——这类不一致由 `tests/test_recommendation_scheduling.py::test_every_scheduler_task_has_a_web_label` 兜住。
+
+同理,`web/utils.py:_job_spec` 里若没有对应 task_type 的分支,JobSpec 会静默落到 `JobType.SYNC`,任务统计归错类。

@@ -2,7 +2,7 @@
 
 **项目**: Pixiv Novel Sync
 **维护者**: dong-jpg
-**最近更新**: 2026-08-14
+**最近更新**: 2026-08-24
 
 ---
 
@@ -15,10 +15,13 @@
 | 文档 | 用途 |
 |------|------|
 | [../README.md](../README.md) | 项目入口：功能介绍、快速开始、配置说明 |
+| [../CLAUDE.md](../CLAUDE.md) | 开发约定：命令、架构分层、代码风格（根目录 `AGENTS.md` 已于 2026-08-20 删除，约定统一收在此处） |
 | [UNIFIED_PROJECT_REQUIREMENTS.md](UNIFIED_PROJECT_REQUIREMENTS.md) | 全项目统一需求、实现状态与来源追溯 |
-| [AUDIT_REPORT_2026-07-02.md](AUDIT_REPORT_2026-07-02.md) | 上一轮审计：修复 8 类严重 bug + 5 类中等问题 |
-| [AUDIT_REPORT_2026-07-03.md](AUDIT_REPORT_2026-07-03.md) | 本轮审计：EPUB 回归修复 + 死代码清理 + 文档整改 |
-| [AUDIT_REPORT_2026-08-13.md](AUDIT_REPORT_2026-08-13.md) | 本轮全项目审计：任务终态、推荐发布、成人路由取消、分页边界与需求覆盖 |
+| [AUDIT_REPORT_2026-07-02.md](AUDIT_REPORT_2026-07-02.md) | 审计：修复 8 类严重 bug + 5 类中等问题 |
+| [AUDIT_REPORT_2026-07-03.md](AUDIT_REPORT_2026-07-03.md) | 审计：EPUB 回归修复 + 死代码清理 + 文档整改 |
+| [AUDIT_REPORT_2026-08-13.md](AUDIT_REPORT_2026-08-13.md) | 最新一轮全项目审计：任务终态、推荐发布、成人路由取消、分页边界与需求覆盖 |
+
+> 2026-08-20 的提交 `ed081db` 修复了一次生产事故（`novel_status` 被 Pixiv 限流时把 5499 篇仍存在的小说误判为已删除），引入三态状态判定、双熔断、分批轮转与 `partial` 任务终态。该事故没有独立审计报告，行为说明见 [JOB_SYSTEM.md](JOB_SYSTEM.md) 第 3.5 节。
 
 ### API 与前端契约
 
@@ -45,13 +48,17 @@
 
 ### 进行中
 
+> **2026-08-24 核实结论：下列 4 份实施计划均未开始实施。** 抽查交付物全部缺失：`refresh_rescue_entities()`、`recommendation_search_plans` 表、`JobType.RECOMMENDATION_SYNC`、task log owner lease、`explanation_source` 字段在代码中均不存在；计划引用的 7 个测试文件（`test_rescue_catalog_refresh` / `test_rescue_catalog_filters` / `test_recommendation_search_plans` / `test_recommendation_feedback` / `test_recommendation_sync` / `test_preference_streams` / `test_task_log_leases`）都没有创建。计划内 checkbox 也全为未勾选。
+>
+> 提交 `104c717 fix: full audit remediation` 完成的是 2026-08-05 那一轮整改，**不是**这 4 份计划。因此它们描述的是**目标状态，不是当前行为**——阅读代码时不要以此为准。
+
 | 文档 | 说明 |
 |------|------|
-| [superpowers/specs/2026-08-14-complete-audit-remediation-design.md](superpowers/specs/2026-08-14-complete-audit-remediation-design.md) | 2026-08-13 审计的完整整改设计（本轮主线） |
-| [superpowers/plans/2026-08-14-runtime-integrity-remediation.md](superpowers/plans/2026-08-14-runtime-integrity-remediation.md) | 运行时完整性整改实施计划 |
-| [superpowers/plans/2026-08-14-rescue-completion.md](superpowers/plans/2026-08-14-rescue-completion.md) | 救援目录收尾实施计划 |
-| [superpowers/plans/2026-08-14-recommendation-completion.md](superpowers/plans/2026-08-14-recommendation-completion.md) | 推荐系统收尾实施计划 |
-| [superpowers/plans/2026-08-14-ai-preference-adult-remediation.md](superpowers/plans/2026-08-14-ai-preference-adult-remediation.md) | AI 偏好注入与成人 Agent 整改实施计划 |
+| [superpowers/specs/2026-08-14-complete-audit-remediation-design.md](superpowers/specs/2026-08-14-complete-audit-remediation-design.md) | 2026-08-13 审计的完整整改设计（本轮主线设计） |
+| [superpowers/plans/2026-08-14-runtime-integrity-remediation.md](superpowers/plans/2026-08-14-runtime-integrity-remediation.md) | 运行时完整性整改实施计划（未开始） |
+| [superpowers/plans/2026-08-14-rescue-completion.md](superpowers/plans/2026-08-14-rescue-completion.md) | 救援目录收尾实施计划（未开始） |
+| [superpowers/plans/2026-08-14-recommendation-completion.md](superpowers/plans/2026-08-14-recommendation-completion.md) | 推荐系统收尾实施计划（未开始） |
+| [superpowers/plans/2026-08-14-ai-preference-adult-remediation.md](superpowers/plans/2026-08-14-ai-preference-adult-remediation.md) | AI 偏好注入与成人 Agent 整改实施计划（未开始） |
 
 ### 已完成
 
@@ -99,7 +106,11 @@
 
 ## 当前状态说明
 
-当前行为以代码、[README.md](../README.md)、[frontend-api-contract.md](frontend-api-contract.md) 和 [AUDIT_REPORT_2026-08-13.md](AUDIT_REPORT_2026-08-13.md) 为准。成人 Agent 的设计约束（fail-closed、Provider scope、角色确认等）以 [ADULT_POLISH_USER_GUIDE.md](ADULT_POLISH_USER_GUIDE.md) 与 [superpowers/specs/2026-08-14-complete-audit-remediation-design.md](superpowers/specs/2026-08-14-complete-audit-remediation-design.md) 为准；仓库中不存在的 `.superpowers/sdd/task-11-brief.md` 不再作为活动清单引用。
+当前行为以**代码与测试**为第一来源，其次是 [README.md](../README.md)、[frontend-api-contract.md](frontend-api-contract.md)、[frontend-pages.md](frontend-pages.md) 和 [JOB_SYSTEM.md](JOB_SYSTEM.md)。
+
+成人 Agent 的**已实现**约束（fail-closed、Provider scope、角色确认、两阶段 JSON review）见 [ADULT_POLISH_USER_GUIDE.md](ADULT_POLISH_USER_GUIDE.md) 与 `docs/superpowers/specs/2026-07-23-adult-polish-agent-design.md`（该轮已落地）。`2026-08-14-complete-audit-remediation-design.md` 描述的是**尚未实施**的下一轮目标，不能当作当前行为依据。仓库中不存在的 `.superpowers/sdd/task-11-brief.md` 不再作为活动清单引用。
+
+测试基线：`python -m pytest -q` → 1258 passed, 4 skipped（2026-08-24 实测）。
 
 归档包含 14 份顶层文档 + 6 份 superpowers 已完成计划，涵盖：
 - 2026-06-16 全量审计系列（AUDIT_REPORT / EXECUTIVE_SUMMARY / COMPLETION_REPORT / CRITICAL_BUGS_FIX_PLAN / BUGS_FIXED_REPORT / ACTION_CHECKLIST）
