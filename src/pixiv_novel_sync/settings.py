@@ -83,6 +83,10 @@ class SyncSettings:
     auto_sync_preference_analyze_interval_hours: int = 1  # 分析间隔（小时）
     auto_sync_preference_analyze_cron: str = "*/30 * * * *"  # 分析cron表达式,默认每30分钟
     preference_analyze_batch_size: int = 200  # 每批分析小说数量
+    # 定时生成推荐: 依赖默认偏好画像, 会消耗 Pixiv 搜索配额, 默认关闭
+    auto_sync_recommendation_run_enabled: bool = False  # 自动生成推荐
+    auto_sync_recommendation_run_interval_hours: int = 24  # 生成推荐间隔（小时）
+    auto_sync_recommendation_run_cron: str = ""  # 生成推荐cron表达式，优先于interval_hours
     # Phase 3.2: pending_deletions表清理配置
     pending_deletion_grace_period_days: int = 30  # pending状态保留天数,给用户充足恢复时间
     pending_deletion_cleanup_confirmed_days: int = 7  # 已确认记录清理天数
@@ -206,6 +210,9 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             auto_sync_preference_analyze_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_preference_analyze_interval_hours"), 1),
             auto_sync_preference_analyze_cron=str(sync_raw.get("auto_sync_preference_analyze_cron", "*/30 * * * *")),
             preference_analyze_batch_size=_coerce_positive_int(sync_raw.get("preference_analyze_batch_size"), 200),
+            auto_sync_recommendation_run_enabled=_coerce_bool(sync_raw.get("auto_sync_recommendation_run_enabled"), False),
+            auto_sync_recommendation_run_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_recommendation_run_interval_hours"), 24),
+            auto_sync_recommendation_run_cron=str(sync_raw.get("auto_sync_recommendation_run_cron", "")),
             pending_deletion_grace_period_days=_coerce_positive_int(sync_raw.get("pending_deletion_grace_period_days"), 30),
             pending_deletion_cleanup_confirmed_days=_coerce_positive_int(sync_raw.get("pending_deletion_cleanup_confirmed_days"), 7),
         ),

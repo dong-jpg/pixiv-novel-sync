@@ -102,6 +102,9 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "auto_sync_preference_analyze_interval_hours": settings.sync.auto_sync_preference_analyze_interval_hours,
         "auto_sync_preference_analyze_cron": settings.sync.auto_sync_preference_analyze_cron,
         "preference_analyze_batch_size": settings.sync.preference_analyze_batch_size,
+        "auto_sync_recommendation_run_enabled": settings.sync.auto_sync_recommendation_run_enabled,
+        "auto_sync_recommendation_run_interval_hours": settings.sync.auto_sync_recommendation_run_interval_hours,
+        "auto_sync_recommendation_run_cron": settings.sync.auto_sync_recommendation_run_cron,
         "pending_deletion_grace_period_days": settings.sync.pending_deletion_grace_period_days,
         "pending_deletion_cleanup_confirmed_days": settings.sync.pending_deletion_cleanup_confirmed_days,
     }
@@ -214,6 +217,8 @@ def _job_spec(
         )
     if tasks == ["preference_analyze"]:
         return JobSpec(source=source, job_type=JobType.PREFERENCE_ANALYZE, task_types=tasks, params=job_params)
+    if tasks == ["recommendation_run"]:
+        return JobSpec(source=source, job_type=JobType.RECOMMENDATION_RUN, task_types=tasks, params=job_params)
     if len(tasks) == 1 and tasks[0] in {"user_status", "novel_status", "series_status"}:
         return JobSpec(source=source, job_type=JobType.STATUS_CHECK, task_types=tasks, params=job_params)
     return JobSpec(source=source, job_type=JobType.SYNC, task_types=tasks, params=job_params)

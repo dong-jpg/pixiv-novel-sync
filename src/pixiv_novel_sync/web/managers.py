@@ -69,6 +69,7 @@ SCHEDULER_TASK_CONFIGS: tuple[dict[str, str], ...] = (
     {"name": "user_backup", "setting_check": "auto_sync_user_backup_enabled", "interval_setting": "auto_sync_user_backup_interval_hours", "cron_setting": "auto_sync_user_backup_cron"},
     {"name": "pending_deletion_detection", "setting_check": "auto_sync_pending_detection_enabled", "interval_setting": "auto_sync_pending_detection_interval_hours", "cron_setting": "auto_sync_pending_detection_cron"},
     {"name": "preference_analyze", "setting_check": "auto_sync_preference_analyze_enabled", "interval_setting": "auto_sync_preference_analyze_interval_hours", "cron_setting": "auto_sync_preference_analyze_cron"},
+    {"name": "recommendation_run", "setting_check": "auto_sync_recommendation_run_enabled", "interval_setting": "auto_sync_recommendation_run_interval_hours", "cron_setting": "auto_sync_recommendation_run_cron"},
 )
 
 
@@ -130,6 +131,7 @@ TASK_LABELS = {
     "user_backup": "全量备份关注用户小说",
     "pending_deletion_detection": "检测取消收藏/追更",
     "preference_analyze": "增量分析本地偏好",
+    "recommendation_run": "生成推荐",
 }
 
 
@@ -768,6 +770,9 @@ class SettingsManager:
         sync_data["auto_sync_preference_analyze_interval_hours"] = _save_int("auto_sync_preference_analyze_interval_hours", 1)
         sync_data["auto_sync_preference_analyze_cron"] = _save_cron("auto_sync_preference_analyze_cron", "*/30 * * * *")
         sync_data["preference_analyze_batch_size"] = _save_int("preference_analyze_batch_size", 200, min_value=10)
+        sync_data["auto_sync_recommendation_run_enabled"] = bool(payload.get("auto_sync_recommendation_run_enabled", sync_data.get("auto_sync_recommendation_run_enabled", False)))
+        sync_data["auto_sync_recommendation_run_interval_hours"] = _save_int("auto_sync_recommendation_run_interval_hours", 24)
+        sync_data["auto_sync_recommendation_run_cron"] = _save_cron("auto_sync_recommendation_run_cron")
         sync_data["pending_deletion_grace_period_days"] = _save_int("pending_deletion_grace_period_days", 30)
         sync_data["pending_deletion_cleanup_confirmed_days"] = _save_int("pending_deletion_cleanup_confirmed_days", 7)
 

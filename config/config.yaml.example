@@ -81,6 +81,11 @@ sync:
   auto_sync_preference_analyze_cron: "*/30 * * * *"
   preference_analyze_batch_size: 200
 
+  # 定时生成推荐：需要先有默认偏好画像，且会消耗 Pixiv 搜索配额，默认关闭
+  auto_sync_recommendation_run_enabled: false
+  auto_sync_recommendation_run_interval_hours: 24
+  auto_sync_recommendation_run_cron: ""
+
   # pending_deletions 清理策略
   pending_deletion_grace_period_days: 30
   pending_deletion_cleanup_confirmed_days: 7
