@@ -35,6 +35,22 @@ SCHEDULER_STOP_JOIN_TIMEOUT_SECONDS = 1.0
 # submit 失败/被占用时的短退避（秒）：避免静默顺延整个周期
 SCHEDULER_SUBMIT_RETRY_SECONDS = 300.0
 
+# --- 任务优先级与让位 ---
+# 优先级数字越小越重要。只有「拉 Pixiv 数据」的任务之间才需要排序：它们共用同一个
+# job 槽（JobManager 的 BoundedSemaphore(1)），谁占着槽别人就得等。
+SCHEDULER_PRIORITY_HIGHEST = 1
+SCHEDULER_PRIORITY_DEFAULT = 3
+# 正在运行的低优先级任务被高优先级任务打断时，多久轮询一次「有没有人来抢」。
+SCHEDULER_PREEMPT_POLL_SECONDS = 5.0
+# 让位后被打断的任务多久重试（秒）。不能顺延整个周期，否则一让位就等于跳过一轮。
+SCHEDULER_PREEMPT_RETRY_SECONDS = 600.0
+# 同一个任务被让位后，这段时间内不再被让位——防止高优先级任务频繁到点把长任务饿死。
+SCHEDULER_PREEMPT_COOLDOWN_SECONDS = 6 * 3600.0
+# 连续被让位这么多次后，强制让它跑完一整轮（临时视为不可让位）。
+SCHEDULER_MAX_CONSECUTIVE_PREEMPTIONS = 2
+# 退避时长按优先级分级：越重要的任务被占用时重试得越勤。
+SCHEDULER_RETRY_SECONDS_BY_PRIORITY: dict[int, float] = {1: 60.0, 2: 120.0}
+
 # --- 重启补偿（从 task_logs 恢复上次执行时间）相关常量 ---
 # 回溯查询 task_logs 的最长窗口（天）。task_logs 本身默认只保留 3 天
 # （见 cleanup_old_task_logs），这里放宽到 7 天纯粹是冗余保护。
@@ -58,19 +74,51 @@ SCHEDULER_TASK_TYPE_ALIASES = {
 }
 
 # 定时任务清单：调度主循环与重启补偿共用，避免两处走样。
-SCHEDULER_TASK_CONFIGS: tuple[dict[str, str], ...] = (
-    {"name": "bookmarks", "setting_check": "auto_sync_bookmarks_enabled", "interval_setting": "auto_sync_bookmarks_interval_hours", "cron_setting": "auto_sync_bookmarks_cron"},
-    {"name": "following_list", "setting_check": "auto_sync_following_list_enabled", "interval_setting": "auto_sync_following_list_interval_hours", "cron_setting": "auto_sync_following_list_cron"},
-    {"name": "following_novels", "setting_check": "auto_sync_following_novels_enabled", "interval_setting": "auto_sync_following_novels_interval_hours", "cron_setting": "auto_sync_following_novels_cron"},
-    {"name": "subscribed_series", "setting_check": "auto_sync_subscribed_series_enabled", "interval_setting": "auto_sync_subscribed_series_interval_hours", "cron_setting": "auto_sync_subscribed_series_cron"},
-    {"name": "user_status", "setting_check": "auto_sync_user_status_enabled", "interval_setting": "auto_sync_user_status_interval_hours", "cron_setting": "auto_sync_user_status_cron"},
-    {"name": "novel_status", "setting_check": "auto_sync_novel_status_enabled", "interval_setting": "auto_sync_novel_status_interval_hours", "cron_setting": "auto_sync_novel_status_cron"},
-    {"name": "series_status", "setting_check": "auto_sync_series_status_enabled", "interval_setting": "auto_sync_series_status_interval_hours", "cron_setting": "auto_sync_series_status_cron"},
-    {"name": "user_backup", "setting_check": "auto_sync_user_backup_enabled", "interval_setting": "auto_sync_user_backup_interval_hours", "cron_setting": "auto_sync_user_backup_cron"},
-    {"name": "pending_deletion_detection", "setting_check": "auto_sync_pending_detection_enabled", "interval_setting": "auto_sync_pending_detection_interval_hours", "cron_setting": "auto_sync_pending_detection_cron"},
-    {"name": "preference_analyze", "setting_check": "auto_sync_preference_analyze_enabled", "interval_setting": "auto_sync_preference_analyze_interval_hours", "cron_setting": "auto_sync_preference_analyze_cron"},
-    {"name": "recommendation_run", "setting_check": "auto_sync_recommendation_run_enabled", "interval_setting": "auto_sync_recommendation_run_interval_hours", "cron_setting": "auto_sync_recommendation_run_cron"},
+#
+# priority：1 最重要。同一时刻多个任务到点时按 priority 升序挑一个提交，同级再按
+#   「逾期最久」优先。用户口径：收藏 = P1，追更系列 = P2，其余 = P3。
+# preemptible：正在跑的它能否为更高优先级的任务让位。只有「按水位轮转、下轮能接着
+#   跑」的任务才可以让位（following_novels 按 user_last_synced、三个 status 检查按
+#   last_checked_at、user_backup 按 offset、preference_analyze 按累加器）。
+#   bookmarks/following_list/pending_detection 本身只跑几十秒到几分钟，没必要打断；
+#   subscribed_series 每轮从 watchlist 头部重走一遍、不是水位式续跑，打断等于白跑；
+#   recommendation_run 跑一半的推荐结果没有意义。
+SCHEDULER_TASK_CONFIGS: tuple[dict[str, Any], ...] = (
+    {"name": "bookmarks", "setting_check": "auto_sync_bookmarks_enabled", "interval_setting": "auto_sync_bookmarks_interval_hours", "cron_setting": "auto_sync_bookmarks_cron", "priority": 1, "preemptible": False},
+    {"name": "subscribed_series", "setting_check": "auto_sync_subscribed_series_enabled", "interval_setting": "auto_sync_subscribed_series_interval_hours", "cron_setting": "auto_sync_subscribed_series_cron", "priority": 2, "preemptible": False},
+    {"name": "following_list", "setting_check": "auto_sync_following_list_enabled", "interval_setting": "auto_sync_following_list_interval_hours", "cron_setting": "auto_sync_following_list_cron", "priority": 3, "preemptible": False},
+    {"name": "following_novels", "setting_check": "auto_sync_following_novels_enabled", "interval_setting": "auto_sync_following_novels_interval_hours", "cron_setting": "auto_sync_following_novels_cron", "priority": 3, "preemptible": True},
+    {"name": "user_status", "setting_check": "auto_sync_user_status_enabled", "interval_setting": "auto_sync_user_status_interval_hours", "cron_setting": "auto_sync_user_status_cron", "priority": 3, "preemptible": True},
+    {"name": "novel_status", "setting_check": "auto_sync_novel_status_enabled", "interval_setting": "auto_sync_novel_status_interval_hours", "cron_setting": "auto_sync_novel_status_cron", "priority": 3, "preemptible": True},
+    {"name": "series_status", "setting_check": "auto_sync_series_status_enabled", "interval_setting": "auto_sync_series_status_interval_hours", "cron_setting": "auto_sync_series_status_cron", "priority": 3, "preemptible": True},
+    {"name": "user_backup", "setting_check": "auto_sync_user_backup_enabled", "interval_setting": "auto_sync_user_backup_interval_hours", "cron_setting": "auto_sync_user_backup_cron", "priority": 3, "preemptible": True},
+    {"name": "pending_deletion_detection", "setting_check": "auto_sync_pending_detection_enabled", "interval_setting": "auto_sync_pending_detection_interval_hours", "cron_setting": "auto_sync_pending_detection_cron", "priority": 3, "preemptible": False},
+    {"name": "preference_analyze", "setting_check": "auto_sync_preference_analyze_enabled", "interval_setting": "auto_sync_preference_analyze_interval_hours", "cron_setting": "auto_sync_preference_analyze_cron", "priority": 3, "preemptible": True},
+    {"name": "recommendation_run", "setting_check": "auto_sync_recommendation_run_enabled", "interval_setting": "auto_sync_recommendation_run_interval_hours", "cron_setting": "auto_sync_recommendation_run_cron", "priority": 3, "preemptible": False},
 )
+
+SCHEDULER_TASK_CONFIG_BY_NAME: dict[str, dict[str, Any]] = {
+    config["name"]: config for config in SCHEDULER_TASK_CONFIGS
+}
+
+
+def scheduler_task_priority(task_name: str) -> int:
+    config = SCHEDULER_TASK_CONFIG_BY_NAME.get(task_name)
+    if config is None:
+        return SCHEDULER_PRIORITY_DEFAULT
+    return int(config.get("priority", SCHEDULER_PRIORITY_DEFAULT))
+
+
+def scheduler_task_is_preemptible(task_name: str) -> bool:
+    config = SCHEDULER_TASK_CONFIG_BY_NAME.get(task_name)
+    return bool(config is not None and config.get("preemptible", False))
+
+
+def scheduler_retry_seconds(task_name: str) -> float:
+    """槽被占用时该任务的退避时长：高优先级重试得更勤。"""
+    return SCHEDULER_RETRY_SECONDS_BY_PRIORITY.get(
+        scheduler_task_priority(task_name), SCHEDULER_SUBMIT_RETRY_SECONDS
+    )
 
 
 def scheduler_task_log_type(task_name: str) -> str:
@@ -154,6 +202,12 @@ class AutoSyncScheduler:
     _task_intervals: dict[str, int] = field(default_factory=dict)  # 每个任务的间隔（小时）
     _task_crons: dict[str, str] = field(default_factory=dict)  # 每个任务的cron表达式
     _current_task_job_id: str | None = None  # 当前正在执行的定时任务 job id
+    _current_task_name: str | None = None  # 当前正在执行的定时任务名（让位判定要用）
+    # 让位护栏：上次被让位的时刻 / 连续被让位次数。防止 P1 频繁到点把长任务永久饿死。
+    _task_preempted_at: dict[str, float] = field(default_factory=dict)
+    _task_preempt_streak: dict[str, int] = field(default_factory=dict)
+    # 本轮刚刚被让位的任务名，由 _run_single_task 写入、主循环消费一次
+    _pending_preemption: set[str] = field(default_factory=set)
     _last_cleanup_time: float = 0.0  # 上次清理日志的时间
     _catalog_initialization_attempted: bool = False
     _schedule_restored: bool = False  # 是否已从 task_logs 做过一次重启补偿
@@ -245,10 +299,21 @@ class AutoSyncScheduler:
             return {
                 "running": self._running,
                 "current_task_job_id": self._current_task_job_id,
+                "current_task_name": self._current_task_name,
                 "task_next_run": dict(self._task_next_run),
                 "task_last_run": dict(self._task_last_run),
                 "task_intervals": dict(self._task_intervals),
                 "task_crons": dict(self._task_crons),
+                # 让前端设置页能展示优先级与让位能力，不必自己硬编码一份
+                "task_priorities": {
+                    config["name"]: int(config.get("priority", SCHEDULER_PRIORITY_DEFAULT))
+                    for config in SCHEDULER_TASK_CONFIGS
+                },
+                "task_preemptible": {
+                    config["name"]: bool(config.get("preemptible", False))
+                    for config in SCHEDULER_TASK_CONFIGS
+                },
+                "task_preempted_at": dict(self._task_preempted_at),
             }
     
     def _run_scheduler(self, stop_event: threading.Event | None = None) -> None:
@@ -330,64 +395,163 @@ class AutoSyncScheduler:
                     task_interval_hours = getattr(settings.sync, task_config["interval_setting"], 6)
                     task_interval_seconds = task_interval_hours * 3600
 
-                    # 调度器竞态修复:_task_next_run 读写纳入锁,避免 KeyError/漏更新
+                    # 首次见到某个任务时先落一个 next_run，别在挑选阶段才补
                     with self._lock:
                         if task_name not in self._task_next_run:
-                            if cron_expr:
-                                from ..settings import cron_to_next_run
-
-                                self._task_next_run[task_name] = cron_to_next_run(cron_expr, now, tz_name) or (now + task_interval_seconds)
-                            else:
-                                self._task_next_run[task_name] = now + task_interval_seconds
+                            self._task_next_run[task_name] = self._compute_next_run(
+                                cron_expr, now, tz_name, task_interval_seconds
+                            )
                             logger.info(
                                 "Task %s scheduled, next run: %s", task_name,
                                 datetime.fromtimestamp(self._task_next_run[task_name]).strftime('%Y-%m-%d %H:%M:%S'),
                             )
 
-                        next_run = self._task_next_run[task_name]
-                        if time.time() >= next_run:
-                            if self._current_task_job_id is not None:
-                                logger.info("Task %s skipped: another task is running (%s)", task_name, self._current_task_job_id)
-                                skip_now = time.time()
-                                if cron_expr:
-                                    from ..settings import cron_to_next_run
+                # 到点的任务按 (优先级, 逾期最久) 排序，每轮只提交第一个。
+                # 旧行为是按 SCHEDULER_TASK_CONFIGS 的数组顺序扫描，谁排在前面谁先抢槽，
+                # 「收藏优先」只是数组顺序的巧合而不是设计；长任务一旦占住槽，收藏就得
+                # 干等一个退避周期。
+                due_tasks = self._collect_due_tasks(settings)
+                if not due_tasks:
+                    stop_event.wait(30)
+                    continue
 
-                                    self._task_next_run[task_name] = cron_to_next_run(cron_expr, skip_now, tz_name) or (skip_now + task_interval_seconds)
-                                else:
-                                    self._task_next_run[task_name] = skip_now + task_interval_seconds
-                                continue
-                        else:
-                            continue
+                task_name = due_tasks[0]
+                task_config = SCHEDULER_TASK_CONFIG_BY_NAME[task_name]
+                cron_expr = getattr(settings.sync, task_config["cron_setting"], "")
+                task_interval_seconds = (
+                    getattr(settings.sync, task_config["interval_setting"], 6) * 3600
+                )
+                if len(due_tasks) > 1:
+                    logger.info(
+                        "Task %s selected by priority; also due: %s",
+                        task_name,
+                        ", ".join(due_tasks[1:]),
+                    )
 
-                    submitted = self._run_single_task(settings, task_name)
+                submitted = self._run_single_task(settings, task_name)
+                # 只有真的跑过才消费让位标记：submit 失败时不能顺手把连续让位计数清零，
+                # 否则护栏会被"反复提交失败"悄悄绕过。
+                preempted = self._consume_preemption_flag(task_name) if submitted else False
 
-                    with self._lock:
-                        if not submitted:
-                            # submit 失败/被占用：短退避后重试，而非顺延整个周期
-                            self._task_next_run[task_name] = time.time() + SCHEDULER_SUBMIT_RETRY_SECONDS
-                            logger.info(
-                                "Task %s submit failed, retry at: %s", task_name,
-                                datetime.fromtimestamp(self._task_next_run[task_name]).strftime('%Y-%m-%d %H:%M:%S'),
-                            )
-                            continue
-                        self._task_last_run[task_name] = time.time()
-                        if cron_expr:
-                            from ..settings import cron_to_next_run
-
-                            self._task_next_run[task_name] = cron_to_next_run(cron_expr, time.time(), tz_name) or (time.time() + task_interval_seconds)
-                        else:
-                            self._task_next_run[task_name] = time.time() + task_interval_seconds
-
+                with self._lock:
+                    if not submitted:
+                        # submit 失败/被占用：短退避后重试，而非顺延整个周期。
+                        # 退避时长按优先级分级，P1 每分钟就再试一次。
+                        retry_seconds = scheduler_retry_seconds(task_name)
+                        self._task_next_run[task_name] = time.time() + retry_seconds
                         logger.info(
-                            "Task %s completed, next run: %s", task_name,
+                            "Task %s submit failed, retry at: %s", task_name,
                             datetime.fromtimestamp(self._task_next_run[task_name]).strftime('%Y-%m-%d %H:%M:%S'),
                         )
+                        continue
+                    self._task_last_run[task_name] = time.time()
+                    if preempted:
+                        # 让位不是"跑完了"：顺延整个周期等于白白跳过一轮。短退避后接着
+                        # 从水位续跑（让位对象已经拿到槽，这段退避正好让它跑完）。
+                        self._task_next_run[task_name] = (
+                            time.time() + SCHEDULER_PREEMPT_RETRY_SECONDS
+                        )
+                        logger.info(
+                            "Task %s yielded to a higher-priority task, resume at: %s",
+                            task_name,
+                            datetime.fromtimestamp(self._task_next_run[task_name]).strftime('%Y-%m-%d %H:%M:%S'),
+                        )
+                        continue
+                    self._task_next_run[task_name] = self._compute_next_run(
+                        cron_expr, time.time(), tz_name, task_interval_seconds
+                    )
+                    logger.info(
+                        "Task %s completed, next run: %s", task_name,
+                        datetime.fromtimestamp(self._task_next_run[task_name]).strftime('%Y-%m-%d %H:%M:%S'),
+                    )
 
-                stop_event.wait(30)
+                # 刚跑完一个任务，立刻回到循环顶部重新按优先级挑选，
+                # 不必再等 30 秒——否则 P1 到点后还要多等一个 tick。
+                if stop_event.is_set():
+                    break
 
             except Exception as exc:
                 logger.error("Scheduler error: %s", exc)
                 stop_event.wait(60)
+
+    def _compute_next_run(
+        self,
+        cron_expr: str,
+        base_time: float,
+        tz_name: str,
+        interval_seconds: float,
+    ) -> float:
+        """算下次运行时刻：cron 非空优先，解析失败回落到 interval。"""
+        if cron_expr:
+            from ..settings import cron_to_next_run
+
+            resolved = cron_to_next_run(cron_expr, base_time, tz_name)
+            if resolved:
+                return float(resolved)
+        return base_time + interval_seconds
+
+    def _collect_due_tasks(self, settings: Settings) -> list[str]:
+        """返回所有已到点的任务名，按 (优先级, 逾期最久) 排序。
+
+        与旧的「按数组顺序扫描」相比，这里把"谁先抢到槽"从声明顺序的巧合变成显式规则：
+        收藏(P1) → 追更系列(P2) → 其余(P3)，同级里逾期越久越优先，避免长期垫底。
+        """
+        now = time.time()
+        due: list[tuple[int, float, str]] = []
+        with self._lock:
+            for config in SCHEDULER_TASK_CONFIGS:
+                task_name = config["name"]
+                if not getattr(settings.sync, config["setting_check"], False):
+                    continue
+                next_run = self._task_next_run.get(task_name)
+                if next_run is None or now < next_run:
+                    continue
+                priority = int(config.get("priority", SCHEDULER_PRIORITY_DEFAULT))
+                # 逾期越久排越前 ⇒ 用负值参与升序排序
+                due.append((priority, -(now - next_run), task_name))
+        due.sort()
+        return [task_name for _priority, _overdue, task_name in due]
+
+    def _highest_due_priority(self, settings: Settings, exclude: str) -> int | None:
+        """当前到点任务里除 ``exclude`` 之外的最高优先级（数字最小）。"""
+        best: int | None = None
+        for task_name in self._collect_due_tasks(settings):
+            if task_name == exclude:
+                continue
+            priority = scheduler_task_priority(task_name)
+            if best is None or priority < best:
+                best = priority
+        return best
+
+    def _may_preempt(self, task_name: str, now: float) -> bool:
+        """让位护栏：冷却期内、或连续被让位太多次的任务，本轮必须让它跑完。"""
+        if not scheduler_task_is_preemptible(task_name):
+            return False
+        with self._lock:
+            streak = int(self._task_preempt_streak.get(task_name, 0))
+            last = self._task_preempted_at.get(task_name)
+        if streak >= SCHEDULER_MAX_CONSECUTIVE_PREEMPTIONS:
+            return False
+        if last is not None and (now - last) < SCHEDULER_PREEMPT_COOLDOWN_SECONDS:
+            return False
+        return True
+
+    def _note_preemption(self, task_name: str, now: float) -> None:
+        with self._lock:
+            self._task_preempted_at[task_name] = now
+            self._task_preempt_streak[task_name] = (
+                int(self._task_preempt_streak.get(task_name, 0)) + 1
+            )
+            self._pending_preemption.add(task_name)
+
+    def _consume_preemption_flag(self, task_name: str) -> bool:
+        """取出并清除"本轮被让位"标记；同时把跑完整轮的任务的连续计数清零。"""
+        with self._lock:
+            if task_name in self._pending_preemption:
+                self._pending_preemption.discard(task_name)
+                return True
+            self._task_preempt_streak.pop(task_name, None)
+            return False
 
     def _initialize_rescue_catalog(self, settings: Settings) -> None:
         db = None
@@ -543,6 +707,7 @@ class AutoSyncScheduler:
             stopped_during_submit = self._stop_event.is_set()
             if not stopped_during_submit:
                 self._current_task_job_id = job.job_id
+                self._current_task_name = task_name
         if stopped_during_submit:
             cancel_task = self.cancel_task
             if cancel_task is not None:
@@ -557,14 +722,103 @@ class AutoSyncScheduler:
             return True
 
         try:
-            run_task(job.job_id)
+            self._run_and_watch_for_preemption(settings, job.job_id, task_name, run_task)
         except Exception as exc:
             logger.error("Auto sync task %s runner failed: %s", task_name, exc)
         finally:
             with self._lock:
                 if self._current_task_job_id == job.job_id:
                     self._current_task_job_id = None
+                    self._current_task_name = None
         return True
+
+    def _run_and_watch_for_preemption(
+        self,
+        settings: Settings,
+        job_id: str,
+        task_name: str,
+        run_task: Callable[[str], None],
+    ) -> None:
+        """在后台线程跑任务，主线程轮询「有没有更高优先级的任务到点了」。
+
+        必须放到独立线程：``run_task`` 是同步阻塞的，调度线程一旦进去就看不见新到点
+        的任务，收藏(P1) 只能干等 following_novels/user_backup 跑完（实测 25–140 分钟）。
+        不可让位的任务（见 SCHEDULER_TASK_CONFIGS.preemptible）走同一条路径，只是不发
+        取消信号——统一实现，避免两套执行流程走样。
+        """
+        if not scheduler_task_is_preemptible(task_name):
+            run_task(job_id)
+            return
+
+        error: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                run_task(job_id)
+            except BaseException as exc:  # noqa: BLE001 - 原样转交给调用方处理
+                error.append(exc)
+
+        thread = threading.Thread(
+            target=worker, name=f"auto-sync-{task_name}", daemon=True
+        )
+        thread.start()
+
+        running_priority = scheduler_task_priority(task_name)
+        yielded = False
+        while thread.is_alive():
+            thread.join(timeout=SCHEDULER_PREEMPT_POLL_SECONDS)
+            if not thread.is_alive() or yielded or self._stop_event.is_set():
+                continue
+            try:
+                challenger_priority = self._highest_due_priority(settings, task_name)
+            except Exception as exc:  # pragma: no cover - 挑选出错不该影响正在跑的任务
+                logger.warning("让位判定失败，本轮不打断 %s: %s", task_name, exc)
+                continue
+            if challenger_priority is None or challenger_priority >= running_priority:
+                continue
+            now = time.time()
+            if not self._may_preempt(task_name, now):
+                continue
+            self._note_preemption(task_name, now)
+            yielded = True
+            self._request_yield(job_id, task_name, challenger_priority)
+
+        thread.join()
+        if error:
+            raise error[0]
+
+    def _request_yield(self, job_id: str, task_name: str, challenger_priority: int) -> None:
+        """给正在跑的任务发取消信号，并在它自己的日志里写清"为什么被中断"。
+
+        先 add_log 再 cancel：``_run_shared_web_job`` 在任务终结后才把内存日志刷进
+        task_logs，所以这条说明会跟着任务日志一起落库，运维不会看到一条无缘无故的
+        "已取消"。
+        """
+        message = (
+            f"为 P{challenger_priority} 高优先级任务让位，本轮提前结束；"
+            "已完成的部分已入库，下轮从水位继续"
+        )
+        job_manager = self.shared_job_manager
+        if job_manager is not None and hasattr(job_manager, "add_log"):
+            try:
+                job_manager.add_log(job_id, "warning", message)
+            except Exception as exc:  # pragma: no cover - 日志失败不阻断让位
+                logger.warning("写入让位说明失败 %s: %s", job_id, exc)
+        cancel_task = self.cancel_task
+        if cancel_task is None:
+            logger.warning("无法让位：cancel_task 回调不可用 (%s)", task_name)
+            return
+        try:
+            cancel_task(job_id)
+        except Exception as exc:
+            logger.warning("让位取消失败 %s: %s", job_id, exc)
+            return
+        logger.info(
+            "Task %s preempted by a P%d task (job %s)",
+            task_name,
+            challenger_priority,
+            job_id,
+        )
 
 
 @dataclass(slots=True)
@@ -691,6 +945,9 @@ class SettingsManager:
 
         sync_data["max_items_per_run"] = _normalize_optional_int(payload.get("max_items_per_run", sync_data.get("max_items_per_run")))
         sync_data["max_pages_per_run"] = _normalize_optional_int(payload.get("max_pages_per_run", sync_data.get("max_pages_per_run")))
+        sync_data["bookmark_max_pages_per_run"] = _normalize_optional_int(
+            payload.get("bookmark_max_pages_per_run", sync_data.get("bookmark_max_pages_per_run"))
+        )
         sync_data["delay_seconds_between_items"] = _normalize_float(
             payload.get("delay_seconds_between_items", sync_data.get("delay_seconds_between_items", 1.0))
         )

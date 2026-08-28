@@ -77,8 +77,10 @@ class FakeDatabase:
             {"items": [{"user_id": 202, "name": "Bob"}], "total_pages": 2},
         ]
         self.list_users_calls: list[tuple[int, int]] = []
+        self.users_for_status_check_calls: list[int | None] = []
         self.user_status_upserts: list[tuple[int, str]] = []
         self.novel_ids = [11, 22]
+        self.known_missing_novel_ids: set[int] = set()
         self.novel_status_upserts: list[tuple[int, str]] = []
         self.status_batch_calls: list[int | None] = []
         self.pending_count_calls: list[str | None] = []
@@ -100,8 +102,17 @@ class FakeDatabase:
         self.list_users_calls.append((page, page_size))
         return self.user_pages[page - 1] if page <= len(self.user_pages) else {"items": [], "total_pages": page - 1}
 
+    def get_users_for_status_check(self, limit: int | None = None) -> list[dict[str, object]]:
+        """状态检查专用轮转清单：这里直接摊平 user_pages，保持既有断言的用户顺序。"""
+        self.users_for_status_check_calls.append(limit)
+        users = [dict(item) for page in self.user_pages for item in page["items"]]
+        return users[: int(limit)] if limit else users
+
     def upsert_user_status(self, user_id: int, status: str) -> None:
         self.user_status_upserts.append((user_id, status))
+
+    def get_known_missing_novel_ids(self) -> set[int]:
+        return set(self.known_missing_novel_ids)
 
     def get_all_novel_ids(self) -> list[int]:
         return list(self.novel_ids)
@@ -120,6 +131,10 @@ class FakeDatabase:
 
     def get_all_series_ids(self) -> list[int]:
         return list(self.series_ids)
+
+    def get_series_ids_for_status_check(self, limit: int | None = None) -> list[int]:
+        ids = list(self.series_ids)
+        return ids[: int(limit)] if limit else ids
 
     def upsert_series_status(self, series_id: int, status: str) -> None:
         self.series_status_upserts.append((series_id, status))
@@ -303,7 +318,10 @@ def test_run_user_status_task_calls_user_db_and_status_checker(settings, service
 
     db = service_env["db"]
     assert checked_user_ids == [101, 202]
-    assert db.list_users_calls == [(1, 500), (2, 500)]
+    # 用户状态检查必须走 last_checked_at 轮转清单，不能再用列表页的 list_users 分页：
+    # 后者顺序固定，熔断一次就把队尾永久饿死（生产实测 105/298 个用户 >3 天未检查）。
+    assert db.users_for_status_check_calls == [None]
+    assert db.list_users_calls == []
     assert db.user_status_upserts == [(101, "normal"), (202, "no_novels")]
     assert db.closed is True
     assert result == {
@@ -378,10 +396,11 @@ def test_novel_status_task_batch_size_comes_from_settings(settings, service_env,
 def test_novel_status_task_aborts_and_skips_catalog_when_rate_limited(settings, service_env, monkeypatch):
     """连续 unknown 触发熔断：中止本轮、标记原因，且不重建救援目录。"""
     monkeypatch.setattr(services, "_check_novel_status", lambda api, novel_id: "unknown")
+    # 条目数跟着阈值走，别写死：阈值调整时这个测试要继续验证熔断而不是变成"跑完了"
     monkeypatch.setattr(
         FakeDatabase,
         "get_novel_ids_for_status_check",
-        lambda self, limit=None: list(range(1, 11)),
+        lambda self, limit=None: list(range(1, services.MAX_CONSECUTIVE_UNKNOWN + 6)),
         raising=False,
     )
     reporter = DummyReporter()

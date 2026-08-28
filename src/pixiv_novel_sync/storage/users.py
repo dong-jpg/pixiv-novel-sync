@@ -30,6 +30,28 @@ class UsersMixin:
             )
             self._commit_if_needed()
 
+    def get_users_for_status_check(self, limit: int | None = None) -> list[dict[str, Any]]:
+        """按 last_checked_at 升序返回待状态检查的用户（从未检查过的排最前）。
+
+        必须与 ``get_novel_ids_for_status_check`` 同一套轮转语义，不能复用
+        ``list_users``：后者是给列表页用的，排序是 ``status 分桶 + updated_at DESC``，
+        与"上次什么时候检查过"无关，因此每轮顺序完全固定。生产事故：队尾连续 5 个
+        用户状态判不出来触发 unknown 熔断后，下一轮又从同一个固定顺序的开头跑，
+        永远走不到第 194 个，实测 105/298 个用户超过 3 天从未被检查。改成按
+        last_checked_at 轮转后，被熔断跳过的尾部下一轮自然排到最前面。
+        """
+        sql = (
+            "SELECT user_id, name FROM users "
+            # (last_checked_at IS NOT NULL) 为 0/1，保证 NULL（从未检查）永远排最前
+            "ORDER BY (last_checked_at IS NOT NULL), last_checked_at, user_id"
+        )
+        params: tuple[Any, ...] = ()
+        if limit is not None and int(limit) > 0:
+            sql += " LIMIT ?"
+            params = (int(limit),)
+        rows = self.conn.execute(sql, params).fetchall()
+        return [{"user_id": row["user_id"], "name": row["name"]} for row in rows]
+
     def upsert_user_status(self, user_id: int, status: str) -> None:
         """更新用户状态；status 为 "unknown" 时只刷新 last_checked_at，不改写 status。"""
         with self._lock:

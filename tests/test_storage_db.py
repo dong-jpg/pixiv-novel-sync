@@ -292,3 +292,58 @@ def test_batch_record_assets(db: Database) -> None:
         ]
     )
     assert db.get_recorded_asset_urls(103) == {"https://i.pximg.net/a.jpg", "https://i.pximg.net/b.jpg"}
+
+
+# ── 状态检查轮转顺序 ─────────────────────────────────────────────
+
+
+def _seed_user_with_check_time(db: Database, user_id: int, checked_at: str | None) -> None:
+    db.upsert_user(UserRecord(user_id=user_id, name=f"u{user_id}", account=f"a{user_id}", raw_json="{}"))
+    db.conn.execute(
+        "UPDATE users SET last_checked_at = ? WHERE user_id = ?", (checked_at, user_id)
+    )
+    db.conn.commit()
+
+
+def test_get_users_for_status_check_rotates_by_last_checked_at(db: Database) -> None:
+    """最久未检查的排最前，从未检查过的（NULL）排在最最前。
+
+    这是 user_status 分轮覆盖的前提：熔断中止后，本轮没轮到的用户下一轮必须排到
+    队首。生产事故是这里曾复用 list_users（status 分桶 + updated_at DESC），顺序
+    每轮固定，导致队尾 105/298 个用户超过 3 天从未被检查。
+    """
+    _seed_user_with_check_time(db, 1, "2026-08-27 10:00:00")
+    _seed_user_with_check_time(db, 2, "2026-08-20 10:00:00")
+    _seed_user_with_check_time(db, 3, None)
+    _seed_user_with_check_time(db, 4, "2026-08-25 10:00:00")
+
+    order = [item["user_id"] for item in db.get_users_for_status_check()]
+
+    assert order == [3, 2, 4, 1]
+    assert db.get_users_for_status_check(limit=2) == [
+        {"user_id": 3, "name": "u3"},
+        {"user_id": 2, "name": "u2"},
+    ]
+
+
+def test_get_series_ids_for_status_check_rotates_by_last_checked_at(db: Database) -> None:
+    for series_id, checked_at in ((11, "2026-08-27 10:00:00"), (12, None), (13, "2026-08-21 10:00:00")):
+        db.conn.execute(
+            "INSERT INTO series (series_id, title, description, user_id, cover_url, total_novels,"
+            " is_subscribed, last_checked_at) VALUES (?, '', '', 1, '', 0, 1, ?)",
+            (series_id, checked_at),
+        )
+    db.conn.commit()
+
+    assert db.get_series_ids_for_status_check() == [12, 13, 11]
+    assert db.get_series_ids_for_status_check(limit=1) == [12]
+
+
+def test_get_known_missing_novel_ids_returns_only_deleted(db: Database) -> None:
+    _insert_user_and_novel(db, novel_id=201)
+    _insert_user_and_novel(db, novel_id=202)
+    _insert_user_and_novel(db, novel_id=203)
+    db.upsert_novel_status(201, "deleted")
+    db.upsert_novel_status(202, "restricted")
+
+    assert db.get_known_missing_novel_ids() == {201}

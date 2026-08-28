@@ -71,7 +71,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 - `create_app` 里按 `_scheduler_registry_key(db_path)` 的模块级注册表 + Werkzeug reloader 检测(`WERKZEUG_RUN_MAIN`)保证只启动一份。
 - 调度器持有回调:`submit_task=_submit_scheduler_task`(内部走 `_submit_shared_job(..., is_auto_sync=True, run_async=False)`)、`run_task=_run_shared_web_job`、`cancel_task=shared_job_manager.request_cancel`——即定时任务与手动 web 任务**共用同一个 JobManager**,天然互斥。
-- 主循环(`_run_scheduler_loop`,每 30s 醒一次):每轮重新 `load_settings`;`auto_sync_enabled=False` 则空转;逐任务检查 enabled 开关与 `_task_next_run`,到点且当前无任务在跑(`_current_task_job_id is None`)时**同步**执行 `_run_single_task`(提交失败/被单活跃约束拒绝则跳过,顺延下次时间)。
+- 主循环(`_run_scheduler_loop`,空闲时每 30s 醒一次):每轮重新 `load_settings`;`auto_sync_enabled=False` 则空转;为新任务补 `_task_next_run`,然后 `_collect_due_tasks` 收集所有到点任务、按 `(priority, 逾期最久)` 排序、**只提交第一个**(详见 3.6)。可让位的长任务跑在独立线程上,主线程同时轮询是否有更高优先级任务到点。
 - 附带职责:每小时清理超过 3 天的 `task_logs` 与 AI jobs(`cleanup_old_task_logs(days=3)` / `cleanup_ai_jobs(keep_days=3)`);首轮尝试初始化救援目录。
 - `stop()` 会取消当前定时任务并停线程;lifecycle claim/release 回调防止多 owner 竞争。
 
@@ -103,17 +103,70 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 | 常量 | 值 | 触发条件 | `aborted_reason` |
 |---|---|---|---|
-| `MAX_CONSECUTIVE_UNKNOWN` | 5 | 连续 5 次状态无法判定,认定被限流 | `rate_limited` |
-| `MAX_CONSECUTIVE_MISSING` | 30 | 连续 30 次判定为删除(`MISSING_STATUSES = {deleted, suspended}`),疑似限流伪装成「不存在」 | `suspicious_missing_streak` |
+| `MAX_CONSECUTIVE_UNKNOWN` | 15 | 连续 15 次状态无法判定,认定被限流 | `rate_limited` |
+| `MAX_CONSECUTIVE_MISSING` | 30 | 连续 30 次**新出现**的删除(`MISSING_STATUSES = {deleted, suspended}`),疑似限流伪装成「不存在」 | `suspicious_missing_streak` |
 
-熔断时写 error 级日志、置 `stopped=True` 并 break,未检查的条目**保持原状态**;最坏情况每轮误判上限 30 条。熔断中止还会跳过救援目录重建。`unknown` 不覆盖已有状态,只刷新 `last_checked_at` 以推进轮转。
+熔断时写 error 级日志、置 `stopped=True` 并 break,未检查的条目**保持原状态**。熔断中止还会跳过救援目录重建。`unknown` 不覆盖已有状态,只刷新 `last_checked_at` 以推进轮转。
+
+两条去噪规则(2026-08-27 生产实测后加入,都在 `_process_status_items`):
+
+- **已知删除不计入 missing streak**。`build_already_missing` 在每轮开始时用 `db.get_known_missing_novel_ids()` 取一次快照;命中的条目只累加 `stats["confirmed_missing"]`,不进 `consecutive_missing`。Pixiv 再次确认一篇本来就是 `deleted` 的作品是一致结论,不是限流证据。实测两次误判都发生在 `11911679`–`11961577` 这段 2010 年连号老作品上——它们确实全被删且已入库。已知删除**不清零**新删除的连续计数,否则"每 29 个新删除插一个已知删除"就能永久绕过熔断。
+- **`MAX_CONSECUTIVE_UNKNOWN` 从 5 放宽到 15**。实测 `user_status` 每轮 193/298 个用户里只有 6 个 unknown,但其中 5 个恰好连续,于是每一轮都在同一处熔断。真限流的形态是"此后全部 unknown"(历史事故 290/290),15 连续足以捕获。
+
+### 轮转顺序必须按 `last_checked_at`
+
+三个状态检查任务的候选清单都要按 `last_checked_at` 升序(NULL 最前),这样熔断跳过的队尾下一轮自然排到最前面:
+
+| 任务 | 清单方法 |
+|---|---|
+| `novel_status` | `db.get_novel_ids_for_status_check(limit=batch_size)` |
+| `user_status` | `db.get_users_for_status_check()` |
+| `series_status` | `db.get_series_ids_for_status_check()` |
+
+生产事故:`user_status` 曾复用列表页的 `db.list_users()`(排序是 `status 分桶 + updated_at DESC`,与检查时间无关),顺序每轮固定,熔断一次就把队尾永久饿死——实测 105/298 个用户超过 3 天从未被检查。**不要用列表页的查询方法喂状态检查。**
+
+### 订阅系列的死系列判定(`sync_engine.py`)
+
+`sync_subscribed_series` 的 `max_consecutive_fetch_failures = 5` 熔断必须先分辨"Pixiv 明确说这个系列没了"和"拿不到详情,原因不明":`_classify_series_response` 复用 `web.utils._classify_pixiv_response` 的三态判定(同一份关键词/限流词表),`missing` 记为死系列——写回 `series.status='deleted'`、累加 `stats["series_deleted"]`、**重置**连续失败计数(一个连贯的"已删除"响应恰恰证明 API 还活着),`unknown` 才计入熔断。
+
+生产事故:watchlist 里长期躺着 24 个已删系列(`944540`、`944510`、`7640606`、`16201537`…),队尾有连续 5 个以上,导致 11/11 轮追更同步都在 `series_processed: 213/214` 处被误判成 `rate_limited` 中止,队尾的真系列永远同步不到。
 
 ### 分批轮转与分页上限
 
 - `NOVEL_STATUS_BATCH_SIZE = 800`:`novel_status` 每轮按 `last_checked_at` 最久优先取一批,不再单次占满整个周期把其他任务挤后。
 - `FOLLOWING_LIST_MAX_PAGES = 50`(`sync_engine.py`):关注列表枚举与作品分页上限解耦,避免 `max_pages_per_run` 把候选集截断。
+- `sync.bookmark_max_pages_per_run`:**收藏列表专用**翻页上限,留空则回落到 `max_pages_per_run`。`max_pages_per_run` 的语义是"关注作者作品列表 / 系列章节的单轮翻页上限",生产配成 2 是为了压体量;收藏复用同一个值会让每轮只看最新约 60 条就标 `truncated/incomplete`,历史收藏永远补不齐——而收藏是优先级最高的数据。解析在 `sync_engine._resolve_bookmark_max_pages`。
 - 关注作者同步按「最久未同步」优先轮转,watermark 兼容旧格式。
 - 调度器从 `task_logs` 恢复上次完成时间,重启不再把所有任务推迟一整个周期;逾期任务错峰补偿。
+
+## 3.6 任务优先级与让位(`web/managers.py`)
+
+所有定时任务共用一个 job 槽(`BoundedSemaphore(1)`),所以"谁先抢到槽"必须是显式规则而不是声明顺序的巧合。
+
+每个 `SCHEDULER_TASK_CONFIGS` 条目带两个字段:
+
+| 字段 | 含义 |
+|---|---|
+| `priority` | 1 最重要。用户口径:收藏 = P1,追更系列 = P2,其余 = P3 |
+| `preemptible` | 正在跑的它能否为更高优先级任务让位 |
+
+**挑选规则**(`_collect_due_tasks`):每轮收集所有已到点任务,按 `(priority, 逾期最久)` 升序排序,**只提交第一个**;跑完立刻回到循环顶部重新挑选,不再等满 30s。旧行为是按数组顺序扫描,"收藏优先"只是 `bookmarks` 恰好排在数组第一位。
+
+**退避分级**(`scheduler_retry_seconds`):槽被占用导致 submit 失败时,P1 退避 60s、P2 退避 120s、P3 沿用 `SCHEDULER_SUBMIT_RETRY_SECONDS = 300s`。
+
+**让位**(`_run_and_watch_for_preemption`):可让位任务不再同步阻塞调度线程,而是丢到 `auto-sync-<task>` 线程跑,主线程每 `SCHEDULER_PREEMPT_POLL_SECONDS = 5s` 轮询"有没有更高优先级的任务到点"。命中且护栏允许时,`_request_yield` 先往 job 日志里写一条 warning 说明原因(`_run_shared_web_job` 在任务终结后才把内存日志刷进 `task_logs`,所以这条说明会跟着落库,运维不会看到一条无缘无故的"已取消"),再调 `cancel_task`。被让位的任务走的是既有协作式取消路径,`task_logs` 记 `cancelled`。
+
+`preemptible=True` 只给「按水位轮转、下轮能接着跑」的任务:`following_novels`(`user_last_synced`)、三个 status 检查(`last_checked_at`)、`user_backup`(`offset`)、`preference_analyze`(累加器)。`subscribed_series` 每轮从 watchlist 头部重走一遍、不是水位式续跑,打断等于白跑;`bookmarks` / `following_list` / `pending_deletion_detection` 本身只跑几十秒到几分钟;`recommendation_run` 跑一半的结果没有意义。
+
+**护栏**(`_may_preempt`),防止 P1 频繁到点把长任务永久饿死:
+
+| 常量 | 值 | 作用 |
+|---|---|---|
+| `SCHEDULER_PREEMPT_COOLDOWN_SECONDS` | 6h | 刚让过位的任务在冷却期内必须能跑完 |
+| `SCHEDULER_MAX_CONSECUTIVE_PREEMPTIONS` | 2 | 连续被让位到上限后强制跑完一整轮 |
+| `SCHEDULER_PREEMPT_RETRY_SECONDS` | 600s | 让位后短退避续跑,而不是顺延整个周期(否则一让位等于跳过一轮) |
+
+让位标记是一次性的(`_consume_preemption_flag`),且只在 `submitted=True` 时消费——否则"反复提交失败"会悄悄把连续让位计数清零绕过护栏。任务完整跑完一轮时同一个方法负责清零计数。
 
 ## 4. 新增 task_type 的步骤
 
@@ -125,7 +178,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 4. **接入触发源**(按需):
    - CLI:在 `cli.py` 的参数解析 / `build_job_spec_from_args` 中允许该 task_type;
    - Web:在 `webapp.py` 相应路由里用 `_submit_shared_job` 提交;
-   - Scheduler:在 `_run_scheduler_loop` 的 `task_configs` 增加条目,并在 `SyncSettings` / `SettingsManager.save_sync_settings` 补 `auto_sync_my_task_{enabled,interval_hours,cron}` 三件套。
+   - Scheduler:在 `web/managers.py:SCHEDULER_TASK_CONFIGS` 增加条目(**必须带 `priority` 与 `preemptible`**,漏了会静默落到 P3/不可让位,`tests/test_scheduler_priority.py` 有防漏断言),并在 `SyncSettings` / `SettingsManager.save_sync_settings` 补 `auto_sync_my_task_{enabled,interval_hours,cron}` 三件套。`preemptible=True` 只给能从水位续跑的任务。
 5. **同步前端契约**:更新 `docs/frontend-api-contract.md`(以及涉及页面时的 `docs/frontend-pages.md`),让前端知道新的 task_type 字符串与标签;若响应结构变化,同步模板中的 Vue 代码。
 6. **测试**:参照 `tests/test_jobs_runner.py` 等,依赖 conftest 的 tmp 路径 fixture;验证正常完成、取消(`stop_requested` 生效)、stats 合并。
 
@@ -137,21 +190,23 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 - 每个任务同时有 `*_interval_hours` 与 `*_cron` 两个旋钮;**cron 非空则优先**,`cron_to_next_run(cron, now, auto_sync_timezone)` 计算下次时间(解析失败回落到 interval)。cron 在 `auto_sync_timezone`(默认 `"UTC"`)时区求值;`SettingsManager.save_sync_settings` 保存时会校验 cron 合法性。
 - env 变量始终覆盖 YAML(`load_settings` 语义)。
 
-`SyncSettings` 中各任务的默认值:
+`SyncSettings` 中各任务的默认值(priority / preemptible 见 3.6):
 
-| 任务(scheduler name) | enabled 默认 | interval_hours 默认 | cron 默认 | 附加字段 |
-|---|---|---|---|---|
-| bookmarks | True | 6 | "" | |
-| following_list | True | 24 | "" | |
-| following_novels | True | 6 | "" | `auto_sync_following_novels_users_limit`(0=全部) |
-| subscribed_series | True | 6 | "" | |
-| user_status | True | 6 | "" | |
-| novel_status | True | 6 | "" | |
-| series_status | True | 6 | "" | |
-| user_backup | False | 24 | "" | |
-| pending_deletion_detection(设置字段名为 `auto_sync_pending_detection_*`) | True | 12 | "" | |
-| preference_analyze | False | 1 | `"*/30 * * * *"` | `preference_analyze_batch_size`(默认 200);scheduler 提交时强制 `max_batches=1` |
-| recommendation_run | False | 24 | "" | 依赖已存在的默认偏好画像;没有画像时任务抛 `RuntimeError("需要先生成默认偏好画像")` |
+| 任务(scheduler name) | P | 可让位 | enabled 默认 | interval_hours 默认 | cron 默认 | 附加字段 |
+|---|---|---|---|---|---|---|
+| bookmarks | 1 | ✗ | True | 6 | "" | `bookmark_max_pages_per_run`(留空跟随 `max_pages_per_run`) |
+| subscribed_series | 2 | ✗ | True | 6 | "" | |
+| following_list | 3 | ✗ | True | 24 | "" | |
+| following_novels | 3 | ✓ | True | 6 | "" | `auto_sync_following_novels_users_limit`(0=全部) |
+| user_status | 3 | ✓ | True | 6 | "" | |
+| novel_status | 3 | ✓ | True | 6 | "" | `novel_status_batch_size`(默认 800) |
+| series_status | 3 | ✓ | True | 6 | "" | |
+| user_backup | 3 | ✓ | False | 24 | "" | |
+| pending_deletion_detection(设置字段名为 `auto_sync_pending_detection_*`) | 3 | ✗ | True | 12 | "" | |
+| preference_analyze | 3 | ✓ | False | 1 | `"*/30 * * * *"` | `preference_analyze_batch_size`(默认 200);scheduler 提交时强制 `max_batches=1` |
+| recommendation_run | 3 | ✗ | False | 24 | "" | 依赖已存在的默认偏好画像;没有画像时任务抛 `RuntimeError("需要先生成默认偏好画像")` |
+
+表格顺序即 `SCHEDULER_TASK_CONFIGS` 的声明顺序(已按优先级排列),该顺序同时决定重启后逾期任务的错峰补偿次序。
 
 注意:preference_analyze 是唯一自带默认 cron 的任务;手动触发(web 按钮)默认 `max_batches=10`(≈2000 篇),定时触发每轮只跑 1 批。
 

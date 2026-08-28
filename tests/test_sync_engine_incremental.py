@@ -520,6 +520,144 @@ def test_sync_subscribed_series_marks_abort_reason_after_consecutive_failures(tm
     assert stats["series_remaining"] == 3
 
 
+DEAD_SERIES_ERROR = {
+    "error": {
+        "user_message": "抱歉，您所指定的系列已经从个人信息删除，或者不存在。",
+        "message": "",
+        "reason": "",
+    }
+}
+RATE_LIMITED_ERROR = {"error": {"user_message": "", "message": "Rate Limit", "reason": ""}}
+
+
+def test_sync_subscribed_series_treats_deleted_series_as_conclusion_not_failure(
+    tmp_path: Path,
+) -> None:
+    """Pixiv 明确回「系列已删除」不是抓取失败，不能触发 rate_limited 熔断。
+
+    生产事故：watchlist 里长期躺着 24 个已删系列，队尾连续 5 个以上，导致每一轮
+    追更同步都在 processed 213/214 处被误判成风控中止，队尾的真系列永远同步不到。
+    """
+
+    class _DeletedSeriesApi:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def novel_series(self, series_id, **kwargs):
+            self.calls += 1
+            return dict(DEAD_SERIES_ERROR)
+
+        def parse_qs(self, url):
+            return None
+
+    settings = _settings(tmp_path)
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    series_ids = _seed_subscribed_series(db, 8, start=2100)
+    api = _DeletedSeriesApi()
+    service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+
+    try:
+        stats = service.sync_subscribed_series()
+        statuses = {
+            row[0]
+            for row in db.conn.execute(
+                "SELECT status FROM series WHERE series_id IN "
+                f"({','.join(str(sid) for sid in series_ids)})"
+            ).fetchall()
+        }
+    finally:
+        db.close()
+
+    # 8 个系列全部走完，没有在第 5 个处中止
+    assert api.calls == 8
+    assert "aborted_reason" not in stats
+    assert stats.get("incomplete") is not True
+    assert stats["series_processed"] == 8
+    assert stats["series_remaining"] == 0
+    assert stats["series_deleted"] == 8
+    # 状态写回，后续轮次不必再猜
+    assert statuses == {"deleted"}
+
+
+def test_sync_subscribed_series_still_aborts_on_rate_limited_error(tmp_path: Path) -> None:
+    """限流文案必须仍然计入连续失败并触发熔断——放宽不能放过真风控。"""
+
+    class _RateLimitedApi:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def novel_series(self, series_id, **kwargs):
+            self.calls += 1
+            return dict(RATE_LIMITED_ERROR)
+
+        def parse_qs(self, url):
+            return None
+
+    settings = _settings(tmp_path)
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    _seed_subscribed_series(db, 8, start=2200)
+    api = _RateLimitedApi()
+    service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+
+    try:
+        stats = service.sync_subscribed_series()
+    finally:
+        db.close()
+
+    assert api.calls == 5
+    assert stats["aborted_reason"] == "rate_limited"
+    assert stats["incomplete"] is True
+    assert stats.get("series_deleted") is None
+
+
+def test_sync_subscribed_series_deleted_series_resets_failure_streak(tmp_path: Path) -> None:
+    """一个「确定已删除」的响应证明 API 还活着，应该重置连续失败计数。
+
+    否则 4 次未知失败 + 1 个已删系列 + 4 次未知失败 会被累加成 8 连败误判风控。
+    """
+    responses = [
+        {"novel_series_detail": None},  # unknown ×4
+        {"novel_series_detail": None},
+        {"novel_series_detail": None},
+        {"novel_series_detail": None},
+        dict(DEAD_SERIES_ERROR),  # 确定结论 → 重置
+        {"novel_series_detail": None},  # unknown ×4，仍未达阈值
+        {"novel_series_detail": None},
+        {"novel_series_detail": None},
+        {"novel_series_detail": None},
+    ]
+
+    class _MixedApi:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def novel_series(self, series_id, **kwargs):
+            response = responses[self.calls]
+            self.calls += 1
+            return response
+
+        def parse_qs(self, url):
+            return None
+
+    settings = _settings(tmp_path)
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    _seed_subscribed_series(db, len(responses), start=2300)
+    api = _MixedApi()
+    service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+
+    try:
+        stats = service.sync_subscribed_series()
+    finally:
+        db.close()
+
+    assert api.calls == len(responses)
+    assert "aborted_reason" not in stats
+    assert stats["series_deleted"] == 1
+
+
 def test_sync_subscribed_series_marks_abort_reason_on_empty_responses(tmp_path: Path) -> None:
     """空响应路径同样要产出 aborted_reason 标记。"""
 
@@ -1108,6 +1246,82 @@ def test_following_rotation_reaches_users_beyond_page_cap(tmp_path: Path) -> Non
     service.sync_following_novels(users_limit=5)
 
     assert api.scanned_user_ids == [61, 62, 63, 64, 65]
+
+
+# ── 收藏翻页上限必须与作品/章节上限解耦 ──────────────────────────
+
+
+class _PagedBookmarkApi:
+    """收藏列表分页 fake：每页 1 条，共 ``page_count`` 页。"""
+
+    def __init__(self, page_count: int) -> None:
+        self.page_count = page_count
+        self.pages_fetched = 0
+
+    def user_bookmarks_novel(self, **kwargs):
+        offset = int(kwargs.get("offset", 0) or 0)
+        self.pages_fetched += 1
+        page_index = offset
+        if page_index >= self.page_count - 1:
+            next_url = None
+        else:
+            next_url = f"https://app-api.pixiv.net/v1/user/bookmarks/novel?offset={page_index + 1}"
+        return SimpleNamespace(novels=[SimpleNamespace(id=1000 + page_index)], next_url=next_url)
+
+    def novel_detail(self, novel_id: int):
+        return SimpleNamespace(novel=_Novel())
+
+    def webview_novel(self, novel_id: int) -> dict:
+        return {"text": "body"}
+
+    def parse_qs(self, next_url):
+        if not next_url:
+            return None
+        return {"user_id": 1, "restrict": "public", "offset": int(str(next_url).split("=")[1])}
+
+
+def test_bookmark_pagination_uses_its_own_page_cap(tmp_path: Path) -> None:
+    """收藏同步不能被 max_pages_per_run 砍掉。
+
+    回归：生产 max_pages_per_run=2（本意是压住关注作者作品列表和系列章节的单轮体量）
+    被收藏列表复用后，每轮只看最新约 60 条收藏就标 truncated/incomplete，
+    历史收藏永远补不齐——而收藏恰恰是用户优先级最高的数据。
+    """
+    settings = _settings(tmp_path)
+    settings.sync.max_pages_per_run = 2
+    settings.sync.bookmark_max_pages_per_run = 10
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    api = _PagedBookmarkApi(page_count=6)
+    service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+
+    try:
+        stats = service.sync(1, ["public"])
+    finally:
+        db.close()
+
+    assert api.pages_fetched == 6  # 6 页全部取回，没有停在第 2 页
+    assert "truncated" not in stats
+
+
+def test_bookmark_pagination_falls_back_to_shared_page_cap(tmp_path: Path) -> None:
+    """未配置收藏专用上限时保持旧行为：跟随 max_pages_per_run。"""
+    settings = _settings(tmp_path)
+    settings.sync.max_pages_per_run = 2
+    settings.sync.bookmark_max_pages_per_run = None
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    api = _PagedBookmarkApi(page_count=6)
+    service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+
+    try:
+        stats = service.sync(1, ["public"])
+    finally:
+        db.close()
+
+    assert api.pages_fetched == 2
+    assert stats["truncated"] is True
+    assert stats["incomplete"] is True
 
 
 def test_following_list_pagination_keeps_self_referencing_loop_guard(tmp_path: Path) -> None:

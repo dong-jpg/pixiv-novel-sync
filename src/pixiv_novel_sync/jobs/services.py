@@ -17,7 +17,11 @@ logger = logging.getLogger(__name__)
 # 连续多少个条目判定为 unknown 就认定「疑似被限流」并中止整轮检查。
 # 背景：pixivpy 被限流时不抛异常而是返回错误响应，历史事故里限流持续 3 小时，
 # 每一批 290 篇全部被误判。中止后本轮未检查的条目保持原状态，等下一轮再补。
-MAX_CONSECUTIVE_UNKNOWN = 5
+#
+# 阈值从 5 放宽到 15 的依据（2026-08-27 生产实测）：user_status 每轮 193/298 个用户
+# 里只有 6 个 unknown，但其中 5 个恰好连续，于是每一轮都在同一处熔断。真限流的形态
+# 是「此后全部 unknown」（290/290），15 连续足以捕获，而零星聚集不会误触发。
+MAX_CONSECUTIVE_UNKNOWN = 15
 
 # 连续多少个条目判定为「已删除」就认定异常并中止整轮检查。
 # 这是判定关键词的兜底：中文文案「尚无此页」很泛，无法排除限流也复用它，一旦如此，
@@ -249,7 +253,7 @@ def run_user_status_task(
         stop_requested=stop_requested,
         task_label="用户状态检查",
         total_label="用户",
-        list_items=_list_all_users,
+        list_items=_list_users_for_status_check,
         check_status=_check_pixiv_user_status,
         upsert_status=lambda db, user, status: db.upsert_user_status(user["user_id"], status),
         progress_name=lambda user: str(user.get("name") or user.get("user_id")),
@@ -279,6 +283,10 @@ def run_novel_status_task(
             f"本轮批次上限 {batch_size} 篇，全库仍有 {remaining} 篇待轮转检查",
         )
 
+    def build_already_missing(db: Database) -> Callable[[Any], bool]:
+        known = db.get_known_missing_novel_ids()
+        return lambda novel_id: int(novel_id) in known
+
     return _run_status_task(
         settings=settings,
         reporter=reporter,
@@ -292,6 +300,7 @@ def run_novel_status_task(
         rebuild_catalog=True,
         claim_finalization=claim_finalization,
         finalize_stats=finalize_stats,
+        build_already_missing=build_already_missing,
     )
 
 
@@ -308,7 +317,7 @@ def run_series_status_task(
         stop_requested=stop_requested,
         task_label="系列状态检查",
         total_label="系列",
-        list_ids=lambda db: db.get_all_series_ids(),
+        list_ids=lambda db: db.get_series_ids_for_status_check(),
         check_status=_check_series_status,
         upsert_status=lambda db, item_id, status: db.upsert_series_status(item_id, status),
         total_key="total_series",
@@ -467,6 +476,7 @@ def _run_status_task(
     rebuild_catalog: bool = False,
     claim_finalization: ClaimFinalization | None = None,
     finalize_stats: Callable[[Database, dict[str, Any]], None] | None = None,
+    build_already_missing: Callable[[Database], Callable[[Any], bool]] | None = None,
 ) -> dict[str, Any]:
     api = _login(settings)
     _ensure_storage_dirs(settings)
@@ -477,6 +487,13 @@ def _run_status_task(
         item_ids = list_ids(db)
         _report_log(reporter, "info", f"开始{task_label}")
         _report_log(reporter, "info", f"共 {len(item_ids)} 个{total_label}需要检查")
+        already_missing: Callable[[Any], bool] | None = None
+        if build_already_missing is not None:
+            # 快照失败不该拖垮整轮：退化成 None 即恢复旧的严格熔断行为
+            try:
+                already_missing = build_already_missing(db)
+            except Exception as exc:
+                logger.warning("%s已知删除快照失败，熔断退回严格模式: %s", task_label, exc)
         stats = _process_status_items(
             settings=settings,
             reporter=reporter,
@@ -488,6 +505,7 @@ def _run_status_task(
             item_label=total_label,
             item_name=lambda item_id: str(item_id),
             total_key=total_key,
+            already_missing=already_missing,
         )
         if finalize_stats is not None:
             # 批次统计只是运维观测信息，失败不应拖垮整轮任务
@@ -570,6 +588,7 @@ def _process_status_items(
     item_label: str,
     item_name: Callable[[Any], str],
     total_key: str,
+    already_missing: Callable[[Any], bool] | None = None,
 ) -> dict[str, Any]:
     checked_count = 0
     status_counts: dict[str, int] = {}
@@ -577,6 +596,7 @@ def _process_status_items(
     consecutive_unknown = 0
     consecutive_missing = 0
     aborted_reason: str | None = None
+    confirmed_missing = 0
     total = len(items)
 
     _report_progress(reporter, phase=item_label, current=0, total=total)
@@ -596,7 +616,16 @@ def _process_status_items(
 
         # 两个熔断计数各自独立：任一状态只要不属于该类，就把该类计数清零
         consecutive_unknown = consecutive_unknown + 1 if status == "unknown" else 0
-        consecutive_missing = consecutive_missing + 1 if status in MISSING_STATUSES else 0
+        # 「已删除」里要把「本来就已知是 deleted，这次只是再次确认」剔掉：那是一致的
+        # 结论，不是限流伪装成不存在的证据。只有原本不是 missing 状态的条目突然变成
+        # missing，才是需要警惕的信号。见 get_known_missing_novel_ids 的注释。
+        if status in MISSING_STATUSES:
+            if already_missing is not None and already_missing(item):
+                confirmed_missing += 1
+            else:
+                consecutive_missing += 1
+        else:
+            consecutive_missing = 0
 
         # unknown 说明这次调用没拿到可信结果；连续多次即认定被限流，立刻收手，
         # 否则会顶着限流把剩余条目全部刷成无效结果（还会进一步加重限流）。
@@ -640,6 +669,10 @@ def _process_status_items(
         "status_counts": status_counts,
         "stopped": stopped,
     }
+    if confirmed_missing:
+        # 「早就知道没了、这次只是再次确认」的数量。单独暴露出来，避免运维看到
+        # status_counts.deleted 很大就以为又出了批量误判。
+        stats["confirmed_missing"] = confirmed_missing
     if aborted_reason:
         stats["aborted_reason"] = aborted_reason
     return stats
@@ -658,6 +691,15 @@ def _list_all_users(db: Database) -> list[dict[str, Any]]:
             break
         page_num += 1
     return users
+
+
+def _list_users_for_status_check(db: Database) -> list[dict[str, Any]]:
+    """状态检查专用的用户清单：按 last_checked_at 轮转，最久未检查的排最前。
+
+    不能用 ``_list_all_users``（走 ``list_users`` 的列表页排序），否则每轮顺序固定，
+    熔断一次就把队尾永久饿死。见 ``get_users_for_status_check`` 的注释。
+    """
+    return db.get_users_for_status_check()
 
 
 def _lookup_user_name(db: Database, user_id: int) -> str:

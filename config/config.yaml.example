@@ -15,7 +15,12 @@ sync:
     - public
     - private
   max_items_per_run: 20
+  # 关注作者作品列表 / 系列章节的单轮翻页上限
   max_pages_per_run: 2
+  # 收藏列表专用翻页上限。留空则跟随 max_pages_per_run。
+  # 收藏优先级最高，通常要放得比 max_pages_per_run 大得多，否则每轮只看最新
+  # 约 30×max_pages_per_run 条收藏就会被标成 truncated，历史收藏补不齐。
+  bookmark_max_pages_per_run: 20
   delay_seconds_between_items: 1.5
   delay_seconds_between_pages: 2.0
   delay_seconds_between_series: 3.0

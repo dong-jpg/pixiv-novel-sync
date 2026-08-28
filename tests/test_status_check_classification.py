@@ -467,6 +467,7 @@ def _run_items(
     statuses: list[str],
     settings: Any = None,
     reporter: Any = None,
+    already_missing: Any = None,
 ) -> dict[str, Any]:
     db = RecordingDb()
     items = list(range(len(statuses)))
@@ -482,11 +483,54 @@ def _run_items(
         item_label="小说",
         item_name=lambda item: str(item),
         total_key="total_novels",
+        already_missing=already_missing,
     )
 
 
+def test_already_missing_items_do_not_trigger_missing_streak() -> None:
+    """本来就已知 deleted 的条目再次被确认，不算「限流伪装成不存在」的证据。
+
+    生产事故：11911679–11961577 这段 2010 年连号老作品确实全被删且已入库为 deleted，
+    却因为连号聚集凑满 30 连续，每次轮到都把整轮 novel_status 熔断掉。
+    """
+    count = services.MAX_CONSECUTIVE_MISSING + 20
+    stats = _run_items(["deleted"] * count, already_missing=lambda item: True)
+
+    assert "aborted_reason" not in stats
+    assert stats["stopped"] is False
+    assert stats["checked_count"] == count
+    assert stats["confirmed_missing"] == count
+
+
+def test_newly_missing_items_still_trigger_streak_despite_known_ones() -> None:
+    """已知 deleted 只是不计数，不能把真正的「突然全变删除」也一起放过。"""
+    known = {0, 1, 2}
+    statuses = ["deleted"] * (services.MAX_CONSECUTIVE_MISSING + len(known) + 5)
+    stats = _run_items(statuses, already_missing=lambda item: item in known)
+
+    assert stats["aborted_reason"] == "suspicious_missing_streak"
+    assert stats["stopped"] is True
+    # 前 3 个是已知删除（不计数），之后 MAX_CONSECUTIVE_MISSING 个新删除触发熔断
+    assert stats["checked_count"] == len(known) + services.MAX_CONSECUTIVE_MISSING
+    assert stats["confirmed_missing"] == len(known)
+
+
+def test_already_missing_item_does_not_reset_new_missing_streak() -> None:
+    """已知删除穿插在新删除之间时，不能把新删除的连续计数清零。
+
+    否则「每 29 个新删除插一个已知删除」就能永久绕过熔断。
+    """
+    half = services.MAX_CONSECUTIVE_MISSING // 2
+    statuses = ["deleted"] * (half + 1 + services.MAX_CONSECUTIVE_MISSING)
+    known = {half}  # 中间插一个已知删除
+    stats = _run_items(statuses, already_missing=lambda item: item in known)
+
+    assert stats["aborted_reason"] == "suspicious_missing_streak"
+    assert stats["confirmed_missing"] == 1
+
+
 def test_process_status_items_aborts_after_consecutive_unknown() -> None:
-    stats = _run_items(["unknown"] * 10)
+    stats = _run_items(["unknown"] * (services.MAX_CONSECUTIVE_UNKNOWN + 5))
 
     assert stats["aborted_reason"] == "rate_limited"
     assert stats["stopped"] is True

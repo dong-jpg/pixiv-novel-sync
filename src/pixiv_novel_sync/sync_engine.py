@@ -93,6 +93,42 @@ def _stop_requested_from_progress(progress_callback: Any) -> Any:
 _RATE_LIMIT_ERROR_TOKENS = ("rate limit", "rate-limit", "ratelimit", "too many requests", "429")
 
 
+def _resolve_bookmark_max_pages(settings: Any) -> int | None:
+    """收藏列表专用翻页上限：优先 ``sync.bookmark_max_pages_per_run``，缺省回落。
+
+    返回 None 表示"不额外限制"，由调用方的 100 页兜底接管。缺省时回落到
+    ``max_pages_per_run``，保证老配置行为不变。
+    """
+    sync_settings = getattr(settings, "sync", None)
+    raw = getattr(sync_settings, "bookmark_max_pages_per_run", None)
+    if raw in (None, ""):
+        return getattr(sync_settings, "max_pages_per_run", None)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return getattr(sync_settings, "max_pages_per_run", None)
+    return value if value > 0 else None
+
+
+def _classify_series_response(series_data: Any) -> str:
+    """判定 ``novel_series`` 响应属于 ok / missing / unknown 哪一类。
+
+    直接复用状态检查那套 fail-safe 判定（``web.utils._classify_pixiv_response``），
+    保证「系列已删除」的关键词表和限流词表只有一份：限流文案永远落到 unknown，
+    只有 Pixiv 明确回「已经从个人信息删除，或者不存在」才算 missing。
+
+    延迟 import 是为了避开 ``sync_engine`` ↔ ``web`` 的导入环，也与本模块其他
+    重依赖的处理方式一致。判定本身出任何异常都保守返回 unknown。
+    """
+    try:
+        from .web.utils import _classify_pixiv_response
+
+        verdict, _detail = _classify_pixiv_response(series_data, ("novel_series_detail",))
+        return str(verdict)
+    except Exception:  # pragma: no cover - 判定失败一律按未知处理，绝不误判删除
+        return "unknown"
+
+
 def _parse_pixiv_error_json(exc: BaseException) -> dict[str, Any] | None:
     """尽力从异常里解析出 Pixiv 返回的 ``{"error": {...}}`` 结构。
 
@@ -495,7 +531,12 @@ class BookmarkNovelSyncService:
     def sync(self, user_id: int, restricts: Iterable[str], download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None, phase_name: str = "同步中") -> dict[str, int]:
         stats = _empty_stats()
         max_items = self.settings.sync.max_items_per_run
-        max_pages = self.settings.sync.max_pages_per_run
+        # 收藏列表的翻页上限必须与「单作者作品分页上限」解耦：max_pages_per_run 生产配成 2
+        # 是为了压住关注作者同步和系列章节的单轮体量，但收藏是用户最在意的一类数据，
+        # 复用同一个 2 会让每轮只看最新 2 页（约 60 条）就标 truncated/incomplete，
+        # 历史收藏永远补不齐。bookmark_max_pages_per_run 未配置时回落到 max_pages_per_run，
+        # 保持旧行为不变。
+        max_pages = _resolve_bookmark_max_pages(self.settings)
         item_delay = self.settings.sync.delay_seconds_between_items
         page_delay = self.settings.sync.delay_seconds_between_pages
         processed_items = 0
@@ -1247,6 +1288,11 @@ class BookmarkNovelSyncService:
             # truncated_series —— 某些系列的章节分页被 max_pages_per_run 截断。
             aborted_reason: str | None = None
             truncated_series = 0
+            # Pixiv 明确回复「系列已删除/不存在」的数量。这类响应是确定性结论而不是
+            # 失败：生产实测 watchlist 里长期躺着 24 个已删系列，其中队尾有连续 5 个以上，
+            # 一旦计入 consecutive_fetch_failures 就会每轮都把整轮误判成 rate_limited
+            # 中止（processed 213/214），既冤枉了风控也让最后的真系列永远同步不到。
+            dead_series = 0
             while queue_idx < len(series_queue):
                 if limit > 0 and synced_series_count >= limit:
                     break
@@ -1436,19 +1482,34 @@ class BookmarkNovelSyncService:
                                 if chapter_count > 0:
                                     synced_series_count += 1
                         else:
-                            consecutive_fetch_failures += 1
-                            logger.warning("No detail found for series %s, keys: %s", sid, list(series_data.keys()) if isinstance(series_data, dict) else "N/A")
-                            if progress_callback:
-                                progress_callback("phase", {"phase": f"系列 {sid}: 获取详情失败，已连续失败 {consecutive_fetch_failures} 次"})
-                            if consecutive_fetch_failures >= max_consecutive_fetch_failures:
-                                logger.warning(
-                                    "Stopping subscribed series sync after %d consecutive series detail failures; likely rate limited or blocked",
-                                    consecutive_fetch_failures,
-                                )
+                            # 先分辨「Pixiv 明确说这个系列没了」和「拿不到详情，原因不明」。
+                            # 复用状态检查那套 fail-safe 三态判定（同一份关键词/限流词表），
+                            # 不额外发请求：series_data 就是刚拿到的响应。
+                            verdict = _classify_series_response(series_data)
+                            if verdict == "missing":
+                                dead_series += 1
+                                consecutive_fetch_failures = 0
+                                try:
+                                    self.db.upsert_series_status(int(sid), "deleted")
+                                except Exception as exc:  # pragma: no cover - 状态写回失败不该中断同步
+                                    logger.warning("标记系列 %s 已删除失败: %s", sid, exc)
+                                logger.info("Series %s is gone on Pixiv; marked deleted (not a fetch failure)", sid)
                                 if progress_callback:
-                                    progress_callback("phase", {"phase": "连续获取系列详情失败，疑似触发 Pixiv 风控，已暂停追更系列同步"})
-                                aborted_reason = "rate_limited"
-                                break
+                                    progress_callback("phase", {"phase": f"系列 {sid}: Pixiv 已删除，标记后跳过"})
+                            else:
+                                consecutive_fetch_failures += 1
+                                logger.warning("No detail found for series %s, keys: %s", sid, list(series_data.keys()) if isinstance(series_data, dict) else "N/A")
+                                if progress_callback:
+                                    progress_callback("phase", {"phase": f"系列 {sid}: 获取详情失败，已连续失败 {consecutive_fetch_failures} 次"})
+                                if consecutive_fetch_failures >= max_consecutive_fetch_failures:
+                                    logger.warning(
+                                        "Stopping subscribed series sync after %d consecutive series detail failures; likely rate limited or blocked",
+                                        consecutive_fetch_failures,
+                                    )
+                                    if progress_callback:
+                                        progress_callback("phase", {"phase": "连续获取系列详情失败，疑似触发 Pixiv 风控，已暂停追更系列同步"})
+                                    aborted_reason = "rate_limited"
+                                    break
                     else:
                         consecutive_fetch_failures += 1
                         logger.warning("Empty response for series %s", sid)
@@ -1492,6 +1553,11 @@ class BookmarkNovelSyncService:
             stats["series_total"] = len(series_queue)
             stats["series_processed"] = queue_idx
             stats["series_remaining"] = max(len(series_queue) - queue_idx, 0)
+            # 已删系列是正常结论而非异常，单独计数：它既不该让本轮变成 incomplete，
+            # 也需要在任务日志里看得见（否则 series_total 和实际同步量的差额无从解释）。
+            if dead_series:
+                stats["series_deleted"] = dead_series
+                logger.info("Marked %d subscribed series as deleted on Pixiv", dead_series)
             if truncated_series:
                 stats["truncated"] = True
                 stats["truncated_series"] = truncated_series

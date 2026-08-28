@@ -583,6 +583,21 @@ class NovelsMixin:
             result.update(row[0] for row in rows)
         return result
 
+    def get_known_missing_novel_ids(self) -> set[int]:
+        """返回数据库里已经标记为 deleted 的小说 ID 集合。
+
+        给 ``_process_status_items`` 的「连续大量 deleted」熔断做去噪：Pixiv 再次确认
+        一篇本来就是 deleted 的作品，是一致的结论而不是"限流伪装成不存在"的证据。
+        生产实测两次误判都发生在 11911679–11961577 这段 2010 年的连号老作品上——它们
+        确实全被删了且已入库为 deleted，却因为连号聚集凑满 30 连续触发熔断。
+
+        一轮取一次（当前 693 条），比逐条查库便宜，也避开检查过程中自身写入的干扰。
+        """
+        rows = self.conn.execute(
+            "SELECT novel_id FROM novels WHERE status = 'deleted'"
+        ).fetchall()
+        return {int(row[0]) for row in rows}
+
     def upsert_novel_status(self, novel_id: int, status: str) -> None:
         """更新小说状态（normal/deleted/restricted/private 等）。
 
