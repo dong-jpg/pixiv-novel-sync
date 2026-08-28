@@ -1006,10 +1006,15 @@
         triggering.value = true;
         addLog(`发起任务请求：${label}`);
         try {
-          const res = await fetch(`/api/dashboard/sync/${task}`, { method: 'POST' });
-          const data = await res.json();
+          // 变更类请求必须带 CSRF（配置了 DASHBOARD_TOKEN 时鉴权网关强制校验），
+          // 否则一律 403 且响应体是 {"error": ...} 而不是 {"message": ...}
+          const res = await fetch(`/api/dashboard/sync/${task}`, {
+            method: 'POST',
+            headers: { 'X-CSRF-Token': await ensureCsrfToken() },
+          });
+          const data = await res.json().catch(() => ({}));
           if (res.ok) addLog(`任务已成功加入队列 (${label})`);
-          else addLog(`任务失败：${data.message || '未知错误'}`, true);
+          else addLog(`任务失败：${data.error || data.message || `HTTP ${res.status}`}`, true);
         } catch (e) {
           addLog(`网络错误：${e.message}`, true);
         } finally {
@@ -1040,10 +1045,13 @@
         if (!confirm('确认清空所有图片缓存？\n清空后首次访问列表图片加载会变慢。')) return;
         clearingCache.value = true;
         try {
-          const res = await fetch('/api/cache/clear', { method: 'POST' });
-          const data = await res.json();
+          const res = await fetch('/api/cache/clear', {
+            method: 'POST',
+            headers: { 'X-CSRF-Token': await ensureCsrfToken() },
+          });
+          const data = await res.json().catch(() => ({}));
           cacheSuccess.value = res.ok;
-          cacheMessage.value = res.ok ? '缓存已成功清空' : (data.error || '清空失败');
+          cacheMessage.value = res.ok ? '缓存已成功清空' : (data.error || data.message || `清空失败（HTTP ${res.status}）`);
           if (res.ok) fetchCacheStatus();
           setTimeout(() => { cacheMessage.value = ''; }, 3000);
         } catch (e) {
@@ -1731,11 +1739,24 @@
         try {
           const res = await fetch('/api/dashboard/settings', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              // 少了这个头，配置了 DASHBOARD_TOKEN 的部署会一律 403，
+              // 而错误体是 {"error": ...}；旧代码只读 data.message，于是把失败
+              // 也显示成「设置已保存」，用户刷新后才发现什么都没存下来。
+              'X-CSRF-Token': await ensureCsrfToken(),
+            },
             body: JSON.stringify(settings.value)
           });
-          const data = await res.json();
-          showSaveStatus(data.message || '设置已保存', res.ok);
+          const data = await res.json().catch(() => ({}));
+          if (res.ok) {
+            showSaveStatus(data.message || '设置已保存', true);
+            // 用后端落盘后的真实值回填，避免界面停留在没保存成功的输入上
+            if (data.sync) settings.value = data.sync;
+          } else {
+            const reason = data.detail || data.error || data.message || `HTTP ${res.status}`;
+            showSaveStatus(`保存失败：${reason}`, false);
+          }
         } catch (e) {
           showSaveStatus('保存失败：网络错误', false);
         } finally {

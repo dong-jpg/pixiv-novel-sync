@@ -192,6 +192,41 @@
   {% include 'vue_components.html' ignore missing %}
 
   <script>
+    // 全站共用的 CSRF 助手。
+    //
+    // 鉴权网关（webapp.py:_check_auth）对 POST/PUT/PATCH/DELETE 强制校验
+    // X-CSRF-Token，只有配置了 DASHBOARD_TOKEN 时才生效——所以本机开发（无 token，
+    // 走 loopback 放行分支）完全察觉不到，一上生产就变成清一色 403，而且错误体是
+    // {"error": ...}，页面里那些只读 data.message 的分支会把失败显示成成功。
+    //
+    // 因此所有变更类请求都必须走 window.csrfFetch，不要自己拼 fetch。
+    let _csrfToken = null;
+    window.ensureCsrfToken = async function () {
+      if (_csrfToken) return _csrfToken;
+      const response = await fetch('/api/csrf-token');
+      const data = await response.json();
+      _csrfToken = data.csrf_token;
+      return _csrfToken;
+    };
+    window.csrfFetch = async function (url, options) {
+      const opts = Object.assign({}, options);
+      const method = (opts.method || 'GET').toUpperCase();
+      if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+        opts.headers = Object.assign({}, opts.headers, {
+          'X-CSRF-Token': await window.ensureCsrfToken(),
+        });
+      }
+      return fetch(url, opts);
+    };
+    // 从任意响应里取出可读的失败原因：后端错误体有 error / detail 两种字段，
+    // 只读 message 会得到 undefined。
+    window.errorText = function (data, response) {
+      if (data && (data.detail || data.error || data.message)) {
+        return data.detail || data.error || data.message;
+      }
+      return `HTTP ${response ? response.status : '?'}`;
+    };
+
     window.initVueApp = function(setupFunc) {
       const { createApp } = Vue;
       const app = createApp(setupFunc);

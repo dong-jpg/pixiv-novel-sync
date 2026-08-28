@@ -158,7 +158,7 @@
     setStep(1, 'active'); setStep(2, 'pending'); setStep(3, 'pending');
     showStatus($('statusBox'), 'pending', spin + '正在启动自动登录...');
     try {
-      const resp = await fetch('/api/token-jobs', { method: 'POST' });
+      const resp = await csrfFetch('/api/token-jobs', { method: 'POST' });
       const data = await resp.json();
       taskId = data.task_id;
       setStep(1, 'done'); setStep(2, 'active');
@@ -199,7 +199,7 @@
   $('oauthBtn').addEventListener('click', async () => {
     $('oauthBtn').disabled = true; $('oauthBtn').innerHTML = spin + '生成链接...';
     try {
-      const data = await (await fetch('/api/token-jobs', { method: 'POST' })).json();
+      const data = await (await csrfFetch('/api/token-jobs', { method: 'POST' })).json();
       currentOAuthTaskId = data.task_id;
       if (data.login_url) { window.open(data.login_url, '_blank'); showStatus($('oauthStatus'), 'waiting', '请在新标签页完成授权，然后粘贴跳转 URL。'); }
     } catch (e) { showStatus($('oauthStatus'), 'error', '失败：' + escapeHtml(e.message)); }
@@ -216,14 +216,14 @@
     $('exchangeBtn').disabled = true; $('exchangeBtn').innerHTML = spin + '验证中...';
     showStatus($('oauthStatus'), 'pending', spin + '正在验证 Token...');
     try {
-      const resp = await fetch('/oauth/exchange/' + currentOAuthTaskId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callback_url: url }) });
+      const resp = await csrfFetch('/oauth/exchange/' + currentOAuthTaskId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callback_url: url }) });
       const data = await resp.json();
       if (resp.ok && data.refresh_token) {
         $('oauthResult').classList.remove('hidden');
         $('oauthResultStatus').innerHTML = '<span class="text-green-600 font-semibold">成功</span>';
         $('oauthResultUserId').textContent = data.user_id || '-';
         $('oauthResultToken').textContent = data.refresh_token;
-        const sr = await fetch('/api/save-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: data.refresh_token, user_id: data.user_id || '' }) });
+        const sr = await csrfFetch('/api/save-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: data.refresh_token, user_id: data.user_id || '' }) });
         showStatus($('oauthStatus'), sr.ok ? 'success' : 'waiting', sr.ok ? '<strong>成功！</strong>Token 已保存。' : 'Token 获取成功，但写入失败。请手动复制。');
       } else { showStatus($('oauthStatus'), 'error', '<strong>失败：</strong>' + escapeHtml(data.error || '无效链接')); }
     } catch (e) { showStatus($('oauthStatus'), 'error', '异常：' + escapeHtml(e.message)); }
@@ -235,7 +235,7 @@
     if (!token) { showStatus($('manualStatus'), 'error', '请提供 refresh_token'); return; }
     $('manualSaveBtn').disabled = true; $('manualSaveBtn').innerHTML = spin + '保存中...';
     try {
-      const resp = await fetch('/api/save-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: token, user_id: userId }) });
+      const resp = await csrfFetch('/api/save-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: token, user_id: userId }) });
       showStatus($('manualStatus'), resp.ok ? 'success' : 'error', resp.ok ? '<strong>已保存！</strong>' : '<strong>失败</strong>');
     } catch (e) { showStatus($('manualStatus'), 'error', '网络错误'); }
     $('manualSaveBtn').disabled = false; $('manualSaveBtn').innerHTML = '保存 Token 凭证';
@@ -253,7 +253,7 @@
           $('resultStatus').innerHTML = '<span class="text-green-600 font-semibold">成功</span>';
           $('resultUserId').textContent = data.user_id || '-';
           $('resultToken').textContent = data.refresh_token;
-          const sr = await fetch('/oauth/save/' + tid, { method: 'POST' });
+          const sr = await csrfFetch('/oauth/save/' + tid, { method: 'POST' });
           if (sr.ok) { $('resultSaved').innerHTML = '<span class="text-green-600 font-semibold">已应用</span>'; showStatus($('statusBox'), 'success', '<strong>完成！</strong>'); }
         } else { showStatus($('statusBox'), 'error', '异常：' + escapeHtml(data.message || '中断')); }
       } catch (e) { showStatus($('statusBox'), 'error', '检查失败'); }

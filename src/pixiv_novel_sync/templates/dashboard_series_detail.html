@@ -350,7 +350,7 @@
         if (!confirm('确定要删除这个系列吗？\n注意：系列下的小说不会被删除，只会解除关联。此操作不可撤销。')) return;
         deleting.value = true;
         try {
-          const res = await fetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`, { method: 'DELETE' });
+          const res = await csrfFetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`, { method: 'DELETE' });
           const data = await res.json();
           if (res.ok) {
             alert('系列已删除');

@@ -506,18 +506,26 @@
       const toggleAutoSync = async () => {
         togglingAutoSync.value = true;
         try {
-          await fetch('/api/dashboard/auto-sync/toggle', {
+          const res = await csrfFetch('/api/dashboard/auto-sync/toggle', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ enabled: !autoSyncStatus.value.running })
           });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert('切换定时同步失败：' + errorText(data, res));
+          }
           await fetchAutoSync();
         } finally { togglingAutoSync.value = false; }
       };
 
       const stopAutoTask = async () => {
         try {
-          await fetch('/api/dashboard/auto-sync/stop-task', { method: 'POST' });
+          const res = await csrfFetch('/api/dashboard/auto-sync/stop-task', { method: 'POST' });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert('停止当前任务失败：' + errorText(data, res));
+          }
           setTimeout(fetchAutoSync, 1000);
         } catch(e) {}
       };

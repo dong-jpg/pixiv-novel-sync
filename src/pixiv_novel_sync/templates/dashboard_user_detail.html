@@ -340,7 +340,7 @@
         checking.value = true;
         showToast('正在检查用户状态...');
         try {
-          const res = await fetch('/api/dashboard/users/' + encodeURIComponent(userId) + '/check', { method: 'POST' });
+          const res = await csrfFetch('/api/dashboard/users/' + encodeURIComponent(userId) + '/check', { method: 'POST' });
           const data = await res.json();
           if (data.ok) {
             showToast('状态: ' + statusLabel(data.status));
@@ -361,7 +361,7 @@
         syncing.value = true;
         showToast('开始同步...');
         try {
-          const res = await fetch('/api/dashboard/users/' + encodeURIComponent(userId) + '/sync', { method: 'POST' });
+          const res = await csrfFetch('/api/dashboard/users/' + encodeURIComponent(userId) + '/sync', { method: 'POST' });
           const data = await res.json();
           if (data.ok) {
             showToast('备份任务已启动，可在首页查看进度');
