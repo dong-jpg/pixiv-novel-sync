@@ -15,7 +15,7 @@
 | `/dashboard/users/<id>` | `src/pixiv_novel_sync/templates/dashboard_user_detail.html` | 作者详情和作者小说 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/pending-deletions` | `src/pixiv_novel_sync/templates/dashboard_pending_deletions.html` | 待确认删除队列 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/logs` | `src/pixiv_novel_sync/templates/dashboard_logs.html` | 同步任务与 AI 创作任务日志 | 已接入 `library-page` / `library-page-header` |
-| `/dashboard/settings` | `src/pixiv_novel_sync/templates/dashboard_settings.html` | 同步、缓存、AI provider/agent 设置 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/settings` | `src/pixiv_novel_sync/templates/dashboard_settings.html` | 左侧分区导航（同步 / AI / 救援 / 系统）+ 右侧内容 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/preferences` | `src/pixiv_novel_sync/templates/dashboard_preferences.html` | 偏好画像与推荐 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/ai` | `src/pixiv_novel_sync/templates/dashboard_ai.html` | AI 自动写作项目、章节和 Pipeline | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/wizard` | `src/pixiv_novel_sync/templates/dashboard_wizard.html` | 创作向导与蒸馏档案 | 已接入 `library-page` / `library-page-header` |
@@ -204,13 +204,27 @@ APIs:
 
 Template: `dashboard_settings.html`
 
-用途：同步设置、缓存管理、救援 Token、AI Provider 模型目录、模型池和 Agent 管理。`#ai-api` 展示目录计数、搜索、人工模型、同步 operation 与旧目录状态；`#ai-model-pools` 编辑有序成员、后备池、引用关系和 Agent 的 `fixed`/`pool` 绑定。
+用途：同步设置、缓存管理、救援 Token、AI Provider 模型目录、模型池和 Agent 管理。
+
+左侧是**分区导航**（分组 + 搜索框），右侧只渲染当前分区；分区靠 URL hash 区分，可直接链接。分组与 hash 对应关系：
+
+| 分组 | 分区（hash） |
+|---|---|
+| 同步 | 基础设置 `#basic`、限速与分页 `#limits`、定时任务 `#scheduler`、手工同步 `#manual` |
+| AI | Provider 与模型目录 `#ai-api`、模型池 `#ai-model-pools`、Agent 绑定 `#ai-agents` |
+| 救援 | 救援 API Token `#rescue-api` |
+| 系统 | 图片缓存 `#cache` |
+
+搜索框按分区名 + 关键词别名过滤（关键词只用于匹配，不显示）。`#ai-api` 展示目录计数、搜索、人工模型、同步 operation 与旧目录状态；`#ai-model-pools` 编辑有序成员、后备池、引用关系和 Agent 的 `fixed`/`pool` 绑定。
+
+`#scheduler` 的任务表额外展示**优先级**（P1 收藏 / P2 追更系列 / P3 其余）、**可让位**标记与**下次运行时间**，三者都从 `GET /api/dashboard/auto-sync/status` 的 `task_priorities` / `task_preemptible` / `task_next_run` 读取——优先级的唯一事实来源是后端 `web/managers.py:SCHEDULER_TASK_CONFIGS`，前端不再另存一份。行顺序与后端声明顺序一致，即抢槽次序。`#limits` 的「收藏最大页数」对应 `sync.bookmark_max_pages_per_run`，留空时回落到 `max_pages_per_run`。
 
 APIs:
 
 - `GET /api/dashboard/settings`
 - `POST /api/dashboard/settings`
 - `POST /api/dashboard/settings/reload`
+- `GET /api/dashboard/auto-sync/status`（优先级、可让位、下次运行时间）
 - `GET /api/cache/status`
 - `POST /api/cache/clear`
 - `POST /api/dashboard/sync/{task_type}`
