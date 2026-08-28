@@ -12,7 +12,7 @@ def test_preference_analyze_route_runs_shared_job(tmp_path, monkeypatch):
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.post(
@@ -49,7 +49,7 @@ def test_preference_analyze_writes_task_log(tmp_path, monkeypatch):
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.post(

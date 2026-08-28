@@ -50,7 +50,7 @@ def make_cover_client(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("PIXIV_DB_PATH", str(db_path))
     monkeypatch.setenv("PIXIV_PUBLIC_DIR", str(public_dir))
     monkeypatch.setenv("PIXIV_PRIVATE_DIR", str(private_dir))
-    app = create_app(config_path=str(config_path), env_path=str(env_path))
+    app = create_app(config_path=str(config_path), env_path=str(env_path), start_scheduler=False)
     app.config["TESTING"] = True
     db = Database(db_path)
     db.init_schema()

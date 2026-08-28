@@ -17,7 +17,7 @@ def test_ai_and_wizard_routes_render_distinct_pages(tmp_path, monkeypatch):
         "  auto_sync_enabled: false\n",
         encoding="utf-8",
     )
-    client = create_app(config_path=str(config_path), env_path=str(env_path)).test_client()
+    client = create_app(config_path=str(config_path), env_path=str(env_path), start_scheduler=False).test_client()
 
     ai = client.get("/dashboard/ai", environ_base={"REMOTE_ADDR": "127.0.0.1"})
     wizard = client.get("/dashboard/wizard", environ_base={"REMOTE_ADDR": "127.0.0.1"})

@@ -1060,7 +1060,7 @@ def test_public_rescue_prefix_bypasses_dashboard_session_only(
     monkeypatch.setenv("PIXIV_DB_PATH", str(db_path))
     env_path = tmp_path / "secured.env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    secured_app = create_app(env_path=str(env_path))
+    secured_app = create_app(env_path=str(env_path), start_scheduler=False)
     secured_app.config.update(TESTING=True)
     secured_client = secured_app.test_client()
 
@@ -1079,7 +1079,7 @@ def test_dashboard_rescue_override_uses_existing_csrf_protection(
     monkeypatch.setenv("PIXIV_DB_PATH", str(db_path))
     env_path = tmp_path / "csrf.env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    csrf_app = create_app(env_path=str(env_path))
+    csrf_app = create_app(env_path=str(env_path), start_scheduler=False)
     csrf_app.config.update(TESTING=True)
     _seed_rescue_data(db_path)
     csrf_client = csrf_app.test_client()

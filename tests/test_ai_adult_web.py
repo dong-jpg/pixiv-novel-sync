@@ -789,7 +789,7 @@ def test_webapp_logs_scope_adult_jobs_and_csrf_blocks_adult_mutation(
         "PIXIV_FLASK_SECRET=test-app-secret\n",
         encoding="utf-8",
     )
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     app.config.update(TESTING=True)
     client = app.test_client()
     assert client.post(

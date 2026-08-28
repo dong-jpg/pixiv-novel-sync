@@ -20,7 +20,7 @@ def _create_test_app(tmp_path: Path, monkeypatch):
         "  auto_sync_enabled: false\n",
         encoding="utf-8",
     )
-    app = create_app(config_path=str(config_path), env_path=str(env_path))
+    app = create_app(config_path=str(config_path), env_path=str(env_path), start_scheduler=False)
     app.config["TESTING"] = True
     return app
 

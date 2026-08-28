@@ -13,7 +13,7 @@ def test_no_dashboard_token_allows_localhost(tmp_path, monkeypatch):
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.get("/api/health", environ_base={"REMOTE_ADDR": "127.0.0.1"})
@@ -28,7 +28,7 @@ def test_health_version_uses_package_version_source(tmp_path, monkeypatch):
     monkeypatch.setattr("pixiv_novel_sync.webapp.__version__", "sentinel-package-version")
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.get("/api/health", environ_base={"REMOTE_ADDR": "127.0.0.1"})
@@ -42,7 +42,7 @@ def test_no_dashboard_token_blocks_non_localhost(tmp_path, monkeypatch):
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.get("/dashboard", environ_base={"REMOTE_ADDR": "203.0.113.10"})
@@ -61,7 +61,7 @@ def test_configured_token_missing_session_returns_403_for_adult_api(
         "PIXIV_REFRESH_TOKEN=test\nDASHBOARD_TOKEN=secret-token\n",
         encoding="utf-8",
     )
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
 
     response = app.test_client().post(
         "/api/dashboard/ai/polish/adult/stream",
@@ -78,10 +78,10 @@ def test_flask_secret_fallback_persists_to_env(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
 
-    first_app = create_app(env_path=str(env_path))
+    first_app = create_app(env_path=str(env_path), start_scheduler=False)
     first_secret = first_app.secret_key
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
-    second_app = create_app(env_path=str(env_path))
+    second_app = create_app(env_path=str(env_path), start_scheduler=False)
 
     content = env_path.read_text(encoding="utf-8")
     assert first_secret
@@ -106,7 +106,7 @@ def test_dashboard_sync_start_submits_web_jobspec(tmp_path, monkeypatch):
         return state
 
     monkeypatch.setattr("pixiv_novel_sync.webapp.JobRunner.run", fake_run)
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.post("/api/dashboard/sync/start")
@@ -133,7 +133,7 @@ def test_dashboard_sync_status_reads_shared_web_job(tmp_path, monkeypatch):
         return self.manager.get_job(job_id)
 
     monkeypatch.setattr("pixiv_novel_sync.webapp.JobRunner.run", fake_run)
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     started = client.post("/api/dashboard/sync/start").get_json()
@@ -173,7 +173,7 @@ def test_oauth_exchange_response_redacts_tokens(tmp_path, monkeypatch):
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     start_response = client.post("/oauth/start")
@@ -213,7 +213,7 @@ def test_no_token_blocks_proxied_request_when_proxy_untrusted(tmp_path, monkeypa
     monkeypatch.delenv("DASHBOARD_TRUST_PROXY", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.get(
@@ -231,7 +231,7 @@ def test_no_token_blocks_spoofed_local_xff_when_proxy_untrusted(tmp_path, monkey
     monkeypatch.setenv("DASHBOARD_TRUST_PROXY", "false")
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.get(
@@ -249,7 +249,7 @@ def test_no_token_blocks_spoofed_local_real_ip_when_proxy_untrusted(tmp_path, mo
     monkeypatch.setenv("DASHBOARD_TRUST_PROXY", "false")
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.get(
@@ -266,7 +266,7 @@ def test_security_headers_are_set(tmp_path, monkeypatch):
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.get("/api/health", environ_base={"REMOTE_ADDR": "127.0.0.1"})
@@ -281,7 +281,7 @@ def test_login_page_declares_utf8_and_keeps_chinese_text(tmp_path, monkeypatch):
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\nDASHBOARD_TOKEN=secret-token\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.get("/api/auth/login")
@@ -300,7 +300,7 @@ def test_csrf_required_for_authenticated_mutating_requests(tmp_path, monkeypatch
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\nDASHBOARD_TOKEN=secret-token\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     assert client.post("/api/auth/login", data={"token": "secret-token"}).status_code == 302
@@ -317,7 +317,7 @@ def test_login_rate_limit_blocks_repeated_failures(tmp_path, monkeypatch):
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\nDASHBOARD_TOKEN=secret-token\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     responses = [client.post("/api/auth/login", data={"token": "bad"}) for _ in range(6)]
@@ -340,7 +340,7 @@ def test_no_token_trusts_xff_client_when_proxy_trusted(tmp_path, monkeypatch):
     monkeypatch.delenv("DASHBOARD_TRUSTED_PROXY_HOPS", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     allowed = client.get(
@@ -365,7 +365,7 @@ def test_no_token_blocks_missing_xff_when_proxy_trusted(tmp_path, monkeypatch):
     monkeypatch.delenv("DASHBOARD_TRUSTED_PROXY_HOPS", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.get(
@@ -383,7 +383,7 @@ def test_no_token_blocks_short_xff_chain_when_proxy_trusted(tmp_path, monkeypatc
     monkeypatch.setenv("DASHBOARD_TRUSTED_PROXY_HOPS", "2")
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.get(
@@ -404,7 +404,7 @@ def test_no_token_ignores_spoofed_leftmost_xff_when_proxy_trusted(tmp_path, monk
     monkeypatch.delenv("DASHBOARD_TRUSTED_PROXY_HOPS", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.get(
@@ -424,7 +424,7 @@ def test_login_rate_limit_not_bypassed_by_rotating_spoofed_xff(tmp_path, monkeyp
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\nDASHBOARD_TOKEN=secret-token\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     # 真实客户端恒为 198.51.100.5（右侧），攻击者每次伪造不同的最左 IP

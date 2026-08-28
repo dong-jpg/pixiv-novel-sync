@@ -8,7 +8,7 @@ def test_dashboard_novels_api_supports_bookmark_category(tmp_path, monkeypatch):
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.get(
@@ -27,7 +27,7 @@ def test_dashboard_novels_api_supports_default_category(tmp_path, monkeypatch):
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     response = client.get(

@@ -8,7 +8,7 @@ def test_preference_analyze_accepts_authenticated_csrf_request(tmp_path, monkeyp
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\nDASHBOARD_TOKEN=secret-token\n", encoding="utf-8")
-    app = create_app(env_path=str(env_path))
+    app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
     assert client.post("/api/auth/login", data={"token": "secret-token"}).status_code == 302

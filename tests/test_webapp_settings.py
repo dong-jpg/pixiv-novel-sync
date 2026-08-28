@@ -85,7 +85,7 @@ def test_dashboard_settings_save_returns_structured_error_for_invalid_payload(tm
     config_path.write_text("sync:\n  bookmark_restricts:\n    - public\n", encoding="utf-8")
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
-    app = create_app(config_path=str(config_path), env_path=str(env_path))
+    app = create_app(config_path=str(config_path), env_path=str(env_path), start_scheduler=False)
 
     response = app.test_client().post(
         "/api/dashboard/settings",
