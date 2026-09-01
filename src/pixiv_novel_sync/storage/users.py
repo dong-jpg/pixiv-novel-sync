@@ -30,6 +30,11 @@ class UsersMixin:
             )
             self._commit_if_needed()
 
+    # 连续多少轮判不出状态就算「已知受限」，之后降频巡检
+    RESTRICTED_STREAK_THRESHOLD = 3
+    # 已知受限用户的复查间隔（天）
+    RESTRICTED_RECHECK_DAYS = 7
+
     def get_users_for_status_check(self, limit: int | None = None) -> list[dict[str, Any]]:
         """按 last_checked_at 升序返回待状态检查的用户（从未检查过的排最前）。
 
@@ -39,30 +44,50 @@ class UsersMixin:
         用户状态判不出来触发 unknown 熔断后，下一轮又从同一个固定顺序的开头跑，
         永远走不到第 194 个，实测 105/298 个用户超过 3 天从未被检查。改成按
         last_checked_at 轮转后，被熔断跳过的尾部下一轮自然排到最前面。
+
+        另外排除「已知受限」用户：连续 ``RESTRICTED_STREAK_THRESHOLD`` 轮判不出状态的
+        账号（生产实测 6 个恒定返回「您的访问权限已经被限制了」，属账号级权限限制而非
+        限流）改为每 ``RESTRICTED_RECHECK_DAYS`` 天才查一次。跳过必须发生在这条 SQL 里
+        而不是巡检循环里：只有根本不进入条目列表，它们才既不占 consecutive_unknown 的
+        熔断额度，也不会把真实的连续 unknown streak 清零。受限判定不是永久的——过期后
+        重新纳入，这次若查出确定结果，``upsert_user_status`` 就把 streak 归零。
         """
         sql = (
             "SELECT user_id, name FROM users "
+            # 已知受限且刚查过不久 ⇒ 本轮跳过；三个 OR 分支是该条件的反面
+            "WHERE restricted_streak < ? "
+            "   OR last_checked_at IS NULL "
+            "   OR last_checked_at < datetime('now', ?) "
             # (last_checked_at IS NOT NULL) 为 0/1，保证 NULL（从未检查）永远排最前
             "ORDER BY (last_checked_at IS NOT NULL), last_checked_at, user_id"
         )
-        params: tuple[Any, ...] = ()
+        params: tuple[Any, ...] = (
+            int(self.RESTRICTED_STREAK_THRESHOLD),
+            f"-{int(self.RESTRICTED_RECHECK_DAYS)} days",
+        )
         if limit is not None and int(limit) > 0:
             sql += " LIMIT ?"
-            params = (int(limit),)
+            params = params + (int(limit),)
         rows = self.conn.execute(sql, params).fetchall()
         return [{"user_id": row["user_id"], "name": row["name"]} for row in rows]
 
     def upsert_user_status(self, user_id: int, status: str) -> None:
-        """更新用户状态；status 为 "unknown" 时只刷新 last_checked_at，不改写 status。"""
+        """更新用户状态；status 为 "unknown" 时只刷新 last_checked_at，不改写 status。
+
+        同时维护 restricted_streak：unknown 累加，任何确定结论归零。降频逻辑见
+        ``get_users_for_status_check``。
+        """
         with self._lock:
             if status == UNKNOWN_STATUS:
                 self.conn.execute(
-                    "UPDATE users SET last_checked_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+                    "UPDATE users SET last_checked_at = CURRENT_TIMESTAMP, "
+                    "restricted_streak = restricted_streak + 1 WHERE user_id = ?",
                     (user_id,),
                 )
             else:
                 self.conn.execute(
-                    "UPDATE users SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+                    "UPDATE users SET status = ?, last_checked_at = CURRENT_TIMESTAMP, "
+                    "restricted_streak = 0 WHERE user_id = ?",
                     (status, user_id),
                 )
             self._commit_if_needed()

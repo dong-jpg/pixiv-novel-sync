@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -661,3 +662,148 @@ def test_normal_run_still_reports_success_level() -> None:
 
     assert reporter.logs[-1][0] == "success"
     assert not any(level == "error" for level, _ in reporter.logs)
+
+
+# --------------------------------------------------------------------------
+# 已知受限用户降频巡检
+# --------------------------------------------------------------------------
+
+
+def _user_streak(db: Database, user_id: int) -> int:
+    row = db.conn.execute(
+        "SELECT restricted_streak FROM users WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    return int(row[0])
+
+
+def test_unknown_user_status_increments_restricted_streak(db: Database) -> None:
+    """连续 unknown 累加 restricted_streak，确定结果归零。
+
+    生产实测 6 个用户（73342541 等）恒定返回「您的访问权限已经被限制了」——那是账号级
+    权限限制，不是限流，三态判定正确地把它们留在 unknown。但它们每轮都被巡检、每轮都
+    白占一格 consecutive_unknown 熔断额度（上限 15）。降频的前提是先能识别出
+    「这个账号一直查不出来」。
+    """
+    db.upsert_user(UserRecord(user_id=7, name="受限作者", account="a", raw_json="{}"))
+
+    for expected in (1, 2, 3):
+        db.upsert_user_status(7, "unknown")
+        assert _user_streak(db, 7) == expected
+
+    db.upsert_user_status(7, "normal")
+    assert _user_streak(db, 7) == 0
+
+    # 归零后能重新累计：受限判定不是一次性开关
+    db.upsert_user_status(7, "unknown")
+    assert _user_streak(db, 7) == 1
+
+
+@pytest.mark.parametrize("definite_status", ["normal", "no_novels", "suspended", "restricted"])
+def test_restricted_streak_resets_on_any_definite_status(db: Database, definite_status: str) -> None:
+    """只要拿到确定结论就归零，不只是 normal。"""
+    db.upsert_user(UserRecord(user_id=8, name="作者", account="a", raw_json="{}"))
+    for _ in range(Database.RESTRICTED_STREAK_THRESHOLD):
+        db.upsert_user_status(8, "unknown")
+
+    db.upsert_user_status(8, definite_status)
+
+    assert _user_streak(db, 8) == 0
+
+
+def test_restricted_users_are_polled_at_most_weekly(db: Database) -> None:
+    """到阈值的受限用户在 RESTRICTED_RECHECK_DAYS 天内不再进入巡检清单。
+
+    跳过发生在 SQL 层：受限用户根本不会进入 ``_process_status_items`` 的条目列表，
+    所以既不计入 consecutive_unknown，也不会把真实的 unknown streak 清零。
+    """
+    db.upsert_user(UserRecord(user_id=1, name="正常", account="a", raw_json="{}"))
+    db.upsert_user(UserRecord(user_id=2, name="受限", account="b", raw_json="{}"))
+
+    for _ in range(Database.RESTRICTED_STREAK_THRESHOLD):
+        db.upsert_user_status(2, "unknown")
+    db.upsert_user_status(1, "normal")
+
+    assert [user["user_id"] for user in db.get_users_for_status_check()] == [1]
+
+    # 降频不是永久拉黑：超过复查间隔后重新纳入，若这次查出确定结果 streak 就归零
+    db.conn.execute(
+        "UPDATE users SET last_checked_at = datetime('now', ?) WHERE user_id = 2",
+        (f"-{Database.RESTRICTED_RECHECK_DAYS + 1} days",),
+    )
+    db.conn.commit()
+
+    assert 2 in [user["user_id"] for user in db.get_users_for_status_check()]
+
+
+def test_restricted_streak_below_threshold_is_still_polled(db: Database) -> None:
+    """未到阈值的零星 unknown 不降频——真限流恢复后必须立刻回到正常巡检节奏。"""
+    db.upsert_user(UserRecord(user_id=3, name="偶发", account="c", raw_json="{}"))
+    for _ in range(Database.RESTRICTED_STREAK_THRESHOLD - 1):
+        db.upsert_user_status(3, "unknown")
+
+    assert [user["user_id"] for user in db.get_users_for_status_check()] == [3]
+
+
+def test_production_restricted_users_are_all_deferred(db: Database) -> None:
+    """生产实测的 6 个受限账号全部退出巡检清单，不再各吃一格 consecutive_unknown。
+
+    这是本次改动的核心目的：熔断上限只有 15，这 6 个恒定 unknown 的账号每轮都白占
+    额度。跳过发生在 SQL 层，它们根本不会传给 ``_process_status_items``。
+    """
+    restricted_ids = (73342541, 127445288, 59683986, 86295739, 13766533, 37152734)
+    for index, user_id in enumerate(restricted_ids):
+        db.upsert_user(UserRecord(user_id=user_id, name=f"受限{index}", account="r", raw_json="{}"))
+        for _ in range(Database.RESTRICTED_STREAK_THRESHOLD):
+            db.upsert_user_status(user_id, "unknown")
+    db.upsert_user(UserRecord(user_id=42, name="正常", account="n", raw_json="{}"))
+
+    assert [user["user_id"] for user in db.get_users_for_status_check()] == [42]
+
+
+def test_user_status_list_skips_deferred_restricted_users(db: Database) -> None:
+    """job 层的清单函数走同一条 SQL，降频对巡检任务同样生效。"""
+    db.upsert_user(UserRecord(user_id=6, name="正常", account="a", raw_json="{}"))
+    db.upsert_user(UserRecord(user_id=9, name="受限", account="b", raw_json="{}"))
+    for _ in range(Database.RESTRICTED_STREAK_THRESHOLD):
+        db.upsert_user_status(9, "unknown")
+
+    users = services._list_users_for_status_check(db)
+
+    assert [user["user_id"] for user in users] == [6]
+
+
+def test_restricted_streak_migration_is_idempotent(tmp_path: Path) -> None:
+    """旧库缺列时补列并默认 0；无版本表，DDL 每次启动重跑必须幂等。"""
+    db_path = tmp_path / "legacy-users.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE users (
+                user_id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                account TEXT,
+                raw_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'unknown',
+                last_checked_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO users (user_id, name, raw_json) VALUES (5, '旧作者', '{}');
+            """
+        )
+    conn.close()
+
+    database = Database(db_path)
+    try:
+        database.init_schema()
+        columns = {row[1] for row in database.conn.execute("PRAGMA table_info(users)").fetchall()}
+        assert "restricted_streak" in columns
+        assert _user_streak(database, 5) == 0
+    finally:
+        database.close()
+
+    again = Database(db_path)
+    try:
+        again.init_schema()
+        assert _user_streak(again, 5) == 0
+    finally:
+        again.close()

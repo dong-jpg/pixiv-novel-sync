@@ -26,6 +26,7 @@ class SchemaMixin:
                 raw_json TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'unknown',
                 last_checked_at TEXT,
+                restricted_streak INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -128,7 +129,7 @@ class SchemaMixin:
             CREATE INDEX IF NOT EXISTS idx_sources_novel_id ON sources(novel_id);
             """
         )
-        # 迁移：为旧版 users 表添加 status 和 last_checked_at 字段
+        # 迁移：为旧版 users 表添加 status、last_checked_at、restricted_streak 字段
         self._migrate_users_table()
         # 修复：重置错误标记为 cleared 的用户状态
         self._fix_cleared_status()
@@ -268,13 +269,22 @@ class SchemaMixin:
             self.conn.execute("PRAGMA foreign_keys=ON")
 
     def _migrate_users_table(self) -> None:
-        """为旧版 users 表添加 status 和 last_checked_at 字段"""
+        """为旧版 users 表添加 status、last_checked_at 和 restricted_streak 字段"""
         cursor = self.conn.execute("PRAGMA table_info(users)")
         columns = {row[1] for row in cursor.fetchall()}
         if "status" not in columns:
             self.conn.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'")
         if "last_checked_at" not in columns:
             self.conn.execute("ALTER TABLE users ADD COLUMN last_checked_at TEXT")
+        if "restricted_streak" not in columns:
+            # 连续判不出状态的轮次。生产实测 6 个账号恒定返回「您的访问权限已经被限制了」，
+            # 这是账号级权限限制而非限流，三态判定正确地留在 unknown（不会误标删除），
+            # 但它们每轮都白占一次 API 请求和一格 consecutive_unknown 熔断额度（上限 15）。
+            # 累计到阈值后降频巡检，见 storage/users.py:get_users_for_status_check。
+            # DEFAULT 0 让旧库现有行直接补 0，无需回填 UPDATE。
+            self.conn.execute(
+                "ALTER TABLE users ADD COLUMN restricted_streak INTEGER NOT NULL DEFAULT 0"
+            )
 
     def _fix_cleared_status(self) -> None:
         """重置错误标记为 cleared 的用户状态为 unknown"""

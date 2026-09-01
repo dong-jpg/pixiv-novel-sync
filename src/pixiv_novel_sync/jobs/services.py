@@ -697,7 +697,8 @@ def _list_users_for_status_check(db: Database) -> list[dict[str, Any]]:
     """状态检查专用的用户清单：按 last_checked_at 轮转，最久未检查的排最前。
 
     不能用 ``_list_all_users``（走 ``list_users`` 的列表页排序），否则每轮顺序固定，
-    熔断一次就把队尾永久饿死。见 ``get_users_for_status_check`` 的注释。
+    熔断一次就把队尾永久饿死。见 ``get_users_for_status_check`` 的注释——清单里还会
+    剔除降频中的已知受限用户，所以 total_users 可能小于全部用户数。
     """
     return db.get_users_for_status_check()
 
