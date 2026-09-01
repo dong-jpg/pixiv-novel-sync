@@ -352,3 +352,106 @@ def test_worker_exception_propagates_to_caller() -> None:
 def test_preempted_task_retries_soon_instead_of_skipping_a_period() -> None:
     """让位后必须短退避续跑，顺延整个周期等于白白跳过一轮。"""
     assert SCHEDULER_PREEMPT_RETRY_SECONDS < 6 * 3600
+
+
+# ── 三处注册表必须与 SCHEDULER_TASK_CONFIGS 保持齐全 ──────────────────
+#
+# 漏注册全都是**静默**失败，不会抛异常也不会红：
+# - web/utils.py:_job_spec 缺分支 → JobSpec 落到 JobType.SYNC，任务统计归错类；
+# - jobs/tasks.py:execute_task 缺分支 → 只有真跑到那一轮才抛 RuntimeError；
+# - jobs/tasks.py:_TASK_LABELS 缺条目 → job 内部日志显示英文键名；
+# - web/managers.py:TASK_LABELS 缺条目 → 任务日志页显示英文键名。
+# 2026-08-28 已逐项核对 11 个任务全部齐全，下面的断言是防后续新增任务时回归。
+# 新增 task_type 的完整清单见 docs/JOB_SYSTEM.md §4。
+
+# 调度器任务名 → `_scheduler_job_spec` 归一化后的内部 task_type。
+# 两者不同名的只有这两个（见 web/utils.py:_scheduler_job_spec 与
+# web/managers.py:SCHEDULER_TASK_TYPE_ALIASES，两处必须同一套映射）。
+EXPECTED_SCHEDULER_TASKS = {
+    "bookmarks": "bookmark",
+    "subscribed_series": "subscribed_series",
+    "following_list": "following_users",
+    "following_novels": "following_novels",
+    "user_status": "user_status",
+    "novel_status": "novel_status",
+    "series_status": "series_status",
+    "user_backup": "user_backup",
+    "pending_deletion_detection": "pending_deletion_detection",
+    "preference_analyze": "preference_analyze",
+    "recommendation_run": "recommendation_run",
+}
+
+
+def test_scheduler_task_roster_is_exactly_the_known_eleven() -> None:
+    """任务清单变化必须是显式动作。
+
+    新增/删除定时任务时这条会红——这正是目的：改这个集合前先按
+    docs/JOB_SYSTEM.md §4 把四处注册表（dispatch、两个标签字典、_job_spec 分支）
+    和 SyncSettings 三件套一起补齐，别只加 SCHEDULER_TASK_CONFIGS 一处。
+    """
+    assert {config["name"] for config in SCHEDULER_TASK_CONFIGS} == set(EXPECTED_SCHEDULER_TASKS)
+    # 名字不能重复：SCHEDULER_TASK_CONFIG_BY_NAME 是按名字建索引的，重名会静默丢一条
+    names = [config["name"] for config in SCHEDULER_TASK_CONFIGS]
+    assert len(names) == len(set(names)) == 11
+
+def test_every_scheduler_task_is_registered_in_all_three_tables() -> None:
+    """每个定时任务在三处独立注册表 + 分派器里都必须齐全。"""
+    import inspect
+
+    from pixiv_novel_sync.jobs.tasks import _TASK_LABELS, execute_task
+    from pixiv_novel_sync.web.managers import TASK_LABELS
+    from pixiv_novel_sync.web.utils import _scheduler_job_spec
+
+    dispatch_source = inspect.getsource(execute_task)
+
+    for config in SCHEDULER_TASK_CONFIGS:
+        name = config["name"]
+
+        # 1) JobSpec 能构造出来，且归一化后的 task_type 与预期一致
+        spec = _scheduler_job_spec(name)
+        assert spec.task_types, f"{name} 构造出空 task_types"
+        internal = spec.task_types[0]
+        assert internal == EXPECTED_SCHEDULER_TASKS[name], (
+            f"{name} 归一化成了 {internal!r}，与 SCHEDULER_TASK_TYPE_ALIASES 不一致"
+        )
+
+        # 2) 调度器名 → 中文标签（任务日志页用；webapp 允许回落到归一化名）
+        assert TASK_LABELS.get(name) or TASK_LABELS.get(internal), (
+            f"web/managers.py:TASK_LABELS 缺少 {name}"
+        )
+
+        # 3) 内部 task_type → 中文标签（job 内部日志用）
+        assert internal in _TASK_LABELS, f"jobs/tasks.py:_TASK_LABELS 缺少 {internal}"
+
+        # 4) execute_task 里有对应分派分支。缺了不会在导入期报错，只会等到真跑那一轮
+        #    才抛 RuntimeError("Unsupported task type ...")，所以这里查源码字面量。
+        assert f'"{internal}"' in dispatch_source, (
+            f"jobs/tasks.py:execute_task 没有 {internal!r} 的分派分支"
+        )
+
+
+def test_scheduler_tasks_map_to_their_own_job_type() -> None:
+    """job_type 映射漏分支不报错，只是静默落到 JobType.SYNC，任务统计归错类。"""
+    from pixiv_novel_sync.jobs.models import JobType
+    from pixiv_novel_sync.web.utils import _scheduler_job_spec
+
+    expected = {
+        # 四个同步类任务落到 SYNC 是设计意图，不是漏分支
+        "bookmarks": JobType.SYNC,
+        "subscribed_series": JobType.SYNC,
+        "following_list": JobType.SYNC,
+        "following_novels": JobType.SYNC,
+        # 三个状态检查是 _job_spec 里最容易漏的一类分支
+        "user_status": JobType.STATUS_CHECK,
+        "novel_status": JobType.STATUS_CHECK,
+        "series_status": JobType.STATUS_CHECK,
+        # 其余各有专属 job_type
+        "user_backup": JobType.USER_BACKUP,
+        "pending_deletion_detection": JobType.PENDING_DELETION_DETECTION,
+        "preference_analyze": JobType.PREFERENCE_ANALYZE,
+        "recommendation_run": JobType.RECOMMENDATION_RUN,
+    }
+    assert set(expected) == set(EXPECTED_SCHEDULER_TASKS)
+
+    for name, job_type in expected.items():
+        assert _scheduler_job_spec(name).job_type == job_type, name

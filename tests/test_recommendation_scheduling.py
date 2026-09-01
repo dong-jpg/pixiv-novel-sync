@@ -36,13 +36,18 @@ TASK_NAME = "recommendation_run"
 
 def test_sync_settings_exposes_recommendation_auto_sync_triple(tmp_path: Path):
     """SyncSettings 必须有 enabled / interval_hours / cron 三个字段。"""
-    settings = load_settings(None, None)
+    # 用空配置读：load_settings(None, None) 会读仓库根的 config/config.yaml（本地开发机
+    # 上真实存在且被 gitignore），断言到的就不是代码默认值了。
+    config = tmp_path / "config.yaml"
+    config.write_text("sync: {}\n", encoding="utf-8")
+    settings = load_settings(str(config), None)
 
     assert settings.sync.auto_sync_recommendation_run_enabled is False, (
         "定时推荐默认必须关闭：它会消耗 Pixiv 搜索配额，且依赖已存在的默认偏好画像"
     )
     assert settings.sync.auto_sync_recommendation_run_interval_hours == 24
-    assert settings.sync.auto_sync_recommendation_run_cron == ""
+    # 阶段二：默认 cron 从空串（走 interval）改为每天 08:50 一次
+    assert settings.sync.auto_sync_recommendation_run_cron == "50 8 * * *"
 
 
 def test_recommendation_auto_sync_reads_from_yaml(tmp_path: Path):

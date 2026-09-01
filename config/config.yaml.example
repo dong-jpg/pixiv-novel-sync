@@ -42,60 +42,84 @@ sync:
   # 系列限速
   series_sync_limit: 0  # 0 = 全部
 
-  # ---- 定时任务 ----
+  # ---- 定时任务排布 ----
+  # 所有定时任务共用一个 job 槽（BoundedSemaphore(1)，串行），所以这里排的是「预算」
+  # 而不只是「频率」：各任务注释里的单轮耗时是生产实测值（3 天 52 轮）。
+  # 优先级固定在 web/managers.py:SCHEDULER_TASK_CONFIGS：收藏 P1、追更系列 P2、其余 P3；
+  # 同级按逾期最久优先，可让位任务会给更高优先级腾槽。详见 docs/JOB_SYSTEM.md §3.6。
+  # 排布原则：P1 收藏每天 6 次均匀铺开（任何时刻最多等 4 小时）；长任务避开收藏时刻
+  # ±30 分钟，减少无谓让位；时效性弱的任务拉到隔日或隔三日。
+  #
   # 全局开关。仅在 dashboard "启用自动同步" 按钮按下时开启
   auto_sync_enabled: false
-  # 时区，决定 cron 表达式的解释。如 Asia/Shanghai / Asia/Tokyo / UTC
-  auto_sync_timezone: UTC
+  # 时区，决定 cron 表达式的解释。如 Asia/Seoul / Asia/Shanghai / UTC
+  auto_sync_timezone: Asia/Seoul
 
-  # 各任务开关 / interval / cron。cron 优先于 interval；cron 留空时使用 interval
+  # 各任务开关 / interval / cron。cron 优先于 interval；cron 留空时使用 interval。
+  # cron 解析失败是**静默**回落到 interval，所以改完务必用 settings.cron_to_next_run
+  # 逐条验算下次运行时刻。cron 值一律加引号：以 "*" 开头的裸标量会被 YAML 当成别名报错。
+
+  # P1 收藏：时效性最高，每天 6 次（单轮约 3 分钟）
   auto_sync_bookmarks_enabled: true
-  auto_sync_bookmarks_interval_hours: 6
-  auto_sync_bookmarks_cron: ""
+  auto_sync_bookmarks_interval_hours: 4
+  auto_sync_bookmarks_cron: "20 0,4,8,12,16,20 * * *"
 
+  # P2 追更系列：单轮约 13 分钟。实测连续 12 轮零新增，从 4 次/天降到 2 次
+  auto_sync_subscribed_series_enabled: true
+  auto_sync_subscribed_series_interval_hours: 12
+  auto_sync_subscribed_series_cron: "40 1,13 * * *"
+
+  # 关注用户列表：following_novels 的输入，单轮约 5 分钟
   auto_sync_following_list_enabled: true
   auto_sync_following_list_interval_hours: 24
-  auto_sync_following_list_cron: ""
+  auto_sync_following_list_cron: "30 10 * * *"
 
+  # 关注用户小说：最大预算项。每轮只跑 users_limit 个作者，按 user_last_synced 轮转，
+  # 配合 following_max_novels_per_author 后单轮从 42 分钟降到约 24 分钟，
+  # 同频率下覆盖率提升 5 倍，所以频率保持每天 4 次不动
   auto_sync_following_novels_enabled: true
   auto_sync_following_novels_interval_hours: 6
-  auto_sync_following_novels_cron: ""
-  # 0 = 不限制每轮扫描的关注用户数
-  auto_sync_following_novels_users_limit: 0
+  auto_sync_following_novels_cron: "0 3,9,15,21 * * *"
+  # 每轮扫描几个关注用户。0 = 不限制。
+  # 注意 user_backup 复用同一个值（jobs/quick_sync.py），改动会同时影响两个任务
+  auto_sync_following_novels_users_limit: 5
 
-  auto_sync_user_status_enabled: true
-  auto_sync_user_status_interval_hours: 6
-  auto_sync_user_status_cron: ""
-
+  # 小说状态巡检：预算第二大但时效性最弱，从 4 次/天降到 2 次（全库轮转周期 2.4→4.8 天）。
+  # 用户主动取消收藏/追更由 pending_deletion_detection 每天检测，不受这里降频影响
   auto_sync_novel_status_enabled: true
-  auto_sync_novel_status_interval_hours: 6
-  auto_sync_novel_status_cron: ""
+  auto_sync_novel_status_interval_hours: 12
+  auto_sync_novel_status_cron: "0 5,17 * * *"
 
+  # 用户/系列状态巡检：各自每轮都能跑完全库，隔日足够
+  auto_sync_user_status_enabled: true
+  auto_sync_user_status_interval_hours: 48
+  auto_sync_user_status_cron: "30 6 */2 * *"
   auto_sync_series_status_enabled: true
-  auto_sync_series_status_interval_hours: 6
-  auto_sync_series_status_cron: ""
+  auto_sync_series_status_interval_hours: 48
+  auto_sync_series_status_cron: "30 18 */2 * *"
 
-  auto_sync_subscribed_series_enabled: true
-  auto_sync_subscribed_series_interval_hours: 6
-  auto_sync_subscribed_series_cron: ""
-
+  # 全量备份关注用户小说：兜底，最弱时效，默认关闭
   auto_sync_user_backup_enabled: false
-  auto_sync_user_backup_interval_hours: 24
-  auto_sync_user_backup_cron: ""
+  auto_sync_user_backup_interval_hours: 72
+  auto_sync_user_backup_cron: "30 2 */3 * *"
 
+  # 检测取消收藏/追更：单轮约 34 秒，每天一次
   auto_sync_pending_detection_enabled: true
-  auto_sync_pending_detection_interval_hours: 12
-  auto_sync_pending_detection_cron: ""
+  auto_sync_pending_detection_interval_hours: 24
+  auto_sync_pending_detection_cron: "30 12 * * *"
 
+  # 增量偏好分析：纯本地计算不耗 Pixiv 配额，但同样占用那个唯一的 job 槽，
+  # 所以也要排在收藏时刻之外，每天两次足够
   auto_sync_preference_analyze_enabled: false
-  auto_sync_preference_analyze_interval_hours: 1
-  auto_sync_preference_analyze_cron: "*/30 * * * *"
+  auto_sync_preference_analyze_interval_hours: 12
+  auto_sync_preference_analyze_cron: "15 7,19 * * *"
   preference_analyze_batch_size: 200
 
-  # 定时生成推荐：需要先有默认偏好画像，且会消耗 Pixiv 搜索配额，默认关闭
+  # 定时生成推荐：一轮最多 20 条 Pixiv 检索，是唯一额外吃搜索配额的任务，每天一次；
+  # 且必须先有默认偏好画像，否则任务直接失败。默认关闭
   auto_sync_recommendation_run_enabled: false
   auto_sync_recommendation_run_interval_hours: 24
-  auto_sync_recommendation_run_cron: ""
+  auto_sync_recommendation_run_cron: "50 8 * * *"
 
   # pending_deletions 清理策略
   pending_deletion_grace_period_days: 30

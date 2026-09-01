@@ -180,7 +180,8 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 4. **接入触发源**(按需):
    - CLI:在 `cli.py` 的参数解析 / `build_job_spec_from_args` 中允许该 task_type;
    - Web:在 `webapp.py` 相应路由里用 `_submit_shared_job` 提交;
-   - Scheduler:在 `web/managers.py:SCHEDULER_TASK_CONFIGS` 增加条目(**必须带 `priority` 与 `preemptible`**,漏了会静默落到 P3/不可让位,`tests/test_scheduler_priority.py` 有防漏断言),并在 `SyncSettings` / `SettingsManager.save_sync_settings` 补 `auto_sync_my_task_{enabled,interval_hours,cron}` 三件套。`preemptible=True` 只给能从水位续跑的任务。
+   - Scheduler:在 `web/managers.py:SCHEDULER_TASK_CONFIGS` 增加条目(**必须带 `priority` 与 `preemptible`**,漏了会静默落到 P3/不可让位,`tests/test_scheduler_priority.py` 有防漏断言),并在 `SyncSettings` / `SettingsManager.save_sync_settings` 补 `auto_sync_my_task_{enabled,interval_hours,cron}` 三件套。`preemptible=True` 只给能从水位续跑的任务。调度器名与内部 task_type 不同名时(如 `bookmarks` → `bookmark`),`web/utils.py:_scheduler_job_spec` 与 `web/managers.py:SCHEDULER_TASK_TYPE_ALIASES` 必须是同一套映射,否则按任务名查不到任何历史记录。
+   - 加完后跑 `pytest tests/test_scheduler_priority.py -k registered`:那里的 `EXPECTED_SCHEDULER_TASKS` 会先红,提示上面 2/3 步和 `_job_spec` 分支是否真的都补了。
 5. **同步前端契约**:更新 `docs/frontend-api-contract.md`(以及涉及页面时的 `docs/frontend-pages.md`),让前端知道新的 task_type 字符串与标签;若响应结构变化,同步模板中的 Vue 代码。
 6. **测试**:参照 `tests/test_jobs_runner.py` 等,依赖 conftest 的 tmp 路径 fixture;验证正常完成、取消(`stop_requested` 生效)、stats 合并。
 
@@ -192,7 +193,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 - 每个任务同时有 `*_interval_hours` 与 `*_cron` 两个旋钮;**cron 非空则优先**,`cron_to_next_run(cron, now, auto_sync_timezone)` 计算下次时间(解析失败回落到 interval)。cron 在 `auto_sync_timezone`(默认 `"UTC"`)时区求值;`SettingsManager.save_sync_settings` 保存时会校验 cron 合法性。
 - env 变量始终覆盖 YAML(`load_settings` 语义)。
 
-`SyncSettings` 中各任务的默认值(priority / preemptible 见 3.6):
+`SyncSettings` 中各任务的**代码默认值**(priority / preemptible 见 3.6;生产实际排布见 5.2,与这里的默认值不同):
 
 | 任务(scheduler name) | P | 可让位 | enabled 默认 | interval_hours 默认 | cron 默认 | 附加字段 |
 |---|---|---|---|---|---|---|
@@ -200,17 +201,19 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 | subscribed_series | 2 | ✗ | True | 6 | "" | `series_max_pages_per_run`(留空跟随 `max_pages_per_run`) |
 | following_list | 3 | ✗ | True | 24 | "" | |
 | following_novels | 3 | ✓ | True | 6 | "" | `auto_sync_following_novels_users_limit`(0=全部)、`following_max_novels_per_author`(留空=不限) |
-| user_status | 3 | ✓ | True | 6 | "" | |
+| user_status | 3 | ✓ | True | 6 | "" | 已知受限用户按 `users.restricted_streak` 降频(≥3 轮判不出状态 → 每 7 天才巡检一次) |
 | novel_status | 3 | ✓ | True | 6 | "" | `novel_status_batch_size`(默认 800) |
 | series_status | 3 | ✓ | True | 6 | "" | |
-| user_backup | 3 | ✓ | False | 24 | "" | |
+| user_backup | 3 | ✓ | False | 24 | "" | 复用 `auto_sync_following_novels_users_limit` |
 | pending_deletion_detection(设置字段名为 `auto_sync_pending_detection_*`) | 3 | ✗ | True | 12 | "" | |
-| preference_analyze | 3 | ✓ | False | 1 | `"*/30 * * * *"` | `preference_analyze_batch_size`(默认 200);scheduler 提交时强制 `max_batches=1` |
-| recommendation_run | 3 | ✗ | False | 24 | "" | 依赖已存在的默认偏好画像;没有画像时任务抛 `RuntimeError("需要先生成默认偏好画像")` |
+| preference_analyze | 3 | ✓ | False | 12 | `"15 7,19 * * *"` | `preference_analyze_batch_size`(默认 200);scheduler 提交时强制 `max_batches=1` |
+| recommendation_run | 3 | ✗ | False | 24 | `"50 8 * * *"` | 依赖已存在的默认偏好画像;没有画像时任务抛 `RuntimeError("需要先生成默认偏好画像")` |
 
 表格顺序即 `SCHEDULER_TASK_CONFIGS` 的声明顺序(已按优先级排列),该顺序同时决定重启后逾期任务的错峰补偿次序。
 
-注意:preference_analyze 是唯一自带默认 cron 的任务;手动触发(web 按钮)默认 `max_batches=10`(≈2000 篇),定时触发每轮只跑 1 批。
+注意:`preference_analyze` 与 `recommendation_run` 是唯二自带默认 cron 的任务(其余默认走 interval),因为这两个都会持续占用那个唯一的 job 槽,却都不是"越勤越好":前者是纯本地计算、生产从未真正跑过,每 30 分钟一次只会挤同步任务;后者每轮最多发 20 条 Pixiv 检索,是唯一额外吃搜索配额的任务。改这两个默认值时,`settings.py` 的 dataclass 默认、`load_settings` 的回落值、`SettingsManager.save_sync_settings` 的 `_save_cron`/`_save_int` 回落值**三处**要一起改——只改前两处的话,"什么都没改就点保存"会把 cron 写成空串,任务悄悄退回按 interval 跑(`tests/test_cron_validation.py` 有防漂断言)。
+
+`preference_analyze` 手动触发(web 按钮)默认 `max_batches=10`(≈2000 篇),定时触发每轮只跑 1 批。
 
 `recommendation_run` 默认关闭:它会消耗 Pixiv 搜索配额,且必须先有默认偏好画像。启用后仍与其他同步任务共用同一个 JobManager,天然互斥,不会和收藏同步并行抢配额。手动入口 `POST /api/dashboard/recommendations/run` 保持不变。
 
@@ -223,4 +226,51 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 手动路由 `POST /api/dashboard/recommendations/run` 提交时显式传 `task_name="生成推荐"`,不依赖任何字典;而定时触发走 `_submit_scheduler_task` → `TASK_LABELS.get(task_name)`。所以**只补一个字典时,手动能显示中文、定时却会显示英文键名**——这类不一致由 `tests/test_recommendation_scheduling.py::test_every_scheduler_task_has_a_web_label` 兜住。
 
-同理,`web/utils.py:_job_spec` 里若没有对应 task_type 的分支,JobSpec 会静默落到 `JobType.SYNC`,任务统计归错类。
+同理,`web/utils.py:_job_spec` 里若没有对应 task_type 的分支,JobSpec 会静默落到 `JobType.SYNC`,任务统计归错类。这一条以及"四处注册表是否齐全"由 `tests/test_scheduler_priority.py::test_every_scheduler_task_is_registered_in_all_three_tables` / `::test_scheduler_tasks_map_to_their_own_job_type` 锁住:新增定时任务时那里的 `EXPECTED_SCHEDULER_TASKS` 会先红,提示按本文 §4 把四处补齐。
+
+### 5.2 推荐 cron 排布与实测预算基线(2026-08-28)
+
+上面那张表是**代码默认值**(大多为空 cron + 6 小时 interval),不是推荐排布。生产与 `config/config.yaml.example` 用下面这套按实测预算排的 cron,时区 `Asia/Seoul`:
+
+| 任务 | P | cron | 频率 | 单轮实测耗时 |
+|---|---|---|---|---|
+| bookmarks | 1 | `"20 0,4,8,12,16,20 * * *"` | 6 次/天 | ~3 min |
+| subscribed_series | 2 | `"40 1,13 * * *"` | 2 次/天 | ~13 min |
+| following_list | 3 | `"30 10 * * *"` | 1 次/天 | ~5 min |
+| following_novels | 3 | `"0 3,9,15,21 * * *"` | 4 次/天 | ~24 min(阶段一前 42 min) |
+| user_status | 3 | `"30 6 */2 * *"` | 隔日 | 全库一轮跑完 |
+| novel_status | 3 | `"0 5,17 * * *"` | 2 次/天 | 每轮一批 800 条 |
+| series_status | 3 | `"30 18 */2 * *"` | 隔日 | 全库一轮跑完 |
+| user_backup | 3 | `"30 2 */3 * *"` | 隔三日(默认关闭) | 最长 2.3 h |
+| pending_deletion_detection | 3 | `"30 12 * * *"` | 1 次/天 | ~34 s |
+| preference_analyze | 3 | `"15 7,19 * * *"` | 2 次/天(默认关闭) | 每轮 1 批 |
+| recommendation_run | 3 | `"50 8 * * *"` | 1 次/天(默认关闭) | ≤20 条检索 |
+
+生产实测 3 天 52 轮,单任务槽串行,总占用 4.9 小时/天(占空比 20.5%)。阶段一吞吐修复 + 阶段二 cron 重排后目标 3.8 小时/天(15.7%)。
+
+排布约束:
+
+1. P1 收藏每天 6 次均匀分布,任何时刻最多等 4 小时。
+2. 长任务(`following_novels`、`novel_status`)避开收藏时刻 ±30 分钟,减少无谓让位。
+3. 时效性弱的任务拉到隔日或隔三日。`novel_status` 从 4 次/天降到 2 次(全库轮转周期 2.4 → 4.8 天)是安全的:用户主动取消收藏/追更由 `pending_deletion_detection` 每天检测,不走状态巡检。
+4. `following_novels` 频率不降:阶段一给单作者加了配额后单轮从 42 分钟降到约 24 分钟,同频率下覆盖率提升约 5 倍,降频反而白丢吞吐。
+5. `subscribed_series` 每轮从 watchlist 头部重走(不可让位、不是水位续跑),所以只能靠降频省预算,实测连续 12 轮零新增,4 次/天 → 2 次/天。
+
+cron 解析失败是**静默**回落到 interval,所以改完必须逐条验算下次运行时刻(不是只确认"不抛异常"):
+
+```bash
+python -c "
+from pixiv_novel_sync.settings import load_settings, cron_to_next_run
+from datetime import datetime
+s = load_settings('config/config.yaml', None); tz = s.sync.auto_sync_timezone
+for attr in sorted(dir(s.sync)):
+    if attr.endswith('_cron') and getattr(s.sync, attr):
+        e = getattr(s.sync, attr); nxt = cron_to_next_run(e, None, tz)
+        assert nxt is not None, attr
+        print(f'{attr:48s} {e:26s} -> {datetime.fromtimestamp(nxt)}')
+"
+```
+
+`tests/test_cron_validation.py` 把这 11 条表达式在 `Asia/Seoul` 下的下次运行时刻与每天触发次数都钉死了,改排布时那里要同步更新。
+
+**注意:截至 2026-08-28 生产 journald 里 `selected by priority` / `submit failed` / `yielded` 均为 0 次**——旧 cron 排得过散,两个任务几乎从不同时到点,3.6 那套让位逻辑从未被触发过。改动这些 cron 后如果看到让位日志,那是机制首次生效,不是故障。

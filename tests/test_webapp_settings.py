@@ -192,7 +192,10 @@ def test_dashboard_settings_payload_includes_preference_and_pending_cleanup(tmp_
     payload = _settings_to_dict(make_settings(tmp_path))
 
     assert payload["auto_sync_preference_analyze_enabled"] is False
-    assert payload["auto_sync_preference_analyze_cron"] == "*/30 * * * *"
+    # 阶段二：默认 cron 从 "*/30 * * * *" 降到每天两次（纯本地计算，但每轮都占用唯一
+    # 那个 job 槽，半小时一次会持续挤掉同步任务）。默认值本身由
+    # tests/test_cron_validation.py 锁定，这里只验证它被原样回显给设置页。
+    assert payload["auto_sync_preference_analyze_cron"] == "15 7,19 * * *"
     assert payload["preference_analyze_batch_size"] == 200
     assert payload["pending_deletion_grace_period_days"] == 30
     assert payload["pending_deletion_cleanup_confirmed_days"] == 7
