@@ -4,6 +4,7 @@
 """
 import logging
 import sqlite3
+import time
 
 
 logger = logging.getLogger(__name__)
@@ -160,6 +161,8 @@ class SchemaMixin:
         self._migrate_reading_progress_table()
         # 迁移：为旧版 novel_texts 表添加正文完整度辅助列
         self._migrate_novel_texts_table()
+        # 迁移：把 novel_fts 的 rowid 对齐到 novel_id（历史错位索引整表重建）
+        self._migrate_novel_fts_rowid()
         self._migrate_core_foreign_keys()
         self._commit_if_needed()
 
@@ -319,6 +322,71 @@ class SchemaMixin:
             self.conn.execute(
                 "UPDATE novel_texts SET has_content = CASE WHEN TRIM(text_raw) != '' THEN 1 ELSE 0 END"
             )
+
+    def _migrate_novel_fts_rowid(self) -> None:
+        """把 novel_fts 的 rowid 对齐到 novel_id，并重建错位的历史索引。
+
+        建表时 novel_id 声明为 UNINDEXED，而 rowid 是自增值，两者完全不对应
+        （生产实测 7627 行里 rowid == novel_id 的有 0 行，如 rowid=12 对应
+        novel_id=25310744）。于是 ``WHERE novel_id = ?`` 只能全表扫描 1 GB 的
+        FTS 索引——生产实测单次 DELETE 39 秒，而每同步一篇小说都要付一次，
+        这是同步吞吐的头号瓶颈（单篇 51 秒里有 40 秒花在这）。搜索路径同样
+        受害：SELECT novel_id ... MATCH 要 0.22 秒，走 rowid 只要 0.002 秒。
+
+        改法是让 rowid 等于 novel_id，按 ID 的读写一律走 rowid（FTS5 主键，
+        O(1)）。历史数据的 rowid 全部错位，只能整表重建。
+        """
+        row = self.conn.execute("SELECT rowid, novel_id FROM novel_fts LIMIT 1").fetchone()
+        if row is None:
+            # 空索引：建表语句本身不写 rowid，后续写入路径会显式指定，无需重建。
+            return
+        if int(row[0]) == int(row[1]):
+            # 已对齐 ⇒ 幂等 no-op。探测只取一行：写入路径是唯一入口，所以要么
+            # 全部对齐（新代码）要么全部错位（旧代码）。若曾中途崩溃留下混合状态，
+            # LIMIT 1 取到的是最小 rowid，即旧的错位行，仍会触发重建——偏安全侧。
+            return
+
+        total = int(self.conn.execute("SELECT COUNT(*) FROM novel_fts").fetchone()[0])
+        logger.warning(
+            "正在重建 novel_fts 索引以对齐 rowid（%d 行）。这是一次性迁移，"
+            "期间服务启动会阻塞约 1-3 分钟，请勿中断。",
+            total,
+        )
+        started = time.time()
+        # 前面的迁移可能刚跑过 UPDATE 而把隐式事务留着（例如 _migrate_novel_texts_table
+        # 补完 has_content 后的回填）。此时 BEGIN IMMEDIATE 会抛
+        # "cannot start a transaction within a transaction"，让老库一启动就崩，
+        # 所以先把待提交的写落盘再开自己的事务。
+        self._commit_if_needed()
+        # 整个重建包在一个事务里：中断则回滚，下次启动重试，不会留下半个索引。
+        with self.transaction():
+            self.conn.execute("DROP TABLE novel_fts")
+            self.conn.execute(
+                """
+                CREATE VIRTUAL TABLE novel_fts USING fts5(
+                    novel_id UNINDEXED,
+                    title,
+                    caption,
+                    author_name,
+                    body
+                )
+                """
+            )
+            # 从权威表回填，显式指定 rowid = novel_id。
+            self.conn.execute(
+                """
+                INSERT INTO novel_fts (rowid, novel_id, title, caption, author_name, body)
+                SELECT n.novel_id, n.novel_id, n.title, COALESCE(n.caption, ''),
+                       COALESCE(u.name, ''), COALESCE(nt.text_raw, '')
+                FROM novels n
+                LEFT JOIN users u ON u.user_id = n.user_id
+                LEFT JOIN novel_texts nt ON nt.novel_id = n.novel_id
+                """
+            )
+        rebuilt = int(self.conn.execute("SELECT COUNT(*) FROM novel_fts").fetchone()[0])
+        logger.warning(
+            "novel_fts 重建完成：%d 行，耗时 %.1f 秒", rebuilt, time.time() - started
+        )
 
     def _migrate_rescue_tables(self) -> None:
         """创建救援人工纠错和单例 API Token 表。"""

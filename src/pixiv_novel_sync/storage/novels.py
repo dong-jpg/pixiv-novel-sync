@@ -347,7 +347,9 @@ class NovelsMixin:
         """删除小说及其相关数据"""
         with self.transaction():
                 old_series_ids = self._rescue_novel_series_ids(novel_id)
-                self.conn.execute("DELETE FROM novel_fts WHERE novel_id = ?", (novel_id,))
+                # FTS 走 rowid（== novel_id）：按 novel_id 会全表扫描 UNINDEXED 列，
+                # 生产实测单次 39 秒，详见 replace_fts 的说明。
+                self.conn.execute("DELETE FROM novel_fts WHERE rowid = ?", (novel_id,))
                 self.conn.execute("DELETE FROM sync_check_list WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'novel' AND item_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM recommendation_items WHERE novel_id = ?", (novel_id,))
@@ -380,15 +382,20 @@ class NovelsMixin:
     def replace_fts(self, novel_id: int, title: str, caption: str, author_name: str, body: str) -> None:
         """更新FTS索引。
 
+        必须走 rowid：novel_id 是 UNINDEXED 列，``WHERE novel_id = ?`` 只能全表扫描
+        1 GB 的 FTS 索引，生产实测单次 DELETE 39 秒，而每同步一篇小说都要付一次
+        （单篇 51 秒里 40 秒花在这）。rowid 是 FTS5 主键，同样的删除是 O(1)。
+        INSERT 也必须显式写 rowid，否则又退回自增值，与 novel_id 重新错位。
+
         ✅ Bug #6 修复: 使用 transaction() 确保 DELETE 和 INSERT 的原子性。
         注意:与upsert_novel分离调用时存在漂移风险(一个成功一个失败)。
-        Phase 5批量事务化后自然原子化。当前调用方(sync_engine.py:1723)未封装事务。
         """
         with self.transaction():
-            self.conn.execute("DELETE FROM novel_fts WHERE novel_id = ?", (novel_id,))
+            self.conn.execute("DELETE FROM novel_fts WHERE rowid = ?", (novel_id,))
             self.conn.execute(
-                "INSERT INTO novel_fts (novel_id, title, caption, author_name, body) VALUES (?, ?, ?, ?, ?)",
-                (novel_id, title, caption, author_name, body),
+                "INSERT INTO novel_fts (rowid, novel_id, title, caption, author_name, body) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (novel_id, novel_id, title, caption, author_name, body),
             )
 
     def list_recent_novels(self, page: int = 1, page_size: int = 10, category: str = "all",
@@ -410,7 +417,9 @@ class NovelsMixin:
 
         fts_query = escape_fts_query(search) if search else ""
         if fts_query:
-            where_clauses.append("n.novel_id IN (SELECT novel_id FROM novel_fts WHERE novel_fts MATCH ?)")
+            # 走 rowid（== novel_id）：novel_id 是 UNINDEXED 列，SELECT novel_id 只能
+            # 全表扫描 FTS 索引（生产实测 0.22 秒，走 rowid 是 0.002 秒）。
+            where_clauses.append("n.novel_id IN (SELECT rowid FROM novel_fts WHERE novel_fts MATCH ?)")
             params.append(fts_query)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""

@@ -322,8 +322,12 @@ class UsersMixin:
                 novel_ids = [row[0] for row in self.conn.execute("SELECT novel_id FROM novels WHERE user_id = ?", (user_id,)).fetchall()]
 
                 # 2. 删除小说相关的从属数据（按依赖顺序）
-                # 2.1 删除 FTS 索引
-                self.conn.execute("DELETE FROM novel_fts WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
+                # 2.1 删除 FTS 索引。走 rowid（== novel_id）：按 novel_id 会全表扫描
+                #     UNINDEXED 列，生产实测单次 39 秒，详见 replace_fts 的说明。
+                self.conn.execute(
+                    "DELETE FROM novel_fts WHERE rowid IN (SELECT novel_id FROM novels WHERE user_id = ?)",
+                    (user_id,),
+                )
                 # 2.2 删除小说相关的其他从属表
                 self.conn.execute("DELETE FROM sync_check_list WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
                 self.conn.execute("DELETE FROM recommendation_items WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))

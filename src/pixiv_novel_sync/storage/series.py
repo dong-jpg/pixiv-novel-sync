@@ -149,10 +149,12 @@ class SeriesMixin:
         where_clauses: list[str] = ["se.is_subscribed = 1"]
         params_count: list[Any] = []
         if search:
+            # 章节全文子查询走 rowid（== novel_id）：novel_id 是 UNINDEXED 列，
+            # SELECT novel_id 只能全表扫描 FTS 索引（0.22 秒 vs 0.002 秒）。
             where_clauses.append(
                 """(se.title LIKE ? OR (
                    (se.title IS NULL OR se.title = '') AND EXISTS (
-                     SELECT 1 FROM novels n0 WHERE n0.series_id = se.series_id AND n0.novel_id IN (SELECT novel_id FROM novel_fts WHERE novel_fts MATCH ?)
+                     SELECT 1 FROM novels n0 WHERE n0.series_id = se.series_id AND n0.novel_id IN (SELECT rowid FROM novel_fts WHERE novel_fts MATCH ?)
                    )
                    ) OR u.name LIKE ?)"""
             )

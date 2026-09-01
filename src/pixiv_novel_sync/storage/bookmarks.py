@@ -21,7 +21,9 @@ class BookmarksMixin:
         where_clauses: list[str] = ["s.source_type LIKE 'bookmark_%'"]
         params_count: list[Any] = []
         if search:
-            where_clauses.append("n.novel_id IN (SELECT novel_id FROM novel_fts WHERE novel_fts MATCH ?)")
+            # 走 rowid（== novel_id）：novel_id 是 UNINDEXED 列，SELECT novel_id 只能
+            # 全表扫描 FTS 索引（生产实测 0.22 秒，走 rowid 是 0.002 秒）。
+            where_clauses.append("n.novel_id IN (SELECT rowid FROM novel_fts WHERE novel_fts MATCH ?)")
             params_count.append(search)
         where_sql = f"WHERE {' AND '.join(where_clauses)}"
         total = int(
