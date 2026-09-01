@@ -27,6 +27,8 @@ def _settings(tmp_path: Path) -> SimpleNamespace:
             delay_seconds_between_chapters=0,
             max_items_per_run=None,
             max_pages_per_run=None,
+            following_max_novels_per_author=None,
+            series_max_pages_per_run=None,
             download_assets=True,
             write_markdown=True,
             write_raw_text=True,
@@ -1369,3 +1371,223 @@ def test_sync_following_list_stores_users_beyond_page_cap(tmp_path: Path) -> Non
 
     assert stats["users"] == 70
     assert "truncated" not in stats
+
+
+# ── 每作者同步配额：高产作者不能吃掉整轮预算 ──────────────────────
+
+
+class _ProlificAuthorsApi:
+    """每个作者都有 ``novels_per_author`` 篇作品，且全是新作（会真正落库）。"""
+
+    def __init__(self, author_ids: list[int], novels_per_author: int) -> None:
+        self.author_ids = author_ids
+        self.novels_per_author = novels_per_author
+        self.scanned_user_ids: list[int] = []
+        self.synced_novel_ids: list[int] = []
+
+    def user_following(self, **kwargs):
+        return SimpleNamespace(
+            user_previews=[
+                SimpleNamespace(user=SimpleNamespace(id=uid, name=f"作者{uid}"))
+                for uid in self.author_ids
+            ],
+            next_url=None,
+        )
+
+    def user_novels(self, **kwargs):
+        user_id = int(kwargs["user_id"])
+        self.scanned_user_ids.append(user_id)
+        novels = []
+        for index in range(self.novels_per_author):
+            novel = _Novel()
+            novel.id = user_id * 1000 + index
+            novels.append(novel)
+        return SimpleNamespace(novels=novels, next_url=None)
+
+    def novel_detail(self, novel_id: int):
+        self.synced_novel_ids.append(int(novel_id))
+        novel = _Novel()
+        novel.id = int(novel_id)
+        return SimpleNamespace(novel=novel)
+
+    def webview_novel(self, novel_id: int) -> dict:
+        return {"text": f"正文 {novel_id}"}
+
+    def parse_qs(self, next_url):
+        return None
+
+
+def test_author_quota_moves_to_next_author_instead_of_ending_run(tmp_path: Path) -> None:
+    """单作者撞到配额后必须换下一个作者，而不是结束整轮。
+
+    回归：max_items_per_run 只在切换作者之前检查，单个作者内部没有任何闸门。生产实测
+    一个高产作者连跑 60 篇 52 分钟，跑完整轮预算就收工，日志里永远是
+    "Following rotation: synced 1/256 users this run"——256 个作者轮一圈要 95 天。
+    这里 max_items_per_run=3 故意小于单作者作品数，正好复刻那个场景：修复前只扫到
+    第一个作者就结束整轮。
+    """
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 1
+    settings.sync.following_max_novels_per_author = 2
+    settings.sync.max_items_per_run = 3
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    api = _ProlificAuthorsApi(author_ids=[11, 22, 33], novels_per_author=5)
+    service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+
+    try:
+        stats = service.sync_following_novels(users_limit=3)
+    finally:
+        db.close()
+
+    # 三个作者都被访问到，而不是第一个吃掉全部预算
+    assert api.scanned_user_ids == [11, 22, 33]
+    # 每个作者只同步了配额内的 2 篇
+    assert stats["novels"] == 6
+    assert stats["author_quota_hit"] == 3
+
+
+def test_author_quota_none_keeps_unlimited_per_author(tmp_path: Path) -> None:
+    """配额留空时保持旧行为：单作者不设上限。"""
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 1
+    settings.sync.following_max_novels_per_author = None
+    settings.sync.max_items_per_run = None
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    api = _ProlificAuthorsApi(author_ids=[11], novels_per_author=4)
+    service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+
+    try:
+        stats = service.sync_following_novels(users_limit=1)
+    finally:
+        db.close()
+
+    assert stats["novels"] == 4
+    assert stats.get("author_quota_hit", 0) == 0
+
+
+def test_author_with_fewer_novels_than_quota_is_not_marked_incomplete(tmp_path: Path) -> None:
+    """作者作品数少于配额时不能误报撞配额，也不能把整轮标成未完成。"""
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 1
+    settings.sync.following_max_novels_per_author = 10
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    api = _ProlificAuthorsApi(author_ids=[11, 22], novels_per_author=3)
+    service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+
+    try:
+        stats = service.sync_following_novels(users_limit=2)
+    finally:
+        db.close()
+
+    assert stats["novels"] == 6
+    assert stats.get("author_quota_hit", 0) == 0
+    assert "incomplete" not in stats
+
+
+def test_run_hard_cap_derives_from_quota_not_max_items(tmp_path: Path) -> None:
+    """整轮硬顶按 配额 × users_limit × 1.5 推导，不再直接用 max_items_per_run。"""
+    settings = _settings(tmp_path)
+    settings.sync.following_max_novels_per_author = 20
+    settings.sync.max_items_per_run = 20
+
+    assert sync_engine._resolve_following_author_quota(settings) == 20
+    # 5 个作者 × 20 篇 × 1.5 = 150，远大于 max_items_per_run=20
+    assert sync_engine._resolve_following_run_cap(settings, 5) == 150
+
+
+def test_run_hard_cap_falls_back_to_max_items_without_quota(tmp_path: Path) -> None:
+    """未配配额时回落 max_items_per_run，保证老配置行为不变。"""
+    settings = _settings(tmp_path)
+    settings.sync.following_max_novels_per_author = None
+    settings.sync.max_items_per_run = 20
+
+    assert sync_engine._resolve_following_run_cap(settings, 5) == 20
+
+
+# ── 系列章节分页上限必须与作者作品分页上限解耦 ────────────────────
+
+
+def test_series_max_pages_overrides_generic_cap(tmp_path: Path) -> None:
+    """系列章节分页有独立上限，不再被 max_pages_per_run 锁死。
+
+    回归：两者共用 max_pages_per_run=2 时长系列的章节列表被截断，生产实测每轮
+    truncated_series=2、8 个订阅系列长期缺 76 章，高频重跑也补不齐。
+    """
+    settings = _settings(tmp_path)
+    settings.sync.max_pages_per_run = 2
+    settings.sync.series_max_pages_per_run = 10
+
+    assert sync_engine._resolve_series_max_pages(settings) == 10
+
+
+def test_series_max_pages_falls_back_to_generic_cap(tmp_path: Path) -> None:
+    """留空时回落 max_pages_per_run，保持老配置行为。"""
+    settings = _settings(tmp_path)
+    settings.sync.max_pages_per_run = 2
+    settings.sync.series_max_pages_per_run = None
+
+    assert sync_engine._resolve_series_max_pages(settings) == 2
+
+
+def test_series_max_pages_treats_non_positive_as_unlimited(tmp_path: Path) -> None:
+    """0 / 负数表示不额外限制，交给调用方的 100 页兜底。"""
+    settings = _settings(tmp_path)
+    settings.sync.max_pages_per_run = 2
+    settings.sync.series_max_pages_per_run = 0
+
+    assert sync_engine._resolve_series_max_pages(settings) is None
+
+
+def test_series_pagination_walks_past_generic_cap(tmp_path: Path, monkeypatch) -> None:
+    """章节分页实际翻页数由 series_max_pages_per_run 决定，而非 max_pages_per_run。"""
+
+    class _PagedSeriesApi:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def novel_series(self, series_id, **kwargs):
+            self.calls += 1
+            return {
+                "novel_series_detail": {
+                    "title": "长系列",
+                    "caption": "",
+                    "user": {"id": 1, "name": "作者", "account": "acc"},
+                    "content_count": 60,
+                },
+                "novels": [{"id": 1000 + self.calls}],
+                "next_url": f"https://example.invalid/next?last_order={self.calls}",
+            }
+
+        def parse_qs(self, url):
+            return {"last_order": "10"}
+
+    settings = _settings(tmp_path)
+    settings.sync.max_pages_per_run = 2
+    settings.sync.series_max_pages_per_run = 5
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    _seed_subscribed_series(db, 1, start=11471205)
+    monkeypatch.setattr(db, "novel_archive_complete", lambda *a, **k: True)
+    monkeypatch.setattr(db, "count_series_complete_novels", lambda *a, **k: 0)
+    api = _PagedSeriesApi()
+    service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+
+    try:
+        stats = service.sync_subscribed_series()
+    finally:
+        db.close()
+
+    assert api.calls == 5  # 首页 + 4 次翻页，而不是停在 max_pages_per_run=2
+    assert stats["truncated_series"] == 1  # 这个 fake 永远有 next_url，触顶仍要暴露
+
+
+def test_series_pagination_source_uses_dedicated_resolver() -> None:
+    """章节分页必须调用 _resolve_series_max_pages，而不是直读 max_pages_per_run。"""
+    source = Path(sync_engine.__file__).read_text(encoding="utf-8")
+
+    assert "series_safety_limit = _resolve_series_max_pages(self.settings)" in source
+    assert "series_safety_limit = self.settings.sync.max_pages_per_run" not in source
+

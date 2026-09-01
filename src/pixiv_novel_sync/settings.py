@@ -48,6 +48,15 @@ class SyncSettings:
     # 收藏是用户优先级最高的数据，不该被"压住关注作者/系列单轮体量"的那个上限一起砍掉：
     # max_pages_per_run=2 时每轮只看最新约 60 条收藏就标 truncated，历史收藏永远补不齐。
     bookmark_max_pages_per_run: int | None = None
+    # 单个关注作者在一轮 following_novels 里最多同步多少篇。None = 不限（旧行为）。
+    # 必须有这道闸门：max_items_per_run 只在切换作者之前检查，单个作者内部完全没有上限，
+    # 于是第一个高产作者就把整轮预算吃光——生产实测 256 个关注作者每轮只覆盖 1 个，
+    # 轮完一圈要 95 天。
+    following_max_novels_per_author: int | None = None
+    # 系列章节分页专用上限。None = 跟随 max_pages_per_run（旧行为）。
+    # 系列章节数远超单个作者的单轮作品体量，共用那个上限会把长系列永久截断：
+    # 生产实测每轮 truncated_series=2，8 个订阅系列长期缺 76 章，高频重跑也补不齐。
+    series_max_pages_per_run: int | None = None
     delay_seconds_between_series: float = 3.0  # 每个系列之间的间隔
     delay_seconds_between_chapters: float = 1.0  # 系列下每章节间隔
     delay_seconds_between_skips: float = 0.1  # 跳过内容时的间隔
@@ -177,6 +186,8 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             sync_subscribed_series=_coerce_bool(sync_raw.get("sync_subscribed_series"), True),
             series_sync_limit=max(_coerce_int(sync_raw.get("series_sync_limit"), 0), 0),
             bookmark_max_pages_per_run=_coerce_optional_int(sync_raw.get("bookmark_max_pages_per_run")),
+            following_max_novels_per_author=_coerce_optional_int(sync_raw.get("following_max_novels_per_author")),
+            series_max_pages_per_run=_coerce_optional_int(sync_raw.get("series_max_pages_per_run")),
             delay_seconds_between_series=_coerce_float(sync_raw.get("delay_seconds_between_series"), 3.0),
             delay_seconds_between_chapters=_coerce_float(sync_raw.get("delay_seconds_between_chapters"), 1.0),
             delay_seconds_between_skips=_coerce_float(sync_raw.get("delay_seconds_between_skips"), 0.1),

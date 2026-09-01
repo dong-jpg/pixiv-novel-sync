@@ -140,6 +140,16 @@
               <input type="number" v-model.number="settings.bookmark_max_pages_per_run" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
               <p class="mt-1 text-xs text-pixiv-light">收藏同步专用；每页约 30 条，配小了历史收藏补不齐</p>
             </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">每作者最大篇数 (留空不限)</label>
+              <input type="number" v-model.number="settings.following_max_novels_per_author" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <p class="mt-1 text-xs text-pixiv-light">关注作者同步专用；留空时高产作者会吃光整轮预算，一轮只覆盖 1 个作者</p>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">系列最大页数 (留空跟随单次最大页数)</label>
+              <input type="number" v-model.number="settings.series_max_pages_per_run" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <p class="mt-1 text-xs text-pixiv-light">系列章节列表专用；配小了长系列的缺章永远补不齐</p>
+            </div>
           </div>
         </div>
 

@@ -216,6 +216,49 @@ def test_save_sync_settings_persists_pending_cleanup_days(tmp_path):
     assert config["sync"]["pending_deletion_cleanup_confirmed_days"] == 3
 
 
+def test_save_sync_settings_round_trips_new_throughput_fields(tmp_path):
+    """每作者配额与系列分页上限必须能存进 YAML 并读回。"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("sync:\n  max_pages_per_run: 2\n", encoding="utf-8")
+
+    saved = SettingsManager(str(config_path)).save_sync_settings(
+        {"following_max_novels_per_author": 20, "series_max_pages_per_run": 10}
+    )
+
+    assert saved["following_max_novels_per_author"] == 20
+    assert saved["series_max_pages_per_run"] == 10
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["sync"]["following_max_novels_per_author"] == 20
+    assert config["sync"]["series_max_pages_per_run"] == 10
+
+
+def test_save_sync_settings_allows_blank_throughput_fields(tmp_path):
+    """留空表示「跟随通用上限」，必须存成 None 而不是 0。"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "sync:\n  following_max_novels_per_author: 20\n  series_max_pages_per_run: 10\n",
+        encoding="utf-8",
+    )
+
+    saved = SettingsManager(str(config_path)).save_sync_settings(
+        {"following_max_novels_per_author": "", "series_max_pages_per_run": ""}
+    )
+
+    assert saved["following_max_novels_per_author"] is None
+    assert saved["series_max_pages_per_run"] is None
+
+
+def test_load_settings_defaults_new_throughput_fields_to_none(tmp_path):
+    """老配置文件（没有这两个字段）必须行为不变。"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("sync:\n  max_pages_per_run: 2\n", encoding="utf-8")
+
+    settings = load_settings(config_path=config_path, env_path=tmp_path / ".env")
+
+    assert settings.sync.following_max_novels_per_author is None
+    assert settings.sync.series_max_pages_per_run is None
+
+
 def test_latest_matching_sync_check_scope_requires_same_fingerprint_and_task(tmp_path):
     settings = make_settings(tmp_path)
     fingerprint = build_sync_check_fingerprint(settings, 123)

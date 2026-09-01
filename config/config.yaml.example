@@ -21,6 +21,12 @@ sync:
   # 收藏优先级最高，通常要放得比 max_pages_per_run 大得多，否则每轮只看最新
   # 约 30×max_pages_per_run 条收藏就会被标成 truncated，历史收藏补不齐。
   bookmark_max_pages_per_run: 20
+  # 单个关注作者每轮最多同步多少篇。留空 = 不限。
+  # 建议一定要设：留空时第一个高产作者会把整轮预算吃光，每轮只覆盖 1 个作者。
+  following_max_novels_per_author: 20
+  # 系列章节分页专用上限。留空则跟随 max_pages_per_run。
+  # 跟随时 max_pages_per_run=2 会把长系列的章节列表截断，缺章永远补不齐。
+  series_max_pages_per_run: 10
   delay_seconds_between_items: 1.5
   delay_seconds_between_pages: 2.0
   delay_seconds_between_series: 3.0

@@ -948,6 +948,14 @@ class SettingsManager:
         sync_data["bookmark_max_pages_per_run"] = _normalize_optional_int(
             payload.get("bookmark_max_pages_per_run", sync_data.get("bookmark_max_pages_per_run"))
         )
+        # 留空 = 跟随通用上限/不限；_normalize_optional_int 会拒绝 0 与负数，
+        # 避免把"每作者 0 篇"这种等于关掉同步的值写进配置。
+        sync_data["following_max_novels_per_author"] = _normalize_optional_int(
+            payload.get("following_max_novels_per_author", sync_data.get("following_max_novels_per_author"))
+        )
+        sync_data["series_max_pages_per_run"] = _normalize_optional_int(
+            payload.get("series_max_pages_per_run", sync_data.get("series_max_pages_per_run"))
+        )
         sync_data["delay_seconds_between_items"] = _normalize_float(
             payload.get("delay_seconds_between_items", sync_data.get("delay_seconds_between_items", 1.0))
         )

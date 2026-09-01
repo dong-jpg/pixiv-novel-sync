@@ -59,6 +59,8 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "max_items_per_run": settings.sync.max_items_per_run,
         "max_pages_per_run": settings.sync.max_pages_per_run,
         "bookmark_max_pages_per_run": settings.sync.bookmark_max_pages_per_run,
+        "following_max_novels_per_author": settings.sync.following_max_novels_per_author,
+        "series_max_pages_per_run": settings.sync.series_max_pages_per_run,
         "delay_seconds_between_items": settings.sync.delay_seconds_between_items,
         "delay_seconds_between_pages": settings.sync.delay_seconds_between_pages,
         "sync_bookmarks": settings.sync.sync_bookmarks,

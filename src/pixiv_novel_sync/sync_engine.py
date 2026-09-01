@@ -110,6 +110,59 @@ def _resolve_bookmark_max_pages(settings: Any) -> int | None:
     return value if value > 0 else None
 
 
+def _resolve_following_author_quota(settings: Any) -> int | None:
+    """单个关注作者每轮的同步上限：``sync.following_max_novels_per_author``。
+
+    返回 None 表示「不限」（旧行为）。这道闸门是必需的：``max_items_per_run`` 只在
+    切换作者之前检查，单个作者内部完全没有上限，于是第一个高产作者就把整轮预算吃光
+    ——生产实测 256 个关注作者每轮只覆盖 1 个，轮完一圈要 95 天。
+    """
+    sync_settings = getattr(settings, "sync", None)
+    raw = getattr(sync_settings, "following_max_novels_per_author", None)
+    if raw in (None, ""):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _resolve_following_run_cap(settings: Any, users_limit: int) -> int | None:
+    """整轮同步的硬顶，只用来防异常——正常收敛靠每作者配额。
+
+    一轮的正常体量是「每作者配额 × users_limit」，所以硬顶取它的 1.5 倍留出余量，
+    只兜住「配额没配 + 某作者作品极多」这种异常。直接拿 ``max_items_per_run`` 当整轮
+    闸门正是旧代码的病根：它（生产配 20）比单个高产作者的作品数还小，第一个作者跑完
+    整轮就收工，队尾的作者永远饿死。配额或 users_limit 缺失时回落
+    ``max_items_per_run``，保持老配置行为不变。
+    """
+    sync_settings = getattr(settings, "sync", None)
+    quota = _resolve_following_author_quota(settings)
+    if quota is None or users_limit <= 0:
+        return getattr(sync_settings, "max_items_per_run", None)
+    return int(quota * users_limit * 1.5)
+
+
+def _resolve_series_max_pages(settings: Any) -> int | None:
+    """系列章节分页专用上限：优先 ``sync.series_max_pages_per_run``，缺省回落。
+
+    返回 None 表示「不额外限制」，由调用方的 100 页兜底接管。系列的章节数可以远超
+    单个作者一轮的作品体量，共用 ``max_pages_per_run`` 会把长系列永久截断：生产实测
+    每轮 truncated_series=2，8 个订阅系列缺 76 章，而且重跑多少次都补不齐（每轮都从
+    watchlist 头部重新开始，永远在同一页触顶）。
+    """
+    sync_settings = getattr(settings, "sync", None)
+    raw = getattr(sync_settings, "series_max_pages_per_run", None)
+    if raw in (None, ""):
+        return getattr(sync_settings, "max_pages_per_run", None)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return getattr(sync_settings, "max_pages_per_run", None)
+    return value if value > 0 else None
+
+
 def _classify_series_response(series_data: Any) -> str:
     """判定 ``novel_series`` 响应属于 ok / missing / unknown 哪一类。
 
@@ -823,6 +876,10 @@ class BookmarkNovelSyncService:
         stats = _empty_stats()
         max_items = self.settings.sync.max_items_per_run
         max_pages = self.settings.sync.max_pages_per_run
+        # 单作者配额是本轮预算的主闸门；整轮硬顶只兜异常。旧代码只有 max_items_per_run
+        # 一道闸门且只在切换作者之前检查，第一个高产作者就把整轮预算吃光。
+        author_quota = _resolve_following_author_quota(self.settings)
+        run_hard_cap = _resolve_following_run_cap(self.settings, users_limit)
         item_delay = self.settings.sync.delay_seconds_between_items
         page_delay = self.settings.sync.delay_seconds_between_pages
         users_processed = 0  # 已处理的用户数
@@ -906,6 +963,7 @@ class BookmarkNovelSyncService:
 
             next_novel_query: dict[str, Any] | None = {"user_id": author_id}
             author_page_count = 0
+            author_synced = 0  # 本作者本轮实际同步数（跳过不计）
             existing_streak = 0
             stop_author_scan = False
             while next_novel_query:
@@ -985,6 +1043,18 @@ class BookmarkNovelSyncService:
                     # 只有实际同步（非跳过）才计入 synced_items
                     if counters.get("novels", 0) > 0:
                         synced_items += 1
+                        author_synced += 1
+                        # 撞到每作者配额就收手，把剩下的预算让给下一个作者。绝不能像
+                        # 旧代码那样结束整轮，否则一个高产作者会让队尾的作者永远饿死。
+                        if author_quota is not None and author_synced >= author_quota:
+                            logger.info(
+                                "Author %s reached per-author quota=%d, moving to next author",
+                                author_id,
+                                author_quota,
+                            )
+                            stats["author_quota_hit"] = stats.get("author_quota_hit", 0) + 1
+                            stats["incomplete"] = True
+                            stop_author_scan = True
 
                     if progress_callback:
                         progress_callback("novel_done", {
@@ -1036,9 +1106,12 @@ class BookmarkNovelSyncService:
             stats["users_total"] = len(candidates)
 
             for user in selected:
-                # 检查是否达到实际同步数量限制
-                if max_items is not None and synced_items >= max_items:
-                    logger.info("Reached max_items_per_run=%s (synced), stopping sync", max_items)
+                # 本轮的结束判据是「跑满 users_limit 个作者」，硬顶只在异常时兜底。
+                if run_hard_cap is not None and synced_items >= run_hard_cap:
+                    logger.warning(
+                        "Reached run hard cap=%s (synced), stopping sync", run_hard_cap
+                    )
+                    stats["incomplete"] = True
                     break
                 _sync_author(user)
 
@@ -1081,7 +1154,8 @@ class BookmarkNovelSyncService:
                 users = getattr(following_result, "user_previews", []) or []
 
                 for user_preview in users:
-                    # 检查是否达到实际同步数量限制
+                    # 不限量模式没有 users_limit 可推导硬顶，沿用 max_items_per_run 作为
+                    # 整轮闸门（每作者配额在 _sync_author 内部同样生效）。
                     if max_items is not None and synced_items >= max_items:
                         logger.info("Reached max_items_per_run=%s (synced), stopping sync", max_items)
                         _save_watermark()
@@ -1398,14 +1472,15 @@ class BookmarkNovelSyncService:
                                 # 处理分页
                                 next_url = series_data.get("next_url")
                                 series_page_count = 1
-                                series_safety_limit = self.settings.sync.max_pages_per_run or 100  # 3.3翻页上限兜底
+                                series_safety_limit = _resolve_series_max_pages(self.settings) or 100  # 翻页上限兜底
                                 if progress_callback:
                                     progress_callback("phase", {"phase": f"系列 {title or sid}: 已获取 {len(all_novel_items)} 章"})
                                 while next_url:
                                     if series_page_count >= series_safety_limit:
                                         logger.info("Reached page safety limit=%s for series %s, stopping pagination", series_safety_limit, sid)
-                                        # 该系列本轮没取全章节（配置的 max_pages_per_run 太小时
-                                        # 尤其明显），必须让调用方看到"未取完"。
+                                        # 该系列本轮没取全章节（配置的
+                                        # series_max_pages_per_run 太小时尤其明显），
+                                        # 必须让调用方看到"未取完"。
                                         truncated_series += 1
                                         if progress_callback:
                                             progress_callback("phase", {"phase": f"系列 {title or sid}: 已达单轮翻页上限 {series_safety_limit}，本轮未取完全部章节"})
