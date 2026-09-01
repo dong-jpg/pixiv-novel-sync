@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 import requests as http_requests
 import yaml
-from flask import Flask, Response, jsonify, redirect, render_template, request, session, send_file
+from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, send_file
 
 from . import __version__
 from .jobs.manager import JobManager
@@ -30,6 +30,7 @@ from .storage_files import FileStorage
 from .utils_env import secure_atomic_write
 from .utils_naming import safe_name
 from .web.managers import AutoSyncScheduler, SettingsManager, TASK_LABELS
+from .web.managers import SCHEDULER_TASK_CONFIGS, scheduler_task_log_type
 from .web.managers import SyncJobManager, SyncJobState  # noqa: F401 - 经 webapp 重导出供 tests 使用
 from .web.utils import (
     _atomic_write_yaml,
@@ -44,6 +45,8 @@ from .web.utils import (
     _restricts_to_label,
     _external_base_url,
     _check_pixiv_user_status,
+    cron_next_runs,
+    cron_runs_per_day,
 )
 
 # 经 webapp 再导出：jobs/services.py 依赖 _check_novel_status/_check_series_status，
@@ -870,9 +873,21 @@ def create_app(
     def dashboard_novel_detail_page(novel_id: int):
         return render_template("dashboard_novel_detail.html", novel_id=novel_id)
 
+    # 设置页已拆成五个一级页面：同步 / 模型 / Agent / 成人润色 / 系统。
+    # 只有 sync 与 system 两页的表单落到 config.yaml（见 SETTINGS_SECTIONS），
+    # 另外三页的配置存在数据库里，走 ai_web.py 自己的端点。
+    _SETTINGS_PAGES = ("sync", "models", "agents", "adult", "system")
+
     @app.get("/dashboard/settings")
     def dashboard_settings_page():
-        return render_template("dashboard_settings.html")
+        # 旧书签与旧的 #hash 链接一律落到同步页
+        return redirect("/dashboard/settings/sync")
+
+    @app.get("/dashboard/settings/<section>")
+    def dashboard_settings_section_page(section: str):
+        if section not in _SETTINGS_PAGES:
+            abort(404)
+        return render_template(f"dashboard_settings_{section}.html")
 
     @app.get("/dashboard/logs")
     def dashboard_logs_page():
@@ -1329,6 +1344,90 @@ def create_app(
             return _api_error("保存设置失败", detail=str(exc))
         return jsonify({"ok": True, "message": "设置已保存", "sync": saved})
 
+    @app.put("/api/dashboard/settings/<section>")
+    def dashboard_settings_save_section(section: str):
+        """按分区保存：payload 里只有本区字段会被采纳，别区字段沿用磁盘上的旧值。
+
+        拆页后每页表单只含自己那一区，走全量端点会把没加载的字段写成默认值。
+        未知分区由 save_sync_settings 抛 ValueError，这里统一按 400 返回。
+        """
+        payload = request.get_json(silent=True) or {}
+        try:
+            saved = settings_manager.save_sync_settings(payload, section=section)
+        except Exception as exc:
+            return _api_error("保存设置失败", detail=str(exc))
+        return jsonify({"ok": True, "message": "设置已保存", "sync": saved})
+
+    @app.post("/api/dashboard/settings/cron-preview")
+    def dashboard_settings_cron_preview():
+        """校验 cron 表达式并给出接下来几次触发时刻（保存前预览）。
+
+        非法表达式返回 200 + valid=False：这是校验结果，不是请求错误。
+        必须让界面能区分「合法、下次是 X」与「解析不了、调度器会静默回落到按
+        interval 跑」——后者是最难发现的偏差（写错 cron 不会报任何错）。
+        """
+        body = request.get_json(silent=True) or {}
+        expr = str(body.get("cron") or "").strip()
+        tz_name = str(body.get("timezone") or "UTC")
+        count = max(1, min(_safe_int(body.get("count"), 5), 10))
+        # 合法表达式最长也就几十个字符；超长输入直接判非法，免得把大列表交给 croniter
+        if len(expr) > 200:
+            return jsonify(
+                {
+                    "ok": True,
+                    "data": {
+                        "valid": False,
+                        "empty": False,
+                        "falls_back_to_interval": True,
+                        "next_runs": [],
+                        "runs_per_day": None,
+                        "timezone": tz_name,
+                    },
+                }
+            )
+
+        runs = cron_next_runs(expr, tz_name, count) if expr else None
+        if runs is None:
+            return jsonify(
+                {
+                    "ok": True,
+                    "data": {
+                        "valid": False,
+                        "empty": not expr,
+                        # 空表达式与非法表达式的后果相同（都按 interval 跑），
+                        # 但文案不同，所以两个标记都给出去。
+                        "falls_back_to_interval": True,
+                        "next_runs": [],
+                        "runs_per_day": None,
+                        "timezone": tz_name,
+                    },
+                }
+            )
+
+        from datetime import datetime as _datetime
+        from zoneinfo import ZoneInfo
+
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            # cron_to_next_run 对未知时区也是回落 UTC，这里保持一致
+            tz = ZoneInfo("UTC")
+        return jsonify(
+            {
+                "ok": True,
+                "data": {
+                    "valid": True,
+                    "empty": False,
+                    "falls_back_to_interval": False,
+                    "next_runs": [
+                        _datetime.fromtimestamp(run, tz).isoformat() for run in runs
+                    ],
+                    "runs_per_day": cron_runs_per_day(expr, tz_name),
+                    "timezone": tz_name,
+                },
+            }
+        )
+
     @app.post("/api/dashboard/sync/start")
     def dashboard_sync_start():
         current_settings = settings_manager.load(env_path=env_path)
@@ -1363,16 +1462,31 @@ def create_app(
 
     @app.post("/api/dashboard/sync/<task_type>")
     def dashboard_sync_single(task_type: str):
-        """手动触发单个同步任务"""
+        """手动触发单个同步任务
+
+        这张表必须覆盖 SCHEDULER_TASK_CONFIGS 里的每个任务（按 task_logs 的
+        task_type 命名）：改完配置得能立刻手动跑一次验证，否则只能干等下一个周期。
+        tests/test_settings_sections.py 会逐个 POST 检查覆盖面。
+        """
         task_map = {
             "bookmark": ("bookmark", "同步收藏"),
             "following_users": ("following_users", "同步关注用户"),
             "following_novels": ("following_novels", "同步关注小说"),
+            # 前端按钮发的是下划线形式，而专门的追更系列路由是连字符的
+            # /api/dashboard/sync/subscribed-series，缺这个键就必然 400。
+            "subscribed_series": ("subscribed_series", "同步追更系列"),
             "user_status": ("user_status", "检查用户状态"),
             "novel_status": ("novel_status", "检查小说状态"),
             "series_status": ("series_status", "检查系列状态"),
+            "user_backup": ("user_backup", "全量备份关注用户小说"),
+            "pending_deletion_detection": (
+                "pending_deletion_detection",
+                "检测取消收藏/追更",
+            ),
+            "preference_analyze": ("preference_analyze", "增量分析本地偏好"),
+            "recommendation_run": ("recommendation_run", "生成推荐"),
         }
-        
+
         if task_type not in task_map:
             return _api_error("不支持的任务类型")
         
@@ -1416,6 +1530,105 @@ def create_app(
             if job:
                 status["current_job"] = _job_to_dict(job)
         return jsonify(status)
+
+    @app.get("/api/dashboard/auto-sync/budget")
+    def auto_sync_budget():
+        """调度预算聚合：每个任务的优先级、频率、上一轮耗时与预估每日占用。
+
+        设置页的调度表要回答「这个任务每天要占掉多少时间」。预算 = 单轮耗时 × 每天
+        触发次数，其中次数按当前 cron 现算（cron 一改，观测窗口里的历史总时长立刻
+        失真），cron 解析不了时按 interval 折算——与调度器静默回落的行为保持一致。
+
+        耗时来自 task_logs：前端不该去翻分页的 /api/dashboard/logs（20 条一页，11 个
+        任务凑不齐一轮），也不该自己实现 cron 解析。
+        """
+        days = max(1, min(_safe_int(request.args.get("days"), 3), 30))
+        current_settings = settings_manager.load(env_path=env_path)
+        sync_settings = current_settings.sync
+        tz_name = getattr(sync_settings, "auto_sync_timezone", "UTC") or "UTC"
+
+        try:
+            db = _open_database(current_settings)
+            try:
+                history = db.get_task_duration_stats(days=days)
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("读取调度耗时统计失败：%s", exc)
+            history = {}
+
+        tasks: dict[str, Any] = {}
+        total_estimated = 0.0
+        for config in SCHEDULER_TASK_CONFIGS:
+            name = str(config["name"])
+            log_type = scheduler_task_log_type(name)
+            stats = history.get(log_type, {})
+            cron_expr = str(getattr(sync_settings, config["cron_setting"], "") or "").strip()
+            interval_hours = _safe_int(getattr(sync_settings, config["interval_setting"], 0), 0)
+
+            runs_per_day = cron_runs_per_day(cron_expr, tz_name) if cron_expr else None
+            cron_valid = runs_per_day is not None
+            schedule_source = "cron" if cron_valid else "interval"
+            if not cron_valid:
+                # cron 为空或解析失败都落到 interval，这正是调度器的行为
+                runs_per_day = round(24.0 / interval_hours, 4) if interval_hours > 0 else None
+
+            # 优先用最近一轮的实测耗时；只有历史里没有终态记录时才退回均值
+            reference = stats.get("last_duration_seconds")
+            if reference is None:
+                reference = stats.get("avg_duration_seconds")
+            estimated = (
+                round(runs_per_day * float(reference), 2)
+                if runs_per_day is not None and reference is not None
+                else None
+            )
+
+            enabled = bool(getattr(sync_settings, config["setting_check"], False))
+            if enabled and estimated:
+                total_estimated += estimated
+
+            tasks[name] = {
+                "task_type": log_type,
+                "label": TASK_LABELS.get(log_type, log_type),
+                "enabled": enabled,
+                "priority": int(config.get("priority", 3)),
+                "preemptible": bool(config.get("preemptible", False)),
+                "cron": cron_expr,
+                "cron_valid": cron_valid,
+                "interval_hours": interval_hours,
+                "schedule_source": schedule_source,
+                "runs_per_day": runs_per_day,
+                "runs": int(stats.get("runs", 0) or 0),
+                "last_status": stats.get("last_status"),
+                "last_started_at": stats.get("last_started_at"),
+                "last_duration_seconds": stats.get("last_duration_seconds"),
+                "avg_duration_seconds": (
+                    round(float(stats["avg_duration_seconds"]), 2)
+                    if stats.get("avg_duration_seconds") is not None
+                    else None
+                ),
+                # 观测值：窗口内实际累计耗时摊到每天，与预估值对照能看出排布是否失真
+                "observed_daily_seconds": (
+                    round(float(stats.get("total_duration_seconds", 0.0)) / days, 2)
+                    if stats.get("runs")
+                    else None
+                ),
+                "estimated_daily_seconds": estimated,
+            }
+
+        return jsonify(
+            {
+                "ok": True,
+                "days": days,
+                "timezone": tz_name,
+                "day_seconds": 86400,
+                "tasks": tasks,
+                "total_estimated_daily_seconds": round(total_estimated, 2),
+                # 占空比：所有启用任务的每日预算 / 一天。共用一个执行槽，所以这个比例
+                # 直接就是「唯一那个 job 槽的忙碌程度」。
+                "total_duty_ratio": round(total_estimated / 86400.0, 6),
+            }
+        )
 
     @app.post("/api/dashboard/auto-sync/toggle")
     def auto_sync_toggle():

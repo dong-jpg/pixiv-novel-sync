@@ -15,7 +15,11 @@
 | `/dashboard/users/<id>` | `src/pixiv_novel_sync/templates/dashboard_user_detail.html` | 作者详情和作者小说 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/pending-deletions` | `src/pixiv_novel_sync/templates/dashboard_pending_deletions.html` | 待确认删除队列 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/logs` | `src/pixiv_novel_sync/templates/dashboard_logs.html` | 同步任务与 AI 创作任务日志 | 已接入 `library-page` / `library-page-header` |
-| `/dashboard/settings` | `src/pixiv_novel_sync/templates/dashboard_settings.html` | 左侧分区导航（同步 / AI / 救援 / 系统）+ 右侧内容 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/settings/sync` | `src/pixiv_novel_sync/templates/dashboard_settings_sync.html` | 同步开关、限速分组、调度表与手动触发 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/settings/models` | `src/pixiv_novel_sync/templates/dashboard_settings_models.html` | Provider、模型目录、模型池 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/settings/agents` | `src/pixiv_novel_sync/templates/dashboard_settings_agents.html` | 普通 Agent 绑定与候选模型链 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/settings/adult` | `src/pixiv_novel_sync/templates/dashboard_settings_adult.html` | 成人润色 Agent、review binding、项目角色 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/settings/system` | `src/pixiv_novel_sync/templates/dashboard_settings_system.html` | 图片缓存、救援 Token、导出、待删除保留期 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/preferences` | `src/pixiv_novel_sync/templates/dashboard_preferences.html` | 偏好画像与推荐 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/ai` | `src/pixiv_novel_sync/templates/dashboard_ai.html` | AI 自动写作项目、章节和 Pipeline | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/wizard` | `src/pixiv_novel_sync/templates/dashboard_wizard.html` | 创作向导与蒸馏档案 | 已接入 `library-page` / `library-page-header` |
@@ -200,47 +204,51 @@ APIs:
 - `GET /api/dashboard/ai/jobs/<job_id>`
 - `POST /api/dashboard/ai/jobs/<job_id>/continue`
 
-### `/dashboard/settings`
+### 设置（五个一级页面）
 
-Template: `dashboard_settings.html`
+`/dashboard/settings` 只做 302，一律落到 `/dashboard/settings/sync`。旧的单页 + URL hash 分区导航已经废弃，改为五个独立路由，各自一个模板、一个 Vue 应用，共享 Jinja 导航条 `dashboard_settings_nav.html`（纯静态链接，高亮取 `request.path`）。侧栏「设置」在 Operations 分组下展开为同名的五个二级项。
 
-用途：同步设置、缓存管理、救援 Token、AI Provider 模型目录、模型池和 Agent 管理。
+| Route | Template | 内容 |
+|---|---|---|
+| `/dashboard/settings/sync` | `dashboard_settings_sync.html` | 基础设置、限速与分页（按收藏 / 关注作者 / 系列 / 巡检分组）、定时同步调度表、手动触发 |
+| `/dashboard/settings/models` | `dashboard_settings_models.html` | Provider CRUD（`#ai-api`）、模型目录、模型池（`#ai-model-pools`）与最近尝试记录 |
+| `/dashboard/settings/agents` | `dashboard_settings_agents.html` | 普通 Agent 的绑定 / 提示词 / 采样参数（`#ai-agents`）、候选模型链预览 |
+| `/dashboard/settings/adult` | `dashboard_settings_adult.html` | 成人润色 Agent、`safety` / `fact_guard` review binding、项目角色与成人确认 |
+| `/dashboard/settings/system` | `dashboard_settings_system.html` | 图片缓存、救援 API Token（`#rescue-api`）、统计导出、待删除保留期 |
 
-左侧是**分区导航**（分组 + 搜索框），右侧只渲染当前分区；分区靠 URL hash 区分，可直接链接。分组与 hash 对应关系：
+保存按分区独立进行：同步页调 `PUT /api/dashboard/settings/sync`，系统页调 `PUT /api/dashboard/settings/system`。分区端点只采纳本区字段，其余字段沿用磁盘上的旧值——每页表单只含自己那一区，走全量端点会把没加载的字段写成默认值。AI 三页的配置存在数据库里，走 `ai_web.py` 的端点，不经过 `/api/dashboard/settings`。
 
-| 分组 | 分区（hash） |
-|---|---|
-| 同步 | 基础设置 `#basic`、限速与分页 `#limits`、定时任务 `#scheduler`、手工同步 `#manual` |
-| AI | Provider 与模型目录 `#ai-api`、模型池 `#ai-model-pools`、Agent 绑定 `#ai-agents` |
-| 救援 | 救援 API Token `#rescue-api` |
-| 系统 | 图片缓存 `#cache` |
+`agents` 页的**候选模型链**回答「这个 Agent 实际会依次调用哪些模型」：选中 Agent 后按真实路由顺序列出 `① Provider / model_key（来源）`，来源区分固定绑定、池成员第 N 位与第 N 级后备池成员，并显示响应里的四个硬上限（候选尝试 / 网络请求 / 解析候选数 / 池节点数）。数据来自只读端点 `GET /api/dashboard/ai/agents/<agent_id>/candidates`，它只做候选解析、不发起任何生成请求，也不回传 Provider 的连接地址与密钥。固定绑定的链只有一个元素，此时不显示模型池区块。
 
-搜索框按分区名 + 关键词别名过滤（关键词只用于匹配，不显示）。`#ai-api` 展示目录计数、搜索、人工模型、同步 operation 与旧目录状态；`#ai-model-pools` 编辑有序成员、后备池、引用关系和 Agent 的 `fixed`/`pool` 绑定。
+`models` 页的模型池编辑器额外展示该池**最近的真实尝试记录**（`GET /api/dashboard/ai/model-pools/<pool_id>/attempts`）：每条显示状态、Provider / 模型、池内位置、阶段、耗时、错误 scope/category/message 与所属 job。`partial` 与 `failed` 分开显示——`partial` 是已经开始输出正文之后才失败，路由不会再转移到下一个候选。
 
-`#scheduler` 的任务表额外展示**优先级**（P1 收藏 / P2 追更系列 / P3 其余）、**可让位**标记与**下次运行时间**，三者都从 `GET /api/dashboard/auto-sync/status` 的 `task_priorities` / `task_preemptible` / `task_next_run` 读取——优先级的唯一事实来源是后端 `web/managers.py:SCHEDULER_TASK_CONFIGS`，前端不再另存一份。行顺序与后端声明顺序一致，即抢槽次序。`#limits` 的「收藏最大页数」对应 `sync.bookmark_max_pages_per_run`，留空时回落到 `max_pages_per_run`。
+`sync` 页的调度表展示**优先级**（P1 收藏 / P2 追更系列 / P3 其余）、**可让位**标记、**下次运行时间**（`GET /api/dashboard/auto-sync/status` 的 `task_priorities` / `task_preemptible` / `task_next_run`），以及**上一轮耗时**与**预估每日占用**（`GET /api/dashboard/auto-sync/budget`）。优先级的唯一事实来源是后端 `web/managers.py:SCHEDULER_TASK_CONFIGS`，前端不另存一份；行顺序即抢槽次序。cron 输入框改动后调 `POST /api/dashboard/settings/cron-preview` 校验并列出下次 5 次触发时刻——cron 写错时调度器会静默回落到按 interval 跑，不预览就发现不了。限速区的「收藏最大页数」对应 `sync.bookmark_max_pages_per_run`，留空时回落到 `max_pages_per_run`。
 
 APIs:
 
 - `GET /api/dashboard/settings`
-- `POST /api/dashboard/settings`
+- `PUT /api/dashboard/settings/<section>`（`section` 为 `sync` 或 `system`）
+- `POST /api/dashboard/settings`（全量端点，保留兼容）
 - `POST /api/dashboard/settings/reload`
+- `POST /api/dashboard/settings/cron-preview`
 - `GET /api/dashboard/auto-sync/status`（优先级、可让位、下次运行时间）
-- `GET /api/cache/status`
-- `POST /api/cache/clear`
+- `GET /api/dashboard/auto-sync/budget?days=3`（上一轮耗时、每日预算、占空比）
+- `GET /api/cache/status`、`POST /api/cache/clear`
 - `POST /api/dashboard/sync/{task_type}`
-- `GET /api/dashboard/rescue-token/status`
-- `POST /api/dashboard/rescue-token/rotate`
-- Provider/Agent CRUD。
+- `GET /api/dashboard/rescue-token/status`、`POST /api/dashboard/rescue-token/rotate`
+- `GET /api/dashboard/export/stats`
+- Provider / Agent CRUD。
 - `GET|POST /api/dashboard/ai/providers/<provider_id>/models`
 - `POST /api/dashboard/ai/providers/<provider_id>/models/sync`
 - `GET|DELETE /api/dashboard/ai/model-sync-operations/<operation_id>`
 - `GET /api/dashboard/ai/model-sync-operations/<operation_id>/events`
 - `POST /api/dashboard/ai/model-sync-operations/<operation_id>/confirm-empty`
-- 模型池 CRUD 与 `PUT /api/dashboard/ai/model-pools/<pool_id>/members`，详见 `frontend-api-contract.md`。
+- `GET /api/dashboard/ai/agents/<agent_id>/candidates`
+- 模型池 CRUD、`PUT /api/dashboard/ai/model-pools/<pool_id>/members` 与 `GET /api/dashboard/ai/model-pools/<pool_id>/attempts`，详见 `frontend-api-contract.md`。
 
-“救援 API”设置页只展示 Token 前缀与轮换时间。完整救援 Token 只在生成或轮换成功后显示一次，关闭窗口时立即清空页面中的明文。AI 设置不回显 API Key；模型池编辑器列出所有可能接收 Prompt 的 Provider，并明确提示跨 Provider 故障转移的隐私范围。
+`system` 页的救援 API 只展示 Token 前缀与轮换时间。完整救援 Token 只在生成或轮换成功后显示一次，关闭窗口时立即清空页面中的明文。`models` 页不回显 API Key；模型池编辑器列出所有可能接收 Prompt 的 Provider，并明确提示跨 Provider 故障转移的隐私范围。
 
-### 成人配置（`/dashboard/settings`）
+### 成人配置（`/dashboard/settings/adult`）
 
 成人 Agent 不走普通 Agent 的生命周期入口。设置页先选择项目，维护结构化的虚构角色（年龄、年龄依据、别名和 revision），再在 adult confirmation 中打开成人内容并勾选当前角色 revision。`safety` 与 `fact_guard` 两个固定 review binding 必须分别绑定支持 `json` 的 Provider 模型或模型池；binding、角色或确认 revision 变化后，阅读页会要求重新获取 Provider scope。
 

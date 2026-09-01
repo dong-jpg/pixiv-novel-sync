@@ -18,7 +18,8 @@ def test_reader_does_not_normalize_content_before_offset_submission():
 
 
 def test_settings_shows_fixed_policy_hashes_and_binding_capability():
-    html = Path("src/pixiv_novel_sync/templates/dashboard_settings.html").read_text(encoding="utf-8")
+    # 成人润色配置在设置页拆分后独立成 /dashboard/settings/adult
+    html = Path("src/pixiv_novel_sync/templates/dashboard_settings_adult.html").read_text(encoding="utf-8")
     assert "adult_safety_policy" in html
     assert "adult_fact_guard_policy" in html
     assert "json" in html
@@ -55,7 +56,12 @@ def test_reader_requires_confirmations_and_regenerate_parent_lineage():
 
 
 def test_settings_uses_versioned_character_confirmation_without_agent_controls():
-    html = Path("src/pixiv_novel_sync/templates/dashboard_settings.html").read_text(encoding="utf-8")
+    """角色确认带版本号；成人润色 Agent 不得出现在普通 Agent 列表里。
+
+    两条断言落在两个模板上：角色确认在 adult 页，而「把 adult_polish 从列表里排除」
+    是 agents 页的过滤逻辑——那里才是可能误开编辑/删除入口的地方。
+    """
+    html = Path("src/pixiv_novel_sync/templates/dashboard_settings_adult.html").read_text(encoding="utf-8")
     for contract in (
         "/characters",
         "expected_revision",
@@ -65,7 +71,11 @@ def test_settings_uses_versioned_character_confirmation_without_agent_controls()
         "sortedCharacters",
     ):
         assert contract in html
-    assert "agent.task_type !== 'adult_polish'" in html
+
+    agents_html = Path(
+        "src/pixiv_novel_sync/templates/dashboard_settings_agents.html"
+    ).read_text(encoding="utf-8")
+    assert "agent.task_type !== 'adult_polish'" in agents_html
 
 
 def test_reader_converts_utf16_dom_offsets_to_codepoint_offsets_before_slicing():

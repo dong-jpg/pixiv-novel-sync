@@ -142,6 +142,53 @@ class TasksMixin:
         item["is_auto_sync"] = bool(item.get("is_auto_sync"))
         return item
 
+    def get_task_duration_stats(self, days: int = 3) -> dict[str, dict[str, Any]]:
+        """按 task_type 聚合最近 N 天的耗时，供设置页的调度预算列使用。
+
+        只统计写了 duration_seconds 的行：running 的记录还没有耗时，把 NULL 当 0 会
+        让「上一轮耗时」在任务正在跑时莫名归零。
+
+        SQL 里 MAX(started_at) 与裸列 status/duration_seconds 同时出现是 SQLite 的
+        既定行为（裸列取自 MAX 命中的那一行），所以「最近一轮」不需要第二次查询。
+        """
+        rows = self.conn.execute(
+            """
+            SELECT task_type,
+                   COUNT(*) AS runs,
+                   SUM(duration_seconds) AS total_seconds,
+                   AVG(duration_seconds) AS avg_seconds,
+                   MAX(started_at) AS last_started_at,
+                   duration_seconds AS last_duration_seconds,
+                   status AS last_status,
+                   finished_at AS last_finished_at
+            FROM task_logs
+            WHERE started_at >= datetime('now', ? || ' days')
+              AND duration_seconds IS NOT NULL
+            GROUP BY task_type
+            """,
+            (f"-{days}",),
+        ).fetchall()
+
+        stats: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            item = dict(row)
+            stats[str(item["task_type"])] = {
+                "runs": int(item["runs"] or 0),
+                "total_duration_seconds": float(item["total_seconds"] or 0.0),
+                "avg_duration_seconds": (
+                    float(item["avg_seconds"]) if item["avg_seconds"] is not None else None
+                ),
+                "last_duration_seconds": (
+                    float(item["last_duration_seconds"])
+                    if item["last_duration_seconds"] is not None
+                    else None
+                ),
+                "last_status": item["last_status"],
+                "last_started_at": item["last_started_at"],
+                "last_finished_at": item["last_finished_at"],
+            }
+        return stats
+
     # AI 创作任务的 task_type → 中文名映射（与前端 dashboard_ai.html 的 JOB_TYPE_LABELS 对齐）
     _AI_TASK_LABELS = {
         "chapter_continue": "自动生成章节",

@@ -243,3 +243,99 @@ def test_save_sync_settings_default_crons_pass_their_own_validator(tmp_path: Pat
     assert saved["auto_sync_preference_analyze_cron"] == "15 7,19 * * *"
     assert saved["auto_sync_preference_analyze_interval_hours"] == 12
     assert saved["auto_sync_recommendation_run_cron"] == "50 8 * * *"
+
+
+# ── cron 预览端点 ─────────────────────────────────────────────────────
+#
+# 设置页的 cron 字段原本是裸文本框：写错了不会有任何反馈，因为调度器对解析失败是
+# **静默回落到 interval**。预览端点让「合法、下次是 X」与「解析不了、会退回按
+# interval 跑」在保存前就能区分开，且 cron 解析只有后端一份实现（前端不自己写）。
+
+
+def _preview_client(tmp_path: Path):
+    """建一个只连 tmp 目录的 dashboard app。
+
+    必须显式 start_scheduler=False 且给一份 tmp env_path：默认会真的拉起调度线程
+    （tests/test_test_isolation.py 会抓泄漏），而 env_path 缺省会读进仓库根目录的
+    真实 .env，本机有没有 DASHBOARD_TOKEN 会决定鉴权门开不开。
+    """
+    from pixiv_novel_sync.webapp import create_app
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("sync: {}\n", encoding="utf-8")
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(
+        config_path=str(config_path), env_path=str(env_path), start_scheduler=False
+    )
+    client = app.test_client()
+    return client, {"X-CSRF-Token": client.get("/api/csrf-token").get_json()["csrf_token"]}
+
+
+def test_cron_preview_returns_next_runs(tmp_path: Path) -> None:
+    client, headers = _preview_client(tmp_path)
+
+    res = client.post(
+        "/api/dashboard/settings/cron-preview",
+        json={"cron": "20 0,4,8,12,16,20 * * *", "timezone": "Asia/Seoul", "count": 5},
+        headers=headers,
+    )
+
+    assert res.status_code == 200
+    data = res.get_json()["data"]
+    assert data["valid"] is True
+    assert len(data["next_runs"]) == 5
+    # 逐次递增，且带时区偏移（前端直接显示，不再自己算时区）
+    assert data["next_runs"] == sorted(data["next_runs"])
+    # 每天 6 次：预算列靠它把「单轮耗时」折算成「每日占用」
+    assert data["runs_per_day"] == 6.0
+
+
+def test_cron_preview_respects_timezone(tmp_path: Path) -> None:
+    """同一个表达式在不同时区必须给出不同的绝对时刻（差 9 小时）。"""
+    client, headers = _preview_client(tmp_path)
+
+    def _first(tz: str) -> str:
+        res = client.post(
+            "/api/dashboard/settings/cron-preview",
+            json={"cron": "0 3 * * *", "timezone": tz, "count": 1},
+            headers=headers,
+        )
+        return res.get_json()["data"]["next_runs"][0]
+
+    assert _first("Asia/Seoul") != _first("UTC")
+
+
+def test_cron_preview_reports_invalid_expression(tmp_path: Path) -> None:
+    """非法表达式是校验结果而不是请求错误：仍返回 200，用 valid=False 表达。"""
+    client, headers = _preview_client(tmp_path)
+
+    res = client.post(
+        "/api/dashboard/settings/cron-preview",
+        json={"cron": "99 99 * * *", "timezone": "UTC"},
+        headers=headers,
+    )
+
+    assert res.status_code == 200
+    data = res.get_json()["data"]
+    assert data["valid"] is False
+    assert data["next_runs"] == []
+    # 界面必须能明确说出「会退回按 interval 跑」，而不是只显示一句「无效」
+    assert data["falls_back_to_interval"] is True
+
+
+def test_cron_preview_treats_blank_as_interval_mode(tmp_path: Path) -> None:
+    """留空是合法用法（表示按 interval 跑），不能报成非法表达式。"""
+    client, headers = _preview_client(tmp_path)
+
+    res = client.post(
+        "/api/dashboard/settings/cron-preview",
+        json={"cron": "   ", "timezone": "UTC"},
+        headers=headers,
+    )
+
+    data = res.get_json()["data"]
+    assert res.status_code == 200
+    assert data["valid"] is False
+    assert data["empty"] is True
+    assert data["falls_back_to_interval"] is True

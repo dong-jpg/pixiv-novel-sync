@@ -178,12 +178,13 @@ def test_settings_dict_covers_every_scheduler_task():
 # ---------------------------------------------------------------------------
 
 def test_scheduler_tab_lists_recommendation_task():
+    # 调度表随设置页拆分落到 /dashboard/settings/sync
     template = (
         Path(__file__).resolve().parents[1]
         / "src"
         / "pixiv_novel_sync"
         / "templates"
-        / "dashboard_settings.html"
+        / "dashboard_settings_sync.html"
     ).read_text(encoding="utf-8")
 
     assert "auto_sync_recommendation_run_enabled" in template

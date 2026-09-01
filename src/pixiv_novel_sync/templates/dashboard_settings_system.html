@@ -1,0 +1,304 @@
+{% extends "base.html" %}
+
+{% block title %}系统维护 - Pixiv 小说同步器{% endblock %}
+
+{% block content %}
+{# 设置页第五分页：图片缓存、救援 API Token、数据导出、待删除保留期。
+   只有「待删除保留期」落到 config.yaml，走 PUT /api/dashboard/settings/system——
+   分区端点保证这一页保存时不会把同步页的限速字段冲成默认值。
+   变更类请求一律用 base.html 的 window.csrfFetch，失败原因用 window.errorText 读。 #}
+<div class="library-page px-6 lg:px-8 pt-6 max-w-6xl mx-auto space-y-5 pb-8">
+  <div class="library-page-header">
+    <div>
+      <p class="library-kicker">Settings</p>
+      <h1 class="text-2xl font-bold text-gray-900 mb-1">系统维护</h1>
+      <p class="text-sm text-pixiv-gray">图片缓存、救援 API、数据导出与待删除保留期</p>
+    </div>
+  </div>
+
+  {% include 'dashboard_settings_nav.html' %}
+
+  <!-- 1. 待删除保留期（唯一落到 config.yaml 的一块） -->
+  <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 sm:p-8">
+    <div class="mb-6 pb-4 border-b border-gray-100">
+      <h2 class="text-xl font-bold text-gray-900">待删除保留期</h2>
+      <p class="text-sm text-pixiv-gray mt-1">
+        取消收藏/追更的内容不会立刻删除，先进入「待确认删除」列表；这里控制它在列表里停留多久。
+      </p>
+    </div>
+
+    <div v-if="!settings" class="text-sm text-pixiv-gray">正在读取设置…</div>
+    <div v-else class="space-y-6">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">待确认保留天数</label>
+          <input type="number" min="0" v-model.number="settings.pending_deletion_grace_period_days"
+                 class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+          <p class="mt-1 text-xs text-pixiv-light">检测到取消收藏后，等待人工确认的宽限天数</p>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">已确认记录保留天数</label>
+          <input type="number" min="0" v-model.number="settings.pending_deletion_cleanup_confirmed_days"
+                 class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+          <p class="mt-1 text-xs text-pixiv-light">确认删除后，记录本身还留多久便于回溯</p>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-4">
+        <button @click="saveSettings" :disabled="saving"
+                class="px-5 py-2 bg-brand-500 text-white hover:bg-brand-600 font-medium text-sm rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50">
+          {{ saving ? '保存中...' : '保存系统设置' }}
+        </button>
+        <a href="/api/dashboard/export/stats" download="pixiv-stats.json"
+           class="px-5 py-2 bg-gray-100 text-gray-700 hover:bg-gray-200 font-medium text-sm rounded-lg transition-colors shadow-sm border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 no-underline">
+          导出统计数据
+        </a>
+        <span v-if="saveMessage" class="text-sm font-medium" :class="saveSuccess ? 'text-green-600' : 'text-red-600'">{{ saveMessage }}</span>
+      </div>
+    </div>
+  </section>
+  <!-- 2. 图片缓存 -->
+  <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 sm:p-8">
+    <div class="mb-6 pb-4 border-b border-gray-100">
+      <h2 class="text-xl font-bold text-gray-900">图片缓存管理</h2>
+      <p class="text-sm text-pixiv-gray mt-1">管理本地图片反代缓存，清空后会强制重新拉取最新封面。</p>
+    </div>
+
+    <div class="bg-gray-50 rounded-lg p-5 border border-gray-100 mb-4 flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+      <div>
+        <div class="text-xs font-medium text-pixiv-gray uppercase mb-1.5">当前缓存占用</div>
+        <div v-if="loadingCache" class="animate-pulse h-6 bg-gray-200 rounded w-24"></div>
+        <div v-else-if="cacheData.exists" class="text-lg font-bold text-gray-900 flex items-center gap-3">
+          <span class="font-mono bg-white px-2.5 py-0.5 rounded-md border border-gray-100 text-base">{{ cacheData.size_human }}</span>
+          <span class="text-sm font-normal text-pixiv-gray">{{ cacheData.file_count }} 个文件</span>
+        </div>
+        <div v-else class="text-pixiv-gray text-sm">缓存目录不存在或为空</div>
+      </div>
+      <div class="flex items-center gap-3">
+        <button @click="fetchCacheStatus" class="px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500">刷新状态</button>
+        <button @click="clearCache" :disabled="clearingCache" class="px-4 py-2 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm font-medium hover:bg-red-100 transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50">清空缓存</button>
+      </div>
+    </div>
+    <div v-if="cacheMessage" class="text-sm font-medium" :class="cacheSuccess ? 'text-green-600' : 'text-red-600'">{{ cacheMessage }}</div>
+  </section>
+
+  <!-- 3. 救援 API Token（id 保留旧的 rescue-api，老链接的 #hash 仍能定位） -->
+  <section id="rescue-api" class="space-y-4">
+    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 sm:p-8">
+      <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+        <div>
+          <h2 class="text-xl font-bold text-gray-900">Pixiv 救援 API</h2>
+          <p class="text-sm text-pixiv-gray mt-1">为油猴脚本提供只读的私人备份阅读接口。Token 只保存摘要，轮换后旧 Token 立即失效。</p>
+        </div>
+        <span class="self-start px-2 py-1 rounded text-xs font-medium"
+              :class="rescueTokenStatus.configured ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-600'">
+          {{ rescueTokenStatus.configured ? '已配置' : '未配置' }}
+        </span>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-6 text-sm">
+        <div class="p-4 bg-gray-50 rounded-lg border border-gray-100">
+          <div class="text-xs text-gray-500">当前 Token 前缀</div>
+          <div class="font-mono text-gray-900 mt-1">{{ rescueTokenStatus.token_prefix || '尚未生成' }}</div>
+        </div>
+        <div class="p-4 bg-gray-50 rounded-lg border border-gray-100">
+          <div class="text-xs text-gray-500">最近轮换时间</div>
+          <div class="text-gray-900 mt-1">{{ rescueTokenStatus.rotated_at || '尚未生成' }}</div>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-3 mt-6">
+        <button @click="rotateRescueToken" :disabled="rotatingRescueToken"
+                class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600 disabled:opacity-50">
+          {{ rotatingRescueToken ? '轮换中...' : (rescueTokenStatus.configured ? '轮换 Token' : '生成 Token') }}
+        </button>
+        <button @click="loadRescueTokenStatus" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200">
+          刷新状态
+        </button>
+      </div>
+      <p v-if="rescueTokenMessage" class="text-sm mt-3" :class="rescueTokenMessageType === 'error' ? 'text-red-600' : 'text-emerald-700'">{{ rescueTokenMessage }}</p>
+    </div>
+    <div class="p-4 bg-amber-50 border border-amber-100 rounded-lg text-sm text-amber-800">
+      Token 明文只在轮换成功后显示一次。请使用 HTTPS 保存到油猴脚本的安全存储中，不要把 Token 写入 URL、日志或截图。
+    </div>
+  </section>
+
+  <app-modal title="救援 API Token" :is-open="!!rescueTokenPlaintext" @close="closeRescueToken">
+    <div class="space-y-4">
+      <div class="p-3 bg-amber-50 border border-amber-100 rounded-lg text-sm text-amber-800">
+        这是唯一一次显示完整 Token。关闭此窗口后页面会立即清空明文，无法再次查看。
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1.5">完整 Token</label>
+        <textarea readonly :value="rescueTokenPlaintext" rows="3"
+                  class="w-full px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 font-mono text-sm break-all resize-none"></textarea>
+      </div>
+    </div>
+    <template #footer>
+      <button @click="closeRescueToken" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200">关闭并清空</button>
+      <button @click="copyRescueToken" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600">复制 Token</button>
+    </template>
+  </app-modal>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  initVueApp({
+    setup() {
+      const { ref, onMounted } = Vue;
+
+      const settings = ref(null);
+      const saving = ref(false);
+      const saveMessage = ref('');
+      const saveSuccess = ref(true);
+
+      const loadingCache = ref(true);
+      const clearingCache = ref(false);
+      const cacheData = ref({});
+      const cacheMessage = ref('');
+      const cacheSuccess = ref(true);
+
+      const rescueTokenStatus = ref({ configured: false, token_prefix: '', rotated_at: '' });
+      const rescueTokenPlaintext = ref('');
+      const rescueTokenMessage = ref('');
+      const rescueTokenMessageType = ref('success');
+      const rotatingRescueToken = ref(false);
+
+      const showSaveStatus = (msg, success) => {
+        saveMessage.value = msg;
+        saveSuccess.value = success;
+        setTimeout(() => { saveMessage.value = ''; }, 4000);
+      };
+
+      async function loadSettings() {
+        try {
+          const res = await fetch('/api/dashboard/settings');
+          settings.value = await res.json();
+        } catch (err) {
+          showSaveStatus('读取设置失败', false);
+        }
+      }
+
+      // 只发 system 分区：这一页没有同步页的限速/调度字段，走全量端点会把它们
+      // 按默认值写回（后端逐字段 payload.get(k, 默认值) 在半份 payload 下就是覆盖）。
+      async function saveSettings() {
+        if (!settings.value) return;
+        saving.value = true;
+        try {
+          const res = await window.csrfFetch('/api/dashboard/settings/system', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              pending_deletion_grace_period_days: settings.value.pending_deletion_grace_period_days,
+              pending_deletion_cleanup_confirmed_days: settings.value.pending_deletion_cleanup_confirmed_days,
+            }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) {
+            showSaveStatus(`保存失败：${window.errorText(data, res)}`, false);
+            return;
+          }
+          if (data.sync) settings.value = data.sync;
+          showSaveStatus(data.message || '设置已保存', true);
+        } catch (err) {
+          showSaveStatus('保存失败：网络错误', false);
+        } finally {
+          saving.value = false;
+        }
+      }
+      async function fetchCacheStatus() {
+        loadingCache.value = true;
+        try {
+          const res = await fetch('/api/cache/status');
+          cacheData.value = await res.json();
+        } catch (err) {
+          cacheData.value = { exists: false };
+        } finally {
+          loadingCache.value = false;
+        }
+      }
+
+      async function clearCache() {
+        if (!confirm('确认清空所有图片缓存？\n清空后首次访问列表图片会变慢。')) return;
+        clearingCache.value = true;
+        try {
+          const res = await window.csrfFetch('/api/cache/clear', { method: 'POST' });
+          const data = await res.json().catch(() => ({}));
+          cacheSuccess.value = res.ok;
+          cacheMessage.value = res.ok ? '缓存已清空' : `清空失败：${window.errorText(data, res)}`;
+          if (res.ok) fetchCacheStatus();
+          setTimeout(() => { cacheMessage.value = ''; }, 4000);
+        } catch (err) {
+          cacheSuccess.value = false;
+          cacheMessage.value = '网络错误';
+        } finally {
+          clearingCache.value = false;
+        }
+      }
+
+      async function loadRescueTokenStatus() {
+        try {
+          const res = await fetch('/api/dashboard/rescue-token/status');
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
+          rescueTokenStatus.value = data.data || { configured: false, token_prefix: '', rotated_at: '' };
+        } catch (err) {
+          rescueTokenMessageType.value = 'error';
+          rescueTokenMessage.value = String(err.message || err) || '读取 Token 状态失败';
+        }
+      }
+
+      async function rotateRescueToken() {
+        if (!confirm('轮换后旧 Token 会立即失效，确认继续吗？')) return;
+        rotatingRescueToken.value = true;
+        rescueTokenMessage.value = '';
+        try {
+          const res = await window.csrfFetch('/api/dashboard/rescue-token/rotate', { method: 'POST' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
+          rescueTokenPlaintext.value = (data.data && data.data.token) || '';
+          rescueTokenStatus.value = {
+            configured: true,
+            token_prefix: (data.data && data.data.token_prefix) || '',
+            rotated_at: (data.data && data.data.rotated_at) || '',
+          };
+          rescueTokenMessageType.value = 'success';
+          rescueTokenMessage.value = 'Token 已轮换，请在关闭窗口前复制。';
+        } catch (err) {
+          rescueTokenMessageType.value = 'error';
+          rescueTokenMessage.value = String(err.message || err) || 'Token 轮换失败';
+        } finally {
+          rotatingRescueToken.value = false;
+        }
+      }
+      async function copyRescueToken() {
+        if (!rescueTokenPlaintext.value) return;
+        try {
+          await navigator.clipboard.writeText(rescueTokenPlaintext.value);
+          rescueTokenMessageType.value = 'success';
+          rescueTokenMessage.value = 'Token 已复制';
+        } catch (err) {
+          rescueTokenMessageType.value = 'error';
+          rescueTokenMessage.value = '复制失败，请手动复制';
+        }
+      }
+
+      // 关闭即清空明文：页面上不留第二次查看的机会
+      const closeRescueToken = () => { rescueTokenPlaintext.value = ''; };
+
+      onMounted(() => {
+        loadSettings();
+        fetchCacheStatus();
+        loadRescueTokenStatus();
+      });
+
+      return {
+        settings, saving, saveMessage, saveSuccess, saveSettings,
+        loadingCache, clearingCache, cacheData, cacheMessage, cacheSuccess,
+        fetchCacheStatus, clearCache,
+        rescueTokenStatus, rescueTokenPlaintext, rescueTokenMessage, rescueTokenMessageType,
+        rotatingRescueToken, loadRescueTokenStatus, rotateRescueToken, copyRescueToken, closeRescueToken,
+      };
+    }
+  });
+</script>
+{% endblock %}

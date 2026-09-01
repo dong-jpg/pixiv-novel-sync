@@ -1,0 +1,18 @@
+{# 五个设置分页的共享导航条。
+   刻意留在 Jinja 层而不是做成 Vue 组件：这些链接是真实的页面跳转，高亮只取决于
+   request.path，不需要任何前端状态；侧栏「设置」项落在 /dashboard/settings（302 到
+   同步页），子页之间靠这一条切换。
+   Jinja 变量定界符是 {[ ]}（Vue 占用了 {{ }}）。 #}
+<nav class="library-card !py-3 flex flex-wrap items-center gap-2" aria-label="设置分区">
+  {% for slug, label in [
+       ('sync', '同步与调度'),
+       ('models', '模型与 Provider'),
+       ('agents', 'Agent 绑定'),
+       ('adult', '成人润色'),
+       ('system', '系统维护')] %}
+  {% set is_current = request.path == '/dashboard/settings/' + slug %}
+  <a href="/dashboard/settings/{[ slug ]}"
+     class="px-3 py-1.5 rounded-xl text-sm font-bold no-underline transition-colors {[ 'bg-brand-50 text-brand-600' if is_current else 'text-pixiv-gray hover:bg-gray-50 hover:text-gray-900' ]}"
+     {% if is_current %}aria-current="page"{% endif %}>{[ label ]}</a>
+  {% endfor %}
+</nav>

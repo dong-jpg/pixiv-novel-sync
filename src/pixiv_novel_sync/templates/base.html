@@ -227,6 +227,98 @@
       return `HTTP ${response ? response.status : '?'}`;
     };
 
+    // SSE 流式读取。此前 ai / wizard / reader 三页共写了 7 份几乎相同的
+    // getReader + 手工切帧代码，任何一处修 bug 都修不全，统一收在这里。
+    //
+    // handlers: { onEvent(name, payload), onDone(), onError(err) }
+    // 返回 { events, terminal }：terminal 表示收到过 done / error 帧，
+    // 断线重连要靠它判断流是否已经跑到终态。
+    // 没传 onError 时异常原样抛出——调用方的 try/catch 才能接管重连。
+    window.streamSSE = async function (url, options, handlers) {
+      const h = handlers || {};
+      const result = { events: 0, terminal: false };
+      const failure = function (err) {
+        if (h.onError) { h.onError(err); return result; }
+        throw err;
+      };
+      let response;
+      try {
+        response = await window.csrfFetch(url, options);
+      } catch (err) {
+        return failure(err);
+      }
+      if (!response.ok || !response.body) {
+        const data = await response.json().catch(() => ({}));
+        return failure(new Error(window.errorText(data, response)));
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+          // SSE 以空行分帧；最后一段可能不完整，留在 buffer 里等下一轮
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop() || '';
+          for (const frame of frames) {
+            if (!frame.trim()) continue;
+            let eventName = 'message';
+            const dataLines = [];
+            for (const line of frame.split('\n')) {
+              if (line.startsWith('event:')) eventName = line.slice(6).trim();
+              else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+            }
+            if (!dataLines.length) continue;
+            let payload = dataLines.join('\n');
+            try { payload = JSON.parse(payload); } catch (e) { /* 保持字符串 */ }
+            result.events += 1;
+            if (eventName === 'done' || eventName === 'error') result.terminal = true;
+            // onEvent 允许是 async：ai 页有几处要在 done 帧里重载章节，
+            // 不 await 就会变成脱管的后台请求，顺序和原来的逐帧读取不一致。
+            if (h.onEvent) await h.onEvent(eventName, payload);
+          }
+          if (done) break;
+        }
+      } catch (err) {
+        return failure(err);
+      }
+      if (h.onDone) await h.onDone();
+      return result;
+    };
+
+    // AI 页面公共数据层。/dashboard/ai 与 /dashboard/wizard 之前各写了一份
+    // api() 加四个 load*Profiles()，端点或错误处理一改就得改两处，而两处都只读
+    // data.error——于是鉴权网关返回的 detail 形状失败一律显示成「请求失败」。
+    window.aiApi = {
+      async request(url, options) {
+        const response = await window.csrfFetch(url, options);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.ok === false) {
+          throw new Error(window.errorText(data, response));
+        }
+        return data.data;
+      },
+      agents() {
+        return window.aiApi.request('/api/dashboard/ai/agents');
+      },
+      async styleProfiles() {
+        const data = await window.aiApi.request('/api/dashboard/ai/style-profiles');
+        return (data && data.items) || [];
+      },
+      async novelProfiles() {
+        const data = await window.aiApi.request('/api/dashboard/ai/novel-profiles');
+        return (data && data.items) || [];
+      },
+      preferenceProfiles() {
+        return window.aiApi.request('/api/dashboard/preferences/profiles');
+      },
+      // Agent 的候选模型链（只读预览，后端只做解析不发生成请求）
+      agentCandidates(agentId) {
+        return window.aiApi.request(`/api/dashboard/ai/agents/${agentId}/candidates`);
+      },
+    };
+
     window.initVueApp = function(setupFunc) {
       const { createApp } = Vue;
       const app = createApp(setupFunc);

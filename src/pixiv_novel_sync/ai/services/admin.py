@@ -24,7 +24,15 @@ from ..model_pools import (
     ModelPoolValidationError,
     expand_pool_ids,
 )
-from ..model_router import CandidateSnapshot, ModelRouteConflictError, ModelRouter
+from ..model_router import (
+    MAX_CANDIDATE_ATTEMPTS,
+    MAX_NETWORK_REQUESTS,
+    MAX_POOL_NODES,
+    MAX_RESOLVED_CANDIDATES,
+    CandidateSnapshot,
+    ModelRouteConflictError,
+    ModelRouter,
+)
 from ..model_sync import ModelSyncConflictError
 from ..models import AIAgentConfig, AIProviderConfig, AIStreamChunk
 from ..providers import ProviderConfigError, validate_base_url
@@ -713,6 +721,57 @@ class AIAdminMixin:
             return db.list_ai_model_pool_attempts(pool_id, limit=limit)
         finally:
             db.close()
+
+    def preview_agent_candidates(self, agent_id: int) -> dict[str, Any]:
+        """解析并返回该 Agent 的候选模型链，不发起任何真实生成请求。
+
+        配置界面此前完全看不出「这个 Agent 实际会依次调用哪些模型」，只能等任务
+        跑完去日志页事后看。这里复用 ModelRouter 的解析路径，保证预览顺序与真实
+        执行顺序永远一致；同时只回传路由决策需要的字段——Provider 的密文、
+        base_url、配置哈希一律不出网，避免预览成为机密的旁路出口。
+        """
+        db = self._db()
+        try:
+            agent = self._load_agent_config(db, agent_id)
+        finally:
+            db.close()
+
+        snapshot = self.model_router.resolve_candidates(agent, stage="main")
+        candidates = [
+            {
+                "order": index + 1,
+                "provider_id": candidate.provider_id,
+                "provider_name": candidate.provider_name,
+                "model_key": candidate.model_key,
+                "provider_model_id": candidate.provider_model_id,
+                "pool_id": candidate.pool_id,
+                "pool_name": candidate.pool_name,
+                "pool_position": candidate.pool_position,
+                "fallback_depth": candidate.fallback_depth,
+                # 固定绑定没有池节点，界面直接显示「fixed」；池绑定显示命中的池名，
+                # 这样一眼能看出候选是主池还是第几级后备池给出来的。
+                "source": candidate.pool_name or "fixed",
+                "capabilities": list(candidate.capabilities),
+                "context_window": candidate.context_window,
+            }
+            for index, candidate in enumerate(snapshot.candidates)
+        ]
+        first = candidates[0] if candidates else {}
+        return {
+            "agent_id": agent.id,
+            "agent_name": agent.name,
+            "task_type": agent.task_type,
+            "binding_type": agent.binding_type,
+            "pool_id": first.get("pool_id"),
+            "pool_name": first.get("pool_name"),
+            "candidates": candidates,
+            "limits": {
+                "max_candidate_attempts": MAX_CANDIDATE_ATTEMPTS,
+                "max_network_requests": MAX_NETWORK_REQUESTS,
+                "max_resolved_candidates": MAX_RESOLVED_CANDIDATES,
+                "max_pool_nodes": MAX_POOL_NODES,
+            },
+        }
 
     def list_agents(self) -> list[dict[str, Any]]:
         db = self._db()

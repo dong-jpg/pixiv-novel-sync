@@ -24,7 +24,12 @@
 | `/dashboard/users/<user_id>` | `dashboard_user_detail.html` | 作者详情 |
 | `/dashboard/pending-deletions` | `dashboard_pending_deletions.html` | 待确认删除 |
 | `/dashboard/logs` | `dashboard_logs.html` | 任务日志 |
-| `/dashboard/settings` | `dashboard_settings.html` | 设置 |
+| `/dashboard/settings` | 302 → `/dashboard/settings/sync` | 旧书签与旧 `#hash` 链接的落点 |
+| `/dashboard/settings/sync` | `dashboard_settings_sync.html` | 同步与调度 |
+| `/dashboard/settings/models` | `dashboard_settings_models.html` | 模型与 Provider |
+| `/dashboard/settings/agents` | `dashboard_settings_agents.html` | Agent 绑定 |
+| `/dashboard/settings/adult` | `dashboard_settings_adult.html` | 成人润色 |
+| `/dashboard/settings/system` | `dashboard_settings_system.html` | 系统维护 |
 | `/dashboard/preferences` | `dashboard_preferences.html` | 偏好画像与推荐 |
 | `/dashboard/ai` | `dashboard_ai.html` | AI 自动写作 |
 | `/dashboard/wizard` | `dashboard_wizard.html` | 创作向导与蒸馏档案 |
@@ -116,6 +121,48 @@ Expected fields:
 ```
 
 ## Dashboard sync APIs
+
+### GET /api/dashboard/auto-sync/budget
+
+Used by: `/dashboard/settings/sync` 的调度表（耗时与每日预算两列）。
+
+Query：`days`（观测窗口，夹到 1–30，默认 3）。
+
+响应以调度任务名为键（与 `auto-sync/status` 同一套键）：
+
+```json
+{
+  "ok": true,
+  "days": 3,
+  "timezone": "UTC",
+  "day_seconds": 86400,
+  "tasks": {
+    "bookmarks": {
+      "task_type": "bookmark",
+      "label": "同步收藏小说",
+      "enabled": true,
+      "priority": 1,
+      "preemptible": false,
+      "cron": "20 0,4,8,12,16,20 * * *",
+      "cron_valid": true,
+      "interval_hours": 4,
+      "schedule_source": "cron",
+      "runs_per_day": 6,
+      "runs": 12,
+      "last_status": "succeeded",
+      "last_started_at": "2026-08-28T00:20:00",
+      "last_duration_seconds": 312.5,
+      "avg_duration_seconds": 298.4,
+      "observed_daily_seconds": 1193.6,
+      "estimated_daily_seconds": 1875.0
+    }
+  },
+  "total_estimated_daily_seconds": 4200.0,
+  "total_duty_ratio": 0.048611
+}
+```
+
+预算 = 单轮耗时 × 每天触发次数；次数按当前 cron 现算（cron 一改，历史累计时长立刻失真），cron 解析不了时按 `interval_hours` 折算——与调度器静默回落的行为一致，`schedule_source` 标出用的是哪一种。耗时优先取最近一轮实测值，没有终态记录时退回窗口均值。`total_duty_ratio` 是所有启用任务的每日预算除以一天：同步任务全局只有一个执行槽，这个比例就是那个槽的忙碌程度。前端不要用分页的 `/api/dashboard/logs` 自己聚合（20 条一页凑不齐一轮全部任务），也不要自己实现 cron 解析。
 
 ### POST /api/dashboard/sync/start
 
@@ -459,11 +506,53 @@ Returns settings object consumed by settings form.
 
 ### POST /api/dashboard/settings
 
-Saves settings. Body is the edited settings object.
+Saves settings. Body is the edited settings object。全量端点，与分区端点并存。
+
+### PUT /api/dashboard/settings/<section>
+
+Used by: `/dashboard/settings/sync`（`section=sync`）与 `/dashboard/settings/system`（`section=system`）。
+
+按分区保存：只有该分区声明的字段会从 body 取值，其余字段沿用 `config/config.yaml` 里的既有值。字段白名单是 `web/managers.py:SETTINGS_SECTIONS`。设置页拆分后每页表单只含自己那一区，走全量端点会把没加载的字段写成默认值。
+
+Body 是该分区的部分设置对象；夹带别区字段会被忽略而不是写入。响应：
+
+```json
+{ "ok": true, "message": "设置已保存", "sync": { "...": "保存后的完整 sync 配置" } }
+```
+
+未知 `section` 返回 `400`。变更类请求需带 `X-CSRF-Token`。
 
 ### POST /api/dashboard/settings/reload
 
 Reloads settings from backend config source.
+
+### POST /api/dashboard/settings/cron-preview
+
+Used by: `/dashboard/settings/sync` 的 cron 输入框（保存前校验）。
+
+Body：
+
+```json
+{ "cron": "20 0,4,8,12,16,20 * * *", "timezone": "Asia/Seoul", "count": 5 }
+```
+
+`count` 夹到 1–10，默认 5；`timezone` 默认 `UTC`，未知时区按 UTC 处理（与 `cron_to_next_run` 一致）。响应：
+
+```json
+{
+  "ok": true,
+  "data": {
+    "valid": true,
+    "empty": false,
+    "falls_back_to_interval": false,
+    "next_runs": ["2026-08-28T00:20:00+09:00"],
+    "runs_per_day": 6,
+    "timezone": "Asia/Seoul"
+  }
+}
+```
+
+非法或超长（>200 字符）表达式返回 `200` 且 `valid: false`、`falls_back_to_interval: true`——这是校验结果而不是请求错误。空表达式额外带 `empty: true`。两种情况调度器都会静默回落到按 `*_interval_hours` 跑，界面必须把这个差别显示出来。
 
 ### GET /api/cache/status
 
@@ -475,14 +564,21 @@ Clears cache. Mutation endpoint; UI should show confirmation/status.
 
 ### POST /api/dashboard/sync/{task_type}
 
-Settings page task shortcuts. Current task types include:
+Settings page task shortcuts。`task_type` 白名单与 `webapp.py` 的 `task_map` 一致，当前 11 项：
 
 - `bookmark`
 - `following_users`
 - `following_novels`
+- `subscribed_series`（页面按钮发下划线形式，专门的追更系列路由是连字符的 `/api/dashboard/sync/subscribed-series`；缺这个键会 400）
 - `user_status`
 - `novel_status`
 - `series_status`
+- `user_backup`
+- `pending_deletion_detection`
+- `preference_analyze`
+- `recommendation_run`
+
+未列出的 task_type 返回 `400` 与 `{ "error": "不支持的任务类型" }`。
 
 ## Pending deletion APIs
 
@@ -618,10 +714,56 @@ Body:
 - `POST /api/dashboard/ai/agents`
 - `PUT /api/dashboard/ai/agents/{agent_id}`
 - `DELETE /api/dashboard/ai/agents/{agent_id}`
+- `GET /api/dashboard/ai/agents/<agent_id>/candidates`
 - `POST /api/dashboard/ai/agents/seed`
 - `POST /api/dashboard/ai/agents/adult-polish/seed`：创建/确保成人润色 Agent。要求成人 owner 会话与 JSON object body；成功返回 `{ ok, data }`（Agent 信息），失败按成人路由规则映射为固定中文错误（默认「创建成人润色 Agent 失败」）。
 
 成员替换是全量、有序写入，body 为 `{"expected_version": 3, "members": [{"provider_model_id": 10, "enabled": true}]}`；陈旧版本返回 `409`。后备池按链顺序展开并按 `(provider_id, model_key)` 去重。Agent 的 `binding_type=fixed|pool` 互斥：`fixed` 提交 `provider_id`/`model`，`pool` 提交 `model_pool_id`。`required_capabilities` 只接受 `streaming`、`json`、`vision`、`tools`、`long_context`。
+
+`GET /api/dashboard/ai/model-pools/<pool_id>/attempts?limit=50` 返回该池最近的真实尝试记录（跨 job，按 `started_at` 倒序，`limit` 夹到 1–200）。字段是重命名过的投影，不是 job 详情里的 `*_snapshot`：
+
+```json
+[
+  {
+    "job_id": "...", "attempt_index": 0, "pool_id": 3, "pool_version": 5,
+    "pool_position": 1, "pool_name": "主池", "provider_id": 2,
+    "provider_model_id": 10, "provider_name": "deepseek", "model_key": "deepseek-v3",
+    "stage": "main", "status": "failed", "error_scope": "provider",
+    "error_message": "...", "error_category": "provider_error",
+    "finish_reason": "error", "output_started": false,
+    "started_at": "...", "finished_at": "...", "latency_ms": 1234
+  }
+]
+```
+
+`status` 取 `running` / `succeeded` / `failed` / `partial` / `cancelled`。`partial` 与 `failed` 必须分开显示：`partial` 是已经开始输出正文之后才失败，路由不会再转移到下一个候选（否则正文重复），`output_started=true` 就是这条约束的依据。
+
+`GET /api/dashboard/ai/agents/<agent_id>/candidates` 是只读预览：按真实路由顺序解析该 Agent 的候选模型链，**不发起任何生成请求**，也不回传 Provider 的连接地址、密钥或配置哈希。
+
+```json
+{
+  "ok": true,
+  "data": {
+    "agent_id": 4, "agent_name": "章节续写", "task_type": "continue",
+    "binding_type": "pool", "pool_id": 3, "pool_name": "主池",
+    "candidates": [
+      {
+        "order": 1, "provider_id": 2, "provider_name": "deepseek",
+        "model_key": "deepseek-v3", "provider_model_id": 10,
+        "pool_id": 3, "pool_name": "主池", "pool_position": 1,
+        "fallback_depth": 0, "source": "主池",
+        "capabilities": ["streaming"], "context_window": 64000
+      }
+    ],
+    "limits": {
+      "max_candidate_attempts": 16, "max_network_requests": 32,
+      "max_resolved_candidates": 64, "max_pool_nodes": 8
+    }
+  }
+}
+```
+
+`source` 是 `pool_name` 或固定绑定的 `"fixed"`；`fallback_depth` 为 0 表示主池成员，`N` 表示第 N 级后备池。固定绑定的链只有一个元素且 `pool_id` 为 `null`，界面不应显示模型池区块。`limits` 直接来自 `ai/model_pools.py` 的常量，前端必须显示响应值而不是自己抄一份数字。未知 agent 返回 `400`。
 
 单池和完整后备链最多 64 个候选，链深度最多 8；每个 job 最多尝试 16 个候选、32 次网络请求和 30 分钟。模型池可能把同一 Prompt 发送给多个 Provider，前端必须展示完整 Provider 范围及跨 Provider 隐私提示。
 

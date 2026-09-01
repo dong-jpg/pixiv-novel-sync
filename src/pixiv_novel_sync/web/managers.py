@@ -149,6 +149,97 @@ def _parse_db_timestamp(value: Any) -> float | None:
     return parsed.timestamp()
 
 
+# --- 设置分区 ---
+# 设置页拆成五个一级页面后要能按分区独立保存：每个分区声明自己拥有哪些字段。
+# 分区保存时只有本区字段允许从 payload 取值，其余字段强制沿用 YAML 既有值——
+# 否则「同步页保存」会把系统页没加载的字段写成默认值（save_sync_settings 通篇是
+# payload.get(k, 默认值)，在只含半份表单的 payload 下这就是静默覆盖）。
+#
+# 覆盖面由 tests/test_settings_sections.py 锁定：_settings_to_dict 暴露的每个字段
+# 必须落在且只落在一个分区里。新增设置项时若忘了登记，那个字段将永远无法通过分区
+# 端点保存。
+# 只有这两个分区对应 YAML 的 sync: 块；模型/Agent/成人润色三页的配置存在数据库里，
+# 走 ai_web.py 自己的端点，不经过 save_sync_settings。
+SETTINGS_SECTIONS: dict[str, frozenset[str]] = {
+    "sync": frozenset(
+        {
+            # 基础开关与输出
+            "enabled",
+            "initial_manual_only",
+            "download_assets",
+            "write_markdown",
+            "write_raw_text",
+            "bookmark_restricts",
+            # 单轮配额与分页上限
+            "max_items_per_run",
+            "max_pages_per_run",
+            "bookmark_max_pages_per_run",
+            "following_max_novels_per_author",
+            "series_max_pages_per_run",
+            "series_sync_limit",
+            # 限速
+            "delay_seconds_between_items",
+            "delay_seconds_between_pages",
+            "delay_seconds_between_series",
+            "delay_seconds_between_chapters",
+            "delay_seconds_between_skips",
+            # 同步范围
+            "sync_bookmarks",
+            "sync_following_users",
+            "sync_following_novels",
+            "sync_subscribed_series",
+            # 定时同步总开关与时区。auto_sync_enabled 归在同步区只是为了「每个字段
+            # 都有归属」，它由首页那个开关经 /api/dashboard/auto-sync/toggle 单独
+            # 落盘，save_sync_settings 无论全量还是分区都刻意不写它。
+            "auto_sync_enabled",
+            "auto_sync_timezone",
+            # 各任务的调度参数（开关 / 间隔 / cron）
+            "auto_sync_bookmarks_enabled",
+            "auto_sync_bookmarks_interval_hours",
+            "auto_sync_bookmarks_cron",
+            "auto_sync_following_list_enabled",
+            "auto_sync_following_list_interval_hours",
+            "auto_sync_following_list_cron",
+            "auto_sync_following_novels_enabled",
+            "auto_sync_following_novels_interval_hours",
+            "auto_sync_following_novels_cron",
+            "auto_sync_following_novels_users_limit",
+            "auto_sync_user_status_enabled",
+            "auto_sync_user_status_interval_hours",
+            "auto_sync_user_status_cron",
+            "auto_sync_novel_status_enabled",
+            "auto_sync_novel_status_interval_hours",
+            "auto_sync_novel_status_cron",
+            "auto_sync_series_status_enabled",
+            "auto_sync_series_status_interval_hours",
+            "auto_sync_series_status_cron",
+            "auto_sync_subscribed_series_enabled",
+            "auto_sync_subscribed_series_interval_hours",
+            "auto_sync_subscribed_series_cron",
+            "auto_sync_user_backup_enabled",
+            "auto_sync_user_backup_interval_hours",
+            "auto_sync_user_backup_cron",
+            "auto_sync_pending_detection_enabled",
+            "auto_sync_pending_detection_interval_hours",
+            "auto_sync_pending_detection_cron",
+            "auto_sync_preference_analyze_enabled",
+            "auto_sync_preference_analyze_interval_hours",
+            "auto_sync_preference_analyze_cron",
+            "preference_analyze_batch_size",
+            "auto_sync_recommendation_run_enabled",
+            "auto_sync_recommendation_run_interval_hours",
+            "auto_sync_recommendation_run_cron",
+        }
+    ),
+    "system": frozenset(
+        {
+            "pending_deletion_grace_period_days",
+            "pending_deletion_cleanup_confirmed_days",
+        }
+    ),
+}
+
+
 @dataclass(slots=True)
 class SyncJobState:
     job_id: str
@@ -916,9 +1007,19 @@ class SettingsManager:
         self._cache = None
         self._cache_time = 0.0
 
-    def save_sync_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def save_sync_settings(
+        self, payload: dict[str, Any], section: str | None = None
+    ) -> dict[str, Any]:
         if not self.config_path:
             raise ValueError("缺少 config_path，无法保存设置")
+
+        if section is not None:
+            allowed = SETTINGS_SECTIONS.get(section)
+            if allowed is None:
+                raise ValueError(f"未知的设置分区: {section!r}")
+            # 只保留本区字段。下面整段逻辑都是 payload.get(k, 既有值)，
+            # 所以被过滤掉的键会自动沿用 YAML 里的旧值，而不是被写成默认值。
+            payload = {key: value for key, value in payload.items() if key in allowed}
 
         config_path = Path(self.config_path)
         config_path.parent.mkdir(parents=True, exist_ok=True)

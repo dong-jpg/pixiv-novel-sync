@@ -46,7 +46,11 @@ def test_dashboard_pages_are_marked_as_library_pages():
         "dashboard_user_detail.html",
         "dashboard_pending_deletions.html",
         "dashboard_logs.html",
-        "dashboard_settings.html",
+        "dashboard_settings_sync.html",
+        "dashboard_settings_models.html",
+        "dashboard_settings_agents.html",
+        "dashboard_settings_adult.html",
+        "dashboard_settings_system.html",
         "dashboard_preferences.html",
         "dashboard_ai.html",
         "dashboard_wizard.html",
@@ -210,13 +214,19 @@ def test_ai_project_pages_prefer_cover_url_with_gradient_fallback():
 
 def test_ai_dashboard_api_adds_csrf_to_mutating_requests():
     html = read(TEMPLATES / "dashboard_ai.html")
+    base = read(TEMPLATES / "base.html")
 
-    assert "ensureCsrfToken" in html
-    assert "async function csrfFetch" in html
-    assert "'/api/csrf-token'" in html
-    assert "'X-CSRF-Token': token" in html
-    assert "return window.fetch(url, opts)" in html
+    # CSRF 助手只允许有一份，在 base.html 里；页面自建副本会让全站版本形同虚设
+    assert "async function csrfFetch" not in html
+    assert "function ensureCsrfToken" not in html
+    assert "'/api/csrf-token'" not in html
+    assert "window.csrfFetch" in html
+    # 页面不得绕过助手直接发请求，否则生产环境的 CSRF 门会把它变成 403
     assert "await fetch(" not in html
+    assert "window.fetch(" not in html
+    assert "window.csrfFetch = async function" in base
+    assert "'/api/csrf-token'" in base
+    assert "'X-CSRF-Token'" in base
 
 
 def test_ai_project_overview_uses_single_panel_and_preserves_independent_actions():
@@ -339,7 +349,8 @@ def test_rescue_detail_pages_support_manual_override_with_csrf():
 
 
 def test_settings_contains_rescue_token_rotation():
-    html = read(TEMPLATES / "dashboard_settings.html")
+    # 救援 API Token 随设置页拆分落到系统维护页（原 #rescue-api 分区）
+    html = read(TEMPLATES / "dashboard_settings_system.html")
 
     assert "rescue-api" in html
     assert "/api/dashboard/rescue-token/status" in html
@@ -415,9 +426,11 @@ def test_ai_templates_expose_preference_profile_and_strength_controls() -> None:
         html = read(TEMPLATES / name)
         assert "preference_profile_id" in html, name
         assert "preference_injection_strength" in html, name
-        assert "/api/dashboard/preferences/profiles" in html, name
+        # 画像列表改由 base.html 的 window.aiApi 统一加载，页面只保留调用点
+        assert "preferenceProfiles" in html, name
         for strength in ("off", "light", "standard", "strong"):
             assert strength in html, (name, strength)
+    assert "/api/dashboard/preferences/profiles" in read(TEMPLATES / "base.html")
 
 
 def test_dashboard_header_holds_stats_without_manual_sync_controls():
@@ -475,3 +488,64 @@ def test_sidebar_footer_shows_own_account_with_premium_badge():
     assert "PREMIUM" in html
     assert "普通账号" in html
     assert "未绑定用户" not in html
+
+
+def test_sidebar_expands_settings_into_five_subpages():
+    """设置已拆成五个一级页面，侧栏必须展开成二级并区分当前页。
+
+    父项用 startsWith('/dashboard/settings') 匹配，五个子页会同时高亮同一项——
+    看不出当前在哪一页；子项必须精确匹配。
+    """
+    html = read(TEMPLATES / "vue_components.html")
+
+    for label, path in (
+        ("同步与调度", "/dashboard/settings/sync"),
+        ("模型与 Provider", "/dashboard/settings/models"),
+        ("Agent 绑定", "/dashboard/settings/agents"),
+        ("成人润色", "/dashboard/settings/adult"),
+        ("系统维护", "/dashboard/settings/system"),
+    ):
+        assert path in html, path
+        assert label in html, label
+    # 「设置」本身指向 /dashboard/settings（高亮前缀），链接落到同步页
+    assert "item.href || item.path" in html
+    assert "currentPath === child.path" in html
+
+
+def test_settings_split_pages_and_new_endpoints_are_documented():
+    """文档不能再指向已删除的 dashboard_settings.html，三个新端点要入契约。"""
+    pages = read(DOCS / "frontend-pages.md")
+    contract = read(DOCS / "frontend-api-contract.md")
+
+    assert "dashboard_settings.html" not in pages
+    assert "dashboard_settings.html" not in contract
+    for route, template in (
+        ("/dashboard/settings/sync", "dashboard_settings_sync.html"),
+        ("/dashboard/settings/models", "dashboard_settings_models.html"),
+        ("/dashboard/settings/agents", "dashboard_settings_agents.html"),
+        ("/dashboard/settings/adult", "dashboard_settings_adult.html"),
+        ("/dashboard/settings/system", "dashboard_settings_system.html"),
+    ):
+        assert route in pages, route
+        assert template in pages, template
+        assert route in contract, route
+        assert template in contract, template
+
+    for endpoint in (
+        "PUT /api/dashboard/settings/<section>",
+        "POST /api/dashboard/settings/cron-preview",
+        "GET /api/dashboard/auto-sync/budget",
+        "GET /api/dashboard/ai/agents/<agent_id>/candidates",
+    ):
+        assert endpoint in contract, endpoint
+
+    # 手动触发的 task_type 白名单曾漏掉 subscribed_series，文档要与 task_map 一致
+    for task_type in (
+        "subscribed_series",
+        "user_backup",
+        "pending_deletion_detection",
+        "preference_analyze",
+        "recommendation_run",
+    ):
+        assert task_type in contract, task_type
+

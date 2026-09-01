@@ -121,7 +121,8 @@ pixiv-novel-sync sync bookmark following_novels subscribed_series
 
 - /dashboard/ai：项目、长篇规划、章节、草稿、Pipeline 和 AI 小说库。
 - /dashboard/wizard：创作向导、蒸馏档案和导入流程。
-- /dashboard/settings：AI Provider、模型目录、模型池和 Agent 绑定。
+- /dashboard/settings/models：AI Provider、模型目录、模型池与该池最近的真实尝试记录。
+- /dashboard/settings/agents：Agent 绑定，以及「这个 Agent 会依次调用哪些模型」的候选链预览。
 
 所有业务生成路径统一经过 ModelRouter。固定 Agent 保持指定 Provider/模型语义，池绑定 Agent 按候选快照顺序执行 fallback；一次请求可能触达多个 Provider，前端必须展示并确认完整 Provider 范围。
 
@@ -134,7 +135,7 @@ pixiv-novel-sync sync bookmark following_novels subscribed_series
 1. 设置稳定的 `DASHBOARD_TOKEN`，并登录 Dashboard。
 2. 在 Provider 模型目录中同步或手工添加可路由模型，再按需要建立固定或池绑定。
 3. 创建或启用 `task_type=adult_polish` 的 Agent；普通 Agent CRUD 不会暴露它的删除/停用入口。
-4. 在设置页为 `safety` 和 `fact_guard` 两个 review binding 配置支持 `json` 的固定模型或模型池。
+4. 在 /dashboard/settings/adult 为 `safety` 和 `fact_guard` 两个 review binding 配置支持 `json` 的固定模型或模型池。
 5. 建立结构化的虚构角色记录，填写年龄依据和 `fictional=true`；启用项目成人内容后，确认当前角色 revision。
 6. 阅读页先获取并确认当前 Provider scope，再生成候选；warning、Provider scope、角色或章节 revision 变化都必须重新生成。
 
@@ -144,11 +145,11 @@ pixiv-novel-sync sync bookmark following_novels subscribed_series
 
 /dashboard/preferences 提供偏好画像、搜索计划、推荐任务、结果反馈和屏蔽管理。当前推荐逻辑以本地统计和可解释规则为主；AI 仅用于关键词清洗，结构化偏好总结和 AI 推荐解释仍未接入。
 
-推荐既可在页面手动触发，也可在 /dashboard/settings#scheduler 配置定时执行（`auto_sync_recommendation_run_*`，默认关闭）。启用前需先生成默认偏好画像，否则任务会失败；定时推荐与其他同步任务共用同一个任务队列，不会并行抢 Pixiv 搜索配额。
+推荐既可在页面手动触发，也可在 /dashboard/settings/sync 的调度表配置定时执行（`auto_sync_recommendation_run_*`，默认关闭）。启用前需先生成默认偏好画像，否则任务会失败；定时推荐与其他同步任务共用同一个任务队列，不会并行抢 Pixiv 搜索配额。
 
 ### Pixiv 原站救援阅读
 
-1. 在 /dashboard/settings#rescue-api 生成独立救援 Token，明文只显示一次。
+1. 在 /dashboard/settings/system 的「救援 API」区块生成独立救援 Token，明文只显示一次。
 2. 安装 userscripts/pixiv-rescue.user.js，并通过油猴菜单写入救援 Token。
 3. 脚本只在 Pixiv 小说或系列明确失效时读取本地备份；正常页面不会请求救援 API。
 

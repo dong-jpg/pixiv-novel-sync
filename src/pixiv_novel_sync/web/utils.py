@@ -301,6 +301,77 @@ def _restricts_to_label(restricts: list[str]) -> str:
     return " / ".join(labels) if labels else "无"
 
 
+# 预算折算的时间窗：按未来 7 天数一遍触发次数再摊到每天，这样 `*/2` / `*/3` 这类
+# 隔日表达式也能算出 0.5 / 0.33 次每天，而不是「今天不跑就是 0」。
+_CRON_HORIZON_DAYS = 7
+# 迭代上限：`* * * * *` 在 7 天里有一万多次，数到 400 次就够估算频率了。
+_CRON_MAX_FIRES = 400
+_DAY_SECONDS = 86400.0
+
+
+def cron_runs_per_day(
+    cron_expr: str, timezone_name: str = "UTC", base_time: float | None = None
+) -> float | None:
+    """估算一个 cron 表达式每天触发几次；无法解析时返回 None。
+
+    调度器对解析失败是**静默回落到 interval**，所以「算不出来」必须能与「每天 0 次」
+    区分开——前者返回 None（界面要提示会退回 interval），后者才是 0.0。
+    """
+    expr = str(cron_expr or "").strip()
+    if not expr:
+        return None
+
+    from ..settings import cron_to_next_run
+
+    base = float(base_time if base_time is not None else time.time())
+    horizon = base + _CRON_HORIZON_DAYS * _DAY_SECONDS
+    cursor = base
+    fires = 0
+    last_fire = base
+    while fires < _CRON_MAX_FIRES:
+        nxt = cron_to_next_run(expr, cursor, timezone_name)
+        if nxt is None:
+            return None
+        if nxt > horizon:
+            break
+        fires += 1
+        last_fire = float(nxt)
+        cursor = float(nxt)
+
+    if fires == 0:
+        return 0.0
+    if fires >= _CRON_MAX_FIRES:
+        # 提前收工：按实际覆盖到的时间跨度摊，至少按 1 小时算，避免除出天文数字
+        span_days = max((last_fire - base) / _DAY_SECONDS, 1.0 / 24.0)
+        return round(fires / span_days, 4)
+    return round(fires / float(_CRON_HORIZON_DAYS), 4)
+
+
+def cron_next_runs(
+    cron_expr: str,
+    timezone_name: str = "UTC",
+    count: int = 5,
+    base_time: float | None = None,
+) -> list[float] | None:
+    """连续算出接下来 count 次触发的时间戳；无法解析时返回 None。"""
+    expr = str(cron_expr or "").strip()
+    if not expr:
+        return None
+
+    from ..settings import cron_to_next_run
+
+    cursor = float(base_time if base_time is not None else time.time())
+    runs: list[float] = []
+    for _ in range(max(1, count)):
+        nxt = cron_to_next_run(expr, cursor, timezone_name)
+        if nxt is None:
+            return None
+        runs.append(float(nxt))
+        # +1 秒推进游标，否则同一时刻会被反复算出来
+        cursor = float(nxt) + 1.0
+    return runs
+
+
 def _external_base_url(req) -> str:
     # L3: 显式配置的外部地址优先，彻底避免依赖客户端可控的 Host / base_url
     # 构造 OAuth 回调（否则投毒 Host 头可劫持回调、泄露 code）。

@@ -1,0 +1,658 @@
+{% extends "base.html" %}
+
+{% block title %}同步与调度 - Pixiv 小说同步器{% endblock %}
+
+{% block content %}
+{# 设置页第一分页：同步范围与输出、分组限速、定时调度表、手动触发。
+   保存只走 PUT /api/dashboard/settings/sync（分区端点），所以这一页的表单缺少
+   系统页字段也不会把它们覆盖成默认值。变更类请求一律用 base.html 的
+   window.csrfFetch，失败原因一律用 window.errorText 读（错误体是 error/detail）。 #}
+<div class="library-page px-6 lg:px-8 pt-6 max-w-6xl mx-auto space-y-5 pb-8">
+  <div class="library-page-header">
+    <div>
+      <p class="library-kicker">Settings</p>
+      <h1 class="text-2xl font-bold text-gray-900 mb-1">同步与调度</h1>
+      <p class="text-sm text-pixiv-gray">同步范围与输出、分组限速、定时任务预算与手动触发</p>
+    </div>
+    <div class="library-actions">
+      <span v-if="saveMessage" class="text-sm font-medium" :class="saveSuccess ? 'text-green-600' : 'text-red-600'">{{ saveMessage }}</span>
+      <button @click="saveSettings" :disabled="saving || !settings"
+              class="px-5 py-2 bg-brand-500 text-white hover:bg-brand-600 font-medium text-sm rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50">
+        {{ saving ? '保存中...' : '保存同步设置' }}
+      </button>
+    </div>
+  </div>
+
+  {% include 'dashboard_settings_nav.html' %}
+
+  <div v-if="!settings" class="library-card text-sm text-pixiv-gray">正在读取设置…</div>
+
+  <template v-else>
+    <!-- 1. 同步范围与输出 -->
+    <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 sm:p-8">
+      <div class="mb-6 pb-4 border-b border-gray-100">
+        <h2 class="text-xl font-bold text-gray-900">同步范围与输出</h2>
+        <p class="text-sm text-pixiv-gray mt-1">决定要抓哪些内容、落盘成什么格式</p>
+      </div>
+
+      <div class="space-y-8">
+        <div>
+          <h3 class="text-sm font-bold text-gray-900 mb-3">同步内容</h3>
+          <div class="p-3 bg-blue-50 rounded-lg border border-blue-100 text-xs text-brand-500 font-medium mb-4">
+            提示：首次大批量拉取时建议只开一项，分批跑完再逐个打开。
+          </div>
+          <div class="space-y-3">
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.sync_bookmarks" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 group-hover:text-gray-900 transition-colors">同步收藏小说</span>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.sync_following_users" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 group-hover:text-gray-900 transition-colors">同步关注用户列表</span>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.sync_following_novels" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 group-hover:text-gray-900 transition-colors">同步关注用户的小说</span>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.sync_subscribed_series" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700 group-hover:text-gray-900 transition-colors">同步追更系列</span>
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <h3 class="text-sm font-bold text-gray-900 mb-3">功能选项</h3>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-y-3 gap-x-6">
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.enabled" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700">启用全局同步</span>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.initial_manual_only" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700">首次仅允许手工触发</span>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.download_assets" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700">下载封面与插图资源</span>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.write_markdown" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700">输出 Markdown 文件</span>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.write_raw_text" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700">输出原始文本文件</span>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.bookmark_restricts" value="public" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700">同步公开收藏</span>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer group">
+              <input type="checkbox" v-model="settings.bookmark_restricts" value="private" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+              <span class="text-sm text-gray-700">同步私密收藏</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </section>
+    <!-- 2. 分组限速 -->
+    <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 sm:p-8">
+      <div class="mb-6 pb-4 border-b border-gray-100">
+        <h2 class="text-xl font-bold text-gray-900">限速与单轮配额</h2>
+        <p class="text-sm text-pixiv-gray mt-1">
+          按数据来源分组：收藏（量小、最紧急）与巡检（量大、最不紧急）不该共用一套保守参数。
+          本轮只调整展示分组，<strong>不改任何默认值</strong>——分级数值要等新基线跑满一周再定。
+        </p>
+      </div>
+
+      <div class="space-y-8">
+        <div>
+          <h3 class="text-sm font-bold text-gray-900 mb-1">全局上限（四类共用）</h3>
+          <p class="text-xs text-pixiv-light mb-3">没有专用配额的来源都落到这里</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">单次最大条数（留空不限）</label>
+              <input type="number" v-model.number="settings.max_items_per_run" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">单次最大页数（留空不限）</label>
+              <input type="number" v-model.number="settings.max_pages_per_run" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <p class="mt-1 text-xs text-pixiv-light">作用于关注作者作品列表与系列章节</p>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">每本之间延迟（秒）</label>
+              <input type="number" v-model.number="settings.delay_seconds_between_items" step="0.1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">每页之间延迟（秒）</label>
+              <input type="number" v-model.number="settings.delay_seconds_between_pages" step="0.1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">跳过内容时延迟（秒）</label>
+              <input type="number" v-model.number="settings.delay_seconds_between_skips" step="0.1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <p class="mt-1 text-xs text-pixiv-light">内容哈希未变、只需跳过时的等待</p>
+            </div>
+          </div>
+        </div>
+        <div class="pt-6 border-t border-gray-100">
+          <h3 class="text-sm font-bold text-gray-900 mb-1">收藏</h3>
+          <p class="text-xs text-pixiv-light mb-3">P1 任务，量最小、时效性最高</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">收藏最大页数（留空跟随全局）</label>
+              <input type="number" v-model.number="settings.bookmark_max_pages_per_run" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <p class="mt-1 text-xs text-pixiv-light">每页约 30 条；配成全局的 2 页时只有最新 60 条收藏会被访问到</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-6 border-t border-gray-100">
+          <h3 class="text-sm font-bold text-gray-900 mb-1">关注作者</h3>
+          <p class="text-xs text-pixiv-light mb-3">按 user_last_synced 轮转，可让位、下轮从水位续跑</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">每作者最大篇数（留空不限）</label>
+              <input type="number" v-model.number="settings.following_max_novels_per_author" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <p class="mt-1 text-xs text-pixiv-light">留空时单个高产作者会吃光整轮预算，一轮只覆盖 1 个作者</p>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">每轮扫描用户数（0=全部）</label>
+              <input type="number" v-model.number="settings.auto_sync_following_novels_users_limit" min="0" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-6 border-t border-gray-100">
+          <h3 class="text-sm font-bold text-gray-900 mb-1">系列</h3>
+          <p class="text-xs text-pixiv-light mb-3">每轮从追更列表头部重走，不是水位续跑，所以不可让位</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">系列最大页数（留空跟随全局）</label>
+              <input type="number" v-model.number="settings.series_max_pages_per_run" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <p class="mt-1 text-xs text-pixiv-light">系列章节列表专用；配小了长系列的缺章永远补不齐</p>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">每轮同步系列数（0=全部）</label>
+              <input type="number" v-model.number="settings.series_sync_limit" min="0" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">每个系列间延迟（秒）</label>
+              <input type="number" v-model.number="settings.delay_seconds_between_series" step="0.1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">系列内每章延迟（秒）</label>
+              <input type="number" v-model.number="settings.delay_seconds_between_chapters" step="0.1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-6 border-t border-gray-100">
+          <h3 class="text-sm font-bold text-gray-900 mb-1">巡检（用户 / 小说 / 系列状态）</h3>
+          <p class="text-xs text-pixiv-gray">
+            三个状态检查按 last_checked_at 轮转，目前没有专用限速参数，全部沿用上方的全局上限与延迟。
+            它们是最大的预算消费者却最不紧急，专用参数留待新基线出来后再拆——不要靠调全局值来压它们，
+            那会连带拖慢收藏。
+          </p>
+        </div>
+      </div>
+    </section>
+    <!-- 3. 定时调度与预算 -->
+    <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 sm:p-8">
+      <div class="mb-6 pb-4 border-b border-gray-100">
+        <h2 class="text-xl font-bold text-gray-900">定时调度与预算</h2>
+        <p class="text-sm text-pixiv-gray mt-1">
+          所有任务共用一个执行槽。到点冲突时按优先级挑选（P1 收藏 → P2 追更系列 → P3 其余），
+          同级按逾期最久优先。需要在控制台打开全局定时开关。
+        </p>
+      </div>
+
+      <div class="space-y-6">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-bold text-gray-900 mb-2">系统时区</label>
+            <select v-model="settings.auto_sync_timezone" @change="clearCronPreviews"
+                    class="w-full px-3 py-2 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 custom-select">
+              <option v-for="zone in timezones" :key="zone.id" :value="zone.id">{{ zone.label }}</option>
+            </select>
+            <p class="mt-1.5 text-xs text-pixiv-light">cron 表达式按这个时区解释，改完要重新预览</p>
+          </div>
+          <div class="rounded-lg border border-gray-100 bg-gray-50 px-4 py-3">
+            <div class="text-xs font-medium text-pixiv-gray uppercase mb-1">已启用任务预计每日占用</div>
+            <div v-if="budget" class="text-lg font-bold text-gray-900">
+              {{ formatDuration(budget.total_estimated_daily_seconds) }}
+              <span class="text-sm font-normal text-pixiv-gray">占空比 {{ formatPercent(budget.total_duty_ratio) }}</span>
+            </div>
+            <div v-else class="text-sm text-pixiv-light">正在统计…</div>
+            <p class="mt-1 text-xs text-pixiv-light">
+              = 各任务「最近一轮耗时 × 每天触发次数」之和，耗时取最近 {{ budget ? budget.days : 3 }} 天的 task_logs
+            </p>
+          </div>
+        </div>
+
+        <div class="rounded-lg border border-gray-100 overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm text-left align-top">
+              <thead class="bg-gray-50 border-b border-gray-100">
+                <tr>
+                  <th scope="col" class="px-4 py-3 text-xs font-medium text-pixiv-gray uppercase whitespace-nowrap">任务类型</th>
+                  <th scope="col" class="px-4 py-3 text-xs font-medium text-pixiv-gray uppercase whitespace-nowrap">优先级</th>
+                  <th scope="col" class="px-4 py-3 text-xs font-medium text-pixiv-gray uppercase whitespace-nowrap">间隔 (小时)</th>
+                  <th scope="col" class="px-4 py-3 text-xs font-medium text-pixiv-gray uppercase">Cron (优先)</th>
+                  <th scope="col" class="px-4 py-3 text-xs font-medium text-pixiv-gray uppercase whitespace-nowrap">下次运行</th>
+                  <th scope="col" class="px-4 py-3 text-xs font-medium text-pixiv-gray uppercase whitespace-nowrap">上轮耗时</th>
+                  <th scope="col" class="px-4 py-3 text-xs font-medium text-pixiv-gray uppercase whitespace-nowrap">每日预算</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-50">
+                <tr v-for="task in schedulerTasks" :key="task.key" class="hover:bg-gray-50/50">
+                  <td class="px-4 py-3">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" v-model="settings[task.enableKey]" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
+                      <span class="font-medium text-gray-900 whitespace-nowrap">{{ task.label }}</span>
+                    </label>
+                  </td>
+                  <td class="px-4 py-3">
+                    <span v-if="schedulerTaskMeta(task).priority" class="inline-flex items-center gap-1.5">
+                      <span class="px-1.5 py-0.5 rounded text-xs font-semibold"
+                            :class="schedulerTaskMeta(task).priority === 1 ? 'bg-brand-50 text-brand-600'
+                                    : (schedulerTaskMeta(task).priority === 2 ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-600')">
+                        P{{ schedulerTaskMeta(task).priority }}
+                      </span>
+                      <span v-if="schedulerTaskMeta(task).preemptible" class="text-xs text-pixiv-light" title="正在跑时可为更高优先级任务让位，下轮从水位续跑">可让位</span>
+                    </span>
+                    <span v-else class="text-xs text-pixiv-light">—</span>
+                  </td>
+                  <td class="px-4 py-2">
+                    <input type="number" v-model.number="settings[task.intervalKey]" min="1" class="w-20 px-2 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+                  </td>
+                  <td class="px-4 py-2 min-w-[15rem]">
+                    <div class="flex items-center gap-2">
+                      <input type="text" v-model="settings[task.cronKey]"
+                             @change="previewCron(task)" @keyup.enter="previewCron(task)"
+                             placeholder="如 0 3 * * *"
+                             :class="cronInvalid(task) ? 'border-red-400 bg-red-50' : 'border-gray-200'"
+                             class="w-36 px-2 py-1.5 font-mono border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                      <button type="button" @click="previewCron(task)"
+                              class="text-xs px-2 py-1.5 rounded bg-gray-100 text-gray-700 hover:bg-gray-200">预览</button>
+                    </div>
+                    <p class="mt-1 text-xs" :class="cronHint(task).tone">{{ cronHint(task).text }}</p>
+                    <ul v-if="cronPreview(task).next_runs && cronPreview(task).next_runs.length" class="mt-1 space-y-0.5">
+                      <li v-for="(moment, index) in cronPreview(task).next_runs" :key="index" class="text-xs text-pixiv-gray font-mono">
+                        {{ index + 1 }}. {{ formatIsoMoment(moment) }}
+                      </li>
+                    </ul>
+                  </td>
+                  <td class="px-4 py-3 text-xs text-pixiv-gray whitespace-nowrap">{{ formatNextRun(schedulerTaskMeta(task).nextRun) }}</td>
+                  <td class="px-4 py-3 text-xs whitespace-nowrap">
+                    <span v-if="taskBudget(task).last_duration_seconds !== null && taskBudget(task).last_duration_seconds !== undefined"
+                          :class="taskBudget(task).last_status === 'succeeded' ? 'text-pixiv-gray' : 'text-amber-700'"
+                          :title="'最近一轮状态：' + (taskBudget(task).last_status || '未知')">
+                      {{ formatDuration(taskBudget(task).last_duration_seconds) }}
+                    </span>
+                    <span v-else class="text-pixiv-light">—</span>
+                  </td>
+                  <td class="px-4 py-3 text-xs whitespace-nowrap">
+                    <span v-if="taskBudget(task).estimated_daily_seconds" class="text-pixiv-gray"
+                          :title="'每天 ' + taskBudget(task).runs_per_day + ' 次 × ' + formatDuration(taskBudget(task).last_duration_seconds)">
+                      {{ formatDuration(taskBudget(task).estimated_daily_seconds) }}
+                      <span class="text-pixiv-light">/ 天</span>
+                    </span>
+                    <span v-else class="text-pixiv-light">—</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="px-4 py-2.5 text-xs text-pixiv-gray bg-gray-50/60 border-t border-gray-100">
+            标「可让位」的长任务会为更高优先级任务提前让出槽位，下轮从水位续跑；不可让位的任务
+            （如追更系列）每轮从头重走，打断等于白跑。下次运行时间来自调度器运行态，保存后重启生效。
+            <strong>cron 留空或写错时调度器会静默按间隔跑</strong>，所以上面的 cron 状态提示要看一眼。
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-medium text-pixiv-gray mb-1.5">偏好分析每批小说数</label>
+            <input type="number" v-model.number="settings.preference_analyze_batch_size" min="10" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+            <p class="mt-1.5 text-xs text-pixiv-gray">默认 200。纯本地计算，但每轮同样占用唯一那个执行槽。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+    <!-- 4. 手动触发 -->
+    <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 sm:p-8">
+      <div class="mb-6 pb-4 border-b border-gray-100">
+        <h2 class="text-xl font-bold text-gray-900">手动触发</h2>
+        <p class="text-sm text-pixiv-gray mt-1">
+          立刻跑一轮（不受定时开关限制）。覆盖调度器会自动跑的全部 11 个任务——改完配置能立刻验证，
+          不用干等下一个周期。同一时刻只允许一个任务在跑。
+        </p>
+      </div>
+
+      <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
+        <button v-for="btn in manualButtons" :key="btn.id" @click="triggerManualTask(btn.id, btn.label)"
+                :disabled="triggering"
+                class="w-full px-4 py-2.5 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 shadow-sm border focus:outline-none focus:ring-2 focus:ring-offset-1"
+                :class="btn.class">
+          {{ btn.label }}
+        </button>
+      </div>
+
+      <div class="library-terminal p-4">
+        <h4 class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">执行日志</h4>
+        <div class="font-mono text-xs leading-relaxed text-gray-300 h-48 overflow-y-auto space-y-1">
+          <div v-if="!manualLogs.length" class="text-gray-600 py-4 text-center">点击上方按钮触发任务</div>
+          <div v-for="(log, i) in manualLogs" :key="i">
+            <span class="text-gray-500 mr-2">[{{ log.time }}]</span>
+            <span :class="log.error ? 'text-red-400' : 'text-gray-300'">{{ log.msg }}</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="flex items-center gap-4">
+      <button @click="saveSettings" :disabled="saving"
+              class="px-5 py-2 bg-brand-500 text-white hover:bg-brand-600 font-medium text-sm rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50">
+        {{ saving ? '保存中...' : '保存同步设置' }}
+      </button>
+      <span v-if="saveMessage" class="text-sm font-medium" :class="saveSuccess ? 'text-green-600' : 'text-red-600'">{{ saveMessage }}</span>
+    </div>
+  </template>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<style>
+  .custom-select {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-position: right 0.5rem center;
+    background-repeat: no-repeat;
+    background-size: 1.5em 1.5em;
+  }
+</style>
+<script>
+  initVueApp({
+    setup() {
+      const { ref, reactive, onMounted } = Vue;
+
+      const settings = ref(null);
+      const saving = ref(false);
+      const saveMessage = ref('');
+      const saveSuccess = ref(true);
+
+      const timezones = [
+        { id: 'UTC', label: 'UTC (协调世界时)' },
+        { id: 'Asia/Shanghai', label: 'Asia/Shanghai (中国上海, UTC+8)' },
+        { id: 'Asia/Tokyo', label: 'Asia/Tokyo (日本东京, UTC+9)' },
+        { id: 'Asia/Seoul', label: 'Asia/Seoul (韩国首尔, UTC+9)' },
+        { id: 'America/New_York', label: 'America/New_York (美国东部, UTC-5)' },
+        { id: 'America/Los_Angeles', label: 'America/Los_Angeles (美国西部, UTC-8)' },
+        { id: 'Europe/London', label: 'Europe/London (英国伦敦, UTC+0)' },
+        { id: 'Europe/Berlin', label: 'Europe/Berlin (德国柏林, UTC+1)' },
+      ];
+
+      // schedulerName 必须与后端 SCHEDULER_TASK_CONFIGS 的 name 对齐：优先级 / 可让位 /
+      // 下次运行时间来自 /api/dashboard/auto-sync/status，耗时与预算来自
+      // /api/dashboard/auto-sync/budget，两个端点都以这个名字为键。
+      // 顺序与后端声明顺序一致（已按优先级排列），表格从上到下即抢槽次序。
+      const schedulerTasks = [
+        { key: 'bookmarks', schedulerName: 'bookmarks', label: '同步收藏小说', enableKey: 'auto_sync_bookmarks_enabled', intervalKey: 'auto_sync_bookmarks_interval_hours', cronKey: 'auto_sync_bookmarks_cron' },
+        { key: 'subscribedSeries', schedulerName: 'subscribed_series', label: '同步追更系列', enableKey: 'auto_sync_subscribed_series_enabled', intervalKey: 'auto_sync_subscribed_series_interval_hours', cronKey: 'auto_sync_subscribed_series_cron' },
+        { key: 'followingList', schedulerName: 'following_list', label: '更新关注用户列表', enableKey: 'auto_sync_following_list_enabled', intervalKey: 'auto_sync_following_list_interval_hours', cronKey: 'auto_sync_following_list_cron' },
+        { key: 'followingNovels', schedulerName: 'following_novels', label: '同步关注用户的小说', enableKey: 'auto_sync_following_novels_enabled', intervalKey: 'auto_sync_following_novels_interval_hours', cronKey: 'auto_sync_following_novels_cron' },
+        { key: 'userStatus', schedulerName: 'user_status', label: '状态: 检查用户', enableKey: 'auto_sync_user_status_enabled', intervalKey: 'auto_sync_user_status_interval_hours', cronKey: 'auto_sync_user_status_cron' },
+        { key: 'novelStatus', schedulerName: 'novel_status', label: '状态: 检查小说', enableKey: 'auto_sync_novel_status_enabled', intervalKey: 'auto_sync_novel_status_interval_hours', cronKey: 'auto_sync_novel_status_cron' },
+        { key: 'seriesStatus', schedulerName: 'series_status', label: '状态: 检查系列', enableKey: 'auto_sync_series_status_enabled', intervalKey: 'auto_sync_series_status_interval_hours', cronKey: 'auto_sync_series_status_cron' },
+        { key: 'userBackup', schedulerName: 'user_backup', label: '全量备份关注用户', enableKey: 'auto_sync_user_backup_enabled', intervalKey: 'auto_sync_user_backup_interval_hours', cronKey: 'auto_sync_user_backup_cron' },
+        { key: 'pendingDetection', schedulerName: 'pending_deletion_detection', label: '检测: 取消收藏/追更', enableKey: 'auto_sync_pending_detection_enabled', intervalKey: 'auto_sync_pending_detection_interval_hours', cronKey: 'auto_sync_pending_detection_cron' },
+        { key: 'preferenceAnalyze', schedulerName: 'preference_analyze', label: '增量分析本地偏好', enableKey: 'auto_sync_preference_analyze_enabled', intervalKey: 'auto_sync_preference_analyze_interval_hours', cronKey: 'auto_sync_preference_analyze_cron' },
+        { key: 'recommendationRun', schedulerName: 'recommendation_run', label: '生成推荐', enableKey: 'auto_sync_recommendation_run_enabled', intervalKey: 'auto_sync_recommendation_run_interval_hours', cronKey: 'auto_sync_recommendation_run_cron' },
+      ];
+      // 调度器运行态（优先级、可让位、下次运行时间）。优先级的唯一事实来源是后端
+      // SCHEDULER_TASK_CONFIGS，前端不再硬编码一份，避免两处走样。
+      const schedulerStatus = ref(null);
+      const budget = ref(null);
+
+      async function loadSchedulerStatus() {
+        try {
+          const res = await fetch('/api/dashboard/auto-sync/status');
+          if (!res.ok) return;
+          schedulerStatus.value = await res.json();
+        } catch (err) {
+          schedulerStatus.value = null;
+        }
+      }
+
+      // 耗时与每日预算：后端已经把「最近一轮耗时 × cron 每天次数」算好了，
+      // 前端不去翻分页的 /api/dashboard/logs（20 条一页凑不齐 11 个任务），
+      // 也不自己实现 cron 解析。
+      async function loadBudget() {
+        try {
+          const res = await fetch('/api/dashboard/auto-sync/budget');
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) return;
+          budget.value = data;
+        } catch (err) {
+          budget.value = null;
+        }
+      }
+
+      const schedulerTaskMeta = (task) => {
+        const status = schedulerStatus.value;
+        if (!status) return { priority: null, preemptible: null, nextRun: null };
+        const name = task.schedulerName;
+        return {
+          priority: (status.task_priorities || {})[name] ?? null,
+          preemptible: (status.task_preemptible || {})[name] ?? null,
+          nextRun: (status.task_next_run || {})[name] ?? null,
+        };
+      };
+
+      const taskBudget = (task) => {
+        if (!budget.value) return {};
+        return (budget.value.tasks || {})[task.schedulerName] || {};
+      };
+      const formatNextRun = (epochSeconds) => {
+        if (!epochSeconds) return '—';
+        const when = new Date(epochSeconds * 1000);
+        if (Number.isNaN(when.getTime())) return '—';
+        const diffMinutes = Math.round((when.getTime() - Date.now()) / 60000);
+        const clock = when.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        if (diffMinutes <= 0) return `${clock}（已到点）`;
+        if (diffMinutes < 60) return `${clock}（${diffMinutes} 分钟后）`;
+        return `${clock}（${Math.round(diffMinutes / 60)} 小时后）`;
+      };
+
+      const formatDuration = (seconds) => {
+        const value = Number(seconds);
+        if (!Number.isFinite(value) || value <= 0) return '—';
+        if (value < 60) return `${Math.round(value)} 秒`;
+        if (value < 3600) {
+          const minutes = Math.floor(value / 60);
+          const rest = Math.round(value % 60);
+          return rest ? `${minutes} 分 ${rest} 秒` : `${minutes} 分`;
+        }
+        const hours = Math.floor(value / 3600);
+        const minutes = Math.round((value % 3600) / 60);
+        return minutes ? `${hours} 小时 ${minutes} 分` : `${hours} 小时`;
+      };
+
+      const formatPercent = (ratio) => {
+        const value = Number(ratio);
+        if (!Number.isFinite(value)) return '—';
+        return `${(value * 100).toFixed(1)}%`;
+      };
+
+      // 预览端点返回带时区偏移的 ISO 串，这里只做本地化显示，不再重新算时区
+      const formatIsoMoment = (text) => {
+        const when = new Date(text);
+        if (Number.isNaN(when.getTime())) return text;
+        return when.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+      };
+      // cron 校验与预览。调度器对解析失败是**静默回落到 interval**，写错表达式不会报
+      // 任何错，只会变成「配了 cron 却按小时间隔跑」这种极难发现的偏差——所以界面必须把
+      // 「合法、下次是 X」与「解析不了、会退回按间隔跑」明确区分开。
+      // 页面加载时不批量预览（11 行就是 11 个请求）：已保存表达式的合法性与频率由
+      // budget 端点一并给出，逐次触发时刻按需再取。
+      const cronPreviews = reactive({});
+
+      const cronPreview = (task) => cronPreviews[task.key] || {};
+
+      const cronInvalid = (task) => {
+        const preview = cronPreviews[task.key];
+        if (preview && preview.checked) return preview.valid === false && preview.empty !== true;
+        const saved = taskBudget(task);
+        return !!(saved.cron && saved.cron_valid === false);
+      };
+
+      const cronHint = (task) => {
+        const preview = cronPreviews[task.key];
+        if (preview && preview.loading) return { text: '校验中…', tone: 'text-pixiv-light' };
+        if (preview && preview.error) return { text: preview.error, tone: 'text-red-600' };
+        if (preview && preview.checked) {
+          if (preview.empty) return { text: '留空：按左侧间隔小时数运行', tone: 'text-pixiv-light' };
+          if (!preview.valid) return { text: 'cron 表达式无法解析，保存后会退回按间隔运行', tone: 'text-red-600' };
+          return { text: `合法：每天 ${preview.runs_per_day} 次`, tone: 'text-emerald-700' };
+        }
+        const saved = taskBudget(task);
+        if (!saved.cron) return { text: '留空：按左侧间隔小时数运行', tone: 'text-pixiv-light' };
+        if (saved.cron_valid === false) return { text: 'cron 表达式无法解析，当前实际按间隔运行', tone: 'text-red-600' };
+        if (saved.runs_per_day === null || saved.runs_per_day === undefined) return { text: '', tone: 'text-pixiv-light' };
+        return { text: `每天 ${saved.runs_per_day} 次`, tone: 'text-pixiv-gray' };
+      };
+
+      async function previewCron(task) {
+        if (!settings.value) return;
+        const expr = settings.value[task.cronKey] || '';
+        cronPreviews[task.key] = { loading: true, checked: false };
+        try {
+          const res = await window.csrfFetch('/api/dashboard/settings/cron-preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cron: expr, timezone: settings.value.auto_sync_timezone, count: 5 }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) {
+            cronPreviews[task.key] = { checked: false, error: window.errorText(data, res) };
+            return;
+          }
+          cronPreviews[task.key] = Object.assign({}, data.data, { checked: true, loading: false });
+        } catch (err) {
+          cronPreviews[task.key] = { checked: false, error: String(err) };
+        }
+      }
+
+      // 时区一改，之前算出来的时刻全部失效
+      const clearCronPreviews = () => {
+        Object.keys(cronPreviews).forEach((key) => { delete cronPreviews[key]; });
+      };
+      async function loadSettings() {
+        try {
+          const res = await fetch('/api/dashboard/settings');
+          const data = await res.json();
+          if (!data.bookmark_restricts) data.bookmark_restricts = [];
+          settings.value = data;
+        } catch (err) {
+          saveSuccess.value = false;
+          saveMessage.value = '读取设置失败';
+        }
+      }
+
+      const showSaveStatus = (msg, success) => {
+        saveMessage.value = msg;
+        saveSuccess.value = success;
+        setTimeout(() => { saveMessage.value = ''; }, 4000);
+      };
+
+      // 只发本分区端点：拆页后这份表单里没有系统页的字段，走全量端点会把
+      // pending_deletion_* 之类没加载的字段写成默认值（后端逐字段 payload.get 的语义）。
+      async function saveSettings() {
+        if (!settings.value) return;
+        saving.value = true;
+        saveMessage.value = '';
+        try {
+          const res = await window.csrfFetch('/api/dashboard/settings/sync', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(settings.value),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) {
+            // 错误体是 error/detail，只读 message 会把失败显示成成功
+            showSaveStatus(`保存失败：${window.errorText(data, res)}`, false);
+            return;
+          }
+          // 用后端落盘后的真实值回填，避免界面停留在没保存成功的输入上
+          if (data.sync) settings.value = data.sync;
+          showSaveStatus(data.message || '设置已保存', true);
+          clearCronPreviews();
+          await Promise.all([loadSchedulerStatus(), loadBudget()]);
+        } catch (err) {
+          showSaveStatus('保存失败：网络错误', false);
+        } finally {
+          saving.value = false;
+        }
+      }
+      // 手动触发。id 是 task_logs 的 task_type，也就是 webapp.py task_map 的键——
+      // 「同步追更系列」曾经发 subscribed_series 而 task_map 里没有这个键，必然 400
+      // （专门的追更系列路由是连字符的 /api/dashboard/sync/subscribed-series）。
+      // 现在 task_map 覆盖全部 11 个调度任务，按钮也一并补齐。
+      const manualButtons = [
+        { id: 'bookmark', label: '同步收藏', class: 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 focus:ring-blue-500' },
+        { id: 'subscribed_series', label: '同步追更系列', class: 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100 focus:ring-purple-500' },
+        { id: 'following_users', label: '更新关注用户列表', class: 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100 focus:ring-indigo-500' },
+        { id: 'following_novels', label: '同步关注用户小说', class: 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 focus:ring-emerald-500' },
+        { id: 'user_status', label: '检查用户状态', class: 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 focus:ring-amber-500' },
+        { id: 'novel_status', label: '检查小说状态', class: 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100 focus:ring-rose-500' },
+        { id: 'series_status', label: '检查系列状态', class: 'bg-cyan-50 text-cyan-700 border-cyan-200 hover:bg-cyan-100 focus:ring-cyan-500' },
+        { id: 'user_backup', label: '全量备份关注用户', class: 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100 focus:ring-slate-500' },
+        { id: 'pending_deletion_detection', label: '检测取消收藏/追更', class: 'bg-orange-50 text-orange-700 border-orange-200 hover:bg-orange-100 focus:ring-orange-500' },
+        { id: 'preference_analyze', label: '增量分析本地偏好', class: 'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100 focus:ring-teal-500' },
+        { id: 'recommendation_run', label: '生成推荐', class: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200 hover:bg-fuchsia-100 focus:ring-fuchsia-500' },
+      ];
+      const triggering = ref(false);
+      const manualLogs = ref([]);
+
+      const addLog = (msg, error = false) => {
+        manualLogs.value.unshift({ time: new Date().toLocaleTimeString('zh-CN'), msg, error });
+      };
+
+      async function triggerManualTask(task, label) {
+        triggering.value = true;
+        addLog(`发起任务请求：${label}`);
+        try {
+          const res = await window.csrfFetch(`/api/dashboard/sync/${task}`, { method: 'POST' });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data.ok !== false) {
+            addLog(`任务已加入队列（${label}）`);
+            await loadSchedulerStatus();
+          } else {
+            addLog(`任务失败：${window.errorText(data, res)}`, true);
+          }
+        } catch (err) {
+          addLog(`网络错误：${String(err)}`, true);
+        } finally {
+          triggering.value = false;
+        }
+      }
+
+      onMounted(() => {
+        loadSettings();
+        loadSchedulerStatus();
+        loadBudget();
+      });
+
+      return {
+        settings, saving, saveMessage, saveSuccess, saveSettings,
+        timezones, schedulerTasks, schedulerStatus, schedulerTaskMeta,
+        budget, taskBudget,
+        formatNextRun, formatDuration, formatPercent, formatIsoMoment,
+        cronPreview, cronInvalid, cronHint, previewCron, clearCronPreviews,
+        manualButtons, triggering, manualLogs, triggerManualTask,
+      };
+    }
+  });
+</script>
+{% endblock %}

@@ -26,8 +26,12 @@ _ROUTE_STAGES = {"internal", "main", "validation"}
 _CONTEXT_WINDOW_MIN = 256
 _CONTEXT_WINDOW_MAX = 10_000_000
 _MAX_OUTPUT_TOKENS = 1_000_000
-_MAX_CANDIDATES = 64
-_MAX_POOL_NODES = 8
+MAX_RESOLVED_CANDIDATES = 64
+MAX_POOL_NODES = 8
+# 每个 job 的候选/网络预算硬上限。原本只在 _check_candidate_budget 里写字面量，
+# 候选链预览要把同一组数字展示给前端，所以提成常量避免抄成两份。
+MAX_CANDIDATE_ATTEMPTS = 16
+MAX_NETWORK_REQUESTS = 32
 _SAFETY_MARGIN = 256
 _HEARTBEAT_INTERVAL_SECONDS = 15.0
 _LEASE_SECONDS = 45
@@ -488,7 +492,7 @@ class ModelRouter:
         while pool_id is not None:
             if pool_id in seen_pools:
                 raise ModelRouteError("后备模型池链存在循环")
-            if len(seen_pools) >= _MAX_POOL_NODES:
+            if len(seen_pools) >= MAX_POOL_NODES:
                 raise ModelRouteError("后备模型池链最多包含 8 个节点")
             seen_pools.add(pool_id)
 
@@ -520,7 +524,7 @@ class ModelRouter:
                     provider = cls._provider_row(db, provider_id)
                     provider_rows[provider_id] = provider
 
-                if len(candidates) >= _MAX_CANDIDATES:
+                if len(candidates) >= MAX_RESOLVED_CANDIDATES:
                     raise ModelRouteError("展开后的候选模型不能超过 64 个")
                 seen_candidates.add(candidate_key)
                 candidates.append(
@@ -564,7 +568,10 @@ class ModelRouter:
         )
         if snapshot.snapshot_hash != expected_hash:
             raise ModelRouteConflictError("候选快照校验失败，请重新开始任务")
-        if not snapshot.candidates or len(snapshot.candidates) > _MAX_CANDIDATES:
+        if (
+            not snapshot.candidates
+            or len(snapshot.candidates) > MAX_RESOLVED_CANDIDATES
+        ):
             raise ModelRouteConflictError("候选快照内容无效")
         if [item.candidate_index for item in snapshot.candidates] != list(
             range(len(snapshot.candidates))
@@ -787,10 +794,14 @@ class ModelRouter:
 
     @staticmethod
     def _check_candidate_budget(state: Mapping[str, Any]) -> None:
-        if int(state.get("candidate_attempt_count") or 0) >= 16:
-            raise AIRouteBudgetExhausted("候选尝试次数已达到 16 次上限")
-        if int(state.get("network_request_count") or 0) >= 32:
-            raise AIRouteBudgetExhausted("网络请求次数已达到 32 次上限")
+        if int(state.get("candidate_attempt_count") or 0) >= MAX_CANDIDATE_ATTEMPTS:
+            raise AIRouteBudgetExhausted(
+                f"候选尝试次数已达到 {MAX_CANDIDATE_ATTEMPTS} 次上限"
+            )
+        if int(state.get("network_request_count") or 0) >= MAX_NETWORK_REQUESTS:
+            raise AIRouteBudgetExhausted(
+                f"网络请求次数已达到 {MAX_NETWORK_REQUESTS} 次上限"
+            )
 
     def _validate_execution_snapshot(
         self,

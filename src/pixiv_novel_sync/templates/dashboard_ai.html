@@ -1016,66 +1016,35 @@ window.initVueApp({
       toastTimer = setTimeout(() => { toastMessage.value = ''; }, 3200);
       setTimeout(() => { message.value = ''; }, 4000);
     }
-    let csrfToken = '';
-    async function ensureCsrfToken() {
-      if (csrfToken) return csrfToken;
-      const res = await window.fetch('/api/csrf-token');
-      const data = await res.json();
-      if (!res.ok || !data.csrf_token) throw new Error(data.error || '获取安全令牌失败');
-      csrfToken = data.csrf_token;
-      return csrfToken;
-    }
-    async function csrfFetch(url, options = {}) {
-      const opts = { ...options };
-      const method = String(opts.method || 'GET').toUpperCase();
-      if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
-        const token = await ensureCsrfToken();
-        opts.headers = { ...(opts.headers || {}), 'X-CSRF-Token': token };
-      }
-      return window.fetch(url, opts);
-    }
-    async function api(url, options = {}) {
-      const res = await csrfFetch(url, options);
-      const data = await res.json();
-      if (!res.ok || data.ok === false) throw new Error(data.error || '请求失败');
-      return data.data;
-    }
-    async function loadAgents() { agents.value = await api('/api/dashboard/ai/agents'); applyBestAgentDefaults(); }
+    // 请求、错误文案与 SSE 解析全部走 base.html 的公共层（window.csrfFetch /
+    // window.errorText / window.streamSSE / window.aiApi），本页不再自建副本。
+    const api = (url, options) => window.aiApi.request(url, options);
+    async function loadAgents() { agents.value = await window.aiApi.agents(); applyBestAgentDefaults(); }
 
-    async function readSSE(res) {
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+    // 本页所有生成流的公共出口：帧解析在 window.streamSSE 里，这里只负责把
+    // 事件映射到页面状态，并把长篇规划事件里的 plan 交回调用方。
+    async function routeStream(url, payload) {
       let plan = null;
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split('\n\n');
-        buffer = events.pop() || '';
-        for (const raw of events) {
-          const lines = raw.split('\n');
-          const event = (lines.find(l => l.startsWith('event:')) || '').slice(6).trim();
-          const dataLine = (lines.find(l => l.startsWith('data:')) || '').slice(5).trim();
-          if (!dataLine) continue;
-          const data = JSON.parse(dataLine);
+      await window.streamSSE(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }, {
+        onEvent: (event, data) => {
           if (event === 'metadata') currentJobId.value = data.job_id || '';
           if (event === 'progress') streamOutput.value += '\n[' + (data.phase || 'progress') + '] ' + (data.message || '处理中…') + '\n';
           if (event === 'delta') streamOutput.value += data.text || '';
-          if (event === 'longform_plan') plan = data.plan;
-          if (event === 'longform_plan_details') plan = data.plan;
+          if (event === 'longform_plan' || event === 'longform_plan_details') plan = data.plan;
           if (event === 'done' && data.plan) plan = data.plan;
           if (event === 'error') throw new Error(data.message || '生成失败');
-        }
-      }
+        },
+      });
       return plan;
     }
     async function startStream(url, payload) {
       streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
       try {
-        const res = await csrfFetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-        if (!res.ok || !res.body) throw new Error('流式请求失败');
-        await readSSE(res);
+        await routeStream(url, payload);
         if (!streamOutput.value.trim()) {
           showMessage('任务完成但模型返回空内容（可能输入过长或被模型截断）', 'error');
         } else {
@@ -1093,9 +1062,9 @@ window.initVueApp({
     async function detectAITells() {
       if (!streamOutput.value) return;
       try {
-        const res = await csrfFetch('/api/dashboard/ai/detect-ai-tells', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: streamOutput.value }) });
-        const data = await res.json();
-        if (!res.ok || data.ok === false) throw new Error(data.error || '检测失败');
+        const res = await window.csrfFetch('/api/dashboard/ai/detect-ai-tells', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: streamOutput.value }) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
         const report = data.data;
         let msg = `AI 痕迹评分：${report.score.toFixed(0)}/100（越高越像人写）`;
         if (report.issues && report.issues.length) {
@@ -1105,11 +1074,10 @@ window.initVueApp({
       } catch (e) { showMessage(e.message, 'error'); }
     }
 
-    // ── 风格档案 ──────────────────────────────────────────────
-    async function loadStyleProfiles() { styleProfiles.value = (await api('/api/dashboard/ai/style-profiles')).items || []; }
-    // ── 小说档案 ──────────────────────────────────────────────
-    async function loadNovelProfiles() { novelProfiles.value = (await api('/api/dashboard/ai/novel-profiles')).items || []; }
-    async function loadPreferenceProfiles() { preferenceProfiles.value = await api('/api/dashboard/preferences/profiles'); }
+    // ── 风格档案 / 小说档案 / 偏好画像（加载器在 base.html 的 window.aiApi）──
+    async function loadStyleProfiles() { styleProfiles.value = await window.aiApi.styleProfiles(); }
+    async function loadNovelProfiles() { novelProfiles.value = await window.aiApi.novelProfiles(); }
+    async function loadPreferenceProfiles() { preferenceProfiles.value = await window.aiApi.preferenceProfiles(); }
     // ── 写作项目函数 ──────────────────────────────────────────
     async function loadProjects() { try { projectList.value = await api('/api/dashboard/ai/projects'); } catch {} }
     async function createProject() {
@@ -1335,18 +1303,6 @@ window.initVueApp({
       showRawImportModal.value = true;
     }
 
-    async function fetchStream(url, payload, fallbackError) {
-      const res = await csrfFetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-      if (!res.ok || !res.body) {
-        let message = fallbackError;
-        try {
-          const data = await res.json();
-          message = data.error || message;
-        } catch (_) {}
-        throw new Error(message);
-      }
-      return res;
-    }
     async function generateLongformPlan() {
       const pid = currentProject.value?.id;
       if (!pid) return;
@@ -1354,8 +1310,7 @@ window.initVueApp({
       if (!longformPlanForm.target_words) { showMessage('请填写目标总字数', 'error'); return; }
       longformPlanning.value = true; streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
       try {
-        const res = await fetchStream('/api/dashboard/ai/projects/' + pid + '/longform-plan/stream', preferencePayload(longformPlanForm), '长篇规划请求失败');
-        const plan = await readSSE(res);
+        const plan = await routeStream('/api/dashboard/ai/projects/' + pid + '/longform-plan/stream', preferencePayload(longformPlanForm));
         if (!plan) throw new Error('模型未返回可用规划');
         Object.assign(longformPlan, { project_outline: plan.project_outline || '', target_words: plan.target_words || 0, expected_chapter_count: plan.expected_chapter_count || 0, average_chapter_words: plan.average_chapter_words || 0, structure_notes: plan.structure_notes || '', volumes: plan.volumes || [], chapters: plan.chapters || [], foreshadows: plan.foreshadows || [] });
         await refreshCurrentProject();
@@ -1369,8 +1324,7 @@ window.initVueApp({
       if (!longformDetailForm.agent_id) { showMessage('请选择详细梗概 Agent', 'error'); return; }
       longformDetailPlanning.value = true; streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
       try {
-        const res = await fetchStream('/api/dashboard/ai/projects/' + pid + '/longform-plan/details/stream', preferencePayload(longformDetailForm), '详细梗概扩写请求失败');
-        const plan = await readSSE(res);
+        const plan = await routeStream('/api/dashboard/ai/projects/' + pid + '/longform-plan/details/stream', preferencePayload(longformDetailForm));
         if (!plan) throw new Error('模型未返回可用详细梗概');
         Object.assign(longformPlan, { project_outline: plan.project_outline || '', target_words: plan.target_words || 0, expected_chapter_count: plan.expected_chapter_count || 0, average_chapter_words: plan.average_chapter_words || 0, structure_notes: plan.structure_notes || '', volumes: plan.volumes || [], chapters: plan.chapters || [], foreshadows: plan.foreshadows || [] });
         await refreshCurrentProject();
@@ -1553,9 +1507,7 @@ window.initVueApp({
       streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
       const payload = preferencePayload({ agent_id: chapterContinueAgent.value, source_type: 'manual', text: chapterEditForm.content || '(空)', instruction: chapterInstruction.value, context_chars: 8000 });
       try {
-        const res = await csrfFetch('/api/dashboard/ai/plan/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-        if (!res.ok || !res.body) throw new Error('构思请求失败');
-        await readSSE(res);
+        await routeStream('/api/dashboard/ai/plan/stream', payload);
         chapterEditForm.outline = streamOutput.value;
         showMessage('构思已生成并填入大纲');
       } catch (e) { showMessage(e.message, 'error'); }
@@ -1568,9 +1520,7 @@ window.initVueApp({
       const payload = preferencePayload({ agent_id: chapterContinueAgent.value, project_id: currentProject.value?.id, chapter_id: currentChapter.value?.id });
       streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
       try {
-        const res = await csrfFetch('/api/dashboard/ai/projects/' + currentProject.value?.id + '/states/auto-update/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-        if (!res.ok || !res.body) throw new Error('状态更新请求失败');
-        await readSSE(res);
+        await routeStream('/api/dashboard/ai/projects/' + currentProject.value?.id + '/states/auto-update/stream', payload);
         await loadProjectStates(currentProject.value?.id);
         await loadForeshadows(currentProject.value?.id);
         showMessage('项目状态已自动更新');
@@ -1607,31 +1557,20 @@ window.initVueApp({
       pipelineRunning.value = true;
       streamOutput.value = '';
       try {
-        const res = await csrfFetch('/api/dashboard/ai/projects/' + currentProject.value.id + '/foreshadows/auto-resolve/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(preferencePayload({ project_id: currentProject.value.id, chapter_id: currentChapter.value?.id })) });
-        if (!res.ok || !res.body) throw new Error('自动回收请求失败');
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const events = buffer.split('\n\n');
-          buffer = events.pop() || '';
-          for (const raw of events) {
-            const lines = raw.split('\n');
-            const event = (lines.find(l => l.startsWith('event:')) || '').slice(6).trim();
-            const dataLine = (lines.find(l => l.startsWith('data:')) || '').slice(5).trim();
-            if (!dataLine) continue;
-            const data = JSON.parse(dataLine);
+        await window.streamSSE('/api/dashboard/ai/projects/' + currentProject.value.id + '/foreshadows/auto-resolve/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(preferencePayload({ project_id: currentProject.value.id, chapter_id: currentChapter.value?.id })),
+        }, {
+          onEvent: async (event, data) => {
             if (event === 'delta') {
               streamOutput.value += data.text || '';
             } else if (event === 'done') {
               showMessage('伏笔自动回收完成', 'success');
               await loadForeshadows(currentProject.value.id);
             }
-          }
-        }
+          },
+        });
       } catch (e) {
         showMessage(e.message, 'error');
       } finally {
@@ -1748,24 +1687,13 @@ window.initVueApp({
           plan_text: chapterEditForm.outline,
           context_chars: 8000,
         });
-        const res = await csrfFetch('/api/dashboard/ai/chapters/pipeline/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-        if (!res.ok || !res.body) throw new Error('请求失败');
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
         let curStepName = '';
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const events = buffer.split('\n\n');
-          buffer = events.pop() || '';
-          for (const raw of events) {
-            const lines = raw.split('\n');
-            const event = (lines.find(l => l.startsWith('event:')) || '').slice(6).trim();
-            const dataLine = (lines.find(l => l.startsWith('data:')) || '').slice(5).trim();
-            if (!dataLine) continue;
-            const data = JSON.parse(dataLine);
+        await window.streamSSE('/api/dashboard/ai/chapters/pipeline/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        }, {
+          onEvent: (event, data) => {
             if (event === 'metadata') {
               if (data.steps) pipelineSteps.value = data.steps.map(s => ({ name: s.name, label: s.label, status: 'pending', statusLabel: '等待' }));
             } else if (event === 'step_start') {
@@ -1795,17 +1723,17 @@ window.initVueApp({
               dashboardTab.value = 'pipeline';
               showMessage('步骤"' + (data.label || data.step) + '"失败，已跳过并继续：' + (data.error || ''), 'warning');
             } else if (event === 'done') {
-              const failed = pipelineSteps.value.filter(s => s.status === 'failed').map(s => s.name);
-              if (autoRetryFailed && failed.length) {
-                showMessage('Pipeline 完成，但有 ' + failed.length + ' 个步骤失败，请稍候自动重试', 'warning');
+              const failedSteps = pipelineSteps.value.filter(s => s.status === 'failed').map(s => s.name);
+              if (autoRetryFailed && failedSteps.length) {
+                showMessage('Pipeline 完成，但有 ' + failedSteps.length + ' 个步骤失败，请稍候自动重试', 'warning');
               } else {
                 showMessage('Pipeline 完成（耗时 ' + (data.duration_sec || 0) + ' 秒）');
               }
             } else if (event === 'error') {
               throw new Error(data.message || '执行失败');
             }
-          }
-        }
+          },
+        });
         // 重新加载章节数据 + dashboard
         await openChapter(currentChapter.value);
         await loadChapterDashboard();
@@ -1834,31 +1762,20 @@ window.initVueApp({
           chapter_id: currentChapter.value.id,
           agent_id: 0,
         });
-        const res = await csrfFetch(endpoint, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-        if (!res.ok || !res.body) throw new Error('请求失败');
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const events = buffer.split('\n\n');
-          buffer = events.pop() || '';
-          for (const raw of events) {
-            const lines = raw.split('\n');
-            const event = (lines.find(l => l.startsWith('event:')) || '').slice(6).trim();
-            const dataLine = (lines.find(l => l.startsWith('data:')) || '').slice(5).trim();
-            if (!dataLine) continue;
-            const data = JSON.parse(dataLine);
+        await window.streamSSE(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        }, {
+          onEvent: async (event, data) => {
             if (event === 'delta') {
               streamOutput.value += data.text || '';
             } else if (event === 'done') {
               showMessage(`${stepName === 'extract-summary' ? '摘要提取' : '润色'}完成`, 'success');
               await openChapter(currentChapter.value);
             }
-          }
-        }
+          },
+        });
       } catch (e) {
         showMessage(e.message, 'error');
       } finally {
@@ -1890,23 +1807,12 @@ window.initVueApp({
           output_chars: 3000,
           context_chars: 8000,
         });
-        const res = await csrfFetch('/api/dashboard/ai/chapters/pipeline/batch/stream', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-        if (!res.ok || !res.body) throw new Error('批量生成请求失败');
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const events = buffer.split('\n\n');
-          buffer = events.pop() || '';
-          for (const raw of events) {
-            const lines = raw.split('\n');
-            const event = (lines.find(l => l.startsWith('event:')) || '').slice(6).trim();
-            const dataLine = (lines.find(l => l.startsWith('data:')) || '').slice(5).trim();
-            if (!dataLine) continue;
-            const data = JSON.parse(dataLine);
+        await window.streamSSE('/api/dashboard/ai/chapters/pipeline/batch/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        }, {
+          onEvent: (event, data) => {
             if (event === 'batch_start') {
               batchPipelineProgress.total = data.total || batchPipelineProgress.total;
             } else if (event === 'chapter_start') {
@@ -1924,8 +1830,8 @@ window.initVueApp({
               batchPipelineProgress.failed = data.failed || batchPipelineProgress.failed;
               batchPipelineProgress.total = data.total || batchPipelineProgress.total;
             }
-          }
-        }
+          },
+        });
         await loadChapters(currentProject.value.id);
         showMessage('批量生成完成：成功 ' + batchPipelineProgress.succeeded + ' 章，失败 ' + batchPipelineProgress.failed + ' 章');
       } catch (e) { showMessage(e.message, 'error'); }

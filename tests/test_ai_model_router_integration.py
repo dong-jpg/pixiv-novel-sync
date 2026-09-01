@@ -385,8 +385,11 @@ def test_route_job_hard_limits_are_16_32_and_30_minutes(
     assert row["network_request_count"] == 0
     assert timedelta(minutes=29) < deadline - before <= timedelta(minutes=30)
     router_source = (Path(__file__).parents[1] / "src" / "pixiv_novel_sync" / "ai" / "model_router.py").read_text(encoding="utf-8")
-    assert ">= 16" in router_source
-    assert ">= 32" in router_source
+    # 上限提成了具名常量（候选链预览要展示同一组数字），断言常量值与比较点都在
+    assert "MAX_CANDIDATE_ATTEMPTS = 16" in router_source
+    assert "MAX_NETWORK_REQUESTS = 32" in router_source
+    assert ">= MAX_CANDIDATE_ATTEMPTS" in router_source
+    assert ">= MAX_NETWORK_REQUESTS" in router_source
 
 
 def test_stream_route_forwards_progress_delta_and_result(

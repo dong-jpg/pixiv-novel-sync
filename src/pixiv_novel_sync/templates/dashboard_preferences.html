@@ -166,7 +166,6 @@ window.initVueApp({
     const messageType = ref('success');
     const analysisJob = ref(null);
     const analysisResult = ref(null);
-    let csrfToken = '';
 
     const confidenceText = computed(() => {
       const v = selected.value?.profile?.confidence?.overall || 0;
@@ -179,31 +178,14 @@ window.initVueApp({
       setTimeout(() => { if (message.value === text) message.value = ''; }, 3500);
     }
 
-    async function ensureCsrfToken() {
-      if (csrfToken) return csrfToken;
-      const res = await fetch('/api/csrf-token');
-      const data = await res.json();
-      csrfToken = data.csrf_token || '';
-      return csrfToken;
-    }
-
-    async function fetchJson(url, options = {}) {
-      const opts = { ...options };
-      const method = String(opts.method || 'GET').toUpperCase();
-      if (method !== 'GET' && method !== 'HEAD') {
-        const token = await ensureCsrfToken();
-        opts.headers = {
-          ...(opts.headers || {}),
-          'X-CSRF-Token': token,
-        };
-      }
-      return fetch(url, opts);
-    }
+    // 统一走 base.html 的 window.csrfFetch：鉴权门只在「已认证 session」分支校验
+    // CSRF，本地无 DASHBOARD_TOKEN 开发时永不触发，自建副本漏一个头就是生产专属 403。
+    const fetchJson = window.csrfFetch;
 
     async function loadProfiles() {
       const res = await fetch('/api/dashboard/preferences/profiles');
       const data = await res.json();
-      if (!data.ok) throw new Error(data.error || '加载失败');
+      if (!data.ok) throw new Error(window.errorText(data, res));
       profiles.value = data.data || [];
       selected.value = profiles.value.find(p => p.is_default) || profiles.value[0] || null;
     }
@@ -214,7 +196,7 @@ window.initVueApp({
         const res = await fetch(`/api/dashboard/sync/status?job_id=${encodeURIComponent(jobId)}`);
         const data = await res.json();
         const job = data.job;
-        if (!job) throw new Error(data.error || '获取任务状态失败');
+        if (!job) throw new Error(window.errorText(data, res));
         if (onUpdate) onUpdate(job);
 
         if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
@@ -229,7 +211,7 @@ window.initVueApp({
     async function loadRecommendationItems() {
       const res = await fetch('/api/dashboard/recommendations/items?limit=100');
       const data = await res.json();
-      if (!data.ok) throw new Error(data.error || '加载推荐失败');
+      if (!data.ok) throw new Error(window.errorText(data, res));
       recommendationItems.value = data.data || [];
     }
 
@@ -241,7 +223,7 @@ window.initVueApp({
         body: JSON.stringify({ profile_id: selected.value.id, filters: { max_queries: 12, per_query_limit: 20 } })
       });
       const data = await res.json();
-      if (!data.ok) return showMessage(data.error || '生成搜索计划失败', 'error');
+      if (!data.ok) return showMessage('生成搜索计划失败：' + window.errorText(data, res), 'error');
       searchPlan.value = data.data;
       showMessage('搜索计划已生成');
     }
@@ -258,7 +240,7 @@ window.initVueApp({
           body: JSON.stringify({ profile_id: selected.value.id, search_plan: searchPlan.value })
         });
         const data = await res.json();
-        if (!data.ok) throw new Error(data.error || '启动失败');
+        if (!data.ok) throw new Error(window.errorText(data, res));
 
         const jobId = data.data.job_id;
         showMessage('正在生成推荐...');
@@ -286,7 +268,7 @@ window.initVueApp({
         body: JSON.stringify({ feedback_type: type })
       });
       const data = await res.json();
-      if (!data.ok) return showMessage(data.error || '反馈失败', 'error');
+      if (!data.ok) return showMessage('反馈失败：' + window.errorText(data, res), 'error');
       await loadRecommendationItems();
     }
 
@@ -298,7 +280,7 @@ window.initVueApp({
         body: JSON.stringify({ mute_type: 'author', mute_value: String(item.author_id), reason: item.author_name })
       });
       const data = await res.json();
-      if (!data.ok) return showMessage(data.error || '屏蔽失败', 'error');
+      if (!data.ok) return showMessage('屏蔽失败：' + window.errorText(data, res), 'error');
       await feedback(item, 'muted');
       showMessage('已屏蔽作者');
     }
@@ -313,7 +295,7 @@ window.initVueApp({
           body: JSON.stringify({ name: '本地偏好画像', is_default: true, scope: { min_text_length: 1000, max_batches: 10 } })
         });
         const data = await res.json();
-        if (!data.ok) throw new Error(data.error || '启动失败');
+        if (!data.ok) throw new Error(window.errorText(data, res));
 
         const jobId = data.data.job_id;
         analysisResult.value = null;

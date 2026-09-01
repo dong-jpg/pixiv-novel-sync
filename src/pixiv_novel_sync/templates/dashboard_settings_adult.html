@@ -1,0 +1,401 @@
+{% extends "base.html" %}
+
+{% block title %}成人润色 - Pixiv 小说同步器{% endblock %}
+
+{% block content %}
+{# 设置页第四分页：成人润色 Agent、按项目的角色确认、两个审查绑定。
+   这一区是 fail-closed 的：策略 ID / 各种哈希只读展示，能力固定 json，绑定与
+   stored_matches 不符时不允许启用。搬运时不得放宽任何一处校验——放宽是行为变更。
+   项目不再手输数字 ID，改成下拉选择（数据来自 GET /api/dashboard/ai/projects）。 #}
+<div class="library-page px-6 lg:px-8 pt-6 max-w-6xl mx-auto space-y-5 pb-8">
+  <div class="library-page-header">
+    <div>
+      <p class="library-kicker">Settings</p>
+      <h1 class="text-2xl font-bold text-gray-900 mb-1">成人润色</h1>
+      <p class="text-sm text-pixiv-gray">润色 Agent 绑定、项目角色确认与安全/事实审查绑定</p>
+    </div>
+    <div class="library-actions">
+      <span v-if="aiMessage" class="text-sm font-medium"
+            :class="aiMessageType === 'error' ? 'text-red-600' : (aiMessageType === 'warning' ? 'text-amber-600' : 'text-green-600')">{{ aiMessage }}</span>
+    </div>
+  </div>
+
+  {% include 'dashboard_settings_nav.html' %}
+
+  <!-- 1. 成人润色 Agent -->
+  <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-3">
+    <div>
+      <h2 class="text-xl font-bold text-gray-900">成人润色 Agent</h2>
+      <p class="text-sm text-pixiv-gray mt-1">只能在这里维护绑定；它不出现在普通 Agent 列表里，也没有删除入口。</p>
+    </div>
+    <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto] gap-3 items-end">
+      <div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <input v-model="adultAgentForm.name" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Agent 名称">
+          <select v-model="adultAgentForm.binding_type" class="px-3 py-2 border border-gray-200 rounded-lg text-sm"><option value="fixed">固定模型</option><option value="pool">模型池</option></select>
+          <select v-if="adultAgentForm.binding_type === 'fixed'" v-model.number="adultAgentForm.provider_id" class="px-3 py-2 border border-gray-200 rounded-lg text-sm"><option :value="0">选择 Provider</option><option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option></select>
+          <select v-else v-model.number="adultAgentForm.model_pool_id" class="px-3 py-2 border border-gray-200 rounded-lg text-sm"><option :value="0">选择已启用模型池</option><option v-for="pool in modelPools.filter(item => item.enabled)" :key="pool.id" :value="pool.id">{{ pool.name }}</option></select>
+        </div>
+        <input v-if="adultAgentForm.binding_type === 'fixed'" v-model="adultAgentForm.model" class="w-full mt-2 px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="model_key（留空使用 Provider 默认模型）">
+      </div>
+      <button @click="seedAdultPolishAgent" :disabled="adultAgentSaving || !adultAgentBindingValid" class="h-10 px-4 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ adultAgentSaving ? '保存中' : '保存成人润色 Agent' }}</button>
+    </div>
+  </section>
+  <!-- 2. 项目角色确认 -->
+  <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-4">
+    <div>
+      <h2 class="text-xl font-bold text-gray-900">项目角色确认</h2>
+      <p class="text-sm text-pixiv-gray mt-1">
+        润色请求必须落在某个写作项目的已确认角色集合上。确认带版本号，角色一改版本就变，
+        旧确认立即失效（这是事实守卫的前提，不是形式主义）。
+      </p>
+    </div>
+    <div class="flex flex-col sm:flex-row sm:items-end gap-3">
+      <label class="text-sm text-gray-700 flex-1">写作项目
+        <select v-model.number="adultProjectId" @change="loadAdultProject"
+                class="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" aria-label="成人内容写作项目">
+          <option :value="0">选择项目…</option>
+          <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option>
+        </select>
+      </label>
+      <button @click="loadAdultProject" :disabled="!adultProjectId || adultProjectLoading" class="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm disabled:opacity-50">{{ adultProjectLoading ? '加载中' : '重新加载确认' }}</button>
+    </div>
+    <p v-if="!projects.length" class="text-xs text-pixiv-light">还没有写作项目：先在 AI 创作页建一个。</p>
+    <p v-if="adultProjectError" class="text-sm text-red-600" role="alert">{{ adultProjectError }}</p>
+
+    <div v-if="adultProjectId" class="space-y-4">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label class="flex items-center gap-2 text-sm text-gray-700"><input v-model="adultConfirmation.adult_content_enabled" type="checkbox" class="rounded border-gray-300">启用成人内容</label>
+        <label class="flex items-center gap-2 text-sm text-gray-700"><input v-model="adultConfirmation.fictional_characters_confirmed" type="checkbox" class="rounded border-gray-300">我确认参与角色均为虚构成年人</label>
+      </div>
+      <label class="flex items-center gap-2 text-sm text-gray-700"><input v-model="adultConfirmation.adult_characters_confirmed" type="checkbox" class="rounded border-gray-300">我确认下列角色与版本</label>
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+        <input v-model="adultCharacterForm.canonical_name" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="角色名">
+        <input v-model="adultCharacterForm.aliases" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="别名，逗号分隔">
+        <input v-model.number="adultCharacterForm.age_years" type="number" min="18" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="年龄">
+        <input v-model="adultCharacterForm.age_basis" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="年龄依据">
+        <button @click="saveAdultCharacter" :disabled="adultCharacterSaving || !adultCharacterForm.canonical_name" class="px-3 py-2 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ adultCharacterForm.character_id ? '保存角色' : '新增角色' }}</button>
+      </div>
+      <div class="overflow-x-auto border border-gray-100 rounded-lg">
+        <table class="w-full text-sm text-left"><thead class="bg-gray-50 text-gray-600"><tr><th class="px-3 py-2">角色</th><th class="px-3 py-2">年龄</th><th class="px-3 py-2">版本</th><th class="px-3 py-2">操作</th></tr></thead>
+          <tbody><tr v-for="character in sortedCharacters" :key="character.character_id" class="border-t border-gray-100"><td class="px-3 py-2">{{ character.canonical_name }}</td><td class="px-3 py-2">{{ character.age_years }}</td><td class="px-3 py-2">{{ character.revision }}</td><td class="px-3 py-2 whitespace-nowrap"><button @click="editAdultCharacter(character)" class="text-brand-600 mr-3">编辑</button><button @click="deactivateAdultCharacter(character)" class="text-red-600">停用</button></td></tr></tbody>
+        </table>
+      </div>
+      <div class="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between border-t border-gray-100 pt-3">
+        <p class="text-xs text-gray-500">确认版本 {{ adultConfirmation.adult_confirmation_revision || 0 }}。列表按角色 ID 排序后提交。</p>
+        <button @click="saveAdultConfirmation" :disabled="adultConfirmationSaving || !adultConfirmation.adult_content_enabled || !adultConfirmation.adult_characters_confirmed || !adultConfirmation.fictional_characters_confirmed" class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm disabled:opacity-50">{{ adultConfirmationSaving ? '保存中' : '保存确认' }}</button>
+      </div>
+    </div>
+  </section>
+  <!-- 3. 审查绑定（策略与哈希只读展示） -->
+  <section class="space-y-4">
+    <div>
+      <h2 class="text-xl font-bold text-gray-900">成人审查绑定</h2>
+      <p class="mt-1 text-sm text-pixiv-gray">Policy、各类哈希与所需能力固定展示，只允许调整审查模型绑定与启停。</p>
+    </div>
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+      <div v-for="kind in adultReviewKinds" :key="kind" class="bg-white border border-gray-200 rounded-lg p-4 min-w-0 space-y-3">
+        <div class="flex items-center justify-between gap-3">
+          <h3 class="text-sm font-bold text-gray-900">{{ kind === 'safety' ? '安全审查' : '事实保护' }}</h3>
+          <label class="flex items-center gap-2 text-sm text-gray-700">
+            <input type="checkbox" v-model="adultReviewBindings[kind].enabled" class="rounded border-gray-300">
+            启用
+          </label>
+        </div>
+        <dl class="text-xs text-gray-600 space-y-1 min-w-0">
+          <div><dt class="inline font-medium">Policy</dt><dd class="inline ml-2 break-all">{{ adultReviewBindings[kind].policy_id }}</dd></div>
+          <div><dt class="inline font-medium">Hash</dt><dd class="inline ml-2 font-mono break-all">{{ adultReviewBindings[kind].policy_hash }}</dd></div>
+          <div><dt class="inline font-medium">Prompt</dt><dd class="inline ml-2 font-mono break-all">{{ adultReviewBindings[kind].prompt_hash }}</dd></div>
+          <div><dt class="inline font-medium">Schema</dt><dd class="inline ml-2 font-mono break-all">{{ adultReviewBindings[kind].schema_hash }}</dd></div>
+          <div><dt class="inline font-medium">能力</dt><dd class="inline ml-2 font-mono">json</dd></div>
+        </dl>
+        <div class="grid grid-cols-2 rounded-lg bg-gray-100 p-1 text-sm">
+          <label class="flex items-center justify-center px-3 py-2 rounded cursor-pointer" :class="adultReviewBindings[kind].binding_type === 'fixed' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'">
+            <input type="radio" class="sr-only" value="fixed" v-model="adultReviewBindings[kind].binding_type">固定模型
+          </label>
+          <label class="flex items-center justify-center px-3 py-2 rounded cursor-pointer" :class="adultReviewBindings[kind].binding_type === 'pool' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'">
+            <input type="radio" class="sr-only" value="pool" v-model="adultReviewBindings[kind].binding_type">模型池
+          </label>
+        </div>
+        <div v-if="adultReviewBindings[kind].binding_type === 'fixed'" class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <select v-model.number="adultReviewBindings[kind].provider_id" class="px-3 py-2 border border-gray-200 rounded-lg text-sm min-w-0">
+            <option :value="0">选择 Provider</option>
+            <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option>
+          </select>
+          <input v-model="adultReviewBindings[kind].model" class="px-3 py-2 border border-gray-200 rounded-lg text-sm min-w-0" placeholder="JSON model_key">
+        </div>
+        <select v-else v-model.number="adultReviewBindings[kind].model_pool_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+          <option :value="0">选择已启用模型池</option>
+          <option v-for="pool in modelPools.filter(item => item.enabled)" :key="pool.id" :value="pool.id">{{ pool.name }}</option>
+        </select>
+        <div class="flex items-center justify-between gap-3">
+          <span class="text-xs" :class="adultReviewBindings[kind].stored_matches ? 'text-green-700' : 'text-red-600'">version {{ adultReviewBindings[kind].version }}</span>
+          <button @click="saveAdultReviewBinding(kind)" :disabled="adultReviewSaving[kind] || !adultReviewBindingValid(kind)" class="px-3 py-2 bg-gray-900 text-white rounded-lg text-sm disabled:opacity-50">
+            {{ adultReviewSaving[kind] ? '保存中' : '保存绑定' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  initVueApp({
+    setup() {
+      const { ref, reactive, computed, onMounted } = Vue;
+
+      const providers = ref([]);
+      const modelPools = ref([]);
+      const projects = ref([]);
+      const aiMessage = ref('');
+      const aiMessageType = ref('success');
+
+      const adultReviewKinds = ['safety', 'fact_guard'];
+      const adultReviewDefaults = (kind) => ({
+        review_kind: kind,
+        enabled: false,
+        binding_type: 'fixed',
+        provider_id: 0,
+        model: '',
+        model_pool_id: 0,
+        required_capabilities: ['json'],
+        version: 1,
+        policy_id: kind === 'safety' ? 'adult_safety_policy' : 'adult_fact_guard_policy',
+        policy_hash: '',
+        prompt_hash: '',
+        schema_hash: '',
+        stored_matches: false
+      });
+      const adultReviewBindings = reactive({ safety: adultReviewDefaults('safety'), fact_guard: adultReviewDefaults('fact_guard') });
+      const adultReviewSaving = reactive({ safety: false, fact_guard: false });
+      const adultAgentForm = reactive({ name: '成人描写润色', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0 });
+      const adultAgentSaving = ref(false);
+      const adultProjectId = ref(0);
+      const adultProjectLoading = ref(false);
+      const adultProjectError = ref('');
+      const adultCharacters = ref([]);
+      const adultConfirmation = reactive({ adult_content_enabled: false, adult_characters_confirmed: false, fictional_characters_confirmed: false, adult_confirmation_revision: 0, character_ids: [] });
+      const adultCharacterForm = reactive({ character_id: '', revision: 0, canonical_name: '', aliases: '', age_years: 18, age_basis: '', fictional: true });
+      const adultCharacterSaving = ref(false);
+      const adultConfirmationSaving = ref(false);
+
+      const sortedCharacters = computed(() => [...adultCharacters.value].sort((left, right) => String(left.character_id).localeCompare(String(right.character_id))));
+      const adultAgentBindingValid = computed(() => adultAgentForm.binding_type === 'pool' ? adultAgentForm.model_pool_id > 0 : adultAgentForm.provider_id > 0);
+      // fail-closed：策略状态与库里存的不一致时只允许停用，不允许继续启用。
+      // 顺序有意义——先放行「停用」，再拦住 stored_matches 不符的启用。
+      const adultReviewBindingValid = (kind) => {
+        const binding = adultReviewBindings[kind];
+        if (!binding) return false;
+        if (binding.enabled === false) return true;
+        if (binding.stored_matches === false) return false;
+        return binding.binding_type === 'pool' ? binding.model_pool_id > 0 : binding.provider_id > 0;
+      };
+
+      const showAiMessage = (msg, type = 'success') => {
+        aiMessage.value = msg;
+        aiMessageType.value = type;
+        setTimeout(() => { aiMessage.value = ''; }, 4000);
+      };
+
+      // 读写都走 base.html 的公共层（window.csrfFetch + window.errorText）
+      const aiApi = (url, options) => window.aiApi.request(url, options);
+      const loadProviders = async () => {
+        try { providers.value = await aiApi('/api/dashboard/ai/providers'); }
+        catch (e) { showAiMessage(e.message || '读取 Provider 失败', 'error'); }
+      };
+      const loadModelPools = async () => {
+        try { modelPools.value = await aiApi('/api/dashboard/ai/model-pools'); }
+        catch (e) { showAiMessage(e.message || '读取模型池失败', 'error'); }
+      };
+      // 项目下拉替换了原来手输数字 ID 的输入框：手输 ID 既猜不到又容易错到别人的项目上
+      const loadProjects = async () => {
+        try { projects.value = await aiApi('/api/dashboard/ai/projects'); }
+        catch (e) { showAiMessage(e.message || '读取写作项目失败', 'error'); }
+      };
+
+      const loadAdultReviewBinding = async (kind) => {
+        const data = await aiApi(`/api/dashboard/ai/adult-review-bindings/${kind}`);
+        Object.assign(adultReviewBindings[kind], adultReviewDefaults(kind), data || {}, {
+          binding_type: (data && data.binding_type) || 'fixed',
+          provider_id: Number((data && data.provider_id) || 0),
+          model: String((data && data.model) || ''),
+          model_pool_id: Number((data && data.model_pool_id) || 0),
+          required_capabilities: ['json']
+        });
+      };
+      const loadAdultReviewBindings = async () => {
+        try {
+          await Promise.all(adultReviewKinds.map(kind => loadAdultReviewBinding(kind)));
+        } catch (e) {
+          showAiMessage(e.message || '读取成人审查绑定失败', 'error');
+        }
+      };
+      const seedAdultPolishAgent = async () => {
+        if (!adultAgentBindingValid.value) return;
+        adultAgentSaving.value = true;
+        try {
+          const payload = { name: String(adultAgentForm.name || '').trim() || '成人描写润色', binding_type: adultAgentForm.binding_type };
+          if (adultAgentForm.binding_type === 'pool') {
+            payload.model_pool_id = Number(adultAgentForm.model_pool_id || 0);
+          } else {
+            payload.provider_id = Number(adultAgentForm.provider_id || 0);
+            payload.model = String(adultAgentForm.model || '').trim() || null;
+          }
+          await aiApi('/api/dashboard/ai/agents/adult-polish/seed', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+          showAiMessage('成人润色 Agent 已保存');
+        } catch (e) {
+          showAiMessage(e.message || '成人润色 Agent 保存失败', 'error');
+        } finally {
+          adultAgentSaving.value = false;
+        }
+      };
+      const resetAdultCharacterForm = () => Object.assign(adultCharacterForm, { character_id: '', revision: 0, canonical_name: '', aliases: '', age_years: 18, age_basis: '', fictional: true });
+      const loadAdultProject = async () => {
+        if (!adultProjectId.value) {
+          adultCharacters.value = [];
+          return;
+        }
+        adultProjectLoading.value = true;
+        adultProjectError.value = '';
+        try {
+          const [characters, confirmation] = await Promise.all([
+            aiApi(`/api/dashboard/ai/projects/${adultProjectId.value}/characters`),
+            aiApi(`/api/dashboard/ai/projects/${adultProjectId.value}/adult-confirmation`)
+          ]);
+          adultCharacters.value = Array.isArray(characters) ? characters : [];
+          Object.assign(adultConfirmation, { adult_content_enabled: false, adult_characters_confirmed: false, fictional_characters_confirmed: false, adult_confirmation_revision: 0, character_ids: [] }, confirmation || {});
+          resetAdultCharacterForm();
+        } catch (e) {
+          adultProjectError.value = e.message || '读取成人项目设置失败';
+        } finally {
+          adultProjectLoading.value = false;
+        }
+      };
+      const editAdultCharacter = (character) => Object.assign(adultCharacterForm, {
+        character_id: character.character_id,
+        revision: Number(character.revision || 0),
+        canonical_name: character.canonical_name || '',
+        aliases: Array.isArray(character.aliases) ? character.aliases.join(', ') : '',
+        age_years: Number(character.age_years || 18),
+        age_basis: character.age_basis || '',
+        fictional: character.fictional === true
+      });
+      const saveAdultCharacter = async () => {
+        if (!adultProjectId.value || !adultCharacterForm.canonical_name) return;
+        adultCharacterSaving.value = true;
+        adultProjectError.value = '';
+        const payload = {
+          canonical_name: adultCharacterForm.canonical_name.trim(),
+          aliases: adultCharacterForm.aliases.split(',').map(item => item.trim()).filter(Boolean),
+          age_years: Number(adultCharacterForm.age_years),
+          age_basis: adultCharacterForm.age_basis.trim(),
+          fictional: adultCharacterForm.fictional === true
+        };
+        try {
+          if (adultCharacterForm.character_id) {
+            // 带 expected_revision：并发改角色时必须失败而不是覆盖
+            payload.expected_revision = Number(adultCharacterForm.revision);
+            await aiApi(`/api/dashboard/ai/projects/${adultProjectId.value}/characters/${encodeURIComponent(adultCharacterForm.character_id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+          } else {
+            await aiApi(`/api/dashboard/ai/projects/${adultProjectId.value}/characters`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+          }
+          await loadAdultProject();
+        } catch (e) {
+          adultProjectError.value = e.message || '保存角色失败';
+        } finally {
+          adultCharacterSaving.value = false;
+        }
+      };
+      const deactivateAdultCharacter = async (character) => {
+        if (!adultProjectId.value || !confirm(`确认停用角色“${character.canonical_name}”？`)) return;
+        try {
+          await aiApi(`/api/dashboard/ai/projects/${adultProjectId.value}/characters/${encodeURIComponent(character.character_id)}`, {
+            method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ expected_revision: Number(character.revision) })
+          });
+          await loadAdultProject();
+        } catch (e) {
+          adultProjectError.value = e.message || '停用角色失败';
+        }
+      };
+      const saveAdultConfirmation = async () => {
+        if (!adultProjectId.value) return;
+        adultConfirmationSaving.value = true;
+        adultProjectError.value = '';
+        try {
+          await aiApi(`/api/dashboard/ai/projects/${adultProjectId.value}/adult-confirmation`, {
+            method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({
+              expected_revision: Number(adultConfirmation.adult_confirmation_revision || 0),
+              adult_content_enabled: adultConfirmation.adult_content_enabled === true,
+              adult_characters_confirmed: adultConfirmation.adult_characters_confirmed === true,
+              fictional_characters_confirmed: adultConfirmation.fictional_characters_confirmed === true,
+              character_ids: sortedCharacters.value.map(character => character.character_id)
+            })
+          });
+          await loadAdultProject();
+        } catch (e) {
+          adultProjectError.value = e.message || '保存成人确认失败';
+        } finally {
+          adultConfirmationSaving.value = false;
+        }
+      };
+      const saveAdultReviewBinding = async (kind) => {
+        const binding = adultReviewBindings[kind];
+        if (!adultReviewBindingValid(kind)) return;
+        adultReviewSaving[kind] = true;
+        try {
+          const payload = {
+            enabled: binding.enabled === true,
+            expected_version: Number(binding.version)
+          };
+          if (payload.enabled && binding.binding_type === 'pool') {
+            payload.binding_type = 'pool';
+            payload.model_pool_id = Number(binding.model_pool_id || 0);
+          } else if (payload.enabled) {
+            payload.binding_type = 'fixed';
+            payload.provider_id = Number(binding.provider_id || 0);
+            payload.model = String(binding.model || '').trim() || null;
+          }
+          const saved = await aiApi(`/api/dashboard/ai/adult-review-bindings/${kind}`, {
+            method: 'PUT',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+          });
+          Object.assign(binding, saved || {}, {
+            binding_type: (saved && saved.binding_type) || 'fixed',
+            provider_id: Number((saved && saved.provider_id) || 0),
+            model: String((saved && saved.model) || ''),
+            model_pool_id: Number((saved && saved.model_pool_id) || 0),
+            required_capabilities: ['json']
+          });
+          showAiMessage('成人审查绑定已保存');
+        } catch (e) {
+          // 保存失败要把服务端真实状态拉回来，避免界面停在一个没生效的绑定上
+          await loadAdultReviewBinding(kind).catch(() => {});
+          showAiMessage(e.message || '成人审查绑定保存失败', 'error');
+        } finally {
+          adultReviewSaving[kind] = false;
+        }
+      };
+
+      onMounted(() => {
+        loadProviders();
+        loadModelPools();
+        loadProjects();
+        loadAdultReviewBindings();
+      });
+
+      return {
+        providers, modelPools, projects, aiMessage, aiMessageType,
+        adultReviewKinds, adultReviewBindings, adultReviewSaving, adultReviewBindingValid,
+        adultAgentForm, adultAgentSaving, adultAgentBindingValid, seedAdultPolishAgent,
+        adultProjectId, adultProjectLoading, adultProjectError, adultCharacters, adultConfirmation,
+        adultCharacterForm, adultCharacterSaving, adultConfirmationSaving, sortedCharacters,
+        loadAdultProject, editAdultCharacter, saveAdultCharacter, deactivateAdultCharacter,
+        saveAdultConfirmation, saveAdultReviewBinding, loadAdultReviewBindings,
+      };
+    }
+  });
+</script>
+{% endblock %}

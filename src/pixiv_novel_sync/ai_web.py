@@ -913,6 +913,17 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
         except Exception as exc:
             return fail(exc)
 
+    @app.get("/api/dashboard/ai/agents/<int:agent_id>/candidates")
+    def preview_ai_agent_candidates(agent_id: int):
+        """只读预览：这个 Agent 会按什么顺序调用哪些模型。
+
+        纯解析，不发起任何生成请求；业务生成仍然只能走 ModelRouter 的执行路径。
+        """
+        try:
+            return ok(service.preview_agent_candidates(agent_id))
+        except Exception as exc:
+            return fail(exc)
+
     @app.post("/api/dashboard/ai/agents")
     def create_ai_agent():
         try:

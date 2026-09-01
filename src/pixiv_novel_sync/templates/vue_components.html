@@ -28,11 +28,24 @@ function registerGlobalComponents(app) {
     { type: 'divider', label: 'Operations' },
     { path: '/dashboard/pending-deletions', label: '待确认删除', icon: 'trash', hasBadge: true },
     { path: '/dashboard/logs', label: '任务日志', icon: 'clipboard' },
-    { path: '/dashboard/settings', label: '设置', icon: 'cog' },
+    // 设置已拆成五个一级页面。父项的 path 留作高亮前缀（五个子页都在 /dashboard/settings
+    // 下），href 才是实际落点：/dashboard/settings 只是一个 302。
+    {
+      path: '/dashboard/settings', href: '/dashboard/settings/sync', label: '设置', icon: 'cog',
+      children: [
+        { path: '/dashboard/settings/sync', label: '同步与调度' },
+        { path: '/dashboard/settings/models', label: '模型与 Provider' },
+        { path: '/dashboard/settings/agents', label: 'Agent 绑定' },
+        { path: '/dashboard/settings/adult', label: '成人润色' },
+        { path: '/dashboard/settings/system', label: '系统维护' },
+      ],
+    },
   ];
 
   function isActive(currentPath, item) {
     if (item.exact) return currentPath === item.path;
+    // 前缀匹配只能回答「在不在这个分组里」。设置的五个子页共用 /dashboard/settings
+    // 前缀，父项一律高亮，看不出当前是哪一页——子项在模板里按 path 精确匹配。
     return currentPath.startsWith(item.path);
   }
 
@@ -43,13 +56,23 @@ function registerGlobalComponents(app) {
         <div v-if="item.type === 'divider'" class="pt-4 pb-1 px-3">
           <div class="text-[10px] font-black text-gray-400 uppercase tracking-[.18em]">{{ item.label }}</div>
         </div>
-        <a v-else :href="item.path" :class="['library-nav-link sidebar-link', isActive(item) && 'active']">
-          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" v-html="icons[item.icon]"></svg>
-          <span>{{ item.label }}</span>
-          <span v-if="item.hasBadge && pendingCount > 0" class="ml-auto bg-red-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full leading-none">
-            {{ pendingCount > 99 ? '99+' : pendingCount }}
-          </span>
-        </a>
+        <template v-else>
+          <a :href="item.href || item.path" :class="['library-nav-link sidebar-link', isActive(item) && 'active']">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" v-html="icons[item.icon]"></svg>
+            <span>{{ item.label }}</span>
+            <span v-if="item.hasBadge && pendingCount > 0" class="ml-auto bg-red-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full leading-none">
+              {{ pendingCount > 99 ? '99+' : pendingCount }}
+            </span>
+          </a>
+          <div v-if="item.children" class="pl-11 pr-1 pt-0.5 pb-1 space-y-0.5">
+            <a v-for="child in item.children" :key="child.path" :href="child.path"
+               :class="['block px-2 py-1 rounded-lg text-[13px] font-bold no-underline transition-colors',
+                        currentPath === child.path ? 'text-brand-600 bg-blue-50/80' : 'text-gray-400 hover:text-gray-700 hover:bg-gray-50']"
+               :aria-current="currentPath === child.path ? 'page' : null">
+              {{ child.label }}
+            </a>
+          </div>
+        </template>
       </template>
     `,
     setup(props) {
@@ -114,7 +137,7 @@ function registerGlobalComponents(app) {
     props: ['currentPath'],
     template: `
       <nav class="mobile-bottom-bar">
-        <a v-for="item in mobileItems" :key="item.path" :href="item.path" :class="{ active: isActive(item) }">
+        <a v-for="item in mobileItems" :key="item.path" :href="item.href || item.path" :class="{ active: isActive(item) }">
           <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" v-html="icons[item.icon]"></svg>
           <span>{{ item.label }}</span>
         </a>

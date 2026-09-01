@@ -1,0 +1,381 @@
+{% extends "base.html" %}
+
+{% block title %}Agent 绑定 - Pixiv 小说同步器{% endblock %}
+
+{% block content %}
+{# 设置页第三分页：普通写作 Agent 的绑定、提示词与采样参数。
+   成人润色 Agent 与两个审查绑定在 /dashboard/settings/adult，本页刻意把
+   task_type === 'adult_polish' 的 Agent 从列表里排除——它是 fail-closed 子系统，
+   不能通过普通 Agent 列表被编辑或删除。
+   Agent 配置存在数据库里，走 ai_web.py 的端点，不经过 /api/dashboard/settings。 #}
+<div class="library-page px-6 lg:px-8 pt-6 max-w-6xl mx-auto space-y-5 pb-8">
+  <div class="library-page-header">
+    <div>
+      <p class="library-kicker">Settings</p>
+      <h1 class="text-2xl font-bold text-gray-900 mb-1">Agent 绑定</h1>
+      <p class="text-sm text-pixiv-gray">按任务类型管理 Agent 的模型绑定、提示词与采样参数</p>
+    </div>
+    <div class="library-actions">
+      <span v-if="aiMessage" class="text-sm font-medium"
+            :class="aiMessageType === 'error' ? 'text-red-600' : (aiMessageType === 'warning' ? 'text-amber-600' : 'text-green-600')">{{ aiMessage }}</span>
+    </div>
+  </div>
+
+  {% include 'dashboard_settings_nav.html' %}
+
+  <section id="ai-agents" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-3">
+      <div>
+        <h2 class="text-xl font-bold text-gray-900">Agent 设置</h2>
+        <p class="text-sm text-pixiv-gray mt-1">创作页会按任务类型默认选择最优 Agent。</p>
+      </div>
+      <div class="flex gap-2 mb-2 flex-wrap">
+        <select v-model.number="seedProviderId" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+          <option :value="0">选择 Provider 初始化默认 Agent</option>
+          <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+        </select>
+        <button @click="seedAgents" :disabled="!seedProviderId" class="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-sm disabled:opacity-50">一键初始化</button>
+      </div>
+      <input v-model="agentForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Agent 名称">
+      <select v-model="agentForm.task_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+        <option value="wizard">创作向导</option>
+        <option value="continue">续写 / 自动写作</option>
+        <option value="rewrite">改写 / 去 AI 味</option>
+        <option value="audit">内容审计</option>
+        <option value="plan">规划 / 构思</option>
+        <option value="extract_summary">摘要提取</option>
+        <option value="resolve_foreshadow">伏笔回收</option>
+        <option value="distill_style">风格蒸馏</option>
+        <option value="distill_novel">小说蒸馏</option>
+        <option value="keyword_clean">关键词清洗</option>
+        <option value="general">通用</option>
+      </select>
+      <div class="grid grid-cols-2 rounded-lg bg-gray-100 p-1 text-sm">
+        <label class="flex items-center justify-center gap-2 px-3 py-2 rounded cursor-pointer" :class="agentForm.binding_type === 'fixed' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'"><input type="radio" v-model="agentForm.binding_type" value="fixed" class="sr-only">固定模型</label>
+        <label class="flex items-center justify-center gap-2 px-3 py-2 rounded cursor-pointer" :class="agentForm.binding_type === 'pool' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'"><input type="radio" v-model="agentForm.binding_type" value="pool" class="sr-only">模型池</label>
+      </div>
+      <div v-if="agentForm.binding_type === 'fixed'" class="space-y-2">
+        <select v-model.number="agentForm.provider_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+          <option :value="0">选择 Provider</option>
+          <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option>
+        </select>
+        <select v-model="agentForm.model" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+          <option value="">使用 Provider 默认模型</option>
+          <option v-for="model in agentProviderModels" :key="model.id" :value="model.model_key">{{ model.display_name || model.model_key }}</option>
+        </select>
+        <input v-model="agentForm.model" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="也可手工输入 model_key">
+      </div>
+      <div v-else class="space-y-2">
+        <select v-model.number="agentForm.model_pool_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+          <option :value="0">选择已启用模型池</option>
+          <option v-for="pool in modelPools.filter(item => item.enabled)" :key="pool.id" :value="pool.id">{{ pool.name }}（{{ pool.members.length }} 个成员）</option>
+        </select>
+        <div class="rounded border border-amber-100 bg-amber-50 p-3 text-xs text-amber-800">失败转移时 Prompt 可能发送给（注意隐私边界）：{{ selectedAgentPoolSummary || '请选择模型池' }}</div>
+      </div>
+      <div>
+        <div class="text-xs font-medium text-gray-600 mb-2">必需能力 required_capabilities</div>
+        <div class="grid grid-cols-2 gap-2 text-xs">
+          <label v-for="capability in capabilityOptions" :key="capability" class="flex items-center gap-2"><input type="checkbox" v-model="agentForm.required_capabilities" :value="capability">{{ capability }}</label>
+        </div>
+      </div>
+      <textarea v-model="agentForm.system_prompt" rows="8" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="System prompt"></textarea>
+      <div class="grid grid-cols-2 gap-3">
+        <input type="number" step="0.1" v-model.number="agentForm.temperature" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="temperature">
+        <input type="number" v-model.number="agentForm.max_tokens" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="max_tokens">
+      </div>
+      <label class="flex items-center gap-2 text-sm text-gray-700">
+        <input type="checkbox" v-model="agentForm.enabled" class="rounded border-gray-300">
+        启用 Agent
+      </label>
+      <div class="flex gap-2 flex-wrap">
+        <button @click="saveAgent" :disabled="!agentBindingValid" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ agentForm.id ? '更新 Agent' : '保存 Agent' }}</button>
+        <button v-if="agentForm.id" @click="resetAgentForm" class="px-4 py-2 bg-gray-100 rounded-lg text-sm">取消编辑</button>
+      </div>
+    </div>
+    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+      <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
+        <h2 class="text-xl font-bold text-gray-900">Agent 列表</h2>
+        <select v-model="agentFilter" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+          <option value="">全部类型</option>
+          <option value="wizard">创作向导</option>
+          <option value="continue">续写 / 自动写作</option>
+          <option value="rewrite">改写</option>
+          <option value="audit">内容审计</option>
+          <option value="plan">规划</option>
+          <option value="distill_style">风格蒸馏</option>
+          <option value="distill_novel">小说蒸馏</option>
+          <option value="keyword_clean">关键词清洗</option>
+          <option value="general">通用</option>
+        </select>
+      </div>
+      <div class="space-y-2 max-h-[70vh] overflow-y-auto pr-1">
+        <div v-for="agent in filteredAgents" :key="agent.id" class="border border-gray-100 rounded-lg p-3 text-sm">
+          <div class="flex items-center justify-between gap-2">
+            <div class="font-semibold text-gray-900 truncate">{{ agent.name }}</div>
+            <span class="text-[10px] px-2 py-0.5 rounded" :class="agent.enabled === false ? 'bg-gray-100 text-gray-500' : 'bg-green-50 text-green-700'">{{ agent.enabled === false ? '停用' : '启用' }}</span>
+          </div>
+          <div class="text-xs text-pixiv-gray mt-1">{{ agent.task_type }} · {{ agent.binding_summary }}</div>
+          <div v-if="agent.required_capabilities && agent.required_capabilities.length" class="text-xs text-pixiv-gray mt-1">能力：{{ agent.required_capabilities.join(', ') }}</div>
+          <div class="flex gap-2 mt-2">
+            <button @click="editAgent(agent)" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">编辑</button>
+            <button @click="deleteAgent(agent.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
+          </div>
+        </div>
+        <p v-if="!filteredAgents.length" class="text-sm text-pixiv-gray text-center py-8">暂无匹配 Agent</p>
+      </div>
+    </div>
+  </section>
+  {# 候选模型链预览。
+     数据来自 GET /api/dashboard/ai/agents/<id>/candidates（只做 resolve_candidates
+     解析，不发起任何真实生成请求），它刻意不回传 Provider 的连接地址、密钥与配置哈希，
+     本页也不许再去别的端点补齐这些字段。
+     这里回答的是「这个 Agent 到底会调哪个模型、按什么顺序」——此前只能等任务跑完
+     去 /dashboard/logs 事后看。 #}
+  <section class="library-card space-y-3" data-hook="agent-candidate-chain">
+    <div class="flex items-start justify-between gap-3 flex-wrap">
+      <div>
+        <h2 class="library-section-title mb-1">候选模型链</h2>
+        <p class="text-xs text-pixiv-gray">按真实路由顺序解析，不会发起任何生成请求</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <select v-model.number="candidateAgentId" @change="loadCandidateChain(candidateAgentId)"
+                class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+          <option :value="0">选择 Agent 查看候选链</option>
+          <option v-for="agent in filteredAgents" :key="agent.id" :value="agent.id">{{ agent.name }}（{{ agent.task_type }}）</option>
+        </select>
+        <button @click="loadCandidateChain(candidateAgentId)" :disabled="!candidateAgentId || candidateChainLoading"
+                class="text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-50">刷新</button>
+      </div>
+    </div>
+
+    <p v-if="candidateChainLoading" class="text-sm text-pixiv-gray">解析中…</p>
+    <p v-else-if="candidateChainError" class="text-sm text-red-600">{{ candidateChainError }}</p>
+    <p v-else-if="!candidateChain" class="text-sm text-pixiv-gray">选择上方任一 Agent，或在左侧点「编辑」，即可看到它实际会依次调用哪些模型。</p>
+    <template v-else>
+      <div class="text-sm font-bold text-gray-900">
+        Agent「{{ candidateChain.agent_name }}」
+        {# 生产实测 0 个模型池、16 个 Agent 全是 fixed 绑定：固定绑定不显示空池区块 #}
+        <span v-if="candidateChain.pool_name" class="font-medium text-pixiv-gray">→ 池「{{ candidateChain.pool_name }}」</span>
+        <span v-else class="font-medium text-pixiv-gray">→ 固定模型（无模型池，失败不转移）</span>
+      </div>
+      <ol v-if="candidateChain.candidates.length" class="space-y-1">
+        <li v-for="candidate in candidateChain.candidates" :key="candidate.order"
+            class="flex items-baseline gap-2 text-sm">
+          <span class="w-6 flex-shrink-0 text-brand-600 font-bold">{{ candidateOrderMark(candidate.order) }}</span>
+          <span class="font-mono text-gray-900 truncate">{{ candidate.provider_name }} / {{ candidate.model_key }}</span>
+          <span class="text-xs text-pixiv-gray flex-shrink-0">（{{ candidateSourceLabel(candidate) }}）</span>
+        </li>
+      </ol>
+      <p v-else class="text-sm text-amber-700">候选链为空：绑定的 Provider 或模型当前不可路由（已停用，或不满足必需能力）。</p>
+      <p class="text-xs text-pixiv-gray">上限：{{ candidateLimitText }}</p>
+      <p v-if="candidateChainTruncated" class="text-xs text-amber-700">候选数超过单个任务的尝试上限，末尾候选实际不会被用到。</p>
+    </template>
+  </section>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  initVueApp({
+    setup() {
+      const { ref, reactive, computed, onMounted } = Vue;
+
+      const providers = ref([]);
+      const providerModels = reactive({});
+      const modelPools = ref([]);
+      const agents = ref([]);
+      const agentFilter = ref('');
+      const seedProviderId = ref(0);
+      const aiMessage = ref('');
+      const aiMessageType = ref('success');
+      const capabilityOptions = ['streaming', 'json', 'vision', 'tools', 'long_context'];
+      const agentForm = reactive({ id: 0, name: '', task_type: 'continue', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0, required_capabilities: [], system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
+      const candidateAgentId = ref(0);
+      const candidateChain = ref(null);
+      const candidateChainError = ref('');
+      const candidateChainLoading = ref(false);
+      // ①..⑯ 覆盖单个任务的 16 次尝试上限；解析结果最多 64 个候选，超出部分退回数字，
+      // 免得越界取到 undefined。
+      const CANDIDATE_ORDER_MARKS = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯';
+
+      const showAiMessage = (msg, type = 'success') => {
+        aiMessage.value = msg;
+        aiMessageType.value = type;
+        setTimeout(() => { aiMessage.value = ''; }, 4000);
+      };
+
+      // 成人润色 Agent 不在这里管理：它属于 fail-closed 子系统，绑定与审查策略
+      // 都在 /dashboard/settings/adult，普通列表里不给编辑/删除入口。
+      const filteredAgents = computed(() => agents.value.filter(
+        agent => agent.task_type !== 'adult_polish' && (!agentFilter.value || agent.task_type === agentFilter.value)
+      ));
+      const agentProviderModels = computed(() => {
+        const catalog = providerModels[agentForm.provider_id];
+        return catalog && Array.isArray(catalog.items) ? catalog.items.filter(model => model.routable) : [];
+      });
+      const agentBindingValid = computed(() => agentForm.binding_type === 'pool' ? agentForm.model_pool_id > 0 : agentForm.provider_id > 0);
+      const selectedAgentPoolSummary = computed(() => {
+        const selected = modelPools.value.find(pool => pool.id === agentForm.model_pool_id);
+        if (!selected) return '';
+        const names = [];
+        const seenProviders = new Set();
+        const seenPools = new Set();
+        let pool = selected;
+        // 最多 8 个池节点（与 ModelRouter 的硬上限一致），顺带防环
+        while (pool && !seenPools.has(pool.id) && seenPools.size < 8) {
+          seenPools.add(pool.id);
+          (pool.members || []).forEach(member => {
+            if (seenProviders.has(member.provider_id)) return;
+            seenProviders.add(member.provider_id);
+            const provider = providers.value.find(item => item.id === member.provider_id);
+            names.push(provider ? provider.name : `Provider #${member.provider_id}`);
+          });
+          pool = pool.fallback_pool_id ? modelPools.value.find(item => item.id === pool.fallback_pool_id) : null;
+        }
+        return names.join('、');
+      });
+      const candidateOrderMark = (order) => CANDIDATE_ORDER_MARKS[Number(order) - 1] || `${order}.`;
+      // 来源要区分主池成员与第 N 级后备池成员：后备池意味着失败后把同一份 Prompt
+      // 送到另一批 Provider，隐私范围随之扩大，运维必须一眼看出来。
+      const candidateSourceLabel = (candidate) => {
+        if (!candidate.pool_id) return '固定绑定';
+        const position = candidate.pool_position ? `成员 ${candidate.pool_position}` : '成员';
+        if (candidate.fallback_depth > 0) {
+          return `第 ${candidate.fallback_depth} 级后备池「${candidate.pool_name}」${position}`;
+        }
+        return `池「${candidate.pool_name}」${position}`;
+      };
+      // 上限一律取响应里的 limits：前端抄一份数字，后端调整硬上限后界面会静默说谎。
+      const candidateLimitText = computed(() => {
+        const limits = candidateChain.value && candidateChain.value.limits;
+        if (!limits) return '';
+        return [
+          `${limits.max_candidate_attempts} 次候选尝试`,
+          `${limits.max_network_requests} 次网络请求`,
+          `${limits.max_resolved_candidates} 个候选`,
+          `${limits.max_pool_nodes} 个池节点`,
+        ].join(' / ');
+      });
+      // 解析出的候选可以比单任务尝试上限更长（最多 64 个），末尾那些永远轮不到。
+      const candidateChainTruncated = computed(() => {
+        const chain = candidateChain.value;
+        if (!chain || !chain.limits) return false;
+        return chain.candidates.length > chain.limits.max_candidate_attempts;
+      });
+      // 只调 /candidates 一个端点：它已经过滤掉 Provider 的连接地址、密钥与配置哈希，
+      // 界面不许再去别处补齐这些字段。
+      const loadCandidateChain = async (agentId) => {
+        const id = Number(agentId || 0);
+        candidateChainError.value = '';
+        if (!id) {
+          candidateChain.value = null;
+          return;
+        }
+        candidateChainLoading.value = true;
+        try {
+          candidateChain.value = await window.aiApi.agentCandidates(id);
+        } catch (e) {
+          candidateChain.value = null;
+          // window.aiApi.request 内部已经用 window.errorText 取过失败原因
+          candidateChainError.value = e.message || '读取候选链失败';
+        } finally {
+          candidateChainLoading.value = false;
+        }
+      };
+      // 读写都走 base.html 的公共层：window.aiApi.request 内部用 window.csrfFetch
+      // （变更类请求自动带 X-CSRF-Token）并用 window.errorText 取失败原因。
+      const aiApi = (url, options) => window.aiApi.request(url, options);
+
+      const loadProviders = async () => {
+        providers.value = await aiApi('/api/dashboard/ai/providers');
+        // 固定绑定的模型下拉需要各 Provider 的可路由模型
+        await Promise.all(providers.value.map(async provider => {
+          try {
+            providerModels[provider.id] = await aiApi(`/api/dashboard/ai/providers/${provider.id}/models`);
+          } catch (e) {
+            if (!providerModels[provider.id]) providerModels[provider.id] = { items: [] };
+          }
+        }));
+      };
+      const loadModelPools = async () => {
+        try {
+          modelPools.value = await aiApi('/api/dashboard/ai/model-pools');
+        } catch (e) {
+          showAiMessage(e.message || '读取模型池失败', 'error');
+        }
+      };
+      const loadAgents = async () => { agents.value = await window.aiApi.agents(); };
+
+      const resetAgentForm = () => Object.assign(agentForm, { id: 0, name: '', task_type: 'continue', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0, required_capabilities: [], system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
+      const editAgent = (agent) => {
+        Object.assign(agentForm, { id: agent.id, name: agent.name || '', task_type: agent.task_type || 'continue', binding_type: agent.binding_type || 'fixed', provider_id: agent.provider_id || 0, model: agent.model || '', model_pool_id: agent.model_pool_id || 0, required_capabilities: [...(agent.required_capabilities || [])], system_prompt: agent.system_prompt || '', temperature: agent.temperature || 0.8, top_p: agent.top_p || 0.9, max_tokens: agent.max_tokens || 4000, context_window: agent.context_window || 16000, enabled: agent.enabled !== false });
+        // 编辑时顺带解析候选链：改绑定前先看清它现在会调哪些模型
+        candidateAgentId.value = agent.id;
+        loadCandidateChain(agent.id);
+      };
+
+      const saveAgent = async () => {
+        try {
+          const payload = { ...agentForm };
+          const id = payload.id;
+          delete payload.id;
+          payload.required_capabilities = [...agentForm.required_capabilities];
+          if (payload.binding_type === 'pool') {
+            delete payload.provider_id;
+            delete payload.model;
+            payload.model_pool_id = Number(agentForm.model_pool_id || 0);
+          } else {
+            delete payload.model_pool_id;
+            payload.provider_id = Number(agentForm.provider_id || 0);
+            payload.model = String(agentForm.model || '').trim() || null;
+          }
+          await aiApi(id ? '/api/dashboard/ai/agents/' + id : '/api/dashboard/ai/agents', { method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+          await loadAgents(); resetAgentForm(); showAiMessage('Agent 已保存');
+          // 改完绑定立刻重解析：候选顺序变了要马上看得到
+          if (candidateAgentId.value) await loadCandidateChain(candidateAgentId.value);
+        } catch (e) { showAiMessage(e.message, 'error'); }
+      };
+      const deleteAgent = async (id) => {
+        if (!confirm('确认删除 Agent？')) return;
+        try {
+          await aiApi('/api/dashboard/ai/agents/' + id, { method: 'DELETE' });
+          await loadAgents();
+          // 删掉的 Agent 不能继续挂在候选链面板上（再刷新会 400）
+          if (candidateAgentId.value === id) { candidateAgentId.value = 0; candidateChain.value = null; }
+          showAiMessage('Agent 已删除');
+        }
+        catch (e) { showAiMessage(e.message, 'error'); }
+      };
+
+      const seedAgents = async () => {
+        if (!seedProviderId.value) return;
+        try {
+          const created = await aiApi('/api/dashboard/ai/agents/seed', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ provider_id: seedProviderId.value }) });
+          await loadAgents(); showAiMessage('已初始化 ' + Object.keys(created || {}).length + ' 个内置 Agent');
+        } catch (e) { showAiMessage(e.message, 'error'); }
+      };
+
+      onMounted(async () => {
+        try {
+          await loadProviders();
+        } catch (e) {
+          showAiMessage(e.message || '读取 Provider 失败', 'error');
+        }
+        loadModelPools();
+        loadAgents().catch(e => showAiMessage(e.message || '读取 Agent 失败', 'error'));
+      });
+
+      return {
+        providers, providerModels, modelPools, agents, agentFilter, seedProviderId,
+        aiMessage, aiMessageType, capabilityOptions, agentForm,
+        filteredAgents, agentProviderModels, agentBindingValid, selectedAgentPoolSummary,
+        candidateAgentId, candidateChain, candidateChainError, candidateChainLoading,
+        candidateLimitText, candidateChainTruncated,
+        candidateOrderMark, candidateSourceLabel, loadCandidateChain,
+        loadProviders, loadModelPools, loadAgents,
+        resetAgentForm, editAgent, saveAgent, deleteAgent, seedAgents,
+      };
+    }
+  });
+</script>
+{% endblock %}

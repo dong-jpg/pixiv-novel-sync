@@ -11,7 +11,11 @@ from pixiv_novel_sync.webapp import SettingsManager, SyncJobManager, SyncJobStat
 
 
 def test_settings_template_exposes_keyword_clean_agent_type():
-    html = Path("src/pixiv_novel_sync/templates/dashboard_settings.html").read_text(encoding="utf-8")
+    """Agent 页必须能选到 keyword_clean：编辑表单与列表筛选各一处。
+
+    设置页拆成五个一级页面后，普通 Agent 的 CRUD 落在 dashboard_settings_agents.html。
+    """
+    html = Path("src/pixiv_novel_sync/templates/dashboard_settings_agents.html").read_text(encoding="utf-8")
 
     assert html.count('<option value="keyword_clean">关键词清洗</option>') == 2
 

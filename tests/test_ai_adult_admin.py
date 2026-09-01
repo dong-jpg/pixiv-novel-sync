@@ -336,7 +336,8 @@ def test_adult_admin_routes_forward_versioned_requests(monkeypatch, tmp_path):
 
 
 def test_settings_exposes_readonly_adult_review_bindings():
-    html = Path("src/pixiv_novel_sync/templates/dashboard_settings.html").read_text(
+    # 设置页拆分后成人润色独立成 /dashboard/settings/adult
+    html = Path("src/pixiv_novel_sync/templates/dashboard_settings_adult.html").read_text(
         encoding="utf-8"
     )
 
@@ -355,7 +356,7 @@ def test_settings_exposes_readonly_adult_review_bindings():
 
 
 def test_settings_allows_disabling_binding_when_policy_state_mismatches():
-    html = Path("src/pixiv_novel_sync/templates/dashboard_settings.html").read_text(
+    html = Path("src/pixiv_novel_sync/templates/dashboard_settings_adult.html").read_text(
         encoding="utf-8"
     )
 
