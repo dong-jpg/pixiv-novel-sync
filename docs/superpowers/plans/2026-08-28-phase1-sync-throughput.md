@@ -29,7 +29,7 @@
 |---|---|---|
 | `src/pixiv_novel_sync/storage/schema.py` | 幂等 DDL 与迁移 | 新增 `_migrate_novel_fts_rowid()` 并在 `init_schema()` 调用 |
 | `src/pixiv_novel_sync/storage/novels.py` | novels 域存储 | `replace_fts` / `delete_novel` 改走 rowid；`list_recent_novels` 搜索改 `SELECT rowid` |
-| `src/pixiv_novel_sync/storage/users.py` | users 域存储 | `delete_user_with_novels` 清 FTS 改 rowid |
+| `src/pixiv_novel_sync/storage/users.py` | users 域存储 | `delete_user` 清 FTS 改 rowid |
 | `src/pixiv_novel_sync/storage/bookmarks.py` | 收藏列表查询 | 搜索改 `SELECT rowid` |
 | `src/pixiv_novel_sync/storage/series.py` | 系列列表查询 | 搜索改 `SELECT rowid` |
 | `src/pixiv_novel_sync/settings.py` | 配置加载 | `SyncSettings` 新增两个字段 |
@@ -310,7 +310,7 @@ git commit -m "fix: 对齐 novel_fts 的 rowid 与 novel_id 并重建历史索�
 
 **Files:**
 - Modify: `src/pixiv_novel_sync/storage/novels.py:380`（`replace_fts`）、`:350`（`delete_novel` 内清 FTS）
-- Modify: `src/pixiv_novel_sync/storage/users.py:326`（`delete_user_with_novels` 内清 FTS）
+- Modify: `src/pixiv_novel_sync/storage/users.py:326`（`delete_user(user_id)` 内清 FTS，方法定义在 `:315`）
 - Test: `tests/test_storage_db.py`
 
 **Interfaces:**
@@ -376,7 +376,7 @@ def test_delete_novel_removes_fts_row(db: Database) -> None:
     assert db.conn.execute("SELECT COUNT(*) FROM novel_fts").fetchone()[0] == 0
 
 
-def test_delete_user_with_novels_removes_fts_rows(db: Database) -> None:
+def test_delete_user_removes_fts_rows(db: Database) -> None:
     db.upsert_user(UserRecord(user_id=7, name="作者甲", account="acc", raw_json="{}"))
     for novel_id in (31415926, 27182818):
         db.upsert_novel(
@@ -401,12 +401,10 @@ def test_delete_user_with_novels_removes_fts_rows(db: Database) -> None:
         )
         db.replace_fts(novel_id, f"标题{novel_id}", "简介", "作者甲", "正文")
 
-    db.delete_user_with_novels(7)
+    db.delete_user(7)
 
     assert db.conn.execute("SELECT COUNT(*) FROM novel_fts").fetchone()[0] == 0
 ```
-
-若 `delete_user_with_novels` 的实际方法名不同，先 `grep -n "def delete_user" src/pixiv_novel_sync/storage/users.py` 确认后改成真实名字。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -442,7 +440,7 @@ Expected: `test_replace_fts_writes_rowid_equal_to_novel_id` FAIL（rowid 是 1 �
                 self.conn.execute("DELETE FROM novel_fts WHERE rowid = ?", (novel_id,))
 ```
 
-`storage/users.py` 的 `delete_user_with_novels` 内清 FTS 那句：
+`storage/users.py` 的 `delete_user` 内清 FTS 那句：
 
 ```python
                 # 走 rowid：见 replace_fts 的注释，按 novel_id 会全表扫描 FTS 索引
