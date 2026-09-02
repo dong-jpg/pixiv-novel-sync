@@ -82,12 +82,26 @@
 
 ## 3. 拆分方案：4 个页面
 
-| 路由 | 模板 | 承载 | markup 约 | 侧栏 |
+| 路由 | 模板 | 承载 | markup 约 | 导航 |
 |---|---|---|---|---|
-| `/dashboard/ai` | `dashboard_ai_projects.html` | 项目列表 + 新建/删除 | 40 行 | 父项落点，**渲染真页面** |
-| `/dashboard/ai/projects/<int:project_id>` | `dashboard_ai_project.html` | overview 三个 section + longform + RawImport 弹窗 | 290 行 | 子项「项目与规划」 |
-| `/dashboard/ai/projects/<int:project_id>/chapters` | `dashboard_ai_chapters.html` | chapters 列表 + 批量 pipeline + chapter 工作区 + chapterDashboard + pipeline modal + 上下文预览弹窗 | 460 行 | 子项「章节与自动写作」 |
-| `/dashboard/ai/projects/<int:project_id>/notes` | `dashboard_ai_notes.html` | foreshadow + states + search | 80 行 | 子项「伏笔与记忆」 |
+| `/dashboard/ai` | `dashboard_ai_projects.html` | 项目列表 + 新建/删除 | 40 行 | **侧栏单条扁平项**，渲染真页面 |
+| `/dashboard/ai/projects/<int:project_id>` | `dashboard_ai_project.html` | overview 三个 section + longform + RawImport 弹窗 | 290 行 | 页内导航「项目与规划」 |
+| `/dashboard/ai/projects/<int:project_id>/chapters` | `dashboard_ai_chapters.html` | chapters 列表 + 批量 pipeline + chapter 工作区 + chapterDashboard + pipeline modal + 上下文预览弹窗 | 460 行 | 页内导航「章节与自动写作」 |
+| `/dashboard/ai/projects/<int:project_id>/notes` | `dashboard_ai_notes.html` | foreshadow + states + search | 80 行 | 页内导航「伏笔与记忆」 |
+
+### 3.0 导航不能照抄设置页的侧栏 children
+
+设置页的五个子页是**全局**的，所以能静态写进 `vue_components.html:NAV_ITEMS` 的 `children`。**AI 的三个子页不行**——它们的路径带 `<project_id>`，侧栏不知道当前是哪个项目，而没开项目时这三条根本无处可去。
+
+因此：
+
+- **侧栏**：`/dashboard/ai` 保持现在的单条扁平项，不加 `children`，一行不改。`isActive` 的前缀匹配（`currentPath.startsWith('/dashboard/ai')`）对所有子页天然生效，且现有路由里没有别的路径以 `/dashboard/ai` 开头（`/dashboard/novels/ai/<id>` 不匹配）。
+- **项目内导航**：新建 Jinja partial `dashboard_ai_project_nav.html`，接收 `project_id` 渲染三条项目内链接，按 `request.path` 精确高亮。与 `dashboard_settings_nav.html` 同型，区别是**带参数**。三个项目内页面各 `{% include %}` 一次。
+- 项目列表页不含这个 partial（没有 project_id 可传）。
+
+两个后果：上一轮那条 `test_sidebar_expands_settings_into_five_subpages`（`test_frontend_library_os.py:493`）不受影响，也**不需要**照抄一份 AI 版；`NAV_ITEMS` 零改动，§7 的步 2 相应缩减为只建 partial。
+
+### 3.1 两个合并决定
 
 两个合并决定：
 
@@ -96,7 +110,7 @@
 
 pipeline 弹窗的 markup 抽成 Jinja partial `dashboard_ai_pipeline_modal.html`（照 `dashboard_ai_output_panel.html` 的既有做法 `{% include %}`），**JS 留在章节页同一个 `setup()` 里**。体积下来了，运行态不变。
 
-### 3.1 按需加载（本次拆分的主要收益）
+### 3.2 按需加载（本次拆分的主要收益）
 
 现状：进任何页面都打 5 个请求，开项目再打 3 个。拆后：
 
@@ -231,11 +245,11 @@ L137 / L151 / L363 三条要求 `docs/frontend-pages.md` 与 `docs/frontend-api-
 
 | 步 | 内容 | 关键约束 |
 |---|---|---|
-| 1 | `ai_web.py` 加 4 个页面路由 + `?project_id=` 302 兼容 | 四条都在 `register_ai_routes` 内，自动继承 `webapp.py:704` 鉴权门；`/dashboard/ai` 必须渲染真页面（陷阱 #6） |
-| 2 | `vue_components.html:NAV_ITEMS` 给 AI 项加 `children` | 复用上一轮的通用机制（`item.href \|\| item.path`、`currentPath === child.path` 精确高亮、`:aria-current`）；`isActive` 的前缀匹配对 `/dashboard/ai` 天然可用（无其他路径以此开头） |
-| 3 | 建 4 个模板 + `dashboard_ai_pipeline_modal.html` partial，删 `dashboard_ai.html` | 每页只加载自己的数据（§3.1）；`{[ ]}` 是 Jinja 变量分隔符 |
-| 4 | 迁移 14 + 4 处测试断言，改 4 个陷阱的断言语义 | **必须与步 3 同一个 commit**，否则一删旧模板就是一片红 |
-| 5 | 新增 §6.4 的 `@click` 导出守卫测试 | 覆盖全部四页 |
+| 1 | 加固 §6.1 的三条公共层断言（剥注释 + 条件式正向） | **独立于拆分，可先落**。落之前它们在现有三页上必须仍绿 |
+| 2 | `ai_web.py` 加 4 个页面路由 + `?project_id=` 302 兼容；建 `dashboard_ai_project_nav.html` partial | 四条都在 `register_ai_routes` 内，自动继承 `webapp.py:704` 鉴权门；`/dashboard/ai` 必须渲染真页面（陷阱 #6）；`NAV_ITEMS` 零改动（§3.0） |
+| 3 | 项目列表页 + 项目页（overview 三 section + longform + RawImport） | 每页只加载自己的数据（§3.2）；`{[ ]}` 是 Jinja 变量分隔符 |
+| 4 | 章节页 + `dashboard_ai_pipeline_modal.html` partial + `beforeunload` 守卫 | pipeline JS 留在同一 `setup()`（§5）；弹窗②区改只读（§4.4） |
+| 5 | 笔记页；**删 `dashboard_ai.html`；迁移 14 + 4 处断言；新增 `@click` 导出守卫** | **必须同一个 commit**，否则一删旧模板就是一片红 |
 | 6 | 更新 `docs/frontend-pages.md`、`frontend-api-contract.md`、`README.md`、`CLAUDE.md` | §6.3 列的四个位置 |
 
 每个模板的 `<script>` 块改完用 `node --check` 校验（先替换 Jinja 占位符）——语法错在 pytest 里抓不到，只会在浏览器里白屏。
@@ -245,7 +259,7 @@ L137 / L151 / L363 三条要求 `docs/frontend-pages.md` 与 `docs/frontend-api-
 - `pytest` 全绿，基线 1427 passed / 4 skipped（本轮应更多）。
 - 四个新路由在**已认证**会话下 HTTP 200；`/dashboard/ai?project_id=<id>` 302 到 `/dashboard/ai/projects/<id>`；不存在的 project_id 返回 404 而非白屏。
 - `grep -rn "dashboard_ai.html" src/ tests/` 除「断言其不存在」外为空。
-- 每页请求数符合 §3.1 的表（用浏览器 network 或 `preview_network` 核对，不是靠读代码推断）。
+- 每页请求数符合 §3.2 的表（用浏览器 network 或 `preview_network` 核对，不是靠读代码推断）。
 - 章节页在 pipeline 运行中触发导航会被 `beforeunload` 拦截。
 - 从 `/dashboard/wizard` 导入项目仍能跳到正确的项目页（§4.5 的闭环）。
 - pipeline 从章节页触发、关闭弹窗后仍在后台跑、重开弹窗能看到进度——**与拆分前行为一致**（§5 的否决前提）。
