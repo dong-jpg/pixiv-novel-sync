@@ -21,7 +21,10 @@
 | `/dashboard/settings/adult` | `src/pixiv_novel_sync/templates/dashboard_settings_adult.html` | 成人润色 Agent、review binding、项目角色 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings/system` | `src/pixiv_novel_sync/templates/dashboard_settings_system.html` | 图片缓存、救援 Token、导出、待删除保留期 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/preferences` | `src/pixiv_novel_sync/templates/dashboard_preferences.html` | 偏好画像与推荐 | 已接入 `library-page` / `library-page-header` |
-| `/dashboard/ai` | `src/pixiv_novel_sync/templates/dashboard_ai.html` | AI 自动写作项目、章节和 Pipeline | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/ai` | `src/pixiv_novel_sync/templates/dashboard_ai_projects.html` | AI 创作项目列表（新建 / 打开 / 删除） | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/ai/projects/<project_id>` | `src/pixiv_novel_sync/templates/dashboard_ai_project.html` | 作品资料、封面、蒸馏档案套用、风格控制、长篇规划 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/ai/projects/<project_id>/chapters` | `src/pixiv_novel_sync/templates/dashboard_ai_chapters.html` | 章节列表与单章工作区、自动写作 Pipeline | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/ai/projects/<project_id>/notes` | `src/pixiv_novel_sync/templates/dashboard_ai_notes.html` | 伏笔追踪、状态记忆、语义检索 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/wizard` | `src/pixiv_novel_sync/templates/dashboard_wizard.html` | 创作向导与蒸馏档案 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/novels?category=ai` | `src/pixiv_novel_sync/templates/dashboard_novels.html` | AI 创作小说库 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/novels?category=rescue` | `src/pixiv_novel_sync/templates/dashboard_novels.html` | 拯救成功小说与系列 | 已接入 `library-page` / `library-page-header` |
@@ -265,17 +268,27 @@ APIs:
 - Preference profile APIs。
 - Recommendation APIs。
 
-### `/dashboard/ai`
+### AI 创作（四个一级页面）
 
-Template: `dashboard_ai.html`
+`dashboard_ai.html` 已删除。原来那一页（项目列表 + 作品资料 + 章节工作区 + 伏笔/状态记忆，靠 `pageMode` 与内层 tab 切换）拆成四个独立路由，各自一个模板、一个 Vue 应用；三个项目内页面共享 Jinja 导航条 `dashboard_ai_project_nav.html`（纯静态链接，高亮取 `request.path`）。侧栏「AI 创作」仍是单个一级项、指向项目列表——项目内导航依赖 `project_id`，没法照设置页那样写成侧栏的静态 children。
 
-用途：AI 自动写作项目、全书规划、章节工作区、伏笔、状态记忆、语义检索和 Pipeline。
+| Route | Template | 内容 |
+|---|---|---|
+| `/dashboard/ai` | `dashboard_ai_projects.html` | 项目列表：新建、打开、删除 |
+| `/dashboard/ai/projects/<project_id>` | `dashboard_ai_project.html` | 作品资料、封面、蒸馏档案套用、风格控制与偏好画像、长篇规划 |
+| `/dashboard/ai/projects/<project_id>/chapters` | `dashboard_ai_chapters.html` | 章节列表、单章工作区、自动写作 Pipeline（弹窗为 `dashboard_ai_pipeline_modal.html`） |
+| `/dashboard/ai/projects/<project_id>/notes` | `dashboard_ai_notes.html` | 伏笔追踪、状态记忆、语义检索 |
+
+`project_id` 由路由注入而非前端解析 URL：模板里写 `const projectId = {[ project_id ]};`（Jinja 定界符是 `{[ ]}`，写成 `{{ }}` 会被 Vue 当插值吃掉，JS 直接语法错）。三个项目内页面都过 `ai_web.py:_require_project`，项目不存在时返回 404，而不是渲染一张所有请求都失败的空白页。
+
+旧深链 `/dashboard/ai?project_id=<id>` 仍然可用（创作向导导入完成后跳的就是它）：值为正整数时 302 到 `/dashboard/ai/projects/<id>`，其余取值（`0`、`abc`、`-1`、空）一律回落到项目列表，不制造 `/dashboard/ai/projects/0` 这种 404 深链。
 
 关键约束：
 
-- 不初始化创作向导会话或蒸馏表单。
-- `/dashboard/ai?project_id=<id>` 可直接打开指定项目。
-- 流式写请求统一附加 CSRF Token。
+- 四个页面都不初始化创作向导会话或蒸馏表单，也不互相内嵌另一页的作用域。
+- 公共层一律取自 `base.html`，页面不自建副本：`window.csrfFetch`、`window.errorText`、`window.streamSSE`、`window.aiApi`。流式写请求统一附加 CSRF Token。
+- 章节页在启动 pipeline 前幂等写回一次风格设定与档案绑定（`saveProjectStyleControl` / `saveProjectProfiles`，单章与批量两个入口都写）。后端 `ai/services/projects.py:_project_style_control_prompt` 读的是**已落库**的项目记录，所以编辑 UI 在项目页、写回动作必须留在章节页。
+- 章节页的伏笔改为在 `openChapter()` 里按需加载（`if (!foreshadows.value.length)`），不在 mount 时拉：既守住首屏 3 个请求的载入预算，又保留到期伏笔提醒。
 
 ### `/dashboard/wizard`
 
@@ -369,8 +382,11 @@ APIs:
 
 | Partial | 被引用于 | 用途 |
 | --- | --- | --- |
-| `dashboard_ai_output_panel.html` | `dashboard_ai.html`、`dashboard_wizard.html` | AI 生成输出面板（流式输出、阶段/进度展示、结果操作） |
+| `dashboard_ai_output_panel.html` | `dashboard_ai_chapters.html`、`dashboard_wizard.html` | AI 生成输出面板（流式输出、阶段/进度展示、结果操作） |
 | `dashboard_ai_source_search.html` | `dashboard_wizard.html` | 创作向导的素材来源搜索面板 |
+| `dashboard_ai_project_nav.html` | `dashboard_ai_project.html`、`dashboard_ai_chapters.html`、`dashboard_ai_notes.html` | 项目内导航条（资料 / 章节 / 笔记），纯静态链接 |
+| `dashboard_ai_pipeline_modal.html` | `dashboard_ai_chapters.html` | 自动写作 Pipeline 弹窗的 markup；对应的 `setup()` 在章节页里 |
+| `dashboard_settings_nav.html` | 五个 `dashboard_settings_*.html` | 设置页导航条，纯静态链接 |
 
 ## Validation checklist
 

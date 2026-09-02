@@ -1,0 +1,116 @@
+{# 章节自动 Pipeline 的全屏弹窗，只有 markup，被 dashboard_ai_chapters.html
+   {% include %} 进 content 块。
+
+   为什么是 partial 而不是独立页面：pipeline 的运行态 100% 活在浏览器内存里
+   （pipelineSteps / streamOutput / 自动重试循环全在前端），而
+   POST /api/dashboard/ai/jobs/<id>/continue 是「换下一个模型重试」，不是
+   「重连一条在跑的流」。导航到独立页 = 丢掉刚触发的流（产出不丢，UI 无法恢复）。
+   所以 JS 留在章节页同一个 setup() 里，这里只抽 markup 减体积。
+
+   ②区（套用蒸馏档案）在拆页后改为**只读**：它和项目页的 profiles section 绑同一个
+   projectMetaForm，两处都能写就成了跨页写冲突。写权限收回项目页一处，这里只展示 +
+   给一条「去项目页修改」链接。 #}
+<div v-if="showPipelineModal" class="fixed inset-0 bg-black/50 z-50 flex items-stretch justify-center p-2 sm:p-6" @click.self="onPipelineModalClose">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-6xl flex flex-col overflow-hidden" style="max-height: calc(100vh - 1rem);">
+    <div class="flex items-center justify-between px-5 py-3 border-b border-gray-100 bg-gradient-to-r from-amber-50 to-rose-50 flex-shrink-0">
+      <div>
+        <h2 class="text-lg font-bold text-gray-900">🚀 自动生成本章 · {{ currentProject?.name }} 第{{ currentChapter?.chapter_number }}章</h2>
+        <p class="text-xs text-pixiv-gray mt-0.5">{{ pipelineRunning ? '正在按顺序执行所选步骤，每步独立保存，失败可单独重试' : '勾选步骤、配置 Agent，然后启动 Pipeline' }}</p>
+      </div>
+      <button @click="onPipelineModalClose" class="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">{{ pipelineRunning ? '后台运行（关闭）' : '关闭' }}</button>
+    </div>
+    <div class="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 overflow-hidden min-h-0">
+      <div class="lg:col-span-4 border-r border-gray-100 overflow-y-auto p-4 space-y-4 bg-gray-50/40">
+        <div>
+          <h3 class="text-sm font-bold text-gray-900 mb-2">① 选择步骤</h3>
+          <div class="grid grid-cols-2 gap-1 text-xs">
+            <label v-for="s in pipelineAllSteps" :key="s.id" class="flex items-center gap-1.5 px-2 py-1.5 rounded bg-white border border-gray-100 hover:border-amber-300">
+              <input type="checkbox" :value="s.id" v-model="pipelineSelectedSteps" :disabled="pipelineRunning" class="rounded">
+              <span class="flex-1">{{ s.label }}</span>
+            </label>
+          </div>
+          <div class="flex gap-2 mt-2">
+            <button @click="pipelineSelectedSteps = pipelineAllSteps.map(s => s.id)" :disabled="pipelineRunning" class="text-xs text-pixiv-gray hover:text-gray-700">全选</button>
+            <button @click="pipelineSelectedSteps = ['continue','deai','summary','state','foreshadow','audit','detect','index']" :disabled="pipelineRunning" class="text-xs text-pixiv-gray hover:text-gray-700">核心集</button>
+            <button @click="pipelineSelectedSteps = []" :disabled="pipelineRunning" class="text-xs text-pixiv-gray hover:text-gray-700">清空</button>
+          </div>
+        </div>
+        <div>
+          <h3 class="text-sm font-bold text-gray-900 mb-2">② 套用蒸馏档案</h3>
+          <div class="space-y-2 text-xs bg-white border border-indigo-100 rounded-lg p-3">
+            <p class="text-pixiv-gray">自动写作会把项目上已选的风格、角色模板和世界观注入上下文。</p>
+            <div class="flex flex-wrap gap-1.5">
+              <span class="px-2 py-1 rounded" :class="projectMetaForm.style_profile_id ? 'bg-indigo-50 text-indigo-700' : 'bg-gray-50 text-pixiv-gray'">风格档案：{{ projectMetaForm.style_profile_id ? '已套用' : '不套用' }}</span>
+              <span class="px-2 py-1 rounded" :class="projectMetaForm.novel_profile_id ? 'bg-purple-50 text-purple-700' : 'bg-gray-50 text-pixiv-gray'">角色 / 世界观：{{ projectMetaForm.novel_profile_id ? '已套用' : '不套用' }}</span>
+              <span class="px-2 py-1 rounded" :class="projectMetaForm.preference_profile_id ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-50 text-pixiv-gray'">偏好画像：{{ projectMetaForm.preference_profile_id ? '已选择' : '未选择' }} / {{ projectMetaForm.preference_injection_strength || 'off' }}</span>
+            </div>
+            <a :href="'/dashboard/ai/projects/' + projectId" class="inline-block text-brand-600 hover:underline">去项目页修改 →</a>
+          </div>
+        </div>
+        <div>
+          <h3 class="text-sm font-bold text-gray-900 mb-2">③ 指定每步 Agent</h3>
+          <div class="space-y-1.5">
+            <div v-for="s in pipelineAllSteps" :key="s.id" class="flex items-center gap-2 text-xs"
+                 :class="pipelineSelectedSteps.includes(s.id) ? '' : 'opacity-40'">
+              <span class="w-20 text-pixiv-gray flex-shrink-0">{{ s.label }}</span>
+              <template v-if="s.id === 'detect' || s.id === 'index'">
+                <span class="flex-1 px-1.5 py-1 text-pixiv-gray italic">{{ s.id === 'detect' ? '规则检测，无需 Agent' : 'TFIDF 索引，无需 Agent' }}</span>
+              </template>
+              <template v-else>
+                <select v-model.number="pipelineAgentIds[s.id]" :disabled="pipelineRunning || !pipelineSelectedSteps.includes(s.id)" class="flex-1 px-1.5 py-1 border border-gray-200 rounded bg-white">
+                  <option :value="0">默认（自动选择）</option>
+                  <option v-for="a in pipelineAgentsFor(s.id)" :key="a.id" :value="a.id">{{ a.name }}</option>
+                </select>
+              </template>
+            </div>
+          </div>
+        </div>
+        <div class="space-y-2">
+          <button v-if="!pipelineRunning" @click="startChapterPipeline" :disabled="!currentChapter || !pipelineSelectedSteps.length" class="w-full px-4 py-2.5 bg-amber-500 text-white rounded-lg text-sm font-bold disabled:opacity-50">▶ 启动 Pipeline</button>
+          <div v-if="!pipelineRunning" class="grid grid-cols-2 gap-2">
+            <button @click="runSingleStep('extract-summary')" :disabled="!currentChapter" class="px-3 py-1.5 bg-blue-50 text-blue-700 border border-blue-200 rounded text-xs font-medium hover:bg-blue-100 disabled:opacity-50">📝 提取摘要</button>
+            <button @click="runSingleStep('polish')" :disabled="!currentChapter" class="px-3 py-1.5 bg-purple-50 text-purple-700 border border-purple-200 rounded text-xs font-medium hover:bg-purple-100 disabled:opacity-50">✨ 润色</button>
+          </div>
+          <p v-else class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">运行中…右侧可看到实时输出。已完成的步骤已经独立写库，即使后续失败也不会丢。关闭弹窗只是转后台，不会中断；但离开本页会丢掉进度显示。</p>
+        </div>
+        <div v-if="pipelineSteps.length">
+          <h3 class="text-sm font-bold text-gray-900 mb-2">④ 进度</h3>
+          <div class="space-y-1.5">
+            <div v-for="(s, i) in pipelineSteps" :key="s.name + i" class="bg-white border border-gray-100 rounded-lg px-3 py-2 text-xs">
+              <div class="flex items-center gap-2">
+                <span class="w-5 h-5 inline-flex items-center justify-center rounded text-[10px] font-bold flex-shrink-0"
+                      :class="{
+                        'bg-gray-100 text-gray-400': s.status === 'pending',
+                        'bg-blue-500 text-white animate-pulse': s.status === 'running',
+                        'bg-green-500 text-white': s.status === 'done',
+                        'bg-yellow-400 text-yellow-900': s.status === 'skipped',
+                        'bg-red-500 text-white': s.status === 'failed',
+                      }">{{ i + 1 }}</span>
+                <span class="flex-1 font-medium text-gray-900">{{ s.label }}</span>
+                <span class="text-pixiv-gray">{{ s.statusLabel }}</span>
+                <button v-if="s.status === 'failed' || s.status === 'skipped'" @click="retryPipelineStep(s.name)" :disabled="pipelineRunning" class="px-1.5 py-0.5 bg-blue-50 text-blue-600 border border-blue-100 rounded text-[10px] hover:bg-blue-100 disabled:opacity-50" title="只重跑这一步">🔁 重试</button>
+              </div>
+              <div v-if="s.error" class="mt-1 text-[11px] text-red-600 break-all">{{ s.error }}</div>
+              <div v-else-if="s.reason" class="mt-1 text-[11px] text-pixiv-gray">已跳过：{{ s.reason }}</div>
+              <div v-else-if="s.meta && Object.keys(s.meta).length" class="mt-1 text-[11px] text-pixiv-gray">{{ formatStepMeta(s.meta) }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="lg:col-span-8 flex flex-col overflow-hidden">
+        <div class="px-5 py-2 border-b border-gray-100 flex items-center gap-3 flex-shrink-0">
+          <span class="text-sm font-bold text-gray-900">实时输出</span>
+          <span v-if="pipelineCurrentStep" class="text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-100">{{ pipelineStepLabel(pipelineCurrentStep) }} 中</span>
+          <span v-if="streamOutput" class="text-xs text-pixiv-gray ml-auto">{{ streamOutput.length.toLocaleString() }} 字</span>
+          <button @click="streamOutput = ''" :disabled="pipelineRunning" class="text-xs text-pixiv-gray hover:text-gray-700 disabled:opacity-30">清空</button>
+        </div>
+        <pre ref="pipelineOutputRef" class="flex-1 min-h-[520px] max-h-[calc(100vh-12rem)] whitespace-pre-wrap text-sm text-gray-800 font-serif overflow-y-auto bg-gray-50 p-4 border-0 m-0">{{ streamOutput || (pipelineRunning ? '等待输出...' : '点击左侧「启动 Pipeline」开始') }}</pre>
+        <div class="px-5 py-2 border-t border-gray-100 flex items-center gap-2 flex-shrink-0 flex-wrap">
+          <span class="text-xs text-pixiv-gray">所有产出已独立保存到章节，离开本页不保留输出</span>
+          <button v-if="streamOutput" @click="copyPipelineOutput" class="ml-auto text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">复制</button>
+          <button v-if="streamOutput" @click="scrollPipelineOutputBottom" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">↓ 底部</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

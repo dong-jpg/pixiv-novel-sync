@@ -1,0 +1,343 @@
+{% extends "base.html" %}
+
+{% block title %}伏笔与记忆 - Pixiv 小说同步器{% endblock %}
+
+{% block content %}
+{# 项目内第三页：伏笔追踪 + 状态记忆 + 语义检索。
+
+   为什么这三块合成一页而不是三页：它们都是「长篇一致性」的只读/低频写工具，
+   共享同一份 chapters（伏笔的到期判断要章节总数，检索结果要章节号），
+   拆开就要三份 loadChapters。三块纵向堆叠，不再套内层 tab —— 内层 tab 是
+   dashboard_ai.html 里那七个 tab 的病根。
+
+   AI 自动回收伏笔（autoResolveForeshadows）留在这一页：它和章节 pipeline 的
+   foreshadow 步骤打的是同一个端点，但这里是「整本回顾」的入口，章节页那条是
+   「写完这一章顺手回收」，两者的默认参数不同（这里不带 chapter_id）。
+
+   Jinja 变量定界符是 {[ ]}（Vue 占用了 {{ }}）。 #}
+<div class="library-page px-4 sm:px-6 lg:px-8 py-6 max-w-7xl mx-auto space-y-4" data-page="ai-notes">
+  <div class="library-page-header sr-only"><h1>伏笔与记忆</h1></div>
+
+  <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">{{ currentProject?.name || '伏笔与记忆' }}</h1>
+      <p class="text-sm text-pixiv-gray mt-1">伏笔追踪 · 状态记忆 · 语义检索</p>
+    </div>
+    <div class="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 max-w-xl">
+      你选择的文本会发送到当前 Agent 绑定的 AI API，请确认 API 服务商可信。
+    </div>
+  </div>
+
+  {% include 'dashboard_ai_project_nav.html' %}
+
+  <div v-if="message" class="px-4 py-3 rounded-lg text-sm" :class="messageType === 'error' ? 'bg-red-50 text-red-700 border border-red-100' : (messageType === 'warning' ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-green-50 text-green-700 border border-green-100')">
+    {{ message }}
+  </div>
+  <div v-if="toastMessage" class="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-lg shadow-lg text-sm max-w-sm" :class="toastType === 'error' ? 'bg-red-600 text-white' : (toastType === 'warning' ? 'bg-amber-500 text-white' : 'bg-green-600 text-white')">
+    {{ toastMessage }}
+  </div>
+
+  <!-- 伏笔追踪 -->
+  <section class="library-card">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="font-bold text-gray-900">伏笔追踪</h2>
+      <div class="flex gap-2 flex-wrap">
+        <button @click="autoResolveForeshadows" :disabled="autoResolving" class="text-xs px-3 py-1.5 bg-purple-50 text-purple-700 border border-purple-200 rounded-lg hover:bg-purple-100 disabled:opacity-50">🤖 AI自动回收</button>
+        <button @click="openRawImportModal('foreshadow')" class="text-xs px-3 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg hover:bg-indigo-100">导入原始输出</button>
+        <button @click="showForeshadowForm = !showForeshadowForm" class="text-xs px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg">添加伏笔</button>
+      </div>
+    </div>
+    <div class="flex gap-2 mb-3 flex-wrap">
+      <button v-for="f in ['all','pending','approaching','resolved']" :key="f" @click="foreshadowFilter = f"
+        class="text-xs px-2 py-1 rounded" :class="foreshadowFilter === f ? 'bg-brand-500 text-white' : 'bg-gray-100 text-gray-600'">
+        {{ {all:'全部',pending:'待回收',approaching:'即将到期',resolved:'已回收'}[f] }}
+      </button>
+    </div>
+    <div v-if="showForeshadowForm" class="border border-amber-100 bg-amber-50 rounded-lg p-3 mb-3 space-y-2">
+      <input v-model="newForeshadow.description" class="w-full px-3 py-2 border border-amber-200 rounded-lg text-sm" placeholder="伏笔描述">
+      <div class="grid grid-cols-3 gap-2">
+        <input type="number" v-model.number="newForeshadow.planted_chapter" class="px-2 py-1.5 border border-amber-200 rounded text-xs" placeholder="埋设章节">
+        <input type="number" v-model.number="newForeshadow.target_resolve_chapter" class="px-2 py-1.5 border border-amber-200 rounded text-xs" placeholder="目标回收章节">
+        <select v-model="newForeshadow.importance" class="px-2 py-1.5 border border-amber-200 rounded text-xs">
+          <option value="high">高</option><option value="normal">中</option><option value="low">低</option>
+        </select>
+      </div>
+      <button @click="addForeshadow" class="px-3 py-1.5 bg-amber-500 text-white rounded text-xs">保存</button>
+    </div>
+    <div class="space-y-2">
+      <div v-for="fs in filteredForeshadows" :key="fs.id" class="border rounded-lg p-2 text-sm" :class="fs.status === 'resolved' ? 'border-green-200 bg-green-50' : (fs.target_resolve_chapter && fs.target_resolve_chapter <= (chapters.length || 0) ? 'border-red-200 bg-red-50' : 'border-gray-100')">
+        <div class="flex items-center justify-between">
+          <span>{{ fs.description }}</span>
+          <div class="flex gap-1">
+            <button v-if="fs.status === 'pending'" @click="resolveForeshadow(fs.id)" class="text-xs px-2 py-0.5 rounded bg-green-100 text-green-700">标记回收</button>
+            <button @click="deleteForeshadow(fs.id)" class="text-xs px-2 py-0.5 rounded bg-red-50 text-red-600">删除</button>
+          </div>
+        </div>
+        <div class="text-xs text-pixiv-gray mt-1">
+          <span v-if="fs.planted_chapter">第{{ fs.planted_chapter }}章埋设</span>
+          <span v-if="fs.target_resolve_chapter"> · 目标第{{ fs.target_resolve_chapter }}章回收</span>
+          <span class="ml-2 px-1.5 py-0.5 rounded" :class="{'bg-red-100 text-red-700': fs.importance === 'high', 'bg-gray-100': fs.importance === 'normal', 'bg-blue-50 text-blue-600': fs.importance === 'low'}">{{ fs.importance }}</span>
+        </div>
+      </div>
+      <p v-if="!filteredForeshadows.length" class="text-sm text-pixiv-gray text-center py-6">暂无符合条件的伏笔</p>
+    </div>
+    <pre v-if="streamOutput" class="mt-3 whitespace-pre-wrap text-xs text-gray-700 bg-gray-50 rounded-lg p-3 max-h-64 overflow-y-auto">{{ streamOutput }}</pre>
+  </section>
+
+  <!-- 状态记忆 -->
+  <section class="library-card space-y-3">
+    <h2 class="font-bold text-gray-900 text-sm">项目状态记忆</h2>
+    <p class="text-xs text-pixiv-gray">这些状态会作为上下文注入自动写作，帮助 AI 保持角色、剧情、世界观一致。章节页的「自动更新状态」写的就是这里。</p>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
+      <div v-for="(label, key) in {character_state:'角色状态', plot_progress:'剧情进展', world_state:'世界观'}" :key="key">
+        <label class="block text-xs font-medium text-pixiv-gray mb-1">{{ label }}</label>
+        <textarea v-model="projectStates[key]" rows="8" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" :placeholder="'记录' + label + '...'"></textarea>
+      </div>
+    </div>
+    <button @click="saveProjectStates" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">保存状态</button>
+  </section>
+
+  <!-- 语义检索 -->
+  <section class="library-card space-y-3">
+    <h2 class="font-bold text-gray-900 text-sm">语义搜索</h2>
+    <div class="flex gap-2 max-w-2xl">
+      <input v-model="searchQuery" class="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="搜索历史片段..." @keyup.enter="searchProject">
+      <button @click="searchProject" class="px-3 py-2 bg-gray-100 rounded-lg text-xs">搜索</button>
+    </div>
+    <div v-if="searchResults.length" class="space-y-2 max-h-96 overflow-auto">
+      <div v-for="r in searchResults" :key="r.content" class="border border-gray-100 rounded p-2 text-xs">
+        <div class="flex items-center justify-between text-pixiv-gray mb-1">
+          <span>第{{ r.chapter_number }}章 · {{ r.entry_type }}</span>
+          <span>{{ (r.score * 100).toFixed(0) }}%</span>
+        </div>
+        <div class="text-gray-700">{{ r.content.substring(0, 150) }}</div>
+      </div>
+    </div>
+    <p v-else class="text-xs text-pixiv-gray">输入关键词搜索已索引的章节片段。只有点过「索引入库」的章节才在检索范围内。</p>
+  </section>
+</div>
+
+<!-- 原始输出导入弹窗：伏笔回收流被截断时的兜底入口 -->
+<div v-if="showRawImportModal" class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" @click.self="showRawImportModal = false">
+  <div class="bg-white rounded-xl shadow-xl max-w-3xl w-full p-5 space-y-4 max-h-[90vh] flex flex-col">
+    <div>
+      <h3 class="text-lg font-bold text-gray-900">导入伏笔回收原始输出</h3>
+      <p class="text-xs text-pixiv-gray mt-1">可粘贴模型原始输出，也可只填 job_id 从任务日志读取 output_text。</p>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div>
+        <label class="block text-xs font-medium text-pixiv-gray mb-1">job_id（可选）</label>
+        <input v-model="rawImportJobId" class="w-full px-3 py-2 border border-gray-200 rounded text-sm" placeholder="任务日志里的 job_id">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-pixiv-gray mb-1">章节 ID</label>
+        <select v-model.number="rawImportChapterId" class="w-full px-3 py-2 border border-gray-200 rounded text-sm">
+          <option :value="0">请选择章节</option>
+          <option v-for="ch in chapters" :key="ch.id" :value="ch.id">第{{ ch.chapter_number }}章 {{ ch.title || '未命名' }}</option>
+        </select>
+      </div>
+    </div>
+    <div class="flex-1 min-h-0">
+      <label class="block text-xs font-medium text-pixiv-gray mb-1">原始输出（可选，优先于 job_id）</label>
+      <textarea v-model="rawImportText" rows="14" class="w-full px-3 py-2 border border-gray-200 rounded text-xs font-mono resize-none" placeholder="粘贴 JSON / ```json fenced 输出 / 带说明文字的模型输出"></textarea>
+    </div>
+    <div class="flex justify-end gap-2">
+      <button @click="showRawImportModal = false" class="px-3 py-1.5 bg-gray-100 rounded text-sm">取消</button>
+      <button @click="confirmRawImport" :disabled="rawImporting || (!rawImportText.trim() && !rawImportJobId.trim())" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm disabled:opacity-50">{{ rawImporting ? '导入中…' : '确认导入' }}</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  window.initVueApp({
+    setup() {
+      const { ref, reactive, computed, onMounted } = Vue;
+      const projectId = {[ project_id ]};
+
+      const message = ref('');
+      const messageType = ref('success');
+      const toastMessage = ref('');
+      const toastType = ref('success');
+      let toastTimer = null;
+      const streamOutput = ref('');
+      const currentJobId = ref('');
+
+      const currentProject = ref(null);
+      const chapters = ref([]);
+      const foreshadows = ref([]);
+      const foreshadowFilter = ref('all');
+      const showForeshadowForm = ref(false);
+      const newForeshadow = reactive({ description: '', planted_chapter: null, target_resolve_chapter: null, importance: 'normal' });
+      const autoResolving = ref(false);
+      const projectStates = reactive({ character_state: '', plot_progress: '', world_state: '' });
+      const searchQuery = ref('');
+      const searchResults = ref([]);
+      const showRawImportModal = ref(false);
+      const rawImportText = ref('');
+      const rawImportJobId = ref('');
+      const rawImportChapterId = ref(0);
+      const rawImporting = ref(false);
+
+      // 「即将到期」= 待回收且目标章节在总章数 +2 以内，和章节页的到期提醒同一口径
+      const filteredForeshadows = computed(() => {
+        if (foreshadowFilter.value === 'all') return foreshadows.value;
+        if (foreshadowFilter.value === 'approaching') {
+          const cn = chapters.value.length;
+          return foreshadows.value.filter(f => f.status === 'pending' && f.target_resolve_chapter && f.target_resolve_chapter <= cn + 2);
+        }
+        return foreshadows.value.filter(f => f.status === foreshadowFilter.value);
+      });
+
+      function showMessage(text, type = 'success') {
+        message.value = text;
+        messageType.value = type;
+        toastMessage.value = text;
+        toastType.value = type;
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => { toastMessage.value = ''; }, 3200);
+        setTimeout(() => { message.value = ''; }, 4000);
+      }
+      // 请求、错误文案与 SSE 解析全部走 base.html 的公共层（window.csrfFetch /
+      // window.errorText / window.streamSSE / window.aiApi），本页不再自建副本。
+      const api = (url, options) => window.aiApi.request(url, options);
+      // 偏好画像的编辑 UI 在项目页，这里直接从项目记录取，省掉一次 profiles 请求
+      function preferencePayload(extra = {}) {
+        return {
+          ...extra,
+          preference_profile_id: currentProject.value?.preference_profile_id || null,
+          preference_injection_strength: currentProject.value?.preference_injection_strength || 'off',
+        };
+      }
+      async function loadProject() {
+        try { currentProject.value = await api('/api/dashboard/ai/projects/' + projectId); }
+        catch (e) { showMessage(e.message || '读取项目失败', 'error'); }
+      }
+      async function loadChapters() {
+        try { chapters.value = await api('/api/dashboard/ai/projects/' + projectId + '/chapters'); }
+        catch { chapters.value = []; }
+      }
+      async function loadForeshadows() {
+        try { foreshadows.value = await api('/api/dashboard/ai/projects/' + projectId + '/foreshadows'); }
+        catch { foreshadows.value = []; }
+      }
+      async function loadProjectStates() {
+        try {
+          const states = await api('/api/dashboard/ai/projects/' + projectId + '/states');
+          projectStates.character_state = states.character_state || '';
+          projectStates.plot_progress = states.plot_progress || '';
+          projectStates.world_state = states.world_state || '';
+        } catch { Object.assign(projectStates, { character_state: '', plot_progress: '', world_state: '' }); }
+      }
+      async function saveProjectStates() {
+        try {
+          for (const [key, val] of Object.entries(projectStates)) {
+            if (val.trim()) await api('/api/dashboard/ai/projects/' + projectId + '/states/' + key, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ content: val }) });
+          }
+          showMessage('状态已保存');
+        } catch (e) { showMessage(e.message, 'error'); }
+      }
+
+      async function addForeshadow() {
+        if (!newForeshadow.description.trim()) { showMessage('伏笔描述不能为空', 'error'); return; }
+        try {
+          await api('/api/dashboard/ai/foreshadows', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ ...newForeshadow, project_id: projectId }) });
+          Object.assign(newForeshadow, { description: '', planted_chapter: null, target_resolve_chapter: null, importance: 'normal' });
+          showForeshadowForm.value = false;
+          await loadForeshadows();
+        } catch (e) { showMessage(e.message, 'error'); }
+      }
+      async function resolveForeshadow(id) {
+        try { await api('/api/dashboard/ai/foreshadows/' + id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ status: 'resolved', resolved_chapter: chapters.value.length }) }); await loadForeshadows(); }
+        catch (e) { showMessage(e.message, 'error'); }
+      }
+      async function deleteForeshadow(id) {
+        if (!confirm('确认删除此伏笔？')) return;
+        try { await api('/api/dashboard/ai/foreshadows/' + id, { method: 'DELETE' }); await loadForeshadows(); }
+        catch (e) { showMessage(e.message, 'error'); }
+      }
+      // 整本回顾式回收：不带 chapter_id，让后端从全书上下文里判断哪些伏笔已经落地。
+      // 章节页 pipeline 的 foreshadow 步骤是「写完这一章顺手回收」，两者参数不同。
+      async function autoResolveForeshadows() {
+        if (autoResolving.value) return;
+        autoResolving.value = true;
+        streamOutput.value = '';
+        try {
+          await window.streamSSE('/api/dashboard/ai/projects/' + projectId + '/foreshadows/auto-resolve/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(preferencePayload({ project_id: projectId })),
+          }, {
+            onEvent: async (event, data) => {
+              if (event === 'metadata') {
+                currentJobId.value = data.job_id || '';
+              } else if (event === 'delta') {
+                streamOutput.value += data.text || '';
+              } else if (event === 'error') {
+                throw new Error(data.message || '回收失败');
+              } else if (event === 'done') {
+                showMessage('伏笔自动回收完成', 'success');
+                await loadForeshadows();
+              }
+            },
+          });
+        } catch (e) {
+          showMessage(e.message, 'error');
+        } finally {
+          autoResolving.value = false;
+        }
+      }
+      async function searchProject() {
+        if (!searchQuery.value.trim()) return;
+        try { searchResults.value = await api('/api/dashboard/ai/projects/' + projectId + '/search?q=' + encodeURIComponent(searchQuery.value)); }
+        catch (e) { showMessage(e.message, 'error'); searchResults.value = []; }
+      }
+      // 本页只有 foreshadow 一种导入类型（全书规划的两种在项目页），
+      // 所以不再有 rawImportType 分支。
+      function openRawImportModal() {
+        rawImportText.value = '';
+        rawImportJobId.value = '';
+        rawImportChapterId.value = 0;
+        showRawImportModal.value = true;
+      }
+      async function confirmRawImport() {
+        rawImporting.value = true;
+        try {
+          const payload = {};
+          if (rawImportText.value.trim()) payload.output_text = rawImportText.value;
+          if (rawImportJobId.value.trim()) payload.job_id = rawImportJobId.value.trim();
+          const chapterId = rawImportChapterId.value;
+          if (!chapterId) throw new Error('请选择章节');
+          await api('/api/dashboard/ai/projects/' + projectId + '/foreshadows/auto-resolve/import-output', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ ...payload, chapter_id: chapterId }),
+          });
+          await loadForeshadows();
+          showRawImportModal.value = false;
+          rawImportText.value = ''; rawImportJobId.value = '';
+          showMessage('原始输出已导入');
+        } catch (e) { showMessage(e.message, 'error'); }
+        finally { rawImporting.value = false; }
+      }
+
+      onMounted(async () => {
+        // 四个请求：项目 + 章节（伏笔到期判断与检索结果都要章节号）+ 伏笔 + 状态
+        await Promise.all([loadProject(), loadChapters(), loadForeshadows(), loadProjectStates()]);
+      });
+
+      // setup() 的返回值是模板唯一的渲染作用域，漏一个名字就是点了没反应
+      return {
+        projectId, message, messageType, toastMessage, toastType, streamOutput, currentJobId,
+        currentProject, chapters, foreshadows, foreshadowFilter, filteredForeshadows,
+        showForeshadowForm, newForeshadow, autoResolving,
+        addForeshadow, resolveForeshadow, deleteForeshadow, autoResolveForeshadows,
+        projectStates, saveProjectStates,
+        searchQuery, searchResults, searchProject,
+        showRawImportModal, rawImportText, rawImportJobId, rawImportChapterId, rawImporting,
+        openRawImportModal, confirmRawImport,
+      };
+    }
+  });
+</script>
+{% endblock %}

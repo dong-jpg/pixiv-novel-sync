@@ -189,7 +189,7 @@ class TasksMixin:
             }
         return stats
 
-    # AI 创作任务的 task_type → 中文名映射（与前端 dashboard_ai.html 的 JOB_TYPE_LABELS 对齐）
+    # AI 创作任务的 task_type → 中文名映射（与前端 dashboard_logs.html 的 aiTaskLabel 对齐）
     _AI_TASK_LABELS = {
         "chapter_continue": "自动生成章节",
         "chapter_pipeline": "自动写作 Pipeline",

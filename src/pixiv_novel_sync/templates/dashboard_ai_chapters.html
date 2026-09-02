@@ -1,0 +1,1075 @@
+{% extends "base.html" %}
+
+{% block title %}章节与自动写作 - Pixiv 小说同步器{% endblock %}
+
+{% block content %}
+{# 项目内第二页：章节列表 + 批量 pipeline + 单章工作区 + 章节产出面板。
+
+   拆分前这是 dashboard_ai.html 的 projectDetailTab === 'chapters' 与 'chapter'
+   两块，加上 pipeline 弹窗。三者是设计文档 §2.2 认定的「强耦合三角」：共享
+   currentChapter / chapters / streamOutput / pipelineSteps / pipelineRunning /
+   pipelineSelectedSteps / pipelineAgentIds，openChapter ↔ backToChapterList ↔
+   adjacentChapter 在列表与工作区之间来回跳，startChapterPipeline 与
+   startBatchChapterPipeline 共用同一套步骤配置与 agent 映射。拆开就要复制这一整套。
+
+   当前章节不进 URL 路径段（§4.2）：上一章/下一章是连续跳转，每跳一次全量重载会
+   打断 pipeline。改成 ?chapter=<id> 可选深链 + history.replaceState 同步。
+
+   页面装载 3 个请求（§3.2）：agents + project + chapters。伏笔列表改为**打开某一章
+   时**才拉（工作区的到期提醒需要它，列表视图不需要），所以装载请求数不变。 #}
+<div class="library-page px-4 sm:px-6 lg:px-8 py-6 max-w-7xl mx-auto space-y-4" data-page="ai-chapters">
+  <div class="library-page-header sr-only"><h1>章节与自动写作</h1></div>
+  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+    <div class="min-w-0">
+      <h1 class="text-2xl font-bold text-gray-900 truncate">{{ currentProject?.name || '章节' }}</h1>
+      <p class="text-sm text-pixiv-gray mt-1">章节列表 · 单章续写 · 自动 Pipeline</p>
+    </div>
+    <div class="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 max-w-xl">
+      你选择的文本会发送到当前 Agent 绑定的 AI API，请确认 API 服务商可信。
+    </div>
+  </div>
+
+  {% include 'dashboard_ai_project_nav.html' %}
+
+  <div v-if="message" class="px-4 py-3 rounded-lg text-sm" :class="messageType === 'error' ? 'bg-red-50 text-red-700 border border-red-100' : (messageType === 'warning' ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-green-50 text-green-700 border border-green-100')">
+    {{ message }}
+  </div>
+
+  <div v-if="toastMessage" class="fixed right-4 bottom-20 lg:bottom-6 z-[120] max-w-sm px-4 py-3 rounded-xl shadow-xl border text-sm flex items-start gap-2"
+       :class="toastType === 'error' ? 'bg-red-50 text-red-800 border-red-200' : (toastType === 'warning' ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-green-50 text-green-800 border-green-200')">
+    <span class="font-bold">{{ toastType === 'error' ? '!' : (toastType === 'warning' ? '!' : '✓') }}</span>
+    <span>{{ toastMessage }}</span>
+  </div>
+
+  <!-- ═══ 章节列表 ═══ -->
+  <section v-if="!currentChapter" class="library-card space-y-3">
+    <div class="flex items-center justify-between gap-3 flex-wrap">
+      <div>
+        <h2 class="font-bold text-gray-900">章节自动写作</h2>
+        <p class="text-xs text-pixiv-gray mt-1">点章节进入工作区；勾选多章可批量跑 Pipeline。规划章节在「项目与规划」页生成。</p>
+      </div>
+      <button @click="createChapter" class="px-3 py-1.5 bg-brand-500 text-white rounded-lg text-sm whitespace-nowrap">新建空白章节</button>
+    </div>
+
+    <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 space-y-2">
+      <div class="flex items-center gap-2 flex-wrap text-xs">
+        <span class="font-medium text-amber-800">已选择 {{ batchSelectedChapterIds.length }} / {{ chapters.length }} 章</span>
+        <button @click="selectEmptyChapters" :disabled="batchPipelineRunning" class="px-2 py-1 bg-white border border-amber-200 rounded text-amber-700 hover:bg-amber-100 disabled:opacity-50">选中未生成</button>
+        <button @click="selectAllChapters" :disabled="batchPipelineRunning" class="px-2 py-1 bg-white border border-amber-200 rounded text-amber-700 hover:bg-amber-100 disabled:opacity-50">全选</button>
+        <button @click="clearBatchSelection" :disabled="batchPipelineRunning" class="px-2 py-1 bg-white border border-amber-200 rounded text-amber-700 hover:bg-amber-100 disabled:opacity-50">清空</button>
+        <button @click="startBatchChapterPipeline" :disabled="batchPipelineRunning || !batchSelectedChapterIds.length" class="px-3 py-1 bg-amber-500 text-white rounded font-medium disabled:opacity-50">{{ batchPipelineRunning ? '批量生成中…' : '批量跑 Pipeline' }}</button>
+        <button @click="generateMissingChapters" :disabled="batchPipelineRunning" class="px-3 py-1 bg-white border border-amber-300 rounded text-amber-800 hover:bg-amber-100 disabled:opacity-50">一键补全未生成</button>
+      </div>
+      <p v-if="batchPipelineRunning || batchPipelineProgress.total" class="text-xs text-amber-700">
+        {{ batchPipelineProgress.currentLabel || '准备开始' }} · 成功 {{ batchPipelineProgress.succeeded }} / 失败 {{ batchPipelineProgress.failed }} / 共 {{ batchPipelineProgress.total }}
+      </p>
+      <p class="text-[11px] text-amber-700">批量运行使用弹窗里配置的步骤与 Agent；每章每步独立写库，中途失败不回滚。</p>
+    </div>
+
+    <div class="divide-y divide-gray-50">
+      <div v-for="ch in chapters" :key="ch.id" class="flex items-center gap-3 py-2.5 hover:bg-gray-50 rounded-lg px-2 cursor-pointer" @click="openChapter(ch)">
+        <input type="checkbox" :checked="batchSelectedChapterIds.includes(ch.id)" @click.stop="toggleBatchChapter(ch.id)" class="rounded flex-shrink-0">
+        <div class="min-w-0 flex-1">
+          <div class="text-sm font-medium text-gray-900 truncate">第{{ ch.chapter_number }}章 {{ ch.title || '未命名' }}</div>
+          <div class="text-xs text-pixiv-gray mt-0.5">{{ chapterPipelineSummary(ch) }}</div>
+        </div>
+        <span class="text-xs text-pixiv-gray flex-shrink-0">{{ ch.word_count || 0 }} 字</span>
+        <span class="text-[10px] px-1.5 py-0.5 rounded flex-shrink-0" :class="chapterGenerated(ch) ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'">{{ chapterGenerated(ch) ? '有正文' : '空' }}</span>
+        <button @click.stop="deleteChapter(ch.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100 flex-shrink-0">删除</button>
+      </div>
+    </div>
+    <p v-if="!chapters.length" class="text-sm text-pixiv-gray text-center py-8">暂无章节。可以点「新建空白章节」，或先去「项目与规划」页生成全书规划再批量建章。</p>
+  </section>
+
+  <!-- ═══ 单章工作区 ═══ -->
+  <div v-else :key="currentChapter?.id" class="space-y-4">
+    <div class="flex items-center justify-between gap-3 flex-wrap">
+      <div class="flex items-center gap-2 text-sm text-pixiv-gray">
+        <span class="text-gray-900 font-medium">第{{ currentChapter?.chapter_number }}章 {{ currentChapter?.title || '未命名' }}</span>
+      </div>
+      <div class="flex gap-2 text-xs">
+        <button @click="backToChapterList" class="px-3 py-1.5 bg-white border border-gray-200 rounded-lg hover:bg-gray-50">返回章节列表</button>
+        <button @click="openAdjacentChapter(-1)" :disabled="!adjacentChapter(-1)" class="px-3 py-1.5 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40">上一章</button>
+        <button @click="openAdjacentChapter(1)" :disabled="!adjacentChapter(1)" class="px-3 py-1.5 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40">下一章</button>
+      </div>
+    </div>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+      <div class="lg:col-span-2 space-y-4">
+        <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
+          <input v-model="chapterEditForm.title" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-bold" placeholder="章节标题">
+          <div>
+            <label class="block text-xs font-medium text-pixiv-gray mb-1.5">章节大纲（续写时自动引用）</label>
+            <textarea v-model="chapterEditForm.outline" rows="4" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs" placeholder="本章大纲/构思..."></textarea>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-pixiv-gray mb-1.5">正文内容</label>
+            <textarea v-model="chapterEditForm.content" rows="20" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif" placeholder="章节正文..."></textarea>
+          </div>
+          <div v-if="!chapterEditForm.title || !chapterEditForm.outline" class="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            这个章节缺少标题或大纲。空白新建章节不会自动生成这些内容；可以点「生成构思」，或先在「项目与规划」页生成长篇规划后再创建章节。
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button @click="saveCurrentChapter" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">保存章节</button>
+            <button @click="previewChapterContext" :disabled="contextPreviewLoading || streaming || !chapterContinueAgent" class="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm disabled:opacity-50">{{ contextPreviewLoading ? '预览中...' : '预览上下文' }}</button>
+            <button @click="startChapterContinue" :disabled="streaming" class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm disabled:opacity-50">{{ streaming ? '续写中...' : 'AI 续写' }}</button>
+            <button @click="startChapterPlan" :disabled="streaming" class="px-4 py-2 bg-amber-500 text-white rounded-lg text-sm disabled:opacity-50">生成构思</button>
+            <button @click="autoUpdateState" :disabled="streaming" class="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm disabled:opacity-50">更新状态</button>
+            <button @click="appendOutput" v-if="streamOutput && !streaming" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">追加到正文</button>
+          </div>
+          <p class="text-xs text-pixiv-gray">普通「AI 续写」会流式生成并自动写回当前章节正文；完成后页面会刷新正文。右侧输出仍保留本次新增内容，方便复制或二次处理——但离开本页不保留。</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">续写 Agent</label>
+              <select v-model.number="chapterContinueAgent" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+                <option :value="0">请选择</option>
+                <option v-for="a in continueAgents" :key="a.id" :value="a.id">{{ a.name }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1.5">续写指令</label>
+              <input v-model="chapterInstruction" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="可选指令...">
+            </div>
+          </div>
+        </div>
+        <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4 space-y-3">
+          <h3 class="font-bold text-gray-900 text-sm">章节元数据</h3>
+          <div>
+            <label class="block text-xs font-medium text-pixiv-gray mb-1">摘要</label>
+            <textarea v-model="chapterEditForm.summary" rows="3" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="本章摘要（用于后续章节的上下文）"></textarea>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-pixiv-gray mb-1">关键事件（每行一个）</label>
+            <textarea v-model="chapterKeyEventsText" rows="3" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="事件1&#10;事件2"></textarea>
+          </div>
+          <div class="flex gap-2 items-center flex-wrap">
+            <button @click="saveCurrentChapter" class="px-3 py-1.5 bg-brand-500 text-white rounded text-xs">保存</button>
+            <button @click="indexChapter" class="px-3 py-1.5 bg-gray-100 rounded text-xs">索引到检索库</button>
+            <span v-if="chapterActionStatus" class="text-xs text-green-600">{{ chapterActionStatus }}</span>
+          </div>
+        </div>
+      </div>
+      <div class="space-y-4">
+        <div class="bg-gradient-to-br from-amber-50 to-rose-50 rounded-xl border border-amber-200 p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="font-bold text-gray-900 text-sm">自动生成本章</h3>
+            <button v-if="pipelineSteps.length" @click="showPipelineModal = true" class="text-xs px-2 py-1 bg-white border border-amber-200 rounded text-amber-700 hover:bg-amber-50">查看运行详情</button>
+          </div>
+          <p class="text-xs text-pixiv-gray">Pipeline 会按所选步骤自动处理本章：续写会写回正文，默认还会生成摘要/关键事件、更新状态、回收伏笔、AI 痕迹检测并索引入库。</p>
+          <button @click="openPipelineModal" :disabled="!currentChapter" class="w-full px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+            {{ pipelineRunning ? '执行中（点击查看进度）' : '配置并运行 Pipeline' }}
+          </button>
+          <div v-if="pipelineSteps.length" class="flex flex-wrap gap-1">
+            <span v-for="(s, i) in pipelineSteps" :key="s.name + i"
+                  :title="s.label + ' ' + s.statusLabel + (s.error ? ' - ' + s.error : '')"
+                  class="inline-flex items-center justify-center w-6 h-6 rounded text-[10px] font-medium cursor-help"
+                  :class="{
+                    'bg-gray-100 text-gray-400': s.status === 'pending',
+                    'bg-blue-500 text-white animate-pulse': s.status === 'running',
+                    'bg-green-500 text-white': s.status === 'done',
+                    'bg-yellow-400 text-yellow-900': s.status === 'skipped',
+                    'bg-red-500 text-white': s.status === 'failed',
+                  }">{{ i + 1 }}</span>
+          </div>
+        </div>
+
+        <output-panel title="AI 输出" :text="streamOutput" :job-id="currentJobId" :streaming="streaming" :show-detect="true" @save="saveDraft('章节续写', streamOutput)" @detect="detectAITells"></output-panel>
+
+        <div v-if="chapterDashboard" class="bg-white rounded-xl border border-gray-100 shadow-sm">
+          <div class="border-b border-gray-100 px-4 pt-3 flex items-center gap-1 overflow-x-auto">
+            <button v-for="t in dashboardTabs" :key="t.id" @click="dashboardTab = t.id"
+                    class="px-3 py-1.5 text-xs font-medium rounded-t-lg whitespace-nowrap"
+                    :class="dashboardTab === t.id ? 'bg-brand-500 text-white' : 'text-gray-600 hover:bg-gray-50'">
+              {{ t.label }}
+            </button>
+            <button @click="loadChapterDashboard" class="ml-auto text-xs text-pixiv-gray hover:text-gray-700">刷新</button>
+          </div>
+          <div class="p-4 text-xs">
+            <div v-if="dashboardTab === 'meta'" class="space-y-2">
+              <div><span class="font-medium text-gray-900">摘要：</span><pre class="mt-1 whitespace-pre-wrap font-serif text-gray-700">{{ chapterDashboard.chapter?.summary || '（无）' }}</pre></div>
+              <div><span class="font-medium text-gray-900">关键事件：</span>
+                <ul class="mt-1 list-disc pl-5 text-gray-700">
+                  <li v-for="(e, i) in chapterDashboard.chapter?.key_events || []" :key="i">{{ e }}</li>
+                </ul>
+              </div>
+            </div>
+            <div v-else-if="dashboardTab === 'state'" class="space-y-2">
+              <div v-for="(v, k) in chapterDashboard.project_states || {}" :key="k">
+                <div class="font-medium text-gray-900">{{ stateLabel(k) }}</div>
+                <pre class="mt-1 whitespace-pre-wrap text-gray-700 max-h-40 overflow-auto">{{ v }}</pre>
+              </div>
+            </div>
+            <div v-else-if="dashboardTab === 'foreshadow'">
+              <div v-if="chapterDashboard.foreshadows_planted?.length">
+                <div class="font-medium text-gray-900 mb-1">本章新埋伏笔</div>
+                <ul class="list-disc pl-5 text-gray-700 space-y-1">
+                  <li v-for="f in chapterDashboard.foreshadows_planted" :key="f.id">{{ f.description }}<span v-if="f.target_resolve_chapter" class="text-pixiv-gray"> (目标第{{ f.target_resolve_chapter }}章)</span></li>
+                </ul>
+              </div>
+              <div v-if="chapterDashboard.foreshadows_resolved?.length" class="mt-3">
+                <div class="font-medium text-green-700 mb-1">本章回收伏笔</div>
+                <ul class="list-disc pl-5 text-gray-700 space-y-1">
+                  <li v-for="f in chapterDashboard.foreshadows_resolved" :key="f.id">{{ f.description }}<span v-if="f.notes" class="text-pixiv-gray block"> 证据：{{ f.notes }}</span></li>
+                </ul>
+              </div>
+              <p v-if="!chapterDashboard.foreshadows_planted?.length && !chapterDashboard.foreshadows_resolved?.length" class="text-pixiv-gray">本章无伏笔变化。</p>
+            </div>
+            <div v-else-if="dashboardTab === 'detect'">
+              <div v-if="chapterDashboard.chapter?.metadata?.ai_score !== undefined">
+                <div class="text-2xl font-bold" :class="(chapterDashboard.chapter.metadata.ai_score || 0) >= 70 ? 'text-green-600' : 'text-amber-600'">
+                  {{ Math.round(chapterDashboard.chapter.metadata.ai_score || 0) }} / 100
+                </div>
+                <p class="text-pixiv-gray">分数越高越像人写</p>
+                <ul v-if="chapterDashboard.chapter.metadata.ai_tells?.length" class="mt-2 list-disc pl-5 text-gray-700 space-y-1">
+                  <li v-for="(it, i) in chapterDashboard.chapter.metadata.ai_tells" :key="i"><span class="text-amber-700">[{{ it.severity }}]</span> {{ it.message }}</li>
+                </ul>
+              </div>
+              <p v-else class="text-pixiv-gray">尚未检测，运行 Pipeline 时会自动检测。</p>
+            </div>
+            <div v-else-if="dashboardTab === 'audit'">
+              <pre v-if="chapterDashboard.chapter?.metadata?.audit_report" class="whitespace-pre-wrap font-serif text-gray-700 max-h-96 overflow-auto">{{ chapterDashboard.chapter.metadata.audit_report }}</pre>
+              <p v-else class="text-pixiv-gray">尚未审计，运行 Pipeline 时会自动审计。</p>
+            </div>
+            <div v-else-if="dashboardTab === 'pipeline'">
+              <div v-if="chapterDashboard.chapter?.metadata?.pipeline" class="space-y-2">
+                <div class="grid grid-cols-2 gap-2 text-xs">
+                  <div class="rounded bg-gray-50 border border-gray-100 p-2">状态：{{ chapterDashboard.chapter.metadata.pipeline.status || 'unknown' }}</div>
+                  <div class="rounded bg-gray-50 border border-gray-100 p-2">耗时：{{ chapterDashboard.chapter.metadata.pipeline.duration_sec || chapterDashboard.chapter.metadata.pipeline_duration_sec || 0 }} 秒</div>
+                  <div class="rounded bg-gray-50 border border-gray-100 p-2">失败：{{ chapterDashboard.chapter.metadata.pipeline.failed_steps || 0 }}</div>
+                  <div class="rounded bg-gray-50 border border-gray-100 p-2">跳过：{{ chapterDashboard.chapter.metadata.pipeline.skipped_steps || 0 }}</div>
+                </div>
+                <div v-if="chapterDashboard.chapter.metadata.pipeline.warnings?.length" class="rounded border border-amber-100 bg-amber-50 p-2 text-amber-700">
+                  <div class="font-bold mb-1">Warnings</div>
+                  <ul class="list-disc pl-4 space-y-1">
+                    <li v-for="(w, i) in chapterDashboard.chapter.metadata.pipeline.warnings" :key="i">{{ w.step ? pipelineStepLabel(w.step) + '：' : '' }}{{ w.message || w }}</li>
+                  </ul>
+                </div>
+                <p class="text-pixiv-gray">本章已运行的 Pipeline 步骤：</p>
+                <table class="w-full">
+                  <tr v-for="s in chapterDashboard.chapter.metadata.pipeline.steps || []" :key="s.name" class="border-b border-gray-50">
+                    <td class="py-1 pr-2 text-gray-900">{{ pipelineStepLabel(s.name) }}</td>
+                    <td class="py-1 px-2"><span class="px-1.5 py-0.5 rounded text-[10px]" :class="pipelineStatusBadge(s.status)">{{ s.status }}</span></td>
+                    <td class="py-1 pl-2 text-pixiv-gray break-all">
+                      <span :class="s.status === 'failed' ? 'text-red-600 font-medium' : ''">{{ s.error || s.reason || '' }}</span>
+                    </td>
+                    <td class="py-1 pl-2 text-right">
+                      <button v-if="s.status === 'failed' || s.status === 'skipped'" @click="retryPipelineStep(s.name)" :disabled="pipelineRunning" class="px-2 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-100 text-[10px] hover:bg-blue-100 disabled:opacity-50">重试此步</button>
+                    </td>
+                  </tr>
+                </table>
+              </div>
+              <p v-else class="text-pixiv-gray">本章尚未运行过 Pipeline。</p>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="chapterForeshadowAlerts.length" class="bg-amber-50 border border-amber-200 rounded-xl p-4">
+          <h3 class="font-bold text-amber-800 text-sm mb-2">伏笔提醒</h3>
+          <div v-for="fs in chapterForeshadowAlerts" :key="fs.id" class="text-xs text-amber-700 mb-1">
+            <span class="font-medium" :class="fs.target_resolve_chapter < currentChapter?.chapter_number ? 'text-red-600' : ''">
+              {{ fs.target_resolve_chapter < currentChapter?.chapter_number ? '[超期]' : '[即将到期]' }}
+            </span>
+            {{ fs.description }}（目标第{{ fs.target_resolve_chapter }}章）
+          </div>
+          <a :href="'/dashboard/ai/projects/' + projectId + '/notes'" class="text-xs text-amber-800 underline">去「伏笔与记忆」页处理 →</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% include 'dashboard_ai_pipeline_modal.html' %}
+
+  <!-- ═══ 上下文预览弹窗 ═══ -->
+  <div v-if="showContextPreviewModal" class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" @click.self="showContextPreviewModal = false">
+    <div class="bg-white rounded-xl shadow-xl max-w-5xl w-full p-5 space-y-4 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between gap-3">
+        <div>
+          <h3 class="text-lg font-bold text-gray-900">本次续写上下文预览</h3>
+          <p class="text-xs text-pixiv-gray mt-1">展示实际会发给模型的上下文和 prompt 摘要。</p>
+        </div>
+        <button @click="showContextPreviewModal = false" class="px-3 py-1.5 bg-gray-100 rounded text-sm">关闭</button>
+      </div>
+      <div v-if="contextPreview" class="space-y-3 text-xs">
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div class="rounded bg-gray-50 border border-gray-100 p-2">上下文 {{ contextPreview.stats?.full_context_chars || 0 }} 字</div>
+          <div class="rounded bg-gray-50 border border-gray-100 p-2">原始 {{ contextPreview.stats?.original_context_chars || 0 }} 字</div>
+          <div class="rounded bg-gray-50 border border-gray-100 p-2">限制 {{ contextPreview.stats?.context_limit_chars || 0 }} 字</div>
+          <div class="rounded bg-gray-50 border border-gray-100 p-2">{{ contextPreview.stats?.truncated ? '已截断' : '未截断' }}</div>
+        </div>
+        <div class="flex gap-2 flex-wrap">
+          <span class="px-2 py-1 rounded bg-indigo-50 text-indigo-700">风格档案：{{ contextPreview.has_style_prompt ? '已注入' : '未注入' }}</span>
+          <span class="px-2 py-1 rounded bg-purple-50 text-purple-700">小说档案：{{ contextPreview.has_novel_prompt ? '已注入' : '未注入' }}</span>
+          <span class="px-2 py-1 rounded bg-emerald-50 text-emerald-700">偏好画像：{{ contextPreview.preference_profile_id ? '已选择' : '未选择' }} / {{ contextPreview.preference_injection_strength || 'off' }}</span>
+        </div>
+        <details open class="border border-gray-100 rounded-lg"><summary class="px-3 py-2 bg-gray-50 cursor-pointer font-medium">Prompt 预览</summary><pre class="p-3 whitespace-pre-wrap font-mono max-h-72 overflow-auto">{{ contextPreview.prompt_preview }}</pre></details>
+        <details class="border border-gray-100 rounded-lg"><summary class="px-3 py-2 bg-gray-50 cursor-pointer font-medium">项目上下文</summary><pre class="p-3 whitespace-pre-wrap font-serif max-h-72 overflow-auto">{{ contextPreview.project_context }}</pre></details>
+        <details class="border border-gray-100 rounded-lg"><summary class="px-3 py-2 bg-gray-50 cursor-pointer font-medium">完整上下文片段</summary><pre class="p-3 whitespace-pre-wrap font-serif max-h-72 overflow-auto">{{ contextPreview.full_context_preview }}</pre></details>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+{% include "dashboard_ai_output_panel.html" %}
+<script>
+  window.initVueApp({
+    components: { 'output-panel': window.aiOutputPanelComponent },
+    setup() {
+      const { ref, reactive, computed, onMounted } = Vue;
+      const projectId = {[ project_id ]};
+      let chapterDashboardReq = 0;  // 章节产出面板请求令牌，防止快速切章时旧请求覆盖新章节数据
+
+      const agents = ref([]);
+      const message = ref('');
+      const messageType = ref('success');
+      const toastMessage = ref('');
+      const toastType = ref('success');
+      let toastTimer = null;
+      const streaming = ref(false);
+      const streamOutput = ref('');
+      const currentJobId = ref('');
+
+      const currentProject = ref(null);
+      const chapters = ref([]);
+      const currentChapter = ref(null);
+      const foreshadows = ref([]);
+      // 只读镜像：档案与偏好画像的写权限在项目页，这里只做展示 + 组 payload（§4.4）
+      const projectMetaForm = reactive({
+        style_profile_id: 0, novel_profile_id: 0,
+        preference_profile_id: 0, preference_injection_strength: 'off',
+        style_control: { sliders: { explicitness: 50, lyricism: 50, pacing: 50, darkness: 50, vulgarity: 50 }, tags: [], custom: '' },
+      });
+      const chapterEditForm = reactive({ title: '', content: '', outline: '', summary: '' });
+      const chapterKeyEventsText = ref('');
+      const chapterContinueAgent = ref(0);
+      const chapterInstruction = ref('');
+      const chapterActionStatus = ref('');
+      const batchSelectedChapterIds = ref([]);
+      const batchPipelineRunning = ref(false);
+      const batchPipelineProgress = reactive({ total: 0, succeeded: 0, failed: 0, currentLabel: '' });
+      const showContextPreviewModal = ref(false);
+      const contextPreview = ref(null);
+      const contextPreviewLoading = ref(false);
+
+      // ── 章节自动 Pipeline + 产出面板 ──────────────────────────
+      const pipelineAllSteps = [
+        { id: 'continue', label: '续写' },
+        { id: 'polish_dialogue', label: '对话润色' },
+        { id: 'polish_psychology', label: '心理润色' },
+        { id: 'deai', label: '去AI味' },
+        { id: 'summary', label: '摘要+关键事件' },
+        { id: 'state', label: '更新项目状态' },
+        { id: 'foreshadow', label: '回收伏笔' },
+        { id: 'audit', label: '内容审计' },
+        { id: 'detect', label: 'AI痕迹检测' },
+        { id: 'index', label: '索引入库' },
+      ];
+      const pipelineSelectedSteps = ref(pipelineAllSteps.map(s => s.id));
+      const pipelineAgentIds = reactive({ continue: 0, polish_dialogue: 0, polish_psychology: 0, deai: 0, summary: 0, state: 0, foreshadow: 0, audit: 0 });
+      const pipelineRunning = ref(false);
+      const pipelineSteps = ref([]); // {name, label, status, statusLabel}
+      const showPipelineModal = ref(false);
+      const pipelineCurrentStep = ref('');
+      const pipelineOutputRef = ref(null);
+      const chapterDashboard = ref(null);
+      const dashboardTab = ref('meta');
+      const dashboardTabs = [
+        { id: 'meta', label: '摘要+关键事件' },
+        { id: 'state', label: '项目状态' },
+        { id: 'foreshadow', label: '伏笔变化' },
+        { id: 'detect', label: 'AI痕迹' },
+        { id: 'audit', label: '审计报告' },
+        { id: 'pipeline', label: 'Pipeline 历史' },
+      ];
+
+      const continueAgents = computed(() => agents.value.filter(a => ['continue', 'general'].includes(a.task_type)));
+      // 到期伏笔提醒：foreshadows 在 openChapter 时才拉，列表视图用不到
+      const chapterForeshadowAlerts = computed(() => {
+        if (!currentChapter.value) return [];
+        const cn = currentChapter.value.chapter_number;
+        return foreshadows.value.filter(f => f.status === 'pending' && f.target_resolve_chapter && f.target_resolve_chapter <= cn + 2);
+      });
+
+      // 本页只用到续写 / 润色 / pipeline 相关的 Agent 类型，向导与蒸馏不在这里
+      const AGENT_PRIORITY = {
+        continue: ['continue', 'general'],
+        polish_dialogue: ['polish_dialogue', 'rewrite', 'general'],
+        polish_psychology: ['polish_psychology', 'rewrite', 'general'],
+        deai: ['rewrite', 'general'],
+        summary: ['extract_summary', 'general'],
+        state: ['general', 'continue'],
+        foreshadow: ['resolve_foreshadow', 'general'],
+        audit: ['audit', 'general'],
+      };
+      function bestAgentId(kind) {
+        const priorities = AGENT_PRIORITY[kind] || [kind, 'general'];
+        const enabled = agents.value.filter(a => a.enabled !== false);
+        for (const type of priorities) {
+          const matched = enabled.find(a => a.task_type === type);
+          if (matched) return matched.id;
+        }
+        return enabled[0]?.id || 0;
+      }
+      function applyBestAgentDefaults(force = false) {
+        if (force || !chapterContinueAgent.value) chapterContinueAgent.value = bestAgentId('continue');
+        for (const step of pipelineAllSteps) {
+          if (step.id === 'detect' || step.id === 'index') continue;
+          if (force || !pipelineAgentIds[step.id]) pipelineAgentIds[step.id] = bestAgentId(step.id);
+        }
+      }
+      function showMessage(text, type = 'success') {
+        message.value = text;
+        messageType.value = type;
+        toastMessage.value = text;
+        toastType.value = type;
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => { toastMessage.value = ''; }, 3200);
+        setTimeout(() => { message.value = ''; }, 4000);
+      }
+      // 请求、错误文案与 SSE 解析全部走 base.html 的公共层（window.csrfFetch /
+      // window.errorText / window.streamSSE / window.aiApi），本页不再自建副本。
+      const api = (url, options) => window.aiApi.request(url, options);
+      async function loadAgents() { agents.value = await window.aiApi.agents(); applyBestAgentDefaults(); }
+
+      // 本页所有生成流的公共出口：帧解析在 window.streamSSE 里，这里只负责把
+      // 事件映射到页面状态。
+      async function routeStream(url, payload) {
+        await window.streamSSE(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        }, {
+          onEvent: (event, data) => {
+            if (event === 'metadata') currentJobId.value = data.job_id || '';
+            if (event === 'progress') streamOutput.value += '\n[' + (data.phase || 'progress') + '] ' + (data.message || '处理中…') + '\n';
+            if (event === 'delta') streamOutput.value += data.text || '';
+            if (event === 'error') throw new Error(data.message || '生成失败');
+          },
+        });
+      }
+      async function startStream(url, payload) {
+        streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
+        try {
+          await routeStream(url, payload);
+          if (!streamOutput.value.trim()) {
+            showMessage('任务完成但模型返回空内容（可能输入过长或被模型截断）', 'error');
+          } else {
+            showMessage('生成完成');
+          }
+        } catch (e) { showMessage(e.message, 'error'); }
+        finally { streaming.value = false; }
+      }
+      async function saveDraft(title, content) {
+        try { await api('/api/dashboard/ai/drafts', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ title, content, source_job_id: currentJobId.value }) }); showMessage('草稿已保存'); }
+        catch (e) { showMessage(e.message, 'error'); }
+      }
+
+      // ── AI 痕迹检测 ──────────────────────────────────────────
+      async function detectAITells() {
+        if (!streamOutput.value) return;
+        try {
+          const res = await window.csrfFetch('/api/dashboard/ai/detect-ai-tells', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: streamOutput.value }) });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
+          const report = data.data;
+          let msg = `AI 痕迹评分：${report.score.toFixed(0)}/100（越高越像人写）`;
+          if (report.issues && report.issues.length) {
+            msg += '\n问题：' + report.issues.map(i => `[${i.severity}] ${i.message}`).join('；');
+          }
+          alert(msg);
+        } catch (e) { showMessage(e.message, 'error'); }
+      }
+      // ── 项目 / 章节 / 伏笔数据 ────────────────────────────────
+      async function loadProject() {
+        try {
+          const project = await api('/api/dashboard/ai/projects/' + projectId);
+          currentProject.value = project;
+          const sc = (project.settings && project.settings.style_control) || {};
+          const sliders = Object.assign({ explicitness: 50, lyricism: 50, pacing: 50, darkness: 50, vulgarity: 50 }, sc.sliders || {});
+          Object.assign(projectMetaForm, {
+            style_profile_id: project.style_profile_id || 0,
+            novel_profile_id: project.novel_profile_id || 0,
+            preference_profile_id: project.preference_profile_id || 0,
+            preference_injection_strength: project.preference_injection_strength || 'off',
+            style_control: { sliders, tags: Array.isArray(sc.tags) ? [...sc.tags] : [], custom: sc.custom || '' },
+          });
+        } catch (e) { showMessage(e.message || '读取项目失败', 'error'); }
+      }
+      async function loadChapters() {
+        try {
+          chapters.value = await api('/api/dashboard/ai/projects/' + projectId + '/chapters');
+          const validIds = new Set(chapters.value.map(ch => ch.id));
+          batchSelectedChapterIds.value = batchSelectedChapterIds.value.filter(id => validIds.has(id));
+        } catch { chapters.value = []; }
+      }
+      async function loadForeshadows() {
+        try { foreshadows.value = await api('/api/dashboard/ai/projects/' + projectId + '/foreshadows'); }
+        catch { foreshadows.value = []; }
+      }
+
+      // 档案与风格设定的编辑 UI 在项目页，这里只保留启动 pipeline 前的幂等写回：
+      // 后端 _project_style_control_prompt 是从**已落库**的项目记录读 style_control 的，
+      // 不写回就等于这次生成用的是上一次保存的风格。
+      async function saveProjectStyleControl() {
+        if (!currentProject.value) return false;
+        try {
+          const existing = (currentProject.value.settings && typeof currentProject.value.settings === 'object')
+            ? currentProject.value.settings : {};
+          const styleControl = JSON.parse(JSON.stringify(projectMetaForm.style_control));
+          const settings = { ...existing, style_control: styleControl };
+          await api('/api/dashboard/ai/projects/' + projectId, {
+            method: 'PUT',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ settings }),
+          });
+          currentProject.value.settings = settings;
+          return true;
+        } catch (e) {
+          showMessage(e.message, 'error');
+          return false;
+        }
+      }
+      async function saveProjectProfiles() {
+        if (!currentProject.value) return false;
+        try {
+          await api('/api/dashboard/ai/projects/' + projectId, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({
+            style_profile_id: projectMetaForm.style_profile_id || null,
+            novel_profile_id: projectMetaForm.novel_profile_id || null,
+            preference_profile_id: projectMetaForm.preference_profile_id || null,
+            preference_injection_strength: projectMetaForm.preference_injection_strength || 'off',
+          }) });
+          return true;
+        } catch (e) {
+          showMessage(e.message, 'error');
+          return false;
+        }
+      }
+      function preferencePayload(extra = {}) {
+        return {
+          ...extra,
+          preference_profile_id: projectMetaForm.preference_profile_id || null,
+          preference_injection_strength: projectMetaForm.preference_injection_strength || 'off',
+        };
+      }
+      // ── 章节列表 ──────────────────────────────────────────────
+      function chapterGenerated(ch) {
+        return !!String(ch?.content || '').trim() || Number(ch?.word_count || 0) > 0;
+      }
+      function chapterPipelineSummary(ch) {
+        const p = ch?.metadata?.pipeline;
+        if (!p) return chapterGenerated(ch) ? '已有正文，尚未运行 Pipeline' : '未生成正文';
+        const statusMap = { running: '运行中', succeeded: '已完成', partial: '部分完成', failed: '失败' };
+        return 'Pipeline：' + (statusMap[p.status] || p.status || '未知') + (p.failed_steps ? ' · 失败 ' + p.failed_steps + ' 步' : '');
+      }
+      function toggleBatchChapter(id) {
+        const list = batchSelectedChapterIds.value.slice();
+        const idx = list.indexOf(id);
+        if (idx >= 0) list.splice(idx, 1);
+        else list.push(id);
+        batchSelectedChapterIds.value = list;
+      }
+      function selectEmptyChapters() {
+        batchSelectedChapterIds.value = chapters.value.filter(ch => !chapterGenerated(ch)).map(ch => ch.id);
+      }
+      function selectAllChapters() {
+        batchSelectedChapterIds.value = chapters.value.map(ch => ch.id);
+      }
+      function clearBatchSelection() {
+        batchSelectedChapterIds.value = [];
+      }
+      async function generateMissingChapters() {
+        selectEmptyChapters();
+        if (!batchSelectedChapterIds.value.length) { showMessage('所有章节都已生成正文'); return; }
+        await startBatchChapterPipeline();
+      }
+      async function createChapter() {
+        try { await api('/api/dashboard/ai/chapters', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ project_id: projectId }) }); await loadChapters(); showMessage('空白章节已创建，可手动填写标题/大纲，或先在「项目与规划」生成全书规划'); }
+        catch (e) { showMessage(e.message, 'error'); }
+      }
+      async function deleteChapter(id) {
+        if (!confirm('确认删除此章节？')) return;
+        try { await api('/api/dashboard/ai/chapters/' + id, { method: 'DELETE' }); await loadChapters(); }
+        catch (e) { showMessage(e.message, 'error'); }
+      }
+      // ── 单章工作区 ────────────────────────────────────────────
+      function resetChapterWorkspace() {
+        streamOutput.value = '';
+        currentJobId.value = '';
+        pipelineSteps.value = [];
+        pipelineCurrentStep.value = '';
+        chapterDashboard.value = null;
+        dashboardTab.value = 'meta';
+        chapterActionStatus.value = '';
+        showPipelineModal.value = false;
+        showContextPreviewModal.value = false;
+      }
+      // 当前章节写进 query（§4.2）：刷新/分享能回到同一章，但不产生历史记录，
+      // 所以浏览器「后退」还是回上一个页面而不是逐章倒退。
+      function syncChapterQuery(chapterId) {
+        const base = '/dashboard/ai/projects/' + projectId + '/chapters';
+        const url = chapterId ? base + '?chapter=' + chapterId : base;
+        try { window.history.replaceState(null, '', url); } catch {}
+      }
+      function adjacentChapter(delta) {
+        if (!currentChapter.value) return null;
+        const idx = chapters.value.findIndex(ch => Number(ch.id) === Number(currentChapter.value.id));
+        if (idx < 0) return null;
+        return chapters.value[idx + delta] || null;
+      }
+      function openAdjacentChapter(delta) {
+        const ch = adjacentChapter(delta);
+        if (ch) openChapter(ch);
+      }
+      function backToChapterList() {
+        currentChapter.value = null;
+        resetChapterWorkspace();
+        syncChapterQuery(0);
+      }
+      async function openChapter(ch) {
+        resetChapterWorkspace();
+        currentChapter.value = { ...ch };
+        Object.assign(chapterEditForm, { title: ch.title || '', content: ch.content || '', outline: ch.outline || '', summary: ch.summary || '' });
+        chapterKeyEventsText.value = (ch.key_events || []).join('\n');
+        if (!chapterContinueAgent.value) chapterContinueAgent.value = bestAgentId('continue');
+        applyBestAgentDefaults();
+        syncChapterQuery(ch.id);
+        // 伏笔只在进入工作区时拉：到期提醒需要它，列表视图不需要，
+        // 这样页面装载仍然只有 3 个请求（§3.2）。
+        if (!foreshadows.value.length) loadForeshadows();
+        await Vue.nextTick();
+        // 同步加载产出面板（带请求令牌，防止快速切章时旧请求覆盖新章节数据）
+        const reqId = ++chapterDashboardReq;
+        const targetId = ch.id;
+        try {
+          const data = await api('/api/dashboard/ai/chapters/' + targetId + '/dashboard');
+          if (reqId === chapterDashboardReq && currentChapter.value && Number(currentChapter.value.id) === Number(targetId)) {
+            chapterDashboard.value = data;
+          }
+        } catch {
+          if (reqId === chapterDashboardReq && currentChapter.value && Number(currentChapter.value.id) === Number(targetId)) {
+            chapterDashboard.value = null;
+          }
+        }
+      }
+      async function saveCurrentChapter() {
+        if (!currentChapter.value) return;
+        const keyEvents = chapterKeyEventsText.value.split('\n').map(s => s.trim()).filter(Boolean);
+        try {
+          await api('/api/dashboard/ai/chapters/' + currentChapter.value.id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ ...chapterEditForm, key_events: keyEvents }) });
+          currentChapter.value = { ...currentChapter.value, ...chapterEditForm, key_events: keyEvents, word_count: (chapterEditForm.content || '').length };
+          chapterActionStatus.value = '已保存';
+          showMessage('章节已保存');
+        } catch (e) { showMessage(e.message, 'error'); }
+      }
+      async function previewChapterContext() {
+        if (!currentChapter.value || !currentProject.value) return;
+        if (!chapterContinueAgent.value) { showMessage('请选择续写 Agent', 'error'); return; }
+        contextPreviewLoading.value = true;
+        try {
+          await saveCurrentChapter();
+          contextPreview.value = await api('/api/dashboard/ai/projects/' + projectId + '/context/preview', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(preferencePayload({
+              agent_id: chapterContinueAgent.value,
+              chapter_id: currentChapter.value.id,
+              instruction: chapterInstruction.value,
+              context_chars: 8000,
+              max_chars: 6000,
+            })),
+          });
+          showContextPreviewModal.value = true;
+        } catch (e) { showMessage(e.message, 'error'); }
+        finally { contextPreviewLoading.value = false; }
+      }
+      async function startChapterContinue() {
+        if (!chapterContinueAgent.value) { showMessage('请选择续写 Agent', 'error'); return; }
+        await saveCurrentChapter();
+        const payload = preferencePayload({ agent_id: chapterContinueAgent.value, project_id: projectId, chapter_id: currentChapter.value?.id, instruction: chapterInstruction.value });
+        await startStream('/api/dashboard/ai/chapters/continue/stream', payload);
+        if (currentChapter.value) {
+          try {
+            const fresh = await api('/api/dashboard/ai/chapters/' + currentChapter.value.id);
+            currentChapter.value = fresh;
+            Object.assign(chapterEditForm, { title: fresh.title || '', content: fresh.content || '', outline: fresh.outline || '', summary: fresh.summary || '' });
+            chapterKeyEventsText.value = (fresh.key_events || []).join('\n');
+            chapterActionStatus.value = 'AI 续写已自动保存';
+          } catch {}
+        }
+      }
+      async function startChapterPlan() {
+        if (!chapterContinueAgent.value) { showMessage('请选择 Agent', 'error'); return; }
+        streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
+        const payload = preferencePayload({ agent_id: chapterContinueAgent.value, source_type: 'manual', text: chapterEditForm.content || '(空)', instruction: chapterInstruction.value, context_chars: 8000 });
+        try {
+          await routeStream('/api/dashboard/ai/plan/stream', payload);
+          chapterEditForm.outline = streamOutput.value;
+          showMessage('构思已生成并填入大纲');
+        } catch (e) { showMessage(e.message, 'error'); }
+        finally { streaming.value = false; }
+      }
+      async function autoUpdateState() {
+        if (!chapterContinueAgent.value) { showMessage('请选择 Agent', 'error'); return; }
+        if (!chapterEditForm.content.trim()) { showMessage('章节内容为空', 'error'); return; }
+        await saveCurrentChapter();
+        const payload = preferencePayload({ agent_id: chapterContinueAgent.value, project_id: projectId, chapter_id: currentChapter.value?.id });
+        streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
+        try {
+          // 状态正文在「伏笔与记忆」页展示，这里只刷新伏笔（到期提醒要用）
+          await routeStream('/api/dashboard/ai/projects/' + projectId + '/states/auto-update/stream', payload);
+          await loadForeshadows();
+          showMessage('项目状态已自动更新，可在「伏笔与记忆」页查看');
+        } catch (e) { showMessage(e.message, 'error'); }
+        finally { streaming.value = false; }
+      }
+      function appendOutput() {
+        if (!streamOutput.value) return;
+        chapterEditForm.content = (chapterEditForm.content || '') + '\n' + streamOutput.value;
+        streamOutput.value = '';
+        showMessage('已追加到正文');
+      }
+      async function indexChapter() {
+        if (!currentChapter.value) return;
+        await saveCurrentChapter();
+        try { await api('/api/dashboard/ai/projects/' + projectId + '/chapters/' + currentChapter.value.id + '/index', { method: 'POST' }); chapterActionStatus.value = '已保存并索引到检索库'; showMessage('已索引到检索库'); }
+        catch (e) { showMessage(e.message, 'error'); }
+      }
+      // ── Pipeline 辅助 ─────────────────────────────────────────
+      function pipelineAgentsFor(stepId) {
+        const allowed = AGENT_PRIORITY[stepId] || [];
+        return agents.value.filter(a => allowed.includes(a.task_type));
+      }
+      function pipelineStepLabel(name) {
+        const s = pipelineAllSteps.find(x => x.id === name);
+        return s ? s.label : name;
+      }
+      function pipelineStatusBadge(status) {
+        const map = { pending: 'bg-gray-100 text-gray-600', running: 'bg-blue-100 text-blue-700', done: 'bg-green-100 text-green-700', skipped: 'bg-yellow-100 text-yellow-700', failed: 'bg-red-100 text-red-700' };
+        return map[status] || 'bg-gray-100 text-gray-600';
+      }
+      function stateLabel(key) {
+        const map = { character_state: '角色状态', plot_progress: '剧情进展', world_state: '世界观状态', pending_hooks: '未回收钩子' };
+        return map[key] || key;
+      }
+      async function loadChapterDashboard() {
+        if (!currentChapter.value) { chapterDashboard.value = null; return; }
+        const reqId = ++chapterDashboardReq;
+        const targetId = currentChapter.value.id;
+        try {
+          const data = await api('/api/dashboard/ai/chapters/' + targetId + '/dashboard');
+          if (reqId === chapterDashboardReq && currentChapter.value && Number(currentChapter.value.id) === Number(targetId)) {
+            chapterDashboard.value = data;
+          }
+        } catch (e) {
+          if (reqId === chapterDashboardReq) showMessage(e.message, 'error');
+        }
+      }
+      function openPipelineModal() {
+        showPipelineModal.value = true;
+      }
+      function onPipelineModalClose() {
+        // 运行中允许"后台运行"——只关弹窗，不停 pipeline
+        showPipelineModal.value = false;
+      }
+      function formatStepMeta(meta) {
+        if (!meta || typeof meta !== 'object') return '';
+        const parts = [];
+        if (meta.chars != null) parts.push(meta.chars + ' 字');
+        if (meta.events != null) parts.push(meta.events + ' 个事件');
+        if (meta.resolved != null) parts.push('回收 ' + meta.resolved);
+        if (meta.score != null) parts.push('分数 ' + Math.round(meta.score));
+        if (meta.issues != null) parts.push(meta.issues + ' 问题');
+        if (meta.indexed != null) parts.push(meta.indexed ? '已索引' : '索引失败');
+        return parts.join(' · ');
+      }
+      async function copyPipelineOutput() {
+        if (!streamOutput.value) return;
+        try { await navigator.clipboard.writeText(streamOutput.value); showMessage('已复制'); }
+        catch (e) { showMessage('复制失败', 'error'); }
+      }
+      function scrollPipelineOutputBottom() {
+        const el = pipelineOutputRef.value;
+        if (el) el.scrollTop = el.scrollHeight;
+      }
+      async function startChapterPipeline(autoRetryFailed = true) {
+        if (!currentChapter.value || pipelineRunning.value) return;
+        const steps = pipelineSelectedSteps.value.slice();
+        if (!steps.length) { showMessage('至少选择一个步骤', 'error'); return; }
+        // 启动前把档案与风格设定写回项目：后端读的是库里的值，不是这里的 payload
+        if (!(await saveProjectProfiles())) return;
+        if (!(await saveProjectStyleControl())) return;
+        applyBestAgentDefaults();
+        // 自动填充未指定的 agent_id
+        const agent_ids = {};
+        for (const s of pipelineAllSteps) {
+          if (!steps.includes(s.id)) continue;
+          if (s.id === 'index' || s.id === 'detect') continue;
+          let aid = pipelineAgentIds[s.id] || bestAgentId(s.id);
+          agent_ids[s.id] = aid || 0;
+        }
+        pipelineRunning.value = true;
+        pipelineCurrentStep.value = '';
+        pipelineSteps.value = steps.map(name => ({ name, label: pipelineStepLabel(name), status: 'pending', statusLabel: '等待' }));
+        streamOutput.value = '';
+        try {
+          const payload = preferencePayload({
+            project_id: projectId,
+            chapter_id: currentChapter.value.id,
+            steps,
+            agent_ids,
+            instruction: chapterInstruction.value,
+            output_chars: 3000,
+            plan_text: chapterEditForm.outline,
+            context_chars: 8000,
+          });
+          let curStepName = '';
+          await window.streamSSE('/api/dashboard/ai/chapters/pipeline/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          }, {
+            onEvent: (event, data) => {
+              if (event === 'metadata') {
+                if (data.steps) pipelineSteps.value = data.steps.map(s => ({ name: s.name, label: s.label, status: 'pending', statusLabel: '等待' }));
+              } else if (event === 'step_start') {
+                curStepName = data.step;
+                pipelineCurrentStep.value = data.step;
+                const idx = pipelineSteps.value.findIndex(x => x.name === data.step);
+                if (idx >= 0) { pipelineSteps.value[idx].status = 'running'; pipelineSteps.value[idx].statusLabel = '运行中'; }
+                streamOutput.value = '';
+              } else if (event === 'delta') {
+                if (data.step === curStepName) streamOutput.value += data.text || '';
+              } else if (event === 'step_done') {
+                const idx = pipelineSteps.value.findIndex(x => x.name === data.step);
+                if (idx >= 0) {
+                  const skipped = !!data.skipped;
+                  pipelineSteps.value[idx].status = skipped ? 'skipped' : 'done';
+                  pipelineSteps.value[idx].statusLabel = skipped ? '跳过' : '完成';
+                  if (data.meta) pipelineSteps.value[idx].meta = data.meta;
+                  if (skipped && data.reason) pipelineSteps.value[idx].reason = data.reason;
+                }
+              } else if (event === 'step_failed') {
+                const idx = pipelineSteps.value.findIndex(x => x.name === data.step);
+                if (idx >= 0) {
+                  pipelineSteps.value[idx].status = 'failed';
+                  pipelineSteps.value[idx].statusLabel = '失败';
+                  pipelineSteps.value[idx].error = data.error || '未知错误';
+                }
+                dashboardTab.value = 'pipeline';
+                showMessage('步骤"' + (data.label || data.step) + '"失败，已跳过并继续：' + (data.error || ''), 'warning');
+              } else if (event === 'done') {
+                const failedSteps = pipelineSteps.value.filter(s => s.status === 'failed').map(s => s.name);
+                if (autoRetryFailed && failedSteps.length) {
+                  showMessage('Pipeline 完成，但有 ' + failedSteps.length + ' 个步骤失败，请稍候自动重试', 'warning');
+                } else {
+                  showMessage('Pipeline 完成（耗时 ' + (data.duration_sec || 0) + ' 秒）');
+                }
+              } else if (event === 'error') {
+                throw new Error(data.message || '执行失败');
+              }
+            },
+          });
+          // 重新加载章节数据 + dashboard
+          await openChapter(currentChapter.value);
+          await loadChapterDashboard();
+          await loadForeshadows();
+          const failed = pipelineSteps.value.filter(s => s.status === 'failed').map(s => s.name);
+          if (autoRetryFailed && failed.length) {
+            pipelineRunning.value = false;
+            await retryFailedPipelineSteps(failed, 3);
+          }
+        } catch (e) {
+          showMessage(e.message, 'error');
+        } finally {
+          pipelineRunning.value = false;
+          pipelineCurrentStep.value = '';
+        }
+      }
+      async function runSingleStep(stepName) {
+        if (!currentChapter.value || pipelineRunning.value) return;
+        const endpoint = `/api/dashboard/ai/chapters/${stepName}/stream`;
+        pipelineRunning.value = true;
+        streamOutput.value = '';
+        try {
+          const payload = preferencePayload({
+            project_id: projectId,
+            chapter_id: currentChapter.value.id,
+            agent_id: 0,
+          });
+          await window.streamSSE(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          }, {
+            onEvent: async (event, data) => {
+              if (event === 'delta') {
+                streamOutput.value += data.text || '';
+              } else if (event === 'done') {
+                showMessage(`${stepName === 'extract-summary' ? '摘要提取' : '润色'}完成`, 'success');
+                await openChapter(currentChapter.value);
+              }
+            },
+          });
+        } catch (e) {
+          showMessage(e.message, 'error');
+        } finally {
+          pipelineRunning.value = false;
+        }
+      }
+      async function retryPipelineStep(stepName) {
+        if (!currentChapter.value || pipelineRunning.value) return;
+        const savedSelected = pipelineSelectedSteps.value.slice();
+        pipelineSelectedSteps.value = [stepName];
+        try {
+          await startChapterPipeline(false);
+        } finally {
+          pipelineSelectedSteps.value = savedSelected;
+        }
+      }
+      async function retryFailedPipelineSteps(stepNames, maxAttempts = 3) {
+        const uniqueSteps = Array.from(new Set((stepNames || []).filter(Boolean)));
+        if (!uniqueSteps.length) return;
+        const savedSelected = pipelineSelectedSteps.value.slice();
+        try {
+          for (const stepName of uniqueSteps) {
+            let succeeded = false;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              const label = pipelineStepLabel(stepName);
+              showMessage('正在重试步骤"' + label + '"（' + attempt + '/' + maxAttempts + '）', 'warning');
+              const idx = pipelineSteps.value.findIndex(x => x.name === stepName);
+              if (idx >= 0) {
+                pipelineSteps.value[idx].status = 'running';
+                pipelineSteps.value[idx].statusLabel = '重试中 ' + attempt + '/' + maxAttempts;
+                pipelineSteps.value[idx].error = '';
+              }
+              pipelineSelectedSteps.value = [stepName];
+              await startChapterPipeline(false);
+              const latest = pipelineSteps.value.find(x => x.name === stepName);
+              if (latest && latest.status !== 'failed') {
+                succeeded = true;
+                break;
+              }
+            }
+            if (!succeeded) showMessage('步骤"' + pipelineStepLabel(stepName) + '"重试 ' + maxAttempts + ' 次后仍失败', 'warning');
+          }
+        } finally {
+          pipelineSelectedSteps.value = savedSelected;
+        }
+      }
+      async function startBatchChapterPipeline() {
+        if (!currentProject.value || batchPipelineRunning.value || !batchSelectedChapterIds.value.length) return;
+        if (!(await saveProjectProfiles())) return;
+        if (!(await saveProjectStyleControl())) return;
+        applyBestAgentDefaults();
+        const steps = pipelineSelectedSteps.value.slice();
+        if (!steps.length) { showMessage('至少选择一个 Pipeline 步骤', 'error'); return; }
+        const agent_ids = {};
+        for (const s of pipelineAllSteps) {
+          if (!steps.includes(s.id) || s.id === 'index' || s.id === 'detect') continue;
+          agent_ids[s.id] = pipelineAgentIds[s.id] || bestAgentId(s.id) || 0;
+        }
+        batchPipelineRunning.value = true;
+        Object.assign(batchPipelineProgress, { total: batchSelectedChapterIds.value.length, succeeded: 0, failed: 0, currentLabel: '准备开始' });
+        try {
+          const payload = preferencePayload({
+            project_id: projectId,
+            chapter_ids: batchSelectedChapterIds.value,
+            steps,
+            agent_ids,
+            instruction: chapterInstruction.value,
+            output_chars: 3000,
+            context_chars: 8000,
+          });
+          await window.streamSSE('/api/dashboard/ai/chapters/pipeline/batch/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          }, {
+            onEvent: (event, data) => {
+              if (event === 'batch_start') {
+                batchPipelineProgress.total = data.total || batchPipelineProgress.total;
+              } else if (event === 'chapter_start') {
+                batchPipelineProgress.currentLabel = '第' + data.chapter_number + '章 ' + (data.title || '');
+              } else if (event === 'chapter_done') {
+                if (data.partial) batchPipelineProgress.failed += 1;
+                else batchPipelineProgress.succeeded += 1;
+              } else if (event === 'chapter_failed') {
+                batchPipelineProgress.failed += 1;
+                showMessage('第' + data.chapter_number + '章生成失败：' + (data.message || ''), 'warning');
+              } else if (event === 'error') {
+                throw new Error(data.message || '批量生成失败');
+              } else if (event === 'done') {
+                batchPipelineProgress.succeeded = data.succeeded || batchPipelineProgress.succeeded;
+                batchPipelineProgress.failed = data.failed || batchPipelineProgress.failed;
+                batchPipelineProgress.total = data.total || batchPipelineProgress.total;
+              }
+            },
+          });
+          await loadChapters();
+          showMessage('批量生成完成：成功 ' + batchPipelineProgress.succeeded + ' 章，失败 ' + batchPipelineProgress.failed + ' 章');
+        } catch (e) { showMessage(e.message, 'error'); }
+        finally { batchPipelineRunning.value = false; batchPipelineProgress.currentLabel = '已完成'; }
+      }
+      // 流式输出时自动跟随到底
+      let _autoScrollTimer = null;
+      Vue.watch(streamOutput, () => {
+        if (!pipelineRunning.value || !showPipelineModal.value) return;
+        if (_autoScrollTimer) return;
+        _autoScrollTimer = requestAnimationFrame(() => {
+          const el = pipelineOutputRef.value;
+          if (el) {
+            // 用户向上滚动看历史时不强制跟随
+            const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+            if (distFromBottom < 200) el.scrollTop = el.scrollHeight;
+          }
+          _autoScrollTimer = null;
+        });
+      });
+
+      onMounted(async () => {
+        // 装载只打 3 个请求：Agent 列表 + 项目 + 章节列表（§3.2）
+        await Promise.all([loadAgents(), loadProject(), loadChapters()]);
+        applyBestAgentDefaults();
+        // ?chapter=<id> 深链直接进工作区（§4.2）
+        const wanted = Number(new URLSearchParams(window.location.search).get('chapter') || 0);
+        if (wanted) {
+          const ch = chapters.value.find(c => Number(c.id) === wanted);
+          if (ch) await openChapter(ch);
+        }
+        // Pipeline 的运行态只活在这一页的内存里，关标签或跳走就没了（§4.6）
+        window.addEventListener('beforeunload', (e) => {
+          if (!pipelineRunning.value && !batchPipelineRunning.value) return;
+          e.preventDefault();
+          e.returnValue = '';
+          return '';
+        });
+      });
+      // setup() 的返回值是模板唯一的渲染作用域：本页 markup 与
+      // dashboard_ai_pipeline_modal.html partial 里出现的每个名字都必须在这里，
+      // 漏一个就是点了没反应（tests/test_frontend_library_os.py 有守卫）。
+      return {
+        projectId, agents, message, messageType, toastMessage, toastType,
+        streaming, streamOutput, currentJobId, continueAgents,
+        currentProject, chapters, currentChapter, foreshadows, chapterForeshadowAlerts,
+        projectMetaForm, chapterEditForm, chapterKeyEventsText, chapterContinueAgent,
+        chapterInstruction, chapterActionStatus,
+        saveDraft, detectAITells, appendOutput,
+        chapterGenerated, chapterPipelineSummary,
+        batchSelectedChapterIds, batchPipelineRunning, batchPipelineProgress,
+        toggleBatchChapter, selectEmptyChapters, selectAllChapters, clearBatchSelection,
+        startBatchChapterPipeline, generateMissingChapters,
+        createChapter, deleteChapter, openChapter, adjacentChapter, openAdjacentChapter,
+        backToChapterList, saveCurrentChapter, indexChapter,
+        previewChapterContext, showContextPreviewModal, contextPreview, contextPreviewLoading,
+        startChapterContinue, startChapterPlan, autoUpdateState,
+        pipelineAllSteps, pipelineSelectedSteps, pipelineAgentIds, pipelineRunning, pipelineSteps,
+        pipelineAgentsFor, pipelineStepLabel, pipelineStatusBadge, stateLabel,
+        chapterDashboard, dashboardTab, dashboardTabs, loadChapterDashboard,
+        startChapterPipeline, runSingleStep, retryPipelineStep,
+        showPipelineModal, pipelineCurrentStep, pipelineOutputRef,
+        openPipelineModal, onPipelineModalClose,
+        formatStepMeta, copyPipelineOutput, scrollPipelineOutputBottom,
+      };
+    }
+  });
+</script>
+{% endblock %}

@@ -3,12 +3,25 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from pixiv_novel_sync.storage_db import Database
 from pixiv_novel_sync.webapp import create_app
 
 
 TEMPLATES = Path("src/pixiv_novel_sync/templates")
-# 三个 AI 页面：公共层（csrfFetch / errorText / streamSSE）必须由 base.html 提供
-AI_PAGES = ("dashboard_ai.html", "dashboard_wizard.html", "dashboard_ai_reader.html")
+# AI 页面：公共层（csrfFetch / errorText / streamSSE）必须由 base.html 提供。
+# dashboard_ai.html 已按 docs/superpowers/specs/2026-09-02-dashboard-ai-page-split-design.md
+# 拆成前四个一级页面，断言范围随之扩大——原来一页守住的东西现在要四页都守住。
+AI_PAGES = (
+    "dashboard_ai_projects.html",
+    "dashboard_ai_project.html",
+    "dashboard_ai_chapters.html",
+    "dashboard_ai_notes.html",
+    "dashboard_wizard.html",
+    "dashboard_ai_reader.html",
+)
+# 章节页把 pipeline 弹窗抽成了 partial：markup 在 partial 里，setup() 在页面里，
+# 所以导出守卫必须跟进 {% include %}，否则弹窗里的 @click 全是盲区。
+_INCLUDE = re.compile(r"\{%-?\s*include\s+['\"]([\w./-]+)['\"].*?-?%\}", re.S)
 
 _LINE_COMMENT = re.compile(r"^[ \t]*//.*$", re.M)
 _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
@@ -35,7 +48,7 @@ def read(name: str) -> str:
 def read_code(name: str) -> str:
     """读模板并剥掉注释，只留可执行部分。
 
-    下面三条正向断言原本是朴素子串匹配，而 dashboard_ai.html 顶部有一段
+    下面三条正向断言原本是朴素子串匹配，而每个 AI 页面顶部都有一段
     「本页不再自建副本（window.csrfFetch / errorText / streamSSE / aiApi）」的
     说明注释——一个新页面只要把那段注释一起抄过去，就能在完全没调用公共层的
     情况下让断言变绿。所以断言前必须先剥注释，否则守的是注释不是代码。
@@ -43,6 +56,21 @@ def read_code(name: str) -> str:
     code = _HTML_COMMENT.sub("", read(name))
     code = _BLOCK_COMMENT.sub("", code)
     return _LINE_COMMENT.sub("", code)
+
+
+def page_markup(name: str, _seen: frozenset[str] = frozenset()) -> str:
+    """页面渲染出的 markup：先内联 {% include %}，再剥掉 <script>。
+
+    顺序不能反——先剥 script 会把 extra_scripts 里的 include 一起带走，而
+    dashboard_ai_output_panel.html 整个就是一个 <script>（组件定义，自带作用域），
+    先内联再剥正好把它排除掉，只留真正属于本页作用域的 markup。
+    """
+    text = read(name)
+    for included in _INCLUDE.findall(text):
+        if included in _seen:
+            continue
+        text += page_markup(included, _seen | {name})
+    return _SCRIPT_BLOCK.sub("", text)
 
 
 def _match_bracket(text: str, start: int) -> int:
@@ -156,8 +184,13 @@ def setup_scope(html: str) -> set[str]:
 
     base.html 的 window.initVueApp 只做 createApp(setupFunc) + mount，没有任何兜底，
     所以 setup() 的返回值就是模板能解析的全部名字。
+
+    锚点从 initVueApp 往后找，不能直接 html.index("setup()")：页头的 {# #} 注释里
+    也会写到「setup()」这个词，锚错就会把一段 markup 当函数体，括号配不平之后
+    连顶层 return 都找不到。
     """
-    brace = html.index("{", html.index("setup()"))
+    anchor = html.index("initVueApp")
+    brace = html.index("{", html.index("setup()", anchor))
     body = html[brace + 1 : _match_bracket(html, brace)]
     returns = _top_level_returns(body)
     assert returns, "找不到 setup() 的顶层 return"
@@ -184,14 +217,17 @@ def setup_scope(html: str) -> set[str]:
 def test_every_event_handler_is_exported_from_setup():
     """回归：事件绑到 setup() 没返回的名字上，按钮会静默失效或抛 TypeError。
 
-    实际踩过两次：伏笔 tab 的「AI自动回收」（autoResolveForeshadows）和 Pipeline 弹窗的
+    实际踩过两次：伏笔页的「AI自动回收」（autoResolveForeshadows）和 Pipeline 弹窗的
     单步按钮（runSingleStep）都定义了却没进导出对象，点了没反应。组件 emit（@save /
     @detect）走同一套解析，漏导出同样是死绑定。
+
+    markup 走 page_markup：拆页后 pipeline 弹窗是 include 进来的 partial，
+    它的 @click 绑的是章节页 setup() 的作用域，必须一起校验。
     """
     for name in AI_PAGES:
         html = read(name)
         scope = setup_scope(html)
-        markup = _SCRIPT_BLOCK.sub("", html)
+        markup = page_markup(name)
 
         handlers = set()
         for _event, expr in _EVENT_BINDING.findall(markup):
@@ -266,22 +302,28 @@ def test_shared_helper_assertions_ignore_comments():
 
     没有这条，read_code 哪天退化成 read() 也不会有人发现，而那正是
     「抄注释即可假通过」这个漏洞的复发路径。
+
+    取样页选章节页：拆分后它是唯一同时用到四个助手的页面，顶部那段
+    「本页不再自建副本」的注释也在这里，正好同时提供正样本和注释噪声。
     """
     marker = "window.streamSSE"
-    ai_raw = read("dashboard_ai.html")
-    ai_code = read_code("dashboard_ai.html")
+    raw = read("dashboard_ai_chapters.html")
+    code = read_code("dashboard_ai_chapters.html")
 
-    # dashboard_ai.html 顶部确实有一段提到公共层名字的注释
-    assert ai_raw.count(marker) > ai_code.count(marker), (
-        "dashboard_ai.html 的公共层注释没有被剥掉，三条正向断言可被注释欺骗"
+    assert raw.count(marker) > code.count(marker), (
+        "dashboard_ai_chapters.html 的公共层注释没有被剥掉，三条正向断言可被注释欺骗"
     )
     assert _LINE_COMMENT.sub("", "  // window.csrfFetch\nreal();") == "\nreal();"
     assert _HTML_COMMENT.sub("", "<!-- window.errorText -->x") == "x"
 
 
 def test_ai_and_wizard_share_one_profile_loader():
-    """agents / 风格档案 / 小说档案 / 偏好画像的加载只允许有一份实现。"""
-    for name in ("dashboard_ai.html", "dashboard_wizard.html"):
+    """agents / 风格档案 / 小说档案 / 偏好画像的加载只允许有一份实现。
+
+    取样页选项目页：拆分后档案与偏好画像的编辑 UI 收敛在这一页（章节页只留只读镜像），
+    所以它和创作向导是这四个加载器的两个真实调用点。
+    """
+    for name in ("dashboard_ai_project.html", "dashboard_wizard.html"):
         html = read(name)
         assert "window.aiApi" in html, name
         assert "'/api/dashboard/ai/style-profiles'" not in html, name
@@ -289,8 +331,15 @@ def test_ai_and_wizard_share_one_profile_loader():
         assert "'/api/dashboard/preferences/profiles'" not in html, name
 
 
-def test_ai_and_wizard_routes_render_distinct_pages(tmp_path, monkeypatch):
+def make_client(tmp_path, monkeypatch):
+    """带 schema 和一个真实项目的测试客户端。
+
+    project_id 必须真实存在：三个项目内页面都过 ai_web.py 的 _require_project
+    守卫，随手编一个 id 只会拿到 404，测不到渲染。
+    """
     monkeypatch.setenv("PIXIV_FLASK_SECRET", "ai-page-route-test-secret")
+    db_path = tmp_path / "routes.db"
+    monkeypatch.setenv("PIXIV_DB_PATH", str(db_path))
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
     config_path = tmp_path / "config.yaml"
@@ -298,19 +347,79 @@ def test_ai_and_wizard_routes_render_distinct_pages(tmp_path, monkeypatch):
         "storage:\n"
         f"  public_dir: {(tmp_path / 'public').as_posix()}\n"
         f"  private_dir: {(tmp_path / 'private').as_posix()}\n"
-        f"  db_path: {(tmp_path / 'routes.db').as_posix()}\n"
+        f"  db_path: {db_path.as_posix()}\n"
         "sync:\n"
         "  auto_sync_enabled: false\n",
         encoding="utf-8",
     )
-    client = create_app(config_path=str(config_path), env_path=str(env_path), start_scheduler=False).test_client()
+    app = create_app(config_path=str(config_path), env_path=str(env_path), start_scheduler=False)
+    db = Database(db_path)
+    db.init_schema()
+    project_id = db.create_ai_writing_project({"name": "拆页路由测试"})
+    db.close()
+    return app.test_client(), project_id
 
-    ai = client.get("/dashboard/ai", environ_base={"REMOTE_ADDR": "127.0.0.1"})
-    wizard = client.get("/dashboard/wizard", environ_base={"REMOTE_ADDR": "127.0.0.1"})
 
-    ai_html = ai.get_data(as_text=True)
-    wizard_html = wizard.get_data(as_text=True)
+def get(client, path: str):
+    """未设 DASHBOARD_TOKEN 时鉴权门只放行环回地址。"""
+    return client.get(path, environ_base={"REMOTE_ADDR": "127.0.0.1"})
+
+
+def test_ai_and_wizard_routes_render_distinct_pages(tmp_path, monkeypatch):
+    client, _project_id = make_client(tmp_path, monkeypatch)
+
+    ai_html = get(client, "/dashboard/ai").get_data(as_text=True)
+    wizard_html = get(client, "/dashboard/wizard").get_data(as_text=True)
+
     assert 'data-page="ai-writing"' in ai_html
     assert 'data-page="writing-wizard"' not in ai_html
     assert 'data-page="writing-wizard"' in wizard_html
     assert 'data-page="ai-writing"' not in wizard_html
+
+
+def test_ai_project_pages_render_with_route_project_id(tmp_path, monkeypatch):
+    """三个项目内页面各自渲染，且 project_id 是由路由注入而非 URL query 解析。"""
+    client, project_id = make_client(tmp_path, monkeypatch)
+    pages = {
+        f"/dashboard/ai/projects/{project_id}": "ai-project",
+        f"/dashboard/ai/projects/{project_id}/chapters": "ai-chapters",
+        f"/dashboard/ai/projects/{project_id}/notes": "ai-notes",
+    }
+
+    for path, marker in pages.items():
+        response = get(client, path)
+        assert response.status_code == 200, path
+        html = response.get_data(as_text=True)
+        assert f'data-page="{marker}"' in html, path
+        # Jinja 定界符是 {[ ]}，渲染后必须是裸数字。留着定界符说明写成了 {{ }}，
+        # 那会被 Vue 当插值吃掉，JS 里 projectId 直接语法错、整页白屏。
+        assert f"const projectId = {project_id};" in html, path
+        # 项目内导航条是三页共用的 partial，掉了就没法互相跳
+        assert f'href="/dashboard/ai/projects/{project_id}/chapters"' in html, path
+
+
+def test_legacy_project_query_redirects_to_project_page(tmp_path, monkeypatch):
+    """创作向导导入完成后跳的是旧深链 ?project_id=<id>，必须还能落到项目页。"""
+    client, project_id = make_client(tmp_path, monkeypatch)
+
+    moved = get(client, f"/dashboard/ai?project_id={project_id}")
+    assert moved.status_code == 302
+    assert moved.headers["Location"].endswith(f"/dashboard/ai/projects/{project_id}")
+
+    # 非法值不许变成 /dashboard/ai/projects/0 这种 404 深链，回落到项目列表
+    for bad in ("0", "abc", "-1", ""):
+        response = get(client, f"/dashboard/ai?project_id={bad}")
+        assert response.status_code == 200, bad
+        assert 'data-page="ai-writing"' in response.get_data(as_text=True), bad
+
+
+def test_missing_project_pages_return_404(tmp_path, monkeypatch):
+    """项目不存在时给 404，而不是渲染一张所有请求都失败的空白页。"""
+    client, project_id = make_client(tmp_path, monkeypatch)
+    missing = project_id + 9999
+
+    for suffix in ("", "/chapters", "/notes"):
+        response = get(client, f"/dashboard/ai/projects/{missing}{suffix}")
+        assert response.status_code == 404, suffix
+
+

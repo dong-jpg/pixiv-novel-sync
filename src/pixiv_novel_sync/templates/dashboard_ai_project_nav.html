@@ -1,0 +1,24 @@
+{# 三个「项目内」页面的共享导航条，需要调用方传入 project_id。
+
+   与 dashboard_settings_nav.html 同型，但**带参数**，这是它不能做成侧栏 children 的原因：
+   设置页的五个子页是全局路径，可以静态写进 NAV_ITEMS；AI 的三个子页路径里有 project_id，
+   侧栏不知道当前是哪个项目，没开项目时这三条也无处可去。所以侧栏保持 /dashboard/ai
+   一条扁平项（前缀匹配天然对所有子页高亮），项目内切换靠这一条。
+
+   高亮用 request.path 精确比较，不能用 startswith——否则「项目与规划」在章节页也会亮。
+   Jinja 变量定界符是 {[ ]}（Vue 占用了 {{ }}）。 #}
+<nav class="library-card !py-3 flex flex-wrap items-center gap-2" aria-label="项目内导航">
+  <a href="/dashboard/ai"
+     class="px-3 py-1.5 rounded-xl text-sm font-bold no-underline text-pixiv-gray hover:bg-gray-50 hover:text-gray-900 transition-colors">← 全部项目</a>
+  <span class="w-px h-5 bg-gray-200" aria-hidden="true"></span>
+  {% for suffix, label in [
+       ('', '项目与规划'),
+       ('/chapters', '章节与自动写作'),
+       ('/notes', '伏笔与记忆')] %}
+  {% set href = '/dashboard/ai/projects/' ~ project_id ~ suffix %}
+  {% set is_current = request.path == href %}
+  <a href="{[ href ]}"
+     class="px-3 py-1.5 rounded-xl text-sm font-bold no-underline transition-colors {[ 'bg-brand-50 text-brand-600' if is_current else 'text-pixiv-gray hover:bg-gray-50 hover:text-gray-900' ]}"
+     {% if is_current %}aria-current="page"{% endif %}>{[ label ]}</a>
+  {% endfor %}
+</nav>

@@ -31,7 +31,10 @@
 | `/dashboard/settings/adult` | `dashboard_settings_adult.html` | 成人润色 |
 | `/dashboard/settings/system` | `dashboard_settings_system.html` | 系统维护 |
 | `/dashboard/preferences` | `dashboard_preferences.html` | 偏好画像与推荐 |
-| `/dashboard/ai` | `dashboard_ai.html` | AI 自动写作 |
+| `/dashboard/ai` | `dashboard_ai_projects.html` | AI 创作项目列表（`?project_id=<正整数>` 302 到项目页） |
+| `/dashboard/ai/projects/<project_id>` | `dashboard_ai_project.html` | 作品资料、风格控制、长篇规划 |
+| `/dashboard/ai/projects/<project_id>/chapters` | `dashboard_ai_chapters.html` | 章节工作区与自动写作 Pipeline |
+| `/dashboard/ai/projects/<project_id>/notes` | `dashboard_ai_notes.html` | 伏笔、状态记忆、语义检索 |
 | `/dashboard/wizard` | `dashboard_wizard.html` | 创作向导与蒸馏档案 |
 | `/dashboard/novels/ai/<project_id>` | `dashboard_ai_reader.html` | AI 创作小说阅读 |
 

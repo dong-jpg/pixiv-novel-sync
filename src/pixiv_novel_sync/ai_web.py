@@ -10,7 +10,17 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
+from flask import (
+    Flask,
+    Response,
+    abort,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    stream_with_context,
+)
 
 from .ai.service import (
     AINotFoundError,
@@ -690,9 +700,39 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    def _require_project(project_id: int) -> None:
+        """项目内页面的存在性守卫：项目不存在时给 404，而不是渲染一张空白页。
+
+        service.get_writing_project 对缺失项目抛的是 AIServiceError（不是
+        AINotFoundError），所以这里按基类捕获。
+        """
+        try:
+            service.get_writing_project(project_id)
+        except AIServiceError:
+            abort(404)
+
     @app.get("/dashboard/ai")
     def dashboard_ai_page():
-        return render_template("dashboard_ai.html")
+        # 兼容 /dashboard/wizard 导入完成后的旧深链 ?project_id=<id>
+        raw = (request.args.get("project_id") or "").strip()
+        if raw.isdigit() and int(raw) > 0:
+            return redirect(f"/dashboard/ai/projects/{int(raw)}", code=302)
+        return render_template("dashboard_ai_projects.html")
+
+    @app.get("/dashboard/ai/projects/<int:project_id>")
+    def dashboard_ai_project_page(project_id: int):
+        _require_project(project_id)
+        return render_template("dashboard_ai_project.html", project_id=project_id)
+
+    @app.get("/dashboard/ai/projects/<int:project_id>/chapters")
+    def dashboard_ai_chapters_page(project_id: int):
+        _require_project(project_id)
+        return render_template("dashboard_ai_chapters.html", project_id=project_id)
+
+    @app.get("/dashboard/ai/projects/<int:project_id>/notes")
+    def dashboard_ai_notes_page(project_id: int):
+        _require_project(project_id)
+        return render_template("dashboard_ai_notes.html", project_id=project_id)
 
     @app.get("/dashboard/wizard")
     def dashboard_wizard_page():

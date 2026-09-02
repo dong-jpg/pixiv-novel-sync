@@ -119,7 +119,10 @@ pixiv-novel-sync sync bookmark following_novels subscribed_series
 
 ### AI 创作
 
-- /dashboard/ai：项目、长篇规划、章节、草稿、Pipeline 和 AI 小说库。
+- /dashboard/ai：AI 创作项目列表（新建、打开、删除）。
+- /dashboard/ai/projects/<project_id>：作品资料、封面、风格控制、长篇规划。
+- /dashboard/ai/projects/<project_id>/chapters：章节列表、单章工作区、自动写作 Pipeline。
+- /dashboard/ai/projects/<project_id>/notes：伏笔追踪、状态记忆、语义检索。
 - /dashboard/wizard：创作向导、蒸馏档案和导入流程。
 - /dashboard/settings/models：AI Provider、模型目录、模型池与该池最近的真实尝试记录。
 - /dashboard/settings/agents：Agent 绑定，以及「这个 Agent 会依次调用哪些模型」的候选链预览。

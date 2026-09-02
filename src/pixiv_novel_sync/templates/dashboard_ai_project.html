@@ -1,0 +1,705 @@
+{% extends "base.html" %}
+
+{% block title %}项目与规划 - Pixiv 小说同步器{% endblock %}
+
+{% block content %}
+{# 项目内第一页：作品资料 / 蒸馏档案套用 / 风格控制 / 长篇规划。
+
+   拆分前这是 dashboard_ai.html 的 projectDetailTab === 'overview' 与 'longform'
+   两块。合成一页的理由（设计文档 §2.2「中耦合」）：两者共享 currentProject、
+   longformPlan、refreshCurrentProject 与 RawImport 弹窗，拆开就要复制这四样。
+
+   project_id 由路由注入，不再靠 openProject(p) 从列表里 find——深链、刷新、
+   后退都能直接落到正确项目上。 #}
+<div class="library-page px-4 sm:px-6 lg:px-8 py-6 max-w-7xl mx-auto space-y-4" data-page="ai-project">
+  <div class="library-page-header sr-only"><h1>项目与规划</h1></div>
+  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+    <div class="min-w-0">
+      <h1 class="text-2xl font-bold text-gray-900 truncate">{{ currentProject?.name || '项目' }}</h1>
+      <p class="text-sm text-pixiv-gray mt-1">作品资料 · 蒸馏档案 · 风格控制 · 全书规划</p>
+    </div>
+    <div class="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 max-w-xl">
+      你选择的文本会发送到当前 Agent 绑定的 AI API，请确认 API 服务商可信。
+    </div>
+  </div>
+
+  {% include 'dashboard_ai_project_nav.html' %}
+
+  <div v-if="message" class="px-4 py-3 rounded-lg text-sm" :class="messageType === 'error' ? 'bg-red-50 text-red-700 border border-red-100' : (messageType === 'warning' ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-green-50 text-green-700 border border-green-100')">
+    {{ message }}
+  </div>
+
+  <div v-if="toastMessage" class="fixed right-4 bottom-20 lg:bottom-6 z-[120] max-w-sm px-4 py-3 rounded-xl shadow-xl border text-sm flex items-start gap-2"
+       :class="toastType === 'error' ? 'bg-red-50 text-red-800 border-red-200' : (toastType === 'warning' ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-green-50 text-green-800 border-green-200')">
+    <span class="font-bold">{{ toastType === 'error' ? '!' : (toastType === 'warning' ? '!' : '✓') }}</span>
+    <span>{{ toastMessage }}</span>
+  </div>
+
+  <!-- ═══ Raw Output 导入弹窗 ═══ -->
+  <div v-if="showRawImportModal" class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" @click.self="showRawImportModal = false">
+    <div class="bg-white rounded-xl shadow-xl max-w-3xl w-full p-5 space-y-4 max-h-[90vh] flex flex-col">
+      <div>
+        <h3 class="text-lg font-bold text-gray-900">{{ rawImportTitle }}</h3>
+        <p class="text-xs text-pixiv-gray mt-1">可粘贴模型原始输出，也可只填 job_id 从任务日志读取 output_text。</p>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-pixiv-gray mb-1">job_id（可选）</label>
+        <input v-model="rawImportJobId" class="w-full px-3 py-2 border border-gray-200 rounded text-sm" placeholder="任务日志里的 job_id">
+      </div>
+      <div class="flex-1 min-h-0">
+        <label class="block text-xs font-medium text-pixiv-gray mb-1">原始输出（可选，优先于 job_id）</label>
+        <textarea v-model="rawImportText" rows="14" class="w-full px-3 py-2 border border-gray-200 rounded text-xs font-mono resize-none" placeholder="粘贴 JSON / ```json fenced 输出 / 带说明文字的模型输出"></textarea>
+      </div>
+      <div class="flex justify-end gap-2">
+        <button @click="showRawImportModal = false" class="px-3 py-1.5 bg-gray-100 rounded text-sm">取消</button>
+        <button @click="confirmRawImport" :disabled="rawImporting || (!rawImportText.trim() && !rawImportJobId.trim())" class="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm disabled:opacity-50">{{ rawImporting ? '导入中…' : '确认导入' }}</button>
+      </div>
+    </div>
+  </div>
+
+  <section>
+    <!-- 概览：一块面板三个 section，不套嵌套卡片 -->
+    <div data-overview-panel class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+      <section data-overview-section="project" class="p-5 space-y-4">
+        <div>
+          <h3 class="font-bold text-gray-900 text-sm">作品资料与进度</h3>
+          <p class="text-xs text-pixiv-gray mt-1">集中维护作品资料，并查看当前写作进度与全书目标。</p>
+        </div>
+        <div class="grid grid-cols-1 lg:grid-cols-[7rem_minmax(0,1.35fr)_minmax(16rem,1fr)] gap-5 items-start">
+          <div class="space-y-2">
+            <div class="relative w-28 aspect-[3/4] flex-shrink-0 overflow-hidden rounded-lg shadow-sm" :style="projectCoverGradient(currentProject?.name)">
+              <img v-if="currentProject?.cover_url" :src="currentProject.cover_url" class="absolute inset-0 w-full h-full object-cover" @error="currentProject.cover_url = null">
+              <div v-else class="absolute inset-0 flex items-center justify-center">
+                <span class="text-4xl font-black text-white/90 drop-shadow select-none">{{ projectFirstChar(currentProject?.name) }}</span>
+              </div>
+            </div>
+            <input ref="coverInput" type="file" accept="image/jpeg,image/png,image/webp" class="hidden" @change="uploadProjectCover">
+            <div class="flex flex-wrap gap-2">
+              <button @click="$refs.coverInput.click()" :disabled="coverBusy" class="px-3 py-1.5 bg-brand-500 text-white rounded-lg text-xs font-medium hover:bg-brand-600 disabled:opacity-50">
+                {{ coverBusy ? '处理中…' : (currentProject?.cover_url ? '替换封面' : '上传封面') }}
+              </button>
+              <button v-if="currentProject?.cover_url" @click="deleteProjectCover" :disabled="coverBusy" class="px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-medium hover:bg-red-100 disabled:opacity-50">删除封面</button>
+            </div>
+          </div>
+
+          <div class="space-y-3 min-w-0">
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1">项目名称</label>
+              <input v-model="projectMetaForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="项目名称">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1">项目描述</label>
+              <textarea v-model="projectMetaForm.description" rows="3" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="项目描述（可选）"></textarea>
+            </div>
+            <div class="flex justify-end">
+              <button @click="saveProjectMeta" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600">保存信息</button>
+            </div>
+          </div>
+
+          <div class="space-y-3 min-w-0">
+            <h4 class="text-xs font-bold text-gray-700">项目概况</h4>
+            <div class="grid grid-cols-2 gap-2 text-xs">
+              <div class="rounded bg-gray-50 border border-gray-100 p-2.5 text-center">
+                <div class="font-mono text-lg font-bold text-gray-900">{{ chapters.length }}</div>
+                <div class="text-pixiv-gray mt-0.5">章节</div>
+              </div>
+              <div class="rounded bg-gray-50 border border-gray-100 p-2.5 text-center">
+                <div class="font-mono text-lg font-bold text-gray-900">{{ Math.round(chapters.reduce((s,c)=>s+(c.word_count||0),0)/1000) }}k</div>
+                <div class="text-pixiv-gray mt-0.5">字数</div>
+              </div>
+              <div class="rounded bg-gray-50 border border-gray-100 p-2.5 text-center">
+                <div class="font-mono text-lg font-bold text-gray-900">{{ generatedChapterCount }}</div>
+                <div class="text-pixiv-gray mt-0.5">已有正文</div>
+              </div>
+              <div class="rounded bg-gray-50 border border-gray-100 p-2.5 text-center">
+                <div class="font-mono text-lg font-bold text-gray-900">{{ longformPlan.chapters.length }}</div>
+                <div class="text-pixiv-gray mt-0.5">规划章节</div>
+              </div>
+            </div>
+            <div v-if="longformPlan.target_words || longformPlan.expected_chapter_count" class="pt-2 border-t border-gray-100">
+              <div class="text-xs font-medium text-pixiv-gray mb-2">规划目标</div>
+              <div class="flex flex-wrap gap-1.5">
+                <span v-if="longformPlan.target_words" class="text-xs px-2 py-1 rounded-full bg-brand-50 border border-brand-100 text-brand-700">目标 {{ Number(longformPlan.target_words).toLocaleString() }} 字</span>
+                <span v-if="longformPlan.expected_chapter_count" class="text-xs px-2 py-1 rounded-full bg-brand-50 border border-brand-100 text-brand-700">预计 {{ longformPlan.expected_chapter_count }} 章</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 蒸馏内容套用（风格 / 小说档案） -->
+      <section data-overview-section="profiles" class="p-5 border-t border-gray-100 space-y-3">
+        <div>
+          <h3 class="font-bold text-gray-900 text-sm">套用蒸馏内容</h3>
+          <p class="text-xs text-pixiv-gray mt-1">为本项目绑定文风、角色与世界观档案，自动写作时会持续注入。章节页只读取，不再改写。</p>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-3 items-end">
+          <div class="min-w-0">
+            <label class="block text-xs font-medium text-pixiv-gray mb-1">风格档案（文风 / 笔触）</label>
+            <select v-model.number="projectMetaForm.style_profile_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+              <option :value="0">不套用</option>
+              <option v-for="p in styleProfiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+            </select>
+          </div>
+          <div class="min-w-0">
+            <label class="block text-xs font-medium text-pixiv-gray mb-1">小说档案（角色 / 世界观 / 设定）</label>
+            <select v-model.number="projectMetaForm.novel_profile_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+              <option :value="0">不套用</option>
+              <option v-for="p in novelProfiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+            </select>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 xl:justify-end">
+            <a href="/dashboard/wizard?tab=distill" class="px-3 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50">管理档案</a>
+            <button @click="saveProjectProfiles" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600">保存套用</button>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3 border-t border-gray-100">
+          <div>
+            <label class="block text-xs font-medium text-pixiv-gray mb-1">AI 偏好画像</label>
+            <select v-model.number="projectMetaForm.preference_profile_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+              <option :value="0">不注入画像</option>
+              <option v-for="profile in preferenceProfiles" :key="profile.id" :value="profile.id">{{ profile.name }}</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-pixiv-gray mb-1">画像注入强度</label>
+            <select v-model="projectMetaForm.preference_injection_strength" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+              <option v-for="strength in preferenceStrengths" :key="strength.value" :value="strength.value">{{ strength.label }}</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <!-- 风格控制 -->
+      <section data-overview-section="style" class="p-5 border-t border-gray-100 space-y-4">
+        <div>
+          <h3 class="font-bold text-gray-900 text-sm">风格控制</h3>
+          <p class="text-xs text-pixiv-gray mt-1">滑块居中（50）时不干预；向两端调整后，续写会持续采用对应倾向。</p>
+        </div>
+        <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,3fr)_minmax(18rem,2fr)] gap-6 items-start">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 min-w-0">
+            <div v-for="(s, index) in STYLE_SLIDERS" :key="s.key" class="space-y-1" :class="STYLE_SLIDERS.length % 2 && index === STYLE_SLIDERS.length - 1 ? 'md:col-span-2' : ''">
+              <div class="flex items-center justify-between text-xs gap-3">
+                <span class="font-medium text-gray-700">{{ s.label }}</span>
+                <span class="font-mono text-pixiv-gray">{{ projectMetaForm.style_control.sliders[s.key] }}</span>
+              </div>
+              <input type="range" min="0" max="100" step="5" v-model.number="projectMetaForm.style_control.sliders[s.key]" class="w-full accent-brand-500">
+              <div class="flex justify-between gap-3 text-[10px] text-gray-400">
+                <span>{{ s.left }}</span><span class="text-right">{{ s.right }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="space-y-4 min-w-0">
+            <div>
+            <label class="block text-xs font-medium text-pixiv-gray mb-1">风格标签</label>
+            <div class="flex flex-wrap gap-1.5 mb-2">
+              <span v-for="t in projectMetaForm.style_control.tags" :key="t" class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-brand-50 text-brand-700">
+                {{ t }}<button @click="removeStyleTag(t)" class="hover:text-brand-900">×</button>
+              </span>
+              <span v-if="!projectMetaForm.style_control.tags.length" class="text-xs text-gray-400">未添加标签</span>
+            </div>
+            <div class="flex flex-col sm:flex-row gap-2">
+              <input v-model="styleTagInput" @keydown.enter.prevent="addStyleTag" class="flex-1 min-w-0 px-3 py-1.5 border border-gray-200 rounded-lg text-sm" placeholder="如：NTR、病娇、治愈、第一人称">
+              <button @click="addStyleTag" class="px-3 py-1.5 bg-brand-500 text-white rounded-lg text-sm hover:bg-brand-600">添加</button>
+            </div>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-pixiv-gray mb-1">额外要求（可选）</label>
+              <textarea v-model="projectMetaForm.style_control.custom" rows="3" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="补充的风格指令，如：用第一人称、多用对话推进、避免说教"></textarea>
+            </div>
+            <div class="flex justify-end">
+              <button @click="saveProjectStyleControl" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600">保存风格设定</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </section>
+  <!-- ═══ 长篇规划 ═══ -->
+  <div class="bg-gradient-to-br from-indigo-50 to-brand-50 rounded-xl border border-indigo-100 shadow-sm p-4 space-y-4">
+    <div class="flex items-start justify-between gap-3">
+      <div>
+        <h3 class="font-bold text-gray-900">长篇规划</h3>
+        <p class="text-xs text-pixiv-gray mt-1">输入目标总字数，让 AI 估算章节数并先生成每章概要；再扩写详细章节梗概用于后续正文 Pipeline。</p>
+      </div>
+      <div v-if="longformPlan.expected_chapter_count || longformPlan.target_words" class="flex flex-wrap gap-1 justify-end">
+        <span v-if="longformPlan.target_words" class="text-xs px-2 py-1 rounded-full bg-white border border-indigo-100 text-indigo-700">目标 {{ Number(longformPlan.target_words).toLocaleString() }} 字</span>
+        <span v-if="longformPlan.expected_chapter_count" class="text-xs px-2 py-1 rounded-full bg-white border border-indigo-100 text-indigo-700">预计 {{ longformPlan.expected_chapter_count }} 章</span>
+        <span v-if="longformPlan.average_chapter_words" class="text-xs px-2 py-1 rounded-full bg-white border border-indigo-100 text-indigo-700">均章 {{ Number(longformPlan.average_chapter_words).toLocaleString() }} 字</span>
+      </div>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
+      <div>
+        <label class="block text-xs font-medium text-pixiv-gray mb-1">规划 Agent</label>
+        <select v-model.number="longformPlanForm.agent_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+          <option :value="0">请选择</option>
+          <option v-for="a in planAgents" :key="a.id" :value="a.id">{{ a.name }}</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-pixiv-gray mb-1">目标总字数</label>
+        <input type="number" min="1" v-model.number="longformPlanForm.target_words" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white" placeholder="例如 500000">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-pixiv-gray mb-1">章节数参考（可选）</label>
+        <input type="number" min="1" v-model.number="longformPlanForm.expected_chapters" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white" placeholder="不填则 AI 估算">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-pixiv-gray mb-1">单章字数参考</label>
+        <input type="number" min="1" v-model.number="longformPlanForm.chapter_words_reference" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white" placeholder="例如 4000">
+      </div>
+    </div>
+    <div class="flex justify-end gap-2">
+      <button @click="openRawImportModal('longform_plan')" class="px-3 py-2 bg-white border border-indigo-200 text-indigo-700 rounded-lg text-sm font-medium">导入原始输出</button>
+      <button @click="generateLongformPlan" :disabled="longformPlanning || !longformPlanForm.agent_id || !longformPlanForm.target_words" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+        {{ longformPlanning ? '规划中…' : '生成全书规划' }}
+      </button>
+    </div>
+    <textarea v-model="longformPlanForm.instruction" rows="3" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white" placeholder="补充规划要求：题材、节奏、主线、预计篇幅、必须出现的剧情节点等"></textarea>
+    <div v-if="longformPlanning || longformDetailPlanning || streamOutput" class="bg-white/90 rounded-lg border border-indigo-100 overflow-hidden">
+      <div class="px-3 py-2 border-b border-indigo-100 flex items-center gap-2">
+        <span class="text-xs font-bold text-gray-900">实时输出</span>
+        <span v-if="currentJobId" class="text-[10px] font-mono text-pixiv-gray">{{ currentJobId.substring(0, 8) }}</span>
+        <span v-if="longformPlanning || longformDetailPlanning" class="text-[10px] text-indigo-600 animate-pulse">生成中…</span>
+        <span class="text-[10px] text-pixiv-gray">离开本页不保留输出（规划结果已落库）</span>
+        <button v-if="streamOutput && !longformPlanning && !longformDetailPlanning" @click="streamOutput = ''" class="ml-auto text-xs text-pixiv-gray hover:text-gray-700">清空</button>
+      </div>
+      <pre class="p-3 text-xs whitespace-pre-wrap font-mono text-gray-700 max-h-64 overflow-auto">{{ streamOutput || '等待模型输出…' }}</pre>
+    </div>
+    <div v-if="longformPlan.project_outline || longformPlan.chapters.length" class="bg-white/80 rounded-lg border border-indigo-100 p-3 space-y-3">
+      <div v-if="longformPlan.structure_notes">
+        <div class="text-xs font-bold text-gray-900 mb-1">结构拆分说明</div>
+        <pre class="text-xs text-gray-700 whitespace-pre-wrap max-h-32 overflow-auto font-serif">{{ longformPlan.structure_notes }}</pre>
+      </div>
+      <div v-if="longformPlan.project_outline">
+        <div class="text-xs font-bold text-gray-900 mb-1">全书大纲</div>
+        <pre class="text-xs text-gray-700 whitespace-pre-wrap max-h-40 overflow-auto font-serif">{{ longformPlan.project_outline }}</pre>
+      </div>
+      <div v-if="longformPlan.chapters.length" class="space-y-2">
+        <div class="flex items-center justify-between gap-2 flex-wrap">
+          <div class="text-xs font-bold text-gray-900">章节规划（{{ longformPlan.chapters.length }} 章）</div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <button @click="createNextPlannedChapter" class="text-xs px-2 py-1 bg-brand-500 text-white rounded">创建下一章</button>
+            <input type="number" min="1" v-model.number="longformCreateCount" class="w-20 px-2 py-1 border border-gray-200 rounded text-xs" placeholder="数量">
+            <button @click="createPlannedChapters(longformCreateCount)" class="text-xs px-2 py-1 bg-indigo-600 text-white rounded">创建前 N 章</button>
+            <button @click="createPlannedChapters(0)" class="text-xs px-2 py-1 bg-gray-900 text-white rounded">创建全部</button>
+            <a :href="'/dashboard/ai/projects/' + projectId + '/chapters'" class="text-xs px-2 py-1 bg-white border border-gray-200 text-gray-700 rounded no-underline hover:bg-gray-50">去自动写作</a>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 flex-wrap">
+          <select v-model.number="longformDetailForm.agent_id" class="text-xs px-2 py-1 border border-gray-200 rounded bg-white">
+            <option :value="0">详细梗概 Agent</option>
+            <option v-for="a in planAgents" :key="a.id" :value="a.id">{{ a.name }}</option>
+          </select>
+          <button @click="openRawImportModal('longform_details')" :disabled="!longformPlan.chapters.length" class="text-xs px-2 py-1 bg-white border border-purple-200 text-purple-700 rounded disabled:opacity-50">导入详细梗概原始输出</button>
+          <button @click="generateDetailedOutlines" :disabled="longformDetailPlanning || !longformDetailForm.agent_id" class="text-xs px-2 py-1 bg-purple-600 text-white rounded disabled:opacity-50">{{ longformDetailPlanning ? '扩写中…' : '扩写未完成详细梗概' }}</button>
+        </div>
+        <textarea v-model="longformDetailForm.instruction" rows="2" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="详细梗概扩写要求：例如每章拆 4-6 个场景，明确情绪变化和章尾钩子"></textarea>
+        <div class="max-h-64 overflow-auto space-y-2 pr-1">
+          <div v-for="ch in longformPlan.chapters" :key="ch.chapter_number" class="border border-gray-100 rounded-lg p-2 text-xs bg-white">
+            <div class="flex items-center justify-between gap-2">
+              <div class="font-medium text-gray-900">第{{ ch.chapter_number }}章 {{ ch.title }}</div>
+              <span :class="plannedChapterExists(ch.chapter_number) ? 'text-green-600' : (ch.detailed_outline ? 'text-purple-600' : 'text-pixiv-gray')">{{ plannedChapterExists(ch.chapter_number) ? '已创建' : (ch.detailed_outline ? '已扩写 · ' : '') + ((ch.target_words || 3000) + ' 字') }}</span>
+            </div>
+            <div v-if="ch.outline" class="text-gray-600 mt-1 whitespace-pre-wrap"><span class="font-bold">概要：</span>{{ ch.outline }}</div>
+            <div v-if="ch.detailed_outline" class="text-gray-700 mt-1 whitespace-pre-wrap"><span class="font-bold">详细梗概：</span>{{ ch.detailed_outline }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  window.initVueApp({
+    setup() {
+      const { ref, reactive, computed, onMounted } = Vue;
+      const projectId = {[ project_id ]};
+
+      const agents = ref([]);
+      const styleProfiles = ref([]);
+      const novelProfiles = ref([]);
+      const preferenceProfiles = ref([]);
+      const preferenceStrengths = [
+        { value: 'off', label: '关闭' },
+        { value: 'light', label: '轻量' },
+        { value: 'standard', label: '标准' },
+        { value: 'strong', label: '强化' },
+      ];
+      const message = ref('');
+      const messageType = ref('success');
+      const toastMessage = ref('');
+      const toastType = ref('success');
+      let toastTimer = null;
+      const streaming = ref(false);
+      const streamOutput = ref('');
+      const currentJobId = ref('');
+
+      const currentProject = ref(null);
+      const coverBusy = ref(false);
+      const chapters = ref([]);
+      const styleTagInput = ref('');
+      const projectMetaForm = reactive({
+        name: '', description: '', style_profile_id: 0, novel_profile_id: 0,
+        preference_profile_id: 0, preference_injection_strength: 'off',
+        // 项目级风格控制：滑块 + 标签 + 自定义，注入续写 prompt
+        style_control: { sliders: { explicitness: 50, lyricism: 50, pacing: 50, darkness: 50, vulgarity: 50 }, tags: [], custom: '' },
+      });
+      const STYLE_SLIDERS = [
+        { key: 'explicitness', label: '情色露骨度', left: '含蓄留白', right: '直接露骨' },
+        { key: 'lyricism', label: '抒情浓度', left: '克制冷静', right: '抒情唯美' },
+        { key: 'pacing', label: '叙事节奏', left: '舒缓铺陈', right: '紧凑快节奏' },
+        { key: 'darkness', label: '黑暗压抑度', left: '明亮温暖', right: '黑暗沉重' },
+        { key: 'vulgarity', label: '粗俗口语度', left: '雅致书面', right: '粗俗生猛' },
+      ];
+      const longformPlanning = ref(false);
+      const longformDetailPlanning = ref(false);
+      const longformCreateCount = ref(3);
+      const longformPlanForm = reactive({ agent_id: 0, target_words: null, expected_chapters: null, chapter_words_reference: 4000, instruction: '' });
+      const longformDetailForm = reactive({ agent_id: 0, instruction: '', mode: 'missing_only' });
+      const longformPlan = reactive({ project_outline: '', target_words: 0, expected_chapter_count: 0, average_chapter_words: 0, structure_notes: '', volumes: [], chapters: [], foreshadows: [] });
+      const showRawImportModal = ref(false);
+      const rawImportType = ref('longform_plan');
+      const rawImportText = ref('');
+      const rawImportJobId = ref('');
+      const rawImporting = ref(false);
+      const rawImportTitle = computed(() => ({
+        longform_plan: '导入全书规划原始输出',
+        longform_details: '导入详细章节梗概原始输出',
+      }[rawImportType.value] || '导入原始输出'));
+
+      const planAgents = computed(() => agents.value.filter(a => ['plan', 'general'].includes(a.task_type)));
+      const generatedChapterCount = computed(() => chapters.value.filter(ch => !!String(ch.content || '').trim() || Number(ch.word_count || 0) > 0).length);
+      const missingPlannedChapters = computed(() => longformPlan.chapters.filter(ch => !plannedChapterExists(ch.chapter_number)));
+
+      function plannedChapterExists(chapterNumber) {
+        return chapters.value.some(ch => Number(ch.chapter_number) === Number(chapterNumber));
+      }
+      function syncLongformPlanFromProject(project) {
+        const plan = project?.settings?.longform_plan || {};
+        longformPlan.project_outline = plan.project_outline || '';
+        longformPlan.target_words = plan.target_words || project?.settings?.target_words || 0;
+        longformPlan.expected_chapter_count = plan.expected_chapter_count || project?.settings?.expected_chapter_count || 0;
+        longformPlan.average_chapter_words = plan.average_chapter_words || project?.settings?.average_chapter_words || 0;
+        longformPlan.structure_notes = plan.structure_notes || '';
+        longformPlan.volumes = Array.isArray(plan.volumes) ? plan.volumes : [];
+        longformPlan.chapters = Array.isArray(plan.chapters) ? plan.chapters : [];
+        longformPlan.foreshadows = Array.isArray(plan.foreshadows) ? plan.foreshadows : [];
+      }
+      function applyProjectToForm(p) {
+        const sc = (p.settings && p.settings.style_control) || {};
+        const sliders = Object.assign({ explicitness: 50, lyricism: 50, pacing: 50, darkness: 50, vulgarity: 50 }, sc.sliders || {});
+        Object.assign(projectMetaForm, {
+          name: p.name || '', description: p.description || '',
+          style_profile_id: p.style_profile_id || 0, novel_profile_id: p.novel_profile_id || 0,
+          preference_profile_id: p.preference_profile_id || 0,
+          preference_injection_strength: p.preference_injection_strength || 'off',
+          style_control: { sliders, tags: Array.isArray(sc.tags) ? [...sc.tags] : [], custom: sc.custom || '' },
+        });
+        syncLongformPlanFromProject(p);
+      }
+      function showMessage(text, type = 'success') {
+        message.value = text;
+        messageType.value = type;
+        toastMessage.value = text;
+        toastType.value = type;
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => { toastMessage.value = ''; }, 3200);
+        setTimeout(() => { message.value = ''; }, 4000);
+      }
+      // 请求、错误文案与 SSE 解析全部走 base.html 的公共层（window.csrfFetch /
+      // window.errorText / window.streamSSE / window.aiApi），本页不再自建副本。
+      const api = (url, options) => window.aiApi.request(url, options);
+
+      // 本页两条规划流的公共出口：帧解析在 window.streamSSE 里，这里只把事件
+      // 映射到页面状态，并把 plan 交回调用方。
+      async function routeStream(url, payload) {
+        let plan = null;
+        await window.streamSSE(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        }, {
+          onEvent: (event, data) => {
+            if (event === 'metadata') currentJobId.value = data.job_id || '';
+            if (event === 'progress') streamOutput.value += '\n[' + (data.phase || 'progress') + '] ' + (data.message || '处理中…') + '\n';
+            if (event === 'delta') streamOutput.value += data.text || '';
+            if (event === 'longform_plan' || event === 'longform_plan_details') plan = data.plan;
+            if (event === 'done' && data.plan) plan = data.plan;
+            if (event === 'error') throw new Error(data.message || '生成失败');
+          },
+        });
+        return plan;
+      }
+
+      function bestPlanAgentId() {
+        const enabled = agents.value.filter(a => a.enabled !== false);
+        for (const type of ['plan', 'general']) {
+          const matched = enabled.find(a => a.task_type === type);
+          if (matched) return matched.id;
+        }
+        return enabled[0]?.id || 0;
+      }
+      async function loadAgents() {
+        agents.value = await window.aiApi.agents();
+        const fallback = bestPlanAgentId();
+        if (!longformPlanForm.agent_id) longformPlanForm.agent_id = fallback;
+        if (!longformDetailForm.agent_id) longformDetailForm.agent_id = fallback;
+      }
+      // 风格档案 / 小说档案 / 偏好画像的加载器同样在 base.html 的 window.aiApi 里
+      async function loadStyleProfiles() { styleProfiles.value = await window.aiApi.styleProfiles(); }
+      async function loadNovelProfiles() { novelProfiles.value = await window.aiApi.novelProfiles(); }
+      async function loadPreferenceProfiles() { preferenceProfiles.value = await window.aiApi.preferenceProfiles(); }
+      async function refreshCurrentProject() {
+        try {
+          const project = await api('/api/dashboard/ai/projects/' + projectId);
+          currentProject.value = project;
+          syncLongformPlanFromProject(project);
+        } catch (e) { showMessage(e.message, 'error'); }
+      }
+      async function loadProject() {
+        try {
+          const project = await api('/api/dashboard/ai/projects/' + projectId);
+          currentProject.value = project;
+          applyProjectToForm(project);
+        } catch (e) { showMessage(e.message || '读取项目失败', 'error'); }
+      }
+      async function loadChapters() {
+        try { chapters.value = await api('/api/dashboard/ai/projects/' + projectId + '/chapters'); }
+        catch { chapters.value = []; }
+      }
+
+      async function saveProjectMeta() {
+        try {
+          await api('/api/dashboard/ai/projects/' + projectId, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name: projectMetaForm.name, description: projectMetaForm.description }) });
+          if (currentProject.value) {
+            currentProject.value.name = projectMetaForm.name;
+            currentProject.value.description = projectMetaForm.description;
+          }
+          showMessage('项目信息已保存');
+        } catch (e) { showMessage(e.message, 'error'); }
+      }
+      async function saveProjectStyleControl() {
+        if (!currentProject.value) return false;
+        try {
+          const existing = (currentProject.value.settings && typeof currentProject.value.settings === 'object')
+            ? currentProject.value.settings : {};
+          const styleControl = JSON.parse(JSON.stringify(projectMetaForm.style_control));
+          const settings = { ...existing, style_control: styleControl };
+          await api('/api/dashboard/ai/projects/' + projectId, {
+            method: 'PUT',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ settings }),
+          });
+          currentProject.value.settings = settings;
+          showMessage('风格设定已保存');
+          return true;
+        } catch (e) {
+          showMessage(e.message, 'error');
+          return false;
+        }
+      }
+      async function uploadProjectCover(event) {
+        const input = event?.target;
+        const file = input?.files?.[0];
+        if (!file || coverBusy.value) return;
+        const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
+        if (!allowedTypes.has(file.type)) {
+          showMessage('封面仅支持 JPEG、PNG 或 WebP 格式', 'error');
+          input.value = '';
+          return;
+        }
+        if (file.size > 10 * 1024 * 1024) {
+          showMessage('封面不能超过 10 MiB', 'error');
+          input.value = '';
+          return;
+        }
+        coverBusy.value = true;
+        try {
+          const form = new FormData();
+          form.append('cover', file);
+          const data = await api('/api/dashboard/ai/projects/' + projectId + '/cover', {
+            method: 'POST', body: form,
+          });
+          if (currentProject.value) currentProject.value.cover_url = data.cover_url + '?v=' + Date.now();
+          showMessage('封面已保存');
+        } catch (e) {
+          showMessage(e.message, 'error');
+        } finally {
+          coverBusy.value = false;
+          input.value = '';
+        }
+      }
+      async function deleteProjectCover() {
+        if (coverBusy.value) return;
+        if (!confirm('确认删除当前封面？')) return;
+        coverBusy.value = true;
+        try {
+          await api('/api/dashboard/ai/projects/' + projectId + '/cover', { method: 'DELETE' });
+          if (currentProject.value) currentProject.value.cover_url = null;
+          showMessage('封面已删除');
+        } catch (e) {
+          showMessage(e.message, 'error');
+        } finally {
+          coverBusy.value = false;
+        }
+      }
+      async function saveProjectProfiles() {
+        try {
+          await api('/api/dashboard/ai/projects/' + projectId, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({
+            style_profile_id: projectMetaForm.style_profile_id || null,
+            novel_profile_id: projectMetaForm.novel_profile_id || null,
+            preference_profile_id: projectMetaForm.preference_profile_id || null,
+            preference_injection_strength: projectMetaForm.preference_injection_strength || 'off',
+          }) });
+          if (currentProject.value) {
+            currentProject.value.style_profile_id = projectMetaForm.style_profile_id || null;
+            currentProject.value.novel_profile_id = projectMetaForm.novel_profile_id || null;
+            currentProject.value.preference_profile_id = projectMetaForm.preference_profile_id || null;
+            currentProject.value.preference_injection_strength = projectMetaForm.preference_injection_strength || 'off';
+          }
+          showMessage('档案与偏好画像已保存');
+          return true;
+        } catch (e) {
+          showMessage(e.message, 'error');
+          return false;
+        }
+      }
+      function preferencePayload(extra = {}) {
+        return {
+          ...extra,
+          preference_profile_id: projectMetaForm.preference_profile_id || null,
+          preference_injection_strength: projectMetaForm.preference_injection_strength || 'off',
+        };
+      }
+      function addStyleTag() {
+        const t = styleTagInput.value.trim();
+        if (t && !projectMetaForm.style_control.tags.includes(t)) {
+          projectMetaForm.style_control.tags.push(t);
+        }
+        styleTagInput.value = '';
+      }
+      function removeStyleTag(t) {
+        const i = projectMetaForm.style_control.tags.indexOf(t);
+        if (i >= 0) projectMetaForm.style_control.tags.splice(i, 1);
+      }
+      function projectCoverGradient(name) {    // 基于书名 hash 的稳定渐变
+        const s = String(name || '?');
+        let h = 0;
+        for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) & 0xffffffff;
+        const hue = Math.abs(h) % 360;
+        const hue2 = (hue + 40) % 360;
+        return { background: 'linear-gradient(135deg, hsl(' + hue + ' 70% 55%), hsl(' + hue2 + ' 70% 42%))' };
+      }
+      function projectFirstChar(name) {
+        const s = String(name || '').trim();
+        return s ? Array.from(s)[0] : '书';   // Array.from 正确处理 CJK / emoji
+      }
+      function openRawImportModal(type) {
+        rawImportType.value = type;
+        rawImportText.value = '';
+        rawImportJobId.value = '';
+        showRawImportModal.value = true;
+      }
+      async function confirmRawImport() {
+        rawImporting.value = true;
+        try {
+          const payload = {};
+          if (rawImportText.value.trim()) payload.output_text = rawImportText.value;
+          if (rawImportJobId.value.trim()) payload.job_id = rawImportJobId.value.trim();
+          if (rawImportType.value === 'longform_plan') {
+            const result = await api('/api/dashboard/ai/projects/' + projectId + '/longform-plan/import-output', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ ...payload, target_words: longformPlanForm.target_words, chapter_words_reference: longformPlanForm.chapter_words_reference }) });
+            applyPlan(result);
+          } else if (rawImportType.value === 'longform_details') {
+            const result = await api('/api/dashboard/ai/projects/' + projectId + '/longform-plan/details/import-output', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+            applyPlan(result.plan || {});
+          }
+          await refreshCurrentProject();
+          showRawImportModal.value = false;
+          rawImportText.value = ''; rawImportJobId.value = '';
+          showMessage('原始输出已导入');
+        } catch (e) { showMessage(e.message, 'error'); }
+        finally { rawImporting.value = false; }
+      }
+      function applyPlan(plan) {
+        Object.assign(longformPlan, {
+          project_outline: plan.project_outline || '',
+          target_words: plan.target_words || 0,
+          expected_chapter_count: plan.expected_chapter_count || 0,
+          average_chapter_words: plan.average_chapter_words || 0,
+          structure_notes: plan.structure_notes || '',
+          volumes: plan.volumes || [],
+          chapters: plan.chapters || [],
+          foreshadows: plan.foreshadows || [],
+        });
+      }
+      async function generateLongformPlan() {
+        if (!longformPlanForm.agent_id) { showMessage('请选择规划 Agent', 'error'); return; }
+        if (!longformPlanForm.target_words) { showMessage('请填写目标总字数', 'error'); return; }
+        longformPlanning.value = true; streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
+        try {
+          const plan = await routeStream('/api/dashboard/ai/projects/' + projectId + '/longform-plan/stream', preferencePayload(longformPlanForm));
+          if (!plan) throw new Error('模型未返回可用规划');
+          applyPlan(plan);
+          await refreshCurrentProject();
+          showMessage('长篇规划已生成并保存');
+        } catch (e) { showMessage(e.message, 'error'); }
+        finally { longformPlanning.value = false; streaming.value = false; }
+      }
+      async function generateDetailedOutlines() {
+        if (!longformDetailForm.agent_id) { showMessage('请选择详细梗概 Agent', 'error'); return; }
+        longformDetailPlanning.value = true; streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
+        try {
+          const plan = await routeStream('/api/dashboard/ai/projects/' + projectId + '/longform-plan/details/stream', preferencePayload(longformDetailForm));
+          if (!plan) throw new Error('模型未返回可用详细梗概');
+          applyPlan(plan);
+          await refreshCurrentProject();
+          showMessage('详细章节梗概已生成并保存');
+        } catch (e) { showMessage(e.message, 'error'); }
+        finally { longformDetailPlanning.value = false; streaming.value = false; }
+      }
+      async function createPlannedChapters(count = 0) {
+        let selected = missingPlannedChapters.value;
+        if (count && count > 0) selected = selected.slice(0, count);
+        if (!selected.length) { showMessage('没有需要创建的规划章节'); return; }
+        try {
+          const result = await api('/api/dashboard/ai/projects/' + projectId + '/chapters/batch', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ chapters: selected, mode: 'missing_only' }) });
+          await loadChapters();
+          showMessage(`已创建 ${result.created?.length || 0} 章，跳过 ${result.skipped?.length || 0} 章`);
+        } catch (e) { showMessage(e.message, 'error'); }
+      }
+      function createNextPlannedChapter() { createPlannedChapters(1); }
+
+      onMounted(async () => {
+        await Promise.all([
+          loadAgents().catch(e => showMessage(e.message || '读取 Agent 失败', 'error')),
+          loadStyleProfiles().catch(() => {}),
+          loadNovelProfiles().catch(() => {}),
+          loadPreferenceProfiles().catch(() => {}),
+          loadProject(),
+          loadChapters(),
+        ]);
+      });
+
+      return {
+        projectId, agents, styleProfiles, novelProfiles, preferenceProfiles, preferenceStrengths,
+        message, messageType, toastMessage, toastType, streaming, streamOutput, currentJobId,
+        currentProject, coverBusy, chapters, styleTagInput, projectMetaForm, STYLE_SLIDERS,
+        longformPlanning, longformDetailPlanning, longformCreateCount, longformPlanForm,
+        longformDetailForm, longformPlan, showRawImportModal, rawImportType, rawImportText,
+        rawImportJobId, rawImporting, rawImportTitle,
+        planAgents, generatedChapterCount, missingPlannedChapters, plannedChapterExists,
+        loadProject, loadChapters, refreshCurrentProject,
+        saveProjectMeta, saveProjectStyleControl, uploadProjectCover, deleteProjectCover,
+        saveProjectProfiles, preferencePayload, addStyleTag, removeStyleTag,
+        projectCoverGradient, projectFirstChar,
+        openRawImportModal, confirmRawImport,
+        generateLongformPlan, generateDetailedOutlines, createPlannedChapters, createNextPlannedChapter,
+      };
+    }
+  });
+</script>
+{% endblock %}
