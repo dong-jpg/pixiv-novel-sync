@@ -1054,6 +1054,10 @@ class BookmarkNovelSyncService:
                             )
                             stats["author_quota_hit"] = stats.get("author_quota_hit", 0) + 1
                             stats["incomplete"] = True
+                            # 触到每作者配额是**设计行为**（配额存在的意义就是换下一个作者），
+                            # 不是出错。标上 rotation_pending，任务日志才不会把每一轮都
+                            # 显示成黄色「部分完成」——见 webapp.py:_task_log_status_for_stats。
+                            stats["rotation_pending"] = True
                             stop_author_scan = True
 
                     if progress_callback:
@@ -1111,6 +1115,9 @@ class BookmarkNovelSyncService:
                     logger.warning(
                         "Reached run hard cap=%s (synced), stopping sync", run_hard_cap
                     )
+                    # 这条和下面的轮转不一样：走到硬顶说明 users_limit 那层判据没拦住，
+                    # 属于异常截断，必须留在黄色的 partial 里，别被 rotation_pending 转绿。
+                    stats["truncated"] = True
                     stats["incomplete"] = True
                     break
                 _sync_author(user)
@@ -1121,6 +1128,10 @@ class BookmarkNovelSyncService:
                 # 本轮只覆盖了部分关注作者：剩下的会在后续轮次按最久未同步优先补上，
                 # 但必须让调用方看出这轮不是全量。
                 stats["incomplete"] = True
+                # 按 user_last_synced 轮转是**设计行为**：256 个作者 ÷ 每轮 users_limit 个
+                # 本来就跑不完，全圈约 12.8 天。没有这个标记，任务日志里最大的那个任务
+                # 会永远显示「部分完成」，真正的截断/熔断反而被淹没。
+                stats["rotation_pending"] = True
             logger.info(
                 "Following rotation: synced %d/%d users this run (users_limit=%d), %d remaining",
                 users_processed,

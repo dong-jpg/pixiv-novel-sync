@@ -150,8 +150,12 @@ def test_current_frontend_docs_describe_task_logs_and_ai_pages():
     readme = read(ROOT / "README.md")
     contract = read(DOCS / "frontend-api-contract.md")
 
-    assert "默认保留 3 天" in readme
-    assert "保留最近 7 天" not in readme
+    # 保留期从硬编码 3 天改成可配置的 sync.task_log_retention_days（默认 14 天）。
+    # README 必须写出真实默认值和配置项名：按「只留 3 天」去规划「上线后观察一周再
+    # 调限速参数」是行不通的，而这个误解正是文档没跟上代码造成的。
+    assert "保留 14 天" in readme
+    assert "task_log_retention_days" in readme
+    assert "默认保留 3 天" not in readme
     assert "/dashboard/novels?category=rescue" in readme
     assert "userscripts/pixiv-rescue.user.js" in readme
     assert "| `/dashboard/logs` | `dashboard_logs.html` | 任务日志 |" in contract
@@ -176,7 +180,11 @@ def test_task_logs_template_has_complete_ai_filters_and_details():
     assert "filters.status" in html
     assert "/api/dashboard/ai/jobs/" in html
     assert "selectedLog.job_id || selectedLog.id" in html
-    assert '<option value="7">7 天</option>' not in html
+    # 天数下拉不能给出超过默认保留期的选项：库里只留 14 天，列出 30 天只会让用户
+    # 看到一段永远空着的窗口。原来这条断言写死「不许出现 7 天」，因为那时只留 3 天。
+    assert '<option value="14">14 天</option>' in html
+    assert '<option value="30">' not in html
+    assert '<option value="90">' not in html
     assert "polish_dialogue" in html
     assert "polish_psychology" in html
     assert "keyword_clean" in html

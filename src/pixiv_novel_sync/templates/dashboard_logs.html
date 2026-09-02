@@ -9,7 +9,7 @@
   <!-- Header -->
   <div>
     <h1 class="text-2xl font-bold text-gray-900 mb-1">任务日志</h1>
-    <p class="text-sm text-pixiv-gray">查看手工任务和定时任务的执行记录，日志默认保留 3 天</p>
+    <p class="text-sm text-pixiv-gray">查看手工任务和定时任务的执行记录，保留天数在「设置 › 系统维护」里调，默认 14 天</p>
   </div>
 
   <!-- Filter Bar -->
@@ -58,6 +58,8 @@
         <select v-model="filters.days" class="pl-3 pr-8 py-1.5 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-colors custom-select min-w-[80px]">
           <option value="1">1 天</option>
           <option value="3">3 天</option>
+          <option value="7">7 天</option>
+          <option value="14">14 天</option>
         </select>
       </div>
     </div>
@@ -714,6 +716,12 @@
           if (s.users_synced ?? s.users) parts.push(`${s.users_synced ?? s.users}人`);
           if (s.series_synced) parts.push(`${s.series_synced}系列`);
           if (s.assets_downloaded) parts.push(`${s.assets_downloaded}图`);
+          // 轮转任务本轮跑满即算成功（关注作者按 user_last_synced 排队，一轮只覆盖
+          // users_limit 个），但必须让人看出后面还有——否则「全都同步完了」和
+          // 「才刚跑到第 5 个作者」在列表里长得一模一样。
+          if (s.rotation_pending) {
+            parts.push(s.users_remaining !== undefined ? `轮转中，剩 ${s.users_remaining} 位作者` : '轮转中');
+          }
           return parts.length ? parts.join(', ') : '完成';
         }
         return log.status === 'cancelled' ? '已取消' : '完成';

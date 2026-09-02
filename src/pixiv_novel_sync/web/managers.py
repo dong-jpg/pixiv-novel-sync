@@ -52,8 +52,10 @@ SCHEDULER_MAX_CONSECUTIVE_PREEMPTIONS = 2
 SCHEDULER_RETRY_SECONDS_BY_PRIORITY: dict[int, float] = {1: 60.0, 2: 120.0}
 
 # --- 重启补偿（从 task_logs 恢复上次执行时间）相关常量 ---
-# 回溯查询 task_logs 的最长窗口（天）。task_logs 本身默认只保留 3 天
-# （见 cleanup_old_task_logs），这里放宽到 7 天纯粹是冗余保护。
+# 回溯查询 task_logs 的最长窗口（天）。task_logs 的保留期现在由
+# sync.task_log_retention_days 决定（默认 14 天，见清理循环），这里的 7 天是
+# 「最多往前找多久的上次执行」，比保留期短没关系——超过 7 天没跑过的任务，
+# 顺延一个周期也无所谓。
 SCHEDULER_HISTORY_LOOKBACK_DAYS = 7
 # 单个 task_type 最多扫描多少条日志去找最后一次执行：足够跨过最近的失败/取消记录。
 SCHEDULER_HISTORY_SCAN_LIMIT = 50
@@ -235,6 +237,7 @@ SETTINGS_SECTIONS: dict[str, frozenset[str]] = {
         {
             "pending_deletion_grace_period_days",
             "pending_deletion_cleanup_confirmed_days",
+            "task_log_retention_days",
         }
     ),
 }
@@ -441,8 +444,11 @@ class AutoSyncScheduler:
                     try:
                         db = Database(settings.storage.db_path)
                         db.init_schema()
-                        db.cleanup_old_task_logs(days=3)
-                        db.cleanup_ai_jobs(keep_days=3)
+                        # 保留天数从配置读，两张表用同一个值：任务日志页把同步任务和
+                        # AI 任务当成一页的两个分类，两边保留期不一致会让筛选结果对不上。
+                        retention_days = max(int(settings.sync.task_log_retention_days or 14), 1)
+                        db.cleanup_old_task_logs(days=retention_days)
+                        db.cleanup_ai_jobs(keep_days=retention_days)
                         self._last_cleanup_time = now_ts
                     except Exception as exc:
                         logger.warning("Failed to cleanup old task logs: %s", exc)
@@ -1143,6 +1149,7 @@ class SettingsManager:
         sync_data["auto_sync_recommendation_run_cron"] = _save_cron("auto_sync_recommendation_run_cron", "50 8 * * *")
         sync_data["pending_deletion_grace_period_days"] = _save_int("pending_deletion_grace_period_days", 30)
         sync_data["pending_deletion_cleanup_confirmed_days"] = _save_int("pending_deletion_cleanup_confirmed_days", 7)
+        sync_data["task_log_retention_days"] = _save_int("task_log_retention_days", 14)
 
         _atomic_write_yaml(config_path, config_data)
 

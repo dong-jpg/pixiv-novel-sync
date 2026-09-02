@@ -322,13 +322,28 @@ def _task_log_status_for_stats(stats: dict[str, Any] | None) -> str:
 
     生产事故：状态检查被限流熔断，只检查了 30/800 篇就中止，任务日志里却仍是绿色
     「成功」，运维根本看不出这轮几乎什么都没查。凡是 stats 里带 ``aborted_reason``
-    （熔断中止）或 ``incomplete``（订阅系列中止、关注作者只覆盖部分、分页触顶）的，
-    一律记 ``partial``，让它在任务日志里显示成黄色「部分完成」。
+    （熔断中止）或 ``truncated``（分页触顶）的，一律记 ``partial``，让它在任务日志里
+    显示成黄色「部分完成」。
 
-    注意：``remaining`` / ``users_remaining`` 等是常规轮转字段（分批检查本来就有剩余），
+    ``incomplete`` 单独出现时也算 ``partial``——它是兜底信号，宁可误报黄色也不能漏。
+    唯一的例外是同时带 ``rotation_pending``：那表示「跑不完是设计如此」（关注作者按
+    ``user_last_synced`` 轮转，256 人 ÷ 每轮 5 人，全圈约 12.8 天；每作者配额同理），
+    这种轮次记 ``succeeded``。否则最大的那个任务永远是黄色，真正的截断和熔断反而被
+    淹没在里面——黄色必须稀有才有意义。
+
+    注意方向不能反：新增的 ``stats["incomplete"] = True`` 站点默认仍然是 ``partial``，
+    只有显式标了 ``rotation_pending`` 才降级。``tests/test_sync_engine_incremental.py``
+    会 grep 源码，确保每个 ``incomplete`` 站点都伴随 ``truncated`` / ``aborted_reason``
+    / ``rotation_pending`` 之一，不让"沉默的绿色"重新长出来。
+
+    ``remaining`` / ``users_remaining`` 等是常规轮转字段（分批检查本来就有剩余），
     不能作为判定依据，否则每一轮都会变成 partial。
     """
-    if isinstance(stats, dict) and (stats.get("aborted_reason") or stats.get("incomplete")):
+    if not isinstance(stats, dict):
+        return JobStatus.SUCCEEDED.value
+    if stats.get("aborted_reason") or stats.get("truncated"):
+        return _TASK_LOG_STATUS_PARTIAL
+    if stats.get("incomplete") and not stats.get("rotation_pending"):
         return _TASK_LOG_STATUS_PARTIAL
     return JobStatus.SUCCEEDED.value
 
@@ -1675,7 +1690,7 @@ def create_app(
             task_type = request.args.get("task_type")
             status = request.args.get("status") or None
             is_auto = request.args.get("is_auto")
-            days = request.args.get("days", 3, type=int)
+            days = max(1, min(request.args.get("days", 3, type=int) or 3, 90))
             category = request.args.get("category") or "sync"
 
             is_auto_sync = None

@@ -86,6 +86,52 @@ def test_system_section_save_keeps_sync_fields(tmp_path):
     assert saved["delay_seconds_between_items"] == 4.5
 
 
+def test_task_log_retention_is_configurable_and_defaults_to_two_weeks(tmp_path):
+    """任务日志保留天数必须可配，且默认给足两周。
+
+    原来 `cleanup_old_task_logs(days=3)` 是硬编码：耗时趋势、调度预算、限速调参
+    全都只能回看 3 天，而「上线后观察一周再调参数」这种计划因此永远无法执行。
+    """
+    default_path = _write_config(tmp_path, max_items_per_run=20)
+    assert load_settings(str(default_path)).sync.task_log_retention_days == 14
+
+    configured = _write_config(tmp_path, task_log_retention_days=30)
+    assert load_settings(str(configured)).sync.task_log_retention_days == 30
+
+    # 归属系统区：和「待删除保留期」放在一起，同步页保存不该动它
+    assert "task_log_retention_days" in SETTINGS_SECTIONS["system"]
+    saved = SettingsManager(str(configured)).save_sync_settings(
+        {"task_log_retention_days": 7}, section="system"
+    )
+    assert saved["task_log_retention_days"] == 7
+    assert saved["max_items_per_run"] == load_settings(str(configured)).sync.max_items_per_run
+
+    # 0 / 负数会让清理把整张表删空，必须夹到至少 1 天
+    floored = SettingsManager(str(configured)).save_sync_settings(
+        {"task_log_retention_days": 0}, section="system"
+    )
+    assert floored["task_log_retention_days"] >= 1
+
+
+def test_scheduler_cleanup_reads_retention_from_settings(tmp_path):
+    """清理循环必须读配置，两张表用同一个值。
+
+    源码断言：清理埋在调度线程的 while 循环里，行为测试要么起线程要么改结构，
+    而这条约束的实质是「别再写死 3」，grep 就够。
+    """
+    from pathlib import Path
+
+    from pixiv_novel_sync.web import managers as managers_module
+
+    source = Path(managers_module.__file__).read_text(encoding="utf-8")
+
+    assert "settings.sync.task_log_retention_days" in source
+    assert "cleanup_old_task_logs(days=retention_days)" in source
+    assert "cleanup_ai_jobs(keep_days=retention_days)" in source
+    assert "cleanup_old_task_logs(days=3)" not in source
+    assert "cleanup_ai_jobs(keep_days=3)" not in source
+
+
 def test_full_save_without_section_keeps_legacy_behaviour(tmp_path):
     """section=None 必须保持原有全量行为（CLI 与既有测试依赖它）。"""
     config_path = _write_config(tmp_path, max_items_per_run=20)

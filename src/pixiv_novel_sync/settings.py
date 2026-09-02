@@ -107,6 +107,10 @@ class SyncSettings:
     # Phase 3.2: pending_deletions表清理配置
     pending_deletion_grace_period_days: int = 30  # pending状态保留天数,给用户充足恢复时间
     pending_deletion_cleanup_confirmed_days: int = 7  # 已确认记录清理天数
+    # 任务日志（task_logs + ai_jobs）保留天数。原来硬编码 3 天，导致「攒一周数据再看
+    # 趋势」根本不可能——窗口永远只有 3 天。放宽到 14 天：按生产实测约 31 次/天算是
+    # 400 多行，体积可忽略，而调度预算和耗时回归至少要两周才看得出来。
+    task_log_retention_days: int = 14
 
 
 @dataclass(slots=True)
@@ -235,6 +239,7 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             auto_sync_recommendation_run_cron=str(sync_raw.get("auto_sync_recommendation_run_cron", "50 8 * * *")),
             pending_deletion_grace_period_days=_coerce_positive_int(sync_raw.get("pending_deletion_grace_period_days"), 30),
             pending_deletion_cleanup_confirmed_days=_coerce_positive_int(sync_raw.get("pending_deletion_cleanup_confirmed_days"), 7),
+            task_log_retention_days=_coerce_positive_int(sync_raw.get("task_log_retention_days"), 14),
         ),
         storage=StorageSettings(
             public_dir=public_dir,

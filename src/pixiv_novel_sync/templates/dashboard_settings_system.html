@@ -3,8 +3,8 @@
 {% block title %}系统维护 - Pixiv 小说同步器{% endblock %}
 
 {% block content %}
-{# 设置页第五分页：图片缓存、救援 API Token、数据导出、待删除保留期。
-   只有「待删除保留期」落到 config.yaml，走 PUT /api/dashboard/settings/system——
+{# 设置页第五分页：图片缓存、救援 API Token、数据导出、数据保留期。
+   只有「数据保留期」落到 config.yaml，走 PUT /api/dashboard/settings/system——
    分区端点保证这一页保存时不会把同步页的限速字段冲成默认值。
    变更类请求一律用 base.html 的 window.csrfFetch，失败原因用 window.errorText 读。 #}
 <div class="library-page px-6 lg:px-8 pt-6 max-w-6xl mx-auto space-y-5 pb-8">
@@ -12,18 +12,18 @@
     <div>
       <p class="library-kicker">Settings</p>
       <h1 class="text-2xl font-bold text-gray-900 mb-1">系统维护</h1>
-      <p class="text-sm text-pixiv-gray">图片缓存、救援 API、数据导出与待删除保留期</p>
+      <p class="text-sm text-pixiv-gray">图片缓存、救援 API、数据导出与数据保留期</p>
     </div>
   </div>
 
   {% include 'dashboard_settings_nav.html' %}
 
-  <!-- 1. 待删除保留期（唯一落到 config.yaml 的一块） -->
+  <!-- 1. 数据保留期（唯一落到 config.yaml 的一块） -->
   <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 sm:p-8">
     <div class="mb-6 pb-4 border-b border-gray-100">
-      <h2 class="text-xl font-bold text-gray-900">待删除保留期</h2>
+      <h2 class="text-xl font-bold text-gray-900">数据保留期</h2>
       <p class="text-sm text-pixiv-gray mt-1">
-        取消收藏/追更的内容不会立刻删除，先进入「待确认删除」列表；这里控制它在列表里停留多久。
+        取消收藏/追更的内容不会立刻删除，先进入「待确认删除」列表；这里控制它在列表里停留多久，以及任务日志保留多长。
       </p>
     </div>
 
@@ -41,6 +41,12 @@
           <input type="number" min="0" v-model.number="settings.pending_deletion_cleanup_confirmed_days"
                  class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
           <p class="mt-1 text-xs text-pixiv-light">确认删除后，记录本身还留多久便于回溯</p>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">任务日志保留天数</label>
+          <input type="number" min="1" v-model.number="settings.task_log_retention_days"
+                 class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+          <p class="mt-1 text-xs text-pixiv-light">同步任务与 AI 任务日志共用这个值；调低会立刻丢掉更早的耗时趋势</p>
         </div>
       </div>
 
@@ -190,6 +196,7 @@
             body: JSON.stringify({
               pending_deletion_grace_period_days: settings.value.pending_deletion_grace_period_days,
               pending_deletion_cleanup_confirmed_days: settings.value.pending_deletion_cleanup_confirmed_days,
+              task_log_retention_days: settings.value.task_log_retention_days,
             }),
           });
           const data = await res.json().catch(() => ({}));

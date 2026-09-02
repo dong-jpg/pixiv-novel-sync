@@ -1038,6 +1038,36 @@ def test_task_log_status_for_stats_keeps_succeeded_for_clean_run():
     assert _task_log_status_for_stats({"remaining": 6000}) == JobStatus.SUCCEEDED.value
 
 
+def test_task_log_status_for_stats_keeps_rotation_round_succeeded():
+    """按设计跑不完的轮次不该记 partial：256 个关注作者 ÷ 每轮 users_limit 个。
+
+    生产实测：following_novels 每轮都带 incomplete + users_remaining=251，于是耗时
+    最大的那个任务在日志页永远是黄色「部分完成」。黄色必须稀有才有意义——它一旦
+    变成常态，真正的熔断中止和分页截断就被淹没在里面了。
+    """
+    rotation = {"users": 59, "users_remaining": 251, "incomplete": True, "rotation_pending": True}
+    assert _task_log_status_for_stats(rotation) == JobStatus.SUCCEEDED.value
+    # 每作者配额触顶同理：配额存在的意义就是换下一个作者，不是出错
+    quota_hit = {"author_quota_hit": 2, "incomplete": True, "rotation_pending": True}
+    assert _task_log_status_for_stats(quota_hit) == JobStatus.SUCCEEDED.value
+
+
+def test_task_log_status_for_stats_rotation_flag_does_not_mask_real_trouble():
+    """rotation_pending 只降级「纯轮转」，盖不住截断和熔断。
+
+    降级的方向必须是白名单式的：新增的 incomplete 站点默认仍然 partial，只有显式
+    标了 rotation_pending 才转绿，否则"沉默的绿色"会从别处重新长出来。
+    """
+    assert _task_log_status_for_stats(
+        {"incomplete": True, "rotation_pending": True, "truncated": True}
+    ) == "partial"
+    assert _task_log_status_for_stats(
+        {"incomplete": True, "rotation_pending": True, "aborted_reason": "rate_limited"}
+    ) == "partial"
+    # truncated 现在是独立判据：以前它只是 incomplete 的附带信号，漏设 incomplete 就变绿
+    assert _task_log_status_for_stats({"truncated": True}) == "partial"
+
+
 def test_shared_sync_aborted_by_rate_limit_updates_task_log_as_partial(tmp_path, monkeypatch):
     RecordingDatabase.created_logs = []
     RecordingDatabase.updated_logs = []

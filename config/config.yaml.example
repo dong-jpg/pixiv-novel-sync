@@ -125,6 +125,10 @@ sync:
   pending_deletion_grace_period_days: 30
   pending_deletion_cleanup_confirmed_days: 7
 
+  # 任务日志（task_logs + ai_jobs）保留天数。调度器每小时清理一次。
+  # 原来硬编码 3 天，导致耗时趋势和调度预算最多只能回看 3 天。
+  task_log_retention_days: 14
+
 storage:
   public_dir: ./data/library/public
   private_dir: ./data/library/private

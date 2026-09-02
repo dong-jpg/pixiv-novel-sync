@@ -1591,3 +1591,34 @@ def test_series_pagination_source_uses_dedicated_resolver() -> None:
     assert "series_safety_limit = _resolve_series_max_pages(self.settings)" in source
     assert "series_safety_limit = self.settings.sync.max_pages_per_run" not in source
 
+
+def test_every_incomplete_marker_declares_why() -> None:
+    """每个 stats["incomplete"] = True 都要同时说明「为什么没跑完」。
+
+    webapp.py:_task_log_status_for_stats 按三个标记决定日志颜色：``truncated`` /
+    ``aborted_reason`` 记 partial（黄），``rotation_pending`` 记 succeeded（绿，
+    因为轮转跑不完是设计如此）。只置 incomplete 而不说明原因的站点会落到"默认
+    partial"，于是黄色重新变成常态——那正是这条断言要拦住的退化。
+
+    源码断言而不是行为断言：这是个"新增代码时别忘了"的约束，只有 grep 才拦得住
+    下一个补 incomplete 的人。
+    """
+    source = Path(sync_engine.__file__).read_text(encoding="utf-8").splitlines()
+
+    marker_lines = [i for i, line in enumerate(source) if 'stats["incomplete"] = True' in line]
+    assert len(marker_lines) >= 10, "incomplete 站点数量骤降，断言该更新了"
+
+    undeclared: list[int] = []
+    for index in marker_lines:
+        # 原因标记就写在同一段里：往前 8 行往后 4 行足够覆盖所有现存写法
+        window = "\n".join(source[max(index - 8, 0) : index + 5])
+        if not any(
+            reason in window
+            for reason in ('stats["truncated"]', "aborted_reason", 'stats["rotation_pending"]')
+        ):
+            undeclared.append(index + 1)
+
+    assert not undeclared, (
+        f"sync_engine.py 第 {undeclared} 行只置了 incomplete，没说明是截断、熔断还是轮转"
+    )
+

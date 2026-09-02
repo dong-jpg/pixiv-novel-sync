@@ -115,7 +115,7 @@ pixiv-novel-sync web-token-ui
 pixiv-novel-sync sync bookmark following_novels subscribed_series
 ~~~
 
-任务统一写入日志页，可取消、筛选和查看进度；任务日志默认保留 3 天。自动同步的 interval 和 cron 配置在 config/config.yaml 中维护。
+任务统一写入日志页，可取消、筛选和查看进度；任务日志默认保留 14 天，天数由 sync.task_log_retention_days 控制（系统维护页可改）。自动同步的 interval 和 cron 配置在 config/config.yaml 中维护。
 
 ### AI 创作
 

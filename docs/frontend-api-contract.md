@@ -481,7 +481,7 @@ Starts author sync.
 
 ### GET /api/dashboard/logs
 
-Used by: dashboard recent activity and task logs page。同步任务与 AI 创作任务默认保留 3 天。
+Used by: dashboard recent activity and task logs page。同步任务与 AI 创作任务默认保留 14 天（`sync.task_log_retention_days`，两张表共用）。
 
 请求示例：`GET /api/dashboard/logs?category=sync|ai&task_type=&status=&days=1|3`，其中竖线表示二选一。
 
