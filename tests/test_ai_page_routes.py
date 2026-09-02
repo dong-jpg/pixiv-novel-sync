@@ -18,6 +18,15 @@ _BARE_FETCH = re.compile(r"(?<![\w.])fetch\s*\(")
 _API_URL = re.compile(r"""['"`]/api/""")
 _SSE_URL = re.compile(r"/stream['\"`]")
 
+_SCRIPT_BLOCK = re.compile(r"<script\b[^>]*>.*?</script>", re.DOTALL | re.IGNORECASE)
+# @click / @change / @keydown.enter / 组件 emit 的 @save @detect …，含所有修饰符
+_EVENT_BINDING = re.compile(r'@([a-zA-Z][\w-]*)(?:\.[\w.]+)?\s*=\s*"([^"]*)"')
+# 只认「裸标识符」「fn(...)」「name = ...」三种形态；成员调用与 $emit / $refs 不在范围内
+_HANDLER_NAME = re.compile(r"^\s*([A-Za-z_][\w$]*)\s*(?:\(|=(?!=)|$)")
+_IDENTIFIER = re.compile(r"[A-Za-z_$][\w$]*")
+_OPENING = "{[("
+_CLOSING = "}])"
+
 
 def read(name: str) -> str:
     return (TEMPLATES / name).read_text(encoding="utf-8")
@@ -34,6 +43,165 @@ def read_code(name: str) -> str:
     code = _HTML_COMMENT.sub("", read(name))
     code = _BLOCK_COMMENT.sub("", code)
     return _LINE_COMMENT.sub("", code)
+
+
+def _match_bracket(text: str, start: int) -> int:
+    """返回 text[start] 处括号的配对下标，跳过字符串字面量内的括号。"""
+    assert text[start] in _OPENING, text[start : start + 20]
+    depth = 0
+    quote = None
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "'\"`":
+            quote = ch
+        elif ch in _OPENING:
+            depth += 1
+        elif ch in _CLOSING:
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise AssertionError("括号未闭合")
+
+
+def _split_top_level(body: str) -> list[str]:
+    """按顶层逗号切分对象字面量的内容。"""
+    parts: list[str] = []
+    cur: list[str] = []
+    depth = 0
+    quote = None
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if quote:
+            cur.append(ch)
+            if ch == "\\" and i + 1 < len(body):
+                cur.append(body[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "'\"`":
+            quote = ch
+            cur.append(ch)
+        elif ch in _OPENING:
+            depth += 1
+            cur.append(ch)
+        elif ch in _CLOSING:
+            depth -= 1
+            cur.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    parts.append("".join(cur))
+    return parts
+
+
+def _object_keys(text: str, brace: int) -> set[str]:
+    """取对象字面量的键名（含 { a, b } 简写形式）。"""
+    keys = set()
+    for part in _split_top_level(text[brace + 1 : _match_bracket(text, brace)]):
+        part = part.strip()
+        if not part or part.startswith("..."):
+            continue
+        key = part.split(":", 1)[0].strip()
+        if _IDENTIFIER.fullmatch(key):
+            keys.add(key)
+    return keys
+
+
+def _top_level_returns(body: str) -> list[int]:
+    """定位 setup() 函数体顶层的 return，忽略嵌套函数里的 return。"""
+    out: list[int] = []
+    depth = 0
+    quote = None
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "'\"`":
+            quote = ch
+        elif ch in _OPENING:
+            depth += 1
+        elif ch in _CLOSING:
+            depth -= 1
+        elif depth == 0 and body.startswith("return", i):
+            before = body[i - 1] if i else " "
+            after = body[i + 6] if i + 6 < len(body) else " "
+            if not (before.isalnum() or before == "_") and not (after.isalnum() or after == "_"):
+                out.append(i + 6)
+                i += 6
+                continue
+        i += 1
+    return out
+
+
+def setup_scope(html: str) -> set[str]:
+    """setup() 实际交给模板的渲染作用域。
+
+    base.html 的 window.initVueApp 只做 createApp(setupFunc) + mount，没有任何兜底，
+    所以 setup() 的返回值就是模板能解析的全部名字。
+    """
+    brace = html.index("{", html.index("setup()"))
+    body = html[brace + 1 : _match_bracket(html, brace)]
+    returns = _top_level_returns(body)
+    assert returns, "找不到 setup() 的顶层 return"
+
+    names: set[str] = set()
+    for pos in returns:
+        rest = body[pos:].lstrip()
+        if rest.startswith("{"):
+            # return { a, b, c }
+            names |= _object_keys(body, body.index("{", pos))
+            continue
+        # return exported —— 键分散在 const 声明和若干 Object.assign 里
+        ident = _IDENTIFIER.match(rest)
+        assert ident, f"无法解析 return 表达式：{rest[:40]!r}"
+        alias = re.escape(ident.group(0))
+        decl = re.search(rf"\b(?:const|let|var)\s+{alias}\s*=\s*\{{", body)
+        assert decl, f"找不到 {ident.group(0)} 的对象字面量声明"
+        names |= _object_keys(body, decl.end() - 1)
+        for assign in re.finditer(rf"Object\.assign\(\s*{alias}\s*,\s*\{{", body):
+            names |= _object_keys(body, assign.end() - 1)
+    return names
+
+
+def test_every_event_handler_is_exported_from_setup():
+    """回归：事件绑到 setup() 没返回的名字上，按钮会静默失效或抛 TypeError。
+
+    实际踩过两次：伏笔 tab 的「AI自动回收」（autoResolveForeshadows）和 Pipeline 弹窗的
+    单步按钮（runSingleStep）都定义了却没进导出对象，点了没反应。组件 emit（@save /
+    @detect）走同一套解析，漏导出同样是死绑定。
+    """
+    for name in AI_PAGES:
+        html = read(name)
+        scope = setup_scope(html)
+        markup = _SCRIPT_BLOCK.sub("", html)
+
+        handlers = set()
+        for _event, expr in _EVENT_BINDING.findall(markup):
+            matched = _HANDLER_NAME.match(expr)
+            if matched:
+                handlers.add(matched.group(1))
+
+        assert handlers, f"{name} 没解析出任何事件处理器，正则该更新了"
+        missing = sorted(handlers - scope)
+        assert not missing, f"{name} 的事件绑定指向了 setup() 未返回的名字：{missing}"
 
 
 def test_base_provides_shared_frontend_helpers():
