@@ -468,15 +468,9 @@
       async function detectAITells() {
         if (!streamOutput.value) return;
         try {
-          const res = await window.csrfFetch('/api/dashboard/ai/detect-ai-tells', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: streamOutput.value }) });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
-          const report = data.data;
-          let msg = `AI 痕迹评分：${report.score.toFixed(0)}/100（越高越像人写）`;
-          if (report.issues && report.issues.length) {
-            msg += '\n问题：' + report.issues.map(i => `[${i.severity}] ${i.message}`).join('；');
-          }
-          alert(msg);
+          const report = await api('/api/dashboard/ai/detect-ai-tells', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: streamOutput.value }) });
+          const issues = (report.issues || []).map(i => `[${i.severity}] ${i.message}`).join('；');
+          alert(`AI 痕迹评分：${report.score.toFixed(0)}/100（越高越像人写）` + (issues ? '\n问题：' + issues : ''));
         } catch (e) { showMessage(e.message, 'error'); }
       }
       // ── 项目 / 章节 / 伏笔数据 ────────────────────────────────
