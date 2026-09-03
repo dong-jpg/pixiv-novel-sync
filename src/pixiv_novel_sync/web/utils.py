@@ -108,7 +108,6 @@ def _settings_to_dict(settings: Settings) -> dict[str, Any]:
         "auto_sync_recommendation_run_enabled": settings.sync.auto_sync_recommendation_run_enabled,
         "auto_sync_recommendation_run_interval_hours": settings.sync.auto_sync_recommendation_run_interval_hours,
         "auto_sync_recommendation_run_cron": settings.sync.auto_sync_recommendation_run_cron,
-        "pending_deletion_grace_period_days": settings.sync.pending_deletion_grace_period_days,
         "pending_deletion_cleanup_confirmed_days": settings.sync.pending_deletion_cleanup_confirmed_days,
         "task_log_retention_days": settings.sync.task_log_retention_days,
     }

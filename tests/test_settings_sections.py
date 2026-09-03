@@ -32,13 +32,13 @@ def _write_config(tmp_path, **sync_values):
 def test_section_save_only_touches_its_own_fields(tmp_path):
     """分区保存不能把其它分区的字段写回默认值。
 
-    回归意图：设置页拆分后，同步页的表单里没有 pending_deletion_grace_period_days，
+    回归意图：设置页拆分后，同步页的表单里没有 pending_deletion_cleanup_confirmed_days，
     若保存时仍走全量路径，payload.get(k, 默认值) 会把它从 30 覆盖成默认值。
     """
     config_path = _write_config(
         tmp_path,
         max_items_per_run=20,
-        pending_deletion_grace_period_days=30,
+        pending_deletion_cleanup_confirmed_days=30,
     )
 
     saved = SettingsManager(str(config_path)).save_sync_settings(
@@ -46,9 +46,9 @@ def test_section_save_only_touches_its_own_fields(tmp_path):
     )
 
     assert saved["max_items_per_run"] == 50
-    assert saved["pending_deletion_grace_period_days"] == 30
+    assert saved["pending_deletion_cleanup_confirmed_days"] == 30
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert config["sync"]["pending_deletion_grace_period_days"] == 30
+    assert config["sync"]["pending_deletion_cleanup_confirmed_days"] == 30
 
 
 def test_section_save_ignores_fields_outside_the_section(tmp_path):
@@ -56,16 +56,16 @@ def test_section_save_ignores_fields_outside_the_section(tmp_path):
     config_path = _write_config(
         tmp_path,
         max_items_per_run=20,
-        pending_deletion_grace_period_days=30,
+        pending_deletion_cleanup_confirmed_days=30,
     )
 
     SettingsManager(str(config_path)).save_sync_settings(
-        {"max_items_per_run": 50, "pending_deletion_grace_period_days": 999},
+        {"max_items_per_run": 50, "pending_deletion_cleanup_confirmed_days": 999},
         section="sync",
     )
 
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert config["sync"]["pending_deletion_grace_period_days"] == 30
+    assert config["sync"]["pending_deletion_cleanup_confirmed_days"] == 30
 
 
 def test_system_section_save_keeps_sync_fields(tmp_path):
@@ -74,16 +74,39 @@ def test_system_section_save_keeps_sync_fields(tmp_path):
         tmp_path,
         max_items_per_run=20,
         delay_seconds_between_items=4.5,
-        pending_deletion_grace_period_days=30,
+        pending_deletion_cleanup_confirmed_days=30,
     )
 
     saved = SettingsManager(str(config_path)).save_sync_settings(
-        {"pending_deletion_grace_period_days": 45}, section="system"
+        {"pending_deletion_cleanup_confirmed_days": 45}, section="system"
     )
 
-    assert saved["pending_deletion_grace_period_days"] == 45
+    assert saved["pending_deletion_cleanup_confirmed_days"] == 45
     assert saved["max_items_per_run"] == 20
     assert saved["delay_seconds_between_items"] == 4.5
+
+
+def test_dead_pending_grace_setting_is_scrubbed_on_save(tmp_path):
+    """历史遗留的空设置要在下一次保存时被擦掉，而不是永远留在 YAML 里。
+
+    pending_deletion_grace_period_days 从来没有被任何代码读过
+    （cleanup_old_pending_deletions 第一行就 del 掉了这个参数），但它曾经出现在设置页
+    上、文案还写着「等待人工确认的宽限天数」，生产上 74 条 pending 最老的已经 105 天，
+    远超它写的 30 天。留着这个键只会让人以为待确认列表会到期自动清理。
+    """
+    config_path = _write_config(
+        tmp_path, max_items_per_run=20, pending_deletion_grace_period_days=30
+    )
+
+    saved = SettingsManager(str(config_path)).save_sync_settings(
+        {"max_items_per_run": 50}, section="sync"
+    )
+
+    assert "pending_deletion_grace_period_days" not in saved
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert "pending_deletion_grace_period_days" not in config["sync"]
+    # 真正生效的那个保留期不能被顺手删掉
+    assert config["sync"]["pending_deletion_cleanup_confirmed_days"] == 7
 
 
 def test_task_log_retention_is_configurable_and_defaults_to_two_weeks(tmp_path):
@@ -137,11 +160,11 @@ def test_full_save_without_section_keeps_legacy_behaviour(tmp_path):
     config_path = _write_config(tmp_path, max_items_per_run=20)
 
     saved = SettingsManager(str(config_path)).save_sync_settings(
-        {"max_items_per_run": 50, "pending_deletion_grace_period_days": 999}
+        {"max_items_per_run": 50, "pending_deletion_cleanup_confirmed_days": 999}
     )
 
     assert saved["max_items_per_run"] == 50
-    assert saved["pending_deletion_grace_period_days"] == 999
+    assert saved["pending_deletion_cleanup_confirmed_days"] == 999
 
 
 def test_invalid_section_is_rejected(tmp_path):
@@ -204,12 +227,12 @@ def _csrf_headers(client):
 def test_section_endpoint_saves_only_its_section(tmp_path):
     """PUT /api/dashboard/settings/sync 不能动 system 区字段。"""
     _app, client, _config_path = _dashboard_app(
-        tmp_path, max_items_per_run=20, pending_deletion_grace_period_days=30
+        tmp_path, max_items_per_run=20, task_log_retention_days=30
     )
 
     res = client.put(
         "/api/dashboard/settings/sync",
-        json={"max_items_per_run": 50, "pending_deletion_grace_period_days": 999},
+        json={"max_items_per_run": 50, "task_log_retention_days": 999},
         headers=_csrf_headers(client),
     )
 
@@ -217,7 +240,7 @@ def test_section_endpoint_saves_only_its_section(tmp_path):
     body = res.get_json()
     assert body["ok"] is True
     assert body["sync"]["max_items_per_run"] == 50
-    assert body["sync"]["pending_deletion_grace_period_days"] == 30
+    assert body["sync"]["task_log_retention_days"] == 30
 
 
 def test_unknown_section_endpoint_returns_400(tmp_path):

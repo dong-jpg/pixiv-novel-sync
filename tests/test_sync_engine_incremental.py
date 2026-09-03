@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -390,11 +391,21 @@ def test_sync_subscribed_series_propagates_interrupted_error(tmp_path: Path, mon
         db.close()
 
 
+def _iso_days_ago(days: float) -> str:
+    """N 天前的 UTC ISO 时间戳。
+
+    轮转降频是按「距今多少天」判断的，写死日期会随着时间推移让断言逐渐失真
+    （复查窗口 30 天，一个写死 2026-08 的时间戳过一个月就自动越过窗口）。
+    """
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
 class _FollowingFakeDb:
     """sync_following_novels 所需的最小 DB 假件。"""
-
     def __init__(self) -> None:
         self.watermark_updates: list[dict] = []
+        # 已确认「Pixiv 上没有小说」的作者。默认空集：绝大多数测试不关心降频。
+        self.authors_without_novels: set[int] = set()
 
     def get_sync_check_list(self, scope):
         return {}
@@ -407,6 +418,9 @@ class _FollowingFakeDb:
 
     def upsert_sync_check_item(self, novel_id, exists, scope):
         pass
+
+    def get_authors_without_novels(self):
+        return set(self.authors_without_novels)
 
 
 def test_sync_following_novels_outer_pagination_has_safety_limit(tmp_path: Path) -> None:
@@ -1133,6 +1147,94 @@ def test_sync_following_novels_prioritises_never_synced_users(tmp_path: Path) ->
     service.sync_following_novels(users_limit=3)
 
     assert api.scanned_user_ids == [4, 5, 6]
+
+
+def test_following_rotation_deprioritises_authors_without_novels(tmp_path: Path) -> None:
+    """已确认没有小说的作者要降频，不再每轮各占一个 users_limit 槽位。
+
+    生产实测：298 个关注里 87 个状态是 no_novels（Pixiv 的关注不区分插画与小说，
+    关注的是画师）。槽位是本任务唯一的稀缺资源，不降频就有三分之一的槽位在空转。
+    """
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 1
+    db = _RotationFakeDb(
+        {
+            "last_sync_time": "2026-08-10T00:00:00+00:00",
+            "user_max_ids": {},
+            # 1、2 是画师且刚扫过 ⇒ 本轮应让位给 3、4、5
+            "user_last_synced": {
+                "1": _iso_days_ago(1),
+                "2": _iso_days_ago(2),
+                "3": _iso_days_ago(20),
+                "4": _iso_days_ago(21),
+                "5": _iso_days_ago(22),
+            },
+        }
+    )
+    db.authors_without_novels = {1, 2}
+    api = _EightAuthorsApi()
+    service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+
+    stats = service.sync_following_novels(users_limit=3)
+
+    # 6/7/8 从未同步 ⇒ 最优先；1、2 被降频后连队尾都排在 3/4/5 之后
+    assert api.scanned_user_ids == [6, 7, 8]
+    assert stats["rotation_deprioritized"] == 2
+
+
+def test_following_rotation_rechecks_empty_authors_after_window(tmp_path: Path) -> None:
+    """降频不是永久跳过：超过复查窗口后必须重新回到正常排序。
+
+    关注的画师随时可能开始写小说；永久排除等于把一个可恢复的判断变成单向门。
+    """
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 1
+    stale = _iso_days_ago(sync_engine.NO_NOVELS_RECHECK_DAYS + 5)
+    db = _RotationFakeDb(
+        {
+            "last_sync_time": "2026-08-10T00:00:00+00:00",
+            "user_max_ids": {},
+            "user_last_synced": {str(uid): _iso_days_ago(1) for uid in range(2, 9)}
+            | {"1": stale},
+        }
+    )
+    db.authors_without_novels = {1}
+    api = _EightAuthorsApi()
+    service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+
+    stats = service.sync_following_novels(users_limit=1)
+
+    assert api.scanned_user_ids == [1]  # 窗口过期 ⇒ 又按"最久未同步"排到最前
+    assert stats["rotation_deprioritized"] == 0
+
+
+def test_following_rotation_reports_cycle_progress(tmp_path: Path) -> None:
+    """轮转进度要用「还有几个从未同步」和「最久多少天」，不能用 users_remaining。
+
+    users_remaining = 候选数 - users_limit，每轮恒定（生产上永远是 251），当进度看
+    完全没有信息量；日志页那句「轮转中，剩 N 位作者」就是这么变成一个不动的数字的。
+    """
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 1
+    db = _RotationFakeDb(
+        {
+            "last_sync_time": "2026-08-10T00:00:00+00:00",
+            "user_max_ids": {},
+            "user_last_synced": {"1": _iso_days_ago(9), "2": _iso_days_ago(3)},
+        }
+    )
+    api = _EightAuthorsApi()
+    service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+
+    first = service.sync_following_novels(users_limit=3)
+
+    # 8 个候选，2 个有记录，本轮又扫了 3 个 ⇒ 还剩 3 个从未同步
+    assert first["rotation_never_synced"] == 3
+    assert first["users_remaining"] == 5  # 恒定值仍然保留，只是不再用来显示进度
+    assert first["rotation_oldest_age_days"] == pytest.approx(9, abs=0.2)
+
+    second = service.sync_following_novels(users_limit=3)
+    assert second["rotation_never_synced"] == 0  # 单调递减到 0，这才是进度
 
 
 def test_sync_following_novels_accepts_legacy_watermark_without_last_synced(tmp_path: Path) -> None:

@@ -209,7 +209,13 @@ def test_task_logs_template_surfaces_abort_and_incomplete_markers():
     assert "本轮未完成" in html
     assert "selectedLog.stats.remaining" in html
     assert "剩余待检查" in html
-    assert "selectedLog.stats.users_remaining" in html
+    # 轮转进度用「从未同步数 / 最久多少天」，不用 users_remaining——后者等于
+    # 候选数减 users_limit，每轮恒定（生产上永远 251），摆在面板里是个不动的数字。
+    assert "selectedLog.stats.rotation_never_synced" in html
+    assert "从未同步的作者" in html
+    assert "selectedLog.stats.rotation_oldest_age_days" in html
+    assert "selectedLog.stats.rotation_deprioritized" in html
+    assert "selectedLog.stats.users_remaining" not in html
     assert "selectedLog.stats.series_remaining" in html
     assert "selectedLog.stats.truncated" in html
     # 中止原因要翻成中文，别把 rate_limited 直接甩给运维

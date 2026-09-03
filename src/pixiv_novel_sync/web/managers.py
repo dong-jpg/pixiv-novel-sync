@@ -235,7 +235,6 @@ SETTINGS_SECTIONS: dict[str, frozenset[str]] = {
     ),
     "system": frozenset(
         {
-            "pending_deletion_grace_period_days",
             "pending_deletion_cleanup_confirmed_days",
             "task_log_retention_days",
         }
@@ -1147,9 +1146,11 @@ class SettingsManager:
         # 回落默认值必须与 SyncSettings 的默认值一致：这里若回落成空串，"什么都没改就点
         # 保存"会把新默认 cron 写成空，任务悄悄退回按 interval 跑。
         sync_data["auto_sync_recommendation_run_cron"] = _save_cron("auto_sync_recommendation_run_cron", "50 8 * * *")
-        sync_data["pending_deletion_grace_period_days"] = _save_int("pending_deletion_grace_period_days", 30)
         sync_data["pending_deletion_cleanup_confirmed_days"] = _save_int("pending_deletion_cleanup_confirmed_days", 7)
         sync_data["task_log_retention_days"] = _save_int("task_log_retention_days", 14)
+        # 顺手擦掉历史遗留的空设置：它从来没被任何代码读过，留在 YAML 里只会让人
+        # 以为待确认记录会到期自动清理。
+        sync_data.pop("pending_deletion_grace_period_days", None)
 
         _atomic_write_yaml(config_path, config_data)
 

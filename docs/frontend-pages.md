@@ -19,7 +19,7 @@
 | `/dashboard/settings/models` | `src/pixiv_novel_sync/templates/dashboard_settings_models.html` | Provider、模型目录、模型池 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings/agents` | `src/pixiv_novel_sync/templates/dashboard_settings_agents.html` | 普通 Agent 绑定与候选模型链 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings/adult` | `src/pixiv_novel_sync/templates/dashboard_settings_adult.html` | 成人润色 Agent、review binding、项目角色 | 已接入 `library-page` / `library-page-header` |
-| `/dashboard/settings/system` | `src/pixiv_novel_sync/templates/dashboard_settings_system.html` | 图片缓存、救援 Token、导出、待删除保留期 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/settings/system` | `src/pixiv_novel_sync/templates/dashboard_settings_system.html` | 图片缓存、救援 Token、导出、数据保留期 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/preferences` | `src/pixiv_novel_sync/templates/dashboard_preferences.html` | 偏好画像与推荐 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/ai` | `src/pixiv_novel_sync/templates/dashboard_ai_projects.html` | AI 创作项目列表（新建 / 打开 / 删除） | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/ai/projects/<project_id>` | `src/pixiv_novel_sync/templates/dashboard_ai_project.html` | 作品资料、封面、蒸馏档案套用、风格控制、长篇规划 | 已接入 `library-page` / `library-page-header` |
@@ -200,7 +200,11 @@ Template: `dashboard_logs.html`
 
 用途：任务日志列表和详情弹窗。任务类型分为“同步任务”和“AI 创作任务”，默认保留最近 14 天（`sync.task_log_retention_days`，两张表共用），天数下拉提供 1 / 3 / 7 / 14 天；AI 任务支持类型、状态和时间筛选。AI 详情展示候选快照 hash、PromptBudget、实际 Provider/模型、模型池、attempt 错误与耗时；`partial` 单独标记为“部分完成”。存在未尝试候选时，用户可显式选择“使用下一个模型继续”，页面不会自动重试。
 
-同步任务的黄色“部分完成”只留给**真出了问题**的轮次：`aborted_reason`（熔断中止）或 `truncated`（分页触顶）。关注作者按 `user_last_synced` 轮转，每轮只覆盖 `users_limit` 个作者、必然带 `incomplete`，这种轮次由 `rotation_pending` 标记为绿色“成功”，结果列显示“轮转中，剩 N 位作者”——否则耗时最大的任务永远是黄色，真正的中止就被淹没了。判定在 `webapp.py:_task_log_status_for_stats`，只置 `incomplete` 而不说明原因的站点仍然算 partial。
+同步任务的黄色“部分完成”只留给**真出了问题**的轮次：`aborted_reason`（熔断中止）或 `truncated`（分页触顶）。关注作者按 `user_last_synced` 轮转，每轮只覆盖 `users_limit` 个作者、必然带 `incomplete`，这种轮次由 `rotation_pending` 标记为绿色“成功”——否则耗时最大的任务永远是黄色，真正的中止就被淹没了。判定在 `webapp.py:_task_log_status_for_stats`，只置 `incomplete` 而不说明原因的站点仍然算 partial。
+
+轮转进度显示 `rotation_never_synced`（“还有 N 位作者从未同步”，单调递减到 0）或 `rotation_oldest_age_days`（“最久 X 天未同步”），**不用 `users_remaining`**——后者等于候选数减 `users_limit`，每轮恒定（生产上永远是 251），当进度看没有信息量。详情弹窗另外展示 `rotation_deprioritized`：已确认没有小说的作者（Pixiv 关注不区分插画与小说）会被降频，`NO_NOVELS_RECHECK_DAYS` 天内不占轮转槽位。
+
+单条日志的 `stats` 有 8 KB 上限（`webapp.py:_prune_stats_for_log`）。超限时按字段体积裁剪，被裁掉的字段在 `_pruned` 里留下“类型 + 元素数 + 字节数”。这条存在的原因是 `recommendation_run` 曾把整个候选列表（连正文摘要）写进 stats，单轮 351 KB。裁剪只作用于落库那份，运行中的进度接口读的仍是完整对象。
 
 APIs:
 
@@ -219,7 +223,9 @@ APIs:
 | `/dashboard/settings/models` | `dashboard_settings_models.html` | Provider CRUD（`#ai-api`）、模型目录、模型池（`#ai-model-pools`）与最近尝试记录 |
 | `/dashboard/settings/agents` | `dashboard_settings_agents.html` | 普通 Agent 的绑定 / 提示词 / 采样参数（`#ai-agents`）、候选模型链预览 |
 | `/dashboard/settings/adult` | `dashboard_settings_adult.html` | 成人润色 Agent、`safety` / `fact_guard` review binding、项目角色与成人确认 |
-| `/dashboard/settings/system` | `dashboard_settings_system.html` | 图片缓存、救援 API Token（`#rescue-api`）、统计导出、数据保留期（待删除 + 任务日志） |
+| `/dashboard/settings/system` | `dashboard_settings_system.html` | 图片缓存、救援 API Token（`#rescue-api`）、统计导出、数据保留期（已确认删除记录 + 任务日志） |
+
+`system` 页的数据保留期只有两个字段：`pending_deletion_cleanup_confirmed_days`（已确认/已恢复记录留多久）与 `task_log_retention_days`（任务日志，两张表共用）。**待确认（pending）记录没有保留期**——它们必须由用户手动确认或恢复，不会到期自动消失。曾经存在的 `pending_deletion_grace_period_days` 从未被任何代码读取（`cleanup_old_pending_deletions` 第一行就丢弃该参数），却在页面上写着「等待人工确认的宽限天数」，已于 2026-09-03 移除；`save_sync_settings` 会在下次保存时把这个遗留键从 YAML 里擦掉。
 
 保存按分区独立进行：同步页调 `PUT /api/dashboard/settings/sync`，系统页调 `PUT /api/dashboard/settings/system`。分区端点只采纳本区字段，其余字段沿用磁盘上的旧值——每页表单只含自己那一区，走全量端点会把没加载的字段写成默认值。AI 三页的配置存在数据库里，走 `ai_web.py` 的端点，不经过 `/api/dashboard/settings`。
 

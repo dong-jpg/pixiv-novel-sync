@@ -35,6 +35,22 @@ class UsersMixin:
     # 已知受限用户的复查间隔（天）
     RESTRICTED_RECHECK_DAYS = 7
 
+    def get_authors_without_novels(self) -> set[int]:
+        """返回已确认「Pixiv 上没有小说」的作者集合，供关注轮转降频用。
+
+        Pixiv 的关注关系不区分插画与小说：生产实测 298 个关注里 87 个是
+        ``no_novels``（关注的是画师）。它们每轮各占一个 ``users_limit`` 槽位却零产出，
+        而槽位是关注同步唯一的稀缺资源。
+
+        只返回集合、不在这里做过滤：跳过必须是**降频**而不是永久排除——这些账号随时
+        可能开始写小说，所以调用方按复查窗口放它们回队列（见
+        ``sync_engine._order_following_users_for_rotation``）。
+        """
+        rows = self.conn.execute(
+            "SELECT user_id FROM users WHERE status = 'no_novels'"
+        ).fetchall()
+        return {int(row[0]) for row in rows}
+
     def get_users_for_status_check(self, limit: int | None = None) -> list[dict[str, Any]]:
         """按 last_checked_at 升序返回待状态检查的用户（从未检查过的排最前）。
 

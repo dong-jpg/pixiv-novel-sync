@@ -13,6 +13,7 @@ from pixiv_novel_sync.webapp import (
     AutoSyncScheduler,
     SyncJobManager,
     SyncJobState,
+    _prune_stats_for_log,
     _task_log_status_for_stats,
     _web_job_spec,
     create_app,
@@ -1066,6 +1067,62 @@ def test_task_log_status_for_stats_rotation_flag_does_not_mask_real_trouble():
     ) == "partial"
     # truncated 现在是独立判据：以前它只是 incomplete 的附带信号，漏设 incomplete 就变绿
     assert _task_log_status_for_stats({"truncated": True}) == "partial"
+
+
+# ── 任务日志的 stats 只留摘要，不留业务负载 ─────────────────────
+#
+# 生产实测：recommendation_run 每轮往 stats_json 里写 351 KB（整个候选列表连正文
+# 摘要），100 行日志合计 6.42 MB、均值 67 KB/行，而这些数据本来就在推荐表里。
+
+
+def test_prune_stats_keeps_small_stats_untouched():
+    """小 stats 必须原样通过——绝大多数任务的诊断信息就靠这些字段。"""
+    stats = {
+        "novels": 82,
+        "users_remaining": 251,
+        "rotation_pending": True,
+        "status_counts": {"normal": 786, "deleted": 13},
+        "aborted_reason": None,
+    }
+
+    assert _prune_stats_for_log(stats) is stats
+    assert _prune_stats_for_log(None) is None
+    assert _prune_stats_for_log({}) == {}
+
+
+def test_prune_stats_drops_oversized_payload_but_keeps_scalars():
+    """超限时丢掉大字段、留下标量，并在 _pruned 里说明丢了什么。"""
+    stats = {
+        "run_id": 34,
+        "items": [{"title": "标题" * 200, "caption": "正文" * 400} for _ in range(60)],
+        "status_counts": {"new": 12, "dismissed": 3},
+    }
+
+    pruned = _prune_stats_for_log(stats)
+
+    assert pruned["run_id"] == 34
+    assert pruned["status_counts"] == {"new": 12, "dismissed": 3}
+    assert "items" not in pruned
+    # 不能凭空消失：要看得出「这里原本有 60 个元素」
+    assert "items" in pruned["_pruned"]
+    assert "list[60]" in pruned["_pruned"]["items"]
+    # 原对象不能被就地改坏——运行中的进度接口读的是同一份 JobState.stats
+    assert len(stats["items"]) == 60
+
+
+def test_prune_stats_survives_unserialisable_values():
+    """stats 里混进不可序列化的对象时不能抛异常，否则整条任务日志写不进去。"""
+
+    class Weird:
+        def __repr__(self) -> str:  # pragma: no cover - 仅用于构造用例
+            return "weird"
+
+    stats = {"ok": 1, "blob": ["x" * 900 for _ in range(30)], "weird": Weird()}
+
+    pruned = _prune_stats_for_log(stats)
+
+    assert pruned["ok"] == 1
+    assert "blob" in pruned["_pruned"]
 
 
 def test_shared_sync_aborted_by_rate_limit_updates_task_log_as_partial(tmp_path, monkeypatch):

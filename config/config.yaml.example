@@ -121,8 +121,8 @@ sync:
   auto_sync_recommendation_run_interval_hours: 24
   auto_sync_recommendation_run_cron: "50 8 * * *"
 
-  # pending_deletions 清理策略
-  pending_deletion_grace_period_days: 30
+  # pending_deletions 清理策略。只清理「已确认 / 已恢复」的历史记录；
+  # 待确认（pending）记录不会到期自动消失，必须手动确认或恢复。
   pending_deletion_cleanup_confirmed_days: 7
 
   # 任务日志（task_logs + ai_jobs）保留天数。调度器每小时清理一次。

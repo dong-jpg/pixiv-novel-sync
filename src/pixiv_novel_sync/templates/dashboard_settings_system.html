@@ -31,16 +31,10 @@
     <div v-else class="space-y-6">
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
-          <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">待确认保留天数</label>
-          <input type="number" min="0" v-model.number="settings.pending_deletion_grace_period_days"
-                 class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
-          <p class="mt-1 text-xs text-pixiv-light">检测到取消收藏后，等待人工确认的宽限天数</p>
-        </div>
-        <div>
           <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">已确认记录保留天数</label>
-          <input type="number" min="0" v-model.number="settings.pending_deletion_cleanup_confirmed_days"
+          <input type="number" min="1" v-model.number="settings.pending_deletion_cleanup_confirmed_days"
                  class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
-          <p class="mt-1 text-xs text-pixiv-light">确认删除后，记录本身还留多久便于回溯</p>
+          <p class="mt-1 text-xs text-pixiv-light">确认删除后，记录本身还留多久便于回溯。待确认的记录不会到期自动消失，只能手动确认或恢复</p>
         </div>
         <div>
           <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">任务日志保留天数</label>
@@ -194,7 +188,6 @@
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              pending_deletion_grace_period_days: settings.value.pending_deletion_grace_period_days,
               pending_deletion_cleanup_confirmed_days: settings.value.pending_deletion_cleanup_confirmed_days,
               task_log_retention_days: settings.value.task_log_retention_days,
             }),

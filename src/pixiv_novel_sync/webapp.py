@@ -316,6 +316,56 @@ def _release_scheduler_owner(key: str, scheduler: AutoSyncScheduler) -> None:
 # 黄色「部分完成」，这里复用同一取值。
 _TASK_LOG_STATUS_PARTIAL = "partial"
 
+# 单条任务日志的 stats 体积上限。生产实测 recommendation_run 每轮往 stats 里写
+# 351 KB（整个候选列表连正文摘要），100 行日志合计 6.42 MB，均值 67 KB/行——而这些
+# 数据本来就在推荐表里，日志里再抄一份既撑大库也让详情弹窗要加载几百 KB JSON。
+_TASK_LOG_STATS_MAX_BYTES = 8192
+# 单个字段的保留上限：小于这个尺寸的一律留下（status_counts、source_scope 这类小 dict
+# 是诊断的主要依据，不能被一刀切掉）。
+_TASK_LOG_STATS_FIELD_MAX_BYTES = 512
+
+
+def _prune_stats_for_log(stats: dict[str, Any] | None) -> dict[str, Any] | None:
+    """写进 task_logs 前给 stats 瘦身：只留摘要，不留业务负载。
+
+    按体积裁剪而不是按字段名黑名单：黑名单每加一个新任务就得改一次，漏了不会有人
+    发现；按体积裁剪对以后新增的胖字段自动生效。被裁掉的字段会在 ``_pruned`` 里留下
+    「类型 + 元素数 + 字节数」，所以日志里看得出「这里原本有东西」而不是凭空消失。
+
+    只裁日志，不裁 ``JobState.stats``：运行中的进度接口读的是内存里那份完整对象。
+    """
+    if not isinstance(stats, dict):
+        return stats
+    try:
+        encoded = json.dumps(stats, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return stats
+    if len(encoded.encode("utf-8")) <= _TASK_LOG_STATS_MAX_BYTES:
+        return stats
+
+    pruned: dict[str, Any] = {}
+    dropped: dict[str, str] = {}
+    for key, value in stats.items():
+        if value is None or isinstance(value, (int, float, bool)):
+            pruned[key] = value
+            continue
+        try:
+            size = len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+        except (TypeError, ValueError):
+            size = _TASK_LOG_STATS_FIELD_MAX_BYTES + 1
+        if size <= _TASK_LOG_STATS_FIELD_MAX_BYTES:
+            pruned[key] = value
+            continue
+        if isinstance(value, list):
+            dropped[key] = f"list[{len(value)}] {size}B"
+        elif isinstance(value, dict):
+            dropped[key] = f"dict[{len(value)}] {size}B"
+        else:
+            dropped[key] = f"{type(value).__name__} {size}B"
+    if dropped:
+        pruned["_pruned"] = dropped
+    return pruned
+
 
 def _task_log_status_for_stats(stats: dict[str, Any] | None) -> str:
     """按任务 stats 判定写进 task_logs 的终态。
@@ -501,7 +551,7 @@ def create_app(
                 db.update_task_log(
                     log_id,
                     _task_log_status_for_stats(job.stats),
-                    stats=job.stats,
+                    stats=_prune_stats_for_log(job.stats),
                     logs=logs,
                 )
             elif job.status == JobStatus.FAILED:

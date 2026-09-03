@@ -327,6 +327,20 @@ def test_get_users_for_status_check_rotates_by_last_checked_at(db: Database) -> 
     ]
 
 
+def test_get_authors_without_novels_returns_only_confirmed_empties(db: Database) -> None:
+    """只返回状态被确认为 no_novels 的作者，供关注轮转降频用。
+
+    Pixiv 的关注不区分插画与小说，生产实测 298 个关注里 87 个是 no_novels（关注的
+    是画师）。它们每轮各占一个 users_limit 槽位却零产出，而槽位是关注同步唯一的稀缺
+    资源。unknown / suspended 不算在内：那是「查不出来」而不是「确认没有」。
+    """
+    for user_id, status in ((1, "normal"), (2, "no_novels"), (3, "unknown"), (4, "no_novels"), (5, "suspended")):
+        db.upsert_user(UserRecord(user_id=user_id, name=f"u{user_id}", account=f"a{user_id}", raw_json="{}"))
+        db.upsert_user_status(user_id, status)
+
+    assert db.get_authors_without_novels() == {2, 4}
+
+
 def test_get_series_ids_for_status_check_rotates_by_last_checked_at(db: Database) -> None:
     for series_id, checked_at in ((11, "2026-08-27 10:00:00"), (12, None), (13, "2026-08-21 10:00:00")):
         db.conn.execute(

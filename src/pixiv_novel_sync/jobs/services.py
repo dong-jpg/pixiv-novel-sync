@@ -405,10 +405,10 @@ def run_pending_deletion_detection_task(
         stats.setdefault("stopped", False)
         _report_log(reporter, "success", f"检测完成: 发现 {stats.get('new_pending', 0)} 条新的待确认记录")
 
-        # Phase 3.2: 清理过期的pending_deletions记录
+        # Phase 3.2: 清理已确认/已恢复的历史记录。pending 记录不在此列——它们必须由
+        # 用户手动确认或恢复，没有"宽限期到了就自动确认"这回事（否则待确认列表会静默消失）。
         try:
             cleanup_result = db.cleanup_old_pending_deletions(
-                grace_period_days=getattr(settings.sync, "pending_deletion_grace_period_days", 30),
                 cleanup_confirmed_days=getattr(settings.sync, "pending_deletion_cleanup_confirmed_days", 7)
             )
             if cleanup_result["auto_confirmed"] > 0 or cleanup_result["cleaned_up"] > 0:

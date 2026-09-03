@@ -298,9 +298,17 @@
             <div class="text-[11px] text-pixiv-gray uppercase font-medium tracking-wider mb-1">剩余待检查</div>
             <div class="text-lg font-bold text-gray-900">{{ selectedLog.stats.remaining }}</div>
           </div>
-          <div v-if="selectedLog.stats.users_remaining !== undefined" class="bg-gray-50 p-3 rounded-lg border border-gray-100">
-            <div class="text-[11px] text-pixiv-gray uppercase font-medium tracking-wider mb-1">剩余关注作者</div>
-            <div class="text-lg font-bold text-gray-900">{{ selectedLog.stats.users_remaining }}</div>
+          <div v-if="selectedLog.stats.rotation_never_synced !== undefined" class="bg-gray-50 p-3 rounded-lg border border-gray-100">
+            <div class="text-[11px] text-pixiv-gray uppercase font-medium tracking-wider mb-1">从未同步的作者</div>
+            <div class="text-lg font-bold text-gray-900">{{ selectedLog.stats.rotation_never_synced }}</div>
+          </div>
+          <div v-if="selectedLog.stats.rotation_oldest_age_days !== undefined" class="bg-gray-50 p-3 rounded-lg border border-gray-100">
+            <div class="text-[11px] text-pixiv-gray uppercase font-medium tracking-wider mb-1">最久未同步（天）</div>
+            <div class="text-lg font-bold text-gray-900">{{ selectedLog.stats.rotation_oldest_age_days }}</div>
+          </div>
+          <div v-if="selectedLog.stats.rotation_deprioritized" class="bg-gray-50 p-3 rounded-lg border border-gray-100">
+            <div class="text-[11px] text-pixiv-gray uppercase font-medium tracking-wider mb-1">已降频（无小说）</div>
+            <div class="text-lg font-bold text-gray-900">{{ selectedLog.stats.rotation_deprioritized }}</div>
           </div>
           <div v-if="selectedLog.stats.series_remaining !== undefined" class="bg-gray-50 p-3 rounded-lg border border-gray-100">
             <div class="text-[11px] text-pixiv-gray uppercase font-medium tracking-wider mb-1">剩余系列</div>
@@ -719,8 +727,15 @@
           // 轮转任务本轮跑满即算成功（关注作者按 user_last_synced 排队，一轮只覆盖
           // users_limit 个），但必须让人看出后面还有——否则「全都同步完了」和
           // 「才刚跑到第 5 个作者」在列表里长得一模一样。
+          // 注意别用 users_remaining：它是「本轮没轮到的候选数」，每轮恒定不动。
           if (s.rotation_pending) {
-            parts.push(s.users_remaining !== undefined ? `轮转中，剩 ${s.users_remaining} 位作者` : '轮转中');
+            if (s.rotation_never_synced) {
+              parts.push(`轮转中，还有 ${s.rotation_never_synced} 位作者从未同步`);
+            } else if (s.rotation_oldest_age_days != null) {
+              parts.push(`轮转中，最久 ${s.rotation_oldest_age_days} 天未同步`);
+            } else {
+              parts.push('轮转中');
+            }
           }
           return parts.length ? parts.join(', ') : '完成';
         }

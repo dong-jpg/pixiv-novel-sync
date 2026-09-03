@@ -45,7 +45,29 @@ _CHECK_PAGE_SAFETY_LIMIT = 2000
 # 第 61 位之后的作者就永远排除在轮转之外（等于换个位置重演"永远只同步最前面几个"）。
 FOLLOWING_LIST_MAX_PAGES = 50
 
+# 已知「没有小说」的作者在关注轮转里的复查间隔（天）。降频而非永久跳过：
+# 关注的画师随时可能开始写小说。30 天 vs 自然轮转的 12.8 天，等于把这批作者的
+# 占用从每天约 6.6 个槽位压到约 2.8 个，省下的槽位归真实作者。
+NO_NOVELS_RECHECK_DAYS = 30
+
 T = TypeVar('T')
+
+
+def _iso_age_days(value: Any) -> float:
+    """ISO 时间戳距今多少天；缺失或解析失败一律当「无穷久以前」。
+
+    方向必须是无穷大而不是 0：这个值用来决定「该不该降频」，把解析失败当成
+    「刚刚查过」会让坏数据永久沉底，当成「很久没查」最多多查一次。
+    """
+    if not value:
+        return float("inf")
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return float("inf")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - parsed).total_seconds() / 86400.0
 
 
 def _sleep_with_progress_cancel(
@@ -854,21 +876,39 @@ class BookmarkNovelSyncService:
     def _order_following_users_for_rotation(
         users: list[Any],
         user_last_synced: dict[str, str],
+        empty_author_ids: set[int] | None = None,
     ) -> list[Any]:
         """按"最久未同步优先"给关注作者排序，实现跨轮次轮转。
 
         Pixiv 的 user_following 顺序基本固定（按关注时间倒序），直接取前 N 个会让
-        排在后面的作者永远同步不到。排序键：水位线里没有记录的（从未同步过）排最前，
-        其余按上次同步时间升序；键相同时 sorted 的稳定性会保留关注列表原顺序。
+        排在后面的作者永远同步不到。排序键三段：
+
+        1. ``demoted``：已知没有小说、且在 ``NO_NOVELS_RECHECK_DAYS`` 复查窗口内的
+           作者排到最后。槽位是本任务唯一的稀缺资源，生产实测 298 个关注里 87 个是
+           ``no_novels``，不降频就有三分之一的槽位在空转。
+        2. ``has_timestamp``：水位线里没有记录的（从未同步过）排最前。
+        3. 上次同步时间升序。
+
+        无时间戳时 ``_iso_age_days`` 返回无穷大，所以「从未扫描的空作者」不会被降频——
+        它必须先被扫一次拿到时间戳，否则永久沉底就变成了永久跳过。键相同时 sorted 的
+        稳定性会保留关注列表原顺序。
         """
-        def _rotation_key(user: Any) -> tuple[int, str]:
+        empty_ids = empty_author_ids or set()
+
+        def _rotation_key(user: Any) -> tuple[int, int, str]:
             author_id = getattr(user, "id", None)
             if author_id is None:
-                return (0, "")
+                return (0, 0, "")
             last_synced = user_last_synced.get(str(int(author_id)))
+            demoted = (
+                1
+                if int(author_id) in empty_ids
+                and _iso_age_days(last_synced) < NO_NOVELS_RECHECK_DAYS
+                else 0
+            )
             if not last_synced:
-                return (0, "")
-            return (1, str(last_synced))
+                return (demoted, 0, "")
+            return (demoted, 1, str(last_synced))
 
         return sorted(users, key=_rotation_key)
 
@@ -1105,9 +1145,21 @@ class BookmarkNovelSyncService:
                 stats["truncated"] = True
                 stats["incomplete"] = True
 
-            selected = self._order_following_users_for_rotation(candidates, user_last_synced)[:users_limit]
+            empty_author_ids = self.db.get_authors_without_novels()
+            selected = self._order_following_users_for_rotation(
+                candidates, user_last_synced, empty_author_ids
+            )[:users_limit]
             user_progress_total = len(selected)
             stats["users_total"] = len(candidates)
+            # 观测降频效果：本轮候选里有多少个作者因为「已知无小说且在复查窗口内」被压到队尾
+            stats["rotation_deprioritized"] = sum(
+                1
+                for user in candidates
+                if getattr(user, "id", None) is not None
+                and int(user.id) in empty_author_ids
+                and _iso_age_days(user_last_synced.get(str(int(user.id))))
+                < NO_NOVELS_RECHECK_DAYS
+            )
 
             for user in selected:
                 # 本轮的结束判据是「跑满 users_limit 个作者」，硬顶只在异常时兜底。
@@ -1124,6 +1176,28 @@ class BookmarkNovelSyncService:
 
             remaining = max(len(candidates) - users_processed, 0)
             stats["users_remaining"] = remaining
+            # 全圈进度。users_remaining 是「本轮没轮到的候选数」，等于
+            # len(candidates) - users_limit，每轮恒定（生产上永远是 251），当进度看
+            # 完全无意义。真正会动的是这两个：从未扫描数单调递减到 0，扫描年龄在全圈
+            # 跑通之后稳定在一个周期附近。
+            seen_at = dict(user_last_synced)
+            seen_at.update(current_user_last_synced)
+            never_synced = 0
+            oldest_age: float | None = None
+            for user in candidates:
+                author_id = getattr(user, "id", None)
+                if author_id is None:
+                    continue
+                timestamp = seen_at.get(str(int(author_id)))
+                if not timestamp:
+                    never_synced += 1
+                    continue
+                age = _iso_age_days(timestamp)
+                if age != float("inf") and (oldest_age is None or age > oldest_age):
+                    oldest_age = age
+            stats["rotation_never_synced"] = never_synced
+            if oldest_age is not None:
+                stats["rotation_oldest_age_days"] = round(oldest_age, 1)
             if remaining:
                 # 本轮只覆盖了部分关注作者：剩下的会在后续轮次按最久未同步优先补上，
                 # 但必须让调用方看出这轮不是全量。
@@ -1133,11 +1207,14 @@ class BookmarkNovelSyncService:
                 # 会永远显示「部分完成」，真正的截断/熔断反而被淹没。
                 stats["rotation_pending"] = True
             logger.info(
-                "Following rotation: synced %d/%d users this run (users_limit=%d), %d remaining",
+                "Following rotation: synced %d/%d users this run (users_limit=%d), "
+                "%d never synced, oldest %s days, %d deprioritized",
                 users_processed,
                 len(candidates),
                 users_limit,
-                remaining,
+                never_synced,
+                "n/a" if oldest_age is None else round(oldest_age, 1),
+                stats.get("rotation_deprioritized", 0),
             )
         else:
             # 不限量：保持原有的"边翻页边同步"行为

@@ -140,6 +140,7 @@ def test_load_settings_reads_pending_deletion_cleanup_days(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "sync:\n"
+        # 历史遗留的空设置：读到也不该长出属性来
         "  pending_deletion_grace_period_days: 45\n"
         "  pending_deletion_cleanup_confirmed_days: 9\n",
         encoding="utf-8",
@@ -147,8 +148,8 @@ def test_load_settings_reads_pending_deletion_cleanup_days(tmp_path):
 
     settings = load_settings(config_path=config_path, env_path=tmp_path / ".env")
 
-    assert settings.sync.pending_deletion_grace_period_days == 45
     assert settings.sync.pending_deletion_cleanup_confirmed_days == 9
+    assert not hasattr(settings.sync, "pending_deletion_grace_period_days")
 
 
 def test_load_settings_normalizes_bookmark_restricts(tmp_path):
@@ -201,8 +202,8 @@ def test_dashboard_settings_payload_includes_preference_and_pending_cleanup(tmp_
     # tests/test_cron_validation.py 锁定，这里只验证它被原样回显给设置页。
     assert payload["auto_sync_preference_analyze_cron"] == "15 7,19 * * *"
     assert payload["preference_analyze_batch_size"] == 200
-    assert payload["pending_deletion_grace_period_days"] == 30
     assert payload["pending_deletion_cleanup_confirmed_days"] == 7
+    assert payload["task_log_retention_days"] == 14
 
 
 def test_save_sync_settings_persists_pending_cleanup_days(tmp_path):
@@ -211,16 +212,16 @@ def test_save_sync_settings_persists_pending_cleanup_days(tmp_path):
 
     saved = SettingsManager(str(config_path)).save_sync_settings(
         {
-            "pending_deletion_grace_period_days": 21,
             "pending_deletion_cleanup_confirmed_days": 3,
+            "task_log_retention_days": 21,
         }
     )
 
-    assert saved["pending_deletion_grace_period_days"] == 21
     assert saved["pending_deletion_cleanup_confirmed_days"] == 3
+    assert saved["task_log_retention_days"] == 21
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert config["sync"]["pending_deletion_grace_period_days"] == 21
     assert config["sync"]["pending_deletion_cleanup_confirmed_days"] == 3
+    assert config["sync"]["task_log_retention_days"] == 21
 
 
 def test_save_sync_settings_round_trips_new_throughput_fields(tmp_path):
