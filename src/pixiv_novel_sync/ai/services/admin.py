@@ -407,6 +407,48 @@ class AIAdminMixin:
         return model
 
     @staticmethod
+    def provider_config_lint(
+        provider: Mapping[str, Any],
+        *,
+        bound_agent_count: int = 0,
+        routable_models: int = 0,
+    ) -> list[dict[str, str]]:
+        """只看 Provider 行本身就能下的结论，零网络。
+
+        第一条判据刻意调用运行时那个 validate_base_url（resolve=False 跳过 DNS）：
+        结论由构造保证与运行时一致。另写一份 scheme 规则必然与 providers.py 漂移，
+        届时横幅报「健康」而任务照样失败——比没有横幅更坏。
+
+        base_url 允许留空（表示用适配器默认地址），此时跳过这条判据。
+        """
+        findings: list[dict[str, str]] = []
+        base_url = provider.get("base_url")
+        if base_url:
+            try:
+                validate_base_url(str(base_url), resolve=False)
+            except ProviderConfigError as exc:
+                findings.append(
+                    {"level": "will_fail", "code": "base_url", "message": str(exc)}
+                )
+        if not provider.get("has_api_key"):
+            findings.append(
+                {"level": "will_fail", "code": "api_key", "message": "未保存 API Key"}
+            )
+        if not provider.get("enabled") and bound_agent_count:
+            findings.append({
+                "level": "warn",
+                "code": "disabled_but_bound",
+                "message": f"Provider 已停用，但有 {bound_agent_count} 个 Agent 绑在这里",
+            })
+        if not routable_models:
+            findings.append({
+                "level": "warn",
+                "code": "no_routable_model",
+                "message": "目录里没有可路由模型，模型池选不出成员",
+            })
+        return findings
+
+    @staticmethod
     def _require_model_pool_row(db: Database, pool_id: int) -> dict[str, Any]:
         pool = db.get_ai_model_pool(pool_id)
         if pool is None:

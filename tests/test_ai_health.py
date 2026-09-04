@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from pixiv_novel_sync.ai.providers import ProviderConfigError, validate_base_url
+from pixiv_novel_sync.ai.service import AIWritingService
 from pixiv_novel_sync.storage_db import Database
 
 
@@ -73,3 +75,49 @@ def test_ai_job_failure_summary_groups_by_task_type(db: Database) -> None:
         {"task_type": "keyword_clean", "failures": 3, "last_at": summary[0]["last_at"]}
     ]
     assert summary[0]["last_at"]
+
+
+def test_lint_flags_plain_http_with_the_runtime_message() -> None:
+    """体检结论必须与运行时那句报错逐字相同——另写一份规则迟早漂移。"""
+    provider = {"base_url": "http://nas.example.com:3000", "has_api_key": True, "enabled": True}
+
+    findings = AIWritingService.provider_config_lint(provider, routable_models=3)
+
+    base_url_finding = next(f for f in findings if f["code"] == "base_url")
+    assert base_url_finding["level"] == "will_fail"
+    with pytest.raises(ProviderConfigError) as excinfo:
+        validate_base_url("http://nas.example.com:3000", resolve=False)
+    assert base_url_finding["message"] == str(excinfo.value)
+
+
+def test_lint_does_not_touch_the_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """体检必须用 resolve=False：一旦有人改成 resolve=True，这条就会炸。"""
+    import socket
+
+    def explode(*args, **kwargs):
+        raise AssertionError("静态体检不允许发起 DNS 解析")
+
+    monkeypatch.setattr(socket, "getaddrinfo", explode)
+    provider = {"base_url": "https://api.example.com/v1", "has_api_key": True, "enabled": True}
+
+    assert AIWritingService.provider_config_lint(provider, routable_models=5) == []
+
+
+def test_lint_flags_missing_key_and_empty_catalog() -> None:
+    findings = AIWritingService.provider_config_lint(
+        {"base_url": "https://api.example.com/v1", "has_api_key": False, "enabled": True},
+        routable_models=0,
+    )
+    codes = {f["code"]: f["level"] for f in findings}
+    assert codes["api_key"] == "will_fail"
+    assert codes["no_routable_model"] == "warn"
+
+
+def test_lint_flags_disabled_provider_only_when_agents_bound() -> None:
+    disabled = {"base_url": "https://api.example.com/v1", "has_api_key": True, "enabled": False}
+
+    with_agents = AIWritingService.provider_config_lint(disabled, bound_agent_count=15, routable_models=3)
+    without = AIWritingService.provider_config_lint(disabled, bound_agent_count=0, routable_models=3)
+
+    assert any(f["code"] == "disabled_but_bound" for f in with_agents)
+    assert not any(f["code"] == "disabled_but_bound" for f in without)
