@@ -119,5 +119,22 @@ def test_lint_flags_disabled_provider_only_when_agents_bound() -> None:
     with_agents = AIWritingService.provider_config_lint(disabled, bound_agent_count=15, routable_models=3)
     without = AIWritingService.provider_config_lint(disabled, bound_agent_count=0, routable_models=3)
 
-    assert any(f["code"] == "disabled_but_bound" for f in with_agents)
+    bound_finding = next(f for f in with_agents if f["code"] == "disabled_but_bound")
+    assert bound_finding["level"] == "will_fail"
     assert not any(f["code"] == "disabled_but_bound" for f in without)
+
+
+def test_disabled_provider_really_fails_routing_not_just_degrades() -> None:
+    """把 disabled_but_bound 定为 will_fail 的依据：路由层是硬失败，不是降级。
+
+    spec §3.2 把这一格的档位留给「以 resolve_candidates 的真实行为为准」。
+    真实行为是 _provider_row 直接抛 ModelRouteError，固定绑定连目录都走不到，
+    所以这条固定为 will_fail。这里把那个依据钉住：哪天路由改成跳过禁用 Provider
+    继续找别的候选，这条会红，提醒把档位降回 warn。
+    """
+    import inspect
+
+    from pixiv_novel_sync.ai import model_router
+
+    source = inspect.getsource(model_router.ModelRouter._provider_row)
+    assert 'raise ModelRouteError("Provider 已禁用")' in source

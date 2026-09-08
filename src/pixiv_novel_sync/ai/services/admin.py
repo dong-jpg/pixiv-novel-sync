@@ -407,6 +407,13 @@ class AIAdminMixin:
         return model
 
     @staticmethod
+    def _require_model_pool_row(db: Database, pool_id: int) -> dict[str, Any]:
+        pool = db.get_ai_model_pool(pool_id)
+        if pool is None:
+            raise AINotFoundError("模型池不存在")
+        return pool
+
+    @staticmethod
     def provider_config_lint(
         provider: Mapping[str, Any],
         *,
@@ -420,6 +427,12 @@ class AIAdminMixin:
         届时横幅报「健康」而任务照样失败——比没有横幅更坏。
 
         base_url 允许留空（表示用适配器默认地址），此时跳过这条判据。
+
+        disabled_but_bound 定为 will_fail 而非 warn，依据是路由的真实行为：
+        model_router.py:_provider_row 对已禁用 Provider 直接抛
+        ModelRouteError("Provider 已禁用")，固定绑定没有任何降级余地。
+        bound_agent_count 只数固定绑定（池绑定的 provider_id 为 NULL，
+        见 ai_agents 的 CHECK），所以数出来的每个 Agent 都是真的会失败。
         """
         findings: list[dict[str, str]] = []
         base_url = provider.get("base_url")
@@ -436,9 +449,11 @@ class AIAdminMixin:
             )
         if not provider.get("enabled") and bound_agent_count:
             findings.append({
-                "level": "warn",
+                "level": "will_fail",
                 "code": "disabled_but_bound",
-                "message": f"Provider 已停用，但有 {bound_agent_count} 个 Agent 绑在这里",
+                "message": (
+                    f"Provider 已停用，绑在这里的 {bound_agent_count} 个 Agent 会直接失败"
+                ),
             })
         if not routable_models:
             findings.append({
@@ -447,13 +462,6 @@ class AIAdminMixin:
                 "message": "目录里没有可路由模型，模型池选不出成员",
             })
         return findings
-
-    @staticmethod
-    def _require_model_pool_row(db: Database, pool_id: int) -> dict[str, Any]:
-        pool = db.get_ai_model_pool(pool_id)
-        if pool is None:
-            raise AINotFoundError("模型池不存在")
-        return pool
 
     def list_providers(self) -> list[dict[str, Any]]:
         db = self._db()
