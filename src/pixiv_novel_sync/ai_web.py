@@ -742,6 +742,15 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     def dashboard_ai_project_reader_page(project_id: int):
         return render_template("dashboard_ai_reader.html", project_id=project_id)
 
+    @app.get("/api/dashboard/ai/health")
+    def get_ai_health():
+        """AI 配置的只读健康投影。零网络，可随意刷新。"""
+        try:
+            days = parse_int(request.args.get("days"), 7, "days", min_value=1, max_value=30)
+            return ok(service.ai_health(days=days))
+        except Exception as exc:
+            return fail(exc)
+
     @app.get("/api/dashboard/ai/providers")
     def list_ai_providers():
         try:

@@ -433,17 +433,37 @@ class AIAdminMixin:
         ModelRouteError("Provider 已禁用")，固定绑定没有任何降级余地。
         bound_agent_count 只数固定绑定（池绑定的 provider_id 为 NULL，
         见 ai_agents 的 CHECK），所以数出来的每个 Agent 都是真的会失败。
+
+        「停着的」Provider 不算「坏的」：已停用且没有任何 Agent 绑着时，
+        缺 Key 与空目录都不报。catalog.py:155 对已停用 Provider 把 routable 硬置 0，
+        不豁免的话每个备用 Provider 都会常驻一条警告加一条 will_fail，
+        横幅上的黄色就不再稀有——同 CLAUDE.md 对 partial 状态的态度。
+        base_url 与 disabled_but_bound 不在豁免范围内：前者是配置本身写错了，
+        后者恰恰以「有人绑着」为前提。
         """
         findings: list[dict[str, str]] = []
         base_url = provider.get("base_url")
         if base_url:
             try:
                 validate_base_url(str(base_url), resolve=False)
-            except ProviderConfigError as exc:
-                findings.append(
-                    {"level": "will_fail", "code": "base_url", "message": str(exc)}
+            except (ProviderConfigError, ValueError) as exc:
+                # 兜到裸 ValueError 是必要的：_parse_provider_url 的 urlparse(raw)
+                # 在任何 try 之外（providers.py:123），IPv6 括号不配对（http://[::1）
+                # 会抛 ValueError("Invalid IPv6 URL")。健康投影把整个 ai_health()
+                # 包在 except Exception 里，漏一个就是整条横幅消失——恰好是配置坏掉、
+                # 最需要它说话的时候。裸异常的消息是英文的，不能直接进中文界面。
+                # ProviderConfigError 目前继承自 ValueError，写成元组是为了它哪天
+                # 改了基类也不至于漏掉。
+                message = (
+                    str(exc)
+                    if isinstance(exc, ProviderConfigError)
+                    else "base_url 格式非法，无法解析"
                 )
-        if not provider.get("has_api_key"):
+                findings.append(
+                    {"level": "will_fail", "code": "base_url", "message": message}
+                )
+        parked = not provider.get("enabled") and not bound_agent_count
+        if not parked and not provider.get("has_api_key"):
             findings.append(
                 {"level": "will_fail", "code": "api_key", "message": "未保存 API Key"}
             )
@@ -455,13 +475,144 @@ class AIAdminMixin:
                     f"Provider 已停用，绑在这里的 {bound_agent_count} 个 Agent 会直接失败"
                 ),
             })
-        if not routable_models:
+        if not parked and not routable_models:
             findings.append({
                 "level": "warn",
                 "code": "no_routable_model",
                 "message": "目录里没有可路由模型，模型池选不出成员",
             })
         return findings
+
+    def ai_health(self, *, days: int = 7) -> dict[str, Any]:
+        """AI 配置的只读健康投影。零网络：不发起任何 Provider 请求。
+
+        投影字段是白名单挑出来的，不是把库里的行往外递：list_ai_providers() 是
+        SELECT *，带着 base_url / proxy / models_sync_owner。这个横幅常驻三个设置页，
+        没有任何理由让它复述连接地址（见 spec 的响应约定）。
+        """
+        db = self._db()
+        try:
+            providers = db.list_ai_providers()
+            agents = db.list_ai_agents()
+            pools = {int(p["id"]): p for p in db.list_ai_model_pools()}
+            attempt_health = db.get_provider_attempt_health(days=days)
+            job_failures = db.get_ai_job_failure_summary(days=days)
+            routable = {
+                int(p["id"]): int(db.list_ai_provider_models(int(p["id"]))["routable"])
+                for p in providers
+            }
+        finally:
+            db.close()
+
+        # 只数固定绑定：池绑定的 provider_id 为 NULL（ai_agents 的 CHECK），
+        # 所以这里数出来的每个 Agent 都真的会随该 Provider 一起失败。
+        bound: dict[int, int] = {}
+        for agent in agents:
+            provider_id = agent.get("provider_id")
+            if agent.get("binding_type") == "fixed" and provider_id:
+                bound[int(provider_id)] = bound.get(int(provider_id), 0) + 1
+
+        provider_status: dict[int, str] = {}
+        provider_items: list[dict[str, Any]] = []
+        for row in providers:
+            # 已停用的 Provider 照样列出：它是否还有 Agent 绑着，是这个视图最重要的事实，
+            # 按 enabled 过滤恰好会藏起 2026-09-03 那次事故的形状。
+            provider_id = int(row["id"])
+            findings = self.provider_config_lint(
+                row,
+                bound_agent_count=bound.get(provider_id, 0),
+                routable_models=routable.get(provider_id, 0),
+            )
+            status = (
+                "will_fail" if any(f["level"] == "will_fail" for f in findings)
+                else ("warn" if findings else "healthy")
+            )
+            provider_status[provider_id] = status
+            provider_items.append({
+                "id": provider_id,
+                "name": row.get("name"),
+                "enabled": bool(row.get("enabled")),
+                "status": status,
+                "findings": findings,
+                "bound_agent_count": bound.get(provider_id, 0),
+                "routable_models": routable.get(provider_id, 0),
+                "models_synced_at": row.get("models_synced_at"),
+                "models_sync_error": row.get("models_sync_error"),
+                "attempts": attempt_health.get(provider_id),
+            })
+
+        agent_items = [
+            self._agent_health_item(agent, provider_status, pools) for agent in agents
+        ]
+        unhealthy = sum(1 for item in agent_items if item["status"] == "will_fail")
+        return {
+            "window_days": int(days),
+            "providers": provider_items,
+            "agents": agent_items,
+            "ai_job_failures": job_failures,
+            "totals": {
+                "providers": len(provider_items),
+                "providers_will_fail": sum(
+                    1 for item in provider_items if item["status"] == "will_fail"
+                ),
+                "routable_models": sum(routable.values()),
+                "agents": len(agent_items),
+                "agents_unhealthy": unhealthy,
+            },
+        }
+
+    @staticmethod
+    def _agent_health_item(
+        agent: Mapping[str, Any],
+        provider_status: Mapping[int, str],
+        pools: Mapping[int, Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Agent 的状态是**继承**来的：它自己没坏，是它绑的东西坏了。
+
+        池绑定要走完整条后备链，判据与运行时一致：model_router.py:492-506 逐个池
+        往后备走，跳过已停用的池，只要链上任何一个成员可路由就不算失败。只看根池
+        会把「根池坏了但后备池好着」误报成必失败——而配了后备池恰恰是为了这种情况。
+        expand_pool_ids 是 _validate_agent_binding 绑定校验用的同一个展开器。
+        """
+        status, reason = "healthy", ""
+        if agent.get("binding_type") == "pool":
+            try:
+                chain = expand_pool_ids(int(agent.get("model_pool_id") or 0), pools)
+            except ModelPoolValidationError:
+                # 池不存在或后备链成环：运行时同样走不通，但原因不是「成员都坏了」
+                status, reason = "will_fail", "绑定的模型池不存在或后备链有环"
+            else:
+                # 已停用的池被运行时整段跳过，不贡献任何候选
+                members = [
+                    member
+                    for pool_id in chain
+                    if bool((pools.get(pool_id) or {}).get("enabled"))
+                    for member in (pools.get(pool_id) or {}).get("members", [])
+                    if member.get("enabled")
+                ]
+                if not members:
+                    status, reason = "will_fail", "绑定的模型池没有启用成员"
+                elif all(
+                    provider_status.get(int(m.get("provider_id") or 0)) == "will_fail"
+                    for m in members
+                ):
+                    status, reason = (
+                        "will_fail",
+                        "模型池及其后备池里每个成员的 Provider 都配置必失败",
+                    )
+        else:
+            provider_id = int(agent.get("provider_id") or 0)
+            if not provider_id:
+                status, reason = "will_fail", "没有绑定 Provider"
+            elif provider_status.get(provider_id) == "will_fail":
+                status, reason = "will_fail", "绑定的 Provider 配置必失败"
+        return {
+            "id": int(agent["id"]),
+            "name": agent.get("name"),
+            "task_type": agent.get("task_type"),
+            "status": status,
+            "reason": reason,
+        }
 
     def list_providers(self) -> list[dict[str, Any]]:
         db = self._db()
