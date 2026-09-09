@@ -742,7 +742,16 @@ class AIAdminMixin:
             db.close()
         model = provider_config.default_model
         if not model:
-            raise AIServiceError("Provider 未配置默认模型")
+            # 死循环：测试要模型 → 模型要同步 → 同步要先保存。目录里已有可路由模型时
+            # 直接借第一个来测，别把用户卡在「先去填默认模型」。
+            catalog = self.list_provider_models(provider_id, routable_only=True)
+            items = catalog.get("items") or []
+            if items:
+                model = items[0].get("model_key")
+        if not model:
+            raise AIServiceError(
+                "这个 Provider 还没有可用模型：先点「获取模型列表」，或在高级设置里填默认模型"
+            )
         provider = self._get_provider(provider_config)
         started = time.time()
         text_parts: list[str] = []

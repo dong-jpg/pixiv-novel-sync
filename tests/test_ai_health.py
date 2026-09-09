@@ -674,3 +674,27 @@ def test_health_endpoint_makes_no_network_call(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(socket.socket, "connect", explode)
 
     assert _get_health(app)["totals"]["providers_will_fail"] == 1
+
+
+def test_test_provider_falls_back_to_first_routable_model(tmp_path, monkeypatch) -> None:
+    """想验证一个新 Provider 通不通，不该被「先填默认模型」挡住。"""
+    from pixiv_novel_sync.ai.service import AIServiceError
+
+    app, db_path = _app(tmp_path, monkeypatch)
+    db = Database(db_path)
+    db.init_schema()
+    provider_id = db.create_ai_provider({
+        "name": "p", "provider_type": "openai_compatible",
+        "base_url": "https://api.example.com/v1", "api_key_encrypted": None,
+        "default_model": None, "enabled": 1,
+    })
+    db.close()
+
+    res = app.test_client().post(
+        f"/api/dashboard/ai/providers/{provider_id}/test",
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    # 目录为空 ⇒ 不再是「未配置默认模型」，而是指向下一步动作
+    assert res.status_code == 400
+    assert "获取模型列表" in res.get_json()["error"]
