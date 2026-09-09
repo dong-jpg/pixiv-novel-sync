@@ -216,3 +216,16 @@ def test_provider_card_and_agent_row_show_inherited_health():
     for text in ("agentHealth", "继承"):
         assert text in AGENTS_TEMPLATE
 
+
+def test_provider_form_collapses_advanced_fields_and_probes_before_save():
+    for text in ("probe-models", "probedModels", "toggleProbedModel", "advancedOpen", "从已有 Provider 复制"):
+        assert text in TEMPLATE
+    # /v1 建议是一键按钮，不是静默改写
+    assert "试试" in TEMPLATE and "/v1" in TEMPLATE
+
+
+def test_model_catalog_rows_can_toggle_enabled():
+    """enabled 决定 routable，后端早就支持改它，之前前端完全没接线。"""
+    assert "/api/dashboard/ai/provider-models/" in TEMPLATE
+    assert "toggleModelEnabled" in TEMPLATE
+

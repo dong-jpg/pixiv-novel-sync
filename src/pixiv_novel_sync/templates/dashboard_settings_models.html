@@ -33,27 +33,47 @@
       </div>
       <input v-model="providerForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="名称">
       <select v-model="providerForm.provider_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-        <option value="openai_compatible">OpenAI-compatible</option>
-        <option value="anthropic">Anthropic</option>
-        <option value="xai">xAI</option>
+        <option value="openai_compatible">OpenAI 兼容 —— 填到 /v1 为止，或网关根地址</option>
+        <option value="anthropic">Anthropic —— 官方 /v1/messages 或同协议网关</option>
+        <option value="xai">xAI —— 官方 https://api.x.ai/v1</option>
       </select>
-      <input v-model="providerForm.base_url" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="base_url，可留空使用默认值">
-      <input v-model="providerForm.default_model" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="默认模型">
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <label class="block text-xs text-pixiv-gray">上下文窗口 (tokens)
-          <input type="number" min="1" v-model.number="providerForm.context_window" class="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="128000">
-        </label>
-        <label class="block text-xs text-pixiv-gray">超时 (秒)
-          <input type="number" min="1" v-model.number="providerForm.timeout_seconds" class="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="120">
-        </label>
-        <label class="block text-xs text-pixiv-gray">重试次数
-          <input type="number" min="0" v-model.number="providerForm.max_retries" class="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="2">
+      <input v-model="providerForm.base_url" @blur="lintBaseUrl"
+             class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+             placeholder="base_url，可留空使用默认值">
+      <p v-if="baseUrlHint" class="text-xs text-red-600">{{ baseUrlHint }}</p>
+      <div class="flex gap-2 flex-wrap">
+        <button @click="probeModels" :disabled="probeStatus === '探测中…'" class="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm">探测模型</button>
+      </div>
+      <p v-if="probeStatus" class="text-xs" :class="probeRetryWithV1 ? 'text-amber-700' : 'text-gray-700'">{{ probeStatus }}</p>
+      <button v-if="probeRetryWithV1" @click="applyV1Suggestion" class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-800">试试 {{ probeRetryWithV1 }}/v1</button>
+      <div v-if="probedModels.length" class="space-y-1 max-h-48 overflow-y-auto border border-gray-100 rounded p-2">
+        <label v-for="model in probedModels" :key="model.model_key" class="flex items-center gap-2 text-xs">
+          <input type="checkbox" :checked="model.checked" @change="toggleProbedModel(model)">
+          <span class="font-medium text-gray-900 truncate">{{ model.display_name || model.model_key }}</span>
+          <span class="text-gray-500 truncate">{{ model.model_key }}</span>
         </label>
       </div>
-      <label class="flex items-center gap-2 text-sm text-gray-700">
-        <input type="checkbox" v-model="providerForm.stream_enabled" class="rounded border-gray-300">
-        启用流式输出
-      </label>
+      <details :open="advancedOpen" @toggle="advancedOpen = $event.target.open">
+        <summary class="text-xs text-pixiv-gray cursor-pointer">高级（默认模型 / 超时 / 重试 / 上下文窗口 / 流式）</summary>
+        <div class="pt-3 space-y-3">
+          <input v-model="providerForm.default_model" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="默认模型">
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <label class="block text-xs text-pixiv-gray">上下文窗口 (tokens)
+              <input type="number" min="1" v-model.number="providerForm.context_window" class="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="128000">
+            </label>
+            <label class="block text-xs text-pixiv-gray">超时 (秒)
+              <input type="number" min="1" v-model.number="providerForm.timeout_seconds" class="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="120">
+            </label>
+            <label class="block text-xs text-pixiv-gray">重试次数
+              <input type="number" min="0" v-model.number="providerForm.max_retries" class="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="2">
+            </label>
+          </div>
+          <label class="flex items-center gap-2 text-sm text-gray-700">
+            <input type="checkbox" v-model="providerForm.stream_enabled" class="rounded border-gray-300">
+            启用流式输出
+          </label>
+        </div>
+      </details>
       <label class="flex items-center gap-2 text-sm text-gray-700">
         <input type="checkbox" v-model="providerForm.enabled" class="rounded border-gray-300">
         启用该 Provider
@@ -127,6 +147,10 @@
                   </div>
                   <div class="flex-shrink-0 text-right space-y-1">
                     <div class="text-gray-500">{{ model.source || 'catalog' }}</div>
+                    <label class="flex items-center gap-1 justify-end">
+                      <input type="checkbox" :checked="model.enabled"
+                             @change="toggleModelEnabled(provider.id, model)">启用
+                    </label>
                     <button v-if="model.manual" @click="deleteManualModel(provider.id, model.id)" class="text-red-600 hover:text-red-700">删除人工记录</button>
                   </div>
                 </div>
@@ -152,6 +176,7 @@
           <div v-if="providerTestStatus[provider.id]" class="mt-2 text-xs px-2 py-1 rounded" :class="providerTestStatus[provider.id].type === 'error' ? 'bg-red-50 text-red-700' : (providerTestStatus[provider.id].type === 'warning' ? 'bg-amber-50 text-amber-700' : 'bg-green-50 text-green-700')">{{ providerTestStatus[provider.id].text }}</div>
           <div class="flex gap-2 mt-2 flex-wrap">
             <button @click="editProvider(provider)" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">编辑</button>
+            <button @click="copyFromProvider(provider)" class="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">从已有 Provider 复制</button>
             <button @click="testProvider(provider.id)" :disabled="testingProviderId === provider.id" class="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-50">{{ testingProviderId === provider.id ? '测试中…' : '测试' }}</button>
             <button @click="deleteProvider(provider.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
           </div>
@@ -308,6 +333,11 @@
       // 而不是这个候选不可用。
       const ATTEMPT_STATUS_LABELS = { running: '进行中', succeeded: '成功', failed: '失败', partial: '已输出后失败', cancelled: '已取消' };
       const providerForm = reactive({ id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
+      const advancedOpen = ref(false);
+      const baseUrlHint = ref('');
+      const probedModels = ref([]);
+      const probeStatus = ref('');
+      const probeRetryWithV1 = ref('');
       const MODEL_SYNC_EVENTS = new Set(['started', 'page', 'empty_confirmation_required', 'completed', 'failed', 'cancelled']);
       const aiMessage = ref('');
       const aiMessageType = ref('success');
@@ -742,6 +772,65 @@
         await recoverModelSyncOperations();
       };
       const resetProviderForm = () => Object.assign(providerForm, { id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
+      const lintBaseUrl = () => {
+        const url = (providerForm.base_url || '').trim();
+        baseUrlHint.value = '';
+        if (!url) return;
+        // 与运行时同一条规则：非回环主机必须 https（ai/providers.py:validate_base_url）
+        const loopback = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(url);
+        if (url.startsWith('http://') && !loopback) {
+          baseUrlHint.value = 'base_url 必须使用 https（本机回环地址除外）——保存后所有调用都会失败';
+        }
+        if (!providerForm.name) {
+          try { providerForm.name = new URL(url).host; } catch (e) {}
+        }
+      };
+      const copyFromProvider = (provider) => {
+        Object.assign(providerForm, { ...provider, id: 0, api_key: '' });
+        baseUrlHint.value = '';
+      };
+      async function probeModels() {
+        probeStatus.value = '探测中…';
+        probedModels.value = [];
+        probeRetryWithV1.value = '';
+        try {
+          const data = await window.aiApi.request('/api/dashboard/ai/providers/probe-models', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              provider_id: providerForm.id || undefined,
+              provider_type: providerForm.provider_type,
+              base_url: providerForm.base_url,
+              api_key: providerForm.api_key || undefined,
+            }),
+          });
+          probedModels.value = data.items.map(item => ({ ...item, checked: item.suggested }));
+          probeStatus.value = `通，${data.latency_ms}ms，找到 ${data.items.length} 个`;
+        } catch (e) {
+          probeStatus.value = window.errorText ? e.message : String(e);
+          const url = (providerForm.base_url || '').replace(/\/+$/, '');
+          if (url && !/\/v1$/.test(url) && /404|not found|路径/i.test(e.message || '')) {
+            probeRetryWithV1.value = url;
+          }
+        }
+      }
+      function toggleProbedModel(model) { model.checked = !model.checked; }
+      function applyV1Suggestion() {
+        providerForm.base_url = probeRetryWithV1.value + '/v1';
+        probeRetryWithV1.value = '';
+        probeModels();
+      }
+      async function toggleModelEnabled(providerId, model) {
+        try {
+          await window.aiApi.request(`/api/dashboard/ai/provider-models/${model.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !model.enabled }),
+          });
+          await loadProviderModels(providerId);
+          await loadAiHealth();
+        } catch (e) { showAiMessage(e.message, 'error'); }
+      }
       const editProvider = (provider) => Object.assign(providerForm, { id: provider.id, name: provider.name || '', provider_type: provider.provider_type || 'openai_compatible', base_url: provider.base_url || '', default_model: provider.default_model || '', api_key: '', timeout_seconds: provider.timeout_seconds || 120, max_retries: provider.max_retries || 2, context_window: provider.context_window || 128000, stream_enabled: provider.stream_enabled !== false, enabled: provider.enabled !== false });
       const saveProvider = async () => {
         try {
@@ -789,6 +878,9 @@
         aiMessage, aiMessageType, providerForm,
         loadProviders, resetProviderForm, editProvider, saveProvider, deleteProvider, testProvider,
         aiHealth, aiHealthLoading, loadAiHealth, providerHealth,
+        advancedOpen, baseUrlHint, lintBaseUrl, copyFromProvider,
+        probedModels, probeStatus, probeRetryWithV1, probeModels, toggleProbedModel, applyV1Suggestion,
+        toggleModelEnabled,
       };
     }
   });
