@@ -1005,6 +1005,14 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
         except Exception as exc:
             return fail(exc)
 
+    @app.put("/api/dashboard/ai/agents/bindings")
+    def update_ai_agent_bindings_route():
+        """批量改绑 / 批量启停。单事务，成人 Agent 混入即整体拒绝。"""
+        try:
+            return ok(service.update_agent_bindings(require_json_object()))
+        except Exception as exc:
+            return fail(exc)
+
     @app.post("/api/dashboard/ai/agents/adult-polish/seed")
     def seed_adult_polish_agent():
         try:

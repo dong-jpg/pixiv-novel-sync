@@ -417,6 +417,55 @@ class AiCoreMixin:
             self.conn.execute("DELETE FROM ai_agents WHERE id = ?", (agent_id,))
             self._commit_if_needed()
 
+    def update_ai_agent_bindings(
+        self, agent_ids: list[int], binding: dict[str, Any]
+    ) -> int:
+        """一个事务里改完一批 Agent 的绑定。
+
+        不复用 N 次 update_ai_agent：中途失败会留下改了一半的状态。只动绑定字段，
+        system_prompt / 采样参数 / required_capabilities 一律不碰——那些是每个 Agent
+        的个性，批量覆盖会把十几个精调过的提示词一次抹平。
+        """
+        if not agent_ids:
+            return 0
+        provider_id = binding.get("provider_id")
+        model_pool_id = binding.get("model_pool_id")
+        affected = 0
+        with self._lock, self.transaction():
+            for agent_id in agent_ids:
+                cursor = self.conn.execute(
+                    """
+                    UPDATE ai_agents
+                    SET binding_type = ?, provider_id = ?, model = ?, model_pool_id = ?,
+                        binding_version = binding_version + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        binding.get("binding_type") or "fixed",
+                        int(provider_id) if provider_id is not None else None,
+                        binding.get("model"),
+                        int(model_pool_id) if model_pool_id is not None else None,
+                        int(agent_id),
+                    ),
+                )
+                affected += cursor.rowcount
+        return affected
+
+    def set_ai_agents_enabled(self, agent_ids: list[int], enabled: bool) -> int:
+        """批量启停。同样单事务，但不动 binding_version——绑定没变。"""
+        if not agent_ids:
+            return 0
+        affected = 0
+        with self._lock, self.transaction():
+            for agent_id in agent_ids:
+                cursor = self.conn.execute(
+                    "UPDATE ai_agents SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (1 if enabled else 0, int(agent_id)),
+                )
+                affected += cursor.rowcount
+        return affected
+
     @staticmethod
     def _attempt_from_row(row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)

@@ -12,7 +12,11 @@ from collections.abc import Iterator, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from ...storage.ai.core import AIJobConflictError, AIProviderReferenceError
+from ...storage.ai.core import (
+    ADULT_AI_TASK_TYPES,
+    AIJobConflictError,
+    AIProviderReferenceError,
+)
 from ...storage_db import Database
 from ..model_catalog import (
     ModelCatalogConflictError,
@@ -1200,6 +1204,56 @@ class AIAdminMixin:
             db.delete_ai_agent(agent_id)
         finally:
             db.close()
+
+    def update_agent_bindings(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """批量改绑 / 批量启停。成人 Agent 混入即整体拒绝（fail-closed）。"""
+        raw_ids = payload.get("agent_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise AIServiceError("agent_ids 必须是非空数组")
+        agent_ids = [int(value) for value in raw_ids]
+
+        db = self._db()
+        try:
+            by_id = {int(a["id"]): a for a in db.list_ai_agents()}
+            missing = [i for i in agent_ids if i not in by_id]
+            if missing:
+                raise AINotFoundError(f"Agent 不存在：{missing}")
+            adult = [
+                by_id[i]["name"] for i in agent_ids
+                if by_id[i].get("task_type") in ADULT_AI_TASK_TYPES
+            ]
+            if adult:
+                # 成人 Agent 有独立的生命周期入口与 fail-closed 契约（policy hash /
+                # review binding / 角色 revision），混进通用批量等于给安全边界开后门。
+                raise AIServiceError(
+                    f"成人润色 Agent 不参与批量操作，请单独配置：{'、'.join(adult)}"
+                )
+            if "enabled" in payload:
+                self._require_boolean(payload, "enabled")
+                updated = db.set_ai_agents_enabled(agent_ids, bool(payload["enabled"]))
+            else:
+                binding = payload.get("binding")
+                if not isinstance(binding, dict):
+                    raise AIServiceError("binding 必须是对象")
+                binding_type = binding.get("binding_type") or "fixed"
+                if binding_type not in ("fixed", "pool"):
+                    raise AIServiceError("binding_type 只能是 fixed 或 pool")
+                if binding_type == "fixed" and not binding.get("provider_id"):
+                    raise AIServiceError("固定绑定必须指定 provider_id")
+                if binding_type == "pool" and not binding.get("model_pool_id"):
+                    raise AIServiceError("池绑定必须指定 model_pool_id")
+                # ai_agents 上那条 CHECK 要求两个绑定字段互斥，且 pool 时 model 必须为
+                # NULL（model_schema.py:164-172），不归一化就会被 SQLite 整条拒掉。
+                normalized = {
+                    "binding_type": binding_type,
+                    "model": binding.get("model") if binding_type == "fixed" else None,
+                    "provider_id": binding.get("provider_id") if binding_type == "fixed" else None,
+                    "model_pool_id": binding.get("model_pool_id") if binding_type == "pool" else None,
+                }
+                updated = db.update_ai_agent_bindings(agent_ids, normalized)
+        finally:
+            db.close()
+        return {"updated": int(updated)}
 
     def create_document(self, payload: dict[str, Any]) -> int:
         content = str(payload.get("content") or "")
