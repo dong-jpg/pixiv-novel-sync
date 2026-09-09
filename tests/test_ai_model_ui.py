@@ -209,3 +209,10 @@ def test_health_band_surfaces_silent_degradation_and_bad_bindings():
     # 横幅是只读投影，不该出现任何变更类请求
     assert "window.csrfFetch" not in HEALTH_BAND
 
+
+def test_provider_card_and_agent_row_show_inherited_health():
+    for text in ("providerHealth", "bound_agent_count", "models_sync_error"):
+        assert text in TEMPLATE
+    for text in ("agentHealth", "继承"):
+        assert text in AGENTS_TEMPLATE
+
