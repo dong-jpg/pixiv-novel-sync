@@ -11,6 +11,9 @@ TEMPLATE = Path(
 AGENTS_TEMPLATE = Path(
     "src/pixiv_novel_sync/templates/dashboard_settings_agents.html"
 ).read_text(encoding="utf-8")
+ADULT_TEMPLATE = Path(
+    "src/pixiv_novel_sync/templates/dashboard_settings_adult.html"
+).read_text(encoding="utf-8")
 LOG_TEMPLATE = Path(
     "src/pixiv_novel_sync/templates/dashboard_logs.html"
 ).read_text(encoding="utf-8")
@@ -177,4 +180,32 @@ def test_pool_attempt_status_labels_separate_partial_from_failed():
     assert "partial" in TEMPLATE
     assert "已输出" in TEMPLATE
     assert "output_started" in TEMPLATE
+
+
+HEALTH_BAND = Path(
+    "src/pixiv_novel_sync/templates/dashboard_ai_health_band.html"
+).read_text(encoding="utf-8")
+
+
+def test_health_band_is_included_on_all_three_ai_settings_pages():
+    """三页都要有：横幅要出现在你正在编辑的那一页上，而不是一个要跳过去的目的地。"""
+    for template in (TEMPLATE, AGENTS_TEMPLATE, ADULT_TEMPLATE):
+        assert "dashboard_ai_health_band.html" in template
+        # 横幅 markup 引用的名字必须在本页 setup() 里导出
+        for name in ("aiHealth", "aiHealthLoading", "loadAiHealth"):
+            assert name in template
+
+
+def test_health_band_surfaces_silent_degradation_and_bad_bindings():
+    for text in (
+        "/api/dashboard/ai/health",
+        "providers_will_fail",
+        "agents_unhealthy",
+        "ai_job_failures",
+        "静默降级",
+        "继承",
+    ):
+        assert text in HEALTH_BAND
+    # 横幅是只读投影，不该出现任何变更类请求
+    assert "window.csrfFetch" not in HEALTH_BAND
 

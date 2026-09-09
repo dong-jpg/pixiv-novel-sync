@@ -22,6 +22,8 @@
 
   {% include 'dashboard_settings_nav.html' %}
 
+  {% include 'dashboard_ai_health_band.html' %}
+
   <!-- 1. Provider 与模型目录 -->
   <section id="ai-api" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
     <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-3">
@@ -257,6 +259,14 @@
       const providers = ref([]);
       const testingProviderId = ref(0);
       const providerTestStatus = reactive({});
+      const aiHealth = ref(null);
+      const aiHealthLoading = ref(false);
+      async function loadAiHealth() {
+        aiHealthLoading.value = true;
+        try { aiHealth.value = await window.aiApi.request('/api/dashboard/ai/health'); }
+        catch (e) { aiHealth.value = null; }
+        finally { aiHealthLoading.value = false; }
+      }
       const providerModels = reactive({});
       const modelSearch = reactive({});
       const modelCatalogExpanded = reactive({});
@@ -739,6 +749,7 @@
       onMounted(() => {
         loadProviders();
         loadModelPools();
+        loadAiHealth();
       });
 
       return {
@@ -755,6 +766,7 @@
         movePoolMember, replacePoolMembers, saveModelPool, deleteModelPool,
         aiMessage, aiMessageType, providerForm,
         loadProviders, resetProviderForm, editProvider, saveProvider, deleteProvider, testProvider,
+        aiHealth, aiHealthLoading, loadAiHealth,
       };
     }
   });
