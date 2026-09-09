@@ -257,16 +257,12 @@
 
       // 成人润色 Agent 不在这里管理：它属于 fail-closed 子系统，绑定与审查策略
       // 都在 /dashboard/settings/adult，普通列表里不给编辑/删除入口。
-      const filteredAgents = computed(() => agents.value.filter(agent => {
-        if (agent.task_type === 'adult_polish') return false;
-        if (agentFilter.value && agent.task_type !== agentFilter.value) return false;
-        if (onlyBadBindings.value && agentHealth(agent.id)?.status !== 'will_fail') return false;
-        if (agentSearch.value) {
-          const haystack = `${agent.name || ''} ${agent.task_type || ''}`.toLowerCase();
-          if (!haystack.includes(agentSearch.value.toLowerCase())) return false;
-        }
-        return true;
-      }));
+      const filteredAgents = computed(() => agents.value.filter(agent =>
+        agent.task_type !== 'adult_polish'
+          && (!agentFilter.value || agent.task_type === agentFilter.value)
+          && (!onlyBadBindings.value || agentHealth(agent.id)?.status === 'will_fail')
+          && (!agentSearch.value || `${agent.name || ''} ${agent.task_type || ''}`.toLowerCase().includes(agentSearch.value.toLowerCase()))
+      ));
       const agentHealth = (agentId) =>
         (aiHealth.value?.agents || []).find(item => item.id === agentId) || null;
       const agentSearch = ref('');

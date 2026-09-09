@@ -678,11 +678,13 @@ Body:
 
 ### Provider、模型目录与同步 operation
 
+- `GET /api/dashboard/ai/health?days=7`：AI 配置的只读健康投影，零网络。
 - `GET /api/dashboard/ai/providers`
 - `POST /api/dashboard/ai/providers`
 - `PUT /api/dashboard/ai/providers/{provider_id}`
 - `DELETE /api/dashboard/ai/providers/{provider_id}`
 - `POST /api/dashboard/ai/providers/{provider_id}/test`
+- `POST /api/dashboard/ai/providers/probe-models`：预览上游模型列表，不落库、不建 Provider。
 - `GET /api/dashboard/ai/providers/<provider_id>/models?search=&routable_only=&enabled_only=`
 - `POST /api/dashboard/ai/providers/<provider_id>/models`：创建人工模型。
 - `PUT /api/dashboard/ai/provider-models/<model_id>`
@@ -718,6 +720,7 @@ Body:
 - `PUT /api/dashboard/ai/agents/{agent_id}`
 - `DELETE /api/dashboard/ai/agents/{agent_id}`
 - `GET /api/dashboard/ai/agents/<agent_id>/candidates`
+- `PUT /api/dashboard/ai/agents/bindings`：批量改绑 / 批量启停。单事务，成人 Agent 混入即整体拒绝。
 - `POST /api/dashboard/ai/agents/seed`
 - `POST /api/dashboard/ai/agents/adult-polish/seed`：创建/确保成人润色 Agent。要求成人 owner 会话与 JSON object body；成功返回 `{ ok, data }`（Agent 信息），失败按成人路由规则映射为固定中文错误（默认「创建成人润色 Agent 失败」）。
 
