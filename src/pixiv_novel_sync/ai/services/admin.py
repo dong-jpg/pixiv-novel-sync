@@ -35,7 +35,7 @@ from ..model_router import (
 )
 from ..model_sync import ModelSyncConflictError
 from ..models import AIAgentConfig, AIProviderConfig, AIStreamChunk
-from ..providers import ProviderConfigError, validate_base_url
+from ..providers import ProviderConfigError, create_provider, validate_base_url
 from ..prompts import (
     DEFAULT_CHAPTER_SUMMARY_PROMPT,
     DEFAULT_FORESHADOW_RESOLVE_PROMPT,
@@ -765,6 +765,74 @@ class AIAdminMixin:
             if chunk.type == "delta":
                 text_parts.append(chunk.text)
         return {"ok": True, "model": model, "latency_ms": int((time.time() - started) * 1000), "text": "".join(text_parts).strip()[:100]}
+
+    _NON_CHAT_CAPABILITY_HINTS = ("embed", "rerank", "asr", "speech", "audio", "image", "vision")
+
+    def probe_provider_models(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """用表单里的凭据拉一次模型列表用于预览。**不写任何库表。**
+
+        与 model_sync 的分工：落库目录永远只有 model_sync 一个写入方，这里只回一份
+        预览清单，让错的配置在落库前就被拦下（spec §4.2）。
+        """
+        base_url = (str(payload.get("base_url") or "")).strip() or None
+        provider_type = str(payload.get("provider_type") or "openai_compatible")
+        api_key = payload.get("api_key") or None
+        provider_id = payload.get("provider_id")
+
+        if provider_id is not None and not api_key:
+            db = self._db()
+            try:
+                row = db.get_ai_provider(int(provider_id), include_secret=True)
+            finally:
+                db.close()
+            if row is None:
+                raise AINotFoundError("Provider 不存在")
+            # 借库里那把 Key 时地址必须逐字相同：否则这个端点等于「把加密存好的 Key
+            # 发到我指定的任意地址」，而 validate_base_url 拦不住它（目标可以是完全
+            # 合法的 https 公网主机）。
+            if (row.get("base_url") or None) != base_url:
+                raise AIServiceError(
+                    "借用已保存的 API Key 时不能同时改地址：请在表单里重新填入 Key"
+                )
+            api_key = self.secret_manager.decrypt(row.get("api_key_encrypted"))
+        if not api_key:
+            raise AIServiceError("请填入 API Key")
+
+        config = AIProviderConfig(
+            id=0,
+            name="probe",
+            provider_type=provider_type,
+            base_url=base_url,
+            api_key=api_key,
+            default_model=None,
+            timeout_seconds=int(payload.get("timeout_seconds") or 120),
+            context_window=int(payload.get("context_window") or 128000),
+        )
+        provider = create_provider(config)
+        started = time.time()
+        try:
+            result = provider.list_models(deadline=time.monotonic() + 60)
+        finally:
+            provider.close()
+
+        items = []
+        for model in result.models:
+            capabilities = list(model.get("capabilities") or [])
+            lowered = " ".join(capabilities).lower()
+            suggested = not any(hint in lowered for hint in self._NON_CHAT_CAPABILITY_HINTS)
+            items.append({
+                "model_key": model.get("model_key"),
+                "display_name": model.get("display_name"),
+                "capabilities": capabilities,
+                "context_window": model.get("context_window"),
+                "suggested": suggested,
+            })
+        return {
+            "latency_ms": int((time.time() - started) * 1000),
+            "complete": bool(result.complete),
+            "partial_reason": result.partial_reason,
+            "items": items,
+        }
 
     def list_provider_models(
         self,

@@ -751,6 +751,14 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
         except Exception as exc:
             return fail(exc)
 
+    @app.post("/api/dashboard/ai/providers/probe-models")
+    def probe_ai_provider_models():
+        """预览上游模型列表。不落库、不建 Provider（spec §4.2）。"""
+        try:
+            return ok(service.probe_provider_models(require_json_object()))
+        except Exception as exc:
+            return fail(exc)
+
     @app.get("/api/dashboard/ai/providers")
     def list_ai_providers():
         try:
