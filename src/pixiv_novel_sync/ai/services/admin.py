@@ -419,6 +419,7 @@ class AIAdminMixin:
         *,
         bound_agent_count: int = 0,
         routable_models: int = 0,
+        pool_referenced: bool = False,
     ) -> list[dict[str, str]]:
         """只看 Provider 行本身就能下的结论，零网络。
 
@@ -434,12 +435,25 @@ class AIAdminMixin:
         bound_agent_count 只数固定绑定（池绑定的 provider_id 为 NULL，
         见 ai_agents 的 CHECK），所以数出来的每个 Agent 都是真的会失败。
 
-        「停着的」Provider 不算「坏的」：已停用且没有任何 Agent 绑着时，
+        「停着的」Provider 不算「坏的」：已停用、且没有任何东西依赖它时，
         缺 Key 与空目录都不报。catalog.py:155 对已停用 Provider 把 routable 硬置 0，
         不豁免的话每个备用 Provider 都会常驻一条警告加一条 will_fail，
         横幅上的黄色就不再稀有——同 CLAUDE.md 对 partial 状态的态度。
         base_url 与 disabled_but_bound 不在豁免范围内：前者是配置本身写错了，
         后者恰恰以「有人绑着」为前提。
+
+        pool_referenced 与 bound_agent_count 回答的是**两个不同的问题**，
+        所以是两个参数而不是一个合计：
+
+        - bound_agent_count 问「有多少 Agent 必然随它一起失败」，只数固定绑定。
+          disabled_but_bound 是 will_fail，这一档要求「必然失败」，只有固定绑定
+          给得起这个保证；池绑定在池里还有别的可路由成员时会优雅降级（运行时
+          model_router.py:508-513 逐成员挑），把池绑定算进这个计数会造出假红。
+        - pool_referenced 问「有没有任何东西依赖它」，池引用满足这个。停用一个
+          被池引用的 Provider 不是「停着」，是把池里的成员抽走了：
+          catalog.py:76 的 routable 因 provider_enabled 为假而全灭，运行时
+          model_router.py:551-552 抛 ModelRouteError("模型池没有可用模型")。
+          豁免它就会让这种事故形状全绿——假绿比没有横幅更坏。
         """
         findings: list[dict[str, str]] = []
         base_url = provider.get("base_url")
@@ -462,7 +476,11 @@ class AIAdminMixin:
                 findings.append(
                     {"level": "will_fail", "code": "base_url", "message": message}
                 )
-        parked = not provider.get("enabled") and not bound_agent_count
+        parked = (
+            not provider.get("enabled")
+            and not bound_agent_count
+            and not pool_referenced
+        )
         if not parked and not provider.get("has_api_key"):
             findings.append(
                 {"level": "will_fail", "code": "api_key", "message": "未保存 API Key"}
@@ -492,25 +510,58 @@ class AIAdminMixin:
         """
         db = self._db()
         try:
-            providers = db.list_ai_providers()
-            agents = db.list_ai_agents()
-            pools = {int(p["id"]): p for p in db.list_ai_model_pools()}
-            attempt_health = db.get_provider_attempt_health(days=days)
-            job_failures = db.get_ai_job_failure_summary(days=days)
-            routable = {
-                int(p["id"]): int(db.list_ai_provider_models(int(p["id"]))["routable"])
-                for p in providers
-            }
+            # 整块读包进一个 read_transaction：并发的模型同步在两次读之间提交，
+            # 就会产出 models_synced_at 与 routable_models 互不匹配的一行。
+            # （read_transaction 可嵌套，list_ai_provider_models 内部那层照旧。）
+            with db.read_transaction():
+                providers = db.list_ai_providers()
+                agents = db.list_ai_agents()
+                pools = {int(p["id"]): p for p in db.list_ai_model_pools()}
+                attempt_health = db.get_provider_attempt_health(days=days)
+                job_failures = db.get_ai_job_failure_summary(days=days)
+                routable: dict[int, int] = {}
+                # provider_model_id -> routable，供池成员过滤复用运行时判据。
+                # 不额外查库：这里本来就要为每个 Provider 调一次，只是把 items 也留下。
+                routable_by_model: dict[int, bool] = {}
+                for provider_row in providers:
+                    catalog = db.list_ai_provider_models(int(provider_row["id"]))
+                    routable[int(provider_row["id"])] = int(catalog["routable"])
+                    for item in catalog["items"]:
+                        routable_by_model[int(item["id"])] = bool(item["routable"])
         finally:
             db.close()
 
         # 只数固定绑定：池绑定的 provider_id 为 NULL（ai_agents 的 CHECK），
         # 所以这里数出来的每个 Agent 都真的会随该 Provider 一起失败。
         bound: dict[int, int] = {}
+        # 「经由模型池被依赖」的 Provider：单独一个集合，只喂给 parked 豁免判定，
+        # 不并进 bound_agent_count（理由见 provider_config_lint 的 docstring）。
+        pool_referenced: set[int] = set()
         for agent in agents:
             provider_id = agent.get("provider_id")
             if agent.get("binding_type") == "fixed" and provider_id:
                 bound[int(provider_id)] = bound.get(int(provider_id), 0) + 1
+            elif agent.get("binding_type") == "pool":
+                try:
+                    chain = expand_pool_ids(int(agent.get("model_pool_id") or 0), pools)
+                except ModelPoolValidationError:
+                    # 池不存在或后备链成环：这个 Agent 无论如何都跑不通，
+                    # 也就谈不上"依赖某个 Provider"，跳过。
+                    continue
+                for pool_id in chain:
+                    pool = pools.get(pool_id) or {}
+                    if not bool(pool.get("enabled")):
+                        continue
+                    for member in pool.get("members", []):
+                        if not member.get("enabled"):
+                            continue
+                        member_provider_id = member.get("provider_id")
+                        if member_provider_id:
+                            # 刻意不要求 routable：Provider 一停用，它名下每个模型的
+                            # routable 就是假（catalog.py:76 的 provider_enabled），
+                            # 拿它当条件会自相引用 —— 停用后立刻"没人依赖"，
+                            # parked 永久豁免，正是要堵的那个洞。
+                            pool_referenced.add(int(member_provider_id))
 
         provider_status: dict[int, str] = {}
         provider_items: list[dict[str, Any]] = []
@@ -522,6 +573,7 @@ class AIAdminMixin:
                 row,
                 bound_agent_count=bound.get(provider_id, 0),
                 routable_models=routable.get(provider_id, 0),
+                pool_referenced=provider_id in pool_referenced,
             )
             status = (
                 "will_fail" if any(f["level"] == "will_fail" for f in findings)
@@ -542,7 +594,8 @@ class AIAdminMixin:
             })
 
         agent_items = [
-            self._agent_health_item(agent, provider_status, pools) for agent in agents
+            self._agent_health_item(agent, provider_status, pools, routable_by_model)
+            for agent in agents
         ]
         unhealthy = sum(1 for item in agent_items if item["status"] == "will_fail")
         return {
@@ -566,16 +619,33 @@ class AIAdminMixin:
         agent: Mapping[str, Any],
         provider_status: Mapping[int, str],
         pools: Mapping[int, Mapping[str, Any]],
+        routable_by_model: Mapping[int, bool],
     ) -> dict[str, Any]:
         """Agent 的状态是**继承**来的：它自己没坏，是它绑的东西坏了。
+
+        已停用的 Agent 一律报 healthy：运行时第一道门就是
+        model_router.py:650-652 的 `if not agent.enabled: raise
+        ModelRouteError("Agent 已禁用")`，它永远走不到解析候选那一步，
+        **不可能因为这里所报的原因失败**。停一个 Provider 连带停掉它那批 Agent
+        是最自然的运维动作，此时 Provider 侧按 parked 规则正确变绿，
+        Agent 侧若整批亮红，横幅就在自相矛盾。
 
         池绑定要走完整条后备链，判据与运行时一致：model_router.py:492-506 逐个池
         往后备走，跳过已停用的池，只要链上任何一个成员可路由就不算失败。只看根池
         会把「根池坏了但后备池好着」误报成必失败——而配了后备池恰恰是为了这种情况。
         expand_pool_ids 是 _validate_agent_binding 绑定校验用的同一个展开器。
+
+        成员过滤除了池 enabled 与成员行 enabled，还必须过 routable
+        （model_router.py:509-513 那一道）：routable 的定义是
+        `enabled AND (manual OR discovered_available) AND provider_enabled`
+        （catalog.py:76），所以成员的模型行被停用、或成员所属 Provider 被停用时，
+        运行时都不产生候选，最终抛 ModelRouteError("模型池没有可用模型")。
+        少过这一道就是假绿，而假绿比没有横幅更坏。
         """
         status, reason = "healthy", ""
-        if agent.get("binding_type") == "pool":
+        if not agent.get("enabled"):
+            status, reason = "healthy", "Agent 已停用，不参与路由"
+        elif agent.get("binding_type") == "pool":
             try:
                 chain = expand_pool_ids(int(agent.get("model_pool_id") or 0), pools)
             except ModelPoolValidationError:
@@ -583,15 +653,27 @@ class AIAdminMixin:
                 status, reason = "will_fail", "绑定的模型池不存在或后备链有环"
             else:
                 # 已停用的池被运行时整段跳过，不贡献任何候选
-                members = [
+                enabled_members = [
                     member
                     for pool_id in chain
                     if bool((pools.get(pool_id) or {}).get("enabled"))
                     for member in (pools.get(pool_id) or {}).get("members", [])
                     if member.get("enabled")
                 ]
-                if not members:
+                # 再过运行时那道 routable，成员的模型行或其 Provider 被停用都在此落选
+                members = [
+                    member
+                    for member in enabled_members
+                    if routable_by_model.get(int(member.get("provider_model_id") or 0))
+                ]
+                if not enabled_members:
                     status, reason = "will_fail", "绑定的模型池没有启用成员"
+                elif not members:
+                    # 与上一句刻意分开：成员开关本来就是开着的，让用户去开它只会白跑一趟
+                    status, reason = (
+                        "will_fail",
+                        "模型池及其后备池里没有可路由的模型（成员模型被停用，或其 Provider 已停用）",
+                    )
                 elif all(
                     provider_status.get(int(m.get("provider_id") or 0)) == "will_fail"
                     for m in members

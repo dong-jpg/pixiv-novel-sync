@@ -126,20 +126,24 @@ def test_lint_flags_disabled_provider_only_when_agents_bound() -> None:
     assert not any(f["code"] == "disabled_but_bound" for f in without)
 
 
-def test_disabled_provider_really_fails_routing_not_just_degrades() -> None:
+def test_disabled_provider_really_fails_routing_not_just_degrades(db: Database) -> None:
     """把 disabled_but_bound 定为 will_fail 的依据：路由层是硬失败，不是降级。
 
     spec §3.2 把这一格的档位留给「以 resolve_candidates 的真实行为为准」。
     真实行为是 _provider_row 直接抛 ModelRouteError，固定绑定连目录都走不到，
-    所以这条固定为 will_fail。这里把那个依据钉住：哪天路由改成跳过禁用 Provider
-    继续找别的候选，这条会红，提醒把档位降回 warn。
+    所以这条固定为 will_fail。这里断言的是**行为**而不是源码字面量：哪天路由改成
+    跳过禁用 Provider 继续找别的候选，这条会红，提醒把档位降回 warn；
+    而只改文案不改行为不会误伤。
     """
-    import inspect
+    from pixiv_novel_sync.ai.model_router import ModelRouteError, ModelRouter
 
-    from pixiv_novel_sync.ai import model_router
+    provider_id = db.create_ai_provider({
+        "name": "停用网关", "provider_type": "openai_compatible",
+        "base_url": "https://api.example.com/v1", "api_key_encrypted": "cipher", "enabled": 0,
+    })
 
-    source = inspect.getsource(model_router.ModelRouter._provider_row)
-    assert 'raise ModelRouteError("Provider 已禁用")' in source
+    with pytest.raises(ModelRouteError):
+        ModelRouter._provider_row(db, provider_id)
 
 
 def test_lint_survives_a_base_url_that_breaks_urlparse_itself() -> None:
@@ -385,6 +389,170 @@ def test_health_endpoint_follows_the_fallback_pool_chain(tmp_path, monkeypatch) 
     assert data["totals"]["agents_unhealthy"] == 0
 
 
+def _enabled_pool(db: Database, name: str, model_ids: list[int]) -> int:
+    """建一个启用的池并按顺序放入成员（成员行本身都是启用的）。"""
+    pool_id = db.create_ai_model_pool({"name": name, "pool_kind": "custom"})
+    version = db.replace_ai_model_pool_members(
+        pool_id,
+        [{"provider_model_id": mid, "enabled": True} for mid in model_ids],
+        expected_version=1,
+    )
+    db.update_ai_model_pool(pool_id, {"enabled": True}, expected_version=version)
+    return pool_id
+
+
+def test_health_flags_a_provider_that_is_only_depended_on_through_a_pool(
+    tmp_path, monkeypatch
+) -> None:
+    """「只经由模型池被依赖」的 Provider 被停用时，两侧都不许报绿。
+
+    这是 2026-09-03 事故形状的池绑定版本，也是本横幅存在的理由：假绿比没有横幅更坏。
+    bound_agent_count 只数固定绑定，所以这个 Provider 的「有人绑着」永远是 0 ——
+    parked 豁免必须靠池引用来兜，否则缺 Key 与空目录双双被抑制，整行变绿。
+    运行时的判据在 model_router.py:509-513（成员模型不 routable 就不产生候选）与
+    :531-533（一个候选都没有就 raise ModelRouteError("模型池没有可用模型")），
+    而 routable 的定义（catalog.py:76）里就含 provider_enabled。
+    """
+    app, db_path = _app(tmp_path, monkeypatch)
+    db = Database(db_path)
+    db.init_schema()
+    provider_id = db.create_ai_provider({
+        "name": "池里唯一的网关", "provider_type": "openai_compatible",
+        "base_url": "https://api.example.com/v1", "api_key_encrypted": "cipher", "enabled": 1,
+    })
+    model_id = db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "only-model", "enabled": True}
+    )
+    pool_id = _enabled_pool(db, "唯一的池", [model_id])
+    agent_id = db.create_ai_agent({
+        "name": "池绑定助手", "task_type": "continue", "binding_type": "pool",
+        "model_pool_id": pool_id, "system_prompt": "x", "enabled": 1,
+    })
+    # UI 上一步可达：update_ai_provider 的 allowed 集合含 enabled，且没有任何引用守卫
+    db.update_ai_provider(provider_id, {"enabled": 0})
+    db.close()
+
+    data = _get_health(app)
+    provider = next(p for p in data["providers"] if p["id"] == provider_id)
+    agent = next(a for a in data["agents"] if a["id"] == agent_id)
+
+    # 有 Key、地址也合法，所以只剩 no_routable_model 这一条 warn
+    assert provider["findings"] != []
+    assert {f["code"] for f in provider["findings"]} == {"no_routable_model"}
+    assert provider["status"] == "warn"
+    assert provider["bound_agent_count"] == 0
+    assert agent["status"] == "will_fail"
+    assert data["totals"]["agents_unhealthy"] >= 1
+
+
+def test_health_flags_a_pool_member_whose_model_row_is_switched_off(
+    tmp_path, monkeypatch
+) -> None:
+    """成员模型行被停用（models 页的开关）时运行时同样选不出候选。
+
+    reason 必须与「没有启用成员」区分开：成员开关本来就是开着的，
+    照旧那句话会把用户送去翻一个已经开着的开关。
+    """
+    app, db_path = _app(tmp_path, monkeypatch)
+    db = Database(db_path)
+    db.init_schema()
+    provider_id = db.create_ai_provider({
+        "name": "好网关", "provider_type": "openai_compatible",
+        "base_url": "https://api.example.com/v1", "api_key_encrypted": "cipher", "enabled": 1,
+    })
+    model_id = db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "parked-model", "enabled": True}
+    )
+    pool_id = _enabled_pool(db, "成员被关掉的池", [model_id])
+    agent_id = db.create_ai_agent({
+        "name": "池绑定助手", "task_type": "continue", "binding_type": "pool",
+        "model_pool_id": pool_id, "system_prompt": "x", "enabled": 1,
+    })
+    db.update_ai_provider_model(model_id, {"enabled": False})
+    db.close()
+
+    data = _get_health(app)
+    agent = next(a for a in data["agents"] if a["id"] == agent_id)
+
+    assert agent["status"] == "will_fail"
+    assert "可路由" in agent["reason"]
+    assert "启用成员" not in agent["reason"]
+
+
+def test_health_does_not_cry_wolf_when_the_pool_keeps_one_routable_member(
+    tmp_path, monkeypatch
+) -> None:
+    """一个成员的 Provider 停用、另一个还好着时，运行时优雅降级 —— 不许报红。
+
+    这条防的是把 routable 判据加进去时改过头：假红会让用户下次不看这个横幅，
+    与假绿一样毁掉它的价值。运行时会跳过不可路由的成员继续找下一个
+    （model_router.py:508-513 是 continue，不是 raise）。
+    """
+    app, db_path = _app(tmp_path, monkeypatch)
+    db = Database(db_path)
+    db.init_schema()
+    good_id = db.create_ai_provider({
+        "name": "好网关", "provider_type": "openai_compatible",
+        "base_url": "https://api.example.com/v1", "api_key_encrypted": "cipher", "enabled": 1,
+    })
+    parked_id = db.create_ai_provider({
+        "name": "待停用网关", "provider_type": "openai_compatible",
+        "base_url": "https://backup.example.com/v1", "api_key_encrypted": "cipher", "enabled": 1,
+    })
+    good_model = db.create_ai_provider_model(
+        {"provider_id": good_id, "model_key": "good-model", "enabled": True}
+    )
+    parked_model = db.create_ai_provider_model(
+        {"provider_id": parked_id, "model_key": "parked-model", "enabled": True}
+    )
+    pool_id = _enabled_pool(db, "两个成员的池", [good_model, parked_model])
+    agent_id = db.create_ai_agent({
+        "name": "有余量的助手", "task_type": "continue", "binding_type": "pool",
+        "model_pool_id": pool_id, "system_prompt": "x", "enabled": 1,
+    })
+    db.update_ai_provider(parked_id, {"enabled": 0})
+    db.close()
+
+    data = _get_health(app)
+    agent = next(a for a in data["agents"] if a["id"] == agent_id)
+
+    assert agent["status"] == "healthy"
+    assert agent["reason"] == ""
+    assert data["totals"]["agents_unhealthy"] == 0
+
+
+def test_health_does_not_count_a_disabled_agent_as_unhealthy(tmp_path, monkeypatch) -> None:
+    """停用的 Agent 不可能因为投影所报的原因失败，所以不占 agents_unhealthy。
+
+    运行时第一道门就是 model_router.py:650-652 的
+    ``if not agent.enabled: raise ModelRouteError("Agent 已禁用")`` ——
+    它永远走不到解析候选那一步。停一个 Provider 连带停掉它那批 Agent 是最自然的
+    运维动作，此时 Provider 侧按 Ruling B 正确变绿，Agent 侧整批亮红会自相矛盾。
+    agents[] 保持五键契约（T4 消费这个形状），所以纠偏必须在投影里做完。
+    """
+    app, db_path = _app(tmp_path, monkeypatch)
+    db = Database(db_path)
+    db.init_schema()
+    provider_id = db.create_ai_provider({
+        "name": "坏网关", "provider_type": "openai_compatible",
+        "base_url": "http://nas.example.com:3000", "api_key_encrypted": "cipher", "enabled": 1,
+    })
+    sleeping = db.create_ai_agent({
+        "name": "已停用助手", "task_type": "continue", "binding_type": "fixed",
+        "provider_id": provider_id, "model": "m1", "system_prompt": "x", "enabled": 0,
+    })
+    db.close()
+
+    data = _get_health(app)
+    agent = next(a for a in data["agents"] if a["id"] == sleeping)
+
+    assert agent["status"] == "healthy"
+    assert "停用" in agent["reason"]
+    assert data["totals"]["agents_unhealthy"] == 0
+    # 五键契约不许因为这条修正而变宽（尤其不许新增 enabled 让 T4 自己判断）
+    assert set(agent) == {"id", "name", "task_type", "status", "reason"}
+
+
 def test_health_endpoint_reports_parked_provider_as_healthy(tmp_path, monkeypatch) -> None:
     """停用且没人绑的 Provider 在投影里也是 healthy，不占横幅的黄色额度。"""
     app, db_path = _app(tmp_path, monkeypatch)
@@ -440,8 +608,9 @@ def test_health_endpoint_reports_failing_tasks_and_honours_days_window(tmp_path,
     ]
     assert month["window_days"] == 30
     assert {row["task_type"] for row in month["ai_job_failures"]} == {"keyword_clean", "chapter_summary"}
-    # 战绩按 provider_id 聚合，随窗口一起走
-    assert week["providers"][0]["attempts"]["failures"] == 1
+    # 战绩按 provider_id 聚合，随窗口一起走（按 id 找，不按位置——list_ai_providers
+    # 是 ORDER BY id DESC，加第二个 Provider 就会静默错位）
+    assert next(p for p in week["providers"] if p["id"] == provider_id)["attempts"]["failures"] == 1
 
 
 def test_health_days_window_is_validated_like_every_other_int_arg(tmp_path, monkeypatch) -> None:
