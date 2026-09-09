@@ -229,3 +229,14 @@ def test_model_catalog_rows_can_toggle_enabled():
     assert "/api/dashboard/ai/provider-models/" in TEMPLATE
     assert "toggleModelEnabled" in TEMPLATE
 
+
+def test_agents_page_supports_search_multiselect_and_batch_rebind():
+    for text in (
+        "agentSearch", "selectedAgentIds", "toggleAgentSelection", "selectAllAgents",
+        "batchRebind", "batchSetEnabled", "/api/dashboard/ai/agents/bindings",
+        "onlyBadBindings", "成人润色 Agent 不参与批量",
+    ):
+        assert text in AGENTS_TEMPLATE
+    # 确认弹窗必须逐项列出老值 → 新值
+    assert "batchPreview" in AGENTS_TEMPLATE
+
