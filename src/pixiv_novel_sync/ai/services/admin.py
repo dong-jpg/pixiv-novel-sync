@@ -12,7 +12,11 @@ from collections.abc import Iterator, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from ...storage.ai.core import AIJobConflictError, AIProviderReferenceError
+from ...storage.ai.core import (
+    ADULT_AI_TASK_TYPES,
+    AIJobConflictError,
+    AIProviderReferenceError,
+)
 from ...storage_db import Database
 from ..model_catalog import (
     ModelCatalogConflictError,
@@ -35,7 +39,7 @@ from ..model_router import (
 )
 from ..model_sync import ModelSyncConflictError
 from ..models import AIAgentConfig, AIProviderConfig, AIStreamChunk
-from ..providers import ProviderConfigError, validate_base_url
+from ..providers import ProviderConfigError, create_provider, validate_base_url
 from ..prompts import (
     DEFAULT_CHAPTER_SUMMARY_PROMPT,
     DEFAULT_FORESHADOW_RESOLVE_PROMPT,
@@ -413,6 +417,289 @@ class AIAdminMixin:
             raise AINotFoundError("模型池不存在")
         return pool
 
+    @staticmethod
+    def provider_config_lint(
+        provider: Mapping[str, Any],
+        *,
+        bound_agent_count: int = 0,
+        routable_models: int = 0,
+        pool_referenced: bool = False,
+    ) -> list[dict[str, str]]:
+        """只看 Provider 行本身就能下的结论，零网络。
+
+        第一条判据刻意调用运行时那个 validate_base_url（resolve=False 跳过 DNS）：
+        结论由构造保证与运行时一致。另写一份 scheme 规则必然与 providers.py 漂移，
+        届时横幅报「健康」而任务照样失败——比没有横幅更坏。
+
+        base_url 允许留空（表示用适配器默认地址），此时跳过这条判据。
+
+        disabled_but_bound 定为 will_fail 而非 warn，依据是路由的真实行为：
+        model_router.py:_provider_row 对已禁用 Provider 直接抛
+        ModelRouteError("Provider 已禁用")，固定绑定没有任何降级余地。
+        bound_agent_count 只数固定绑定（池绑定的 provider_id 为 NULL，
+        见 ai_agents 的 CHECK），所以数出来的每个 Agent 都是真的会失败。
+
+        「停着的」Provider 不算「坏的」：已停用、且没有任何东西依赖它时，
+        缺 Key 与空目录都不报。catalog.py:155 对已停用 Provider 把 routable 硬置 0，
+        不豁免的话每个备用 Provider 都会常驻一条警告加一条 will_fail，
+        横幅上的黄色就不再稀有——同 CLAUDE.md 对 partial 状态的态度。
+        base_url 与 disabled_but_bound 不在豁免范围内：前者是配置本身写错了，
+        后者恰恰以「有人绑着」为前提。
+
+        pool_referenced 与 bound_agent_count 回答的是**两个不同的问题**，
+        所以是两个参数而不是一个合计：
+
+        - bound_agent_count 问「有多少 Agent 必然随它一起失败」，只数固定绑定。
+          disabled_but_bound 是 will_fail，这一档要求「必然失败」，只有固定绑定
+          给得起这个保证；池绑定在池里还有别的可路由成员时会优雅降级（运行时
+          model_router.py:508-513 逐成员挑），把池绑定算进这个计数会造出假红。
+        - pool_referenced 问「有没有任何东西依赖它」，池引用满足这个。停用一个
+          被池引用的 Provider 不是「停着」，是把池里的成员抽走了：
+          catalog.py:76 的 routable 因 provider_enabled 为假而全灭，运行时
+          model_router.py:551-552 抛 ModelRouteError("模型池没有可用模型")。
+          豁免它就会让这种事故形状全绿——假绿比没有横幅更坏。
+        """
+        findings: list[dict[str, str]] = []
+        base_url = provider.get("base_url")
+        if base_url:
+            try:
+                validate_base_url(str(base_url), resolve=False)
+            except (ProviderConfigError, ValueError) as exc:
+                # 兜到裸 ValueError 是必要的：_parse_provider_url 的 urlparse(raw)
+                # 在任何 try 之外（providers.py:123），IPv6 括号不配对（http://[::1）
+                # 会抛 ValueError("Invalid IPv6 URL")。健康投影把整个 ai_health()
+                # 包在 except Exception 里，漏一个就是整条横幅消失——恰好是配置坏掉、
+                # 最需要它说话的时候。裸异常的消息是英文的，不能直接进中文界面。
+                # ProviderConfigError 目前继承自 ValueError，写成元组是为了它哪天
+                # 改了基类也不至于漏掉。
+                message = (
+                    str(exc)
+                    if isinstance(exc, ProviderConfigError)
+                    else "base_url 格式非法，无法解析"
+                )
+                findings.append(
+                    {"level": "will_fail", "code": "base_url", "message": message}
+                )
+        parked = (
+            not provider.get("enabled")
+            and not bound_agent_count
+            and not pool_referenced
+        )
+        if not parked and not provider.get("has_api_key"):
+            findings.append(
+                {"level": "will_fail", "code": "api_key", "message": "未保存 API Key"}
+            )
+        if not provider.get("enabled") and bound_agent_count:
+            findings.append({
+                "level": "will_fail",
+                "code": "disabled_but_bound",
+                "message": (
+                    f"Provider 已停用，绑在这里的 {bound_agent_count} 个 Agent 会直接失败"
+                ),
+            })
+        if not parked and not routable_models:
+            findings.append({
+                "level": "warn",
+                "code": "no_routable_model",
+                "message": "目录里没有可路由模型，模型池选不出成员",
+            })
+        return findings
+
+    def ai_health(self, *, days: int = 7) -> dict[str, Any]:
+        """AI 配置的只读健康投影。零网络：不发起任何 Provider 请求。
+
+        投影字段是白名单挑出来的，不是把库里的行往外递：list_ai_providers() 是
+        SELECT *，带着 base_url / proxy / models_sync_owner。这个横幅常驻三个设置页，
+        没有任何理由让它复述连接地址（见 spec 的响应约定）。
+        """
+        db = self._db()
+        try:
+            # 整块读包进一个 read_transaction：并发的模型同步在两次读之间提交，
+            # 就会产出 models_synced_at 与 routable_models 互不匹配的一行。
+            # （read_transaction 可嵌套，list_ai_provider_models 内部那层照旧。）
+            with db.read_transaction():
+                providers = db.list_ai_providers()
+                agents = db.list_ai_agents()
+                pools = {int(p["id"]): p for p in db.list_ai_model_pools()}
+                attempt_health = db.get_provider_attempt_health(days=days)
+                job_failures = db.get_ai_job_failure_summary(days=days)
+                routable: dict[int, int] = {}
+                # provider_model_id -> routable，供池成员过滤复用运行时判据。
+                # 不额外查库：这里本来就要为每个 Provider 调一次，只是把 items 也留下。
+                routable_by_model: dict[int, bool] = {}
+                for provider_row in providers:
+                    catalog = db.list_ai_provider_models(int(provider_row["id"]))
+                    routable[int(provider_row["id"])] = int(catalog["routable"])
+                    for item in catalog["items"]:
+                        routable_by_model[int(item["id"])] = bool(item["routable"])
+        finally:
+            db.close()
+
+        # 只数固定绑定：池绑定的 provider_id 为 NULL（ai_agents 的 CHECK），
+        # 所以这里数出来的每个 Agent 都真的会随该 Provider 一起失败。
+        bound: dict[int, int] = {}
+        # 「经由模型池被依赖」的 Provider：单独一个集合，只喂给 parked 豁免判定，
+        # 不并进 bound_agent_count（理由见 provider_config_lint 的 docstring）。
+        pool_referenced: set[int] = set()
+        for agent in agents:
+            provider_id = agent.get("provider_id")
+            if agent.get("binding_type") == "fixed" and provider_id:
+                bound[int(provider_id)] = bound.get(int(provider_id), 0) + 1
+            elif agent.get("binding_type") == "pool":
+                try:
+                    chain = expand_pool_ids(int(agent.get("model_pool_id") or 0), pools)
+                except ModelPoolValidationError:
+                    # 池不存在或后备链成环：这个 Agent 无论如何都跑不通，
+                    # 也就谈不上"依赖某个 Provider"，跳过。
+                    continue
+                for pool_id in chain:
+                    pool = pools.get(pool_id) or {}
+                    if not bool(pool.get("enabled")):
+                        continue
+                    for member in pool.get("members", []):
+                        if not member.get("enabled"):
+                            continue
+                        member_provider_id = member.get("provider_id")
+                        if member_provider_id:
+                            # 刻意不要求 routable：Provider 一停用，它名下每个模型的
+                            # routable 就是假（catalog.py:76 的 provider_enabled），
+                            # 拿它当条件会自相引用 —— 停用后立刻"没人依赖"，
+                            # parked 永久豁免，正是要堵的那个洞。
+                            pool_referenced.add(int(member_provider_id))
+
+        provider_status: dict[int, str] = {}
+        provider_items: list[dict[str, Any]] = []
+        for row in providers:
+            # 已停用的 Provider 照样列出：它是否还有 Agent 绑着，是这个视图最重要的事实，
+            # 按 enabled 过滤恰好会藏起 2026-09-03 那次事故的形状。
+            provider_id = int(row["id"])
+            findings = self.provider_config_lint(
+                row,
+                bound_agent_count=bound.get(provider_id, 0),
+                routable_models=routable.get(provider_id, 0),
+                pool_referenced=provider_id in pool_referenced,
+            )
+            status = (
+                "will_fail" if any(f["level"] == "will_fail" for f in findings)
+                else ("warn" if findings else "healthy")
+            )
+            provider_status[provider_id] = status
+            provider_items.append({
+                "id": provider_id,
+                "name": row.get("name"),
+                "enabled": bool(row.get("enabled")),
+                "status": status,
+                "findings": findings,
+                "bound_agent_count": bound.get(provider_id, 0),
+                "routable_models": routable.get(provider_id, 0),
+                "models_synced_at": row.get("models_synced_at"),
+                "models_sync_error": row.get("models_sync_error"),
+                "attempts": attempt_health.get(provider_id),
+            })
+
+        agent_items = [
+            self._agent_health_item(agent, provider_status, pools, routable_by_model)
+            for agent in agents
+        ]
+        unhealthy = sum(1 for item in agent_items if item["status"] == "will_fail")
+        return {
+            "window_days": int(days),
+            "providers": provider_items,
+            "agents": agent_items,
+            "ai_job_failures": job_failures,
+            "totals": {
+                "providers": len(provider_items),
+                "providers_will_fail": sum(
+                    1 for item in provider_items if item["status"] == "will_fail"
+                ),
+                "routable_models": sum(routable.values()),
+                "agents": len(agent_items),
+                "agents_unhealthy": unhealthy,
+            },
+        }
+
+    @staticmethod
+    def _agent_health_item(
+        agent: Mapping[str, Any],
+        provider_status: Mapping[int, str],
+        pools: Mapping[int, Mapping[str, Any]],
+        routable_by_model: Mapping[int, bool],
+    ) -> dict[str, Any]:
+        """Agent 的状态是**继承**来的：它自己没坏，是它绑的东西坏了。
+
+        已停用的 Agent 一律报 healthy：运行时第一道门就是
+        model_router.py:650-652 的 `if not agent.enabled: raise
+        ModelRouteError("Agent 已禁用")`，它永远走不到解析候选那一步，
+        **不可能因为这里所报的原因失败**。停一个 Provider 连带停掉它那批 Agent
+        是最自然的运维动作，此时 Provider 侧按 parked 规则正确变绿，
+        Agent 侧若整批亮红，横幅就在自相矛盾。
+
+        池绑定要走完整条后备链，判据与运行时一致：model_router.py:492-506 逐个池
+        往后备走，跳过已停用的池，只要链上任何一个成员可路由就不算失败。只看根池
+        会把「根池坏了但后备池好着」误报成必失败——而配了后备池恰恰是为了这种情况。
+        expand_pool_ids 是 _validate_agent_binding 绑定校验用的同一个展开器。
+
+        成员过滤除了池 enabled 与成员行 enabled，还必须过 routable
+        （model_router.py:509-513 那一道）：routable 的定义是
+        `enabled AND (manual OR discovered_available) AND provider_enabled`
+        （catalog.py:76），所以成员的模型行被停用、或成员所属 Provider 被停用时，
+        运行时都不产生候选，最终抛 ModelRouteError("模型池没有可用模型")。
+        少过这一道就是假绿，而假绿比没有横幅更坏。
+        """
+        status, reason = "healthy", ""
+        if not agent.get("enabled"):
+            status, reason = "healthy", "Agent 已停用，不参与路由"
+        elif agent.get("binding_type") == "pool":
+            try:
+                chain = expand_pool_ids(int(agent.get("model_pool_id") or 0), pools)
+            except ModelPoolValidationError:
+                # 池不存在或后备链成环：运行时同样走不通，但原因不是「成员都坏了」
+                status, reason = "will_fail", "绑定的模型池不存在或后备链有环"
+            else:
+                # 已停用的池被运行时整段跳过，不贡献任何候选
+                enabled_members = [
+                    member
+                    for pool_id in chain
+                    if bool((pools.get(pool_id) or {}).get("enabled"))
+                    for member in (pools.get(pool_id) or {}).get("members", [])
+                    if member.get("enabled")
+                ]
+                # 再过运行时那道 routable，成员的模型行或其 Provider 被停用都在此落选
+                members = [
+                    member
+                    for member in enabled_members
+                    if routable_by_model.get(int(member.get("provider_model_id") or 0))
+                ]
+                if not enabled_members:
+                    status, reason = "will_fail", "绑定的模型池没有启用成员"
+                elif not members:
+                    # 与上一句刻意分开：成员开关本来就是开着的，让用户去开它只会白跑一趟
+                    status, reason = (
+                        "will_fail",
+                        "模型池及其后备池里没有可路由的模型（成员模型被停用，或其 Provider 已停用）",
+                    )
+                elif all(
+                    provider_status.get(int(m.get("provider_id") or 0)) == "will_fail"
+                    for m in members
+                ):
+                    status, reason = (
+                        "will_fail",
+                        "模型池及其后备池里每个成员的 Provider 都配置必失败",
+                    )
+        else:
+            provider_id = int(agent.get("provider_id") or 0)
+            if not provider_id:
+                status, reason = "will_fail", "没有绑定 Provider"
+            elif provider_status.get(provider_id) == "will_fail":
+                status, reason = "will_fail", "绑定的 Provider 配置必失败"
+        return {
+            "id": int(agent["id"]),
+            "name": agent.get("name"),
+            "task_type": agent.get("task_type"),
+            "status": status,
+            "reason": reason,
+        }
+
     def list_providers(self) -> list[dict[str, Any]]:
         db = self._db()
         try:
@@ -459,7 +746,16 @@ class AIAdminMixin:
             db.close()
         model = provider_config.default_model
         if not model:
-            raise AIServiceError("Provider 未配置默认模型")
+            # 死循环：测试要模型 → 模型要同步 → 同步要先保存。目录里已有可路由模型时
+            # 直接借第一个来测，别把用户卡在「先去填默认模型」。
+            catalog = self.list_provider_models(provider_id, routable_only=True)
+            items = catalog.get("items") or []
+            if items:
+                model = items[0].get("model_key")
+        if not model:
+            raise AIServiceError(
+                "这个 Provider 还没有可用模型：先点「获取模型列表」，或在高级设置里填默认模型"
+            )
         provider = self._get_provider(provider_config)
         started = time.time()
         text_parts: list[str] = []
@@ -473,6 +769,74 @@ class AIAdminMixin:
             if chunk.type == "delta":
                 text_parts.append(chunk.text)
         return {"ok": True, "model": model, "latency_ms": int((time.time() - started) * 1000), "text": "".join(text_parts).strip()[:100]}
+
+    _NON_CHAT_CAPABILITY_HINTS = ("embed", "rerank", "asr", "speech", "audio", "image", "vision")
+
+    def probe_provider_models(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """用表单里的凭据拉一次模型列表用于预览。**不写任何库表。**
+
+        与 model_sync 的分工：落库目录永远只有 model_sync 一个写入方，这里只回一份
+        预览清单，让错的配置在落库前就被拦下（spec §4.2）。
+        """
+        base_url = (str(payload.get("base_url") or "")).strip() or None
+        provider_type = str(payload.get("provider_type") or "openai_compatible")
+        api_key = payload.get("api_key") or None
+        provider_id = payload.get("provider_id")
+
+        if provider_id is not None and not api_key:
+            db = self._db()
+            try:
+                row = db.get_ai_provider(int(provider_id), include_secret=True)
+            finally:
+                db.close()
+            if row is None:
+                raise AINotFoundError("Provider 不存在")
+            # 借库里那把 Key 时地址必须逐字相同：否则这个端点等于「把加密存好的 Key
+            # 发到我指定的任意地址」，而 validate_base_url 拦不住它（目标可以是完全
+            # 合法的 https 公网主机）。
+            if (row.get("base_url") or None) != base_url:
+                raise AIServiceError(
+                    "借用已保存的 API Key 时不能同时改地址：请在表单里重新填入 Key"
+                )
+            api_key = self.secret_manager.decrypt(row.get("api_key_encrypted"))
+        if not api_key:
+            raise AIServiceError("请填入 API Key")
+
+        config = AIProviderConfig(
+            id=0,
+            name="probe",
+            provider_type=provider_type,
+            base_url=base_url,
+            api_key=api_key,
+            default_model=None,
+            timeout_seconds=int(payload.get("timeout_seconds") or 120),
+            context_window=int(payload.get("context_window") or 128000),
+        )
+        provider = create_provider(config)
+        started = time.time()
+        try:
+            result = provider.list_models(deadline=time.monotonic() + 60)
+        finally:
+            provider.close()
+
+        items = []
+        for model in result.models:
+            capabilities = list(model.get("capabilities") or [])
+            lowered = " ".join(capabilities).lower()
+            suggested = not any(hint in lowered for hint in self._NON_CHAT_CAPABILITY_HINTS)
+            items.append({
+                "model_key": model.get("model_key"),
+                "display_name": model.get("display_name"),
+                "capabilities": capabilities,
+                "context_window": model.get("context_window"),
+                "suggested": suggested,
+            })
+        return {
+            "latency_ms": int((time.time() - started) * 1000),
+            "complete": bool(result.complete),
+            "partial_reason": result.partial_reason,
+            "items": items,
+        }
 
     def list_provider_models(
         self,
@@ -840,6 +1204,56 @@ class AIAdminMixin:
             db.delete_ai_agent(agent_id)
         finally:
             db.close()
+
+    def update_agent_bindings(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """批量改绑 / 批量启停。成人 Agent 混入即整体拒绝（fail-closed）。"""
+        raw_ids = payload.get("agent_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise AIServiceError("agent_ids 必须是非空数组")
+        agent_ids = [int(value) for value in raw_ids]
+
+        db = self._db()
+        try:
+            by_id = {int(a["id"]): a for a in db.list_ai_agents()}
+            missing = [i for i in agent_ids if i not in by_id]
+            if missing:
+                raise AINotFoundError(f"Agent 不存在：{missing}")
+            adult = [
+                by_id[i]["name"] for i in agent_ids
+                if by_id[i].get("task_type") in ADULT_AI_TASK_TYPES
+            ]
+            if adult:
+                # 成人 Agent 有独立的生命周期入口与 fail-closed 契约（policy hash /
+                # review binding / 角色 revision），混进通用批量等于给安全边界开后门。
+                raise AIServiceError(
+                    f"成人润色 Agent 不参与批量操作，请单独配置：{'、'.join(adult)}"
+                )
+            if "enabled" in payload:
+                self._require_boolean(payload, "enabled")
+                updated = db.set_ai_agents_enabled(agent_ids, bool(payload["enabled"]))
+            else:
+                binding = payload.get("binding")
+                if not isinstance(binding, dict):
+                    raise AIServiceError("binding 必须是对象")
+                binding_type = binding.get("binding_type") or "fixed"
+                if binding_type not in ("fixed", "pool"):
+                    raise AIServiceError("binding_type 只能是 fixed 或 pool")
+                if binding_type == "fixed" and not binding.get("provider_id"):
+                    raise AIServiceError("固定绑定必须指定 provider_id")
+                if binding_type == "pool" and not binding.get("model_pool_id"):
+                    raise AIServiceError("池绑定必须指定 model_pool_id")
+                # ai_agents 上那条 CHECK 要求两个绑定字段互斥，且 pool 时 model 必须为
+                # NULL（model_schema.py:164-172），不归一化就会被 SQLite 整条拒掉。
+                normalized = {
+                    "binding_type": binding_type,
+                    "model": binding.get("model") if binding_type == "fixed" else None,
+                    "provider_id": binding.get("provider_id") if binding_type == "fixed" else None,
+                    "model_pool_id": binding.get("model_pool_id") if binding_type == "pool" else None,
+                }
+                updated = db.update_ai_agent_bindings(agent_ids, normalized)
+        finally:
+            db.close()
+        return {"updated": int(updated)}
 
     def create_document(self, payload: dict[str, Any]) -> int:
         content = str(payload.get("content") or "")

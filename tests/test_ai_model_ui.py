@@ -11,6 +11,9 @@ TEMPLATE = Path(
 AGENTS_TEMPLATE = Path(
     "src/pixiv_novel_sync/templates/dashboard_settings_agents.html"
 ).read_text(encoding="utf-8")
+ADULT_TEMPLATE = Path(
+    "src/pixiv_novel_sync/templates/dashboard_settings_adult.html"
+).read_text(encoding="utf-8")
 LOG_TEMPLATE = Path(
     "src/pixiv_novel_sync/templates/dashboard_logs.html"
 ).read_text(encoding="utf-8")
@@ -177,4 +180,63 @@ def test_pool_attempt_status_labels_separate_partial_from_failed():
     assert "partial" in TEMPLATE
     assert "已输出" in TEMPLATE
     assert "output_started" in TEMPLATE
+
+
+HEALTH_BAND = Path(
+    "src/pixiv_novel_sync/templates/dashboard_ai_health_band.html"
+).read_text(encoding="utf-8")
+
+
+def test_health_band_is_included_on_all_three_ai_settings_pages():
+    """三页都要有：横幅要出现在你正在编辑的那一页上，而不是一个要跳过去的目的地。"""
+    for template in (TEMPLATE, AGENTS_TEMPLATE, ADULT_TEMPLATE):
+        assert "dashboard_ai_health_band.html" in template
+        # 横幅 markup 引用的名字必须在本页 setup() 里导出
+        for name in ("aiHealth", "aiHealthLoading", "loadAiHealth"):
+            assert name in template
+
+
+def test_health_band_surfaces_silent_degradation_and_bad_bindings():
+    for text in (
+        "/api/dashboard/ai/health",
+        "providers_will_fail",
+        "agents_unhealthy",
+        "ai_job_failures",
+        "静默降级",
+        "继承",
+    ):
+        assert text in HEALTH_BAND
+    # 横幅是只读投影，不该出现任何变更类请求
+    assert "window.csrfFetch" not in HEALTH_BAND
+
+
+def test_provider_card_and_agent_row_show_inherited_health():
+    for text in ("providerHealth", "bound_agent_count", "models_sync_error"):
+        assert text in TEMPLATE
+    for text in ("agentHealth", "继承"):
+        assert text in AGENTS_TEMPLATE
+
+
+def test_provider_form_collapses_advanced_fields_and_probes_before_save():
+    for text in ("probe-models", "probedModels", "toggleProbedModel", "advancedOpen", "从已有 Provider 复制"):
+        assert text in TEMPLATE
+    # /v1 建议是一键按钮，不是静默改写
+    assert "试试" in TEMPLATE and "/v1" in TEMPLATE
+
+
+def test_model_catalog_rows_can_toggle_enabled():
+    """enabled 决定 routable，后端早就支持改它，之前前端完全没接线。"""
+    assert "/api/dashboard/ai/provider-models/" in TEMPLATE
+    assert "toggleModelEnabled" in TEMPLATE
+
+
+def test_agents_page_supports_search_multiselect_and_batch_rebind():
+    for text in (
+        "agentSearch", "selectedAgentIds", "toggleAgentSelection", "selectAllAgents",
+        "batchRebind", "batchSetEnabled", "/api/dashboard/ai/agents/bindings",
+        "onlyBadBindings", "成人润色 Agent 不参与批量",
+    ):
+        assert text in AGENTS_TEMPLATE
+    # 确认弹窗必须逐项列出老值 → 新值
+    assert "batchPreview" in AGENTS_TEMPLATE
 

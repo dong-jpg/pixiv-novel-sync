@@ -417,6 +417,55 @@ class AiCoreMixin:
             self.conn.execute("DELETE FROM ai_agents WHERE id = ?", (agent_id,))
             self._commit_if_needed()
 
+    def update_ai_agent_bindings(
+        self, agent_ids: list[int], binding: dict[str, Any]
+    ) -> int:
+        """一个事务里改完一批 Agent 的绑定。
+
+        不复用 N 次 update_ai_agent：中途失败会留下改了一半的状态。只动绑定字段，
+        system_prompt / 采样参数 / required_capabilities 一律不碰——那些是每个 Agent
+        的个性，批量覆盖会把十几个精调过的提示词一次抹平。
+        """
+        if not agent_ids:
+            return 0
+        provider_id = binding.get("provider_id")
+        model_pool_id = binding.get("model_pool_id")
+        affected = 0
+        with self._lock, self.transaction():
+            for agent_id in agent_ids:
+                cursor = self.conn.execute(
+                    """
+                    UPDATE ai_agents
+                    SET binding_type = ?, provider_id = ?, model = ?, model_pool_id = ?,
+                        binding_version = binding_version + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        binding.get("binding_type") or "fixed",
+                        int(provider_id) if provider_id is not None else None,
+                        binding.get("model"),
+                        int(model_pool_id) if model_pool_id is not None else None,
+                        int(agent_id),
+                    ),
+                )
+                affected += cursor.rowcount
+        return affected
+
+    def set_ai_agents_enabled(self, agent_ids: list[int], enabled: bool) -> int:
+        """批量启停。同样单事务，但不动 binding_version——绑定没变。"""
+        if not agent_ids:
+            return 0
+        affected = 0
+        with self._lock, self.transaction():
+            for agent_id in agent_ids:
+                cursor = self.conn.execute(
+                    "UPDATE ai_agents SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (1 if enabled else 0, int(agent_id)),
+                )
+                affected += cursor.rowcount
+        return affected
+
     @staticmethod
     def _attempt_from_row(row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
@@ -437,6 +486,74 @@ class AiCoreMixin:
             (job_id,),
         ).fetchall()
         return [self._attempt_from_row(row) for row in rows]
+
+    def get_provider_attempt_health(self, days: int = 7) -> dict[int, dict[str, Any]]:
+        """按 provider_id 聚合最近 N 天的候选尝试战绩，供设置页健康横幅使用。
+
+        按 attempts 聚合而不是按 ai_jobs：一个 job 可能跨多个 Provider 做故障转移，
+        算在任何单一 Provider 头上都不对。
+
+        SQL 里 MAX(...) 与裸列 status/error_* 同时出现是 SQLite 的既定行为（裸列取自
+        MAX 命中的那一行），与 storage/tasks.py:get_task_duration_stats 同一手法，
+        所以「最近一次」不需要第二次查询。
+        """
+        rows = self.conn.execute(
+            """
+            SELECT provider_id,
+                   COUNT(*) AS attempts,
+                   SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failures,
+                   MAX(COALESCE(finished_at, started_at)) AS last_at,
+                   status AS last_status,
+                   error_scope AS last_error_scope,
+                   error_category AS last_error_category,
+                   error_message AS last_error_message
+            FROM ai_job_model_attempts
+            WHERE provider_id IS NOT NULL
+              AND COALESCE(finished_at, started_at) >= datetime('now', ? || ' days')
+            GROUP BY provider_id
+            """,
+            (f"-{int(days)}",),
+        ).fetchall()
+        return {
+            int(row["provider_id"]): {
+                "attempts": int(row["attempts"] or 0),
+                "failures": int(row["failures"] or 0),
+                "last_at": row["last_at"],
+                "last_status": row["last_status"],
+                "last_error_scope": row["last_error_scope"],
+                "last_error_category": row["last_error_category"],
+                "last_error_message": row["last_error_message"],
+            }
+            for row in rows
+        }
+
+    def get_ai_job_failure_summary(self, days: int = 7) -> list[dict[str, Any]]:
+        """最近 N 天失败的 AI 任务，按 task_type 归并。
+
+        这是把「红色的 AI 任务」和「绿色的 preference_analyze」关联起来的唯一线索：
+        clean_keywords 按设计优雅降级，所以主任务永远报绿，只有这里能看出它在静默失败。
+        """
+        rows = self.conn.execute(
+            """
+            SELECT task_type,
+                   COUNT(*) AS failures,
+                   MAX(COALESCE(finished_at, created_at)) AS last_at
+            FROM ai_jobs
+            WHERE status = 'failed'
+              AND COALESCE(finished_at, created_at) >= datetime('now', ? || ' days')
+            GROUP BY task_type
+            ORDER BY failures DESC, task_type
+            """,
+            (f"-{int(days)}",),
+        ).fetchall()
+        return [
+            {
+                "task_type": row["task_type"],
+                "failures": int(row["failures"] or 0),
+                "last_at": row["last_at"],
+            }
+            for row in rows
+        ]
 
     @staticmethod
     def _route_summary(attempts: list[dict[str, Any]]) -> dict[str, Any] | None:

@@ -742,6 +742,23 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     def dashboard_ai_project_reader_page(project_id: int):
         return render_template("dashboard_ai_reader.html", project_id=project_id)
 
+    @app.get("/api/dashboard/ai/health")
+    def get_ai_health():
+        """AI 配置的只读健康投影。零网络，可随意刷新。"""
+        try:
+            days = parse_int(request.args.get("days"), 7, "days", min_value=1, max_value=30)
+            return ok(service.ai_health(days=days))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/providers/probe-models")
+    def probe_ai_provider_models():
+        """预览上游模型列表。不落库、不建 Provider（spec §4.2）。"""
+        try:
+            return ok(service.probe_provider_models(require_json_object()))
+        except Exception as exc:
+            return fail(exc)
+
     @app.get("/api/dashboard/ai/providers")
     def list_ai_providers():
         try:
@@ -985,6 +1002,14 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
         try:
             service.delete_agent(agent_id)
             return ok()
+        except Exception as exc:
+            return fail(exc)
+
+    @app.put("/api/dashboard/ai/agents/bindings")
+    def update_ai_agent_bindings_route():
+        """批量改绑 / 批量启停。单事务，成人 Agent 混入即整体拒绝。"""
+        try:
+            return ok(service.update_agent_bindings(require_json_object()))
         except Exception as exc:
             return fail(exc)
 

@@ -1,0 +1,53 @@
+{# AI 配置总览。三页（models / agents / adult）共享，常驻页顶。
+   数据来自 GET /api/dashboard/ai/health —— 纯 DB 投影，零网络请求，可随意刷新。
+   这里只读，不做任何变更操作，所以整段不发起任何带 CSRF 头的写请求。
+   存在理由见 docs/superpowers/specs/2026-09-03-ai-settings-operability-design.md §2.1：
+   生产曾经 AI 全线失败四天而没有任何地方说话。 #}
+<section class="library-card space-y-2" data-hook="ai-health-band">
+  <div class="flex items-start justify-between gap-3 flex-wrap">
+    <h2 class="library-section-title mb-0">AI 配置总览</h2>
+    <button @click="loadAiHealth" :disabled="aiHealthLoading"
+            class="text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-50">
+      {{ aiHealthLoading ? '检查中…' : '重新检查' }}
+    </button>
+  </div>
+
+  <p v-if="!aiHealth" class="text-sm text-pixiv-gray">正在读取配置健康…</p>
+  <template v-else>
+    <div class="text-sm text-gray-800">
+      {{ aiHealth.totals.providers }} 个 Provider
+      <span v-if="aiHealth.totals.providers_will_fail" class="text-red-600 font-semibold">
+        · ✕ {{ aiHealth.totals.providers_will_fail }} 个配置必失败
+      </span>
+      · {{ aiHealth.totals.routable_models }} 个可路由模型
+    </div>
+    <div class="text-sm text-gray-800">
+      {{ aiHealth.totals.agents }} 个 Agent
+      <span v-if="aiHealth.totals.agents_unhealthy" class="text-red-600 font-semibold">
+        · ⚠ {{ aiHealth.totals.agents_unhealthy }} 个绑在坏 Provider 上
+      </span>
+    </div>
+    <div v-for="failure in aiHealth.ai_job_failures" :key="failure.task_type"
+         class="text-sm text-amber-700">
+      ⚠ 最近 {{ aiHealth.window_days }} 天 {{ failure.failures }} 次
+      {{ failure.task_type }} 任务失败<span v-if="failure.task_type === 'keyword_clean'">，偏好关键词精炼正在静默降级</span>
+    </div>
+
+    <details v-if="aiHealth.totals.providers_will_fail || aiHealth.totals.agents_unhealthy">
+      <summary class="text-xs text-pixiv-gray cursor-pointer">展开逐项</summary>
+      <div class="mt-2 space-y-1 text-xs">
+        <div v-for="provider in aiHealth.providers.filter(p => p.status !== 'healthy')"
+             :key="'p' + provider.id">
+          <span class="font-semibold text-gray-900">{{ provider.name }}</span>
+          <span v-for="finding in provider.findings" :key="finding.code"
+                :class="finding.level === 'will_fail' ? 'text-red-600' : 'text-amber-700'">
+            · {{ finding.message }}
+          </span>
+        </div>
+        <p class="text-pixiv-light pt-1">
+          Agent 的红点是<strong>继承</strong>自它绑定的 Provider / 模型池，不是 Agent 自己坏了——去上面修 Provider，不用改 Agent。
+        </p>
+      </div>
+    </details>
+  </template>
+</section>

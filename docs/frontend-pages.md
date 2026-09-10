@@ -229,6 +229,8 @@ APIs:
 
 保存按分区独立进行：同步页调 `PUT /api/dashboard/settings/sync`，系统页调 `PUT /api/dashboard/settings/system`。分区端点只采纳本区字段，其余字段沿用磁盘上的旧值——每页表单只含自己那一区，走全量端点会把没加载的字段写成默认值。AI 三页的配置存在数据库里，走 `ai_web.py` 的端点，不经过 `/api/dashboard/settings`。
 
+AI 三页（models / agents / adult）页顶共享 **AI 配置总览横幅**（`dashboard_ai_health_band.html`），数据来自只读端点 `GET /api/dashboard/ai/health`——纯数据库投影、零网络请求，可随意刷新。它把「现在到底在用什么、坏没坏」说到页面上：Provider 数、必失败数、可路由模型数、绑在坏 Provider 上的 Agent 数，以及按任务类型归并的 AI 任务失败次数（其中 `keyword_clean` 会标注为静默降级）。Agent 的红点是**继承**自它绑定的 Provider / 模型池，不是 Agent 自己坏了。
+
 `agents` 页的**候选模型链**回答「这个 Agent 实际会依次调用哪些模型」：选中 Agent 后按真实路由顺序列出 `① Provider / model_key（来源）`，来源区分固定绑定、池成员第 N 位与第 N 级后备池成员，并显示响应里的四个硬上限（候选尝试 / 网络请求 / 解析候选数 / 池节点数）。数据来自只读端点 `GET /api/dashboard/ai/agents/<agent_id>/candidates`，它只做候选解析、不发起任何生成请求，也不回传 Provider 的连接地址与密钥。固定绑定的链只有一个元素，此时不显示模型池区块。
 
 `models` 页的模型池编辑器额外展示该池**最近的真实尝试记录**（`GET /api/dashboard/ai/model-pools/<pool_id>/attempts`）：每条显示状态、Provider / 模型、池内位置、阶段、耗时、错误 scope/category/message 与所属 job。`partial` 与 `failed` 分开显示——`partial` 是已经开始输出正文之后才失败，路由不会再转移到下一个候选。
@@ -249,12 +251,15 @@ APIs:
 - `GET /api/dashboard/rescue-token/status`、`POST /api/dashboard/rescue-token/rotate`
 - `GET /api/dashboard/export/stats`
 - Provider / Agent CRUD。
+- `GET /api/dashboard/ai/health?days=7`
+- `POST /api/dashboard/ai/providers/probe-models`
 - `GET|POST /api/dashboard/ai/providers/<provider_id>/models`
 - `POST /api/dashboard/ai/providers/<provider_id>/models/sync`
 - `GET|DELETE /api/dashboard/ai/model-sync-operations/<operation_id>`
 - `GET /api/dashboard/ai/model-sync-operations/<operation_id>/events`
 - `POST /api/dashboard/ai/model-sync-operations/<operation_id>/confirm-empty`
 - `GET /api/dashboard/ai/agents/<agent_id>/candidates`
+- `PUT /api/dashboard/ai/agents/bindings`
 - 模型池 CRUD、`PUT /api/dashboard/ai/model-pools/<pool_id>/members` 与 `GET /api/dashboard/ai/model-pools/<pool_id>/attempts`，详见 `frontend-api-contract.md`。
 
 `system` 页的救援 API 只展示 Token 前缀与轮换时间。完整救援 Token 只在生成或轮换成功后显示一次，关闭窗口时立即清空页面中的明文。`models` 页不回显 API Key；模型池编辑器列出所有可能接收 Prompt 的 Provider，并明确提示跨 Provider 故障转移的隐私范围。
