@@ -125,7 +125,12 @@ class PendingAndWatermarksMixin:
         - novel 且带 source_type 时补录 sources 记录（source_key 用 bookmark_source_key）；
         - series 时恢复 is_subscribed = 1。
         任一步失败则整体回滚，避免出现"已 restored 但来源/订阅未恢复"的中间态。
+
+        提交后刷新拯救目录：目录成员资格按「有没有 pending 行」判定，恢复之后条目该
+        回到目录里，不刷就要等下一个同步任务顺手重建。刷新刻意放在事务外——放进去
+        会让目录刷新失败连带回滚掉已经生效的恢复。
         """
+        record: dict[str, Any] | None = None
         with self.transaction():
             row = self.conn.execute(
                 "SELECT * FROM pending_deletions WHERE id = ? AND status = 'pending'",
@@ -154,7 +159,11 @@ class PendingAndWatermarksMixin:
                     "UPDATE series SET is_subscribed = 1 WHERE series_id = ?",
                     (item_id,),
                 )
-            return record
+
+        # 事务已提交，恢复本身不会因为目录刷新失败而回滚；这与 delete_novel 里
+        # 直接调 refresh_rescue_item 的既有手法一致，不做静默吞异常。
+        self.refresh_rescue_item(str(record["item_type"]), int(record["item_id"]))
+        return record
 
     def get_pending_deletion_count(self) -> int:
         """获取 pending 状态的记录总数"""

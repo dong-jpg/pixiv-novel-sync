@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from ..models import AssetRecord, NovelRecord, NovelTextRecord, SourceRecord
-from .utils import escape_fts_query
+from .utils import escape_fts_query, novel_source_url
 
 # 状态检查拿不到可信结果时的占位状态：不允许写进 status 列覆盖已有状态
 UNKNOWN_STATUS = "unknown"
@@ -20,8 +20,8 @@ class NovelsMixin:
                 INSERT INTO novels (
                     novel_id, user_id, series_id, title, caption, visible, restrict_value,
                     x_restrict, text_length, total_bookmarks, total_views, cover_url,
-                    tags_json, create_date, raw_json, meta_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    tags_json, create_date, raw_json, meta_hash, source_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(novel_id) DO UPDATE SET
                     user_id = excluded.user_id,
                     series_id = excluded.series_id,
@@ -38,6 +38,9 @@ class NovelsMixin:
                     create_date = excluded.create_date,
                     raw_json = excluded.raw_json,
                     meta_hash = excluded.meta_hash,
+                    -- source_url 由主键 novel_id 唯一确定，正常情况下永不变化；
+                    -- COALESCE 只为补上历史遗留的空值，不会覆盖已写入的地址。
+                    source_url = COALESCE(novels.source_url, excluded.source_url),
                     last_seen_at = CURRENT_TIMESTAMP
                 """,
                 (
@@ -57,6 +60,7 @@ class NovelsMixin:
                     record.create_date,
                     record.raw_json,
                     record.meta_hash,
+                    novel_source_url(record.novel_id),
                 ),
             )
             self._commit_if_needed()
@@ -201,6 +205,7 @@ class NovelsMixin:
                 n.last_seen_at,
                 n.status,
                 n.last_checked_at,
+                n.source_url,
                 nt.text_raw,
                 nt.text_markdown,
                 n.raw_json,

@@ -536,6 +536,106 @@ def test_refresh_missing_series_cleans_catalog_and_sources(db: Database) -> None
     assert tuple(orphan) == (260, "章节")
 
 
+def test_rebuild_catalog_excludes_items_pending_user_removal(db: Database) -> None:
+    """已进「待确认删除」的条目不许同时出现在拯救目录。
+
+    取消收藏/追更只会写 pending_deletions，既不清 sources 的 bookmark_ 行，也不把
+    series.is_subscribed 置 0（两者都要等用户点「确认移除」）。于是一个被本人取消、
+    又恰好被 Pixiv 下架的作品会同时挂在两个列表上，拯救页还给它标着「我的收藏」——
+    用户读到的就是「我取消的东西被算成拯救」。两个子系统的判据本就不同
+    （本人取消 vs Pixiv 下架），pending 存在时以「等你决定」为准。
+    """
+    _seed_novel(db, 800, status="deleted", text="取消收藏后又被删")
+    db.upsert_source(SourceRecord(800, "bookmark_public", "1"))
+    db.add_pending_deletion("novel", 800, "unbookmarked", "取消收藏后又被删", "作者", "")
+
+    _seed_series(db, 810, status="deleted", total_novels=1)
+    _seed_novel(db, 811, series_id=810, status="deleted", text="章节")
+    db.conn.execute("UPDATE series SET is_subscribed = 1 WHERE series_id = 810")
+    db.add_pending_deletion("series", 810, "unfollowed_series", "系列", "作者", "")
+
+    # 对照：同样被删但没有 pending 记录，照旧算拯救
+    _seed_novel(db, 820, status="deleted", text="真被删的")
+    db.upsert_source(SourceRecord(820, "following_user_scan", "2"))
+
+    db.rebuild_rescue_catalog()
+
+    ids = {
+        (row[0], row[1])
+        for row in db.conn.execute(
+            "SELECT item_type, item_id FROM rescue_catalog"
+        ).fetchall()
+    }
+    assert ("novel", 800) not in ids
+    assert ("series", 810) not in ids
+    assert ("novel", 820) in ids
+
+
+def test_source_url_is_derived_from_the_primary_key_and_survives_upsert(db: Database) -> None:
+    """source_url 由 novel_id / series_id 唯一确定，所以它不该能被写歪。
+
+    存在的理由：判断「Pixiv 原站还在不在」需要一个不依赖 status 推断的入口——
+    status 是本地熔断/限流的产物，而原站地址是客观事实。集中拼接也顺手消掉了
+    show.php / novel/series 字面量散落在 4 个文件里各拼各的问题。
+    """
+    from pixiv_novel_sync.models import NovelRecord
+
+    _seed_novel(db, 900, status="deleted", text="正文")
+    db.upsert_novel(
+        NovelRecord(
+            novel_id=900, user_id=2, series_id=None, title="小说", caption=None,
+            visible=True, restrict="public", x_restrict=0, text_length=2,
+            total_bookmarks=0, total_views=0, cover_url=None, tags_json="[]",
+            create_date=None, raw_json="{}", meta_hash="h-900",
+        )
+    )
+    db.upsert_subscribed_series(910, "系列", "", 2, None, 1)
+
+    assert db.conn.execute(
+        "SELECT source_url FROM novels WHERE novel_id = 900"
+    ).fetchone()[0] == "https://www.pixiv.net/novel/show.php?id=900"
+    assert db.conn.execute(
+        "SELECT source_url FROM series WHERE series_id = 910"
+    ).fetchone()[0] == "https://www.pixiv.net/novel/series/910"
+
+    # 详情接口把地址带出来，前端不必再自己拼一遍
+    detail = db.get_novel_detail(900)
+    assert detail is not None
+    assert detail["source_url"] == "https://www.pixiv.net/novel/show.php?id=900"
+
+
+def test_list_rescues_marks_whether_the_user_still_holds_the_item(db: Database) -> None:
+    """拯救目录要区分「你曾收藏/追更过」与「仅扫描备份」。
+
+    生产实测 365 条拯救成功里 bookmark 来源为 0，全部来自 following_user_scan /
+    user_backup。不标出来的话，用户没法判断哪些是自己真正在乎的丢失内容。
+    """
+    _seed_novel(db, 830, status="deleted", text="我收藏过的")
+    db.upsert_source(SourceRecord(830, "bookmark_public", "1"))
+
+    _seed_novel(db, 840, status="deleted", text="只是扫到的")
+    db.upsert_source(SourceRecord(840, "following_user_scan", "2"))
+
+    _seed_novel(db, 850, status="deleted", text="仅备份的")
+    db.upsert_source(SourceRecord(850, "user_backup", "3"))
+
+    _seed_series(db, 860, status="deleted", total_novels=1)
+    _seed_novel(db, 861, series_id=860, status="deleted", text="章节")
+    db.conn.execute("UPDATE series SET is_subscribed = 1 WHERE series_id = 860")
+    db.conn.commit()
+
+    db.rebuild_rescue_catalog()
+    items = {
+        (item["item_type"], item["item_id"]): item
+        for item in db.list_rescues(page=1, page_size=50)["items"]
+    }
+
+    assert items[("novel", 830)]["personal_relation"] is True
+    assert items[("series", 860)]["personal_relation"] is True
+    assert items[("novel", 840)]["personal_relation"] is False
+    assert items[("novel", 850)]["personal_relation"] is False
+
+
 def test_rebuild_catalog_classifies_complete_and_partial_series(db: Database) -> None:
     _seed_series(db, 300, status="deleted", total_novels=2)
     _seed_novel(db, 301, series_id=300, text="一")

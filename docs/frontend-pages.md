@@ -330,6 +330,10 @@ Template: `dashboard_novels.html`
 
 接口另外支持 `item_type`（`novel` / `series`），但仅在未指定 `content_kind` 时生效；页面固定发送 `content_kind`，因此 `item_type` 实际不参与筛选。
 
+卡片右上角的徽标除内容类型与救援状态外，还会在 `personal_relation` 为真时显示「我收藏/追更过」：该字段区分「本人收藏 / 追更」与「关注扫描 / 全量备份」两类来源。生产实测拯救成功的条目全部来自批量扫描（`bookmark` 来源为 0），不标出来就无法分辨哪些丢失内容是自己真正在乎的。
+
+已进入「待确认删除」（`pending`）的条目不出现在本列表：本人取消收藏 / 追更的作品以「等你决定」为准，避免同一作品同时挂在待确认与拯救两个列表里。
+
 页面还展示目录的 `refreshed_at`，`stale` 为真时提示「数据可能已过期」。
 
 API：`GET /api/dashboard/rescues`。

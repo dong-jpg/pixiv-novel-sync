@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from .utils import escape_fts_query
+from .utils import escape_fts_query, series_source_url
 
 # 与 novels 一致：unknown 表示本次检查没拿到可信结果，不得覆盖已有状态
 UNKNOWN_STATUS = "unknown"
@@ -36,18 +36,20 @@ class SeriesMixin:
         with self._lock:
             self.conn.execute(
                 """
-                INSERT INTO series (series_id, title, description, user_id, cover_url, total_novels, is_subscribed, last_seen_at)
-                VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                INSERT INTO series (series_id, title, description, user_id, cover_url, total_novels, source_url, is_subscribed, last_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
                 ON CONFLICT(series_id) DO UPDATE SET
                     title = CASE WHEN excluded.title != '' THEN excluded.title ELSE series.title END,
                     description = CASE WHEN excluded.description != '' THEN excluded.description ELSE series.description END,
                     user_id = CASE WHEN excluded.user_id != 0 THEN excluded.user_id ELSE series.user_id END,
                     cover_url = COALESCE(excluded.cover_url, series.cover_url),
                     total_novels = CASE WHEN excluded.total_novels > 0 THEN excluded.total_novels ELSE series.total_novels END,
+                    -- source_url 由主键 series_id 唯一确定，COALESCE 只补历史遗留空值。
+                    source_url = COALESCE(series.source_url, excluded.source_url),
                     is_subscribed = 1,
                     last_seen_at = CURRENT_TIMESTAMP
                 """,
-                (series_id, title, description, user_id, cover_url, total_novels),
+                (series_id, title, description, user_id, cover_url, total_novels, series_source_url(series_id)),
             )
             self._commit_if_needed()
 

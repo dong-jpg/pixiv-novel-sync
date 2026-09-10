@@ -6,6 +6,8 @@ import logging
 import sqlite3
 import time
 
+from .utils import PIXIV_NOVEL_URL_PREFIX, PIXIV_SERIES_URL_PREFIX
+
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,7 @@ class SchemaMixin:
                 create_date TEXT,
                 raw_json TEXT NOT NULL,
                 meta_hash TEXT NOT NULL,
+                source_url TEXT,
                 first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -86,6 +89,7 @@ class SchemaMixin:
                 user_id INTEGER NOT NULL,
                 cover_url TEXT,
                 total_novels INTEGER DEFAULT 0,
+                source_url TEXT,
                 first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -314,13 +318,22 @@ class SchemaMixin:
         self.fail_stale_task_logs()
 
     def _migrate_novels_table(self) -> None:
-        """为 novels 表添加 status 和 last_checked_at 字段"""
+        """为 novels 表添加 status、last_checked_at 和 source_url 字段"""
         cursor = self.conn.execute("PRAGMA table_info(novels)")
         columns = {row[1] for row in cursor.fetchall()}
         if "status" not in columns:
             self.conn.execute("ALTER TABLE novels ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'")
         if "last_checked_at" not in columns:
             self.conn.execute("ALTER TABLE novels ADD COLUMN last_checked_at TEXT")
+        # source_url 是 novel_id 的确定性投影，整列一次回填即可；之后 upsert_novel
+        # 负责维护。它给「Pixiv 原站还在不在」提供一个不依赖 status 推断的判定入口。
+        if "source_url" not in columns:
+            self.conn.execute("ALTER TABLE novels ADD COLUMN source_url TEXT")
+        self.conn.execute(
+            "UPDATE novels SET source_url = ? || novel_id "
+            "WHERE source_url IS NULL OR source_url = ''",
+            (PIXIV_NOVEL_URL_PREFIX,),
+        )
 
     def _migrate_novel_texts_table(self) -> None:
         """为旧版 novel_texts 表添加正文完整度辅助列并回填。"""
@@ -503,7 +516,7 @@ class SchemaMixin:
         self._commit_if_needed()
 
     def _migrate_series_table(self) -> None:
-        """为 series 表添加 is_subscribed、status、last_checked_at 字段"""
+        """为 series 表添加 is_subscribed、status、last_checked_at、source_url 字段"""
         cursor = self.conn.execute("PRAGMA table_info(series)")
         columns = {row[1] for row in cursor.fetchall()}
         if "is_subscribed" not in columns:
@@ -512,6 +525,13 @@ class SchemaMixin:
             self.conn.execute("ALTER TABLE series ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'")
         if "last_checked_at" not in columns:
             self.conn.execute("ALTER TABLE series ADD COLUMN last_checked_at TEXT")
+        if "source_url" not in columns:
+            self.conn.execute("ALTER TABLE series ADD COLUMN source_url TEXT")
+        self.conn.execute(
+            "UPDATE series SET source_url = ? || series_id "
+            "WHERE source_url IS NULL OR source_url = ''",
+            (PIXIV_SERIES_URL_PREFIX,),
+        )
 
     def init_sync_check_table(self) -> None:
         """初始化同步检查表"""

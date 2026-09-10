@@ -260,6 +260,7 @@ Expected detail fields include:
 - `series_id`
 - `tags`
 - `cover_url`
+- `source_url`：Pixiv 原站地址（`https://www.pixiv.net/novel/show.php?id=<novel_id>`），由主键派生，前端不必自己拼。`series` 表同名列用 `https://www.pixiv.net/novel/series/<series_id>`。
 - bookmark/view counts where available。
 - `rescue`：实时救援评估、远端状态、完整度和人工纠错状态。
 
@@ -354,7 +355,11 @@ Expected fields include series metadata and novels/chapters list.
 
 响应 `data` 除 `items` 与分页元数据外，还包含目录级 `stale` 布尔字段（依据 `refreshed_at` 与当前配置判定救援目录是否过期）。
 
-列表项字段：`item_type`、`item_id`、`title`、`author_name`、`cover_url`、`rescue_state`、`remote_status`、`eligibility_reason`、`expected_count`、`local_count`、`complete_count`、`last_checked_at`、`updated_at`。
+列表项字段：`item_type`、`item_id`、`title`、`author_name`、`cover_url`、`rescue_state`、`remote_status`、`eligibility_reason`、`expected_count`、`local_count`、`complete_count`、`last_checked_at`、`updated_at`、`content_kind`、`content_kind_label`、`series_id`、`sources`、`personal_relation`。
+
+`personal_relation` 是布尔值，表示该条目是否带有本人主动关联的来源（`bookmark` / `subscribed_series`）。`following_user_scan` 与 `user_backup` 属于批量扫描，本人未必在乎，该字段为 `false`。字段由已取出的 `sources` 派生，不额外查库。
+
+已进入「待确认删除」（`pending_deletions.status = 'pending'`）的条目不出现在本列表中：本人取消收藏 / 追更的作品以「等你决定」为准。`confirmed` 会真删本地备份，`restored` 表示用户明确保留，两者都不触发排除。人工 `include` 纠错优先于这条排除。
 
 ### PUT /api/dashboard/rescue-overrides/<item_type>/<item_id>
 

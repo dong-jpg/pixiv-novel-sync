@@ -758,17 +758,23 @@ def test_run_pending_deletion_detection_task_calls_service_and_returns_stats(set
         }
     ]
     assert db.closed is True
-    assert result == {
-        "bookmark": {"new_pending": 1},
-        "series": {"new_pending": 2},
-        "new_pending": 3,
-        "stopped": False,
-        "auto_confirmed": 0,  # Phase 3.2: cleanup结果
-        "cleaned_up": 0,
-    }
+    # 检测写完 pending_deletions 后重建拯救目录：拯救页按「有没有 pending 行」排除条目，
+    # 不重建就要等下一个同步任务才生效。rescue_catalog_duration_ms 是非确定计时，单列断言。
+    assert result["bookmark"] == {"new_pending": 1}
+    assert result["series"] == {"new_pending": 2}
+    assert result["new_pending"] == 3
+    assert result["stopped"] is False
+    assert result["auto_confirmed"] == 0  # Phase 3.2: cleanup结果
+    assert result["cleaned_up"] == 0
+    assert result["rescue_catalog_items"] == 7
+    assert result["rescue_catalog_sources"] == 8
+    assert db.rebuild_catalog_calls == 1
     assert reporter.logs[0] == ("info", "=== 开始检测取消收藏/追更 ===")
     assert reporter.logs[1] == ("success", "登录成功, 用户ID: 999")
-    assert reporter.logs[-1] == ("success", "检测完成: 发现 3 条新的待确认记录")
+    assert ("success", "检测完成: 发现 3 条新的待确认记录") in reporter.logs
+    # 目录刷新是收尾步骤，所以它才是最后一条
+    assert reporter.logs[-1][0] == "success"
+    assert reporter.logs[-1][1].startswith("救援目录刷新完成")
     assert reporter.progress_updates == [{"phase": "pending_deletion_detection", "current": 0, "total": 0}]
 
 
@@ -792,6 +798,9 @@ def test_run_pending_deletion_detection_task_preserves_existing_stopped_flag(set
     result = services.run_pending_deletion_detection_task(settings)
 
     assert result["stopped"] is True
+    # 中止时不重建目录：半途状态不该写进去（与 _run_status_task 同一语义）
+    assert "rescue_catalog_items" not in result
+    assert service_env["db"].rebuild_catalog_calls == 0
     assert service_env["db"].closed is True
 
     monkeypatch.setattr(services, "BookmarkNovelSyncService", original_factory)
@@ -818,14 +827,13 @@ def test_run_pending_deletion_detection_task_returns_stopped_when_cancelled_duri
 def test_run_pending_deletion_detection_task_accepts_missing_reporter(settings, service_env):
     result = services.run_pending_deletion_detection_task(settings, reporter=None)
 
-    assert result == {
-        "bookmark": {"new_pending": 1},
-        "series": {"new_pending": 2},
-        "new_pending": 3,
-        "stopped": False,
-        "auto_confirmed": 0,  # Phase 3.2
-        "cleaned_up": 0,
-    }
+    assert result["bookmark"] == {"new_pending": 1}
+    assert result["series"] == {"new_pending": 2}
+    assert result["new_pending"] == 3
+    assert result["stopped"] is False
+    assert result["auto_confirmed"] == 0  # Phase 3.2
+    assert result["cleaned_up"] == 0
+    assert result["rescue_catalog_items"] == 7
     assert service_env["db"].closed is True
 
 

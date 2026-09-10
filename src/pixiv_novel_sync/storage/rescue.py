@@ -43,6 +43,9 @@ class RescueMixin:
         "series_chapter": "系列单章",
         "standalone": "独立小说",
     }
+    # 「本人主动关联」的来源：收藏与追更。following_user_scan / user_backup 是批量
+    # 扫来的，本人未必在乎——生产实测 365 条拯救成功里 bookmark 来源为 0，全是这两类。
+    _PERSONAL_SOURCE_KINDS = frozenset({"bookmark", "subscribed_series"})
 
     @classmethod
     def _validate_rescue_item_type(cls, item_type: str) -> str:
@@ -143,12 +146,25 @@ class RescueMixin:
         normalized_ids = sorted({int(value) for value in series_ids or set()})
         if series_ids is not None and not normalized_ids:
             return []
-        where_sql = ""
+        # 已进「待确认删除」的系列排除在外（理由同 _catalog_novel_rows）。放在 WHERE
+        # 而非 HAVING：pending 是「这个系列本身」的属性，与聚合无关。人工 include 覆盖优先。
+        where_clauses = [
+            """(
+                ro.action = 'include'
+                OR NOT EXISTS (
+                    SELECT 1 FROM pending_deletions pd
+                    WHERE pd.item_type = 'series'
+                      AND pd.item_id = se.series_id
+                      AND pd.status = 'pending'
+                )
+            )"""
+        ]
         params: tuple[int, ...] = ()
         if normalized_ids:
             placeholders = ", ".join("?" for _ in normalized_ids)
-            where_sql = f"WHERE se.series_id IN ({placeholders})"
+            where_clauses.append(f"se.series_id IN ({placeholders})")
             params = tuple(normalized_ids)
+        where_sql = "WHERE " + " AND ".join(where_clauses)
         rows = self.conn.execute(
             f"""
             SELECT
@@ -271,6 +287,19 @@ class RescueMixin:
               AND (
                     ro.action = 'include'
                     OR COALESCE(n.status, 'unknown') IN ('deleted', 'restricted')
+              )
+              -- 已进「待确认删除」的条目排除在外：本人取消收藏/追更只会写 pending，
+              -- 既不清 sources 也不动 status，于是一个被本人取消、又恰好被 Pixiv 下架
+              -- 的作品会同时挂进两个列表。只排 pending——confirmed 会真删本地行，
+              -- restored 是用户明确表态「留着」。人工 include 覆盖优先于这条排除。
+              AND (
+                    ro.action = 'include'
+                    OR NOT EXISTS (
+                        SELECT 1 FROM pending_deletions pd
+                        WHERE pd.item_type = 'novel'
+                          AND pd.item_id = n.novel_id
+                          AND pd.status = 'pending'
+                    )
               )
               {filter_sql}
             ORDER BY n.novel_id
@@ -1307,6 +1336,13 @@ class RescueMixin:
             item["sources"] = sources_by_item.get(
                 (item_type_value, item_id_value),
                 [],
+            )
+            # 复用上面已经取出的来源，不再多查一次库。生产实测拯救成功里 bookmark
+            # 来源为 0、全是 following_user_scan / user_backup，不标出来用户就没法
+            # 分辨「我真正收藏/追更过的丢失内容」和「只是批量扫到的」。
+            item["personal_relation"] = any(
+                source["kind"] in self._PERSONAL_SOURCE_KINDS
+                for source in item["sources"]
             )
             if item_type_value == "novel":
                 item["novel_id"] = item_id_value

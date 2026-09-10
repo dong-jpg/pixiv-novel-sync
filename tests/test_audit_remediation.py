@@ -339,6 +339,31 @@ def test_restore_pending_deletion_atomic_novel_and_series(tmp_path: Path) -> Non
     db.close()
 
 
+def test_restore_pending_deletion_returns_the_item_to_the_rescue_catalog(tmp_path: Path) -> None:
+    """「忽略恢复」之后条目必须回到拯救目录，不必等下一个同步任务。
+
+    目录成员资格按「有没有 pending 行」判定，所以改 pending 状态的每条路径都得刷新目录：
+    confirm 走 delete_novel/delete_series（已显式清目录），detection 任务收尾全量重建，
+    restore 之前漏了——恢复后条目仍被排除，直到某个同步任务顺手重建才回来。
+    """
+    db = Database(tmp_path / "restore-catalog.db")
+    db.init_schema()
+    _seed_rescue_novel(db, 51)
+    db.add_pending_deletion("novel", 51, "unbookmarked", "小说", "作者", "")
+
+    db.rebuild_rescue_catalog()
+    assert db.get_rescue_catalog_item("novel", 51) is None
+
+    rows = db.conn.execute(
+        "SELECT id FROM pending_deletions WHERE item_type = 'novel' AND item_id = 51"
+    ).fetchall()
+    record = db.restore_pending_deletion_atomic(int(rows[0]["id"]), bookmark_source_key="777")
+
+    assert record is not None
+    assert db.get_rescue_catalog_item("novel", 51) is not None
+    db.close()
+
+
 def test_restore_pending_deletion_atomic_rolls_back_on_failure(tmp_path, monkeypatch) -> None:
     db = Database(tmp_path / "pending2.db")
     db.init_schema()

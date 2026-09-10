@@ -3,6 +3,34 @@ from __future__ import annotations
 
 import sqlite3
 
+# Pixiv 原站链接。novel/series 的地址由 ID 唯一确定，所以这是「拼接」而非「外部输入」，
+# 不存在校验外部 URL 的问题。前缀集中在这里，让写库、迁移回填、读 API、油猴脚本、
+# 前端推荐卡片都用同一份格式——此前 show.php / novel/series 的字面量散落在 4 个文件里各拼各的。
+PIXIV_NOVEL_URL_PREFIX = "https://www.pixiv.net/novel/show.php?id="
+PIXIV_SERIES_URL_PREFIX = "https://www.pixiv.net/novel/series/"
+
+
+def novel_source_url(novel_id: int | None) -> str | None:
+    """由 novel_id 拼出 Pixiv 原站单篇小说地址；无 ID 时返回 None。"""
+    try:
+        value = int(novel_id)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return f"{PIXIV_NOVEL_URL_PREFIX}{value}"
+
+
+def series_source_url(series_id: int | None) -> str | None:
+    """由 series_id 拼出 Pixiv 原站系列地址；无 ID 时返回 None。"""
+    try:
+        value = int(series_id)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return f"{PIXIV_SERIES_URL_PREFIX}{value}"
+
 
 def escape_fts_query(search: str) -> str:
     """把用户搜索词转成安全的 FTS5 MATCH 表达式。

@@ -420,6 +420,14 @@ def run_pending_deletion_detection_task(
         except Exception as e:
             _report_log(reporter, "warning", f"清理过期记录失败: {e}")
 
+        # 本任务改的是 pending_deletions，而拯救目录按「有没有 pending 行」排除条目：
+        # 不重建的话，新取消收藏的作品会继续挂在拯救页上，直到下一个同步/状态检查
+        # 任务顺手重建为止——用户点完「检测取消收藏」马上去看拯救页，看到的还是旧状态。
+        # 同理，cleanup 把 restored 记录清掉后也要重建，让「我要留着」的作品回到目录。
+        # 中止（stopped）时跳过：与 _run_status_task 的 rebuild_catalog 分支同一语义。
+        if not stats.get("stopped"):
+            stats.update(_rebuild_rescue_catalog(db, reporter))
+
         return stats
     finally:
         db.close()
