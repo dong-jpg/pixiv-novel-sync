@@ -121,7 +121,7 @@
       </div>
 
       <div v-else-if="recommendationItems.length" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-        <a v-for="item in recommendationItems" :key="item.id" :href="recommendationItemUrl(item)"
+        <a v-for="item in recommendationItems" :key="item.id" :href="recommendationItemUrl(item)" target="_blank" rel="noopener noreferrer"
            class="group block border border-gray-100 rounded-xl p-4 hover:bg-gray-50 hover:border-brand-200 transition-all">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0">
@@ -490,8 +490,8 @@
       const retryRecommendationItems = () => loadRecommendationItems();
 
       const recommendationItemUrl = (item) => {
-        if (item?.item_type === 'series' && item.series_id) return '/dashboard/series/' + encodeURIComponent(item.series_id);
-        if (item?.novel_id) return '/dashboard/novels/' + encodeURIComponent(item.novel_id);
+        if (item?.item_type === 'series' && item.series_id) return 'https://www.pixiv.net/novel/series/' + encodeURIComponent(item.series_id);
+        if (item?.novel_id) return 'https://www.pixiv.net/novel/show.php?id=' + encodeURIComponent(item.novel_id);
         return '/dashboard/preferences';
       };
 

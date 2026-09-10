@@ -528,6 +528,24 @@ def test_dashboard_puts_recommendations_above_activity():
     assert html.index("最近推书结果") < html.index("最近活动")
 
 
+def test_recommendation_cards_link_to_pixiv_original_not_local_detail():
+    """推来的书尚未归档，本地 /dashboard/novels|series 详情页会打不开。
+
+    卡片必须指向 Pixiv 原站（show.php / series），否则用户只能看介绍、点不进去。
+    """
+    dashboard = read(TEMPLATES / "dashboard.html")
+    preferences = read(TEMPLATES / "dashboard_preferences.html")
+
+    assert "https://www.pixiv.net/novel/show.php?id=" in dashboard
+    assert "https://www.pixiv.net/novel/series/" in dashboard
+    # 首页不能再用本地详情页当推荐卡片的跳转目标
+    assert "'/dashboard/novels/' +" not in dashboard
+    assert "'/dashboard/series/' +" not in dashboard
+
+    assert "https://www.pixiv.net/novel/show.php?id=" in preferences
+    assert "itemUrl" in preferences
+
+
 def test_dashboard_activity_titles_use_chinese_task_labels():
     """最近活动的任务名按 task_type 映射成中文，不再显示英文内部键。"""
     html = read(TEMPLATES / "dashboard.html")

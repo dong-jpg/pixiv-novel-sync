@@ -127,7 +127,7 @@
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
                 <div class="flex items-center gap-2 flex-wrap">
-                  <span class="text-sm font-bold text-gray-900">{{ item.title }}</span>
+                  <a :href="itemUrl(item)" target="_blank" rel="noopener noreferrer" class="text-sm font-bold text-gray-900 hover:text-brand-600">{{ item.title }}</a>
                   <span class="text-[10px] px-1.5 py-0.5 rounded" :class="item.item_type === 'series' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'">{{ item.item_type === 'series' ? '系列' : '单篇' }}</span>
                   <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{{ item.score }} 分</span>
                 </div>
@@ -213,6 +213,14 @@ window.initVueApp({
       const data = await res.json();
       if (!data.ok) throw new Error(window.errorText(data, res));
       recommendationItems.value = data.data || [];
+    }
+
+    // 推来的书尚未归档到本地，跳本地详情页会 404；这里直接指向 Pixiv 原站，
+    // 让用户能真正打开作品 / 系列页阅读。
+    function itemUrl(item) {
+      if (item.item_type === 'series' && item.series_id) return 'https://www.pixiv.net/novel/series/' + encodeURIComponent(item.series_id);
+      if (item.novel_id) return 'https://www.pixiv.net/novel/show.php?id=' + encodeURIComponent(item.novel_id);
+      return '#';
     }
 
     async function buildSearchPlan() {
@@ -330,7 +338,7 @@ window.initVueApp({
     return {
       profiles, selected, loading, recommendationLoading, searchPlan, recommendationItems,
       message, messageType, analysisJob, analysisResult, confidenceText, loadProfiles, analyze,
-      buildSearchPlan, runRecommendations, loadRecommendationItems, feedback, muteAuthor,
+      buildSearchPlan, runRecommendations, loadRecommendationItems, feedback, muteAuthor, itemUrl,
     };
   }
 });
