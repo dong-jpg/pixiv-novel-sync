@@ -546,6 +546,27 @@ def test_recommendation_cards_link_to_pixiv_original_not_local_detail():
     assert "itemUrl" in preferences
 
 
+def test_dashboard_cards_use_library_os_surface_classes():
+    """控制台是唯一还没迁移到 library OS 的页面：顶部统计小卡片没有 library 阴影，
+    三个内容区块用裸 Tailwind 卡片类 + 自定义标题字号，与其余页面观感不一致。
+
+    统一后：内容区块用 library-card / library-panel，标题用 library-section-title，
+    统计小卡片补上 shadow-sm（base.html 把它映射成 --library-shadow）。
+    """
+    html = read(TEMPLATES / "dashboard.html")
+
+    # 三个内容区块都要走 library 表面类
+    assert "library-card" in html
+    assert "library-panel" in html
+    # 标题走 library-section-title，不再是裸 text-sm font-bold
+    assert html.count("library-section-title") >= 3
+    assert "text-sm font-bold text-gray-800" not in html
+
+    # 统计小卡片必须拿到 library 阴影（base.html 的 .library-page .shadow-sm 覆盖）
+    header = html.split("</header>")[0]
+    assert header.count("shadow-sm") >= 4
+
+
 def test_dashboard_activity_titles_use_chinese_task_labels():
     """最近活动的任务名按 task_type 映射成中文，不再显示英文内部键。"""
     html = read(TEMPLATES / "dashboard.html")

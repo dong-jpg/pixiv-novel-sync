@@ -29,8 +29,8 @@
         <div class="grid grid-cols-2 sm:flex sm:items-stretch gap-2 sm:gap-2.5 w-full sm:w-auto">
           <!-- 小说总数 -->
           <a href="/dashboard/novels"
-            class="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-gray-100 bg-white
-                   hover:border-brand-200 hover:shadow-sm transition-all min-w-0">
+            class="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-gray-100 bg-white shadow-sm
+                   hover:border-brand-200 transition-all min-w-0">
             <div class="w-8 h-8 rounded-lg bg-brand-50 flex items-center justify-center flex-shrink-0">
               <svg class="w-4 h-4 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
             </div>
@@ -43,8 +43,8 @@
 
           <!-- 关注作者 -->
           <a href="/dashboard/follows"
-            class="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-gray-100 bg-white
-                   hover:border-blue-200 hover:shadow-sm transition-all min-w-0">
+            class="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-gray-100 bg-white shadow-sm
+                   hover:border-blue-200 transition-all min-w-0">
             <div class="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
               <svg class="w-4 h-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
             </div>
@@ -57,8 +57,8 @@
 
           <!-- 追更系列 -->
           <a href="/dashboard/novels?category=following"
-            class="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-gray-100 bg-white
-                   hover:border-violet-200 hover:shadow-sm transition-all min-w-0">
+            class="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-gray-100 bg-white shadow-sm
+                   hover:border-violet-200 transition-all min-w-0">
             <div class="w-8 h-8 rounded-lg bg-violet-50 flex items-center justify-center flex-shrink-0">
               <svg class="w-4 h-4 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
             </div>
@@ -71,7 +71,7 @@
 
           <!-- 待确认 -->
           <a href="/dashboard/pending-deletions"
-            class="flex items-center gap-2.5 px-3 py-2 rounded-xl border bg-white hover:shadow-sm transition-all min-w-0"
+            class="flex items-center gap-2.5 px-3 py-2 rounded-xl border bg-white shadow-sm transition-all min-w-0"
             :class="stats.pending_count > 0 ? 'border-amber-200 hover:border-amber-300' : 'border-gray-100 hover:border-amber-200'">
             <div class="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center flex-shrink-0">
               <svg class="w-4 h-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
@@ -94,10 +94,10 @@
          详细执行日志请到「任务日志」页点开详情查看 -->
 
     <!-- ===== Recent Recommendations（置于页面上方） ===== -->
-    <section class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-brand-200 transition-all p-5">
+    <section class="library-card hover:shadow-md hover:border-brand-200 transition-all">
       <div class="flex items-start justify-between gap-3 mb-4">
         <div>
-          <h2 class="text-sm font-bold text-gray-800">最近推书结果</h2>
+          <h2 class="library-section-title">最近推书结果</h2>
           <p class="text-xs text-pixiv-gray mt-1">来自「偏好与推荐」的最新搜书 / 推书结果，点击卡片可进入作品或系列详情。</p>
         </div>
         <div class="flex items-center gap-2 flex-shrink-0">
@@ -150,9 +150,9 @@
 
       <!-- Left: 最近活动 Timeline (2/3) -->
       <div class="lg:col-span-2 flex" data-dashboard-card="activity">
-        <div class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-brand-200 transition-all h-full flex flex-col w-full">
+        <div class="library-panel hover:shadow-md hover:border-brand-200 transition-all h-full flex flex-col w-full">
           <div class="px-5 pt-5 pb-3 border-b border-gray-50">
-            <span class="text-sm font-bold text-gray-800">最近活动</span>
+            <span class="library-section-title">最近活动</span>
           </div>
           <div class="px-5 py-4 flex-1 flex flex-col">
             <!-- Loading -->
@@ -216,9 +216,9 @@
 
       <!-- Right: 定时任务 Panel (1/3) -->
       <div class="flex" data-dashboard-card="scheduler">
-        <div class="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-brand-200 transition-all h-full flex flex-col w-full">
+        <div class="library-panel hover:shadow-md hover:border-brand-200 transition-all h-full flex flex-col w-full">
           <div class="px-5 pt-5 pb-3 border-b border-gray-50 flex items-center justify-between">
-            <span class="text-sm font-bold text-gray-800">定时任务</span>
+            <span class="library-section-title">定时任务</span>
             <button @click="toggleAutoSync" :disabled="togglingAutoSync"
               class="px-2.5 py-1 text-[11px] font-semibold rounded-lg transition-all disabled:opacity-50"
               :class="autoSyncStatus?.running
