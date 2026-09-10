@@ -232,6 +232,93 @@ def _seed_recommendation_item(db_path) -> int:
     return item_id
 
 
+def _seed_recommendation_runs(db_path, runs: int, items_per_run: int) -> None:
+    """造 runs 轮推书、每轮 items_per_run 条，run_id 递增。"""
+    db = Database(db_path)
+    db.init_schema()
+    profile_id = db.create_preference_profile({"name": "p", "source_scope": {}, "stats": {}, "profile": {}})
+    for run_index in range(runs):
+        run_id = db.create_recommendation_run(profile_id, {"queries": []})
+        for item_index in range(items_per_run):
+            db.upsert_recommendation_item({
+                "run_id": run_id, "profile_id": profile_id, "item_type": "novel",
+                "novel_id": run_index * 100 + item_index, "title": f"t{run_index}-{item_index}",
+                "tags": [], "score": item_index, "matched": {},
+            })
+    db.close()
+
+
+def test_list_recommendation_items_paged_orders_newest_run_first(tmp_path: Path):
+    """首页要「最新一轮排最前」：排序键是 run_id 而不是 created_at / updated_at。
+
+    同一本书被新一轮重推时 upsert 会刷 run_id 与 updated_at，created_at 停在首次入库；
+    反馈操作也会刷 updated_at。拿那两个排序会让老结果跳回第一页。
+    """
+    _seed_recommendation_runs(tmp_path / "paged.db", runs=3, items_per_run=4)
+    db = Database(tmp_path / "paged.db")
+    db.init_schema()
+
+    first = db.list_recommendation_items_paged(page=1, page_size=4)
+    assert first["total"] == 12
+    assert first["total_pages"] == 3
+    assert first["page"] == 1
+    # 最新一轮（run_id 最大）的 4 条整体在第一页，轮内按分数倒序
+    assert [item["score"] for item in first["items"]] == [3, 2, 1, 0]
+    assert all(item["title"].startswith("t2-") for item in first["items"])
+
+    last = db.list_recommendation_items_paged(page=3, page_size=4)
+    assert all(item["title"].startswith("t0-") for item in last["items"])
+
+    # 越界页夹回最后一页，不返回空
+    clamped = db.list_recommendation_items_paged(page=99, page_size=4)
+    assert clamped["page"] == 3
+    db.close()
+
+
+def test_recommendation_items_endpoint_returns_envelope_with_page(tmp_path: Path):
+    """带 page 参数返回分页信封；不带则保持平铺数组（偏好页与 run 返回值依赖旧形状）。"""
+    from flask import Flask
+
+    from pixiv_novel_sync.preference_web import register_preference_routes
+    from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings
+
+    settings = Settings(
+        pixiv=PixivSettings(refresh_token="", access_token=None, proxy=None, timeout=30, verify_ssl=True, user_id=None),
+        sync=SyncSettings(
+            enabled=True,
+            initial_manual_only=False,
+            download_assets=False,
+            write_markdown=True,
+            write_raw_text=True,
+            bookmark_restricts=["public"],
+            max_items_per_run=None,
+            max_pages_per_run=None,
+            delay_seconds_between_items=0,
+            delay_seconds_between_pages=0,
+        ),
+        storage=StorageSettings(public_dir=tmp_path / "public", private_dir=tmp_path / "private", db_path=tmp_path / "env.db"),
+    )
+    app = Flask(__name__)
+    register_preference_routes(app, settings)
+    _seed_recommendation_runs(settings.storage.db_path, runs=2, items_per_run=3)
+    client = app.test_client()
+
+    envelope = client.get("/api/dashboard/recommendations/items?page=1&page_size=3").get_json()
+    assert envelope["ok"] is True
+    data = envelope["data"]
+    assert set(data) == {"items", "page", "page_size", "total", "total_pages"}
+    assert data["total"] == 6
+    assert data["total_pages"] == 2
+    assert len(data["items"]) == 3
+
+    flat = client.get("/api/dashboard/recommendations/items?limit=100").get_json()
+    assert isinstance(flat["data"], list)
+    assert len(flat["data"]) == 6
+
+    bad = client.get("/api/dashboard/recommendations/items?page=abc")
+    assert bad.status_code == 400
+
+
 def test_feedback_rejects_invalid_feedback_type(tmp_path: Path):
     """反馈接口必须校验枚举,非法值返回 400 且不写库。"""
     app, settings = _make_feedback_app(tmp_path)

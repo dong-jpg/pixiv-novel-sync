@@ -6,10 +6,13 @@
 <div class="library-page flex flex-col min-h-screen">
   <div class="library-page-header sr-only"><h1>控制台</h1></div>
 
-  <!-- ===== Sticky Top Header Bar：标题 + 四项核心统计 ===== -->
-  <!-- 统计从下方卡片区上移到横条；原来的手动同步控件已移除 -->
-  <header class="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-gray-100">
-    <div class="px-6 lg:px-8 py-4">
+  <!-- ===== Page Body ===== -->
+  <div class="flex-1 px-6 lg:px-8 py-6 space-y-6">
+
+    <!-- 标题 + 四项核心统计。原来是通栏 sticky 直角横条，与下方圆角卡片观感割裂；
+         现在作为页内第一张 library-card（22px 圆角 + library 阴影），与其余区块同一套表面。
+         手动同步控件此前已移除，入口在设置页。 -->
+    <header class="library-card">
       <div class="flex items-start justify-between gap-4 flex-wrap">
         <div class="flex-shrink-0">
           <div class="flex items-center gap-2.5">
@@ -84,14 +87,7 @@
           </a>
         </div>
       </div>
-    </div>
-  </header>
-
-  <!-- ===== Page Body ===== -->
-  <div class="flex-1 px-6 lg:px-8 py-6 space-y-6">
-
-    <!-- 统计已上移至顶部横条；运行中任务的实时日志框已移除，
-         详细执行日志请到「任务日志」页点开详情查看 -->
+    </header>
 
     <!-- ===== Recent Recommendations（置于页面上方） ===== -->
     <section class="library-card hover:shadow-md hover:border-brand-200 transition-all">
@@ -101,17 +97,15 @@
           <p class="text-xs text-pixiv-gray mt-1">来自「偏好与推荐」的最新搜书 / 推书结果，点击卡片可进入作品或系列详情。</p>
         </div>
         <div class="flex items-center gap-2 flex-shrink-0">
-          <button @click="loadRecommendationItems" class="text-xs px-3 py-1.5 bg-gray-100 rounded-lg hover:bg-gray-200">刷新</button>
+          <button @click="loadRecommendationItems(1)" class="text-xs px-3 py-1.5 bg-gray-100 rounded-lg hover:bg-gray-200">刷新</button>
           <a href="/dashboard/preferences" class="text-xs px-3 py-1.5 bg-brand-50 text-brand-600 rounded-lg hover:bg-brand-100">查看全部</a>
         </div>
       </div>
 
-      <div v-if="loadingRecommendations" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-        <div v-for="n in 3" :key="n" class="border border-gray-100 rounded-xl p-4 animate-pulse">
-          <div class="h-4 bg-gray-100 rounded w-2/3 mb-3"></div>
-          <div class="h-3 bg-gray-50 rounded w-1/2 mb-2"></div>
-          <div class="h-3 bg-gray-50 rounded w-full mb-1.5"></div>
-          <div class="h-3 bg-gray-50 rounded w-4/5"></div>
+      <div v-if="loadingRecommendations" class="space-y-2">
+        <div v-for="n in 5" :key="n" class="border border-gray-100 rounded-xl px-4 py-3 animate-pulse">
+          <div class="h-4 bg-gray-100 rounded w-1/2 mb-2"></div>
+          <div class="h-3 bg-gray-50 rounded w-1/3"></div>
         </div>
       </div>
 
@@ -120,24 +114,27 @@
         <button @click="retryRecommendationItems" class="mt-3 px-3 py-1.5 bg-white border border-red-200 text-red-600 rounded-lg text-xs hover:bg-red-50">重试</button>
       </div>
 
-      <div v-else-if="recommendationItems.length" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+      <!-- 列表 + 翻页：最新一轮推书整体排最前（后端按 run_id 倒序），每页 10 条 -->
+      <div v-else-if="recommendationItems.length" class="space-y-2">
         <a v-for="item in recommendationItems" :key="item.id" :href="recommendationItemUrl(item)" target="_blank" rel="noopener noreferrer"
-           class="group block border border-gray-100 rounded-xl p-4 hover:bg-gray-50 hover:border-brand-200 transition-all">
-          <div class="flex items-start justify-between gap-3">
-            <div class="min-w-0">
-              <div class="flex items-center gap-2 flex-wrap">
-                <span class="text-sm font-bold text-gray-900 group-hover:text-brand-600 line-clamp-1">{{ item.title || '未命名作品' }}</span>
-                <span class="text-[10px] px-1.5 py-0.5 rounded" :class="item.item_type === 'series' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'">{{ item.item_type === 'series' ? '系列' : '单篇' }}</span>
-                <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{{ item.score || 0 }} 分</span>
-              </div>
-              <div class="text-xs text-pixiv-gray mt-1 truncate">{{ item.author_name || '未知作者' }} · {{ recommendationLengthText(item) }}</div>
+           class="group flex items-start gap-3 border border-gray-100 rounded-xl px-4 py-3 hover:bg-gray-50 hover:border-brand-200 transition-all">
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-sm font-bold text-gray-900 group-hover:text-brand-600 line-clamp-1">{{ item.title || '未命名作品' }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded" :class="item.item_type === 'series' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'">{{ item.item_type === 'series' ? '系列' : '单篇' }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{{ item.score || 0 }} 分</span>
+            </div>
+            <div class="text-xs text-pixiv-gray mt-1 truncate">{{ item.author_name || '未知作者' }} · {{ recommendationLengthText(item) }}</div>
+            <p class="text-xs text-gray-700 mt-1 line-clamp-1">{{ item.reason || item.caption || '暂无推荐理由' }}</p>
+          </div>
+          <div class="flex flex-col items-end gap-1.5 flex-shrink-0">
+            <span class="text-[10px] text-gray-400 whitespace-nowrap">{{ recommendationTimeText(item) }}</span>
+            <div class="flex flex-wrap gap-1.5 justify-end max-w-[16rem]">
+              <span v-for="tag in item.tags?.slice(0, 4) || []" :key="tag" class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{{ tag }}</span>
             </div>
           </div>
-          <p class="text-xs text-gray-700 mt-2 line-clamp-2 min-h-[2.5rem]">{{ item.reason || item.caption || '暂无推荐理由' }}</p>
-          <div class="flex flex-wrap gap-1.5 mt-3">
-            <span v-for="tag in item.tags?.slice(0, 6) || []" :key="tag" class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{{ tag }}</span>
-          </div>
         </a>
+        <app-pagination :page="recommendationPage" :pages="recommendationTotalPages" @update:page="loadRecommendationItems"></app-pagination>
       </div>
 
       <div v-else class="text-sm text-pixiv-gray text-center py-8 border border-dashed border-gray-200 rounded-xl">
@@ -315,6 +312,8 @@
       const recommendationItems = ref([]);
       const loadingRecommendations = ref(true);
       const recommendationError = ref('');
+      const recommendationPage = ref(1);
+      const recommendationTotalPages = ref(1);
 
       let pollInterval = null;
       let autoSyncInterval = null;
@@ -472,14 +471,20 @@
         finally { loadingActivity.value = false; }
       };
 
-      const loadRecommendationItems = async () => {
+      // 分页信封：后端按 run_id 倒序（最新一轮在前）、轮内按分数。page 参数由
+      // app-pagination 的 update:page 事件传入；刷新按钮不带参数回到第一页。
+      const loadRecommendationItems = async (page) => {
         loadingRecommendations.value = recommendationItems.value.length === 0;
         recommendationError.value = '';
+        const target = Number(page || 1);
         try {
-          const res = await fetch('/api/dashboard/recommendations/items?limit=6');
+          const res = await fetch(`/api/dashboard/recommendations/items?page=${target}&page_size=10`);
           const data = await res.json();
           if (!res.ok || data.ok === false) throw new Error(data.error || '推荐结果加载失败');
-          recommendationItems.value = data.data || [];
+          const envelope = data.data || {};
+          recommendationItems.value = envelope.items || [];
+          recommendationPage.value = envelope.page || 1;
+          recommendationTotalPages.value = envelope.total_pages || 1;
         } catch(e) {
           console.error(e);
           recommendationError.value = e.message || '推荐结果加载失败';
@@ -487,7 +492,7 @@
           loadingRecommendations.value = false;
         }
       };
-      const retryRecommendationItems = () => loadRecommendationItems();
+      const retryRecommendationItems = () => loadRecommendationItems(recommendationPage.value);
 
       const recommendationItemUrl = (item) => {
         if (item?.item_type === 'series' && item.series_id) return 'https://www.pixiv.net/novel/series/' + encodeURIComponent(item.series_id);
@@ -500,6 +505,16 @@
         if (!n) return item?.item_type === 'series' ? '系列' : '单篇';
         if (n >= 10000) return (n / 10000).toFixed(1) + ' 万字';
         return Number(n).toLocaleString('zh-CN') + ' 字';
+      };
+      // created_at 是 SQLite 的 UTC CURRENT_TIMESTAMP（无时区标记），直接 new Date()
+      // 会被当成本地时间，与列表里其它时间戳一样补 Z 再格式化。
+      const recommendationTimeText = (item) => {
+        const raw = String(item?.created_at || '').trim();
+        if (!raw) return '';
+        const iso = raw.includes('T') ? raw : raw.replace(' ', 'T');
+        const parsed = new Date(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(iso) ? iso : iso + 'Z');
+        if (Number.isNaN(parsed.getTime())) return raw;
+        return parsed.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
       };
 
       // ── Actions ──
@@ -550,7 +565,8 @@
         latestJob, loadingJob, isTaskRunning, progressPercent,
         autoSyncStatus, loadingAutoSync, togglingAutoSync, autoTasksList, toggleAutoSync, stopAutoTask,
         activityList, activityPage, activityTotalPages, loadingActivity, loadActivity,
-        recommendationItems, loadingRecommendations, recommendationError, loadRecommendationItems, retryRecommendationItems, recommendationItemUrl, recommendationLengthText,
+        recommendationItems, loadingRecommendations, recommendationError, loadRecommendationItems, retryRecommendationItems, recommendationItemUrl, recommendationLengthText, recommendationTimeText,
+        recommendationPage, recommendationTotalPages,
       };
     }
   });

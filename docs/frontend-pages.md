@@ -78,7 +78,11 @@ Shared APIs：
 
 Template: `dashboard.html`
 
-用途：同步操作入口、统计卡片、运行中任务、最近活动、定时任务状态。
+用途：统计卡片、运行中任务提示、最近推书结果、最近活动、定时任务状态。手动同步与预检查的入口在设置页（`/dashboard/settings/sync` 的手动触发区），本页不再承载。
+
+布局：标题 + 四项核心统计（小说总数 / 关注作者 / 追更系列 / 待确认）是页内第一张 `library-card`，与下方区块同一套表面（22px 圆角 + library 阴影）；不再是通栏 sticky 直角横条。
+
+「最近推书结果」是列表 + `app-pagination` 翻页（每页 10 条），数据来自 `GET /api/dashboard/recommendations/items?page=&page_size=` 的分页信封，最新一轮推书整体排最前、轮内按分数；每行点击跳转 Pixiv 原站（`source_url` 同款格式）。
 
 APIs:
 
@@ -86,18 +90,14 @@ APIs:
 - `GET /api/dashboard/sync/status`
 - `GET /api/dashboard/auto-sync/status`
 - `GET /api/dashboard/logs`
-- `POST /api/dashboard/check-bookmarks`
-- `POST /api/dashboard/sync/subscribed-series`
-- `POST /api/dashboard/sync/start`
+- `GET /api/dashboard/recommendations/items?page=&page_size=`
 - `POST /api/dashboard/auto-sync/toggle`
 - `POST /api/dashboard/auto-sync/stop-task`
 
 关键交互：
 
-- 手动同步。
-- 收藏预检查。
-- 追更系列同步。
-- 自动同步启停。
+- 自动同步启停与停止当前任务。
+- 推书列表翻页；刷新按钮回到第一页。
 - 日志轮询和任务进度展示。
 
 ### `/dashboard/novels`

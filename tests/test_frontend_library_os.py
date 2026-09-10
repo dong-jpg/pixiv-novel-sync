@@ -567,6 +567,35 @@ def test_dashboard_cards_use_library_os_surface_classes():
     assert header.count("shadow-sm") >= 4
 
 
+def test_dashboard_recommendations_are_a_paged_list_not_a_card_grid():
+    """首页推书改为列表 + 翻页，最新一轮在前（后端按 run_id 倒序）。
+
+    卡片网格一屏只放得下 6 条且没有翻页，历史结果根本翻不到；列表 + app-pagination
+    才能承载「最新在前、往下翻页」。
+    """
+    html = read(TEMPLATES / "dashboard.html")
+
+    assert "app-pagination" in html
+    assert "recommendationPage" in html
+    assert "recommendationTotalPages" in html
+    # 分页信封由带 page 参数的请求取回
+    assert "recommendations/items?page=" in html
+    # 不再是三列卡片网格
+    assert 'class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">' not in html
+
+
+def test_dashboard_header_is_a_rounded_library_card_not_a_square_sticky_bar():
+    """截图里控制台头部是通栏直角横条，与下方 22px 圆角卡片割裂。
+
+    头部改为页内第一张 library-card，与其余区块同一套表面；sticky 通栏横条移除。
+    """
+    html = read(TEMPLATES / "dashboard.html")
+
+    assert "sticky top-0 z-30 bg-white/80 backdrop-blur-md" not in html
+    header = html.split("</header>")[0]
+    assert 'class="library-card"' in header
+
+
 def test_dashboard_activity_titles_use_chinese_task_labels():
     """最近活动的任务名按 task_type 映射成中文，不再显示英文内部键。"""
     html = read(TEMPLATES / "dashboard.html")

@@ -184,6 +184,17 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
         instance = db()
         try:
             status = request.args.get("status") or None
+            # 带 page 参数走分页信封（首页推书列表用）；不带则保持平铺数组，
+            # 偏好页与 recommendations.run 的返回值依赖旧形状。
+            raw_page = request.args.get("page")
+            if raw_page is not None:
+                page = int(raw_page)
+                page_size = int(request.args.get("page_size") or 10)
+                return ok(
+                    instance.list_recommendation_items_paged(
+                        page=page, page_size=page_size, status=status
+                    )
+                )
             limit = int(request.args.get("limit") or 100)
             return ok(instance.list_recommendation_items(status=status, limit=limit))
         except Exception as exc:

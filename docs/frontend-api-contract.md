@@ -656,6 +656,11 @@ Query:
 
 - `status`
 - `limit`
+- `page`、`page_size`（可选）
+
+不带 `page` 时返回平铺数组（按 `score DESC, updated_at DESC`，受 `limit` 截断），偏好页与 `recommendations.run` 的返回值依赖这个旧形状。
+
+带 `page` 时返回分页信封 `{ items, page, page_size, total, total_pages }`，排序为 `run_id DESC, score DESC, id DESC`——最新一轮推书整体排最前、轮内按分数。排序键刻意用 `run_id`：同一本书被新一轮重推时 upsert 会刷新 `run_id` 与 `updated_at`，而 `created_at` 停在首次入库；反馈操作也会刷 `updated_at`，拿那两个排序会让老结果跳回第一页。`page_size` 夹到 1–50，越界 `page` 夹回最后一页。`page` 非数字返回 `400`。
 
 ### POST /api/dashboard/recommendations/items/{item_id}/feedback
 

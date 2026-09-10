@@ -419,6 +419,47 @@ class RecommendationsMixin:
         rows = self.conn.execute(sql, params).fetchall()
         return [self._row_to_recommendation_item(row) for row in rows]
 
+    def list_recommendation_items_paged(
+        self,
+        page: int = 1,
+        page_size: int = 10,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        """按「最新一轮推书在前」分页返回推荐结果。
+
+        排序键是 run_id 而不是 created_at / updated_at：同一本书被新一轮重推时
+        upsert 会刷新 run_id 与 updated_at，而 created_at 停在首次入库；反馈操作
+        （update_recommendation_item_status）也会刷 updated_at，拿它排序会让一条
+        被点过「不感兴趣」的老结果跳回第一页。run_id 只随推书轮次变化，
+        「最新一轮的结果整体排最前、轮内按分数」正是首页想要的语义。
+        """
+        where_sql = ""
+        params: list[Any] = []
+        if status:
+            where_sql = " WHERE status = ?"
+            params.append(status)
+        total = int(
+            self.conn.execute(
+                f"SELECT COUNT(*) FROM recommendation_items{where_sql}", params
+            ).fetchone()[0]
+        )
+        normalized_size = max(1, min(int(page_size), 50))
+        normalized_page = max(1, int(page))
+        total_pages = max((total + normalized_size - 1) // normalized_size, 1)
+        normalized_page = min(normalized_page, total_pages)
+        rows = self.conn.execute(
+            f"SELECT * FROM recommendation_items{where_sql} "
+            "ORDER BY run_id DESC, score DESC, id DESC LIMIT ? OFFSET ?",
+            (*params, normalized_size, (normalized_page - 1) * normalized_size),
+        ).fetchall()
+        return {
+            "items": [self._row_to_recommendation_item(row) for row in rows],
+            "page": normalized_page,
+            "page_size": normalized_size,
+            "total": total,
+            "total_pages": total_pages,
+        }
+
     def get_recent_recommendation_items(self, limit: int = 100, status: str | None = None) -> list[dict[str, Any]]:
         """获取最近推荐项目用于相似度检测"""
         return self.list_recommendation_items(status=status, limit=limit)
