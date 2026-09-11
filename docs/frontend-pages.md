@@ -78,9 +78,11 @@ Shared APIs：
 
 Template: `dashboard.html`
 
-用途：统计卡片、运行中任务提示、最近推书结果、最近活动、定时任务状态。手动同步与预检查的入口在设置页（`/dashboard/settings/sync` 的手动触发区），本页不再承载。
+用途：统计卡片、运行状态条（定时同步开关 + 当前活动任务 + 停止当前）、最近推书结果。手动同步与预检查的入口在设置页（`/dashboard/settings/sync` 的手动触发区），本页不再承载。
 
-布局：标题 + 四项核心统计（小说总数 / 关注作者 / 追更系列 / 待确认）是页内第一张 `library-card`，与下方区块同一套表面（22px 圆角 + library 阴影）；不再是通栏 sticky 直角横条。
+布局：标题 + 四项核心统计（小说总数 / 关注作者 / 追更系列 / 待确认）是页内第一张 `library-card`，与下方区块同一套表面（22px 圆角 + library 阴影）；不再是通栏 sticky 直角横条。卡片底部是一条**运行状态条**：左侧是定时同步全局开关（「启用/停用定时同步」，这是全局启停的唯一 UI 入口——设置页只有逐任务的 cron / 开关），右侧是有定时任务在跑时才出现的「停止当前」，中间在任务运行时显示「任务执行中 + 当前任务名（`currentTaskName`，按 `task_type` 映射成中文）+ 进度百分比」，点击进入任务日志页。
+
+原先下方的「最近活动」时间线与「定时任务」列表面板已移除：推书列表上来后它们信息重复，任务历史归「任务日志」页、逐项调度状态归设置页的调度表。
 
 「最近推书结果」是列表 + `app-pagination` 翻页（每页 10 条），数据来自 `GET /api/dashboard/recommendations/items?page=&page_size=` 的分页信封，最新一轮推书整体排最前、轮内按分数；每行点击跳转 Pixiv 原站（`source_url` 同款格式）。
 
@@ -89,16 +91,15 @@ APIs:
 - `GET /api/dashboard/status`
 - `GET /api/dashboard/sync/status`
 - `GET /api/dashboard/auto-sync/status`
-- `GET /api/dashboard/logs`
 - `GET /api/dashboard/recommendations/items?page=&page_size=`
 - `POST /api/dashboard/auto-sync/toggle`
 - `POST /api/dashboard/auto-sync/stop-task`
 
 关键交互：
 
-- 自动同步启停与停止当前任务。
+- 定时同步全局启停与停止当前任务（均在运行状态条）。
 - 推书列表翻页；刷新按钮回到第一页。
-- 日志轮询和任务进度展示。
+- 任务状态轮询（`fetchJobStatus` 每 3 秒、`fetchAutoSync` 每 10 秒）。
 
 ### `/dashboard/novels`
 

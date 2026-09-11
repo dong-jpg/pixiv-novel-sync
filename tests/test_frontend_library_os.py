@@ -135,12 +135,18 @@ def test_wizard_preserves_distill_sources_and_merge_controls():
     assert "payload.overwrite_fields" in wizard
 
 
-def test_dashboard_cards_stretch_and_recommendations_have_error_state():
+def test_dashboard_drops_activity_and_scheduler_panels_keeps_error_state():
+    """首页下方的「最近活动」时间线与「定时任务」列表面板已移除（推书列表上来后
+    它们信息重复），但推书结果的错误态保留。"""
     html = read(TEMPLATES / "dashboard.html")
 
-    assert 'data-dashboard-card="activity"' in html
-    assert 'data-dashboard-card="scheduler"' in html
-    assert html.count("h-full flex flex-col") >= 2
+    # 两个面板不再存在
+    assert 'data-dashboard-card="activity"' not in html
+    assert 'data-dashboard-card="scheduler"' not in html
+    assert "最近活动" not in html
+    assert "activityList" not in html
+    assert "autoTasksList" not in html
+    # 推书错误态保留
     assert "recommendationError" in html
     assert "推荐结果加载失败" in html
     assert "retryRecommendationItems" in html
@@ -521,11 +527,14 @@ def test_dashboard_drops_inline_running_log_terminal():
 
 
 def test_dashboard_puts_recommendations_above_activity():
-    """推书结果展示框位于「最近活动」之前。"""
+    """推书结果是头部横条之后唯一的正文区块（下方两个面板已移除）。"""
     html = read(TEMPLATES / "dashboard.html")
 
     assert html.count("最近推书结果") == 1
-    assert html.index("最近推书结果") < html.index("最近活动")
+    assert html.index("最近推书结果") > html.index("</header>")
+    # 推书区块是 </header> 之后第一个也是最后一个区块
+    body = html.split("</header>", 1)[1]
+    assert body.count("<section") == 1
 
 
 def test_recommendation_cards_link_to_pixiv_original_not_local_detail():
@@ -547,19 +556,15 @@ def test_recommendation_cards_link_to_pixiv_original_not_local_detail():
 
 
 def test_dashboard_cards_use_library_os_surface_classes():
-    """控制台是唯一还没迁移到 library OS 的页面：顶部统计小卡片没有 library 阴影，
-    三个内容区块用裸 Tailwind 卡片类 + 自定义标题字号，与其余页面观感不一致。
-
-    统一后：内容区块用 library-card / library-panel，标题用 library-section-title，
-    统计小卡片补上 shadow-sm（base.html 把它映射成 --library-shadow）。
-    """
+    """控制台迁移到 library OS：头部横条与推书区块都走 library-card 表面，标题用
+    library-section-title，统计小卡片补上 shadow-sm（base.html 把它映射成
+    --library-shadow）。下方两个面板移除后页面只剩这两块。"""
     html = read(TEMPLATES / "dashboard.html")
 
-    # 三个内容区块都要走 library 表面类
-    assert "library-card" in html
-    assert "library-panel" in html
+    # 头部横条与推书区块都走 library-card 表面
+    assert html.count("library-card") >= 2
     # 标题走 library-section-title，不再是裸 text-sm font-bold
-    assert html.count("library-section-title") >= 3
+    assert "library-section-title" in html
     assert "text-sm font-bold text-gray-800" not in html
 
     # 统计小卡片必须拿到 library 阴影（base.html 的 .library-page .shadow-sm 覆盖）
@@ -596,13 +601,35 @@ def test_dashboard_header_is_a_rounded_library_card_not_a_square_sticky_bar():
     assert 'class="library-card"' in header
 
 
-def test_dashboard_activity_titles_use_chinese_task_labels():
-    """最近活动的任务名按 task_type 映射成中文，不再显示英文内部键。"""
+def test_dashboard_current_task_name_uses_chinese_labels():
+    """横条上「任务执行中」旁显示当前活动任务名，按 task_type 映射成中文，
+    不再显示英文内部键。活动列表面板移除后，映射表仍由 currentTaskName 使用。"""
     html = read(TEMPLATES / "dashboard.html")
 
     assert "TASK_TYPE_LABELS" in html
-    assert "TASK_TYPE_LABELS[item.task_type]" in html
+    assert "currentTaskName" in html
     assert "novel_status: '检查小说状态'" in html
+
+
+def test_dashboard_status_bar_keeps_autosync_toggle_and_stop():
+    """移除「定时任务」面板后，定时同步全局开关与「停止当前」必须保留在横条里。
+
+    这是全局启停定时同步的唯一 UI 入口（设置页只有逐任务的 cron / 开关，没有这个
+    master toggle），随面板一起删掉就会丢功能。当前活动任务也并入横条显示。
+    """
+    html = read(TEMPLATES / "dashboard.html")
+
+    # 全局开关：toggleAutoSync + 两个状态文案都在
+    assert "toggleAutoSync" in html
+    assert "停用定时同步" in html
+    assert "启用定时同步" in html
+    # 停止当前：stopAutoTask 仍绑定，且依赖 current_task_job_id 显隐
+    assert "stopAutoTask" in html
+    assert "停止当前" in html
+    assert "autoSyncStatus?.current_task_job_id" in html
+    # 当前活动任务名 + 进度并入横条
+    assert "currentTaskName" in html
+    assert "任务执行中" in html
 
 
 def test_sidebar_footer_shows_own_account_with_premium_badge():
