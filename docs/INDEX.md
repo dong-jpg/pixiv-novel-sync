@@ -2,7 +2,7 @@
 
 **项目**: Pixiv Novel Sync
 **维护者**: dong-jpg
-**最近更新**: 2026-08-24
+**最近更新**: 2026-09-14
 
 ---
 
@@ -19,7 +19,8 @@
 | [UNIFIED_PROJECT_REQUIREMENTS.md](UNIFIED_PROJECT_REQUIREMENTS.md) | 全项目统一需求、实现状态与来源追溯 |
 | [AUDIT_REPORT_2026-07-02.md](AUDIT_REPORT_2026-07-02.md) | 审计：修复 8 类严重 bug + 5 类中等问题 |
 | [AUDIT_REPORT_2026-07-03.md](AUDIT_REPORT_2026-07-03.md) | 审计：EPUB 回归修复 + 死代码清理 + 文档整改 |
-| [AUDIT_REPORT_2026-08-13.md](AUDIT_REPORT_2026-08-13.md) | 最新一轮全项目审计：任务终态、推荐发布、成人路由取消、分页边界与需求覆盖 |
+| [AUDIT_REPORT_2026-08-13.md](AUDIT_REPORT_2026-08-13.md) | 审计：任务终态、推荐发布、成人路由取消、分页边界与需求覆盖 |
+| [AUDIT_REPORT_2026-09-14.md](AUDIT_REPORT_2026-09-14.md) | 最新一轮全项目审计：登录落盘、调度器锁死、每请求 init_schema、AI 中文预算、成人别名恢复、需求覆盖矩阵与 35 条无调用路由 |
 
 > 2026-08-20 的提交 `ed081db` 修复了一次生产事故（`novel_status` 被 Pixiv 限流时把 5499 篇仍存在的小说误判为已删除），引入三态状态判定、双熔断、分批轮转与 `partial` 任务终态。该事故没有独立审计报告，行为说明见 [JOB_SYSTEM.md](JOB_SYSTEM.md) 第 3.5 节。
 
