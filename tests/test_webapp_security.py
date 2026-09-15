@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -203,6 +204,24 @@ def test_oauth_exchange_response_redacts_tokens(tmp_path, monkeypatch):
     assert payload["has_access_token"] is True
     assert "refresh_token" not in payload
     assert "access_token" not in payload
+
+
+def test_token_login_template_never_consumes_plaintext_token():
+    """登录页不得消费后端响应里的明文 refresh_token。
+
+    后端 `_oauth_task_public_payload` 只回 has_refresh_token，所以三条 OAuth 路径都必须
+    按 has_refresh_token 判定成败，落盘走服务端自己持有 token 的 `/oauth/save/<task_id>`，
+    而不是把明文回传 `/api/save-token`。该接口只保留给「直接填入凭证」表单（用户手上
+    本来就有明文 token），不得出现在 OAuth 兑换路径上。
+    """
+    html = Path("src/pixiv_novel_sync/templates/token_login.html").read_text(encoding="utf-8")
+
+    assert "data.refresh_token" not in html
+    assert "/oauth/save/" in html
+
+    save_token_lines = [line for line in html.splitlines() if "/api/save-token" in line]
+    assert len(save_token_lines) == 1
+    assert "data." not in save_token_lines[0]
 
 
 def test_no_token_blocks_proxied_request_when_proxy_untrusted(tmp_path, monkeypatch):

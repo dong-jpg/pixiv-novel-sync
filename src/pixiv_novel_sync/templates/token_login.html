@@ -148,7 +148,8 @@
     $('resultStatus').textContent = data.status === 'done' ? '提取成功' : data.status;
     $('resultStatus').className = data.status === 'done' ? 'font-semibold text-green-600' : 'font-semibold text-red-600';
     $('resultUserId').textContent = data.user_id || '-';
-    $('resultToken').textContent = data.refresh_token || '-';
+    // 后端只回 has_refresh_token（token 明文不出服务端），这里只能显示是否已获取
+    $('resultToken').textContent = data.has_refresh_token ? '已获取（已写入 .env，不在页面展示）' : '-';
   }
 
   $('loginBtn').addEventListener('click', async () => {
@@ -179,7 +180,7 @@
       if (data.status === 'done') {
         clearInterval(pollTimer); pollTimer = null;
         setStep(2, 'done'); setStep(3, 'active');
-        if (data.refresh_token) {
+        if (data.has_refresh_token) {
           showAutoResult(data);
           $('resultSaved').innerHTML = '<span class="text-green-600 font-semibold">已写入配置</span>';
           setStep(3, 'done');
@@ -218,14 +219,15 @@
     try {
       const resp = await csrfFetch('/oauth/exchange/' + currentOAuthTaskId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callback_url: url }) });
       const data = await resp.json();
-      if (resp.ok && data.refresh_token) {
+      if (resp.ok && data.has_refresh_token) {
         $('oauthResult').classList.remove('hidden');
         $('oauthResultStatus').innerHTML = '<span class="text-green-600 font-semibold">成功</span>';
         $('oauthResultUserId').textContent = data.user_id || '-';
-        $('oauthResultToken').textContent = data.refresh_token;
-        const sr = await csrfFetch('/api/save-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: data.refresh_token, user_id: data.user_id || '' }) });
-        showStatus($('oauthStatus'), sr.ok ? 'success' : 'waiting', sr.ok ? '<strong>成功！</strong>Token 已保存。' : 'Token 获取成功，但写入失败。请手动复制。');
-      } else { showStatus($('oauthStatus'), 'error', '<strong>失败：</strong>' + escapeHtml(data.error || '无效链接')); }
+        $('oauthResultToken').textContent = '已获取（不在页面展示）';
+        // token 明文留在服务端，落盘走 /oauth/save/<task_id> 而不是把明文传回来
+        const sr = await csrfFetch('/oauth/save/' + currentOAuthTaskId, { method: 'POST' });
+        showStatus($('oauthStatus'), sr.ok ? 'success' : 'waiting', sr.ok ? '<strong>成功！</strong>Token 已保存。' : 'Token 获取成功，但写入失败：' + escapeHtml(window.errorText(await sr.json().catch(() => ({})), sr)));
+      } else { showStatus($('oauthStatus'), 'error', '<strong>失败：</strong>' + escapeHtml(window.errorText(data, resp))); }
     } catch (e) { showStatus($('oauthStatus'), 'error', '异常：' + escapeHtml(e.message)); }
     $('exchangeBtn').disabled = false; $('exchangeBtn').innerHTML = '验证并提取 Token';
   });
@@ -248,11 +250,11 @@
       showStatus($('statusBox'), 'pending', spin + '完成授权...');
       try {
         const data = await (await fetch('/oauth/task/' + tid)).json();
-        if (data.status === 'done' && data.refresh_token) {
+        if (data.status === 'done' && data.has_refresh_token) {
           $('resultBox').classList.remove('hidden');
           $('resultStatus').innerHTML = '<span class="text-green-600 font-semibold">成功</span>';
           $('resultUserId').textContent = data.user_id || '-';
-          $('resultToken').textContent = data.refresh_token;
+          $('resultToken').textContent = '已获取（不在页面展示）';
           const sr = await csrfFetch('/oauth/save/' + tid, { method: 'POST' });
           if (sr.ok) { $('resultSaved').innerHTML = '<span class="text-green-600 font-semibold">已应用</span>'; showStatus($('statusBox'), 'success', '<strong>完成！</strong>'); }
         } else { showStatus($('statusBox'), 'error', '异常：' + escapeHtml(data.message || '中断')); }
