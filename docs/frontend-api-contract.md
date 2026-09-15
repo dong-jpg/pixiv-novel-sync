@@ -2,6 +2,8 @@
 
 本文档记录 Library OS 前端当前依赖的后端接口。后端重构时应优先保持路径、方法和主要字段兼容；如需调整，请在对接时同步更新前端适配层。
 
+> AI 写作相关端点（创作项目 / 章节 / 草稿 / 文档 / 蒸馏档案 / Prompt 模板 / chat / 写作类 SSE stream / 成人润色）随 AI 写作模块移到 `ai-writing` 分支维护，main 分支契约不再记载；main 只保留 Provider / 模型目录 / 模型同步 / 模型池 / Agent 绑定 / AI job 读取与续接等基础设施端点。
+
 ## 通用约定
 
 - 页面仍由 Flask/Jinja 渲染，前端通过 Vue 3 CDN 增强交互。
@@ -18,7 +20,7 @@
 | `/token-login` | `token_login.html` | Token / OAuth 授权 |
 | `/dashboard` | `dashboard.html` | 控制台 |
 | `/dashboard/follows` | `dashboard_follows.html` | 作者列表 |
-| `/dashboard/novels` | `dashboard_novels.html` | 小说库 / 追更系列 / AI 创作 / 拯救成功列表 |
+| `/dashboard/novels` | `dashboard_novels.html` | 小说库 / 追更系列 / 拯救成功列表 |
 | `/dashboard/novels/<novel_id>` | `dashboard_novel_detail.html` | 小说详情 / 阅读页 |
 | `/dashboard/series/<series_id>` | `dashboard_series_detail.html` | 系列详情 |
 | `/dashboard/users/<user_id>` | `dashboard_user_detail.html` | 作者详情 |
@@ -28,15 +30,8 @@
 | `/dashboard/settings/sync` | `dashboard_settings_sync.html` | 同步与调度 |
 | `/dashboard/settings/models` | `dashboard_settings_models.html` | 模型与 Provider |
 | `/dashboard/settings/agents` | `dashboard_settings_agents.html` | Agent 绑定 |
-| `/dashboard/settings/adult` | `dashboard_settings_adult.html` | 成人润色 |
 | `/dashboard/settings/system` | `dashboard_settings_system.html` | 系统维护 |
 | `/dashboard/preferences` | `dashboard_preferences.html` | 偏好画像与推荐 |
-| `/dashboard/ai` | `dashboard_ai_projects.html` | AI 创作项目列表（`?project_id=<正整数>` 302 到项目页） |
-| `/dashboard/ai/projects/<project_id>` | `dashboard_ai_project.html` | 作品资料、风格控制、长篇规划 |
-| `/dashboard/ai/projects/<project_id>/chapters` | `dashboard_ai_chapters.html` | 章节工作区与自动写作 Pipeline |
-| `/dashboard/ai/projects/<project_id>/notes` | `dashboard_ai_notes.html` | 伏笔、状态记忆、语义检索 |
-| `/dashboard/wizard` | `dashboard_wizard.html` | 创作向导与蒸馏档案 |
-| `/dashboard/novels/ai/<project_id>` | `dashboard_ai_reader.html` | AI 创作小说阅读 |
 
 ## 认证与健康检查 APIs
 
@@ -730,9 +725,8 @@ Body:
 - `PUT /api/dashboard/ai/agents/{agent_id}`
 - `DELETE /api/dashboard/ai/agents/{agent_id}`
 - `GET /api/dashboard/ai/agents/<agent_id>/candidates`
-- `PUT /api/dashboard/ai/agents/bindings`：批量改绑 / 批量启停。单事务，成人 Agent 混入即整体拒绝。
+- `PUT /api/dashboard/ai/agents/bindings`：批量改绑 / 批量启停。单事务。
 - `POST /api/dashboard/ai/agents/seed`
-- `POST /api/dashboard/ai/agents/adult-polish/seed`：创建/确保成人润色 Agent。要求成人 owner 会话与 JSON object body；成功返回 `{ ok, data }`（Agent 信息），失败按成人路由规则映射为固定中文错误（默认「创建成人润色 Agent 失败」）。
 
 成员替换是全量、有序写入，body 为 `{"expected_version": 3, "members": [{"provider_model_id": 10, "enabled": true}]}`；陈旧版本返回 `409`。后备池按链顺序展开并按 `(provider_id, model_key)` 去重。Agent 的 `binding_type=fixed|pool` 互斥：`fixed` 提交 `provider_id`/`model`，`pool` 提交 `model_pool_id`。`required_capabilities` 只接受 `streaming`、`json`、`vision`、`tools`、`long_context`。
 
@@ -760,7 +754,7 @@ Body:
 {
   "ok": true,
   "data": {
-    "agent_id": 4, "agent_name": "章节续写", "task_type": "continue",
+    "agent_id": 4, "agent_name": "关键词清洗", "task_type": "keyword_clean",
     "binding_type": "pool", "pool_id": 3, "pool_name": "主池",
     "candidates": [
       {
@@ -783,82 +777,13 @@ Body:
 
 单池和完整后备链最多 64 个候选，链深度最多 8；每个 job 最多尝试 16 个候选、32 次网络请求和 30 分钟。模型池可能把同一 Prompt 发送给多个 Provider，前端必须展示完整 Provider 范围及跨 Provider 隐私提示。
 
-## 成人本地润色 API
+## AI job APIs
 
-成人润色是独立的、需要 Dashboard 会话的 fail-closed 功能。所有成功响应都使用 `{ "ok": true, "data": ... }`；普通错误使用 `{ "ok": false, "error": "..." }`。除 scope、配置读取和普通 GET 外，写请求必须带 `X-CSRF-Token`。任务读取、事件恢复、取消、重新生成和应用还必须带当前 job 对应的 `X-Adult-Access-Token`；token 与 owner/job 不匹配时不会暴露任务内容。
+main 分支只保留 AI job 的读取、清理与手动续接端点；写作端点（documents / drafts / detect-ai-tells / prompt-templates / series/search / 蒸馏档案 style-profiles & novel-profiles）随 AI 写作模块移到 `ai-writing` 分支。
 
-### 端点
-
-| 方法 | 路由 | 请求/响应约束 |
-| --- | --- | --- |
-| `GET` | `/api/dashboard/ai/projects/{project_id}/characters` | 返回当前项目角色数组；只读结构化字段，不返回正文。 |
-| `POST` | `/api/dashboard/ai/projects/{project_id}/characters` | 创建角色，要求 `canonical_name`、`aliases`、`age_years`、`age_basis`、`fictional`。 |
-| `PUT`/`DELETE` | `/api/dashboard/ai/projects/{project_id}/characters/{character_id}` | 必须提交 `expected_revision`，冲突返回 `409`。 |
-| `GET`/`PUT` | `/api/dashboard/ai/projects/{project_id}/adult-confirmation` | 读取或 CAS 更新成人开关、虚构成年人确认、角色 revision 列表；读取响应同时返回按确认顺序派生的 `character_ids`，供阅读页筛选可参与角色。 |
-| `GET`/`PUT` | `/api/dashboard/ai/adult-review-bindings/{review_kind}` | `review_kind` 为 `safety` 或 `fact_guard`；固定/池 binding 必须声明 `json` 能力和 `expected_version`。 |
-| `POST` | `/api/dashboard/ai/polish/adult/scope` | body 精确为 `{ "agent_id": number }`；返回 `groups` 与 `provider_scope_hash`。 |
-| `POST` | `/api/dashboard/ai/polish/adult/stream` | 提交无正文请求（见下方字段），返回成人 SSE。 |
-| `GET` | `/api/dashboard/ai/polish/adult/{job_id}` | 返回脱敏 job 元数据；成功候选只在未应用且仍保留时返回。 |
-| `GET` | `/api/dashboard/ai/polish/adult/{job_id}/events` | 使用 signed access token 读取一次当前数据库快照；可重放白名单 metadata/validation/candidate/done/error，成功且未清理时 candidate 包含完整候选正文；任务仍为 `running` 时只返回当前 `progress` 状态后结束，不会续接原 Provider SSE。 |
-| `POST` | `/api/dashboard/ai/polish/adult/{job_id}/cancel` | 请求体为空对象；返回 `{ "cancel_requested": boolean }`。 |
-| `POST` | `/api/dashboard/ai/polish/adult/{job_id}/regenerate` | body 为新的无正文请求并带 `parent_job_id`；返回新的 SSE metadata/validation/candidate/done。 |
-| `POST` | `/api/dashboard/ai/polish/adult/{job_id}/apply` | body 精确为 `{ "warning_ack_hash": string }`；必须同时提供 signed access token，成功返回 application/revision/hash。 |
-
-stream/regenerate 的请求字段是 `project_id`、`chapter_id`、`agent_id`、`target_start`、`target_end`、`chapter_content_hash`、`target_text_hash`、`chapter_revision`、`participant_character_ids`、`adult_characters_confirmed`、`intensity`、`locked_terms`、`instruction`、`idempotency_key` 和 `provider_scope_hash`；重新生成另加 `parent_job_id`。`target_text`、`before`、`after`、Prompt、system prompt 和 Provider 原始响应均禁止提交、持久化或通过 API 返回。offset 使用 Unicode code point，前端必须从原始章节文本计算 hash，不得先规范化换行。
-
-### SSE 事件与脱敏
-
-成人 stream 只允许 `metadata`、`progress`、`validation`、`candidate`、`done`、`error` 六类事件。`metadata` 返回 `job_id`、`parent_job_id`、`replayed` 和有效期 10 分钟的 `access_token`；`progress` 只返回脱敏阶段/模型摘要，状态重放接口在任务仍运行时至少返回 `{ "job_id": "...", "status": "running" }` 后结束；`validation` 返回结构校验摘要、warning/blocking code、`validation_hash`，有 warning 时额外返回 scoped `warning_ack_hash`；`candidate` 含完整候选正文，成功且未应用/未清理时也可从 owner/job token 保护的详情与状态重放接口读取，但不会进入通用 AI job JSON。任何 provider 错误都映射为固定中文错误码和消息。
-
-SSE 响应必须带：`Cache-Control: no-store, no-cache, must-revalidate, max-age=0`、`Pragma: no-cache`、`X-Robots-Tag: noindex, nofollow, noarchive`、`X-Content-Type-Options: nosniff` 和 `X-Accel-Buffering: no`。job JSON 读取同样使用 `no-store`、`Pragma`、`X-Robots-Tag` 和 `nosniff`。
-
-### 状态码、保留与重试
-
-- `403`：未登录、未配置 Dashboard token、signed access token 缺失/过期/跨 owner，或缺少 CSRF。
-- `404`：项目、章节、角色或 job 不存在；owner 不匹配也按 `404` 隐藏资源。
-- `409`：章节内容/revision、角色确认 revision、Provider scope、Agent/binding/policy snapshot、lease 或 warning 校验发生变化；必须重新获取 scope 并重新生成。
-- `422`：请求字段、范围、hash、参与角色或 idempotency key 格式非法；`400` 表示已认证但配置/路由不可用。
-
-未应用候选采用默认三天清理策略；后台 scheduler 启用时每小时检查，也可通过 AI job cleanup API 手工触发。应用后章节正文只写入目标区间，任务 `output_text` 清理，应用记录仅保留 hash、校验摘要、策略和 Provider/model snapshot。应用不会自动成为普通 Pipeline step，也不会因网络/Provider 变化自动重试。成人路由始终要求 Dashboard token，即使请求来自 localhost；运行顺序和前置配置见 `frontend-pages.md` 的成人配置页说明。
-
-## AI content and job APIs
-
-- `POST /api/dashboard/ai/documents/upload`
-- `POST /api/dashboard/ai/documents/manual`
-- `GET /api/dashboard/ai/drafts`
-- `POST /api/dashboard/ai/drafts`
-- `PUT /api/dashboard/ai/drafts/{draft_id}`
-- `DELETE /api/dashboard/ai/drafts/{draft_id}`
-- `GET /api/dashboard/ai/drafts/{draft_id}/history`
-- `POST /api/dashboard/ai/drafts/{draft_id}/fork`
 - `GET /api/dashboard/ai/jobs`
 - `GET /api/dashboard/ai/jobs/{job_id}`
 - `POST /api/dashboard/ai/jobs/cleanup`
-- `POST /api/dashboard/ai/detect-ai-tells`
-- `GET /api/dashboard/ai/prompt-templates`
-- `GET /api/dashboard/ai/prompt-templates/{template_id}`
-- `POST /api/dashboard/ai/prompt-templates`
-- `PUT /api/dashboard/ai/prompt-templates/{template_id}`
-- `DELETE /api/dashboard/ai/prompt-templates/{template_id}`
-- `POST /api/dashboard/ai/prompt-templates/seed`
-- `GET /api/dashboard/ai/series/search`
-
-### 蒸馏档案 APIs（style-profiles / novel-profiles）
-
-文风蒸馏档案与小说蒸馏档案接口结构一致，均返回 `{ ok, data }` / `{ ok, error }`：
-
-- `GET /api/dashboard/ai/style-profiles?page=&page_size=`：分页列表，`page` 最小 1，`page_size` 默认 20、最大 200。
-- `GET /api/dashboard/ai/style-profiles/{profile_id}`：档案详情。
-- `PUT /api/dashboard/ai/style-profiles/{profile_id}`：更新档案，body 为 JSON object，成功返回 `{ "ok": true }`。
-- `DELETE /api/dashboard/ai/style-profiles/{profile_id}`：删除档案。
-- `POST /api/dashboard/ai/style-profiles/save`：保存蒸馏结果为档案，成功返回 `{ "ok": true, "data": { "id": 1 } }`。
-- `GET /api/dashboard/ai/novel-profiles?page=&page_size=`
-- `GET /api/dashboard/ai/novel-profiles/{profile_id}`
-- `PUT /api/dashboard/ai/novel-profiles/{profile_id}`
-- `DELETE /api/dashboard/ai/novel-profiles/{profile_id}`
-- `POST /api/dashboard/ai/novel-profiles/save`：成功返回 `{ "ok": true, "data": { "id": 1 } }`。
-
-Used by: 创作向导 / 蒸馏档案页（`/dashboard/wizard`）。
 
 ### GET /api/dashboard/ai/jobs/<job_id>
 
@@ -881,24 +806,7 @@ Used by: 创作向导 / 蒸馏档案页（`/dashboard/wizard`）。
 
 ## AI SSE stream contract
 
-The following endpoints return `text/event-stream`:
-
-- `POST /api/dashboard/ai/continue/stream`
-- `POST /api/dashboard/ai/rewrite/stream`
-- `POST /api/dashboard/ai/distill/style/stream`
-- `POST /api/dashboard/ai/distill/novel/stream`
-- `POST /api/dashboard/ai/audit/stream`
-- `POST /api/dashboard/ai/plan/stream`
-- `POST /api/dashboard/ai/projects/{project_id}/longform-plan/stream`
-- `POST /api/dashboard/ai/projects/{project_id}/longform-plan/details/stream`
-- `POST /api/dashboard/ai/chapters/continue/stream`
-- `POST /api/dashboard/ai/projects/{project_id}/states/auto-update/stream`
-- `POST /api/dashboard/ai/chat/stream`
-- `POST /api/dashboard/ai/chapters/pipeline/stream`
-- `POST /api/dashboard/ai/chapters/pipeline/batch/stream`
-- `POST /api/dashboard/ai/chapters/extract-summary/stream`
-- `POST /api/dashboard/ai/chapters/polish/stream`
-- `POST /api/dashboard/ai/projects/{project_id}/foreshadows/auto-resolve/stream`
+main 分支上唯一返回 `text/event-stream` 的 AI 端点是 `POST /api/dashboard/ai/jobs/<job_id>/continue`（手动「下一个模型继续」）。写作类 stream 端点（continue / rewrite / distill / audit / plan / longform / chapters / pipeline / chat）随 AI 写作模块移到 `ai-writing` 分支。
 
 Required event names:
 
@@ -909,54 +817,8 @@ Required event names:
 | `metadata` | metadata object |
 | `done` | terminal success payload |
 | `error` | `{ "message": "..." }` or equivalent |
-| custom | backend-specific event name and payload |
 
 Frontend expects streams to terminate with `done` or `error`.
-
-## AI longform project APIs
-
-- `GET /api/dashboard/ai/projects`
-- `GET /api/dashboard/ai/projects/{project_id}`
-- `POST /api/dashboard/ai/projects`
-- `PUT /api/dashboard/ai/projects/{project_id}`
-- `DELETE /api/dashboard/ai/projects/{project_id}`
-- `POST /api/dashboard/ai/projects/<project_id>/cover`
-- `GET /api/dashboard/ai/projects/<project_id>/cover`
-- `DELETE /api/dashboard/ai/projects/<project_id>/cover`
-- `GET /api/dashboard/ai/projects/{project_id}/reader`
-- `GET /api/dashboard/ai/projects/{project_id}/download`
-- `GET /api/dashboard/ai/projects/{project_id}/chapters`
-- `GET /api/dashboard/ai/chapters/{chapter_id}`
-- `POST /api/dashboard/ai/chapters`
-- `PUT /api/dashboard/ai/chapters/{chapter_id}`
-- `DELETE /api/dashboard/ai/chapters/{chapter_id}`
-- `POST /api/dashboard/ai/projects/{project_id}/chapters/batch`
-- `GET /api/dashboard/ai/projects/{project_id}/states`
-- `PUT /api/dashboard/ai/projects/{project_id}/states/{state_type}`
-- `GET /api/dashboard/ai/projects/{project_id}/foreshadows`
-- `POST /api/dashboard/ai/foreshadows`
-- `PUT /api/dashboard/ai/foreshadows/{foreshadow_id}`
-- `DELETE /api/dashboard/ai/foreshadows/{foreshadow_id}`
-- `POST /api/dashboard/ai/projects/{project_id}/chapters/{chapter_id}/index`
-- `GET /api/dashboard/ai/projects/{project_id}/search`
-- `GET /api/dashboard/ai/chapters/{chapter_id}/dashboard`
-- `POST /api/dashboard/ai/projects/{project_id}/longform-plan/import-output`：把外部/流式生成的长篇规划输出导入项目，body 为 JSON payload，返回 `{ ok, data }`。
-- `POST /api/dashboard/ai/projects/{project_id}/longform-plan/details/import-output`：导入规划细化输出，格式同上。
-- `POST /api/dashboard/ai/projects/{project_id}/context/preview`：预览项目上下文组装结果；body 为 JSON object（`project_id` 由路径注入），返回 `{ ok, data }`。
-- `POST /api/dashboard/ai/projects/{project_id}/foreshadows/auto-resolve/import-output`：导入伏笔自动回收的生成输出，返回 `{ ok, data }`。
-
-封面上传使用 `multipart/form-data` 的 `cover` 字段，支持 JPEG、PNG、WebP，最大 10 MiB；成功返回 `cover_url`。文件类型、扩展名或文件头不一致返回 400，项目或封面不存在返回 404。读取接口直接返回图片内容，删除成功返回 `cover_url: null`。
-
-## AI chat/session APIs
-
-- `GET /api/dashboard/ai/chat/sessions`
-- `POST /api/dashboard/ai/chat/sessions`
-- `GET /api/dashboard/ai/chat/sessions/{session_id}`
-- `PUT /api/dashboard/ai/chat/sessions/{session_id}`
-- `DELETE /api/dashboard/ai/chat/sessions/{session_id}`
-- `GET /api/dashboard/ai/chat/sessions/{session_id}/preview`
-- `POST /api/dashboard/ai/chat/sessions/{session_id}/import-to-project`
-- `POST /api/dashboard/ai/chat/sessions/{session_id}/import-raw-to-project`
 
 ## Token/OAuth APIs
 

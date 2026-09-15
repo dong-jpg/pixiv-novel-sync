@@ -14,6 +14,8 @@
 
 上轮审计（2026-08-13）的 4 条 P0 全部已修复，P1 大部分已修复；逐条核实见 §9。
 
+**AI 创作与成人润色条目在 `ai-writing` 分支处理**：2026-09-15 起 AI 创作 / 成人润色模块已从 main 剥离（提交 `cfdc56e`），本报告中涉及这两个模块的发现（如 §2.4 中文预算、创作向导导入弹窗、成人别名恢复、成人润色 progress 等）随代码在 `ai-writing` 分支整改，不再属于 main 分支的修复范围。
+
 工作树里有一个游离的 `.claude/worktrees/objective-napier-aeb3a6`（detached HEAD `fa7ee2e`，含已删除的 `dashboard_ai.html` 副本），与主干无关，建议 `git worktree remove` 掉，避免全仓 grep 时干扰。
 
 ---

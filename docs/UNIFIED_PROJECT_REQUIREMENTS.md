@@ -2,7 +2,7 @@
 
 > 版本：v1.1（文档整合与状态校准版）
 > 整合日期：2026-07-28
-> 状态更新：2026-08-14
+> 状态更新：2026-08-14；2026-09-15 AI 写作 / 成人润色需求（第 10.3、11、13 节）随模块移至 `ai-writing` 分支，main 分支只保留 AI 基础设施需求（第 12 节）与关键词清洗。
 > 项目：Pixiv Novel Sync
 > 文档性质：需求基线、现行契约索引、状态与来源追溯
 > 覆盖范围：整合输入为 56 份正式 Markdown 与 23 份补充 Markdown（共 79 份，不含本文）
@@ -33,13 +33,13 @@
 1. **当前事实链**：代码与测试 > `README.md` > `docs/frontend-api-contract.md` > `docs/frontend-pages.md`、`docs/library-os-style-guide.md` > `CLAUDE.md`。
 2. **目标需求链**：最新已确认的统一需求 > 最新设计规格 > 对应实施计划和任务报告 > 旧计划与归档报告。
 
-`docs/INDEX.md` 认定 `API_COMPLETE.md`、`KNOWLEDGE_GRAPH.md` 和 `AI_WRITING_STUDIO_PLAN.md` 是历史快照；它们可以帮助理解演进，但不能覆盖当前接口或数据结构。无法判定的冲突必须保留来源并标记为“待核实”，不能静默选择。
+`docs/INDEX.md` 认定 `API_COMPLETE.md` 和 `KNOWLEDGE_GRAPH.md` 是历史快照；它们可以帮助理解演进，但不能覆盖当前接口或数据结构。无法判定的冲突必须保留来源并标记为“待核实”，不能静默选择。
 
 ## 2. 产品目标与用户边界
 
 ### 2.1 产品目标
 
-`MUST` 系统应在本地安全保存用户的 Pixiv 小说资产，提供可搜索、可导出、可阅读、可恢复的小说库，并在同一 Web 界面中支持同步任务、偏好推荐和 AI 创作。
+`MUST` 系统应在本地安全保存用户的 Pixiv 小说资产，提供可搜索、可导出、可阅读、可恢复的小说库，并在同一 Web 界面中支持同步任务与偏好推荐。AI 创作工作台（项目 / 章节 / 向导 / 蒸馏 / 成人润色）已移到 `ai-writing` 分支单独维护，main 分支只保留其依赖的 AI 基础设施（Provider / 模型目录 / 模型池 / 统一路由 / 关键词清洗）。
 
 `MUST` AI 能力应复用现有 Provider、Agent、SQLite、SSE 和任务基础设施；新增模块不得另建一套互不兼容的用户、文件或任务系统。
 
@@ -57,7 +57,7 @@
 ### 3.1 代码与目录
 
 - Python 包位于 `src/pixiv_novel_sync/`；`cli.py` 是命令入口，`webapp.py` 创建 Flask 应用。
-- `jobs/` 负责共享任务、`storage/` 负责 SQLite mixin、`ai/` 负责 AI Provider 与创作服务、`templates/` 使用 Vue 3 CDN 和 Jinja。
+- `jobs/` 负责共享任务、`storage/` 负责 SQLite mixin、`ai/` 负责 AI Provider 与模型目录/池/路由（创作服务在 `ai-writing` 分支）、`templates/` 使用 Vue 3 CDN 和 Jinja。
 - `userscripts/pixiv-rescue.user.js` 与救援 API 是一对兼容接口；修改救援响应或认证时必须同步验证脚本。
 - `config/`、`deploy/`、`scripts/` 负责配置和部署；`assets/` 负责品牌素材；`tests/` 是 pytest 测试集。
 
@@ -116,7 +116,7 @@
 ### 5.4 导出与阅读
 
 - `CURRENT` 支持单本和批量 EPUB 导出，导出正文、元数据、封面和插图时必须进行 XHTML/HTML 安全处理，禁止存储型 XSS。
-- `CURRENT` 支持小说全文搜索、阅读进度保存/删除、系列目录阅读和 AI 创作小说阅读。
+- `CURRENT` 支持小说全文搜索、阅读进度保存/删除和系列目录阅读。
 - `MUST` 导出失败返回可读错误，不破坏原始归档；大批量导出应有进度或明确的任务状态。
 
 ## 6. 存储与数据完整性
@@ -146,7 +146,7 @@
 
 ### 7.3 取消和并发
 
-- `MUST` 从入口到 Provider、分页等待、章节等待、推荐搜索和状态检查传递 `stop_requested`。
+- `MUST` 从入口到 Provider、分页等待、推荐搜索和状态检查传递 `stop_requested`。
 - `MUST` 共享统计更新使用锁内合并；Web 序列化读取快照时不能与后台写入发生竞态。
 - `MUST` 服务、数据库连接、HTTP session、信号量和文件句柄在正常、失败、取消路径均释放。
 
@@ -157,7 +157,7 @@
 | 页面 | 必须提供的能力 |
 |------|----------------|
 | `/dashboard` | 系统状态、同步统计、快速操作、最新任务进度 |
-| `/dashboard/novels` | 全部、收藏、追更、AI 创作、救援分类；搜索、排序、导出 |
+| `/dashboard/novels` | 全部、收藏、追更、救援分类；搜索、排序、导出 |
 | `/dashboard/novels/<id>` | 元数据、正文、阅读进度、系列关系、救援信息 |
 | `/dashboard/series/<id>` | 系列信息、作者、封面、顺序章节和章节跳转 |
 | `/dashboard/follows` | 关注用户、状态标识、用户详情入口和单独备份 |
@@ -166,9 +166,6 @@
 | `/dashboard/logs` | 同步/AI 日志筛选、详情、刷新、脱敏错误和进度 |
 | `/dashboard/settings` | Pixiv、同步、定时、限速、AI Provider、救援 Token |
 | `/dashboard/preferences` | 画像分析、搜索计划、推荐任务、反馈和屏蔽 |
-| `/dashboard/ai` | AI 项目、长篇规划、章节、Pipeline、封面、风格控制 |
-| `/dashboard/wizard` | 创作向导、蒸馏档案和导入流程 |
-| `/dashboard/novels?category=ai` | AI 创作小说库和阅读 |
 | `/dashboard/novels?category=rescue` | 预计算救援目录及筛选 |
 | `/token-login` | OAuth/token 登录和错误提示 |
 
@@ -176,7 +173,7 @@
 
 - `MUST` 以 `docs/frontend-api-contract.md` 为当前端点和响应契约；旧 `API_COMPLETE.md` 中的 `/api/ai/*`、旧同步路径和旧响应字段标记为 `SUPERSEDED`。注意：`/api/auth/login` **不属于** `SUPERSEDED`——它仍是 Dashboard 登录的必经路径（`webapp.py:484` 的登录页重定向依赖它），已收录进当前契约。
 - `MUST` API 使用统一的 JSON 成功/错误结构、分页、排序、状态码和 CSRF 约定；异步操作返回 job/operation 标识，不能假装同步完成。
-- `CURRENT` API 分为 shell/status、sync、archive、rescue、users、logs、settings/cache、pending deletions、preferences/recommendations、AI content/jobs/projects/chat、OAuth/token 等族群。
+- `CURRENT` API 分为 shell/status、sync、archive、rescue、users、logs、settings/cache、pending deletions、preferences/recommendations、AI configuration/jobs、OAuth/token 等族群。
 - `MUST` 前端只依赖契约中公开字段；未认证、参数错误、资源不存在、冲突、过期目录和取消分别返回可区分结果。
 - `MUST` AI SSE 至少使用 `delta`、`progress`、`metadata`、`done`、`error` 事件并以 `done` 或 `error` 终止；事件可重连、携带阶段/进度/终态，并在页面刷新后通过 job/operation 查询恢复，不发送 key、prompt、正文或完整响应头。
 
@@ -233,33 +230,21 @@
 - `MUST` 支持感兴趣、不感兴趣、屏蔽作者、屏蔽标签、加入待阅读/待同步、立即同步单篇/系列；反馈和屏蔽在下一次推荐中生效。
 - `PARTIAL` 当前推荐核心与任务日志已有实现证据，但 AI 偏好总结、创作注入、若干 stream 接口和部分前端操作仍是缺口（`x_restrict`/risk 字段与跨 run 系列去重已实现于 `recommendations.py`，2026-08-14 复核结案）。
 
-### 10.3 推荐与 AI 创作连接
+### 10.3 推荐与 AI 创作连接（已移至 `ai-writing` 分支）
 
-- `MUST` 支持在创作向导、长篇规划、章节续写、章节 Pipeline、润色、去 AI 味和内容审计中选择 `preference_profile_id`。
-- `MUST` 只向 prompt 注入摘要和结构化偏好，不直接拼接大量正文；注入强度支持关闭、轻度、标准、强化。
+创作向导、长篇规划、章节续写、章节 Pipeline、润色、去 AI 味和内容审计中选择 `preference_profile_id`、以及偏好注入强度的需求，随 AI 写作模块在 `ai-writing` 分支维护，main 分支不实现。
+
 - `MUST` 画像默认本地保存，可删除；前端不默认展开敏感正文证据。
 
-## 11. AI 创作工作台
+## 11. AI 创作工作台（已移至 `ai-writing` 分支）
 
-### 11.1 已有创作能力
+本节原记载 AI 工作台的全部需求：项目 / 章节 / 草稿 / Pipeline、长篇规划、风格蒸馏与小说蒸馏、语义检索（TF-IDF / Qwen embedding）、内容审计、自动摘要、伏笔管理、风格控制与封面、`/dashboard/ai` 与 `/dashboard/wizard` 页面边界等。2026-09-15 起 AI 写作模块（`ai/services/{generation,projects,chat_wizard,adult}.py`、`ai/retrieval.py`、`ai/detection.py`、`storage/ai/{writing,documents,adult}.py` 及对应模板/路由/测试）整体移至 `ai-writing` 分支维护，main 分支不再实现这些能力；需求原文以 `ai-writing` 分支的本文件为准。
 
-`CURRENT/PARTIAL` AI 工作台提供 Provider、Agent、续写、改写、创作向导、长篇规划、章节管理、草稿版本、风格蒸馏、小说蒸馏、语义检索、内容审计、自动摘要、伏笔管理和章节 Pipeline。Provider 适配范围以当前代码为准，至少覆盖 OpenAI-compatible、Anthropic、xAI 以及 README/CLAUDE 列出的 Moonshot、Qwen 和自定义 Provider；旧计划中“暂不支持 Gemini”不应被写成永久限制。
+main 分支保留的 AI 范围：
 
-### 11.2 项目、章节和 Pipeline
-
-- `MUST` AI 项目保存项目资料、世界观/角色事实、蒸馏内容、风格控制、章节、草稿、状态、摘要和伏笔，保存操作互不覆盖。
-- `MUST` 长篇规划、章节细纲、续写、对话润色、心理描写、去 AI 味、审计和状态维护按阶段输出，结构化阶段不能误当正文阶段。
-- `MUST` Pipeline 支持续写 → 润色 → 审计等组合，并记录每步状态、错误、摘要和可重试信息；取消不留下半成品。
-- `MUST` Retrieval 支持 TF-IDF 和可选 embedding；Qwen embedding 向量按 float32 BLOB 保存，按内容 hash 去重，旧 JSON 向量保持可读，初始化失败时回退 TF-IDF，不对空索引调用 API；运行期远程错误应向调用方明确报告。
-- `MUST` 远程 embedding 服务只接收检索所需的章节摘要、关键事件和查询，不得接收 refresh token、Cookie、API key 或默认完整正文；启用前应提示用户确认服务商的数据策略。
-
-### 11.3 风格控制与封面
-
-- `MUST` 项目级风格控制包含 explicitness、lyricism、pacing、darkness、vulgarity 滑块和标签，独立写入 `settings_json.style_control`，不覆盖 `longform_plan`。
-- `MUST` 风格注入规划、细纲、续写、Pipeline 续写、对话/心理润色；审计、状态、摘要等结构化任务不注入。
-- `MUST` 封面只接受 JPEG、PNG、WebP；扩展名、MIME 和文件魔数同时校验，最大 10 MiB，路径只能位于 `public_dir`，使用原子写入/替换。
-- `MUST` 项目总览采用一个主面板和三个分区（资料与进度、蒸馏内容、风格控制），保留三组独立保存操作，不使用嵌套卡片。
-- `MUST` 自动写作 `/dashboard/ai` 与创作向导 `/dashboard/wizard` 使用独立模板和状态边界；深链接兼容，自动写作页不初始化向导会话，向导页不初始化章节工作区。
+- `CURRENT` Provider、Agent、模型目录、模型池与统一路由（见第 12 节），Provider 适配至少覆盖 OpenAI-compatible、Anthropic、xAI。
+- `DONE` 偏好关键词清洗（`AIWritingService.clean_keywords`，`jobs/tasks.py` 唯一调用点，失败优雅降级）。
+- `MUST` 存量库中的写作表（`ai_drafts`、`ai_documents`、`ai_style_profiles`、`ai_novel_profiles`、`ai_prompt_templates` 及成人润色相关表）保留不删：迁移只加不减，切回 `ai-writing` 分支时数据仍可用。
 
 ## 12. AI 模型目录、模型池与统一路由
 
@@ -268,7 +253,7 @@
 - `MUST` Provider 可安全发现并同步结构化模型目录，用户可建立有序 primary/secondary/grok/custom 模型池、后备池和 Agent 绑定。
 - `MUST` 既有固定 Agent 自动迁移为 `binding_type=fixed`；ID、Provider、模型、Prompt、参数、启用状态和既有固定调用语义不变。
 - `MUST` Agent 支持 fixed 与 pool 两种绑定；固定 Agent 不自动跨 Provider 切换，模型为空时使用 Provider default model，两者为空时在网络请求前返回中文配置错误。
-- `MUST` 所有 AI 生成通过单一 `ModelRouter` 入口，业务层不得直接调用 `provider.stream_generate()`。显式豁免：Provider 实现内部、Router 内部，以及 `ai/services/admin.py:458` 的 Provider 连通性测试（该测试的目的就是验证单一 Provider 的直连可用性，不应经过路由与故障转移）。
+- `MUST` 所有 AI 生成通过单一 `ModelRouter` 入口，业务层不得直接调用 `provider.stream_generate()`。显式豁免：Provider 实现内部、Router 内部，以及 `ai/services/admin.py` 的 `test_provider` 连通性测试（该测试的目的就是验证单一 Provider 的直连可用性，不应经过路由与故障转移）。
 
 ### 12.2 目录事实源和规范化
 
@@ -296,18 +281,11 @@
 - `DONE` AI 模型目录、模型池与统一路由第一阶段 Task 1-22 已完成，包括 Schema、目录同步、池图与 CAS、`ModelRouter`、全调用链迁移、审计、手工续接、设置页和日志页；验收以对应提交及全量测试为准。
 - `OUT` 第一阶段不实现跨任务健康计数、冷却、权重轮询、成本排序和后台定时目录刷新。
 
-## 13. 成人描写局部润色 Agent
+## 13. 成人描写局部润色 Agent（已移至 `ai-writing` 分支）
 
-- `DONE` 核心流程只处理用户明确选中的一个连续片段；前后文只读，不能整章、多片段或默认接入 Pipeline。实现覆盖 Dashboard 认证、角色确认、Provider scope、固定安全/事实审查、候选校验、乐观锁应用和脱敏存储。
-- `MUST` 只接受已认证 Dashboard 会话；未配置 token、未登录、owner 不匹配或可猜 job ID 均拒绝，不能使用 tokenless 单用户例外。
-- `MUST` 候选必须通过服务端固定的 `adult_safety_review` 和 `adult_fact_guard`；这两个阶段不是普通 Agent CRUD，也不能被用户编辑或跳过。
-- `MUST` 参与者必须是结构化确认的成年虚构人物；未成年人、年龄不明、现实人物、新人物或身份/关系/同意不确定时 fail-closed。
-- `MUST` 写作、两项审查均使用统一 `ModelRouter`；成人模块不得直接读取模型池 SQL，不得硬编码 Grok/xAI。
-- `MUST` 写作、`adult_safety_review`、`adult_fact_guard` 三个阶段可使用的 Provider 范围必须在启用功能前向用户明确展示并确认。
-- `MUST` Provider delta 只在服务端内存缓冲；完整事实、安全、差异和策略校验通过后才能发送候选，partial 缓冲必须丢弃。
-- `MUST` 应用时在 `BEGIN IMMEDIATE` 内重验章节 revision、正文和片段 hash、角色事实、策略、binding、owner 和 warning acknowledgment，再以乐观锁写回。
-- `MUST` 成人审计输入、通用日志和应用记录不得保存原片段、上下文、完整 Prompt、Provider 原始响应、未完成/安全阻断候选或 API key；完整校验后的未应用候选只允许临时保存在 owner-scoped `ai_jobs.output_text`，应用或保留期清理后删除。
-- `PARTIAL` 当前成人请求虽然保留 `preference_profile_id` 与注入强度字段，但阅读页未发送、服务端未将画像注入成人 Prompt；取消回调也未传入 ModelRouter，progress 在同步路由完成后才发送。详见 `docs/AUDIT_REPORT_2026-08-13.md`。
+本节原记载成人局部润色 Agent 的全部需求（fail-closed 认证、角色确认、Provider scope、固定 `adult_safety_review` / `adult_fact_guard` 两阶段 JSON review、乐观锁应用、脱敏存储与保留期）。2026-09-15 起成人润色模块（`ai/adult_*.py`、`ai/services/adult.py`、`storage/ai/adult.py`、`/dashboard/settings/adult` 页面与对应路由/测试）整体移至 `ai-writing` 分支维护，main 分支不实现该功能；需求原文以 `ai-writing` 分支的本文件为准。
+
+- `MUST` main 分支保留存量成人润色数据表不删除（迁移只加不减）；`ai_jobs` 的 `owner_scope` / `idempotency_key_hash` 列继续存在。
 
 ## 14. 视觉、响应式与可访问性
 
@@ -366,7 +344,6 @@
 - 救援资格、覆盖优先级、目录重建/增量回滚、来源筛选、stale/503、Token 和 userscript 安全。
 - 偏好空数据、短文本过滤、画像 JSON、推荐去重/评分/反馈/屏蔽、AI 不可用降级。
 - Provider SSRF、模型规范化、池循环/CAS、路由切换、partial、续接快照和敏感字段脱敏。
-- 成人 Agent 认证、成年事实、策略不可编辑、事实保护、hash/revision 乐观锁和日志脱敏。
 - 前端深链接、响应式溢出、键盘可达、加载/空/错误态、SSE 重连和不使用 `v-html`。
 
 ### 17.3 覆盖率说明
@@ -378,21 +355,19 @@
 ### 18.1 已有基础（`DONE/CURRENT`）
 
 - 核心 Pixiv 同步、SQLite/文件归档、Web 仪表盘、EPUB、任务调度和共享 JobRunner。
-- 任务取消硬化、Provider key 加密、SSRF/DNS/代理信任边界、AI 导入校验、测试隔离和多轮审计修复。
-- 偏好本地统计、推荐核心、反馈/屏蔽基础、统一日志投影、关键词清洗和项目风格后端。
+- 任务取消硬化、Provider key 加密、SSRF/DNS/代理信任边界、测试隔离和多轮审计修复。
+- 偏好本地统计、推荐核心、反馈/屏蔽基础、统一日志投影和关键词清洗。
 - 救援单项实时 API、userscript、正文完整度字段、预计算目录和来源展示的基础 Task 1-5。
 - AI 模型目录、模型池与统一路由第一阶段 Task 1-22：目录同步、池图与 CAS、`ModelRouter`、全调用链、审计、`partial`、手工续接、设置页和日志页。
 
 ### 18.2 当前主线（`MUST/PLANNED`）
 
 1. 完成救援目录剩余纠错/删除接线、前端完整筛选、部署性能验收和全量回归。
-2. 完成偏好 AI 总结、推荐失败/取消隔离、搜索计划 CRUD、屏蔽标签/待同步/立即同步和成人入口的偏好注入。
-3. 补齐成人局部润色的实时 progress、取消/断连传播和对应回归测试；核心安全审查与事实保护边界已实施。
+2. 完成偏好 AI 总结、推荐失败/取消隔离、搜索计划 CRUD、屏蔽标签/待同步/立即同步（成人入口的偏好注入随成人润色在 `ai-writing` 分支处理）。
 
 ### 18.3 后续体验改进
 
-- 完成 AI 项目总览单面板、自动写作/向导模板拆分的最终复核和视觉回归。
-- 完成封面在小说库、AI 阅读和项目总览的一致展示；补充风格控制 UI 和标签。
+- 完成封面在小说库的一致展示。（AI 项目总览单面板、自动写作/向导模板拆分、AI 阅读与项目总览封面等条目随 AI 写作模块在 `ai-writing` 分支处理。）
 - 统一任务日志筛选、详情、过期提示和移动端布局；保持 AI `ai_jobs` 与同步 `task_logs` 的分表边界。
 
 ## 19. 历史候选与明确非目标
@@ -415,8 +390,8 @@
 | 来源组 | 文件 |
 |--------|------|
 | 根目录与开发指导 | `README.md`、`CLAUDE.md`、`assets/logo-design.md` |
-| 当前参考 | `docs/INDEX.md`、`docs/AUDIT_REPORT_2026-07-02.md`、`docs/AUDIT_REPORT_2026-07-03.md`、`docs/AUDIT_REPORT_2026-08-13.md`、`docs/frontend-api-contract.md`、`docs/frontend-pages.md`、`docs/library-os-style-guide.md`、`docs/JOB_SYSTEM.md`、`docs/MODEL_ROUTING_GUIDE.md`、`docs/RESCUE_USER_GUIDE.md`、`docs/ADULT_POLISH_USER_GUIDE.md`、`docs/PREFERENCE_RECOMMENDER_REQUIREMENTS.md`、`docs/QWEN_EMBEDDING_INTEGRATION.md` |
-| 历史顶层快照 | `docs/API_COMPLETE.md`、`docs/AI_WRITING_STUDIO_PLAN.md`、`KNOWLEDGE_GRAPH.md` |
+| 当前参考 | `docs/INDEX.md`、`docs/AUDIT_REPORT_2026-07-02.md`、`docs/AUDIT_REPORT_2026-07-03.md`、`docs/AUDIT_REPORT_2026-08-13.md`、`docs/frontend-api-contract.md`、`docs/frontend-pages.md`、`docs/library-os-style-guide.md`、`docs/JOB_SYSTEM.md`、`docs/MODEL_ROUTING_GUIDE.md`、`docs/RESCUE_USER_GUIDE.md`、`docs/PREFERENCE_RECOMMENDER_REQUIREMENTS.md` |
+| 历史顶层快照 | `docs/API_COMPLETE.md`、`KNOWLEDGE_GRAPH.md` |
 | 活跃规格与计划 | `docs/superpowers/specs/` 与 `docs/superpowers/plans/`；AI 模型第一阶段以 `2026-07-27-ai-model-catalog-pools-unified-requirements.md` 和已完成实施计划为追溯基线 |
 | 归档顶层 | `docs/archive/` 下审计、完成报告、优化路线图和模块拆分文档 |
 | 归档 superpowers | `docs/archive/superpowers/plans/` 与 `docs/archive/superpowers/specs/` 下 Qwen embedding、CLI/Web Job、统一任务队列文档 |

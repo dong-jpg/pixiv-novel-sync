@@ -5,7 +5,7 @@
 
   <strong>从收藏，到灵感，再到下一章。</strong>
 
-  <p>本地归档 Pixiv 小说，整理创作素材，用 AI 辅助写作，并基于阅读偏好发现新作品。</p>
+  <p>本地归档 Pixiv 小说，并基于阅读偏好发现新作品。AI 写作模块（项目 / 章节 / 创作向导 / 成人润色）在 <code>ai-writing</code> 分支单独维护。</p>
 
   ![Python](https://img.shields.io/badge/Python-3.10+-2A211B.svg)
   ![Flask](https://img.shields.io/badge/Flask-3.x-B75A3C.svg)
@@ -35,12 +35,12 @@
 </td>
 <td width="33%" valign="top">
 
-### Writing Studio
+### AI Infrastructure
 
-- 管理 AI 项目、长篇规划、章节、草稿和 Pipeline。
-- 支持续写、改写、润色、内容审计、摘要和伏笔维护。
-- 可从范文或本地小说蒸馏风格、设定和上下文。
-- 支持 Provider 模型目录、有序模型池和统一 ModelRouter fallback。
+- Provider、模型目录、有序模型池和统一 ModelRouter fallback。
+- Agent 绑定（固定 / 池）与候选模型链预览。
+- 偏好关键词清洗是 main 分支唯一的 AI 生成调用点。
+- AI 写作模块（项目 / 章节 / 创作向导 / 蒸馏 / 成人润色）在 `ai-writing` 分支。
 
 </td>
 <td width="33%" valign="top">
@@ -117,13 +117,10 @@ pixiv-novel-sync sync bookmark following_novels subscribed_series
 
 任务统一写入日志页，可取消、筛选和查看进度；任务日志默认保留 14 天，天数由 sync.task_log_retention_days 控制（系统维护页可改）。自动同步的 interval 和 cron 配置在 config/config.yaml 中维护。
 
-### AI 创作
+### AI 基础设施
 
-- /dashboard/ai：AI 创作项目列表（新建、打开、删除）。
-- /dashboard/ai/projects/<project_id>：作品资料、封面、风格控制、长篇规划。
-- /dashboard/ai/projects/<project_id>/chapters：章节列表、单章工作区、自动写作 Pipeline。
-- /dashboard/ai/projects/<project_id>/notes：伏笔追踪、状态记忆、语义检索。
-- /dashboard/wizard：创作向导、蒸馏档案和导入流程。
+AI 写作模块（创作项目、章节工作区、创作向导、蒸馏与成人润色）在 `ai-writing` 分支；main 分支只保留它运行所需的 AI 基础设施。
+
 - /dashboard/settings/models：AI Provider、模型目录、模型池与该池最近的真实尝试记录。
 - /dashboard/settings/agents：Agent 绑定，以及「这个 Agent 会依次调用哪些模型」的候选链预览。
 
@@ -131,18 +128,7 @@ pixiv-novel-sync sync bookmark following_novels subscribed_series
 
 模型目录可通过 \`/api/dashboard/ai/providers/<provider_id>/models/sync\` 同步，也可以保留手工模型。模型池按成员顺序和后备池展开候选；单个 job 最多尝试 16 个候选、发起 32 次网络请求、运行 30 分钟。
 
-### 成人本地润色 Agent
-
-成人润色只处理用户在章节阅读页选中的连续片段。配置顺序是：
-
-1. 设置稳定的 `DASHBOARD_TOKEN`，并登录 Dashboard。
-2. 在 Provider 模型目录中同步或手工添加可路由模型，再按需要建立固定或池绑定。
-3. 创建或启用 `task_type=adult_polish` 的 Agent；普通 Agent CRUD 不会暴露它的删除/停用入口。
-4. 在 /dashboard/settings/adult 为 `safety` 和 `fact_guard` 两个 review binding 配置支持 `json` 的固定模型或模型池。
-5. 建立结构化的虚构角色记录，填写年龄依据和 `fictional=true`；启用项目成人内容后，确认当前角色 revision。
-6. 阅读页先获取并确认当前 Provider scope，再生成候选；warning、Provider scope、角色或章节 revision 变化都必须重新生成。
-
-成人路由不支持无 token 的本地单用户例外，也不会自动加入普通 Pipeline。候选正文仅在未应用期间按三天策略保留；应用后任务正文会清理，应用记录只保留章节/候选/校验/策略和 Provider snapshot hash 等元数据，不保留正文。固定安全策略、两阶段 JSON review、角色事实、锁定词和章节范围任一校验失败都会 fail closed。连接中断时可使用同一 job 的 signed events 恢复脱敏校验和候选状态。完整的请求字段、SSE 事件和错误语义见 [`docs/frontend-api-contract.md`](docs/frontend-api-contract.md)。
+main 分支上唯一的 AI 生成调用是推荐偏好的关键词清洗（`clean_keywords`），失败时优雅降级回原始统计词。
 
 ### 智能推荐
 
@@ -177,7 +163,7 @@ Dashboard 内的救援目录入口是 /dashboard/novels?category=rescue。
 src/pixiv_novel_sync/
 ├── cli.py                 # 命令入口
 ├── webapp.py              # Flask 应用工厂
-├── ai/                    # Provider、ModelRouter、创作服务和检索
+├── ai/                    # Provider、模型目录、模型池、ModelRouter 与关键词清洗
 ├── jobs/                  # 共享 JobSpec、JobRunner 和任务分派
 ├── storage/               # SQLite mixin、schema 和各领域存储
 ├── web/                   # Web 管理器和工具函数

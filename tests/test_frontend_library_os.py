@@ -89,9 +89,8 @@ def test_current_frontend_docs_describe_task_logs_and_ai_pages():
     assert "/dashboard/novels?category=rescue" in readme
     assert "userscripts/pixiv-rescue.user.js" in readme
     assert "| `/dashboard/logs` | `dashboard_logs.html` | 任务日志 |" in contract
-    assert "/dashboard/wizard" in contract
-    assert "/dashboard/novels/ai/<project_id>" in contract
-    assert "/api/dashboard/ai/projects/<project_id>/cover" in contract
+    # AI 写作页面（wizard / AI 阅读页 / 项目封面）已随 ai-writing 分支剥离，
+    # 契约不再记载这些路由；main 上幸存的 AI 端点断言见 test_ai_model_docs.py。
 
 
 def test_task_logs_template_has_complete_ai_filters_and_details():
@@ -223,7 +222,6 @@ def test_frontend_contract_documents_exist_and_cover_core_topics():
         "GET /api/dashboard/novels",
         "GET /api/dashboard/logs",
         "GET /api/dashboard/settings",
-        "POST /api/dashboard/ai/continue/stream",
         "GET /proxy/image?url=...",
     ]:
         assert endpoint in contract
@@ -232,7 +230,6 @@ def test_frontend_contract_documents_exist_and_cover_core_topics():
         "/dashboard",
         "/dashboard/novels",
         "/dashboard/preferences",
-        "/dashboard/ai",
         "/token-login",
     ]:
         assert route in pages
@@ -448,11 +445,15 @@ def test_settings_split_pages_and_new_endpoints_are_documented():
 
     assert "dashboard_settings.html" not in pages
     assert "dashboard_settings.html" not in contract
+    # 成人润色设置页随 AI 写作模块移到 ai-writing 分支，main 上只剩四个设置页
+    assert "/dashboard/settings/adult" not in pages
+    assert "dashboard_settings_adult.html" not in pages
+    assert "/dashboard/settings/adult" not in contract
+    assert "dashboard_settings_adult.html" not in contract
     for route, template in (
         ("/dashboard/settings/sync", "dashboard_settings_sync.html"),
         ("/dashboard/settings/models", "dashboard_settings_models.html"),
         ("/dashboard/settings/agents", "dashboard_settings_agents.html"),
-        ("/dashboard/settings/adult", "dashboard_settings_adult.html"),
         ("/dashboard/settings/system", "dashboard_settings_system.html"),
     ):
         assert route in pages, route
