@@ -15,12 +15,9 @@ from .storage.reading_progress import ReadingProgressMixin
 from .storage.recommendations import RecommendationsMixin
 from .storage.rescue import RescueMixin
 from .storage.ai.core import AiCoreMixin
-from .storage.ai.documents import AiDocumentsMixin
-from .storage.ai.writing import AiWritingMixin
 from .storage.ai.catalog import CatalogMixin
 from .storage.ai.model_sync import ModelSyncStorageMixin
 from .storage.ai.pools import PoolsMixin
-from .storage.ai.adult import AdultStorageMixin
 
 
 class Database(
@@ -34,12 +31,9 @@ class Database(
     RecommendationsMixin,
     RescueMixin,
     AiCoreMixin,
-    AiDocumentsMixin,
-    AiWritingMixin,
     CatalogMixin,
     ModelSyncStorageMixin,
     PoolsMixin,
-    AdultStorageMixin,
     SchemaMixin,
     DatabaseConnection,
 ):

@@ -794,20 +794,6 @@ def create_app(
                     return _csrf_failed()
             return
         # API 请求返回 401，页面请求重定向到登录
-        is_adult_api = (
-            path.startswith("/api/dashboard/ai/polish/adult")
-            or path.startswith("/api/dashboard/ai/adult-review-bindings/")
-            or path.startswith("/api/dashboard/ai/agents/adult-polish/")
-            or (
-                path.startswith("/api/dashboard/ai/projects/")
-                and (
-                    "/characters" in path
-                    or path.endswith("/adult-confirmation")
-                )
-            )
-        )
-        if is_adult_api:
-            return jsonify({"error": "forbidden"}), 403
         if path.startswith("/api/"):
             return jsonify({"error": "unauthorized"}), 401
         return redirect("/api/auth/login")
@@ -938,10 +924,10 @@ def create_app(
     def dashboard_novel_detail_page(novel_id: int):
         return render_template("dashboard_novel_detail.html", novel_id=novel_id)
 
-    # 设置页已拆成五个一级页面：同步 / 模型 / Agent / 成人润色 / 系统。
+    # 设置页已拆成四个一级页面：同步 / 模型 / Agent / 系统。
     # 只有 sync 与 system 两页的表单落到 config.yaml（见 SETTINGS_SECTIONS），
-    # 另外三页的配置存在数据库里，走 ai_web.py 自己的端点。
-    _SETTINGS_PAGES = ("sync", "models", "agents", "adult", "system")
+    # models / agents 两页的配置存在数据库里，走 ai_web.py 自己的端点。
+    _SETTINGS_PAGES = ("sync", "models", "agents", "system")
 
     @app.get("/dashboard/settings")
     def dashboard_settings_page():
@@ -1753,22 +1739,12 @@ def create_app(
             db = _open_database(current_settings)
             try:
                 if category == "ai":
-                    from .ai.adult_auth import require_adult_owner
-                    from .storage.ai.core import ADULT_AI_TASK_TYPES
-
-                    try:
-                        owner_scope = require_adult_owner(current_settings).scope
-                    except PermissionError:
-                        if task_type in ADULT_AI_TASK_TYPES:
-                            return jsonify({"error": "adult authentication required"}), 403
-                        owner_scope = ""
                     result = db.get_ai_task_logs(
                         page=page,
                         page_size=page_size,
                         task_type=task_type,
                         status=status,
                         days=days,
-                        owner_scope=owner_scope,
                     )
                 else:
                     result = db.get_task_logs(

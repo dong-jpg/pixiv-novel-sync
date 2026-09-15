@@ -922,34 +922,20 @@ def seed_api_partial_continue_job(api) -> SimpleNamespace:
     )
 
 
-def test_continue_endpoint_replays_child_idempotently(api) -> None:
+def test_continue_endpoint_rejects_all_task_types_on_main(api) -> None:
+    """main 剥离写作流后，任何历史任务都没有可恢复的流式生成处理器。"""
     seeded = seed_api_partial_continue_job(api)
     path = f"/api/dashboard/ai/jobs/{seeded.parent_job_id}/continue"
 
-    first = api.client.post(
-        path,
-        json=seeded.payload,
-        headers={"X-CSRF-Token": api.csrf},
-    )
-    first_body = first.get_data(as_text=True)
-    calls_after_first = list(api.fake_provider.generate_calls)
-    second = api.client.post(
+    response = api.client.post(
         path,
         json=seeded.payload,
         headers={"X-CSRF-Token": api.csrf},
     )
 
-    assert first.status_code == 200
-    assert first.mimetype == "text/event-stream"
-    assert "event: done" in first_body
-    assert calls_after_first == ["continue-model-2"]
-    assert api.fake_provider.generate_calls == calls_after_first
-    assert "event: done" in second.get_data(as_text=True)
-    children = api.db.conn.execute(
-        "SELECT job_id FROM ai_jobs WHERE parent_job_id = ?",
-        (seeded.parent_job_id,),
-    ).fetchall()
-    assert len(children) == 1
+    assert response.status_code == 409
+    assert "手动候选继续" in response.get_json()["error"]
+    assert api.fake_provider.generate_calls == []
 
 
 def test_continue_rejects_snapshot_hash_before_opening_sse(api) -> None:
@@ -980,7 +966,7 @@ def test_continue_rejects_remaining_provider_config_change_with_409(api) -> None
     )
 
     assert response.status_code == 409
-    assert "Provider 配置" in response.get_json()["error"]
+    assert "手动候选继续" in response.get_json()["error"]
 
 
 def test_continue_validates_exact_body_and_next_candidate_index(api) -> None:
@@ -990,6 +976,7 @@ def test_continue_validates_exact_body_and_next_candidate_index(api) -> None:
         ({**seeded.payload, "parent_job_id": "different-parent"}, 400),
         ({**seeded.payload, "idempotency_key": "short"}, 400),
         ({**seeded.payload, "candidate_snapshot_hash": "A" * 64}, 400),
+        # main 没有可恢复任务类型，索引语义校验在类型拒绝之后，期望 409
         ({**seeded.payload, "resume_candidate_index": 0}, 409),
         ({**seeded.payload, "extra": True}, 400),
     ]

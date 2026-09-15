@@ -106,21 +106,15 @@ def test_update_and_delete_provider_invalidate_cached_provider(monkeypatch, tmp_
     assert fake_db.closed
 
 
-def test_close_closes_cached_providers_and_retriever(monkeypatch, tmp_path: Path) -> None:
+def test_close_closes_cached_providers(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("pixiv_novel_sync.ai.service.create_provider", lambda config: FakeProvider(config))
     service = AIWritingService(tmp_path / "test.db")
     first = service._get_provider(make_config(provider_id=1))
     second = service._get_provider(make_config(provider_id=2))
-    retriever = FakeProvider(make_config(provider_id=3))
-    service._retriever = retriever
-    service._retriever_config_key = (None, None, "model", 60)
 
     service.close()
 
     assert first.closed
     assert second.closed
-    assert retriever.closed
     assert service._provider_cache == {}
     assert service._provider_cache_by_id == {}
-    assert service._retriever is None
-    assert service._retriever_config_key is None

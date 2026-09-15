@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import secrets
 import threading
 import uuid
@@ -14,12 +13,6 @@ from typing import Any, Literal
 
 from ...storage_db import Database
 from ..crypto import AISecretManager
-from ..preference_context import (
-    PreferenceStrength,
-    build_preference_context,
-    inject_preference_context,
-    normalize_preference_strength,
-)
 from ..model_router import (
     CandidateSnapshot,
     ModelRouter,
@@ -31,7 +24,6 @@ from ..model_router import (
 from ..model_sync import ModelSyncCoordinator
 from ..models import AIAgentConfig, AIProviderConfig, AIStreamChunk
 from ..providers import AIProvider
-from ..retrieval import BaseRetriever, create_retriever
 
 
 class AIServiceError(RuntimeError):
@@ -61,7 +53,6 @@ class RouteJobContext:
     agent: AIAgentConfig
     candidate_snapshot: CandidateSnapshot
     prompt_budget: PromptBudget
-    preference_context: str | None = None
     resume_candidate_index: int = 0
 
 
@@ -74,9 +65,6 @@ class AIServiceCore:
     def __init__(self, db_path: Path, secret_manager: AISecretManager | None = None) -> None:
         self.db_path = db_path
         self.secret_manager = secret_manager or AISecretManager()
-        self._retriever: BaseRetriever | None = None
-        self._retriever_config_key: tuple[str | None, str | None, str, int] | None = None
-        self._retriever_lock = threading.Lock()  # 7.7: 保护retriever缓存
         self._provider_cache: dict[tuple[Any, ...], AIProvider] = {}
         self._provider_cache_by_id: dict[int, tuple[Any, ...]] = {}
         self._provider_lock = threading.Lock()
@@ -89,41 +77,6 @@ class AIServiceCore:
             self._get_provider,
         )
 
-    def _get_retriever(self) -> BaseRetriever:
-        # 7.7: 加锁保护缓存逻辑,避免多线程竞态
-        with self._retriever_lock:
-            embedding_base_url = (
-                os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_BASE_URL")
-                or os.getenv("QWEN_EMBEDDING_BASE_URL")
-            )
-            embedding_api_key = (
-                os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_API_KEY")
-                or os.getenv("QWEN_EMBEDDING_API_KEY")
-            )
-            embedding_model = (
-                os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_MODEL")
-                or os.getenv("QWEN_EMBEDDING_MODEL")
-                or "Qwen3-Embedding-8B"
-            )
-            timeout_raw = os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_TIMEOUT", "60")
-            try:
-                embedding_timeout = max(int(timeout_raw), 1)
-            except ValueError:
-                embedding_timeout = 60
-            config_key = (embedding_base_url, embedding_api_key, embedding_model, embedding_timeout)
-            if self._retriever is None or self._retriever_config_key != config_key:
-                if self._retriever is not None and hasattr(self._retriever, "close"):
-                    self._retriever.close()  # type: ignore[attr-defined]
-                self._retriever = create_retriever(
-                    self.db_path,
-                    model_name=embedding_model,
-                    api_base_url=embedding_base_url,
-                    api_key=embedding_api_key,
-                    api_timeout=embedding_timeout,
-                )
-                self._retriever_config_key = config_key
-            return self._retriever
-
     def _db(self) -> Database:
         db = Database(self.db_path)
         key = str(self.db_path)
@@ -131,124 +84,6 @@ class AIServiceCore:
             db.init_schema()
             AIServiceCore._initialized_paths.add(key)
         return db
-
-    @staticmethod
-    def _resolve_preference_context(
-        db: Database,
-        payload: Mapping[str, Any],
-        project: Mapping[str, Any] | None = None,
-    ) -> tuple[int | None, PreferenceStrength, str | None]:
-        project = project or {}
-        raw_profile_id = (
-            payload.get("preference_profile_id")
-            if "preference_profile_id" in payload
-            else project.get("preference_profile_id")
-        )
-        raw_strength = (
-            payload.get("preference_injection_strength")
-            if "preference_injection_strength" in payload
-            else project.get("preference_injection_strength", "off")
-        )
-
-        if raw_strength is None or raw_strength == "":
-            strength = normalize_preference_strength("off")
-        else:
-            normalized_input = (
-                raw_strength.strip().lower()
-                if isinstance(raw_strength, str)
-                else ""
-            )
-            strength = normalize_preference_strength(raw_strength)
-            if normalized_input != strength:
-                raise AIServiceError(
-                    "偏好注入强度必须是 off、light、standard 或 strong"
-                )
-
-        if raw_profile_id in (None, "", 0):
-            return None, "off", None
-        if isinstance(raw_profile_id, bool):
-            raise AIServiceError("偏好画像 ID 无效")
-        try:
-            profile_id = int(raw_profile_id)
-        except (TypeError, ValueError) as exc:
-            raise AIServiceError("偏好画像 ID 无效") from exc
-        if profile_id <= 0:
-            raise AIServiceError("偏好画像 ID 无效")
-
-        profile = db.get_preference_profile(profile_id)
-        if profile is None:
-            raise AIServiceError("偏好画像不存在")
-        context = build_preference_context(profile, strength)
-        return profile_id, strength, context
-
-    @staticmethod
-    def _preference_project(
-        db: Database,
-        payload: Mapping[str, Any],
-        project: Mapping[str, Any] | None,
-    ) -> Mapping[str, Any] | None:
-        if project is not None:
-            return project
-
-        project_id: int | None = None
-        raw_project_id = payload.get("project_id")
-        if raw_project_id not in (None, "", 0) and not isinstance(raw_project_id, bool):
-            try:
-                parsed_project_id = int(raw_project_id)
-            except (TypeError, ValueError):
-                parsed_project_id = 0
-            if parsed_project_id > 0:
-                project_id = parsed_project_id
-
-        if project_id is None:
-            raw_chapter_id = payload.get("chapter_id")
-            if raw_chapter_id not in (None, "", 0) and not isinstance(raw_chapter_id, bool):
-                try:
-                    chapter_id = int(raw_chapter_id)
-                except (TypeError, ValueError):
-                    chapter_id = 0
-                if chapter_id > 0:
-                    chapter = db.get_ai_chapter(chapter_id)
-                    if chapter:
-                        project_id = int(chapter.get("project_id") or 0) or None
-
-        return db.get_ai_writing_project(project_id) if project_id else None
-
-    @staticmethod
-    def _fit_preference_messages(
-        messages: list[dict[str, str]],
-        input_budget: int,
-    ) -> list[dict[str, str]]:
-        total_bytes = sum(
-            len(str(message.get("content") or "").encode("utf-8"))
-            for message in messages
-        )
-        if total_bytes <= input_budget or not messages:
-            return messages
-
-        trim_index = next(
-            (
-                index
-                for index in range(len(messages) - 1, -1, -1)
-                if messages[index].get("role") != "system"
-            ),
-            -1,
-        )
-        if trim_index < 0:
-            raise AIServiceError("偏好画像与固定 Prompt 超过可用输入预算")
-        fixed_bytes = total_bytes - len(
-            str(messages[trim_index].get("content") or "").encode("utf-8")
-        )
-        remaining = input_budget - fixed_bytes
-        if remaining <= 0:
-            raise AIServiceError("偏好画像与固定 Prompt 超过可用输入预算")
-
-        encoded = str(messages[trim_index].get("content") or "").encode("utf-8")
-        messages[trim_index]["content"] = encoded[-remaining:].decode(
-            "utf-8",
-            errors="ignore",
-        )
-        return messages
 
     def _provider_cache_key(self, config: AIProviderConfig) -> tuple[Any, ...]:
         return (
@@ -338,8 +173,6 @@ class AIServiceCore:
         *,
         messages: list[dict[str, str]],
         max_tokens: int,
-        preference_payload: Mapping[str, Any] | None = None,
-        preference_project: Mapping[str, Any] | None = None,
         parent_job_id: str | None = None,
         idempotency_key: str | None = None,
         snapshot: CandidateSnapshot | None = None,
@@ -355,23 +188,7 @@ class AIServiceCore:
             raise AIServiceError("resume_candidate_index 必须是非负整数")
 
         job_input_data = dict(input_data)
-        preference_context: str | None = None
         budget_messages = [dict(message) for message in messages]
-        if preference_payload is not None:
-            project = self._preference_project(
-                db,
-                preference_payload,
-                preference_project,
-            )
-            profile_id, strength, preference_context = (
-                self._resolve_preference_context(db, preference_payload, project)
-            )
-            job_input_data["preference_profile_id"] = profile_id
-            job_input_data["preference_injection_strength"] = strength
-            budget_messages = inject_preference_context(
-                budget_messages,
-                preference_context,
-            )
 
         prepared_resume = _ROUTE_RESUME_CONTEXT.get()
         if prepared_resume is None:
@@ -499,7 +316,6 @@ class AIServiceCore:
             agent=agent,
             candidate_snapshot=candidate_snapshot,
             prompt_budget=prompt_budget,
-            preference_context=preference_context,
             resume_candidate_index=resume_candidate_index,
         )
 
@@ -583,15 +399,6 @@ class AIServiceCore:
                 "max_tokens 必须为正整数且不能超过已保存的输出预算"
             )
         route_messages = [dict(message) for message in messages]
-        if stage == "main" and context.preference_context:
-            route_messages = inject_preference_context(
-                route_messages,
-                context.preference_context,
-            )
-            route_messages = self._fit_preference_messages(
-                route_messages,
-                context.prompt_budget.input_budget,
-            )
         request = RouteRequest(
             job_id=context.job_id,
             stage=stage,
@@ -704,9 +511,3 @@ class AIServiceCore:
             self._provider_cache_by_id.clear()
         for provider in providers:
             provider.close()
-        with self._retriever_lock:
-            retriever = self._retriever
-            self._retriever = None
-            self._retriever_config_key = None
-        if retriever is not None and hasattr(retriever, "close"):
-            retriever.close()  # type: ignore[attr-defined]

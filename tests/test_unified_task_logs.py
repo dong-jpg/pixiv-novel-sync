@@ -16,7 +16,7 @@ def db(tmp_path: Path) -> Database:
 
 def test_get_ai_task_logs_projects_ai_jobs_to_unified_shape(db: Database) -> None:
     """#12: ai_jobs 只读投影为 task_logs 结构，供统一日志页消费。"""
-    db.create_ai_job("aijob-1", "chapter_continue", agent_id=1, input_data={"chapter_id": 5})
+    db.create_ai_job("aijob-1", "keyword_clean", agent_id=1, input_data={"raw_keywords": ["噪声"]})
     db.update_ai_job("aijob-1", "succeeded", output_text="done")
 
     result = db.get_ai_task_logs(page=1, page_size=20, days=3)
@@ -25,22 +25,22 @@ def test_get_ai_task_logs_projects_ai_jobs_to_unified_shape(db: Database) -> Non
     row = items[0]
     # 统一结构字段齐全
     assert row["job_id"] == "aijob-1"
-    assert row["task_type"] == "chapter_continue"
-    assert row["task_name"] == "自动生成章节"  # 映射为中文名
+    assert row["task_type"] == "keyword_clean"
+    assert row["task_name"] == "关键词清洗"  # 映射为中文名
     assert row["status"] == "succeeded"
     assert row["category"] == "ai"
     assert row["is_auto_sync"] is False
 
 
 def test_unified_ai_log_includes_partial_and_route_summary(db: Database) -> None:
-    db.create_ai_job("partial", "continue", 1, {})
+    db.create_ai_job("partial", "keyword_clean", 1, {})
     db.update_ai_job("partial", "partial", output_text="半截")
 
     row = db.get_ai_task_logs(status="partial", days=3)["items"][0]
 
     assert row["status"] == "partial"
     assert row["status_label"] == "部分完成"
-    assert row["task_name"] == "续写"
+    assert row["task_name"] == "关键词清洗"
     assert row["is_running"] is False
     assert row["attempt_count"] == 0
     assert row["route_summary"] is None
@@ -49,12 +49,12 @@ def test_unified_ai_log_includes_partial_and_route_summary(db: Database) -> None
 
 
 def test_get_ai_task_logs_filters_by_task_type(db: Database) -> None:
-    db.create_ai_job("aijob-a", "chapter_continue", agent_id=1, input_data={})
-    db.create_ai_job("aijob-b", "distill_style", agent_id=1, input_data={})
+    db.create_ai_job("aijob-a", "keyword_clean", agent_id=1, input_data={})
+    db.create_ai_job("aijob-b", "some_legacy_task", agent_id=1, input_data={})
 
-    only_distill = db.get_ai_task_logs(task_type="distill_style", days=3)
+    only_distill = db.get_ai_task_logs(task_type="some_legacy_task", days=3)
     assert [r["job_id"] for r in only_distill["items"]] == ["aijob-b"]
-    assert only_distill["items"][0]["task_name"] == "风格蒸馏"
+    assert only_distill["items"][0]["task_name"] == "some_legacy_task"  # 未知类型回退原名
 
 
 def test_get_ai_task_logs_unknown_type_falls_back_to_raw(db: Database) -> None:
@@ -64,14 +64,14 @@ def test_get_ai_task_logs_unknown_type_falls_back_to_raw(db: Database) -> None:
 
 
 def test_get_ai_task_logs_filters_status_and_maps_real_types(db: Database) -> None:
-    db.create_ai_job("ok", "polish_dialogue", agent_id=1, input_data={})
+    db.create_ai_job("ok", "keyword_clean", agent_id=1, input_data={})
     db.update_ai_job("ok", "succeeded", output_text="done")
-    db.create_ai_job("running", "polish_psychology", agent_id=1, input_data={})
+    db.create_ai_job("running", "keyword_clean", agent_id=1, input_data={})
 
     result = db.get_ai_task_logs(status="succeeded", days=3)
 
     assert [item["job_id"] for item in result["items"]] == ["ok"]
-    assert result["items"][0]["task_name"] == "对话润色"
+    assert result["items"][0]["task_name"] == "关键词清洗"
 
 
 def test_get_ai_task_logs_empty(db: Database) -> None:
@@ -81,7 +81,7 @@ def test_get_ai_task_logs_empty(db: Database) -> None:
 
 
 def test_partial_ai_job_has_terminal_label_and_status_filter(db: Database) -> None:
-    db.create_ai_job("partial", "continue", agent_id=1, input_data={})
+    db.create_ai_job("partial", "keyword_clean", agent_id=1, input_data={})
     db.update_ai_job("partial", "partial", output_text="半截")
 
     result = db.get_ai_task_logs(status="partial", days=3)

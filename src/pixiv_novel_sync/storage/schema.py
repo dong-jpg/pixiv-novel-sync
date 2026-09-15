@@ -153,15 +153,12 @@ class SchemaMixin:
         self._migrate_sync_watermarks_table()
         # 迁移：创建/升级预检查表。旧服务端库可能已有无 scope 的 sync_check_list。
         self.init_sync_check_table()
-        # 迁移：创建 AI 创作工作台相关表
+        # 迁移：创建 AI 创作工作台相关表（main 只保留 provider/agent/job/模型路由）
         self._migrate_ai_tables()
         # 迁移：创建偏好画像与推书相关表
         self._migrate_preference_tables()
-        # 迁移：创建 AI 写作项目（章节/伏笔/状态记忆）相关表
-        self._migrate_ai_writing_tables()
-        # 成人润色依赖模型路由和写作表，必须在两者迁移完成后执行。
-        self._commit_if_needed()
-        self._migrate_adult_polish_tables()
+        # 写作项目 / 成人润色表迁移已随模块剥离移除；
+        # 存量库中的这些表保留不动（迁移只加不减），由 ai-writing 分支继续使用。
         # 迁移：创建阅读进度追踪表
         self._migrate_reading_progress_table()
         # 迁移：为旧版 novel_texts 表添加正文完整度辅助列
@@ -752,68 +749,10 @@ class SchemaMixin:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
-            CREATE TABLE IF NOT EXISTS ai_drafts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                content TEXT NOT NULL,
-                source_job_id TEXT,
-                parent_draft_id INTEGER,
-                style_profile_id INTEGER,
-                novel_profile_id INTEGER,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS ai_documents (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                source_type TEXT NOT NULL,
-                content TEXT NOT NULL,
-                content_hash TEXT NOT NULL,
-                metadata_json TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS ai_style_profiles (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                source_type TEXT,
-                source_ids_json TEXT,
-                profile_json TEXT NOT NULL,
-                sample_prompt TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS ai_novel_profiles (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                source_type TEXT,
-                source_ids_json TEXT,
-                profile_json TEXT NOT NULL,
-                continuation_prompt TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS ai_prompt_templates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                category TEXT NOT NULL DEFAULT 'general',
-                template TEXT NOT NULL,
-                description TEXT,
-                is_builtin INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
             CREATE INDEX IF NOT EXISTS idx_ai_agents_task_type ON ai_agents(task_type);
             CREATE INDEX IF NOT EXISTS idx_ai_agents_provider_id ON ai_agents(provider_id);
             CREATE INDEX IF NOT EXISTS idx_ai_jobs_job_id ON ai_jobs(job_id);
             CREATE INDEX IF NOT EXISTS idx_ai_jobs_created_at ON ai_jobs(created_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_ai_drafts_updated_at ON ai_drafts(updated_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_ai_documents_hash ON ai_documents(content_hash);
-            CREATE INDEX IF NOT EXISTS idx_ai_prompt_templates_category ON ai_prompt_templates(category);
             """
         )
         # 迁移：为已有 ai_providers 表添加 context_window 列
@@ -828,6 +767,16 @@ class SchemaMixin:
             self.conn.commit()
         except Exception:
             pass
+
+        # ai_jobs 的 owner_scope / idempotency_key_hash 两列原先由成人迁移添加，
+        # 剥离后挪到这里（带守卫的 ADD COLUMN），通用查询与 ai-writing 分支都依赖它们。
+        ai_job_columns = {
+            row[1] for row in self.conn.execute("PRAGMA table_info(ai_jobs)").fetchall()
+        }
+        if "owner_scope" not in ai_job_columns:
+            self.conn.execute("ALTER TABLE ai_jobs ADD COLUMN owner_scope TEXT")
+        if "idempotency_key_hash" not in ai_job_columns:
+            self.conn.execute("ALTER TABLE ai_jobs ADD COLUMN idempotency_key_hash TEXT")
 
         self.conn.execute("PRAGMA foreign_keys=OFF")
         try:
@@ -874,327 +823,6 @@ class SchemaMixin:
             );
             """
         )
-
-    def _migrate_ai_writing_tables(self) -> None:
-        """创建 AI 写作项目相关表（项目、章节、伏笔、状态记忆、对话向导）。"""
-        self.conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS ai_writing_projects (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                description TEXT,
-                outline_json TEXT,
-                style_profile_id INTEGER,
-                novel_profile_id INTEGER,
-                preference_profile_id INTEGER,
-                preference_injection_strength TEXT NOT NULL DEFAULT 'off'
-                    CHECK (preference_injection_strength IN ('off', 'light', 'standard', 'strong')),
-                settings_json TEXT,
-                cover_path TEXT,
-                status TEXT NOT NULL DEFAULT 'active',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS ai_chapters (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id INTEGER NOT NULL,
-                chapter_number INTEGER NOT NULL,
-                title TEXT,
-                content TEXT,
-                summary TEXT,
-                key_events_json TEXT,
-                outline TEXT,
-                word_count INTEGER NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'draft',
-                metadata_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(project_id, chapter_number)
-            );
-
-            CREATE TABLE IF NOT EXISTS ai_foreshadows (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id INTEGER NOT NULL,
-                description TEXT NOT NULL,
-                planted_chapter INTEGER,
-                target_resolve_chapter INTEGER,
-                resolved_chapter INTEGER,
-                status TEXT NOT NULL DEFAULT 'pending',
-                importance TEXT NOT NULL DEFAULT 'normal',
-                notes TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS ai_project_states (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id INTEGER NOT NULL,
-                state_type TEXT NOT NULL,
-                content TEXT NOT NULL,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(project_id, state_type)
-            );
-
-            CREATE TABLE IF NOT EXISTS ai_chat_sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                agent_id INTEGER,
-                scope TEXT NOT NULL DEFAULT 'wizard',
-                title TEXT,
-                metadata_json TEXT NOT NULL DEFAULT '{}',
-                status TEXT NOT NULL DEFAULT 'active',
-                imported_project_id INTEGER,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS ai_chat_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id INTEGER NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                metadata_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_ai_chapters_project ON ai_chapters(project_id, chapter_number);
-            CREATE INDEX IF NOT EXISTS idx_ai_foreshadows_project ON ai_foreshadows(project_id, status);
-            CREATE INDEX IF NOT EXISTS idx_ai_project_states_project ON ai_project_states(project_id);
-            CREATE INDEX IF NOT EXISTS idx_ai_chat_sessions_scope ON ai_chat_sessions(scope, status);
-            CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_session ON ai_chat_messages(session_id);
-            """
-        )
-        project_cols = {
-            row[1] for row in self.conn.execute("PRAGMA table_info(ai_writing_projects)").fetchall()
-        }
-        if "cover_path" not in project_cols:
-            self.conn.execute("ALTER TABLE ai_writing_projects ADD COLUMN cover_path TEXT")
-        if "preference_profile_id" not in project_cols:
-            self.conn.execute(
-                "ALTER TABLE ai_writing_projects "
-                "ADD COLUMN preference_profile_id INTEGER"
-            )
-        if "preference_injection_strength" not in project_cols:
-            self.conn.execute(
-                "ALTER TABLE ai_writing_projects "
-                "ADD COLUMN preference_injection_strength TEXT NOT NULL DEFAULT 'off' "
-                "CHECK (preference_injection_strength IN ('off', 'light', 'standard', 'strong'))"
-            )
-        # 给已有 ai_chapters 表补 metadata_json 列（老库迁移）
-        try:
-            cols = {row[1] for row in self.conn.execute("PRAGMA table_info(ai_chapters)").fetchall()}
-            if "metadata_json" not in cols:
-                self.conn.execute("ALTER TABLE ai_chapters ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
-        except sqlite3.OperationalError:
-            pass
-
-    def _migrate_adult_polish_tables(self) -> None:
-        """幂等创建成人润色的 fail-closed 存储边界。"""
-        from ..ai.adult_policies import FACT_GUARD_POLICY, SAFETY_POLICY
-        from ..ai.adult_types import canonical_sha256, raw_sha256
-
-        def columns(table: str) -> set[str]:
-            return {
-                str(row[1])
-                for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()
-            }
-
-        def add_column(table: str, name: str, declaration: str) -> None:
-            if name not in columns(table):
-                self.conn.execute(
-                    f"ALTER TABLE {table} ADD COLUMN {name} {declaration}"
-                )
-
-        with self.transaction() as conn:
-            add_column(
-                "ai_writing_projects",
-                "adult_content_enabled",
-                "INTEGER NOT NULL DEFAULT 0 CHECK (adult_content_enabled IN (0,1))",
-            )
-            add_column(
-                "ai_writing_projects",
-                "adult_characters_confirmed",
-                "INTEGER NOT NULL DEFAULT 0 CHECK (adult_characters_confirmed IN (0,1))",
-            )
-            add_column(
-                "ai_writing_projects",
-                "fictional_characters_confirmed",
-                "INTEGER NOT NULL DEFAULT 0 CHECK (fictional_characters_confirmed IN (0,1))",
-            )
-            add_column(
-                "ai_writing_projects",
-                "adult_characters_json",
-                "TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(adult_characters_json))",
-            )
-            add_column(
-                "ai_writing_projects",
-                "adult_confirmation_revision",
-                "INTEGER NOT NULL DEFAULT 0 CHECK (adult_confirmation_revision >= 0)",
-            )
-            add_column(
-                "ai_writing_projects",
-                "adult_confirmation_updated_at",
-                "TEXT",
-            )
-            add_column(
-                "ai_chapters",
-                "chapter_revision",
-                "INTEGER NOT NULL DEFAULT 0 CHECK (chapter_revision >= 0)",
-            )
-            add_column("ai_jobs", "owner_scope", "TEXT")
-            add_column("ai_jobs", "idempotency_key_hash", "TEXT")
-
-            for statement in (
-                """
-                CREATE TABLE IF NOT EXISTS ai_project_characters (
-                    character_id TEXT PRIMARY KEY,
-                    project_id INTEGER NOT NULL REFERENCES ai_writing_projects(id) ON DELETE CASCADE,
-                    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
-                    canonical_name TEXT NOT NULL,
-                    aliases_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(aliases_json)),
-                    age_years INTEGER CHECK(age_years >= 0),
-                    age_basis TEXT NOT NULL,
-                    fictional INTEGER NOT NULL CHECK(fictional IN (0,1)),
-                    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """,
-                """
-                CREATE INDEX IF NOT EXISTS idx_ai_project_characters_project_active
-                    ON ai_project_characters(project_id, active)
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS ai_adult_review_bindings (
-                    review_kind TEXT PRIMARY KEY CHECK(review_kind IN ('safety','fact_guard')),
-                    binding_type TEXT CHECK(binding_type IN ('fixed','pool')),
-                    provider_id INTEGER REFERENCES ai_providers(id) ON DELETE RESTRICT,
-                    model TEXT,
-                    model_pool_id INTEGER REFERENCES ai_model_pools(id) ON DELETE RESTRICT,
-                    required_capabilities_json TEXT NOT NULL DEFAULT '["json"]'
-                        CHECK(json_valid(required_capabilities_json)),
-                    enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
-                    version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS ai_adult_policy_state (
-                    policy_kind TEXT PRIMARY KEY CHECK(policy_kind IN ('safety','fact_guard')),
-                    policy_id TEXT NOT NULL UNIQUE,
-                    policy_version INTEGER NOT NULL CHECK(policy_version > 0),
-                    policy_hash TEXT NOT NULL,
-                    prompt_hash TEXT NOT NULL,
-                    schema_hash TEXT NOT NULL,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS ai_polish_applications (
-                    id INTEGER PRIMARY KEY,
-                    source_job_id TEXT NOT NULL UNIQUE,
-                    owner_scope TEXT NOT NULL,
-                    project_id INTEGER NOT NULL REFERENCES ai_writing_projects(id) ON DELETE CASCADE,
-                    chapter_id INTEGER NOT NULL REFERENCES ai_chapters(id) ON DELETE CASCADE,
-                    target_start INTEGER NOT NULL CHECK(target_start >= 0),
-                    target_end INTEGER NOT NULL CHECK(target_end > target_start),
-                    chapter_revision_before INTEGER NOT NULL CHECK(chapter_revision_before >= 0),
-                    chapter_hash_before TEXT NOT NULL,
-                    target_hash_before TEXT NOT NULL,
-                    project_facts_hash TEXT NOT NULL,
-                    adult_confirmation_revision INTEGER NOT NULL CHECK(adult_confirmation_revision >= 0),
-                    adult_characters_hash TEXT NOT NULL,
-                    participant_hash TEXT NOT NULL,
-                    provider_scope_hash TEXT NOT NULL,
-                    main_binding_hash TEXT NOT NULL DEFAULT '',
-                    safety_binding_hash TEXT NOT NULL DEFAULT '',
-                    fact_guard_binding_hash TEXT NOT NULL DEFAULT '',
-                    safety_policy_hash TEXT NOT NULL,
-                    safety_prompt_hash TEXT NOT NULL DEFAULT '',
-                    fact_guard_prompt_hash TEXT NOT NULL DEFAULT '',
-                    validator_policy_hash TEXT NOT NULL,
-                    validation_hash TEXT NOT NULL,
-                    warning_ack_hash TEXT NOT NULL DEFAULT '',
-                    access_token_hash TEXT NOT NULL,
-                    snapshots_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(snapshots_json)),
-                    validation_json TEXT NOT NULL CHECK(json_valid(validation_json)),
-                    applicable INTEGER NOT NULL CHECK(applicable IN (0,1)),
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    applied_at TEXT,
-                    chapter_hash_after TEXT,
-                    chapter_revision_after INTEGER
-                )
-                """,
-                """
-                CREATE INDEX IF NOT EXISTS idx_ai_polish_applications_owner_job
-                    ON ai_polish_applications(owner_scope, source_job_id)
-                """,
-                """
-                CREATE INDEX IF NOT EXISTS idx_ai_polish_applications_chapter_created
-                    ON ai_polish_applications(project_id, chapter_id, created_at)
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS ai_chapter_derivative_invalidations (
-                    chapter_id INTEGER PRIMARY KEY REFERENCES ai_chapters(id) ON DELETE CASCADE,
-                    chapter_revision INTEGER NOT NULL,
-                    reason TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending'
-                        CHECK(status IN ('pending','queued','rebuilt')),
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """,
-                """
-                CREATE INDEX IF NOT EXISTS idx_ai_jobs_adult_owner_created
-                    ON ai_jobs(owner_scope, created_at)
-                """,
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_jobs_adult_idempotency
-                    ON ai_jobs(owner_scope, idempotency_key_hash)
-                    WHERE task_type = 'adult_polish' AND idempotency_key_hash IS NOT NULL
-                """,
-            ):
-                conn.execute(statement)
-
-            conn.executemany(
-                """
-                INSERT OR IGNORE INTO ai_adult_review_bindings (
-                    review_kind, binding_type, provider_id, model, model_pool_id,
-                    required_capabilities_json, enabled, version
-                ) VALUES (?, NULL, NULL, NULL, NULL, '["json"]', 0, 1)
-                """,
-                (("safety",), ("fact_guard",)),
-            )
-            for kind, bundle in (
-                ("safety", SAFETY_POLICY),
-                ("fact_guard", FACT_GUARD_POLICY),
-            ):
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO ai_adult_policy_state (
-                        policy_kind, policy_id, policy_version, policy_hash,
-                        prompt_hash, schema_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        kind,
-                        bundle.policy_id,
-                        bundle.version,
-                        bundle.expected_hash,
-                        raw_sha256(bundle.prompt_template),
-                        canonical_sha256(bundle.output_schema),
-                    ),
-                )
-
-            adult_violations = [
-                row
-                for row in conn.execute("PRAGMA foreign_key_check").fetchall()
-                if str(row[0]).startswith("ai_")
-            ]
-            if adult_violations:
-                raise RuntimeError(
-                    f"成人润色迁移外键校验失败: {adult_violations[:5]!r}"
-                )
 
     def _migrate_reading_progress_table(self) -> None:
         """创建阅读进度追踪表。"""

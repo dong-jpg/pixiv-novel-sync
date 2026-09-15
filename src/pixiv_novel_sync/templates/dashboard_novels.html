@@ -57,14 +57,6 @@
         追更系列
       </button>
       <button
-        @click="filters.category = 'ai'"
-        class="px-4 py-1.5 text-sm font-medium rounded-full transition-all duration-200"
-        :class="filters.category === 'ai'
-          ? 'bg-brand-500 text-white shadow-sm'
-          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'">
-        AI 创作小说
-      </button>
-      <button
         @click="filters.category = 'rescue'"
         class="px-4 py-1.5 text-sm font-medium rounded-full transition-all duration-200"
         :class="filters.category === 'rescue'
@@ -73,7 +65,7 @@
         拯救成功
       </button>
       <span class="ml-1 sm:ml-3 text-xs text-gray-400" v-if="!loading">
-        共 <span class="font-semibold text-gray-600">{{ totalItems }}</span> {{ filters.category === 'ai' ? '个 AI 作品' : (filters.category === 'following' ? '个系列' : (filters.category === 'rescue' ? '项救援数据' : '部作品')) }}
+        共 <span class="font-semibold text-gray-600">{{ totalItems }}</span> {{ filters.category === 'following' ? '个系列' : (filters.category === 'rescue' ? '项救援数据' : '部作品') }}
       </span>
     </div>
     <div v-if="filters.category === 'rescue'" class="flex flex-wrap items-center gap-3 mt-3 pt-3 border-t border-gray-100">
@@ -121,7 +113,7 @@
       <svg class="mx-auto h-14 w-14 text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
       </svg>
-      <p class="text-sm text-gray-400">{{ filters.category === 'ai' ? '暂无 AI 创作小说，请先在 AI 创作里创建项目' : (filters.category === 'following' ? '暂无追更系列' : (filters.category === 'rescue' ? '暂未发现符合条件的救援数据' : '暂无收藏小说，请先执行一次同步')) }}</p>
+      <p class="text-sm text-gray-400">{{ filters.category === 'following' ? '暂无追更系列' : (filters.category === 'rescue' ? '暂未发现符合条件的救援数据' : '暂无收藏小说，请先执行一次同步') }}</p>
     </div>
 
     <!-- Loading Skeletons -->
@@ -308,46 +300,6 @@
       </a>
     </div>
 
-    <!-- Card Grid: AI Writing Projects -->
-    <div v-else class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 pt-2">
-      <a v-for="item in items" :key="'ai-' + item.id"
-         :href="'/dashboard/novels/ai/' + encodeURIComponent(item.id)"
-         class="group bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden hover:shadow-md hover:-translate-y-0.5 transition-all duration-200">
-
-        <!-- Cover Area -->
-        <div class="aspect-[3/4] relative overflow-hidden">
-          <div class="absolute inset-0" :style="'background: linear-gradient(135deg, ' + getGradient(item.name || item.id) + ')' "></div>
-          <div v-if="!item.cover_url" class="absolute inset-0 flex items-center justify-center">
-            <span class="text-white/80 text-4xl font-bold select-none">{{ (item.name || '?').substring(0, 1) }}</span>
-          </div>
-          <img v-if="item.cover_url"
-               :src="item.cover_url"
-               class="absolute inset-0 w-full h-full object-cover"
-               @error="item.cover_url = ''">
-          <div class="absolute top-2 left-2 z-10">
-            <span class="px-1.5 py-0.5 bg-rose-500 text-white text-[10px] font-bold rounded">AI 创作</span>
-          </div>
-          <div class="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-black/60 to-transparent"></div>
-          <div class="absolute bottom-2 left-2 right-2 flex items-center gap-3 z-10">
-            <span class="flex items-center gap-1 text-white/90 text-xs">{{ item.chapter_count || 0 }} 章</span>
-            <span class="text-white/90 text-xs">{{ formatTextLength(item.total_words || 0) }}</span>
-          </div>
-        </div>
-
-        <!-- Info Below Cover -->
-        <div class="p-3">
-          <h3 class="text-sm font-bold text-gray-900 group-hover:text-brand-600 transition-colors line-clamp-2 leading-snug mb-2" :title="item.name">
-            {{ item.name || '未命名 AI 作品' }}
-          </h3>
-          <div v-if="item.description" class="text-xs text-gray-500 line-clamp-2 mb-2">{{ item.description }}</div>
-          <div class="flex items-center justify-between text-[11px] text-gray-400">
-            <span>{{ item.status || 'draft' }}</span>
-            <span>{{ formatDate(item.updated_at) }}</span>
-          </div>
-        </div>
-      </a>
-    </div>
-
     <!-- Pagination + Page Size -->
     <div v-if="!loading && !error && items.length > 0" class="flex flex-col sm:flex-row items-center justify-between gap-3 mt-8 px-1">
       <div class="flex items-center gap-2 text-sm text-gray-500">
@@ -407,7 +359,7 @@
       // Filters
       const initialCategory = new URLSearchParams(window.location.search).get('category');
       const filters = reactive({
-        category: ['bookmark', 'following', 'ai', 'rescue'].includes(initialCategory) ? initialCategory : 'bookmark',
+        category: ['bookmark', 'following', 'rescue'].includes(initialCategory) ? initialCategory : 'bookmark',
         search: '',
         sort: ''
       });
@@ -482,28 +434,28 @@
             return;
           }
 
-          if (filters.category === 'ai') {
-            const res = await fetch('/api/dashboard/ai/projects', {
+          const params = new URLSearchParams({
+              page: String(page.value),
+              page_size: String(pageSize.value),
+              state: rescueFilters.state,
+              item_type: rescueFilters.item_type,
+              content_kind: rescueFilters.content_kind,
+              source_kind: rescueFilters.source_kind,
+              search: filters.search,
+              sort: filters.sort === 'updated_desc' ? 'updated_desc' : 'checked_desc'
+            });
+            const response = await fetch('/api/dashboard/rescues?' + params.toString(), {
               signal: fetchAbortController.signal
             });
-
-            if (!res.ok) throw new Error('API Request Failed');
-
-            const data = await res.json();
-            let all = data.ok === false ? [] : (data.data || data.items || []);
-            const q = filters.search.trim().toLowerCase();
-            if (q) {
-              all = all.filter(item =>
-                String(item.name || '').toLowerCase().includes(q) ||
-                String(item.description || '').toLowerCase().includes(q)
-              );
-            }
-            all = all.slice().sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
-            totalItems.value = all.length;
-            totalPages.value = Math.max(Math.ceil(all.length / pageSize.value), 1);
-            if (page.value > totalPages.value) page.value = totalPages.value;
-            const start = (page.value - 1) * pageSize.value;
-            items.value = all.slice(start, start + pageSize.value);
+            const result = await response.json();
+            if (!response.ok || result.ok === false) throw new Error(result.error || '救援数据加载失败');
+            const data = result.data || {};
+            items.value = data.items || [];
+            totalItems.value = data.total || 0;
+            page.value = data.page || 1;
+            totalPages.value = data.total_pages || 1;
+            rescueCatalog.refreshed_at = data.refreshed_at || '';
+            rescueCatalog.stale = Boolean(data.stale);
             return;
           }
 

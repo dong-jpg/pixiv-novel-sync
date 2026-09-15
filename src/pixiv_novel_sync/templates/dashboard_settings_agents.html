@@ -3,10 +3,7 @@
 {% block title %}Agent 绑定 - Pixiv 小说同步器{% endblock %}
 
 {% block content %}
-{# 设置页第三分页：普通写作 Agent 的绑定、提示词与采样参数。
-   成人润色 Agent 与两个审查绑定在 /dashboard/settings/adult，本页刻意把
-   task_type === 'adult_polish' 的 Agent 从列表里排除——它是 fail-closed 子系统，
-   不能通过普通 Agent 列表被编辑或删除。
+{# 设置页第三分页：Agent 的绑定、提示词与采样参数。
    Agent 配置存在数据库里，走 ai_web.py 的端点，不经过 /api/dashboard/settings。 #}
 <div class="library-page px-6 lg:px-8 pt-6 max-w-6xl mx-auto space-y-5 pb-8">
   <div class="library-page-header">
@@ -40,15 +37,6 @@
       </div>
       <input v-model="agentForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Agent 名称">
       <select v-model="agentForm.task_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-        <option value="wizard">创作向导</option>
-        <option value="continue">续写 / 自动写作</option>
-        <option value="rewrite">改写 / 去 AI 味</option>
-        <option value="audit">内容审计</option>
-        <option value="plan">规划 / 构思</option>
-        <option value="extract_summary">摘要提取</option>
-        <option value="resolve_foreshadow">伏笔回收</option>
-        <option value="distill_style">风格蒸馏</option>
-        <option value="distill_novel">小说蒸馏</option>
         <option value="keyword_clean">关键词清洗</option>
         <option value="general">通用</option>
       </select>
@@ -99,13 +87,6 @@
         <h2 class="text-xl font-bold text-gray-900">Agent 列表</h2>
         <select v-model="agentFilter" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
           <option value="">全部类型</option>
-          <option value="wizard">创作向导</option>
-          <option value="continue">续写 / 自动写作</option>
-          <option value="rewrite">改写</option>
-          <option value="audit">内容审计</option>
-          <option value="plan">规划</option>
-          <option value="distill_style">风格蒸馏</option>
-          <option value="distill_novel">小说蒸馏</option>
           <option value="keyword_clean">关键词清洗</option>
           <option value="general">通用</option>
         </select>
@@ -131,11 +112,7 @@
         <div v-for="agent in filteredAgents" :key="agent.id" class="border border-gray-100 rounded-lg p-3 text-sm">
           <label class="flex items-start gap-2">
             <input type="checkbox" :checked="selectedAgentIds.includes(agent.id)"
-                   :disabled="String(agent.task_type || '').startsWith('adult_')"
                    @change="toggleAgentSelection(agent.id)" class="mt-1">
-            <span v-if="String(agent.task_type || '').startsWith('adult_')" class="text-[10px] text-pixiv-light">
-              成人润色 Agent 不参与批量，请单独配置
-            </span>
           </label>
           <div class="flex items-center justify-between gap-2">
             <div class="font-semibold text-gray-900 truncate">{{ agent.name }}</div>
@@ -240,7 +217,7 @@
       const aiMessage = ref('');
       const aiMessageType = ref('success');
       const capabilityOptions = ['streaming', 'json', 'vision', 'tools', 'long_context'];
-      const agentForm = reactive({ id: 0, name: '', task_type: 'continue', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0, required_capabilities: [], system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
+      const agentForm = reactive({ id: 0, name: '', task_type: 'keyword_clean', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0, required_capabilities: [], system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
       const candidateAgentId = ref(0);
       const candidateChain = ref(null);
       const candidateChainError = ref('');
@@ -255,11 +232,8 @@
         setTimeout(() => { aiMessage.value = ''; }, 4000);
       };
 
-      // 成人润色 Agent 不在这里管理：它属于 fail-closed 子系统，绑定与审查策略
-      // 都在 /dashboard/settings/adult，普通列表里不给编辑/删除入口。
       const filteredAgents = computed(() => agents.value.filter(agent =>
-        agent.task_type !== 'adult_polish'
-          && (!agentFilter.value || agent.task_type === agentFilter.value)
+        (!agentFilter.value || agent.task_type === agentFilter.value)
           && (!onlyBadBindings.value || agentHealth(agent.id)?.status === 'will_fail')
           && (!agentSearch.value || `${agent.name || ''} ${agent.task_type || ''}`.toLowerCase().includes(agentSearch.value.toLowerCase()))
       ));
@@ -270,9 +244,7 @@
       const selectedAgentIds = ref([]);
       const batchPreview = ref(null);
 
-      const batchEligibleAgents = computed(() => filteredAgents.value.filter(
-        agent => !String(agent.task_type || '').startsWith('adult_')
-      ));
+      const batchEligibleAgents = computed(() => filteredAgents.value);
       function toggleAgentSelection(agentId) {
         const index = selectedAgentIds.value.indexOf(agentId);
         if (index >= 0) selectedAgentIds.value.splice(index, 1);
@@ -421,9 +393,9 @@
       };
       const loadAgents = async () => { agents.value = await window.aiApi.agents(); };
 
-      const resetAgentForm = () => Object.assign(agentForm, { id: 0, name: '', task_type: 'continue', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0, required_capabilities: [], system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
+      const resetAgentForm = () => Object.assign(agentForm, { id: 0, name: '', task_type: 'keyword_clean', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0, required_capabilities: [], system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
       const editAgent = (agent) => {
-        Object.assign(agentForm, { id: agent.id, name: agent.name || '', task_type: agent.task_type || 'continue', binding_type: agent.binding_type || 'fixed', provider_id: agent.provider_id || 0, model: agent.model || '', model_pool_id: agent.model_pool_id || 0, required_capabilities: [...(agent.required_capabilities || [])], system_prompt: agent.system_prompt || '', temperature: agent.temperature || 0.8, top_p: agent.top_p || 0.9, max_tokens: agent.max_tokens || 4000, context_window: agent.context_window || 16000, enabled: agent.enabled !== false });
+        Object.assign(agentForm, { id: agent.id, name: agent.name || '', task_type: agent.task_type || 'keyword_clean', binding_type: agent.binding_type || 'fixed', provider_id: agent.provider_id || 0, model: agent.model || '', model_pool_id: agent.model_pool_id || 0, required_capabilities: [...(agent.required_capabilities || [])], system_prompt: agent.system_prompt || '', temperature: agent.temperature || 0.8, top_p: agent.top_p || 0.9, max_tokens: agent.max_tokens || 4000, context_window: agent.context_window || 16000, enabled: agent.enabled !== false });
         // 编辑时顺带解析候选链：改绑定前先看清它现在会调哪些模型
         candidateAgentId.value = agent.id;
         loadCandidateChain(agent.id);

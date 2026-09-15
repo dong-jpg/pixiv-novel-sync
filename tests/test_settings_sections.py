@@ -273,7 +273,7 @@ def test_section_endpoint_reports_validation_failure(tmp_path):
 def test_settings_pages_all_render(tmp_path):
     _app, client, _config_path = _dashboard_app(tmp_path, max_items_per_run=20)
 
-    for section in ("sync", "models", "agents", "adult", "system"):
+    for section in ("sync", "models", "agents", "system"):
         res = client.get(f"/dashboard/settings/{section}")
         assert res.status_code == 200, section
 

@@ -287,9 +287,8 @@
       return result;
     };
 
-    // AI 页面公共数据层。/dashboard/ai 与 /dashboard/wizard 之前各写了一份
-    // api() 加四个 load*Profiles()，端点或错误处理一改就得改两处，而两处都只读
-    // data.error——于是鉴权网关返回的 detail 形状失败一律显示成「请求失败」。
+    // AI 公共数据层。统一走 csrfFetch + errorText，鉴权网关返回的 detail 形状
+    // 失败也能正确显示（手写 fetch 只读 data.error 会把失败渲染成「请求失败」）。
     window.aiApi = {
       async request(url, options) {
         const response = await window.csrfFetch(url, options);
@@ -301,14 +300,6 @@
       },
       agents() {
         return window.aiApi.request('/api/dashboard/ai/agents');
-      },
-      async styleProfiles() {
-        const data = await window.aiApi.request('/api/dashboard/ai/style-profiles');
-        return (data && data.items) || [];
-      },
-      async novelProfiles() {
-        const data = await window.aiApi.request('/api/dashboard/ai/novel-profiles');
-        return (data && data.items) || [];
       },
       preferenceProfiles() {
         return window.aiApi.request('/api/dashboard/preferences/profiles');

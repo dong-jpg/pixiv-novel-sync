@@ -21,14 +21,12 @@ function registerGlobalComponents(app) {
   const NAV_ITEMS = [
     { path: '/dashboard', label: '控制台', icon: 'home', exact: true },
     { path: '/dashboard/novels', label: '小说库', icon: 'book' },
-    { path: '/dashboard/ai', label: 'AI 创作', icon: 'sparkles' },
-    { path: '/dashboard/wizard', label: '创作向导', icon: 'edit' },
     { path: '/dashboard/preferences', label: '偏好与推荐', icon: 'heart' },
     { path: '/dashboard/follows', label: '作者与系列', icon: 'users' },
     { type: 'divider', label: 'Operations' },
     { path: '/dashboard/pending-deletions', label: '待确认删除', icon: 'trash', hasBadge: true },
     { path: '/dashboard/logs', label: '任务日志', icon: 'clipboard' },
-    // 设置已拆成五个一级页面。父项的 path 留作高亮前缀（五个子页都在 /dashboard/settings
+    // 设置已拆成四个一级页面。父项的 path 留作高亮前缀（四个子页都在 /dashboard/settings
     // 下），href 才是实际落点：/dashboard/settings 只是一个 302。
     {
       path: '/dashboard/settings', href: '/dashboard/settings/sync', label: '设置', icon: 'cog',
@@ -36,7 +34,6 @@ function registerGlobalComponents(app) {
         { path: '/dashboard/settings/sync', label: '同步与调度' },
         { path: '/dashboard/settings/models', label: '模型与 Provider' },
         { path: '/dashboard/settings/agents', label: 'Agent 绑定' },
-        { path: '/dashboard/settings/adult', label: '成人润色' },
         { path: '/dashboard/settings/system', label: '系统维护' },
       ],
     },
@@ -44,7 +41,7 @@ function registerGlobalComponents(app) {
 
   function isActive(currentPath, item) {
     if (item.exact) return currentPath === item.path;
-    // 前缀匹配只能回答「在不在这个分组里」。设置的五个子页共用 /dashboard/settings
+    // 前缀匹配只能回答「在不在这个分组里」。设置的四个子页共用 /dashboard/settings
     // 前缀，父项一律高亮，看不出当前是哪一页——子项在模板里按 path 精确匹配。
     return currentPath.startsWith(item.path);
   }

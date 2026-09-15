@@ -51,7 +51,7 @@ def test_no_dashboard_token_blocks_non_localhost(tmp_path, monkeypatch):
     assert response.status_code == 403
 
 
-def test_configured_token_missing_session_returns_403_for_adult_api(
+def test_configured_token_missing_session_returns_401_for_ai_api(
     tmp_path,
     monkeypatch,
 ):
@@ -65,12 +65,12 @@ def test_configured_token_missing_session_returns_403_for_adult_api(
     app = create_app(env_path=str(env_path), start_scheduler=False)
 
     response = app.test_client().post(
-        "/api/dashboard/ai/polish/adult/stream",
+        "/api/dashboard/ai/agents",
         json={},
         environ_base={"REMOTE_ADDR": "127.0.0.1"},
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 def test_flask_secret_fallback_persists_to_env(tmp_path, monkeypatch):

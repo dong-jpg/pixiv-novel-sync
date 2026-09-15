@@ -378,23 +378,6 @@
         { value: 'recommendation_run', label: '生成推荐' }
       ];
       const AI_TASK_OPTIONS = [
-        { value: 'chapter_continue', label: '自动生成章节' },
-        { value: 'chapter_pipeline', label: '自动写作 Pipeline' },
-        { value: 'longform_plan', label: '全书规划' },
-        { value: 'longform_plan_details', label: '详细梗概' },
-        { value: 'continue', label: '续写' },
-        { value: 'rewrite', label: '改写' },
-        { value: 'audit', label: '内容审计' },
-        { value: 'plan', label: '写前构思' },
-        { value: 'distill_style', label: '风格蒸馏' },
-        { value: 'distill_novel', label: '小说蒸馏' },
-        { value: 'extract_summary', label: '摘要提取' },
-        { value: 'chat', label: '创作向导对话' },
-        { value: 'update_state', label: '状态记忆更新' },
-        { value: 'resolve_foreshadow', label: '伏笔回收' },
-        { value: 'polish', label: '润色' },
-        { value: 'polish_dialogue', label: '对话润色' },
-        { value: 'polish_psychology', label: '心理描写润色' },
         { value: 'keyword_clean', label: '关键词清洗' }
       ];
       const taskTypeOptions = computed(() =>
@@ -418,7 +401,8 @@
       const continueOutput = ref('');
       const continueError = ref('');
       let csrfToken = '';
-      const RESUMABLE_TASK_TYPES = new Set(['continue', 'rewrite', 'distill_style', 'distill_novel', 'audit', 'plan', 'longform_plan', 'longform_plan_details', 'update_state', 'extract_summary', 'resolve_foreshadow']);
+      // main 已剥离写作流，历史 ai_jobs 没有可手动候选继续的任务类型
+      const RESUMABLE_TASK_TYPES = new Set();
 
       const continueCandidate = computed(() => {
         const job = selectedLog.value;
@@ -681,15 +665,8 @@
           'pending_deletion_detection': '检测取消',
           'preference_analyze': '增量分析本地偏好', 'recommendation_run': '生成推荐',
           'manual': '手工任务',
-          // AI 创作任务（与后端 storage/tasks.py 的 _AI_TASK_LABELS 对齐）
-          'chapter_continue': '自动生成章节', 'chapter_pipeline': '自动写作 Pipeline',
-          'longform_plan': '全书规划', 'longform_plan_details': '详细梗概',
-          'continue': '续写', 'rewrite': '改写', 'audit': '内容审计', 'plan': '写前构思',
-          'distill_style': '风格蒸馏', 'distill_novel': '小说蒸馏',
-          'extract_summary': '摘要提取', 'summarize': '摘要提取', 'chat': '创作向导对话',
-          'update_state': '状态记忆更新', 'state_update': '状态记忆更新',
-          'resolve_foreshadow': '伏笔回收', 'foreshadow_resolve': '伏笔回收', 'polish': '润色',
-          'polish_dialogue': '对话润色', 'polish_psychology': '心理描写润色', 'keyword_clean': '关键词清洗'
+          // AI 任务（与后端 storage/tasks.py 的 _AI_TASK_LABELS 对齐）
+          'keyword_clean': '关键词清洗'
         };
         return map[type] || type;
       };

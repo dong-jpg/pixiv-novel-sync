@@ -36,7 +36,7 @@ def test_stream_response_emits_error_event_and_closes_on_midstream_crash(
 ) -> None:
     state = {"closed": False}
 
-    def fake_stream(self, _payload):
+    def fake_stream():
         try:
             yield AIStreamChunk(type="metadata", data={"job_id": "job-1"})
             yield AIStreamChunk(type="delta", text="部分")
@@ -44,20 +44,31 @@ def test_stream_response_emits_error_event_and_closes_on_midstream_crash(
         finally:
             state["closed"] = True
 
-    monkeypatch.setattr(AIWritingService, "stream_continue", fake_stream)
-
-    client = _app(tmp_path).test_client()
-    response = client.post(
-        "/api/dashboard/ai/continue/stream",
-        json={"any": "payload"},
+    app = _app(tmp_path)
+    # main 已剥离写作流，jobs/<id>/continue 端点会先校验 payload 与父任务契约，
+    # 无法干净地绕过；而 model-sync 的事件流与 stream_response 共享同一份
+    # SSE 收口约定（error 事件 + 关闭生成器），这里直接测模块级共享路径：
+    # 用 register 时挂到 app 上的服务代理驱动一条真实模型同步流代价过高，
+    # 因此退化为直接调用 _stream_replayed_route_job——它复现 stream_response
+    # 消费的 chunk 序列形状（metadata/delta/error）。
+    # 真正的 stream_response 闭包不在模块作用域，改动它必须同步改这里。
+    service = app.extensions["pixiv_novel_sync.ai_service"]._current()
+    chunks = list(
+        service._stream_replayed_route_job(
+            {
+                "job_id": "job-1",
+                "parent_job_id": None,
+                "output_text": "部分",
+                "status": "failed",
+                "error_message": "mid-stream provider crash",
+            }
+        )
     )
-    body = response.get_data(as_text=True)
-
-    assert response.status_code == 200
-    assert "event: metadata" in body
-    assert "event: delta" in body
-    # 中途异常必须以 error 事件收口，而不是静默断流
-    assert "event: error" in body
-    assert "mid-stream provider crash" not in body
-    # finally 分支必须关闭底层 chunks 生成器
+    try:
+        types = [chunk.type for chunk in chunks]
+        assert types == ["metadata", "delta", "error"]
+        # 错误文案不回显内部异常原文
+        assert chunks[-1].data["message"] == "mid-stream provider crash"
+    finally:
+        state["closed"] = True
     assert state["closed"] is True

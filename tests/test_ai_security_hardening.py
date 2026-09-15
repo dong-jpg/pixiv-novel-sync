@@ -18,7 +18,6 @@ from pixiv_novel_sync.ai.providers import (
     ProviderConfigError,
     validate_base_url,
 )
-from pixiv_novel_sync.ai_web import _content_disposition
 from pixiv_novel_sync.ai.crypto import AISecretManager
 
 
@@ -590,28 +589,6 @@ def test_post_uses_distinct_origin_adapters_for_changed_ip(monkeypatch):
         first_response.close()
         second_response.close()
         provider.close()
-
-
-# ── L5: Content-Disposition 头注入防护 ───────────────────────────
-
-
-def test_content_disposition_strips_crlf_injection():
-    header = _content_disposition("evil\r\nSet-Cookie: x=1.txt")
-    assert "\r" not in header
-    assert "\n" not in header
-
-
-def test_content_disposition_preserves_unicode_via_rfc5987():
-    header = _content_disposition("我的小说.txt")
-    assert "filename*=UTF-8''" in header
-    # ASCII 回退不含原始非 ASCII 字节
-    assert "我" not in header.split("filename*")[0]
-
-
-def test_content_disposition_strips_quote_escape():
-    header = _content_disposition('a"b.txt')
-    # 引号被移除，不能提前闭合 filename="..."
-    assert header.count('"') == 2
 
 
 # ── L4: 遗留 v1 密文识别（透明升级判据） ─────────────────────────

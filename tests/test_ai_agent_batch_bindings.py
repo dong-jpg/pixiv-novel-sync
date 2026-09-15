@@ -72,23 +72,3 @@ def test_batch_rebind_is_atomic(db: Database) -> None:
     for agent in db.list_ai_agents():
         assert agent["model"] == "old-model"
         assert agent["binding_version"] == 1
-
-
-def test_batch_rebind_rejects_adult_agents_outright(db: Database) -> None:
-    """fail-closed：混入成人 Agent 要整体拒绝，不是静默跳过。"""
-    from pixiv_novel_sync.ai.service import AIServiceError, AIWritingService
-
-    normal = _agent(db, "普通")
-    adult = _agent(db, "成人润色", task_type="adult_polish")
-    target = _provider(db, "目标网关")
-    db_path = db.path
-    db.close()
-    service = AIWritingService(db_path=db_path)
-
-    with pytest.raises(AIServiceError) as excinfo:
-        service.update_agent_bindings({
-            "agent_ids": [normal, adult],
-            "binding": {"binding_type": "fixed", "provider_id": target, "model": "m"},
-        })
-
-    assert "成人" in str(excinfo.value)

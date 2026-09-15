@@ -3,16 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 
-# 设置页已拆成五个一级页面：Provider / 模型目录 / 模型池在 models 页，
+# 设置页已拆成四个一级页面：Provider / 模型目录 / 模型池在 models 页，
 # Agent 绑定（binding_type、required_capabilities）在 agents 页。
 TEMPLATE = Path(
     "src/pixiv_novel_sync/templates/dashboard_settings_models.html"
 ).read_text(encoding="utf-8")
 AGENTS_TEMPLATE = Path(
     "src/pixiv_novel_sync/templates/dashboard_settings_agents.html"
-).read_text(encoding="utf-8")
-ADULT_TEMPLATE = Path(
-    "src/pixiv_novel_sync/templates/dashboard_settings_adult.html"
 ).read_text(encoding="utf-8")
 LOG_TEMPLATE = Path(
     "src/pixiv_novel_sync/templates/dashboard_logs.html"
@@ -187,9 +184,9 @@ HEALTH_BAND = Path(
 ).read_text(encoding="utf-8")
 
 
-def test_health_band_is_included_on_all_three_ai_settings_pages():
-    """三页都要有：横幅要出现在你正在编辑的那一页上，而不是一个要跳过去的目的地。"""
-    for template in (TEMPLATE, AGENTS_TEMPLATE, ADULT_TEMPLATE):
+def test_health_band_is_included_on_all_ai_settings_pages():
+    """两页都要有：横幅要出现在你正在编辑的那一页上，而不是一个要跳过去的目的地。"""
+    for template in (TEMPLATE, AGENTS_TEMPLATE):
         assert "dashboard_ai_health_band.html" in template
         # 横幅 markup 引用的名字必须在本页 setup() 里导出
         for name in ("aiHealth", "aiHealthLoading", "loadAiHealth"):
@@ -234,7 +231,7 @@ def test_agents_page_supports_search_multiselect_and_batch_rebind():
     for text in (
         "agentSearch", "selectedAgentIds", "toggleAgentSelection", "selectAllAgents",
         "batchRebind", "batchSetEnabled", "/api/dashboard/ai/agents/bindings",
-        "onlyBadBindings", "成人润色 Agent 不参与批量",
+        "onlyBadBindings",
     ):
         assert text in AGENTS_TEMPLATE
     # 确认弹窗必须逐项列出老值 → 新值
