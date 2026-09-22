@@ -205,7 +205,7 @@
 - [ ] **T2-19 `meta_hash` 剔除易变字段**
   `sync_engine.py:2223-2224` 计算前删 `total_bookmarks / total_view / total_comments / …`；或 `text_unchanged` 时跳过 `upsert_novel_text` + `replace_fts` + 正文写盘。验收：同一小说第二轮 `stats["skipped"]` 命中。
 
-- [ ] **T2-20 `run_scheduled_user_backup` 单用户失败阻塞轮转**
+- [x] **T2-20 `run_scheduled_user_backup` 单用户失败阻塞轮转**
   `jobs/quick_sync.py:135-162` 循环内捕获单用户异常记 `failed_users`；watermark 按 `completed + failed` 前进；`services.py:194-199` 的失败率检查改在 `processed` 自增之后。
 
 - [ ] **T2-21 手动任务取消入口**

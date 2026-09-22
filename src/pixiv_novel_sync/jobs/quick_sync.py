@@ -119,9 +119,10 @@ def run_scheduled_user_backup(
                 f"用户 {offset + 1}-{offset + len(batch)}/{total_users}, 本轮 {len(batch)} 人 ===",
             )
 
-        totals = {"novels": 0, "skipped": 0, "assets_downloaded": 0}
+        totals = {"novels": 0, "skipped": 0, "assets_downloaded": 0, "failed_users": 0}
         stopped = False
         completed_users = 0
+        failed_users = 0
         for index, user_id in enumerate(batch):
             if stop_requested is not None and stop_requested():
                 stopped = True
@@ -132,24 +133,34 @@ def run_scheduled_user_backup(
                     current=index + 1,
                     total=len(batch),
                 )
-            stats = job_services.run_user_backup_task(
-                settings,
-                user_id,
-                reporter=reporter,
-                stop_requested=stop_requested,
-                rebuild_catalog=False,
-            )
+            try:
+                stats = job_services.run_user_backup_task(
+                    settings,
+                    user_id,
+                    reporter=reporter,
+                    stop_requested=stop_requested,
+                    rebuild_catalog=False,
+                )
+            except Exception as exc:
+                failed_users += 1
+                logger.warning("用户 %s 备份失败，跳过并继续轮转: %s", user_id, exc)
+                if reporter is not None:
+                    reporter.add_log("warning", f"用户 {user_id} 备份失败，已跳过: {exc}")
+                continue
             for key in totals:
+                if key == "failed_users":
+                    continue
                 totals[key] += int(stats.get(key, 0) or 0)
             if stats.get("stopped"):
                 stopped = True
                 break
             completed_users += 1
+        totals["failed_users"] = failed_users
 
         if not stopped and stop_requested is not None and stop_requested():
             stopped = True
 
-        next_offset = offset + completed_users
+        next_offset = offset + completed_users + failed_users
         if next_offset >= total_users:
             next_offset = 0
         if total_users:

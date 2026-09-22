@@ -196,13 +196,13 @@ def run_user_backup_task(
                     source_type="user_backup",
                     source_key=str(user_id),
                 )
+                processed += 1
                 failed = counters.get("failed", 0)
                 if failed:
                     total_failed += failed
-                    # 3.1容错:单本失败累计,超20%或绝对10本再中止,保留已同步部分
-                    if total_failed >= 10 or (processed > 0 and total_failed / processed > 0.2):
+                    # 单本失败先计入本轮已处理，再看失败率，避免第一本失败时分母还是 0。
+                    if total_failed >= 10 or total_failed / processed > 0.2:
                         raise RuntimeError(f"User backup aborted for user {user_id}: {total_failed}/{processed} novels failed (threshold exceeded)")
-                processed += 1
                 total_novels += counters.get("novels", 0)
                 total_skipped += counters.get("skipped", 0)
                 total_assets += counters.get("assets_downloaded", 0)
