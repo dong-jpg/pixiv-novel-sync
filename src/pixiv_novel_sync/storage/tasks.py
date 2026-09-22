@@ -5,6 +5,19 @@ import json
 from typing import Any
 
 
+def _clamp_log_page(page: int, page_size: int) -> tuple[int, int]:
+    """日志分页夹到合法范围，避免 page_size=0 时除零。"""
+    try:
+        page_value = int(page)
+    except (TypeError, ValueError):
+        page_value = 1
+    try:
+        size_value = int(page_size)
+    except (TypeError, ValueError):
+        size_value = 20
+    return max(page_value, 1), max(min(size_value, 200), 1)
+
+
 class TasksMixin:
     """任务日志管理 mixin。
 
@@ -47,6 +60,7 @@ class TasksMixin:
                      task_type: str | None = None, is_auto_sync: bool | None = None,
                      days: int = 3) -> dict[str, Any]:
         """获取任务日志列表"""
+        page, page_size = _clamp_log_page(page, page_size)
         offset = (page - 1) * page_size
 
         conditions = ["started_at >= datetime('now', ? || ' days')"]
@@ -207,6 +221,7 @@ class TasksMixin:
         AI 创作任务是独立的流式系统（ai_jobs 表），这里只做只读投影，不迁移数据。
         started_at 缺失时回退到 created_at 以保证时间过滤/排序一致。
         """
+        page, page_size = _clamp_log_page(page, page_size)
         with self._lock:
             offset = (page - 1) * page_size
             conditions = ["COALESCE(started_at, created_at) >= datetime('now', ? || ' days')"]

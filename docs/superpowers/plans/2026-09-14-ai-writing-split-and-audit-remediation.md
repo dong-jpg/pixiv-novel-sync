@@ -164,16 +164,16 @@
 - [ ] **T2-06 分页 tiebreaker**
   `novels.py:441-447`（`updated_desc` 补回 `novel_id DESC`）、`bookmarks.py:39-45`、`users.py:232,302,344`、`series.py:594`、`pending_and_watermarks.py:507`、`tasks.py:205,393` 末尾统一补主键。
 
-- [ ] **T2-07 `logs` `page_size` 夹紧**
+- [x] **T2-07 `logs` `page_size` 夹紧**
   `storage/tasks.py:176-211,350-398` `page = max(page,1); page_size = max(min(page_size,200),1)`；`webapp.py:1739` 同。验收：`page_size=0` 与 `-1` 返回 400 或夹到 1。
 
 - [ ] **T2-08 `_lock` 与 `transaction()` 锁序**
   写方法去掉 `with self._lock`（`_lock` 只保护 `_all_conns`）。验收：`grep -c "with self._lock" storage/` 显著下降；全量测试绿。
 
-- [ ] **T2-09 `upsert_subscribed_series.cover_url` 空串覆盖**
+- [x] **T2-09 `upsert_subscribed_series.cover_url` 空串覆盖**
   `series.py:44` 改 `CASE WHEN excluded.cover_url IS NOT NULL AND excluded.cover_url != '' THEN ... ELSE series.cover_url END`。
 
-- [ ] **T2-10 `upsert_user` `'"{}"'` 绕过**
+- [x] **T2-10 `upsert_user` `'"{}"'` 绕过**
   `users.py:26` 守卫改 `json_valid(...) AND json_type(...)='object' AND excluded.raw_json != '{}'`；`sync_engine.py:2278` 传 `"{}"` 字面量。
 
 - [ ] **T2-11 索引整理**

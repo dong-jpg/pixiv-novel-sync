@@ -23,7 +23,11 @@ class UsersMixin:
                 ON CONFLICT(user_id) DO UPDATE SET
                   name = excluded.name,
                   account = CASE WHEN excluded.account IS NOT NULL AND excluded.account != '' THEN excluded.account ELSE users.account END,
-                  raw_json = CASE WHEN excluded.raw_json != '{}' AND excluded.raw_json != '' THEN excluded.raw_json ELSE users.raw_json END,
+                  raw_json = CASE
+                    WHEN json_valid(excluded.raw_json)
+                     AND json_type(excluded.raw_json) = 'object'
+                     AND excluded.raw_json != '{}'
+                    THEN excluded.raw_json ELSE users.raw_json END,
                   updated_at = CURRENT_TIMESTAMP
                 """,
                 (record.user_id, record.name, record.account, record.raw_json),

@@ -42,7 +42,9 @@ class SeriesMixin:
                     title = CASE WHEN excluded.title != '' THEN excluded.title ELSE series.title END,
                     description = CASE WHEN excluded.description != '' THEN excluded.description ELSE series.description END,
                     user_id = CASE WHEN excluded.user_id != 0 THEN excluded.user_id ELSE series.user_id END,
-                    cover_url = COALESCE(excluded.cover_url, series.cover_url),
+                    cover_url = CASE
+                        WHEN excluded.cover_url IS NOT NULL AND excluded.cover_url != ''
+                        THEN excluded.cover_url ELSE series.cover_url END,
                     total_novels = CASE WHEN excluded.total_novels > 0 THEN excluded.total_novels ELSE series.total_novels END,
                     -- source_url 由主键 series_id 唯一确定，COALESCE 只补历史遗留空值。
                     source_url = COALESCE(series.source_url, excluded.source_url),
