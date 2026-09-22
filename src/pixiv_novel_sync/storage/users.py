@@ -363,8 +363,25 @@ class UsersMixin:
         ✅ Bug #5 修复: 按正确顺序删除（从属表→主表），避免中间失败导致数据不一致
         """
         with self.transaction():
+                series_ids = [
+                    row[0]
+                    for row in self.conn.execute(
+                        "SELECT series_id FROM series WHERE user_id = ?",
+                        (user_id,),
+                    )
+                ]
+                for series_id in series_ids:
+                    self.delete_series(int(series_id))
                 # 1. 先获取要删除的小说 ID 列表
                 novel_ids = [row[0] for row in self.conn.execute("SELECT novel_id FROM novels WHERE user_id = ?", (user_id,)).fetchall()]
+                self.conn.execute(
+                    "DELETE FROM reading_progress WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)",
+                    (user_id,),
+                )
+                self.conn.execute(
+                    "DELETE FROM preference_analyzed_novels WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)",
+                    (user_id,),
+                )
 
                 # 2. 删除小说相关的从属数据（按依赖顺序）
                 # 2.1 删除 FTS 索引。走 rowid（== novel_id）：按 novel_id 会全表扫描

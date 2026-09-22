@@ -155,7 +155,7 @@
 - [x] **T2-03 `_rebuild_table_with_foreign_key` 事务化**
   `schema.py:263-273` 先 `_commit_if_needed()`，`PRAGMA foreign_keys=OFF` 放事务外，rename / create / copy / drop 包进 `with self.transaction()`；启动发现 `*_old` 表则报错。
 
-- [ ] **T2-04 `delete_user` 删 series + 孤儿表**
+- [x] **T2-04 `delete_user` 删 series + 孤儿表**
   `storage/users.py:356-417` 对 `SELECT series_id FROM series WHERE user_id=?` 走 `delete_series` 逻辑；`delete_novel` / `delete_user` 补清 `reading_progress`、`preference_analyzed_novels`。验收：删作者后 `list_following_series` 不含其系列，两张表无孤儿行。
 
 - [ ] **T2-05 归档目录持久化**
