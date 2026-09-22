@@ -160,20 +160,16 @@ def test_read_transaction_base_exception_rolls_back_outer_write(
     ).fetchone()[0] == "恢复用户"
 
 
-def test_read_transaction_joins_implicit_write_transaction(db: Database) -> None:
-    db.conn.execute(
-        "INSERT INTO users (user_id, name, raw_json) "
-        "VALUES (904, '隐式事务用户', '{}')"
-    )
-    assert db._transaction_depth == 0
-    assert db.conn.in_transaction
-
+def test_read_transaction_rolls_back_writes_it_started(db: Database) -> None:
     with pytest.raises(RuntimeError, match="inner"):
         with db.read_transaction():
+            db.conn.execute(
+                "INSERT INTO users (user_id, name, raw_json) "
+                "VALUES (904, '读事务用户', '{}')"
+            )
             raise RuntimeError("inner")
 
-    assert db.conn.in_transaction
-    db.conn.rollback()
+    assert db.conn.in_transaction is False
     assert db.conn.execute(
         "SELECT 1 FROM users WHERE user_id = 904"
     ).fetchone() is None
@@ -541,31 +537,17 @@ def test_fts_migration_handles_empty_index(db: Database) -> None:
     assert db.conn.execute("SELECT COUNT(*) FROM novel_fts").fetchone()[0] == 0
 
 
-def test_fts_migration_tolerates_pending_implicit_transaction(tmp_path: Path) -> None:
-    """迁移开始前若已有未提交的隐式事务，重建不能崩在 BEGIN IMMEDIATE 上。
-
-    回归：init_schema 的迁移链里，前一个迁移可能刚跑过 UPDATE（例如
-    _migrate_novel_texts_table 给老库补 has_content 列后回填），Python sqlite3
-    为它开了隐式事务且没提交。此时 transaction() 的 BEGIN IMMEDIATE 会抛
-    "cannot start a transaction within a transaction"，让 init_schema 直接崩在
-    启动阶段——而缺列的老库正是本迁移的目标人群。
-    """
-    db_path = tmp_path / "legacy-fts-pending-tx.db"
-    _legacy_fts_db(db_path)
-
-    db = Database(db_path)
+def test_statement_does_not_leave_implicit_transaction(tmp_path: Path) -> None:
+    """单条写语句不应留下隐式事务。"""
+    db = Database(tmp_path / "autocommit.db")
+    db.init_schema()
     try:
-        # 复刻前一个迁移留下的未提交写：同一个连接上的 UPDATE 会打开隐式事务
-        db.conn.execute("UPDATE novels SET meta_hash = 'pending'")
-        assert db.conn.in_transaction
-
-        db._migrate_novel_fts_rowid()
-
-        rows = db.conn.execute("SELECT rowid, novel_id FROM novel_fts ORDER BY rowid").fetchall()
-        assert [(row[0], row[1]) for row in rows] == [
-            (25310744, 25310744),
-            (27380872, 27380872),
-        ]
+        db.conn.execute(
+            "INSERT INTO users (user_id, name, raw_json) VALUES (1, '作者', '{}')"
+        )
+        assert db.conn.in_transaction is False
+        row = db.conn.execute("SELECT name FROM users WHERE user_id = 1").fetchone()
+        assert row[0] == "作者"
     finally:
         db.close()
 

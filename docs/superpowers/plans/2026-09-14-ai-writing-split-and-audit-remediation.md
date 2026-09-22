@@ -149,7 +149,7 @@
 - [x] **T2-01 `init_schema` 进程级一次**
   新增 `Database.ensure_schema(path)` 按 `db_path` 记忆（参考 `ai/services/core.py:128-134 _initialized_paths`）；`webapp.py:70-82 _open_database`、`rescue_web.py:151`、`preference_web.py:28`、`web/managers.py:445/656/735` 改为不再每次 `init_schema()`；`create_app`、CLI 入口、job 入口各调一次。`_migrate_*` 里的 UPDATE / `INSERT OR IGNORE` / `CREATE INDEX` 先 SELECT 判断有行才写（`schema.py:508-516` 回填、`_fix_cleared_status`），`foreign_key_check` 只在真正建表 / 重建时跑。验收：7k 篇库 `_open_database` < 20 ms；另一线程持 `BEGIN IMMEDIATE` 时页面请求不阻塞。
 
-- [ ] **T2-02 连接改 `isolation_level=None`**
+- [x] **T2-02 连接改 `isolation_level=None`**
   `storage/connection.py:120`；所有写方法确认走 `transaction()` 或显式 `commit()`；删 `_migrate_novel_fts_rowid:383` 的补丁式 `_commit_if_needed()` 与 `test_fts_migration_tolerates_pending_implicit_transaction`；`transaction()` :184 的 `rollback()` 隐患随之消失。验收：全量测试绿；`grep -n "_commit_if_needed" storage/` 只剩 transaction 内部。
 
 - [ ] **T2-03 `_rebuild_table_with_foreign_key` 事务化**

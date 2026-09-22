@@ -46,7 +46,13 @@ class DatabaseConnection:
         existing = getattr(self._local, "conn", None)
         if existing is not None and getattr(self._local, "generation", -1) == self._generation:
             return existing
-        conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30.0)
+        # isolation_level=None：语句自动提交，避免隐式 BEGIN 把写锁挂到连接关闭。
+        conn = sqlite3.connect(
+            self.path,
+            check_same_thread=False,
+            timeout=30.0,
+            isolation_level=None,
+        )
         conn.row_factory = sqlite3.Row
         # 每个连接独立开启 WAL + 设置超时
         conn.execute("PRAGMA journal_mode=WAL")
