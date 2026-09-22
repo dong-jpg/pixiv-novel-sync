@@ -176,51 +176,6 @@ def test_execute_task_passes_finalization_claim_to_bookmark(monkeypatch):
     assert observed == [claim_finalization]
 
 
-def test_execute_task_dispatches_sync_check_without_releasing_runner_slot(monkeypatch):
-    calls = []
-
-    def fake_run_check_bookmarks_task(
-        settings,
-        manager,
-        job_id,
-        release_semaphore=True,
-        raise_on_error=False,
-        stop_requested=None,
-    ):
-        calls.append((settings, manager, job_id, release_semaphore, raise_on_error, stop_requested))
-        return {"total_checked": 2}
-
-    monkeypatch.setattr("pixiv_novel_sync.jobs.quick_sync.run_check_bookmarks_task", fake_run_check_bookmarks_task)
-    settings = object()
-    manager = object()
-
-    result = execute_task("sync_check", settings, {"manager": manager, "job_id": "job-1"})
-
-    assert result == {"total_checked": 2}
-    assert calls[0][:5] == (settings, manager, "job-1", False, True)
-    assert calls[0][5] is not None
-
-
-def test_execute_task_propagates_sync_check_failure(monkeypatch):
-    def fake_run_check_bookmarks_task(
-        settings,
-        manager,
-        job_id,
-        release_semaphore=True,
-        raise_on_error=False,
-        stop_requested=None,
-    ):
-        assert release_semaphore is False
-        assert raise_on_error is True
-        assert stop_requested is not None
-        raise RuntimeError("sync check failed")
-
-    monkeypatch.setattr("pixiv_novel_sync.jobs.quick_sync.run_check_bookmarks_task", fake_run_check_bookmarks_task)
-
-    with pytest.raises(RuntimeError, match="sync check failed"):
-        execute_task("sync_check", object(), {"manager": object(), "job_id": "job-1"})
-
-
 def test_direct_sync_progress_callback_ignores_missing_manager_methods():
     callback = _build_progress_callback(object(), "job-1")
 

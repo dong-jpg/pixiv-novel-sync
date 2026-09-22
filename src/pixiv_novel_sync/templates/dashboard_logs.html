@@ -366,8 +366,8 @@
 
       // 两大分类下各自的 task_type 选项
       const SYNC_TASK_OPTIONS = [
-        { value: 'bookmarks', label: '收藏同步' },
-        { value: 'following_list', label: '关注列表' },
+        { value: 'bookmark', label: '收藏同步' },
+        { value: 'following_users', label: '关注列表' },
         { value: 'following_novels', label: '关注小说' },
         { value: 'subscribed_series', label: '追更系列' },
         { value: 'user_status', label: '检查用户状态' },
@@ -625,13 +625,16 @@
       // Helpers
       const formatDate = (dateStr) => {
         if (!dateStr) return '-';
-        return new Date(dateStr).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        // SQLite 的 CURRENT_TIMESTAMP 不带时区，补 Z 按 UTC 解析，与首页一致
+        const d = new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(dateStr) ? dateStr : dateStr + 'Z');
+        if (isNaN(d)) return dateStr;
+        return d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
       };
 
       const formatTime = (dateStr) => {
         if (!dateStr) return '-';
         if (/^\d{2}:\d{2}:\d{2}$/.test(dateStr)) return dateStr;
-        const d = new Date(dateStr);
+        const d = new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(dateStr) ? dateStr : dateStr + 'Z');
         if (isNaN(d)) return dateStr;
         return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       };

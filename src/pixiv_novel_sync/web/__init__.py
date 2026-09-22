@@ -2,8 +2,6 @@
 from .managers import (
     AutoSyncScheduler,
     SettingsManager,
-    SyncJobManager,
-    SyncJobState,
     TASK_LABELS,
 )
 from .utils import (
@@ -33,8 +31,6 @@ from .utils import (
 __all__ = [
     "AutoSyncScheduler",
     "SettingsManager",
-    "SyncJobManager",
-    "SyncJobState",
     "TASK_LABELS",
     "_atomic_write_yaml",
     "_oauth_task_public_payload",

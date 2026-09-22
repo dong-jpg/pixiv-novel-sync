@@ -26,7 +26,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync_parser = subparsers.add_parser("sync", help="Build sync job specs")
     sync_parser.add_argument("tasks", nargs="*", default=None)
-    subparsers.add_parser("sync-check", help="Build sync check job specs")
     status_check_parser = subparsers.add_parser("status-check", help="Build status check job specs")
     status_check_parser.set_defaults(tasks=None)
     status_check_parser.add_argument(
@@ -47,8 +46,6 @@ def build_parser() -> argparse.ArgumentParser:
 def build_job_spec_from_args(args: argparse.Namespace) -> JobSpec:
     if args.command == "sync":
         return JobSpec(source=JobSource.CLI, job_type=JobType.SYNC, task_types=list(args.tasks or []))
-    if args.command == "sync-check":
-        return JobSpec(source=JobSource.CLI, job_type=JobType.SYNC_CHECK, task_types=["sync_check"])
     if args.command == "status-check":
         tasks = args.tasks if args.tasks is not None else ["user_status", "novel_status", "series_status"]
         return JobSpec(source=JobSource.CLI, job_type=JobType.STATUS_CHECK, task_types=list(tasks))
@@ -118,7 +115,6 @@ def main() -> None:
         app.run(host=args.host, port=args.port, debug=False, threaded=True)
     elif args.command in {
         "sync",
-        "sync-check",
         "status-check",
         "pending-deletion-detection",
         "user-backup",

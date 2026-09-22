@@ -140,6 +140,24 @@ def test_task_logs_template_surfaces_abort_and_incomplete_markers():
     assert "suspicious_missing_streak" in html
 
 
+def test_task_logs_template_sync_filter_uses_current_task_type_keys():
+    """T1-10：同步筛选项的值必须对齐真实 task_type（bookmark / following_users）。
+
+    旧值用的是过时的 key，选中后按值过滤永远匹配不到任何日志行。
+    """
+    html = read(TEMPLATES / "dashboard_logs.html")
+
+    assert "value: 'bookmark'" in html
+    assert "value: 'following_users'" in html
+
+
+def test_task_logs_template_treats_naive_timestamps_as_utc():
+    """T1-10：后端存的是无时区 UTC 串，格式化前补 Z 才不会被当成本地时间偏移。"""
+    html = read(TEMPLATES / "dashboard_logs.html")
+
+    assert "dateStr + 'Z'" in html
+
+
 def test_library_contains_rescue_tab_and_api_contract():
     html = read(TEMPLATES / "dashboard_novels.html")
 

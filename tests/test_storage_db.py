@@ -194,8 +194,6 @@ def test_delete_novel_cascades_child_rows_and_cleans_satellites(db: Database) ->
     db.record_asset(100, "cover", "https://i.pximg.net/x.jpg", "x.jpg", "hash")
     db.upsert_source(SourceRecord(novel_id=100, source_type="bookmark_public", source_key="1"))
     db.replace_fts(100, "title", "caption", "author", "body")
-    db.init_sync_check_table()
-    db.upsert_sync_check_item(100, True)
     db.conn.execute("INSERT INTO pending_deletions (item_type, item_id, title, reason, status) VALUES ('novel', 100, 't', 'r', 'pending')")
     db.conn.execute("INSERT INTO recommendation_items (run_id, profile_id, item_type, novel_id, title, tags_json, matched_json, status) VALUES (1, 1, 'novel', 100, 't', '[]', '{}', 'pending')")
     db.conn.execute("INSERT INTO recommendation_feedback (item_type, feedback_type, novel_id) VALUES ('novel', 'dismiss', 100)")
@@ -208,7 +206,6 @@ def test_delete_novel_cascades_child_rows_and_cleans_satellites(db: Database) ->
     assert db.conn.execute("SELECT 1 FROM assets WHERE novel_id = 100").fetchone() is None
     assert db.conn.execute("SELECT 1 FROM sources WHERE novel_id = 100").fetchone() is None
     assert db.conn.execute("SELECT 1 FROM novel_fts WHERE novel_id = 100").fetchone() is None
-    assert db.conn.execute("SELECT 1 FROM sync_check_list WHERE novel_id = 100").fetchone() is None
     assert db.conn.execute("SELECT 1 FROM pending_deletions WHERE item_type = 'novel' AND item_id = 100").fetchone() is None
     assert db.conn.execute("SELECT 1 FROM recommendation_items WHERE novel_id = 100").fetchone() is None
     assert db.conn.execute("SELECT 1 FROM recommendation_feedback WHERE novel_id = 100").fetchone() is None
@@ -220,8 +217,6 @@ def test_delete_user_removes_owned_novels_and_children(db: Database) -> None:
     db.record_asset(101, "cover", "https://i.pximg.net/x.jpg", "x.jpg", "hash")
     db.upsert_source(SourceRecord(novel_id=101, source_type="bookmark_public", source_key="5"))
     db.replace_fts(101, "title", "caption", "author", "body")
-    db.init_sync_check_table()
-    db.upsert_sync_check_item(101, True)
     db.conn.execute("INSERT INTO pending_deletions (item_type, item_id, title, reason, status) VALUES ('user', 5, 'u', 'r', 'pending')")
     db.conn.execute("INSERT INTO pending_deletions (item_type, item_id, title, reason, status) VALUES ('novel', 101, 'n', 'r', 'pending')")
     db.conn.execute("INSERT INTO recommendation_feedback (item_type, feedback_type, novel_id, author_id) VALUES ('novel', 'dismiss', 101, 5)")
@@ -278,10 +273,15 @@ def test_cleanup_old_pending_deletions_does_not_auto_confirm_pending(db: Databas
     assert db.conn.execute("SELECT 1 FROM pending_deletions WHERE item_id = 201").fetchone() is None
 
 
-def test_batch_sync_check_upsert(db: Database) -> None:
-    db.init_sync_check_table()
-    db.upsert_sync_check_items([(1, True), (2, False), (3, True)], scope="scope")
-    assert db.get_sync_check_list("scope") == {1: True, 2: False, 3: True}
+def test_cleanup_stale_pending_commits_even_on_zero_hits(db: Database) -> None:
+    """T1-05：即使 0 行命中也要提交，否则隐式事务悬挂到连接关闭。
+
+    回归：旧代码只在有命中时提交，一次空 UPDATE 会让连接停在开着的事务里，
+    后续读被 WAL 的旧快照困住。
+    """
+    # 库里没有匹配的 pending 行，UPDATE 命中 0 行
+    assert db.cleanup_stale_pending({1, 2, 3}, "novel") == 0
+    assert db.conn.in_transaction is False
 
 
 def test_batch_record_assets(db: Database) -> None:
@@ -697,6 +697,49 @@ def test_list_bookmark_novels_search_matches_via_fts_rowid(db: Database) -> None
 
     assert result["total"] == 1
     assert [item["novel_id"] for item in result["items"]] == [31415926]
+
+
+def test_list_bookmark_novels_exposes_avatar_and_r18_badge(db: Database) -> None:
+    """T1-12：收藏列表要投影作者头像与 x_restrict，前端才画得出头像和 R18 角标。
+
+    头像从作者 raw_json 的 profile_image_urls.medium 提取，字段名对齐前端的
+    author_avatar_url；raw_json 缺失时该字段必须是 None 而不是报错。
+    """
+    db.upsert_user(
+        UserRecord(
+            user_id=7,
+            name="作者7",
+            account="acc7",
+            raw_json='{"profile_image_urls": {"medium": "https://i.pximg.net/avatar_medium.jpg"}}',
+        )
+    )
+    db.upsert_novel(
+        NovelRecord(
+            novel_id=555,
+            user_id=7,
+            series_id=None,
+            title="限制级标题",
+            caption="简介",
+            visible=True,
+            restrict="public",
+            x_restrict=2,
+            text_length=10,
+            total_bookmarks=0,
+            total_views=0,
+            cover_url=None,
+            tags_json="[]",
+            create_date="2026-01-01T00:00:00+00:00",
+            raw_json="{}",
+            meta_hash="meta",
+        )
+    )
+    db.upsert_source(SourceRecord(novel_id=555, source_type="bookmark_public", source_key="1"))
+
+    result = db.list_bookmark_novels()
+
+    item = next(row for row in result["items"] if row["novel_id"] == 555)
+    assert item["author_avatar_url"] == "https://i.pximg.net/avatar_medium.jpg"
+    assert item["x_restrict"] == 2
 
 
 def test_list_following_series_search_falls_back_to_chapter_fts(db: Database) -> None:

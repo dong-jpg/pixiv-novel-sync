@@ -615,6 +615,81 @@ def test_cancelled_run_marks_run_cancelled_not_failed(tmp_path: Path):
     db.close()
 
 
+def test_partial_search_errors_mark_incomplete_but_still_publish(tmp_path: Path):
+    """T1-09：部分查询失败时 run 仍 succeeded，但打上 incomplete + search_errors，好候选照常落库。
+
+    回归：单个查询的 API 异常曾直接冒出炸掉整轮，让本可入库的候选全丢；现在
+    per-query try/except 累加 errors 并继续，只要不是全败就正常发布。
+    """
+    import pytest
+
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    profile_id = db.create_preference_profile({
+        "name": "default", "source_scope": {}, "stats": {},
+        "profile": {"search_strategy": {"primary_tags": ["甜文", "冒险"]}},
+    })
+
+    good = SimpleNamespace(
+        id=2, text_length=6000, title="温柔", caption="", tags=["甜文"],
+        user=SimpleNamespace(id=9, name="A"), total_bookmarks=200, series=None, series_id=None,
+    )
+
+    class FlakyApi:
+        def __init__(self):
+            self.calls = 0
+
+        def search_novel(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(novels=[good], next_url=None)
+            raise RuntimeError("second query boom")
+
+        def parse_qs(self, url):
+            return None
+
+    service = RecommendationService(db, make_settings(tmp_path), api=FlakyApi())
+    result = service.run(profile_id=profile_id)
+
+    assert result["stats"]["saved"] == 1
+    assert result["stats"]["errors"] >= 1
+    assert result["stats"]["incomplete"] is True
+    assert result["stats"]["aborted_reason"] == "search_errors"
+    latest_run = max(db.list_recommendation_runs(), key=lambda r: r["id"])
+    assert latest_run["status"] == "succeeded"
+    items = db.list_recommendation_items()
+    assert [item["novel_id"] for item in items] == [2]
+    db.close()
+
+
+def test_all_search_queries_failing_marks_run_failed_and_publishes_nothing(tmp_path: Path):
+    """T1-09：所有查询都失败时 run 标记 failed 并抛 RuntimeError，一条 item 都不落。"""
+    import pytest
+
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    profile_id = db.create_preference_profile({
+        "name": "default", "source_scope": {}, "stats": {},
+        "profile": {"search_strategy": {"primary_tags": ["甜文", "冒险"]}},
+    })
+
+    class BoomApi:
+        def search_novel(self, **kwargs):
+            raise RuntimeError("all boom")
+
+        def parse_qs(self, url):
+            return None
+
+    service = RecommendationService(db, make_settings(tmp_path), api=BoomApi())
+    with pytest.raises(RuntimeError, match="推荐搜索全部失败"):
+        service.run(profile_id=profile_id)
+
+    assert db.list_recommendation_items() == []
+    latest_run = max(db.list_recommendation_runs(), key=lambda r: r["id"])
+    assert latest_run["status"] == "failed"
+    db.close()
+
+
 def test_filter_state_includes_feedback_dismissed(tmp_path: Path):
     """recommendation_feedback 中 dismissed/muted 的记录必须并入排除集合。"""
     db = Database(tmp_path / "rec.db")

@@ -1,10 +1,8 @@
 """管理器类模块 - 从 webapp.py 提取
 
 包含:
-- SyncJobState: 同步任务状态数据类
 - TASK_LABELS: 任务标签字典
 - AutoSyncScheduler: 定时同步调度器
-- SyncJobManager: 同步任务管理器
 - SettingsManager: 设置管理器
 """
 from __future__ import annotations
@@ -20,7 +18,6 @@ from typing import Any
 
 from ..settings import Settings, load_settings
 from ..storage_db import Database
-from ..sync_check import build_sync_check_fingerprint
 from .utils import (
     _atomic_write_yaml,
     _load_yaml_file,
@@ -240,23 +237,6 @@ SETTINGS_SECTIONS: dict[str, frozenset[str]] = {
         }
     ),
 }
-
-
-@dataclass(slots=True)
-class SyncJobState:
-    job_id: str
-    status: str = "pending"
-    message: str = "等待开始"
-    started_at: float | None = None
-    finished_at: float | None = None
-    stats: dict[str, Any] | None = None
-    error: str | None = None
-    progress: dict[str, Any] = field(default_factory=dict)
-    logs: list[dict[str, Any]] = field(default_factory=list)
-    task_list: list[str] = field(default_factory=list)  # 任务列表
-    current_task_index: int = 0  # 当前执行的任务索引
-    is_auto_sync: bool = False  # 是否是定时任务
-    log_id: int | None = None  # 关联的日志 ID
 
 
 TASK_LABELS = {
@@ -805,16 +785,42 @@ class AutoSyncScheduler:
                 self._current_task_job_id = job.job_id
                 self._current_task_name = task_name
         if stopped_during_submit:
-            cancel_task = self.cancel_task
-            if cancel_task is not None:
+            job_manager = self.shared_job_manager
+            if job_manager is not None and hasattr(job_manager, "mark_cancelled"):
                 try:
-                    cancel_task(job.job_id)
+                    job_manager.mark_cancelled(job.job_id, message="scheduler stopped before start")
                 except Exception as exc:
                     logger.warning(
-                        "Failed to cancel auto sync task %s after scheduler stop: %s",
+                        "Failed to mark auto sync task %s cancelled after scheduler stop: %s",
                         job.job_id,
                         exc,
                     )
+            else:
+                cancel_task = self.cancel_task
+                if cancel_task is not None:
+                    try:
+                        cancel_task(job.job_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to cancel auto sync task %s after scheduler stop: %s",
+                            job.job_id,
+                            exc,
+                        )
+            # job 已终结，task_logs 里那行 running 不会有人再回写，必须就地改成
+            # cancelled，否则日志页永远挂着一条「运行中」。
+            progress = getattr(job, "progress", None)
+            log_id = progress.get("log_id") if isinstance(progress, dict) else None
+            if log_id:
+                try:
+                    from pixiv_novel_sync.storage_db import Database
+
+                    db = Database(settings.storage.db_path)
+                    try:
+                        db.update_task_log(int(log_id), "cancelled", error_message="scheduler stopped before start")
+                    finally:
+                        db.close()
+                except Exception as exc:
+                    logger.warning("回写调度器任务日志失败 %s: %s", job.job_id, exc)
             return True
 
         try:
@@ -915,80 +921,6 @@ class AutoSyncScheduler:
             challenger_priority,
             job_id,
         )
-
-
-@dataclass(slots=True)
-class SyncJobManager:
-    config_path: str | None
-    env_path: str | None
-    _jobs: dict[str, SyncJobState] = field(default_factory=dict)
-    _lock: threading.Lock = field(default_factory=threading.Lock)
-    _semaphore: threading.Semaphore = field(default_factory=lambda: threading.Semaphore(1))
-    MAX_LOGS: int = 50
-    MAX_JOBS: int = 100  # 最多保留的任务数
-
-    def get_job(self, job_id: str) -> SyncJobState | None:
-        with self._lock:
-            return self._jobs.get(job_id)
-
-    def latest_job(self) -> SyncJobState | None:
-        with self._lock:
-            if not self._jobs:
-                return None
-            # 按 started_at 排序，而非字符串排序
-            return max(self._jobs.values(), key=lambda j: j.started_at or 0)
-
-    def latest_matching_sync_check_scope(self, settings: Settings, user_id: int | None, task_type: str) -> tuple[str, str] | None:
-        """保留：仅测试/兼容用途。"""
-        fingerprint = build_sync_check_fingerprint(settings, user_id)
-        with self._lock:
-            jobs = sorted(
-                self._jobs.values(),
-                key=lambda job: job.finished_at or job.started_at or 0,
-                reverse=True,
-            )
-            for job in jobs:
-                if job.status != "succeeded":
-                    continue
-                scope = job.progress.get("sync_check_scope")
-                if not scope:
-                    continue
-                if job.progress.get("sync_check_fingerprint") != fingerprint:
-                    continue
-                task_types = job.progress.get("sync_check_task_types") or []
-                if task_type not in task_types:
-                    continue
-                return str(scope), job.job_id
-        return None
-
-    def add_log(self, job_id: str, level: str, message: str) -> None:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if job is None:
-                return
-            log_entry = {
-                "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "level": level,
-                "message": message,
-            }
-            job.logs.append(log_entry)
-            if len(job.logs) > self.MAX_LOGS:
-                job.logs = job.logs[-self.MAX_LOGS:]
-
-    def update_progress(self, job_id: str, **kwargs: Any) -> None:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if job is None:
-                return
-            job.progress.update(kwargs)
-            job.message = kwargs.get("message", job.message)
-
-    def is_cancel_requested(self, job_id: str) -> bool:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if job is None:
-                return False
-            return bool(job.progress.get("cancel_requested", False))
 
 
 class SettingsManager:
@@ -1093,7 +1025,16 @@ class SettingsManager:
         )
         
         # 定时同步设置（auto_sync_enabled 由首页按钮单独控制）
-        sync_data["auto_sync_timezone"] = str(payload.get("auto_sync_timezone", sync_data.get("auto_sync_timezone", "UTC")))
+        _tz_raw = str(payload.get("auto_sync_timezone", sync_data.get("auto_sync_timezone", "UTC")))
+        if _tz_raw.strip():
+            # 先校验再落盘：无效时区名会让 cron 在错误时区里静默计算，且
+            # ZoneInfoNotFoundError 不是 ImportError，必须显式转 ValueError。
+            from zoneinfo import ZoneInfo
+            try:
+                ZoneInfo(_tz_raw.strip())
+            except Exception:
+                raise ValueError(f"非法的时区: auto_sync_timezone={_tz_raw!r}") from None
+        sync_data["auto_sync_timezone"] = _tz_raw
 
         # 校验 cron 表达式合法性的辅助函数
         from ..settings import cron_to_next_run as _cron_check

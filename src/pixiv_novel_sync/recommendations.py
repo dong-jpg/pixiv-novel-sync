@@ -10,6 +10,7 @@ from .auth import PixivAuthManager
 from .rate_limiter import RateLimiter
 from .settings import Settings
 from .storage_db import Database
+from .sync.utils import retry_on_pixiv_error
 
 # 单个系列拉取章节时的安全翻页上限，避免异常或循环的 next_url 造成无限翻页
 _SERIES_PAGE_SAFETY_LIMIT = 50
@@ -113,10 +114,17 @@ class RecommendationService:
                         stats["filtered"] += 1
                         continue
 
-                    item = self._candidate_to_item(
-                        api, novel, query, profile, plan.get("filters") or {}, filter_state,
-                        series_length_cache, pending_items=pending_items,
-                    )
+                    try:
+                        item = self._candidate_to_item(
+                            api, novel, query, profile, plan.get("filters") or {}, filter_state,
+                            series_length_cache, pending_items=pending_items,
+                        )
+                    except InterruptedError:
+                        raise
+                    except Exception:
+                        # 单个候选的 API/数据异常不应炸掉整轮
+                        stats["errors"] += 1
+                        continue
                     if item is None:
                         stats["filtered"] += 1
                         continue
@@ -128,6 +136,12 @@ class RecommendationService:
                     pending_items.append(item)
                     stats["saved"] += 1
                 self._page_delay(_emit)
+            if stats["errors"] > 0:
+                stats["incomplete"] = True
+                stats["aborted_reason"] = "search_errors"
+            if stats["searched"] > 0 and stats["errors"] == stats["searched"]:
+                self.db.update_recommendation_run(run_id, "failed", stats=stats, error_message="全部搜索查询失败")
+                raise RuntimeError("推荐搜索全部失败")
             # 单事务发布：全部 upsert + run 终态一起提交，失败则整体回滚
             with self.db.transaction():
                 for item in pending_items:
@@ -161,7 +175,7 @@ class RecommendationService:
         while next_query and len(results) < limit and page_count < max_pages:
             if emit:
                 emit("_cancel_check", {})
-            response = api.search_novel(**next_query)
+            response = self._call_search(api, next_query)
             novels = list(getattr(response, "novels", []) or [])
             if not novels:  # 7.1: 空页即停
                 break
@@ -171,6 +185,11 @@ class RecommendationService:
             if next_query and len(results) < limit:
                 self._page_delay(emit)
         return results[:limit]
+
+    def _call_search(self, api: AppPixivAPI, next_query: dict[str, Any]) -> Any:
+        return retry_on_pixiv_error(max_retries=3, stop_requested=self.stop_requested)(
+            lambda: api.search_novel(**next_query)
+        )()
 
     def _candidate_to_item(
         self,
@@ -349,9 +368,14 @@ class RecommendationService:
         while next_query and pages < _SERIES_PAGE_SAFETY_LIMIT:
             pages += 1
             try:
-                response = api.novel_series(**next_query)
+                response = retry_on_pixiv_error(max_retries=3, stop_requested=self.stop_requested)(
+                    lambda: api.novel_series(**next_query)
+                )()
             except TypeError:
                 response = api.novel_series(series_id)
+            except Exception:
+                # 系列 API 失败按 0 处理，不中断整轮推荐
+                return (0, 0)
             novels = self._extract_series_novels(response)
             total_count += len(novels)
             total_length += sum(self._novel_text_length(item) for item in novels)

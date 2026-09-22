@@ -187,8 +187,8 @@ class PendingAndWatermarksMixin:
                     (item_type, *batch),
                 )
                 total_count += result.rowcount
-            if total_count:
-                self._commit_if_needed()
+            # 0 行命中也要提交，否则隐式事务悬挂到连接关闭
+            self._commit_if_needed()
             return total_count
 
     def cleanup_old_pending_deletions(self, grace_period_days: int = 30, cleanup_confirmed_days: int = 7) -> dict[str, int]:

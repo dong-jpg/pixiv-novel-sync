@@ -355,7 +355,6 @@ class NovelsMixin:
                 # FTS 走 rowid（== novel_id）：按 novel_id 会全表扫描 UNINDEXED 列，
                 # 生产实测单次 39 秒，详见 replace_fts 的说明。
                 self.conn.execute("DELETE FROM novel_fts WHERE rowid = ?", (novel_id,))
-                self.conn.execute("DELETE FROM sync_check_list WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'novel' AND item_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM recommendation_items WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM recommendation_feedback WHERE novel_id = ?", (novel_id,))

@@ -230,14 +230,14 @@ class SeriesMixin:
             params_query,
         ).fetchall()
         items = [dict(row) for row in rows]
-        # 6.7: 提取作者头像
+        # 6.7: 提取作者头像，前端字段名是 author_avatar_url
         for item in items:
             raw_json = item.pop("author_raw_json", None)
             if raw_json:
                 from ..storage_db import Database
-                item["author_avatar"] = Database._extract_user_avatar(Database._load_raw_json(raw_json))
+                item["author_avatar_url"] = Database._extract_user_avatar(Database._load_raw_json(raw_json))
             else:
-                item["author_avatar"] = None
+                item["author_avatar_url"] = None
         return {
             "items": items,
             "page": page, "page_size": page_size,

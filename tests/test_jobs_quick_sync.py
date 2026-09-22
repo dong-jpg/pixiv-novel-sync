@@ -47,14 +47,13 @@ class FakeAuthManager:
 
 
 class FakeSyncService:
-    def __init__(self, api, db, storage, settings, sync_check_scope=None) -> None:
+    def __init__(self, api, db, storage, settings) -> None:
         self.api = api
         self.db = db
         self.storage = storage
         self.settings = settings
-        self.sync_check_scope = sync_check_scope
         self.sync_callback = None
-        self.check_callback = None
+        self.stop_requested = None
 
     def sync(
         self,
@@ -69,19 +68,6 @@ class FakeSyncService:
         if progress_callback is not None:
             progress_callback("page", {"page": 1})
         return {"novels": 1, "skipped": 0, "assets_downloaded": 0}
-
-    def check_all_existence(self, user_id, restricts, progress_callback=None):
-        self.check_callback = progress_callback
-        if progress_callback is not None:
-            progress_callback("page", {"page": 1})
-        return {
-            "total_checked": 1,
-            "new": 1,
-            "existing": 0,
-            "bookmarks": {"total": 1, "new": 1, "existing": 0},
-            "following_novels": {"total": 0, "new": 0, "existing": 0},
-            "subscribed_series": {"total": 0, "new": 0, "existing": 0},
-        }
 
 
 class FakeJobManager:
@@ -148,8 +134,8 @@ def quick_sync_env(monkeypatch):
         created["storage"] = storage
         return storage
 
-    def make_service(api, db, storage, settings, sync_check_scope=None):
-        service = FakeSyncService(api, db, storage, settings, sync_check_scope=sync_check_scope)
+    def make_service(api, db, storage, settings):
+        service = FakeSyncService(api, db, storage, settings)
         created["service"] = service
         return service
 
@@ -252,38 +238,3 @@ def test_run_bookmark_sync_skips_rebuild_when_finalization_claim_is_rejected(
     assert claim_calls == [True]
     assert quick_sync_env["db"].rebuild_catalog_calls == 0
     assert quick_sync_env["db"].closed is True
-
-
-def test_run_check_bookmarks_task_stops_before_login(settings, quick_sync_env):
-    manager = FakeJobManager()
-
-    with pytest.raises(InterruptedError, match="Task stopped by user"):
-        quick_sync.run_check_bookmarks_task(
-            settings,
-            manager,
-            "job-1",
-            release_semaphore=False,
-            raise_on_error=True,
-            stop_requested=lambda: True,
-        )
-
-    assert "auth" not in quick_sync_env
-    assert manager.released is False
-
-
-def test_run_check_bookmarks_task_stops_from_progress_callback(settings, quick_sync_env):
-    manager = FakeJobManager()
-    stop_calls = iter([False, True])
-
-    with pytest.raises(InterruptedError, match="Task stopped by user"):
-        quick_sync.run_check_bookmarks_task(
-            settings,
-            manager,
-            "job-1",
-            release_semaphore=False,
-            raise_on_error=True,
-            stop_requested=lambda: next(stop_calls),
-        )
-
-    assert quick_sync_env["db"].closed is True
-    assert manager.released is False

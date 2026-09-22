@@ -11,8 +11,6 @@ from pixiv_novel_sync.jobs.models import JobSource, JobStatus, JobType
 from pixiv_novel_sync.storage_db import Database as RealDatabase
 from pixiv_novel_sync.webapp import (
     AutoSyncScheduler,
-    SyncJobManager,
-    SyncJobState,
     _prune_stats_for_log,
     _task_log_status_for_stats,
     _web_job_spec,
@@ -120,9 +118,14 @@ def test_stop_during_submit_cancels_job_before_runner_starts():
         assert release_submit.wait(timeout=3)
         return state
 
+    shared_manager = SimpleNamespace(
+        mark_cancelled=lambda job_id, **kwargs: calls.append(("mark_cancelled", job_id)) or True,
+    )
+
     scheduler = AutoSyncScheduler(
         None,
         None,
+        shared_job_manager=shared_manager,
         submit_task=submit_task,
         run_task=lambda job_id: calls.append(("run", job_id)),
         cancel_task=lambda job_id: calls.append(("cancel", job_id)) or True,
@@ -141,7 +144,33 @@ def test_stop_during_submit_cancels_job_before_runner_starts():
     worker.join(timeout=3)
 
     assert not worker.is_alive()
-    assert calls == [("cancel", "shared-1")]
+    assert calls == [("mark_cancelled", "shared-1")]
+
+
+def test_submit_failure_marks_task_log_failed_instead_of_ghost_running(tmp_path, monkeypatch):
+    """T1-03：submit 抛异常时，已建的 task_log 必须落 failed，不能留下幽灵 running。
+
+    旧代码先 submit 再 create_task_log，submit 失败会留下没有任何终态回写路径的
+    内存任务；新顺序反过来后，except 分支负责把日志行标成 failed。
+    """
+    RecordingDatabase.created_logs = []
+    RecordingDatabase.updated_logs = []
+
+    def failing_submit(self, spec):
+        raise RuntimeError("submit boom")
+
+    monkeypatch.setattr("pixiv_novel_sync.webapp.Database", RecordingDatabase)
+    monkeypatch.setattr(webapp_module.JobManager, "submit", failing_submit)
+
+    app = _app(tmp_path, monkeypatch)
+    response = app.test_client().post("/api/dashboard/sync/start")
+
+    assert response.status_code == 400
+    assert RecordingDatabase.updated_logs == [
+        {"log_id": 1, "status": JobStatus.FAILED.value, "error_message": "job submit failed"}
+    ]
+    # 没有任务残留在内存里
+    assert app.config["job_manager"].latest_job() is None
 
 
 def test_auto_scheduler_has_no_legacy_sync_business_methods():
@@ -189,26 +218,6 @@ def test_auto_sync_status_reads_current_job_from_shared_manager(tmp_path, monkey
     assert response.status_code == 200
     assert response.get_json()["current_job"]["job_id"] == job.job_id
     assert response.get_json()["current_job"]["source"] == JobSource.SCHEDULER.value
-
-
-def test_sync_status_does_not_fall_back_to_legacy_manager(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        SyncJobManager,
-        "latest_job",
-        lambda self: SyncJobState(job_id="legacy-1"),
-    )
-    app = _app(tmp_path, monkeypatch)
-
-    response = app.test_client().get("/api/dashboard/sync/status")
-
-    assert response.status_code == 200
-    assert response.get_json() == {"job": None}
-
-
-def test_legacy_sync_job_manager_constructor_remains_compatible():
-    manager = SyncJobManager(config_path=None, env_path=None)
-
-    assert manager.latest_job() is None
 
 
 def test_health_counts_running_jobs_from_shared_manager(tmp_path, monkeypatch):

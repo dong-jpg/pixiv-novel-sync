@@ -86,6 +86,17 @@ def test_validate_base_url_allows_private_with_opt_in(monkeypatch):
         validate_base_url("https://100.64.0.1/v1", resolve=True)
 
 
+def test_validate_base_url_opt_in_allows_ipv6_loopback(monkeypatch):
+    """T1-07：opt-in 下 IPv6 回环 ::1 必须放行。
+
+    回归：Python 3.11 里 IPv6Address("::1") 的 is_reserved/is_loopback/is_private
+    同时为 True，若 is_reserved 的拒绝分支排在 is_loopback 放行之前，自建的
+    http://[::1]:port 模型服务永远连不上。
+    """
+    monkeypatch.setenv("PIXIV_AI_ALLOW_PRIVATE_HOSTS", "1")
+    assert validate_base_url("http://[::1]:11434/v1", resolve=True).startswith("http://[::1]")
+
+
 def test_resolve_target_rejects_explicit_zero_port(monkeypatch):
     def must_not_resolve(_host, port, *_args, **_kwargs):
         pytest.fail(f"显式端口 0 被错误改写为 {port} 并进入 DNS 解析")

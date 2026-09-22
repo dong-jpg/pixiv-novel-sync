@@ -162,86 +162,6 @@ def test_unchanged_novel_skips_text_db_writes_and_repairs_missing_assets(tmp_pat
     assert db.conn.execute("SELECT 1 FROM sources WHERE novel_id = 100 AND source_type = 'bookmark_public'").fetchone() is not None
 
 
-def test_check_bookmarks_existence_batches_sync_check_writes(tmp_path: Path) -> None:
-    class FakeDb:
-        def __init__(self):
-            self.items = None
-            self.scope = None
-
-        def init_sync_check_table(self):
-            pass
-
-        def clear_sync_check_list(self, scope):
-            self.scope = scope
-
-        def get_existing_novel_ids(self, novel_ids, require_assets=False):
-            assert novel_ids == [100, 101]
-            assert require_assets is True
-            return {100}
-
-        def upsert_sync_check_items(self, items, scope="_"):
-            self.items = items
-            self.scope = scope
-
-    settings = _settings(tmp_path)
-    db = FakeDb()
-    service = BookmarkNovelSyncService(_Api(), db, _Storage(), settings, sync_check_scope="scope")
-
-    result = service.check_bookmarks_existence(1, ["public"])
-
-    assert result == {"total_checked": 2, "existing": 1, "new": 1}
-    assert db.items == [(100, True), (101, False)]
-    assert db.scope == "scope"
-
-
-def test_check_bookmarks_existence_stops_at_page_safety_limit(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    class EndlessUntilThirdPageApi:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def user_bookmarks_novel(self, **kwargs):
-            self.calls += 1
-            return SimpleNamespace(
-                novels=[SimpleNamespace(id=100 + self.calls)],
-                next_url=f"page-{self.calls + 1}",
-            )
-
-        def parse_qs(self, next_url):
-            if self.calls >= 3:
-                return None
-            return {"user_id": 1, "restrict": "public", "page": self.calls + 1}
-
-    class FakeDb:
-        def init_sync_check_table(self):
-            pass
-
-        def clear_sync_check_list(self, scope):
-            pass
-
-        def get_existing_novel_ids(self, novel_ids, require_assets=False):
-            return set()
-
-        def upsert_sync_check_items(self, items, scope="_"):
-            pass
-
-    monkeypatch.setattr(sync_engine, "_CHECK_PAGE_SAFETY_LIMIT", 2)
-    api = EndlessUntilThirdPageApi()
-    service = BookmarkNovelSyncService(
-        api,
-        FakeDb(),
-        _Storage(),
-        _settings(tmp_path),
-    )
-
-    result = service.check_bookmarks_existence(1, ["public"])
-
-    assert api.calls == 2
-    assert result["total_checked"] == 2
-
-
 def test_sleep_with_progress_cancel_raises_when_progress_callback_requests_stop(monkeypatch) -> None:
     slept = []
     events = []
@@ -407,17 +327,14 @@ class _FollowingFakeDb:
         # 已确认「Pixiv 上没有小说」的作者。默认空集：绝大多数测试不关心降频。
         self.authors_without_novels: set[int] = set()
 
-    def get_sync_check_list(self, scope):
-        return {}
+    def novel_archive_complete(self, novel_id, require_assets=False):
+        return False
 
     def get_watermark(self, key):
         return None
 
     def update_watermark(self, key, value):
         self.watermark_updates.append(value)
-
-    def upsert_sync_check_item(self, novel_id, exists, scope):
-        pass
 
     def get_authors_without_novels(self):
         return set(self.authors_without_novels)
@@ -857,11 +774,11 @@ def test_sync_following_novels_marks_truncated_on_author_page_limit(tmp_path: Pa
     assert stats["incomplete"] is True
 
 
-class _ExistingCheckListDb(_FollowingFakeDb):
-    """预检查结果里所有小说都标记为"已存在"。"""
+class _ExistingArchiveDb(_FollowingFakeDb):
+    """本地库里所有小说都已完整归档（跳过判定的直接依据）。"""
 
-    def get_sync_check_list(self, scope):
-        return {novel_id: True for novel_id in range(1, 200)}
+    def novel_archive_complete(self, novel_id, require_assets=False):
+        return 1 <= novel_id < 200
 
 
 def test_sync_following_novels_stops_author_scan_immediately_on_existing_streak(
@@ -900,7 +817,7 @@ def test_sync_following_novels_stops_author_scan_immediately_on_existing_streak(
     settings = _settings(tmp_path)
     settings.pixiv.user_id = 1
     api = _PagedAuthorApi()
-    service = BookmarkNovelSyncService(api, _ExistingCheckListDb(), _Storage(), settings)
+    service = BookmarkNovelSyncService(api, _ExistingArchiveDb(), _Storage(), settings)
 
     with caplog.at_level(logging.INFO, logger="pixiv_novel_sync.sync_engine"):
         stats = service.sync_following_novels()
@@ -1723,4 +1640,43 @@ def test_every_incomplete_marker_declares_why() -> None:
     assert not undeclared, (
         f"sync_engine.py 第 {undeclared} 行只置了 incomplete，没说明是截断、熔断还是轮转"
     )
+
+
+def test_user_backup_incomplete_marker_declares_why() -> None:
+    """jobs/services.py 的 incomplete 站点同样要说明原因。"""
+    from pixiv_novel_sync.jobs import services
+
+    source = Path(services.__file__).read_text(encoding="utf-8").splitlines()
+    marker_lines = [i for i, line in enumerate(source) if 'stats["incomplete"] = True' in line]
+    for index in marker_lines:
+        window = "\n".join(source[max(index - 8, 0) : index + 5])
+        if not any(
+            reason in window
+            for reason in ('stats["truncated"]', "aborted_reason", 'stats["rotation_pending"]')
+        ):
+            raise AssertionError(f"jobs/services.py 第 {index + 1} 行只置了 incomplete")
+
+
+def test_sync_following_novels_cancellation_saves_watermark(tmp_path: Path) -> None:
+    """T1-04：第 2 个作者处被取消，第 1 个作者的轮转时间戳必须已落水位。
+
+    回归：旧代码 _save_watermark 只在正常收尾时调用，取消/异常直接丢掉整轮进度，
+    下一轮又挑中同一批作者，队尾作者永远饿死。
+    """
+    settings = _settings(tmp_path)
+    settings.pixiv.user_id = 1
+    db = _RotationFakeDb()
+    api = _EightAuthorsApi(author_ids=[1, 2])
+
+    def progress_callback(event_type: str, data: dict) -> None:
+        if event_type == "user_start" and data.get("author_id") == 2:
+            raise InterruptedError("stop")
+
+    service = BookmarkNovelSyncService(api, db, _Storage(), settings)
+    with pytest.raises(InterruptedError):
+        service.sync_following_novels(users_limit=2, progress_callback=progress_callback)
+
+    assert db.watermark_updates, "取消时水位必须落盘"
+    last = db.watermark_updates[-1]
+    assert "1" in last["user_last_synced"]
 

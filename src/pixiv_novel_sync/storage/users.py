@@ -370,7 +370,6 @@ class UsersMixin:
                     (user_id,),
                 )
                 # 2.2 删除小说相关的其他从属表
-                self.conn.execute("DELETE FROM sync_check_list WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
                 self.conn.execute("DELETE FROM recommendation_items WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
                 # 2.3 删除每个小说的反馈和待删除记录
                 for novel_id in novel_ids:

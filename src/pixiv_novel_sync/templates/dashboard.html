@@ -185,7 +185,7 @@
         user_backup: '全量备份用户', user_status: '检查用户状态',
         novel_status: '检查小说状态', series_status: '检查系列状态',
         pending_deletion_detection: '检测取消收藏',
-        sync_check: '预检查', manual: '手工同步',
+        manual: '手工同步',
         preference_analyze: '增量分析本地偏好', recommendation_run: '生成推荐',
       };
 
@@ -255,7 +255,10 @@
       const fetchJobStatus = async () => {
         if (loadingJob.value) return;
         try {
-          const jobIdParam = latestJob.value?.job_id ? `?job_id=${latestJob.value.job_id}` : '';
+          // 只有运行中/排队中的任务才带 job_id 跟踪；已结束任务让接口返回最新
+          const status = latestJob.value?.status;
+          const isActive = status === 'running' || status === 'queued' || status === 'cancel_requested';
+          const jobIdParam = (latestJob.value?.job_id && isActive) ? `?job_id=${latestJob.value.job_id}` : '';
           const res = await fetch(`/api/dashboard/sync/status${jobIdParam}`);
           if (res.ok) {
             const data = await res.json();

@@ -156,9 +156,13 @@ def run_user_backup_task(
         processed = 0
         total_seen = 0
         stopped = False
+        truncated_by_page_cap = False
         next_query: dict[str, Any] | None = {"user_id": user_id}
         # 翻页上限兜底：防止 API 返回自引用 next_url 导致死循环
-        max_pages = getattr(getattr(settings, "sync", None), "max_pages_per_run", None) or 200
+        # 备份是整库导出，不能共用 max_pages_per_run=2 那种轻量上限
+        max_pages = getattr(getattr(settings, "sync", None), "user_backup_max_pages_per_run", None)
+        if max_pages is None:
+            max_pages = getattr(getattr(settings, "sync", None), "max_pages_per_run", None) or 200
         page_count = 0
 
         _report_progress(reporter, phase="user_backup", current=0, total=0, current_novel=user_name, author=user_name)
@@ -171,6 +175,7 @@ def run_user_backup_task(
                 message = f"用户全量备份翻页达到兜底上限 {max_pages} 页，提前停止: {user_name} ({user_id})"
                 logger.warning(message)
                 _report_log(reporter, "warning", message)
+                truncated_by_page_cap = True
                 break
 
             result = api.user_novels(**next_query)
@@ -230,6 +235,10 @@ def run_user_backup_task(
             "assets_downloaded": total_assets,
             "stopped": stopped,
         }
+        if truncated_by_page_cap:
+            # 触顶翻页上限属于异常截断，必须让任务日志显示 partial
+            stats["truncated"] = True
+            stats["incomplete"] = True
         if not stats.get("stopped") and stop_requested is not None and stop_requested():
             stats["stopped"] = True
         if rebuild_catalog and not stats.get("stopped"):

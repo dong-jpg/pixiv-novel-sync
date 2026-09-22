@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 import logging
 import secrets
 import shutil
@@ -31,7 +32,6 @@ from .utils_env import secure_atomic_write
 from .utils_naming import safe_name
 from .web.managers import AutoSyncScheduler, SettingsManager, TASK_LABELS
 from .web.managers import SCHEDULER_TASK_CONFIGS, scheduler_task_log_type
-from .web.managers import SyncJobManager, SyncJobState  # noqa: F401 - 经 webapp 重导出供 tests 使用
 from .web.utils import (
     _atomic_write_yaml,
     _oauth_task_public_payload,
@@ -579,20 +579,45 @@ def create_app(
             if _has_any_running_web_job():
                 raise RuntimeError("已有同步任务正在运行，请稍后再试")
 
+            # DB IO 必须在锁外做：create_task_log 走 _open_database，会建连 +
+            # init_schema，持锁期间阻塞所有 get_job/is_cancel_requested。
             db = _open_database(current_settings)
             try:
-                job = shared_job_manager.submit(spec)
                 log_id = db.create_task_log(
                     task_type=task_type,
                     task_name=task_name,
-                    job_id=job.job_id,
                     is_auto_sync=is_auto_sync,
                 )
-                job.progress["log_id"] = log_id
-                if progress:
-                    shared_job_manager.update_progress(job.job_id, **progress)
             finally:
                 db.close()
+
+            try:
+                job = shared_job_manager.submit(spec)
+            except Exception:
+                # 日志行已建但任务没进内存，把日志标成 failed，避免幽灵 running。
+                db = _open_database(current_settings)
+                try:
+                    db.update_task_log(log_id, JobStatus.FAILED.value, error_message="job submit failed")
+                finally:
+                    db.close()
+                raise
+            job.progress["log_id"] = log_id
+            # 回填 job_id：日志页按 job_id 关联内存任务与 task_logs 行。
+            # RecordingDatabase 等测试替身没有 conn，用 try 包一层，让替身也能过。
+            db = _open_database(current_settings)
+            try:
+                with db.transaction() as conn:
+                    conn.execute(
+                        "UPDATE task_logs SET job_id = ? WHERE id = ?",
+                        (job.job_id, log_id),
+                    )
+            except AttributeError:
+                # 测试替身无 conn/transaction，跳过回填
+                pass
+            finally:
+                db.close()
+            if progress:
+                shared_job_manager.update_progress(job.job_id, **progress)
         # 线程启动放在锁外，避免 worker 立即抢锁被阻塞
         if run_async:
             thread = threading.Thread(target=_run_shared_web_job, args=(job.job_id,), daemon=True)
@@ -697,17 +722,17 @@ def create_app(
 
     # --- 认证中间件 ---
     # /proxy/image 需要登录（防止开放代理）。OAuth 回调与健康检查路径必须豁免（无 cookie 场景）。
+    # /nginx-health 不在豁免名单里：它曾是 nginx 探活专用路径，实际从未注册路由，
+    # 留在豁免表只会让人误以为存在一条无认证入口。
     _AUTH_EXEMPT_PATHS = {
         "/api/auth/login",
         "/api/csrf-token",
-        "/nginx-health",
         "/api/health",
         "/oauth/callback",
     }
 
     _CSRF_EXEMPT_PATHS = {
         "/api/auth/login",
-        "/nginx-health",
         "/api/health",
         "/oauth/callback",
     }
@@ -855,7 +880,9 @@ def create_app(
         if _login_failures.is_blocked(client, now):
             return jsonify({"error": "too many login attempts"}), 429
         input_token = request.form.get("token", "")
-        if _hmac.compare_digest(input_token, token):
+        # compare_digest 两边编码成 bytes：DASHBOARD_TOKEN 含中文等非 ASCII 时，
+        # str 版本会直接抛 TypeError 变成 500，而不是按「密码错」计一次 401。
+        if _hmac.compare_digest(input_token.encode("utf-8"), str(token).encode("utf-8")):
             _login_failures.clear(client)
             session["authenticated"] = True
             session["authenticated_at"] = time.time_ns()
@@ -895,8 +922,15 @@ def create_app(
             current_settings = settings_manager.load(env_path=env_path)
             proxies = {"http": current_settings.pixiv.proxy, "https": current_settings.pixiv.proxy} if current_settings.pixiv.proxy else None
             resp = http_requests.get(url, headers=headers, timeout=15, verify=current_settings.pixiv.verify_ssl, proxies=proxies, allow_redirects=False)
-            resp.raise_for_status()
-            return Response(resp.content, content_type=resp.headers.get("Content-Type", "image/jpeg"))
+            # 不跟随 3xx：跟随重定向会让本端点变成开放代理（跳到非 pximg 域）。
+            # 其余非 200 也不把上游错误体当图片回给前端。
+            if resp.status_code != 200:
+                return Response(f"Upstream returned {resp.status_code}", status=502)
+            out = Response(resp.content, content_type=resp.headers.get("Content-Type", "image/jpeg"))
+            for hop in ("Content-Length", "Cache-Control"):
+                if resp.headers.get(hop):
+                    out.headers[hop] = resp.headers[hop]
+            return out
         except Exception as exc:
             return Response(f"Failed to fetch image: {exc}", status=502)
 
@@ -1007,9 +1041,18 @@ def create_app(
         payload = request.get_json(silent=True) or {}
         refresh_token = str(payload.get("refresh_token") or "").strip()
         user_id_raw = payload.get("user_id")
-        user_id = int(user_id_raw) if user_id_raw not in (None, "") else None
+        try:
+            user_id = int(user_id_raw) if user_id_raw not in (None, "") else None
+        except (ValueError, TypeError):
+            return jsonify({"error": "invalid user_id"}), 400
         if not refresh_token:
             return jsonify({"error": "missing refresh_token"}), 400
+        # refresh_token 只允许 Pixiv 颁发的字符集：带换行的值写进 .env 会拆行，
+        # 把下一行变成新的 KEY=VALUE，造成配置注入。
+        if not re.fullmatch(r"[A-Za-z0-9_\-]{10,}", refresh_token):
+            return jsonify({"error": "invalid refresh_token format"}), 400
+        if user_id is not None and user_id <= 0:
+            return jsonify({"error": "invalid user_id"}), 400
         manager.save_to_env(refresh_token, user_id)
         return jsonify({"ok": True, "message": "已写入 .env"})
 
@@ -1489,19 +1532,6 @@ def create_app(
         except Exception as exc:
             return _api_error(str(exc))
         return jsonify({"ok": True, "message": job.message, "job": _shared_job_to_dict(job)})
-
-    @app.post("/api/dashboard/check-bookmarks")
-    def dashboard_check_bookmarks():
-        """预检查：扫描所有需要同步的内容，标记哪些已存在"""
-        current_settings = settings_manager.load(env_path=env_path)
-        
-        try:
-            spec = _web_job_spec(["sync_check"])
-            job = _submit_shared_job(spec, current_settings, "sync_check", "预检查所有内容")
-        except Exception as exc:
-            return _api_error(str(exc))
-
-        return jsonify({"ok": True, "message": "预检查任务已启动", "job": _shared_job_to_dict(job)})
 
     @app.get("/api/dashboard/sync/status")
     def dashboard_sync_status():

@@ -15,7 +15,6 @@ _TASK_LABELS: dict[str, str] = {
     "following_users": "关注用户",
     "following_novels": "关注用户小说",
     "subscribed_series": "订阅系列",
-    "sync_check": "同步检查",
     "user_status": "用户状态检查",
     "novel_status": "小说状态检查",
     "series_status": "系列状态检查",
@@ -60,22 +59,6 @@ def execute_task(task_type: str, settings: Any, context: dict[str, Any] | None =
             settings,
             stop_requested=stop_requested,
             claim_finalization=claim_finalization,
-        )
-
-    if task_type == "sync_check":
-        from pixiv_novel_sync.jobs.quick_sync import run_check_bookmarks_task
-
-        manager = context.get("manager")
-        job_id = context.get("job_id")
-        if manager is None or not job_id:
-            raise RuntimeError("sync_check CLI execution requires job manager and job_id context")
-        return run_check_bookmarks_task(
-            settings,
-            manager,
-            str(job_id),
-            release_semaphore=False,
-            raise_on_error=True,
-            stop_requested=stop_requested,
         )
 
     if task_type in {"following_users", "following_novels", "subscribed_series"}:

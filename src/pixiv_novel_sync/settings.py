@@ -57,6 +57,9 @@ class SyncSettings:
     # 系列章节数远超单个作者的单轮作品体量，共用那个上限会把长系列永久截断：
     # 生产实测每轮 truncated_series=2，8 个订阅系列长期缺 76 章，高频重跑也补不齐。
     series_max_pages_per_run: int | None = None
+    # 用户全量备份翻页上限。None = 跟随 max_pages_per_run（旧行为）。
+    # 备份是整库导出，共用 2 页上限会把 800 篇收藏截成 60 篇，任务日志却显示绿色。
+    user_backup_max_pages_per_run: int | None = None
     delay_seconds_between_series: float = 3.0  # 每个系列之间的间隔
     delay_seconds_between_chapters: float = 1.0  # 系列下每章节间隔
     delay_seconds_between_skips: float = 0.1  # 跳过内容时的间隔
@@ -152,9 +155,14 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
 
     refresh_token = os.getenv("PIXIV_REFRESH_TOKEN", "").strip()
     access_token = os.getenv("PIXIV_ACCESS_TOKEN", "").strip() or None
-    proxy = os.getenv("PIXIV_PROXY") or pixiv_raw.get("proxy")
+    # 空串按「未设置」处理，回落 YAML：`.env` 里 `PIXIV_PROXY=` / `PIXIV_TIMEOUT=` 的
+    # 留空写法语义是不覆盖，而不是把代理清成空 / 把 timeout 打成 ValueError。
+    _proxy_env = os.getenv("PIXIV_PROXY")
+    proxy = (_proxy_env.strip() if _proxy_env is not None and _proxy_env.strip() else None) or pixiv_raw.get("proxy")
+    _timeout_env = os.getenv("PIXIV_TIMEOUT")
+    _timeout_raw = _timeout_env if _timeout_env is not None and _timeout_env.strip() else pixiv_raw.get("timeout", 30)
     try:
-        timeout = int(os.getenv("PIXIV_TIMEOUT", pixiv_raw.get("timeout", 30)))
+        timeout = int(_timeout_raw)
     except (ValueError, TypeError):
         timeout = 30
     verify_ssl = _parse_bool(os.getenv("PIXIV_VERIFY_SSL"), default=pixiv_raw.get("verify_ssl", True))
@@ -199,6 +207,7 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             bookmark_max_pages_per_run=_coerce_optional_int(sync_raw.get("bookmark_max_pages_per_run")),
             following_max_novels_per_author=_coerce_optional_int(sync_raw.get("following_max_novels_per_author")),
             series_max_pages_per_run=_coerce_optional_int(sync_raw.get("series_max_pages_per_run")),
+            user_backup_max_pages_per_run=_coerce_optional_int(sync_raw.get("user_backup_max_pages_per_run")),
             delay_seconds_between_series=_coerce_float(sync_raw.get("delay_seconds_between_series"), 3.0),
             delay_seconds_between_chapters=_coerce_float(sync_raw.get("delay_seconds_between_chapters"), 1.0),
             delay_seconds_between_skips=_coerce_float(sync_raw.get("delay_seconds_between_skips"), 0.1),
@@ -268,10 +277,11 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def _parse_bool(value: str | None, default: bool) -> bool:
-    if value is None:
+    # 空串视为未设置：``.env`` 里常见 ``PIXIV_X=`` 的留空写法，
+    # 语义是「不覆盖」，而不是「显式关掉」。
+    if value is None or not value.strip():
         return bool(default)
-    normalized = value.strip().lower()
-    return normalized in {"1", "true", "yes", "on"}
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _parse_optional_int(value: str | None) -> int | None:

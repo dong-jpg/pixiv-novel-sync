@@ -24,7 +24,6 @@ class JobSource(str, Enum):
 
 class JobType(str, Enum):
     SYNC = "sync"
-    SYNC_CHECK = "sync_check"
     STATUS_CHECK = "status_check"
     PENDING_DELETION_DETECTION = "pending_deletion_detection"
     USER_BACKUP = "user_backup"

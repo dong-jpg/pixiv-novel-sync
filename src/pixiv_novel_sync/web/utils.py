@@ -160,19 +160,12 @@ def _job_to_dict_unified(job: Any) -> dict[str, Any] | None:
     }
 
     # JobState专用字段
-    if isinstance(job, JobState):
-        result["logs"] = [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs]
-        result["task_list"] = list(job.task_types)
-        result["current_task_index"] = int(job.progress.get("current_task_index", 0) or 0)
-        result["is_auto_sync"] = job.spec.source == JobSource.SCHEDULER
-        result["source"] = job.spec.source.value
-        result["job_type"] = job.spec.job_type.value
-    # SyncJobState专用字段
-    else:
-        result["logs"] = job.logs
-        result["task_list"] = job.task_list
-        result["current_task_index"] = job.current_task_index
-        result["is_auto_sync"] = job.is_auto_sync
+    result["logs"] = [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs]
+    result["task_list"] = list(job.task_types)
+    result["current_task_index"] = int(job.progress.get("current_task_index", 0) or 0)
+    result["is_auto_sync"] = job.spec.source == JobSource.SCHEDULER
+    result["source"] = job.spec.source.value
+    result["job_type"] = job.spec.job_type.value
 
     return result
 
@@ -209,8 +202,6 @@ def _job_spec(
         )
     if tasks == ["user_backup"]:
         return JobSpec(source=source, job_type=JobType.USER_BACKUP, task_types=tasks, params=job_params)
-    if tasks == ["sync_check"]:
-        return JobSpec(source=source, job_type=JobType.SYNC_CHECK, task_types=tasks, params=job_params)
     if tasks == ["pending_deletion_detection"]:
         return JobSpec(
             source=source,

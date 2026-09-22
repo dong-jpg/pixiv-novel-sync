@@ -1310,8 +1310,10 @@ class AIAdminMixin:
         return AIProviderConfig(
             id=int(row["id"]), name=row["name"], provider_type=row["provider_type"],
             base_url=row.get("base_url"), api_key=api_key, default_model=row.get("default_model"),
-            timeout_seconds=int(row.get("timeout_seconds") or 120), max_retries=int(row.get("max_retries") or 2),
-            proxy=row.get("proxy"), context_window=int(row.get("context_window") or 128000),
+            timeout_seconds=int(row["timeout_seconds"]) if row.get("timeout_seconds") is not None else 120,
+            max_retries=int(row["max_retries"]) if row.get("max_retries") is not None else 2,
+            proxy=row.get("proxy"),
+            context_window=int(row["context_window"]) if row.get("context_window") is not None else 128000,
             stream_enabled=bool(row.get("stream_enabled", 1)),
             enabled=bool(row.get("enabled")),
         )
@@ -1326,9 +1328,12 @@ class AIAdminMixin:
         return AIAgentConfig(
             id=int(row["id"]), name=row["name"], task_type=row["task_type"],
             provider_id=int(provider_id) if provider_id is not None else None,
-            model=row.get("model"), system_prompt=row["system_prompt"], temperature=float(row.get("temperature") or 0.8),
-            top_p=float(row.get("top_p") or 0.9), max_tokens=int(row.get("max_tokens") or 4000),
-            context_window=int(row.get("context_window") or 16000), enabled=bool(row.get("enabled")),
+            model=row.get("model"), system_prompt=row["system_prompt"],
+            temperature=float(row["temperature"]) if row.get("temperature") is not None else 0.8,
+            top_p=float(row["top_p"]) if row.get("top_p") is not None else 0.9,
+            max_tokens=int(row["max_tokens"]) if row.get("max_tokens") is not None else 4000,
+            context_window=int(row["context_window"]) if row.get("context_window") is not None else 16000,
+            enabled=bool(row.get("enabled")),
             binding_type=row.get("binding_type") or "fixed",
             model_pool_id=(
                 int(row["model_pool_id"])

@@ -102,11 +102,14 @@ def _is_blocked_ip(ip: ipaddress._BaseAddress, *, allow_private: bool) -> bool:
     mapped = getattr(ip, "ipv4_mapped", None)
     if mapped is not None:
         ip = mapped
+    # 回环地址独立判断：opt-in 时优先放行，避免被 reserved 兜底规则误杀。
+    if ip.is_loopback:
+        return not allow_private
     if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
         return True
     if ip.is_global:
         return False
-    if allow_private and (ip.is_private or ip.is_loopback):
+    if allow_private and ip.is_private:
         return False
     return True
 
@@ -1050,6 +1053,16 @@ class XAIProvider(OpenAICompatibleProvider):
 class AnthropicProvider(AIProvider):
     default_base_url = "https://api.anthropic.com"
 
+    def _resolve_base_url(self) -> str:
+        """归一化 base_url：去掉末尾斜杠；已带 /v1 的不重复拼接。"""
+        return (self.config.base_url or self.default_base_url).rstrip("/")
+
+    def _resolve_api_path(self, path: str) -> str:
+        base_url = self._resolve_base_url()
+        if base_url.endswith("/v1"):
+            return f"{base_url}/{path.lstrip('/')}"
+        return f"{base_url}/v1/{path.lstrip('/')}"
+
     def _model_discovery_request(self) -> tuple[str, dict[str, str], str]:
         if not self.config.api_key:
             raise AIProviderError(
@@ -1057,14 +1070,8 @@ class AnthropicProvider(AIProvider):
                 category="configuration",
                 scope="provider",
             )
-        base_url = (self.config.base_url or self.default_base_url).rstrip("/")
-        endpoint = (
-            f"{base_url}/models"
-            if base_url.endswith("/v1")
-            else f"{base_url}/v1/models"
-        )
         return (
-            endpoint,
+            self._resolve_api_path("/models"),
             {
                 "x-api-key": self.config.api_key,
                 "anthropic-version": "2023-06-01",
@@ -1091,8 +1098,7 @@ class AnthropicProvider(AIProvider):
                 category="configuration",
                 scope="provider",
             )
-        base_url = (self.config.base_url or self.default_base_url).rstrip("/")
-        url = f"{base_url}/v1/messages"
+        url = self._resolve_api_path("/messages")
         system_parts: list[str] = []
         anthropic_messages: list[dict[str, str]] = []
         for message in messages:

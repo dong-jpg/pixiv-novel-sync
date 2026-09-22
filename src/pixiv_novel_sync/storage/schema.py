@@ -151,8 +151,6 @@ class SchemaMixin:
         self._migrate_rescue_tables()
         # 迁移：创建同步水位线表
         self._migrate_sync_watermarks_table()
-        # 迁移：创建/升级预检查表。旧服务端库可能已有无 scope 的 sync_check_list。
-        self.init_sync_check_table()
         # 迁移：创建 AI 创作工作台相关表（main 只保留 provider/agent/job/模型路由）
         self._migrate_ai_tables()
         # 迁移：创建偏好画像与推书相关表
@@ -529,38 +527,6 @@ class SchemaMixin:
             "WHERE source_url IS NULL OR source_url = ''",
             (PIXIV_SERIES_URL_PREFIX,),
         )
-
-    def init_sync_check_table(self) -> None:
-        """初始化同步检查表"""
-        self.conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS sync_check_list (
-                scope TEXT NOT NULL DEFAULT '_',
-                novel_id INTEGER NOT NULL,
-                exists_local INTEGER NOT NULL DEFAULT 0,
-                checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (scope, novel_id)
-            );
-            """
-        )
-        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(sync_check_list)").fetchall()}
-        if "scope" not in columns:
-            self.conn.executescript(
-                """
-                ALTER TABLE sync_check_list RENAME TO sync_check_list_old;
-                CREATE TABLE sync_check_list (
-                    scope TEXT NOT NULL DEFAULT '_',
-                    novel_id INTEGER NOT NULL,
-                    exists_local INTEGER NOT NULL DEFAULT 0,
-                    checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (scope, novel_id)
-                );
-                INSERT OR REPLACE INTO sync_check_list (scope, novel_id, exists_local, checked_at)
-                SELECT '_', novel_id, exists_local, checked_at FROM sync_check_list_old;
-                DROP TABLE sync_check_list_old;
-                """
-            )
-        self._commit_if_needed()
 
     def _migrate_preference_tables(self) -> None:
         """创建偏好画像与推荐相关表。"""

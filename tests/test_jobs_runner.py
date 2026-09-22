@@ -102,7 +102,7 @@ def test_runner_does_not_start_pre_cancelled_job():
 
 def test_runner_does_not_double_stats_when_task_returns_same_object():
     """回归测试：JobRunner 的 merge_stats 不应与任务内部对 job.stats 的赋值冲突。
-    P0 bug: run_check_bookmarks_task 曾让 job.stats = check_stats，然后 return check_stats，
+    P0 bug: 预检查任务曾让 job.stats = check_stats，然后 return check_stats，
     导致 merge_stats(state.stats, task_stats) 对同一对象累加,所有数值翻倍。
     修复后:返回独立副本,统一路径不应设 job.stats(legacy路径除外)。"""
     manager = JobManager()

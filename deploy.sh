@@ -45,6 +45,12 @@ if [ -d "$INSTALL_DIR/.git" ]; then
     git fetch origin
     git reset --hard origin/main
 else
+    # 目录已有数据但没有 .git：说明是手工部署或上次 clone 不完整，拒绝覆盖
+    if [ -d "$INSTALL_DIR/data" ] || [ -f "$INSTALL_DIR/.env" ] || [ -f "$INSTALL_DIR/config/config.yaml" ]; then
+        echo -e "${RED}错误：$INSTALL_DIR 已存在数据/配置但无 .git，拒绝覆盖。${NC}"
+        echo -e "${YELLOW}请先备份或手动初始化 git 仓库。${NC}"
+        exit 1
+    fi
     rm -rf "$INSTALL_DIR"
     git clone "$REPO_URL" "$INSTALL_DIR"
     cd "$INSTALL_DIR"
