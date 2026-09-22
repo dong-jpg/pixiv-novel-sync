@@ -26,7 +26,7 @@ from .jobs.runner import JobRunner
 from .jobs.tasks import execute_task
 from .oauth_helper import OAuthManager
 from .settings import Settings
-from .storage_db import Database
+from .storage_db import Database, prepare_schema
 from .storage_files import FileStorage
 from .utils_env import secure_atomic_write
 from .utils_naming import safe_name
@@ -77,7 +77,7 @@ def _open_database(current_settings: Settings) -> Database:
     """
     db = Database(current_settings.storage.db_path)
     try:
-        db.init_schema()
+        prepare_schema(db)
     except BaseException:
         db.close()
         raise
@@ -543,7 +543,7 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         db = Database(current_settings.storage.db_path)
         try:
-            db.init_schema()
+            prepare_schema(db)
             logs = _shared_job_logs_for_db(job)
             if job.status == JobStatus.SUCCEEDED:
                 # 熔断中止/本轮没跑完的任务不能记成 succeeded，否则风控事故在日志里

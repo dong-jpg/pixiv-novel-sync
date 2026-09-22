@@ -98,7 +98,9 @@ class ModelSyncCoordinator:
         self._closed = False
         db = self._db()
         try:
-            db.init_schema()
+            from ..storage_db import prepare_schema
+
+            prepare_schema(db)
         finally:
             db.close()
 

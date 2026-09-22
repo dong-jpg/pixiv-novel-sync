@@ -8,7 +8,7 @@ from time import perf_counter
 from typing import Any
 
 from pixiv_novel_sync.auth import PixivAuthManager
-from pixiv_novel_sync.storage_db import Database
+from pixiv_novel_sync.storage_db import Database, prepare_schema
 from pixiv_novel_sync.storage_files import FileStorage
 from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
 
@@ -137,7 +137,7 @@ def run_user_backup_task(
     storage = _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
-    db.init_schema()
+    prepare_schema(db)
     try:
         service = BookmarkNovelSyncService(
             api=api,
@@ -366,7 +366,7 @@ def run_pending_deletion_detection_task(
 
     db = Database(settings.storage.db_path)
     try:
-        db.init_schema()
+        prepare_schema(db)
         storage = _ensure_storage_dirs(settings)
         service = BookmarkNovelSyncService(
             api=api,
@@ -459,7 +459,7 @@ def _run_user_status_like_task(
     _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
-    db.init_schema()
+    prepare_schema(db)
     try:
         items = list_items(db)
         _report_log(reporter, "info", f"开始{task_label}")
@@ -499,7 +499,7 @@ def _run_status_task(
     _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
-    db.init_schema()
+    prepare_schema(db)
     try:
         item_ids = list_ids(db)
         _report_log(reporter, "info", f"开始{task_label}")
@@ -580,7 +580,7 @@ def _persist_self_profile(settings: Any, auth_result: Any) -> None:
             return
         db = Database(settings.storage.db_path)
         try:
-            db.init_schema()
+            prepare_schema(db)
             db.save_self_profile(profile)
         finally:
             db.close()

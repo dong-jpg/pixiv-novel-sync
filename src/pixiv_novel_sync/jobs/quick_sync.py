@@ -8,7 +8,7 @@ from typing import Any
 
 from ..auth import PixivAuthManager
 from ..settings import Settings
-from ..storage_db import Database
+from ..storage_db import Database, prepare_schema
 from ..storage_files import FileStorage
 from ..sync_engine import BookmarkNovelSyncService
 from . import services as job_services
@@ -61,7 +61,7 @@ def run_bookmark_sync(
         raise RuntimeError("Unable to determine PIXIV_USER_ID. Set PIXIV_USER_ID in .env.")
 
     db = Database(settings.storage.db_path)
-    db.init_schema()
+    prepare_schema(db)
     _save_self_profile(db, auth_result)
     storage = FileStorage(settings)
     storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
@@ -98,7 +98,7 @@ def run_scheduled_user_backup(
     """Back up a rotating batch of followed users through the shared runner."""
     db = Database(settings.storage.db_path)
     try:
-        db.init_schema()
+        prepare_schema(db)
         rows = db.conn.execute("SELECT user_id FROM users ORDER BY user_id").fetchall()
         user_ids = [int(row[0]) for row in rows]
         total_users = len(user_ids)

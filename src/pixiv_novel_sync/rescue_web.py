@@ -15,7 +15,7 @@ from flask import Flask, Response, jsonify, request
 
 from .settings import Settings
 from .storage.rescue import CatalogNotReadyError
-from .storage_db import Database
+from .storage_db import Database, prepare_schema
 
 
 logger = logging.getLogger(__name__)
@@ -148,7 +148,7 @@ def register_rescue_routes(
 
     def open_db() -> Database:
         db = Database(current_settings().storage.db_path)
-        db.init_schema()
+        prepare_schema(db)
         return db
 
     def public_auth(view):

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..settings import Settings, load_settings
-from ..storage_db import Database
+from ..storage_db import Database, prepare_schema
 from .utils import (
     _atomic_write_yaml,
     _load_yaml_file,
@@ -422,7 +422,7 @@ class AutoSyncScheduler:
                     db = None
                     try:
                         db = Database(settings.storage.db_path)
-                        db.init_schema()
+                        prepare_schema(db)
                         # 保留天数从配置读，两张表用同一个值：任务日志页把同步任务和
                         # AI 任务当成一页的两个分类，两边保留期不一致会让筛选结果对不上。
                         retention_days = max(int(settings.sync.task_log_retention_days or 14), 1)
@@ -633,7 +633,7 @@ class AutoSyncScheduler:
         db = None
         try:
             db = Database(settings.storage.db_path)
-            db.init_schema()
+            prepare_schema(db)
             with db.transaction():
                 if db.get_rescue_catalog_meta() is None:
                     db.rebuild_rescue_catalog()
@@ -712,7 +712,7 @@ class AutoSyncScheduler:
         db = None
         try:
             db = Database(settings.storage.db_path)
-            db.init_schema()
+            prepare_schema(db)
             now = time.time()
             overdue_index = 0
             for task_name, task_log_type, interval_seconds in pending:

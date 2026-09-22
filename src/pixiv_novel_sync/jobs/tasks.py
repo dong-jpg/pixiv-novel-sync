@@ -125,7 +125,7 @@ def _run_direct_sync_task(
     stop_requested: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     from pixiv_novel_sync.auth import PixivAuthManager
-    from pixiv_novel_sync.storage_db import Database
+    from pixiv_novel_sync.storage_db import Database, prepare_schema
     from pixiv_novel_sync.storage_files import FileStorage
     from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
 
@@ -150,7 +150,7 @@ def _run_direct_sync_task(
     add_log("success", f"登录成功, 用户ID: {auth_result.user_id}")
 
     db = Database(settings.storage.db_path)
-    db.init_schema()
+    prepare_schema(db)
     storage = FileStorage(settings)
     storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
 
@@ -290,7 +290,7 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
     增量累加: 每次只分析未处理的小说,跳过已分析,从累加器重建并更新默认画像。
     手动按钮触发大批量(默认 2000 篇);定时任务每次跑少量(默认 200 篇)。
     """
-    from pixiv_novel_sync.storage_db import Database
+    from pixiv_novel_sync.storage_db import Database, prepare_schema
     from pixiv_novel_sync.preferences import PreferenceAnalyzer
 
     reporter = _job_reporter_from_context(context)
@@ -299,7 +299,7 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
 
     db = Database(settings.storage.db_path)
     try:
-        db.init_schema()
+        prepare_schema(db)
         analyzer = PreferenceAnalyzer(db)
         params = context.get("params", {})
         scope = dict(params.get("scope", {}) or {})
@@ -385,7 +385,7 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
 
 def _run_recommendation_run_task(settings: Any, context: dict[str, Any]) -> dict[str, Any]:
     """Phase 7.6: 推荐运行长任务"""
-    from pixiv_novel_sync.storage_db import Database
+    from pixiv_novel_sync.storage_db import Database, prepare_schema
     from pixiv_novel_sync.recommendations import RecommendationService
 
     reporter = _job_reporter_from_context(context)
@@ -394,7 +394,7 @@ def _run_recommendation_run_task(settings: Any, context: dict[str, Any]) -> dict
 
     db = Database(settings.storage.db_path)
     try:
-        db.init_schema()
+        prepare_schema(db)
         service = RecommendationService(db, settings)
         service.stop_requested = stop_requested
         params = context.get("params", {})

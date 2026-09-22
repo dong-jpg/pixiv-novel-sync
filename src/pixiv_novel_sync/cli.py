@@ -100,10 +100,10 @@ def main() -> None:
 
         run_bookmark_sync(settings)
     elif args.command == "db-stats":
-        from .storage_db import Database
+        from .storage_db import Database, prepare_schema
 
         db = Database(settings.storage.db_path)
-        db.init_schema()
+        prepare_schema(db)
         try:
             print(db.export_stats())
         finally:

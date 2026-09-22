@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from ...storage_db import Database
+from ...storage_db import Database, prepare_schema
 from ..crypto import AISecretManager
 from ..model_router import (
     CandidateSnapshot,
@@ -57,11 +57,6 @@ class RouteJobContext:
 
 
 class AIServiceCore:
-    # Track which DB paths have had their schema initialized. A single class-wide
-    # bool would skip init_schema() for a second service pointing at a different
-    # path (tests, multiple DBs in one process), causing "no such table".
-    _initialized_paths: set[str] = set()
-
     def __init__(self, db_path: Path, secret_manager: AISecretManager | None = None) -> None:
         self.db_path = db_path
         self.secret_manager = secret_manager or AISecretManager()
@@ -78,12 +73,8 @@ class AIServiceCore:
         )
 
     def _db(self) -> Database:
-        db = Database(self.db_path)
-        key = str(self.db_path)
-        if key not in AIServiceCore._initialized_paths:
-            db.init_schema()
-            AIServiceCore._initialized_paths.add(key)
-        return db
+        # Database.ensure_schema 已做进程级按路径记忆，这里不再自持一份缓存。
+        return prepare_schema(Database(self.db_path))
 
     def _provider_cache_key(self, config: AIProviderConfig) -> tuple[Any, ...]:
         return (
