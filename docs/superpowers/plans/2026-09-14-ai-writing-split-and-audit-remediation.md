@@ -161,7 +161,7 @@
 - [ ] **T2-05 归档目录持久化**
   `novels.archive_dir TEXT` 列（`PRAGMA table_info` 守卫，回填 `novel_dir(...)`）；同步时写入；`storage_files.py:127-147 get_novel_cover_path`、`webapp.py:142-175 _ArchiveTrash.__init__` 改读列。验收：改作者名后删除仍清掉旧目录，封面仍可找到。
 
-- [ ] **T2-06 分页 tiebreaker**
+- [x] **T2-06 分页 tiebreaker**
   `novels.py:441-447`（`updated_desc` 补回 `novel_id DESC`）、`bookmarks.py:39-45`、`users.py:232,302,344`、`series.py:594`、`pending_and_watermarks.py:507`、`tasks.py:205,393` 末尾统一补主键。
 
 - [x] **T2-07 `logs` `page_size` 夹紧**
@@ -185,7 +185,7 @@
 - [ ] **T2-13 `get_ai_task_logs` N+1**
   `storage/tasks.py:401-403` 一次 `WHERE job_id IN (...)` 后分组。
 
-- [ ] **T2-14 WAL 上限**
+- [x] **T2-14 WAL 上限**
   连接初始化加 `PRAGMA journal_size_limit=67108864`。验收：长任务后 `-wal` 文件回落。
 
 - [ ] **T2-15 `.trash` 启动清扫 + confirm 顺序**

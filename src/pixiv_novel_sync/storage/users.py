@@ -233,7 +233,7 @@ class UsersMixin:
                    (SELECT COUNT(*) FROM novels n WHERE n.user_id = u.user_id) AS novel_count
             FROM users u
             {where_clause}
-            ORDER BY CASE u.status WHEN 'no_novels' THEN 1 WHEN 'suspended' THEN 2 ELSE 0 END, u.updated_at DESC
+            ORDER BY CASE u.status WHEN 'no_novels' THEN 1 WHEN 'suspended' THEN 2 ELSE 0 END, u.updated_at DESC, u.user_id DESC
             LIMIT ? OFFSET ?
             """,
             [*params, page_size, offset],
@@ -303,7 +303,7 @@ class UsersMixin:
             FROM novels n
             LEFT JOIN series se ON se.series_id = n.series_id
             WHERE n.user_id = ?{where_extra}
-            ORDER BY n.last_seen_at DESC
+            ORDER BY n.last_seen_at DESC, n.novel_id DESC
             LIMIT ? OFFSET ?
             """,
             [user_id, page_size, offset],
@@ -345,7 +345,7 @@ class UsersMixin:
             LEFT JOIN users u ON u.user_id = n.user_id
             WHERE n.user_id = ? AND n.series_id IS NOT NULL
             GROUP BY n.series_id
-            ORDER BY last_updated DESC
+            ORDER BY last_updated DESC, n.series_id DESC
             LIMIT ? OFFSET ?
             """,
             [user_id, page_size, offset],

@@ -59,6 +59,7 @@ class DatabaseConnection:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA journal_size_limit=67108864")
         self._local.conn = conn
         self._local.transaction_depth = 0
         with self._lock:

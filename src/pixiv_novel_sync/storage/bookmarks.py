@@ -35,11 +35,11 @@ class BookmarksMixin:
 
         order_sql = "n.last_seen_at DESC, n.novel_id DESC"
         if sort == "updated_desc":
-            order_sql = "n.last_seen_at DESC"
+            order_sql = "n.last_seen_at DESC, n.novel_id DESC"
         elif sort == "bookmarks_desc":
-            order_sql = "n.total_bookmarks DESC"
+            order_sql = "n.total_bookmarks DESC, n.novel_id DESC"
         elif sort == "views_desc":
-            order_sql = "n.total_views DESC"
+            order_sql = "n.total_views DESC, n.novel_id DESC"
 
         params_query: list[Any] = []
         if search:

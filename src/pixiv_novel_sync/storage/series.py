@@ -176,15 +176,15 @@ class SeriesMixin:
         page = min(page, total_pages)
         offset = (page - 1) * page_size
 
-        order_sql = "se.last_seen_at DESC"
+        order_sql = "se.last_seen_at DESC, se.series_id DESC"
         if sort == "updated_desc":
-            order_sql = "se.last_seen_at DESC"
+            order_sql = "se.last_seen_at DESC, se.series_id DESC"
         elif sort == "bookmarks_desc":
             # Phase 5.5: 子查询改JOIN预聚合消除N+1
-            order_sql = "COALESCE(agg.total_bookmarks, 0) DESC"
+            order_sql = "COALESCE(agg.total_bookmarks, 0) DESC, se.series_id DESC"
         elif sort == "views_desc":
             # Phase 5.5: 子查询改JOIN预聚合消除N+1
-            order_sql = "COALESCE(agg.total_views, 0) DESC"
+            order_sql = "COALESCE(agg.total_views, 0) DESC, se.series_id DESC"
 
         params_query: list[Any] = []
         if search:

@@ -86,7 +86,7 @@ class TasksMixin:
             f"""
             SELECT * FROM task_logs
             WHERE {where_clause}
-            ORDER BY started_at DESC
+            ORDER BY started_at DESC, id DESC
             LIMIT ? OFFSET ?
             """,
             params + [page_size, offset]
@@ -246,7 +246,7 @@ class TasksMixin:
                        (julianday(finished_at) - julianday(started_at)) * 86400 AS duration_seconds
                 FROM ai_jobs
                 WHERE {where_clause}
-                ORDER BY COALESCE(started_at, created_at) DESC
+                ORDER BY COALESCE(started_at, created_at) DESC, id DESC
                 LIMIT ? OFFSET ?
                 """,
                 params + [page_size, offset],

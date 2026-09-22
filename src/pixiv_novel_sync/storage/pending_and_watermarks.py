@@ -75,7 +75,7 @@ class PendingAndWatermarksMixin:
         page = min(page, total_pages)
         offset = (page - 1) * page_size
         rows = self.conn.execute(
-            f"SELECT * FROM pending_deletions {where_sql} ORDER BY detected_at DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM pending_deletions {where_sql} ORDER BY detected_at DESC, id DESC LIMIT ? OFFSET ?",
             [*params, page_size, offset],
         ).fetchall()
         return {
