@@ -158,7 +158,7 @@
 - [x] **T2-04 `delete_user` 删 series + 孤儿表**
   `storage/users.py:356-417` 对 `SELECT series_id FROM series WHERE user_id=?` 走 `delete_series` 逻辑；`delete_novel` / `delete_user` 补清 `reading_progress`、`preference_analyzed_novels`。验收：删作者后 `list_following_series` 不含其系列，两张表无孤儿行。
 
-- [ ] **T2-05 归档目录持久化**
+- [x] **T2-05 归档目录持久化**
   `novels.archive_dir TEXT` 列（`PRAGMA table_info` 守卫，回填 `novel_dir(...)`）；同步时写入；`storage_files.py:127-147 get_novel_cover_path`、`webapp.py:142-175 _ArchiveTrash.__init__` 改读列。验收：改作者名后删除仍清掉旧目录，封面仍可找到。
 
 - [x] **T2-06 分页 tiebreaker**

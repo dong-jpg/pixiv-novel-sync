@@ -51,6 +51,7 @@ class SchemaMixin:
                 raw_json TEXT NOT NULL,
                 meta_hash TEXT NOT NULL,
                 source_url TEXT,
+                archive_dir TEXT,
                 first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -367,6 +368,34 @@ class SchemaMixin:
                 "WHERE source_url IS NULL OR source_url = ''",
                 (PIXIV_NOVEL_URL_PREFIX,),
             )
+        if "archive_dir" not in columns:
+            self.conn.execute("ALTER TABLE novels ADD COLUMN archive_dir TEXT")
+        self._backfill_novel_archive_dirs()
+
+    def _backfill_novel_archive_dirs(self) -> None:
+        """按当前作者名补上还没记下的归档相对路径。已有值不覆盖。"""
+        pending = self.conn.execute(
+            "SELECT 1 FROM novels WHERE archive_dir IS NULL OR archive_dir = '' LIMIT 1"
+        ).fetchone()
+        if pending is None:
+            return
+        from ..storage_files import FileStorage
+
+        rows = self.conn.execute(
+            """
+            SELECT n.novel_id, n.user_id, n.title, COALESCE(u.name, 'unknown')
+            FROM novels n
+            LEFT JOIN users u ON u.user_id = n.user_id
+            WHERE n.archive_dir IS NULL OR n.archive_dir = ''
+            """
+        ).fetchall()
+        self.conn.executemany(
+            "UPDATE novels SET archive_dir = ? WHERE novel_id = ?",
+            [
+                (FileStorage.relative_novel_dir(row[1], row[3], row[0], row[2] or ""), row[0])
+                for row in rows
+            ],
+        )
 
     def _migrate_novel_texts_table(self) -> None:
         """为旧版 novel_texts 表添加正文完整度辅助列并回填。"""

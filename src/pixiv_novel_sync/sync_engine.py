@@ -1915,12 +1915,21 @@ class BookmarkNovelSyncService:
 
         # 3.5 hash增量:读旧hash比对,未变更跳过写盘写库
         existing_row = self.db.conn.execute(
-            "SELECT meta_hash FROM novels WHERE novel_id = ?", (novel_id,)
+            "SELECT meta_hash, archive_dir FROM novels WHERE novel_id = ?", (novel_id,)
         ).fetchone()
         existing_text_row = self.db.conn.execute(
             "SELECT text_hash FROM novel_texts WHERE novel_id = ?", (novel_id,)
         ).fetchone()
         meta_unchanged = existing_row and existing_row[0] == meta_hash
+        stored_archive = existing_row[1] if existing_row and existing_row[1] else None
+        if stored_archive:
+            novel_dir = self.storage.resolve_archive_dir(
+                restrict, stored_archive, user_id, user_name, novel_id, title
+            )
+            archive_dir = stored_archive
+        else:
+            archive_dir = self.storage.relative_novel_dir(user_id, user_name, novel_id, title)
+            novel_dir = self.storage.base_dir(restrict) / archive_dir
         text_unchanged = existing_text_row and existing_text_row[0] == text_hash
 
         expected_assets = _collect_asset_urls(detail_novel, webview) if download_assets else []
@@ -1933,7 +1942,7 @@ class BookmarkNovelSyncService:
             with self.db.transaction():
                 self.db.touch_novel(novel_id)
                 self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
-            assets_downloaded = self._download_and_record_assets(novel_dir=None, restrict=restrict, user_id=user_id, user_name=user_name, novel_id=novel_id, title=title, assets=missing_assets)
+            assets_downloaded = self._download_and_record_assets(novel_dir=novel_dir, restrict=restrict, user_id=user_id, user_name=user_name, novel_id=novel_id, title=title, assets=missing_assets)
             return {
                 "users": 0, "novels": 0, "texts_updated": 0, "assets_downloaded": assets_downloaded,
                 "bookmarks": int(getattr(detail_novel, "total_bookmarks", 0) or 0),
@@ -1948,7 +1957,6 @@ class BookmarkNovelSyncService:
         # so if we committed first and the process died before writing files, the
         # novel would be marked "synced" forever with no text on disk. Writing
         # files first means a crash leaves the DB unmarked and the novel is retried.
-        novel_dir = self.storage.novel_dir(restrict, user_id, user_name, novel_id, title)
         self.storage.write_text(novel_dir / "meta.json", json.dumps(meta_plain, ensure_ascii=False, indent=2))
         if write_raw_text:
             self.storage.write_text(novel_dir / "text.txt", body)
@@ -1984,6 +1992,7 @@ class BookmarkNovelSyncService:
                     create_date=getattr(detail_novel, "create_date", None),
                     raw_json=stable_json_dumps(meta_plain),
                     meta_hash=meta_hash,
+                    archive_dir=archive_dir,
                 )
             )
             self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))

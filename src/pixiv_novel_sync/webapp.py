@@ -157,8 +157,9 @@ class _ArchiveTrash:
             if not novel_id:
                 continue
             novel_dirs.append(
-                self._storage.novel_dir(
+                self._storage.resolve_archive_dir(
                     str(ref.get("restrict_value") or "public"),
+                    ref.get("archive_dir"),
                     user_id,
                     str(ref.get("author_name") or "unknown"),
                     novel_id,

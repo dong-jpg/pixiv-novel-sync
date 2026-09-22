@@ -20,8 +20,8 @@ class NovelsMixin:
                 INSERT INTO novels (
                     novel_id, user_id, series_id, title, caption, visible, restrict_value,
                     x_restrict, text_length, total_bookmarks, total_views, cover_url,
-                    tags_json, create_date, raw_json, meta_hash, source_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    tags_json, create_date, raw_json, meta_hash, source_url, archive_dir
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(novel_id) DO UPDATE SET
                     user_id = excluded.user_id,
                     series_id = excluded.series_id,
@@ -41,6 +41,9 @@ class NovelsMixin:
                     -- source_url 由主键 novel_id 唯一确定，正常情况下永不变化；
                     -- COALESCE 只为补上历史遗留的空值，不会覆盖已写入的地址。
                     source_url = COALESCE(novels.source_url, excluded.source_url),
+                    archive_dir = CASE
+                        WHEN novels.archive_dir IS NOT NULL AND novels.archive_dir != ''
+                        THEN novels.archive_dir ELSE excluded.archive_dir END,
                     last_seen_at = CURRENT_TIMESTAMP
                 """,
                 (
@@ -61,6 +64,7 @@ class NovelsMixin:
                     record.raw_json,
                     record.meta_hash,
                     novel_source_url(record.novel_id),
+                    record.archive_dir,
                 ),
             )
             self._commit_if_needed()
@@ -206,6 +210,7 @@ class NovelsMixin:
                 n.status,
                 n.last_checked_at,
                 n.source_url,
+                n.archive_dir,
                 nt.text_raw,
                 nt.text_markdown,
                 n.raw_json,
@@ -275,6 +280,7 @@ class NovelsMixin:
                 n.user_id,
                 COALESCE(u.name, 'unknown') AS author_name,
                 n.title,
+                n.archive_dir,
                 GROUP_CONCAT(a.local_path, char(10)) AS asset_paths
             FROM novels n
             LEFT JOIN users u ON u.user_id = n.user_id

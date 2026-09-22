@@ -579,8 +579,9 @@ def _remove_archive_files(settings: Settings, archive_refs: list[dict[str, Any]]
         if not novel_id:
             continue
         novel_dirs.append(
-            storage.novel_dir(
+            storage.resolve_archive_dir(
                 str(ref.get("restrict_value") or "public"),
+                ref.get("archive_dir"),
                 user_id,
                 str(ref.get("author_name") or "unknown"),
                 novel_id,
