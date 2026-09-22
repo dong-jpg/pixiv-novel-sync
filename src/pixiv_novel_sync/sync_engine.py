@@ -194,6 +194,8 @@ def _classify_series_response(series_data: Any) -> str:
 
         verdict, _detail = _classify_pixiv_response(series_data, ("novel_series_detail",))
         return str(verdict)
+    except InterruptedError:
+        raise
     except Exception:  # pragma: no cover - 判定失败一律按未知处理，绝不误判删除
         return "unknown"
 
@@ -328,6 +330,8 @@ class BookmarkNovelSyncService:
                     break
                 try:
                     result = self.api.user_bookmarks_novel(**next_query)
+                except InterruptedError:
+                    raise
                 except Exception as e:
                     logger.error("API call user_bookmarks_novel failed: %s", e)
                     break
@@ -527,6 +531,8 @@ class BookmarkNovelSyncService:
                 break
             try:
                 following_result = self.api.user_following(**next_query)
+            except InterruptedError:
+                raise
             except Exception as e:
                 logger.error("API call user_following failed: %s", e)
                 incomplete = True
@@ -697,6 +703,8 @@ class BookmarkNovelSyncService:
                     break
                 try:
                     novels_result = self.api.user_novels(**next_novel_query)
+                except InterruptedError:
+                    raise
                 except Exception as e:
                     logger.error("API call user_novels for user %s failed: %s", author_id, e)
                     break
@@ -915,6 +923,8 @@ class BookmarkNovelSyncService:
                     return stats
                 try:
                     following_result = self.api.user_following(**next_following_query)
+                except InterruptedError:
+                    raise
                 except Exception as e:
                     logger.error("API call user_following failed: %s", e)
                     break
@@ -1051,6 +1061,8 @@ class BookmarkNovelSyncService:
                                                 all_watched_ids.extend(paged_ids)
                                                 if isinstance(novel_series_thumbs, dict) and isinstance(paged_thumbs, dict):
                                                     novel_series_thumbs.update(paged_thumbs)
+                                        except InterruptedError:
+                                            raise
                                         except Exception as e:
                                             logger.warning("Failed to fetch page %d: %s", page_num, e)
                                 
@@ -1080,13 +1092,19 @@ class BookmarkNovelSyncService:
                                                 user_id=0, cover_url=s.get("cover_url", ""), total_novels=0,
                                             )
                                         # 新系列：不在此处插入，等 App API 获取详情后再插入
+                                    except InterruptedError:
+                                        raise
                                     except Exception:
                                         pass
                                 
                                 break
+                    except InterruptedError:
+                        raise
                     except Exception as e:
                         logger.warning("Web API %s failed: %s", endpoint, str(e))
                 
+            except InterruptedError:
+                raise
             except Exception as e:
                 logger.warning("Web API failed: %s", str(e))
         else:
@@ -1113,6 +1131,8 @@ class BookmarkNovelSyncService:
                         "cover_url": row[4] or "",
                     })
                 logger.info("Loaded %d subscribed series from DB fallback", len(series_list))
+            except InterruptedError:
+                raise
             except Exception as e:
                 logger.warning("Failed to load subscribed series from DB: %s", str(e))
 
@@ -1267,6 +1287,8 @@ class BookmarkNovelSyncService:
                                                 progress_callback("phase", {"phase": f"系列 {title or sid}: 已获取 {len(all_novel_items)} 章"})
                                         else:
                                             break
+                                    except InterruptedError:
+                                        raise
                                     except Exception as e:
                                         logger.warning("Failed to fetch next page for series %s: %s", sid, e)
                                         break
@@ -1336,6 +1358,8 @@ class BookmarkNovelSyncService:
                                 consecutive_fetch_failures = 0
                                 try:
                                     self.db.upsert_series_status(int(sid), "deleted")
+                                except InterruptedError:
+                                    raise
                                 except Exception as exc:  # pragma: no cover - 状态写回失败不该中断同步
                                     logger.warning("标记系列 %s 已删除失败: %s", sid, exc)
                                 logger.info("Series %s is gone on Pixiv; marked deleted (not a fetch failure)", sid)
@@ -1373,6 +1397,8 @@ class BookmarkNovelSyncService:
                     # 用户取消：不能被下面的 except Exception 吞掉（InterruptedError 是
                     # Exception 子类）。章节间/跳过延迟里的 _sleep_with_progress_cancel
                     # 会抛出它，必须原样上抛让 runner 标记任务已取消。
+                    raise
+                except InterruptedError:
                     raise
                 except Exception as e:
                     consecutive_fetch_failures += 1
@@ -1457,6 +1483,8 @@ class BookmarkNovelSyncService:
                     stats["series_synced"] += 1
                     logger.info("Synced series from DB: %s (ID: %s)", row[1], series_id)
                 
+            except InterruptedError:
+                raise
             except Exception as e:
                 logger.warning("Failed to extract series from DB: %s", str(e))
         
@@ -1506,6 +1534,8 @@ class BookmarkNovelSyncService:
             else:
                 logger.warning("Web Cookie 自动刷新失败: %s", result.get("error", "unknown"))
                 return None
+        except InterruptedError:
+            raise
         except Exception as exc:
             logger.warning("Web Cookie 自动刷新异常: %s", exc)
             return None
@@ -1555,6 +1585,8 @@ class BookmarkNovelSyncService:
         # 1. 获取远程收藏 ID 集合（必须完整成功，否则直接抛出）
         try:
             remote_ids = self._fetch_remote_bookmark_ids(user_id, restricts, progress_callback)
+        except InterruptedError:
+            raise
         except Exception as exc:
             logger.error("Failed to fetch remote bookmark ids; abort detection to avoid false-positive deletions: %s", exc)
             raise
@@ -1628,6 +1660,8 @@ class BookmarkNovelSyncService:
                 if novel_obj is None:
                     stats["skipped_deleted"] += 1
                     continue
+            except InterruptedError:
+                raise
             except Exception:
                 stats["skipped_deleted"] += 1
                 continue
@@ -1723,6 +1757,8 @@ class BookmarkNovelSyncService:
                 if detail is None:
                     stats["skipped_deleted"] += 1
                     continue
+            except InterruptedError:
+                raise
             except Exception:
                 stats["skipped_deleted"] += 1
                 continue
@@ -1836,6 +1872,8 @@ class BookmarkNovelSyncService:
                 paged_data = paged_resp.json()
                 paged_ids = paged_data.get("body", {}).get("page", {}).get("watchedSeriesIds", [])
                 remote_ids.update(int(sid) for sid in paged_ids)
+        except InterruptedError:
+            raise
         except Exception as e:
             logger.warning("Failed to fetch remote subscribed series: %s", e)
             return None
@@ -1854,6 +1892,8 @@ class BookmarkNovelSyncService:
         novel_id = int(novel.id)
         try:
             return self._sync_novel_inner(novel_id, novel, restrict, download_assets, write_markdown, write_raw_text, source_type, source_key)
+        except InterruptedError:
+            raise
         except InterruptedError:
             raise
         except Exception as e:

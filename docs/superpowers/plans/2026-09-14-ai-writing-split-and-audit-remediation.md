@@ -193,7 +193,7 @@
 
 ### 2.2 同步 / 任务
 
-- [ ] **T2-16 9 处 `except Exception` 吞 `InterruptedError`**
+- [x] **T2-16 9 处 `except Exception` 吞 `InterruptedError`**
   `sync_engine.py:645,1020,846,1234,406,441,464,1943,2038` 前加 `except InterruptedError: raise`；把 `test_sync_subscribed_series_propagates_interrupted_error` 的模式推广到 `sync()` 与 `_sync_author`。
 
 - [ ] **T2-17 翻页失败静默绿**
