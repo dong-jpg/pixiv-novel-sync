@@ -173,13 +173,19 @@ class SchemaMixin:
         )
 
     def _migrate_core_foreign_keys(self) -> None:
+        rebuilt = False
         if not self._has_foreign_key("novel_texts", "novel_id", "novels"):
             self._rebuild_novel_texts_with_foreign_key()
+            rebuilt = True
         if not self._has_foreign_key("assets", "novel_id", "novels"):
             self._rebuild_assets_with_foreign_key()
+            rebuilt = True
         if not self._has_foreign_key("sources", "novel_id", "novels"):
             self._rebuild_sources_with_foreign_key()
+            rebuilt = True
         self.conn.execute("PRAGMA foreign_keys=ON")
+        if not rebuilt:
+            return
         violations = self.conn.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             # 不再 RuntimeError：历史数据残留 FK 违规不应让全部路由 500。
@@ -288,6 +294,11 @@ class SchemaMixin:
     def _fix_cleared_status(self) -> None:
         """重置错误标记为 cleared 的用户状态为 unknown"""
         try:
+            pending = self.conn.execute(
+                "SELECT 1 FROM users WHERE status = 'cleared' LIMIT 1"
+            ).fetchone()
+            if pending is None:
+                return
             self.conn.execute("UPDATE users SET status = 'unknown' WHERE status = 'cleared'")
             self._commit_if_needed()
         except Exception:
@@ -324,11 +335,15 @@ class SchemaMixin:
         # 负责维护。它给「Pixiv 原站还在不在」提供一个不依赖 status 推断的判定入口。
         if "source_url" not in columns:
             self.conn.execute("ALTER TABLE novels ADD COLUMN source_url TEXT")
-        self.conn.execute(
-            "UPDATE novels SET source_url = ? || novel_id "
-            "WHERE source_url IS NULL OR source_url = ''",
-            (PIXIV_NOVEL_URL_PREFIX,),
-        )
+        missing_url = self.conn.execute(
+            "SELECT 1 FROM novels WHERE source_url IS NULL OR source_url = '' LIMIT 1"
+        ).fetchone()
+        if missing_url is not None:
+            self.conn.execute(
+                "UPDATE novels SET source_url = ? || novel_id "
+                "WHERE source_url IS NULL OR source_url = ''",
+                (PIXIV_NOVEL_URL_PREFIX,),
+            )
 
     def _migrate_novel_texts_table(self) -> None:
         """为旧版 novel_texts 表添加正文完整度辅助列并回填。"""
@@ -500,14 +515,25 @@ class SchemaMixin:
                 ON rescue_catalog_sources(source_kind, item_type, item_id);
             """
         )
-        self.conn.execute(
+        missing_membership = self.conn.execute(
             """
-            INSERT OR IGNORE INTO rescue_catalog_memberships (novel_id, series_id)
-            SELECT n.novel_id, n.series_id
+            SELECT 1
             FROM novels n
             JOIN series se ON se.series_id = n.series_id
+            LEFT JOIN rescue_catalog_memberships m ON m.novel_id = n.novel_id
+            WHERE m.novel_id IS NULL
+            LIMIT 1
             """
-        )
+        ).fetchone()
+        if missing_membership is not None:
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO rescue_catalog_memberships (novel_id, series_id)
+                SELECT n.novel_id, n.series_id
+                FROM novels n
+                JOIN series se ON se.series_id = n.series_id
+                """
+            )
         self._commit_if_needed()
 
     def _migrate_series_table(self) -> None:
@@ -522,11 +548,15 @@ class SchemaMixin:
             self.conn.execute("ALTER TABLE series ADD COLUMN last_checked_at TEXT")
         if "source_url" not in columns:
             self.conn.execute("ALTER TABLE series ADD COLUMN source_url TEXT")
-        self.conn.execute(
-            "UPDATE series SET source_url = ? || series_id "
-            "WHERE source_url IS NULL OR source_url = ''",
-            (PIXIV_SERIES_URL_PREFIX,),
-        )
+        missing_url = self.conn.execute(
+            "SELECT 1 FROM series WHERE source_url IS NULL OR source_url = '' LIMIT 1"
+        ).fetchone()
+        if missing_url is not None:
+            self.conn.execute(
+                "UPDATE series SET source_url = ? || series_id "
+                "WHERE source_url IS NULL OR source_url = ''",
+                (PIXIV_SERIES_URL_PREFIX,),
+            )
 
     def _migrate_preference_tables(self) -> None:
         """创建偏好画像与推荐相关表。"""

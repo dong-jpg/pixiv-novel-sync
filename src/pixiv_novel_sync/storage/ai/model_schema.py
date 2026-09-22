@@ -175,10 +175,10 @@ def _create_ai_agents_table(conn: sqlite3.Connection) -> None:
     )
 
 
-def _rebuild_ai_agents(conn: sqlite3.Connection) -> None:
+def _rebuild_ai_agents(conn: sqlite3.Connection) -> bool:
     old_columns = _table_columns(conn, "ai_agents")
     if _AGENT_ROUTING_COLUMNS <= old_columns:
-        return
+        return False
 
     old_table = "ai_agents_model_routing_old"
     if _table_exists(conn, old_table):
@@ -224,6 +224,7 @@ def _rebuild_ai_agents(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute(f"DROP TABLE {old_table}")
+    return True
 
 
 def _create_ai_jobs_table(conn: sqlite3.Connection) -> None:
@@ -270,10 +271,10 @@ def _create_ai_jobs_table(conn: sqlite3.Connection) -> None:
     )
 
 
-def _rebuild_ai_jobs(conn: sqlite3.Connection) -> None:
+def _rebuild_ai_jobs(conn: sqlite3.Connection) -> bool:
     old_columns = _table_columns(conn, "ai_jobs")
     if _JOB_ROUTING_COLUMNS <= old_columns:
-        return
+        return False
 
     old_table = "ai_jobs_model_routing_old"
     if _table_exists(conn, old_table):
@@ -338,6 +339,7 @@ def _rebuild_ai_jobs(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute(f"DROP TABLE {old_table}")
+    return True
 
 
 def _create_attempt_and_sync_tables(conn: sqlite3.Connection) -> None:
@@ -538,14 +540,17 @@ def assert_model_routing_foreign_keys(conn: sqlite3.Connection) -> None:
 def _migrate_model_routing_schema_in_transaction(
     conn: sqlite3.Connection,
 ) -> None:
+    created = not _table_exists(conn, "ai_provider_models")
     _create_model_routing_tables(conn)
-    _rebuild_ai_agents(conn)
-    _rebuild_ai_jobs(conn)
+    agents_rebuilt = _rebuild_ai_agents(conn)
+    jobs_rebuilt = _rebuild_ai_jobs(conn)
+    rebuilt = agents_rebuilt or jobs_rebuilt
     _create_attempt_and_sync_tables(conn)
     _add_provider_sync_columns(conn)
     _create_model_routing_indexes(conn)
     _import_available_models(conn)
-    assert_model_routing_foreign_keys(conn)
+    if created or rebuilt:
+        assert_model_routing_foreign_keys(conn)
 
 
 def migrate_model_routing_schema(conn: sqlite3.Connection) -> None:
