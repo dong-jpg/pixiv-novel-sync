@@ -121,17 +121,13 @@ class SchemaMixin:
 
         CREATE INDEX IF NOT EXISTS idx_task_logs_type ON task_logs(task_type);
         CREATE INDEX IF NOT EXISTS idx_task_logs_started_at ON task_logs(started_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_task_logs_auto_sync ON task_logs(is_auto_sync);
 
         CREATE INDEX IF NOT EXISTS idx_novels_user_id ON novels(user_id);
         CREATE INDEX IF NOT EXISTS idx_novels_series_id ON novels(series_id);
         CREATE INDEX IF NOT EXISTS idx_novels_last_seen_at ON novels(last_seen_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_sources_source_type ON sources(source_type);
 
         -- Phase 5性能:高频WHERE条件索引
         CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
-        CREATE INDEX IF NOT EXISTS idx_assets_novel_id ON assets(novel_id);
-        CREATE INDEX IF NOT EXISTS idx_sources_novel_id ON sources(novel_id);
         """
         )
         # 迁移：为旧版 users 表添加 status、last_checked_at、restricted_streak 字段
@@ -165,7 +161,34 @@ class SchemaMixin:
         # 迁移：把 novel_fts 的 rowid 对齐到 novel_id（历史错位索引整表重建）
         self._migrate_novel_fts_rowid()
         self._migrate_core_foreign_keys()
+        self._migrate_query_indexes()
         self._commit_if_needed()
+
+    def _migrate_query_indexes(self) -> None:
+        """丢掉被主键或唯一约束覆盖的索引，给轮转查询补上能走的索引。"""
+        for name in (
+            "idx_assets_novel_id",
+            "idx_sources_novel_id",
+            "idx_ai_jobs_job_id",
+            "idx_sources_source_type",
+            "idx_rescue_overrides_action",
+            "idx_reading_progress_status",
+            "idx_reading_progress_last_read",
+            "idx_task_logs_auto_sync",
+        ):
+            self.conn.execute(f"DROP INDEX IF EXISTS {name}")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_novels_last_checked ON novels(last_checked_at, novel_id)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_last_checked ON users(last_checked_at, user_id)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_series_last_checked ON series(last_checked_at, series_id)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_novels_status ON novels(status)"
+        )
 
     def _has_foreign_key(self, table_name: str, column_name: str, target_table: str) -> bool:
         return any(
@@ -494,9 +517,6 @@ class SchemaMixin:
                 PRIMARY KEY (item_type, item_id)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_rescue_overrides_action
-                ON rescue_overrides(action);
-
             CREATE TABLE IF NOT EXISTS rescue_api_token (
                 singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
                 token_hash TEXT NOT NULL,
@@ -806,22 +826,20 @@ class SchemaMixin:
 
             CREATE INDEX IF NOT EXISTS idx_ai_agents_task_type ON ai_agents(task_type);
             CREATE INDEX IF NOT EXISTS idx_ai_agents_provider_id ON ai_agents(provider_id);
-            CREATE INDEX IF NOT EXISTS idx_ai_jobs_job_id ON ai_jobs(job_id);
             CREATE INDEX IF NOT EXISTS idx_ai_jobs_created_at ON ai_jobs(created_at DESC);
             """
         )
-        # 迁移：为已有 ai_providers 表添加 context_window 列
-        try:
-            self.conn.execute("ALTER TABLE ai_providers ADD COLUMN context_window INTEGER NOT NULL DEFAULT 128000")
-            self.conn.commit()
-        except Exception:
-            pass  # 列已存在则忽略
-        # 迁移：为已有 ai_providers 表添加 stream_enabled 列
-        try:
-            self.conn.execute("ALTER TABLE ai_providers ADD COLUMN stream_enabled INTEGER NOT NULL DEFAULT 1")
-            self.conn.commit()
-        except Exception:
-            pass
+        provider_columns = {
+            row[1] for row in self.conn.execute("PRAGMA table_info(ai_providers)").fetchall()
+        }
+        if "context_window" not in provider_columns:
+            self.conn.execute(
+                "ALTER TABLE ai_providers ADD COLUMN context_window INTEGER NOT NULL DEFAULT 128000"
+            )
+        if "stream_enabled" not in provider_columns:
+            self.conn.execute(
+                "ALTER TABLE ai_providers ADD COLUMN stream_enabled INTEGER NOT NULL DEFAULT 1"
+            )
 
         # ai_jobs 的 owner_scope / idempotency_key_hash 两列原先由成人迁移添加，
         # 剥离后挪到这里（带守卫的 ADD COLUMN），通用查询与 ai-writing 分支都依赖它们。
@@ -891,7 +909,6 @@ class SchemaMixin:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE INDEX IF NOT EXISTS idx_reading_progress_status ON reading_progress(status);
-            CREATE INDEX IF NOT EXISTS idx_reading_progress_last_read ON reading_progress(last_read_at DESC);
+
             """
         )

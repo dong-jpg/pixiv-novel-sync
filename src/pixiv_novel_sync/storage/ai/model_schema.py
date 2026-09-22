@@ -444,7 +444,6 @@ def _create_model_routing_indexes(conn: sqlite3.Connection) -> None:
         "ON ai_agents(provider_id)",
         "CREATE INDEX IF NOT EXISTS idx_ai_agents_model_pool_id "
         "ON ai_agents(model_pool_id)",
-        "CREATE INDEX IF NOT EXISTS idx_ai_jobs_job_id ON ai_jobs(job_id)",
         "CREATE INDEX IF NOT EXISTS idx_ai_jobs_created_at "
         "ON ai_jobs(created_at DESC)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_jobs_parent_idempotency "

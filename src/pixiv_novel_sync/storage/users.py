@@ -77,8 +77,8 @@ class UsersMixin:
             "WHERE restricted_streak < ? "
             "   OR last_checked_at IS NULL "
             "   OR last_checked_at < datetime('now', ?) "
-            # (last_checked_at IS NOT NULL) 为 0/1，保证 NULL（从未检查）永远排最前
-            "ORDER BY (last_checked_at IS NOT NULL), last_checked_at, user_id"
+            # SQLite 升序把 NULL 排在最前，从未检查的用户自然先轮到。
+            "ORDER BY last_checked_at, user_id"
         )
         params: tuple[Any, ...] = (
             int(self.RESTRICTED_STREAK_THRESHOLD),

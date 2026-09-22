@@ -646,8 +646,8 @@ class NovelsMixin:
         """
         sql = (
             "SELECT novel_id FROM novels "
-            # (last_checked_at IS NOT NULL) 为 0/1，保证 NULL（从未检查）永远排最前
-            "ORDER BY (last_checked_at IS NOT NULL), last_checked_at, novel_id"
+            # SQLite 升序把 NULL 排在最前，从未检查的小说自然先轮到。
+            "ORDER BY last_checked_at, novel_id"
         )
         params: tuple[Any, ...] = ()
         if limit is not None and int(limit) > 0:

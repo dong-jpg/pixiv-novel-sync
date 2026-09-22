@@ -310,7 +310,7 @@ class SeriesMixin:
         """
         sql = (
             "SELECT series_id FROM series "
-            "ORDER BY (last_checked_at IS NOT NULL), last_checked_at, series_id"
+            "ORDER BY last_checked_at, series_id"
         )
         params: tuple[Any, ...] = ()
         if limit is not None and int(limit) > 0:
