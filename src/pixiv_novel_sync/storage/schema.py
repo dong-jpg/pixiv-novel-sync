@@ -18,6 +18,7 @@ class SchemaMixin:
     def init_schema(self) -> None:
         # PRAGMA 已在 conn property 中每连接执行,这里只建表
         with self._lock:
+            self._assert_no_interrupted_rebuild()
             self.conn.executescript(
                 """
 
@@ -261,15 +262,37 @@ class SchemaMixin:
             """,
         )
 
+    def _assert_no_interrupted_rebuild(self) -> None:
+        leftovers = [
+            row[0]
+            for row in self.conn.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type = 'table'
+                  AND name IN ('novel_texts_old', 'assets_old', 'sources_old')
+                """
+            )
+        ]
+        if leftovers:
+            raise RuntimeError(f"检测到未完成的表重建，请先处理: {', '.join(leftovers)}")
+
     def _rebuild_table_with_foreign_key(self, table_name: str, create_sql: str, copy_sql: str) -> None:
         old_name = f"{table_name}_old"
+        self._commit_if_needed()
+        existing = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (old_name,),
+        ).fetchone()
+        if existing is not None:
+            raise RuntimeError(f"检测到未完成的表重建，请先处理: {old_name}")
+        # foreign_keys 开关不能放进事务。
         self.conn.execute("PRAGMA foreign_keys=OFF")
         try:
-            self.conn.execute(f"DROP TABLE IF EXISTS {old_name}")
-            self.conn.execute(f"ALTER TABLE {table_name} RENAME TO {old_name}")
-            self.conn.execute(create_sql)
-            self.conn.execute(copy_sql)
-            self.conn.execute(f"DROP TABLE {old_name}")
+            with self.transaction():
+                self.conn.execute(f"ALTER TABLE {table_name} RENAME TO {old_name}")
+                self.conn.execute(create_sql)
+                self.conn.execute(copy_sql)
+                self.conn.execute(f"DROP TABLE {old_name}")
         finally:
             self.conn.execute("PRAGMA foreign_keys=ON")
 

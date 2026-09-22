@@ -152,7 +152,7 @@
 - [x] **T2-02 连接改 `isolation_level=None`**
   `storage/connection.py:120`；所有写方法确认走 `transaction()` 或显式 `commit()`；删 `_migrate_novel_fts_rowid:383` 的补丁式 `_commit_if_needed()` 与 `test_fts_migration_tolerates_pending_implicit_transaction`；`transaction()` :184 的 `rollback()` 隐患随之消失。验收：全量测试绿；`grep -n "_commit_if_needed" storage/` 只剩 transaction 内部。
 
-- [ ] **T2-03 `_rebuild_table_with_foreign_key` 事务化**
+- [x] **T2-03 `_rebuild_table_with_foreign_key` 事务化**
   `schema.py:263-273` 先 `_commit_if_needed()`，`PRAGMA foreign_keys=OFF` 放事务外，rename / create / copy / drop 包进 `with self.transaction()`；启动发现 `*_old` 表则报错。
 
 - [ ] **T2-04 `delete_user` 删 series + 孤儿表**
