@@ -179,10 +179,10 @@
 - [ ] **T2-11 索引整理**
   删 `idx_assets_novel_id`、`idx_sources_novel_id`、`idx_ai_jobs_job_id`、`idx_sources_source_type`、`idx_rescue_overrides_action`、`idx_reading_progress_status`、`idx_reading_progress_last_read`、`idx_task_logs_auto_sync`（迁移里 `DROP INDEX IF EXISTS`，索引可删）。新增 `novels/users/series (last_checked_at, id)` 三个索引，轮转查询 `ORDER BY last_checked_at, id` 去掉 `(x IS NOT NULL)` 前缀；`novels(status)` 索引。`_migrate_ai_tables` :819-830 的 `try/except: pass` 改 `PRAGMA table_info` 守卫。验收：`EXPLAIN QUERY PLAN` 轮转查询走索引。
 
-- [ ] **T2-12 FTS 回滚场景探测**
+- [x] **T2-12 FTS 回滚场景探测**
   `schema.py:362-370` 同时取 `ORDER BY rowid DESC LIMIT 1`。
 
-- [ ] **T2-13 `get_ai_task_logs` N+1**
+- [x] **T2-13 `get_ai_task_logs` N+1**
   `storage/tasks.py:401-403` 一次 `WHERE job_id IN (...)` 后分组。
 
 - [x] **T2-14 WAL 上限**

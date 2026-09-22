@@ -420,14 +420,22 @@ class SchemaMixin:
         改法是让 rowid 等于 novel_id，按 ID 的读写一律走 rowid（FTS5 主键，
         O(1)）。历史数据的 rowid 全部错位，只能整表重建。
         """
-        row = self.conn.execute("SELECT rowid, novel_id FROM novel_fts LIMIT 1").fetchone()
-        if row is None:
+        rows = self.conn.execute(
+            """
+            SELECT rowid, novel_id FROM (
+                SELECT rowid, novel_id FROM novel_fts ORDER BY rowid ASC LIMIT 1
+            )
+            UNION ALL
+            SELECT rowid, novel_id FROM (
+                SELECT rowid, novel_id FROM novel_fts ORDER BY rowid DESC LIMIT 1
+            )
+            """
+        ).fetchall()
+        if not rows:
             # 空索引：建表语句本身不写 rowid，后续写入路径会显式指定，无需重建。
             return
-        if int(row[0]) == int(row[1]):
-            # 已对齐 ⇒ 幂等 no-op。探测只取一行：写入路径是唯一入口，所以要么
-            # 全部对齐（新代码）要么全部错位（旧代码）。若曾中途崩溃留下混合状态，
-            # LIMIT 1 取到的是最小 rowid，即旧的错位行，仍会触发重建——偏安全侧。
+        if all(int(row[0]) == int(row[1]) for row in rows):
+            # 头尾都对齐才跳过。只看最小 rowid 会漏掉「前面已对齐、尾部仍错位」的半截重建。
             return
 
         total = int(self.conn.execute("SELECT COUNT(*) FROM novel_fts").fetchone()[0])
