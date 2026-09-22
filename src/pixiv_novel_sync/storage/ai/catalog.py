@@ -200,26 +200,25 @@ class CatalogMixin:
         manual_context = self._validate_context_window(data.get("manual_context_window"))
         # 人工补录默认 manual=1；enabled 缺省为 1
         enabled = 1 if data.get("enabled", 1) else 0
-        with self._lock:
-            cursor = self.conn.execute(
-                """
-                INSERT INTO ai_provider_models (
-                    provider_id, model_key, manual, discovered, discovered_available,
-                    enabled, manual_display_name, manual_capabilities_json,
-                    manual_context_window
-                ) VALUES (?, ?, 1, 0, 0, ?, ?, ?, ?)
-                """,
-                (
-                    int(data["provider_id"]),
-                    model_key,
-                    enabled,
-                    manual_display,
-                    manual_caps,
-                    manual_context,
-                ),
-            )
-            self._commit_if_needed()
-            return int(cursor.lastrowid)
+        cursor = self.conn.execute(
+            """
+            INSERT INTO ai_provider_models (
+                provider_id, model_key, manual, discovered, discovered_available,
+                enabled, manual_display_name, manual_capabilities_json,
+                manual_context_window
+            ) VALUES (?, ?, 1, 0, 0, ?, ?, ?, ?)
+            """,
+            (
+                int(data["provider_id"]),
+                model_key,
+                enabled,
+                manual_display,
+                manual_caps,
+                manual_context,
+            ),
+        )
+        self._commit_if_needed()
+        return int(cursor.lastrowid)
 
     def update_ai_provider_model(self, model_id: int, patch: Mapping[str, Any]) -> None:
         """只更新用户可写字段：``enabled`` 和 ``manual_*``。
@@ -256,12 +255,11 @@ class CatalogMixin:
             return
         fields.append("updated_at = CURRENT_TIMESTAMP")
         params.append(model_id)
-        with self._lock:
-            self.conn.execute(
-                f"UPDATE ai_provider_models SET {', '.join(fields)} WHERE id = ?",
-                params,
-            )
-            self._commit_if_needed()
+        self.conn.execute(
+            f"UPDATE ai_provider_models SET {', '.join(fields)} WHERE id = ?",
+            params,
+        )
+        self._commit_if_needed()
 
     def remove_ai_provider_model_manual(self, model_id: int) -> None:
         """清除人工保留标记。

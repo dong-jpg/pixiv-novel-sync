@@ -15,24 +15,23 @@ class UsersMixin:
 
     def upsert_user(self, record) -> None:
         """插入或更新用户记录"""
-        with self._lock:
-            self.conn.execute(
-                """
-                INSERT INTO users (user_id, name, account, raw_json)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                  name = excluded.name,
-                  account = CASE WHEN excluded.account IS NOT NULL AND excluded.account != '' THEN excluded.account ELSE users.account END,
-                  raw_json = CASE
-                    WHEN json_valid(excluded.raw_json)
-                     AND json_type(excluded.raw_json) = 'object'
-                     AND excluded.raw_json != '{}'
-                    THEN excluded.raw_json ELSE users.raw_json END,
-                  updated_at = CURRENT_TIMESTAMP
-                """,
-                (record.user_id, record.name, record.account, record.raw_json),
-            )
-            self._commit_if_needed()
+        self.conn.execute(
+            """
+            INSERT INTO users (user_id, name, account, raw_json)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+              name = excluded.name,
+              account = CASE WHEN excluded.account IS NOT NULL AND excluded.account != '' THEN excluded.account ELSE users.account END,
+              raw_json = CASE
+                WHEN json_valid(excluded.raw_json)
+                 AND json_type(excluded.raw_json) = 'object'
+                 AND excluded.raw_json != '{}'
+                THEN excluded.raw_json ELSE users.raw_json END,
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            (record.user_id, record.name, record.account, record.raw_json),
+        )
+        self._commit_if_needed()
 
     # 连续多少轮判不出状态就算「已知受限」，之后降频巡检
     RESTRICTED_STREAK_THRESHOLD = 3
@@ -97,20 +96,19 @@ class UsersMixin:
         同时维护 restricted_streak：unknown 累加，任何确定结论归零。降频逻辑见
         ``get_users_for_status_check``。
         """
-        with self._lock:
-            if status == UNKNOWN_STATUS:
-                self.conn.execute(
-                    "UPDATE users SET last_checked_at = CURRENT_TIMESTAMP, "
-                    "restricted_streak = restricted_streak + 1 WHERE user_id = ?",
-                    (user_id,),
-                )
-            else:
-                self.conn.execute(
-                    "UPDATE users SET status = ?, last_checked_at = CURRENT_TIMESTAMP, "
-                    "restricted_streak = 0 WHERE user_id = ?",
-                    (status, user_id),
-                )
-            self._commit_if_needed()
+        if status == UNKNOWN_STATUS:
+            self.conn.execute(
+                "UPDATE users SET last_checked_at = CURRENT_TIMESTAMP, "
+                "restricted_streak = restricted_streak + 1 WHERE user_id = ?",
+                (user_id,),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE users SET status = ?, last_checked_at = CURRENT_TIMESTAMP, "
+                "restricted_streak = 0 WHERE user_id = ?",
+                (status, user_id),
+            )
+        self._commit_if_needed()
 
     # 本人账号资料的水位线存储键。users 表只存「被关注的作者」，本人账号不在其中，
     # 所以侧边栏不能靠 users 表取自己的信息（会退化成"最近同步的作者"）。

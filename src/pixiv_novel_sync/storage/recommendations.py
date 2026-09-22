@@ -39,25 +39,24 @@ class RecommendationsMixin:
         return self._row_to_preference_profile(row) if row else None
 
     def create_preference_profile(self, data: dict[str, Any]) -> int:
-        with self._lock:
-            if data.get("is_default"):
-                self.conn.execute("UPDATE preference_profiles SET is_default = 0")
-            cursor = self.conn.execute(
-                """
-                INSERT INTO preference_profiles (name, description, source_scope_json, stats_json, profile_json, is_default)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    data.get("name") or "未命名偏好画像",
-                    data.get("description"),
-                    json.dumps(data.get("source_scope") or {}, ensure_ascii=False),
-                    json.dumps(data.get("stats") or {}, ensure_ascii=False),
-                    json.dumps(data.get("profile") or {}, ensure_ascii=False),
-                    1 if data.get("is_default") else 0,
-                ),
-            )
-            self._commit_if_needed()
-            return int(cursor.lastrowid)
+        if data.get("is_default"):
+            self.conn.execute("UPDATE preference_profiles SET is_default = 0")
+        cursor = self.conn.execute(
+            """
+            INSERT INTO preference_profiles (name, description, source_scope_json, stats_json, profile_json, is_default)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data.get("name") or "未命名偏好画像",
+                data.get("description"),
+                json.dumps(data.get("source_scope") or {}, ensure_ascii=False),
+                json.dumps(data.get("stats") or {}, ensure_ascii=False),
+                json.dumps(data.get("profile") or {}, ensure_ascii=False),
+                1 if data.get("is_default") else 0,
+            ),
+        )
+        self._commit_if_needed()
+        return int(cursor.lastrowid)
 
     def update_preference_profile(self, profile_id: int, data: dict[str, Any]) -> None:
         fields: list[str] = []
@@ -77,21 +76,18 @@ class RecommendationsMixin:
             return
         fields.append("updated_at = CURRENT_TIMESTAMP")
         params.append(profile_id)
-        with self._lock:
-            if data.get("is_default"):
-                self.conn.execute("UPDATE preference_profiles SET is_default = 0 WHERE id != ?", (profile_id,))
-            self.conn.execute(f"UPDATE preference_profiles SET {', '.join(fields)} WHERE id = ?", params)
-            self._commit_if_needed()
+        if data.get("is_default"):
+            self.conn.execute("UPDATE preference_profiles SET is_default = 0 WHERE id != ?", (profile_id,))
+        self.conn.execute(f"UPDATE preference_profiles SET {', '.join(fields)} WHERE id = ?", params)
+        self._commit_if_needed()
 
     def set_default_preference_profile(self, profile_id: int) -> None:
-        with self._lock:
-            self.conn.execute("UPDATE preference_profiles SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END", (profile_id,))
-            self._commit_if_needed()
+        self.conn.execute("UPDATE preference_profiles SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END", (profile_id,))
+        self._commit_if_needed()
 
     def delete_preference_profile(self, profile_id: int) -> None:
-        with self._lock:
-            self.conn.execute("DELETE FROM preference_profiles WHERE id = ?", (profile_id,))
-            self._commit_if_needed()
+        self.conn.execute("DELETE FROM preference_profiles WHERE id = ?", (profile_id,))
+        self._commit_if_needed()
 
     def fetch_preference_source_rows(self, min_text_length: int = 1000, limit: int = 0) -> list[dict[str, Any]]:
         sql = """
@@ -290,28 +286,26 @@ class RecommendationsMixin:
 
 
     def create_recommendation_run(self, profile_id: int, search_plan: dict[str, Any], status: str = "running") -> int:
-        with self._lock:
-            cursor = self.conn.execute(
-                """
-                INSERT INTO recommendation_runs (profile_id, status, search_plan_json)
-                VALUES (?, ?, ?)
-                """,
-                (profile_id, status, json.dumps(search_plan, ensure_ascii=False)),
-            )
-            self._commit_if_needed()
-            return int(cursor.lastrowid)
+        cursor = self.conn.execute(
+            """
+            INSERT INTO recommendation_runs (profile_id, status, search_plan_json)
+            VALUES (?, ?, ?)
+            """,
+            (profile_id, status, json.dumps(search_plan, ensure_ascii=False)),
+        )
+        self._commit_if_needed()
+        return int(cursor.lastrowid)
 
     def update_recommendation_run(self, run_id: int, status: str, stats: dict[str, Any] | None = None, error_message: str | None = None) -> None:
-        with self._lock:
-            self.conn.execute(
-                """
-                UPDATE recommendation_runs
-                SET status = ?, stats_json = ?, error_message = ?, finished_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (status, json.dumps(stats or {}, ensure_ascii=False), error_message, run_id),
-            )
-            self._commit_if_needed()
+        self.conn.execute(
+            """
+            UPDATE recommendation_runs
+            SET status = ?, stats_json = ?, error_message = ?, finished_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (status, json.dumps(stats or {}, ensure_ascii=False), error_message, run_id),
+        )
+        self._commit_if_needed()
 
     def _row_to_recommendation_run(self, row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
@@ -370,43 +364,42 @@ class RecommendationsMixin:
             json.dumps(data.get("risk_notes") or [], ensure_ascii=False),
             data.get("status") or "new",
         )
-        with self._lock:
-            existing = self.conn.execute(
+        existing = self.conn.execute(
+            """
+            SELECT id FROM recommendation_items
+            WHERE item_type = ? AND COALESCE(novel_id, 0) = ? AND COALESCE(series_id, 0) = ?
+            """,
+            (item_type, int(novel_id or 0), int(series_id or 0)),
+        ).fetchone()
+        if existing:
+            item_id = int(existing[0])
+            self.conn.execute(
                 """
-                SELECT id FROM recommendation_items
-                WHERE item_type = ? AND COALESCE(novel_id, 0) = ? AND COALESCE(series_id, 0) = ?
+                UPDATE recommendation_items SET
+                    run_id = ?, profile_id = ?, item_type = ?, novel_id = ?, series_id = ?, title = ?,
+                    author_id = ?, author_name = ?, caption = ?, tags_json = ?, text_length = ?,
+                    series_total_text_length = ?, series_total_novels = ?, total_bookmarks = ?, total_views = ?,
+                    score = ?, reason = ?, matched_json = ?, source_query = ?, x_restrict = ?,
+                    risk_notes_json = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
                 """,
-                (item_type, int(novel_id or 0), int(series_id or 0)),
-            ).fetchone()
-            if existing:
-                item_id = int(existing[0])
-                self.conn.execute(
-                    """
-                    UPDATE recommendation_items SET
-                        run_id = ?, profile_id = ?, item_type = ?, novel_id = ?, series_id = ?, title = ?,
-                        author_id = ?, author_name = ?, caption = ?, tags_json = ?, text_length = ?,
-                        series_total_text_length = ?, series_total_novels = ?, total_bookmarks = ?, total_views = ?,
-                        score = ?, reason = ?, matched_json = ?, source_query = ?, x_restrict = ?,
-                        risk_notes_json = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    """,
-                    values[:-1] + (item_id,),
-                )
-            else:
-                cursor = self.conn.execute(
-                    """
-                    INSERT INTO recommendation_items (
-                        run_id, profile_id, item_type, novel_id, series_id, title, author_id, author_name,
-                        caption, tags_json, text_length, series_total_text_length, series_total_novels,
-                        total_bookmarks, total_views, score, reason, matched_json, source_query,
-                        x_restrict, risk_notes_json, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    values,
-                )
-                item_id = int(cursor.lastrowid)
-            self._commit_if_needed()
-            return item_id
+                values[:-1] + (item_id,),
+            )
+        else:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO recommendation_items (
+                    run_id, profile_id, item_type, novel_id, series_id, title, author_id, author_name,
+                    caption, tags_json, text_length, series_total_text_length, series_total_novels,
+                    total_bookmarks, total_views, score, reason, matched_json, source_query,
+                    x_restrict, risk_notes_json, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+            item_id = int(cursor.lastrowid)
+        self._commit_if_needed()
+        return item_id
 
     def list_recommendation_items(self, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         sql = "SELECT * FROM recommendation_items"
@@ -472,43 +465,39 @@ class RecommendationsMixin:
         return self._row_to_recommendation_item(row) if row else None
 
     def update_recommendation_item_status(self, item_id: int, status: str) -> None:
-        with self._lock:
-            self.conn.execute("UPDATE recommendation_items SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (status, item_id))
-            self._commit_if_needed()
+        self.conn.execute("UPDATE recommendation_items SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (status, item_id))
+        self._commit_if_needed()
 
     def create_recommendation_feedback(self, data: dict[str, Any]) -> int:
-        with self._lock:
-            cursor = self.conn.execute(
-                """
-                INSERT INTO recommendation_feedback (item_type, novel_id, series_id, author_id, feedback_type, note)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (data["item_type"], data.get("novel_id"), data.get("series_id"), data.get("author_id"), data["feedback_type"], data.get("note")),
-            )
-            self._commit_if_needed()
-            return int(cursor.lastrowid)
+        cursor = self.conn.execute(
+            """
+            INSERT INTO recommendation_feedback (item_type, novel_id, series_id, author_id, feedback_type, note)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (data["item_type"], data.get("novel_id"), data.get("series_id"), data.get("author_id"), data["feedback_type"], data.get("note")),
+        )
+        self._commit_if_needed()
+        return int(cursor.lastrowid)
 
     def list_recommendation_mutes(self) -> list[dict[str, Any]]:
         rows = self.conn.execute("SELECT * FROM recommendation_mutes ORDER BY created_at DESC").fetchall()
         return [dict(row) for row in rows]
 
     def create_recommendation_mute(self, mute_type: str, mute_value: str, reason: str | None = None) -> int:
-        with self._lock:
-            cursor = self.conn.execute(
-                """
-                INSERT INTO recommendation_mutes (mute_type, mute_value, reason)
-                VALUES (?, ?, ?)
-                ON CONFLICT(mute_type, mute_value) DO UPDATE SET reason = excluded.reason
-                """,
-                (mute_type, mute_value, reason),
-            )
-            self._commit_if_needed()
-            return int(cursor.lastrowid)
+        cursor = self.conn.execute(
+            """
+            INSERT INTO recommendation_mutes (mute_type, mute_value, reason)
+            VALUES (?, ?, ?)
+            ON CONFLICT(mute_type, mute_value) DO UPDATE SET reason = excluded.reason
+            """,
+            (mute_type, mute_value, reason),
+        )
+        self._commit_if_needed()
+        return int(cursor.lastrowid)
 
     def delete_recommendation_mute(self, mute_id: int) -> None:
-        with self._lock:
-            self.conn.execute("DELETE FROM recommendation_mutes WHERE id = ?", (mute_id,))
-            self._commit_if_needed()
+        self.conn.execute("DELETE FROM recommendation_mutes WHERE id = ?", (mute_id,))
+        self._commit_if_needed()
 
     def get_recommendation_filter_state(self) -> dict[str, Any]:
         # 5.3: archived 判断走主键索引 EXISTS 惰性查询,不再 SELECT 全表灌进内存。

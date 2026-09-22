@@ -17,123 +17,122 @@ class SchemaMixin:
 
     def init_schema(self) -> None:
         # PRAGMA 已在 conn property 中每连接执行,这里只建表
-        with self._lock:
-            self._assert_no_interrupted_rebuild()
-            self.conn.executescript(
-                """
-
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                account TEXT,
-                raw_json TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'unknown',
-                last_checked_at TEXT,
-                restricted_streak INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS novels (
-                novel_id INTEGER PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                series_id INTEGER,
-                title TEXT NOT NULL,
-                caption TEXT,
-                visible INTEGER NOT NULL,
-                restrict_value TEXT NOT NULL,
-                x_restrict INTEGER NOT NULL,
-                text_length INTEGER NOT NULL,
-                total_bookmarks INTEGER NOT NULL,
-                total_views INTEGER NOT NULL,
-                cover_url TEXT,
-                tags_json TEXT NOT NULL,
-                create_date TEXT,
-                raw_json TEXT NOT NULL,
-                meta_hash TEXT NOT NULL,
-                source_url TEXT,
-                archive_dir TEXT,
-                first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS novel_texts (
-                novel_id INTEGER PRIMARY KEY REFERENCES novels(novel_id) ON DELETE CASCADE,
-                text_raw TEXT NOT NULL,
-                has_content INTEGER NOT NULL DEFAULT 0,
-                text_markdown TEXT,
-                text_hash TEXT NOT NULL,
-                fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS assets (
-                asset_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                novel_id INTEGER NOT NULL REFERENCES novels(novel_id) ON DELETE CASCADE,
-                asset_type TEXT NOT NULL,
-                remote_url TEXT NOT NULL,
-                local_path TEXT NOT NULL,
-                file_hash TEXT,
-                downloaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(novel_id, asset_type, remote_url)
-            );
-
-            CREATE TABLE IF NOT EXISTS sources (
-                novel_id INTEGER NOT NULL REFERENCES novels(novel_id) ON DELETE CASCADE,
-                source_type TEXT NOT NULL,
-                source_key TEXT NOT NULL,
-                discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (novel_id, source_type, source_key)
-            );
-
-            CREATE TABLE IF NOT EXISTS series (
-                series_id INTEGER PRIMARY KEY,
-                title TEXT NOT NULL,
-                description TEXT,
-                user_id INTEGER NOT NULL,
-                cover_url TEXT,
-                total_novels INTEGER DEFAULT 0,
-                source_url TEXT,
-                first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE VIRTUAL TABLE IF NOT EXISTS novel_fts USING fts5(
-                novel_id UNINDEXED,
-                title,
-                caption,
-                author_name,
-                body
-            );
-
-            CREATE TABLE IF NOT EXISTS task_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_type TEXT NOT NULL,
-                task_name TEXT NOT NULL,
-                job_id TEXT,
-                status TEXT NOT NULL DEFAULT 'running',
-                started_at TEXT NOT NULL,
-                finished_at TEXT,
-                duration_seconds REAL,
-                stats_json TEXT,
-                error_message TEXT,
-                logs_json TEXT,
-                is_auto_sync INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_task_logs_type ON task_logs(task_type);
-            CREATE INDEX IF NOT EXISTS idx_task_logs_started_at ON task_logs(started_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_task_logs_auto_sync ON task_logs(is_auto_sync);
-
-            CREATE INDEX IF NOT EXISTS idx_novels_user_id ON novels(user_id);
-            CREATE INDEX IF NOT EXISTS idx_novels_series_id ON novels(series_id);
-            CREATE INDEX IF NOT EXISTS idx_novels_last_seen_at ON novels(last_seen_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_sources_source_type ON sources(source_type);
-
-            -- Phase 5性能:高频WHERE条件索引
-            CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
-            CREATE INDEX IF NOT EXISTS idx_assets_novel_id ON assets(novel_id);
-            CREATE INDEX IF NOT EXISTS idx_sources_novel_id ON sources(novel_id);
+        self._assert_no_interrupted_rebuild()
+        self.conn.executescript(
             """
+
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            account TEXT,
+            raw_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'unknown',
+            last_checked_at TEXT,
+            restricted_streak INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS novels (
+            novel_id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            series_id INTEGER,
+            title TEXT NOT NULL,
+            caption TEXT,
+            visible INTEGER NOT NULL,
+            restrict_value TEXT NOT NULL,
+            x_restrict INTEGER NOT NULL,
+            text_length INTEGER NOT NULL,
+            total_bookmarks INTEGER NOT NULL,
+            total_views INTEGER NOT NULL,
+            cover_url TEXT,
+            tags_json TEXT NOT NULL,
+            create_date TEXT,
+            raw_json TEXT NOT NULL,
+            meta_hash TEXT NOT NULL,
+            source_url TEXT,
+            archive_dir TEXT,
+            first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS novel_texts (
+            novel_id INTEGER PRIMARY KEY REFERENCES novels(novel_id) ON DELETE CASCADE,
+            text_raw TEXT NOT NULL,
+            has_content INTEGER NOT NULL DEFAULT 0,
+            text_markdown TEXT,
+            text_hash TEXT NOT NULL,
+            fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS assets (
+            asset_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            novel_id INTEGER NOT NULL REFERENCES novels(novel_id) ON DELETE CASCADE,
+            asset_type TEXT NOT NULL,
+            remote_url TEXT NOT NULL,
+            local_path TEXT NOT NULL,
+            file_hash TEXT,
+            downloaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(novel_id, asset_type, remote_url)
+        );
+
+        CREATE TABLE IF NOT EXISTS sources (
+            novel_id INTEGER NOT NULL REFERENCES novels(novel_id) ON DELETE CASCADE,
+            source_type TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (novel_id, source_type, source_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS series (
+            series_id INTEGER PRIMARY KEY,
+            title TEXT NOT NULL,
+            description TEXT,
+            user_id INTEGER NOT NULL,
+            cover_url TEXT,
+            total_novels INTEGER DEFAULT 0,
+            source_url TEXT,
+            first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS novel_fts USING fts5(
+            novel_id UNINDEXED,
+            title,
+            caption,
+            author_name,
+            body
+        );
+
+        CREATE TABLE IF NOT EXISTS task_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_type TEXT NOT NULL,
+            task_name TEXT NOT NULL,
+            job_id TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            duration_seconds REAL,
+            stats_json TEXT,
+            error_message TEXT,
+            logs_json TEXT,
+            is_auto_sync INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_task_logs_type ON task_logs(task_type);
+        CREATE INDEX IF NOT EXISTS idx_task_logs_started_at ON task_logs(started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_task_logs_auto_sync ON task_logs(is_auto_sync);
+
+        CREATE INDEX IF NOT EXISTS idx_novels_user_id ON novels(user_id);
+        CREATE INDEX IF NOT EXISTS idx_novels_series_id ON novels(series_id);
+        CREATE INDEX IF NOT EXISTS idx_novels_last_seen_at ON novels(last_seen_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_sources_source_type ON sources(source_type);
+
+        -- Phase 5性能:高频WHERE条件索引
+        CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+        CREATE INDEX IF NOT EXISTS idx_assets_novel_id ON assets(novel_id);
+        CREATE INDEX IF NOT EXISTS idx_sources_novel_id ON sources(novel_id);
+        """
         )
         # 迁移：为旧版 users 表添加 status、last_checked_at、restricted_streak 字段
         self._migrate_users_table()

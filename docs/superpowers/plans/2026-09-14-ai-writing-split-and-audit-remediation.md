@@ -167,7 +167,7 @@
 - [x] **T2-07 `logs` `page_size` 夹紧**
   `storage/tasks.py:176-211,350-398` `page = max(page,1); page_size = max(min(page_size,200),1)`；`webapp.py:1739` 同。验收：`page_size=0` 与 `-1` 返回 400 或夹到 1。
 
-- [ ] **T2-08 `_lock` 与 `transaction()` 锁序**
+- [x] **T2-08 `_lock` 与 `transaction()` 锁序**
   写方法去掉 `with self._lock`（`_lock` 只保护 `_all_conns`）。验收：`grep -c "with self._lock" storage/` 显著下降；全量测试绿。
 
 - [x] **T2-09 `upsert_subscribed_series.cover_url` 空串覆盖**

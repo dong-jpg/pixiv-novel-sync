@@ -192,31 +192,30 @@ class AiCoreMixin:
         return self._row_to_ai_provider(row, include_secret=include_secret)
 
     def create_ai_provider(self, data: dict[str, Any]) -> int:
-        with self._lock:
-            cursor = self.conn.execute(
-                """
-                INSERT INTO ai_providers (
-                    name, provider_type, base_url, api_key_encrypted, default_model,
-                    available_models_json, timeout_seconds, max_retries, proxy, context_window, stream_enabled, enabled
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    data.get("name"),
-                    data.get("provider_type"),
-                    data.get("base_url"),
-                    data.get("api_key_encrypted"),
-                    data.get("default_model"),
-                    json.dumps(data.get("available_models") or [], ensure_ascii=False),
-                    int(data["timeout_seconds"]) if data.get("timeout_seconds") is not None else 120,
-                    int(data["max_retries"]) if data.get("max_retries") is not None else 2,
-                    data.get("proxy"),
-                    int(data["context_window"]) if data.get("context_window") is not None else 128000,
-                    1 if data.get("stream_enabled", True) else 0,
-                    1 if data.get("enabled", True) else 0,
-                ),
-            )
-            self._commit_if_needed()
-            return int(cursor.lastrowid)
+        cursor = self.conn.execute(
+            """
+            INSERT INTO ai_providers (
+                name, provider_type, base_url, api_key_encrypted, default_model,
+                available_models_json, timeout_seconds, max_retries, proxy, context_window, stream_enabled, enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data.get("name"),
+                data.get("provider_type"),
+                data.get("base_url"),
+                data.get("api_key_encrypted"),
+                data.get("default_model"),
+                json.dumps(data.get("available_models") or [], ensure_ascii=False),
+                int(data["timeout_seconds"]) if data.get("timeout_seconds") is not None else 120,
+                int(data["max_retries"]) if data.get("max_retries") is not None else 2,
+                data.get("proxy"),
+                int(data["context_window"]) if data.get("context_window") is not None else 128000,
+                1 if data.get("stream_enabled", True) else 0,
+                1 if data.get("enabled", True) else 0,
+            ),
+        )
+        self._commit_if_needed()
+        return int(cursor.lastrowid)
 
     def update_ai_provider(self, provider_id: int, data: dict[str, Any]) -> None:
         allowed = {
@@ -238,9 +237,8 @@ class AiCoreMixin:
             return
         fields.append("updated_at = CURRENT_TIMESTAMP")
         params.append(provider_id)
-        with self._lock:
-            self.conn.execute(f"UPDATE ai_providers SET {', '.join(fields)} WHERE id = ?", params)
-            self._commit_if_needed()
+        self.conn.execute(f"UPDATE ai_providers SET {', '.join(fields)} WHERE id = ?", params)
+        self._commit_if_needed()
 
     def delete_ai_provider(self, provider_id: int) -> None:
         with self.transaction() as conn:
@@ -340,33 +338,32 @@ class AiCoreMixin:
         provider_id = data.get("provider_id")
         model_pool_id = data.get("model_pool_id")
         capabilities = sorted(data.get("required_capabilities") or [])
-        with self._lock:
-            cursor = self.conn.execute(
-                """
-                INSERT INTO ai_agents (
-                    name, task_type, binding_type, provider_id, model, model_pool_id,
-                    required_capabilities_json, binding_version, system_prompt,
-                    temperature, top_p, max_tokens, context_window, enabled
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    data.get("name"), data.get("task_type"),
-                    data.get("binding_type") or "fixed",
-                    int(provider_id) if provider_id is not None else None,
-                    data.get("model"),
-                    int(model_pool_id) if model_pool_id is not None else None,
-                    json.dumps(capabilities, ensure_ascii=False, separators=(",", ":")),
-                    int(data.get("binding_version") or 1),
-                    data.get("system_prompt"),
-                    float(data["temperature"]) if data.get("temperature") is not None else 0.8,
-                    float(data["top_p"]) if data.get("top_p") is not None else 0.9,
-                    int(data["max_tokens"]) if data.get("max_tokens") is not None else 4000,
-                    int(data["context_window"]) if data.get("context_window") is not None else 16000,
-                    1 if data.get("enabled", True) else 0,
-                ),
-            )
-            self._commit_if_needed()
-            return int(cursor.lastrowid)
+        cursor = self.conn.execute(
+            """
+            INSERT INTO ai_agents (
+                name, task_type, binding_type, provider_id, model, model_pool_id,
+                required_capabilities_json, binding_version, system_prompt,
+                temperature, top_p, max_tokens, context_window, enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data.get("name"), data.get("task_type"),
+                data.get("binding_type") or "fixed",
+                int(provider_id) if provider_id is not None else None,
+                data.get("model"),
+                int(model_pool_id) if model_pool_id is not None else None,
+                json.dumps(capabilities, ensure_ascii=False, separators=(",", ":")),
+                int(data.get("binding_version") or 1),
+                data.get("system_prompt"),
+                float(data["temperature"]) if data.get("temperature") is not None else 0.8,
+                float(data["top_p"]) if data.get("top_p") is not None else 0.9,
+                int(data["max_tokens"]) if data.get("max_tokens") is not None else 4000,
+                int(data["context_window"]) if data.get("context_window") is not None else 16000,
+                1 if data.get("enabled", True) else 0,
+            ),
+        )
+        self._commit_if_needed()
+        return int(cursor.lastrowid)
 
     def update_ai_agent(self, agent_id: int, data: dict[str, Any]) -> None:
         allowed = {
@@ -401,14 +398,12 @@ class AiCoreMixin:
         fields.append("binding_version = binding_version + 1")
         fields.append("updated_at = CURRENT_TIMESTAMP")
         params.append(agent_id)
-        with self._lock:
-            self.conn.execute(f"UPDATE ai_agents SET {', '.join(fields)} WHERE id = ?", params)
-            self._commit_if_needed()
+        self.conn.execute(f"UPDATE ai_agents SET {', '.join(fields)} WHERE id = ?", params)
+        self._commit_if_needed()
 
     def delete_ai_agent(self, agent_id: int) -> None:
-        with self._lock:
-            self.conn.execute("DELETE FROM ai_agents WHERE id = ?", (agent_id,))
-            self._commit_if_needed()
+        self.conn.execute("DELETE FROM ai_agents WHERE id = ?", (agent_id,))
+        self._commit_if_needed()
 
     def update_ai_agent_bindings(
         self, agent_ids: list[int], binding: dict[str, Any]
@@ -424,7 +419,7 @@ class AiCoreMixin:
         provider_id = binding.get("provider_id")
         model_pool_id = binding.get("model_pool_id")
         affected = 0
-        with self._lock, self.transaction():
+        with self.transaction():
             for agent_id in agent_ids:
                 cursor = self.conn.execute(
                     """
@@ -450,7 +445,7 @@ class AiCoreMixin:
         if not agent_ids:
             return 0
         affected = 0
-        with self._lock, self.transaction():
+        with self.transaction():
             for agent_id in agent_ids:
                 cursor = self.conn.execute(
                     "UPDATE ai_agents SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -1401,9 +1396,8 @@ class AiCoreMixin:
             return cursor.rowcount == 1
 
     def delete_ai_job(self, job_id: str) -> None:
-        with self._lock:
-            self.conn.execute("DELETE FROM ai_jobs WHERE job_id = ?", (job_id,))
-            self._commit_if_needed()
+        self.conn.execute("DELETE FROM ai_jobs WHERE job_id = ?", (job_id,))
+        self._commit_if_needed()
 
     def cleanup_ai_jobs(
         self,

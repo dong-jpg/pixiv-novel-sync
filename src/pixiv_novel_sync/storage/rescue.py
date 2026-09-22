@@ -869,30 +869,28 @@ class RescueMixin:
         if not self._rescue_item_exists(normalized_type, normalized_id):
             raise ValueError("救援对象不存在")
 
-        with self._lock:
-            self.conn.execute(
-                """
-                INSERT INTO rescue_overrides (
-                    item_type, item_id, action, note, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT(item_type, item_id) DO UPDATE SET
-                    action = excluded.action,
-                    note = excluded.note,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (normalized_type, normalized_id, normalized_action, normalized_note),
-            )
-            self._commit_if_needed()
+        self.conn.execute(
+            """
+            INSERT INTO rescue_overrides (
+                item_type, item_id, action, note, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(item_type, item_id) DO UPDATE SET
+                action = excluded.action,
+                note = excluded.note,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (normalized_type, normalized_id, normalized_action, normalized_note),
+        )
+        self._commit_if_needed()
         return self.get_rescue_override(normalized_type, normalized_id) or {}
 
     def delete_rescue_override(self, item_type: str, item_id: int) -> bool:
         normalized_type = self._validate_rescue_item_type(item_type)
-        with self._lock:
-            cursor = self.conn.execute(
-                "DELETE FROM rescue_overrides WHERE item_type = ? AND item_id = ?",
-                (normalized_type, int(item_id)),
-            )
-            self._commit_if_needed()
+        cursor = self.conn.execute(
+            "DELETE FROM rescue_overrides WHERE item_type = ? AND item_id = ?",
+            (normalized_type, int(item_id)),
+        )
+        self._commit_if_needed()
         return bool(cursor.rowcount)
 
     @staticmethod
@@ -1436,18 +1434,17 @@ class RescueMixin:
         token_hash: str,
         token_prefix: str,
     ) -> dict[str, Any]:
-        with self._lock:
-            self.conn.execute(
-                """
-                INSERT INTO rescue_api_token (
-                    singleton_id, token_hash, token_prefix, rotated_at
-                ) VALUES (1, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(singleton_id) DO UPDATE SET
-                    token_hash = excluded.token_hash,
-                    token_prefix = excluded.token_prefix,
-                    rotated_at = CURRENT_TIMESTAMP
-                """,
-                (str(token_hash), str(token_prefix)),
-            )
-            self._commit_if_needed()
+        self.conn.execute(
+            """
+            INSERT INTO rescue_api_token (
+                singleton_id, token_hash, token_prefix, rotated_at
+            ) VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(singleton_id) DO UPDATE SET
+                token_hash = excluded.token_hash,
+                token_prefix = excluded.token_prefix,
+                rotated_at = CURRENT_TIMESTAMP
+            """,
+            (str(token_hash), str(token_prefix)),
+        )
+        self._commit_if_needed()
         return self.get_rescue_token_record() or {}
