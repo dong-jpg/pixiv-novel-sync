@@ -249,10 +249,13 @@ class TasksMixin:
         ).fetchall()
         total_pages = (total + page_size - 1) // page_size
 
+        row_dicts = [dict(row) for row in rows]
+        attempts_by_job = self.list_ai_job_model_attempts_for_jobs(
+            [str(row["job_id"]) for row in row_dicts if row.get("job_id")]
+        )
         items: list[dict[str, Any]] = []
-        for row in rows:
-            r = dict(row)
-            attempts = self.list_ai_job_model_attempts(str(r["job_id"]))
+        for r in row_dicts:
+            attempts = attempts_by_job.get(str(r.get("job_id")), [])
             items.append({
                 "job_id": r.get("job_id"),
                 "task_type": r.get("task_type"),

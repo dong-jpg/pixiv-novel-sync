@@ -465,15 +465,27 @@ class AiCoreMixin:
         return item
 
     def list_ai_job_model_attempts(self, job_id: str) -> list[dict[str, Any]]:
+        return self.list_ai_job_model_attempts_for_jobs([job_id]).get(job_id, [])
+
+    def list_ai_job_model_attempts_for_jobs(
+        self, job_ids: list[str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        if not job_ids:
+            return {}
+        placeholders = ",".join("?" * len(job_ids))
         rows = self.conn.execute(
-            """
+            f"""
             SELECT * FROM ai_job_model_attempts
-            WHERE job_id = ?
-            ORDER BY attempt_index
+            WHERE job_id IN ({placeholders})
+            ORDER BY job_id, attempt_index
             """,
-            (job_id,),
+            tuple(job_ids),
         ).fetchall()
-        return [self._attempt_from_row(row) for row in rows]
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            item = self._attempt_from_row(row)
+            grouped.setdefault(str(item["job_id"]), []).append(item)
+        return grouped
 
     def get_provider_attempt_health(self, days: int = 7) -> dict[int, dict[str, Any]]:
         """按 provider_id 聚合最近 N 天的候选尝试战绩，供设置页健康横幅使用。
