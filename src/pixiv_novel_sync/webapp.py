@@ -573,37 +573,48 @@ def create_app(
         progress: dict[str, Any] | None = None,
         run_async: bool = True,
     ) -> JobState:
-        # 原子化"无活跃任务则提交"：检查与 submit 同持 JobManager 锁，
-        # 消除并发请求同时通过检查导致双任务的 TOCTOU 窗口。
+        def _mark_log_failed(log_id: int, message: str) -> None:
+            db = _open_database(current_settings)
+            try:
+                db.update_task_log(log_id, JobStatus.FAILED.value, error_message=message)
+            finally:
+                db.close()
+
+        # 已有任务时直接拒绝，不打开数据库。写日志仍放在锁外，
+        # 避免迁移或磁盘 IO 挡住 get_job / is_cancel_requested。
         with shared_job_manager._lock:
             if _has_any_running_web_job():
                 raise RuntimeError("已有同步任务正在运行，请稍后再试")
 
-            # DB IO 必须在锁外做：create_task_log 走 _open_database，会建连 +
-            # init_schema，持锁期间阻塞所有 get_job/is_cancel_requested。
-            db = _open_database(current_settings)
-            try:
-                log_id = db.create_task_log(
-                    task_type=task_type,
-                    task_name=task_name,
-                    is_auto_sync=is_auto_sync,
-                )
-            finally:
-                db.close()
+        db = _open_database(current_settings)
+        try:
+            log_id = db.create_task_log(
+                task_type=task_type,
+                task_name=task_name,
+                is_auto_sync=is_auto_sync,
+            )
+        finally:
+            db.close()
 
-            try:
+        # 写日志的窗口里可能有别的请求入队，提交前再检查一次。
+        try:
+            with shared_job_manager._lock:
+                if _has_any_running_web_job():
+                    raise RuntimeError("已有同步任务正在运行，请稍后再试")
                 job = shared_job_manager.submit(spec)
+        except Exception as exc:
+            message = str(exc) if "已有同步任务正在运行" in str(exc) else "job submit failed"
+            try:
+                _mark_log_failed(log_id, message)
             except Exception:
-                # 日志行已建但任务没进内存，把日志标成 failed，避免幽灵 running。
-                db = _open_database(current_settings)
-                try:
-                    db.update_task_log(log_id, JobStatus.FAILED.value, error_message="job submit failed")
-                finally:
-                    db.close()
-                raise
-            job.progress["log_id"] = log_id
-            # 回填 job_id：日志页按 job_id 关联内存任务与 task_logs 行。
-            # RecordingDatabase 等测试替身没有 conn，用 try 包一层，让替身也能过。
+                logger.warning("回写失败的任务日志也失败了", exc_info=True)
+            raise
+
+        job.progress["log_id"] = log_id
+        # 回填 job_id：日志页按 job_id 关联内存任务与 task_logs 行。
+        # RecordingDatabase 等测试替身没有 conn，用 try 包一层，让替身也能过。
+        # 回填失败必须把已入队的 job 标成 failed，否则线程不会启动，队列永久占着。
+        try:
             db = _open_database(current_settings)
             try:
                 with db.transaction() as conn:
@@ -612,13 +623,18 @@ def create_app(
                         (job.job_id, log_id),
                     )
             except AttributeError:
-                # 测试替身无 conn/transaction，跳过回填
                 pass
             finally:
                 db.close()
-            if progress:
-                shared_job_manager.update_progress(job.job_id, **progress)
-        # 线程启动放在锁外，避免 worker 立即抢锁被阻塞
+        except Exception as exc:
+            shared_job_manager.mark_failed(job.job_id, str(exc))
+            try:
+                _mark_log_failed(log_id, str(exc))
+            except Exception:
+                logger.warning("回写失败的任务日志也失败了", exc_info=True)
+            raise
+        if progress:
+            shared_job_manager.update_progress(job.job_id, **progress)
         if run_async:
             thread = threading.Thread(target=_run_shared_web_job, args=(job.job_id,), daemon=True)
             thread.start()
@@ -793,6 +809,30 @@ def create_app(
     def _is_local_request() -> bool:
         return _is_loopback_addr(_client_addr())
 
+    _ALLOWED_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+    def _request_hostname() -> str:
+        raw = (request.host or "").strip().lower().rstrip(".")
+        if raw.startswith("["):
+            end = raw.find("]")
+            return raw[1:end] if end > 1 else raw
+        if raw.count(":") == 1:
+            return raw.split(":", 1)[0]
+        return raw
+
+    def _csrf_blocked(path: str):
+        if request.method not in _MUTATING_METHODS or path in _CSRF_EXEMPT_PATHS:
+            return None
+        submitted = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or ""
+        expected = _get_csrf_token()
+        try:
+            matched = secrets.compare_digest(str(submitted).encode("utf-8"), expected.encode("utf-8"))
+        except Exception:
+            matched = False
+        if not submitted or not matched:
+            return _csrf_failed()
+        return None
+
     @app.before_request
     def _check_auth():
         path = request.path
@@ -803,20 +843,25 @@ def create_app(
             # 安全加固：未配置 token 时仅允许真正的本机访问。
             # 若检测到代理头但未显式信任代理，说明很可能暴露在反代后，
             # 此时 remote_addr=127.0.0.1 不可信，一律拒绝，避免私密收藏泄漏。
+            # 本机模式同样校验 Host 与 CSRF：DNS 重绑定和跨站表单都不能直接改库。
             if _behind_proxy() and not _trust_proxy:
                 return jsonify({"error": "dashboard token required when behind a proxy"}), 403
-            if _is_local_request():
-                return
-            return jsonify({"error": "dashboard token required for non-local access"}), 403
+            if not _is_local_request():
+                return jsonify({"error": "dashboard token required for non-local access"}), 403
+            if _request_hostname() not in _ALLOWED_LOCAL_HOSTS:
+                return jsonify({"error": "host not allowed"}), 403
+            blocked = _csrf_blocked(path)
+            if blocked is not None:
+                return blocked
+            return
         if path in _AUTH_EXEMPT_PATHS:
             return
         if path.startswith("/static/"):
             return
         if session.get("authenticated"):
-            if request.method in _MUTATING_METHODS and path not in _CSRF_EXEMPT_PATHS:
-                submitted = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
-                if not submitted or not secrets.compare_digest(str(submitted), _get_csrf_token()):
-                    return _csrf_failed()
+            blocked = _csrf_blocked(path)
+            if blocked is not None:
+                return blocked
             return
         # API 请求返回 401，页面请求重定向到登录
         if path.startswith("/api/"):

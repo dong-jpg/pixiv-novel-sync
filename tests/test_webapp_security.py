@@ -23,7 +23,54 @@ def test_no_dashboard_token_allows_localhost(tmp_path, monkeypatch):
     assert response.get_json()["version"] == pixiv_novel_sync.__version__
 
 
-def test_health_version_uses_package_version_source(tmp_path, monkeypatch):
+def _local_app(tmp_path, monkeypatch):
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path), start_scheduler=False)
+    app.config["RAW_HTTP"] = True
+    return app
+
+
+def test_no_token_post_without_csrf_is_forbidden(tmp_path, monkeypatch):
+    app = _local_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    blocked = client.post(
+        "/api/dashboard/sync/start",
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    token = client.get("/api/csrf-token", environ_base={"REMOTE_ADDR": "127.0.0.1"}).get_json()["csrf_token"]
+    allowed = client.post(
+        "/api/dashboard/sync/start",
+        headers={"X-CSRF-Token": token},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert blocked.status_code == 403
+    assert blocked.get_json()["error"] == "csrf token invalid"
+    assert allowed.status_code != 403
+
+
+def test_no_token_rejects_non_loopback_host(tmp_path, monkeypatch):
+    app = _local_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    blocked = client.get(
+        "/api/health",
+        headers={"Host": "evil.example"},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    allowed = client.get(
+        "/api/health",
+        headers={"Host": "127.0.0.1:5010"},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert blocked.status_code == 403
+    assert blocked.get_json()["error"] == "host not allowed"
+    assert allowed.status_code == 200
     monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
     monkeypatch.setattr("pixiv_novel_sync.webapp.__version__", "sentinel-package-version")

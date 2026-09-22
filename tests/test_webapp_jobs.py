@@ -173,6 +173,63 @@ def test_submit_failure_marks_task_log_failed_instead_of_ghost_running(tmp_path,
     assert app.config["job_manager"].latest_job() is None
 
 
+def test_task_log_write_does_not_hold_job_manager_lock(tmp_path, monkeypatch):
+    observed = {}
+
+    class ProbeDatabase(RecordingDatabase):
+        def create_task_log(self, **kwargs):
+            manager = app.config["job_manager"]
+
+            def other() -> None:
+                acquired = manager._lock.acquire(timeout=0.05)
+                observed["acquired"] = acquired
+                if acquired:
+                    manager._lock.release()
+
+            thread = threading.Thread(target=other)
+            thread.start()
+            thread.join()
+            return super().create_task_log(**kwargs)
+
+    RecordingDatabase.created_logs = []
+    monkeypatch.setattr(webapp_module, "Database", ProbeDatabase)
+    monkeypatch.setattr(
+        webapp_module.JobRunner,
+        "run",
+        lambda self, job_id: self.manager.mark_succeeded(job_id, "succeeded"),
+    )
+    app = _app(tmp_path, monkeypatch)
+
+    response = app.test_client().post("/api/dashboard/sync/start")
+
+    assert response.status_code == 200
+    assert observed["acquired"] is True
+
+
+def test_job_id_backfill_failure_does_not_leave_queued_job(tmp_path, monkeypatch):
+    ran = []
+
+    class BoomDatabase(RecordingDatabase):
+        def transaction(self):
+            raise RuntimeError("backfill boom")
+
+    RecordingDatabase.created_logs = []
+    RecordingDatabase.updated_logs = []
+    monkeypatch.setattr(webapp_module, "Database", BoomDatabase)
+    monkeypatch.setattr(webapp_module.JobRunner, "run", lambda self, job_id: ran.append(job_id))
+    app = _app(tmp_path, monkeypatch)
+
+    response = app.test_client().post("/api/dashboard/sync/start")
+
+    assert response.status_code == 400
+    assert "backfill boom" in response.get_json()["error"]
+    job = app.config["job_manager"].latest_job()
+    assert job is not None
+    assert job.status == JobStatus.FAILED
+    assert ran == []
+    assert RecordingDatabase.updated_logs[-1]["status"] == JobStatus.FAILED.value
+
+
 def test_auto_scheduler_has_no_legacy_sync_business_methods():
     assert not any(name.startswith("_sync_") for name in dir(AutoSyncScheduler))
 
