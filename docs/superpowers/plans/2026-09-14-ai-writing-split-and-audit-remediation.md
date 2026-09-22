@@ -196,7 +196,7 @@
 - [x] **T2-16 9 处 `except Exception` 吞 `InterruptedError`**
   `sync_engine.py:645,1020,846,1234,406,441,464,1943,2038` 前加 `except InterruptedError: raise`；把 `test_sync_subscribed_series_propagates_interrupted_error` 的模式推广到 `sync()` 与 `_sync_author`。
 
-- [ ] **T2-17 翻页失败静默绿**
+- [x] **T2-17 翻页失败静默绿**
   `sync_engine.py:645,1020,1234` 失败时 `stats["failed"] += 1; stats["incomplete"] = True; aborted_reason = "fetch_failed"`（同一行附近声明三标记之一以过 `test_every_incomplete_marker_declares_why`）。
 
 - [ ] **T2-18 系列熔断只对 `novel_series` 计数**
@@ -211,13 +211,13 @@
 - [ ] **T2-21 手动任务取消入口**
   新增 `POST /api/dashboard/sync/cancel`（可选 `job_id`，默认 latest）调 `shared_job_manager.request_cancel`；`dashboard.html` 停止按钮按 `is_auto_sync` 分流。文档 `JOB_SYSTEM.md:82` 同步。
 
-- [ ] **T2-22 不限量模式 `max_items` 返回不标 truncated**
+- [x] **T2-22 不限量模式 `max_items` 返回不标 truncated**
   `sync_engine.py:1247-1250` 置 `truncated + incomplete`。
 
-- [ ] **T2-23 让位判定**
+- [x] **T2-23 让位判定**
   `web/managers.py:876-880,903-911` `_request_yield` 返回 `cancel_task()` 布尔，只有 True 才 `_note_preemption`。
 
-- [ ] **T2-24 `_fetch_remote_bookmark_ids` 200 页上限**
+- [x] **T2-24 `_fetch_remote_bookmark_ids` 200 页上限**
   `sync_engine.py:2079-2093` 触顶时写 `stats["truncated"]` + 明确错误文案，而不是裸 `RuntimeError`。
 
 - [ ] **T2-25 杂项**

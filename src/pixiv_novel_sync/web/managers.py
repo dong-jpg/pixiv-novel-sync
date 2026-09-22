@@ -881,15 +881,15 @@ class AutoSyncScheduler:
             now = time.time()
             if not self._may_preempt(task_name, now):
                 continue
-            self._note_preemption(task_name, now)
-            yielded = True
-            self._request_yield(job_id, task_name, challenger_priority)
+            if self._request_yield(job_id, task_name, challenger_priority):
+                self._note_preemption(task_name, now)
+                yielded = True
 
         thread.join()
         if error:
             raise error[0]
 
-    def _request_yield(self, job_id: str, task_name: str, challenger_priority: int) -> None:
+    def _request_yield(self, job_id: str, task_name: str, challenger_priority: int) -> bool:
         """给正在跑的任务发取消信号，并在它自己的日志里写清"为什么被中断"。
 
         先 add_log 再 cancel：``_run_shared_web_job`` 在任务终结后才把内存日志刷进
@@ -909,18 +909,22 @@ class AutoSyncScheduler:
         cancel_task = self.cancel_task
         if cancel_task is None:
             logger.warning("无法让位：cancel_task 回调不可用 (%s)", task_name)
-            return
+            return False
         try:
-            cancel_task(job_id)
+            cancelled = cancel_task(job_id)
         except Exception as exc:
             logger.warning("让位取消失败 %s: %s", job_id, exc)
-            return
+            return False
+        if cancelled is False:
+            logger.info("任务 %s 拒绝让位 (job %s)", task_name, job_id)
+            return False
         logger.info(
             "Task %s preempted by a P%d task (job %s)",
             task_name,
             challenger_priority,
             job_id,
         )
+        return True
 
 
 class SettingsManager:

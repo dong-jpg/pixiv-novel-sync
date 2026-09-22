@@ -33,6 +33,10 @@ from .utils_text import clean_caption, normalize_text, to_markdown
 
 logger = logging.getLogger(__name__)
 
+
+class RemoteListTruncated(RuntimeError):
+    """远端列表翻页触顶，结果不能拿来做差集。"""
+
 # 关注列表枚举（user_following）专用的翻页上限，每页 30 人 ⇒ 50 页 = 1500 人。
 # 它只是自引用 next_url 死循环的兜底，绝不能复用 max_pages_per_run：后者的语义是
 # 「单轮同步的作品分页上限」，生产配成 2 会把关注候选集砍到 60 人，关注数一超过 60，
@@ -334,6 +338,9 @@ class BookmarkNovelSyncService:
                     raise
                 except Exception as e:
                     logger.error("API call user_bookmarks_novel failed: %s", e)
+                    stats["failed"] = int(stats.get("failed") or 0) + 1
+                    stats["incomplete"] = True
+                    stats["aborted_reason"] = "fetch_failed"
                     break
                 page_count += 1
                 if progress_callback:
@@ -520,6 +527,7 @@ class BookmarkNovelSyncService:
         next_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
         page_count = 0
         incomplete = False
+        fetch_failed = False
 
         while next_query:
             if page_count >= safety_limit:
@@ -536,6 +544,7 @@ class BookmarkNovelSyncService:
             except Exception as e:
                 logger.error("API call user_following failed: %s", e)
                 incomplete = True
+                fetch_failed = True
                 break
             page_count += 1
             if progress_callback:
@@ -558,7 +567,7 @@ class BookmarkNovelSyncService:
                     progress_callback("rate_limit", {"seconds": page_delay})
                 _sleep_with_progress_cancel(page_delay, progress_callback)
 
-        return collected, incomplete
+        return collected, incomplete, fetch_failed
 
     @staticmethod
     def _order_following_users_for_rotation(
@@ -707,6 +716,9 @@ class BookmarkNovelSyncService:
                     raise
                 except Exception as e:
                     logger.error("API call user_novels for user %s failed: %s", author_id, e)
+                    stats["failed"] = int(stats.get("failed") or 0) + 1
+                    stats["incomplete"] = True
+                    stats["aborted_reason"] = "fetch_failed"
                     break
                 author_page_count += 1
                 novels = getattr(novels_result, "novels", []) or []
@@ -821,13 +833,17 @@ class BookmarkNovelSyncService:
             # 限量模式：先取回完整关注列表，再按"最久未同步优先"挑本轮要跑的作者。
             # 直接顺着 user_following 的顺序取前 N 个，会让后面的作者永远轮不到
             # （生产上关注 53 人、users_limit=5，连续 9 轮都只同步了最前面 5 个）。
-            candidates, list_incomplete = self._collect_following_users(
+            candidates, list_incomplete, list_fetch_failed = self._collect_following_users(
                 current_user_id,
                 following_list_page_limit,
                 page_delay,
                 progress_callback,
             )
-            if list_incomplete:
+            if list_fetch_failed:
+                stats["failed"] = int(stats.get("failed") or 0) + 1
+                stats["incomplete"] = True
+                stats["aborted_reason"] = "fetch_failed"
+            elif list_incomplete:
                 stats["truncated"] = True
                 stats["incomplete"] = True
 
@@ -927,7 +943,11 @@ class BookmarkNovelSyncService:
                     raise
                 except Exception as e:
                     logger.error("API call user_following failed: %s", e)
-                    break
+                    stats["failed"] = int(stats.get("failed") or 0) + 1
+                    stats["incomplete"] = True
+                    stats["aborted_reason"] = "fetch_failed"
+                    _save_watermark()
+                    return stats
                 following_page_count += 1
                 if progress_callback:
                     progress_callback("page", {"page": following_page_count})
@@ -938,6 +958,8 @@ class BookmarkNovelSyncService:
                     # 整轮闸门（每作者配额在 _sync_author 内部同样生效）。
                     if max_items is not None and synced_items >= max_items:
                         logger.info("Reached max_items_per_run=%s (synced), stopping sync", max_items)
+                        stats["truncated"] = True
+                        stats["incomplete"] = True
                         _save_watermark()
                         return stats
                     _sync_author(getattr(user_preview, "user", user_preview))
@@ -1587,6 +1609,12 @@ class BookmarkNovelSyncService:
             remote_ids = self._fetch_remote_bookmark_ids(user_id, restricts, progress_callback)
         except InterruptedError:
             raise
+        except RemoteListTruncated as exc:
+            logger.error("%s", exc)
+            stats["truncated"] = True
+            stats["incomplete"] = True
+            stats["aborted_reason"] = "fetch_failed"
+            return stats
         except Exception as exc:
             logger.error("Failed to fetch remote bookmark ids; abort detection to avoid false-positive deletions: %s", exc)
             raise
@@ -1806,8 +1834,8 @@ class BookmarkNovelSyncService:
             page_count = 0
             while next_query:
                 if page_count >= max_pages:
-                    raise RuntimeError(
-                        f"Bookmark fetch exceeded max_pages={max_pages} for restrict={restrict}; aborting to prevent unbounded paging"
+                    raise RemoteListTruncated(
+                        f"收藏列表在 {restrict} 下翻过 {max_pages} 页仍未结束，已中止，避免把未拉到的收藏误判为取消"
                     )
                 result = self.api.user_bookmarks_novel(**next_query)
                 page_count += 1
