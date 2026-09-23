@@ -243,7 +243,7 @@
 - [x] **T2-31 `SESSION_COOKIE_SECURE` 顺序**
   `webapp.py:486-492` 挪到 `settings_manager.load()` 之后。
 
-- [ ] **T2-32 `/proxy/image` 3xx**
+- [x] **T2-32 `/proxy/image` 3xx**
   `webapp.py:911-913` 非 200 返回 502，透传 `Content-Length` / `Cache-Control`。
 
 - [ ] **T2-33 部署脚本**

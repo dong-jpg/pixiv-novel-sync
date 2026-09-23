@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pixiv_novel_sync
 from pixiv_novel_sync.jobs.models import JobSource, JobStatus
+from pixiv_novel_sync import webapp as webapp_module
 from pixiv_novel_sync.webapp import _oauth_task_public_payload, create_app
 
 
@@ -433,6 +434,47 @@ def test_chinese_dashboard_token_logs_in_and_counts_failures(tmp_path, monkeypat
     wrong = [client.post("/api/auth/login", data={"token": "错误密码"}) for _ in range(6)]
     assert [response.status_code for response in wrong[:5]] == [401, 401, 401, 401, 401]
     assert wrong[5].status_code == 429
+
+
+def test_proxy_image_turns_non_200_into_502_and_forwards_cache_headers(tmp_path, monkeypatch):
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path), start_scheduler=False)
+    client = app.test_client()
+    url = "/proxy/image?url=https://i.pximg.net/c/1.jpg"
+
+    class _Resp:
+        def __init__(self, status_code, content, headers):
+            self.status_code = status_code
+            self.content = content
+            self.headers = headers
+
+    seen: list[dict] = []
+
+    def fake_get(target, **kwargs):
+        seen.append({"url": target, **kwargs})
+        if len(seen) == 1:
+            return _Resp(302, b"<html>go</html>", {"Location": "https://evil.example/a"})
+        return _Resp(
+            200,
+            b"img",
+            {"Content-Type": "image/jpeg", "Content-Length": "3", "Cache-Control": "public, max-age=60"},
+        )
+
+    monkeypatch.setattr(webapp_module.http_requests, "get", fake_get)
+
+    blocked = client.get(url, environ_base={"REMOTE_ADDR": "127.0.0.1"})
+    assert blocked.status_code == 502
+    assert b"go" not in blocked.data
+    assert seen[0]["allow_redirects"] is False
+
+    ok = client.get(url, environ_base={"REMOTE_ADDR": "127.0.0.1"})
+    assert ok.status_code == 200
+    assert ok.data == b"img"
+    assert ok.headers["Cache-Control"] == "public, max-age=60"
+    assert ok.headers["Content-Length"] == "3"
 
 
 def test_session_cookie_secure_reads_env_file(tmp_path, monkeypatch):
