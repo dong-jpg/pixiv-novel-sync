@@ -438,8 +438,8 @@ class AIProvider:
         self._pinned_adapters: dict[str, _PinnedHostAdapter] = {}
 
     def close(self) -> None:
+        self.session.close()
         with self._adapter_lock:
-            self.session.close()
             self._pinned_adapters.clear()
 
     def estimate_message_tokens(
@@ -500,31 +500,31 @@ class AIProvider:
         headers["Host"] = target.host_header
         kwargs["allow_redirects"] = False
         kwargs["stream"] = True
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AIProviderError("模型目录同步超过截止时间")
+            configured_timeout = kwargs.get("timeout")
+            if isinstance(configured_timeout, (int, float)):
+                kwargs["timeout"] = min(float(configured_timeout), remaining)
+            elif configured_timeout is None:
+                kwargs["timeout"] = remaining
         with self._adapter_lock:
-            if deadline is not None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise AIProviderError("模型目录同步超过截止时间")
-                configured_timeout = kwargs.get("timeout")
-                if isinstance(configured_timeout, (int, float)):
-                    kwargs["timeout"] = min(float(configured_timeout), remaining)
-                elif configured_timeout is None:
-                    kwargs["timeout"] = remaining
             adapter = self._pinned_adapters.get(prefix)
             if adapter is None:
                 adapter = _PinnedHostAdapter(hostname=target.hostname, ip=target.ip)
                 self.session.mount(prefix, adapter)
                 self._pinned_adapters[prefix] = adapter
-            request_method = getattr(self.session, normalized_method.lower(), None)
-            if callable(request_method):
-                response = request_method(pinned_url, headers=headers, **kwargs)
-            else:
-                response = self.session.request(
-                    normalized_method,
-                    pinned_url,
-                    headers=headers,
-                    **kwargs,
-                )
+        request_method = getattr(self.session, normalized_method.lower(), None)
+        if callable(request_method):
+            response = request_method(pinned_url, headers=headers, **kwargs)
+        else:
+            response = self.session.request(
+                normalized_method,
+                pinned_url,
+                headers=headers,
+                **kwargs,
+            )
         if 300 <= response.status_code < 400:
             response.close()
             raise AIProviderError(f"AI API 拒绝重定向响应 {response.status_code}")

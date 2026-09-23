@@ -566,6 +566,41 @@ def test_post_reuses_origin_adapter_without_closing_active_pool(monkeypatch):
         provider.close()
 
 
+def test_adapter_lock_is_not_held_during_request_or_close(monkeypatch):
+    def fixed_public(host, port, *_args, **_kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", port))]
+
+    seen = {"request": None, "close": None}
+
+    def fake_post(url, **_kwargs):
+        seen["request"] = provider._adapter_lock.locked()
+        response = requests.Response()
+        response.status_code = 200
+        response.raw = io.BytesIO()
+        return response
+
+    def fake_close():
+        seen["close"] = provider._adapter_lock.locked()
+
+    monkeypatch.setattr(provider_module.socket, "getaddrinfo", fixed_public)
+    provider = _make_provider()
+    monkeypatch.setattr(provider.session, "post", fake_post)
+    monkeypatch.setattr(provider.session, "close", fake_close)
+    try:
+        response = provider._post("https://pool.test/v1/messages", json={"request": 1})
+        response.close()
+        assert any(
+            isinstance(adapter, provider_module._PinnedHostAdapter)
+            for adapter in provider.session.adapters.values()
+        )
+        provider.close()
+    finally:
+        provider.close()
+
+    assert seen["request"] is False
+    assert seen["close"] is False
+
+
 def test_post_uses_distinct_origin_adapters_for_changed_ip(monkeypatch):
     resolved_ips = iter(("8.8.8.8", "1.1.1.1"))
 

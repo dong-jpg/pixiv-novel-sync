@@ -267,7 +267,7 @@
 - [x] **T2-38 Provider 无法删除**
   `storage/ai/core.py:286-297` 只拒绝「被固定 Agent 引用」与「模型被池引用」，目录行交给 CASCADE。
 
-- [ ] **T2-39 `_adapter_lock` 内发网络请求**
+- [x] **T2-39 `_adapter_lock` 内发网络请求**
   `ai/providers.py:500-524` 锁只包 `session.mount` get-or-create，请求移到锁外；`close()` 同理。
 
 - [ ] **T2-40 普通 AI job 取消 + deadline**
