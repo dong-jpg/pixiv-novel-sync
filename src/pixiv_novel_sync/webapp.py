@@ -499,11 +499,15 @@ def create_app(
     app.jinja_env.variable_end_string = "]}"
     app.secret_key = _load_or_create_flask_secret(env_path)
     # 加固 cookie：HttpOnly + SameSite=Lax。
-    # L2: Secure 默认随部署形态推断——显式设 PIXIV_COOKIE_SECURE 优先；
-    # 未显式设置但启用了 DASHBOARD_TRUST_PROXY（典型 HTTPS 反代部署）时自动开启，
-    # 避免明文 HTTP 场景把会话 cookie 暴露在链路上。纯本机 HTTP 调试仍可显式关掉。
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    settings_manager = SettingsManager(config_path)
+    # Secure 必须在 load() 之后看环境变量：DASHBOARD_TRUST_PROXY / PIXIV_COOKIE_SECURE
+    # 通常只写在 .env 里，create_app 进来时进程环境还没有它们。
+    try:
+        settings_manager.load(env_path=env_path)
+    except Exception as exc:
+        logger.warning("启动加载设置失败，cookie Secure 仅依据已有环境变量：%s", exc)
     _cookie_secure_raw = os.getenv("PIXIV_COOKIE_SECURE", "").strip().lower()
     if _cookie_secure_raw in {"1", "true", "yes", "on"}:
         app.config["SESSION_COOKIE_SECURE"] = True
@@ -511,7 +515,6 @@ def create_app(
         app.config["SESSION_COOKIE_SECURE"] = False
     elif os.getenv("DASHBOARD_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes", "on"}:
         app.config["SESSION_COOKIE_SECURE"] = True
-    settings_manager = SettingsManager(config_path)
     shared_job_manager = JobManager()
     app.config["job_manager"] = shared_job_manager
 

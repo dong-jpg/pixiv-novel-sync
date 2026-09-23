@@ -240,7 +240,7 @@
 - [x] **T2-30 时区校验**
   `web/managers.py:1096` `ZoneInfo(tz)` 失败即 `ValueError`；`webapp.py:1475-1479` 预览响应加 `timezone_valid` / `effective_timezone`；`dashboard_settings_sync.html:386-395` 下拉支持自由输入。
 
-- [ ] **T2-31 `SESSION_COOKIE_SECURE` 顺序**
+- [x] **T2-31 `SESSION_COOKIE_SECURE` 顺序**
   `webapp.py:486-492` 挪到 `settings_manager.load()` 之后。
 
 - [ ] **T2-32 `/proxy/image` 3xx**

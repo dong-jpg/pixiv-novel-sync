@@ -435,6 +435,35 @@ def test_chinese_dashboard_token_logs_in_and_counts_failures(tmp_path, monkeypat
     assert wrong[5].status_code == 429
 
 
+def test_session_cookie_secure_reads_env_file(tmp_path, monkeypatch):
+    """Secure 必须在 load_dotenv 之后判断。只写在 .env 里的反代开关，进程环境里还没有。"""
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    monkeypatch.delenv("PIXIV_COOKIE_SECURE", raising=False)
+    monkeypatch.delenv("DASHBOARD_TRUST_PROXY", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("DASHBOARD_TRUST_PROXY=true\n", encoding="utf-8")
+
+    app = create_app(
+        config_path=str(tmp_path / "missing.yaml"),
+        env_path=str(env_path),
+        start_scheduler=False,
+    )
+
+    assert app.config["SESSION_COOKIE_SECURE"] is True
+
+    monkeypatch.delenv("DASHBOARD_TRUST_PROXY", raising=False)
+    monkeypatch.delenv("PIXIV_COOKIE_SECURE", raising=False)
+    forced = tmp_path / "forced.env"
+    forced.write_text("DASHBOARD_TRUST_PROXY=true\nPIXIV_COOKIE_SECURE=false\n", encoding="utf-8")
+    plain = create_app(
+        config_path=str(tmp_path / "also-missing.yaml"),
+        env_path=str(forced),
+        start_scheduler=False,
+    )
+    assert plain.config["SESSION_COOKIE_SECURE"] is False
+
+
 def test_login_rate_limit_blocks_repeated_failures(tmp_path, monkeypatch):
     monkeypatch.setenv("DASHBOARD_TOKEN", "secret-token")
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
