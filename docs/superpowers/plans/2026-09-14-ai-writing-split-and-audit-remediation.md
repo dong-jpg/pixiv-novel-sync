@@ -270,7 +270,7 @@
 - [x] **T2-39 `_adapter_lock` 内发网络请求**
   `ai/providers.py:500-524` 锁只包 `session.mount` get-or-create，请求移到锁外；`close()` 同理。
 
-- [ ] **T2-40 普通 AI job 取消 + deadline**
+- [x] **T2-40 普通 AI job 取消 + deadline**
   `ai_jobs` 加 `cancel_requested` 列；新增 `POST /api/dashboard/ai/jobs/<id>/cancel`；heartbeat 线程读取后 set `threading.Event`，`RouteRequest.is_cancelled` 检查它；`model_router.py:886-889 _request_cancelled` 同时检查 `route_deadline_at`；调度器循环每小时调 `fail_stale_ai_jobs()`。日志页加取消按钮。
 
 - [ ] **T2-41 429 按模型判 scope**（用户已确认非有意）

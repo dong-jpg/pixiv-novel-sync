@@ -1164,6 +1164,49 @@ class AiCoreMixin:
             )
             return True
 
+    def request_ai_job_cancel(self, job_id: str) -> bool:
+        """把仍在运行的任务标成已请求取消。已经标过也算成功。"""
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT status, cancel_requested FROM ai_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None or row["status"] != "running":
+                return False
+            if not row["cancel_requested"]:
+                conn.execute(
+                    """
+                    UPDATE ai_jobs SET cancel_requested = 1
+                    WHERE job_id = ? AND status = 'running'
+                    """,
+                    (job_id,),
+                )
+            return True
+
+    def ai_job_should_stop(self, job_id: str) -> bool:
+        """心跳线程用：取消标记、截止时间已到，或任务已经不在运行。"""
+        row = self.conn.execute(
+            """
+            SELECT status, cancel_requested, route_deadline_at
+            FROM ai_jobs WHERE job_id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        if row is None or row["status"] != "running":
+            return True
+        if row["cancel_requested"]:
+            return True
+        deadline = row["route_deadline_at"]
+        if not deadline:
+            return False
+        try:
+            parsed = datetime.fromisoformat(str(deadline).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) >= parsed
+
     def mark_ai_job_output_started(
         self,
         job_id: str,

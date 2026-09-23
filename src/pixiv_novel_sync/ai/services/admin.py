@@ -1398,6 +1398,21 @@ class AIAdminMixin:
         finally:
             db.close()
 
+    def cancel_job(self, job_id: str) -> dict[str, Any]:
+        """请求取消仍在运行的 AI 任务。真正停下来要等路由心跳读到标记。"""
+        db = self._db()
+        try:
+            job = db.get_ai_job(job_id)
+            if not job:
+                raise AINotFoundError("任务不存在")
+            if job.get("status") != "running":
+                raise AIConflictError("任务已经结束，不能取消")
+            if not db.request_ai_job_cancel(job_id):
+                raise AIConflictError("任务已经结束，不能取消")
+            return {"job_id": job_id, "cancel_requested": True}
+        finally:
+            db.close()
+
     def cleanup_jobs(
         self,
         keep_days: int = 3,

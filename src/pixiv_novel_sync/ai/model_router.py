@@ -102,6 +102,7 @@ class RouteRequest:
     top_p: float = 0.9
     resume_candidate_index: int = 0
     is_cancelled: Callable[[], bool] | None = None
+    route_deadline_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -854,8 +855,9 @@ class ModelRouter:
     def _start_heartbeat(
         self,
         request: RouteRequest,
-    ) -> tuple[threading.Event, threading.Thread]:
+    ) -> tuple[threading.Event, threading.Thread, threading.Event]:
         stopped = threading.Event()
+        cancel_event = threading.Event()
 
         def heartbeat() -> None:
             while not stopped.is_set():
@@ -866,7 +868,10 @@ class ModelRouter:
                         request.owner_token,
                         self._lease_until(),
                     ):
+                        cancel_event.set()
                         return
+                    if db.ai_job_should_stop(request.job_id):
+                        cancel_event.set()
                 finally:
                     db.close()
                 stopped.wait(_HEARTBEAT_INTERVAL_SECONDS)
@@ -881,12 +886,14 @@ class ModelRouter:
                 raise ModelRouteError("ModelRouter 已关闭")
             self._heartbeat_workers[stopped] = thread
             thread.start()
-        return stopped, thread
+        return stopped, thread, cancel_event
 
     def _request_cancelled(self, request: RouteRequest) -> bool:
-        return self._closed.is_set() or (
-            request.is_cancelled is not None and request.is_cancelled()
-        )
+        if self._closed.is_set():
+            return True
+        if request.is_cancelled is not None and request.is_cancelled():
+            return True
+        return self._deadline_expired(request.route_deadline_at)
 
     @staticmethod
     def _route_progress(
@@ -1068,7 +1075,17 @@ class ModelRouter:
 
         db = self._db_factory()
         try:
-            heartbeat_stop, heartbeat_thread = self._start_heartbeat(request)
+            heartbeat_stop, heartbeat_thread, cancel_event = self._start_heartbeat(
+                request
+            )
+            prior_cancelled = request.is_cancelled
+
+            def _route_cancelled() -> bool:
+                if cancel_event.is_set():
+                    return True
+                return prior_cancelled is not None and prior_cancelled()
+
+            request.is_cancelled = _route_cancelled
         except BaseException:
             db.close()
             raise
@@ -1079,6 +1096,7 @@ class ModelRouter:
         current_output_started = False
         try:
             state = self._active_route_state(db, request)
+            request.route_deadline_at = state.get("route_deadline_at")
             candidates = [
                 candidate
                 for candidate in request.candidate_snapshot.candidates

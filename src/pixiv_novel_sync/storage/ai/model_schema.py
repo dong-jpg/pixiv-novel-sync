@@ -265,6 +265,7 @@ def _create_ai_jobs_table(conn: sqlite3.Connection) -> None:
             prompt_budget_json TEXT,
             parent_job_id TEXT,
             idempotency_key TEXT,
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """
@@ -532,6 +533,17 @@ def _import_available_models(conn: sqlite3.Connection) -> None:
         )
 
 
+def _ensure_ai_job_cancel_column(conn: sqlite3.Connection) -> None:
+    """已完成路由迁移的库不会重建 ai_jobs，取消标记用加列补上。"""
+    if not _table_exists(conn, "ai_jobs"):
+        return
+    if "cancel_requested" in _table_columns(conn, "ai_jobs"):
+        return
+    conn.execute(
+        "ALTER TABLE ai_jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0"
+    )
+
+
 def assert_model_routing_foreign_keys(conn: sqlite3.Connection) -> None:
     """Raise when any database row violates a declared foreign key."""
     violations = conn.execute("PRAGMA foreign_key_check").fetchall()
@@ -552,6 +564,7 @@ def _migrate_model_routing_schema_in_transaction(
     _add_provider_sync_columns(conn)
     _create_model_routing_indexes(conn)
     _import_available_models(conn)
+    _ensure_ai_job_cancel_column(conn)
     if created or rebuilt:
         assert_model_routing_foreign_keys(conn)
 

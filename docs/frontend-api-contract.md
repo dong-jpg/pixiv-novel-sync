@@ -786,6 +786,10 @@ main 分支只保留 AI job 的读取、清理与手动续接端点；写作端�
 
 返回 AI 任务完整详情，包括 `job_id`、`task_type`、`status`、`input`、`output_text`、`output`、`error_message`、`candidate_snapshot_hash`、`candidate_snapshot`、`prompt_budget`、`attempts`、`route_summary` 和时间字段。attempt 包含实际 Provider/模型、池快照、stage、状态、错误分类及耗时；快照和 attempt 不含 API Key、Prompt、正文或完整请求/响应。任务不存在时返回 404。
 
+### POST /api/dashboard/ai/jobs/<job_id>/cancel
+
+把仍在 `running` 的任务标成 `cancel_requested`。路由心跳读到后停止，任务终态变为 `cancelled`。任务不存在返回 404，已经结束返回 409。重复请求同一次取消仍返回成功。
+
 ### POST /api/dashboard/ai/jobs/<job_id>/continue
 
 从终态父 job 的不可变候选快照创建 child job，并从第一个未尝试候选继续。接口返回常规 AI SSE；重复 `idempotency_key` 复用同一 child job，不重复调用 Provider。

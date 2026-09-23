@@ -209,6 +209,10 @@
             </tbody>
           </table>
         </div>
+        <div v-if="selectedLog.status === 'running'" class="flex items-center gap-3">
+          <button @click="cancelAiJob" :disabled="cancelRunning" class="px-4 py-2 bg-red-600 text-white rounded-lg text-sm disabled:opacity-50">{{ cancelRunning ? '正在取消...' : '取消任务' }}</button>
+          <span v-if="cancelNotice" class="text-xs text-amber-700">{{ cancelNotice }}</span>
+        </div>
         <div v-if="continueCandidate" class="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-3">
           <div class="text-xs text-amber-800">使用下一个模型继续（显式操作，不会自动重试）</div>
           <select class="w-full px-3 py-2 border border-amber-200 rounded-lg text-sm bg-white" :value="continueCandidate.candidate_index" disabled>
@@ -400,6 +404,8 @@
       const continueStatus = ref('');
       const continueOutput = ref('');
       const continueError = ref('');
+      const cancelRunning = ref(false);
+      const cancelNotice = ref('');
       let csrfToken = '';
       // main 已剥离写作流，历史 ai_jobs 没有可手动候选继续的任务类型
       const RESUMABLE_TASK_TYPES = new Set();
@@ -485,6 +491,8 @@
         continueStatus.value = '';
         continueOutput.value = '';
         continueError.value = '';
+        cancelRunning.value = false;
+        cancelNotice.value = '';
         if (!log) {
           modalOpen.value = false;
           return;
@@ -734,6 +742,24 @@
         catch { return String(value ?? ''); }
       };
 
+      const cancelAiJob = async () => {
+        const job = selectedLog.value;
+        if (!job || !job.job_id || cancelRunning.value) return;
+        cancelRunning.value = true;
+        cancelNotice.value = '';
+        try {
+          const res = await window.csrfFetch('/api/dashboard/ai/jobs/' + encodeURIComponent(job.job_id) + '/cancel', { method: 'POST' });
+          const payload = await res.json().catch(() => ({}));
+          if (!res.ok || payload.ok === false) throw new Error(window.errorText(payload, res));
+          cancelNotice.value = '已请求取消，任务会在下一次心跳后停止';
+          selectedLog.value = { ...job, cancel_requested: true };
+        } catch (e) {
+          cancelNotice.value = e.message || '取消失败';
+        } finally {
+          cancelRunning.value = false;
+        }
+      };
+
       const copyDetailText = async (value) => {
         const text = typeof value === 'string' ? value : formatJson(value);
         if (text && window.navigator?.clipboard) await window.navigator.clipboard.writeText(text);
@@ -760,6 +786,7 @@
         taskTypeOptions,
         modalOpen, detailLoading, selectedLog, modalTitle,
         continueCandidate, continueRunning, continueStatus, continueOutput, continueError,
+        cancelRunning, cancelNotice, cancelAiJob,
         applyFilter, handlePageChange, showDetail, continueWithNextModel,
         formatDate, formatTime, formatDuration, getStatusConfig, getTaskTypeName,
         formatResult, resultClass, formatJson, copyDetailText, formatAbortReason

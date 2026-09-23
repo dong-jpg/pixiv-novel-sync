@@ -383,6 +383,7 @@ def test_routing_schema_has_strict_pool_and_attempt_constraints(db: Database):
         "prompt_budget_json",
         "parent_job_id",
         "idempotency_key",
+        "cancel_requested",
     } <= job_columns
 
     attempt_columns = {

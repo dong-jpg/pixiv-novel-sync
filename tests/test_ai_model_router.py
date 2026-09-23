@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
+from datetime import datetime, timedelta, timezone
 from collections.abc import Iterator
 from collections.abc import Generator, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -1222,6 +1224,63 @@ def test_expired_deadline_fails_without_attempt_or_provider(
     assert "route_budget_exhausted" in db.get_ai_job(route_request.job_id)[
         "error_message"
     ]
+
+
+def test_cancel_flag_reaches_the_route_through_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+    route_router: ModelRouter,
+    route_request: RouteRequest,
+    fake_providers: FakeProviderRegistry,
+    db: Database,
+) -> None:
+    monkeypatch.setattr(
+        "pixiv_novel_sync.ai.model_router._HEARTBEAT_INTERVAL_SECONDS",
+        0.01,
+    )
+
+    def mark_cancel() -> AIStreamChunk:
+        assert db.request_ai_job_cancel(route_request.job_id) is True
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            if route_request.is_cancelled is not None and route_request.is_cancelled():
+                return AIStreamChunk(type="delta", text="晚了")
+            time.sleep(0.01)
+        raise AssertionError("取消标记没有传进路由")
+
+    fake_providers.succeed("p1", [mark_cancel, normal_done()])
+
+    result = route_router.execute(route_request)
+
+    assert result.finish_state == "cancelled"
+    assert result.output_text == ""
+    assert db.get_ai_job(route_request.job_id)["status"] == "cancelled"
+
+
+def test_deadline_expiring_during_stream_cancels_before_the_delta(
+    route_router: ModelRouter,
+    route_request: RouteRequest,
+    fake_providers: FakeProviderRegistry,
+    db: Database,
+) -> None:
+    soon = (datetime.now(timezone.utc) + timedelta(seconds=1)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    db.conn.execute(
+        "UPDATE ai_jobs SET route_deadline_at = ? WHERE job_id = ?",
+        (soon, route_request.job_id),
+    )
+    db.conn.commit()
+
+    def slow_chunk() -> AIStreamChunk:
+        time.sleep(1.4)
+        return AIStreamChunk(type="delta", text="晚了")
+
+    fake_providers.succeed("p1", [slow_chunk, normal_done()])
+
+    result = route_router.execute(route_request)
+
+    assert result.finish_state == "cancelled"
+    assert result.output_text == ""
 
 
 def test_cancellation_after_delta_closes_iterator_and_never_switches(

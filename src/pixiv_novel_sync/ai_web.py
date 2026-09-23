@@ -506,6 +506,13 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
         except Exception as exc:
             return fail(exc)
 
+    @app.post("/api/dashboard/ai/jobs/<job_id>/cancel")
+    def cancel_ai_job(job_id: str):
+        try:
+            return ok(service.cancel_job(job_id))
+        except Exception as exc:
+            return fail(exc)
+
     @app.post("/api/dashboard/ai/jobs/<job_id>/continue")
     def continue_ai_job_with_next_model(job_id: str):
         try:

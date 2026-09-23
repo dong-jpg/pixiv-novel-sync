@@ -61,6 +61,22 @@ def create_owned_job(
     )
 
 
+def test_request_ai_job_cancel_marks_running_job_once(db: Database) -> None:
+    create_owned_job(db, "cancel-me")
+    assert db.request_ai_job_cancel("cancel-me") is True
+    assert db.request_ai_job_cancel("cancel-me") is True
+    row = db.conn.execute(
+        "SELECT cancel_requested, status FROM ai_jobs WHERE job_id = 'cancel-me'"
+    ).fetchone()
+    assert row["status"] == "running"
+    assert row["cancel_requested"] == 1
+    assert db.ai_job_should_stop("cancel-me") is True
+    assert db.request_ai_job_cancel("missing") is False
+
+    db.finish_ai_job_cas("cancel-me", "owner", "succeeded")
+    assert db.request_ai_job_cancel("cancel-me") is False
+
+
 def canonical_snapshot() -> tuple[str, str]:
     value = {
         "binding_version": 1,
