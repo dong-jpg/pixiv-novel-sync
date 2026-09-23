@@ -1596,6 +1596,22 @@ def create_app(
             }
         )
 
+    @app.post("/api/dashboard/sync/cancel")
+    def dashboard_sync_cancel():
+        """取消手动同步任务。定时任务仍走 /api/dashboard/auto-sync/stop-task。"""
+        job_id = (request.args.get("job_id") or "").strip()
+        if not job_id:
+            payload = request.get_json(silent=True) or {}
+            job_id = str(payload.get("job_id") or "").strip()
+        if not job_id:
+            latest = shared_job_manager.latest_job()
+            job_id = latest.job_id if latest is not None else ""
+        if not job_id:
+            return _api_error("没有可取消的任务", 404)
+        if not shared_job_manager.request_cancel(job_id):
+            return _api_error("任务不存在、已结束，或正在收尾", 409)
+        return jsonify({"ok": True, "job_id": job_id, "message": "已请求取消"})
+
     @app.post("/api/dashboard/sync/start")
     def dashboard_sync_start():
         current_settings = settings_manager.load(env_path=env_path)

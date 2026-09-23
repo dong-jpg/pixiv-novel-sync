@@ -105,8 +105,8 @@
           <span v-else class="text-[11px] text-gray-400">当前无运行任务</span>
         </div>
 
-        <!-- 停止当前：仅当有定时任务在跑时出现 -->
-        <button v-if="autoSyncStatus?.current_task_job_id" @click="stopAutoTask"
+        <!-- 停止当前：手动任务走同步取消，定时任务走调度器停止 -->
+        <button v-if="isTaskRunning || autoSyncStatus?.current_task_job_id" @click="stopCurrentTask"
           class="text-[11px] text-red-600 font-semibold px-2.5 py-1.5 border border-red-200 bg-red-50 rounded-lg hover:bg-red-100 transition-colors flex-shrink-0">
           停止当前
         </button>
@@ -210,7 +210,10 @@
       let autoSyncInterval = null;
 
       // ── Computed ──
-      const isTaskRunning = computed(() => latestJob.value?.status === 'running');
+      const isTaskRunning = computed(() => {
+        const status = latestJob.value?.status;
+        return status === 'running' || status === 'queued' || status === 'cancel_requested';
+      });
 
       const progressPercent = computed(() => {
         if (!latestJob.value?.progress) return 0;
@@ -342,15 +345,20 @@
         } finally { togglingAutoSync.value = false; }
       };
 
-      const stopAutoTask = async () => {
+      const stopCurrentTask = async () => {
+        const job = latestJob.value;
+        const manualRunning = job && isTaskRunning.value && !job.is_auto_sync;
+        const url = manualRunning
+          ? `/api/dashboard/sync/cancel?job_id=${encodeURIComponent(job.job_id)}`
+          : '/api/dashboard/auto-sync/stop-task';
         try {
-          const res = await csrfFetch('/api/dashboard/auto-sync/stop-task', { method: 'POST' });
+          const res = await csrfFetch(url, { method: 'POST' });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             alert('停止当前任务失败：' + errorText(data, res));
           }
-          setTimeout(fetchAutoSync, 1000);
-        } catch(e) {}
+          setTimeout(() => { fetchJobStatus(); fetchAutoSync(); }, 1000);
+        } catch (e) {}
       };
 
       // ── Lifecycle ──
@@ -370,7 +378,7 @@
       return {
         stats, loadingStats,
         latestJob, loadingJob, isTaskRunning, progressPercent, currentTaskName,
-        autoSyncStatus, togglingAutoSync, toggleAutoSync, stopAutoTask,
+        autoSyncStatus, togglingAutoSync, toggleAutoSync, stopCurrentTask,
         recommendationItems, loadingRecommendations, recommendationError, loadRecommendationItems, retryRecommendationItems, recommendationItemUrl, recommendationLengthText, recommendationTimeText,
         recommendationPage, recommendationTotalPages,
       };

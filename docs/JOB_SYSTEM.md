@@ -79,7 +79,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 取消是**协作式**的,没有强杀线程:
 
-1. 外部(web 停止按钮 / scheduler.stop)调用 `JobManager.request_cancel(job_id)` → 状态置 `CANCEL_REQUESTED`(终态或已进入 finalization 则拒绝)。
+1. 外部调用 `JobManager.request_cancel(job_id)` → 状态置 `CANCEL_REQUESTED`(终态或已进入 finalization 则拒绝)。手动任务走 `POST /api/dashboard/sync/cancel`（可带 `job_id`，缺省取最新任务）；定时任务走 `POST /api/dashboard/auto-sync/stop-task` 或 `scheduler.stop`。
 2. 任务侧感知有三层:
    - `JobRunner` 在每个 task_type 开始前检查 `is_cancel_requested`;
    - `execute_task` 通过 `_stop_requested_from_context(context)` 构造 `stop_requested()` 闭包(内部即 `manager.is_cancel_requested(job_id)`),传给各任务实现;长任务在批次边界 / progress 回调里轮询,发现取消就抛 `InterruptedError("Task stopped by user")`;

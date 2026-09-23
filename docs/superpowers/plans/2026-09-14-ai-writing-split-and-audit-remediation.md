@@ -202,13 +202,13 @@
 - [x] **T2-18 系列熔断只对 `novel_series` 计数**
   `sync_engine.py:1473-1708` 把 `series_data = self.api.novel_series(int(sid))` 单独 try 计数；其余异常 `stats["failed"]` + `continue`。
 
-- [ ] **T2-19 `meta_hash` 剔除易变字段**
+- [x] **T2-19 `meta_hash` 剔除易变字段**
   `sync_engine.py:2223-2224` 计算前删 `total_bookmarks / total_view / total_comments / …`；或 `text_unchanged` 时跳过 `upsert_novel_text` + `replace_fts` + 正文写盘。验收：同一小说第二轮 `stats["skipped"]` 命中。
 
 - [x] **T2-20 `run_scheduled_user_backup` 单用户失败阻塞轮转**
   `jobs/quick_sync.py:135-162` 循环内捕获单用户异常记 `failed_users`；watermark 按 `completed + failed` 前进；`services.py:194-199` 的失败率检查改在 `processed` 自增之后。
 
-- [ ] **T2-21 手动任务取消入口**
+- [x] **T2-21 手动任务取消入口**
   新增 `POST /api/dashboard/sync/cancel`（可选 `job_id`，默认 latest）调 `shared_job_manager.request_cancel`；`dashboard.html` 停止按钮按 `is_auto_sync` 分流。文档 `JOB_SYSTEM.md:82` 同步。
 
 - [x] **T2-22 不限量模式 `max_items` 返回不标 truncated**
@@ -220,7 +220,7 @@
 - [x] **T2-24 `_fetch_remote_bookmark_ids` 200 页上限**
   `sync_engine.py:2079-2093` 触顶时写 `stats["truncated"]` + 明确错误文案，而不是裸 `RuntimeError`。
 
-- [ ] **T2-25 杂项**
+- [x] **T2-25 杂项**
   `jobs/runner.py:644-645` claim 丢失时 `mark_failed`；`jobs/quick_sync.py:72` 设 `service.stop_requested`，`:86` 删 `print`；`jobs/services.py:136` 登录一次传 `api`；`storage_files.py:116` 与 `generation` 蒸馏 sleep 改可取消（后者在 ai-writing）；`sync_engine.py:756-816` 删「防误删」死逻辑。
 
 ### 2.3 Web / 设置 / 部署

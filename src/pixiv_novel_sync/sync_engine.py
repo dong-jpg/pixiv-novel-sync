@@ -33,6 +33,22 @@ from .utils_text import clean_caption, normalize_text, to_markdown
 
 logger = logging.getLogger(__name__)
 
+# 这些计数每次打开作品都会变。算进 meta_hash 会让「正文没变」的第二轮仍整篇重写。
+_VOLATILE_NOVEL_FIELDS = {
+    "total_bookmarks",
+    "total_view",
+    "total_views",
+    "total_comments",
+    "total_comment",
+    "comment_count",
+}
+
+
+def _stable_meta_for_hash(plain: Any) -> Any:
+    if not isinstance(plain, dict):
+        return plain
+    return {key: value for key, value in plain.items() if key not in _VOLATILE_NOVEL_FIELDS}
+
 
 class RemoteListTruncated(RuntimeError):
     """远端列表翻页触顶，结果不能拿来做差集。"""
@@ -498,15 +514,6 @@ class BookmarkNovelSyncService:
                 if progress_callback:
                     progress_callback("rate_limit", {"seconds": page_delay})
                 _sleep_with_progress_cancel(page_delay, progress_callback)
-
-        # Phase 3.1: 防止API异常返回空列表导致误删
-        if stats["users"] == 0 and existing_user_count > 0:
-            logger.warning(
-                f"API returned empty following list but {existing_user_count} users exist locally. "
-                "Refusing to clear user data. This may indicate a temporary API issue."
-            )
-            # 恢复统计以反映实际未删除
-            stats["users"] = existing_user_count
 
         return stats
 
@@ -1970,7 +1977,7 @@ class BookmarkNovelSyncService:
         caption = clean_caption(getattr(detail_novel, "caption", None))
         tags_json = stable_json_dumps(_extract_tags(getattr(detail_novel, "tags", [])))
         meta_plain = _to_plain(detail_novel)
-        meta_hash = sha256_text(stable_json_dumps(meta_plain))
+        meta_hash = sha256_text(stable_json_dumps(_stable_meta_for_hash(meta_plain)))
         cover_url = _extract_cover_url(detail_novel)
         series = getattr(detail_novel, "series", None)
         series_id = int(series.id) if getattr(series, "id", None) else None
@@ -2108,6 +2115,7 @@ class BookmarkNovelSyncService:
                 timeout=self.settings.pixiv.timeout,
                 verify_ssl=self.settings.pixiv.verify_ssl,
                 proxy=self.settings.pixiv.proxy,
+                stop_requested=self.stop_requested,
             )
             if file_hash:
                 records.append(AssetRecord(novel_id, asset_type, asset_url, str(target), file_hash))

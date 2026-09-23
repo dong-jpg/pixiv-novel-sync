@@ -107,9 +107,20 @@ class _Storage:
     def asset_path(self, novel_dir, asset_type, filename):
         return novel_dir / asset_type / filename
 
-    def download_asset(self, url, target, timeout, verify_ssl, proxy):
+    def download_asset(self, url, target, timeout, verify_ssl, proxy, stop_requested=None):
         self.downloads.append((url, target))
         return "asset-hash"
+
+    def relative_novel_dir(self, user_id, user_name, novel_id, title):
+        return f"authors/{user_id}/novels/{novel_id}"
+
+    def base_dir(self, restrict):
+        return Path("archive")
+
+    def resolve_archive_dir(self, restrict, archive_dir, user_id, user_name, novel_id, title):
+        if archive_dir:
+            return Path("archive") / str(archive_dir)
+        return self.novel_dir(restrict, user_id, user_name, novel_id, title)
 
 
 def test_unchanged_novel_skips_text_db_writes_and_repairs_missing_assets(tmp_path: Path) -> None:
@@ -118,7 +129,7 @@ def test_unchanged_novel_skips_text_db_writes_and_repairs_missing_assets(tmp_pat
     db.init_schema()
     novel = _Novel()
     body = normalize_text("body")
-    meta_plain = _to_plain(novel)
+    meta_plain = sync_engine._stable_meta_for_hash(_to_plain(novel))
     db.upsert_user(UserRecord(user_id=1, name="author", account="acc", raw_json="{}"))
     db.upsert_novel(
         NovelRecord(
@@ -157,6 +168,20 @@ def test_unchanged_novel_skips_text_db_writes_and_repairs_missing_assets(tmp_pat
 
     assert result["skipped"] == 1
     assert result["assets_downloaded"] == 1
+    novel.total_bookmarks = 99
+    novel.total_view = 500
+    result = service._sync_novel_inner(
+        100,
+        novel,
+        "public",
+        download_assets=False,
+        write_markdown=True,
+        write_raw_text=True,
+        source_type="bookmark_public",
+        source_key="1",
+    )
+    assert result["skipped"] == 1
+    assert result["assets_downloaded"] == 0
     assert storage.text_writes == []
     assert db.get_recorded_asset_urls(100) == {"https://i.pximg.net/img-original/img/1.jpg"}
     assert db.conn.execute("SELECT 1 FROM sources WHERE novel_id = 100 AND source_type = 'bookmark_public'").fetchone() is not None

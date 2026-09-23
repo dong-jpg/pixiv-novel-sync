@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import pixiv_novel_sync.webapp as webapp_module
 
-from pixiv_novel_sync.jobs.models import JobSource, JobStatus, JobType
+from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobStatus, JobType
 from pixiv_novel_sync.storage_db import Database as RealDatabase
 from pixiv_novel_sync.webapp import (
     AutoSyncScheduler,
@@ -228,6 +228,18 @@ def test_job_id_backfill_failure_does_not_leave_queued_job(tmp_path, monkeypatch
     assert job.status == JobStatus.FAILED
     assert ran == []
     assert RecordingDatabase.updated_logs[-1]["status"] == JobStatus.FAILED.value
+
+
+def test_manual_sync_cancel_requests_cancel(tmp_path, monkeypatch) -> None:
+    app = _app(tmp_path, monkeypatch)
+    manager = app.config["job_manager"]
+    job = manager.submit(JobSpec(source=JobSource.WEB, task_types=["bookmark"]))
+    manager.mark_running(job.job_id)
+
+    response = app.test_client().post(f"/api/dashboard/sync/cancel?job_id={job.job_id}")
+
+    assert response.status_code == 200
+    assert manager.get_job(job.job_id).status == JobStatus.CANCEL_REQUESTED
 
 
 def test_auto_scheduler_has_no_legacy_sync_business_methods():

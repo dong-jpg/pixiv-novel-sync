@@ -6,6 +6,7 @@ import os
 import shutil
 import time
 from pathlib import Path
+from collections.abc import Callable
 from typing import Iterable
 
 import requests
@@ -96,6 +97,7 @@ class FileStorage:
         verify_ssl: bool,
         proxy: str | None,
         max_retries: int = 3,
+        stop_requested: Callable[[], bool] | None = None,
     ) -> str | None:
         """下载资源到目标路径，带 Referer、流式写入和指数退避重试。"""
         proxies = {"http": proxy, "https": proxy} if proxy else None
@@ -125,6 +127,8 @@ class FileStorage:
                         tmp.unlink(missing_ok=True)
                         raise
                     return hasher.hexdigest()
+            except InterruptedError:
+                raise
             except Exception as exc:
                 last_exc = exc
                 # 4xx 客户端错误（除 429）不重试
@@ -135,7 +139,9 @@ class FileStorage:
                 if attempt < max_retries - 1:
                     backoff = 2 ** attempt
                     logger.info("Retry %s/%s for %s after %ss: %s", attempt + 1, max_retries, url, backoff, exc)
-                    time.sleep(backoff)
+                    from .rate_limiter import cancellable_sleep
+
+                    cancellable_sleep(backoff, stop_requested)
         logger.warning("Failed to download asset %s after %s attempts: %s", url, max_retries, last_exc)
         return None
 

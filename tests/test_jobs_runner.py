@@ -212,6 +212,20 @@ def test_runner_fallback_claim_finishes_task_without_executor_claim():
     assert result.stats["ordinary"] == 1
 
 
+def test_runner_marks_failed_when_finalization_claim_is_lost():
+    manager = JobManager()
+    state = manager.submit(JobSpec(source=JobSource.CLI, task_types=["a"]))
+    manager.try_begin_finalization = lambda job_id: None
+
+    result = JobRunner(
+        manager=manager,
+        executor=lambda task_type, context: {"novels": 1},
+    ).run(state.job_id)
+
+    assert result.status == JobStatus.FAILED
+    assert result.error == "finalization claim lost"
+
+
 def test_runner_succeeds_for_empty_task_list():
     manager = JobManager()
     state = manager.submit(JobSpec(source=JobSource.CLI, task_types=[]))
