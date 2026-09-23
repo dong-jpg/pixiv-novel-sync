@@ -264,7 +264,7 @@
 - [x] **T2-37 `_import_available_models` 每次重跑**
   `storage/ai/model_schema.py:484-527` 导入后把 `available_models_json` 置 NULL；`_normalize_provider_payload` 不再接受 `available_models`；`dashboard_settings_models.html:788-791 copyFromProvider` 显式挑字段。验收：删掉的人工模型重启后不复活。
 
-- [ ] **T2-38 Provider 无法删除**
+- [x] **T2-38 Provider 无法删除**
   `storage/ai/core.py:286-297` 只拒绝「被固定 Agent 引用」与「模型被池引用」，目录行交给 CASCADE。
 
 - [ ] **T2-39 `_adapter_lock` 内发网络请求**

@@ -271,18 +271,6 @@ class AiCoreMixin:
                     "Provider 的模型仍被模型池引用，无法删除"
                 )
 
-            catalog_model = conn.execute(
-                """
-                SELECT 1 FROM ai_provider_models
-                WHERE provider_id = ?
-                LIMIT 1
-                """,
-                (provider_id,),
-            ).fetchone()
-            if catalog_model is not None:
-                raise AIProviderReferenceError(
-                    "Provider 仍有模型目录记录，无法删除"
-                )
             conn.execute("DELETE FROM ai_providers WHERE id = ?", (provider_id,))
 
     def _row_to_ai_agent(self, row: sqlite3.Row) -> dict[str, Any]:
