@@ -234,7 +234,7 @@
 - [x] **T2-28 `/api/save-token` 白名单**
   `webapp.py:1022` `re.fullmatch(r"[A-Za-z0-9_\-]{10,}")` 否则 400；`user_id` 用 `_safe_int`；`sync_engine.py:1834 _save_web_cookie_to_env` 同样过滤换行。
 
-- [ ] **T2-29 `compare_digest` 非 ASCII**
+- [x] **T2-29 `compare_digest` 非 ASCII**
   `webapp.py:872,793` 两处先 `.encode("utf-8")`。验收：中文 `DASHBOARD_TOKEN` 可登录，输入中文 401 且计入限流。
 
 - [ ] **T2-30 时区校验**

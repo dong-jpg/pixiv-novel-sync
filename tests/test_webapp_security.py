@@ -418,6 +418,23 @@ def test_csrf_required_for_authenticated_mutating_requests(tmp_path, monkeypatch
     assert allowed.status_code == 200
 
 
+def test_chinese_dashboard_token_logs_in_and_counts_failures(tmp_path, monkeypatch):
+    token = "访问密码"
+    monkeypatch.setenv("DASHBOARD_TOKEN", token)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text(f"PIXIV_REFRESH_TOKEN=test\nDASHBOARD_TOKEN={token}\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path), start_scheduler=False)
+    client = app.test_client()
+
+    ok = client.post("/api/auth/login", data={"token": token})
+    assert ok.status_code == 302
+
+    wrong = [client.post("/api/auth/login", data={"token": "错误密码"}) for _ in range(6)]
+    assert [response.status_code for response in wrong[:5]] == [401, 401, 401, 401, 401]
+    assert wrong[5].status_code == 429
+
+
 def test_login_rate_limit_blocks_repeated_failures(tmp_path, monkeypatch):
     monkeypatch.setenv("DASHBOARD_TOKEN", "secret-token")
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
