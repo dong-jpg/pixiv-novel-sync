@@ -246,7 +246,7 @@
 - [x] **T2-32 `/proxy/image` 3xx**
   `webapp.py:911-913` 非 200 返回 502，透传 `Content-Length` / `Cache-Control`。
 
-- [ ] **T2-33 部署脚本**
+- [x] **T2-33 部署脚本**
   `update.sh:14-17,51` 备份放 `$INSTALL_DIR/.backup/`（`umask 077`）成功后删除；`deploy.sh:127` / `update.sh:102` unit `PATH` 补 `/usr/local/bin:/usr/bin:/bin`；`deploy.sh` apt 列表加 `acl`，执行 `playwright install chromium`；nginx 配置 `server_name` / 证书路径用 `envsubst` 渲染，`nginx -t` 失败中止；`scripts/install_server.sh` 与 `deploy/systemd/*` 二选一：修到自洽或整体删除并同步 `test_deployment_contract.py`。
 
 - [ ] **T2-34 设置保存后重算 `next_run`**

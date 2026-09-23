@@ -22,6 +22,7 @@ venv/
 Thumbs.db
 
 # Local runtime data
+.backup/
 .env
 .env.*
 !.env.example

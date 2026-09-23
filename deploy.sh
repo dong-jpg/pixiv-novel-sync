@@ -31,7 +31,7 @@ fi
 # 1. 安装系统依赖
 echo -e "${GREEN}[1/8] 安装系统依赖...${NC}"
 sudo apt update -qq
-sudo apt install -y -qq python3 python3-pip python3-venv git nginx > /dev/null 2>&1
+sudo apt install -y -qq python3 python3-pip python3-venv git nginx acl gettext-base > /dev/null 2>&1
 
 # 2. 克隆或更新代码
 echo -e "${GREEN}[2/8] 获取最新代码...${NC}"
@@ -68,6 +68,7 @@ python3 -m venv --clear .venv
 source .venv/bin/activate
 pip install --upgrade pip -q
 pip install -e . -q
+playwright install chromium
 
 # 5. 恢复或创建配置文件
 echo -e "${GREEN}[5/8] 配置文件...${NC}"
@@ -108,15 +109,22 @@ sudo usermod -a -G www-data $(whoami)
 sudo setfacl -d -m g::rwx /var/cache/nginx/pixiv_img
 sudo setfacl -m g::rwx /var/cache/nginx/pixiv_img
 
-# 复制 Nginx 配置
-sudo cp -f config/nginx/pixiv-novel-sync.conf /etc/nginx/sites-available/pixiv-novel-sync
+# 渲染 Nginx 配置。只替换这三个占位符，避免把 $host 等 nginx 变量清掉。
+PIXIV_SERVER_NAME="${PIXIV_SERVER_NAME:-pixiv.dongboapp.com}"
+PIXIV_SSL_CERTIFICATE="${PIXIV_SSL_CERTIFICATE:-/etc/ssl/certs/${PIXIV_SERVER_NAME}.pem}"
+PIXIV_SSL_CERTIFICATE_KEY="${PIXIV_SSL_CERTIFICATE_KEY:-/etc/ssl/private/${PIXIV_SERVER_NAME}.key}"
+export PIXIV_SERVER_NAME PIXIV_SSL_CERTIFICATE PIXIV_SSL_CERTIFICATE_KEY
+envsubst '${PIXIV_SERVER_NAME} ${PIXIV_SSL_CERTIFICATE} ${PIXIV_SSL_CERTIFICATE_KEY}' \
+  < config/nginx/pixiv-novel-sync.conf \
+  | sudo tee /etc/nginx/sites-available/pixiv-novel-sync > /dev/null
 sudo ln -sf /etc/nginx/sites-available/pixiv-novel-sync /etc/nginx/sites-enabled/pixiv-novel-sync
 
 # 删除默认配置（避免冲突）
 sudo rm -f /etc/nginx/sites-enabled/default
 
-# 测试并重启 Nginx
-sudo nginx -t && sudo systemctl restart nginx
+# nginx -t 失败必须中止：写在 && 左边时 set -e 不会退出。
+sudo nginx -t
+sudo systemctl restart nginx
 echo "  Nginx 配置完成，监听端口: ${NGINX_PORT}"
 
 # 7. 创建 systemd 服务
@@ -130,7 +138,7 @@ After=network.target
 Type=simple
 User=$(whoami)
 WorkingDirectory=${INSTALL_DIR}
-Environment=PATH=${INSTALL_DIR}/.venv/bin
+Environment=PATH=${INSTALL_DIR}/.venv/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=${INSTALL_DIR}/.venv/bin/pixiv-novel-sync --config config/config.yaml web-token-ui --host 127.0.0.1 --port ${FLASK_PORT}
 Restart=always
 RestartSec=5
