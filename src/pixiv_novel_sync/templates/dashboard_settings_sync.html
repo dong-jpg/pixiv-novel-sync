@@ -211,12 +211,15 @@
       <div class="space-y-6">
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div>
-            <label class="block text-sm font-bold text-gray-900 mb-2">系统时区</label>
-            <select v-model="settings.auto_sync_timezone" @change="clearCronPreviews"
-                    class="w-full px-3 py-2 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 custom-select">
+            <label class="block text-sm font-bold text-gray-900 mb-2" for="auto-sync-timezone">系统时区</label>
+            <input id="auto-sync-timezone" type="text" list="timezone-options"
+                   v-model="settings.auto_sync_timezone" @change="clearCronPreviews"
+                   placeholder="如 Asia/Shanghai"
+                   class="w-full px-3 py-2 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <datalist id="timezone-options">
               <option v-for="zone in timezones" :key="zone.id" :value="zone.id">{{ zone.label }}</option>
-            </select>
-            <p class="mt-1.5 text-xs text-pixiv-light">cron 表达式按这个时区解释，改完要重新预览</p>
+            </datalist>
+            <p class="mt-1.5 text-xs text-pixiv-light">可从列表选，也可直接输入 IANA 时区名。cron 按这个时区解释，改完要重新预览</p>
           </div>
           <div class="rounded-lg border border-gray-100 bg-gray-50 px-4 py-3">
             <div class="text-xs font-medium text-pixiv-gray uppercase mb-1">已启用任务预计每日占用</div>
@@ -513,6 +516,12 @@
         if (preview && preview.loading) return { text: '校验中…', tone: 'text-pixiv-light' };
         if (preview && preview.error) return { text: preview.error, tone: 'text-red-600' };
         if (preview && preview.checked) {
+          if (preview.timezone_valid === false) {
+            return {
+              text: '时区无效，预览按 ' + (preview.effective_timezone || 'UTC') + ' 计算；保存会被拒绝',
+              tone: 'text-red-600',
+            };
+          }
           if (preview.empty) return { text: '留空：按左侧间隔小时数运行', tone: 'text-pixiv-light' };
           if (!preview.valid) return { text: 'cron 表达式无法解析，保存后会退回按间隔运行', tone: 'text-red-600' };
           return { text: `合法：每天 ${preview.runs_per_day} 次`, tone: 'text-emerald-700' };

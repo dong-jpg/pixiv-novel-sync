@@ -1541,6 +1541,24 @@ def create_app(
         expr = str(body.get("cron") or "").strip()
         tz_name = str(body.get("timezone") or "UTC")
         count = max(1, min(_safe_int(body.get("count"), 5), 10))
+
+        from zoneinfo import ZoneInfo
+
+        tz_candidate = tz_name.strip() or "UTC"
+        try:
+            ZoneInfo(tz_candidate)
+        except Exception:
+            timezone_valid = False
+            effective_timezone = "UTC"
+        else:
+            timezone_valid = True
+            effective_timezone = tz_candidate
+        tz_fields = {
+            "timezone": tz_name,
+            "timezone_valid": timezone_valid,
+            "effective_timezone": effective_timezone,
+        }
+
         # 合法表达式最长也就几十个字符；超长输入直接判非法，免得把大列表交给 croniter
         if len(expr) > 200:
             return jsonify(
@@ -1552,12 +1570,12 @@ def create_app(
                         "falls_back_to_interval": True,
                         "next_runs": [],
                         "runs_per_day": None,
-                        "timezone": tz_name,
+                        **tz_fields,
                     },
                 }
             )
 
-        runs = cron_next_runs(expr, tz_name, count) if expr else None
+        runs = cron_next_runs(expr, effective_timezone, count) if expr else None
         if runs is None:
             return jsonify(
                 {
@@ -1570,19 +1588,14 @@ def create_app(
                         "falls_back_to_interval": True,
                         "next_runs": [],
                         "runs_per_day": None,
-                        "timezone": tz_name,
+                        **tz_fields,
                     },
                 }
             )
 
         from datetime import datetime as _datetime
-        from zoneinfo import ZoneInfo
 
-        try:
-            tz = ZoneInfo(tz_name)
-        except Exception:
-            # cron_to_next_run 对未知时区也是回落 UTC，这里保持一致
-            tz = ZoneInfo("UTC")
+        tz = ZoneInfo(effective_timezone)
         return jsonify(
             {
                 "ok": True,
@@ -1593,8 +1606,8 @@ def create_app(
                     "next_runs": [
                         _datetime.fromtimestamp(run, tz).isoformat() for run in runs
                     ],
-                    "runs_per_day": cron_runs_per_day(expr, tz_name),
-                    "timezone": tz_name,
+                    "runs_per_day": cron_runs_per_day(expr, effective_timezone),
+                    **tz_fields,
                 },
             }
         )

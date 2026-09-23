@@ -1029,15 +1029,16 @@ class SettingsManager:
         )
         
         # 定时同步设置（auto_sync_enabled 由首页按钮单独控制）
-        _tz_raw = str(payload.get("auto_sync_timezone", sync_data.get("auto_sync_timezone", "UTC")))
-        if _tz_raw.strip():
-            # 先校验再落盘：无效时区名会让 cron 在错误时区里静默计算，且
-            # ZoneInfoNotFoundError 不是 ImportError，必须显式转 ValueError。
-            from zoneinfo import ZoneInfo
-            try:
-                ZoneInfo(_tz_raw.strip())
-            except Exception:
-                raise ValueError(f"非法的时区: auto_sync_timezone={_tz_raw!r}") from None
+        _tz_raw = str(
+            payload.get("auto_sync_timezone", sync_data.get("auto_sync_timezone", "UTC")) or ""
+        ).strip() or "UTC"
+        # 先校验再落盘：无效时区名会让 cron 在错误时区里静默计算，且
+        # ZoneInfoNotFoundError 不是 ImportError，必须显式转 ValueError。
+        from zoneinfo import ZoneInfo
+        try:
+            ZoneInfo(_tz_raw)
+        except Exception:
+            raise ValueError(f"非法的时区: auto_sync_timezone={_tz_raw!r}") from None
         sync_data["auto_sync_timezone"] = _tz_raw
 
         # 校验 cron 表达式合法性的辅助函数

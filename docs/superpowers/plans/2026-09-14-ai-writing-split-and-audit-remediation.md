@@ -237,7 +237,7 @@
 - [x] **T2-29 `compare_digest` 非 ASCII**
   `webapp.py:872,793` 两处先 `.encode("utf-8")`。验收：中文 `DASHBOARD_TOKEN` 可登录，输入中文 401 且计入限流。
 
-- [ ] **T2-30 时区校验**
+- [x] **T2-30 时区校验**
   `web/managers.py:1096` `ZoneInfo(tz)` 失败即 `ValueError`；`webapp.py:1475-1479` 预览响应加 `timezone_valid` / `effective_timezone`；`dashboard_settings_sync.html:386-395` 下拉支持自由输入。
 
 - [ ] **T2-31 `SESSION_COOKIE_SECURE` 顺序**

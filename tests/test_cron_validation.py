@@ -339,3 +339,47 @@ def test_cron_preview_treats_blank_as_interval_mode(tmp_path: Path) -> None:
     assert data["valid"] is False
     assert data["empty"] is True
     assert data["falls_back_to_interval"] is True
+
+
+def test_cron_preview_reports_invalid_timezone(tmp_path: Path) -> None:
+    """非法时区不能再回显 valid 却按原名假装计算。"""
+    client, headers = _preview_client(tmp_path)
+
+    res = client.post(
+        "/api/dashboard/settings/cron-preview",
+        json={"cron": "0 3 * * *", "timezone": "Not/AZone", "count": 1},
+        headers=headers,
+    )
+
+    assert res.status_code == 200
+    data = res.get_json()["data"]
+    assert data["valid"] is True
+    assert data["timezone"] == "Not/AZone"
+    assert data["timezone_valid"] is False
+    assert data["effective_timezone"] == "UTC"
+
+    ok = client.post(
+        "/api/dashboard/settings/cron-preview",
+        json={"cron": "0 3 * * *", "timezone": "Asia/Seoul", "count": 1},
+        headers=headers,
+    )
+    good = ok.get_json()["data"]
+    assert good["timezone_valid"] is True
+    assert good["effective_timezone"] == "Asia/Seoul"
+
+
+def test_save_sync_settings_rejects_unknown_timezone(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("sync:\n  auto_sync_timezone: UTC\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="时区"):
+        SettingsManager(str(config)).save_sync_settings({"auto_sync_timezone": "Not/AZone"})
+
+    assert "Not/AZone" not in config.read_text(encoding="utf-8")
+
+
+def test_timezone_field_accepts_free_text() -> None:
+    html = Path("src/pixiv_novel_sync/templates/dashboard_settings_sync.html").read_text(encoding="utf-8")
+    assert 'list="timezone-options"' in html
+    assert "<datalist id=\"timezone-options\">" in html
+    assert "timezone_valid" in html
