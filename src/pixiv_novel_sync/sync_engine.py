@@ -1196,6 +1196,19 @@ class BookmarkNovelSyncService:
                     progress_callback("phase", {"phase": f"同步系列 {series_idx} (已同步 {synced_series_count}{f'/{limit}' if limit > 0 else ''}) (ID: {sid})"})
                 try:
                     series_data = self.api.novel_series(int(sid))
+                except InterruptedError:
+                    raise
+                except Exception as e:
+                    consecutive_fetch_failures += 1
+                    stats["failed"] = stats.get("failed", 0) + 1
+                    logger.warning("Failed to fetch series %s: %s", sid, e)
+                    if progress_callback:
+                        progress_callback("phase", {"phase": f"系列 {sid}: 获取失败，已连续失败 {consecutive_fetch_failures} 次"})
+                    if consecutive_fetch_failures >= max_consecutive_fetch_failures:
+                        aborted_reason = "rate_limited"
+                        break
+                    continue
+                try:
                     if series_data and not _first_logged:
                         _first_logged = True
                         logger.info("novel_series response keys: %s", list(series_data.keys()) if isinstance(series_data, dict) else "N/A")
@@ -1416,26 +1429,12 @@ class BookmarkNovelSyncService:
                             aborted_reason = "rate_limited"
                             break
                 except InterruptedError:
-                    # 用户取消：不能被下面的 except Exception 吞掉（InterruptedError 是
-                    # Exception 子类）。章节间/跳过延迟里的 _sleep_with_progress_cancel
-                    # 会抛出它，必须原样上抛让 runner 标记任务已取消。
-                    raise
-                except InterruptedError:
+                    # 用户取消必须原样上抛。章节同步里的其它异常不能计入系列熔断。
                     raise
                 except Exception as e:
-                    consecutive_fetch_failures += 1
-                    logger.warning("Failed to fetch series %s: %s", sid, str(e))
-                    if progress_callback:
-                        progress_callback("phase", {"phase": f"系列 {sid}: 获取失败，已连续失败 {consecutive_fetch_failures} 次"})
-                    if consecutive_fetch_failures >= max_consecutive_fetch_failures:
-                        logger.warning(
-                            "Stopping subscribed series sync after %d consecutive fetch exceptions; likely rate limited or blocked",
-                            consecutive_fetch_failures,
-                        )
-                        if progress_callback:
-                            progress_callback("phase", {"phase": "连续获取系列失败，疑似触发 Pixiv 风控，已暂停追更系列同步"})
-                        aborted_reason = "rate_limited"
-                        break
+                    stats["failed"] = stats.get("failed", 0) + 1
+                    logger.warning("Series %s processing failed: %s", sid, e)
+                    continue
 
                 # 系列之间的延迟
                 if series_delay > 0 and queue_idx < len(series_queue):

@@ -199,7 +199,7 @@
 - [x] **T2-17 翻页失败静默绿**
   `sync_engine.py:645,1020,1234` 失败时 `stats["failed"] += 1; stats["incomplete"] = True; aborted_reason = "fetch_failed"`（同一行附近声明三标记之一以过 `test_every_incomplete_marker_declares_why`）。
 
-- [ ] **T2-18 系列熔断只对 `novel_series` 计数**
+- [x] **T2-18 系列熔断只对 `novel_series` 计数**
   `sync_engine.py:1473-1708` 把 `series_data = self.api.novel_series(int(sid))` 单独 try 计数；其余异常 `stats["failed"]` + `continue`。
 
 - [ ] **T2-19 `meta_hash` 剔除易变字段**
