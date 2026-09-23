@@ -980,6 +980,19 @@ class SettingsManager:
         self._cache = None
         self._cache_time = 0.0
 
+    def set_auto_sync_enabled(self, enabled: bool) -> bool:
+        """只改定时总开关。不走整份 save_sync_settings，避免把别的字段写成默认值。"""
+        if not self.config_path:
+            raise ValueError("缺少 config_path，无法保存设置")
+        config_path = Path(self.config_path)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_data = _load_yaml_file(config_path)
+        sync_data = config_data.setdefault("sync", {})
+        sync_data["auto_sync_enabled"] = bool(enabled)
+        _atomic_write_yaml(config_path, config_data)
+        self.invalidate()
+        return bool(enabled)
+
     def save_sync_settings(
         self, payload: dict[str, Any], section: str | None = None
     ) -> dict[str, Any]:

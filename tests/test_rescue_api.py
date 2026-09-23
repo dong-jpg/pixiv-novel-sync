@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -1085,6 +1086,7 @@ def test_dashboard_rescue_override_uses_existing_csrf_protection(
     csrf_client = csrf_app.test_client()
     with csrf_client.session_transaction() as session:
         session["authenticated"] = True
+        session["authenticated_at"] = time.time()
 
     blocked = csrf_client.put(
         "/api/dashboard/rescue-overrides/novel/10",

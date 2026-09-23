@@ -16,7 +16,6 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 import requests as http_requests
-import yaml
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, send_file
 
 from . import __version__
@@ -33,7 +32,6 @@ from .utils_naming import safe_name
 from .web.managers import AutoSyncScheduler, SettingsManager, TASK_LABELS
 from .web.managers import SCHEDULER_TASK_CONFIGS, scheduler_task_log_type
 from .web.utils import (
-    _atomic_write_yaml,
     _oauth_task_public_payload,
     _settings_to_dict,
     _shared_job_to_dict,
@@ -55,9 +53,6 @@ from .web.utils import _check_novel_status, _check_series_status  # noqa: F401
 from .web.utils import _remove_archive_files  # noqa: F401
 
 logger = logging.getLogger(__name__)
-
-# 记录服务启动时间（用于健康检查 API 计算 uptime）
-_service_start_time: float = time.time()
 
 # Nginx 图片缓存目录（可用环境变量覆盖，便于测试）与遍历上限
 _NGINX_CACHE_DIR_ENV = "PIXIV_NGINX_CACHE_DIR"
@@ -479,6 +474,8 @@ def _load_or_create_flask_secret(env_path: str | None) -> str:
 
     secret = os.urandom(32).hex()
     path.parent.mkdir(parents=True, exist_ok=True)
+    # 空的 PIXIV_FLASK_SECRET= 要原地换掉。再追加一行会让 .env 出现两个同名键。
+    lines = [line for line in lines if not line.startswith("PIXIV_FLASK_SECRET=")]
     lines.append(f"PIXIV_FLASK_SECRET={secret}")
     payload = ("\n".join(lines) + "\n").encode("utf-8")
     secure_atomic_write(path, payload)
@@ -558,6 +555,11 @@ def create_app(
         if detail is not None:
             payload["detail"] = detail
         return jsonify(payload), status
+
+    def _submit_failure(exc: Exception, status: int = 400):
+        if "已有同步任务正在运行" in str(exc):
+            return _api_error("已有同步任务正在运行，请稍后再试", 409)
+        return _api_error(str(exc), status)
 
     def _shared_job_logs_for_db(job: JobState) -> list[dict[str, Any]]:
         return [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs]
@@ -787,6 +789,23 @@ def create_app(
     _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
     _login_failures = _LoginFailureTracker()
     app.config["login_failure_tracker"] = _login_failures
+    _SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+
+    def _authenticated_session_fresh() -> bool:
+        if not session.get("authenticated"):
+            return False
+        started = session.get("authenticated_at")
+        if isinstance(started, (int, float)) and started > 10**12:
+            age = (time.time_ns() - float(started)) / 1_000_000_000
+        elif isinstance(started, (int, float)):
+            age = time.time() - float(started)
+        else:
+            session.clear()
+            return False
+        if age > _SESSION_MAX_AGE_SECONDS:
+            session.clear()
+            return False
+        return True
 
     def _get_csrf_token() -> str:
         token = session.get("csrf_token")
@@ -890,7 +909,7 @@ def create_app(
             return
         if path.startswith("/static/"):
             return
-        if session.get("authenticated"):
+        if _authenticated_session_fresh():
             blocked = _csrf_blocked(path)
             if blocked is not None:
                 return blocked
@@ -961,8 +980,9 @@ def create_app(
         # str 版本会直接抛 TypeError 变成 500，而不是按「密码错」计一次 401。
         if _hmac.compare_digest(input_token.encode("utf-8"), str(token).encode("utf-8")):
             _login_failures.clear(client)
+            session.clear()
             session["authenticated"] = True
-            session["authenticated_at"] = time.time_ns()
+            session["authenticated_at"] = time.time()
             _get_csrf_token()
             return redirect("/")
         _login_failures.record_failure(client, now)
@@ -1479,29 +1499,31 @@ def create_app(
     def check_user_status(user_id: int):
         current_settings = settings_manager.load(env_path=env_path)
         from .auth import PixivAuthManager
-        auth = PixivAuthManager(current_settings.pixiv)
-        api, _ = auth.login()
-        db = _open_database(current_settings)
+        db = None
         try:
+            auth = PixivAuthManager(current_settings.pixiv)
+            api, _ = auth.login()
+            db = _open_database(current_settings)
             status = _check_pixiv_user_status(api, user_id)
             db.upsert_user_status(user_id, status)
             return jsonify({"ok": True, "status": status})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         finally:
-            db.close()
+            if db is not None:
+                db.close()
 
     @app.post("/api/dashboard/users/<int:user_id>/sync")
     def sync_user_novels(user_id: int):
         """触发某用户全部小说的后台备份任务，避免阻塞 HTTP 请求。"""
         if _has_active_shared_jobs():
-            return _api_error("已有同步任务正在运行，请稍后再试")
+            return _api_error("已有同步任务正在运行，请稍后再试", 409)
         current_settings = settings_manager.load(env_path=env_path)
         try:
             spec = _web_job_spec([f"user_backup:{user_id}"])
             job = _submit_shared_job(spec, current_settings, "user_backup", f"用户 {user_id} 备份")
         except Exception as exc:
-            return _api_error(str(exc), 500)
+            return _submit_failure(exc, 500)
         return jsonify({"ok": True, "job_id": job.job_id, "job": _shared_job_to_dict(job)})
 
     @app.get("/api/dashboard/settings")
@@ -1646,7 +1668,7 @@ def create_app(
         try:
             job = _submit_shared_job(spec, current_settings, "manual", "全量手动同步")
         except Exception as exc:
-            return _api_error(str(exc))
+            return _submit_failure(exc)
         return jsonify({"ok": True, "message": job.message, "job": _shared_job_to_dict(job)})
 
     @app.get("/api/dashboard/sync/status")
@@ -1693,7 +1715,7 @@ def create_app(
             spec = _web_job_spec([internal_type])
             job = _submit_shared_job(spec, current_settings, internal_type, task_name)
         except Exception as exc:
-            return _api_error(str(exc))
+            return _submit_failure(exc)
         return jsonify({"ok": True, "message": "任务已启动", "job": _shared_job_to_dict(job)})
 
     @app.post("/api/dashboard/sync/subscribed-series")
@@ -1714,7 +1736,7 @@ def create_app(
                 progress={"series_limit": limit},
             )
         except Exception as exc:
-            return _api_error(str(exc))
+            return _submit_failure(exc)
         return jsonify({"ok": True, "message": "任务已启动", "job": _shared_job_to_dict(job)})
 
     @app.get("/api/dashboard/auto-sync/status")
@@ -1834,22 +1856,17 @@ def create_app(
         enabled = data.get("enabled")
         if enabled is None:
             return jsonify({"error": "missing enabled parameter"}), 400
-        
-        # 更新配置文件
-        if config_path:
-            config_path_obj = Path(config_path)
-            if config_path_obj.exists():
-                with config_path_obj.open("r", encoding="utf-8") as f:
-                    config_data = yaml.safe_load(f) or {}
-                sync_data = config_data.setdefault("sync", {})
-                sync_data["auto_sync_enabled"] = bool(enabled)
-                _atomic_write_yaml(config_path_obj, config_data)
-        
+        enabled = bool(enabled)
+        if settings_manager.config_path:
+            settings_manager.set_auto_sync_enabled(enabled)
+        else:
+            settings_manager.invalidate()
+
         if enabled:
             auto_sync_scheduler.start()
         else:
             auto_sync_scheduler.stop()
-        
+
         return jsonify({"ok": True, "enabled": enabled})
     
     @app.post("/api/dashboard/auto-sync/stop-task")
@@ -2083,7 +2100,7 @@ def create_app(
             spec = _web_job_spec(["pending_deletion_detection"])
             job = _submit_shared_job(spec, current_settings, "pending_deletion_detection", "检测取消收藏/追更")
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 400
+            return _submit_failure(exc)
         return jsonify({"ok": True, "message": "检测任务已启动", "job": _shared_job_to_dict(job)})
 
     @app.post("/api/dashboard/pending-deletions/<int:deletion_id>/confirm")
@@ -2173,33 +2190,10 @@ def create_app(
     # ------------------------------------------------------------------
     @app.get("/api/health")
     def health_check():
-        """返回服务健康状态"""
-        uptime = round(time.time() - _service_start_time, 2)
-
-        # 检查数据库是否可访问
-        db_accessible = False
-        db = None
-        try:
-            current_settings = settings_manager.load(env_path=env_path)
-            db = _open_database(current_settings)
-            db.conn.execute("SELECT 1")
-            db_accessible = True
-        except Exception:
-            db_accessible = False
-        finally:
-            if db is not None:
-                db.close()
-
-        # 当前运行中的任务数
-        with shared_job_manager._lock:
-            running_jobs = sum(1 for j in shared_job_manager._jobs.values() if j.status == JobStatus.RUNNING)
-
+        """返回服务健康状态。探活不打开数据库。version 留给已有测试和契约。"""
         return jsonify({
             "status": "ok",
             "version": __version__,
-            "uptime_seconds": uptime,
-            "db_accessible": db_accessible,
-            "running_jobs": running_jobs,
         })
 
     # ------------------------------------------------------------------
@@ -2211,62 +2205,7 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         db = _open_database(current_settings)
         try:
-            # 小说总数
-            total_novels = db.conn.execute(
-                "SELECT COUNT(*) FROM novels"
-            ).fetchone()[0]
-
-            # 用户总数
-            total_users = db.conn.execute(
-                "SELECT COUNT(*) FROM users"
-            ).fetchone()[0]
-
-            # 系列总数
-            total_series = db.conn.execute(
-                "SELECT COUNT(*) FROM series"
-            ).fetchone()[0]
-
-            # 按状态分组的小说数
-            novels_by_status = {}
-            for row in db.conn.execute(
-                "SELECT status, COUNT(*) as cnt FROM novels GROUP BY status"
-            ).fetchall():
-                novels_by_status[row[0]] = row[1]
-
-            # 按状态分组的用户数
-            users_by_status = {}
-            for row in db.conn.execute(
-                "SELECT status, COUNT(*) as cnt FROM users GROUP BY status"
-            ).fetchall():
-                users_by_status[row[0]] = row[1]
-
-            # 最近 10 条任务记录
-            recent_tasks = []
-            for row in db.conn.execute(
-                "SELECT id, task_type, task_name, job_id, status, is_auto_sync, "
-                "started_at, finished_at, error_message "
-                "FROM task_logs ORDER BY id DESC LIMIT 10"
-            ).fetchall():
-                recent_tasks.append({
-                    "id": row[0],
-                    "task_type": row[1],
-                    "task_name": row[2],
-                    "job_id": row[3],
-                    "status": row[4],
-                    "is_auto_sync": bool(row[5]),
-                    "started_at": row[6],
-                    "finished_at": row[7],
-                    "error_message": row[8],
-                })
-
-            return jsonify({
-                "total_novels": total_novels,
-                "total_users": total_users,
-                "total_series": total_series,
-                "novels_by_status": novels_by_status,
-                "users_by_status": users_by_status,
-                "recent_tasks": recent_tasks,
-            })
+            return jsonify(db.collect_library_export())
         except Exception as exc:
             logger.error("Export stats failed: %s", exc)
             return jsonify({"error": str(exc)}), 500

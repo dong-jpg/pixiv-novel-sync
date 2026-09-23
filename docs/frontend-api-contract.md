@@ -65,12 +65,11 @@ Used by: 所有需要携带 `X-CSRF-Token` 的写请求前端封装。响应：
 ```json
 {
   "status": "ok",
-  "version": "x.y.z",
-  "uptime_seconds": 123.45,
-  "db_accessible": true,
-  "running_jobs": 0
+  "version": "x.y.z"
 }
 ```
+
+探活只回答进程是否在，不打开数据库，也不统计正在跑的任务。
 
 ## Shared shell APIs
 

@@ -109,10 +109,12 @@ def main() -> None:
         finally:
             db.close()
     elif args.command == "web-token-ui":
+        from waitress import serve
+
         from .webapp import create_app
 
         app = create_app(config_path=args.config, env_path=args.env_file)
-        app.run(host=args.host, port=args.port, debug=False, threaded=True)
+        serve(app, host=args.host, port=args.port, threads=8)
     elif args.command in {
         "sync",
         "status-check",

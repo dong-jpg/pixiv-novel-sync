@@ -289,7 +289,7 @@ def test_auto_sync_status_reads_current_job_from_shared_manager(tmp_path, monkey
     assert response.get_json()["current_job"]["source"] == JobSource.SCHEDULER.value
 
 
-def test_health_counts_running_jobs_from_shared_manager(tmp_path, monkeypatch):
+def test_health_stays_available_while_a_job_is_running(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
     manager = app.config["job_manager"]
     job = manager.submit(_web_job_spec(["bookmark"]))
@@ -298,7 +298,7 @@ def test_health_counts_running_jobs_from_shared_manager(tmp_path, monkeypatch):
     response = app.test_client().get("/api/health")
 
     assert response.status_code == 200
-    assert response.get_json()["running_jobs"] == 1
+    assert response.get_json() == {"status": "ok", "version": response.get_json()["version"]}
 
 
 
@@ -872,7 +872,7 @@ def test_create_app_shares_scheduler_owner_by_normalized_db_path_and_releases_on
 
         monkeypatch.setattr("pixiv_novel_sync.webapp.Database", ForbiddenDatabase)
         blocked = second_app.test_client().post("/api/dashboard/sync/user_status")
-        assert blocked.status_code == 400
+        assert blocked.status_code == 409
         assert "已有同步任务" in blocked.get_json()["error"]
 
         status_response = second_app.test_client().get(
@@ -1015,7 +1015,7 @@ def test_scheduler_old_worker_cannot_release_restarted_owner(tmp_path):
 
 
 def test_shared_sync_blocks_concurrent_sync_submission(tmp_path, monkeypatch):
-    """shared 路径有任务运行时，新的 sync 提交应被阻断返回 400。"""
+    """shared 路径有任务运行时，新的 sync 提交应被阻断返回 409。"""
     def keep_shared_job_running(self, job_id):
         self.manager.mark_running(job_id, "running")
         return self.manager.get_job(job_id)
@@ -1029,7 +1029,7 @@ def test_shared_sync_blocks_concurrent_sync_submission(tmp_path, monkeypatch):
     blocked = client.post("/api/dashboard/sync/user_status")
 
     assert started.status_code == 200
-    assert blocked.status_code == 400
+    assert blocked.status_code == 409
     assert blocked.get_json()["error"] == "已有同步任务正在运行，请稍后再试"
 
 

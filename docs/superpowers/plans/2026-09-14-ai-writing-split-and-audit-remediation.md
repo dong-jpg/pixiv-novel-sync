@@ -252,8 +252,9 @@
 - [x] **T2-34 设置保存后重算 `next_run`**
   `save_sync_settings` 后对 cron 变更任务重算；删 `POST /api/dashboard/settings/reload`；`dashboard_settings_sync.html:310` 文案改「新间隔 / cron 在该任务下一次运行后生效，无需重启」。
 
-- [ ] **T2-35 杂项 Web**
+- [x] **T2-35 杂项 Web**
   `auto_sync_toggle`（:1707-1714）走 `SettingsManager` 并 `invalidate()`；「任务已在运行」统一 409；`check_user_status` :1374 `login()` 进 try；登录时 `session.clear()` 并按 `authenticated_at` 7 天过期；`/api/health` 只返回 `{"status":"ok"}`；`.env` 空值行原地替换（:451-461）；删 `_AUTH_EXEMPT_PATHS` 的 `/nginx-health`；`dashboard_status` / `export/stats` 裸 SQL 下沉 storage；生产改 `waitress`。
+  偏离：健康检查保留 `status` 与 `version`。现有测试和契约依赖 `version`；`uptime` / `db_accessible` / `running_jobs` 已去掉，探活不再打开数据库。
 
 ### 2.4 AI 基础设施
 

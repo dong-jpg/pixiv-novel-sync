@@ -105,3 +105,44 @@ class Database(
             "(SELECT COUNT(*) FROM pending_deletions WHERE status = 'pending') AS pending_count"
         ).fetchone()
         return json.dumps(dict(row), ensure_ascii=False)
+
+    def collect_library_export(self) -> dict[str, Any]:
+        """仪表盘导出统计。查询放在存储层，路由不再拼 SQL。"""
+        totals = json.loads(self.export_stats())
+
+        def _grouped(table: str) -> dict[str, int]:
+            counts: dict[str, int] = {}
+            for row in self.conn.execute(
+                f"SELECT status, COUNT(*) AS cnt FROM {table} GROUP BY status"
+            ):
+                key = row[0] if row[0] is not None else ""
+                counts[str(key)] = int(row[1])
+            return counts
+
+        recent_tasks = []
+        for row in self.conn.execute(
+            "SELECT id, task_type, task_name, job_id, status, is_auto_sync, "
+            "started_at, finished_at, error_message "
+            "FROM task_logs ORDER BY id DESC LIMIT 10"
+        ):
+            recent_tasks.append(
+                {
+                    "id": row[0],
+                    "task_type": row[1],
+                    "task_name": row[2],
+                    "job_id": row[3],
+                    "status": row[4],
+                    "is_auto_sync": bool(row[5]),
+                    "started_at": row[6],
+                    "finished_at": row[7],
+                    "error_message": row[8],
+                }
+            )
+        return {
+            "total_novels": int(totals["novels_count"]),
+            "total_users": int(totals["users_count"]),
+            "total_series": int(totals["series_count"]),
+            "novels_by_status": _grouped("novels"),
+            "users_by_status": _grouped("users"),
+            "recent_tasks": recent_tasks,
+        }
