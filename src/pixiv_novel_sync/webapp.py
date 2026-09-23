@@ -255,6 +255,26 @@ class _ArchiveTrash:
         shutil.rmtree(self._trash_root, ignore_errors=True)
 
 
+def _sweep_stale_trash(trash_root: Path, *, max_age_seconds: float = 86400) -> int:
+    """删掉回收站里超过一天的暂存目录。进程崩溃后没人 commit/rollback 的目录靠它收尾。"""
+    if not trash_root.is_dir():
+        return 0
+    cutoff = time.time() - max_age_seconds
+    removed = 0
+    for child in trash_root.iterdir():
+        try:
+            if child.stat().st_mtime >= cutoff:
+                continue
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
+            removed += 1
+        except OSError as exc:
+            logger.warning("清理回收站失败 %s: %s", child, exc)
+    return removed
+
+
 def _remove_archive_files_atomic(
     settings: Settings,
     archive_refs: list[dict[str, Any]],
@@ -507,6 +527,14 @@ def create_app(
             _startup_db.close()
     except Exception as exc:
         logger.warning("启动清理遗留任务日志失败：%s", exc)
+
+    try:
+        startup_settings = settings_manager.load(env_path=env_path)
+        swept = _sweep_stale_trash(startup_settings.storage.public_dir.parent / ".trash")
+        if swept:
+            logger.info("启动时清理了 %d 个超过 24 小时的回收站目录", swept)
+    except Exception as exc:
+        logger.warning("启动清理回收站失败：%s", exc)
 
     def run_web_task(task_type: str, context: dict[str, Any]) -> dict[str, Any] | None:
         current_settings = settings_manager.load(env_path=env_path)
@@ -2022,40 +2050,60 @@ def create_app(
         db = _open_database(current_settings)
         trash: _ArchiveTrash | None = None
         try:
+            preview = db.conn.execute(
+                "SELECT item_type, item_id FROM pending_deletions WHERE id = ? AND status = 'pending'",
+                (deletion_id,),
+            ).fetchone()
+            if preview is None:
+                return jsonify({"error": "记录不存在或已处理"}), 404
+            item_type = preview["item_type"]
+            item_id = int(preview["item_id"])
+            if item_type == "novel":
+                archive_refs = db.list_novel_archive_refs(novel_ids=[item_id])
+            elif item_type == "series":
+                archive_refs = db.list_novel_archive_refs(series_id=item_id)
+            else:
+                archive_refs = []
+            # 文件先离开原位，再开写事务。搬文件时不持有 SQLite 写锁。
+            trash = _ArchiveTrash(current_settings, archive_refs)
+            trash.stage()
             with db.transaction():
                 record = db.confirm_pending_deletion(deletion_id)
                 if record is None:
-                    return jsonify({"error": "记录不存在或已处理"}), 404
-                item_type = record["item_type"]
-                item_id = record["item_id"]
+                    raise LookupError("记录不存在或已处理")
                 if item_type == "novel":
-                    archive_refs = db.list_novel_archive_refs(novel_ids=[item_id])
-                    # 安全顺序：文件先入 trash，事务提交成功后再真正清除
-                    trash = _ArchiveTrash(current_settings, archive_refs)
-                    trash.stage()
                     db.delete_novel(item_id)
                 elif item_type == "series":
-                    archive_refs = db.list_novel_archive_refs(series_id=item_id)
-                    trash = _ArchiveTrash(current_settings, archive_refs)
-                    trash.stage()
                     current_chapter_rows = db.conn.execute(
                         "SELECT novel_id FROM novels WHERE series_id = ? ORDER BY novel_id",
                         (item_id,),
                     ).fetchall()
-                    current_chapter_ids = [
-                        int(row["novel_id"]) for row in current_chapter_rows
-                    ]
+                    current_chapter_ids = [int(row["novel_id"]) for row in current_chapter_rows]
                     affected_chapter_ids = db.delete_series(item_id)
-                    # 外层 BEGIN IMMEDIATE 保证查询与删除共享同一写快照，
-                    # 历史关系只参与刷新，不会被误当成当前章节删除。
                     for novel_id in current_chapter_ids:
                         db.delete_novel(novel_id)
                     _refresh_rescue_chapters(db, affected_chapter_ids)
-            archive_cleanup = trash.commit() if trash is not None else dict(_EMPTY_ARCHIVE_STATS)
+            archive_cleanup = trash.commit()
             return jsonify({"ok": True, "message": "已确认删除", "archive_cleanup": archive_cleanup})
+        except LookupError as exc:
+            if trash is not None:
+                trash.rollback()
+            return jsonify({"error": str(exc)}), 404
         except Exception as exc:
             if trash is not None:
                 trash.rollback()
+            try:
+                db.conn.execute(
+                    """
+                    UPDATE pending_deletions
+                    SET status = 'pending', confirmed_at = NULL
+                    WHERE id = ? AND status = 'confirmed'
+                    """,
+                    (deletion_id,),
+                )
+                db._commit_if_needed()
+            except Exception:
+                logger.warning("确认删除失败后未能把记录改回 pending", exc_info=True)
             return jsonify({"error": str(exc)}), 500
         finally:
             db.close()

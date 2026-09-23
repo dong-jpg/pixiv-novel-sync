@@ -188,7 +188,7 @@
 - [x] **T2-14 WAL 上限**
   连接初始化加 `PRAGMA journal_size_limit=67108864`。验收：长任务后 `-wal` 文件回落。
 
-- [ ] **T2-15 `.trash` 启动清扫 + confirm 顺序**
+- [x] **T2-15 `.trash` 启动清扫 + confirm 顺序**
   `create_app` 清理 `public_dir.parent/.trash` 下超 24 h 目录；`webapp.py:1973-2001` confirm 改为先 stage 再进事务（同 `_remove_archive_files_atomic`），失败回滚文件并把状态改回 pending。
 
 ### 2.2 同步 / 任务
