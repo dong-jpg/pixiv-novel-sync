@@ -276,7 +276,7 @@
 - [x] **T2-41 429 按模型判 scope**（用户已确认非有意）
   `ai/providers.py:1451-1454` 429 带模型标记时 `scope="model"`；5xx / 网络错误保持 provider 级但 GUIDE §4.3 写清楚。
 
-- [ ] **T2-42 健康投影三处假绿**
+- [x] **T2-42 健康投影三处假绿**
   `admin.py:487-489` 增加 `api_key_undecryptable`（try `decrypt`）；`:686-693` fixed Agent 复用 `_resolve_fixed` 三条判据；`:660-684` pool Agent 过 `required_capabilities`。
 
 - [ ] **T2-43 PromptBudget 估算器**

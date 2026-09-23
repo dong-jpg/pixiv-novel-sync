@@ -23,6 +23,7 @@ from ..model_pools import (
     ModelPoolValidationError,
     expand_pool_ids,
 )
+from ..crypto import AISecretError
 from ..model_router import (
     MAX_CANDIDATE_ATTEMPTS,
     MAX_NETWORK_REQUESTS,
@@ -30,6 +31,7 @@ from ..model_router import (
     MAX_RESOLVED_CANDIDATES,
     CandidateSnapshot,
     ModelRouteConflictError,
+    ModelRouteError,
     ModelRouter,
 )
 from ..model_sync import ModelSyncConflictError
@@ -421,11 +423,22 @@ class AIAdminMixin:
                 # provider_model_id -> routable，供池成员过滤复用运行时判据。
                 # 不额外查库：这里本来就要为每个 Provider 调一次，只是把 items 也留下。
                 routable_by_model: dict[int, bool] = {}
+                capabilities_by_model: dict[int, set[str]] = {}
+                undecryptable: set[int] = set()
                 for provider_row in providers:
-                    catalog = db.list_ai_provider_models(int(provider_row["id"]))
-                    routable[int(provider_row["id"])] = int(catalog["routable"])
+                    provider_id = int(provider_row["id"])
+                    catalog = db.list_ai_provider_models(provider_id)
+                    routable[provider_id] = int(catalog["routable"])
                     for item in catalog["items"]:
-                        routable_by_model[int(item["id"])] = bool(item["routable"])
+                        model_id = int(item["id"])
+                        routable_by_model[model_id] = bool(item["routable"])
+                        capabilities_by_model[model_id] = set(item.get("capabilities") or [])
+                    if provider_row.get("has_api_key"):
+                        secret_row = db.get_ai_provider(provider_id, include_secret=True)
+                        ciphertext = (secret_row or {}).get("api_key_encrypted")
+                        if ciphertext and not self._api_key_decrypts(ciphertext):
+                            undecryptable.add(provider_id)
+                fixed_route_errors = self._fixed_agent_route_errors(db, agents)
         finally:
             db.close()
 
@@ -473,6 +486,12 @@ class AIAdminMixin:
                 routable_models=routable.get(provider_id, 0),
                 pool_referenced=provider_id in pool_referenced,
             )
+            if provider_id in undecryptable:
+                findings.append({
+                    "level": "will_fail",
+                    "code": "api_key_undecryptable",
+                    "message": "已保存的 API Key 无法解密，请重新填写",
+                })
             status = (
                 "will_fail" if any(f["level"] == "will_fail" for f in findings)
                 else ("warn" if findings else "healthy")
@@ -492,7 +511,14 @@ class AIAdminMixin:
             })
 
         agent_items = [
-            self._agent_health_item(agent, provider_status, pools, routable_by_model)
+            self._agent_health_item(
+                agent,
+                provider_status,
+                pools,
+                routable_by_model,
+                capabilities_by_model,
+                fixed_route_errors.get(int(agent["id"])),
+            )
             for agent in agents
         ]
         unhealthy = sum(1 for item in agent_items if item["status"] == "will_fail")
@@ -512,12 +538,50 @@ class AIAdminMixin:
             },
         }
 
+    def _api_key_decrypts(self, ciphertext: str) -> bool:
+        """解得开才算真的有 Key。没配加密密钥时无法判断，不当成假绿。"""
+        try:
+            self.secret_manager.decrypt(ciphertext)
+        except AISecretError as exc:
+            if "缺少环境变量" in str(exc):
+                return True
+            return False
+        return True
+
+    @staticmethod
+    def _fixed_agent_route_errors(
+        db: Database,
+        agents: list[dict[str, Any]],
+    ) -> dict[int, str]:
+        """固定 Agent 复用路由的三条判据：有 Provider、有模型、能力对得上目录。"""
+        errors: dict[int, str] = {}
+        for agent in agents:
+            if not agent.get("enabled") or agent.get("binding_type") == "pool":
+                continue
+            provider_id = agent.get("provider_id")
+            config = AIAgentConfig(
+                id=int(agent["id"]),
+                name=str(agent.get("name") or ""),
+                task_type=str(agent.get("task_type") or "general"),
+                provider_id=int(provider_id) if provider_id else None,
+                model=agent.get("model"),
+                system_prompt=str(agent.get("system_prompt") or ""),
+                required_capabilities=tuple(agent.get("required_capabilities") or ()),
+            )
+            try:
+                ModelRouter._resolve_fixed(db, config)
+            except ModelRouteError as exc:
+                errors[int(agent["id"])] = str(exc)
+        return errors
+
     @staticmethod
     def _agent_health_item(
         agent: Mapping[str, Any],
         provider_status: Mapping[int, str],
         pools: Mapping[int, Mapping[str, Any]],
         routable_by_model: Mapping[int, bool],
+        capabilities_by_model: Mapping[int, set[str]] | None = None,
+        fixed_route_error: str | None = None,
     ) -> dict[str, Any]:
         """Agent 的状态是**继承**来的：它自己没坏，是它绑的东西坏了。
 
@@ -558,14 +622,27 @@ class AIAdminMixin:
                     for member in (pools.get(pool_id) or {}).get("members", [])
                     if member.get("enabled")
                 ]
-                # 再过运行时那道 routable，成员的模型行或其 Provider 被停用都在此落选
-                members = [
-                    member
-                    for member in enabled_members
-                    if routable_by_model.get(int(member.get("provider_model_id") or 0))
-                ]
+                # 再过运行时那道 routable，以及 Agent 声明的能力要求。
+                required = set(agent.get("required_capabilities") or ())
+                capability_map = capabilities_by_model or {}
+                members = []
+                for member in enabled_members:
+                    model_id = int(member.get("provider_model_id") or 0)
+                    if not routable_by_model.get(model_id):
+                        continue
+                    if required and not required.issubset(capability_map.get(model_id, set())):
+                        continue
+                    members.append(member)
                 if not enabled_members:
                     status, reason = "will_fail", "绑定的模型池没有启用成员"
+                elif not members and required and any(
+                    routable_by_model.get(int(member.get("provider_model_id") or 0))
+                    for member in enabled_members
+                ):
+                    status, reason = (
+                        "will_fail",
+                        "模型池及其后备池里没有满足能力要求的可路由模型",
+                    )
                 elif not members:
                     # 与上一句刻意分开：成员开关本来就是开着的，让用户去开它只会白跑一趟
                     status, reason = (
@@ -586,6 +663,8 @@ class AIAdminMixin:
                 status, reason = "will_fail", "没有绑定 Provider"
             elif provider_status.get(provider_id) == "will_fail":
                 status, reason = "will_fail", "绑定的 Provider 配置必失败"
+            elif fixed_route_error:
+                status, reason = "will_fail", fixed_route_error
         return {
             "id": int(agent["id"]),
             "name": agent.get("name"),

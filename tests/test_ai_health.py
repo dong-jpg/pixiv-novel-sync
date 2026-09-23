@@ -582,6 +582,107 @@ def test_health_does_not_cry_wolf_when_the_pool_keeps_one_routable_member(
     assert data["totals"]["agents_unhealthy"] == 0
 
 
+def test_health_flags_an_undecryptable_api_key(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PIXIV_NOVEL_SYNC_AI_SECRET_KEY", "health-secret")
+    app, db_path = _app(tmp_path, monkeypatch)
+    db = Database(db_path)
+    db.init_schema()
+    provider_id = db.create_ai_provider({
+        "name": "坏密钥",
+        "provider_type": "openai_compatible",
+        "base_url": "https://api.example.com/v1",
+        "api_key_encrypted": "cipher",
+        "enabled": 1,
+    })
+    db.close()
+
+    provider = next(p for p in _get_health(app)["providers"] if p["id"] == provider_id)
+
+    assert any(item["code"] == "api_key_undecryptable" for item in provider["findings"])
+    assert provider["status"] == "will_fail"
+
+
+def test_health_fixed_agent_reuses_route_model_checks(tmp_path, monkeypatch) -> None:
+    app, db_path = _app(tmp_path, monkeypatch)
+    db = Database(db_path)
+    db.init_schema()
+    provider_id = db.create_ai_provider({
+        "name": "好网关",
+        "provider_type": "openai_compatible",
+        "base_url": "https://api.example.com/v1",
+        "api_key_encrypted": "cipher",
+        "enabled": 1,
+    })
+    missing_model = db.create_ai_agent({
+        "name": "没模型",
+        "task_type": "keyword_clean",
+        "binding_type": "fixed",
+        "provider_id": provider_id,
+        "model": None,
+        "system_prompt": "x",
+        "enabled": 1,
+    })
+    db.create_ai_provider_model({
+        "provider_id": provider_id,
+        "model_key": "chat-only",
+        "enabled": True,
+        "manual_capabilities": ["streaming"],
+    })
+    missing_capability = db.create_ai_agent({
+        "name": "缺能力",
+        "task_type": "keyword_clean",
+        "binding_type": "fixed",
+        "provider_id": provider_id,
+        "model": "chat-only",
+        "system_prompt": "x",
+        "required_capabilities": ["json"],
+        "enabled": 1,
+    })
+    db.close()
+
+    agents = {item["id"]: item for item in _get_health(app)["agents"]}
+
+    assert agents[missing_model]["status"] == "will_fail"
+    assert "模型" in agents[missing_model]["reason"]
+    assert agents[missing_capability]["status"] == "will_fail"
+    assert "能力" in agents[missing_capability]["reason"]
+
+
+def test_health_pool_agent_requires_declared_capabilities(tmp_path, monkeypatch) -> None:
+    app, db_path = _app(tmp_path, monkeypatch)
+    db = Database(db_path)
+    db.init_schema()
+    provider_id = db.create_ai_provider({
+        "name": "好网关",
+        "provider_type": "openai_compatible",
+        "base_url": "https://api.example.com/v1",
+        "api_key_encrypted": "cipher",
+        "enabled": 1,
+    })
+    model_id = db.create_ai_provider_model({
+        "provider_id": provider_id,
+        "model_key": "chat-only",
+        "enabled": True,
+        "manual_capabilities": ["streaming"],
+    })
+    pool_id = _enabled_pool(db, "只会聊天的池", [model_id])
+    agent_id = db.create_ai_agent({
+        "name": "要 JSON",
+        "task_type": "keyword_clean",
+        "binding_type": "pool",
+        "model_pool_id": pool_id,
+        "system_prompt": "x",
+        "required_capabilities": ["json"],
+        "enabled": 1,
+    })
+    db.close()
+
+    agent = next(item for item in _get_health(app)["agents"] if item["id"] == agent_id)
+
+    assert agent["status"] == "will_fail"
+    assert "能力" in agent["reason"]
+
+
 def test_health_does_not_count_a_disabled_agent_as_unhealthy(tmp_path, monkeypatch) -> None:
     """停用的 Agent 不可能因为投影所报的原因失败，所以不占 agents_unhealthy。
 
