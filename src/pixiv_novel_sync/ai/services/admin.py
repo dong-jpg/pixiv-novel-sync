@@ -17,6 +17,7 @@ from ..model_catalog import (
     ModelCatalogConflictError,
     ModelCatalogValidationError,
     normalize_capabilities,
+    normalize_model_key,
 )
 from ..model_pools import (
     ModelPoolConflictError,
@@ -818,6 +819,7 @@ class AIAdminMixin:
             default_model=None,
             timeout_seconds=int(payload.get("timeout_seconds") or 120),
             context_window=int(payload.get("context_window") or 128000),
+            proxy=(str(payload.get("proxy")).strip() or None) if payload.get("proxy") else None,
         )
         provider = create_provider(config)
         started = time.time()
@@ -1235,7 +1237,11 @@ class AIAdminMixin:
                 # NULL（model_schema.py:164-172），不归一化就会被 SQLite 整条拒掉。
                 normalized = {
                     "binding_type": binding_type,
-                    "model": binding.get("model") if binding_type == "fixed" else None,
+                    "model": (
+                        self._normalize_saved_model_key(binding.get("model"))
+                        if binding_type == "fixed"
+                        else None
+                    ),
                     "provider_id": binding.get("provider_id") if binding_type == "fixed" else None,
                     "model_pool_id": binding.get("model_pool_id") if binding_type == "pool" else None,
                 }
@@ -1243,6 +1249,15 @@ class AIAdminMixin:
         finally:
             db.close()
         return {"updated": int(updated)}
+
+    @staticmethod
+    def _normalize_saved_model_key(value: Any) -> str | None:
+        if value is None or value == "":
+            return None
+        try:
+            return normalize_model_key(value)
+        except ModelCatalogValidationError as exc:
+            raise AIServiceError(str(exc)) from exc
 
     def _normalize_provider_payload(self, payload: dict[str, Any], require_key: bool = False, partial: bool = False) -> dict[str, Any]:
         data: dict[str, Any] = {}
@@ -1269,6 +1284,8 @@ class AIAdminMixin:
                 data["base_url"] = None
         if data.get("provider_type") not in {None, "openai_compatible", "anthropic", "xai"}:
             raise AIServiceError("不支持的 Provider 类型")
+        if "default_model" in data:
+            data["default_model"] = self._normalize_saved_model_key(data.get("default_model"))
         api_key = str(payload.get("api_key") or "")
         if api_key:
             data["api_key_encrypted"] = self.secret_manager.encrypt(api_key)
@@ -1325,6 +1342,8 @@ class AIAdminMixin:
             raise AIServiceError("固定模型和模型池不能同时提交")
         if binding_type == "fixed" and data.get("model_pool_id") is not None:
             raise AIServiceError("固定模型和模型池不能同时提交")
+        if "model" in data:
+            data["model"] = self._normalize_saved_model_key(data.get("model"))
         if "required_capabilities" in data:
             try:
                 capabilities = normalize_capabilities(

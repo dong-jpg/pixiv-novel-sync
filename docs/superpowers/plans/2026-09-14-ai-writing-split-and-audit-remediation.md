@@ -285,7 +285,7 @@
 - [x] **T2-44 密钥字面值脱敏**
   `providers.py:1509 _http_provider_error` / `_request_provider_error` / `_event_provider_error` 先 `replace(api_key, "[REDACTED]")` 再正则（同 `model_sync.py:195-200`）。
 
-- [ ] **T2-45 杂项 AI**
+- [x] **T2-45 杂项 AI**
   `Retry-After` 消费：重试延迟 `max(2**attempt, error.retry_after or 0)` 上限 60；`_iter_sse_lines` 单行 1 MiB 上限、错误响应体 1 MiB 上限；`ModelListResult` 常量字段与 `empty_authoritative` 死分支删除或真实区分；`probe_provider_models` 带 `proxy`；`_resolve_base_url` :735 去掉 `api.anthropic.com`；`ModelSyncCoordinator.events()` 复用一个 db；`default_model` / Agent `model` 保存时 `normalize_model_key`；`cleanup_model_sync_operations` 接到调度器；`DELETE /model-sync-operations/<id>` 补「取消同步」按钮。
 
 ### 2.5 偏好推荐

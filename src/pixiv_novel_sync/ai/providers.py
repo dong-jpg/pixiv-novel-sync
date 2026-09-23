@@ -319,16 +319,35 @@ def _iter_sse_lines(response: requests.Response) -> Iterator[str]:
         if not chunk:
             continue
         buffer += decoder.decode(chunk)
+        if len(buffer.encode("utf-8")) > _MAX_SSE_LINE_BYTES and "\n" not in buffer:
+            raise AIProviderError(
+                "SSE 单行超过 1 MiB 上限",
+                category="upstream_error",
+                scope="provider",
+            )
         while True:
             idx = buffer.find("\n")
             if idx == -1:
                 break
-            yield buffer[:idx]
+            line = buffer[:idx]
+            if len(line.encode("utf-8")) > _MAX_SSE_LINE_BYTES:
+                raise AIProviderError(
+                    "SSE 单行超过 1 MiB 上限",
+                    category="upstream_error",
+                    scope="provider",
+                )
+            yield line
             buffer = buffer[idx + 1:]
     tail = decoder.decode(b"", final=True)
     if tail:
         buffer += tail
     if buffer:
+        if len(buffer.encode("utf-8")) > _MAX_SSE_LINE_BYTES:
+            raise AIProviderError(
+                "SSE 单行超过 1 MiB 上限",
+                category="upstream_error",
+                scope="provider",
+            )
         yield buffer
 
 
@@ -372,6 +391,18 @@ def _before_network_request(
     _check_cancelled(is_cancelled)
     if request_guard is not None:
         request_guard()
+
+
+_MAX_SSE_LINE_BYTES = 1024 * 1024
+_MAX_ERROR_BODY_BYTES = 1024 * 1024
+
+
+def _retry_delay(attempt: int, retry_after: float | None = None) -> float:
+    """指数退避和 Retry-After 取较大值，最多等 60 秒。"""
+    hinted = float(retry_after or 0)
+    if hinted < 0 or hinted != hinted:  # NaN
+        hinted = 0.0
+    return min(60.0, max(float(2 ** max(0, int(attempt))), hinted))
 
 
 def _sleep_before_retry(
@@ -739,7 +770,7 @@ class OpenAICompatibleProvider(AIProvider):
             return base_url
         parsed = urlparse(base_url)
         host = parsed.hostname or ""
-        official_hosts = ("api.openai.com", "api.deepseek.com", "api.x.ai", "api.anthropic.com")
+        official_hosts = ("api.openai.com", "api.deepseek.com", "api.x.ai")
         if host in official_hosts:
             return base_url
         # 已有自定义路径段（如 /codex / /api/openai 等）→ 不再拼 /v1
@@ -853,7 +884,7 @@ class OpenAICompatibleProvider(AIProvider):
                                 attempt=attempt + 1,
                                 max_retries=max_retries,
                             )
-                            _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
                             continue
                         raise error
                     if response.status_code >= 400:
@@ -967,7 +998,7 @@ class OpenAICompatibleProvider(AIProvider):
                         attempt=attempt + 1,
                         max_retries=max_retries,
                     )
-                    _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                    _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
                     continue
                 raise error from exc
 
@@ -1003,7 +1034,7 @@ class OpenAICompatibleProvider(AIProvider):
                             api_key=self.config.api_key,
                         )
                         if attempt < max_retries:
-                            _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
                             continue
                         raise error
                     if response.status_code >= 400:
@@ -1047,7 +1078,7 @@ class OpenAICompatibleProvider(AIProvider):
                 raise _runtime_config_error(exc) from exc
             except requests.RequestException as exc:
                 if attempt < max_retries:
-                    _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                    _sleep_before_retry(_retry_delay(attempt), is_cancelled)
                     continue
                 raise _request_provider_error(
                     exc,
@@ -1170,7 +1201,7 @@ class AnthropicProvider(AIProvider):
                                 attempt=attempt + 1,
                                 max_retries=max_retries,
                             )
-                            _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
                             continue
                         raise error
                     if response.status_code >= 400:
@@ -1286,7 +1317,7 @@ class AnthropicProvider(AIProvider):
                         attempt=attempt + 1,
                         max_retries=max_retries,
                     )
-                    _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                    _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
                     continue
                 raise error from exc
 
@@ -1321,7 +1352,7 @@ class AnthropicProvider(AIProvider):
                             api_key=self.config.api_key,
                         )
                         if attempt < max_retries:
-                            _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
                             continue
                         raise error
                     if response.status_code >= 400:
@@ -1362,7 +1393,7 @@ class AnthropicProvider(AIProvider):
                 raise _runtime_config_error(exc) from exc
             except requests.RequestException as exc:
                 if attempt < max_retries:
-                    _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                    _sleep_before_retry(_retry_delay(attempt), is_cancelled)
                     continue
                 raise _request_provider_error(
                     exc,
@@ -1394,6 +1425,34 @@ def _response_error_details(
     # 强制按 UTF-8 解码（很多上游网关 Content-Type 不带 charset，requests 会按 latin-1 解析导致中文乱码）
     if not response.encoding or response.encoding.lower() in ("iso-8859-1", "latin-1"):
         response.encoding = "utf-8"
+    headers = getattr(response, "headers", None) or {}
+    declared = None
+    try:
+        raw_length = headers.get("Content-Length") or headers.get("content-length")
+        if isinstance(raw_length, str) and raw_length.strip():
+            declared = int(raw_length)
+    except (TypeError, ValueError, AttributeError):
+        declared = None
+    if declared is not None and declared > _MAX_ERROR_BODY_BYTES:
+        response.close()
+        raise AIProviderError(
+            "错误响应体超过 1 MiB 上限",
+            category="upstream_error",
+            scope="provider",
+        )
+    try:
+        raw_body = response.content or b""
+    except Exception:
+        raw_body = b""
+    if isinstance(raw_body, str):
+        raw_body = raw_body.encode("utf-8", errors="replace")
+    if len(raw_body) > _MAX_ERROR_BODY_BYTES:
+        response.close()
+        raise AIProviderError(
+            "错误响应体超过 1 MiB 上限",
+            category="upstream_error",
+            scope="provider",
+        )
     detail_parts: list[str] = []
     display_message = ""
     try:

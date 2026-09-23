@@ -29,6 +29,38 @@ class _FakeProvider:
         type(self).closed = True
 
 
+def test_probe_forwards_proxy_to_the_provider(tmp_path, monkeypatch) -> None:
+    seen = {}
+
+    def capture(config):
+        seen["proxy"] = config.proxy
+        return _FakeProvider()
+
+    service = AIWritingService(db_path=tmp_path / "probe-proxy.db")
+    monkeypatch.setattr("pixiv_novel_sync.ai.services.admin.create_provider", capture)
+    service.probe_provider_models({
+        "provider_type": "openai_compatible",
+        "base_url": "https://api.example.com/v1",
+        "api_key": "sk-test",
+        "proxy": "http://127.0.0.1:7890",
+    })
+    assert seen["proxy"] == "http://127.0.0.1:7890"
+
+
+def test_saved_model_key_rejects_control_characters(tmp_path) -> None:
+    service = AIWritingService(db_path=tmp_path / "model-key.db")
+    with pytest.raises(AIServiceError, match="控制字符"):
+        service._normalize_provider_payload(
+            {
+                "name": "网关",
+                "provider_type": "openai_compatible",
+                "default_model": "bad\nmodel",
+            }
+        )
+    kept = service._normalize_agent_payload({"model": "grok-4"}, partial=True)
+    assert kept["model"] == "grok-4"
+
+
 def test_probe_marks_chat_and_unlabelled_models_as_suggested(tmp_path, monkeypatch) -> None:
     """能力标签缺失时默认勾上：标签来自上游、不保证齐全，宁可多勾也别让用户以为没获取到。"""
     service = AIWritingService(db_path=tmp_path / "probe.db")

@@ -122,6 +122,7 @@
                 <button @click="syncProviderModels(provider.id)" :disabled="modelSyncBusy(provider.id)" class="text-xs px-2 py-1 rounded bg-brand-50 text-brand-600 hover:bg-brand-100 disabled:opacity-50">
                   {{ modelSyncBusy(provider.id) ? '同步中...' : '同步模型' }}
                 </button>
+                <button v-if="modelSyncBusy(provider.id)" @click="cancelModelSync(provider.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">取消同步</button>
               </div>
             </div>
             <div class="grid grid-cols-3 gap-2 text-center text-xs">
@@ -510,6 +511,18 @@
           showAiMessage('同步失败，旧目录仍可使用', 'warning');
         }
       };
+      const cancelModelSync = async (providerId) => {
+        const operation = modelSyncOperations[providerId];
+        const operationId = operation && operation.operation_id;
+        if (!operationId) return;
+        try {
+          await aiApi(`/api/dashboard/ai/model-sync-operations/${operationId}`, { method: 'DELETE' });
+          updateModelSyncState(providerId, { status: 'cancelled' });
+          showAiMessage('已请求取消同步', 'warning');
+        } catch (e) {
+          showAiMessage(e.message || '取消同步失败', 'error');
+        }
+      };
       const confirmEmptyCatalog = async (providerId) => {
         const confirmation = emptyConfirmations[providerId];
         if (!confirmation) return;
@@ -886,7 +899,7 @@
         modelCatalogExpanded, manualModelForms, modelSyncOperations, emptyConfirmations,
         modelCatalog, modelSyncBusy, loadProviderModels, loadModelSyncOperation,
         manualModelForm, createManualModel, deleteManualModel,
-        syncProviderModels, confirmEmptyCatalog, recoverModelSyncOperations,
+        syncProviderModels, cancelModelSync, confirmEmptyCatalog, recoverModelSyncOperations,
         modelPools, poolProviderFilter, poolModelSearch, poolSaving, poolError, poolForm,
         poolAttempts, poolAttemptsError, poolAttemptsLoading,
         attemptStatusLabel, attemptStatusClass, attemptLatency, formatAttemptTime, loadPoolAttempts,

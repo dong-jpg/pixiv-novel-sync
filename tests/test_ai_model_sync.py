@@ -371,6 +371,43 @@ def test_non_authoritative_empty_requires_exact_confirmation(db: Database) -> No
     ] is False
 
 
+def test_events_reuses_one_database(coordinator: ModelSyncCoordinator, db: Database) -> None:
+    provider_id = seed_provider(db)
+    provider = db.get_ai_provider(provider_id, include_secret=True)
+    operation = db.create_model_sync_operation(
+        provider_id,
+        provider["name"],
+        provider_model_sync_config_hash(provider),
+        "owner-events",
+    )
+    assert db.claim_model_sync_operation(
+        operation["operation_id"],
+        "owner-events",
+        operation["generation"],
+    )
+    models = [normalize_model_record({"id": "kept"})]
+    assert db.finish_model_sync_success(
+        operation["operation_id"],
+        "owner-events",
+        operation["generation"],
+        models,
+        canonical_model_digest(models),
+    )
+    opened = 0
+    original = coordinator._db
+
+    def counting():
+        nonlocal opened
+        opened += 1
+        return original()
+
+    coordinator._db = counting
+    events = list(coordinator.events(operation["operation_id"], poll_interval=0.01))
+    assert opened == 1
+    assert events[0]["event"] == "started"
+    assert events[-1]["event"] == "completed"
+
+
 def test_authoritative_empty_reconciles_without_confirmation(db: Database) -> None:
     provider_id = seed_provider(db)
     db.upsert_discovered_models(

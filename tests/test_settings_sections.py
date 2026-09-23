@@ -152,6 +152,7 @@ def test_scheduler_cleanup_reads_retention_from_settings(tmp_path):
     assert "cleanup_old_task_logs(days=retention_days)" in source
     assert "cleanup_ai_jobs(keep_days=retention_days)" in source
     assert "fail_stale_ai_jobs()" in source
+    assert "cleanup_model_sync_operations(keep_days=retention_days)" in source
     assert "cleanup_old_task_logs(days=3)" not in source
     assert "cleanup_ai_jobs(keep_days=3)" not in source
 

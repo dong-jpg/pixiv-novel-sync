@@ -429,6 +429,7 @@ class AutoSyncScheduler:
                         db.cleanup_old_task_logs(days=retention_days)
                         db.cleanup_ai_jobs(keep_days=retention_days)
                         db.fail_stale_ai_jobs()
+                        db.cleanup_model_sync_operations(keep_days=retention_days)
                         self._last_cleanup_time = now_ts
                     except Exception as exc:
                         logger.warning("Failed to cleanup old task logs: %s", exc)

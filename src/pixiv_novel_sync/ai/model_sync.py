@@ -361,79 +361,85 @@ class ModelSyncCoordinator:
         started = False
         # 与后台同步任务的总时长上限对齐，防止 SSE 轮询无限阻塞连接。
         deadline = time.monotonic() + _MODEL_SYNC_DEADLINE_SECONDS
-        while True:
-            operation = self.get(operation_id)
-            if not started:
-                started = True
-                yield {
-                    "event": "started",
-                    "data": {
-                        "operation_id": operation_id,
-                        "provider_id": operation["provider_id"],
-                        "generation": operation["generation"],
-                    },
-                }
-            if operation["pages"] > last_pages and operation["pages"] > 0:
-                last_pages = operation["pages"]
-                yield {
-                    "event": "page",
-                    "data": {
-                        "operation_id": operation_id,
-                        "pages": operation["pages"],
-                        "discovered_count": operation["discovered_count"],
-                    },
-                }
+        db = self._db()
+        try:
+            while True:
+                operation = db.get_model_sync_operation(operation_id)
+                if operation is None:
+                    raise ModelSyncConflictError("模型同步 operation 不存在")
+                if not started:
+                    started = True
+                    yield {
+                        "event": "started",
+                        "data": {
+                            "operation_id": operation_id,
+                            "provider_id": operation["provider_id"],
+                            "generation": operation["generation"],
+                        },
+                    }
+                if operation["pages"] > last_pages and operation["pages"] > 0:
+                    last_pages = operation["pages"]
+                    yield {
+                        "event": "page",
+                        "data": {
+                            "operation_id": operation_id,
+                            "pages": operation["pages"],
+                            "discovered_count": operation["discovered_count"],
+                        },
+                    }
 
-            status = operation["status"]
-            if status == "needs_empty_confirmation":
-                yield {
-                    "event": "empty_confirmation_required",
-                    "data": {
-                        "operation_id": operation_id,
-                        "generation": operation["generation"],
-                        "result_digest": operation["result_digest"],
-                    },
-                }
-                return
-            if status == "succeeded":
-                yield {
-                    "event": "completed",
-                    "data": {
-                        "operation_id": operation_id,
-                        "generation": operation["generation"],
-                        "result_digest": operation["result_digest"],
-                        "pages": operation["pages"],
-                        "discovered_count": operation["discovered_count"],
-                    },
-                }
-                return
-            if status == "failed":
-                yield {
-                    "event": "failed",
-                    "data": {
-                        "operation_id": operation_id,
-                        "error_code": operation["error_code"],
-                        "error_message": operation["error_message"],
-                    },
-                }
-                return
-            if status == "cancelled":
-                yield {
-                    "event": "cancelled",
-                    "data": {"operation_id": operation_id},
-                }
-                return
-            if time.monotonic() >= deadline:
-                yield {
-                    "event": "failed",
-                    "data": {
-                        "operation_id": operation_id,
-                        "error_code": "timeout",
-                        "error_message": "模型同步事件流超时",
-                    },
-                }
-                return
-            time.sleep(interval)
+                status = operation["status"]
+                if status == "needs_empty_confirmation":
+                    yield {
+                        "event": "empty_confirmation_required",
+                        "data": {
+                            "operation_id": operation_id,
+                            "generation": operation["generation"],
+                            "result_digest": operation["result_digest"],
+                        },
+                    }
+                    return
+                if status == "succeeded":
+                    yield {
+                        "event": "completed",
+                        "data": {
+                            "operation_id": operation_id,
+                            "generation": operation["generation"],
+                            "result_digest": operation["result_digest"],
+                            "pages": operation["pages"],
+                            "discovered_count": operation["discovered_count"],
+                        },
+                    }
+                    return
+                if status == "failed":
+                    yield {
+                        "event": "failed",
+                        "data": {
+                            "operation_id": operation_id,
+                            "error_code": operation["error_code"],
+                            "error_message": operation["error_message"],
+                        },
+                    }
+                    return
+                if status == "cancelled":
+                    yield {
+                        "event": "cancelled",
+                        "data": {"operation_id": operation_id},
+                    }
+                    return
+                if time.monotonic() >= deadline:
+                    yield {
+                        "event": "failed",
+                        "data": {
+                            "operation_id": operation_id,
+                            "error_code": "timeout",
+                            "error_message": "模型同步事件流超时",
+                        },
+                    }
+                    return
+                time.sleep(interval)
+        finally:
+            db.close()
 
     def close(self) -> None:
         with self._lock:
