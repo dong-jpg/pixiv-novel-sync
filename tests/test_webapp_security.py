@@ -253,6 +253,46 @@ def test_oauth_exchange_response_redacts_tokens(tmp_path, monkeypatch):
     assert "access_token" not in payload
 
 
+def test_save_token_rejects_injection_and_bad_user_id(tmp_path, monkeypatch):
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    monkeypatch.delenv("PIXIV_REFRESH_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_USER_ID", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=old-token-value\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path), start_scheduler=False)
+    client = app.test_client()
+
+    injected = client.post(
+        "/api/save-token",
+        json={"refresh_token": "abcdefghij\nEVIL=1", "user_id": 1},
+    )
+    assert injected.status_code == 400
+    assert "EVIL=" not in env_path.read_text(encoding="utf-8")
+
+    short = client.post("/api/save-token", json={"refresh_token": "short"})
+    assert short.status_code == 400
+
+    bad_user = client.post(
+        "/api/save-token",
+        json={"refresh_token": "abcdefghijklmnop", "user_id": "nope"},
+    )
+    assert bad_user.status_code == 400
+    rejected = env_path.read_text(encoding="utf-8")
+    assert "PIXIV_REFRESH_TOKEN=old-token-value\n" in rejected
+    assert "PIXIV_USER_ID=" not in rejected
+    assert "EVIL=" not in rejected
+
+    ok = client.post(
+        "/api/save-token",
+        json={"refresh_token": "abcdefghijklmnop", "user_id": "42"},
+    )
+    assert ok.status_code == 200
+    saved = env_path.read_text(encoding="utf-8")
+    assert "PIXIV_REFRESH_TOKEN=abcdefghijklmnop\n" in saved
+    assert "PIXIV_USER_ID=42\n" in saved
+
+
 def test_token_login_template_never_consumes_plaintext_token():
     """登录页不得消费后端响应里的明文 refresh_token。
 

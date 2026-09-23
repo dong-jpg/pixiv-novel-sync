@@ -289,6 +289,23 @@ def test_web_cookie_delegates_final_bytes_to_shared_writer(tmp_path, monkeypatch
     ]
 
 
+def test_web_cookie_strips_newlines_before_env_write(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OTHER=value\nPIXIV_WEB_COOKIE=old\n", encoding="utf-8")
+    calls: list[tuple[Path, bytes, int]] = []
+    monkeypatch.setenv("ENV_PATH", str(env_path))
+    monkeypatch.setattr(sync_engine, "secure_atomic_write", _capture_writer(calls), raising=False)
+
+    sync_engine.BookmarkNovelSyncService._save_web_cookie_to_env(
+        object(), "session=abc\nEVIL=injected\r\n"
+    )
+
+    assert len(calls) == 1
+    text = calls[0][1].decode("utf-8")
+    assert text == "OTHER=value\nPIXIV_WEB_COOKIE=session=abcEVIL=injected\n"
+    assert "\nEVIL=" not in text
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Windows 无法可靠验证 POSIX 文件 mode")
 def test_oauth_save_keeps_existing_env_private(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"

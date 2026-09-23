@@ -1115,10 +1115,13 @@ def create_app(
         payload = request.get_json(silent=True) or {}
         refresh_token = str(payload.get("refresh_token") or "").strip()
         user_id_raw = payload.get("user_id")
-        try:
-            user_id = int(user_id_raw) if user_id_raw not in (None, "") else None
-        except (ValueError, TypeError):
-            return jsonify({"error": "invalid user_id"}), 400
+        if user_id_raw in (None, ""):
+            user_id = None
+        else:
+            # _safe_int 把非数字收成 0，和负数一样拒绝，避免 int() 抛出变成 500。
+            user_id = _safe_int(user_id_raw, 0)
+            if user_id <= 0:
+                return jsonify({"error": "invalid user_id"}), 400
         if not refresh_token:
             return jsonify({"error": "missing refresh_token"}), 400
         # refresh_token 只允许 Pixiv 颁发的字符集：带换行的值写进 .env 会拆行，

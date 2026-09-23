@@ -231,7 +231,7 @@
 - [x] **T2-27 配置空值语义**
   `settings.py:270-274 _parse_bool` 空串回 default；`PIXIV_TIMEOUT=` 空回落 YAML；`PIXIV_PROXY` 用 `is None` 判断。验收：`_parse_bool('', default=True) is True`。
 
-- [ ] **T2-28 `/api/save-token` 白名单**
+- [x] **T2-28 `/api/save-token` 白名单**
   `webapp.py:1022` `re.fullmatch(r"[A-Za-z0-9_\-]{10,}")` 否则 400；`user_id` 用 `_safe_int`；`sync_engine.py:1834 _save_web_cookie_to_env` 同样过滤换行。
 
 - [ ] **T2-29 `compare_digest` 非 ASCII**

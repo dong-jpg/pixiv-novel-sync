@@ -1570,6 +1570,11 @@ class BookmarkNovelSyncService:
 
     def _save_web_cookie_to_env(self, cookie_string: str) -> None:
         """将新的 Web Cookie 写入 .env 文件。"""
+        # 换行写进 .env 会把下一行变成新的 KEY=VALUE。先滤掉再落盘。
+        cookie_string = str(cookie_string or "").replace("\r", "").replace("\n", "").strip()
+        if not cookie_string:
+            logger.warning("Web Cookie 为空或只含换行，已跳过写入")
+            return
         # 查找 .env 文件路径
         env_path = Path(os.getenv("ENV_PATH", ".env"))
         if not env_path.exists():
