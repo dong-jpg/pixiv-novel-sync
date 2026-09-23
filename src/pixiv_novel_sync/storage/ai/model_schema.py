@@ -497,10 +497,10 @@ def _import_available_models(conn: sqlite3.Connection) -> None:
             elements = json.loads(row[1])
         except (TypeError, ValueError):
             _warn_skipped_model(provider_id, None)
-            continue
+            elements = []
         if not isinstance(elements, list):
             _warn_skipped_model(provider_id, None)
-            continue
+            elements = []
 
         for index, element in enumerate(elements):
             if isinstance(element, str):
@@ -526,6 +526,10 @@ def _import_available_models(conn: sqlite3.Connection) -> None:
                 """,
                 (provider_id, model_key),
             )
+        conn.execute(
+            "UPDATE ai_providers SET available_models_json = NULL WHERE id = ?",
+            (provider_id,),
+        )
 
 
 def assert_model_routing_foreign_keys(conn: sqlite3.Connection) -> None:

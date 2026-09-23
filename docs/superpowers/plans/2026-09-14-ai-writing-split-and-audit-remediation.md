@@ -261,7 +261,7 @@
 - [x] **T2-36 池校验只看受影响子图**
   `ai/model_pools.py:92-98 validate_pool_graph` 增加 `changed_pool_ids` 参数只校验本池 + 引用祖先，或错误信息带池名并把预存在坏池降 warning；`admin.py:721-728 update_provider(enabled=False)` 走一次 lint 提示。
 
-- [ ] **T2-37 `_import_available_models` 每次重跑**
+- [x] **T2-37 `_import_available_models` 每次重跑**
   `storage/ai/model_schema.py:484-527` 导入后把 `available_models_json` 置 NULL；`_normalize_provider_payload` 不再接受 `available_models`；`dashboard_settings_models.html:788-791 copyFromProvider` 显式挑字段。验收：删掉的人工模型重启后不复活。
 
 - [ ] **T2-38 Provider 无法删除**

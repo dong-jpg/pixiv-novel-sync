@@ -786,7 +786,19 @@
         }
       };
       const copyFromProvider = (provider) => {
-        Object.assign(providerForm, { ...provider, id: 0, api_key: '' });
+        Object.assign(providerForm, {
+          id: 0,
+          name: provider.name || '',
+          provider_type: provider.provider_type || 'openai_compatible',
+          base_url: provider.base_url || '',
+          default_model: provider.default_model || '',
+          api_key: '',
+          timeout_seconds: provider.timeout_seconds || 120,
+          max_retries: provider.max_retries || 2,
+          context_window: provider.context_window || 128000,
+          stream_enabled: provider.stream_enabled !== false,
+          enabled: provider.enabled !== false,
+        });
         baseUrlHint.value = '';
       };
       async function probeModels() {

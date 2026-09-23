@@ -1167,7 +1167,9 @@ class AIAdminMixin:
 
     def _normalize_provider_payload(self, payload: dict[str, Any], require_key: bool = False, partial: bool = False) -> dict[str, Any]:
         data: dict[str, Any] = {}
-        keys = ["name", "provider_type", "base_url", "default_model", "available_models", "timeout_seconds", "max_retries", "proxy", "context_window", "stream_enabled", "enabled"]
+        if "available_models" in payload:
+            raise AIServiceError("不再接受 available_models，模型请写入目录")
+        keys = ["name", "provider_type", "base_url", "default_model", "timeout_seconds", "max_retries", "proxy", "context_window", "stream_enabled", "enabled"]
         for key in keys:
             if key in payload:
                 data[key] = payload[key]
