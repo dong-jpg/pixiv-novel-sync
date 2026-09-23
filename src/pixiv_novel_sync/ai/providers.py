@@ -287,15 +287,19 @@ _SECRET_PATTERNS = [
 ]
 
 
-def _redact_secrets(text: str) -> str:
+def _redact_secrets(text: str, *, api_key: str | None = None) -> str:
     """Strip credential-looking substrings from upstream error text.
 
     Some gateways echo the request (including the ``Authorization`` header) in
     4xx bodies. Those bodies flow into ``ai_jobs.error_message`` and the SSE
     error event, so the decrypted key could leak; redact before surfacing.
+    先按本次请求的密钥字面值替换，再跑正则。xAI 的 ``xai-`` 和自建网关的密钥
+    没有固定前缀，正则盖不住。
     """
     if not text:
         return text
+    if api_key:
+        text = text.replace(str(api_key), "[REDACTED]")
     for pat in _SECRET_PATTERNS:
         text = pat.sub("[REDACTED]", text)
     return text
@@ -837,6 +841,7 @@ class OpenAICompatibleProvider(AIProvider):
                         error = _http_provider_error(
                             response,
                             model=str(payload.get("model") or ""),
+                            api_key=self.config.api_key,
                         )
                         if attempt < max_retries:
                             _check_cancelled(is_cancelled)
@@ -855,6 +860,7 @@ class OpenAICompatibleProvider(AIProvider):
                         raise _http_provider_error(
                             response,
                             model=str(payload.get("model") or ""),
+                            api_key=self.config.api_key,
                         )
                     emitted_delta = False
                     finish_reason: Any = None
@@ -946,6 +952,7 @@ class OpenAICompatibleProvider(AIProvider):
                 error = _request_provider_error(
                     exc,
                     provider_label="OpenAI-compatible API",
+                    api_key=self.config.api_key,
                 )
                 if produced_output:
                     # The stream already delivered partial text to the caller; retrying
@@ -993,6 +1000,7 @@ class OpenAICompatibleProvider(AIProvider):
                         error = _http_provider_error(
                             response,
                             model=str(payload.get("model") or ""),
+                            api_key=self.config.api_key,
                         )
                         if attempt < max_retries:
                             _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
@@ -1002,6 +1010,7 @@ class OpenAICompatibleProvider(AIProvider):
                         raise _http_provider_error(
                             response,
                             model=str(payload.get("model") or ""),
+                            api_key=self.config.api_key,
                         )
                     try:
                         data = response.json()
@@ -1043,6 +1052,7 @@ class OpenAICompatibleProvider(AIProvider):
                 raise _request_provider_error(
                     exc,
                     provider_label="OpenAI-compatible API",
+                    api_key=self.config.api_key,
                 ) from exc
 
 
@@ -1149,7 +1159,7 @@ class AnthropicProvider(AIProvider):
                     proxies=self._proxies(),
                 ) as response:
                     if response.status_code in (500, 502, 503, 504, 408, 429):
-                        error = _http_provider_error(response, model=model)
+                        error = _http_provider_error(response, model=model, api_key=self.config.api_key)
                         if attempt < max_retries:
                             _check_cancelled(is_cancelled)
                             yield _progress(
@@ -1164,7 +1174,7 @@ class AnthropicProvider(AIProvider):
                             continue
                         raise error
                     if response.status_code >= 400:
-                        raise _http_provider_error(response, model=model)
+                        raise _http_provider_error(response, model=model, api_key=self.config.api_key)
                     emitted_delta = False
                     stop_reason: Any = None
                     for raw_line in _iter_sse_lines(response):
@@ -1228,7 +1238,11 @@ class AnthropicProvider(AIProvider):
                             return
                         elif event_type == "error":
                             error = event.get("error") or {}
-                            raise _event_provider_error(error, provider_label="Anthropic API")
+                            raise _event_provider_error(
+                                error,
+                                provider_label="Anthropic API",
+                                api_key=self.config.api_key,
+                            )
                     if not emitted_delta:
                         _check_cancelled(is_cancelled)
                         yield _progress(
@@ -1258,6 +1272,7 @@ class AnthropicProvider(AIProvider):
                 error = _request_provider_error(
                     exc,
                     provider_label="Anthropic API",
+                    api_key=self.config.api_key,
                 )
                 if produced_output:
                     # Partial text already streamed to the caller; retrying would duplicate it.
@@ -1303,6 +1318,7 @@ class AnthropicProvider(AIProvider):
                         error = _http_provider_error(
                             response,
                             model=str(payload.get("model") or ""),
+                            api_key=self.config.api_key,
                         )
                         if attempt < max_retries:
                             _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
@@ -1312,6 +1328,7 @@ class AnthropicProvider(AIProvider):
                         raise _http_provider_error(
                             response,
                             model=str(payload.get("model") or ""),
+                            api_key=self.config.api_key,
                         )
                     try:
                         data = response.json()
@@ -1350,6 +1367,7 @@ class AnthropicProvider(AIProvider):
                 raise _request_provider_error(
                     exc,
                     provider_label="Anthropic API",
+                    api_key=self.config.api_key,
                 ) from exc
 
 
@@ -1368,7 +1386,11 @@ def create_provider(config: AIProviderConfig) -> AIProvider:
     )
 
 
-def _response_error_details(response: requests.Response) -> tuple[str, str]:
+def _response_error_details(
+    response: requests.Response,
+    *,
+    api_key: str | None = None,
+) -> tuple[str, str]:
     # 强制按 UTF-8 解码（很多上游网关 Content-Type 不带 charset，requests 会按 latin-1 解析导致中文乱码）
     if not response.encoding or response.encoding.lower() in ("iso-8859-1", "latin-1"):
         response.encoding = "utf-8"
@@ -1399,8 +1421,8 @@ def _response_error_details(response: requests.Response) -> tuple[str, str]:
             display_message = ""
         if display_message:
             detail_parts.append(display_message)
-    safe_message = _redact_secrets(display_message)[:500]
-    safe_details = _redact_secrets(" ".join(detail_parts))[:2000].lower()
+    safe_message = _redact_secrets(display_message, api_key=api_key)[:500]
+    safe_details = _redact_secrets(" ".join(detail_parts), api_key=api_key)[:2000].lower()
     return safe_message, safe_details
 
 
@@ -1514,8 +1536,9 @@ def _http_provider_error(
     response: requests.Response,
     *,
     model: str = "",
+    api_key: str | None = None,
 ) -> AIProviderError:
-    message, details = _response_error_details(response)
+    message, details = _response_error_details(response, api_key=api_key)
     category, scope = _classify_provider_failure(
         int(response.status_code),
         details,
@@ -1534,8 +1557,9 @@ def _request_provider_error(
     error: requests.RequestException,
     *,
     provider_label: str,
+    api_key: str | None = None,
 ) -> AIProviderError:
-    message = _redact_secrets(str(error))[:500]
+    message = _redact_secrets(str(error), api_key=api_key)[:500]
     normalized = message.lower()
     if isinstance(error, requests.Timeout) and "model" in normalized:
         category = "timeout"
@@ -1553,7 +1577,12 @@ def _request_provider_error(
     )
 
 
-def _event_provider_error(error: Any, *, provider_label: str) -> AIProviderError:
+def _event_provider_error(
+    error: Any,
+    *,
+    provider_label: str,
+    api_key: str | None = None,
+) -> AIProviderError:
     if isinstance(error, Mapping):
         parts = [
             value
@@ -1562,7 +1591,7 @@ def _event_provider_error(error: Any, *, provider_label: str) -> AIProviderError
         ]
     else:
         parts = [str(error)] if error else []
-    details = _redact_secrets(" ".join(parts))[:2000]
+    details = _redact_secrets(" ".join(parts), api_key=api_key)[:2000]
     category, scope = _classify_provider_failure(0, details)
     return AIProviderError(
         f"{provider_label} 返回错误：{details or '未知错误'}",

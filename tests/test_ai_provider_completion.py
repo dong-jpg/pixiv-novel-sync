@@ -412,6 +412,24 @@ def test_retry_after_is_parsed_and_upstream_secret_is_redacted(
     assert "sk-upstream-secret" not in str(error)
 
 
+def test_provider_error_redacts_literal_api_key_before_regex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = make_config("openai_compatible", stream_enabled=False)
+    config.api_key = "xai-gateway-token-42"
+    provider = OpenAICompatibleProvider(config)
+    response = FakeResponse(
+        400,
+        payload={"error": {"message": "rejected xai-gateway-token-42"}},
+    )
+    attach_responses(monkeypatch, provider, [response])
+
+    error = collect_error(provider)
+
+    assert "xai-gateway-token-42" not in str(error)
+    assert "[REDACTED]" in str(error)
+
+
 def test_account_quota_is_provider_scoped_not_model_scoped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

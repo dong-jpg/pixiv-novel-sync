@@ -282,7 +282,7 @@
 - [x] **T2-43 PromptBudget 估算器**
   `model_router.py:747-751,957-965` 退化估算改用 `chunking.estimate_token_count`（需把 `chunking.py` 的这个函数留在 main 或搬到 `model_router`），`estimator="heuristic"`；GUIDE §4.1 同步。
 
-- [ ] **T2-44 密钥字面值脱敏**
+- [x] **T2-44 密钥字面值脱敏**
   `providers.py:1509 _http_provider_error` / `_request_provider_error` / `_event_provider_error` 先 `replace(api_key, "[REDACTED]")` 再正则（同 `model_sync.py:195-200`）。
 
 - [ ] **T2-45 杂项 AI**
