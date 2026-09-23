@@ -258,7 +258,7 @@
 
 ### 2.4 AI 基础设施
 
-- [ ] **T2-36 池校验只看受影响子图**
+- [x] **T2-36 池校验只看受影响子图**
   `ai/model_pools.py:92-98 validate_pool_graph` 增加 `changed_pool_ids` 参数只校验本池 + 引用祖先，或错误信息带池名并把预存在坏池降 warning；`admin.py:721-728 update_provider(enabled=False)` 走一次 lint 提示。
 
 - [ ] **T2-37 `_import_available_models` 每次重跑**

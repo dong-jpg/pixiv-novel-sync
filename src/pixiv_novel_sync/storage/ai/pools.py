@@ -64,7 +64,7 @@ class PoolsMixin:
         pools = [
             dict(row)
             for row in conn.execute(
-                "SELECT id, fallback_pool_id, enabled FROM ai_model_pools ORDER BY id"
+                "SELECT id, name, fallback_pool_id, enabled FROM ai_model_pools ORDER BY id"
             ).fetchall()
         ]
         members: dict[int, list[dict[str, Any]]] = {
@@ -193,7 +193,7 @@ class PoolsMixin:
             )
             pool_id = int(cursor.lastrowid)
             pools, graph_members = self._pool_graph_state(conn)
-            validate_pool_graph(pools, graph_members)
+            validate_pool_graph(pools, graph_members, changed_pool_ids=[pool_id])
             return pool_id
 
     def update_ai_model_pool(
@@ -240,7 +240,7 @@ class PoolsMixin:
                 [*params, pool_id],
             )
             pools, graph_members = self._pool_graph_state(conn)
-            validate_pool_graph(pools, graph_members)
+            validate_pool_graph(pools, graph_members, changed_pool_ids=[pool_id])
             next_version = current_version + 1
             conn.execute(
                 """
@@ -305,7 +305,7 @@ class PoolsMixin:
                 )
 
             pools, graph_members = self._pool_graph_state(conn)
-            validate_pool_graph(pools, graph_members)
+            validate_pool_graph(pools, graph_members, changed_pool_ids=[pool_id])
             next_version = current_version + 1
             conn.execute(
                 """

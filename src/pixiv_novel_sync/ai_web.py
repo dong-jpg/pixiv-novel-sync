@@ -235,8 +235,8 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     @app.put("/api/dashboard/ai/providers/<int:provider_id>")
     def update_ai_provider(provider_id: int):
         try:
-            service.update_provider(provider_id, json_payload())
-            return ok()
+            warnings = service.update_provider(provider_id, json_payload())
+            return ok({"warnings": warnings})
         except Exception as exc:
             return fail(exc)
 

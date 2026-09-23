@@ -115,6 +115,67 @@ def test_lint_flags_missing_key_and_empty_catalog() -> None:
     assert codes["no_routable_model"] == "warn"
 
 
+def _seed_provider(tmp_path: Path, name: str) -> tuple[AIWritingService, int]:
+    database = Database(tmp_path / f"{name}.db")
+    database.init_schema()
+    provider_id = database.create_ai_provider(
+        {
+            "name": name,
+            "provider_type": "openai_compatible",
+            "base_url": "https://api.example.com/v1",
+            "api_key_encrypted": "cipher",
+            "enabled": True,
+        }
+    )
+    database.close()
+    return AIWritingService(tmp_path / f"{name}.db"), provider_id
+
+
+def test_disabling_bound_provider_returns_lint(tmp_path: Path) -> None:
+    """停用仍被固定 Agent 引用的 Provider 时，保存接口要带回体检提示。"""
+    service, provider_id = _seed_provider(tmp_path, "bound")
+    try:
+        db = service._db()
+        try:
+            db.create_ai_agent(
+                {
+                    "name": "清洗",
+                    "task_type": "keyword_clean",
+                    "binding_type": "fixed",
+                    "provider_id": provider_id,
+                    "model": "m",
+                    "system_prompt": "prompt",
+                }
+            )
+        finally:
+            db.close()
+
+        warnings = service.update_provider(provider_id, {"enabled": False})
+        assert any(item["code"] == "disabled_but_bound" for item in warnings)
+
+        quiet = service.update_provider(provider_id, {"name": "只改名字"})
+        assert quiet == []
+    finally:
+        service.close()
+
+
+def test_disabling_unused_provider_stays_quiet(tmp_path: Path) -> None:
+    service, provider_id = _seed_provider(tmp_path, "quiet")
+    try:
+        assert service.update_provider(provider_id, {"enabled": False}) == []
+    finally:
+        service.close()
+
+
+def test_models_page_surfaces_provider_save_warnings() -> None:
+    text = Path(
+        "src/pixiv_novel_sync/templates/dashboard_settings_models.html"
+    ).read_text(encoding="utf-8")
+    save_at = text.index("const saveProvider")
+    snippet = text[save_at : save_at + 900]
+    assert "warnings" in snippet
+
+
 def test_lint_flags_disabled_provider_only_when_agents_bound() -> None:
     disabled = {"base_url": "https://api.example.com/v1", "has_api_key": True, "enabled": False}
 

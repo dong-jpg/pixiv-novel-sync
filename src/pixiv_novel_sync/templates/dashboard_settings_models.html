@@ -837,8 +837,14 @@
           const payload = { ...providerForm };
           const id = payload.id;
           delete payload.id;
-          await aiApi(id ? '/api/dashboard/ai/providers/' + id : '/api/dashboard/ai/providers', { method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-          await loadProviders(); resetProviderForm(); showAiMessage('Provider 已保存');
+          const saved = await aiApi(id ? '/api/dashboard/ai/providers/' + id : '/api/dashboard/ai/providers', { method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+          await loadProviders(); resetProviderForm();
+          const warnings = (saved && saved.warnings) || [];
+          if (warnings.length) {
+            showAiMessage(warnings.map((item) => item.message).join('；'), 'warning');
+          } else {
+            showAiMessage('Provider 已保存');
+          }
         } catch (e) { showAiMessage(e.message, 'error'); }
       };
       const deleteProvider = async (id) => {

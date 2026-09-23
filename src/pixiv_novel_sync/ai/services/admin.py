@@ -612,14 +612,48 @@ class AIAdminMixin:
         finally:
             db.close()
 
-    def update_provider(self, provider_id: int, payload: dict[str, Any]) -> None:
+    def update_provider(self, provider_id: int, payload: dict[str, Any]) -> list[dict[str, str]]:
         data = self._normalize_provider_payload(payload, require_key=False, partial=True)
         db = self._db()
         try:
             db.update_ai_provider(provider_id, data)
             self._invalidate_provider(provider_id)
+            if "enabled" in data and not data["enabled"]:
+                return self._lint_provider(db, provider_id)
+            return []
         finally:
             db.close()
+
+    def _lint_provider(self, db: Database, provider_id: int) -> list[dict[str, str]]:
+        """停用之后立刻用和健康横幅同一套规则给一次提示。不拦保存。"""
+        row = db.get_ai_provider(provider_id)
+        if row is None:
+            return []
+        bound = db.conn.execute(
+            """
+            SELECT COUNT(*) FROM ai_agents
+            WHERE binding_type = 'fixed' AND provider_id = ?
+            """,
+            (provider_id,),
+        ).fetchone()[0]
+        catalog = db.list_ai_provider_models(provider_id)
+        pool_hit = db.conn.execute(
+            """
+            SELECT 1
+            FROM ai_model_pool_members AS pm
+            JOIN ai_provider_models AS m ON m.id = pm.provider_model_id
+            JOIN ai_model_pools AS p ON p.id = pm.pool_id
+            WHERE m.provider_id = ? AND pm.enabled = 1 AND p.enabled = 1
+            LIMIT 1
+            """,
+            (provider_id,),
+        ).fetchone()
+        return self.provider_config_lint(
+            row,
+            bound_agent_count=int(bound),
+            routable_models=int(catalog.get("routable") or 0),
+            pool_referenced=pool_hit is not None,
+        )
 
     def delete_provider(self, provider_id: int) -> None:
         db = self._db()
