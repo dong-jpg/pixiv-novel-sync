@@ -225,7 +225,7 @@
 
 ### 2.3 Web / 设置 / 部署
 
-- [ ] **T2-26 本机模式 CSRF + Host**
+- [x] **T2-26 本机模式 CSRF + Host**
   `webapp.py:776-794` CSRF 检查提到 `if not token` 分支之外；Host 白名单 `localhost / 127.0.0.1 / [::1]`。更新直接 POST 无头的测试。验收：无 token 下不带 `X-CSRF-Token` 的 POST 403，`csrfFetch` 正常。
 
 - [ ] **T2-27 配置空值语义**
@@ -292,7 +292,7 @@
 - [ ] **T2-46 默认列表排除 dismissed / muted + 徽标**
   `storage/recommendations.py:411-461` 不传 `status` 时 `WHERE status NOT IN ('dismissed','muted')`；`muteAuthor` 后端批量置同作者 `new` 为 `muted`；两个模板显示状态并灰化。
 
-- [ ] **T2-47 分析任务合并而非覆盖**
+- [x] **T2-47 分析任务合并而非覆盖**
   `jobs/tasks.py:373-387`：existing 存在时 `name / description` 只在 params 显式给出时覆盖；`negative_preferences` 从 existing 合并；AI 失败或 `processed_this_run == 0` 时沿用 `existing.stats.refined_keywords` 且跳过 AI 调用。中期：`overrides_json` 列。验收：用例「AI 抛异常 + 0 篇新小说 → 画像名称与精炼词不变」。
 
 - [ ] **T2-48 搜索计划**
