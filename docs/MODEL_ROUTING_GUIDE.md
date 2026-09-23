@@ -128,7 +128,8 @@ Agent 可声明 `required_capabilities`（只能来自 1.1 的五个固定枚举
 
 - Prompt 超过该候选的上下文窗口（`context_overflow`）；
 - Provider 返回错误、空响应（`empty_response`）、流缺少正常结束标记（`incomplete_response`）、finish_reason 异常（如 `length`、`content_filter`）——前提是**主阶段还没有输出任何内容**；
-- 错误范围（scope）是 `provider` 级（如鉴权失败、Provider 配置错误）时，转移的同时会**短路屏蔽该 Provider**：后续所有同 Provider 的候选直接跳过（skipped, `provider_short_circuit`），不再浪费尝试。
+- 错误范围（scope）是 `provider` 级（如鉴权失败、Provider 配置错误、5xx、网络错误，以及没有点名模型的 429）时，转移的同时会**短路屏蔽该 Provider**：后续所有同 Provider 的候选直接跳过（skipped, `provider_short_circuit`），不再浪费尝试。
+- 429 的响应里带了模型名或 “model” 标记时，scope 是 `model`：只放弃这一个模型，同一个 Provider 的其它模型继续试。
 
 **不会转移、直接终结任务：**
 

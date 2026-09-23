@@ -273,7 +273,7 @@
 - [x] **T2-40 普通 AI job 取消 + deadline**
   `ai_jobs` 加 `cancel_requested` 列；新增 `POST /api/dashboard/ai/jobs/<id>/cancel`；heartbeat 线程读取后 set `threading.Event`，`RouteRequest.is_cancelled` 检查它；`model_router.py:886-889 _request_cancelled` 同时检查 `route_deadline_at`；调度器循环每小时调 `fail_stale_ai_jobs()`。日志页加取消按钮。
 
-- [ ] **T2-41 429 按模型判 scope**（用户已确认非有意）
+- [x] **T2-41 429 按模型判 scope**（用户已确认非有意）
   `ai/providers.py:1451-1454` 429 带模型标记时 `scope="model"`；5xx / 网络错误保持 provider 级但 GUIDE §4.3 写清楚。
 
 - [ ] **T2-42 健康投影三处假绿**

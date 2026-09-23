@@ -1457,6 +1457,9 @@ def _classify_provider_failure(
     if status_code == 429 or any(
         marker in normalized for marker in ("rate_limit", "rate limit", "too many requests")
     ):
+        # 点名了具体模型的 429 只淘汰这个模型。账号级限流没有模型标记，仍短路整个 Provider。
+        if status_code == 429 and model_tagged:
+            return "rate_limited", "model"
         return "rate_limited", "provider"
     if any(
         marker in normalized

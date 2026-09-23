@@ -367,6 +367,7 @@ def test_empty_normal_non_stream_response_is_model_failure(
     [
         (401, {"error": {"message": "invalid API key"}}, "provider", "authentication"),
         (429, {"error": {"message": "rate limit"}}, "provider", "rate_limited"),
+        (429, {"error": {"message": "rate limit for model model-a"}}, "model", "rate_limited"),
         (404, {"error": {"message": "model model-a not found"}}, "model", "model_not_found"),
         (400, {"error": {"message": "maximum context length exceeded"}}, "model", "context_overflow"),
         (408, {"error": {"type": "model_timeout", "message": "model timed out"}}, "model", "timeout"),
