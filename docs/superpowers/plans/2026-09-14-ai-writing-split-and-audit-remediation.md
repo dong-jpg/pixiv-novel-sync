@@ -228,7 +228,7 @@
 - [x] **T2-26 本机模式 CSRF + Host**
   `webapp.py:776-794` CSRF 检查提到 `if not token` 分支之外；Host 白名单 `localhost / 127.0.0.1 / [::1]`。更新直接 POST 无头的测试。验收：无 token 下不带 `X-CSRF-Token` 的 POST 403，`csrfFetch` 正常。
 
-- [ ] **T2-27 配置空值语义**
+- [x] **T2-27 配置空值语义**
   `settings.py:270-274 _parse_bool` 空串回 default；`PIXIV_TIMEOUT=` 空回落 YAML；`PIXIV_PROXY` 用 `is None` 判断。验收：`_parse_bool('', default=True) is True`。
 
 - [ ] **T2-28 `/api/save-token` 白名单**

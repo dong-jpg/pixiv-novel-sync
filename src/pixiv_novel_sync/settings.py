@@ -155,10 +155,14 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
 
     refresh_token = os.getenv("PIXIV_REFRESH_TOKEN", "").strip()
     access_token = os.getenv("PIXIV_ACCESS_TOKEN", "").strip() or None
-    # 空串按「未设置」处理，回落 YAML：`.env` 里 `PIXIV_PROXY=` / `PIXIV_TIMEOUT=` 的
-    # 留空写法语义是不覆盖，而不是把代理清成空 / 把 timeout 打成 ValueError。
+    # 代理用 is None 区分「没写这个变量」和「写了空串」。
+    # 没写才回落 YAML；`PIXIV_PROXY=` 是显式清掉代理，不能再被 `or` 吃回 YAML。
     _proxy_env = os.getenv("PIXIV_PROXY")
-    proxy = (_proxy_env.strip() if _proxy_env is not None and _proxy_env.strip() else None) or pixiv_raw.get("proxy")
+    if _proxy_env is None:
+        proxy = pixiv_raw.get("proxy") or None
+    else:
+        proxy = _proxy_env.strip() or None
+    # 超时空串按「未设置」回落 YAML，避免 `int("")` 打成固定 30 而忽略配置。
     _timeout_env = os.getenv("PIXIV_TIMEOUT")
     _timeout_raw = _timeout_env if _timeout_env is not None and _timeout_env.strip() else pixiv_raw.get("timeout", 30)
     try:
