@@ -1509,11 +1509,18 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         return jsonify(_settings_to_dict(current_settings))
 
+    def _save_settings(payload: dict[str, Any], section: str | None = None) -> dict[str, Any]:
+        before = settings_manager.load(env_path=env_path)
+        saved = settings_manager.save_sync_settings(payload, section=section)
+        after = settings_manager.load(env_path=env_path)
+        auto_sync_scheduler.refresh_changed_schedules(before, after)
+        return saved
+
     @app.post("/api/dashboard/settings")
     def dashboard_settings_save():
         payload = request.get_json(silent=True) or {}
         try:
-            saved = settings_manager.save_sync_settings(payload)
+            saved = _save_settings(payload)
         except Exception as exc:
             return _api_error("保存设置失败", detail=str(exc))
         return jsonify({"ok": True, "message": "设置已保存", "sync": saved})
@@ -1527,7 +1534,7 @@ def create_app(
         """
         payload = request.get_json(silent=True) or {}
         try:
-            saved = settings_manager.save_sync_settings(payload, section=section)
+            saved = _save_settings(payload, section=section)
         except Exception as exc:
             return _api_error("保存设置失败", detail=str(exc))
         return jsonify({"ok": True, "message": "设置已保存", "sync": saved})
@@ -2265,28 +2272,6 @@ def create_app(
             return jsonify({"error": str(exc)}), 500
         finally:
             db.close()
-
-    # ------------------------------------------------------------------
-    # 配置热重载 API
-    # ------------------------------------------------------------------
-    @app.post("/api/dashboard/settings/reload")
-    def dashboard_settings_reload():
-        """重新加载配置文件并返回新配置"""
-        try:
-            new_settings = settings_manager.load(env_path=env_path)
-            new_config = _settings_to_dict(new_settings)
-
-            # 如果定时调度器正在运行，更新其配置缓存
-            if auto_sync_scheduler.is_running():
-                logger.info("Reloading auto sync scheduler config after settings reload")
-                # 清除调度器的下次运行时间缓存，让它在下一轮循环中重新计算
-                with auto_sync_scheduler._lock:
-                    auto_sync_scheduler._task_next_run.clear()
-
-            return jsonify({"ok": True, "message": "配置已重新加载", "settings": new_config})
-        except Exception as exc:
-            logger.error("Settings reload failed: %s", exc)
-            return jsonify({"error": f"配置重载失败：{exc}"}), 500
 
     return app
 

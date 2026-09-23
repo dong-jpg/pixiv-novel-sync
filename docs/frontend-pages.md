@@ -236,7 +236,6 @@ APIs:
 - `GET /api/dashboard/settings`
 - `PUT /api/dashboard/settings/<section>`（`section` 为 `sync` 或 `system`）
 - `POST /api/dashboard/settings`（全量端点，保留兼容）
-- `POST /api/dashboard/settings/reload`
 - `POST /api/dashboard/settings/cron-preview`
 - `GET /api/dashboard/auto-sync/status`（优先级、可让位、下次运行时间）
 - `GET /api/dashboard/auto-sync/budget?days=3`（上一轮耗时、每日预算、占空比）

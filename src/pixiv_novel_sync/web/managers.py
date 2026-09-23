@@ -566,6 +566,38 @@ class AutoSyncScheduler:
                 return float(resolved)
         return base_time + interval_seconds
 
+    def refresh_changed_schedules(self, before: Settings, after: Settings) -> list[str]:
+        """保存设置后，只重算 cron、空 cron 的间隔或时区变了的任务。
+
+        不能像 /settings/reload 那样清空全部 next_run：没改的任务会从现在再顺延一整段间隔。
+        """
+        changed: list[str] = []
+        tz_name = str(getattr(after.sync, "auto_sync_timezone", "UTC") or "UTC")
+        previous_tz = str(getattr(before.sync, "auto_sync_timezone", "UTC") or "UTC")
+        timezone_changed = tz_name != previous_tz
+        now = time.time()
+        with self._lock:
+            for config in SCHEDULER_TASK_CONFIGS:
+                name = config["name"]
+                cron = str(getattr(after.sync, config["cron_setting"], "") or "").strip()
+                interval_hours = int(getattr(after.sync, config["interval_setting"], 6) or 6)
+                previous_cron = str(getattr(before.sync, config["cron_setting"], "") or "").strip()
+                previous_interval = int(getattr(before.sync, config["interval_setting"], 6) or 6)
+                cron_changed = cron != previous_cron
+                interval_changed = interval_hours != previous_interval
+                affects_schedule = cron_changed or (interval_changed and not cron) or (timezone_changed and bool(cron))
+                if not affects_schedule:
+                    continue
+                if name not in self._task_next_run and not cron_changed and not interval_changed:
+                    continue
+                self._task_crons[name] = cron
+                self._task_intervals[name] = interval_hours
+                self._task_next_run[name] = self._compute_next_run(
+                    cron, now, tz_name, float(interval_hours * 3600)
+                )
+                changed.append(name)
+        return changed
+
     def _collect_due_tasks(self, settings: Settings) -> list[str]:
         """返回所有已到点的任务名，按 (优先级, 逾期最久) 排序。
 

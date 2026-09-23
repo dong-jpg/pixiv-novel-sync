@@ -525,9 +525,7 @@ Body 是该分区的部分设置对象；夹带别区字段会被忽略而不是
 
 未知 `section` 返回 `400`。变更类请求需带 `X-CSRF-Token`。
 
-### POST /api/dashboard/settings/reload
-
-Reloads settings from backend config source.
+保存成功后，调度器只重算 cron、间隔或时区发生变化的任务的下次运行时间，其余任务保持原时刻。
 
 ### POST /api/dashboard/settings/cron-preview
 
