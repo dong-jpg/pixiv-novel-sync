@@ -33,6 +33,30 @@ MAX_POOL_NODES = 8
 MAX_CANDIDATE_ATTEMPTS = 16
 MAX_NETWORK_REQUESTS = 32
 _SAFETY_MARGIN = 256
+
+
+def estimate_token_count(text: str) -> int:
+    """没有 Provider 估算器时的退化口径。
+
+    中日韩字符按大约 1.5 字一个 token，其余按大约 4 个字符一个 token。
+    按 UTF-8 字节数会把中文高估大约 4.5 倍。
+    """
+
+    if not text:
+        return 0
+    cjk = 0
+    other = 0
+    for char in text:
+        if (
+            "\u4e00" <= char <= "\u9fff"
+            or "\u3400" <= char <= "\u4dbf"
+            or "\u3040" <= char <= "\u30ff"
+            or "\uac00" <= char <= "\ud7af"
+        ):
+            cjk += 1
+        elif not char.isspace():
+            other += 1
+    return (cjk * 2 + 2) // 3 + (other + 3) // 4
 _HEARTBEAT_INTERVAL_SECONDS = 15.0
 _LEASE_SECONDS = 45
 _ATTEMPT_FINISH_REASONS = {
@@ -126,7 +150,7 @@ class PromptBudget:
     output_reserve: int
     message_overhead: int
     safety_margin: int
-    estimator: Literal["provider", "utf8_bytes"]
+    estimator: Literal["provider", "heuristic", "utf8_bytes"]
 
 
 class ModelRouter:
@@ -742,12 +766,12 @@ class ModelRouter:
             and estimate > 0
             for estimate in estimates
         ):
-            estimator: Literal["provider", "utf8_bytes"] = "provider"
+            estimator: Literal["provider", "heuristic", "utf8_bytes"] = "provider"
             estimated_input = max(int(estimate) for estimate in estimates)
         else:
-            estimator = "utf8_bytes"
+            estimator = "heuristic"
             estimated_input = sum(
-                len(str(message.get("content", "")).encode("utf-8"))
+                estimate_token_count(str(message.get("content", "")))
                 for message in messages
             )
         if estimated_input > input_budget:
@@ -962,12 +986,12 @@ class ModelRouter:
         if candidate.context_window is None:
             return True
         overhead = 4 * len(request.messages) + 2
-        content_bytes = sum(
-            len(str(message.get("content", "")).encode("utf-8"))
+        content_tokens = sum(
+            estimate_token_count(str(message.get("content", "")))
             for message in request.messages
         )
         return (
-            content_bytes + overhead + request.max_tokens + _SAFETY_MARGIN
+            content_tokens + overhead + request.max_tokens + _SAFETY_MARGIN
             <= candidate.context_window
         )
 

@@ -279,7 +279,7 @@
 - [x] **T2-42 健康投影三处假绿**
   `admin.py:487-489` 增加 `api_key_undecryptable`（try `decrypt`）；`:686-693` fixed Agent 复用 `_resolve_fixed` 三条判据；`:660-684` pool Agent 过 `required_capabilities`。
 
-- [ ] **T2-43 PromptBudget 估算器**
+- [x] **T2-43 PromptBudget 估算器**
   `model_router.py:747-751,957-965` 退化估算改用 `chunking.estimate_token_count`（需把 `chunking.py` 的这个函数留在 main 或搬到 `model_router`），`estimator="heuristic"`；GUIDE §4.1 同步。
 
 - [ ] **T2-44 密钥字面值脱敏**

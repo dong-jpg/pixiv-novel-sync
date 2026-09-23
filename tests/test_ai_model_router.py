@@ -564,6 +564,15 @@ def test_saved_snapshot_rejects_pool_or_agent_version_change(
         router.resolve_candidates(pool_agent, snapshot=fresh_snapshot)
 
 
+def test_heuristic_estimate_counts_chinese_tighter_than_utf8_bytes() -> None:
+    from pixiv_novel_sync.ai.model_router import estimate_token_count
+
+    text = "中" * 1500
+    assert estimate_token_count(text) == 1000
+    assert estimate_token_count(text) < len(text.encode("utf-8"))
+    assert estimate_token_count("") == 0
+
+
 def test_prompt_budget_uses_smallest_candidate_window(
     router: ModelRouter,
     pool_agent: AIAgentConfig,
@@ -581,7 +590,7 @@ def test_prompt_budget_uses_smallest_candidate_window(
     assert budget.safety_margin == 256
     assert budget.message_overhead == 6
     assert budget.input_budget == 8_000 - 1_000 - 6 - 256
-    assert budget.estimator == "utf8_bytes"
+    assert budget.estimator == "heuristic"
     assert provider_state["calls"] == list(pool_setup_provider_ids(snapshot))
 
 
@@ -613,7 +622,7 @@ def test_prompt_budget_uses_provider_estimator_only_when_all_are_positive(
         MESSAGES,
         max_tokens=1_000,
     )
-    assert fallback.estimator == "utf8_bytes"
+    assert fallback.estimator == "heuristic"
 
 
 @pytest.mark.parametrize("max_tokens", [0, 1_000_001, True])
