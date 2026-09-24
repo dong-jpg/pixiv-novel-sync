@@ -336,7 +336,7 @@
 - [x] **T2-59 `app-modal` 无障碍**
   `vue_components.html:186-200` 加 `role="dialog" aria-modal="true" :aria-labelledby`、`@keydown.esc`、焦点进出、关闭按钮 `aria-label`。16 个 `<img>` 补 `alt`；AI 设置三页 14 个输入补 label。
 
-- [ ] **T2-60 Provider 探测复选框**
+- [x] **T2-60 Provider 探测复选框**
   `dashboard_settings_models.html:807-843` 保存后把勾选项写为人工模型或触发同步；或改只读预览。
 
 - [ ] **T2-61 杂项前端**

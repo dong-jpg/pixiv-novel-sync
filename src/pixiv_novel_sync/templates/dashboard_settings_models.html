@@ -47,11 +47,12 @@
       <p v-if="probeStatus" class="text-xs" :class="probeRetryWithV1 ? 'text-amber-700' : 'text-gray-700'">{{ probeStatus }}</p>
       <button v-if="probeRetryWithV1" @click="applyV1Suggestion" class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-800">试试 {{ probeRetryWithV1 }}/v1</button>
       <div v-if="probedModels.length" class="space-y-1 max-h-48 overflow-y-auto border border-gray-100 rounded p-2">
-        <label v-for="model in probedModels" :key="model.model_key" class="flex items-center gap-2 text-xs">
-          <input type="checkbox" :checked="model.checked" @change="toggleProbedModel(model)">
+        <div v-for="model in probedModels" :key="model.model_key" class="flex items-center gap-2 text-xs">
+          <span class="px-1.5 py-0.5 rounded" :class="model.suggested ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'">{{ model.suggested ? '建议' : '其他' }}</span>
           <span class="font-medium text-gray-900 truncate">{{ model.display_name || model.model_key }}</span>
           <span class="text-gray-500 truncate">{{ model.model_key }}</span>
-        </label>
+        </div>
+        <p class="text-[11px] text-gray-500 pt-1">这是探测预览。保存 Provider 后，用「同步模型」写入目录。</p>
       </div>
       <details :open="advancedOpen" @toggle="advancedOpen = $event.target.open">
         <summary class="text-xs text-pixiv-gray cursor-pointer">高级（默认模型 / 超时 / 重试 / 上下文窗口 / 流式）</summary>
@@ -839,7 +840,6 @@
           }
         }
       }
-      function toggleProbedModel(model) { model.checked = !model.checked; }
       function applyV1Suggestion() {
         providerForm.base_url = probeRetryWithV1.value + '/v1';
         probeRetryWithV1.value = '';
@@ -910,7 +910,7 @@
         loadProviders, resetProviderForm, editProvider, saveProvider, deleteProvider, testProvider,
         aiHealth, aiHealthLoading, loadAiHealth, providerHealth,
         advancedOpen, baseUrlHint, lintBaseUrl, copyFromProvider,
-        probedModels, probeStatus, probeRetryWithV1, probeModels, toggleProbedModel, applyV1Suggestion,
+        probedModels, probeStatus, probeRetryWithV1, probeModels, applyV1Suggestion,
         toggleModelEnabled,
       };
     }

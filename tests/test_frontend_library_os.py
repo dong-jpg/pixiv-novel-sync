@@ -382,6 +382,12 @@ def test_dashboard_recommendations_are_a_paged_list_not_a_card_grid():
     assert 'class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">' not in html
 
 
+def test_model_probe_is_a_read_only_preview():
+    html = read(TEMPLATES / "dashboard_settings_models.html")
+    assert "toggleProbedModel" not in html
+    assert "探测预览" in html
+
+
 def test_app_modal_is_a_dialog():
     html = read(TEMPLATES / "vue_components.html")
     assert 'role="dialog"' in html
