@@ -342,20 +342,30 @@
           : '/api/dashboard/auto-sync/stop-task';
         try {
           const res = await csrfFetch(url, { method: 'POST' });
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            window.toast('停止当前任务失败：' + errorText(data, res));
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) {
+            window.toast('停止当前任务失败：' + errorText(data, res), 'error');
           }
           setTimeout(() => { fetchJobStatus(); fetchAutoSync(); }, 1000);
         } catch (e) {}
       };
 
       // ── Lifecycle ──
-      onMounted(() => {
+      onMounted(async () => {
         fetchStatus();
         fetchAutoSync();
         loadRecommendationItems();
-        pollInterval = setInterval(fetchJobStatus, 3000);
+        await fetchJobStatus();
+        const armJobPoll = () => {
+          clearInterval(pollInterval);
+          const status = latestJob.value && latestJob.value.status;
+          const busy = status === 'running' || status === 'queued' || status === 'cancel_requested';
+          pollInterval = setInterval(async () => {
+            await fetchJobStatus();
+            armJobPoll();
+          }, busy ? 3000 : 20000);
+        };
+        armJobPoll();
         autoSyncInterval = setInterval(fetchAutoSync, 10000);
       });
 

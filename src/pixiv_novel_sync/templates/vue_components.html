@@ -141,7 +141,7 @@ function registerGlobalComponents(app) {
       </nav>
     `,
     setup(props) {
-      const mobileItems = NAV_ITEMS.filter(i => !i.type && ['home','book','sparkles','edit','heart','cog'].includes(i.icon));
+      const mobileItems = NAV_ITEMS.filter(i => !i.type && ['home','book','heart','trash','clipboard','cog'].includes(i.icon));
       return { mobileItems, icons: ICONS, isActive: (item) => isActive(props.currentPath, item) };
     }
   });

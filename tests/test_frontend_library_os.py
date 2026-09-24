@@ -382,6 +382,18 @@ def test_dashboard_recommendations_are_a_paged_list_not_a_card_grid():
     assert 'class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">' not in html
 
 
+def test_idle_dashboard_polls_slowly_and_mobile_bar_has_ops():
+    html = read(TEMPLATES / "dashboard.html")
+    assert "20000" in html
+    assert "data.ok === false" in html
+    mobile = read(TEMPLATES / "vue_components.html")
+    assert "'trash'" in mobile
+    assert "'clipboard'" in mobile
+    user = read(TEMPLATES / "dashboard_user_detail.html")
+    assert "AbortController" in user
+    assert "网络错误，用户资料没有加载到" in user
+
+
 def test_model_probe_is_a_read_only_preview():
     html = read(TEMPLATES / "dashboard_settings_models.html")
     assert "toggleProbedModel" not in html

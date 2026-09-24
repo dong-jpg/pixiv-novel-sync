@@ -39,7 +39,7 @@
       <div v-else-if="!user" class="px-5 sm:px-7 pb-6 -mt-10 sm:-mt-12">
         <div class="mt-14">
           <h1 class="text-xl font-bold text-gray-900">加载失败</h1>
-          <p class="text-sm text-gray-500 mt-1">未找到该用户</p>
+          <p class="text-sm text-gray-500 mt-1">{{ userError || '未找到该用户' }}</p>
         </div>
       </div>
 
@@ -246,7 +246,9 @@
 
       // ── User state ──
       const user = ref(null);
+      const userError = ref('');
       const loadingUser = ref(true);
+      let userAbort = null;
       const checking = ref(false);
       const syncing = ref(false);
 
@@ -289,16 +291,24 @@
 
       // ── Fetch user detail ──
       const fetchUser = async () => {
+        if (userAbort) userAbort.abort();
+        userAbort = new AbortController();
         loadingUser.value = true;
+        userError.value = '';
         try {
-          const res = await fetch('/api/dashboard/users/' + encodeURIComponent(userId));
+          const res = await fetch('/api/dashboard/users/' + encodeURIComponent(userId), { signal: userAbort.signal });
           if (res.ok) {
             user.value = await res.json();
+          } else if (res.status === 404) {
+            user.value = null;
           } else {
             user.value = null;
+            userError.value = '用户资料加载失败';
           }
         } catch (e) {
+          if (e.name === 'AbortError') return;
           user.value = null;
+          userError.value = '网络错误，用户资料没有加载到';
         } finally {
           loadingUser.value = false;
         }
@@ -387,7 +397,7 @@
       });
 
       return {
-        user, loadingUser, checking, syncing,
+        user, userError, loadingUser, checking, syncing,
         category, items, totalItems, page, totalPages, loadingItems, itemError,
         toast,
         statusLabel, statusType, statusDotClass,

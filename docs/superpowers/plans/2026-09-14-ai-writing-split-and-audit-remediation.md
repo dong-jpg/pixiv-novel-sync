@@ -339,7 +339,7 @@
 - [x] **T2-60 Provider 探测复选框**
   `dashboard_settings_models.html:807-843` 保存后把勾选项写为人工模型或触发同步；或改只读预览。
 
-- [ ] **T2-61 杂项前端**
+- [x] **T2-61 杂项前端**
   登录页去空壳侧栏（`token_login.html:7-10` 用 `initVueApp` 空 setup 或 base 加 `{% block shell %}`）、加 `<form>`、失败原因经 `errorText`；Tailwind / Vue vendor 到 `/static/` 加 `integrity`；首页 `isTaskRunning` 含 `queued / cancel_requested`，`stopAutoTask` 处理 200 `{ok:false}`，不可让位任务加确认，空闲轮询放慢到 15–30 s，footer 改 `shell-data`；用户详情网络错误不报「未找到」并加 `AbortController`；向导页七个 async 加 try/catch（ai-writing）；Agent 批量改绑复用 `agentBindingValid`，筛选补 `extract_summary / resolve_foreshadow`（ai-writing）；系统页 Token 复制反馈进弹窗；成人页 403 文案（ai-writing）；删 `darkMode: 'class'`、`.line-clamp-2` / `.custom-select` 重复、硬编码 `#0096fa`；移动端底栏补「待确认删除」「任务日志」。
 
 ---
