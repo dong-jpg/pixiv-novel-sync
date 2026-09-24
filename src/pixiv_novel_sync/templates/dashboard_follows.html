@@ -72,7 +72,7 @@
             <img v-if="item.avatar_url"
                  :src="'/proxy/image?url=' + encodeURIComponent(item.avatar_url)"
                  class="w-16 h-16 rounded-full object-cover border-2 border-gray-100 group-hover:border-brand-200 transition-colors"
-                 @error="item.avatar_url = ''">
+                 @error="item.avatar_url = ''" alt="">
             <div v-else
                  class="w-16 h-16 rounded-full flex items-center justify-center bg-brand-50 text-brand-600 font-bold text-lg border-2 border-brand-100">
               {{ (item.name || 'U').substring(0, 2) }}

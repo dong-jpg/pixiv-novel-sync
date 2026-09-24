@@ -333,7 +333,7 @@
 - [x] **T2-58 任务命名统一**
   后端在 `shell-data` 或 `base.html` 下发 `TASK_LABELS`，删 `dashboard.html:181`、`dashboard_logs.html:369/677`、`settings_sync.html:402/604` 三份副本与 `following_series` 死键。
 
-- [ ] **T2-59 `app-modal` 无障碍**
+- [x] **T2-59 `app-modal` 无障碍**
   `vue_components.html:186-200` 加 `role="dialog" aria-modal="true" :aria-labelledby`、`@keydown.esc`、焦点进出、关闭按钮 `aria-label`。16 个 `<img>` 补 `alt`；AI 设置三页 14 个输入补 label。
 
 - [ ] **T2-60 Provider 探测复选框**

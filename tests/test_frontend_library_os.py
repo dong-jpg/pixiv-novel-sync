@@ -382,6 +382,14 @@ def test_dashboard_recommendations_are_a_paged_list_not_a_card_grid():
     assert 'class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">' not in html
 
 
+def test_app_modal_is_a_dialog():
+    html = read(TEMPLATES / "vue_components.html")
+    assert 'role="dialog"' in html
+    assert 'aria-modal="true"' in html
+    assert 'aria-label="关闭"' in html
+    assert "@keydown.esc" in html
+
+
 def test_shared_time_and_toast_helpers_exist():
     html = read(TEMPLATES / "base.html")
     assert "window.formatDbTime" in html

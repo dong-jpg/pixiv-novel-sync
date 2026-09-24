@@ -146,7 +146,7 @@
           <img v-if="item.cover_url"
                :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)"
                class="absolute inset-0 w-full h-full object-cover"
-               @error="item.cover_url = ''">
+               @error="item.cover_url = ''" alt="">
 
           <!-- Top Badges -->
           <div class="absolute top-2 left-2 flex flex-wrap gap-1 z-10">
@@ -183,7 +183,7 @@
             <div class="w-5 h-5 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0 overflow-hidden">
               <img v-if="item.author_avatar_url"
                    :src="'/proxy/image?url=' + encodeURIComponent(item.author_avatar_url)"
-                   class="w-full h-full object-cover" @error="item.author_avatar_url = ''">
+                   class="w-full h-full object-cover" @error="item.author_avatar_url = ''" alt="">
               <span v-else class="text-[9px] text-gray-500 font-bold">{{ (item.author_name || '?').substring(0, 1) }}</span>
             </div>
             <span class="text-xs text-gray-500 truncate">{{ item.author_name || '未知' }}</span>
@@ -214,7 +214,7 @@
           <img v-if="item.cover_url"
                :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)"
                class="absolute inset-0 w-full h-full object-cover"
-               @error="item.cover_url = ''">
+               @error="item.cover_url = ''" alt="">
 
           <!-- Bottom Gradient with Stats -->
           <div class="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-black/60 to-transparent"></div>
@@ -238,7 +238,7 @@
             <div class="w-5 h-5 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0 overflow-hidden">
               <img v-if="item.author_avatar_url"
                    :src="'/proxy/image?url=' + encodeURIComponent(item.author_avatar_url)"
-                   class="w-full h-full object-cover" @error="item.author_avatar_url = ''">
+                   class="w-full h-full object-cover" @error="item.author_avatar_url = ''" alt="">
               <span v-else class="text-[9px] text-gray-500 font-bold">{{ (item.author_name || '?').substring(0, 1) }}</span>
             </div>
             <span class="text-xs text-gray-500 truncate">{{ item.author_name || '未知' }}</span>
@@ -263,7 +263,7 @@
           <img v-if="item.cover_url"
                :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)"
                class="absolute inset-0 w-full h-full object-cover"
-               @error="item.cover_url = ''">
+               @error="item.cover_url = ''" alt="">
           <div class="absolute top-2 left-2 right-2 flex flex-wrap gap-1 z-10">
             <span class="px-1.5 py-0.5 bg-gray-900/75 text-white text-[10px] font-bold rounded">{{ item.content_kind_label || (item.item_type === 'series' ? '系列' : '单篇') }}</span>
             <span class="px-1.5 py-0.5 text-white text-[10px] font-bold rounded" :class="item.rescue_state === 'success' ? 'bg-emerald-600' : 'bg-amber-500'">

@@ -66,7 +66,7 @@
         <article v-for="item in items" :key="item.id" class="bg-white border border-gray-100 rounded-xl p-4 flex gap-4 hover:border-gray-200 hover:shadow-sm transition-all">
           <!-- Cover -->
           <div class="flex-shrink-0">
-            <img v-if="item.cover_url" :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)" class="w-20 h-28 sm:w-24 sm:h-32 object-cover rounded-md border border-gray-100 bg-gray-50" @error="item.cover_url = ''">
+            <img v-if="item.cover_url" :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)" class="w-20 h-28 sm:w-24 sm:h-32 object-cover rounded-md border border-gray-100 bg-gray-50" @error="item.cover_url = ''" alt="">
             <div v-else class="w-20 h-28 sm:w-24 sm:h-32 rounded-md bg-gray-50 border border-gray-100 flex items-center justify-center text-pixiv-gray font-medium text-xs p-2 text-center">
               {{ (item.title || '').substring(0, 4) }}
             </div>

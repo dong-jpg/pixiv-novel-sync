@@ -43,7 +43,7 @@
     <!-- Content State -->
     <template v-else>
       <div class="flex-shrink-0 mx-auto md:mx-0">
-        <img v-if="series.cover_url" :src="'/proxy/image?url=' + encodeURIComponent(series.cover_url)" class="w-32 h-44 sm:w-48 sm:h-64 object-cover rounded-lg border border-gray-100 shadow-sm" @error="series.cover_url = ''">
+        <img v-if="series.cover_url" :src="'/proxy/image?url=' + encodeURIComponent(series.cover_url)" class="w-32 h-44 sm:w-48 sm:h-64 object-cover rounded-lg border border-gray-100 shadow-sm" @error="series.cover_url = ''" alt="">
         <div v-else class="w-32 h-44 sm:w-48 sm:h-64 rounded-lg bg-gray-50 border border-gray-100 flex items-center justify-center text-pixiv-gray text-base font-bold text-center p-4">
           {{ (series.title || '').substring(0, 6) }}
         </div>
