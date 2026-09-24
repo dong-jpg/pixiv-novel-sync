@@ -206,13 +206,14 @@ class PreferenceAnalyzer:
         caption_keywords = [item["name"] for item in stats.get("top_caption_keywords", [])[:15]]
         primary_tags = top_tags[:10]
         secondary_tags = top_tags[10:25]
-        broad_queries = primary_tags[:8]
-        precise_queries = []
-        for tag in primary_tags[:6]:
-            for keyword in (title_keywords + caption_keywords + top_keywords)[:8]:
-                if keyword != tag:
-                    precise_queries.append(f"{tag} {keyword}")
-                    break
+        keyword_pool = [item for item in (title_keywords + caption_keywords + top_keywords) if item]
+        precise_queries = [
+            f"{tag} {keyword}"
+            for tag, keyword in zip(primary_tags[:6], keyword_pool)
+            if keyword != tag
+        ]
+        broad_source = secondary_tags or keyword_pool
+        broad_queries = broad_source[:8]
         experimental_queries = [f"{a} {b}" for a, b in zip(primary_tags[:6], top_keywords[:6]) if a != b]
         return {
             "version": 1,

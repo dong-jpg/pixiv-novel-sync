@@ -97,6 +97,72 @@ def test_search_plan_uses_profile_rebuilt_from_refined_keywords(tmp_path: Path):
     db.close()
 
 
+def test_profile_queries_pair_each_tag_with_a_different_keyword(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    analyzer = PreferenceAnalyzer(db)
+    stats = {
+        "novel_count": 8,
+        "total_chars": 80_000,
+        "series_novel_count": 0,
+        "single_novel_count": 8,
+        "avg_text_length": 10_000,
+        "top_tags": [{"name": f"标签{i}", "count": 10 - i} for i in range(12)],
+        "top_title_keywords": [{"name": "标题词", "count": 4}],
+        "top_caption_keywords": [{"name": "简介词", "count": 3}],
+        "top_keywords": [{"name": "正文词", "count": 2}],
+    }
+    profile = analyzer.build_profile(stats)
+    strategy = profile["search_strategy"]
+    assert strategy["precise_queries"][0] == "标签0 标题词"
+    assert strategy["precise_queries"][1] == "标签1 简介词"
+    assert strategy["broad_queries"] == ["标签10", "标签11"]
+    db.close()
+
+
+def test_search_drops_novels_hitting_exclude_terms(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    service = RecommendationService(db, make_settings(tmp_path))
+
+    class _Novel:
+        def __init__(self, title: str):
+            self.title = title
+            self.caption = ""
+            self.tags = []
+
+    class _Api:
+        def search_novel(self, **_kwargs):
+            class _Response:
+                novels = [_Novel("可以看"), _Novel("含禁词的故事")]
+                next_url = None
+            return _Response()
+
+        def parse_qs(self, _url):
+            return None
+
+    kept = service._search_novels(_Api(), "校园", 10, exclude_terms=["禁词"])
+    assert [item.title for item in kept] == ["可以看"]
+    db.close()
+
+
+def test_client_search_plan_is_capped(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    service = RecommendationService(db, make_settings(tmp_path))
+    raw = {
+        "queries": [{"query": "a" * 300, "limit": 500}] + [{"query": f"q{i}", "limit": 0} for i in range(25)],
+        "exclude_terms": ["  不要  ", "不要"],
+    }
+    plan = service._normalize_client_search_plan(raw)
+    assert len(plan["queries"]) == 20
+    assert len(plan["queries"][0]["query"]) == 200
+    assert plan["queries"][0]["limit"] == 100
+    assert plan["queries"][1]["limit"] == 1
+    assert plan["exclude_terms"] == ["不要"]
+    db.close()
+
+
 def test_build_search_plan_enforces_minimum_length_filters(tmp_path: Path):
     db = Database(tmp_path / "rec.db")
     db.init_schema()

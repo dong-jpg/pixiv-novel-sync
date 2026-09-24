@@ -296,7 +296,7 @@
 - [x] **T2-47 分析任务合并而非覆盖**
   `jobs/tasks.py:373-387`：existing 存在时 `name / description` 只在 params 显式给出时覆盖；`negative_preferences` 从 existing 合并；AI 失败或 `processed_this_run == 0` 时沿用 `existing.stats.refined_keywords` 且跳过 AI 调用。中期：`overrides_json` 列。验收：用例「AI 抛异常 + 0 篇新小说 → 画像名称与精炼词不变」。
 
-- [ ] **T2-48 搜索计划**
+- [x] **T2-48 搜索计划**
   `preferences.py:209-216` `precise_queries` 用 `zip(primary_tags[:6], keywords)`；`broad_queries` 改用 `secondary_tags` 或精炼词；`build_search_plan` 产出 `exclude_terms` 并在 `_search_novels` 应用；客户端 `search_plan` 服务端归一化（queries ≤ 20、limit 1..100、query ≤ 200 字）。
 
 - [ ] **T2-49 去重与评分**

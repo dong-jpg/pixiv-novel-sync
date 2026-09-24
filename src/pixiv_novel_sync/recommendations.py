@@ -52,9 +52,22 @@ class RecommendationService:
                 })
         single_min_chars = max(5000, int(filters.get("single_min_chars") or 5000))
         series_min_total_chars = max(20000, int(filters.get("series_min_total_chars") or 20000))
+        negative = profile_data.get("negative_preferences") or {}
+        exclude_terms: list[str] = []
+        seen_excluded: set[str] = set()
+        for raw in (
+            list(negative.get("excluded_keywords") or [])
+            + list(negative.get("excluded_tags") or [])
+            + list(negative.get("avoid_themes") or [])
+        ):
+            term = str(raw).strip()
+            if term and term not in seen_excluded:
+                seen_excluded.add(term)
+                exclude_terms.append(term)
         return {
             "profile_id": profile.get("id"),
             "queries": queries[: int(filters.get("max_queries") or 20)],
+            "exclude_terms": exclude_terms,
             "filters": {
                 "single_min_chars": single_min_chars,
                 "series_min_total_chars": series_min_total_chars,
@@ -79,7 +92,11 @@ class RecommendationService:
         profile = self.db.get_preference_profile(profile_id) if profile_id else self.db.get_default_preference_profile()
         if not profile:
             raise RuntimeError("需要先生成默认偏好画像")
-        plan = search_plan or self.build_search_plan(profile)
+        plan = (
+            self._normalize_client_search_plan(search_plan)
+            if search_plan
+            else self.build_search_plan(profile)
+        )
         run_id = self.db.create_recommendation_run(int(profile["id"]), plan)
         stats = {"searched": 0, "candidates": 0, "saved": 0, "filtered": 0, "errors": 0, "series_deduped": 0}
         # 原子发布：先在内存收集全部候选，全部生成完成后再单事务写入。
@@ -98,7 +115,13 @@ class RecommendationService:
                 _emit("phase", {"phase": f"搜索 [{stats['searched'] + 1}/{len(queries)}]: {query.get('query', '')}"})
                 stats["searched"] += 1
                 try:
-                    novels = self._search_novels(api, query["query"], int(query.get("limit") or 30), _emit)
+                    novels = self._search_novels(
+                        api,
+                        query["query"],
+                        int(query.get("limit") or 30),
+                        _emit,
+                        plan.get("exclude_terms") or [],
+                    )
                 except InterruptedError:
                     raise
                 except Exception:
@@ -167,8 +190,49 @@ class RecommendationService:
             emit("_cancel_check", {})
         self.rate_limiter.wait(stop_requested=self.stop_requested)
 
-    def _search_novels(self, api: AppPixivAPI, query: str, limit: int, emit: Any = None) -> list[Any]:
+    def _normalize_client_search_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
+        """客户端带来的计划只保留有限条、有限长度的查询。"""
+        normalized = dict(plan or {})
+        queries: list[dict[str, Any]] = []
+        for raw in list(normalized.get("queries") or [])[:20]:
+            if isinstance(raw, str):
+                raw = {"query": raw}
+            if not isinstance(raw, dict):
+                continue
+            query = str(raw.get("query") or "").strip()[:200]
+            if not query:
+                continue
+            raw_limit = raw.get("limit")
+            if raw_limit in (None, ""):
+                limit = 30
+            else:
+                try:
+                    limit = int(raw_limit)
+                except (TypeError, ValueError):
+                    limit = 30
+            item = dict(raw)
+            item["query"] = query
+            item["limit"] = min(100, max(1, limit))
+            queries.append(item)
+        normalized["queries"] = queries
+        terms = []
+        for raw in normalized.get("exclude_terms") or []:
+            term = str(raw).strip()
+            if term and term not in terms:
+                terms.append(term[:200])
+        normalized["exclude_terms"] = terms
+        return normalized
+
+    def _search_novels(
+        self,
+        api: AppPixivAPI,
+        query: str,
+        limit: int,
+        emit: Any = None,
+        exclude_terms: list[str] | None = None,
+    ) -> list[Any]:
         results: list[Any] = []
+        blocked = [term for term in (exclude_terms or []) if str(term).strip()]
         next_query: dict[str, Any] | None = {"word": query, "search_target": "partial_match_for_tags", "sort": "date_desc"}
         max_pages = 10  # 7.1: 翻页上限
         page_count = 0
@@ -179,12 +243,20 @@ class RecommendationService:
             novels = list(getattr(response, "novels", []) or [])
             if not novels:  # 7.1: 空页即停
                 break
+            if blocked:
+                novels = [novel for novel in novels if not self._hits_exclude_term(novel, blocked)]
             results.extend(novels)
             next_query = api.parse_qs(getattr(response, "next_url", None))
             page_count += 1
             if next_query and len(results) < limit:
                 self._page_delay(emit)
         return results[:limit]
+
+    def _hits_exclude_term(self, novel: Any, terms: list[str]) -> bool:
+        title = str(getattr(novel, "title", "") or "")
+        caption = str(getattr(novel, "caption", "") or "")
+        haystack = f"{title}\n{caption}\n{' '.join(self._tags(novel))}"
+        return any(term and term in haystack for term in terms)
 
     def _call_search(self, api: AppPixivAPI, next_query: dict[str, Any]) -> Any:
         return retry_on_pixiv_error(max_retries=3, stop_requested=self.stop_requested)(
