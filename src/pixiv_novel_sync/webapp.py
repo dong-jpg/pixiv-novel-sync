@@ -1456,9 +1456,10 @@ def create_app(
         status = str(request.args.get("status", "all") or "all").strip().lower()
         if status not in {"all", "normal", "suspended", "cleared", "no_novels", "unknown"}:
             status = "all"
+        search = str(request.args.get("search", "") or "").strip()
         db = _open_database(current_settings)
         try:
-            payload = db.list_users(page=page, page_size=page_size, status=status)
+            payload = db.list_users(page=page, page_size=page_size, status=status, search=search)
         finally:
             db.close()
         return jsonify(payload)

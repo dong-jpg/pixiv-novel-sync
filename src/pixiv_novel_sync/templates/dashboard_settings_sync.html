@@ -67,10 +67,12 @@
             <label class="flex items-center gap-3 cursor-pointer group">
               <input type="checkbox" v-model="settings.enabled" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
               <span class="text-sm text-gray-700">启用全局同步</span>
+              <span class="text-[11px] text-pixiv-gray">关掉后定时任务不再排队，手工触发仍可用</span>
             </label>
             <label class="flex items-center gap-3 cursor-pointer group">
               <input type="checkbox" v-model="settings.initial_manual_only" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
               <span class="text-sm text-gray-700">首次仅允许手工触发</span>
+              <span class="text-[11px] text-pixiv-gray">库还是空的时候，定时任务先不跑</span>
             </label>
             <label class="flex items-center gap-3 cursor-pointer group">
               <input type="checkbox" v-model="settings.download_assets" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
@@ -113,7 +115,7 @@
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">单次最大条数（留空不限）</label>
-              <input type="number" v-model.number="settings.max_items_per_run" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <input type="number" v-model.number="settings.max_items_per_run" min="1" placeholder="不限" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
             <div>
               <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">单次最大页数（留空不限）</label>
@@ -153,7 +155,7 @@
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">每作者最大篇数（留空不限）</label>
-              <input type="number" v-model.number="settings.following_max_novels_per_author" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <input type="number" v-model.number="settings.following_max_novels_per_author" min="1" placeholder="不限" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
               <p class="mt-1 text-xs text-pixiv-light">留空时单个高产作者会吃光整轮预算，一轮只覆盖 1 个作者</p>
             </div>
             <div>
@@ -343,6 +345,8 @@
         </button>
       </div>
 
+      <a v-if="manualJobLink" :href="manualJobLink" class="inline-flex mb-3 text-sm text-brand-600 hover:text-brand-700">打开任务日志查看进度</a>
+      <p v-if="dirty" class="mb-3 text-xs text-amber-700">有未保存的修改</p>
       <div class="library-terminal p-4">
         <h4 class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">执行日志</h4>
         <div class="font-mono text-xs leading-relaxed text-gray-300 h-48 overflow-y-auto space-y-1">
@@ -379,7 +383,7 @@
 <script>
   initVueApp({
     setup() {
-      const { ref, reactive, onMounted } = Vue;
+      const { ref, reactive, watch, onMounted } = Vue;
 
       const settings = ref(null);
       const saving = ref(false);
@@ -563,7 +567,9 @@
           const res = await fetch('/api/dashboard/settings');
           const data = await res.json();
           if (!data.bookmark_restricts) data.bookmark_restricts = [];
+          settingsReady = false;
           settings.value = data;
+          settingsReady = true;
         } catch (err) {
           saveSuccess.value = false;
           saveMessage.value = '读取设置失败';
@@ -596,6 +602,7 @@
           }
           // 用后端落盘后的真实值回填，避免界面停留在没保存成功的输入上
           if (data.sync) settings.value = data.sync;
+          dirty.value = false;
           showSaveStatus(data.message || '设置已保存', true);
           clearCronPreviews();
           await Promise.all([loadSchedulerStatus(), loadBudget()]);
@@ -623,6 +630,10 @@
         { id: 'recommendation_run', label: '生成推荐', class: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200 hover:bg-fuchsia-100 focus:ring-fuchsia-500' },
       ];
       const triggering = ref(false);
+      const manualJobLink = ref('');
+      const dirty = ref(false);
+      let settingsReady = false;
+      watch(settings, () => { if (settingsReady) dirty.value = true; }, { deep: true });
       const manualLogs = ref([]);
 
       const addLog = (msg, error = false) => {
@@ -636,7 +647,8 @@
           const res = await window.csrfFetch(`/api/dashboard/sync/${task}`, { method: 'POST' });
           const data = await res.json().catch(() => ({}));
           if (res.ok && data.ok !== false) {
-            addLog(`任务已加入队列（${label}）`);
+            addLog(`任务已加入队列（${label}）。进度看任务日志。`);
+            manualJobLink.value = '/dashboard/logs';
             await loadSchedulerStatus();
           } else {
             addLog(`任务失败：${window.errorText(data, res)}`, true);
@@ -660,7 +672,7 @@
         budget, taskBudget,
         formatNextRun, formatDuration, formatPercent, formatIsoMoment,
         cronPreview, cronInvalid, cronHint, previewCron, clearCronPreviews,
-        manualButtons, triggering, manualLogs, triggerManualTask,
+        manualButtons, triggering, manualLogs, manualJobLink, dirty, triggerManualTask,
       };
     }
   });

@@ -209,14 +209,20 @@ class UsersMixin:
             "total_pages": total_pages,
         }
 
-    def list_users(self, page: int = 1, page_size: int = 10, status: str = "all") -> dict[str, Any]:
+    def list_users(self, page: int = 1, page_size: int = 10, status: str = "all", search: str = "") -> dict[str, Any]:
         page = max(page, 1)
         page_size = max(page_size, 1)
-        where_clause = ""
+        clauses: list[str] = []
         params: list[Any] = []
         if status != "all":
-            where_clause = "WHERE u.status = ?"
+            clauses.append("u.status = ?")
             params.append(status)
+        needle = str(search or "").strip()
+        if needle:
+            clauses.append("(u.name LIKE ? OR u.account LIKE ? OR CAST(u.user_id AS TEXT) LIKE ?)")
+            like = f"%{needle}%"
+            params.extend([like, like, like])
+        where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         total = int(
             self.conn.execute(
                 f"SELECT COUNT(*) FROM users u {where_clause}", params

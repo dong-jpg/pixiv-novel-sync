@@ -69,9 +69,7 @@
         <input type="checkbox" v-model="autoRefresh" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500 cursor-pointer">
         自动刷新
       </label>
-      <button @click="applyFilter" class="px-4 py-1.5 bg-brand-500 text-white hover:bg-brand-600 text-sm font-medium rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2">
-        筛选
-      </button>
+      <span v-if="autoRefresh && modalOpen" class="text-xs text-amber-700">详情打开时暂停自动刷新</span>
     </div>
   </div>
 
@@ -83,10 +81,10 @@
           <tr>
             <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">任务类型</th>
             <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">任务名称</th>
-            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">来源</th>
+            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider hidden md:table-cell">来源</th>
             <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">状态</th>
-            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">开始时间</th>
-            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">耗时</th>
+            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider hidden lg:table-cell">开始时间</th>
+            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider hidden lg:table-cell">耗时</th>
             <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">结果</th>
             <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider text-right">操作</th>
           </tr>
@@ -109,19 +107,19 @@
               <p class="text-pixiv-gray text-sm">暂无相关的日志记录</p>
             </td>
           </tr>
-          <tr v-else v-for="log in items" :key="log.job_id || log.id" @click="showDetail(log)" class="hover:bg-gray-50/50 transition-colors cursor-pointer">
+          <tr v-else v-for="log in items" :key="log.job_id || log.id" tabindex="0" @click="showDetail(log)" @keydown.enter="showDetail(log)" class="hover:bg-gray-50/50 transition-colors cursor-pointer focus:bg-brand-50 focus:outline-none">
             <td class="px-5 py-3 whitespace-nowrap text-sm">
               <span class="bg-gray-50 text-gray-700 border border-gray-100 px-2 py-1 rounded-md text-xs font-medium">{{ getTaskTypeName(log.task_type) }}</span>
             </td>
             <td class="px-5 py-3 whitespace-nowrap text-sm text-gray-900 font-medium max-w-[200px] truncate">{{ log.task_name }}</td>
-            <td class="px-5 py-3 whitespace-nowrap text-sm font-medium" :class="log.is_auto_sync ? 'text-brand-500' : 'text-pixiv-gray'">
+            <td class="px-5 py-3 whitespace-nowrap text-sm font-medium hidden md:table-cell" :class="log.is_auto_sync ? 'text-brand-500' : 'text-pixiv-gray'">
               {{ log.category === 'ai' ? 'AI 创作' : (log.is_auto_sync ? '定时' : '手工') }}
             </td>
             <td class="px-5 py-3 whitespace-nowrap">
               <app-badge :type="getStatusConfig(log.status).type">{{ getStatusConfig(log.status).label }}</app-badge>
             </td>
-            <td class="px-5 py-3 whitespace-nowrap text-sm text-pixiv-gray">{{ formatDate(log.started_at) }}</td>
-            <td class="px-5 py-3 whitespace-nowrap text-sm text-pixiv-gray">{{ formatDuration(log.duration_seconds) }}</td>
+            <td class="px-5 py-3 whitespace-nowrap text-sm text-pixiv-gray hidden lg:table-cell">{{ formatDate(log.started_at) }}</td>
+            <td class="px-5 py-3 whitespace-nowrap text-sm text-pixiv-gray hidden lg:table-cell">{{ formatDuration(log.duration_seconds) }}</td>
             <td class="px-5 py-3 whitespace-nowrap text-xs font-medium" :class="resultClass(log)" :title="log.error_message || ''">{{ formatResult(log) }}</td>
             <td class="px-5 py-3 whitespace-nowrap text-right">
               <button @click.stop="showDetail(log)" class="text-brand-500 hover:text-brand-600 font-medium text-sm transition-colors focus:outline-none">详情</button>
@@ -325,7 +323,7 @@
       <div v-if="selectedLog.logs && selectedLog.logs.length > 0">
         <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider mb-3 pb-2 border-b border-gray-100">执行日志</h3>
         <div class="bg-gray-900 rounded-lg p-4 font-mono text-xs text-gray-300 max-h-64 overflow-y-auto space-y-1">
-          <div v-for="(l, i) in selectedLog.logs" :key="i" :class="l.level === 'error' ? 'text-red-400' : ''">
+          <div v-for="(l, i) in selectedLog.logs" :key="i" :class="logLevelClass(l.level)">
             <span class="text-gray-500 mr-2">[{{ formatTime(l.time) }}]</span>
             {{ l.message }}
           </div>
@@ -397,6 +395,7 @@
         filters.task_type = '';
         filters.status = '';
       });
+      watch(filters, () => applyFilter(), { deep: true });
       const autoRefresh = ref(false);
       let refreshInterval = null;
 
@@ -669,6 +668,12 @@
       };
 
       const getTaskTypeName = (type) => (window.TASK_LABELS || {})[type] || type;
+      const logLevelClass = (level) => ({
+        error: 'text-red-400',
+        warning: 'text-amber-300',
+        success: 'text-emerald-300',
+        info: 'text-sky-300',
+      }[level] || 'text-gray-300');
 
       const ABORT_REASON_LABELS = {
         'rate_limited': '疑似 Pixiv 限流，已中止本轮',
@@ -776,7 +781,7 @@
         continueCandidate, continueRunning, continueStatus, continueOutput, continueError,
         cancelRunning, cancelNotice, cancelAiJob,
         applyFilter, handlePageChange, showDetail, continueWithNextModel,
-        formatDate, formatTime, formatDuration, getStatusConfig, getTaskTypeName,
+        formatDate, formatTime, formatDuration, getStatusConfig, getTaskTypeName, logLevelClass,
         formatResult, resultClass, formatJson, copyDetailText, formatAbortReason
       };
     }

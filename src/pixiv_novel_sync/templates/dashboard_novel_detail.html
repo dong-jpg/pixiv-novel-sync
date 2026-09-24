@@ -632,8 +632,17 @@
             }
 
             // Restore scroll after render
-            nextTick(() => {
+            nextTick(async () => {
               const saved = readSavedProgress();
+              if (!saved) {
+                try {
+                  const progressRes = await fetch('/api/dashboard/novels/' + encodeURIComponent(novelId) + '/progress');
+                  if (progressRes.ok) {
+                    const stored = await progressRes.json();
+                    if (stored && stored.progress) progressPercent.value = Number(stored.progress) || 0;
+                  }
+                } catch (e) {}
+              }
               if (restorePending && saved && saved.scrollY > 0 && !window.location.hash) {
                 window.scrollTo({ top: Math.min(saved.scrollY, document.documentElement.scrollHeight), behavior: 'auto' });
               }

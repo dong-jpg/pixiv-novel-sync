@@ -165,7 +165,7 @@ def test_library_contains_rescue_tab_and_api_contract():
     assert "['bookmark', 'following', 'rescue']" in html
     assert "/api/dashboard/rescues" in html
     assert "rescueFilters.state" in html
-    assert "rescueFilters.item_type" in html
+    assert "rescueFilters.content_kind" in html
     assert '<option v-if="filters.category !== \'rescue\'" value="bookmarks_desc">' in html
     assert '<option v-if="filters.category !== \'rescue\'" value="views_desc">' in html
     assert "完整救援" in html
@@ -189,7 +189,7 @@ def test_rescue_library_exposes_content_and_source_filters():
     assert "source.label" in html
     assert "rescueCatalog.stale" in html
     assert "item.content_kind === 'series'" in html
-    assert "rescueFilters.item_type, rescueFilters.content_kind, rescueFilters.source_kind" in html
+    assert "rescueFilters.content_kind, rescueFilters.source_kind" in html
 
 
 def test_rescue_catalog_time_uses_local_display_and_surfaces_backend_error():

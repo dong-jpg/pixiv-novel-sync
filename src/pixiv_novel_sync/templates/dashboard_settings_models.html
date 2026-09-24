@@ -873,7 +873,9 @@
         } catch (e) { showAiMessage(e.message, 'error'); }
       };
       const deleteProvider = async (id) => {
-        if (!confirm('确认删除 Provider？')) return;
+        const bound = providerHealth(id)?.bound_agent_count || 0;
+        const hint = bound ? `有 ${bound} 个 Agent 绑在这里，删除后它们会失去模型。` : '没有 Agent 绑在这里。';
+        if (!confirm('确认删除 Provider？' + hint)) return;
         try { await aiApi('/api/dashboard/ai/providers/' + id, { method: 'DELETE' }); await loadProviders(); showAiMessage('Provider 已删除'); }
         catch (e) { showAiMessage(e.message, 'error'); }
       };

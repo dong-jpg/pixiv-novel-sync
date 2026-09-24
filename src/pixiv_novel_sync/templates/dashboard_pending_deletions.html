@@ -89,8 +89,8 @@
             </div>
 
             <div class="flex gap-2 mt-3 pt-3 border-t border-gray-100">
-              <button @click="confirmDeletion(item.id)" class="flex-1 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-xs font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1">确认移除</button>
-              <button @click="restoreDeletion(item.id)" class="flex-1 px-3 py-1.5 bg-green-50 hover:bg-green-100 text-green-600 border border-green-200 text-xs font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-1">忽略恢复</button>
+              <button @click="confirmDeletion(item)" :disabled="busyId === item.id" class="flex-1 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-xs font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 disabled:opacity-50">{{ busyId === item.id ? '处理中…' : '确认移除' }}</button>
+              <button @click="restoreDeletion(item)" :disabled="busyId === item.id" class="flex-1 px-3 py-1.5 bg-green-50 hover:bg-green-100 text-green-600 border border-green-200 text-xs font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-1 disabled:opacity-50">{{ busyId === item.id ? '处理中…' : '恢复并保留' }}</button>
             </div>
           </div>
         </article>
@@ -98,15 +98,7 @@
     </div>
 
     <!-- Pagination Footer -->
-    <div v-if="totalPages > 1" class="px-5 py-4 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
-      <div class="text-sm text-pixiv-gray">
-        第 <span class="font-medium text-gray-900">{{ currentPage }}</span> / <span class="font-medium text-gray-900">{{ totalPages }}</span> 页
-      </div>
-      <div class="flex gap-2">
-        <button @click="loadPending(currentPage - 1)" :disabled="currentPage <= 1" class="px-4 py-1.5 text-sm font-medium bg-white border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">上一页</button>
-        <button @click="loadPending(currentPage + 1)" :disabled="currentPage >= totalPages" class="px-4 py-1.5 text-sm font-medium bg-white border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">下一页</button>
-      </div>
-    </div>
+    <app-pagination v-if="totalPages > 1" :page="currentPage" :pages="totalPages" @update:page="loadPending"></app-pagination>
 
   </section>
 </div>
@@ -128,6 +120,7 @@
       const currentType = ref(pendingQuery.type);
       const detecting = ref(false);
       const loadError = ref('');
+      const busyId = ref(0);
       let detectionTimer = null;
 
       const tabOptions = [
@@ -174,29 +167,36 @@
       };
 
       // Actions
-      const confirmDeletion = async (id) => {
-        if (!confirm('确认移除？会连同其它来源一起删掉本地文件，此操作不可撤销。')) return;
+      const confirmDeletion = async (item) => {
+        const size = item.text_length ? `约 ${item.text_length} 字` : '';
+        const chapters = item.item_type === 'series' && item.total_novels ? `${item.total_novels} 章` : '';
+        const extra = [chapters, size].filter(Boolean).join('，');
+        if (!confirm(`确认移除「${item.title || '这项'}」？${extra ? extra + '。' : ''}会连同其它来源一起删掉本地文件，此操作不可撤销。`)) return;
+        busyId.value = item.id;
         try {
-          const resp = await csrfFetch('/api/dashboard/pending-deletions/' + id + '/confirm', { method: 'POST' });
+          const resp = await csrfFetch('/api/dashboard/pending-deletions/' + item.id + '/confirm', { method: 'POST' });
           if (resp.ok) {
             loadPending(currentPage.value);
           } else {
             const data = await resp.json().catch(() => ({}));
             window.toast(errorText(data, resp));
           }
-        } catch (e) { window.toast('网络错误'); }
+        } catch (e) { window.toast('网络错误', 'error'); }
+        finally { busyId.value = 0; }
       };
 
-      const restoreDeletion = async (id) => {
+      const restoreDeletion = async (item) => {
+        busyId.value = item.id;
         try {
-          const resp = await csrfFetch('/api/dashboard/pending-deletions/' + id + '/restore', { method: 'POST' });
+          const resp = await csrfFetch('/api/dashboard/pending-deletions/' + item.id + '/restore', { method: 'POST' });
           if (resp.ok) {
             loadPending(currentPage.value);
           } else {
             const data = await resp.json().catch(() => ({}));
-            window.toast(errorText(data, resp));
+            window.toast(errorText(data, resp), 'error');
           }
-        } catch (e) { window.toast('网络错误'); }
+        } catch (e) { window.toast('网络错误', 'error'); }
+        finally { busyId.value = 0; }
       };
 
       const triggerDetection = async () => {
@@ -249,7 +249,7 @@
       });
 
       return {
-        items, loading, loadError, currentPage, totalPages, totalItems, currentType, detecting,
+        items, loading, loadError, busyId, currentPage, totalPages, totalItems, currentType, detecting,
         tabOptions, getPixivUrl, loadPending, switchTab,
         confirmDeletion, restoreDeletion, triggerDetection
       };
