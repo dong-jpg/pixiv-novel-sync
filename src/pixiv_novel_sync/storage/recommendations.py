@@ -401,13 +401,15 @@ class RecommendationsMixin:
         self._commit_if_needed()
         return item_id
 
-    def list_recommendation_items(self, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM recommendation_items"
-        params: list[Any] = []
+    @staticmethod
+    def _recommendation_status_filter(status: str | None) -> tuple[str, list[Any]]:
         if status:
-            sql += " WHERE status = ?"
-            params.append(status)
-        sql += " ORDER BY score DESC, updated_at DESC LIMIT ?"
+            return " WHERE status = ?", [status]
+        return " WHERE status NOT IN ('dismissed', 'muted')", []
+
+    def list_recommendation_items(self, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        where_sql, params = self._recommendation_status_filter(status)
+        sql = f"SELECT * FROM recommendation_items{where_sql} ORDER BY score DESC, updated_at DESC LIMIT ?"
         params.append(max(1, int(limit)))
         rows = self.conn.execute(sql, params).fetchall()
         return [self._row_to_recommendation_item(row) for row in rows]
@@ -426,11 +428,7 @@ class RecommendationsMixin:
         被点过「不感兴趣」的老结果跳回第一页。run_id 只随推书轮次变化，
         「最新一轮的结果整体排最前、轮内按分数」正是首页想要的语义。
         """
-        where_sql = ""
-        params: list[Any] = []
-        if status:
-            where_sql = " WHERE status = ?"
-            params.append(status)
+        where_sql, params = self._recommendation_status_filter(status)
         total = int(
             self.conn.execute(
                 f"SELECT COUNT(*) FROM recommendation_items{where_sql}", params
@@ -484,7 +482,7 @@ class RecommendationsMixin:
         return [dict(row) for row in rows]
 
     def create_recommendation_mute(self, mute_type: str, mute_value: str, reason: str | None = None) -> int:
-        cursor = self.conn.execute(
+        self.conn.execute(
             """
             INSERT INTO recommendation_mutes (mute_type, mute_value, reason)
             VALUES (?, ?, ?)
@@ -492,8 +490,21 @@ class RecommendationsMixin:
             """,
             (mute_type, mute_value, reason),
         )
+        if mute_type == "author" and str(mute_value).isdigit():
+            self.conn.execute(
+                """
+                UPDATE recommendation_items
+                SET status = 'muted', updated_at = CURRENT_TIMESTAMP
+                WHERE author_id = ? AND status = 'new'
+                """,
+                (int(mute_value),),
+            )
+        row = self.conn.execute(
+            "SELECT id FROM recommendation_mutes WHERE mute_type = ? AND mute_value = ?",
+            (mute_type, mute_value),
+        ).fetchone()
         self._commit_if_needed()
-        return int(cursor.lastrowid)
+        return int(row[0])
 
     def delete_recommendation_mute(self, mute_id: int) -> None:
         self.conn.execute("DELETE FROM recommendation_mutes WHERE id = ?", (mute_id,))

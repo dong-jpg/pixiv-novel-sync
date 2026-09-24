@@ -141,10 +141,12 @@
       <!-- 列表 + 翻页：最新一轮推书整体排最前（后端按 run_id 倒序），每页 10 条 -->
       <div v-else-if="recommendationItems.length" class="space-y-2">
         <a v-for="item in recommendationItems" :key="item.id" :href="recommendationItemUrl(item)" target="_blank" rel="noopener noreferrer"
-           class="group flex items-start gap-3 border border-gray-100 rounded-xl px-4 py-3 hover:bg-gray-50 hover:border-brand-200 transition-all">
+           class="group flex items-start gap-3 border border-gray-100 rounded-xl px-4 py-3 hover:bg-gray-50 hover:border-brand-200 transition-all"
+           :class="item.status === 'dismissed' || item.status === 'muted' ? 'opacity-50' : ''">
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2 flex-wrap">
               <span class="text-sm font-bold text-gray-900 group-hover:text-brand-600 line-clamp-1">{{ item.title || '未命名作品' }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{{ {new:'新推荐', interested:'感兴趣', dismissed:'不感兴趣', saved:'已保存', muted:'已屏蔽'}[item.status] || item.status }}</span>
               <span class="text-[10px] px-1.5 py-0.5 rounded" :class="item.item_type === 'series' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'">{{ item.item_type === 'series' ? '系列' : '单篇' }}</span>
               <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{{ item.score || 0 }} 分</span>
             </div>

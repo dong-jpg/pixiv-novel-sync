@@ -290,7 +290,7 @@
 
 ### 2.5 偏好推荐
 
-- [ ] **T2-46 默认列表排除 dismissed / muted + 徽标**
+- [x] **T2-46 默认列表排除 dismissed / muted + 徽标**
   `storage/recommendations.py:411-461` 不传 `status` 时 `WHERE status NOT IN ('dismissed','muted')`；`muteAuthor` 后端批量置同作者 `new` 为 `muted`；两个模板显示状态并灰化。
 
 - [x] **T2-47 分析任务合并而非覆盖**

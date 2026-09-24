@@ -134,6 +134,53 @@ def test_candidate_filters_short_single_and_scores(tmp_path: Path):
     db.close()
 
 
+def test_default_list_hides_dismissed_and_muted_and_author_mute_clears_new(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    profile_id = db.create_preference_profile({"name": "p", "source_scope": {}, "stats": {}, "profile": {}})
+    run_id = db.create_recommendation_run(profile_id, {"queries": []})
+
+    def add(novel_id: int, author_id: int, status: str, score: int) -> int:
+        return db.upsert_recommendation_item({
+            "run_id": run_id,
+            "profile_id": profile_id,
+            "item_type": "novel",
+            "novel_id": novel_id,
+            "author_id": author_id,
+            "title": f"作品 {novel_id}",
+            "tags": [],
+            "score": score,
+            "matched": {},
+            "status": status,
+        })
+
+    kept = add(1, 9, "new", 5)
+    interested = add(2, 9, "interested", 4)
+    dismissed = add(3, 8, "dismissed", 9)
+    muted = add(4, 7, "muted", 8)
+    other_new = add(5, 8, "new", 1)
+
+    visible = [item["id"] for item in db.list_recommendation_items()]
+    assert kept in visible
+    assert interested in visible
+    assert other_new in visible
+    assert dismissed not in visible
+    assert muted not in visible
+    assert [item["id"] for item in db.list_recommendation_items(status="dismissed")] == [dismissed]
+
+    first = db.create_recommendation_mute("author", "9", "不看了")
+    again = db.create_recommendation_mute("author", "9", "还是不看")
+    assert first == again
+    statuses = {
+        item["novel_id"]: item["status"]
+        for item in db.list_recommendation_items(status="muted")
+    }
+    assert statuses[1] == "muted"
+    assert 2 not in statuses
+    assert db.list_recommendation_items()[0]["novel_id"] in {2, 5}
+    db.close()
+
+
 def test_recommendation_item_upsert_and_mutes(tmp_path: Path):
     db = Database(tmp_path / "rec.db")
     db.init_schema()
