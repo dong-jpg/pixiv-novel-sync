@@ -16,7 +16,11 @@
 (function () {
   'use strict';
 
-  const API_ORIGIN = 'https://pixiv.dongboapp.com';
+  const DEFAULT_API_ORIGIN = 'https://pixiv.dongboapp.com';
+  function apiOrigin() {
+    const custom = String(GM_getValue('pixivRescueOrigin', '') || '').trim();
+    return (custom || DEFAULT_API_ORIGIN).replace(/\/$/, '');
+  }
   const TOKEN_KEY = 'pixivRescueToken';
   const ROOT_ATTRIBUTE = 'data-pixiv-rescue';
   const UNAVAILABLE_MARKERS = [
@@ -56,7 +60,7 @@
     return new Promise(function (resolve, reject) {
       GM_xmlhttpRequest({
         method: 'GET',
-        url: API_ORIGIN + path,
+        url: apiOrigin() + path,
         headers: {
           Authorization: 'Bearer ' + token,
           Accept: 'application/json'
@@ -71,7 +75,12 @@
             return;
           }
           if (response.status < 200 || response.status >= 300 || envelope.ok === false) {
-            reject(new Error(response.status === 401 ? 'unauthorized' : 'request_failed'));
+            const status = Number(response.status || 0);
+            if (status === 401) reject(new Error('unauthorized'));
+            else if (status === 404) reject(new Error('not_found'));
+            else if (status === 429) reject(new Error('rate_limited'));
+            else if (status >= 500) reject(new Error('server_error'));
+            else reject(new Error('request_failed'));
             return;
           }
           resolve(envelope.data || {});
@@ -91,7 +100,12 @@
   }
 
   function pageSaysUnavailable() {
-    const text = pageText();
+    const nodes = document.querySelectorAll(
+      '[class*="error"], [class*="Error"], .error-message, main h1, main h2'
+    );
+    const text = Array.from(nodes).map(function (node) {
+      return String(node.textContent || '');
+    }).join('\n');
     return UNAVAILABLE_MARKERS.some(function (marker) {
       return text.includes(marker);
     });
@@ -222,13 +236,31 @@
     addStyles();
     const root = getRoot();
     clearNode(root);
+    root.append(element('div', 'pixiv-rescue-error', rescueErrorText(error, true)));
+  }
+
+  function rescueErrorText(error, pageLevel) {
     const messages = {
       missing_token: '未设置救援 Token，请通过油猴菜单完成设置。',
       unauthorized: '救援 Token 无效，请在网站设置页轮换后重新填写。',
+      not_found: pageLevel ? '未找到可用的救援数据，Pixiv 原页面已保留。' : '备份里没有这一章，目录还在。',
+      rate_limited: '请求太频繁，请稍后再试。',
+      server_error: '救援服务暂时出错，请稍后再试。',
       network_timeout: '救援服务响应超时，Pixiv 原页面已保留。',
       network_error: '无法连接救援服务，Pixiv 原页面已保留。'
     };
-    root.append(element('div', 'pixiv-rescue-error', messages[error.message] || '未找到可用的救援数据，Pixiv 原页面已保留。'));
+    return messages[error && error.message] || (pageLevel
+      ? '未找到可用的救援数据，Pixiv 原页面已保留。'
+      : '这一章没有读到，目录还在。');
+  }
+
+  function renderChapterError(viewer, error) {
+    let note = viewer.querySelector('.pixiv-rescue-chapter-error');
+    if (!note) {
+      note = element('div', 'pixiv-rescue-error pixiv-rescue-chapter-error', '');
+      viewer.prepend(note);
+    }
+    note.textContent = rescueErrorText(error, false);
   }
 
   function renderSeriesChapter(viewer, data) {
@@ -257,7 +289,9 @@
           .then(function (novel) {
             renderSeriesChapter(viewer, novel);
           })
-          .catch(renderError)
+          .catch(function (error) {
+            renderChapterError(viewer, error);
+          })
           .finally(function () {
             button.disabled = false;
           });
@@ -365,6 +399,24 @@
 
   function start() {
     registerTokenMenus();
+    routeRescue();
+    let lastHref = window.location.href;
+    function onRoute() {
+      if (window.location.href === lastHref) return;
+      lastHref = window.location.href;
+      const old = document.querySelector('[' + ROOT_ATTRIBUTE + '="content"]');
+      if (old) old.remove();
+      routeRescue();
+    }
+    const pushState = history.pushState;
+    history.pushState = function () {
+      pushState.apply(history, arguments);
+      onRoute();
+    };
+    window.addEventListener('popstate', onRoute);
+  }
+
+  function routeRescue() {
     if (window.location.pathname === '/novel/show.php') {
       handleNovelPage();
       return;
