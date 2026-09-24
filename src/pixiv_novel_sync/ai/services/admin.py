@@ -22,12 +22,14 @@ from ..model_catalog import (
     ModelCatalogConflictError,
     ModelCatalogValidationError,
     normalize_capabilities,
+    normalize_model_key,
 )
 from ..model_pools import (
     ModelPoolConflictError,
     ModelPoolValidationError,
     expand_pool_ids,
 )
+from ..crypto import AISecretError
 from ..model_router import (
     MAX_CANDIDATE_ATTEMPTS,
     MAX_NETWORK_REQUESTS,
@@ -35,6 +37,7 @@ from ..model_router import (
     MAX_RESOLVED_CANDIDATES,
     CandidateSnapshot,
     ModelRouteConflictError,
+    ModelRouteError,
     ModelRouter,
 )
 from ..model_sync import ModelSyncConflictError
@@ -527,11 +530,22 @@ class AIAdminMixin:
                 # provider_model_id -> routable，供池成员过滤复用运行时判据。
                 # 不额外查库：这里本来就要为每个 Provider 调一次，只是把 items 也留下。
                 routable_by_model: dict[int, bool] = {}
+                capabilities_by_model: dict[int, set[str]] = {}
+                undecryptable: set[int] = set()
                 for provider_row in providers:
-                    catalog = db.list_ai_provider_models(int(provider_row["id"]))
-                    routable[int(provider_row["id"])] = int(catalog["routable"])
+                    provider_id = int(provider_row["id"])
+                    catalog = db.list_ai_provider_models(provider_id)
+                    routable[provider_id] = int(catalog["routable"])
                     for item in catalog["items"]:
-                        routable_by_model[int(item["id"])] = bool(item["routable"])
+                        model_id = int(item["id"])
+                        routable_by_model[model_id] = bool(item["routable"])
+                        capabilities_by_model[model_id] = set(item.get("capabilities") or [])
+                    if provider_row.get("has_api_key"):
+                        secret_row = db.get_ai_provider(provider_id, include_secret=True)
+                        ciphertext = (secret_row or {}).get("api_key_encrypted")
+                        if ciphertext and not self._api_key_decrypts(ciphertext):
+                            undecryptable.add(provider_id)
+                fixed_route_errors = self._fixed_agent_route_errors(db, agents)
         finally:
             db.close()
 
@@ -579,6 +593,12 @@ class AIAdminMixin:
                 routable_models=routable.get(provider_id, 0),
                 pool_referenced=provider_id in pool_referenced,
             )
+            if provider_id in undecryptable:
+                findings.append({
+                    "level": "will_fail",
+                    "code": "api_key_undecryptable",
+                    "message": "已保存的 API Key 无法解密，请重新填写",
+                })
             status = (
                 "will_fail" if any(f["level"] == "will_fail" for f in findings)
                 else ("warn" if findings else "healthy")
@@ -598,7 +618,14 @@ class AIAdminMixin:
             })
 
         agent_items = [
-            self._agent_health_item(agent, provider_status, pools, routable_by_model)
+            self._agent_health_item(
+                agent,
+                provider_status,
+                pools,
+                routable_by_model,
+                capabilities_by_model,
+                fixed_route_errors.get(int(agent["id"])),
+            )
             for agent in agents
         ]
         unhealthy = sum(1 for item in agent_items if item["status"] == "will_fail")
@@ -618,12 +645,50 @@ class AIAdminMixin:
             },
         }
 
+    def _api_key_decrypts(self, ciphertext: str) -> bool:
+        """解得开才算真的有 Key。没配加密密钥时无法判断，不当成假绿。"""
+        try:
+            self.secret_manager.decrypt(ciphertext)
+        except AISecretError as exc:
+            if "缺少环境变量" in str(exc):
+                return True
+            return False
+        return True
+
+    @staticmethod
+    def _fixed_agent_route_errors(
+        db: Database,
+        agents: list[dict[str, Any]],
+    ) -> dict[int, str]:
+        """固定 Agent 复用路由的三条判据：有 Provider、有模型、能力对得上目录。"""
+        errors: dict[int, str] = {}
+        for agent in agents:
+            if not agent.get("enabled") or agent.get("binding_type") == "pool":
+                continue
+            provider_id = agent.get("provider_id")
+            config = AIAgentConfig(
+                id=int(agent["id"]),
+                name=str(agent.get("name") or ""),
+                task_type=str(agent.get("task_type") or "general"),
+                provider_id=int(provider_id) if provider_id else None,
+                model=agent.get("model"),
+                system_prompt=str(agent.get("system_prompt") or ""),
+                required_capabilities=tuple(agent.get("required_capabilities") or ()),
+            )
+            try:
+                ModelRouter._resolve_fixed(db, config)
+            except ModelRouteError as exc:
+                errors[int(agent["id"])] = str(exc)
+        return errors
+
     @staticmethod
     def _agent_health_item(
         agent: Mapping[str, Any],
         provider_status: Mapping[int, str],
         pools: Mapping[int, Mapping[str, Any]],
         routable_by_model: Mapping[int, bool],
+        capabilities_by_model: Mapping[int, set[str]] | None = None,
+        fixed_route_error: str | None = None,
     ) -> dict[str, Any]:
         """Agent 的状态是**继承**来的：它自己没坏，是它绑的东西坏了。
 
@@ -664,14 +729,27 @@ class AIAdminMixin:
                     for member in (pools.get(pool_id) or {}).get("members", [])
                     if member.get("enabled")
                 ]
-                # 再过运行时那道 routable，成员的模型行或其 Provider 被停用都在此落选
-                members = [
-                    member
-                    for member in enabled_members
-                    if routable_by_model.get(int(member.get("provider_model_id") or 0))
-                ]
+                # 再过运行时那道 routable，以及 Agent 声明的能力要求。
+                required = set(agent.get("required_capabilities") or ())
+                capability_map = capabilities_by_model or {}
+                members = []
+                for member in enabled_members:
+                    model_id = int(member.get("provider_model_id") or 0)
+                    if not routable_by_model.get(model_id):
+                        continue
+                    if required and not required.issubset(capability_map.get(model_id, set())):
+                        continue
+                    members.append(member)
                 if not enabled_members:
                     status, reason = "will_fail", "绑定的模型池没有启用成员"
+                elif not members and required and any(
+                    routable_by_model.get(int(member.get("provider_model_id") or 0))
+                    for member in enabled_members
+                ):
+                    status, reason = (
+                        "will_fail",
+                        "模型池及其后备池里没有满足能力要求的可路由模型",
+                    )
                 elif not members:
                     # 与上一句刻意分开：成员开关本来就是开着的，让用户去开它只会白跑一趟
                     status, reason = (
@@ -692,6 +770,8 @@ class AIAdminMixin:
                 status, reason = "will_fail", "没有绑定 Provider"
             elif provider_status.get(provider_id) == "will_fail":
                 status, reason = "will_fail", "绑定的 Provider 配置必失败"
+            elif fixed_route_error:
+                status, reason = "will_fail", fixed_route_error
         return {
             "id": int(agent["id"]),
             "name": agent.get("name"),
@@ -718,14 +798,48 @@ class AIAdminMixin:
         finally:
             db.close()
 
-    def update_provider(self, provider_id: int, payload: dict[str, Any]) -> None:
+    def update_provider(self, provider_id: int, payload: dict[str, Any]) -> list[dict[str, str]]:
         data = self._normalize_provider_payload(payload, require_key=False, partial=True)
         db = self._db()
         try:
             db.update_ai_provider(provider_id, data)
             self._invalidate_provider(provider_id)
+            if "enabled" in data and not data["enabled"]:
+                return self._lint_provider(db, provider_id)
+            return []
         finally:
             db.close()
+
+    def _lint_provider(self, db: Database, provider_id: int) -> list[dict[str, str]]:
+        """停用之后立刻用和健康横幅同一套规则给一次提示。不拦保存。"""
+        row = db.get_ai_provider(provider_id)
+        if row is None:
+            return []
+        bound = db.conn.execute(
+            """
+            SELECT COUNT(*) FROM ai_agents
+            WHERE binding_type = 'fixed' AND provider_id = ?
+            """,
+            (provider_id,),
+        ).fetchone()[0]
+        catalog = db.list_ai_provider_models(provider_id)
+        pool_hit = db.conn.execute(
+            """
+            SELECT 1
+            FROM ai_model_pool_members AS pm
+            JOIN ai_provider_models AS m ON m.id = pm.provider_model_id
+            JOIN ai_model_pools AS p ON p.id = pm.pool_id
+            WHERE m.provider_id = ? AND pm.enabled = 1 AND p.enabled = 1
+            LIMIT 1
+            """,
+            (provider_id,),
+        ).fetchone()
+        return self.provider_config_lint(
+            row,
+            bound_agent_count=int(bound),
+            routable_models=int(catalog.get("routable") or 0),
+            pool_referenced=pool_hit is not None,
+        )
 
     def delete_provider(self, provider_id: int) -> None:
         db = self._db()
@@ -811,6 +925,7 @@ class AIAdminMixin:
             default_model=None,
             timeout_seconds=int(payload.get("timeout_seconds") or 120),
             context_window=int(payload.get("context_window") or 128000),
+            proxy=(str(payload.get("proxy")).strip() or None) if payload.get("proxy") else None,
         )
         provider = create_provider(config)
         started = time.time()
@@ -1246,7 +1361,11 @@ class AIAdminMixin:
                 # NULL（model_schema.py:164-172），不归一化就会被 SQLite 整条拒掉。
                 normalized = {
                     "binding_type": binding_type,
-                    "model": binding.get("model") if binding_type == "fixed" else None,
+                    "model": (
+                        self._normalize_saved_model_key(binding.get("model"))
+                        if binding_type == "fixed"
+                        else None
+                    ),
                     "provider_id": binding.get("provider_id") if binding_type == "fixed" else None,
                     "model_pool_id": binding.get("model_pool_id") if binding_type == "pool" else None,
                 }
@@ -1254,6 +1373,15 @@ class AIAdminMixin:
         finally:
             db.close()
         return {"updated": int(updated)}
+
+    @staticmethod
+    def _normalize_saved_model_key(value: Any) -> str | None:
+        if value is None or value == "":
+            return None
+        try:
+            return normalize_model_key(value)
+        except ModelCatalogValidationError as exc:
+            raise AIServiceError(str(exc)) from exc
 
     def create_document(self, payload: dict[str, Any]) -> int:
         content = str(payload.get("content") or "")
@@ -1306,7 +1434,9 @@ class AIAdminMixin:
 
     def _normalize_provider_payload(self, payload: dict[str, Any], require_key: bool = False, partial: bool = False) -> dict[str, Any]:
         data: dict[str, Any] = {}
-        keys = ["name", "provider_type", "base_url", "default_model", "available_models", "timeout_seconds", "max_retries", "proxy", "context_window", "stream_enabled", "enabled"]
+        if "available_models" in payload:
+            raise AIServiceError("不再接受 available_models，模型请写入目录")
+        keys = ["name", "provider_type", "base_url", "default_model", "timeout_seconds", "max_retries", "proxy", "context_window", "stream_enabled", "enabled"]
         for key in keys:
             if key in payload:
                 data[key] = payload[key]
@@ -1327,6 +1457,8 @@ class AIAdminMixin:
                 data["base_url"] = None
         if data.get("provider_type") not in {None, "openai_compatible", "anthropic", "xai"}:
             raise AIServiceError("不支持的 Provider 类型")
+        if "default_model" in data:
+            data["default_model"] = self._normalize_saved_model_key(data.get("default_model"))
         api_key = str(payload.get("api_key") or "")
         if api_key:
             data["api_key_encrypted"] = self.secret_manager.encrypt(api_key)
@@ -1385,6 +1517,8 @@ class AIAdminMixin:
             raise AIServiceError("固定模型和模型池不能同时提交")
         if binding_type == "fixed" and data.get("model_pool_id") is not None:
             raise AIServiceError("固定模型和模型池不能同时提交")
+        if "model" in data:
+            data["model"] = self._normalize_saved_model_key(data.get("model"))
         if "required_capabilities" in data:
             try:
                 capabilities = normalize_capabilities(
@@ -1485,8 +1619,10 @@ class AIAdminMixin:
         return AIProviderConfig(
             id=int(row["id"]), name=row["name"], provider_type=row["provider_type"],
             base_url=row.get("base_url"), api_key=api_key, default_model=row.get("default_model"),
-            timeout_seconds=int(row.get("timeout_seconds") or 120), max_retries=int(row.get("max_retries") or 2),
-            proxy=row.get("proxy"), context_window=int(row.get("context_window") or 128000),
+            timeout_seconds=int(row["timeout_seconds"]) if row.get("timeout_seconds") is not None else 120,
+            max_retries=int(row["max_retries"]) if row.get("max_retries") is not None else 2,
+            proxy=row.get("proxy"),
+            context_window=int(row["context_window"]) if row.get("context_window") is not None else 128000,
             stream_enabled=bool(row.get("stream_enabled", 1)),
             enabled=bool(row.get("enabled")),
         )
@@ -1503,9 +1639,12 @@ class AIAdminMixin:
         return AIAgentConfig(
             id=int(row["id"]), name=row["name"], task_type=row["task_type"],
             provider_id=int(provider_id) if provider_id is not None else None,
-            model=row.get("model"), system_prompt=row["system_prompt"], temperature=float(row.get("temperature") or 0.8),
-            top_p=float(row.get("top_p") or 0.9), max_tokens=int(row.get("max_tokens") or 4000),
-            context_window=int(row.get("context_window") or 16000), enabled=bool(row.get("enabled")),
+            model=row.get("model"), system_prompt=row["system_prompt"],
+            temperature=float(row["temperature"]) if row.get("temperature") is not None else 0.8,
+            top_p=float(row["top_p"]) if row.get("top_p") is not None else 0.9,
+            max_tokens=int(row["max_tokens"]) if row.get("max_tokens") is not None else 4000,
+            context_window=int(row["context_window"]) if row.get("context_window") is not None else 16000,
+            enabled=bool(row.get("enabled")),
             binding_type=row.get("binding_type") or "fixed",
             model_pool_id=(
                 int(row["model_pool_id"])
@@ -1567,6 +1706,21 @@ class AIAdminMixin:
             if not job:
                 raise AIServiceError("任务不存在")
             return job
+        finally:
+            db.close()
+
+    def cancel_job(self, job_id: str) -> dict[str, Any]:
+        """请求取消仍在运行的 AI 任务。真正停下来要等路由心跳读到标记。"""
+        db = self._db()
+        try:
+            job = db.get_ai_job(job_id)
+            if not job:
+                raise AINotFoundError("任务不存在")
+            if job.get("status") != "running":
+                raise AIConflictError("任务已经结束，不能取消")
+            if not db.request_ai_job_cancel(job_id):
+                raise AIConflictError("任务已经结束，不能取消")
+            return {"job_id": job_id, "cancel_requested": True}
         finally:
             db.close()
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
+from datetime import datetime, timedelta, timezone
 from collections.abc import Iterator
 from collections.abc import Generator, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -562,6 +564,15 @@ def test_saved_snapshot_rejects_pool_or_agent_version_change(
         router.resolve_candidates(pool_agent, snapshot=fresh_snapshot)
 
 
+def test_heuristic_estimate_counts_chinese_tighter_than_utf8_bytes() -> None:
+    from pixiv_novel_sync.ai.model_router import estimate_token_count
+
+    text = "中" * 1500
+    assert estimate_token_count(text) == 1000
+    assert estimate_token_count(text) < len(text.encode("utf-8"))
+    assert estimate_token_count("") == 0
+
+
 def test_prompt_budget_uses_smallest_candidate_window(
     router: ModelRouter,
     pool_agent: AIAgentConfig,
@@ -579,7 +590,7 @@ def test_prompt_budget_uses_smallest_candidate_window(
     assert budget.safety_margin == 256
     assert budget.message_overhead == 6
     assert budget.input_budget == 8_000 - 1_000 - 6 - 256
-    assert budget.estimator == "utf8_bytes"
+    assert budget.estimator == "heuristic"
     assert provider_state["calls"] == list(pool_setup_provider_ids(snapshot))
 
 
@@ -611,7 +622,7 @@ def test_prompt_budget_uses_provider_estimator_only_when_all_are_positive(
         MESSAGES,
         max_tokens=1_000,
     )
-    assert fallback.estimator == "utf8_bytes"
+    assert fallback.estimator == "heuristic"
 
 
 @pytest.mark.parametrize("max_tokens", [0, 1_000_001, True])
@@ -1222,6 +1233,63 @@ def test_expired_deadline_fails_without_attempt_or_provider(
     assert "route_budget_exhausted" in db.get_ai_job(route_request.job_id)[
         "error_message"
     ]
+
+
+def test_cancel_flag_reaches_the_route_through_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+    route_router: ModelRouter,
+    route_request: RouteRequest,
+    fake_providers: FakeProviderRegistry,
+    db: Database,
+) -> None:
+    monkeypatch.setattr(
+        "pixiv_novel_sync.ai.model_router._HEARTBEAT_INTERVAL_SECONDS",
+        0.01,
+    )
+
+    def mark_cancel() -> AIStreamChunk:
+        assert db.request_ai_job_cancel(route_request.job_id) is True
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            if route_request.is_cancelled is not None and route_request.is_cancelled():
+                return AIStreamChunk(type="delta", text="晚了")
+            time.sleep(0.01)
+        raise AssertionError("取消标记没有传进路由")
+
+    fake_providers.succeed("p1", [mark_cancel, normal_done()])
+
+    result = route_router.execute(route_request)
+
+    assert result.finish_state == "cancelled"
+    assert result.output_text == ""
+    assert db.get_ai_job(route_request.job_id)["status"] == "cancelled"
+
+
+def test_deadline_expiring_during_stream_cancels_before_the_delta(
+    route_router: ModelRouter,
+    route_request: RouteRequest,
+    fake_providers: FakeProviderRegistry,
+    db: Database,
+) -> None:
+    soon = (datetime.now(timezone.utc) + timedelta(seconds=1)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    db.conn.execute(
+        "UPDATE ai_jobs SET route_deadline_at = ? WHERE job_id = ?",
+        (soon, route_request.job_id),
+    )
+    db.conn.commit()
+
+    def slow_chunk() -> AIStreamChunk:
+        time.sleep(1.4)
+        return AIStreamChunk(type="delta", text="晚了")
+
+    fake_providers.succeed("p1", [slow_chunk, normal_done()])
+
+    result = route_router.execute(route_request)
+
+    assert result.finish_state == "cancelled"
+    assert result.output_text == ""
 
 
 def test_cancellation_after_delta_closes_iterator_and_never_switches(

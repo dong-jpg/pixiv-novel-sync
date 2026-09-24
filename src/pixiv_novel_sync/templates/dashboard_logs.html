@@ -69,9 +69,7 @@
         <input type="checkbox" v-model="autoRefresh" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500 cursor-pointer">
         自动刷新
       </label>
-      <button @click="applyFilter" class="px-4 py-1.5 bg-brand-500 text-white hover:bg-brand-600 text-sm font-medium rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2">
-        筛选
-      </button>
+      <span v-if="autoRefresh && modalOpen" class="text-xs text-amber-700">详情打开时暂停自动刷新</span>
     </div>
   </div>
 
@@ -83,10 +81,10 @@
           <tr>
             <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">任务类型</th>
             <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">任务名称</th>
-            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">来源</th>
+            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider hidden md:table-cell">来源</th>
             <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">状态</th>
-            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">开始时间</th>
-            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">耗时</th>
+            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider hidden lg:table-cell">开始时间</th>
+            <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider hidden lg:table-cell">耗时</th>
             <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider">结果</th>
             <th scope="col" class="px-5 py-3 text-xs font-medium text-pixiv-gray uppercase tracking-wider text-right">操作</th>
           </tr>
@@ -109,19 +107,19 @@
               <p class="text-pixiv-gray text-sm">暂无相关的日志记录</p>
             </td>
           </tr>
-          <tr v-else v-for="log in items" :key="log.job_id || log.id" @click="showDetail(log)" class="hover:bg-gray-50/50 transition-colors cursor-pointer">
+          <tr v-else v-for="log in items" :key="log.job_id || log.id" tabindex="0" @click="showDetail(log)" @keydown.enter="showDetail(log)" class="hover:bg-gray-50/50 transition-colors cursor-pointer focus:bg-brand-50 focus:outline-none">
             <td class="px-5 py-3 whitespace-nowrap text-sm">
               <span class="bg-gray-50 text-gray-700 border border-gray-100 px-2 py-1 rounded-md text-xs font-medium">{{ getTaskTypeName(log.task_type) }}</span>
             </td>
             <td class="px-5 py-3 whitespace-nowrap text-sm text-gray-900 font-medium max-w-[200px] truncate">{{ log.task_name }}</td>
-            <td class="px-5 py-3 whitespace-nowrap text-sm font-medium" :class="log.is_auto_sync ? 'text-brand-500' : 'text-pixiv-gray'">
+            <td class="px-5 py-3 whitespace-nowrap text-sm font-medium hidden md:table-cell" :class="log.is_auto_sync ? 'text-brand-500' : 'text-pixiv-gray'">
               {{ log.category === 'ai' ? 'AI 创作' : (log.is_auto_sync ? '定时' : '手工') }}
             </td>
             <td class="px-5 py-3 whitespace-nowrap">
               <app-badge :type="getStatusConfig(log.status).type">{{ getStatusConfig(log.status).label }}</app-badge>
             </td>
-            <td class="px-5 py-3 whitespace-nowrap text-sm text-pixiv-gray">{{ formatDate(log.started_at) }}</td>
-            <td class="px-5 py-3 whitespace-nowrap text-sm text-pixiv-gray">{{ formatDuration(log.duration_seconds) }}</td>
+            <td class="px-5 py-3 whitespace-nowrap text-sm text-pixiv-gray hidden lg:table-cell">{{ formatDate(log.started_at) }}</td>
+            <td class="px-5 py-3 whitespace-nowrap text-sm text-pixiv-gray hidden lg:table-cell">{{ formatDuration(log.duration_seconds) }}</td>
             <td class="px-5 py-3 whitespace-nowrap text-xs font-medium" :class="resultClass(log)" :title="log.error_message || ''">{{ formatResult(log) }}</td>
             <td class="px-5 py-3 whitespace-nowrap text-right">
               <button @click.stop="showDetail(log)" class="text-brand-500 hover:text-brand-600 font-medium text-sm transition-colors focus:outline-none">详情</button>
@@ -208,6 +206,10 @@
               </tr>
             </tbody>
           </table>
+        </div>
+        <div v-if="selectedLog.status === 'running'" class="flex items-center gap-3">
+          <button @click="cancelAiJob" :disabled="cancelRunning" class="px-4 py-2 bg-red-600 text-white rounded-lg text-sm disabled:opacity-50">{{ cancelRunning ? '正在取消...' : '取消任务' }}</button>
+          <span v-if="cancelNotice" class="text-xs text-amber-700">{{ cancelNotice }}</span>
         </div>
         <div v-if="continueCandidate" class="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-3">
           <div class="text-xs text-amber-800">使用下一个模型继续（显式操作，不会自动重试）</div>
@@ -321,7 +323,7 @@
       <div v-if="selectedLog.logs && selectedLog.logs.length > 0">
         <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider mb-3 pb-2 border-b border-gray-100">执行日志</h3>
         <div class="bg-gray-900 rounded-lg p-4 font-mono text-xs text-gray-300 max-h-64 overflow-y-auto space-y-1">
-          <div v-for="(l, i) in selectedLog.logs" :key="i" :class="l.level === 'error' ? 'text-red-400' : ''">
+          <div v-for="(l, i) in selectedLog.logs" :key="i" :class="logLevelClass(l.level)">
             <span class="text-gray-500 mr-2">[{{ formatTime(l.time) }}]</span>
             {{ l.message }}
           </div>
@@ -356,18 +358,22 @@
       const totalPages = ref(1);
       const totalItems = ref(0);
 
-      const filters = reactive({
-        category: 'sync',
-        task_type: '',
-        source: '',
-        status: '',
-        days: '3'
+      const initialLogQuery = window.readListQuery({
+        category: 'sync', task_type: '', source: '', status: '', days: '3', page: 1,
       });
+      const filters = reactive({
+        category: initialLogQuery.category === 'ai' ? 'ai' : 'sync',
+        task_type: initialLogQuery.task_type,
+        source: initialLogQuery.source,
+        status: initialLogQuery.status,
+        days: initialLogQuery.days
+      });
+      page.value = initialLogQuery.page;
 
       // 两大分类下各自的 task_type 选项
       const SYNC_TASK_OPTIONS = [
-        { value: 'bookmarks', label: '收藏同步' },
-        { value: 'following_list', label: '关注列表' },
+        { value: 'bookmark', label: '收藏同步' },
+        { value: 'following_users', label: '关注列表' },
         { value: 'following_novels', label: '关注小说' },
         { value: 'subscribed_series', label: '追更系列' },
         { value: 'user_status', label: '检查用户状态' },
@@ -406,6 +412,7 @@
         filters.task_type = '';
         filters.status = '';
       });
+      watch(filters, () => applyFilter(), { deep: true });
       const autoRefresh = ref(false);
       let refreshInterval = null;
 
@@ -417,7 +424,8 @@
       const continueStatus = ref('');
       const continueOutput = ref('');
       const continueError = ref('');
-      let csrfToken = '';
+      const cancelRunning = ref(false);
+      const cancelNotice = ref('');
       const RESUMABLE_TASK_TYPES = new Set(['continue', 'rewrite', 'distill_style', 'distill_novel', 'audit', 'plan', 'longform_plan', 'longform_plan_details', 'update_state', 'extract_summary', 'resolve_foreshadow']);
 
       const continueCandidate = computed(() => {
@@ -471,6 +479,14 @@
         } catch (e) {
           error.value = e.message;
         } finally {
+          window.writeListQuery({
+            category: filters.category,
+            task_type: filters.task_type,
+            source: filters.source,
+            status: filters.status,
+            days: filters.days,
+            page: page.value,
+          });
           loading.value = false;
         }
       };
@@ -501,6 +517,8 @@
         continueStatus.value = '';
         continueOutput.value = '';
         continueError.value = '';
+        cancelRunning.value = false;
+        cancelNotice.value = '';
         if (!log) {
           modalOpen.value = false;
           return;
@@ -530,20 +548,11 @@
           if (!res.ok) throw new Error('加载详情失败');
           selectedLog.value = await res.json();
         } catch(e) {
-          alert('加载日志详情失败');
+          window.toast('加载日志详情失败');
           modalOpen.value = false;
         } finally {
           detailLoading.value = false;
         }
-      };
-
-      const ensureCsrfToken = async () => {
-        if (csrfToken) return csrfToken;
-        const response = await fetch('/api/csrf-token');
-        const data = await response.json();
-        if (!response.ok || !data.csrf_token) throw new Error(data.error || '无法获取安全令牌');
-        csrfToken = data.csrf_token;
-        return csrfToken;
       };
 
       const refreshAiJobDetail = async (jobId) => {
@@ -586,11 +595,10 @@
         continueOutput.value = '';
         continueError.value = '';
         try {
-          const token = await ensureCsrfToken();
           const randomPart = window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-          const response = await fetch(`/api/dashboard/ai/jobs/${encodeURIComponent(parent.job_id)}/continue`, {
+          const response = await window.csrfFetch(`/api/dashboard/ai/jobs/${encodeURIComponent(parent.job_id)}/continue`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               parent_job_id: parent.job_id,
               idempotency_key: `continue-${randomPart}`,
@@ -600,7 +608,7 @@
           });
           if (!response.ok) {
             const payload = await response.json();
-            throw new Error(payload.error || '继续任务请求失败');
+            throw new Error(window.errorText(payload, response));
           }
           if (!response.body) throw new Error('浏览器不支持流式响应');
           const reader = response.body.getReader();
@@ -641,13 +649,16 @@
       // Helpers
       const formatDate = (dateStr) => {
         if (!dateStr) return '-';
-        return new Date(dateStr).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        // SQLite 的 CURRENT_TIMESTAMP 不带时区，补 Z 按 UTC 解析，与首页一致
+        const d = new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(dateStr) ? dateStr : dateStr + 'Z');
+        if (isNaN(d)) return dateStr;
+        return d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
       };
 
       const formatTime = (dateStr) => {
         if (!dateStr) return '-';
         if (/^\d{2}:\d{2}:\d{2}$/.test(dateStr)) return dateStr;
-        const d = new Date(dateStr);
+        const d = new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(dateStr) ? dateStr : dateStr + 'Z');
         if (isNaN(d)) return dateStr;
         return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       };
@@ -672,27 +683,23 @@
         return map[status] || { label: status, type: 'gray' };
       };
 
-      const getTaskTypeName = (type) => {
-        const map = {
-          'bookmark': '收藏同步', 'bookmarks': '收藏同步',
-          'following_users': '关注用户', 'following_list': '关注列表', 'following_novels': '关注小说', 'following_series': '关注系列',
-          'subscribed_series': '追更系列',
-          'user_status': '检查用户状态', 'novel_status': '检查小说状态', 'series_status': '检查系列状态',
-          'pending_deletion_detection': '检测取消',
-          'preference_analyze': '增量分析本地偏好', 'recommendation_run': '生成推荐',
-          'manual': '手工任务',
-          // AI 创作任务（与后端 storage/tasks.py 的 _AI_TASK_LABELS 对齐）
-          'chapter_continue': '自动生成章节', 'chapter_pipeline': '自动写作 Pipeline',
-          'longform_plan': '全书规划', 'longform_plan_details': '详细梗概',
-          'continue': '续写', 'rewrite': '改写', 'audit': '内容审计', 'plan': '写前构思',
-          'distill_style': '风格蒸馏', 'distill_novel': '小说蒸馏',
-          'extract_summary': '摘要提取', 'summarize': '摘要提取', 'chat': '创作向导对话',
-          'update_state': '状态记忆更新', 'state_update': '状态记忆更新',
-          'resolve_foreshadow': '伏笔回收', 'foreshadow_resolve': '伏笔回收', 'polish': '润色',
-          'polish_dialogue': '对话润色', 'polish_psychology': '心理描写润色', 'keyword_clean': '关键词清洗'
-        };
-        return map[type] || type;
+      const AI_TASK_LABELS = {
+        chapter_continue: '自动生成章节', chapter_pipeline: '自动写作 Pipeline',
+        longform_plan: '全书规划', longform_plan_details: '详细梗概',
+        continue: '续写', rewrite: '改写', audit: '内容审计', plan: '写前构思',
+        distill_style: '风格蒸馏', distill_novel: '小说蒸馏',
+        extract_summary: '摘要提取', summarize: '摘要提取', chat: '创作向导对话',
+        update_state: '状态记忆更新', state_update: '状态记忆更新',
+        resolve_foreshadow: '伏笔回收', foreshadow_resolve: '伏笔回收', polish: '润色',
+        polish_dialogue: '对话润色', polish_psychology: '心理描写润色',
       };
+      const getTaskTypeName = (type) => (window.TASK_LABELS || {})[type] || AI_TASK_LABELS[type] || type;
+      const logLevelClass = (level) => ({
+        error: 'text-red-400',
+        warning: 'text-amber-300',
+        success: 'text-emerald-300',
+        info: 'text-sky-300',
+      }[level] || 'text-gray-300');
 
       const ABORT_REASON_LABELS = {
         'rate_limited': '疑似 Pixiv 限流，已中止本轮',
@@ -754,6 +761,24 @@
         catch { return String(value ?? ''); }
       };
 
+      const cancelAiJob = async () => {
+        const job = selectedLog.value;
+        if (!job || !job.job_id || cancelRunning.value) return;
+        cancelRunning.value = true;
+        cancelNotice.value = '';
+        try {
+          const res = await window.csrfFetch('/api/dashboard/ai/jobs/' + encodeURIComponent(job.job_id) + '/cancel', { method: 'POST' });
+          const payload = await res.json().catch(() => ({}));
+          if (!res.ok || payload.ok === false) throw new Error(window.errorText(payload, res));
+          cancelNotice.value = '已请求取消，任务会在下一次心跳后停止';
+          selectedLog.value = { ...job, cancel_requested: true };
+        } catch (e) {
+          cancelNotice.value = e.message || '取消失败';
+        } finally {
+          cancelRunning.value = false;
+        }
+      };
+
       const copyDetailText = async (value) => {
         const text = typeof value === 'string' ? value : formatJson(value);
         if (text && window.navigator?.clipboard) await window.navigator.clipboard.writeText(text);
@@ -780,8 +805,9 @@
         taskTypeOptions,
         modalOpen, detailLoading, selectedLog, modalTitle,
         continueCandidate, continueRunning, continueStatus, continueOutput, continueError,
+        cancelRunning, cancelNotice, cancelAiJob,
         applyFilter, handlePageChange, showDetail, continueWithNextModel,
-        formatDate, formatTime, formatDuration, getStatusConfig, getTaskTypeName,
+        formatDate, formatTime, formatDuration, getStatusConfig, getTaskTypeName, logLevelClass,
         formatResult, resultClass, formatJson, copyDetailText, formatAbortReason
       };
     }

@@ -17,121 +17,118 @@ class SchemaMixin:
 
     def init_schema(self) -> None:
         # PRAGMA 已在 conn property 中每连接执行,这里只建表
-        with self._lock:
-            self.conn.executescript(
-                """
-
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                account TEXT,
-                raw_json TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'unknown',
-                last_checked_at TEXT,
-                restricted_streak INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS novels (
-                novel_id INTEGER PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                series_id INTEGER,
-                title TEXT NOT NULL,
-                caption TEXT,
-                visible INTEGER NOT NULL,
-                restrict_value TEXT NOT NULL,
-                x_restrict INTEGER NOT NULL,
-                text_length INTEGER NOT NULL,
-                total_bookmarks INTEGER NOT NULL,
-                total_views INTEGER NOT NULL,
-                cover_url TEXT,
-                tags_json TEXT NOT NULL,
-                create_date TEXT,
-                raw_json TEXT NOT NULL,
-                meta_hash TEXT NOT NULL,
-                source_url TEXT,
-                first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS novel_texts (
-                novel_id INTEGER PRIMARY KEY REFERENCES novels(novel_id) ON DELETE CASCADE,
-                text_raw TEXT NOT NULL,
-                has_content INTEGER NOT NULL DEFAULT 0,
-                text_markdown TEXT,
-                text_hash TEXT NOT NULL,
-                fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS assets (
-                asset_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                novel_id INTEGER NOT NULL REFERENCES novels(novel_id) ON DELETE CASCADE,
-                asset_type TEXT NOT NULL,
-                remote_url TEXT NOT NULL,
-                local_path TEXT NOT NULL,
-                file_hash TEXT,
-                downloaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(novel_id, asset_type, remote_url)
-            );
-
-            CREATE TABLE IF NOT EXISTS sources (
-                novel_id INTEGER NOT NULL REFERENCES novels(novel_id) ON DELETE CASCADE,
-                source_type TEXT NOT NULL,
-                source_key TEXT NOT NULL,
-                discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (novel_id, source_type, source_key)
-            );
-
-            CREATE TABLE IF NOT EXISTS series (
-                series_id INTEGER PRIMARY KEY,
-                title TEXT NOT NULL,
-                description TEXT,
-                user_id INTEGER NOT NULL,
-                cover_url TEXT,
-                total_novels INTEGER DEFAULT 0,
-                source_url TEXT,
-                first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE VIRTUAL TABLE IF NOT EXISTS novel_fts USING fts5(
-                novel_id UNINDEXED,
-                title,
-                caption,
-                author_name,
-                body
-            );
-
-            CREATE TABLE IF NOT EXISTS task_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_type TEXT NOT NULL,
-                task_name TEXT NOT NULL,
-                job_id TEXT,
-                status TEXT NOT NULL DEFAULT 'running',
-                started_at TEXT NOT NULL,
-                finished_at TEXT,
-                duration_seconds REAL,
-                stats_json TEXT,
-                error_message TEXT,
-                logs_json TEXT,
-                is_auto_sync INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_task_logs_type ON task_logs(task_type);
-            CREATE INDEX IF NOT EXISTS idx_task_logs_started_at ON task_logs(started_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_task_logs_auto_sync ON task_logs(is_auto_sync);
-
-            CREATE INDEX IF NOT EXISTS idx_novels_user_id ON novels(user_id);
-            CREATE INDEX IF NOT EXISTS idx_novels_series_id ON novels(series_id);
-            CREATE INDEX IF NOT EXISTS idx_novels_last_seen_at ON novels(last_seen_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_sources_source_type ON sources(source_type);
-
-            -- Phase 5性能:高频WHERE条件索引
-            CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
-            CREATE INDEX IF NOT EXISTS idx_assets_novel_id ON assets(novel_id);
-            CREATE INDEX IF NOT EXISTS idx_sources_novel_id ON sources(novel_id);
+        self._assert_no_interrupted_rebuild()
+        self.conn.executescript(
             """
+
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            account TEXT,
+            raw_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'unknown',
+            last_checked_at TEXT,
+            restricted_streak INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS novels (
+            novel_id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            series_id INTEGER,
+            title TEXT NOT NULL,
+            caption TEXT,
+            visible INTEGER NOT NULL,
+            restrict_value TEXT NOT NULL,
+            x_restrict INTEGER NOT NULL,
+            text_length INTEGER NOT NULL,
+            total_bookmarks INTEGER NOT NULL,
+            total_views INTEGER NOT NULL,
+            cover_url TEXT,
+            tags_json TEXT NOT NULL,
+            create_date TEXT,
+            raw_json TEXT NOT NULL,
+            meta_hash TEXT NOT NULL,
+            source_url TEXT,
+            archive_dir TEXT,
+            first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS novel_texts (
+            novel_id INTEGER PRIMARY KEY REFERENCES novels(novel_id) ON DELETE CASCADE,
+            text_raw TEXT NOT NULL,
+            has_content INTEGER NOT NULL DEFAULT 0,
+            text_markdown TEXT,
+            text_hash TEXT NOT NULL,
+            fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS assets (
+            asset_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            novel_id INTEGER NOT NULL REFERENCES novels(novel_id) ON DELETE CASCADE,
+            asset_type TEXT NOT NULL,
+            remote_url TEXT NOT NULL,
+            local_path TEXT NOT NULL,
+            file_hash TEXT,
+            downloaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(novel_id, asset_type, remote_url)
+        );
+
+        CREATE TABLE IF NOT EXISTS sources (
+            novel_id INTEGER NOT NULL REFERENCES novels(novel_id) ON DELETE CASCADE,
+            source_type TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (novel_id, source_type, source_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS series (
+            series_id INTEGER PRIMARY KEY,
+            title TEXT NOT NULL,
+            description TEXT,
+            user_id INTEGER NOT NULL,
+            cover_url TEXT,
+            total_novels INTEGER DEFAULT 0,
+            source_url TEXT,
+            first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS novel_fts USING fts5(
+            novel_id UNINDEXED,
+            title,
+            caption,
+            author_name,
+            body
+        );
+
+        CREATE TABLE IF NOT EXISTS task_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_type TEXT NOT NULL,
+            task_name TEXT NOT NULL,
+            job_id TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            duration_seconds REAL,
+            stats_json TEXT,
+            error_message TEXT,
+            logs_json TEXT,
+            is_auto_sync INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_task_logs_type ON task_logs(task_type);
+        CREATE INDEX IF NOT EXISTS idx_task_logs_started_at ON task_logs(started_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_novels_user_id ON novels(user_id);
+        CREATE INDEX IF NOT EXISTS idx_novels_series_id ON novels(series_id);
+        CREATE INDEX IF NOT EXISTS idx_novels_last_seen_at ON novels(last_seen_at DESC);
+
+        -- Phase 5性能:高频WHERE条件索引
+        CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+        """
         )
         # 迁移：为旧版 users 表添加 status、last_checked_at、restricted_streak 字段
         self._migrate_users_table()
@@ -141,7 +138,7 @@ class SchemaMixin:
         self._migrate_novels_table()
         # 迁移：为 series 表添加 is_subscribed、status、last_checked_at 字段
         self._migrate_series_table()
-        # 注意：不再在 init_schema 常规路径里调用 _fix_stale_running_logs()，
+        # 注意：不再在 init_schema 常规路径里把 running 日志改成失败，
         # 否则 Web 请求并发打开数据库时会把正在运行的任务误标为 failed。
         # 进程重启后的遗留 running 日志由应用启动时显式调用
         # fail_stale_task_logs()（见 webapp.create_app）处理一次。
@@ -169,7 +166,34 @@ class SchemaMixin:
         # 迁移：把 novel_fts 的 rowid 对齐到 novel_id（历史错位索引整表重建）
         self._migrate_novel_fts_rowid()
         self._migrate_core_foreign_keys()
+        self._migrate_query_indexes()
         self._commit_if_needed()
+
+    def _migrate_query_indexes(self) -> None:
+        """丢掉被主键或唯一约束覆盖的索引，给轮转查询补上能走的索引。"""
+        for name in (
+            "idx_assets_novel_id",
+            "idx_sources_novel_id",
+            "idx_ai_jobs_job_id",
+            "idx_sources_source_type",
+            "idx_rescue_overrides_action",
+            "idx_reading_progress_status",
+            "idx_reading_progress_last_read",
+            "idx_task_logs_auto_sync",
+        ):
+            self.conn.execute(f"DROP INDEX IF EXISTS {name}")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_novels_last_checked ON novels(last_checked_at, novel_id)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_last_checked ON users(last_checked_at, user_id)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_series_last_checked ON series(last_checked_at, series_id)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_novels_status ON novels(status)"
+        )
 
     def _has_foreign_key(self, table_name: str, column_name: str, target_table: str) -> bool:
         return any(
@@ -178,13 +202,19 @@ class SchemaMixin:
         )
 
     def _migrate_core_foreign_keys(self) -> None:
+        rebuilt = False
         if not self._has_foreign_key("novel_texts", "novel_id", "novels"):
             self._rebuild_novel_texts_with_foreign_key()
+            rebuilt = True
         if not self._has_foreign_key("assets", "novel_id", "novels"):
             self._rebuild_assets_with_foreign_key()
+            rebuilt = True
         if not self._has_foreign_key("sources", "novel_id", "novels"):
             self._rebuild_sources_with_foreign_key()
+            rebuilt = True
         self.conn.execute("PRAGMA foreign_keys=ON")
+        if not rebuilt:
+            return
         violations = self.conn.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             # 不再 RuntimeError：历史数据残留 FK 违规不应让全部路由 500。
@@ -260,15 +290,37 @@ class SchemaMixin:
             """,
         )
 
+    def _assert_no_interrupted_rebuild(self) -> None:
+        leftovers = [
+            row[0]
+            for row in self.conn.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type = 'table'
+                  AND name IN ('novel_texts_old', 'assets_old', 'sources_old')
+                """
+            )
+        ]
+        if leftovers:
+            raise RuntimeError(f"检测到未完成的表重建，请先处理: {', '.join(leftovers)}")
+
     def _rebuild_table_with_foreign_key(self, table_name: str, create_sql: str, copy_sql: str) -> None:
         old_name = f"{table_name}_old"
+        self._commit_if_needed()
+        existing = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (old_name,),
+        ).fetchone()
+        if existing is not None:
+            raise RuntimeError(f"检测到未完成的表重建，请先处理: {old_name}")
+        # foreign_keys 开关不能放进事务。
         self.conn.execute("PRAGMA foreign_keys=OFF")
         try:
-            self.conn.execute(f"DROP TABLE IF EXISTS {old_name}")
-            self.conn.execute(f"ALTER TABLE {table_name} RENAME TO {old_name}")
-            self.conn.execute(create_sql)
-            self.conn.execute(copy_sql)
-            self.conn.execute(f"DROP TABLE {old_name}")
+            with self.transaction():
+                self.conn.execute(f"ALTER TABLE {table_name} RENAME TO {old_name}")
+                self.conn.execute(create_sql)
+                self.conn.execute(copy_sql)
+                self.conn.execute(f"DROP TABLE {old_name}")
         finally:
             self.conn.execute("PRAGMA foreign_keys=ON")
 
@@ -293,6 +345,11 @@ class SchemaMixin:
     def _fix_cleared_status(self) -> None:
         """重置错误标记为 cleared 的用户状态为 unknown"""
         try:
+            pending = self.conn.execute(
+                "SELECT 1 FROM users WHERE status = 'cleared' LIMIT 1"
+            ).fetchone()
+            if pending is None:
+                return
             self.conn.execute("UPDATE users SET status = 'unknown' WHERE status = 'cleared'")
             self._commit_if_needed()
         except Exception:
@@ -313,10 +370,6 @@ class SchemaMixin:
         except Exception:
             return 0
 
-    def _fix_stale_running_logs(self) -> None:
-        """将进程重启后遗留的 running 状态日志标记为 failed（兼容旧调用）"""
-        self.fail_stale_task_logs()
-
     def _migrate_novels_table(self) -> None:
         """为 novels 表添加 status、last_checked_at 和 source_url 字段"""
         cursor = self.conn.execute("PRAGMA table_info(novels)")
@@ -329,10 +382,42 @@ class SchemaMixin:
         # 负责维护。它给「Pixiv 原站还在不在」提供一个不依赖 status 推断的判定入口。
         if "source_url" not in columns:
             self.conn.execute("ALTER TABLE novels ADD COLUMN source_url TEXT")
-        self.conn.execute(
-            "UPDATE novels SET source_url = ? || novel_id "
-            "WHERE source_url IS NULL OR source_url = ''",
-            (PIXIV_NOVEL_URL_PREFIX,),
+        missing_url = self.conn.execute(
+            "SELECT 1 FROM novels WHERE source_url IS NULL OR source_url = '' LIMIT 1"
+        ).fetchone()
+        if missing_url is not None:
+            self.conn.execute(
+                "UPDATE novels SET source_url = ? || novel_id "
+                "WHERE source_url IS NULL OR source_url = ''",
+                (PIXIV_NOVEL_URL_PREFIX,),
+            )
+        if "archive_dir" not in columns:
+            self.conn.execute("ALTER TABLE novels ADD COLUMN archive_dir TEXT")
+        self._backfill_novel_archive_dirs()
+
+    def _backfill_novel_archive_dirs(self) -> None:
+        """按当前作者名补上还没记下的归档相对路径。已有值不覆盖。"""
+        pending = self.conn.execute(
+            "SELECT 1 FROM novels WHERE archive_dir IS NULL OR archive_dir = '' LIMIT 1"
+        ).fetchone()
+        if pending is None:
+            return
+        from ..storage_files import FileStorage
+
+        rows = self.conn.execute(
+            """
+            SELECT n.novel_id, n.user_id, n.title, COALESCE(u.name, 'unknown')
+            FROM novels n
+            LEFT JOIN users u ON u.user_id = n.user_id
+            WHERE n.archive_dir IS NULL OR n.archive_dir = ''
+            """
+        ).fetchall()
+        self.conn.executemany(
+            "UPDATE novels SET archive_dir = ? WHERE novel_id = ?",
+            [
+                (FileStorage.relative_novel_dir(row[1], row[3], row[0], row[2] or ""), row[0])
+                for row in rows
+            ],
         )
 
     def _migrate_novel_texts_table(self) -> None:
@@ -359,14 +444,22 @@ class SchemaMixin:
         改法是让 rowid 等于 novel_id，按 ID 的读写一律走 rowid（FTS5 主键，
         O(1)）。历史数据的 rowid 全部错位，只能整表重建。
         """
-        row = self.conn.execute("SELECT rowid, novel_id FROM novel_fts LIMIT 1").fetchone()
-        if row is None:
+        rows = self.conn.execute(
+            """
+            SELECT rowid, novel_id FROM (
+                SELECT rowid, novel_id FROM novel_fts ORDER BY rowid ASC LIMIT 1
+            )
+            UNION ALL
+            SELECT rowid, novel_id FROM (
+                SELECT rowid, novel_id FROM novel_fts ORDER BY rowid DESC LIMIT 1
+            )
+            """
+        ).fetchall()
+        if not rows:
             # 空索引：建表语句本身不写 rowid，后续写入路径会显式指定，无需重建。
             return
-        if int(row[0]) == int(row[1]):
-            # 已对齐 ⇒ 幂等 no-op。探测只取一行：写入路径是唯一入口，所以要么
-            # 全部对齐（新代码）要么全部错位（旧代码）。若曾中途崩溃留下混合状态，
-            # LIMIT 1 取到的是最小 rowid，即旧的错位行，仍会触发重建——偏安全侧。
+        if all(int(row[0]) == int(row[1]) for row in rows):
+            # 头尾都对齐才跳过。只看最小 rowid 会漏掉「前面已对齐、尾部仍错位」的半截重建。
             return
 
         total = int(self.conn.execute("SELECT COUNT(*) FROM novel_fts").fetchone()[0])
@@ -424,9 +517,6 @@ class SchemaMixin:
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (item_type, item_id)
             );
-
-            CREATE INDEX IF NOT EXISTS idx_rescue_overrides_action
-                ON rescue_overrides(action);
 
             CREATE TABLE IF NOT EXISTS rescue_api_token (
                 singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
@@ -505,14 +595,25 @@ class SchemaMixin:
                 ON rescue_catalog_sources(source_kind, item_type, item_id);
             """
         )
-        self.conn.execute(
+        missing_membership = self.conn.execute(
             """
-            INSERT OR IGNORE INTO rescue_catalog_memberships (novel_id, series_id)
-            SELECT n.novel_id, n.series_id
+            SELECT 1
             FROM novels n
             JOIN series se ON se.series_id = n.series_id
+            LEFT JOIN rescue_catalog_memberships m ON m.novel_id = n.novel_id
+            WHERE m.novel_id IS NULL
+            LIMIT 1
             """
-        )
+        ).fetchone()
+        if missing_membership is not None:
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO rescue_catalog_memberships (novel_id, series_id)
+                SELECT n.novel_id, n.series_id
+                FROM novels n
+                JOIN series se ON se.series_id = n.series_id
+                """
+            )
         self._commit_if_needed()
 
     def _migrate_series_table(self) -> None:
@@ -527,43 +628,15 @@ class SchemaMixin:
             self.conn.execute("ALTER TABLE series ADD COLUMN last_checked_at TEXT")
         if "source_url" not in columns:
             self.conn.execute("ALTER TABLE series ADD COLUMN source_url TEXT")
-        self.conn.execute(
-            "UPDATE series SET source_url = ? || series_id "
-            "WHERE source_url IS NULL OR source_url = ''",
-            (PIXIV_SERIES_URL_PREFIX,),
-        )
-
-    def init_sync_check_table(self) -> None:
-        """初始化同步检查表"""
-        self.conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS sync_check_list (
-                scope TEXT NOT NULL DEFAULT '_',
-                novel_id INTEGER NOT NULL,
-                exists_local INTEGER NOT NULL DEFAULT 0,
-                checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (scope, novel_id)
-            );
-            """
-        )
-        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(sync_check_list)").fetchall()}
-        if "scope" not in columns:
-            self.conn.executescript(
-                """
-                ALTER TABLE sync_check_list RENAME TO sync_check_list_old;
-                CREATE TABLE sync_check_list (
-                    scope TEXT NOT NULL DEFAULT '_',
-                    novel_id INTEGER NOT NULL,
-                    exists_local INTEGER NOT NULL DEFAULT 0,
-                    checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (scope, novel_id)
-                );
-                INSERT OR REPLACE INTO sync_check_list (scope, novel_id, exists_local, checked_at)
-                SELECT '_', novel_id, exists_local, checked_at FROM sync_check_list_old;
-                DROP TABLE sync_check_list_old;
-                """
+        missing_url = self.conn.execute(
+            "SELECT 1 FROM series WHERE source_url IS NULL OR source_url = '' LIMIT 1"
+        ).fetchone()
+        if missing_url is not None:
+            self.conn.execute(
+                "UPDATE series SET source_url = ? || series_id "
+                "WHERE source_url IS NULL OR source_url = ''",
+                (PIXIV_SERIES_URL_PREFIX,),
             )
-        self._commit_if_needed()
 
     def _migrate_preference_tables(self) -> None:
         """创建偏好画像与推荐相关表。"""
@@ -809,25 +882,23 @@ class SchemaMixin:
 
             CREATE INDEX IF NOT EXISTS idx_ai_agents_task_type ON ai_agents(task_type);
             CREATE INDEX IF NOT EXISTS idx_ai_agents_provider_id ON ai_agents(provider_id);
-            CREATE INDEX IF NOT EXISTS idx_ai_jobs_job_id ON ai_jobs(job_id);
             CREATE INDEX IF NOT EXISTS idx_ai_jobs_created_at ON ai_jobs(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_ai_drafts_updated_at ON ai_drafts(updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_ai_documents_hash ON ai_documents(content_hash);
             CREATE INDEX IF NOT EXISTS idx_ai_prompt_templates_category ON ai_prompt_templates(category);
             """
         )
-        # 迁移：为已有 ai_providers 表添加 context_window 列
-        try:
-            self.conn.execute("ALTER TABLE ai_providers ADD COLUMN context_window INTEGER NOT NULL DEFAULT 128000")
-            self.conn.commit()
-        except Exception:
-            pass  # 列已存在则忽略
-        # 迁移：为已有 ai_providers 表添加 stream_enabled 列
-        try:
-            self.conn.execute("ALTER TABLE ai_providers ADD COLUMN stream_enabled INTEGER NOT NULL DEFAULT 1")
-            self.conn.commit()
-        except Exception:
-            pass
+        provider_columns = {
+            row[1] for row in self.conn.execute("PRAGMA table_info(ai_providers)").fetchall()
+        }
+        if "context_window" not in provider_columns:
+            self.conn.execute(
+                "ALTER TABLE ai_providers ADD COLUMN context_window INTEGER NOT NULL DEFAULT 128000"
+            )
+        if "stream_enabled" not in provider_columns:
+            self.conn.execute(
+                "ALTER TABLE ai_providers ADD COLUMN stream_enabled INTEGER NOT NULL DEFAULT 1"
+            )
 
         self.conn.execute("PRAGMA foreign_keys=OFF")
         try:
@@ -1208,7 +1279,6 @@ class SchemaMixin:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE INDEX IF NOT EXISTS idx_reading_progress_status ON reading_progress(status);
-            CREATE INDEX IF NOT EXISTS idx_reading_progress_last_read ON reading_progress(last_read_at DESC);
+
             """
         )

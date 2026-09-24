@@ -202,31 +202,30 @@ class AiCoreMixin:
         return self._row_to_ai_provider(row, include_secret=include_secret)
 
     def create_ai_provider(self, data: dict[str, Any]) -> int:
-        with self._lock:
-            cursor = self.conn.execute(
-                """
-                INSERT INTO ai_providers (
-                    name, provider_type, base_url, api_key_encrypted, default_model,
-                    available_models_json, timeout_seconds, max_retries, proxy, context_window, stream_enabled, enabled
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    data.get("name"),
-                    data.get("provider_type"),
-                    data.get("base_url"),
-                    data.get("api_key_encrypted"),
-                    data.get("default_model"),
-                    json.dumps(data.get("available_models") or [], ensure_ascii=False),
-                    int(data.get("timeout_seconds") or 120),
-                    int(data.get("max_retries") or 2),
-                    data.get("proxy"),
-                    int(data.get("context_window") or 128000),
-                    1 if data.get("stream_enabled", True) else 0,
-                    1 if data.get("enabled", True) else 0,
-                ),
-            )
-            self._commit_if_needed()
-            return int(cursor.lastrowid)
+        cursor = self.conn.execute(
+            """
+            INSERT INTO ai_providers (
+                name, provider_type, base_url, api_key_encrypted, default_model,
+                available_models_json, timeout_seconds, max_retries, proxy, context_window, stream_enabled, enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data.get("name"),
+                data.get("provider_type"),
+                data.get("base_url"),
+                data.get("api_key_encrypted"),
+                data.get("default_model"),
+                json.dumps(data.get("available_models") or [], ensure_ascii=False),
+                int(data["timeout_seconds"]) if data.get("timeout_seconds") is not None else 120,
+                int(data["max_retries"]) if data.get("max_retries") is not None else 2,
+                data.get("proxy"),
+                int(data["context_window"]) if data.get("context_window") is not None else 128000,
+                1 if data.get("stream_enabled", True) else 0,
+                1 if data.get("enabled", True) else 0,
+            ),
+        )
+        self._commit_if_needed()
+        return int(cursor.lastrowid)
 
     def update_ai_provider(self, provider_id: int, data: dict[str, Any]) -> None:
         allowed = {
@@ -248,9 +247,8 @@ class AiCoreMixin:
             return
         fields.append("updated_at = CURRENT_TIMESTAMP")
         params.append(provider_id)
-        with self._lock:
-            self.conn.execute(f"UPDATE ai_providers SET {', '.join(fields)} WHERE id = ?", params)
-            self._commit_if_needed()
+        self.conn.execute(f"UPDATE ai_providers SET {', '.join(fields)} WHERE id = ?", params)
+        self._commit_if_needed()
 
     def delete_ai_provider(self, provider_id: int) -> None:
         with self.transaction() as conn:
@@ -283,18 +281,6 @@ class AiCoreMixin:
                     "Provider 的模型仍被模型池引用，无法删除"
                 )
 
-            catalog_model = conn.execute(
-                """
-                SELECT 1 FROM ai_provider_models
-                WHERE provider_id = ?
-                LIMIT 1
-                """,
-                (provider_id,),
-            ).fetchone()
-            if catalog_model is not None:
-                raise AIProviderReferenceError(
-                    "Provider 仍有模型目录记录，无法删除"
-                )
             conn.execute("DELETE FROM ai_providers WHERE id = ?", (provider_id,))
 
     def _row_to_ai_agent(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -350,30 +336,32 @@ class AiCoreMixin:
         provider_id = data.get("provider_id")
         model_pool_id = data.get("model_pool_id")
         capabilities = sorted(data.get("required_capabilities") or [])
-        with self._lock:
-            cursor = self.conn.execute(
-                """
-                INSERT INTO ai_agents (
-                    name, task_type, binding_type, provider_id, model, model_pool_id,
-                    required_capabilities_json, binding_version, system_prompt,
-                    temperature, top_p, max_tokens, context_window, enabled
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    data.get("name"), data.get("task_type"),
-                    data.get("binding_type") or "fixed",
-                    int(provider_id) if provider_id is not None else None,
-                    data.get("model"),
-                    int(model_pool_id) if model_pool_id is not None else None,
-                    json.dumps(capabilities, ensure_ascii=False, separators=(",", ":")),
-                    int(data.get("binding_version") or 1),
-                    data.get("system_prompt"), float(data.get("temperature") or 0.8),
-                    float(data.get("top_p") or 0.9), int(data.get("max_tokens") or 4000),
-                    int(data.get("context_window") or 16000), 1 if data.get("enabled", True) else 0,
-                ),
-            )
-            self._commit_if_needed()
-            return int(cursor.lastrowid)
+        cursor = self.conn.execute(
+            """
+            INSERT INTO ai_agents (
+                name, task_type, binding_type, provider_id, model, model_pool_id,
+                required_capabilities_json, binding_version, system_prompt,
+                temperature, top_p, max_tokens, context_window, enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data.get("name"), data.get("task_type"),
+                data.get("binding_type") or "fixed",
+                int(provider_id) if provider_id is not None else None,
+                data.get("model"),
+                int(model_pool_id) if model_pool_id is not None else None,
+                json.dumps(capabilities, ensure_ascii=False, separators=(",", ":")),
+                int(data.get("binding_version") or 1),
+                data.get("system_prompt"),
+                float(data["temperature"]) if data.get("temperature") is not None else 0.8,
+                float(data["top_p"]) if data.get("top_p") is not None else 0.9,
+                int(data["max_tokens"]) if data.get("max_tokens") is not None else 4000,
+                int(data["context_window"]) if data.get("context_window") is not None else 16000,
+                1 if data.get("enabled", True) else 0,
+            ),
+        )
+        self._commit_if_needed()
+        return int(cursor.lastrowid)
 
     def update_ai_agent(self, agent_id: int, data: dict[str, Any]) -> None:
         allowed = {
@@ -408,14 +396,12 @@ class AiCoreMixin:
         fields.append("binding_version = binding_version + 1")
         fields.append("updated_at = CURRENT_TIMESTAMP")
         params.append(agent_id)
-        with self._lock:
-            self.conn.execute(f"UPDATE ai_agents SET {', '.join(fields)} WHERE id = ?", params)
-            self._commit_if_needed()
+        self.conn.execute(f"UPDATE ai_agents SET {', '.join(fields)} WHERE id = ?", params)
+        self._commit_if_needed()
 
     def delete_ai_agent(self, agent_id: int) -> None:
-        with self._lock:
-            self.conn.execute("DELETE FROM ai_agents WHERE id = ?", (agent_id,))
-            self._commit_if_needed()
+        self.conn.execute("DELETE FROM ai_agents WHERE id = ?", (agent_id,))
+        self._commit_if_needed()
 
     def update_ai_agent_bindings(
         self, agent_ids: list[int], binding: dict[str, Any]
@@ -431,7 +417,7 @@ class AiCoreMixin:
         provider_id = binding.get("provider_id")
         model_pool_id = binding.get("model_pool_id")
         affected = 0
-        with self._lock, self.transaction():
+        with self.transaction():
             for agent_id in agent_ids:
                 cursor = self.conn.execute(
                     """
@@ -457,7 +443,7 @@ class AiCoreMixin:
         if not agent_ids:
             return 0
         affected = 0
-        with self._lock, self.transaction():
+        with self.transaction():
             for agent_id in agent_ids:
                 cursor = self.conn.execute(
                     "UPDATE ai_agents SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -477,15 +463,27 @@ class AiCoreMixin:
         return item
 
     def list_ai_job_model_attempts(self, job_id: str) -> list[dict[str, Any]]:
+        return self.list_ai_job_model_attempts_for_jobs([job_id]).get(job_id, [])
+
+    def list_ai_job_model_attempts_for_jobs(
+        self, job_ids: list[str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        if not job_ids:
+            return {}
+        placeholders = ",".join("?" * len(job_ids))
         rows = self.conn.execute(
-            """
+            f"""
             SELECT * FROM ai_job_model_attempts
-            WHERE job_id = ?
-            ORDER BY attempt_index
+            WHERE job_id IN ({placeholders})
+            ORDER BY job_id, attempt_index
             """,
-            (job_id,),
+            tuple(job_ids),
         ).fetchall()
-        return [self._attempt_from_row(row) for row in rows]
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            item = self._attempt_from_row(row)
+            grouped.setdefault(str(item["job_id"]), []).append(item)
+        return grouped
 
     def get_provider_attempt_health(self, days: int = 7) -> dict[int, dict[str, Any]]:
         """按 provider_id 聚合最近 N 天的候选尝试战绩，供设置页健康横幅使用。
@@ -1189,6 +1187,49 @@ class AiCoreMixin:
             )
             return True
 
+    def request_ai_job_cancel(self, job_id: str) -> bool:
+        """把仍在运行的任务标成已请求取消。已经标过也算成功。"""
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT status, cancel_requested FROM ai_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None or row["status"] != "running":
+                return False
+            if not row["cancel_requested"]:
+                conn.execute(
+                    """
+                    UPDATE ai_jobs SET cancel_requested = 1
+                    WHERE job_id = ? AND status = 'running'
+                    """,
+                    (job_id,),
+                )
+            return True
+
+    def ai_job_should_stop(self, job_id: str) -> bool:
+        """心跳线程用：取消标记、截止时间已到，或任务已经不在运行。"""
+        row = self.conn.execute(
+            """
+            SELECT status, cancel_requested, route_deadline_at
+            FROM ai_jobs WHERE job_id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        if row is None or row["status"] != "running":
+            return True
+        if row["cancel_requested"]:
+            return True
+        deadline = row["route_deadline_at"]
+        if not deadline:
+            return False
+        try:
+            parsed = datetime.fromisoformat(str(deadline).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) >= parsed
+
     def mark_ai_job_output_started(
         self,
         job_id: str,
@@ -1421,9 +1462,8 @@ class AiCoreMixin:
             return cursor.rowcount == 1
 
     def delete_ai_job(self, job_id: str) -> None:
-        with self._lock:
-            self.conn.execute("DELETE FROM ai_jobs WHERE job_id = ?", (job_id,))
-            self._commit_if_needed()
+        self.conn.execute("DELETE FROM ai_jobs WHERE job_id = ?", (job_id,))
+        self._commit_if_needed()
 
     def cleanup_ai_jobs(
         self,

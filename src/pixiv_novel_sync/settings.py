@@ -57,6 +57,9 @@ class SyncSettings:
     # 系列章节数远超单个作者的单轮作品体量，共用那个上限会把长系列永久截断：
     # 生产实测每轮 truncated_series=2，8 个订阅系列长期缺 76 章，高频重跑也补不齐。
     series_max_pages_per_run: int | None = None
+    # 用户全量备份翻页上限。None = 跟随 max_pages_per_run（旧行为）。
+    # 备份是整库导出，共用 2 页上限会把 800 篇收藏截成 60 篇，任务日志却显示绿色。
+    user_backup_max_pages_per_run: int | None = None
     delay_seconds_between_series: float = 3.0  # 每个系列之间的间隔
     delay_seconds_between_chapters: float = 1.0  # 系列下每章节间隔
     delay_seconds_between_skips: float = 0.1  # 跳过内容时的间隔
@@ -152,9 +155,18 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
 
     refresh_token = os.getenv("PIXIV_REFRESH_TOKEN", "").strip()
     access_token = os.getenv("PIXIV_ACCESS_TOKEN", "").strip() or None
-    proxy = os.getenv("PIXIV_PROXY") or pixiv_raw.get("proxy")
+    # 代理用 is None 区分「没写这个变量」和「写了空串」。
+    # 没写才回落 YAML；`PIXIV_PROXY=` 是显式清掉代理，不能再被 `or` 吃回 YAML。
+    _proxy_env = os.getenv("PIXIV_PROXY")
+    if _proxy_env is None:
+        proxy = pixiv_raw.get("proxy") or None
+    else:
+        proxy = _proxy_env.strip() or None
+    # 超时空串按「未设置」回落 YAML，避免 `int("")` 打成固定 30 而忽略配置。
+    _timeout_env = os.getenv("PIXIV_TIMEOUT")
+    _timeout_raw = _timeout_env if _timeout_env is not None and _timeout_env.strip() else pixiv_raw.get("timeout", 30)
     try:
-        timeout = int(os.getenv("PIXIV_TIMEOUT", pixiv_raw.get("timeout", 30)))
+        timeout = int(_timeout_raw)
     except (ValueError, TypeError):
         timeout = 30
     verify_ssl = _parse_bool(os.getenv("PIXIV_VERIFY_SSL"), default=pixiv_raw.get("verify_ssl", True))
@@ -199,6 +211,7 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             bookmark_max_pages_per_run=_coerce_optional_int(sync_raw.get("bookmark_max_pages_per_run")),
             following_max_novels_per_author=_coerce_optional_int(sync_raw.get("following_max_novels_per_author")),
             series_max_pages_per_run=_coerce_optional_int(sync_raw.get("series_max_pages_per_run")),
+            user_backup_max_pages_per_run=_coerce_optional_int(sync_raw.get("user_backup_max_pages_per_run")),
             delay_seconds_between_series=_coerce_float(sync_raw.get("delay_seconds_between_series"), 3.0),
             delay_seconds_between_chapters=_coerce_float(sync_raw.get("delay_seconds_between_chapters"), 1.0),
             delay_seconds_between_skips=_coerce_float(sync_raw.get("delay_seconds_between_skips"), 0.1),
@@ -268,10 +281,11 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def _parse_bool(value: str | None, default: bool) -> bool:
-    if value is None:
+    # 空串视为未设置：``.env`` 里常见 ``PIXIV_X=`` 的留空写法，
+    # 语义是「不覆盖」，而不是「显式关掉」。
+    if value is None or not value.strip():
         return bool(default)
-    normalized = value.strip().lower()
-    return normalized in {"1", "true", "yes", "on"}
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _parse_optional_int(value: str | None) -> int | None:
@@ -423,30 +437,14 @@ def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: s
     if base_time is None:
         base_time = time.time()
     
-    # 尝试导入时区库
+    from zoneinfo import ZoneInfo
     try:
-        from zoneinfo import ZoneInfo
-        try:
-            tz = ZoneInfo(timezone)
-        except Exception:
-            # 无效时区名（ZoneInfoNotFoundError 不是 ImportError 的子类），回退 UTC，
-            # 否则异常会一路冒泡到调度循环，导致所有 cron 任务永远不触发。
-            logger.warning("未知时区 %r，回退到 UTC", timezone)
-            tz = ZoneInfo("UTC")
-        base_dt = datetime.fromtimestamp(base_time, tz=tz)
-    except ImportError:
-        # Python < 3.9 或没有zoneinfo，尝试使用pytz
-        try:
-            import pytz
-            try:
-                tz = pytz.timezone(timezone)
-            except Exception:
-                logger.warning("未知时区 %r，回退到 UTC", timezone)
-                tz = pytz.UTC
-            base_dt = datetime.fromtimestamp(base_time, tz=tz)
-        except ImportError:
-            # 没有时区库，使用本地时间（不推荐）
-            base_dt = datetime.fromtimestamp(base_time)
+        tz = ZoneInfo(timezone)
+    except Exception:
+        # 无效时区名回退 UTC，否则异常会冒泡到调度循环，cron 任务永远不触发。
+        logger.warning("未知时区 %r，回退到 UTC", timezone)
+        tz = ZoneInfo("UTC")
+    base_dt = datetime.fromtimestamp(base_time, tz=tz)
 
     # 简单实现：查找下一个匹配的时间
     # 这里使用简化的实现，实际项目中建议使用croniter库

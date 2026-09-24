@@ -176,51 +176,6 @@ def test_execute_task_passes_finalization_claim_to_bookmark(monkeypatch):
     assert observed == [claim_finalization]
 
 
-def test_execute_task_dispatches_sync_check_without_releasing_runner_slot(monkeypatch):
-    calls = []
-
-    def fake_run_check_bookmarks_task(
-        settings,
-        manager,
-        job_id,
-        release_semaphore=True,
-        raise_on_error=False,
-        stop_requested=None,
-    ):
-        calls.append((settings, manager, job_id, release_semaphore, raise_on_error, stop_requested))
-        return {"total_checked": 2}
-
-    monkeypatch.setattr("pixiv_novel_sync.jobs.quick_sync.run_check_bookmarks_task", fake_run_check_bookmarks_task)
-    settings = object()
-    manager = object()
-
-    result = execute_task("sync_check", settings, {"manager": manager, "job_id": "job-1"})
-
-    assert result == {"total_checked": 2}
-    assert calls[0][:5] == (settings, manager, "job-1", False, True)
-    assert calls[0][5] is not None
-
-
-def test_execute_task_propagates_sync_check_failure(monkeypatch):
-    def fake_run_check_bookmarks_task(
-        settings,
-        manager,
-        job_id,
-        release_semaphore=True,
-        raise_on_error=False,
-        stop_requested=None,
-    ):
-        assert release_semaphore is False
-        assert raise_on_error is True
-        assert stop_requested is not None
-        raise RuntimeError("sync check failed")
-
-    monkeypatch.setattr("pixiv_novel_sync.jobs.quick_sync.run_check_bookmarks_task", fake_run_check_bookmarks_task)
-
-    with pytest.raises(RuntimeError, match="sync check failed"):
-        execute_task("sync_check", object(), {"manager": object(), "job_id": "job-1"})
-
-
 def test_direct_sync_progress_callback_ignores_missing_manager_methods():
     callback = _build_progress_callback(object(), "job-1")
 
@@ -861,6 +816,95 @@ def test_preference_analyze_defaults_scope_limit(monkeypatch):
     assert captured["incremental"]["max_batches"] == 10
     # 默认画像不存在时走创建分支,且标记为默认
     assert captured["profile"]["is_default"] is True
+
+
+def test_preference_analyze_keeps_manual_fields_when_nothing_new(monkeypatch):
+    captured = {}
+    ai_calls = []
+
+    class FakeReporter:
+        def add_log(self, level, message):
+            pass
+
+    class FakeDb:
+        def init_schema(self):
+            pass
+
+        def get_default_preference_profile(self):
+            return {
+                "id": 7,
+                "name": "手工画像",
+                "description": "手工说明",
+                "stats": {"refined_keywords": ["旧词"]},
+                "profile": {
+                    "negative_preferences": {
+                        "excluded_tags": ["不要"],
+                        "excluded_keywords": ["排除词"],
+                        "avoid_themes": ["虐"],
+                    }
+                },
+            }
+
+        def update_preference_profile(self, profile_id, data):
+            captured["updated"] = (profile_id, data)
+
+        def close(self):
+            pass
+
+    class FakeAnalyzer:
+        def __init__(self, db):
+            pass
+
+        def analyze_incremental(self, batch_size, max_batches, min_text_length=1000, progress=None):
+            return {"processed_this_run": 0, "analyzed_total": 3, "remaining": 0, "done": True}
+
+        def rebuild_profile_from_accumulator(self):
+            return {
+                "source_scope": {"incremental": True},
+                "stats": {"top_keywords": [{"name": "噪声"}], "top_tags": []},
+                "profile": {},
+            }
+
+        def build_profile(self, stats):
+            return {
+                "positive_preferences": {"tags": []},
+                "negative_preferences": {
+                    "excluded_tags": ["屏蔽标签"],
+                    "excluded_keywords": [],
+                    "avoid_themes": [],
+                },
+            }
+
+    class FakeAI:
+        def __init__(self, path):
+            pass
+
+        def clean_keywords(self, *args, **kwargs):
+            ai_calls.append(args)
+            raise RuntimeError("ai down")
+
+    monkeypatch.setattr("pixiv_novel_sync.jobs.tasks._job_reporter_from_context", lambda context: FakeReporter())
+    monkeypatch.setattr("pixiv_novel_sync.storage_db.Database", lambda path: FakeDb())
+    monkeypatch.setattr("pixiv_novel_sync.preferences.PreferenceAnalyzer", FakeAnalyzer)
+    monkeypatch.setattr("pixiv_novel_sync.ai.service.AIWritingService", FakeAI)
+
+    settings = type("Settings", (), {
+        "storage": type("Storage", (), {"db_path": "ignored"})(),
+        "sync": type("Sync", (), {"preference_analyze_batch_size": 200})(),
+    })()
+
+    execute_task("preference_analyze", settings, {"params": {}})
+
+    profile_id, payload = captured["updated"]
+    assert profile_id == 7
+    assert payload["name"] == "手工画像"
+    assert payload["description"] == "手工说明"
+    assert payload["stats"]["refined_keywords"] == ["旧词"]
+    negative = payload["profile"]["negative_preferences"]
+    assert negative["excluded_keywords"] == ["排除词"]
+    assert negative["avoid_themes"] == ["虐"]
+    assert negative["excluded_tags"] == ["不要", "屏蔽标签"]
+    assert ai_calls == []
 
 
 def test_recommendation_run_task_propagates_interrupted_error(tmp_path, monkeypatch):

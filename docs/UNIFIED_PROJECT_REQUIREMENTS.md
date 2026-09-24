@@ -35,6 +35,21 @@
 
 `docs/INDEX.md` 认定 `API_COMPLETE.md`、`KNOWLEDGE_GRAPH.md` 和 `AI_WRITING_STUDIO_PLAN.md` 是历史快照；它们可以帮助理解演进，但不能覆盖当前接口或数据结构。无法判定的冲突必须保留来源并标记为“待核实”，不能静默选择。
 
+### 1.3 2026-09-14 明确不做
+
+下列能力出现在旧计划或审计缺口里，当前 main 不实现。不要为它们加表、加任务类型或加接口。
+
+| 项 | 决定 |
+|---|---|
+| `recommendation_search_plans` 表 | `OUT`。搜索计划只活在当次请求里。 |
+| `JobType.RECOMMENDATION_SYNC`、`explanation_source` | `OUT`。 |
+| 偏好 SSE、AI 结构化总结、完整多画像工作流 | `OUT`。默认画像仍是一条。 |
+| `refresh_rescue_entities` 这个新名字 | `OUT`。继续用 `refresh_rescue_item`。 |
+| 4593 条性能夹具、`verify_rescue_performance.py` | `OUT`。 |
+| task_logs owner lease、seen-cursor、trash manifest 启动重放 | `OUT`。取消和垃圾箱回滚按现有水位与事务做。 |
+| Cloudflare 现网证书、48 小时生产观察 | `OUT`。不在代码任务里。 |
+| 2026-08-28 吞吐计划 | `SUPERSEDED`。已拆成 phase 1–3，由后续提交覆盖。 |
+
 ## 2. 产品目标与用户边界
 
 ### 2.1 产品目标

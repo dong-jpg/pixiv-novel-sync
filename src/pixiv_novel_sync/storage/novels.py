@@ -14,107 +14,107 @@ class NovelsMixin:
     """小说相关数据库操作 Mixin"""
 
     def upsert_novel(self, record: NovelRecord) -> None:
-        with self._lock:
-            self.conn.execute(
-                """
-                INSERT INTO novels (
-                    novel_id, user_id, series_id, title, caption, visible, restrict_value,
-                    x_restrict, text_length, total_bookmarks, total_views, cover_url,
-                    tags_json, create_date, raw_json, meta_hash, source_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(novel_id) DO UPDATE SET
-                    user_id = excluded.user_id,
-                    series_id = excluded.series_id,
-                    title = excluded.title,
-                    caption = excluded.caption,
-                    visible = excluded.visible,
-                    restrict_value = excluded.restrict_value,
-                    x_restrict = excluded.x_restrict,
-                    text_length = excluded.text_length,
-                    total_bookmarks = excluded.total_bookmarks,
-                    total_views = excluded.total_views,
-                    cover_url = excluded.cover_url,
-                    tags_json = excluded.tags_json,
-                    create_date = excluded.create_date,
-                    raw_json = excluded.raw_json,
-                    meta_hash = excluded.meta_hash,
-                    -- source_url 由主键 novel_id 唯一确定，正常情况下永不变化；
-                    -- COALESCE 只为补上历史遗留的空值，不会覆盖已写入的地址。
-                    source_url = COALESCE(novels.source_url, excluded.source_url),
-                    last_seen_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    record.novel_id,
-                    record.user_id,
-                    record.series_id,
-                    record.title,
-                    record.caption,
-                    1 if record.visible else 0,
-                    record.restrict,
-                    record.x_restrict,
-                    record.text_length,
-                    record.total_bookmarks,
-                    record.total_views,
-                    record.cover_url,
-                    record.tags_json,
-                    record.create_date,
-                    record.raw_json,
-                    record.meta_hash,
-                    novel_source_url(record.novel_id),
-                ),
-            )
-            self._commit_if_needed()
+        self.conn.execute(
+            """
+            INSERT INTO novels (
+                novel_id, user_id, series_id, title, caption, visible, restrict_value,
+                x_restrict, text_length, total_bookmarks, total_views, cover_url,
+                tags_json, create_date, raw_json, meta_hash, source_url, archive_dir
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(novel_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                series_id = excluded.series_id,
+                title = excluded.title,
+                caption = excluded.caption,
+                visible = excluded.visible,
+                restrict_value = excluded.restrict_value,
+                x_restrict = excluded.x_restrict,
+                text_length = excluded.text_length,
+                total_bookmarks = excluded.total_bookmarks,
+                total_views = excluded.total_views,
+                cover_url = excluded.cover_url,
+                tags_json = excluded.tags_json,
+                create_date = excluded.create_date,
+                raw_json = excluded.raw_json,
+                meta_hash = excluded.meta_hash,
+                -- source_url 由主键 novel_id 唯一确定，正常情况下永不变化；
+                -- COALESCE 只为补上历史遗留的空值，不会覆盖已写入的地址。
+                source_url = COALESCE(novels.source_url, excluded.source_url),
+                archive_dir = CASE
+                    WHEN novels.archive_dir IS NOT NULL AND novels.archive_dir != ''
+                    THEN novels.archive_dir ELSE excluded.archive_dir END,
+                last_seen_at = CURRENT_TIMESTAMP
+            """,
+            (
+                record.novel_id,
+                record.user_id,
+                record.series_id,
+                record.title,
+                record.caption,
+                1 if record.visible else 0,
+                record.restrict,
+                record.x_restrict,
+                record.text_length,
+                record.total_bookmarks,
+                record.total_views,
+                record.cover_url,
+                record.tags_json,
+                record.create_date,
+                record.raw_json,
+                record.meta_hash,
+                novel_source_url(record.novel_id),
+                record.archive_dir,
+            ),
+        )
+        self._commit_if_needed()
 
     def upsert_novel_text(self, record: NovelTextRecord) -> None:
-        with self._lock:
-            self.conn.execute(
-                """
-                INSERT INTO novel_texts (
-                    novel_id, text_raw, has_content, text_markdown, text_hash, fetched_at
-                )
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(novel_id) DO UPDATE SET
-                    text_raw = excluded.text_raw,
-                    has_content = excluded.has_content,
-                    text_markdown = excluded.text_markdown,
-                    text_hash = excluded.text_hash,
-                    fetched_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    record.novel_id,
-                    record.text_raw,
-                    1 if record.text_raw.strip() else 0,
-                    record.text_markdown,
-                    record.text_hash,
-                ),
+        self.conn.execute(
+            """
+            INSERT INTO novel_texts (
+                novel_id, text_raw, has_content, text_markdown, text_hash, fetched_at
             )
-            self._commit_if_needed()
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(novel_id) DO UPDATE SET
+                text_raw = excluded.text_raw,
+                has_content = excluded.has_content,
+                text_markdown = excluded.text_markdown,
+                text_hash = excluded.text_hash,
+                fetched_at = CURRENT_TIMESTAMP
+            """,
+            (
+                record.novel_id,
+                record.text_raw,
+                1 if record.text_raw.strip() else 0,
+                record.text_markdown,
+                record.text_hash,
+            ),
+        )
+        self._commit_if_needed()
 
     def upsert_source(self, record: SourceRecord) -> None:
-        with self._lock:
-            self.conn.execute(
-                """
-                INSERT OR IGNORE INTO sources (novel_id, source_type, source_key)
-                VALUES (?, ?, ?)
-                """,
-                (record.novel_id, record.source_type, record.source_key),
-            )
-            self._commit_if_needed()
+        self.conn.execute(
+            """
+            INSERT OR IGNORE INTO sources (novel_id, source_type, source_key)
+            VALUES (?, ?, ?)
+            """,
+            (record.novel_id, record.source_type, record.source_key),
+        )
+        self._commit_if_needed()
 
     def record_asset(self, novel_id: int, asset_type: str, remote_url: str, local_path: str, file_hash: str | None) -> None:
-        with self._lock:
-            self.conn.execute(
-                """
-                INSERT INTO assets (novel_id, asset_type, remote_url, local_path, file_hash, downloaded_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(novel_id, asset_type, remote_url) DO UPDATE SET
-                    local_path = excluded.local_path,
-                    file_hash = excluded.file_hash,
-                    downloaded_at = CURRENT_TIMESTAMP
-                """,
-                (novel_id, asset_type, remote_url, local_path, file_hash),
-            )
-            self._commit_if_needed()
+        self.conn.execute(
+            """
+            INSERT INTO assets (novel_id, asset_type, remote_url, local_path, file_hash, downloaded_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(novel_id, asset_type, remote_url) DO UPDATE SET
+                local_path = excluded.local_path,
+                file_hash = excluded.file_hash,
+                downloaded_at = CURRENT_TIMESTAMP
+            """,
+            (novel_id, asset_type, remote_url, local_path, file_hash),
+        )
+        self._commit_if_needed()
 
     def record_assets(self, records: list[AssetRecord]) -> None:
         if not records:
@@ -177,12 +177,11 @@ class NovelsMixin:
 
     def touch_novel(self, novel_id: int) -> None:
         """更新小说的 last_seen_at 时间戳"""
-        with self._lock:
-            self.conn.execute(
-                "UPDATE novels SET last_seen_at = CURRENT_TIMESTAMP WHERE novel_id = ?",
-                (novel_id,),
-            )
-            self._commit_if_needed()
+        self.conn.execute(
+            "UPDATE novels SET last_seen_at = CURRENT_TIMESTAMP WHERE novel_id = ?",
+            (novel_id,),
+        )
+        self._commit_if_needed()
 
     def get_novel_detail(self, novel_id: int) -> dict[str, Any] | None:
         row = self.conn.execute(
@@ -206,6 +205,7 @@ class NovelsMixin:
                 n.status,
                 n.last_checked_at,
                 n.source_url,
+                n.archive_dir,
                 nt.text_raw,
                 nt.text_markdown,
                 n.raw_json,
@@ -275,6 +275,7 @@ class NovelsMixin:
                 n.user_id,
                 COALESCE(u.name, 'unknown') AS author_name,
                 n.title,
+                n.archive_dir,
                 GROUP_CONCAT(a.local_path, char(10)) AS asset_paths
             FROM novels n
             LEFT JOIN users u ON u.user_id = n.user_id
@@ -355,10 +356,11 @@ class NovelsMixin:
                 # FTS 走 rowid（== novel_id）：按 novel_id 会全表扫描 UNINDEXED 列，
                 # 生产实测单次 39 秒，详见 replace_fts 的说明。
                 self.conn.execute("DELETE FROM novel_fts WHERE rowid = ?", (novel_id,))
-                self.conn.execute("DELETE FROM sync_check_list WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM pending_deletions WHERE item_type = 'novel' AND item_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM recommendation_items WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM recommendation_feedback WHERE novel_id = ?", (novel_id,))
+                self.conn.execute("DELETE FROM reading_progress WHERE novel_id = ?", (novel_id,))
+                self.conn.execute("DELETE FROM preference_analyzed_novels WHERE novel_id = ?", (novel_id,))
                 self.conn.execute(
                     "DELETE FROM rescue_catalog_sources WHERE item_type = 'novel' AND item_id = ?",
                     (novel_id,),
@@ -377,12 +379,11 @@ class NovelsMixin:
 
     def delete_bookmark(self, novel_id: int) -> None:
         """删除收藏记录"""
-        with self._lock:
-            self.conn.execute(
-                "DELETE FROM sources WHERE novel_id = ? AND source_type LIKE 'bookmark_%'",
-                (novel_id,),
-            )
-            self._commit_if_needed()
+        self.conn.execute(
+            "DELETE FROM sources WHERE novel_id = ? AND source_type LIKE 'bookmark_%'",
+            (novel_id,),
+        )
+        self._commit_if_needed()
 
     def replace_fts(self, novel_id: int, title: str, caption: str, author_name: str, body: str) -> None:
         """更新FTS索引。
@@ -440,11 +441,11 @@ class NovelsMixin:
 
         order_sql = "n.last_seen_at DESC, n.novel_id DESC"
         if sort == "updated_desc":
-            order_sql = "n.last_seen_at DESC"
+            order_sql = "n.last_seen_at DESC, n.novel_id DESC"
         elif sort == "bookmarks_desc":
-            order_sql = "n.total_bookmarks DESC"
+            order_sql = "n.total_bookmarks DESC, n.novel_id DESC"
         elif sort == "views_desc":
-            order_sql = "n.total_views DESC"
+            order_sql = "n.total_views DESC, n.novel_id DESC"
 
         rows = self.conn.execute(
             f"""
@@ -539,16 +540,6 @@ class NovelsMixin:
                     return nested
         return None
 
-    def export_stats(self) -> str:
-        row = self.conn.execute(
-            "SELECT "
-            "(SELECT COUNT(*) FROM users) AS users_count, "
-            "(SELECT COUNT(*) FROM novels) AS novels_count, "
-            "(SELECT COUNT(*) FROM series) AS series_count, "
-            "(SELECT COUNT(*) FROM pending_deletions WHERE status = 'pending') AS pending_count"
-        ).fetchone()
-        return json.dumps(dict(row), ensure_ascii=False)
-
     def get_existing_novel_ids(self, novel_ids: list[int], require_assets: bool = False) -> set[int]:
         """批量检查小说是否已完整归档，返回可安全跳过的 ID 集合。"""
         if not novel_ids:
@@ -619,23 +610,22 @@ class NovelsMixin:
         本次检查没拿到可信结果（限流 / 网络错误 / 响应异常），用它覆盖已有状态会污染
         数据。同时刷新 last_checked_at 可以让分批轮转继续推进，不会卡在同一批。
         """
-        with self._lock:
-            if status == UNKNOWN_STATUS:
-                self.conn.execute(
-                    "UPDATE novels SET last_checked_at = CURRENT_TIMESTAMP WHERE novel_id = ?",
-                    (novel_id,),
-                )
-            else:
-                self.conn.execute(
-                    """
-                    UPDATE novels
-                    SET status = ?,
-                        last_checked_at = CURRENT_TIMESTAMP
-                    WHERE novel_id = ?
-                    """,
-                    (status, novel_id),
-                )
-            self._commit_if_needed()
+        if status == UNKNOWN_STATUS:
+            self.conn.execute(
+                "UPDATE novels SET last_checked_at = CURRENT_TIMESTAMP WHERE novel_id = ?",
+                (novel_id,),
+            )
+        else:
+            self.conn.execute(
+                """
+                UPDATE novels
+                SET status = ?,
+                    last_checked_at = CURRENT_TIMESTAMP
+                WHERE novel_id = ?
+                """,
+                (status, novel_id),
+            )
+        self._commit_if_needed()
 
     def get_novel_ids_for_status_check(self, limit: int | None = None) -> list[int]:
         """按 last_checked_at 升序返回待状态检查的小说 ID（从未检查过的排最前）。
@@ -646,8 +636,8 @@ class NovelsMixin:
         """
         sql = (
             "SELECT novel_id FROM novels "
-            # (last_checked_at IS NOT NULL) 为 0/1，保证 NULL（从未检查）永远排最前
-            "ORDER BY (last_checked_at IS NOT NULL), last_checked_at, novel_id"
+            # SQLite 升序把 NULL 排在最前，从未检查的小说自然先轮到。
+            "ORDER BY last_checked_at, novel_id"
         )
         params: tuple[Any, ...] = ()
         if limit is not None and int(limit) > 0:

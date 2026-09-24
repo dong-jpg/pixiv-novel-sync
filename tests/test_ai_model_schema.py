@@ -9,6 +9,7 @@ from types import ModuleType
 
 import pytest
 
+from pixiv_novel_sync.ai.service import AIServiceError, AIWritingService
 from pixiv_novel_sync.storage_db import Database
 
 
@@ -192,6 +193,54 @@ def test_old_ai_database_migrates_fixed_agents_and_imports_available_models(
         database.close()
 
 
+def test_deleted_imported_model_is_not_resurrected_on_next_init(tmp_path: Path):
+    """导入后清掉 available_models_json，删掉的人工模型不会在下次启动时复活。"""
+    database = make_old_ai_database(tmp_path / "no-resurrect.db")
+    try:
+        database.init_schema()
+        stored = database.conn.execute(
+            "SELECT available_models_json FROM ai_providers WHERE id = 3"
+        ).fetchone()[0]
+        assert stored is None
+        database.conn.execute(
+            "DELETE FROM ai_provider_models WHERE provider_id = 3"
+        )
+        database.conn.commit()
+        database.init_schema()
+        count = database.conn.execute(
+            "SELECT COUNT(*) FROM ai_provider_models WHERE provider_id = 3"
+        ).fetchone()[0]
+        assert count == 0
+    finally:
+        database.close()
+
+
+def test_provider_payload_rejects_available_models(tmp_path: Path) -> None:
+    service = AIWritingService(tmp_path / "reject-models.db")
+    try:
+        with pytest.raises(AIServiceError, match="available_models"):
+            service.create_provider(
+                {
+                    "name": "网关",
+                    "provider_type": "openai_compatible",
+                    "available_models": ["ghost"],
+                }
+            )
+    finally:
+        service.close()
+
+
+def test_copy_from_provider_does_not_spread_the_row() -> None:
+    text = Path(
+        "src/pixiv_novel_sync/templates/dashboard_settings_models.html"
+    ).read_text(encoding="utf-8")
+    start = text.index("const copyFromProvider")
+    snippet = text[start : text.index("async function probeModels", start)]
+    assert "...provider" not in snippet
+    assert "available_models" not in snippet
+    assert "provider.provider_type" in snippet
+
+
 def test_old_model_list_imports_strings_and_object_ids_and_warns_per_skip(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -334,6 +383,7 @@ def test_routing_schema_has_strict_pool_and_attempt_constraints(db: Database):
         "prompt_budget_json",
         "parent_job_id",
         "idempotency_key",
+        "cancel_requested",
     } <= job_columns
 
     attempt_columns = {

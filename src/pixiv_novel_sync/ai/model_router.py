@@ -33,6 +33,30 @@ MAX_POOL_NODES = 8
 MAX_CANDIDATE_ATTEMPTS = 16
 MAX_NETWORK_REQUESTS = 32
 _SAFETY_MARGIN = 256
+
+
+def estimate_token_count(text: str) -> int:
+    """没有 Provider 估算器时的退化口径。
+
+    中日韩字符按大约 1.5 字一个 token，其余按大约 4 个字符一个 token。
+    按 UTF-8 字节数会把中文高估大约 4.5 倍。
+    """
+
+    if not text:
+        return 0
+    cjk = 0
+    other = 0
+    for char in text:
+        if (
+            "\u4e00" <= char <= "\u9fff"
+            or "\u3400" <= char <= "\u4dbf"
+            or "\u3040" <= char <= "\u30ff"
+            or "\uac00" <= char <= "\ud7af"
+        ):
+            cjk += 1
+        elif not char.isspace():
+            other += 1
+    return (cjk * 2 + 2) // 3 + (other + 3) // 4
 _HEARTBEAT_INTERVAL_SECONDS = 15.0
 _LEASE_SECONDS = 45
 _ATTEMPT_FINISH_REASONS = {
@@ -102,6 +126,7 @@ class RouteRequest:
     top_p: float = 0.9
     resume_candidate_index: int = 0
     is_cancelled: Callable[[], bool] | None = None
+    route_deadline_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +150,7 @@ class PromptBudget:
     output_reserve: int
     message_overhead: int
     safety_margin: int
-    estimator: Literal["provider", "utf8_bytes"]
+    estimator: Literal["provider", "heuristic", "utf8_bytes"]
 
 
 class ModelRouter:
@@ -741,12 +766,12 @@ class ModelRouter:
             and estimate > 0
             for estimate in estimates
         ):
-            estimator: Literal["provider", "utf8_bytes"] = "provider"
+            estimator: Literal["provider", "heuristic", "utf8_bytes"] = "provider"
             estimated_input = max(int(estimate) for estimate in estimates)
         else:
-            estimator = "utf8_bytes"
+            estimator = "heuristic"
             estimated_input = sum(
-                len(str(message.get("content", "")).encode("utf-8"))
+                estimate_token_count(str(message.get("content", "")))
                 for message in messages
             )
         if estimated_input > input_budget:
@@ -854,8 +879,9 @@ class ModelRouter:
     def _start_heartbeat(
         self,
         request: RouteRequest,
-    ) -> tuple[threading.Event, threading.Thread]:
+    ) -> tuple[threading.Event, threading.Thread, threading.Event]:
         stopped = threading.Event()
+        cancel_event = threading.Event()
 
         def heartbeat() -> None:
             while not stopped.is_set():
@@ -866,7 +892,10 @@ class ModelRouter:
                         request.owner_token,
                         self._lease_until(),
                     ):
+                        cancel_event.set()
                         return
+                    if db.ai_job_should_stop(request.job_id):
+                        cancel_event.set()
                 finally:
                     db.close()
                 stopped.wait(_HEARTBEAT_INTERVAL_SECONDS)
@@ -881,12 +910,14 @@ class ModelRouter:
                 raise ModelRouteError("ModelRouter 已关闭")
             self._heartbeat_workers[stopped] = thread
             thread.start()
-        return stopped, thread
+        return stopped, thread, cancel_event
 
     def _request_cancelled(self, request: RouteRequest) -> bool:
-        return self._closed.is_set() or (
-            request.is_cancelled is not None and request.is_cancelled()
-        )
+        if self._closed.is_set():
+            return True
+        if request.is_cancelled is not None and request.is_cancelled():
+            return True
+        return self._deadline_expired(request.route_deadline_at)
 
     @staticmethod
     def _route_progress(
@@ -955,12 +986,12 @@ class ModelRouter:
         if candidate.context_window is None:
             return True
         overhead = 4 * len(request.messages) + 2
-        content_bytes = sum(
-            len(str(message.get("content", "")).encode("utf-8"))
+        content_tokens = sum(
+            estimate_token_count(str(message.get("content", "")))
             for message in request.messages
         )
         return (
-            content_bytes + overhead + request.max_tokens + _SAFETY_MARGIN
+            content_tokens + overhead + request.max_tokens + _SAFETY_MARGIN
             <= candidate.context_window
         )
 
@@ -1068,7 +1099,17 @@ class ModelRouter:
 
         db = self._db_factory()
         try:
-            heartbeat_stop, heartbeat_thread = self._start_heartbeat(request)
+            heartbeat_stop, heartbeat_thread, cancel_event = self._start_heartbeat(
+                request
+            )
+            prior_cancelled = request.is_cancelled
+
+            def _route_cancelled() -> bool:
+                if cancel_event.is_set():
+                    return True
+                return prior_cancelled is not None and prior_cancelled()
+
+            request.is_cancelled = _route_cancelled
         except BaseException:
             db.close()
             raise
@@ -1079,6 +1120,7 @@ class ModelRouter:
         current_output_started = False
         try:
             state = self._active_route_state(db, request)
+            request.route_deadline_at = state.get("route_deadline_at")
             candidates = [
                 candidate
                 for candidate in request.candidate_snapshot.candidates

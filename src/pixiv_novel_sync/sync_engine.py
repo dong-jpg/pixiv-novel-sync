@@ -33,11 +33,25 @@ from .utils_text import clean_caption, normalize_text, to_markdown
 
 logger = logging.getLogger(__name__)
 
-# Hard upper bound on pages walked per pagination loop in check_all_existence.
-# The preflight only collects IDs (no content download), but without a cap a
-# malformed/looping next_url echoed by Pixiv could spin forever. 2000 pages is
-# far beyond any real library yet still bounds the worst case.
-_CHECK_PAGE_SAFETY_LIMIT = 2000
+# 这些计数每次打开作品都会变。算进 meta_hash 会让「正文没变」的第二轮仍整篇重写。
+_VOLATILE_NOVEL_FIELDS = {
+    "total_bookmarks",
+    "total_view",
+    "total_views",
+    "total_comments",
+    "total_comment",
+    "comment_count",
+}
+
+
+def _stable_meta_for_hash(plain: Any) -> Any:
+    if not isinstance(plain, dict):
+        return plain
+    return {key: value for key, value in plain.items() if key not in _VOLATILE_NOVEL_FIELDS}
+
+
+class RemoteListTruncated(RuntimeError):
+    """远端列表翻页触顶，结果不能拿来做差集。"""
 
 # 关注列表枚举（user_following）专用的翻页上限，每页 30 人 ⇒ 50 页 = 1500 人。
 # 它只是自引用 next_url 死循环的兜底，绝不能复用 max_pages_per_run：后者的语义是
@@ -200,6 +214,8 @@ def _classify_series_response(series_data: Any) -> str:
 
         verdict, _detail = _classify_pixiv_response(series_data, ("novel_series_detail",))
         return str(verdict)
+    except InterruptedError:
+        raise
     except Exception:  # pragma: no cover - 判定失败一律按未知处理，绝不误判删除
         return "unknown"
 
@@ -271,14 +287,12 @@ class BookmarkNovelSyncService:
         db: Database,
         storage: FileStorage,
         settings: Settings,
-        sync_check_scope: str = "_",
         stop_requested: Callable[[], bool] | None = None,
     ) -> None:
         self.api = api
         self.db = db
         self.storage = storage
         self.settings = settings
-        self.sync_check_scope = sync_check_scope
         self.stop_requested = stop_requested
         # Phase 3.4: 统一限速器
         self.rate_limiter = RateLimiter(default_delay=self.settings.sync.delay_seconds_between_pages)
@@ -299,310 +313,6 @@ class BookmarkNovelSyncService:
                     )(original),
                 )
 
-    def check_bookmarks_existence(self, user_id: int, restricts: Iterable[str], progress_callback: Any = None) -> dict[str, int]:
-        """保留：仅测试/兼容用途。预检查：获取全部收藏列表，标记哪些已存在本地"""
-        stats = {"total_checked": 0, "existing": 0, "new": 0}
-        
-        # 初始化检查表
-        self.db.init_sync_check_table()
-        self.db.clear_sync_check_list(self.sync_check_scope)
-        
-        if progress_callback:
-            progress_callback("phase", {"phase": "检查收藏列表"})
-        
-        all_novel_ids = []
-        
-        # 第一步：获取全部收藏列表
-        for restrict in restricts:
-            if progress_callback:
-                progress_callback("page", {"page": 1, "restrict": restrict})
-            
-            next_query: dict[str, Any] | None = {"user_id": user_id, "restrict": restrict}
-            page_count = 0
-            
-            while next_query and page_count < _CHECK_PAGE_SAFETY_LIMIT:
-                result = self.api.user_bookmarks_novel(**next_query)
-                page_count += 1
-                
-                if progress_callback:
-                    progress_callback("page", {"page": page_count, "restrict": restrict})
-                
-                novels = getattr(result, "novels", []) or []
-                for novel in novels:
-                    novel_id = int(novel.id)
-                    all_novel_ids.append(novel_id)
-                
-                next_query = self.api.parse_qs(getattr(result, "next_url", None))
-                if next_query and page_count < _CHECK_PAGE_SAFETY_LIMIT:
-                    self.rate_limiter.wait(stop_requested=_stop_requested_from_progress(progress_callback))  # Phase 3.4 可取消
-
-            if next_query:
-                logger.warning(
-                    "Bookmark existence pagination stopped at safety limit %d",
-                    _CHECK_PAGE_SAFETY_LIMIT,
-                )
-        
-        if progress_callback:
-            progress_callback("phase", {"phase": f"检查 {len(all_novel_ids)} 本小说"})
-        
-        # 第二步：批量检查哪些已存在
-        existing_ids = self.db.get_existing_novel_ids(
-            all_novel_ids,
-            require_assets=self.settings.sync.download_assets,
-        )
-        
-        # 第三步：标记并保存结果
-        sync_items: list[tuple[int, bool]] = []
-        for novel_id in all_novel_ids:
-            exists = novel_id in existing_ids
-            sync_items.append((novel_id, exists))
-            stats["total_checked"] += 1
-            if exists:
-                stats["existing"] += 1
-            else:
-                stats["new"] += 1
-        self.db.upsert_sync_check_items(sync_items, self.sync_check_scope)
-
-        if progress_callback:
-            progress_callback("phase", {"phase": f"检查完成: {stats['new']} 本新小说, {stats['existing']} 本已存在"})
-        
-        logger.info("Sync check completed: %d total, %d existing, %d new", 
-                    stats["total_checked"], stats["existing"], stats["new"])
-        
-        return stats
-
-    def check_all_existence(self, user_id: int, restricts: Iterable[str], progress_callback: Any = None) -> dict[str, Any]:
-        """预检查：获取所有需要同步的内容，标记哪些已存在本地"""
-        stats = {
-            "total_checked": 0, 
-            "existing": 0, 
-            "new": 0,
-            "bookmarks": {"total": 0, "existing": 0, "new": 0},
-            "following_novels": {"total": 0, "existing": 0, "new": 0},
-            "subscribed_series": {"total": 0, "existing": 0, "new": 0},
-        }
-        
-        # 初始化检查表
-        self.db.init_sync_check_table()
-        self.db.clear_sync_check_list(self.sync_check_scope)
-        
-        all_novel_ids = []
-        bookmark_ids: list[int] = []
-        following_ids: list[int] = []
-
-        # 1. 检查收藏列表
-        if self.settings.sync.sync_bookmarks:
-            if progress_callback:
-                progress_callback("phase", {"phase": "检查收藏列表"})
-            
-            for restrict in restricts:
-                if progress_callback:
-                    progress_callback("page", {"page": 1, "restrict": restrict})
-                
-                next_query: dict[str, Any] | None = {"user_id": user_id, "restrict": restrict}
-                page_count = 0
-
-                while next_query and page_count < _CHECK_PAGE_SAFETY_LIMIT:
-                    try:
-                        result = self.api.user_bookmarks_novel(**next_query)
-                    except Exception as exc:
-                        logger.warning("预检查收藏分页失败 (restrict=%s, page=%d): %s", restrict, page_count + 1, exc)
-                        break
-                    page_count += 1
-                    
-                    if progress_callback:
-                        progress_callback("page", {"page": page_count, "restrict": restrict})
-                    
-                    novels = getattr(result, "novels", []) or []
-                    for novel in novels:
-                        novel_id = int(novel.id)
-                        bookmark_ids.append(novel_id)
-                        all_novel_ids.append(novel_id)
-                    
-                    next_query = self.api.parse_qs(getattr(result, "next_url", None))
-                    if next_query:
-                        self.rate_limiter.wait(stop_requested=_stop_requested_from_progress(progress_callback))  # Phase 3.4 可取消
-            
-            stats["bookmarks"]["total"] = len(bookmark_ids)
-            if progress_callback:
-                progress_callback("phase", {"phase": f"收藏: {len(bookmark_ids)} 本"})
-        
-        # 2. 检查关注用户的小说
-        if self.settings.sync.sync_following_novels:
-            if progress_callback:
-                progress_callback("phase", {"phase": "检查关注用户小说"})
-            
-            current_user_id = self.settings.pixiv.user_id
-            if current_user_id:
-                next_following_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
-                following_page_count = 0
-                
-                while next_following_query and following_page_count < _CHECK_PAGE_SAFETY_LIMIT:
-                    try:
-                        following_result = self.api.user_following(**next_following_query)
-                    except Exception as exc:
-                        logger.warning("预检查关注列表分页失败 (page=%d): %s", following_page_count + 1, exc)
-                        break
-                    following_page_count += 1
-
-                    if progress_callback:
-                        progress_callback("page", {"page": following_page_count})
-
-                    users = getattr(following_result, "user_previews", []) or []
-
-                    for user_preview in users:
-                        user = getattr(user_preview, "user", user_preview)
-                        author_id = getattr(user, "id", None)
-                        if author_id is None:
-                            continue
-                        author_id = int(author_id)
-
-                        # 获取该用户的小说
-                        next_novel_query: dict[str, Any] | None = {"user_id": author_id}
-                        user_novel_page = 0
-                        while next_novel_query and user_novel_page < _CHECK_PAGE_SAFETY_LIMIT:
-                            try:
-                                novels_result = self.api.user_novels(**next_novel_query)
-                            except Exception as exc:
-                                logger.warning("预检查用户小说分页失败 (user=%d, page=%d): %s", author_id, user_novel_page + 1, exc)
-                                break
-                            user_novel_page += 1
-                            novels = getattr(novels_result, "novels", []) or []
-
-                            for novel in novels:
-                                novel_id = int(novel.id)
-                                following_ids.append(novel_id)
-                                all_novel_ids.append(novel_id)
-
-                            next_novel_query = self.api.parse_qs(getattr(novels_result, "next_url", None))
-                            if next_novel_query:
-                                self.rate_limiter.wait(stop_requested=_stop_requested_from_progress(progress_callback))  # Phase 3.4 可取消
-                    
-                    next_following_query = self.api.parse_qs(getattr(following_result, "next_url", None))
-                    if next_following_query:
-                        self.rate_limiter.wait(stop_requested=_stop_requested_from_progress(progress_callback))  # Phase 3.4 可取消
-            
-            stats["following_novels"]["total"] = len(following_ids)
-            if progress_callback:
-                progress_callback("phase", {"phase": f"关注用户: {len(following_ids)} 本"})
-        
-        # 3. 检查追更系列
-        if self.settings.sync.sync_subscribed_series:
-            if progress_callback:
-                progress_callback("phase", {"phase": "检查追更系列"})
-            
-            series_ids = []
-            web_cookie = self.settings.pixiv.web_cookie
-            if web_cookie:
-                try:
-                    import requests as http_requests
-                    
-                    headers = {
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        "Accept": "application/json",
-                        "Accept-Language": "zh_CN",
-                        "Referer": "https://www.pixiv.net/following/watchlist/novels",
-                        "Cookie": web_cookie,
-                    }
-                    
-                    proxies = {"http": self.settings.pixiv.proxy, "https": self.settings.pixiv.proxy} if self.settings.pixiv.proxy else None
-                    
-                    # 获取追更系列列表（不带 new=1，获取全部订阅而非仅有新内容的）
-                    endpoint = "https://www.pixiv.net/ajax/watch_list/novel?p=1&lang=zh"
-                    response = http_requests.get(
-                        endpoint, headers=headers, proxies=proxies,
-                        timeout=self.settings.pixiv.timeout,
-                        verify=self.settings.pixiv.verify_ssl,
-                    )
-
-                    if response.status_code in (401, 403):
-                        # Cookie 过期，尝试自动刷新
-                        logger.warning("Web Cookie 已过期 (status=%d)，尝试自动刷新...", response.status_code)
-                        new_cookie = self._auto_refresh_web_cookie()
-                        if new_cookie:
-                            web_cookie = new_cookie
-                            headers["Cookie"] = new_cookie
-                            response = http_requests.get(
-                                endpoint, headers=headers, proxies=proxies,
-                                timeout=self.settings.pixiv.timeout,
-                                verify=self.settings.pixiv.verify_ssl,
-                            )
-                        else:
-                            logger.warning("Web Cookie 自动刷新失败，跳过追更系列检查")
-
-                    if response.status_code == 200:
-                        data = response.json()
-                        body = data.get("body", {})
-                        page_info = body.get("page", {})
-                        watched_ids = page_info.get("watchedSeriesIds", [])
-
-                        # 这里只记录系列 ID，系列中的小说会在实际同步阶段获取。
-                        # 不调用任何 per-series 详情接口：AppPixivAPI 没有 novel_series_detail
-                        # 方法，之前的调用会抛 AttributeError 被外层 except 吞掉，导致计数恒为 0。
-                        series_ids.extend(watched_ids)
-                        
-                        # 处理分页
-                        max_page = page_info.get("maxPage", 1)
-                        if max_page > 1:
-                            for page_num in range(2, max_page + 1):
-                                try:
-                                    paged_url = endpoint.replace("p=1", f"p={page_num}")
-                                    paged_response = http_requests.get(
-                                        paged_url, headers=headers, proxies=proxies,
-                                        timeout=self.settings.pixiv.timeout,
-                                        verify=self.settings.pixiv.verify_ssl,
-                                    )
-                                    if paged_response.status_code == 200:
-                                        paged_data = paged_response.json()
-                                        paged_body = paged_data.get("body", {})
-                                        paged_page_info = paged_body.get("page", {})
-                                        paged_watched_ids = paged_page_info.get("watchedSeriesIds", [])
-                                        series_ids.extend(paged_watched_ids)
-                                except Exception as e:
-                                    logger.warning("Failed to fetch watchlist page %d: %s", page_num, e)
-                except Exception as e:
-                    logger.warning("Failed to fetch subscribed series: %s", e)
-            
-            stats["subscribed_series"]["total"] = len(series_ids)
-            if progress_callback:
-                progress_callback("phase", {"phase": f"追更系列: {len(series_ids)} 个"})
-        
-        # 批量检查哪些已存在
-        if progress_callback:
-            progress_callback("phase", {"phase": f"检查 {len(all_novel_ids)} 本小说"})
-        
-        existing_ids = self.db.get_existing_novel_ids(
-            all_novel_ids,
-            require_assets=self.settings.sync.download_assets,
-        )
-        
-        # 标记并保存结果
-        sync_items: list[tuple[int, bool]] = []
-        for novel_id in all_novel_ids:
-            exists = novel_id in existing_ids
-            sync_items.append((novel_id, exists))
-            stats["total_checked"] += 1
-            if exists:
-                stats["existing"] += 1
-            else:
-                stats["new"] += 1
-        self.db.upsert_sync_check_items(sync_items, self.sync_check_scope)
-
-        # 更新各分类统计
-        stats["bookmarks"]["existing"] = len([nid for nid in bookmark_ids if nid in existing_ids])
-        stats["bookmarks"]["new"] = stats["bookmarks"]["total"] - stats["bookmarks"]["existing"]
-
-        stats["following_novels"]["existing"] = len([nid for nid in following_ids if nid in existing_ids])
-        stats["following_novels"]["new"] = stats["following_novels"]["total"] - stats["following_novels"]["existing"]
-        
-        if progress_callback:
-            progress_callback("phase", {"phase": f"检查完成: {stats['new']} 本新小说, {stats['existing']} 本已存在"})
-        
-        logger.info("Sync check completed: %d total, %d existing, %d new", 
-                    stats["total_checked"], stats["existing"], stats["new"])
-        
-        return stats
-
     def sync(self, user_id: int, restricts: Iterable[str], download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None, phase_name: str = "同步中") -> dict[str, int]:
         stats = _empty_stats()
         max_items = self.settings.sync.max_items_per_run
@@ -617,10 +327,6 @@ class BookmarkNovelSyncService:
         processed_items = 0
         synced_items = 0  # 实际同步的数量（不包括跳过的）
 
-        # 获取预检查结果
-        check_list = self.db.get_sync_check_list(self.sync_check_scope)
-        use_check_list = len(check_list) > 0
-
         for restrict in restricts:
             logger.info("Syncing bookmarked novels for restrict=%s", restrict)
             if progress_callback:
@@ -628,7 +334,7 @@ class BookmarkNovelSyncService:
 
             # 注意：Pixiv 收藏列表按"加入收藏的时间"倒序排列，不是按 novel_id 倒序，
             # 因此不能用 novel_id 大小作为"水位线提前终止"判断（用户收藏旧作品时小 ID 会被永久跳过）。
-            # 改为依赖 sync_check_list 跳过已存在的内容；max_items 控制单次同步上限。
+            # max_items 控制单次同步上限。
             reached_max_items = False
 
             next_query: dict[str, Any] | None = {"user_id": user_id, "restrict": restrict}
@@ -644,8 +350,13 @@ class BookmarkNovelSyncService:
                     break
                 try:
                     result = self.api.user_bookmarks_novel(**next_query)
+                except InterruptedError:
+                    raise
                 except Exception as e:
                     logger.error("API call user_bookmarks_novel failed: %s", e)
+                    stats["failed"] = int(stats.get("failed") or 0) + 1
+                    stats["incomplete"] = True
+                    stats["aborted_reason"] = "fetch_failed"
                     break
                 page_count += 1
                 if progress_callback:
@@ -673,10 +384,11 @@ class BookmarkNovelSyncService:
                             "phase": phase_name,
                         })
 
-                    # 使用预检查结果判断是否跳过
-                    should_skip = False
-                    if use_check_list and novel_id in check_list:
-                        should_skip = check_list[novel_id]
+                    # 已在本地完成归档的直接跳过，不再为它们打详情接口
+                    should_skip = self.db.novel_archive_complete(
+                        novel_id,
+                        require_assets=download_assets,
+                    )
 
                     if should_skip:
                         # 已存在，跳过
@@ -690,7 +402,7 @@ class BookmarkNovelSyncService:
                                 progress_callback("rate_limit", {"seconds": skip_delay})
                             _sleep_with_progress_cancel(skip_delay, progress_callback)
                     else:
-                        # 不存在或无预检查结果，执行完整同步
+                        # 不存在，执行完整同步
                         counters = self._sync_novel(
                             novel,
                             restrict,
@@ -699,9 +411,6 @@ class BookmarkNovelSyncService:
                             write_raw_text,
                             source_type=f"bookmark_{restrict}",
                         )
-                        # 同步成功后更新检查列表
-                        if use_check_list:
-                            self.db.upsert_sync_check_item(novel_id, True, self.sync_check_scope)
 
                     _merge_stats(stats, counters)
 
@@ -806,15 +515,6 @@ class BookmarkNovelSyncService:
                     progress_callback("rate_limit", {"seconds": page_delay})
                 _sleep_with_progress_cancel(page_delay, progress_callback)
 
-        # Phase 3.1: 防止API异常返回空列表导致误删
-        if stats["users"] == 0 and existing_user_count > 0:
-            logger.warning(
-                f"API returned empty following list but {existing_user_count} users exist locally. "
-                "Refusing to clear user data. This may indicate a temporary API issue."
-            )
-            # 恢复统计以反映实际未删除
-            stats["users"] = existing_user_count
-
         return stats
 
     def _collect_following_users(
@@ -834,6 +534,7 @@ class BookmarkNovelSyncService:
         next_query: dict[str, Any] | None = {"user_id": current_user_id, "restrict": "public"}
         page_count = 0
         incomplete = False
+        fetch_failed = False
 
         while next_query:
             if page_count >= safety_limit:
@@ -845,9 +546,12 @@ class BookmarkNovelSyncService:
                 break
             try:
                 following_result = self.api.user_following(**next_query)
+            except InterruptedError:
+                raise
             except Exception as e:
                 logger.error("API call user_following failed: %s", e)
                 incomplete = True
+                fetch_failed = True
                 break
             page_count += 1
             if progress_callback:
@@ -870,7 +574,7 @@ class BookmarkNovelSyncService:
                     progress_callback("rate_limit", {"seconds": page_delay})
                 _sleep_with_progress_cancel(page_delay, progress_callback)
 
-        return collected, incomplete
+        return collected, incomplete, fetch_failed
 
     @staticmethod
     def _order_following_users_for_rotation(
@@ -929,10 +633,6 @@ class BookmarkNovelSyncService:
         current_user_id = self.settings.pixiv.user_id
         if not current_user_id:
             raise RuntimeError("PIXIV_USER_ID is required to fetch following list")
-
-        # 获取预检查结果
-        check_list = self.db.get_sync_check_list(self.sync_check_scope)
-        use_check_list = len(check_list) > 0
 
         # 读取水位线：
         # - user_max_ids：每个用户上次见到的最新 novel_id，仅用于观测，不作为硬停止条件；
@@ -1019,8 +719,13 @@ class BookmarkNovelSyncService:
                     break
                 try:
                     novels_result = self.api.user_novels(**next_novel_query)
+                except InterruptedError:
+                    raise
                 except Exception as e:
                     logger.error("API call user_novels for user %s failed: %s", author_id, e)
+                    stats["failed"] = int(stats.get("failed") or 0) + 1
+                    stats["incomplete"] = True
+                    stats["aborted_reason"] = "fetch_failed"
                     break
                 author_page_count += 1
                 novels = getattr(novels_result, "novels", []) or []
@@ -1042,10 +747,12 @@ class BookmarkNovelSyncService:
                             "phase": "同步用户小说",
                         })
 
-                    # 使用预检查结果判断是否跳过
-                    should_skip = False
-                    if use_check_list and novel_id in check_list:
-                        should_skip = check_list[novel_id]
+                    # 已在本地完成归档的直接跳过；existing_streak 的早停判定
+                    # 同样以归档完整度为准（原来是预检查表，但其结果从未被消费）。
+                    should_skip = self.db.novel_archive_complete(
+                        novel_id,
+                        require_assets=download_assets,
+                    )
 
                     if should_skip:
                         # 已存在，跳过
@@ -1075,8 +782,6 @@ class BookmarkNovelSyncService:
                             source_type="following_user_scan",
                             source_key=str(author_id),
                         )
-                        if use_check_list:
-                            self.db.upsert_sync_check_item(novel_id, True, self.sync_check_scope)
 
                     _merge_stats(stats, counters)
 
@@ -1135,13 +840,17 @@ class BookmarkNovelSyncService:
             # 限量模式：先取回完整关注列表，再按"最久未同步优先"挑本轮要跑的作者。
             # 直接顺着 user_following 的顺序取前 N 个，会让后面的作者永远轮不到
             # （生产上关注 53 人、users_limit=5，连续 9 轮都只同步了最前面 5 个）。
-            candidates, list_incomplete = self._collect_following_users(
+            candidates, list_incomplete, list_fetch_failed = self._collect_following_users(
                 current_user_id,
                 following_list_page_limit,
                 page_delay,
                 progress_callback,
             )
-            if list_incomplete:
+            if list_fetch_failed:
+                stats["failed"] = int(stats.get("failed") or 0) + 1
+                stats["incomplete"] = True
+                stats["aborted_reason"] = "fetch_failed"
+            elif list_incomplete:
                 stats["truncated"] = True
                 stats["incomplete"] = True
 
@@ -1161,18 +870,22 @@ class BookmarkNovelSyncService:
                 < NO_NOVELS_RECHECK_DAYS
             )
 
-            for user in selected:
-                # 本轮的结束判据是「跑满 users_limit 个作者」，硬顶只在异常时兜底。
-                if run_hard_cap is not None and synced_items >= run_hard_cap:
-                    logger.warning(
-                        "Reached run hard cap=%s (synced), stopping sync", run_hard_cap
-                    )
-                    # 这条和下面的轮转不一样：走到硬顶说明 users_limit 那层判据没拦住，
-                    # 属于异常截断，必须留在黄色的 partial 里，别被 rotation_pending 转绿。
-                    stats["truncated"] = True
-                    stats["incomplete"] = True
-                    break
-                _sync_author(user)
+            try:
+                for user in selected:
+                    # 本轮的结束判据是「跑满 users_limit 个作者」，硬顶只在异常时兜底。
+                    if run_hard_cap is not None and synced_items >= run_hard_cap:
+                        logger.warning(
+                            "Reached run hard cap=%s (synced), stopping sync", run_hard_cap
+                        )
+                        # 这条和下面的轮转不一样：走到硬顶说明 users_limit 那层判据没拦住，
+                        # 属于异常截断，必须留在黄色的 partial 里，别被 rotation_pending 转绿。
+                        stats["truncated"] = True
+                        stats["incomplete"] = True
+                        break
+                    _sync_author(user)
+            finally:
+                # 取消/异常也必须把已扫作者的水位落盘，否则下轮又从同一批开始。
+                _save_watermark()
 
             remaining = max(len(candidates) - users_processed, 0)
             stats["users_remaining"] = remaining
@@ -1233,9 +946,15 @@ class BookmarkNovelSyncService:
                     return stats
                 try:
                     following_result = self.api.user_following(**next_following_query)
+                except InterruptedError:
+                    raise
                 except Exception as e:
                     logger.error("API call user_following failed: %s", e)
-                    break
+                    stats["failed"] = int(stats.get("failed") or 0) + 1
+                    stats["incomplete"] = True
+                    stats["aborted_reason"] = "fetch_failed"
+                    _save_watermark()
+                    return stats
                 following_page_count += 1
                 if progress_callback:
                     progress_callback("page", {"page": following_page_count})
@@ -1246,6 +965,8 @@ class BookmarkNovelSyncService:
                     # 整轮闸门（每作者配额在 _sync_author 内部同样生效）。
                     if max_items is not None and synced_items >= max_items:
                         logger.info("Reached max_items_per_run=%s (synced), stopping sync", max_items)
+                        stats["truncated"] = True
+                        stats["incomplete"] = True
                         _save_watermark()
                         return stats
                     _sync_author(getattr(user_preview, "user", user_preview))
@@ -1369,6 +1090,8 @@ class BookmarkNovelSyncService:
                                                 all_watched_ids.extend(paged_ids)
                                                 if isinstance(novel_series_thumbs, dict) and isinstance(paged_thumbs, dict):
                                                     novel_series_thumbs.update(paged_thumbs)
+                                        except InterruptedError:
+                                            raise
                                         except Exception as e:
                                             logger.warning("Failed to fetch page %d: %s", page_num, e)
                                 
@@ -1398,13 +1121,19 @@ class BookmarkNovelSyncService:
                                                 user_id=0, cover_url=s.get("cover_url", ""), total_novels=0,
                                             )
                                         # 新系列：不在此处插入，等 App API 获取详情后再插入
+                                    except InterruptedError:
+                                        raise
                                     except Exception:
                                         pass
                                 
                                 break
+                    except InterruptedError:
+                        raise
                     except Exception as e:
                         logger.warning("Web API %s failed: %s", endpoint, str(e))
                 
+            except InterruptedError:
+                raise
             except Exception as e:
                 logger.warning("Web API failed: %s", str(e))
         else:
@@ -1431,6 +1160,8 @@ class BookmarkNovelSyncService:
                         "cover_url": row[4] or "",
                     })
                 logger.info("Loaded %d subscribed series from DB fallback", len(series_list))
+            except InterruptedError:
+                raise
             except Exception as e:
                 logger.warning("Failed to load subscribed series from DB: %s", str(e))
 
@@ -1472,6 +1203,19 @@ class BookmarkNovelSyncService:
                     progress_callback("phase", {"phase": f"同步系列 {series_idx} (已同步 {synced_series_count}{f'/{limit}' if limit > 0 else ''}) (ID: {sid})"})
                 try:
                     series_data = self.api.novel_series(int(sid))
+                except InterruptedError:
+                    raise
+                except Exception as e:
+                    consecutive_fetch_failures += 1
+                    stats["failed"] = stats.get("failed", 0) + 1
+                    logger.warning("Failed to fetch series %s: %s", sid, e)
+                    if progress_callback:
+                        progress_callback("phase", {"phase": f"系列 {sid}: 获取失败，已连续失败 {consecutive_fetch_failures} 次"})
+                    if consecutive_fetch_failures >= max_consecutive_fetch_failures:
+                        aborted_reason = "rate_limited"
+                        break
+                    continue
+                try:
                     if series_data and not _first_logged:
                         _first_logged = True
                         logger.info("novel_series response keys: %s", list(series_data.keys()) if isinstance(series_data, dict) else "N/A")
@@ -1585,6 +1329,8 @@ class BookmarkNovelSyncService:
                                                 progress_callback("phase", {"phase": f"系列 {title or sid}: 已获取 {len(all_novel_items)} 章"})
                                         else:
                                             break
+                                    except InterruptedError:
+                                        raise
                                     except Exception as e:
                                         logger.warning("Failed to fetch next page for series %s: %s", sid, e)
                                         break
@@ -1654,6 +1400,8 @@ class BookmarkNovelSyncService:
                                 consecutive_fetch_failures = 0
                                 try:
                                     self.db.upsert_series_status(int(sid), "deleted")
+                                except InterruptedError:
+                                    raise
                                 except Exception as exc:  # pragma: no cover - 状态写回失败不该中断同步
                                     logger.warning("标记系列 %s 已删除失败: %s", sid, exc)
                                 logger.info("Series %s is gone on Pixiv; marked deleted (not a fetch failure)", sid)
@@ -1688,24 +1436,12 @@ class BookmarkNovelSyncService:
                             aborted_reason = "rate_limited"
                             break
                 except InterruptedError:
-                    # 用户取消：不能被下面的 except Exception 吞掉（InterruptedError 是
-                    # Exception 子类）。章节间/跳过延迟里的 _sleep_with_progress_cancel
-                    # 会抛出它，必须原样上抛让 runner 标记任务已取消。
+                    # 用户取消必须原样上抛。章节同步里的其它异常不能计入系列熔断。
                     raise
                 except Exception as e:
-                    consecutive_fetch_failures += 1
-                    logger.warning("Failed to fetch series %s: %s", sid, str(e))
-                    if progress_callback:
-                        progress_callback("phase", {"phase": f"系列 {sid}: 获取失败，已连续失败 {consecutive_fetch_failures} 次"})
-                    if consecutive_fetch_failures >= max_consecutive_fetch_failures:
-                        logger.warning(
-                            "Stopping subscribed series sync after %d consecutive fetch exceptions; likely rate limited or blocked",
-                            consecutive_fetch_failures,
-                        )
-                        if progress_callback:
-                            progress_callback("phase", {"phase": "连续获取系列失败，疑似触发 Pixiv 风控，已暂停追更系列同步"})
-                        aborted_reason = "rate_limited"
-                        break
+                    stats["failed"] = stats.get("failed", 0) + 1
+                    logger.warning("Series %s processing failed: %s", sid, e)
+                    continue
 
                 # 系列之间的延迟
                 if series_delay > 0 and queue_idx < len(series_queue):
@@ -1775,6 +1511,8 @@ class BookmarkNovelSyncService:
                     stats["series_synced"] += 1
                     logger.info("Synced series from DB: %s (ID: %s)", row[1], series_id)
                 
+            except InterruptedError:
+                raise
             except Exception as e:
                 logger.warning("Failed to extract series from DB: %s", str(e))
         
@@ -1824,12 +1562,19 @@ class BookmarkNovelSyncService:
             else:
                 logger.warning("Web Cookie 自动刷新失败: %s", result.get("error", "unknown"))
                 return None
+        except InterruptedError:
+            raise
         except Exception as exc:
             logger.warning("Web Cookie 自动刷新异常: %s", exc)
             return None
 
     def _save_web_cookie_to_env(self, cookie_string: str) -> None:
         """将新的 Web Cookie 写入 .env 文件。"""
+        # 换行写进 .env 会把下一行变成新的 KEY=VALUE。先滤掉再落盘。
+        cookie_string = str(cookie_string or "").replace("\r", "").replace("\n", "").strip()
+        if not cookie_string:
+            logger.warning("Web Cookie 为空或只含换行，已跳过写入")
+            return
         # 查找 .env 文件路径
         env_path = Path(os.getenv("ENV_PATH", ".env"))
         if not env_path.exists():
@@ -1873,6 +1618,14 @@ class BookmarkNovelSyncService:
         # 1. 获取远程收藏 ID 集合（必须完整成功，否则直接抛出）
         try:
             remote_ids = self._fetch_remote_bookmark_ids(user_id, restricts, progress_callback)
+        except InterruptedError:
+            raise
+        except RemoteListTruncated as exc:
+            logger.error("%s", exc)
+            stats["truncated"] = True
+            stats["incomplete"] = True
+            stats["aborted_reason"] = "fetch_failed"
+            return stats
         except Exception as exc:
             logger.error("Failed to fetch remote bookmark ids; abort detection to avoid false-positive deletions: %s", exc)
             raise
@@ -1946,6 +1699,8 @@ class BookmarkNovelSyncService:
                 if novel_obj is None:
                     stats["skipped_deleted"] += 1
                     continue
+            except InterruptedError:
+                raise
             except Exception:
                 stats["skipped_deleted"] += 1
                 continue
@@ -2041,6 +1796,8 @@ class BookmarkNovelSyncService:
                 if detail is None:
                     stats["skipped_deleted"] += 1
                     continue
+            except InterruptedError:
+                raise
             except Exception:
                 stats["skipped_deleted"] += 1
                 continue
@@ -2088,8 +1845,8 @@ class BookmarkNovelSyncService:
             page_count = 0
             while next_query:
                 if page_count >= max_pages:
-                    raise RuntimeError(
-                        f"Bookmark fetch exceeded max_pages={max_pages} for restrict={restrict}; aborting to prevent unbounded paging"
+                    raise RemoteListTruncated(
+                        f"收藏列表在 {restrict} 下翻过 {max_pages} 页仍未结束，已中止，避免把未拉到的收藏误判为取消"
                     )
                 result = self.api.user_bookmarks_novel(**next_query)
                 page_count += 1
@@ -2154,6 +1911,8 @@ class BookmarkNovelSyncService:
                 paged_data = paged_resp.json()
                 paged_ids = paged_data.get("body", {}).get("page", {}).get("watchedSeriesIds", [])
                 remote_ids.update(int(sid) for sid in paged_ids)
+        except InterruptedError:
+            raise
         except Exception as e:
             logger.warning("Failed to fetch remote subscribed series: %s", e)
             return None
@@ -2172,6 +1931,8 @@ class BookmarkNovelSyncService:
         novel_id = int(novel.id)
         try:
             return self._sync_novel_inner(novel_id, novel, restrict, download_assets, write_markdown, write_raw_text, source_type, source_key)
+        except InterruptedError:
+            raise
         except InterruptedError:
             raise
         except Exception as e:
@@ -2221,7 +1982,7 @@ class BookmarkNovelSyncService:
         caption = clean_caption(getattr(detail_novel, "caption", None))
         tags_json = stable_json_dumps(_extract_tags(getattr(detail_novel, "tags", [])))
         meta_plain = _to_plain(detail_novel)
-        meta_hash = sha256_text(stable_json_dumps(meta_plain))
+        meta_hash = sha256_text(stable_json_dumps(_stable_meta_for_hash(meta_plain)))
         cover_url = _extract_cover_url(detail_novel)
         series = getattr(detail_novel, "series", None)
         series_id = int(series.id) if getattr(series, "id", None) else None
@@ -2233,12 +1994,21 @@ class BookmarkNovelSyncService:
 
         # 3.5 hash增量:读旧hash比对,未变更跳过写盘写库
         existing_row = self.db.conn.execute(
-            "SELECT meta_hash FROM novels WHERE novel_id = ?", (novel_id,)
+            "SELECT meta_hash, archive_dir FROM novels WHERE novel_id = ?", (novel_id,)
         ).fetchone()
         existing_text_row = self.db.conn.execute(
             "SELECT text_hash FROM novel_texts WHERE novel_id = ?", (novel_id,)
         ).fetchone()
         meta_unchanged = existing_row and existing_row[0] == meta_hash
+        stored_archive = existing_row[1] if existing_row and existing_row[1] else None
+        if stored_archive:
+            novel_dir = self.storage.resolve_archive_dir(
+                restrict, stored_archive, user_id, user_name, novel_id, title
+            )
+            archive_dir = stored_archive
+        else:
+            archive_dir = self.storage.relative_novel_dir(user_id, user_name, novel_id, title)
+            novel_dir = self.storage.base_dir(restrict) / archive_dir
         text_unchanged = existing_text_row and existing_text_row[0] == text_hash
 
         expected_assets = _collect_asset_urls(detail_novel, webview) if download_assets else []
@@ -2251,7 +2021,7 @@ class BookmarkNovelSyncService:
             with self.db.transaction():
                 self.db.touch_novel(novel_id)
                 self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
-            assets_downloaded = self._download_and_record_assets(novel_dir=None, restrict=restrict, user_id=user_id, user_name=user_name, novel_id=novel_id, title=title, assets=missing_assets)
+            assets_downloaded = self._download_and_record_assets(novel_dir=novel_dir, restrict=restrict, user_id=user_id, user_name=user_name, novel_id=novel_id, title=title, assets=missing_assets)
             return {
                 "users": 0, "novels": 0, "texts_updated": 0, "assets_downloaded": assets_downloaded,
                 "bookmarks": int(getattr(detail_novel, "total_bookmarks", 0) or 0),
@@ -2262,11 +2032,10 @@ class BookmarkNovelSyncService:
         markdown_text = to_markdown(title, user_name, caption, body) if write_markdown else None
 
         # Write the archive files to disk BEFORE committing the DB rows. The
-        # skip/dedupe logic keys off the DB (novel_text_exists / sync_check_list),
+        # skip/dedupe logic keys off the DB (novel_archive_complete / content hash),
         # so if we committed first and the process died before writing files, the
         # novel would be marked "synced" forever with no text on disk. Writing
         # files first means a crash leaves the DB unmarked and the novel is retried.
-        novel_dir = self.storage.novel_dir(restrict, user_id, user_name, novel_id, title)
         self.storage.write_text(novel_dir / "meta.json", json.dumps(meta_plain, ensure_ascii=False, indent=2))
         if write_raw_text:
             self.storage.write_text(novel_dir / "text.txt", body)
@@ -2302,6 +2071,7 @@ class BookmarkNovelSyncService:
                     create_date=getattr(detail_novel, "create_date", None),
                     raw_json=stable_json_dumps(meta_plain),
                     meta_hash=meta_hash,
+                    archive_dir=archive_dir,
                 )
             )
             self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=source_type, source_key=source_key or str(user_id)))
@@ -2350,6 +2120,7 @@ class BookmarkNovelSyncService:
                 timeout=self.settings.pixiv.timeout,
                 verify_ssl=self.settings.pixiv.verify_ssl,
                 proxy=self.settings.pixiv.proxy,
+                stop_requested=self.stop_requested,
             )
             if file_hash:
                 records.append(AssetRecord(novel_id, asset_type, asset_url, str(target), file_hash))

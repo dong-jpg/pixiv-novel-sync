@@ -29,6 +29,7 @@ class NovelRecord:
     create_date: str | None
     raw_json: str
     meta_hash: str
+    archive_dir: str | None = None
 
 
 @dataclass(slots=True)

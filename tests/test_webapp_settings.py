@@ -5,9 +5,8 @@ from pathlib import Path
 import yaml
 
 from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings, load_settings
-from pixiv_novel_sync.sync_check import build_sync_check_fingerprint, sync_check_task_types
 from pixiv_novel_sync.web.utils import _settings_to_dict
-from pixiv_novel_sync.webapp import SettingsManager, SyncJobManager, SyncJobState, create_app
+from pixiv_novel_sync.webapp import SettingsManager, create_app
 
 
 def test_settings_template_exposes_keyword_clean_agent_type():
@@ -265,32 +264,3 @@ def test_load_settings_defaults_new_throughput_fields_to_none(tmp_path):
 
     assert settings.sync.following_max_novels_per_author is None
     assert settings.sync.series_max_pages_per_run is None
-
-
-def test_latest_matching_sync_check_scope_requires_same_fingerprint_and_task(tmp_path):
-    settings = make_settings(tmp_path)
-    fingerprint = build_sync_check_fingerprint(settings, 123)
-    manager = SyncJobManager(config_path=None, env_path=None)
-    manager._jobs["check_old"] = SyncJobState(
-        job_id="check_old",
-        status="succeeded",
-        finished_at=1,
-        progress={
-            "sync_check_scope": "check_old",
-            "sync_check_fingerprint": "stale",
-            "sync_check_task_types": ["bookmark"],
-        },
-    )
-    manager._jobs["check_new"] = SyncJobState(
-        job_id="check_new",
-        status="succeeded",
-        finished_at=2,
-        progress={
-            "sync_check_scope": "check_new",
-            "sync_check_fingerprint": fingerprint,
-            "sync_check_task_types": sync_check_task_types(settings),
-        },
-    )
-
-    assert manager.latest_matching_sync_check_scope(settings, 123, "bookmark") == ("check_new", "check_new")
-    assert manager.latest_matching_sync_check_scope(settings, 123, "subscribed_series") is None

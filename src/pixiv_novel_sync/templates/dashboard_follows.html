@@ -25,6 +25,7 @@
           {{ tab.label }}
         </button>
       </div>
+      <input v-model="search" @keyup.enter="page = 1; fetchData()" placeholder="搜索名字、账号或 ID" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
       <div class="text-sm font-medium text-gray-500">
         <span v-if="loading">加载中...</span>
         <span v-else>共 <span class="font-bold text-gray-900">{{ totalItems }}</span> 人</span>
@@ -39,6 +40,7 @@
         </svg>
       </div>
       <p class="text-sm text-red-600">{{ error }}</p>
+      <button type="button" @click="fetchData" class="mt-3 px-3 py-1.5 bg-white border border-red-200 text-red-600 rounded-lg text-xs">重试</button>
     </div>
 
     <!-- Empty State -->
@@ -72,7 +74,7 @@
             <img v-if="item.avatar_url"
                  :src="'/proxy/image?url=' + encodeURIComponent(item.avatar_url)"
                  class="w-16 h-16 rounded-full object-cover border-2 border-gray-100 group-hover:border-brand-200 transition-colors"
-                 @error="item.avatar_url = ''">
+                 @error="item.avatar_url = ''" alt="">
             <div v-else
                  class="w-16 h-16 rounded-full flex items-center justify-center bg-brand-50 text-brand-600 font-bold text-lg border-2 border-brand-100">
               {{ (item.name || 'U').substring(0, 2) }}
@@ -101,7 +103,7 @@
 
           <!-- Updated time -->
           <div class="text-[10px] text-gray-400 font-mono mt-2">
-            更新于 {{ (item.updated_at || '-').substring(0, 10) }}
+            更新于 {{ formatDbTime(item.updated_at) || '-' }}
           </div>
         </div>
       </a>
@@ -127,17 +129,21 @@
 
       const items = ref([]);
       const totalItems = ref(0);
-      const page = ref(1);
+      const followQuery = window.readListQuery({ page: 1, status: 'all', q: '' });
+      const page = ref(followQuery.page);
+      const search = ref(followQuery.q);
       const totalPages = ref(1);
       const loading = ref(true);
       const error = ref(null);
-      const status = ref('all');
+      const status = ref(['all', 'normal', 'no_novels', 'suspended', 'cleared', 'unknown'].includes(followQuery.status) ? followQuery.status : 'all');
 
       const tabs = [
         { label: '全部', value: 'all' },
         { label: '正常', value: 'normal' },
         { label: '无小说', value: 'no_novels' },
-        { label: '已停用', value: 'suspended' }
+        { label: '已停用', value: 'suspended' },
+        { label: '已清空', value: 'cleared' },
+        { label: '未知', value: 'unknown' }
       ];
 
       let fetchAbortController = null;
@@ -153,7 +159,8 @@
           const params = new URLSearchParams({
             page: page.value,
             page_size: 12,
-            status: status.value
+            status: status.value,
+            search: search.value
           });
           const res = await fetch('/api/dashboard/users?' + params, {
             signal: fetchAbortController.signal
@@ -172,6 +179,7 @@
             items.value = [];
           }
         } finally {
+          window.writeListQuery({ page: page.value, status: status.value, q: search.value });
           if (fetchAbortController && !fetchAbortController.signal.aborted) {
             loading.value = false;
           }
@@ -188,6 +196,7 @@
         normal:    { label: '正常', badgeClass: 'bg-green-50 text-green-700 border border-green-200', dotClass: 'bg-green-500' },
         no_novels: { label: '无小说', badgeClass: 'bg-yellow-50 text-yellow-700 border border-yellow-200', dotClass: 'bg-yellow-500' },
         suspended: { label: '已停用', badgeClass: 'bg-red-50 text-red-700 border border-red-200', dotClass: 'bg-red-500' },
+        cleared:   { label: '已清空', badgeClass: 'bg-slate-50 text-slate-700 border border-slate-200', dotClass: 'bg-slate-400' },
         unknown:   { label: '未知', badgeClass: 'bg-gray-50 text-gray-700 border border-gray-200', dotClass: 'bg-gray-500' }
       };
 
@@ -203,8 +212,8 @@
       onMounted(() => fetchData());
 
       return {
-        items, totalItems, page, totalPages, loading, error, status, tabs,
-        handlePageChange, statusLabel, statusBadgeClass, statusDotClass
+        items, totalItems, page, totalPages, loading, error, status, search, tabs,
+        fetchData, handlePageChange, statusLabel, statusBadgeClass, statusDotClass
       };
     }
   });

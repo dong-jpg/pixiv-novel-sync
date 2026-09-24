@@ -8,7 +8,6 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
   tailwind.config = {
-    darkMode: 'class',
     theme: {
       extend: {
         colors: {
@@ -226,6 +225,32 @@
       }
       return `HTTP ${response ? response.status : '?'}`;
     };
+    window.formatDbTime = function (value, opts) {
+      if (value == null || value === '' || value === '-') return value ? String(value) : '';
+      let iso = String(value).trim();
+      if (!iso.includes('T')) iso = iso.replace(' ', 'T');
+      if (!/[zZ]$|[+-]\d\d:?\d\d$/.test(iso)) iso += 'Z';
+      const parsed = new Date(iso);
+      if (Number.isNaN(parsed.getTime())) return String(value);
+      return parsed.toLocaleString('zh-CN', Object.assign({
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+      }, opts || {}));
+    };
+    window.toast = function (message, type) {
+      let el = document.getElementById('app-toast');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'app-toast';
+        el.setAttribute('role', 'status');
+        document.body.appendChild(el);
+      }
+      el.textContent = message || '';
+      el.className = 'fixed bottom-4 right-4 z-[80] max-w-sm px-4 py-3 rounded-lg shadow-lg text-sm ' +
+        (type === 'error' ? 'bg-red-600 text-white' : 'bg-gray-900 text-white');
+      clearTimeout(window._toastTimer);
+      window._toastTimer = setTimeout(function () { el.classList.add('hidden'); }, 3500);
+    };
 
     // SSE 流式读取。此前 ai / wizard / reader 三页共写了 7 份几乎相同的
     // getReader + 手工切帧代码，任何一处修 bug 都修不全，统一收在这里。
@@ -234,6 +259,30 @@
     // 返回 { events, terminal }：terminal 表示收到过 done / error 帧，
     // 断线重连要靠它判断流是否已经跑到终态。
     // 没传 onError 时异常原样抛出——调用方的 try/catch 才能接管重连。
+    window.readListQuery = function (defaults) {
+      const params = new URLSearchParams(location.search);
+      const out = {};
+      Object.keys(defaults || {}).forEach(function (key) {
+        const fallback = defaults[key];
+        if (!params.has(key) || params.get(key) === '') out[key] = fallback;
+        else if (typeof fallback === 'number') {
+          const parsed = Number(params.get(key));
+          out[key] = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+        } else out[key] = params.get(key);
+      });
+      return out;
+    };
+    window.writeListQuery = function (state) {
+      const params = new URLSearchParams();
+      Object.keys(state || {}).forEach(function (key) {
+        const value = state[key];
+        if (value === '' || value == null) return;
+        params.set(key, String(value));
+      });
+      const next = location.pathname + (params.toString() ? '?' + params.toString() : '');
+      if (next !== location.pathname + location.search) history.replaceState(null, '', next);
+    };
+
     window.streamSSE = async function (url, options, handlers) {
       const h = handlers || {};
       const result = { events: 0, terminal: false };
@@ -319,9 +368,12 @@
       },
     };
 
+    window.TASK_LABELS = {[ task_labels | tojson ]};
     window.initVueApp = function(setupFunc) {
       const { createApp } = Vue;
       const app = createApp(setupFunc);
+      app.config.globalProperties.formatDbTime = window.formatDbTime;
+      app.config.globalProperties.toast = window.toast;
       if (typeof registerGlobalComponents === 'function') {
         registerGlobalComponents(app);
       }

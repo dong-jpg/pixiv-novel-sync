@@ -7,6 +7,11 @@ import pytest
 from pixiv_novel_sync.jobs import services
 
 
+def test_catalog_rebuild_skips_when_nothing_was_written() -> None:
+    assert services._catalog_inputs_changed({"novels": 0, "skipped": 4}) is False
+    assert services._catalog_inputs_changed({"texts_updated": 1}) is True
+
+
 class DummyReporter:
     def __init__(self) -> None:
         self.logs: list[tuple[str, str]] = []
@@ -142,7 +147,7 @@ class FakeDatabase:
     def update_watermark(self, key: str, value: dict[str, object]) -> None:
         self.watermark_updates.append((key, value))
 
-    def cleanup_old_pending_deletions(self, grace_period_days: int = 30, cleanup_confirmed_days: int = 7) -> dict[str, int]:
+    def cleanup_old_pending_deletions(self, cleanup_confirmed_days: int = 7) -> dict[str, int]:
         """Phase 3.2: Mock cleanup方法"""
         return {"auto_confirmed": 0, "cleaned_up": 0}
 
@@ -1096,3 +1101,29 @@ def test_run_user_backup_task_pagination_has_safety_limit(settings, service_env,
     assert api.user_novels_calls == 200  # 默认兜底 200 页
     assert result["stopped"] is False
     assert any("翻页" in message for _level, message in reporter.logs)
+
+
+def test_run_user_backup_task_page_cap_marks_truncated_and_incomplete(
+    settings, service_env, monkeypatch
+):
+    """T1-13：user_backup 触及自有的 user_backup_max_pages_per_run 上限时，
+    结果必须标 truncated + incomplete（日志页据此显示 partial 而非绿色）。
+    """
+    settings.pixiv.user_id = 999
+    settings.sync.user_backup_max_pages_per_run = 1
+
+    auth = FakeAuthManager(settings.pixiv)
+    # 两页数据，第一页有 next_url 指向第二页
+    auth.api.user_novels_pages = {
+        1: [SimpleNamespace(id=2021)],
+        2: [SimpleNamespace(id=2022)],
+    }
+    auth.api.parse_qs_results = {"page-2": {"user_id": 202, "page": 2}}
+    monkeypatch.setattr(services, "PixivAuthManager", lambda pixiv_settings: auth)
+
+    reporter = DummyReporter()
+    result = services.run_user_backup_task(settings, user_id=202, reporter=reporter)
+
+    assert auth.api.user_novels_calls == [{"user_id": 202}]  # 只请求了第一页
+    assert result["truncated"] is True
+    assert result["incomplete"] is True

@@ -205,6 +205,44 @@ def test_root_pool_for_binding_must_be_enabled_and_nonempty() -> None:
         model_pools.validate_pool_graph([pool], {1: []}, root_pool_id=1)
 
 
+def test_changed_pool_does_not_recheck_unrelated_bad_pool() -> None:
+    """一个已经坏掉的池不能挡住无关池的写入，但改它自己仍然失败，并且报错点名。"""
+    model_pools = importlib.import_module("pixiv_novel_sync.ai.model_pools")
+    pools = [
+        {"id": 1, "name": "坏池", "fallback_pool_id": None, "enabled": 1},
+        {"id": 2, "name": "好池", "fallback_pool_id": None, "enabled": 1},
+    ]
+    members = {
+        1: [],
+        2: [{"provider_id": 1, "model_key": "ok", "enabled": 1}],
+    }
+
+    with pytest.raises(model_pools.ModelPoolValidationError, match="坏池"):
+        model_pools.validate_pool_graph(pools, members)
+    model_pools.validate_pool_graph(pools, members, changed_pool_ids=[2])
+    with pytest.raises(model_pools.ModelPoolValidationError, match="坏池"):
+        model_pools.validate_pool_graph(pools, members, changed_pool_ids=[1])
+
+
+def test_changed_pool_still_checks_pools_that_reference_it() -> None:
+    """改后备池时，引用它的上游池也要重新校验。"""
+    model_pools = importlib.import_module("pixiv_novel_sync.ai.model_pools")
+    pools = [
+        {"id": 1, "name": "上游", "fallback_pool_id": 2, "enabled": 1},
+        {"id": 2, "name": "被停用的后备", "fallback_pool_id": None, "enabled": 0},
+        {"id": 3, "name": "无关", "fallback_pool_id": None, "enabled": 1},
+    ]
+    members = {
+        1: [{"provider_id": 1, "model_key": "primary", "enabled": 1}],
+        2: [{"provider_id": 1, "model_key": "fallback", "enabled": 1}],
+        3: [{"provider_id": 1, "model_key": "other", "enabled": 1}],
+    }
+
+    with pytest.raises(model_pools.ModelPoolValidationError, match="上游"):
+        model_pools.validate_pool_graph(pools, members, changed_pool_ids=[2])
+    model_pools.validate_pool_graph(pools, members, changed_pool_ids=[3])
+
+
 def test_pool_storage_creates_lists_and_gets_disabled_empty_pool(db: Database) -> None:
     pool_id = db.create_ai_model_pool(
         {"name": "一级模型池", "description": "主路由", "pool_kind": "primary"}
@@ -429,3 +467,24 @@ def test_pool_attempts_use_immutable_snapshots_after_pool_deleted(db: Database) 
             "latency_ms": 1000,
         }
     ]
+
+
+def test_storage_write_ignores_unrelated_bad_pool(db: Database) -> None:
+    good_id = seed_enabled_pool(db)
+    bad_id = db.create_ai_model_pool({"name": "坏池", "pool_kind": "custom"})
+    db.conn.execute("UPDATE ai_model_pools SET enabled = 1 WHERE id = ?", (bad_id,))
+    db.conn.commit()
+
+    good = db.get_ai_model_pool(good_id)
+    assert good is not None
+    db.update_ai_model_pool(
+        good_id, {"description": "仍可写"}, expected_version=good["version"]
+    )
+    assert db.get_ai_model_pool(good_id)["description"] == "仍可写"
+
+    bad = db.get_ai_model_pool(bad_id)
+    assert bad is not None
+    with pytest.raises(ModelPoolValidationError, match="坏池"):
+        db.update_ai_model_pool(
+            bad_id, {"description": "改自己"}, expected_version=bad["version"]
+        )

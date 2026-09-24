@@ -297,13 +297,13 @@
 <!-- Sticky top nav -->
 <div class="reader-top-nav" :class="{ scrolled: isScrolled }">
   <div class="reader-top-nav-inner">
-    <a href="/dashboard/novels" class="nav-back">
+    <a :href="backHref" class="nav-back">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
       返回列表
     </a>
     <span class="nav-progress" v-if="!loading && !error">{{ progressPercent }}%</span>
-    <button class="nav-font-btn" @click="cycleFontSize" title="切换字号">
-      <span style="font-size:11px;">字</span>
+    <button class="nav-font-btn" @click="cycleFontSize" :title="'字号 ' + fontSizeLabel">
+      <span style="font-size:11px;">{{ fontSizeLabel }}</span>
     </button>
   </div>
 </div>
@@ -341,6 +341,12 @@
         {{ formatDate(novel.create_date) }}
       </span>
     </div>
+    <div class="flex flex-wrap gap-2 mt-3">
+      <button type="button" @click="exportEpub" class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white">导出 EPUB</button>
+      <button type="button" @click="saveServerProgress" class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white">记下阅读进度</button>
+      <button type="button" @click="deleteThisNovel" class="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 bg-red-50">删除本地归档</button>
+    </div>
+    <p class="text-[11px] text-gray-400 mt-2">字号分小、中、大三档。救援按钮只改本地是否把这本书算进救援目录，不会向 Pixiv 发请求。</p>
     <a v-if="novel.series_id && seriesInfo" :href="'/dashboard/series/' + novel.series_id" class="series-badge">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
       {{ seriesInfo.title || '系列' }} ({{ chapterIndex + 1 }}/{{ seriesInfo.total_novels }})
@@ -353,13 +359,15 @@
           <h2 class="text-sm font-bold text-gray-900">救援状态与人工纠错</h2>
           <p class="text-xs text-gray-500 mt-1">
             <span v-if="novel.rescue.rescue_state === 'success'">已完整救援，正文来自私人备份。</span>
+            <span v-else-if="novel.rescue.rescue_state === 'partial'">只救援了部分章节，正文可能不完整。</span>
             <span v-else>当前未进入救援列表。</span>
             Pixiv 状态：{{ novel.rescue.remote_status || 'unknown' }}
           </p>
+          <p v-if="novel.rescue.pending_removal" class="text-xs text-amber-700 mt-1">这本书还在待确认删除里，确认后会从本地移除。</p>
         </div>
         <span class="self-start px-2 py-1 rounded text-xs font-medium"
-              :class="novel.rescue.rescue_state === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-600'">
-          {{ novel.rescue.rescue_state === 'success' ? '完整救援' : '自动判断' }}
+              :class="novel.rescue.rescue_state === 'success' ? 'bg-emerald-50 text-emerald-700' : (novel.rescue.rescue_state === 'partial' ? 'bg-amber-50 text-amber-700' : 'bg-gray-100 text-gray-600')">
+          {{ novel.rescue.rescue_state === 'success' ? '完整救援' : (novel.rescue.rescue_state === 'partial' ? '部分救援' : '自动判断') }}
         </span>
       </div>
       <input v-model="rescueOverride.note" maxlength="500" type="text" placeholder="纠错备注（可选）"
@@ -429,26 +437,16 @@
       const rescueMessage = ref('');
       const rescueMessageType = ref('success');
       const savingRescue = ref(false);
-      let csrfToken = '';
 
       const syncRescueOverride = (rescue) => {
         rescueOverride.action = rescue?.override_action || '';
         rescueOverride.note = rescue?.override_note || '';
       };
 
-      const ensureCsrfToken = async () => {
-        if (csrfToken) return csrfToken;
-        const response = await fetch('/api/csrf-token');
-        const data = await response.json();
-        if (!response.ok || !data.csrf_token) throw new Error(data.error || '无法获取安全令牌');
-        csrfToken = data.csrf_token;
-        return csrfToken;
-      };
-
       const refreshRescueState = async () => {
         const response = await fetch(`/api/dashboard/novels/${encodeURIComponent(novelId)}`);
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || '刷新救援状态失败');
+        if (!response.ok) throw new Error(window.errorText(data, response));
         novel.value.rescue = data.rescue;
         syncRescueOverride(data.rescue);
       };
@@ -457,14 +455,13 @@
         savingRescue.value = true;
         rescueMessage.value = '';
         try {
-          const token = await ensureCsrfToken();
-          const response = await fetch(`/api/dashboard/rescue-overrides/${itemType}/${novelId}`, {
+          const response = await window.csrfFetch(`/api/dashboard/rescue-overrides/${itemType}/${novelId}`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action, note: rescueOverride.note })
           });
           const data = await response.json();
-          if (!response.ok || data.ok === false) throw new Error(data.error || '保存失败');
+          if (!response.ok || data.ok === false) throw new Error(window.errorText(data, response));
           await refreshRescueState();
           rescueMessageType.value = 'success';
           rescueMessage.value = '人工纠错已保存';
@@ -480,13 +477,11 @@
         savingRescue.value = true;
         rescueMessage.value = '';
         try {
-          const token = await ensureCsrfToken();
-          const response = await fetch(`/api/dashboard/rescue-overrides/${itemType}/${novelId}`, {
-            method: 'DELETE',
-            headers: { 'X-CSRF-Token': token }
+          const response = await window.csrfFetch(`/api/dashboard/rescue-overrides/${itemType}/${novelId}`, {
+            method: 'DELETE'
           });
           const data = await response.json();
-          if (!response.ok || data.ok === false) throw new Error(data.error || '恢复失败');
+          if (!response.ok || data.ok === false) throw new Error(window.errorText(data, response));
           await refreshRescueState();
           rescueMessageType.value = 'success';
           rescueMessage.value = '已恢复自动判断';
@@ -509,6 +504,15 @@
       })();
       const fontSizeIdx = ref(savedFontIdx);
       const fontSize = computed(() => fontSizes[fontSizeIdx.value]);
+      const fontSizeLabel = computed(() => ['小', '中', '大', '特大'][fontSizeIdx.value] || '中');
+      const backHref = computed(() => {
+        const from = new URLSearchParams(location.search).get('from');
+        if (from && from.startsWith('/')) return from;
+        if (document.referrer && document.referrer.startsWith(location.origin + '/dashboard')) {
+          return document.referrer.slice(location.origin.length);
+        }
+        return '/dashboard/novels';
+      });
       const cycleFontSize = () => {
         fontSizeIdx.value = (fontSizeIdx.value + 1) % fontSizes.length;
         try { localStorage.setItem('pixivNovelSync:fontSize', fontSizes[fontSizeIdx.value]); } catch {}
@@ -628,8 +632,17 @@
             }
 
             // Restore scroll after render
-            nextTick(() => {
+            nextTick(async () => {
               const saved = readSavedProgress();
+              if (!saved) {
+                try {
+                  const progressRes = await fetch('/api/dashboard/novels/' + encodeURIComponent(novelId) + '/progress');
+                  if (progressRes.ok) {
+                    const stored = await progressRes.json();
+                    if (stored && stored.progress) progressPercent.value = Number(stored.progress) || 0;
+                  }
+                } catch (e) {}
+              }
               if (restorePending && saved && saved.scrollY > 0 && !window.location.hash) {
                 window.scrollTo({ top: Math.min(saved.scrollY, document.documentElement.scrollHeight), behavior: 'auto' });
               }
@@ -668,12 +681,55 @@
         clearTimeout(scrollThrottle);
       });
 
+      const saveServerProgress = async () => {
+        const progress = Math.max(0, Math.min(100, Math.round((progressPercent.value || 0))));
+        const status = progress >= 100 ? 'completed' : (progress > 0 ? 'reading' : 'unread');
+        const res = await window.csrfFetch('/api/dashboard/novels/' + encodeURIComponent(novelId) + '/progress', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ progress, status }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) window.toast(window.errorText(data, res), 'error');
+        else window.toast('阅读进度已记到账号');
+      };
+      const exportEpub = async () => {
+        const res = await window.csrfFetch('/api/dashboard/novels/export-epub', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ novel_ids: [Number(novelId)] }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          window.toast(window.errorText(data, res), 'error');
+          return;
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = (novel.value && novel.value.title ? novel.value.title : novelId) + '.epub';
+        link.click();
+        URL.revokeObjectURL(url);
+      };
+      const deleteThisNovel = async () => {
+        if (!confirm('删除这本小说的本地归档？此操作不可撤销。')) return;
+        const res = await window.csrfFetch('/api/dashboard/novels/' + encodeURIComponent(novelId), { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          window.toast(window.errorText(data, res), 'error');
+          return;
+        }
+        location.href = backHref.value;
+      };
+
       return {
-        novel, loading, error, progressPercent, isScrolled,
+        novel, loading, error, progressPercent, isScrolled, backHref, fontSizeLabel,
+        exportEpub, saveServerProgress, deleteThisNovel,
         seriesInfo, chapterIndex, prevNovelId, nextNovelId,
         formattedContent, formatNumber, formatTextLength, formatDate,
         fontSize, cycleFontSize, rescueOverride, rescueMessage, rescueMessageType,
-        savingRescue, ensureCsrfToken, saveRescueOverride, clearRescueOverride
+        savingRescue, saveRescueOverride, clearRescueOverride
       };
     }
   });

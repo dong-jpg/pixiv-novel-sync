@@ -115,6 +115,67 @@ def test_lint_flags_missing_key_and_empty_catalog() -> None:
     assert codes["no_routable_model"] == "warn"
 
 
+def _seed_provider(tmp_path: Path, name: str) -> tuple[AIWritingService, int]:
+    database = Database(tmp_path / f"{name}.db")
+    database.init_schema()
+    provider_id = database.create_ai_provider(
+        {
+            "name": name,
+            "provider_type": "openai_compatible",
+            "base_url": "https://api.example.com/v1",
+            "api_key_encrypted": "cipher",
+            "enabled": True,
+        }
+    )
+    database.close()
+    return AIWritingService(tmp_path / f"{name}.db"), provider_id
+
+
+def test_disabling_bound_provider_returns_lint(tmp_path: Path) -> None:
+    """停用仍被固定 Agent 引用的 Provider 时，保存接口要带回体检提示。"""
+    service, provider_id = _seed_provider(tmp_path, "bound")
+    try:
+        db = service._db()
+        try:
+            db.create_ai_agent(
+                {
+                    "name": "清洗",
+                    "task_type": "keyword_clean",
+                    "binding_type": "fixed",
+                    "provider_id": provider_id,
+                    "model": "m",
+                    "system_prompt": "prompt",
+                }
+            )
+        finally:
+            db.close()
+
+        warnings = service.update_provider(provider_id, {"enabled": False})
+        assert any(item["code"] == "disabled_but_bound" for item in warnings)
+
+        quiet = service.update_provider(provider_id, {"name": "只改名字"})
+        assert quiet == []
+    finally:
+        service.close()
+
+
+def test_disabling_unused_provider_stays_quiet(tmp_path: Path) -> None:
+    service, provider_id = _seed_provider(tmp_path, "quiet")
+    try:
+        assert service.update_provider(provider_id, {"enabled": False}) == []
+    finally:
+        service.close()
+
+
+def test_models_page_surfaces_provider_save_warnings() -> None:
+    text = Path(
+        "src/pixiv_novel_sync/templates/dashboard_settings_models.html"
+    ).read_text(encoding="utf-8")
+    save_at = text.index("const saveProvider")
+    snippet = text[save_at : save_at + 900]
+    assert "warnings" in snippet
+
+
 def test_lint_flags_disabled_provider_only_when_agents_bound() -> None:
     disabled = {"base_url": "https://api.example.com/v1", "has_api_key": True, "enabled": False}
 
@@ -519,6 +580,107 @@ def test_health_does_not_cry_wolf_when_the_pool_keeps_one_routable_member(
     assert agent["status"] == "healthy"
     assert agent["reason"] == ""
     assert data["totals"]["agents_unhealthy"] == 0
+
+
+def test_health_flags_an_undecryptable_api_key(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PIXIV_NOVEL_SYNC_AI_SECRET_KEY", "health-secret")
+    app, db_path = _app(tmp_path, monkeypatch)
+    db = Database(db_path)
+    db.init_schema()
+    provider_id = db.create_ai_provider({
+        "name": "坏密钥",
+        "provider_type": "openai_compatible",
+        "base_url": "https://api.example.com/v1",
+        "api_key_encrypted": "cipher",
+        "enabled": 1,
+    })
+    db.close()
+
+    provider = next(p for p in _get_health(app)["providers"] if p["id"] == provider_id)
+
+    assert any(item["code"] == "api_key_undecryptable" for item in provider["findings"])
+    assert provider["status"] == "will_fail"
+
+
+def test_health_fixed_agent_reuses_route_model_checks(tmp_path, monkeypatch) -> None:
+    app, db_path = _app(tmp_path, monkeypatch)
+    db = Database(db_path)
+    db.init_schema()
+    provider_id = db.create_ai_provider({
+        "name": "好网关",
+        "provider_type": "openai_compatible",
+        "base_url": "https://api.example.com/v1",
+        "api_key_encrypted": "cipher",
+        "enabled": 1,
+    })
+    missing_model = db.create_ai_agent({
+        "name": "没模型",
+        "task_type": "keyword_clean",
+        "binding_type": "fixed",
+        "provider_id": provider_id,
+        "model": None,
+        "system_prompt": "x",
+        "enabled": 1,
+    })
+    db.create_ai_provider_model({
+        "provider_id": provider_id,
+        "model_key": "chat-only",
+        "enabled": True,
+        "manual_capabilities": ["streaming"],
+    })
+    missing_capability = db.create_ai_agent({
+        "name": "缺能力",
+        "task_type": "keyword_clean",
+        "binding_type": "fixed",
+        "provider_id": provider_id,
+        "model": "chat-only",
+        "system_prompt": "x",
+        "required_capabilities": ["json"],
+        "enabled": 1,
+    })
+    db.close()
+
+    agents = {item["id"]: item for item in _get_health(app)["agents"]}
+
+    assert agents[missing_model]["status"] == "will_fail"
+    assert "模型" in agents[missing_model]["reason"]
+    assert agents[missing_capability]["status"] == "will_fail"
+    assert "能力" in agents[missing_capability]["reason"]
+
+
+def test_health_pool_agent_requires_declared_capabilities(tmp_path, monkeypatch) -> None:
+    app, db_path = _app(tmp_path, monkeypatch)
+    db = Database(db_path)
+    db.init_schema()
+    provider_id = db.create_ai_provider({
+        "name": "好网关",
+        "provider_type": "openai_compatible",
+        "base_url": "https://api.example.com/v1",
+        "api_key_encrypted": "cipher",
+        "enabled": 1,
+    })
+    model_id = db.create_ai_provider_model({
+        "provider_id": provider_id,
+        "model_key": "chat-only",
+        "enabled": True,
+        "manual_capabilities": ["streaming"],
+    })
+    pool_id = _enabled_pool(db, "只会聊天的池", [model_id])
+    agent_id = db.create_ai_agent({
+        "name": "要 JSON",
+        "task_type": "keyword_clean",
+        "binding_type": "pool",
+        "model_pool_id": pool_id,
+        "system_prompt": "x",
+        "required_capabilities": ["json"],
+        "enabled": 1,
+    })
+    db.close()
+
+    agent = next(item for item in _get_health(app)["agents"] if item["id"] == agent_id)
+
+    assert agent["status"] == "will_fail"
+    assert "能力" in agent["reason"]
 
 
 def test_health_does_not_count_a_disabled_agent_as_unhealthy(tmp_path, monkeypatch) -> None:

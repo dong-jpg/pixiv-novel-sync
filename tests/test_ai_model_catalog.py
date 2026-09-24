@@ -15,6 +15,7 @@ from pixiv_novel_sync.ai.model_catalog import (
     validate_text_field,
 )
 from pixiv_novel_sync.ai.models import ModelListResult
+from pixiv_novel_sync.storage.ai.core import AIProviderReferenceError
 from pixiv_novel_sync.storage_db import Database
 
 # 在运行时构造 Unicode，源文件保持纯 ASCII，避免被编辑器/工具做 NFC 归一化
@@ -191,6 +192,47 @@ def test_catalog_three_counts_are_independent(db):
         assert item["total"] == 3
         assert item["discovered_available"] == 3
         assert item["routable"] == 2
+
+
+def test_delete_provider_cascades_catalog_rows(db):
+    """目录行交给外键 CASCADE。固定 Agent 和池成员仍然拦住删除。"""
+    provider_id = seed_provider(db)
+    db.upsert_discovered_models(
+        provider_id, [{"model_key": "synced-model"}], generation=1
+    )
+    db.delete_ai_provider(provider_id)
+    assert db.get_ai_provider(provider_id) is None
+    assert db.conn.execute(
+        "SELECT COUNT(*) FROM ai_provider_models WHERE provider_id = ?",
+        (provider_id,),
+    ).fetchone()[0] == 0
+
+    blocked = seed_provider(db)
+    db.create_ai_agent(
+        {
+            "name": "固定",
+            "task_type": "keyword_clean",
+            "binding_type": "fixed",
+            "provider_id": blocked,
+            "model": "m",
+            "system_prompt": "prompt",
+        }
+    )
+    with pytest.raises(AIProviderReferenceError, match="固定 Agent"):
+        db.delete_ai_provider(blocked)
+
+    pooled = seed_provider(db)
+    model_id = db.create_ai_provider_model(
+        {"provider_id": pooled, "model_key": "pooled-model", "enabled": True}
+    )
+    pool_id = db.create_ai_model_pool({"name": "占用池", "pool_kind": "custom"})
+    db.replace_ai_model_pool_members(
+        pool_id,
+        [{"provider_model_id": model_id, "enabled": 1}],
+        expected_version=1,
+    )
+    with pytest.raises(AIProviderReferenceError, match="模型池"):
+        db.delete_ai_provider(pooled)
 
 
 def test_provider_disabled_makes_all_catalog_models_unroutable(db):

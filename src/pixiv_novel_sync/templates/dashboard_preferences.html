@@ -20,16 +20,18 @@
   </div>
 
   <main class="space-y-4">
+      <section v-if="pageLoading" class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-sm text-pixiv-gray">正在加载偏好…</section>
+      <template v-else>
       <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
         <div class="flex items-start justify-between gap-3">
           <div>
             <h2 class="text-sm font-bold text-gray-900">增量分析进度</h2>
-            <p class="text-sm text-pixiv-gray mt-1">本地画像会持续更新同一个默认画像；定时任务每批处理未分析小说，已分析内容不会重复处理。</p>
+            <p class="text-sm text-pixiv-gray mt-1">本地画像会持续更新同一个默认画像。这里的最少字数只作用于这一次分析；定时跑不跑、隔多久跑，在设置页的调度里，不会被这次分析改掉。</p>
           </div>
           <a href="/dashboard/logs" class="text-xs px-3 py-1.5 bg-gray-100 rounded hover:bg-gray-200 whitespace-nowrap">查看任务日志</a>
         </div>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm mt-4">
-          <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-pixiv-gray">任务状态</div><div class="font-bold text-gray-900">{{ analysisJob?.status || '空闲' }}</div></div>
+          <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-pixiv-gray">任务状态</div><div class="font-bold text-gray-900">{{ taskStatusText(analysisJob?.status) }}</div></div>
           <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-pixiv-gray">本次处理</div><div class="font-bold text-gray-900">{{ analysisResult?.processed_this_run ?? '-' }}</div></div>
           <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-pixiv-gray">累计已分析</div><div class="font-bold text-gray-900">{{ analysisResult?.analyzed_total ?? selected?.stats?.novel_count ?? 0 }}</div></div>
           <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-pixiv-gray">剩余待分析</div><div class="font-bold text-gray-900">{{ analysisResult?.remaining ?? '-' }}</div></div>
@@ -90,8 +92,7 @@
         <div class="flex items-center justify-between gap-3 mb-3">
           <h3 class="text-sm font-bold text-gray-900">推荐搜索词</h3>
           <div class="flex gap-2">
-            <button @click="buildSearchPlan" :disabled="recommendationLoading" class="text-xs px-3 py-1.5 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50">生成搜索计划</button>
-            <button @click="runRecommendations" :disabled="recommendationLoading || !searchPlan" class="text-xs px-3 py-1.5 bg-brand-500 text-white rounded hover:bg-brand-600 disabled:opacity-50">{{ recommendationLoading ? '推书中…' : '执行 Pixiv 推书' }}</button>
+            <button @click="runRecommendations" :disabled="recommendationLoading || !selected" class="text-xs px-3 py-1.5 bg-brand-500 text-white rounded hover:bg-brand-600 disabled:opacity-50">{{ recommendationLoading ? '推书中…' : '按当前画像推书' }}</button>
           </div>
         </div>
         <div class="space-y-3 text-sm">
@@ -123,11 +124,12 @@
           <button @click="loadRecommendationItems" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">刷新</button>
         </div>
         <div class="space-y-3">
-          <article v-for="item in recommendationItems" :key="item.id" class="border border-gray-100 rounded-lg p-3 hover:bg-gray-50">
+          <article v-for="item in recommendationItems" :key="item.id" class="border border-gray-100 rounded-lg p-3 hover:bg-gray-50" :class="item.status === 'dismissed' || item.status === 'muted' ? 'opacity-50' : ''">
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
                 <div class="flex items-center gap-2 flex-wrap">
                   <a :href="itemUrl(item)" target="_blank" rel="noopener noreferrer" class="text-sm font-bold text-gray-900 hover:text-brand-600">{{ item.title }}</a>
+                  <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{{ {new:'新推荐', interested:'感兴趣', dismissed:'不感兴趣', saved:'已保存', muted:'已屏蔽'}[item.status] || item.status }}</span>
                   <span class="text-[10px] px-1.5 py-0.5 rounded" :class="item.item_type === 'series' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'">{{ item.item_type === 'series' ? '系列' : '单篇' }}</span>
                   <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{{ item.score }} 分</span>
                 </div>
@@ -147,6 +149,7 @@
           <p v-if="!recommendationItems.length" class="text-sm text-pixiv-gray text-center py-8">还没有推荐结果</p>
         </div>
       </section>
+      </template>
     </main>
 </div>
 {% endblock %}
@@ -159,6 +162,11 @@ window.initVueApp({
     const profiles = ref([]);
     const selected = ref(null);
     const loading = ref(false);
+    const pageLoading = ref(true);
+    const taskStatusText = (status) => ({
+      queued: '排队中', running: '运行中', succeeded: '已完成', failed: '失败',
+      cancelled: '已取消', partial: '部分完成',
+    }[status] || (status ? status : '空闲'));
     const recommendationLoading = ref(false);
     const searchPlan = ref(null);
     const recommendationItems = ref([]);
@@ -199,13 +207,13 @@ window.initVueApp({
         if (!job) throw new Error(window.errorText(data, res));
         if (onUpdate) onUpdate(job);
 
-        if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
+        if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled' || job.status === 'partial') {
           return job;
         }
 
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
-      throw new Error('任务超时');
+      return { status: 'running', background: true };
     }
 
     async function loadRecommendationItems() {
@@ -218,6 +226,7 @@ window.initVueApp({
     // 推来的书尚未归档到本地，跳本地详情页会 404；这里直接指向 Pixiv 原站，
     // 让用户能真正打开作品 / 系列页阅读。
     function itemUrl(item) {
+      if (item.source_url) return item.source_url;
       if (item.item_type === 'series' && item.series_id) return 'https://www.pixiv.net/novel/series/' + encodeURIComponent(item.series_id);
       if (item.novel_id) return 'https://www.pixiv.net/novel/show.php?id=' + encodeURIComponent(item.novel_id);
       return '#';
@@ -255,12 +264,14 @@ window.initVueApp({
 
         // 轮询job状态
         const result = await pollJob(jobId);
-        if (result.status === 'succeeded') {
+        if (result.background) {
+          showMessage('推书仍在后台运行，可到任务日志查看', 'warning');
+        } else if (result.status === 'succeeded') {
           await loadRecommendationItems();
-          const saved = result.result?.stats?.saved || 0;
+          const saved = result.stats?.stats?.saved || 0;
           showMessage(`推书完成：保存 ${saved} 条`);
         } else {
-          throw new Error(result.message || '推书失败');
+          throw new Error(result.error || result.message || '推书失败');
         }
       } catch (e) {
         showMessage(e.message || String(e), 'error');
@@ -315,7 +326,9 @@ window.initVueApp({
         });
         analysisJob.value = result;
         if (result.stats) analysisResult.value = result.stats;
-        if (result.status === 'succeeded') {
+        if (result.background) {
+          showMessage('分析仍在后台运行，可到任务日志查看', 'warning');
+        } else if (result.status === 'succeeded') {
           await loadProfiles();
           showMessage('本地偏好画像已增量更新');
         } else {
@@ -333,10 +346,11 @@ window.initVueApp({
         await loadProfiles();
         await loadRecommendationItems();
       } catch (e) { showMessage(e.message || String(e), 'error'); }
+      finally { pageLoading.value = false; }
     });
 
     return {
-      profiles, selected, loading, recommendationLoading, searchPlan, recommendationItems,
+      profiles, selected, loading, pageLoading, taskStatusText, recommendationLoading, searchPlan, recommendationItems,
       message, messageType, analysisJob, analysisResult, confidenceText, loadProfiles, analyze,
       buildSearchPlan, runRecommendations, loadRecommendationItems, feedback, muteAuthor, itemUrl,
     };

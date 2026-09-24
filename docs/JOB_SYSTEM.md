@@ -79,7 +79,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 取消是**协作式**的,没有强杀线程:
 
-1. 外部(web 停止按钮 / scheduler.stop)调用 `JobManager.request_cancel(job_id)` → 状态置 `CANCEL_REQUESTED`(终态或已进入 finalization 则拒绝)。
+1. 外部调用 `JobManager.request_cancel(job_id)` → 状态置 `CANCEL_REQUESTED`(终态或已进入 finalization 则拒绝)。手动任务走 `POST /api/dashboard/sync/cancel`（可带 `job_id`，缺省取最新任务）；定时任务走 `POST /api/dashboard/auto-sync/stop-task` 或 `scheduler.stop`。
 2. 任务侧感知有三层:
    - `JobRunner` 在每个 task_type 开始前检查 `is_cancel_requested`;
    - `execute_task` 通过 `_stop_requested_from_context(context)` 构造 `stop_requested()` 闭包(内部即 `manager.is_cancel_requested(job_id)`),传给各任务实现;长任务在批次边界 / progress 回调里轮询,发现取消就抛 `InterruptedError("Task stopped by user")`;
@@ -202,7 +202,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 | following_list | 3 | ✗ | True | 24 | "" | |
 | following_novels | 3 | ✓ | True | 6 | "" | `auto_sync_following_novels_users_limit`(0=全部)、`following_max_novels_per_author`(留空=不限) |
 | user_status | 3 | ✓ | True | 6 | "" | 已知受限用户按 `users.restricted_streak` 降频(≥3 轮判不出状态 → 每 7 天才巡检一次) |
-| novel_status | 3 | ✓ | True | 6 | "" | `novel_status_batch_size`(默认 800) |
+| novel_status | 3 | ✓ | True | 6 | "" | 批大小是代码常量 `NOVEL_STATUS_BATCH_SIZE`（800），不是设置页字段 |
 | series_status | 3 | ✓ | True | 6 | "" | |
 | user_backup | 3 | ✓ | False | 24 | "" | 复用 `auto_sync_following_novels_users_limit` |
 | pending_deletion_detection(设置字段名为 `auto_sync_pending_detection_*`) | 3 | ✗ | True | 12 | "" | |

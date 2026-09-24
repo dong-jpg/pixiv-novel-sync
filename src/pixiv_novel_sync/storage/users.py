@@ -15,20 +15,23 @@ class UsersMixin:
 
     def upsert_user(self, record) -> None:
         """插入或更新用户记录"""
-        with self._lock:
-            self.conn.execute(
-                """
-                INSERT INTO users (user_id, name, account, raw_json)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                  name = excluded.name,
-                  account = CASE WHEN excluded.account IS NOT NULL AND excluded.account != '' THEN excluded.account ELSE users.account END,
-                  raw_json = CASE WHEN excluded.raw_json != '{}' AND excluded.raw_json != '' THEN excluded.raw_json ELSE users.raw_json END,
-                  updated_at = CURRENT_TIMESTAMP
-                """,
-                (record.user_id, record.name, record.account, record.raw_json),
-            )
-            self._commit_if_needed()
+        self.conn.execute(
+            """
+            INSERT INTO users (user_id, name, account, raw_json)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+              name = excluded.name,
+              account = CASE WHEN excluded.account IS NOT NULL AND excluded.account != '' THEN excluded.account ELSE users.account END,
+              raw_json = CASE
+                WHEN json_valid(excluded.raw_json)
+                 AND json_type(excluded.raw_json) = 'object'
+                 AND excluded.raw_json != '{}'
+                THEN excluded.raw_json ELSE users.raw_json END,
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            (record.user_id, record.name, record.account, record.raw_json),
+        )
+        self._commit_if_needed()
 
     # 连续多少轮判不出状态就算「已知受限」，之后降频巡检
     RESTRICTED_STREAK_THRESHOLD = 3
@@ -74,8 +77,8 @@ class UsersMixin:
             "WHERE restricted_streak < ? "
             "   OR last_checked_at IS NULL "
             "   OR last_checked_at < datetime('now', ?) "
-            # (last_checked_at IS NOT NULL) 为 0/1，保证 NULL（从未检查）永远排最前
-            "ORDER BY (last_checked_at IS NOT NULL), last_checked_at, user_id"
+            # SQLite 升序把 NULL 排在最前，从未检查的用户自然先轮到。
+            "ORDER BY last_checked_at, user_id"
         )
         params: tuple[Any, ...] = (
             int(self.RESTRICTED_STREAK_THRESHOLD),
@@ -93,20 +96,19 @@ class UsersMixin:
         同时维护 restricted_streak：unknown 累加，任何确定结论归零。降频逻辑见
         ``get_users_for_status_check``。
         """
-        with self._lock:
-            if status == UNKNOWN_STATUS:
-                self.conn.execute(
-                    "UPDATE users SET last_checked_at = CURRENT_TIMESTAMP, "
-                    "restricted_streak = restricted_streak + 1 WHERE user_id = ?",
-                    (user_id,),
-                )
-            else:
-                self.conn.execute(
-                    "UPDATE users SET status = ?, last_checked_at = CURRENT_TIMESTAMP, "
-                    "restricted_streak = 0 WHERE user_id = ?",
-                    (status, user_id),
-                )
-            self._commit_if_needed()
+        if status == UNKNOWN_STATUS:
+            self.conn.execute(
+                "UPDATE users SET last_checked_at = CURRENT_TIMESTAMP, "
+                "restricted_streak = restricted_streak + 1 WHERE user_id = ?",
+                (user_id,),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE users SET status = ?, last_checked_at = CURRENT_TIMESTAMP, "
+                "restricted_streak = 0 WHERE user_id = ?",
+                (status, user_id),
+            )
+        self._commit_if_needed()
 
     # 本人账号资料的水位线存储键。users 表只存「被关注的作者」，本人账号不在其中，
     # 所以侧边栏不能靠 users 表取自己的信息（会退化成"最近同步的作者"）。
@@ -207,14 +209,20 @@ class UsersMixin:
             "total_pages": total_pages,
         }
 
-    def list_users(self, page: int = 1, page_size: int = 10, status: str = "all") -> dict[str, Any]:
+    def list_users(self, page: int = 1, page_size: int = 10, status: str = "all", search: str = "") -> dict[str, Any]:
         page = max(page, 1)
         page_size = max(page_size, 1)
-        where_clause = ""
+        clauses: list[str] = []
         params: list[Any] = []
         if status != "all":
-            where_clause = "WHERE u.status = ?"
+            clauses.append("u.status = ?")
             params.append(status)
+        needle = str(search or "").strip()
+        if needle:
+            clauses.append("(u.name LIKE ? OR u.account LIKE ? OR CAST(u.user_id AS TEXT) LIKE ?)")
+            like = f"%{needle}%"
+            params.extend([like, like, like])
+        where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         total = int(
             self.conn.execute(
                 f"SELECT COUNT(*) FROM users u {where_clause}", params
@@ -229,7 +237,7 @@ class UsersMixin:
                    (SELECT COUNT(*) FROM novels n WHERE n.user_id = u.user_id) AS novel_count
             FROM users u
             {where_clause}
-            ORDER BY CASE u.status WHEN 'no_novels' THEN 1 WHEN 'suspended' THEN 2 ELSE 0 END, u.updated_at DESC
+            ORDER BY CASE u.status WHEN 'no_novels' THEN 1 WHEN 'suspended' THEN 2 ELSE 0 END, u.updated_at DESC, u.user_id DESC
             LIMIT ? OFFSET ?
             """,
             [*params, page_size, offset],
@@ -299,7 +307,7 @@ class UsersMixin:
             FROM novels n
             LEFT JOIN series se ON se.series_id = n.series_id
             WHERE n.user_id = ?{where_extra}
-            ORDER BY n.last_seen_at DESC
+            ORDER BY n.last_seen_at DESC, n.novel_id DESC
             LIMIT ? OFFSET ?
             """,
             [user_id, page_size, offset],
@@ -341,7 +349,7 @@ class UsersMixin:
             LEFT JOIN users u ON u.user_id = n.user_id
             WHERE n.user_id = ? AND n.series_id IS NOT NULL
             GROUP BY n.series_id
-            ORDER BY last_updated DESC
+            ORDER BY last_updated DESC, n.series_id DESC
             LIMIT ? OFFSET ?
             """,
             [user_id, page_size, offset],
@@ -359,8 +367,25 @@ class UsersMixin:
         ✅ Bug #5 修复: 按正确顺序删除（从属表→主表），避免中间失败导致数据不一致
         """
         with self.transaction():
+                series_ids = [
+                    row[0]
+                    for row in self.conn.execute(
+                        "SELECT series_id FROM series WHERE user_id = ?",
+                        (user_id,),
+                    )
+                ]
+                for series_id in series_ids:
+                    self.delete_series(int(series_id))
                 # 1. 先获取要删除的小说 ID 列表
                 novel_ids = [row[0] for row in self.conn.execute("SELECT novel_id FROM novels WHERE user_id = ?", (user_id,)).fetchall()]
+                self.conn.execute(
+                    "DELETE FROM reading_progress WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)",
+                    (user_id,),
+                )
+                self.conn.execute(
+                    "DELETE FROM preference_analyzed_novels WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)",
+                    (user_id,),
+                )
 
                 # 2. 删除小说相关的从属数据（按依赖顺序）
                 # 2.1 删除 FTS 索引。走 rowid（== novel_id）：按 novel_id 会全表扫描
@@ -370,7 +395,6 @@ class UsersMixin:
                     (user_id,),
                 )
                 # 2.2 删除小说相关的其他从属表
-                self.conn.execute("DELETE FROM sync_check_list WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
                 self.conn.execute("DELETE FROM recommendation_items WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)", (user_id,))
                 # 2.3 删除每个小说的反馈和待删除记录
                 for novel_id in novel_ids:

@@ -71,7 +71,10 @@ class JobRunner:
                 if active_claim is None:
                     if task_stats:
                         self.manager.merge_task_stats(job_id, task_stats)
-                    self.manager.mark_cancelled(job_id)
+                    if self.manager.is_cancel_requested(job_id):
+                        self.manager.mark_cancelled(job_id)
+                    else:
+                        self.manager.mark_failed(job_id, "finalization claim lost")
                     return state
 
                 if not active_claim.finish(task_stats or {}, is_last_task=is_last_task):

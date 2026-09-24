@@ -8,7 +8,7 @@ from time import perf_counter
 from typing import Any
 
 from pixiv_novel_sync.auth import PixivAuthManager
-from pixiv_novel_sync.storage_db import Database
+from pixiv_novel_sync.storage_db import Database, prepare_schema
 from pixiv_novel_sync.storage_files import FileStorage
 from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
 
@@ -67,6 +67,11 @@ def _report_catalog_log(reporter: JobReporter | None, level: str, message: str) 
         reporter.add_log(level, message)
     except Exception as exc:
         logger.warning("救援目录日志记录失败: %s", exc)
+
+
+def _catalog_inputs_changed(stats: dict[str, Any]) -> bool:
+    """收藏、备份、关注作者同步只有真正写下小说或资源时才刷新救援目录。"""
+    return any(int(stats.get(key) or 0) > 0 for key in ("novels", "texts_updated", "assets_downloaded"))
 
 
 def _rebuild_rescue_catalog(db: Any, reporter: JobReporter | None = None) -> dict[str, int]:
@@ -137,7 +142,7 @@ def run_user_backup_task(
     storage = _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
-    db.init_schema()
+    prepare_schema(db)
     try:
         service = BookmarkNovelSyncService(
             api=api,
@@ -156,9 +161,13 @@ def run_user_backup_task(
         processed = 0
         total_seen = 0
         stopped = False
+        truncated_by_page_cap = False
         next_query: dict[str, Any] | None = {"user_id": user_id}
         # 翻页上限兜底：防止 API 返回自引用 next_url 导致死循环
-        max_pages = getattr(getattr(settings, "sync", None), "max_pages_per_run", None) or 200
+        # 备份是整库导出，不能共用 max_pages_per_run=2 那种轻量上限
+        max_pages = getattr(getattr(settings, "sync", None), "user_backup_max_pages_per_run", None)
+        if max_pages is None:
+            max_pages = getattr(getattr(settings, "sync", None), "max_pages_per_run", None) or 200
         page_count = 0
 
         _report_progress(reporter, phase="user_backup", current=0, total=0, current_novel=user_name, author=user_name)
@@ -171,6 +180,7 @@ def run_user_backup_task(
                 message = f"用户全量备份翻页达到兜底上限 {max_pages} 页，提前停止: {user_name} ({user_id})"
                 logger.warning(message)
                 _report_log(reporter, "warning", message)
+                truncated_by_page_cap = True
                 break
 
             result = api.user_novels(**next_query)
@@ -191,13 +201,13 @@ def run_user_backup_task(
                     source_type="user_backup",
                     source_key=str(user_id),
                 )
+                processed += 1
                 failed = counters.get("failed", 0)
                 if failed:
                     total_failed += failed
-                    # 3.1容错:单本失败累计,超20%或绝对10本再中止,保留已同步部分
-                    if total_failed >= 10 or (processed > 0 and total_failed / processed > 0.2):
+                    # 单本失败先计入本轮已处理，再看失败率，避免第一本失败时分母还是 0。
+                    if total_failed >= 10 or total_failed / processed > 0.2:
                         raise RuntimeError(f"User backup aborted for user {user_id}: {total_failed}/{processed} novels failed (threshold exceeded)")
-                processed += 1
                 total_novels += counters.get("novels", 0)
                 total_skipped += counters.get("skipped", 0)
                 total_assets += counters.get("assets_downloaded", 0)
@@ -230,9 +240,13 @@ def run_user_backup_task(
             "assets_downloaded": total_assets,
             "stopped": stopped,
         }
+        if truncated_by_page_cap:
+            # 触顶翻页上限属于异常截断，必须让任务日志显示 partial
+            stats["truncated"] = True
+            stats["incomplete"] = True
         if not stats.get("stopped") and stop_requested is not None and stop_requested():
             stats["stopped"] = True
-        if rebuild_catalog and not stats.get("stopped"):
+        if rebuild_catalog and not stats.get("stopped") and _catalog_inputs_changed(stats):
             if claim_finalization is not None and not claim_finalization():
                 stats["stopped"] = True
             else:
@@ -357,7 +371,7 @@ def run_pending_deletion_detection_task(
 
     db = Database(settings.storage.db_path)
     try:
-        db.init_schema()
+        prepare_schema(db)
         storage = _ensure_storage_dirs(settings)
         service = BookmarkNovelSyncService(
             api=api,
@@ -450,7 +464,7 @@ def _run_user_status_like_task(
     _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
-    db.init_schema()
+    prepare_schema(db)
     try:
         items = list_items(db)
         _report_log(reporter, "info", f"开始{task_label}")
@@ -490,7 +504,7 @@ def _run_status_task(
     _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
-    db.init_schema()
+    prepare_schema(db)
     try:
         item_ids = list_ids(db)
         _report_log(reporter, "info", f"开始{task_label}")
@@ -571,7 +585,7 @@ def _persist_self_profile(settings: Any, auth_result: Any) -> None:
             return
         db = Database(settings.storage.db_path)
         try:
-            db.init_schema()
+            prepare_schema(db)
             db.save_self_profile(profile)
         finally:
             db.close()

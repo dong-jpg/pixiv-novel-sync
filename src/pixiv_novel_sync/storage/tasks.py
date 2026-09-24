@@ -12,6 +12,19 @@ _ADULT_AI_TASK_TYPES_SQL = ", ".join(
 )
 
 
+def _clamp_log_page(page: int, page_size: int) -> tuple[int, int]:
+    """日志分页夹到合法范围，避免 page_size=0 时除零。"""
+    try:
+        page_value = int(page)
+    except (TypeError, ValueError):
+        page_value = 1
+    try:
+        size_value = int(page_size)
+    except (TypeError, ValueError):
+        size_value = 20
+    return max(page_value, 1), max(min(size_value, 200), 1)
+
+
 class TasksMixin:
     """任务日志管理 mixin。
 
@@ -20,40 +33,39 @@ class TasksMixin:
 
     def create_task_log(self, task_type: str, task_name: str, job_id: str | None = None, is_auto_sync: bool = False) -> int:
         """创建任务日志记录"""
-        with self._lock:
-            cursor = self.conn.execute(
-                """
-                INSERT INTO task_logs (task_type, task_name, job_id, status, started_at, is_auto_sync)
-                VALUES (?, ?, ?, 'running', datetime('now'), ?)
-                """,
-                (task_type, task_name, job_id, 1 if is_auto_sync else 0)
-            )
-            self._commit_if_needed()
-            return int(cursor.lastrowid)
+        cursor = self.conn.execute(
+            """
+            INSERT INTO task_logs (task_type, task_name, job_id, status, started_at, is_auto_sync)
+            VALUES (?, ?, ?, 'running', datetime('now'), ?)
+            """,
+            (task_type, task_name, job_id, 1 if is_auto_sync else 0)
+        )
+        self._commit_if_needed()
+        return int(cursor.lastrowid)
 
     def update_task_log(self, log_id: int, status: str, stats: dict[str, Any] | None = None,
                        error_message: str | None = None, logs: list[dict[str, Any]] | None = None) -> None:
         """更新任务日志"""
-        with self._lock:
-            self.conn.execute(
-                """
-                UPDATE task_logs
-                SET status = ?,
-                    finished_at = datetime('now'),
-                    duration_seconds = (julianday(datetime('now')) - julianday(started_at)) * 86400,
-                    stats_json = ?,
-                    error_message = ?,
-                    logs_json = ?
-                WHERE id = ?
-                """,
-                (status, json.dumps(stats) if stats else None, error_message, json.dumps(logs) if logs else None, log_id)
-            )
-            self._commit_if_needed()
+        self.conn.execute(
+            """
+            UPDATE task_logs
+            SET status = ?,
+                finished_at = datetime('now'),
+                duration_seconds = (julianday(datetime('now')) - julianday(started_at)) * 86400,
+                stats_json = ?,
+                error_message = ?,
+                logs_json = ?
+            WHERE id = ?
+            """,
+            (status, json.dumps(stats) if stats else None, error_message, json.dumps(logs) if logs else None, log_id)
+        )
+        self._commit_if_needed()
 
     def get_task_logs(self, page: int = 1, page_size: int = 20,
                      task_type: str | None = None, is_auto_sync: bool | None = None,
                      days: int = 3) -> dict[str, Any]:
         """获取任务日志列表"""
+        page, page_size = _clamp_log_page(page, page_size)
         offset = (page - 1) * page_size
 
         conditions = ["started_at >= datetime('now', ? || ' days')"]
@@ -79,7 +91,7 @@ class TasksMixin:
             f"""
             SELECT * FROM task_logs
             WHERE {where_clause}
-            ORDER BY started_at DESC
+            ORDER BY started_at DESC, id DESC
             LIMIT ? OFFSET ?
             """,
             params + [page_size, offset]
@@ -113,13 +125,12 @@ class TasksMixin:
 
     def cleanup_old_task_logs(self, days: int = 3) -> int:
         """清理旧的任务日志"""
-        with self._lock:
-            cursor = self.conn.execute(
-                "DELETE FROM task_logs WHERE started_at < datetime('now', ? || ' days')",
-                (f"-{days}",)
-            )
-            self._commit_if_needed()
-            return cursor.rowcount
+        cursor = self.conn.execute(
+            "DELETE FROM task_logs WHERE started_at < datetime('now', ? || ' days')",
+            (f"-{days}",)
+        )
+        self._commit_if_needed()
+        return cursor.rowcount
 
     def get_task_log_by_id(self, log_id: int) -> dict[str, Any] | None:
         """获取单条任务日志详情"""
@@ -238,69 +249,72 @@ class TasksMixin:
         AI 创作任务是独立的流式系统（ai_jobs 表），这里只做只读投影，不迁移数据。
         started_at 缺失时回退到 created_at 以保证时间过滤/排序一致。
         """
-        with self._lock:
-            offset = (page - 1) * page_size
-            conditions = ["COALESCE(started_at, created_at) >= datetime('now', ? || ' days')"]
-            params: list[Any] = [f"-{days}"]
-            if task_type:
-                conditions.append("task_type = ?")
-                params.append(task_type)
-            if status:
-                conditions.append("status = ?")
-                params.append(status)
-            if owner_scope is not None:
-                conditions.append(
-                    f"(task_type NOT IN ({_ADULT_AI_TASK_TYPES_SQL}) OR owner_scope = ?)"
-                )
-                params.append(owner_scope)
-            where_clause = " AND ".join(conditions)
-
-            total = int(
-                self.conn.execute(
-                    f"SELECT COUNT(*) FROM ai_jobs WHERE {where_clause}", params
-                ).fetchone()[0]
+        page, page_size = _clamp_log_page(page, page_size)
+        offset = (page - 1) * page_size
+        conditions = ["COALESCE(started_at, created_at) >= datetime('now', ? || ' days')"]
+        params: list[Any] = [f"-{days}"]
+        if task_type:
+            conditions.append("task_type = ?")
+            params.append(task_type)
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        if owner_scope is not None:
+            conditions.append(
+                f"(task_type NOT IN ({_ADULT_AI_TASK_TYPES_SQL}) OR owner_scope = ?)"
             )
-            rows = self.conn.execute(
-                f"""
-                SELECT job_id, task_type, status, started_at, finished_at,
-                       error_message, created_at,
-                       (julianday(finished_at) - julianday(started_at)) * 86400 AS duration_seconds
-                FROM ai_jobs
-                WHERE {where_clause}
-                ORDER BY COALESCE(started_at, created_at) DESC
-                LIMIT ? OFFSET ?
-                """,
-                params + [page_size, offset],
-            ).fetchall()
-            total_pages = (total + page_size - 1) // page_size
+            params.append(owner_scope)
+        where_clause = " AND ".join(conditions)
 
-            items: list[dict[str, Any]] = []
-            for row in rows:
-                r = dict(row)
-                attempts = self.list_ai_job_model_attempts(str(r["job_id"]))
-                items.append({
-                    "job_id": r.get("job_id"),
-                    "task_type": r.get("task_type"),
-                    "task_name": self._AI_TASK_LABELS.get(r.get("task_type"), r.get("task_type")),
-                    "status": r.get("status"),
-                    "status_label": self._AI_STATUS_LABELS.get(
-                        r.get("status"),
-                        r.get("status"),
-                    ),
-                    "is_running": r.get("status") == "running",
-                    "started_at": r.get("started_at") or r.get("created_at"),
-                    "finished_at": r.get("finished_at"),
-                    "duration_seconds": r.get("duration_seconds"),
-                    "error_message": r.get("error_message"),
-                    "attempt_count": len(attempts),
-                    "route_summary": self._route_summary(attempts),
-                    "is_auto_sync": False,
-                    "category": "ai",
-                })
-            return {
-                "items": items,
-                "page": page,
-                "page_size": page_size,
-                "total": total,
-                "total_pages": total_pages,
-            }
+        total = int(
+            self.conn.execute(
+                f"SELECT COUNT(*) FROM ai_jobs WHERE {where_clause}", params
+            ).fetchone()[0]
+        )
+        rows = self.conn.execute(
+            f"""
+            SELECT job_id, task_type, status, started_at, finished_at,
+                   error_message, created_at,
+                   (julianday(finished_at) - julianday(started_at)) * 86400 AS duration_seconds
+            FROM ai_jobs
+            WHERE {where_clause}
+            ORDER BY COALESCE(started_at, created_at) DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            params + [page_size, offset],
+        ).fetchall()
+        total_pages = (total + page_size - 1) // page_size
+
+        row_dicts = [dict(row) for row in rows]
+        attempts_by_job = self.list_ai_job_model_attempts_for_jobs(
+            [str(row["job_id"]) for row in row_dicts if row.get("job_id")]
+        )
+        items: list[dict[str, Any]] = []
+        for r in row_dicts:
+            attempts = attempts_by_job.get(str(r.get("job_id")), [])
+            items.append({
+                "job_id": r.get("job_id"),
+                "task_type": r.get("task_type"),
+                "task_name": self._AI_TASK_LABELS.get(r.get("task_type"), r.get("task_type")),
+                "status": r.get("status"),
+                "status_label": self._AI_STATUS_LABELS.get(
+                    r.get("status"),
+                    r.get("status"),
+                ),
+                "is_running": r.get("status") == "running",
+                "started_at": r.get("started_at") or r.get("created_at"),
+                "finished_at": r.get("finished_at"),
+                "duration_seconds": r.get("duration_seconds"),
+                "error_message": r.get("error_message"),
+                "attempt_count": len(attempts),
+                "route_summary": self._route_summary(attempts),
+                "is_auto_sync": False,
+                "category": "ai",
+            })
+        return {
+            "items": items,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+        }

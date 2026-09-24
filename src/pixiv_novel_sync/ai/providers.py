@@ -102,11 +102,14 @@ def _is_blocked_ip(ip: ipaddress._BaseAddress, *, allow_private: bool) -> bool:
     mapped = getattr(ip, "ipv4_mapped", None)
     if mapped is not None:
         ip = mapped
+    # 回环地址独立判断：opt-in 时优先放行，避免被 reserved 兜底规则误杀。
+    if ip.is_loopback:
+        return not allow_private
     if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
         return True
     if ip.is_global:
         return False
-    if allow_private and (ip.is_private or ip.is_loopback):
+    if allow_private and ip.is_private:
         return False
     return True
 
@@ -284,15 +287,19 @@ _SECRET_PATTERNS = [
 ]
 
 
-def _redact_secrets(text: str) -> str:
+def _redact_secrets(text: str, *, api_key: str | None = None) -> str:
     """Strip credential-looking substrings from upstream error text.
 
     Some gateways echo the request (including the ``Authorization`` header) in
     4xx bodies. Those bodies flow into ``ai_jobs.error_message`` and the SSE
     error event, so the decrypted key could leak; redact before surfacing.
+    先按本次请求的密钥字面值替换，再跑正则。xAI 的 ``xai-`` 和自建网关的密钥
+    没有固定前缀，正则盖不住。
     """
     if not text:
         return text
+    if api_key:
+        text = text.replace(str(api_key), "[REDACTED]")
     for pat in _SECRET_PATTERNS:
         text = pat.sub("[REDACTED]", text)
     return text
@@ -312,16 +319,35 @@ def _iter_sse_lines(response: requests.Response) -> Iterator[str]:
         if not chunk:
             continue
         buffer += decoder.decode(chunk)
+        if len(buffer.encode("utf-8")) > _MAX_SSE_LINE_BYTES and "\n" not in buffer:
+            raise AIProviderError(
+                "SSE 单行超过 1 MiB 上限",
+                category="upstream_error",
+                scope="provider",
+            )
         while True:
             idx = buffer.find("\n")
             if idx == -1:
                 break
-            yield buffer[:idx]
+            line = buffer[:idx]
+            if len(line.encode("utf-8")) > _MAX_SSE_LINE_BYTES:
+                raise AIProviderError(
+                    "SSE 单行超过 1 MiB 上限",
+                    category="upstream_error",
+                    scope="provider",
+                )
+            yield line
             buffer = buffer[idx + 1:]
     tail = decoder.decode(b"", final=True)
     if tail:
         buffer += tail
     if buffer:
+        if len(buffer.encode("utf-8")) > _MAX_SSE_LINE_BYTES:
+            raise AIProviderError(
+                "SSE 单行超过 1 MiB 上限",
+                category="upstream_error",
+                scope="provider",
+            )
         yield buffer
 
 
@@ -365,6 +391,18 @@ def _before_network_request(
     _check_cancelled(is_cancelled)
     if request_guard is not None:
         request_guard()
+
+
+_MAX_SSE_LINE_BYTES = 1024 * 1024
+_MAX_ERROR_BODY_BYTES = 1024 * 1024
+
+
+def _retry_delay(attempt: int, retry_after: float | None = None) -> float:
+    """指数退避和 Retry-After 取较大值，最多等 60 秒。"""
+    hinted = float(retry_after or 0)
+    if hinted < 0 or hinted != hinted:  # NaN
+        hinted = 0.0
+    return min(60.0, max(float(2 ** max(0, int(attempt))), hinted))
 
 
 def _sleep_before_retry(
@@ -435,8 +473,8 @@ class AIProvider:
         self._pinned_adapters: dict[str, _PinnedHostAdapter] = {}
 
     def close(self) -> None:
+        self.session.close()
         with self._adapter_lock:
-            self.session.close()
             self._pinned_adapters.clear()
 
     def estimate_message_tokens(
@@ -497,31 +535,31 @@ class AIProvider:
         headers["Host"] = target.host_header
         kwargs["allow_redirects"] = False
         kwargs["stream"] = True
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AIProviderError("模型目录同步超过截止时间")
+            configured_timeout = kwargs.get("timeout")
+            if isinstance(configured_timeout, (int, float)):
+                kwargs["timeout"] = min(float(configured_timeout), remaining)
+            elif configured_timeout is None:
+                kwargs["timeout"] = remaining
         with self._adapter_lock:
-            if deadline is not None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise AIProviderError("模型目录同步超过截止时间")
-                configured_timeout = kwargs.get("timeout")
-                if isinstance(configured_timeout, (int, float)):
-                    kwargs["timeout"] = min(float(configured_timeout), remaining)
-                elif configured_timeout is None:
-                    kwargs["timeout"] = remaining
             adapter = self._pinned_adapters.get(prefix)
             if adapter is None:
                 adapter = _PinnedHostAdapter(hostname=target.hostname, ip=target.ip)
                 self.session.mount(prefix, adapter)
                 self._pinned_adapters[prefix] = adapter
-            request_method = getattr(self.session, normalized_method.lower(), None)
-            if callable(request_method):
-                response = request_method(pinned_url, headers=headers, **kwargs)
-            else:
-                response = self.session.request(
-                    normalized_method,
-                    pinned_url,
-                    headers=headers,
-                    **kwargs,
-                )
+        request_method = getattr(self.session, normalized_method.lower(), None)
+        if callable(request_method):
+            response = request_method(pinned_url, headers=headers, **kwargs)
+        else:
+            response = self.session.request(
+                normalized_method,
+                pinned_url,
+                headers=headers,
+                **kwargs,
+            )
         if 300 <= response.status_code < 400:
             response.close()
             raise AIProviderError(f"AI API 拒绝重定向响应 {response.status_code}")
@@ -732,7 +770,7 @@ class OpenAICompatibleProvider(AIProvider):
             return base_url
         parsed = urlparse(base_url)
         host = parsed.hostname or ""
-        official_hosts = ("api.openai.com", "api.deepseek.com", "api.x.ai", "api.anthropic.com")
+        official_hosts = ("api.openai.com", "api.deepseek.com", "api.x.ai")
         if host in official_hosts:
             return base_url
         # 已有自定义路径段（如 /codex / /api/openai 等）→ 不再拼 /v1
@@ -834,6 +872,7 @@ class OpenAICompatibleProvider(AIProvider):
                         error = _http_provider_error(
                             response,
                             model=str(payload.get("model") or ""),
+                            api_key=self.config.api_key,
                         )
                         if attempt < max_retries:
                             _check_cancelled(is_cancelled)
@@ -845,13 +884,14 @@ class OpenAICompatibleProvider(AIProvider):
                                 attempt=attempt + 1,
                                 max_retries=max_retries,
                             )
-                            _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
                             continue
                         raise error
                     if response.status_code >= 400:
                         raise _http_provider_error(
                             response,
                             model=str(payload.get("model") or ""),
+                            api_key=self.config.api_key,
                         )
                     emitted_delta = False
                     finish_reason: Any = None
@@ -943,6 +983,7 @@ class OpenAICompatibleProvider(AIProvider):
                 error = _request_provider_error(
                     exc,
                     provider_label="OpenAI-compatible API",
+                    api_key=self.config.api_key,
                 )
                 if produced_output:
                     # The stream already delivered partial text to the caller; retrying
@@ -957,7 +998,7 @@ class OpenAICompatibleProvider(AIProvider):
                         attempt=attempt + 1,
                         max_retries=max_retries,
                     )
-                    _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                    _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
                     continue
                 raise error from exc
 
@@ -990,15 +1031,17 @@ class OpenAICompatibleProvider(AIProvider):
                         error = _http_provider_error(
                             response,
                             model=str(payload.get("model") or ""),
+                            api_key=self.config.api_key,
                         )
                         if attempt < max_retries:
-                            _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
                             continue
                         raise error
                     if response.status_code >= 400:
                         raise _http_provider_error(
                             response,
                             model=str(payload.get("model") or ""),
+                            api_key=self.config.api_key,
                         )
                     try:
                         data = response.json()
@@ -1035,11 +1078,12 @@ class OpenAICompatibleProvider(AIProvider):
                 raise _runtime_config_error(exc) from exc
             except requests.RequestException as exc:
                 if attempt < max_retries:
-                    _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                    _sleep_before_retry(_retry_delay(attempt), is_cancelled)
                     continue
                 raise _request_provider_error(
                     exc,
                     provider_label="OpenAI-compatible API",
+                    api_key=self.config.api_key,
                 ) from exc
 
 
@@ -1050,6 +1094,16 @@ class XAIProvider(OpenAICompatibleProvider):
 class AnthropicProvider(AIProvider):
     default_base_url = "https://api.anthropic.com"
 
+    def _resolve_base_url(self) -> str:
+        """归一化 base_url：去掉末尾斜杠；已带 /v1 的不重复拼接。"""
+        return (self.config.base_url or self.default_base_url).rstrip("/")
+
+    def _resolve_api_path(self, path: str) -> str:
+        base_url = self._resolve_base_url()
+        if base_url.endswith("/v1"):
+            return f"{base_url}/{path.lstrip('/')}"
+        return f"{base_url}/v1/{path.lstrip('/')}"
+
     def _model_discovery_request(self) -> tuple[str, dict[str, str], str]:
         if not self.config.api_key:
             raise AIProviderError(
@@ -1057,14 +1111,8 @@ class AnthropicProvider(AIProvider):
                 category="configuration",
                 scope="provider",
             )
-        base_url = (self.config.base_url or self.default_base_url).rstrip("/")
-        endpoint = (
-            f"{base_url}/models"
-            if base_url.endswith("/v1")
-            else f"{base_url}/v1/models"
-        )
         return (
-            endpoint,
+            self._resolve_api_path("/models"),
             {
                 "x-api-key": self.config.api_key,
                 "anthropic-version": "2023-06-01",
@@ -1091,8 +1139,7 @@ class AnthropicProvider(AIProvider):
                 category="configuration",
                 scope="provider",
             )
-        base_url = (self.config.base_url or self.default_base_url).rstrip("/")
-        url = f"{base_url}/v1/messages"
+        url = self._resolve_api_path("/messages")
         system_parts: list[str] = []
         anthropic_messages: list[dict[str, str]] = []
         for message in messages:
@@ -1143,7 +1190,7 @@ class AnthropicProvider(AIProvider):
                     proxies=self._proxies(),
                 ) as response:
                     if response.status_code in (500, 502, 503, 504, 408, 429):
-                        error = _http_provider_error(response, model=model)
+                        error = _http_provider_error(response, model=model, api_key=self.config.api_key)
                         if attempt < max_retries:
                             _check_cancelled(is_cancelled)
                             yield _progress(
@@ -1154,11 +1201,11 @@ class AnthropicProvider(AIProvider):
                                 attempt=attempt + 1,
                                 max_retries=max_retries,
                             )
-                            _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
                             continue
                         raise error
                     if response.status_code >= 400:
-                        raise _http_provider_error(response, model=model)
+                        raise _http_provider_error(response, model=model, api_key=self.config.api_key)
                     emitted_delta = False
                     stop_reason: Any = None
                     for raw_line in _iter_sse_lines(response):
@@ -1222,7 +1269,11 @@ class AnthropicProvider(AIProvider):
                             return
                         elif event_type == "error":
                             error = event.get("error") or {}
-                            raise _event_provider_error(error, provider_label="Anthropic API")
+                            raise _event_provider_error(
+                                error,
+                                provider_label="Anthropic API",
+                                api_key=self.config.api_key,
+                            )
                     if not emitted_delta:
                         _check_cancelled(is_cancelled)
                         yield _progress(
@@ -1252,6 +1303,7 @@ class AnthropicProvider(AIProvider):
                 error = _request_provider_error(
                     exc,
                     provider_label="Anthropic API",
+                    api_key=self.config.api_key,
                 )
                 if produced_output:
                     # Partial text already streamed to the caller; retrying would duplicate it.
@@ -1265,7 +1317,7 @@ class AnthropicProvider(AIProvider):
                         attempt=attempt + 1,
                         max_retries=max_retries,
                     )
-                    _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                    _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
                     continue
                 raise error from exc
 
@@ -1297,15 +1349,17 @@ class AnthropicProvider(AIProvider):
                         error = _http_provider_error(
                             response,
                             model=str(payload.get("model") or ""),
+                            api_key=self.config.api_key,
                         )
                         if attempt < max_retries:
-                            _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
                             continue
                         raise error
                     if response.status_code >= 400:
                         raise _http_provider_error(
                             response,
                             model=str(payload.get("model") or ""),
+                            api_key=self.config.api_key,
                         )
                     try:
                         data = response.json()
@@ -1339,11 +1393,12 @@ class AnthropicProvider(AIProvider):
                 raise _runtime_config_error(exc) from exc
             except requests.RequestException as exc:
                 if attempt < max_retries:
-                    _sleep_before_retry(min(2 ** attempt, 60), is_cancelled)
+                    _sleep_before_retry(_retry_delay(attempt), is_cancelled)
                     continue
                 raise _request_provider_error(
                     exc,
                     provider_label="Anthropic API",
+                    api_key=self.config.api_key,
                 ) from exc
 
 
@@ -1362,10 +1417,42 @@ def create_provider(config: AIProviderConfig) -> AIProvider:
     )
 
 
-def _response_error_details(response: requests.Response) -> tuple[str, str]:
+def _response_error_details(
+    response: requests.Response,
+    *,
+    api_key: str | None = None,
+) -> tuple[str, str]:
     # 强制按 UTF-8 解码（很多上游网关 Content-Type 不带 charset，requests 会按 latin-1 解析导致中文乱码）
     if not response.encoding or response.encoding.lower() in ("iso-8859-1", "latin-1"):
         response.encoding = "utf-8"
+    headers = getattr(response, "headers", None) or {}
+    declared = None
+    try:
+        raw_length = headers.get("Content-Length") or headers.get("content-length")
+        if isinstance(raw_length, str) and raw_length.strip():
+            declared = int(raw_length)
+    except (TypeError, ValueError, AttributeError):
+        declared = None
+    if declared is not None and declared > _MAX_ERROR_BODY_BYTES:
+        response.close()
+        raise AIProviderError(
+            "错误响应体超过 1 MiB 上限",
+            category="upstream_error",
+            scope="provider",
+        )
+    try:
+        raw_body = response.content or b""
+    except Exception:
+        raw_body = b""
+    if isinstance(raw_body, str):
+        raw_body = raw_body.encode("utf-8", errors="replace")
+    if len(raw_body) > _MAX_ERROR_BODY_BYTES:
+        response.close()
+        raise AIProviderError(
+            "错误响应体超过 1 MiB 上限",
+            category="upstream_error",
+            scope="provider",
+        )
     detail_parts: list[str] = []
     display_message = ""
     try:
@@ -1393,8 +1480,8 @@ def _response_error_details(response: requests.Response) -> tuple[str, str]:
             display_message = ""
         if display_message:
             detail_parts.append(display_message)
-    safe_message = _redact_secrets(display_message)[:500]
-    safe_details = _redact_secrets(" ".join(detail_parts))[:2000].lower()
+    safe_message = _redact_secrets(display_message, api_key=api_key)[:500]
+    safe_details = _redact_secrets(" ".join(detail_parts), api_key=api_key)[:2000].lower()
     return safe_message, safe_details
 
 
@@ -1451,6 +1538,9 @@ def _classify_provider_failure(
     if status_code == 429 or any(
         marker in normalized for marker in ("rate_limit", "rate limit", "too many requests")
     ):
+        # 点名了具体模型的 429 只淘汰这个模型。账号级限流没有模型标记，仍短路整个 Provider。
+        if status_code == 429 and model_tagged:
+            return "rate_limited", "model"
         return "rate_limited", "provider"
     if any(
         marker in normalized
@@ -1505,8 +1595,9 @@ def _http_provider_error(
     response: requests.Response,
     *,
     model: str = "",
+    api_key: str | None = None,
 ) -> AIProviderError:
-    message, details = _response_error_details(response)
+    message, details = _response_error_details(response, api_key=api_key)
     category, scope = _classify_provider_failure(
         int(response.status_code),
         details,
@@ -1525,8 +1616,9 @@ def _request_provider_error(
     error: requests.RequestException,
     *,
     provider_label: str,
+    api_key: str | None = None,
 ) -> AIProviderError:
-    message = _redact_secrets(str(error))[:500]
+    message = _redact_secrets(str(error), api_key=api_key)[:500]
     normalized = message.lower()
     if isinstance(error, requests.Timeout) and "model" in normalized:
         category = "timeout"
@@ -1544,7 +1636,12 @@ def _request_provider_error(
     )
 
 
-def _event_provider_error(error: Any, *, provider_label: str) -> AIProviderError:
+def _event_provider_error(
+    error: Any,
+    *,
+    provider_label: str,
+    api_key: str | None = None,
+) -> AIProviderError:
     if isinstance(error, Mapping):
         parts = [
             value
@@ -1553,7 +1650,7 @@ def _event_provider_error(error: Any, *, provider_label: str) -> AIProviderError
         ]
     else:
         parts = [str(error)] if error else []
-    details = _redact_secrets(" ".join(parts))[:2000]
+    details = _redact_secrets(" ".join(parts), api_key=api_key)[:2000]
     category, scope = _classify_provider_failure(0, details)
     return AIProviderError(
         f"{provider_label} 返回错误：{details or '未知错误'}",

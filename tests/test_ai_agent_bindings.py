@@ -476,3 +476,35 @@ def test_delete_provider_reports_pool_member_reference_as_conflict(
         service.delete_provider(provider_id)
 
     assert db.get_ai_provider(provider_id) is not None
+
+
+def test_agent_zero_temperature_and_top_p_survive_roundtrip(
+    service: AIWritingService,
+    db: Database,
+) -> None:
+    """T1-06：temperature=0.0 / top_p=0.0 必须原样加载，不被默认值吞掉。
+
+    回归：旧代码用 `row["temperature"] or 0.8`，0.0 是 falsy 会退成 0.8，
+    确定性输出（temperature=0）的 Agent 被静默改成随机温度。现在改成
+    `x if x is not None else default`，只有真正缺列才回落默认。
+    """
+    provider_id = seed_provider(db)
+    db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "det-model", "enabled": True}
+    )
+
+    agent_id = service.create_agent(
+        {
+            "name": "确定性 Agent",
+            "task_type": "general",
+            "provider_id": provider_id,
+            "model": "det-model",
+            "system_prompt": "prompt",
+            "temperature": 0.0,
+            "top_p": 0.0,
+        }
+    )
+
+    config = service._load_agent_config(db, agent_id)
+    assert config.temperature == 0.0
+    assert config.top_p == 0.0

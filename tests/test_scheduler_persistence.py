@@ -413,3 +413,57 @@ def test_cron_task_next_run_still_follows_cron_expression(
     assert expected is not None
     assert abs(scheduler.get_status()["task_next_run"]["bookmarks"] - expected) < 120
     assert submitted == []
+
+
+def test_refresh_changed_schedules_recomputes_only_changed_tasks() -> None:
+    before = _make_settings(
+        Path("unused.db"),
+        auto_sync_bookmarks_cron="0 3 * * *",
+        auto_sync_bookmarks_interval_hours=6,
+        auto_sync_following_list_interval_hours=6,
+    )
+    after = _make_settings(
+        Path("unused.db"),
+        auto_sync_bookmarks_cron="0 4 * * *",
+        auto_sync_bookmarks_interval_hours=12,
+        auto_sync_following_list_interval_hours=12,
+    )
+    scheduler = AutoSyncScheduler(config_path=None, env_path=None)
+    scheduler._task_next_run["bookmarks"] = 1.0
+    scheduler._task_next_run["following_list"] = 2.0
+    untouched = 3.0
+    scheduler._task_next_run["novel_status"] = untouched
+
+    changed = scheduler.refresh_changed_schedules(before, after)
+
+    assert "bookmarks" in changed
+    assert "following_list" in changed
+    assert "novel_status" not in changed
+    assert scheduler._task_next_run["novel_status"] == untouched
+    assert scheduler._task_next_run["bookmarks"] != 1.0
+    assert scheduler._task_next_run["following_list"] != 2.0
+
+
+def test_settings_page_does_not_ask_for_restart() -> None:
+    text = Path("src/pixiv_novel_sync/templates/dashboard_settings_sync.html").read_text(encoding="utf-8")
+    assert "无需重启" in text
+    assert "保存后重启生效" not in text
+
+
+def test_settings_reload_endpoint_is_removed(tmp_path, monkeypatch) -> None:
+    from pixiv_novel_sync.webapp import create_app
+
+    monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
+    app = create_app(env_path=str(env_path), start_scheduler=False)
+
+    response = app.test_client().post(
+        "/api/dashboard/settings/reload",
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    # 分区保存路由仍占着 /settings/<section>，所以这里是 405 而不是独立的重载接口。
+    assert response.status_code in {404, 405}
+    assert "配置已重新加载" not in response.get_data(as_text=True)

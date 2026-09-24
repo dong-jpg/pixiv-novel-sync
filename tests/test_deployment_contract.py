@@ -42,3 +42,30 @@ def test_service_paths_match_install_script_app_dir() -> None:
     assert fields["EnvironmentFile"].startswith(app_dir + "/")
     assert fields["ExecStart"].startswith(app_dir + "/")
     assert app_dir + "/config/config.yaml" in fields["ExecStart"]
+
+
+def test_install_script_puts_code_in_app_dir_and_chowns_service_user() -> None:
+    script = INSTALL_SCRIPT.read_text(encoding="utf-8")
+    assert 'cd "$APP_DIR"' in script
+    assert "chown -R pixivsync:pixivsync" in script
+
+
+def test_web_deploy_backup_path_nginx_render_and_unit_path() -> None:
+    deploy = (ROOT / "deploy.sh").read_text(encoding="utf-8")
+    update = (ROOT / "update.sh").read_text(encoding="utf-8")
+
+    assert "umask 077" in update
+    assert 'BACKUP_DIR="${INSTALL_DIR}/.backup/' in update
+    assert 'rm -rf "$BACKUP_DIR"' in update
+    assert "/tmp/pixiv-novel-sync-backup" not in update
+
+    for script in (deploy, update):
+        assert "/usr/local/bin:/usr/bin:/bin" in script
+        assert "nginx -t &&" not in script
+        assert re.search(r"^sudo nginx -t\s*$", script, re.MULTILINE)
+        assert "envsubst" in script
+        assert "PIXIV_SERVER_NAME:-pixiv.dongboapp.com" in script
+
+    apt_line = next(line for line in deploy.splitlines() if "apt install" in line)
+    assert "acl" in apt_line.split()
+    assert "playwright install chromium" in deploy

@@ -7,12 +7,10 @@ from types import SimpleNamespace
 import pytest
 import pixiv_novel_sync.webapp as webapp_module
 
-from pixiv_novel_sync.jobs.models import JobSource, JobStatus, JobType
+from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobStatus, JobType
 from pixiv_novel_sync.storage_db import Database as RealDatabase
 from pixiv_novel_sync.webapp import (
     AutoSyncScheduler,
-    SyncJobManager,
-    SyncJobState,
     _prune_stats_for_log,
     _task_log_status_for_stats,
     _web_job_spec,
@@ -120,9 +118,14 @@ def test_stop_during_submit_cancels_job_before_runner_starts():
         assert release_submit.wait(timeout=3)
         return state
 
+    shared_manager = SimpleNamespace(
+        mark_cancelled=lambda job_id, **kwargs: calls.append(("mark_cancelled", job_id)) or True,
+    )
+
     scheduler = AutoSyncScheduler(
         None,
         None,
+        shared_job_manager=shared_manager,
         submit_task=submit_task,
         run_task=lambda job_id: calls.append(("run", job_id)),
         cancel_task=lambda job_id: calls.append(("cancel", job_id)) or True,
@@ -141,7 +144,102 @@ def test_stop_during_submit_cancels_job_before_runner_starts():
     worker.join(timeout=3)
 
     assert not worker.is_alive()
-    assert calls == [("cancel", "shared-1")]
+    assert calls == [("mark_cancelled", "shared-1")]
+
+
+def test_submit_failure_marks_task_log_failed_instead_of_ghost_running(tmp_path, monkeypatch):
+    """T1-03：submit 抛异常时，已建的 task_log 必须落 failed，不能留下幽灵 running。
+
+    旧代码先 submit 再 create_task_log，submit 失败会留下没有任何终态回写路径的
+    内存任务；新顺序反过来后，except 分支负责把日志行标成 failed。
+    """
+    RecordingDatabase.created_logs = []
+    RecordingDatabase.updated_logs = []
+
+    def failing_submit(self, spec):
+        raise RuntimeError("submit boom")
+
+    monkeypatch.setattr("pixiv_novel_sync.webapp.Database", RecordingDatabase)
+    monkeypatch.setattr(webapp_module.JobManager, "submit", failing_submit)
+
+    app = _app(tmp_path, monkeypatch)
+    response = app.test_client().post("/api/dashboard/sync/start")
+
+    assert response.status_code == 400
+    assert RecordingDatabase.updated_logs == [
+        {"log_id": 1, "status": JobStatus.FAILED.value, "error_message": "job submit failed"}
+    ]
+    # 没有任务残留在内存里
+    assert app.config["job_manager"].latest_job() is None
+
+
+def test_task_log_write_does_not_hold_job_manager_lock(tmp_path, monkeypatch):
+    observed = {}
+
+    class ProbeDatabase(RecordingDatabase):
+        def create_task_log(self, **kwargs):
+            manager = app.config["job_manager"]
+
+            def other() -> None:
+                acquired = manager._lock.acquire(timeout=0.05)
+                observed["acquired"] = acquired
+                if acquired:
+                    manager._lock.release()
+
+            thread = threading.Thread(target=other)
+            thread.start()
+            thread.join()
+            return super().create_task_log(**kwargs)
+
+    RecordingDatabase.created_logs = []
+    monkeypatch.setattr(webapp_module, "Database", ProbeDatabase)
+    monkeypatch.setattr(
+        webapp_module.JobRunner,
+        "run",
+        lambda self, job_id: self.manager.mark_succeeded(job_id, "succeeded"),
+    )
+    app = _app(tmp_path, monkeypatch)
+
+    response = app.test_client().post("/api/dashboard/sync/start")
+
+    assert response.status_code == 200
+    assert observed["acquired"] is True
+
+
+def test_job_id_backfill_failure_does_not_leave_queued_job(tmp_path, monkeypatch):
+    ran = []
+
+    class BoomDatabase(RecordingDatabase):
+        def transaction(self):
+            raise RuntimeError("backfill boom")
+
+    RecordingDatabase.created_logs = []
+    RecordingDatabase.updated_logs = []
+    monkeypatch.setattr(webapp_module, "Database", BoomDatabase)
+    monkeypatch.setattr(webapp_module.JobRunner, "run", lambda self, job_id: ran.append(job_id))
+    app = _app(tmp_path, monkeypatch)
+
+    response = app.test_client().post("/api/dashboard/sync/start")
+
+    assert response.status_code == 400
+    assert "backfill boom" in response.get_json()["error"]
+    job = app.config["job_manager"].latest_job()
+    assert job is not None
+    assert job.status == JobStatus.FAILED
+    assert ran == []
+    assert RecordingDatabase.updated_logs[-1]["status"] == JobStatus.FAILED.value
+
+
+def test_manual_sync_cancel_requests_cancel(tmp_path, monkeypatch) -> None:
+    app = _app(tmp_path, monkeypatch)
+    manager = app.config["job_manager"]
+    job = manager.submit(JobSpec(source=JobSource.WEB, task_types=["bookmark"]))
+    manager.mark_running(job.job_id)
+
+    response = app.test_client().post(f"/api/dashboard/sync/cancel?job_id={job.job_id}")
+
+    assert response.status_code == 200
+    assert manager.get_job(job.job_id).status == JobStatus.CANCEL_REQUESTED
 
 
 def test_auto_scheduler_has_no_legacy_sync_business_methods():
@@ -191,27 +289,7 @@ def test_auto_sync_status_reads_current_job_from_shared_manager(tmp_path, monkey
     assert response.get_json()["current_job"]["source"] == JobSource.SCHEDULER.value
 
 
-def test_sync_status_does_not_fall_back_to_legacy_manager(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        SyncJobManager,
-        "latest_job",
-        lambda self: SyncJobState(job_id="legacy-1"),
-    )
-    app = _app(tmp_path, monkeypatch)
-
-    response = app.test_client().get("/api/dashboard/sync/status")
-
-    assert response.status_code == 200
-    assert response.get_json() == {"job": None}
-
-
-def test_legacy_sync_job_manager_constructor_remains_compatible():
-    manager = SyncJobManager(config_path=None, env_path=None)
-
-    assert manager.latest_job() is None
-
-
-def test_health_counts_running_jobs_from_shared_manager(tmp_path, monkeypatch):
+def test_health_stays_available_while_a_job_is_running(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
     manager = app.config["job_manager"]
     job = manager.submit(_web_job_spec(["bookmark"]))
@@ -220,7 +298,7 @@ def test_health_counts_running_jobs_from_shared_manager(tmp_path, monkeypatch):
     response = app.test_client().get("/api/health")
 
     assert response.status_code == 200
-    assert response.get_json()["running_jobs"] == 1
+    assert response.get_json() == {"status": "ok", "version": response.get_json()["version"]}
 
 
 
@@ -794,7 +872,7 @@ def test_create_app_shares_scheduler_owner_by_normalized_db_path_and_releases_on
 
         monkeypatch.setattr("pixiv_novel_sync.webapp.Database", ForbiddenDatabase)
         blocked = second_app.test_client().post("/api/dashboard/sync/user_status")
-        assert blocked.status_code == 400
+        assert blocked.status_code == 409
         assert "已有同步任务" in blocked.get_json()["error"]
 
         status_response = second_app.test_client().get(
@@ -937,7 +1015,7 @@ def test_scheduler_old_worker_cannot_release_restarted_owner(tmp_path):
 
 
 def test_shared_sync_blocks_concurrent_sync_submission(tmp_path, monkeypatch):
-    """shared 路径有任务运行时，新的 sync 提交应被阻断返回 400。"""
+    """shared 路径有任务运行时，新的 sync 提交应被阻断返回 409。"""
     def keep_shared_job_running(self, job_id):
         self.manager.mark_running(job_id, "running")
         return self.manager.get_job(job_id)
@@ -951,7 +1029,7 @@ def test_shared_sync_blocks_concurrent_sync_submission(tmp_path, monkeypatch):
     blocked = client.post("/api/dashboard/sync/user_status")
 
     assert started.status_code == 200
-    assert blocked.status_code == 400
+    assert blocked.status_code == 409
     assert blocked.get_json()["error"] == "已有同步任务正在运行，请稍后再试"
 
 

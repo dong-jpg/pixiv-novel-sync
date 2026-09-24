@@ -633,15 +633,34 @@ class RescueMixin:
             )
 
     def _replace_catalog_memberships(self) -> None:
-        self.conn.execute("DELETE FROM rescue_catalog_memberships")
-        self.conn.execute(
-            """
-            INSERT INTO rescue_catalog_memberships (novel_id, series_id)
-            SELECT n.novel_id, n.series_id
-            FROM novels n
-            JOIN series se ON se.series_id = n.series_id
-            """
-        )
+        desired = {
+            (int(row["novel_id"]), int(row["series_id"]))
+            for row in self.conn.execute(
+                """
+                SELECT n.novel_id, n.series_id
+                FROM novels n
+                JOIN series se ON se.series_id = n.series_id
+                """
+            )
+        }
+        current = {
+            (int(row["novel_id"]), int(row["series_id"]))
+            for row in self.conn.execute(
+                "SELECT novel_id, series_id FROM rescue_catalog_memberships"
+            )
+        }
+        stale = current - desired
+        fresh = desired - current
+        if stale:
+            self.conn.executemany(
+                "DELETE FROM rescue_catalog_memberships WHERE novel_id = ? AND series_id = ?",
+                list(stale),
+            )
+        if fresh:
+            self.conn.executemany(
+                "INSERT INTO rescue_catalog_memberships (novel_id, series_id) VALUES (?, ?)",
+                list(fresh),
+            )
 
     def _update_catalog_meta(self, refreshed_at: str, duration_ms: int) -> None:
         item_count = int(self.conn.execute("SELECT COUNT(*) FROM rescue_catalog").fetchone()[0])
@@ -747,37 +766,16 @@ class RescueMixin:
                 }
 
             rows: list[dict[str, Any]] = []
-            should_rebuild = (
-                target_exists
-                or normalized_type == "novel"
-                or bool(existing_series_ids)
-            )
+            should_rebuild = bool(novel_ids) or bool(existing_series_ids)
             if should_rebuild:
                 series_rows = self._catalog_series_rows(existing_series_ids)
                 rescue_series_ids = {
                     int(row["series_id"])
                     for row in series_rows
                 }
-                rebuild_novel_ids = set(novel_ids)
-                if rebuild_novel_ids and series_ids:
-                    placeholders = ", ".join("?" for _ in rebuild_novel_ids)
-                    current_rows = self.conn.execute(
-                        f"""
-                        SELECT novel_id, series_id
-                        FROM novels
-                        WHERE novel_id IN ({placeholders})
-                        """,
-                        tuple(sorted(rebuild_novel_ids)),
-                    ).fetchall()
-                    rebuild_novel_ids = {
-                        int(row["novel_id"])
-                        for row in current_rows
-                        if row["series_id"] is None
-                        or int(row["series_id"]) in existing_series_ids
-                    }
                 novel_rows = self._catalog_novel_rows(
                     rescue_series_ids,
-                    rebuild_novel_ids,
+                    novel_ids,
                 )
                 rows = series_rows + novel_rows
                 self._insert_catalog_rows(rows, refreshed_at)
@@ -869,30 +867,28 @@ class RescueMixin:
         if not self._rescue_item_exists(normalized_type, normalized_id):
             raise ValueError("救援对象不存在")
 
-        with self._lock:
-            self.conn.execute(
-                """
-                INSERT INTO rescue_overrides (
-                    item_type, item_id, action, note, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT(item_type, item_id) DO UPDATE SET
-                    action = excluded.action,
-                    note = excluded.note,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (normalized_type, normalized_id, normalized_action, normalized_note),
-            )
-            self._commit_if_needed()
+        self.conn.execute(
+            """
+            INSERT INTO rescue_overrides (
+                item_type, item_id, action, note, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(item_type, item_id) DO UPDATE SET
+                action = excluded.action,
+                note = excluded.note,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (normalized_type, normalized_id, normalized_action, normalized_note),
+        )
+        self._commit_if_needed()
         return self.get_rescue_override(normalized_type, normalized_id) or {}
 
     def delete_rescue_override(self, item_type: str, item_id: int) -> bool:
         normalized_type = self._validate_rescue_item_type(item_type)
-        with self._lock:
-            cursor = self.conn.execute(
-                "DELETE FROM rescue_overrides WHERE item_type = ? AND item_id = ?",
-                (normalized_type, int(item_id)),
-            )
-            self._commit_if_needed()
+        cursor = self.conn.execute(
+            "DELETE FROM rescue_overrides WHERE item_type = ? AND item_id = ?",
+            (normalized_type, int(item_id)),
+        )
+        self._commit_if_needed()
         return bool(cursor.rowcount)
 
     @staticmethod
@@ -1014,7 +1010,19 @@ class RescueMixin:
             "updated_at": row.get("updated_at"),
             "override_action": row.get("override_action"),
             "override_note": str(row.get("override_note") or ""),
+            "pending_removal": self._pending_removal("series", int(row["series_id"])),
         }
+
+    def _pending_removal(self, item_type: str, item_id: int) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT 1 FROM pending_deletions
+            WHERE item_type = ? AND item_id = ? AND status = 'pending'
+            LIMIT 1
+            """,
+            (item_type, int(item_id)),
+        ).fetchone()
+        return row is not None
 
     def evaluate_rescue_series(self, series_id: int) -> dict[str, Any] | None:
         rows = self._series_summary_rows(int(series_id))
@@ -1053,6 +1061,7 @@ class RescueMixin:
                 n.last_checked_at,
                 n.last_seen_at AS updated_at,
                 nt.text_raw,
+                COALESCE(nt.has_content, 0) AS has_content,
                 ro.action AS override_action,
                 ro.note AS override_note
             FROM novels n
@@ -1068,7 +1077,10 @@ class RescueMixin:
 
     def _novel_evaluation_payload(self, data: dict[str, Any]) -> dict[str, Any]:
         text_raw = str(data.get("text_raw") or "")
-        body_complete = bool(text_raw.strip())
+        if data.get("has_content") is None:
+            body_complete = bool(text_raw.strip())
+        else:
+            body_complete = bool(int(data.get("has_content") or 0))
 
         remote_status = str(data.get("remote_status") or "unknown")
         own_unavailable = self._remote_unavailable(
@@ -1115,6 +1127,7 @@ class RescueMixin:
             "updated_at": data.get("updated_at"),
             "override_action": data.get("override_action"),
             "override_note": str(data.get("override_note") or ""),
+            "pending_removal": self._pending_removal("novel", int(data["novel_id"])),
         }
 
     def evaluate_rescue_novel(self, novel_id: int) -> dict[str, Any] | None:
@@ -1436,18 +1449,21 @@ class RescueMixin:
         token_hash: str,
         token_prefix: str,
     ) -> dict[str, Any]:
-        with self._lock:
-            self.conn.execute(
-                """
-                INSERT INTO rescue_api_token (
-                    singleton_id, token_hash, token_prefix, rotated_at
-                ) VALUES (1, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(singleton_id) DO UPDATE SET
-                    token_hash = excluded.token_hash,
-                    token_prefix = excluded.token_prefix,
-                    rotated_at = CURRENT_TIMESTAMP
-                """,
-                (str(token_hash), str(token_prefix)),
-            )
-            self._commit_if_needed()
+        self.conn.execute(
+            """
+            INSERT INTO rescue_api_token (
+                singleton_id, token_hash, token_prefix, rotated_at
+            ) VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(singleton_id) DO UPDATE SET
+                token_hash = excluded.token_hash,
+                token_prefix = excluded.token_prefix,
+                rotated_at = CURRENT_TIMESTAMP
+            """,
+            (str(token_hash), str(token_prefix)),
+        )
+        self._commit_if_needed()
         return self.get_rescue_token_record() or {}
+
+    def clear_rescue_token_record(self) -> None:
+        self.conn.execute("DELETE FROM rescue_api_token WHERE singleton_id = 1")
+        self._commit_if_needed()

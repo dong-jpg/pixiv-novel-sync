@@ -49,7 +49,7 @@ Used by: 浏览器登录流程（配置 `DASHBOARD_TOKEN` 时）。
 
 ### POST /api/auth/logout
 
-清除登录会话。响应：
+侧栏「退出」调用。清除登录会话。响应：
 
 ```json
 { "ok": true }
@@ -70,12 +70,11 @@ Used by: 所有需要携带 `X-CSRF-Token` 的写请求前端封装。响应：
 ```json
 {
   "status": "ok",
-  "version": "x.y.z",
-  "uptime_seconds": 123.45,
-  "db_accessible": true,
-  "running_jobs": 0
+  "version": "x.y.z"
 }
 ```
+
+探活只回答进程是否在，不打开数据库，也不统计正在跑的任务。
 
 ## Shared shell APIs
 
@@ -169,6 +168,8 @@ Query：`days`（观测窗口，夹到 1–30，默认 3）。
 
 ### POST /api/dashboard/sync/start
 
+仅 API。页面用按任务类型启动的同步接口，这个全量入口留给脚本和测试。
+
 Start full manual sync. Body may be `{}`.
 
 ### POST /api/dashboard/check-bookmarks
@@ -222,7 +223,9 @@ Stops the active auto-sync task.
 
 ### GET /api/dashboard/follows
 
-Used by: follows page（`/dashboard/follows`）。
+仅 API。关注页实际读取 `/api/dashboard/users`。
+
+Used by: 无页面。保留给脚本。
 
 Query params:
 
@@ -530,9 +533,7 @@ Body 是该分区的部分设置对象；夹带别区字段会被忽略而不是
 
 未知 `section` 返回 `400`。变更类请求需带 `X-CSRF-Token`。
 
-### POST /api/dashboard/settings/reload
-
-Reloads settings from backend config source.
+保存成功后，调度器只重算 cron、间隔或时区发生变化的任务的下次运行时间，其余任务保持原时刻。
 
 ### POST /api/dashboard/settings/cron-preview
 
@@ -599,6 +600,8 @@ Query:
 
 ### GET /api/dashboard/pending-deletions/count
 
+仅 API。侧栏数量来自 `/api/dashboard/shell-data`。
+
 Sidebar/count use if needed.
 
 ### POST /api/dashboard/pending-deletions/detect
@@ -649,6 +652,8 @@ Body:
 ### POST /api/dashboard/recommendations/run
 
 ### GET /api/dashboard/recommendations/runs
+
+仅 API。页面不展示历史轮次。多画像的设默认和删除也不做页面。
 
 ### GET /api/dashboard/recommendations/items
 
@@ -833,7 +838,7 @@ SSE 响应必须带：`Cache-Control: no-store, no-cache, must-revalidate, max-a
 - `POST /api/dashboard/ai/drafts/{draft_id}/fork`
 - `GET /api/dashboard/ai/jobs`
 - `GET /api/dashboard/ai/jobs/{job_id}`
-- `POST /api/dashboard/ai/jobs/cleanup`
+- `POST /api/dashboard/ai/jobs/cleanup`（仅 API，调度器直接清过期任务）
 - `POST /api/dashboard/ai/detect-ai-tells`
 - `GET /api/dashboard/ai/prompt-templates`
 - `GET /api/dashboard/ai/prompt-templates/{template_id}`
@@ -863,6 +868,10 @@ Used by: 创作向导 / 蒸馏档案页（`/dashboard/wizard`）。
 ### GET /api/dashboard/ai/jobs/<job_id>
 
 返回 AI 任务完整详情，包括 `job_id`、`task_type`、`status`、`input`、`output_text`、`output`、`error_message`、`candidate_snapshot_hash`、`candidate_snapshot`、`prompt_budget`、`attempts`、`route_summary` 和时间字段。attempt 包含实际 Provider/模型、池快照、stage、状态、错误分类及耗时；快照和 attempt 不含 API Key、Prompt、正文或完整请求/响应。任务不存在时返回 404。
+
+### POST /api/dashboard/ai/jobs/<job_id>/cancel
+
+把仍在 `running` 的任务标成 `cancel_requested`。路由心跳读到后停止，任务终态变为 `cancelled`。任务不存在返回 404，已经结束返回 409。重复请求同一次取消仍返回成功。
 
 ### POST /api/dashboard/ai/jobs/<job_id>/continue
 
@@ -964,10 +973,10 @@ Frontend expects streams to terminate with `done` or `error`.
 - `POST /api/token-jobs`
 - `GET /api/token-jobs/{job_id}`
 - `POST /api/save-token`
-- `POST /oauth/start`
+- `POST /oauth/start`（仅 API。Pixiv 固定回调地址，页面不走这条）
 - `GET /oauth/task/{task_id}`
-- `GET /oauth/callback`
-- `POST /oauth/sync-callback/{task_id}`
+- `GET /oauth/callback`（仅 API）
+- `POST /oauth/sync-callback/{task_id}`（仅 API）
 - `POST /oauth/exchange/{task_id}`
 - `POST /oauth/save/{task_id}`
 

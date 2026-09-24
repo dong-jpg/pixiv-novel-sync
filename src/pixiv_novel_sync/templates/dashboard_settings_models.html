@@ -47,11 +47,12 @@
       <p v-if="probeStatus" class="text-xs" :class="probeRetryWithV1 ? 'text-amber-700' : 'text-gray-700'">{{ probeStatus }}</p>
       <button v-if="probeRetryWithV1" @click="applyV1Suggestion" class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-800">试试 {{ probeRetryWithV1 }}/v1</button>
       <div v-if="probedModels.length" class="space-y-1 max-h-48 overflow-y-auto border border-gray-100 rounded p-2">
-        <label v-for="model in probedModels" :key="model.model_key" class="flex items-center gap-2 text-xs">
-          <input type="checkbox" :checked="model.checked" @change="toggleProbedModel(model)">
+        <div v-for="model in probedModels" :key="model.model_key" class="flex items-center gap-2 text-xs">
+          <span class="px-1.5 py-0.5 rounded" :class="model.suggested ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'">{{ model.suggested ? '建议' : '其他' }}</span>
           <span class="font-medium text-gray-900 truncate">{{ model.display_name || model.model_key }}</span>
           <span class="text-gray-500 truncate">{{ model.model_key }}</span>
-        </label>
+        </div>
+        <p class="text-[11px] text-gray-500 pt-1">这是探测预览。保存 Provider 后，用「同步模型」写入目录。</p>
       </div>
       <details :open="advancedOpen" @toggle="advancedOpen = $event.target.open">
         <summary class="text-xs text-pixiv-gray cursor-pointer">高级（默认模型 / 超时 / 重试 / 上下文窗口 / 流式）</summary>
@@ -122,6 +123,7 @@
                 <button @click="syncProviderModels(provider.id)" :disabled="modelSyncBusy(provider.id)" class="text-xs px-2 py-1 rounded bg-brand-50 text-brand-600 hover:bg-brand-100 disabled:opacity-50">
                   {{ modelSyncBusy(provider.id) ? '同步中...' : '同步模型' }}
                 </button>
+                <button v-if="modelSyncBusy(provider.id)" @click="cancelModelSync(provider.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">取消同步</button>
               </div>
             </div>
             <div class="grid grid-cols-3 gap-2 text-center text-xs">
@@ -129,7 +131,7 @@
               <div class="rounded border border-gray-100 bg-gray-50 px-2 py-1.5"><div class="text-gray-500">已发现可用</div><div class="font-semibold text-gray-900">{{ modelCatalog(provider).discovered_available }}</div></div>
               <div class="rounded border border-gray-100 bg-gray-50 px-2 py-1.5"><div class="text-gray-500">可路由</div><div class="font-semibold text-gray-900">{{ modelCatalog(provider).routable }}</div></div>
             </div>
-            <div v-if="provider.models_synced_at" class="text-xs text-gray-500">最近成功：{{ provider.models_synced_at }}</div>
+            <div v-if="provider.models_synced_at" class="text-xs text-gray-500">最近成功：{{ formatDbTime(provider.models_synced_at) }}</div>
             <div v-if="provider.models_sync_error" class="text-xs text-amber-700">最近同步错误：{{ provider.models_sync_error }}</div>
             <div v-if="modelSyncOperations[provider.id] && ['failed', 'cancelled', 'timeout', 'timed_out'].includes(modelSyncOperations[provider.id].status)" class="text-xs text-amber-700">旧目录仍可使用</div>
             <div class="text-xs text-amber-700">模型池发生故障转移时，Prompt 可能发送到链中的其他 Provider，请确认隐私边界。</div>
@@ -510,6 +512,18 @@
           showAiMessage('同步失败，旧目录仍可使用', 'warning');
         }
       };
+      const cancelModelSync = async (providerId) => {
+        const operation = modelSyncOperations[providerId];
+        const operationId = operation && operation.operation_id;
+        if (!operationId) return;
+        try {
+          await aiApi(`/api/dashboard/ai/model-sync-operations/${operationId}`, { method: 'DELETE' });
+          updateModelSyncState(providerId, { status: 'cancelled' });
+          showAiMessage('已请求取消同步', 'warning');
+        } catch (e) {
+          showAiMessage(e.message || '取消同步失败', 'error');
+        }
+      };
       const confirmEmptyCatalog = async (providerId) => {
         const confirmation = emptyConfirmations[providerId];
         if (!confirmation) return;
@@ -786,7 +800,19 @@
         }
       };
       const copyFromProvider = (provider) => {
-        Object.assign(providerForm, { ...provider, id: 0, api_key: '' });
+        Object.assign(providerForm, {
+          id: 0,
+          name: provider.name || '',
+          provider_type: provider.provider_type || 'openai_compatible',
+          base_url: provider.base_url || '',
+          default_model: provider.default_model || '',
+          api_key: '',
+          timeout_seconds: provider.timeout_seconds || 120,
+          max_retries: provider.max_retries || 2,
+          context_window: provider.context_window || 128000,
+          stream_enabled: provider.stream_enabled !== false,
+          enabled: provider.enabled !== false,
+        });
         baseUrlHint.value = '';
       };
       async function probeModels() {
@@ -814,7 +840,6 @@
           }
         }
       }
-      function toggleProbedModel(model) { model.checked = !model.checked; }
       function applyV1Suggestion() {
         providerForm.base_url = probeRetryWithV1.value + '/v1';
         probeRetryWithV1.value = '';
@@ -837,12 +862,20 @@
           const payload = { ...providerForm };
           const id = payload.id;
           delete payload.id;
-          await aiApi(id ? '/api/dashboard/ai/providers/' + id : '/api/dashboard/ai/providers', { method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-          await loadProviders(); resetProviderForm(); showAiMessage('Provider 已保存');
+          const saved = await aiApi(id ? '/api/dashboard/ai/providers/' + id : '/api/dashboard/ai/providers', { method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+          await loadProviders(); resetProviderForm();
+          const warnings = (saved && saved.warnings) || [];
+          if (warnings.length) {
+            showAiMessage(warnings.map((item) => item.message).join('；'), 'warning');
+          } else {
+            showAiMessage('Provider 已保存');
+          }
         } catch (e) { showAiMessage(e.message, 'error'); }
       };
       const deleteProvider = async (id) => {
-        if (!confirm('确认删除 Provider？')) return;
+        const bound = providerHealth(id)?.bound_agent_count || 0;
+        const hint = bound ? `有 ${bound} 个 Agent 绑在这里，删除后它们会失去模型。` : '没有 Agent 绑在这里。';
+        if (!confirm('确认删除 Provider？' + hint)) return;
         try { await aiApi('/api/dashboard/ai/providers/' + id, { method: 'DELETE' }); await loadProviders(); showAiMessage('Provider 已删除'); }
         catch (e) { showAiMessage(e.message, 'error'); }
       };
@@ -868,7 +901,7 @@
         modelCatalogExpanded, manualModelForms, modelSyncOperations, emptyConfirmations,
         modelCatalog, modelSyncBusy, loadProviderModels, loadModelSyncOperation,
         manualModelForm, createManualModel, deleteManualModel,
-        syncProviderModels, confirmEmptyCatalog, recoverModelSyncOperations,
+        syncProviderModels, cancelModelSync, confirmEmptyCatalog, recoverModelSyncOperations,
         modelPools, poolProviderFilter, poolModelSearch, poolSaving, poolError, poolForm,
         poolAttempts, poolAttemptsError, poolAttemptsLoading,
         attemptStatusLabel, attemptStatusClass, attemptLatency, formatAttemptTime, loadPoolAttempts,
@@ -879,7 +912,7 @@
         loadProviders, resetProviderForm, editProvider, saveProvider, deleteProvider, testProvider,
         aiHealth, aiHealthLoading, loadAiHealth, providerHealth,
         advancedOpen, baseUrlHint, lintBaseUrl, copyFromProvider,
-        probedModels, probeStatus, probeRetryWithV1, probeModels, toggleProbedModel, applyV1Suggestion,
+        probedModels, probeStatus, probeRetryWithV1, probeModels, applyV1Suggestion,
         toggleModelEnabled,
       };
     }

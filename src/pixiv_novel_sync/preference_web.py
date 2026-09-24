@@ -7,7 +7,7 @@ from flask import Flask, jsonify, render_template, request
 
 from .recommendations import RecommendationService
 from .settings import Settings
-from .storage_db import Database
+from .storage_db import Database, prepare_schema
 
 
 def register_preference_routes(app: Flask, settings: Settings | Callable[[], Settings]) -> None:
@@ -25,7 +25,7 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
 
     def db() -> Database:
         instance = Database(current_settings().storage.db_path)
-        instance.init_schema()
+        prepare_schema(instance)
         return instance
 
     @app.get("/dashboard/preferences")

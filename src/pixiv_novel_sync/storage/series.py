@@ -19,74 +19,73 @@ class SeriesMixin:
 
     def upsert_series_status(self, series_id: int, status: str) -> None:
         """更新系列状态；status 为 "unknown" 时只刷新 last_checked_at，不改写 status。"""
-        with self._lock:
-            if status == UNKNOWN_STATUS:
-                self.conn.execute(
-                    "UPDATE series SET last_checked_at = CURRENT_TIMESTAMP WHERE series_id = ?",
-                    (series_id,),
-                )
-            else:
-                self.conn.execute(
-                    "UPDATE series SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE series_id = ?",
-                    (status, series_id),
-                )
-            self._commit_if_needed()
+        if status == UNKNOWN_STATUS:
+            self.conn.execute(
+                "UPDATE series SET last_checked_at = CURRENT_TIMESTAMP WHERE series_id = ?",
+                (series_id,),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE series SET status = ?, last_checked_at = CURRENT_TIMESTAMP WHERE series_id = ?",
+                (status, series_id),
+            )
+        self._commit_if_needed()
 
     def upsert_subscribed_series(self, series_id: int, title: str, description: str, user_id: int, cover_url: str | None, total_novels: int = 0) -> None:
-        with self._lock:
-            self.conn.execute(
-                """
-                INSERT INTO series (series_id, title, description, user_id, cover_url, total_novels, source_url, is_subscribed, last_seen_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
-                ON CONFLICT(series_id) DO UPDATE SET
-                    title = CASE WHEN excluded.title != '' THEN excluded.title ELSE series.title END,
-                    description = CASE WHEN excluded.description != '' THEN excluded.description ELSE series.description END,
-                    user_id = CASE WHEN excluded.user_id != 0 THEN excluded.user_id ELSE series.user_id END,
-                    cover_url = COALESCE(excluded.cover_url, series.cover_url),
-                    total_novels = CASE WHEN excluded.total_novels > 0 THEN excluded.total_novels ELSE series.total_novels END,
-                    -- source_url 由主键 series_id 唯一确定，COALESCE 只补历史遗留空值。
-                    source_url = COALESCE(series.source_url, excluded.source_url),
-                    is_subscribed = 1,
-                    last_seen_at = CURRENT_TIMESTAMP
-                """,
-                (series_id, title, description, user_id, cover_url, total_novels, series_source_url(series_id)),
-            )
-            self._commit_if_needed()
+        self.conn.execute(
+            """
+            INSERT INTO series (series_id, title, description, user_id, cover_url, total_novels, source_url, is_subscribed, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+            ON CONFLICT(series_id) DO UPDATE SET
+                title = CASE WHEN excluded.title != '' THEN excluded.title ELSE series.title END,
+                description = CASE WHEN excluded.description != '' THEN excluded.description ELSE series.description END,
+                user_id = CASE WHEN excluded.user_id != 0 THEN excluded.user_id ELSE series.user_id END,
+                cover_url = CASE
+                    WHEN excluded.cover_url IS NOT NULL AND excluded.cover_url != ''
+                    THEN excluded.cover_url ELSE series.cover_url END,
+                total_novels = CASE WHEN excluded.total_novels > 0 THEN excluded.total_novels ELSE series.total_novels END,
+                -- source_url 由主键 series_id 唯一确定，COALESCE 只补历史遗留空值。
+                source_url = COALESCE(series.source_url, excluded.source_url),
+                is_subscribed = 1,
+                last_seen_at = CURRENT_TIMESTAMP
+            """,
+            (series_id, title, description, user_id, cover_url, total_novels, series_source_url(series_id)),
+        )
+        self._commit_if_needed()
 
     def repair_blank_series_titles(self) -> int:
         """用已归档小说的系列信息修复空标题，避免追更列表显示未命名系列。"""
-        with self._lock:
-            cursor = self.conn.execute(
-                """
-                UPDATE series
-                SET title = COALESCE(
-                        NULLIF((
-                            SELECT json_extract(n.raw_json, '$.series.title')
-                            FROM novels n
-                            WHERE n.series_id = series.series_id
-                              AND json_extract(n.raw_json, '$.series.title') IS NOT NULL
-                              AND json_extract(n.raw_json, '$.series.title') != ''
-                            ORDER BY n.create_date ASC
-                            LIMIT 1
-                        ), ''),
-                        NULLIF((
-                            SELECT MIN(n.title)
-                            FROM novels n
-                            WHERE n.series_id = series.series_id
-                              AND n.title IS NOT NULL
-                              AND n.title != ''
-                        ), '')
-                    ),
-                    total_novels = CASE
-                        WHEN total_novels > 0 THEN total_novels
-                        ELSE (SELECT COUNT(*) FROM novels n WHERE n.series_id = series.series_id)
-                    END
-                WHERE (title IS NULL OR title = '')
-                  AND EXISTS (SELECT 1 FROM novels n WHERE n.series_id = series.series_id)
-                """
-            )
-            self._commit_if_needed()
-            return cursor.rowcount if cursor.rowcount is not None else 0
+        cursor = self.conn.execute(
+            """
+            UPDATE series
+            SET title = COALESCE(
+                    NULLIF((
+                        SELECT json_extract(n.raw_json, '$.series.title')
+                        FROM novels n
+                        WHERE n.series_id = series.series_id
+                          AND json_extract(n.raw_json, '$.series.title') IS NOT NULL
+                          AND json_extract(n.raw_json, '$.series.title') != ''
+                        ORDER BY n.create_date ASC
+                        LIMIT 1
+                    ), ''),
+                    NULLIF((
+                        SELECT MIN(n.title)
+                        FROM novels n
+                        WHERE n.series_id = series.series_id
+                          AND n.title IS NOT NULL
+                          AND n.title != ''
+                    ), '')
+                ),
+                total_novels = CASE
+                    WHEN total_novels > 0 THEN total_novels
+                    ELSE (SELECT COUNT(*) FROM novels n WHERE n.series_id = series.series_id)
+                END
+            WHERE (title IS NULL OR title = '')
+              AND EXISTS (SELECT 1 FROM novels n WHERE n.series_id = series.series_id)
+            """
+        )
+        self._commit_if_needed()
+        return cursor.rowcount if cursor.rowcount is not None else 0
 
     def get_series_detail(self, series_id: int) -> dict[str, Any] | None:
         series_row = self.conn.execute(
@@ -174,15 +173,15 @@ class SeriesMixin:
         page = min(page, total_pages)
         offset = (page - 1) * page_size
 
-        order_sql = "se.last_seen_at DESC"
+        order_sql = "se.last_seen_at DESC, se.series_id DESC"
         if sort == "updated_desc":
-            order_sql = "se.last_seen_at DESC"
+            order_sql = "se.last_seen_at DESC, se.series_id DESC"
         elif sort == "bookmarks_desc":
             # Phase 5.5: 子查询改JOIN预聚合消除N+1
-            order_sql = "COALESCE(agg.total_bookmarks, 0) DESC"
+            order_sql = "COALESCE(agg.total_bookmarks, 0) DESC, se.series_id DESC"
         elif sort == "views_desc":
             # Phase 5.5: 子查询改JOIN预聚合消除N+1
-            order_sql = "COALESCE(agg.total_views, 0) DESC"
+            order_sql = "COALESCE(agg.total_views, 0) DESC, se.series_id DESC"
 
         params_query: list[Any] = []
         if search:
@@ -230,14 +229,14 @@ class SeriesMixin:
             params_query,
         ).fetchall()
         items = [dict(row) for row in rows]
-        # 6.7: 提取作者头像
+        # 6.7: 提取作者头像，前端字段名是 author_avatar_url
         for item in items:
             raw_json = item.pop("author_raw_json", None)
             if raw_json:
                 from ..storage_db import Database
-                item["author_avatar"] = Database._extract_user_avatar(Database._load_raw_json(raw_json))
+                item["author_avatar_url"] = Database._extract_user_avatar(Database._load_raw_json(raw_json))
             else:
-                item["author_avatar"] = None
+                item["author_avatar_url"] = None
         return {
             "items": items,
             "page": page, "page_size": page_size,
@@ -311,7 +310,7 @@ class SeriesMixin:
         """
         sql = (
             "SELECT series_id FROM series "
-            "ORDER BY (last_checked_at IS NOT NULL), last_checked_at, series_id"
+            "ORDER BY last_checked_at, series_id"
         )
         params: tuple[Any, ...] = ()
         if limit is not None and int(limit) > 0:

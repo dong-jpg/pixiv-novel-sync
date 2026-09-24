@@ -75,6 +75,15 @@
       <span class="ml-1 sm:ml-3 text-xs text-gray-400" v-if="!loading">
         共 <span class="font-semibold text-gray-600">{{ totalItems }}</span> {{ filters.category === 'ai' ? '个 AI 作品' : (filters.category === 'following' ? '个系列' : (filters.category === 'rescue' ? '项救援数据' : '部作品')) }}
       </span>
+      <label class="ml-auto inline-flex items-center gap-2 text-xs text-gray-500">
+        每页
+        <select v-model.number="pageSize" @change="onPageSizeChange" class="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white">
+          <option :value="10">10</option>
+          <option :value="20">20</option>
+          <option :value="40">40</option>
+          <option :value="60">60</option>
+        </select>
+      </label>
     </div>
     <div v-if="filters.category === 'rescue'" class="flex flex-wrap items-center gap-3 mt-3 pt-3 border-t border-gray-100">
       <select v-model="rescueFilters.state" class="px-3 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
@@ -122,6 +131,8 @@
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
       </svg>
       <p class="text-sm text-gray-400">{{ filters.category === 'ai' ? '暂无 AI 创作小说，请先在 AI 创作里创建项目' : (filters.category === 'following' ? '暂无追更系列' : (filters.category === 'rescue' ? '暂未发现符合条件的救援数据' : '暂无收藏小说，请先执行一次同步')) }}</p>
+      <a v-if="filters.category !== 'ai'" href="/dashboard/settings/sync" class="inline-flex mt-4 px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">去同步设置跑一轮</a>
+      <a v-else href="/dashboard/ai" class="inline-flex mt-4 px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">去创建项目</a>
     </div>
 
     <!-- Loading Skeletons -->
@@ -154,7 +165,7 @@
           <img v-if="item.cover_url"
                :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)"
                class="absolute inset-0 w-full h-full object-cover"
-               @error="item.cover_url = ''">
+               @error="item.cover_url = ''" alt="">
 
           <!-- Top Badges -->
           <div class="absolute top-2 left-2 flex flex-wrap gap-1 z-10">
@@ -191,7 +202,7 @@
             <div class="w-5 h-5 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0 overflow-hidden">
               <img v-if="item.author_avatar_url"
                    :src="'/proxy/image?url=' + encodeURIComponent(item.author_avatar_url)"
-                   class="w-full h-full object-cover" @error="item.author_avatar_url = ''">
+                   class="w-full h-full object-cover" @error="item.author_avatar_url = ''" alt="">
               <span v-else class="text-[9px] text-gray-500 font-bold">{{ (item.author_name || '?').substring(0, 1) }}</span>
             </div>
             <span class="text-xs text-gray-500 truncate">{{ item.author_name || '未知' }}</span>
@@ -222,7 +233,7 @@
           <img v-if="item.cover_url"
                :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)"
                class="absolute inset-0 w-full h-full object-cover"
-               @error="item.cover_url = ''">
+               @error="item.cover_url = ''" alt="">
 
           <!-- Bottom Gradient with Stats -->
           <div class="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-black/60 to-transparent"></div>
@@ -246,7 +257,7 @@
             <div class="w-5 h-5 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0 overflow-hidden">
               <img v-if="item.author_avatar_url"
                    :src="'/proxy/image?url=' + encodeURIComponent(item.author_avatar_url)"
-                   class="w-full h-full object-cover" @error="item.author_avatar_url = ''">
+                   class="w-full h-full object-cover" @error="item.author_avatar_url = ''" alt="">
               <span v-else class="text-[9px] text-gray-500 font-bold">{{ (item.author_name || '?').substring(0, 1) }}</span>
             </div>
             <span class="text-xs text-gray-500 truncate">{{ item.author_name || '未知' }}</span>
@@ -271,7 +282,7 @@
           <img v-if="item.cover_url"
                :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)"
                class="absolute inset-0 w-full h-full object-cover"
-               @error="item.cover_url = ''">
+               @error="item.cover_url = ''" alt="">
           <div class="absolute top-2 left-2 right-2 flex flex-wrap gap-1 z-10">
             <span class="px-1.5 py-0.5 bg-gray-900/75 text-white text-[10px] font-bold rounded">{{ item.content_kind_label || (item.item_type === 'series' ? '系列' : '单篇') }}</span>
             <span class="px-1.5 py-0.5 text-white text-[10px] font-bold rounded" :class="item.rescue_state === 'success' ? 'bg-emerald-600' : 'bg-amber-500'">
@@ -351,15 +362,7 @@
     <!-- Pagination + Page Size -->
     <div v-if="!loading && !error && items.length > 0" class="flex flex-col sm:flex-row items-center justify-between gap-3 mt-8 px-1">
       <div class="flex items-center gap-2 text-sm text-gray-500">
-        <span>每页</span>
-        <select v-model.number="pageSize" @change="onPageSizeChange"
-          class="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand-300">
-          <option :value="10">10</option>
-          <option :value="20">20</option>
-          <option :value="40">40</option>
-          <option :value="60">60</option>
-        </select>
-        <span>条</span>
+        <span>共 {{ totalItems }} 条</span>
         <span class="text-gray-400 ml-2">共 {{ totalItems }} 条</span>
       </div>
       <app-pagination
@@ -405,15 +408,15 @@
       const rescueCatalog = reactive({ refreshed_at: '', stale: false });
 
       // Filters
-      const initialCategory = new URLSearchParams(window.location.search).get('category');
+      const initialQuery = window.readListQuery({ category: 'bookmark', search: '', sort: '', page: 1 });
       const filters = reactive({
-        category: ['bookmark', 'following', 'ai', 'rescue'].includes(initialCategory) ? initialCategory : 'bookmark',
-        search: '',
-        sort: ''
+        category: ['bookmark', 'following', 'ai', 'rescue'].includes(initialQuery.category) ? initialQuery.category : 'bookmark',
+        search: initialQuery.search,
+        sort: initialQuery.sort
       });
+      page.value = initialQuery.page;
       const rescueFilters = reactive({
         state: 'all',
-        item_type: 'all',
         content_kind: 'all',
         source_kind: 'all'
       });
@@ -461,7 +464,6 @@
               page: String(page.value),
               page_size: String(pageSize.value),
               state: rescueFilters.state,
-              item_type: rescueFilters.item_type,
               content_kind: rescueFilters.content_kind,
               source_kind: rescueFilters.source_kind,
               search: filters.search,
@@ -540,6 +542,12 @@
             items.value = [];
           }
         } finally {
+          window.writeListQuery({
+            category: filters.category,
+            search: filters.search,
+            sort: filters.sort,
+            page: page.value,
+          });
           if (fetchAbortController && !fetchAbortController.signal.aborted) {
             loading.value = false;
           }
@@ -597,7 +605,7 @@
         fetchData();
       });
 
-      watch(() => [rescueFilters.state, rescueFilters.item_type, rescueFilters.content_kind, rescueFilters.source_kind], () => {
+      watch(() => [rescueFilters.state, rescueFilters.content_kind, rescueFilters.source_kind], () => {
         if (filters.category !== 'rescue') return;
         page.value = 1;
         fetchData();

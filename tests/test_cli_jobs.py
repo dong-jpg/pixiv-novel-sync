@@ -14,13 +14,6 @@ def test_sync_command_accepts_multiple_tasks():
     assert args.tasks == ["bookmark", "following_novels"]
 
 
-def test_sync_check_command_exists():
-    parser = build_parser()
-    args = parser.parse_args(["sync-check"])
-
-    assert args.command == "sync-check"
-
-
 def test_status_check_command_accepts_scope():
     parser = build_parser()
     args = parser.parse_args(["status-check", "novel_status"])

@@ -350,6 +350,24 @@ def test_ai_project_overview_keeps_project_summary_compact_at_narrow_desktop():
     assert "lg:grid-cols-[7rem_minmax(0,1.35fr)_minmax(16rem,1fr)]" in project_section
 
 
+def test_task_logs_template_sync_filter_uses_current_task_type_keys():
+    """T1-10：同步筛选项的值必须对齐真实 task_type（bookmark / following_users）。
+
+    旧值用的是过时的 key，选中后按值过滤永远匹配不到任何日志行。
+    """
+    html = read(TEMPLATES / "dashboard_logs.html")
+
+    assert "value: 'bookmark'" in html
+    assert "value: 'following_users'" in html
+
+
+def test_task_logs_template_treats_naive_timestamps_as_utc():
+    """T1-10：后端存的是无时区 UTC 串，格式化前补 Z 才不会被当成本地时间偏移。"""
+    html = read(TEMPLATES / "dashboard_logs.html")
+
+    assert "dateStr + 'Z'" in html
+
+
 def test_library_contains_rescue_tab_and_api_contract():
     html = read(TEMPLATES / "dashboard_novels.html")
 
@@ -357,7 +375,7 @@ def test_library_contains_rescue_tab_and_api_contract():
     assert "['bookmark', 'following', 'ai', 'rescue']" in html
     assert "/api/dashboard/rescues" in html
     assert "rescueFilters.state" in html
-    assert "rescueFilters.item_type" in html
+    assert "rescueFilters.content_kind" in html
     assert '<option v-if="filters.category !== \'rescue\'" value="bookmarks_desc">' in html
     assert '<option v-if="filters.category !== \'rescue\'" value="views_desc">' in html
     assert "完整救援" in html
@@ -381,7 +399,7 @@ def test_rescue_library_exposes_content_and_source_filters():
     assert "source.label" in html
     assert "rescueCatalog.stale" in html
     assert "item.content_kind === 'series'" in html
-    assert "rescueFilters.item_type, rescueFilters.content_kind, rescueFilters.source_kind" in html
+    assert "rescueFilters.content_kind, rescueFilters.source_kind" in html
 
 
 def test_rescue_catalog_time_uses_local_display_and_surfaces_backend_error():
@@ -399,8 +417,8 @@ def test_rescue_detail_pages_support_manual_override_with_csrf():
     for html, item_type in ((novel, "novel"), (series, "series")):
         assert "rescueOverride" in html
         assert "rescueMessage" in html
-        assert "ensureCsrfToken" in html
-        assert "X-CSRF-Token" in html
+        assert "window.csrfFetch" in html
+        assert "ensureCsrfToken" not in html
         assert f"const itemType = '{item_type}'" in html
         assert "/api/dashboard/rescue-overrides/" in html
         assert "saveRescueOverride" in html
@@ -589,6 +607,68 @@ def test_dashboard_recommendations_are_a_paged_list_not_a_card_grid():
     assert 'class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">' not in html
 
 
+def test_list_pages_keep_filters_in_the_url():
+    base = read(TEMPLATES / "base.html")
+    assert "window.writeListQuery" in base
+    for name in (
+        "dashboard_novels.html",
+        "dashboard_logs.html",
+        "dashboard_pending_deletions.html",
+        "dashboard_follows.html",
+        "dashboard_user_detail.html",
+    ):
+        assert "writeListQuery" in read(TEMPLATES / name)
+
+
+def test_sidebar_logout_and_novel_detail_actions():
+    footer = read(TEMPLATES / "vue_components.html")
+    assert "/api/auth/logout" in footer
+    detail = read(TEMPLATES / "dashboard_novel_detail.html")
+    assert "export-epub" in detail
+    assert "/progress" in detail
+    assert "deleteThisNovel" in detail
+
+
+def test_idle_dashboard_polls_slowly_and_mobile_bar_has_ops():
+    html = read(TEMPLATES / "dashboard.html")
+    assert "20000" in html
+    assert "data.ok === false" in html
+    mobile = read(TEMPLATES / "vue_components.html")
+    assert "'trash'" in mobile
+    assert "'clipboard'" in mobile
+    user = read(TEMPLATES / "dashboard_user_detail.html")
+    assert "AbortController" in user
+    assert "网络错误，用户资料没有加载到" in user
+
+
+def test_model_probe_is_a_read_only_preview():
+    html = read(TEMPLATES / "dashboard_settings_models.html")
+    assert "toggleProbedModel" not in html
+    assert "探测预览" in html
+
+
+def test_app_modal_is_a_dialog():
+    html = read(TEMPLATES / "vue_components.html")
+    assert 'role="dialog"' in html
+    assert 'aria-modal="true"' in html
+    assert 'aria-label="关闭"' in html
+    assert "@keydown.esc" in html
+
+
+def test_shared_time_and_toast_helpers_exist():
+    html = read(TEMPLATES / "base.html")
+    assert "window.formatDbTime" in html
+    assert "window.toast" in html
+    for name in (
+        "dashboard_user_detail.html",
+        "dashboard_series_detail.html",
+        "dashboard_pending_deletions.html",
+        "dashboard_follows.html",
+        "dashboard_settings_models.html",
+    ):
+        assert "formatDbTime(" in read(TEMPLATES / name)
+
+
 def test_dashboard_header_is_a_rounded_library_card_not_a_square_sticky_bar():
     """截图里控制台头部是通栏直角横条，与下方 22px 圆角卡片割裂。
 
@@ -606,9 +686,11 @@ def test_dashboard_current_task_name_uses_chinese_labels():
     不再显示英文内部键。活动列表面板移除后，映射表仍由 currentTaskName 使用。"""
     html = read(TEMPLATES / "dashboard.html")
 
-    assert "TASK_TYPE_LABELS" in html
+    assert "window.TASK_LABELS" in html
     assert "currentTaskName" in html
-    assert "novel_status: '检查小说状态'" in html
+    assert "following_series" not in html
+    base = read(TEMPLATES / "base.html")
+    assert "window.TASK_LABELS" in base
 
 
 def test_dashboard_status_bar_keeps_autosync_toggle_and_stop():

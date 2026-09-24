@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from pixiv_novel_sync.preferences import PreferenceAnalyzer
 from pixiv_novel_sync.recommendations import RecommendationService, _SERIES_PAGE_SAFETY_LIMIT
 from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings
@@ -46,6 +48,61 @@ def test_page_delay_forwards_stop_requested(tmp_path: Path, monkeypatch) -> None
 
     assert observed == [{"stop_requested": stop_requested}]
     db.close()
+
+
+def test_profile_update_rejects_unknown_fields_and_the_only_default(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    profile_id = db.create_preference_profile({
+        "name": "默认", "source_scope": {}, "stats": {}, "profile": {}, "is_default": True,
+    })
+    with pytest.raises(ValueError, match="未知字段"):
+        db.update_preference_profile(profile_id, {"nope": 1})
+    with pytest.raises(ValueError, match="唯一的默认"):
+        db.update_preference_profile(profile_id, {"is_default": False})
+    db.update_preference_profile(profile_id, {"name": "改名"})
+    assert db.get_preference_profile(profile_id)["name"] == "改名"
+
+    run_id = db.create_recommendation_run(profile_id, {"queries": []})
+    item_id = db.upsert_recommendation_item({
+        "run_id": run_id, "profile_id": profile_id, "item_type": "novel",
+        "novel_id": 42, "title": "链接", "tags": [], "score": 1, "matched": {},
+    })
+    item = db.get_recommendation_item(item_id)
+    assert item["source_url"] == "https://www.pixiv.net/novel/show.php?id=42"
+    db.close()
+
+
+def test_min_text_length_change_rebuilds_the_accumulator(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    db.merge_preference_batch(
+        {"keyword": {"旧词": 3}},
+        {"novel_count": 2, "series_novel_count": 0, "total_chars": 4000, "length_buckets": {}, "source_dist": {}, "x_restrict_dist": {}},
+        [1, 2],
+        1000,
+    )
+    db.merge_preference_batch(
+        {"keyword": {"新词": 1}},
+        {"novel_count": 1, "series_novel_count": 0, "total_chars": 2000, "length_buckets": {}, "source_dist": {}, "x_restrict_dist": {}},
+        [3],
+        5000,
+    )
+    acc = db.get_preference_accumulator()
+    assert acc["min_text_length"] == 5000
+    assert acc["novel_count"] == 1
+    assert db.top_preference_terms("keyword", 10) == [{"name": "新词", "count": 1}]
+    db.close()
+
+
+def test_preferences_page_keeps_running_jobs_in_the_background() -> None:
+    text = Path("src/pixiv_novel_sync/templates/dashboard_preferences.html").read_text(encoding="utf-8")
+    assert "任务超时" not in text
+    assert "仍在后台运行" in text
+    assert "result.stats?.stats?.saved" in text
+    assert "result.error || result.message" in text
+    assert "pageLoading" in text
+    assert "排队中" in text
 
 
 def test_build_search_plan_from_profile(tmp_path: Path):
@@ -97,6 +154,72 @@ def test_search_plan_uses_profile_rebuilt_from_refined_keywords(tmp_path: Path):
     db.close()
 
 
+def test_profile_queries_pair_each_tag_with_a_different_keyword(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    analyzer = PreferenceAnalyzer(db)
+    stats = {
+        "novel_count": 8,
+        "total_chars": 80_000,
+        "series_novel_count": 0,
+        "single_novel_count": 8,
+        "avg_text_length": 10_000,
+        "top_tags": [{"name": f"标签{i}", "count": 10 - i} for i in range(12)],
+        "top_title_keywords": [{"name": "标题词", "count": 4}],
+        "top_caption_keywords": [{"name": "简介词", "count": 3}],
+        "top_keywords": [{"name": "正文词", "count": 2}],
+    }
+    profile = analyzer.build_profile(stats)
+    strategy = profile["search_strategy"]
+    assert strategy["precise_queries"][0] == "标签0 标题词"
+    assert strategy["precise_queries"][1] == "标签1 简介词"
+    assert strategy["broad_queries"] == ["标签10", "标签11"]
+    db.close()
+
+
+def test_search_drops_novels_hitting_exclude_terms(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    service = RecommendationService(db, make_settings(tmp_path))
+
+    class _Novel:
+        def __init__(self, title: str):
+            self.title = title
+            self.caption = ""
+            self.tags = []
+
+    class _Api:
+        def search_novel(self, **_kwargs):
+            class _Response:
+                novels = [_Novel("可以看"), _Novel("含禁词的故事")]
+                next_url = None
+            return _Response()
+
+        def parse_qs(self, _url):
+            return None
+
+    kept = service._search_novels(_Api(), "校园", 10, exclude_terms=["禁词"])
+    assert [item.title for item in kept] == ["可以看"]
+    db.close()
+
+
+def test_client_search_plan_is_capped(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    service = RecommendationService(db, make_settings(tmp_path))
+    raw = {
+        "queries": [{"query": "a" * 300, "limit": 500}] + [{"query": f"q{i}", "limit": 0} for i in range(25)],
+        "exclude_terms": ["  不要  ", "不要"],
+    }
+    plan = service._normalize_client_search_plan(raw)
+    assert len(plan["queries"]) == 20
+    assert len(plan["queries"][0]["query"]) == 200
+    assert plan["queries"][0]["limit"] == 100
+    assert plan["queries"][1]["limit"] == 1
+    assert plan["exclude_terms"] == ["不要"]
+    db.close()
+
+
 def test_build_search_plan_enforces_minimum_length_filters(tmp_path: Path):
     db = Database(tmp_path / "rec.db")
     db.init_schema()
@@ -107,6 +230,96 @@ def test_build_search_plan_enforces_minimum_length_filters(tmp_path: Path):
 
     assert plan["filters"]["single_min_chars"] == 5000
     assert plan["filters"]["series_min_total_chars"] == 20000
+    db.close()
+
+
+def test_archived_series_and_generic_tag_overlap_do_not_false_positive(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    db.conn.execute("INSERT INTO users (user_id, name, raw_json) VALUES (9, 'A', '{}')")
+    db.conn.execute(
+        """
+        INSERT INTO novels (
+            novel_id, title, user_id, series_id, visible, restrict_value, x_restrict,
+            text_length, total_bookmarks, total_views, tags_json, raw_json, meta_hash
+        ) VALUES (10, '已归档', 9, 77, 1, 'public', 0, 10, 0, 0, '[]', '{}', 'h')
+        """
+    )
+    db.conn.commit()
+    service = RecommendationService(db, make_settings(tmp_path))
+    profile = {
+        "profile": {
+            "positive_preferences": {"tags": ["甜文"], "keywords": []},
+            "search_strategy": {"primary_tags": ["甜文"]},
+            "reading_bias": {"preferred_authors": ["9"], "preferred_min_length": 5000},
+        }
+    }
+    filters = {"single_min_chars": 1000, "exclude_archived": True}
+    filter_state = {
+        "archived_novel_ids": set(),
+        "recommended_novel_ids": set(),
+        "dismissed_novel_ids": set(),
+        "recommended_series_ids": set(),
+        "dismissed_series_ids": set(),
+        "muted_authors": set(),
+        "muted_tags": set(),
+    }
+    archived_series = SimpleNamespace(
+        id=3, text_length=8000, title="系列篇", caption="", tags=["甜文"],
+        user=SimpleNamespace(id=9, name="A"), total_bookmarks=10,
+        series=SimpleNamespace(id=77),
+    )
+    assert service._candidate_to_item(None, archived_series, {"query": "甜文"}, profile, filters, filter_state) is None
+
+    existing = [{
+        "author_id": 9,
+        "title": "完全不同的标题",
+        "tags": ["甜文", "原创", "R-18", "小说"],
+    }]
+    distinctive = SimpleNamespace(
+        id=4, text_length=8000, title="另一篇", caption="",
+        tags=["甜文", "原创", "R-18", "小说"],
+        user=SimpleNamespace(id=9, name="A"), total_bookmarks=10,
+    )
+    kept = service._candidate_to_item(
+        None, distinctive, {"query": "甜文"}, profile, filters, filter_state,
+        existing_items=existing,
+    )
+    assert kept is not None
+
+    crowded = SimpleNamespace(
+        id=5, text_length=8000, title="再一篇", caption="",
+        tags=["校园", "恋爱", "日常", "甜文"],
+        user=SimpleNamespace(id=9, name="A"), total_bookmarks=10,
+    )
+    dropped = service._candidate_to_item(
+        None, crowded, {"query": "甜文"}, profile, filters, filter_state,
+        existing_items=[{
+            "author_id": 9,
+            "title": "毫不相似",
+            "tags": ["校园", "恋爱", "日常", "甜文"],
+        }],
+    )
+    assert dropped is None
+
+    plain = SimpleNamespace(
+        id=6, text_length=8000, title="作者加分", caption="", tags=["甜文"],
+        user=SimpleNamespace(id=9, name="A"), total_bookmarks=10_000_000,
+    )
+    other = SimpleNamespace(
+        id=7, text_length=8000, title="作者加分", caption="", tags=["甜文"],
+        user=SimpleNamespace(id=3, name="B"), total_bookmarks=10_000_000,
+    )
+    preferred = service._score(plain, ["甜文"], profile, 0)
+    stranger = service._score(other, ["甜文"], profile, 0)
+    assert preferred[0] - stranger[0] == 8
+    bookmark_only = service._score(
+        SimpleNamespace(title="", caption="", total_bookmarks=10_000_000, text_length=0, user=None),
+        [],
+        {"profile": {}},
+        0,
+    )[0]
+    assert bookmark_only < 12
     db.close()
 
 
@@ -131,6 +344,53 @@ def test_candidate_filters_short_single_and_scores(tmp_path: Path):
     assert item["item_type"] == "novel"
     assert item["score"] > 0
     assert item["matched"]["tags"] == ["甜文"]
+    db.close()
+
+
+def test_default_list_hides_dismissed_and_muted_and_author_mute_clears_new(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    profile_id = db.create_preference_profile({"name": "p", "source_scope": {}, "stats": {}, "profile": {}})
+    run_id = db.create_recommendation_run(profile_id, {"queries": []})
+
+    def add(novel_id: int, author_id: int, status: str, score: int) -> int:
+        return db.upsert_recommendation_item({
+            "run_id": run_id,
+            "profile_id": profile_id,
+            "item_type": "novel",
+            "novel_id": novel_id,
+            "author_id": author_id,
+            "title": f"作品 {novel_id}",
+            "tags": [],
+            "score": score,
+            "matched": {},
+            "status": status,
+        })
+
+    kept = add(1, 9, "new", 5)
+    interested = add(2, 9, "interested", 4)
+    dismissed = add(3, 8, "dismissed", 9)
+    muted = add(4, 7, "muted", 8)
+    other_new = add(5, 8, "new", 1)
+
+    visible = [item["id"] for item in db.list_recommendation_items()]
+    assert kept in visible
+    assert interested in visible
+    assert other_new in visible
+    assert dismissed not in visible
+    assert muted not in visible
+    assert [item["id"] for item in db.list_recommendation_items(status="dismissed")] == [dismissed]
+
+    first = db.create_recommendation_mute("author", "9", "不看了")
+    again = db.create_recommendation_mute("author", "9", "还是不看")
+    assert first == again
+    statuses = {
+        item["novel_id"]: item["status"]
+        for item in db.list_recommendation_items(status="muted")
+    }
+    assert statuses[1] == "muted"
+    assert 2 not in statuses
+    assert db.list_recommendation_items()[0]["novel_id"] in {2, 5}
     db.close()
 
 
@@ -612,6 +872,81 @@ def test_cancelled_run_marks_run_cancelled_not_failed(tmp_path: Path):
         service.run(profile_id=profile_id, progress_callback=progress_callback)
 
     assert max(db.list_recommendation_runs(), key=lambda r: r["id"])["status"] == "cancelled"
+    db.close()
+
+
+def test_partial_search_errors_mark_incomplete_but_still_publish(tmp_path: Path):
+    """T1-09：部分查询失败时 run 仍 succeeded，但打上 incomplete + search_errors，好候选照常落库。
+
+    回归：单个查询的 API 异常曾直接冒出炸掉整轮，让本可入库的候选全丢；现在
+    per-query try/except 累加 errors 并继续，只要不是全败就正常发布。
+    """
+    import pytest
+
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    profile_id = db.create_preference_profile({
+        "name": "default", "source_scope": {}, "stats": {},
+        "profile": {"search_strategy": {"primary_tags": ["甜文", "冒险"]}},
+    })
+
+    good = SimpleNamespace(
+        id=2, text_length=6000, title="温柔", caption="", tags=["甜文"],
+        user=SimpleNamespace(id=9, name="A"), total_bookmarks=200, series=None, series_id=None,
+    )
+
+    class FlakyApi:
+        def __init__(self):
+            self.calls = 0
+
+        def search_novel(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(novels=[good], next_url=None)
+            raise RuntimeError("second query boom")
+
+        def parse_qs(self, url):
+            return None
+
+    service = RecommendationService(db, make_settings(tmp_path), api=FlakyApi())
+    result = service.run(profile_id=profile_id)
+
+    assert result["stats"]["saved"] == 1
+    assert result["stats"]["errors"] >= 1
+    assert result["stats"]["incomplete"] is True
+    assert result["stats"]["aborted_reason"] == "search_errors"
+    latest_run = max(db.list_recommendation_runs(), key=lambda r: r["id"])
+    assert latest_run["status"] == "succeeded"
+    items = db.list_recommendation_items()
+    assert [item["novel_id"] for item in items] == [2]
+    db.close()
+
+
+def test_all_search_queries_failing_marks_run_failed_and_publishes_nothing(tmp_path: Path):
+    """T1-09：所有查询都失败时 run 标记 failed 并抛 RuntimeError，一条 item 都不落。"""
+    import pytest
+
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    profile_id = db.create_preference_profile({
+        "name": "default", "source_scope": {}, "stats": {},
+        "profile": {"search_strategy": {"primary_tags": ["甜文", "冒险"]}},
+    })
+
+    class BoomApi:
+        def search_novel(self, **kwargs):
+            raise RuntimeError("all boom")
+
+        def parse_qs(self, url):
+            return None
+
+    service = RecommendationService(db, make_settings(tmp_path), api=BoomApi())
+    with pytest.raises(RuntimeError, match="推荐搜索全部失败"):
+        service.run(profile_id=profile_id)
+
+    assert db.list_recommendation_items() == []
+    latest_run = max(db.list_recommendation_runs(), key=lambda r: r["id"])
+    assert latest_run["status"] == "failed"
     db.close()
 
 

@@ -227,6 +227,21 @@ def test_anthropic_stream_fallback_uses_single_non_stream_attempt(monkeypatch):
     assert chunks[4].text == "ok"
 
 
+def test_anthropic_base_url_ending_with_v1_does_not_double_prefix():
+    """T1-08：base_url 已以 /v1 结尾时，不能再拼出 /v1/v1/messages。
+
+    回归：旧代码用 `endswith("\\v1")`（垂直制表符字面量），任何真实 URL 都判不中，
+    自建网关的 /v1 base_url 一律被重复拼成 /v1/v1。
+    """
+    config = dataclasses.replace(make_config("anthropic"), base_url="https://example.com/v1")
+    provider = AnthropicProvider(config)
+    try:
+        assert provider._resolve_api_path("/messages") == "https://example.com/v1/messages"
+        assert provider._model_discovery_request()[0] == "https://example.com/v1/models"
+    finally:
+        provider.close()
+
+
 def test_anthropic_empty_stream_falls_back_to_non_stream(monkeypatch):
     calls: list[dict] = []
 

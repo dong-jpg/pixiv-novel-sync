@@ -34,7 +34,8 @@ def test_userscript_metadata_and_security_contract() -> None:
 def test_userscript_uses_fixed_api_paths_and_safe_rendering() -> None:
     script = _script()
 
-    assert "const API_ORIGIN = 'https://pixiv.dongboapp.com';" in script
+    assert "const DEFAULT_API_ORIGIN = 'https://pixiv.dongboapp.com';" in script
+    assert "pixivRescueOrigin" in script
     assert "'/api/rescue/v1/novels/'" in script
     assert "'/api/rescue/v1/series/'" in script
     assert "'/chapters'" in script

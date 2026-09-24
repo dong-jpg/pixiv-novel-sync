@@ -37,7 +37,9 @@
           <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
         </select>
         <button @click="seedAgents" :disabled="!seedProviderId" class="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-sm disabled:opacity-50">一键初始化</button>
+        <span class="text-xs text-pixiv-gray self-center">只补还没有的内置 Agent，不会覆盖你改过的绑定</span>
       </div>
+      <div id="agent-form"></div>
       <input v-model="agentForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Agent 名称">
       <select v-model="agentForm.task_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
         <option value="wizard">创作向导</option>
@@ -427,6 +429,8 @@
         // 编辑时顺带解析候选链：改绑定前先看清它现在会调哪些模型
         candidateAgentId.value = agent.id;
         loadCandidateChain(agent.id);
+        const form = document.getElementById('agent-form');
+        if (form) form.scrollIntoView({ behavior: 'smooth', block: 'start' });
       };
 
       const saveAgent = async () => {

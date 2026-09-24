@@ -27,6 +27,9 @@ sync:
   # 系列章节分页专用上限。留空则跟随 max_pages_per_run。
   # 跟随时 max_pages_per_run=2 会把长系列的章节列表截断，缺章永远补不齐。
   series_max_pages_per_run: 10
+  # 用户全量备份翻页上限。留空则跟随 max_pages_per_run。
+  # 备份是整库导出，共用 2 页上限会把几百篇收藏截成 60 篇，任务日志却显示绿色。
+  user_backup_max_pages_per_run: 200
   delay_seconds_between_items: 1.5
   delay_seconds_between_pages: 2.0
   delay_seconds_between_series: 3.0

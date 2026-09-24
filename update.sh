@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+umask 077
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -11,7 +12,7 @@ SERVICE_NAME="pixiv-novel-sync"
 FLASK_PORT=5011
 PUBLIC_URL="https://pixiv.dongboapp.com"
 BACKUP_SUFFIX="$(date +%Y%m%d_%H%M%S)"
-BACKUP_DIR="/tmp/pixiv-novel-sync-backup.${BACKUP_SUFFIX}"
+BACKUP_DIR="${INSTALL_DIR}/.backup/${BACKUP_SUFFIX}"
 ENV_BACKUP="${BACKUP_DIR}/.env"
 CONFIG_BACKUP="${BACKUP_DIR}/config.yaml"
 CONFIG_RESTORED=false
@@ -77,16 +78,24 @@ if [ ! -f "config/config.yaml" ] && [ -f "config/config.yaml.example" ]; then
     echo "  已创建 config.yaml"
 fi
 
-# 更新 Nginx 配置
+# 更新 Nginx 配置。只替换这三个占位符，避免把 $host 等 nginx 变量清掉。
 echo -e "${GREEN}[5.5/6] 更新 Nginx 配置...${NC}"
-sudo cp -f config/nginx/pixiv-novel-sync.conf /etc/nginx/sites-available/pixiv-novel-sync
+PIXIV_SERVER_NAME="${PIXIV_SERVER_NAME:-pixiv.dongboapp.com}"
+PIXIV_SSL_CERTIFICATE="${PIXIV_SSL_CERTIFICATE:-/etc/ssl/certs/${PIXIV_SERVER_NAME}.pem}"
+PIXIV_SSL_CERTIFICATE_KEY="${PIXIV_SSL_CERTIFICATE_KEY:-/etc/ssl/private/${PIXIV_SERVER_NAME}.key}"
+export PIXIV_SERVER_NAME PIXIV_SSL_CERTIFICATE PIXIV_SSL_CERTIFICATE_KEY
+envsubst '${PIXIV_SERVER_NAME} ${PIXIV_SSL_CERTIFICATE} ${PIXIV_SSL_CERTIFICATE_KEY}' \
+  < config/nginx/pixiv-novel-sync.conf \
+  | sudo tee /etc/nginx/sites-available/pixiv-novel-sync > /dev/null
 
 # 确保缓存目录权限正确
 sudo chmod -R 775 /var/cache/nginx/pixiv_img 2>/dev/null || true
 sudo chmod g+s /var/cache/nginx/pixiv_img 2>/dev/null || true
 sudo setfacl -d -m g::rwx /var/cache/nginx/pixiv_img 2>/dev/null || true
 
-sudo nginx -t && sudo systemctl reload nginx
+# nginx -t 失败必须中止：写在 && 左边时 set -e 不会退出。
+sudo nginx -t
+sudo systemctl reload nginx
 echo "  Nginx 配置已更新"
 
 # 更新 systemd 服务配置，清理旧版手工部署留下的脏行
@@ -99,7 +108,7 @@ echo "  Nginx 配置已更新"
     printf '%s\n' 'Type=simple'
     printf '%s\n' "User=${USER}"
     printf '%s\n' "WorkingDirectory=${INSTALL_DIR}"
-    printf '%s\n' "Environment=PATH=${INSTALL_DIR}/.venv/bin"
+    printf '%s\n' "Environment=PATH=${INSTALL_DIR}/.venv/bin:/usr/local/bin:/usr/bin:/bin"
     printf '%s\n' "ExecStart=${INSTALL_DIR}/.venv/bin/pixiv-novel-sync --config config/config.yaml web-token-ui --host 127.0.0.1 --port ${FLASK_PORT}"
     printf '%s\n' 'Restart=always'
     printf '%s\n' 'RestartSec=5'
@@ -116,6 +125,7 @@ sudo systemctl restart ${SERVICE_NAME}
 sleep 2
 
 if sudo systemctl is-active --quiet ${SERVICE_NAME}; then
+    rm -rf "$BACKUP_DIR"
     echo -e "${GREEN}=== 更新成功! ===${NC}"
     echo ""
     echo "访问地址: ${PUBLIC_URL}"

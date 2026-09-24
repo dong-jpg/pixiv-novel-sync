@@ -57,6 +57,51 @@ def _seed_novel(
     db.conn.commit()
 
 
+def test_refresh_matches_full_rebuild_for_the_same_novel(db: Database) -> None:
+    _seed_novel(db, novel_id=81, status="deleted", title="系列里的一篇")
+    db.upsert_source(SourceRecord(81, "bookmark_public", "1"))
+    db.rebuild_rescue_catalog()
+    full = db.get_rescue_catalog_item("novel", 81)
+    db.conn.execute("UPDATE novels SET title = '改过的标题' WHERE novel_id = 81")
+    db.conn.commit()
+    db.refresh_rescue_item("novel", 81)
+    refreshed = db.get_rescue_catalog_item("novel", 81)
+    db.rebuild_rescue_catalog()
+    rebuilt = db.get_rescue_catalog_item("novel", 81)
+    assert refreshed is not None and rebuilt is not None
+    assert refreshed["title"] == rebuilt["title"] == "改过的标题"
+    assert {key: refreshed[key] for key in refreshed if key != "refreshed_at"} == {
+        key: rebuilt[key] for key in rebuilt if key != "refreshed_at"
+    }
+    assert full is not None and full["title"] != refreshed["title"]
+
+
+def test_bad_catalog_timestamp_is_stale_and_pending_removal_is_flagged(db: Database) -> None:
+    from types import SimpleNamespace
+
+    from pixiv_novel_sync.rescue_web import _catalog_stale
+
+    settings = SimpleNamespace(
+        sync=SimpleNamespace(
+            auto_sync_novel_status_interval_hours=24,
+            auto_sync_series_status_interval_hours=24,
+        )
+    )
+    assert _catalog_stale("not-a-timestamp", settings) is True
+
+    _seed_novel(db, novel_id=82, status="deleted")
+    db.conn.execute(
+        """
+        INSERT INTO pending_deletions (item_type, item_id, title, reason, status)
+        VALUES ('novel', 82, '待删', 'missing', 'pending')
+        """
+    )
+    db.conn.commit()
+    payload = db.evaluate_rescue_novel(82)
+    assert payload is not None
+    assert payload["pending_removal"] is True
+
+
 def test_novel_text_maintains_has_content(db: Database) -> None:
     _seed_novel(db, novel_id=90, text="正文")
     assert db.conn.execute(

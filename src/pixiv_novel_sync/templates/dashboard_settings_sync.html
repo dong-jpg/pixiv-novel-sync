@@ -67,10 +67,12 @@
             <label class="flex items-center gap-3 cursor-pointer group">
               <input type="checkbox" v-model="settings.enabled" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
               <span class="text-sm text-gray-700">启用全局同步</span>
+              <span class="text-[11px] text-pixiv-gray">关掉后定时任务不再排队，手工触发仍可用</span>
             </label>
             <label class="flex items-center gap-3 cursor-pointer group">
               <input type="checkbox" v-model="settings.initial_manual_only" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
               <span class="text-sm text-gray-700">首次仅允许手工触发</span>
+              <span class="text-[11px] text-pixiv-gray">库还是空的时候，定时任务先不跑</span>
             </label>
             <label class="flex items-center gap-3 cursor-pointer group">
               <input type="checkbox" v-model="settings.download_assets" class="w-4 h-4 text-brand-500 bg-white border-gray-300 rounded focus:ring-brand-500">
@@ -113,7 +115,7 @@
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">单次最大条数（留空不限）</label>
-              <input type="number" v-model.number="settings.max_items_per_run" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <input type="number" v-model.number="settings.max_items_per_run" min="1" placeholder="不限" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
             </div>
             <div>
               <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">单次最大页数（留空不限）</label>
@@ -153,7 +155,7 @@
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label class="block text-xs font-medium text-pixiv-gray uppercase mb-1.5">每作者最大篇数（留空不限）</label>
-              <input type="number" v-model.number="settings.following_max_novels_per_author" min="1" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+              <input type="number" v-model.number="settings.following_max_novels_per_author" min="1" placeholder="不限" class="block w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
               <p class="mt-1 text-xs text-pixiv-light">留空时单个高产作者会吃光整轮预算，一轮只覆盖 1 个作者</p>
             </div>
             <div>
@@ -211,12 +213,15 @@
       <div class="space-y-6">
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div>
-            <label class="block text-sm font-bold text-gray-900 mb-2">系统时区</label>
-            <select v-model="settings.auto_sync_timezone" @change="clearCronPreviews"
-                    class="w-full px-3 py-2 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 custom-select">
+            <label class="block text-sm font-bold text-gray-900 mb-2" for="auto-sync-timezone">系统时区</label>
+            <input id="auto-sync-timezone" type="text" list="timezone-options"
+                   v-model="settings.auto_sync_timezone" @change="clearCronPreviews"
+                   placeholder="如 Asia/Shanghai"
+                   class="w-full px-3 py-2 bg-white border border-gray-200 text-gray-900 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <datalist id="timezone-options">
               <option v-for="zone in timezones" :key="zone.id" :value="zone.id">{{ zone.label }}</option>
-            </select>
-            <p class="mt-1.5 text-xs text-pixiv-light">cron 表达式按这个时区解释，改完要重新预览</p>
+            </datalist>
+            <p class="mt-1.5 text-xs text-pixiv-light">可从列表选，也可直接输入 IANA 时区名。cron 按这个时区解释，改完要重新预览</p>
           </div>
           <div class="rounded-lg border border-gray-100 bg-gray-50 px-4 py-3">
             <div class="text-xs font-medium text-pixiv-gray uppercase mb-1">已启用任务预计每日占用</div>
@@ -307,7 +312,7 @@
           </div>
           <p class="px-4 py-2.5 text-xs text-pixiv-gray bg-gray-50/60 border-t border-gray-100">
             标「可让位」的长任务会为更高优先级任务提前让出槽位，下轮从水位续跑；不可让位的任务
-            （如追更系列）每轮从头重走，打断等于白跑。下次运行时间来自调度器运行态，保存后重启生效。
+            （如追更系列）每轮从头重走，打断等于白跑。新的间隔和 cron 保存后立刻重算下次运行时间，无需重启。
             <strong>cron 留空或写错时调度器会静默按间隔跑</strong>，所以上面的 cron 状态提示要看一眼。
           </p>
         </div>
@@ -340,6 +345,8 @@
         </button>
       </div>
 
+      <a v-if="manualJobLink" :href="manualJobLink" class="inline-flex mb-3 text-sm text-brand-600 hover:text-brand-700">打开任务日志查看进度</a>
+      <p v-if="dirty" class="mb-3 text-xs text-amber-700">有未保存的修改</p>
       <div class="library-terminal p-4">
         <h4 class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">执行日志</h4>
         <div class="font-mono text-xs leading-relaxed text-gray-300 h-48 overflow-y-auto space-y-1">
@@ -376,7 +383,7 @@
 <script>
   initVueApp({
     setup() {
-      const { ref, reactive, onMounted } = Vue;
+      const { ref, reactive, watch, onMounted } = Vue;
 
       const settings = ref(null);
       const saving = ref(false);
@@ -513,6 +520,12 @@
         if (preview && preview.loading) return { text: '校验中…', tone: 'text-pixiv-light' };
         if (preview && preview.error) return { text: preview.error, tone: 'text-red-600' };
         if (preview && preview.checked) {
+          if (preview.timezone_valid === false) {
+            return {
+              text: '时区无效，预览按 ' + (preview.effective_timezone || 'UTC') + ' 计算；保存会被拒绝',
+              tone: 'text-red-600',
+            };
+          }
           if (preview.empty) return { text: '留空：按左侧间隔小时数运行', tone: 'text-pixiv-light' };
           if (!preview.valid) return { text: 'cron 表达式无法解析，保存后会退回按间隔运行', tone: 'text-red-600' };
           return { text: `合法：每天 ${preview.runs_per_day} 次`, tone: 'text-emerald-700' };
@@ -554,7 +567,9 @@
           const res = await fetch('/api/dashboard/settings');
           const data = await res.json();
           if (!data.bookmark_restricts) data.bookmark_restricts = [];
+          settingsReady = false;
           settings.value = data;
+          settingsReady = true;
         } catch (err) {
           saveSuccess.value = false;
           saveMessage.value = '读取设置失败';
@@ -587,6 +602,7 @@
           }
           // 用后端落盘后的真实值回填，避免界面停留在没保存成功的输入上
           if (data.sync) settings.value = data.sync;
+          dirty.value = false;
           showSaveStatus(data.message || '设置已保存', true);
           clearCronPreviews();
           await Promise.all([loadSchedulerStatus(), loadBudget()]);
@@ -614,6 +630,10 @@
         { id: 'recommendation_run', label: '生成推荐', class: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200 hover:bg-fuchsia-100 focus:ring-fuchsia-500' },
       ];
       const triggering = ref(false);
+      const manualJobLink = ref('');
+      const dirty = ref(false);
+      let settingsReady = false;
+      watch(settings, () => { if (settingsReady) dirty.value = true; }, { deep: true });
       const manualLogs = ref([]);
 
       const addLog = (msg, error = false) => {
@@ -627,7 +647,8 @@
           const res = await window.csrfFetch(`/api/dashboard/sync/${task}`, { method: 'POST' });
           const data = await res.json().catch(() => ({}));
           if (res.ok && data.ok !== false) {
-            addLog(`任务已加入队列（${label}）`);
+            addLog(`任务已加入队列（${label}）。进度看任务日志。`);
+            manualJobLink.value = '/dashboard/logs';
             await loadSchedulerStatus();
           } else {
             addLog(`任务失败：${window.errorText(data, res)}`, true);
@@ -651,7 +672,7 @@
         budget, taskBudget,
         formatNextRun, formatDuration, formatPercent, formatIsoMoment,
         cronPreview, cronInvalid, cronHint, previewCron, clearCronPreviews,
-        manualButtons, triggering, manualLogs, triggerManualTask,
+        manualButtons, triggering, manualLogs, manualJobLink, dirty, triggerManualTask,
       };
     }
   });

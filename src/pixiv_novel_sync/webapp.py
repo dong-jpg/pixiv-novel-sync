@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 import logging
 import secrets
 import shutil
@@ -15,7 +16,6 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 import requests as http_requests
-import yaml
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, send_file
 
 from . import __version__
@@ -25,15 +25,13 @@ from .jobs.runner import JobRunner
 from .jobs.tasks import execute_task
 from .oauth_helper import OAuthManager
 from .settings import Settings
-from .storage_db import Database
+from .storage_db import Database, prepare_schema
 from .storage_files import FileStorage
 from .utils_env import secure_atomic_write
 from .utils_naming import safe_name
 from .web.managers import AutoSyncScheduler, SettingsManager, TASK_LABELS
 from .web.managers import SCHEDULER_TASK_CONFIGS, scheduler_task_log_type
-from .web.managers import SyncJobManager, SyncJobState  # noqa: F401 - 经 webapp 重导出供 tests 使用
 from .web.utils import (
-    _atomic_write_yaml,
     _oauth_task_public_payload,
     _settings_to_dict,
     _shared_job_to_dict,
@@ -56,9 +54,6 @@ from .web.utils import _remove_archive_files  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-# 记录服务启动时间（用于健康检查 API 计算 uptime）
-_service_start_time: float = time.time()
-
 # Nginx 图片缓存目录（可用环境变量覆盖，便于测试）与遍历上限
 _NGINX_CACHE_DIR_ENV = "PIXIV_NGINX_CACHE_DIR"
 _NGINX_CACHE_DIR_DEFAULT = "/var/cache/nginx/pixiv_img"
@@ -77,7 +72,7 @@ def _open_database(current_settings: Settings) -> Database:
     """
     db = Database(current_settings.storage.db_path)
     try:
-        db.init_schema()
+        prepare_schema(db)
     except BaseException:
         db.close()
         raise
@@ -157,8 +152,9 @@ class _ArchiveTrash:
             if not novel_id:
                 continue
             novel_dirs.append(
-                self._storage.novel_dir(
+                self._storage.resolve_archive_dir(
                     str(ref.get("restrict_value") or "public"),
+                    ref.get("archive_dir"),
                     user_id,
                     str(ref.get("author_name") or "unknown"),
                     novel_id,
@@ -252,6 +248,26 @@ class _ArchiveTrash:
                 logger.error("归档回收站回滚失败 %s -> %s: %s", dest, source, exc)
         self._moves.clear()
         shutil.rmtree(self._trash_root, ignore_errors=True)
+
+
+def _sweep_stale_trash(trash_root: Path, *, max_age_seconds: float = 86400) -> int:
+    """删掉回收站里超过一天的暂存目录。进程崩溃后没人 commit/rollback 的目录靠它收尾。"""
+    if not trash_root.is_dir():
+        return 0
+    cutoff = time.time() - max_age_seconds
+    removed = 0
+    for child in trash_root.iterdir():
+        try:
+            if child.stat().st_mtime >= cutoff:
+                continue
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
+            removed += 1
+        except OSError as exc:
+            logger.warning("清理回收站失败 %s: %s", child, exc)
+    return removed
 
 
 def _remove_archive_files_atomic(
@@ -458,6 +474,8 @@ def _load_or_create_flask_secret(env_path: str | None) -> str:
 
     secret = os.urandom(32).hex()
     path.parent.mkdir(parents=True, exist_ok=True)
+    # 空的 PIXIV_FLASK_SECRET= 要原地换掉。再追加一行会让 .env 出现两个同名键。
+    lines = [line for line in lines if not line.startswith("PIXIV_FLASK_SECRET=")]
     lines.append(f"PIXIV_FLASK_SECRET={secret}")
     payload = ("\n".join(lines) + "\n").encode("utf-8")
     secure_atomic_write(path, payload)
@@ -478,11 +496,15 @@ def create_app(
     app.jinja_env.variable_end_string = "]}"
     app.secret_key = _load_or_create_flask_secret(env_path)
     # 加固 cookie：HttpOnly + SameSite=Lax。
-    # L2: Secure 默认随部署形态推断——显式设 PIXIV_COOKIE_SECURE 优先；
-    # 未显式设置但启用了 DASHBOARD_TRUST_PROXY（典型 HTTPS 反代部署）时自动开启，
-    # 避免明文 HTTP 场景把会话 cookie 暴露在链路上。纯本机 HTTP 调试仍可显式关掉。
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    settings_manager = SettingsManager(config_path)
+    # Secure 必须在 load() 之后看环境变量：DASHBOARD_TRUST_PROXY / PIXIV_COOKIE_SECURE
+    # 通常只写在 .env 里，create_app 进来时进程环境还没有它们。
+    try:
+        settings_manager.load(env_path=env_path)
+    except Exception as exc:
+        logger.warning("启动加载设置失败，cookie Secure 仅依据已有环境变量：%s", exc)
     _cookie_secure_raw = os.getenv("PIXIV_COOKIE_SECURE", "").strip().lower()
     if _cookie_secure_raw in {"1", "true", "yes", "on"}:
         app.config["SESSION_COOKIE_SECURE"] = True
@@ -490,7 +512,6 @@ def create_app(
         app.config["SESSION_COOKIE_SECURE"] = False
     elif os.getenv("DASHBOARD_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes", "on"}:
         app.config["SESSION_COOKIE_SECURE"] = True
-    settings_manager = SettingsManager(config_path)
     shared_job_manager = JobManager()
     app.config["job_manager"] = shared_job_manager
 
@@ -506,6 +527,14 @@ def create_app(
             _startup_db.close()
     except Exception as exc:
         logger.warning("启动清理遗留任务日志失败：%s", exc)
+
+    try:
+        startup_settings = settings_manager.load(env_path=env_path)
+        swept = _sweep_stale_trash(startup_settings.storage.public_dir.parent / ".trash")
+        if swept:
+            logger.info("启动时清理了 %d 个超过 24 小时的回收站目录", swept)
+    except Exception as exc:
+        logger.warning("启动清理回收站失败：%s", exc)
 
     def run_web_task(task_type: str, context: dict[str, Any]) -> dict[str, Any] | None:
         current_settings = settings_manager.load(env_path=env_path)
@@ -527,6 +556,11 @@ def create_app(
             payload["detail"] = detail
         return jsonify(payload), status
 
+    def _submit_failure(exc: Exception, status: int = 400):
+        if "已有同步任务正在运行" in str(exc):
+            return _api_error("已有同步任务正在运行，请稍后再试", 409)
+        return _api_error(str(exc), status)
+
     def _shared_job_logs_for_db(job: JobState) -> list[dict[str, Any]]:
         return [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs]
 
@@ -543,7 +577,7 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         db = Database(current_settings.storage.db_path)
         try:
-            db.init_schema()
+            prepare_schema(db)
             logs = _shared_job_logs_for_db(job)
             if job.status == JobStatus.SUCCEEDED:
                 # 熔断中止/本轮没跑完的任务不能记成 succeeded，否则风控事故在日志里
@@ -573,27 +607,68 @@ def create_app(
         progress: dict[str, Any] | None = None,
         run_async: bool = True,
     ) -> JobState:
-        # 原子化"无活跃任务则提交"：检查与 submit 同持 JobManager 锁，
-        # 消除并发请求同时通过检查导致双任务的 TOCTOU 窗口。
+        def _mark_log_failed(log_id: int, message: str) -> None:
+            db = _open_database(current_settings)
+            try:
+                db.update_task_log(log_id, JobStatus.FAILED.value, error_message=message)
+            finally:
+                db.close()
+
+        # 已有任务时直接拒绝，不打开数据库。写日志仍放在锁外，
+        # 避免迁移或磁盘 IO 挡住 get_job / is_cancel_requested。
         with shared_job_manager._lock:
             if _has_any_running_web_job():
                 raise RuntimeError("已有同步任务正在运行，请稍后再试")
 
+        db = _open_database(current_settings)
+        try:
+            log_id = db.create_task_log(
+                task_type=task_type,
+                task_name=task_name,
+                is_auto_sync=is_auto_sync,
+            )
+        finally:
+            db.close()
+
+        # 写日志的窗口里可能有别的请求入队，提交前再检查一次。
+        try:
+            with shared_job_manager._lock:
+                if _has_any_running_web_job():
+                    raise RuntimeError("已有同步任务正在运行，请稍后再试")
+                job = shared_job_manager.submit(spec)
+        except Exception as exc:
+            message = str(exc) if "已有同步任务正在运行" in str(exc) else "job submit failed"
+            try:
+                _mark_log_failed(log_id, message)
+            except Exception:
+                logger.warning("回写失败的任务日志也失败了", exc_info=True)
+            raise
+
+        job.progress["log_id"] = log_id
+        # 回填 job_id：日志页按 job_id 关联内存任务与 task_logs 行。
+        # RecordingDatabase 等测试替身没有 conn，用 try 包一层，让替身也能过。
+        # 回填失败必须把已入队的 job 标成 failed，否则线程不会启动，队列永久占着。
+        try:
             db = _open_database(current_settings)
             try:
-                job = shared_job_manager.submit(spec)
-                log_id = db.create_task_log(
-                    task_type=task_type,
-                    task_name=task_name,
-                    job_id=job.job_id,
-                    is_auto_sync=is_auto_sync,
-                )
-                job.progress["log_id"] = log_id
-                if progress:
-                    shared_job_manager.update_progress(job.job_id, **progress)
+                with db.transaction() as conn:
+                    conn.execute(
+                        "UPDATE task_logs SET job_id = ? WHERE id = ?",
+                        (job.job_id, log_id),
+                    )
+            except AttributeError:
+                pass
             finally:
                 db.close()
-        # 线程启动放在锁外，避免 worker 立即抢锁被阻塞
+        except Exception as exc:
+            shared_job_manager.mark_failed(job.job_id, str(exc))
+            try:
+                _mark_log_failed(log_id, str(exc))
+            except Exception:
+                logger.warning("回写失败的任务日志也失败了", exc_info=True)
+            raise
+        if progress:
+            shared_job_manager.update_progress(job.job_id, **progress)
         if run_async:
             thread = threading.Thread(target=_run_shared_web_job, args=(job.job_id,), daemon=True)
             thread.start()
@@ -697,23 +772,40 @@ def create_app(
 
     # --- 认证中间件 ---
     # /proxy/image 需要登录（防止开放代理）。OAuth 回调与健康检查路径必须豁免（无 cookie 场景）。
+    # /nginx-health 不在豁免名单里：它曾是 nginx 探活专用路径，实际从未注册路由，
+    # 留在豁免表只会让人误以为存在一条无认证入口。
     _AUTH_EXEMPT_PATHS = {
         "/api/auth/login",
         "/api/csrf-token",
-        "/nginx-health",
         "/api/health",
         "/oauth/callback",
     }
 
     _CSRF_EXEMPT_PATHS = {
         "/api/auth/login",
-        "/nginx-health",
         "/api/health",
         "/oauth/callback",
     }
     _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
     _login_failures = _LoginFailureTracker()
     app.config["login_failure_tracker"] = _login_failures
+    _SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+
+    def _authenticated_session_fresh() -> bool:
+        if not session.get("authenticated"):
+            return False
+        started = session.get("authenticated_at")
+        if isinstance(started, (int, float)) and started > 10**12:
+            age = (time.time_ns() - float(started)) / 1_000_000_000
+        elif isinstance(started, (int, float)):
+            age = time.time() - float(started)
+        else:
+            session.clear()
+            return False
+        if age > _SESSION_MAX_AGE_SECONDS:
+            session.clear()
+            return False
+        return True
 
     def _get_csrf_token() -> str:
         token = session.get("csrf_token")
@@ -768,6 +860,30 @@ def create_app(
     def _is_local_request() -> bool:
         return _is_loopback_addr(_client_addr())
 
+    _ALLOWED_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+    def _request_hostname() -> str:
+        raw = (request.host or "").strip().lower().rstrip(".")
+        if raw.startswith("["):
+            end = raw.find("]")
+            return raw[1:end] if end > 1 else raw
+        if raw.count(":") == 1:
+            return raw.split(":", 1)[0]
+        return raw
+
+    def _csrf_blocked(path: str):
+        if request.method not in _MUTATING_METHODS or path in _CSRF_EXEMPT_PATHS:
+            return None
+        submitted = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or ""
+        expected = _get_csrf_token()
+        try:
+            matched = secrets.compare_digest(str(submitted).encode("utf-8"), expected.encode("utf-8"))
+        except Exception:
+            matched = False
+        if not submitted or not matched:
+            return _csrf_failed()
+        return None
+
     @app.before_request
     def _check_auth():
         path = request.path
@@ -778,20 +894,25 @@ def create_app(
             # 安全加固：未配置 token 时仅允许真正的本机访问。
             # 若检测到代理头但未显式信任代理，说明很可能暴露在反代后，
             # 此时 remote_addr=127.0.0.1 不可信，一律拒绝，避免私密收藏泄漏。
+            # 本机模式同样校验 Host 与 CSRF：DNS 重绑定和跨站表单都不能直接改库。
             if _behind_proxy() and not _trust_proxy:
                 return jsonify({"error": "dashboard token required when behind a proxy"}), 403
-            if _is_local_request():
-                return
-            return jsonify({"error": "dashboard token required for non-local access"}), 403
+            if not _is_local_request():
+                return jsonify({"error": "dashboard token required for non-local access"}), 403
+            if _request_hostname() not in _ALLOWED_LOCAL_HOSTS:
+                return jsonify({"error": "host not allowed"}), 403
+            blocked = _csrf_blocked(path)
+            if blocked is not None:
+                return blocked
+            return
         if path in _AUTH_EXEMPT_PATHS:
             return
         if path.startswith("/static/"):
             return
-        if session.get("authenticated"):
-            if request.method in _MUTATING_METHODS and path not in _CSRF_EXEMPT_PATHS:
-                submitted = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
-                if not submitted or not secrets.compare_digest(str(submitted), _get_csrf_token()):
-                    return _csrf_failed()
+        if _authenticated_session_fresh():
+            blocked = _csrf_blocked(path)
+            if blocked is not None:
+                return blocked
             return
         # API 请求返回 401，页面请求重定向到登录
         is_adult_api = (
@@ -869,10 +990,13 @@ def create_app(
         if _login_failures.is_blocked(client, now):
             return jsonify({"error": "too many login attempts"}), 429
         input_token = request.form.get("token", "")
-        if _hmac.compare_digest(input_token, token):
+        # compare_digest 两边编码成 bytes：DASHBOARD_TOKEN 含中文等非 ASCII 时，
+        # str 版本会直接抛 TypeError 变成 500，而不是按「密码错」计一次 401。
+        if _hmac.compare_digest(input_token.encode("utf-8"), str(token).encode("utf-8")):
             _login_failures.clear(client)
+            session.clear()
             session["authenticated"] = True
-            session["authenticated_at"] = time.time_ns()
+            session["authenticated_at"] = time.time()
             _get_csrf_token()
             return redirect("/")
         _login_failures.record_failure(client, now)
@@ -909,8 +1033,15 @@ def create_app(
             current_settings = settings_manager.load(env_path=env_path)
             proxies = {"http": current_settings.pixiv.proxy, "https": current_settings.pixiv.proxy} if current_settings.pixiv.proxy else None
             resp = http_requests.get(url, headers=headers, timeout=15, verify=current_settings.pixiv.verify_ssl, proxies=proxies, allow_redirects=False)
-            resp.raise_for_status()
-            return Response(resp.content, content_type=resp.headers.get("Content-Type", "image/jpeg"))
+            # 不跟随 3xx：跟随重定向会让本端点变成开放代理（跳到非 pximg 域）。
+            # 其余非 200 也不把上游错误体当图片回给前端。
+            if resp.status_code != 200:
+                return Response(f"Upstream returned {resp.status_code}", status=502)
+            out = Response(resp.content, content_type=resp.headers.get("Content-Type", "image/jpeg"))
+            for hop in ("Content-Length", "Cache-Control"):
+                if resp.headers.get(hop):
+                    out.headers[hop] = resp.headers[hop]
+            return out
         except Exception as exc:
             return Response(f"Failed to fetch image: {exc}", status=502)
 
@@ -1021,9 +1152,21 @@ def create_app(
         payload = request.get_json(silent=True) or {}
         refresh_token = str(payload.get("refresh_token") or "").strip()
         user_id_raw = payload.get("user_id")
-        user_id = int(user_id_raw) if user_id_raw not in (None, "") else None
+        if user_id_raw in (None, ""):
+            user_id = None
+        else:
+            # _safe_int 把非数字收成 0，和负数一样拒绝，避免 int() 抛出变成 500。
+            user_id = _safe_int(user_id_raw, 0)
+            if user_id <= 0:
+                return jsonify({"error": "invalid user_id"}), 400
         if not refresh_token:
             return jsonify({"error": "missing refresh_token"}), 400
+        # refresh_token 只允许 Pixiv 颁发的字符集：带换行的值写进 .env 会拆行，
+        # 把下一行变成新的 KEY=VALUE，造成配置注入。
+        if not re.fullmatch(r"[A-Za-z0-9_\-]{10,}", refresh_token):
+            return jsonify({"error": "invalid refresh_token format"}), 400
+        if user_id is not None and user_id <= 0:
+            return jsonify({"error": "invalid user_id"}), 400
         manager.save_to_env(refresh_token, user_id)
         return jsonify({"ok": True, "message": "已写入 .env"})
 
@@ -1327,9 +1470,10 @@ def create_app(
         status = str(request.args.get("status", "all") or "all").strip().lower()
         if status not in {"all", "normal", "suspended", "cleared", "no_novels", "unknown"}:
             status = "all"
+        search = str(request.args.get("search", "") or "").strip()
         db = _open_database(current_settings)
         try:
-            payload = db.list_users(page=page, page_size=page_size, status=status)
+            payload = db.list_users(page=page, page_size=page_size, status=status, search=search)
         finally:
             db.close()
         return jsonify(payload)
@@ -1370,29 +1514,31 @@ def create_app(
     def check_user_status(user_id: int):
         current_settings = settings_manager.load(env_path=env_path)
         from .auth import PixivAuthManager
-        auth = PixivAuthManager(current_settings.pixiv)
-        api, _ = auth.login()
-        db = _open_database(current_settings)
+        db = None
         try:
+            auth = PixivAuthManager(current_settings.pixiv)
+            api, _ = auth.login()
+            db = _open_database(current_settings)
             status = _check_pixiv_user_status(api, user_id)
             db.upsert_user_status(user_id, status)
             return jsonify({"ok": True, "status": status})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         finally:
-            db.close()
+            if db is not None:
+                db.close()
 
     @app.post("/api/dashboard/users/<int:user_id>/sync")
     def sync_user_novels(user_id: int):
         """触发某用户全部小说的后台备份任务，避免阻塞 HTTP 请求。"""
         if _has_active_shared_jobs():
-            return _api_error("已有同步任务正在运行，请稍后再试")
+            return _api_error("已有同步任务正在运行，请稍后再试", 409)
         current_settings = settings_manager.load(env_path=env_path)
         try:
             spec = _web_job_spec([f"user_backup:{user_id}"])
             job = _submit_shared_job(spec, current_settings, "user_backup", f"用户 {user_id} 备份")
         except Exception as exc:
-            return _api_error(str(exc), 500)
+            return _submit_failure(exc, 500)
         return jsonify({"ok": True, "job_id": job.job_id, "job": _shared_job_to_dict(job)})
 
     @app.get("/api/dashboard/settings")
@@ -1400,11 +1546,18 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         return jsonify(_settings_to_dict(current_settings))
 
+    def _save_settings(payload: dict[str, Any], section: str | None = None) -> dict[str, Any]:
+        before = settings_manager.load(env_path=env_path)
+        saved = settings_manager.save_sync_settings(payload, section=section)
+        after = settings_manager.load(env_path=env_path)
+        auto_sync_scheduler.refresh_changed_schedules(before, after)
+        return saved
+
     @app.post("/api/dashboard/settings")
     def dashboard_settings_save():
         payload = request.get_json(silent=True) or {}
         try:
-            saved = settings_manager.save_sync_settings(payload)
+            saved = _save_settings(payload)
         except Exception as exc:
             return _api_error("保存设置失败", detail=str(exc))
         return jsonify({"ok": True, "message": "设置已保存", "sync": saved})
@@ -1418,7 +1571,7 @@ def create_app(
         """
         payload = request.get_json(silent=True) or {}
         try:
-            saved = settings_manager.save_sync_settings(payload, section=section)
+            saved = _save_settings(payload, section=section)
         except Exception as exc:
             return _api_error("保存设置失败", detail=str(exc))
         return jsonify({"ok": True, "message": "设置已保存", "sync": saved})
@@ -1435,6 +1588,24 @@ def create_app(
         expr = str(body.get("cron") or "").strip()
         tz_name = str(body.get("timezone") or "UTC")
         count = max(1, min(_safe_int(body.get("count"), 5), 10))
+
+        from zoneinfo import ZoneInfo
+
+        tz_candidate = tz_name.strip() or "UTC"
+        try:
+            ZoneInfo(tz_candidate)
+        except Exception:
+            timezone_valid = False
+            effective_timezone = "UTC"
+        else:
+            timezone_valid = True
+            effective_timezone = tz_candidate
+        tz_fields = {
+            "timezone": tz_name,
+            "timezone_valid": timezone_valid,
+            "effective_timezone": effective_timezone,
+        }
+
         # 合法表达式最长也就几十个字符；超长输入直接判非法，免得把大列表交给 croniter
         if len(expr) > 200:
             return jsonify(
@@ -1446,12 +1617,12 @@ def create_app(
                         "falls_back_to_interval": True,
                         "next_runs": [],
                         "runs_per_day": None,
-                        "timezone": tz_name,
+                        **tz_fields,
                     },
                 }
             )
 
-        runs = cron_next_runs(expr, tz_name, count) if expr else None
+        runs = cron_next_runs(expr, effective_timezone, count) if expr else None
         if runs is None:
             return jsonify(
                 {
@@ -1464,19 +1635,14 @@ def create_app(
                         "falls_back_to_interval": True,
                         "next_runs": [],
                         "runs_per_day": None,
-                        "timezone": tz_name,
+                        **tz_fields,
                     },
                 }
             )
 
         from datetime import datetime as _datetime
-        from zoneinfo import ZoneInfo
 
-        try:
-            tz = ZoneInfo(tz_name)
-        except Exception:
-            # cron_to_next_run 对未知时区也是回落 UTC，这里保持一致
-            tz = ZoneInfo("UTC")
+        tz = ZoneInfo(effective_timezone)
         return jsonify(
             {
                 "ok": True,
@@ -1487,11 +1653,27 @@ def create_app(
                     "next_runs": [
                         _datetime.fromtimestamp(run, tz).isoformat() for run in runs
                     ],
-                    "runs_per_day": cron_runs_per_day(expr, tz_name),
-                    "timezone": tz_name,
+                    "runs_per_day": cron_runs_per_day(expr, effective_timezone),
+                    **tz_fields,
                 },
             }
         )
+
+    @app.post("/api/dashboard/sync/cancel")
+    def dashboard_sync_cancel():
+        """取消手动同步任务。定时任务仍走 /api/dashboard/auto-sync/stop-task。"""
+        job_id = (request.args.get("job_id") or "").strip()
+        if not job_id:
+            payload = request.get_json(silent=True) or {}
+            job_id = str(payload.get("job_id") or "").strip()
+        if not job_id:
+            latest = shared_job_manager.latest_job()
+            job_id = latest.job_id if latest is not None else ""
+        if not job_id:
+            return _api_error("没有可取消的任务", 404)
+        if not shared_job_manager.request_cancel(job_id):
+            return _api_error("任务不存在、已结束，或正在收尾", 409)
+        return jsonify({"ok": True, "job_id": job_id, "message": "已请求取消"})
 
     @app.post("/api/dashboard/sync/start")
     def dashboard_sync_start():
@@ -1501,21 +1683,8 @@ def create_app(
         try:
             job = _submit_shared_job(spec, current_settings, "manual", "全量手动同步")
         except Exception as exc:
-            return _api_error(str(exc))
+            return _submit_failure(exc)
         return jsonify({"ok": True, "message": job.message, "job": _shared_job_to_dict(job)})
-
-    @app.post("/api/dashboard/check-bookmarks")
-    def dashboard_check_bookmarks():
-        """预检查：扫描所有需要同步的内容，标记哪些已存在"""
-        current_settings = settings_manager.load(env_path=env_path)
-        
-        try:
-            spec = _web_job_spec(["sync_check"])
-            job = _submit_shared_job(spec, current_settings, "sync_check", "预检查所有内容")
-        except Exception as exc:
-            return _api_error(str(exc))
-
-        return jsonify({"ok": True, "message": "预检查任务已启动", "job": _shared_job_to_dict(job)})
 
     @app.get("/api/dashboard/sync/status")
     def dashboard_sync_status():
@@ -1561,7 +1730,7 @@ def create_app(
             spec = _web_job_spec([internal_type])
             job = _submit_shared_job(spec, current_settings, internal_type, task_name)
         except Exception as exc:
-            return _api_error(str(exc))
+            return _submit_failure(exc)
         return jsonify({"ok": True, "message": "任务已启动", "job": _shared_job_to_dict(job)})
 
     @app.post("/api/dashboard/sync/subscribed-series")
@@ -1582,7 +1751,7 @@ def create_app(
                 progress={"series_limit": limit},
             )
         except Exception as exc:
-            return _api_error(str(exc))
+            return _submit_failure(exc)
         return jsonify({"ok": True, "message": "任务已启动", "job": _shared_job_to_dict(job)})
 
     @app.get("/api/dashboard/auto-sync/status")
@@ -1702,22 +1871,17 @@ def create_app(
         enabled = data.get("enabled")
         if enabled is None:
             return jsonify({"error": "missing enabled parameter"}), 400
-        
-        # 更新配置文件
-        if config_path:
-            config_path_obj = Path(config_path)
-            if config_path_obj.exists():
-                with config_path_obj.open("r", encoding="utf-8") as f:
-                    config_data = yaml.safe_load(f) or {}
-                sync_data = config_data.setdefault("sync", {})
-                sync_data["auto_sync_enabled"] = bool(enabled)
-                _atomic_write_yaml(config_path_obj, config_data)
-        
+        enabled = bool(enabled)
+        if settings_manager.config_path:
+            settings_manager.set_auto_sync_enabled(enabled)
+        else:
+            settings_manager.invalidate()
+
         if enabled:
             auto_sync_scheduler.start()
         else:
             auto_sync_scheduler.stop()
-        
+
         return jsonify({"ok": True, "enabled": enabled})
     
     @app.post("/api/dashboard/auto-sync/stop-task")
@@ -1961,7 +2125,7 @@ def create_app(
             spec = _web_job_spec(["pending_deletion_detection"])
             job = _submit_shared_job(spec, current_settings, "pending_deletion_detection", "检测取消收藏/追更")
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 400
+            return _submit_failure(exc)
         return jsonify({"ok": True, "message": "检测任务已启动", "job": _shared_job_to_dict(job)})
 
     @app.post("/api/dashboard/pending-deletions/<int:deletion_id>/confirm")
@@ -1970,40 +2134,60 @@ def create_app(
         db = _open_database(current_settings)
         trash: _ArchiveTrash | None = None
         try:
+            preview = db.conn.execute(
+                "SELECT item_type, item_id FROM pending_deletions WHERE id = ? AND status = 'pending'",
+                (deletion_id,),
+            ).fetchone()
+            if preview is None:
+                return jsonify({"error": "记录不存在或已处理"}), 404
+            item_type = preview["item_type"]
+            item_id = int(preview["item_id"])
+            if item_type == "novel":
+                archive_refs = db.list_novel_archive_refs(novel_ids=[item_id])
+            elif item_type == "series":
+                archive_refs = db.list_novel_archive_refs(series_id=item_id)
+            else:
+                archive_refs = []
+            # 文件先离开原位，再开写事务。搬文件时不持有 SQLite 写锁。
+            trash = _ArchiveTrash(current_settings, archive_refs)
+            trash.stage()
             with db.transaction():
                 record = db.confirm_pending_deletion(deletion_id)
                 if record is None:
-                    return jsonify({"error": "记录不存在或已处理"}), 404
-                item_type = record["item_type"]
-                item_id = record["item_id"]
+                    raise LookupError("记录不存在或已处理")
                 if item_type == "novel":
-                    archive_refs = db.list_novel_archive_refs(novel_ids=[item_id])
-                    # 安全顺序：文件先入 trash，事务提交成功后再真正清除
-                    trash = _ArchiveTrash(current_settings, archive_refs)
-                    trash.stage()
                     db.delete_novel(item_id)
                 elif item_type == "series":
-                    archive_refs = db.list_novel_archive_refs(series_id=item_id)
-                    trash = _ArchiveTrash(current_settings, archive_refs)
-                    trash.stage()
                     current_chapter_rows = db.conn.execute(
                         "SELECT novel_id FROM novels WHERE series_id = ? ORDER BY novel_id",
                         (item_id,),
                     ).fetchall()
-                    current_chapter_ids = [
-                        int(row["novel_id"]) for row in current_chapter_rows
-                    ]
+                    current_chapter_ids = [int(row["novel_id"]) for row in current_chapter_rows]
                     affected_chapter_ids = db.delete_series(item_id)
-                    # 外层 BEGIN IMMEDIATE 保证查询与删除共享同一写快照，
-                    # 历史关系只参与刷新，不会被误当成当前章节删除。
                     for novel_id in current_chapter_ids:
                         db.delete_novel(novel_id)
                     _refresh_rescue_chapters(db, affected_chapter_ids)
-            archive_cleanup = trash.commit() if trash is not None else dict(_EMPTY_ARCHIVE_STATS)
+            archive_cleanup = trash.commit()
             return jsonify({"ok": True, "message": "已确认删除", "archive_cleanup": archive_cleanup})
+        except LookupError as exc:
+            if trash is not None:
+                trash.rollback()
+            return jsonify({"error": str(exc)}), 404
         except Exception as exc:
             if trash is not None:
                 trash.rollback()
+            try:
+                db.conn.execute(
+                    """
+                    UPDATE pending_deletions
+                    SET status = 'pending', confirmed_at = NULL
+                    WHERE id = ? AND status = 'confirmed'
+                    """,
+                    (deletion_id,),
+                )
+                db._commit_if_needed()
+            except Exception:
+                logger.warning("确认删除失败后未能把记录改回 pending", exc_info=True)
             return jsonify({"error": str(exc)}), 500
         finally:
             db.close()
@@ -2020,7 +2204,13 @@ def create_app(
             )
             if record is None:
                 return jsonify({"error": "记录不存在或已处理"}), 404
-            return jsonify({"ok": True, "message": "已恢复"})
+            if record.get("refresh_failed"):
+                return jsonify({
+                    "ok": True,
+                    "restored": True,
+                    "message": "已恢复，但救援目录刷新失败",
+                })
+            return jsonify({"ok": True, "restored": True, "message": "已恢复"})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         finally:
@@ -2031,33 +2221,10 @@ def create_app(
     # ------------------------------------------------------------------
     @app.get("/api/health")
     def health_check():
-        """返回服务健康状态"""
-        uptime = round(time.time() - _service_start_time, 2)
-
-        # 检查数据库是否可访问
-        db_accessible = False
-        db = None
-        try:
-            current_settings = settings_manager.load(env_path=env_path)
-            db = _open_database(current_settings)
-            db.conn.execute("SELECT 1")
-            db_accessible = True
-        except Exception:
-            db_accessible = False
-        finally:
-            if db is not None:
-                db.close()
-
-        # 当前运行中的任务数
-        with shared_job_manager._lock:
-            running_jobs = sum(1 for j in shared_job_manager._jobs.values() if j.status == JobStatus.RUNNING)
-
+        """返回服务健康状态。探活不打开数据库。version 留给已有测试和契约。"""
         return jsonify({
             "status": "ok",
             "version": __version__,
-            "uptime_seconds": uptime,
-            "db_accessible": db_accessible,
-            "running_jobs": running_jobs,
         })
 
     # ------------------------------------------------------------------
@@ -2069,89 +2236,16 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         db = _open_database(current_settings)
         try:
-            # 小说总数
-            total_novels = db.conn.execute(
-                "SELECT COUNT(*) FROM novels"
-            ).fetchone()[0]
-
-            # 用户总数
-            total_users = db.conn.execute(
-                "SELECT COUNT(*) FROM users"
-            ).fetchone()[0]
-
-            # 系列总数
-            total_series = db.conn.execute(
-                "SELECT COUNT(*) FROM series"
-            ).fetchone()[0]
-
-            # 按状态分组的小说数
-            novels_by_status = {}
-            for row in db.conn.execute(
-                "SELECT status, COUNT(*) as cnt FROM novels GROUP BY status"
-            ).fetchall():
-                novels_by_status[row[0]] = row[1]
-
-            # 按状态分组的用户数
-            users_by_status = {}
-            for row in db.conn.execute(
-                "SELECT status, COUNT(*) as cnt FROM users GROUP BY status"
-            ).fetchall():
-                users_by_status[row[0]] = row[1]
-
-            # 最近 10 条任务记录
-            recent_tasks = []
-            for row in db.conn.execute(
-                "SELECT id, task_type, task_name, job_id, status, is_auto_sync, "
-                "started_at, finished_at, error_message "
-                "FROM task_logs ORDER BY id DESC LIMIT 10"
-            ).fetchall():
-                recent_tasks.append({
-                    "id": row[0],
-                    "task_type": row[1],
-                    "task_name": row[2],
-                    "job_id": row[3],
-                    "status": row[4],
-                    "is_auto_sync": bool(row[5]),
-                    "started_at": row[6],
-                    "finished_at": row[7],
-                    "error_message": row[8],
-                })
-
-            return jsonify({
-                "total_novels": total_novels,
-                "total_users": total_users,
-                "total_series": total_series,
-                "novels_by_status": novels_by_status,
-                "users_by_status": users_by_status,
-                "recent_tasks": recent_tasks,
-            })
+            return jsonify(db.collect_library_export())
         except Exception as exc:
             logger.error("Export stats failed: %s", exc)
             return jsonify({"error": str(exc)}), 500
         finally:
             db.close()
 
-    # ------------------------------------------------------------------
-    # 配置热重载 API
-    # ------------------------------------------------------------------
-    @app.post("/api/dashboard/settings/reload")
-    def dashboard_settings_reload():
-        """重新加载配置文件并返回新配置"""
-        try:
-            new_settings = settings_manager.load(env_path=env_path)
-            new_config = _settings_to_dict(new_settings)
-
-            # 如果定时调度器正在运行，更新其配置缓存
-            if auto_sync_scheduler.is_running():
-                logger.info("Reloading auto sync scheduler config after settings reload")
-                # 清除调度器的下次运行时间缓存，让它在下一轮循环中重新计算
-                with auto_sync_scheduler._lock:
-                    auto_sync_scheduler._task_next_run.clear()
-
-            return jsonify({"ok": True, "message": "配置已重新加载", "settings": new_config})
-        except Exception as exc:
-            logger.error("Settings reload failed: %s", exc)
-            return jsonify({"error": f"配置重载失败：{exc}"}), 500
+    @app.context_processor
+    def inject_task_labels():
+        return {"task_labels": TASK_LABELS}
 
     return app
 

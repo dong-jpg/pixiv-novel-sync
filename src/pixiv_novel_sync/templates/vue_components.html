@@ -94,7 +94,7 @@ function registerGlobalComponents(app) {
     template: `
       <div class="library-card !p-3 !rounded-2xl !shadow-none bg-white/70">
         <div v-if="user" class="flex items-center gap-2.5 mb-3">
-          <img v-if="user.avatar_url" :src="'/proxy/image?url=' + encodeURIComponent(user.avatar_url)" class="w-9 h-9 rounded-2xl object-cover border border-gray-100" @error="user.avatar_url = ''">
+          <img v-if="user.avatar_url" :src="'/proxy/image?url=' + encodeURIComponent(user.avatar_url)" class="w-9 h-9 rounded-2xl object-cover border border-gray-100" @error="user.avatar_url = ''" alt="">
           <div v-else class="w-9 h-9 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center text-xs font-black">{{ (user.name || 'U').substring(0,2) }}</div>
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-1.5">
@@ -110,9 +110,12 @@ function registerGlobalComponents(app) {
           </div>
         </div>
         <div v-if="user && !user.is_premium && user.user_id" class="text-[10px] text-gray-400 mb-2 -mt-1">普通账号</div>
-        <div class="flex items-center gap-2 text-[11px] font-bold">
-          <span :class="['w-2 h-2 rounded-full flex-shrink-0', autoSyncRunning ? 'bg-green-400 pulse-soft' : 'bg-gray-300']"></span>
-          <span :class="autoSyncRunning ? 'text-green-600' : 'text-gray-400'">{{ autoSyncRunning ? '定时同步已启用' : '定时同步未启用' }}</span>
+        <div class="flex items-center justify-between gap-2 text-[11px] font-bold">
+          <span class="inline-flex items-center gap-2 min-w-0">
+            <span :class="['w-2 h-2 rounded-full flex-shrink-0', autoSyncRunning ? 'bg-green-400 pulse-soft' : 'bg-gray-300']"></span>
+            <span :class="autoSyncRunning ? 'text-green-600' : 'text-gray-400'">{{ autoSyncRunning ? '定时同步已启用' : '定时同步未启用' }}</span>
+          </span>
+          <button type="button" @click="logout" class="text-gray-400 hover:text-red-600">退出</button>
         </div>
       </div>
     `,
@@ -129,7 +132,11 @@ function registerGlobalComponents(app) {
           if (autoRes.ok) { const d = await autoRes.json(); autoSyncRunning.value = d.running; }
         } catch(e) {}
       });
-      return { user, autoSyncRunning };
+      const logout = async () => {
+        await window.csrfFetch('/api/auth/logout', { method: 'POST' });
+        location.href = '/api/auth/login';
+      };
+      return { user, autoSyncRunning, logout };
     }
   });
 
@@ -144,7 +151,7 @@ function registerGlobalComponents(app) {
       </nav>
     `,
     setup(props) {
-      const mobileItems = NAV_ITEMS.filter(i => !i.type && ['home','book','sparkles','edit','heart','cog'].includes(i.icon));
+      const mobileItems = NAV_ITEMS.filter(i => !i.type && ['home','book','heart','trash','clipboard','cog'].includes(i.icon));
       return { mobileItems, icons: ICONS, isActive: (item) => isActive(props.currentPath, item) };
     }
   });
@@ -182,15 +189,32 @@ function registerGlobalComponents(app) {
   app.component('app-modal', {
     props: { title: { type: String, required: true }, isOpen: { type: Boolean, required: true } },
     emits: ['close'],
+    data() {
+      return {
+        titleId: 'modal-title-' + Math.random().toString(36).slice(2),
+        previousFocus: null,
+      };
+    },
+    watch: {
+      isOpen(open) {
+        if (open) {
+          this.previousFocus = document.activeElement;
+          this.$nextTick(() => { if (this.$refs.dialog) this.$refs.dialog.focus(); });
+        } else if (this.previousFocus && this.previousFocus.focus) {
+          this.previousFocus.focus();
+        }
+      },
+    },
     template: `
-      <div v-if="isOpen" class="library-modal fixed inset-0 z-[100] overflow-y-auto">
+      <div v-if="isOpen" class="library-modal fixed inset-0 z-[100] overflow-y-auto" @keydown.esc="$emit('close')">
         <div class="fixed inset-0 bg-slate-950/45 backdrop-blur-sm transition-opacity" @click="$emit('close')"></div>
         <div class="flex min-h-screen items-center justify-center p-4">
-          <div class="relative bg-white rounded-[24px] shadow-2xl w-full max-w-2xl overflow-hidden border border-gray-100">
+          <div ref="dialog" role="dialog" aria-modal="true" :aria-labelledby="titleId" tabindex="-1"
+               class="relative bg-white rounded-[24px] shadow-2xl w-full max-w-2xl overflow-hidden border border-gray-100 outline-none">
             <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-white to-blue-50/60">
-              <h3 class="text-base font-black text-gray-950">{{ title }}</h3>
-              <button @click="$emit('close')" class="text-gray-400 hover:text-gray-700 p-1 rounded-lg hover:bg-white">
-                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+              <h3 :id="titleId" class="text-base font-black text-gray-950">{{ title }}</h3>
+              <button type="button" aria-label="关闭" @click="$emit('close')" class="text-gray-400 hover:text-gray-700 p-1 rounded-lg hover:bg-white">
+                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
               </button>
             </div>
             <div class="px-6 py-5 max-h-[70vh] overflow-y-auto"><slot></slot></div>

@@ -7,7 +7,7 @@
   <div class="library-page-header sr-only"><h1>系列详情</h1></div>
 
   <!-- Back Link -->
-  <a href="/dashboard/novels?category=following" class="inline-flex items-center gap-1.5 text-sm font-medium text-pixiv-gray hover:text-brand-500 transition-colors">
+  <a :href="backHref" class="inline-flex items-center gap-1.5 text-sm font-medium text-pixiv-gray hover:text-brand-500 transition-colors">
     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
     </svg>
@@ -43,7 +43,7 @@
     <!-- Content State -->
     <template v-else>
       <div class="flex-shrink-0 mx-auto md:mx-0">
-        <img v-if="series.cover_url" :src="'/proxy/image?url=' + encodeURIComponent(series.cover_url)" class="w-32 h-44 sm:w-48 sm:h-64 object-cover rounded-lg border border-gray-100 shadow-sm" @error="series.cover_url = ''">
+        <img v-if="series.cover_url" :src="'/proxy/image?url=' + encodeURIComponent(series.cover_url)" class="w-32 h-44 sm:w-48 sm:h-64 object-cover rounded-lg border border-gray-100 shadow-sm" @error="series.cover_url = ''" alt="">
         <div v-else class="w-32 h-44 sm:w-48 sm:h-64 rounded-lg bg-gray-50 border border-gray-100 flex items-center justify-center text-pixiv-gray text-base font-bold text-center p-4">
           {{ (series.title || '').substring(0, 6) }}
         </div>
@@ -55,7 +55,7 @@
           <app-badge type="blue">{{ series.total_novels }} 章</app-badge>
           <app-badge type="gray" v-if="series.total_text_length">{{ formatTextLength(series.total_text_length) }}</app-badge>
           <app-badge :type="statusConfig(series.status).type">{{ statusConfig(series.status).label }}</app-badge>
-          <app-badge type="gray" v-if="series.last_checked_at">检查于 {{ series.last_checked_at.substring(0, 10) }}</app-badge>
+          <app-badge type="gray" v-if="series.last_checked_at">检查于 {{ formatDbTime(series.last_checked_at) }}</app-badge>
         </div>
 
         <div class="text-sm text-pixiv-gray mb-4 inline-flex items-center gap-1.5 self-center md:self-start">
@@ -180,6 +180,14 @@
 
       const pathParts = window.location.pathname.split('/');
       const seriesId = Number(pathParts[pathParts.length - 1] || 0);
+      const backHref = (() => {
+        const from = new URLSearchParams(location.search).get('from');
+        if (from && from.startsWith('/')) return from;
+        if (document.referrer && document.referrer.startsWith(location.origin + '/dashboard')) {
+          return document.referrer.slice(location.origin.length);
+        }
+        return '/dashboard/novels?category=following';
+      })();
       const itemType = 'series';
       const progressPrefix = 'pixivNovelSync:reading:';
 
@@ -193,26 +201,16 @@
       const rescueMessage = ref('');
       const rescueMessageType = ref('success');
       const savingRescue = ref(false);
-      let csrfToken = '';
 
       const syncRescueOverride = (rescue) => {
         rescueOverride.action = rescue?.override_action || '';
         rescueOverride.note = rescue?.override_note || '';
       };
 
-      const ensureCsrfToken = async () => {
-        if (csrfToken) return csrfToken;
-        const response = await fetch('/api/csrf-token');
-        const data = await response.json();
-        if (!response.ok || !data.csrf_token) throw new Error(data.error || '无法获取安全令牌');
-        csrfToken = data.csrf_token;
-        return csrfToken;
-      };
-
       const refreshRescueState = async () => {
         const response = await fetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`);
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || '刷新救援状态失败');
+        if (!response.ok) throw new Error(window.errorText(data, response));
         series.value.rescue = data.rescue;
         syncRescueOverride(data.rescue);
       };
@@ -221,14 +219,13 @@
         savingRescue.value = true;
         rescueMessage.value = '';
         try {
-          const token = await ensureCsrfToken();
-          const response = await fetch(`/api/dashboard/rescue-overrides/${itemType}/${seriesId}`, {
+          const response = await window.csrfFetch(`/api/dashboard/rescue-overrides/${itemType}/${seriesId}`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action, note: rescueOverride.note })
           });
           const data = await response.json();
-          if (!response.ok || data.ok === false) throw new Error(data.error || '保存失败');
+          if (!response.ok || data.ok === false) throw new Error(window.errorText(data, response));
           await refreshRescueState();
           rescueMessageType.value = 'success';
           rescueMessage.value = '人工纠错已保存';
@@ -244,13 +241,11 @@
         savingRescue.value = true;
         rescueMessage.value = '';
         try {
-          const token = await ensureCsrfToken();
-          const response = await fetch(`/api/dashboard/rescue-overrides/${itemType}/${seriesId}`, {
-            method: 'DELETE',
-            headers: { 'X-CSRF-Token': token }
+          const response = await window.csrfFetch(`/api/dashboard/rescue-overrides/${itemType}/${seriesId}`, {
+            method: 'DELETE'
           });
           const data = await response.json();
-          if (!response.ok || data.ok === false) throw new Error(data.error || '恢复失败');
+          if (!response.ok || data.ok === false) throw new Error(window.errorText(data, response));
           await refreshRescueState();
           rescueMessageType.value = 'success';
           rescueMessage.value = '已恢复自动判断';
@@ -353,13 +348,13 @@
           const res = await csrfFetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`, { method: 'DELETE' });
           const data = await res.json();
           if (res.ok) {
-            alert('系列已删除');
+            window.toast('系列已删除');
             window.location.href = '/dashboard/novels?category=following';
           } else {
-            alert('删除失败: ' + (data.error || '未知错误'));
+            window.toast('删除失败: ' + (data.error || '未知错误'));
           }
         } catch (e) {
-          alert('删除失败');
+          window.toast('删除失败');
         } finally {
           deleting.value = false;
         }
@@ -370,11 +365,11 @@
       });
 
       return {
-        series, loading, error, deleting, continueNovelId,
+        series, loading, error, deleting, continueNovelId, backHref,
         formatTextLength, formatNumber, statusConfig, chapterStatusConfig,
         chaptersWithProgress, continueReading, deleteSeries,
         rescueOverride, rescueMessage, rescueMessageType, savingRescue,
-        ensureCsrfToken, saveRescueOverride, clearRescueOverride
+        saveRescueOverride, clearRescueOverride
       };
     }
   });

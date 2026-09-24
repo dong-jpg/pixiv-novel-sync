@@ -53,6 +53,7 @@
       </div>
     </div>
 
+    <p v-else-if="loadError" class="px-5 py-4 text-sm text-red-600">{{ loadError }}</p>
     <!-- Empty State -->
     <div v-else-if="!items.length" class="py-16 text-center">
       <svg class="mx-auto h-12 w-12 text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
@@ -65,7 +66,7 @@
         <article v-for="item in items" :key="item.id" class="bg-white border border-gray-100 rounded-xl p-4 flex gap-4 hover:border-gray-200 hover:shadow-sm transition-all">
           <!-- Cover -->
           <div class="flex-shrink-0">
-            <img v-if="item.cover_url" :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)" class="w-20 h-28 sm:w-24 sm:h-32 object-cover rounded-md border border-gray-100 bg-gray-50" @error="item.cover_url = ''">
+            <img v-if="item.cover_url" :src="'/proxy/image?url=' + encodeURIComponent(item.cover_url)" class="w-20 h-28 sm:w-24 sm:h-32 object-cover rounded-md border border-gray-100 bg-gray-50" @error="item.cover_url = ''" alt="">
             <div v-else class="w-20 h-28 sm:w-24 sm:h-32 rounded-md bg-gray-50 border border-gray-100 flex items-center justify-center text-pixiv-gray font-medium text-xs p-2 text-center">
               {{ (item.title || '').substring(0, 4) }}
             </div>
@@ -84,12 +85,12 @@
                 <app-badge type="gray">{{ item.item_type === 'novel' ? '小说' : '系列' }}</app-badge>
               </div>
               <div class="text-xs text-pixiv-gray truncate">作者: {{ item.author_name || '未知' }}</div>
-              <div class="text-[10px] text-gray-400 font-mono mt-1 truncate">检测于 {{ (item.detected_at || '-').substring(0, 16) }}</div>
+              <div class="text-[10px] text-gray-400 font-mono mt-1 truncate">检测于 {{ formatDbTime(item.detected_at) || '-' }}</div>
             </div>
 
             <div class="flex gap-2 mt-3 pt-3 border-t border-gray-100">
-              <button @click="confirmDeletion(item.id)" class="flex-1 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-xs font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1">确认移除</button>
-              <button @click="restoreDeletion(item.id)" class="flex-1 px-3 py-1.5 bg-green-50 hover:bg-green-100 text-green-600 border border-green-200 text-xs font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-1">忽略恢复</button>
+              <button @click="confirmDeletion(item)" :disabled="busyId === item.id" class="flex-1 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-xs font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 disabled:opacity-50">{{ busyId === item.id ? '处理中…' : '确认移除' }}</button>
+              <button @click="restoreDeletion(item)" :disabled="busyId === item.id" class="flex-1 px-3 py-1.5 bg-green-50 hover:bg-green-100 text-green-600 border border-green-200 text-xs font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-1 disabled:opacity-50">{{ busyId === item.id ? '处理中…' : '恢复并保留' }}</button>
             </div>
           </div>
         </article>
@@ -97,15 +98,7 @@
     </div>
 
     <!-- Pagination Footer -->
-    <div v-if="totalPages > 1" class="px-5 py-4 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
-      <div class="text-sm text-pixiv-gray">
-        第 <span class="font-medium text-gray-900">{{ currentPage }}</span> / <span class="font-medium text-gray-900">{{ totalPages }}</span> 页
-      </div>
-      <div class="flex gap-2">
-        <button @click="loadPending(currentPage - 1)" :disabled="currentPage <= 1" class="px-4 py-1.5 text-sm font-medium bg-white border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">上一页</button>
-        <button @click="loadPending(currentPage + 1)" :disabled="currentPage >= totalPages" class="px-4 py-1.5 text-sm font-medium bg-white border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">下一页</button>
-      </div>
-    </div>
+    <app-pagination v-if="totalPages > 1" :page="currentPage" :pages="totalPages" @update:page="loadPending"></app-pagination>
 
   </section>
 </div>
@@ -115,7 +108,7 @@
 <script>
   initVueApp({
     setup() {
-      const { ref, onMounted } = Vue;
+      const { ref, onMounted, onUnmounted } = Vue;
 
       // State
       const items = ref([]);
@@ -123,8 +116,12 @@
       const currentPage = ref(1);
       const totalPages = ref(1);
       const totalItems = ref(0);
-      const currentType = ref('');
+      const pendingQuery = window.readListQuery({ page: 1, type: '' });
+      const currentType = ref(pendingQuery.type);
       const detecting = ref(false);
+      const loadError = ref('');
+      const busyId = ref(0);
+      let detectionTimer = null;
 
       const tabOptions = [
         { value: '', label: '全部' },
@@ -150,14 +147,17 @@
         try {
           const resp = await fetch(url);
           const data = await resp.json();
+          loadError.value = '';
           items.value = data.items || [];
           currentPage.value = data.page || 1;
           totalPages.value = data.total_pages || 1;
           totalItems.value = data.total || 0;
           currentType.value = type || '';
         } catch (err) {
+          loadError.value = '待确认列表加载失败';
           console.error('Failed to load pending deletions', err);
         } finally {
+          window.writeListQuery({ page: currentPage.value, type: currentType.value });
           loading.value = false;
         }
       };
@@ -167,29 +167,36 @@
       };
 
       // Actions
-      const confirmDeletion = async (id) => {
-        if (!confirm('确认删除？此操作不可撤销，并将删除本地文件。')) return;
+      const confirmDeletion = async (item) => {
+        const size = item.text_length ? `约 ${item.text_length} 字` : '';
+        const chapters = item.item_type === 'series' && item.total_novels ? `${item.total_novels} 章` : '';
+        const extra = [chapters, size].filter(Boolean).join('，');
+        if (!confirm(`确认移除「${item.title || '这项'}」？${extra ? extra + '。' : ''}会连同其它来源一起删掉本地文件，此操作不可撤销。`)) return;
+        busyId.value = item.id;
         try {
-          const resp = await csrfFetch('/api/dashboard/pending-deletions/' + id + '/confirm', { method: 'POST' });
+          const resp = await csrfFetch('/api/dashboard/pending-deletions/' + item.id + '/confirm', { method: 'POST' });
           if (resp.ok) {
             loadPending(currentPage.value);
           } else {
             const data = await resp.json().catch(() => ({}));
-            alert(errorText(data, resp));
+            window.toast(errorText(data, resp));
           }
-        } catch (e) { alert('网络错误'); }
+        } catch (e) { window.toast('网络错误', 'error'); }
+        finally { busyId.value = 0; }
       };
 
-      const restoreDeletion = async (id) => {
+      const restoreDeletion = async (item) => {
+        busyId.value = item.id;
         try {
-          const resp = await csrfFetch('/api/dashboard/pending-deletions/' + id + '/restore', { method: 'POST' });
+          const resp = await csrfFetch('/api/dashboard/pending-deletions/' + item.id + '/restore', { method: 'POST' });
           if (resp.ok) {
             loadPending(currentPage.value);
           } else {
             const data = await resp.json().catch(() => ({}));
-            alert(errorText(data, resp));
+            window.toast(errorText(data, resp), 'error');
           }
-        } catch (e) { alert('网络错误'); }
+        } catch (e) { window.toast('网络错误', 'error'); }
+        finally { busyId.value = 0; }
       };
 
       const triggerDetection = async () => {
@@ -200,11 +207,11 @@
           if (resp.ok) {
             pollDetectionStatus(data.job ? data.job.job_id : null);
           } else {
-            alert('启动检测失败：' + errorText(data, resp));
+            window.toast('启动检测失败：' + errorText(data, resp));
             detecting.value = false;
           }
         } catch (e) {
-          alert('请求失败');
+          window.toast('请求失败');
           detecting.value = false;
         }
       };
@@ -215,29 +222,34 @@
           loadPending(1);
           return;
         }
-        const poll = setInterval(async () => {
+        detectionTimer = setInterval(async () => {
           try {
             const resp = await fetch('/api/dashboard/sync/status?job_id=' + jobId);
             const data = await resp.json();
             const job = data.job;
-            if (!job || job.status === 'succeeded' || job.status === 'failed') {
-              clearInterval(poll);
+            if (!job || job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
+              clearInterval(detectionTimer);
+              detectionTimer = null;
               detecting.value = false;
               loadPending(1);
             }
           } catch (e) {
-            clearInterval(poll);
+            clearInterval(detectionTimer);
+            detectionTimer = null;
             detecting.value = false;
           }
         }, 3000);
       };
 
       onMounted(() => {
-        loadPending(1, '');
+        loadPending(pendingQuery.page, pendingQuery.type);
+      });
+      onUnmounted(() => {
+        if (detectionTimer) clearInterval(detectionTimer);
       });
 
       return {
-        items, loading, currentPage, totalPages, totalItems, currentType, detecting,
+        items, loading, loadError, busyId, currentPage, totalPages, totalItems, currentType, detecting,
         tabOptions, getPixivUrl, loadPending, switchTab,
         confirmDeletion, restoreDeletion, triggerDetection
       };

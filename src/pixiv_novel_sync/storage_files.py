@@ -6,6 +6,7 @@ import os
 import shutil
 import time
 from pathlib import Path
+from collections.abc import Callable
 from typing import Iterable
 
 import requests
@@ -38,10 +39,32 @@ class FileStorage:
     def base_dir(self, restrict: str) -> Path:
         return self.settings.storage.private_dir if restrict == "private" else self.settings.storage.public_dir
 
+    @staticmethod
+    def relative_novel_dir(user_id: int, user_name: str, novel_id: int, title: str) -> str:
+        """相对库根的归档目录。作者改名后仍用首次写入的这一段，才能找到旧文件。"""
+        author = f"{int(user_id)}_{safe_name(user_name or 'unknown', 'unknown')[:48]}"
+        slug = sha256_text(title or "")[:12]
+        return f"authors/{author}/novels/{int(novel_id)}_{slug}"
+
     def novel_dir(self, restrict: str, user_id: int, user_name: str, novel_id: int, title: str) -> Path:
-        author_dir = self.base_dir(restrict) / "authors" / f"{user_id}_{safe_name(user_name, 'unknown')[:48]}"
-        title_slug = sha256_text(title)[:12]
-        return author_dir / "novels" / f"{novel_id}_{title_slug}"
+        return self.base_dir(restrict) / self.relative_novel_dir(user_id, user_name, novel_id, title)
+
+    def resolve_archive_dir(
+        self,
+        restrict: str,
+        archive_dir: str | None,
+        user_id: int,
+        user_name: str,
+        novel_id: int,
+        title: str,
+    ) -> Path:
+        stored = (archive_dir or "").strip()
+        if stored:
+            path = Path(stored)
+            if path.is_absolute():
+                return path
+            return self.base_dir(restrict) / Path(stored)
+        return self.novel_dir(restrict, user_id, user_name, novel_id, title)
 
     def write_text(self, path: Path, content: str) -> None:
         """原子写文本文件：tmp + os.replace。"""
@@ -74,6 +97,7 @@ class FileStorage:
         verify_ssl: bool,
         proxy: str | None,
         max_retries: int = 3,
+        stop_requested: Callable[[], bool] | None = None,
     ) -> str | None:
         """下载资源到目标路径，带 Referer、流式写入和指数退避重试。"""
         proxies = {"http": proxy, "https": proxy} if proxy else None
@@ -103,6 +127,8 @@ class FileStorage:
                         tmp.unlink(missing_ok=True)
                         raise
                     return hasher.hexdigest()
+            except InterruptedError:
+                raise
             except Exception as exc:
                 last_exc = exc
                 # 4xx 客户端错误（除 429）不重试
@@ -113,7 +139,9 @@ class FileStorage:
                 if attempt < max_retries - 1:
                     backoff = 2 ** attempt
                     logger.info("Retry %s/%s for %s after %ss: %s", attempt + 1, max_retries, url, backoff, exc)
-                    time.sleep(backoff)
+                    from .rate_limiter import cancellable_sleep
+
+                    cancellable_sleep(backoff, stop_requested)
         logger.warning("Failed to download asset %s after %s attempts: %s", url, max_retries, last_exc)
         return None
 
@@ -143,7 +171,14 @@ class FileStorage:
             return None
         from .sync.utils import _filename_from_url
         filename = _filename_from_url(cover_url)
-        novel_dir = self.novel_dir(restrict, int(user_id), str(user_name), int(novel_id), str(title))
+        novel_dir = self.resolve_archive_dir(
+            restrict,
+            novel_data.get("archive_dir"),
+            int(user_id),
+            str(user_name),
+            int(novel_id),
+            str(title),
+        )
         return self.asset_path(novel_dir, "cover", filename)
 
     def remove_novel_archive(self, novel_dirs: Iterable[Path], asset_paths: Iterable[Path] = ()) -> dict[str, int]:

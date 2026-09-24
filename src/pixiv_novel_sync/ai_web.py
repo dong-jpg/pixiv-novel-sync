@@ -777,8 +777,8 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     @app.put("/api/dashboard/ai/providers/<int:provider_id>")
     def update_ai_provider(provider_id: int):
         try:
-            service.update_provider(provider_id, json_payload())
-            return ok()
+            warnings = service.update_provider(provider_id, json_payload())
+            return ok({"warnings": warnings})
         except Exception as exc:
             return fail(exc)
 
@@ -1606,6 +1606,13 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             if job is None:
                 raise AINotFoundError("任务不存在")
             return ok(generic_public_job(job))
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/dashboard/ai/jobs/<job_id>/cancel")
+    def cancel_ai_job(job_id: str):
+        try:
+            return ok(service.cancel_job(job_id))
         except Exception as exc:
             return fail(exc)
 

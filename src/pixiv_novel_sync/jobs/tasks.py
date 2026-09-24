@@ -4,7 +4,7 @@ from collections.abc import Callable
 from numbers import Number
 from typing import Any
 
-from pixiv_novel_sync.jobs.services import JobReporter, _rebuild_rescue_catalog
+from pixiv_novel_sync.jobs.services import JobReporter, _catalog_inputs_changed, _rebuild_rescue_catalog
 
 
 def _is_addable_number(value: Any) -> bool:
@@ -15,7 +15,6 @@ _TASK_LABELS: dict[str, str] = {
     "following_users": "关注用户",
     "following_novels": "关注用户小说",
     "subscribed_series": "订阅系列",
-    "sync_check": "同步检查",
     "user_status": "用户状态检查",
     "novel_status": "小说状态检查",
     "series_status": "系列状态检查",
@@ -60,22 +59,6 @@ def execute_task(task_type: str, settings: Any, context: dict[str, Any] | None =
             settings,
             stop_requested=stop_requested,
             claim_finalization=claim_finalization,
-        )
-
-    if task_type == "sync_check":
-        from pixiv_novel_sync.jobs.quick_sync import run_check_bookmarks_task
-
-        manager = context.get("manager")
-        job_id = context.get("job_id")
-        if manager is None or not job_id:
-            raise RuntimeError("sync_check CLI execution requires job manager and job_id context")
-        return run_check_bookmarks_task(
-            settings,
-            manager,
-            str(job_id),
-            release_semaphore=False,
-            raise_on_error=True,
-            stop_requested=stop_requested,
         )
 
     if task_type in {"following_users", "following_novels", "subscribed_series"}:
@@ -142,7 +125,7 @@ def _run_direct_sync_task(
     stop_requested: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     from pixiv_novel_sync.auth import PixivAuthManager
-    from pixiv_novel_sync.storage_db import Database
+    from pixiv_novel_sync.storage_db import Database, prepare_schema
     from pixiv_novel_sync.storage_files import FileStorage
     from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
 
@@ -167,7 +150,7 @@ def _run_direct_sync_task(
     add_log("success", f"登录成功, 用户ID: {auth_result.user_id}")
 
     db = Database(settings.storage.db_path)
-    db.init_schema()
+    prepare_schema(db)
     storage = FileStorage(settings)
     storage.ensure_dirs([settings.storage.public_dir, settings.storage.private_dir, settings.storage.db_path.parent])
 
@@ -206,7 +189,8 @@ def _run_direct_sync_task(
             raise InterruptedError("Task stopped by user")
         if claim_finalization is not None and not claim_finalization():
             raise InterruptedError("Task stopped by user")
-        stats.update(_rebuild_rescue_catalog(db, _job_reporter_from_context(context)))
+        if task_type != "following_novels" or _catalog_inputs_changed(stats):
+            stats.update(_rebuild_rescue_catalog(db, _job_reporter_from_context(context)))
         return stats
     finally:
         db.close()
@@ -301,13 +285,32 @@ def merge_stats(total: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]
     return total
 
 
+def _merge_saved_negative_preferences(profile: dict[str, Any], old_profile: dict[str, Any]) -> dict[str, Any]:
+    """手工排除词、回避主题保留；屏蔽标签与本轮从静音表算出的标签取并集。"""
+    old_neg = (old_profile or {}).get("negative_preferences") or {}
+    new_neg = dict((profile or {}).get("negative_preferences") or {})
+    tags: list[str] = []
+    for tag in list(old_neg.get("excluded_tags") or []) + list(new_neg.get("excluded_tags") or []):
+        text = str(tag).strip()
+        if text and text not in tags:
+            tags.append(text)
+    new_neg["excluded_tags"] = tags
+    for key in ("excluded_keywords", "avoid_themes"):
+        old_vals = [str(item).strip() for item in (old_neg.get(key) or []) if str(item).strip()]
+        if old_vals:
+            new_neg[key] = old_vals
+    merged = dict(profile or {})
+    merged["negative_preferences"] = new_neg
+    return merged
+
+
 def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict[str, Any]:
     """Phase 7.6 / 增量重构: 偏好分析长任务。
 
     增量累加: 每次只分析未处理的小说,跳过已分析,从累加器重建并更新默认画像。
     手动按钮触发大批量(默认 2000 篇);定时任务每次跑少量(默认 200 篇)。
     """
-    from pixiv_novel_sync.storage_db import Database
+    from pixiv_novel_sync.storage_db import Database, prepare_schema
     from pixiv_novel_sync.preferences import PreferenceAnalyzer
 
     reporter = _job_reporter_from_context(context)
@@ -316,7 +319,7 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
 
     db = Database(settings.storage.db_path)
     try:
-        db.init_schema()
+        prepare_schema(db)
         analyzer = PreferenceAnalyzer(db)
         params = context.get("params", {})
         scope = dict(params.get("scope", {}) or {})
@@ -345,35 +348,60 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
 
         # 从累加器重建画像
         rebuilt = analyzer.rebuild_profile_from_accumulator()
-
-        # #10 关键词清洗：机械分词的 top_keywords 含大量噪声口语词，用 AI 提炼成可搜索关键词。
-        # 优雅降级：未配置 AI / 调用失败时保留原始 top_keywords，不影响分析主流程。
-        try:
-            stats = rebuilt.get("stats") or {}
-            raw_keywords = [item["name"] for item in stats.get("top_keywords", [])[:80] if item.get("name")]
-            if raw_keywords:
-                from pixiv_novel_sync.ai.service import AIWritingService
-
-                ai_service = AIWritingService(settings.storage.db_path)
-                top_tags = [item["name"] for item in stats.get("top_tags", [])[:40] if item.get("name")]
-                cleaned = ai_service.clean_keywords(raw_keywords, tags=top_tags)
-                if cleaned and cleaned.get("keywords"):
-                    stats["refined_keywords"] = cleaned["keywords"]
-                    stats["refined_keywords_dropped_sample"] = cleaned.get("dropped_sample", [])
-                    rebuilt["stats"] = stats
-                    reporter.add_log("info", f"AI 关键词清洗完成，提炼出 {len(cleaned['keywords'])} 个可搜索关键词")
-                else:
-                    reporter.add_log("info", "未配置可用 AI 或清洗无结果，保留原始高频词")
-        except Exception as exc:
-            reporter.add_log("warning", f"关键词清洗跳过（{exc}）")
-
-        rebuilt["profile"] = analyzer.build_profile(rebuilt["stats"])
-
-        # 更新单一默认画像(不存在则创建)
         existing = db.get_default_preference_profile()
+        stats = rebuilt.get("stats") or {}
+        old_stats = (existing or {}).get("stats") or {}
+
+        def keep_refined_keywords() -> None:
+            refined = old_stats.get("refined_keywords")
+            if isinstance(refined, list) and refined:
+                stats["refined_keywords"] = list(refined)
+                if "refined_keywords_dropped_sample" in old_stats:
+                    stats["refined_keywords_dropped_sample"] = old_stats.get("refined_keywords_dropped_sample")
+
+        # 没有新小说时不调用 AI，避免一次抖动把上一轮精炼词洗掉。
+        if existing and int(result.get("processed_this_run") or 0) == 0:
+            keep_refined_keywords()
+            reporter.add_log("info", "本次没有新小说，沿用已有精炼词")
+        else:
+            # 机械分词的 top_keywords 含大量噪声口语词，用 AI 提炼成可搜索关键词。
+            # 调用失败时沿用上一轮精炼词，不再退回未清洗的高频词。
+            try:
+                raw_keywords = [item["name"] for item in stats.get("top_keywords", [])[:80] if item.get("name")]
+                if raw_keywords:
+                    from pixiv_novel_sync.ai.service import AIWritingService
+
+                    ai_service = AIWritingService(settings.storage.db_path)
+                    top_tags = [item["name"] for item in stats.get("top_tags", [])[:40] if item.get("name")]
+                    cleaned = ai_service.clean_keywords(raw_keywords, tags=top_tags)
+                    if cleaned and cleaned.get("keywords"):
+                        stats["refined_keywords"] = cleaned["keywords"]
+                        stats["refined_keywords_dropped_sample"] = cleaned.get("dropped_sample", [])
+                        reporter.add_log("info", f"AI 关键词清洗完成，提炼出 {len(cleaned['keywords'])} 个可搜索关键词")
+                    else:
+                        keep_refined_keywords()
+                        reporter.add_log("info", "未配置可用 AI 或清洗无结果，沿用已有精炼词")
+            except Exception as exc:
+                keep_refined_keywords()
+                reporter.add_log("warning", f"关键词清洗跳过（{exc}）")
+
+        rebuilt["stats"] = stats
+        rebuilt["profile"] = _merge_saved_negative_preferences(
+            analyzer.build_profile(stats),
+            (existing or {}).get("profile") or {},
+        )
+
+        def kept_text(key: str, default: str) -> str:
+            if key in params:
+                return params[key]
+            if existing and existing.get(key) not in (None, ""):
+                return existing[key]
+            return default
+
+        # 更新单一默认画像(不存在则创建)。名字和说明只在本次参数显式给出时覆盖。
         profile_payload = {
-            "name": params.get("name", "本地偏好画像"),
-            "description": params.get("description", "基于本地归档小说增量统计生成"),
+            "name": kept_text("name", "本地偏好画像"),
+            "description": kept_text("description", "基于本地归档小说增量统计生成"),
             "source_scope": rebuilt["source_scope"],
             "stats": rebuilt["stats"],
             "profile": rebuilt["profile"],
@@ -402,7 +430,7 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
 
 def _run_recommendation_run_task(settings: Any, context: dict[str, Any]) -> dict[str, Any]:
     """Phase 7.6: 推荐运行长任务"""
-    from pixiv_novel_sync.storage_db import Database
+    from pixiv_novel_sync.storage_db import Database, prepare_schema
     from pixiv_novel_sync.recommendations import RecommendationService
 
     reporter = _job_reporter_from_context(context)
@@ -411,7 +439,7 @@ def _run_recommendation_run_task(settings: Any, context: dict[str, Any]) -> dict
 
     db = Database(settings.storage.db_path)
     try:
-        db.init_schema()
+        prepare_schema(db)
         service = RecommendationService(db, settings)
         service.stop_requested = stop_requested
         params = context.get("params", {})

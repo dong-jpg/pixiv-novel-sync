@@ -161,6 +161,55 @@ def collect_error(
     return caught.value
 
 
+def test_retry_delay_honors_retry_after_and_caps_at_sixty() -> None:
+    from pixiv_novel_sync.ai.providers import _retry_delay
+
+    assert _retry_delay(0, None) == 1
+    assert _retry_delay(1, 2.5) == 2.5
+    assert _retry_delay(3, 2) == 8
+    assert _retry_delay(2, 120) == 60
+
+
+def test_sse_line_over_one_mebibyte_is_rejected() -> None:
+    from pixiv_novel_sync.ai.providers import _iter_sse_lines
+
+    class _Huge:
+        def iter_content(self, chunk_size=None):
+            del chunk_size
+            yield b"x" * (1024 * 1024 + 8)
+
+    with pytest.raises(AIProviderError, match="1 MiB"):
+        list(_iter_sse_lines(_Huge()))
+
+
+def test_error_body_over_one_mebibyte_is_rejected() -> None:
+    from pixiv_novel_sync.ai.providers import _response_error_details
+
+    class _Huge:
+        encoding = "utf-8"
+        headers = {"Content-Length": str(1024 * 1024 + 1)}
+        content = b""
+        text = ""
+
+        def close(self) -> None:
+            self.closed = True
+
+        def json(self):
+            return {}
+
+    response = _Huge()
+    with pytest.raises(AIProviderError, match="1 MiB"):
+        _response_error_details(response)
+
+
+def test_openai_compatible_does_not_treat_anthropic_host_as_official() -> None:
+    provider = OpenAICompatibleProvider(
+        make_config("openai_compatible", stream_enabled=False)
+    )
+    provider.config.base_url = "https://api.anthropic.com"
+    assert provider._resolve_base_url() == "https://api.anthropic.com/v1"
+
+
 def test_provider_error_retains_runtime_error_compatibility() -> None:
     error = AIProviderError("legacy error")
 
@@ -367,6 +416,7 @@ def test_empty_normal_non_stream_response_is_model_failure(
     [
         (401, {"error": {"message": "invalid API key"}}, "provider", "authentication"),
         (429, {"error": {"message": "rate limit"}}, "provider", "rate_limited"),
+        (429, {"error": {"message": "rate limit for model model-a"}}, "model", "rate_limited"),
         (404, {"error": {"message": "model model-a not found"}}, "model", "model_not_found"),
         (400, {"error": {"message": "maximum context length exceeded"}}, "model", "context_overflow"),
         (408, {"error": {"type": "model_timeout", "message": "model timed out"}}, "model", "timeout"),
@@ -409,6 +459,24 @@ def test_retry_after_is_parsed_and_upstream_secret_is_redacted(
     assert error.retry_after == 2.5
     assert error.category == "rate_limited"
     assert "sk-upstream-secret" not in str(error)
+
+
+def test_provider_error_redacts_literal_api_key_before_regex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = make_config("openai_compatible", stream_enabled=False)
+    config.api_key = "xai-gateway-token-42"
+    provider = OpenAICompatibleProvider(config)
+    response = FakeResponse(
+        400,
+        payload={"error": {"message": "rejected xai-gateway-token-42"}},
+    )
+    attach_responses(monkeypatch, provider, [response])
+
+    error = collect_error(provider)
+
+    assert "xai-gateway-token-42" not in str(error)
+    assert "[REDACTED]" in str(error)
 
 
 def test_account_quota_is_provider_scoped_not_model_scoped(
