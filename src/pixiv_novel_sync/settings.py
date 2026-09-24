@@ -437,30 +437,14 @@ def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: s
     if base_time is None:
         base_time = time.time()
     
-    # 尝试导入时区库
+    from zoneinfo import ZoneInfo
     try:
-        from zoneinfo import ZoneInfo
-        try:
-            tz = ZoneInfo(timezone)
-        except Exception:
-            # 无效时区名（ZoneInfoNotFoundError 不是 ImportError 的子类），回退 UTC，
-            # 否则异常会一路冒泡到调度循环，导致所有 cron 任务永远不触发。
-            logger.warning("未知时区 %r，回退到 UTC", timezone)
-            tz = ZoneInfo("UTC")
-        base_dt = datetime.fromtimestamp(base_time, tz=tz)
-    except ImportError:
-        # Python < 3.9 或没有zoneinfo，尝试使用pytz
-        try:
-            import pytz
-            try:
-                tz = pytz.timezone(timezone)
-            except Exception:
-                logger.warning("未知时区 %r，回退到 UTC", timezone)
-                tz = pytz.UTC
-            base_dt = datetime.fromtimestamp(base_time, tz=tz)
-        except ImportError:
-            # 没有时区库，使用本地时间（不推荐）
-            base_dt = datetime.fromtimestamp(base_time)
+        tz = ZoneInfo(timezone)
+    except Exception:
+        # 无效时区名回退 UTC，否则异常会冒泡到调度循环，cron 任务永远不触发。
+        logger.warning("未知时区 %r，回退到 UTC", timezone)
+        tz = ZoneInfo("UTC")
+    base_dt = datetime.fromtimestamp(base_time, tz=tz)
 
     # 简单实现：查找下一个匹配的时间
     # 这里使用简化的实现，实际项目中建议使用croniter库

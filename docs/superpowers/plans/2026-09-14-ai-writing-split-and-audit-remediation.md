@@ -349,7 +349,7 @@
 - [x] **T3-01 删无生产调用方路由**（保留在契约里的标「仅 API」）
   `POST /oauth/start`、`GET /oauth/callback`、`POST /oauth/sync-callback/<id>`、`GET /api/dashboard/follows`、`POST /api/dashboard/settings`（全量）、`POST /api/dashboard/sync/start`、`GET /api/dashboard/pending-deletions/count`、`POST /api/dashboard/settings/reload`（T2-34）、`POST /api/dashboard/ai/jobs/cleanup`、`GET /api/dashboard/recommendations/runs`。**接上而不是删**：`/novels/<id>/progress` 三端点（阅读进度换设备可用）、`POST /novels/export-epub`（加按钮）、`DELETE /novels/<id>` / `/users/<id>` / `/bookmarks/<id>`（详情页加入口或删）、`POST /api/auth/logout`（侧栏加退出）、`POST /profiles/<id>/default` / `DELETE /profiles/<id>`（偏好页加多画像 UI 或删）。
 
-- [ ] **T3-02 死代码**
+- [x] **T3-02 死代码**
   `settings.py:437-449` pytz 分支与 `:456-530 _simple_cron_next_run`；`storage/pending_and_watermarks.py:101 restore_pending_deletion`；`storage/schema.py:316 _fix_stale_running_logs`；`storage/novels.py:542 export_stats` 与 `storage_db.py:50` 二选一；`web/utils.py:577 _remove_archive_files` + `storage_files.py:149 remove_novel_archive`（抽 `_collect_archive_paths` 两处共用）；`storage/rescue.py:795,821` 与 `storage/recommendations.py:333` 仅测试方法移到测试 helper；`jobs/tasks.py:417-418 rate_limit` 分支；`cli.py:128` 不可达 `parser.error`，`cli.py:104` `sync-bookmarks` 按 `truncated` 退出非零；`web/__init__.py` 急切导入清空；`webapp.py:34,54,55` 与 `ai/service.py:3` 未使用导入；`storage/ai/model_sync.py:334 empty_authoritative` 路径。
 
 - [ ] **T3-03 文档修正**（报告 §6 表逐条）

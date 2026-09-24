@@ -99,20 +99,6 @@ class PendingAndWatermarksMixin:
         self._commit_if_needed()
         return dict(row)
 
-    def restore_pending_deletion(self, deletion_id: int) -> dict[str, Any] | None:
-        """恢复，返回记录详情，更新状态为 restored"""
-        row = self.conn.execute(
-            "SELECT * FROM pending_deletions WHERE id = ? AND status = 'pending'", (deletion_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        self.conn.execute(
-            "UPDATE pending_deletions SET status = 'restored', restored_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (deletion_id,),
-        )
-        self._commit_if_needed()
-        return dict(row)
-
     def restore_pending_deletion_atomic(
         self,
         deletion_id: int,

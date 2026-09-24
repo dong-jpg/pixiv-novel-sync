@@ -138,7 +138,7 @@ class SchemaMixin:
         self._migrate_novels_table()
         # 迁移：为 series 表添加 is_subscribed、status、last_checked_at 字段
         self._migrate_series_table()
-        # 注意：不再在 init_schema 常规路径里调用 _fix_stale_running_logs()，
+        # 注意：不再在 init_schema 常规路径里把 running 日志改成失败，
         # 否则 Web 请求并发打开数据库时会把正在运行的任务误标为 failed。
         # 进程重启后的遗留 running 日志由应用启动时显式调用
         # fail_stale_task_logs()（见 webapp.create_app）处理一次。
@@ -364,10 +364,6 @@ class SchemaMixin:
             return int(cursor.rowcount or 0)
         except Exception:
             return 0
-
-    def _fix_stale_running_logs(self) -> None:
-        """将进程重启后遗留的 running 状态日志标记为 failed（兼容旧调用）"""
-        self.fail_stale_task_logs()
 
     def _migrate_novels_table(self) -> None:
         """为 novels 表添加 status、last_checked_at 和 source_url 字段"""

@@ -540,16 +540,6 @@ class NovelsMixin:
                     return nested
         return None
 
-    def export_stats(self) -> str:
-        row = self.conn.execute(
-            "SELECT "
-            "(SELECT COUNT(*) FROM users) AS users_count, "
-            "(SELECT COUNT(*) FROM novels) AS novels_count, "
-            "(SELECT COUNT(*) FROM series) AS series_count, "
-            "(SELECT COUNT(*) FROM pending_deletions WHERE status = 'pending') AS pending_count"
-        ).fetchone()
-        return json.dumps(dict(row), ensure_ascii=False)
-
     def get_existing_novel_ids(self, novel_ids: list[int], require_assets: bool = False) -> set[int]:
         """批量检查小说是否已完整归档，返回可安全跳过的 ID 集合。"""
         if not novel_ids:
