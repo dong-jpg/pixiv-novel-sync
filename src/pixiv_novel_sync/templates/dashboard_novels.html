@@ -357,12 +357,13 @@
       const rescueCatalog = reactive({ refreshed_at: '', stale: false });
 
       // Filters
-      const initialCategory = new URLSearchParams(window.location.search).get('category');
+      const initialQuery = window.readListQuery({ category: 'bookmark', search: '', sort: '', page: 1 });
       const filters = reactive({
-        category: ['bookmark', 'following', 'rescue'].includes(initialCategory) ? initialCategory : 'bookmark',
-        search: '',
-        sort: ''
+        category: ['bookmark', 'following', 'rescue'].includes(initialQuery.category) ? initialQuery.category : 'bookmark',
+        search: initialQuery.search,
+        sort: initialQuery.sort
       });
+      page.value = initialQuery.page;
       const rescueFilters = reactive({
         state: 'all',
         item_type: 'all',
@@ -492,6 +493,12 @@
             items.value = [];
           }
         } finally {
+          window.writeListQuery({
+            category: filters.category,
+            search: filters.search,
+            sort: filters.sort,
+            page: page.value,
+          });
           if (fetchAbortController && !fetchAbortController.signal.aborted) {
             loading.value = false;
           }

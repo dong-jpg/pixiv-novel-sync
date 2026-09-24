@@ -7,7 +7,7 @@
   <div class="library-page-header sr-only"><h1>系列详情</h1></div>
 
   <!-- Back Link -->
-  <a href="/dashboard/novels?category=following" class="inline-flex items-center gap-1.5 text-sm font-medium text-pixiv-gray hover:text-brand-500 transition-colors">
+  <a :href="backHref" class="inline-flex items-center gap-1.5 text-sm font-medium text-pixiv-gray hover:text-brand-500 transition-colors">
     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
     </svg>
@@ -180,6 +180,14 @@
 
       const pathParts = window.location.pathname.split('/');
       const seriesId = Number(pathParts[pathParts.length - 1] || 0);
+      const backHref = (() => {
+        const from = new URLSearchParams(location.search).get('from');
+        if (from && from.startsWith('/')) return from;
+        if (document.referrer && document.referrer.startsWith(location.origin + '/dashboard')) {
+          return document.referrer.slice(location.origin.length);
+        }
+        return '/dashboard/novels?category=following';
+      })();
       const itemType = 'series';
       const progressPrefix = 'pixivNovelSync:reading:';
 
@@ -357,7 +365,7 @@
       });
 
       return {
-        series, loading, error, deleting, continueNovelId,
+        series, loading, error, deleting, continueNovelId, backHref,
         formatTextLength, formatNumber, statusConfig, chapterStatusConfig,
         chaptersWithProgress, continueReading, deleteSeries,
         rescueOverride, rescueMessage, rescueMessageType, savingRescue,

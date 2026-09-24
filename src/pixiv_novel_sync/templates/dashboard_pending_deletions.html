@@ -124,7 +124,8 @@
       const currentPage = ref(1);
       const totalPages = ref(1);
       const totalItems = ref(0);
-      const currentType = ref('');
+      const pendingQuery = window.readListQuery({ page: 1, type: '' });
+      const currentType = ref(pendingQuery.type);
       const detecting = ref(false);
       const loadError = ref('');
       let detectionTimer = null;
@@ -163,6 +164,7 @@
           loadError.value = '待确认列表加载失败';
           console.error('Failed to load pending deletions', err);
         } finally {
+          window.writeListQuery({ page: currentPage.value, type: currentType.value });
           loading.value = false;
         }
       };
@@ -240,7 +242,7 @@
       };
 
       onMounted(() => {
-        loadPending(1, '');
+        loadPending(pendingQuery.page, pendingQuery.type);
       });
       onUnmounted(() => {
         if (detectionTimer) clearInterval(detectionTimer);

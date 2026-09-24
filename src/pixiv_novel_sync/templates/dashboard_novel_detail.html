@@ -508,6 +508,9 @@
       const backHref = computed(() => {
         const from = new URLSearchParams(location.search).get('from');
         if (from && from.startsWith('/')) return from;
+        if (document.referrer && document.referrer.startsWith(location.origin + '/dashboard')) {
+          return document.referrer.slice(location.origin.length);
+        }
         return '/dashboard/novels';
       });
       const cycleFontSize = () => {

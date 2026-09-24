@@ -382,6 +382,19 @@ def test_dashboard_recommendations_are_a_paged_list_not_a_card_grid():
     assert 'class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">' not in html
 
 
+def test_list_pages_keep_filters_in_the_url():
+    base = read(TEMPLATES / "base.html")
+    assert "window.writeListQuery" in base
+    for name in (
+        "dashboard_novels.html",
+        "dashboard_logs.html",
+        "dashboard_pending_deletions.html",
+        "dashboard_follows.html",
+        "dashboard_user_detail.html",
+    ):
+        assert "writeListQuery" in read(TEMPLATES / name)
+
+
 def test_sidebar_logout_and_novel_detail_actions():
     footer = read(TEMPLATES / "vue_components.html")
     assert "/api/auth/logout" in footer

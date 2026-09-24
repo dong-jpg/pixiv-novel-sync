@@ -360,13 +360,17 @@
       const totalPages = ref(1);
       const totalItems = ref(0);
 
-      const filters = reactive({
-        category: 'sync',
-        task_type: '',
-        source: '',
-        status: '',
-        days: '3'
+      const initialLogQuery = window.readListQuery({
+        category: 'sync', task_type: '', source: '', status: '', days: '3', page: 1,
       });
+      const filters = reactive({
+        category: initialLogQuery.category === 'ai' ? 'ai' : 'sync',
+        task_type: initialLogQuery.task_type,
+        source: initialLogQuery.source,
+        status: initialLogQuery.status,
+        days: initialLogQuery.days
+      });
+      page.value = initialLogQuery.page;
 
       // 两大分类下各自的 task_type 选项
       const SYNC_TASK_OPTIONS = [
@@ -460,6 +464,14 @@
         } catch (e) {
           error.value = e.message;
         } finally {
+          window.writeListQuery({
+            category: filters.category,
+            task_type: filters.task_type,
+            source: filters.source,
+            status: filters.status,
+            days: filters.days,
+            page: page.value,
+          });
           loading.value = false;
         }
       };

@@ -127,11 +127,13 @@
 
       const items = ref([]);
       const totalItems = ref(0);
-      const page = ref(1);
+      const followQuery = window.readListQuery({ page: 1, status: 'all', q: '' });
+      const page = ref(followQuery.page);
+      const search = ref(followQuery.q);
       const totalPages = ref(1);
       const loading = ref(true);
       const error = ref(null);
-      const status = ref('all');
+      const status = ref(['all', 'normal', 'no_novels', 'suspended', 'cleared', 'unknown'].includes(followQuery.status) ? followQuery.status : 'all');
 
       const tabs = [
         { label: '全部', value: 'all' },
@@ -153,7 +155,8 @@
           const params = new URLSearchParams({
             page: page.value,
             page_size: 12,
-            status: status.value
+            status: status.value,
+            search: search.value
           });
           const res = await fetch('/api/dashboard/users?' + params, {
             signal: fetchAbortController.signal
@@ -172,6 +175,7 @@
             items.value = [];
           }
         } finally {
+          window.writeListQuery({ page: page.value, status: status.value, q: search.value });
           if (fetchAbortController && !fetchAbortController.signal.aborted) {
             loading.value = false;
           }
