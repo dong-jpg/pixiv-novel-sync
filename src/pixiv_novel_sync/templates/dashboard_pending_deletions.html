@@ -53,6 +53,7 @@
       </div>
     </div>
 
+    <p v-else-if="loadError" class="px-5 py-4 text-sm text-red-600">{{ loadError }}</p>
     <!-- Empty State -->
     <div v-else-if="!items.length" class="py-16 text-center">
       <svg class="mx-auto h-12 w-12 text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
@@ -115,7 +116,7 @@
 <script>
   initVueApp({
     setup() {
-      const { ref, onMounted } = Vue;
+      const { ref, onMounted, onUnmounted } = Vue;
 
       // State
       const items = ref([]);
@@ -125,6 +126,8 @@
       const totalItems = ref(0);
       const currentType = ref('');
       const detecting = ref(false);
+      const loadError = ref('');
+      let detectionTimer = null;
 
       const tabOptions = [
         { value: '', label: '全部' },
@@ -150,12 +153,14 @@
         try {
           const resp = await fetch(url);
           const data = await resp.json();
+          loadError.value = '';
           items.value = data.items || [];
           currentPage.value = data.page || 1;
           totalPages.value = data.total_pages || 1;
           totalItems.value = data.total || 0;
           currentType.value = type || '';
         } catch (err) {
+          loadError.value = '待确认列表加载失败';
           console.error('Failed to load pending deletions', err);
         } finally {
           loading.value = false;
@@ -168,7 +173,7 @@
 
       // Actions
       const confirmDeletion = async (id) => {
-        if (!confirm('确认删除？此操作不可撤销，并将删除本地文件。')) return;
+        if (!confirm('确认移除？会连同其它来源一起删掉本地文件，此操作不可撤销。')) return;
         try {
           const resp = await csrfFetch('/api/dashboard/pending-deletions/' + id + '/confirm', { method: 'POST' });
           if (resp.ok) {
@@ -215,18 +220,20 @@
           loadPending(1);
           return;
         }
-        const poll = setInterval(async () => {
+        detectionTimer = setInterval(async () => {
           try {
             const resp = await fetch('/api/dashboard/sync/status?job_id=' + jobId);
             const data = await resp.json();
             const job = data.job;
-            if (!job || job.status === 'succeeded' || job.status === 'failed') {
-              clearInterval(poll);
+            if (!job || job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
+              clearInterval(detectionTimer);
+              detectionTimer = null;
               detecting.value = false;
               loadPending(1);
             }
           } catch (e) {
-            clearInterval(poll);
+            clearInterval(detectionTimer);
+            detectionTimer = null;
             detecting.value = false;
           }
         }, 3000);
@@ -235,9 +242,12 @@
       onMounted(() => {
         loadPending(1, '');
       });
+      onUnmounted(() => {
+        if (detectionTimer) clearInterval(detectionTimer);
+      });
 
       return {
-        items, loading, currentPage, totalPages, totalItems, currentType, detecting,
+        items, loading, loadError, currentPage, totalPages, totalItems, currentType, detecting,
         tabOptions, getPixivUrl, loadPending, switchTab,
         confirmDeletion, restoreDeletion, triggerDetection
       };

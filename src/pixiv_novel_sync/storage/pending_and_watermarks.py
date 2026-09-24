@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class PendingAndWatermarksMixin:
@@ -156,9 +159,13 @@ class PendingAndWatermarksMixin:
                     (item_id,),
                 )
 
-        # 事务已提交，恢复本身不会因为目录刷新失败而回滚；这与 delete_novel 里
-        # 直接调 refresh_rescue_item 的既有手法一致，不做静默吞异常。
-        self.refresh_rescue_item(str(record["item_type"]), int(record["item_id"]))
+        # 事务已提交。目录刷新失败不能把恢复回滚掉，接口仍告诉调用方已经恢复。
+        try:
+            self.refresh_rescue_item(str(record["item_type"]), int(record["item_id"]))
+        except Exception:
+            logger.exception("恢复已生效，但救援目录刷新失败 id=%s", deletion_id)
+            record["refresh_failed"] = True
+        record["restored"] = True
         return record
 
     def get_pending_deletion_count(self) -> int:
@@ -186,13 +193,11 @@ class PendingAndWatermarksMixin:
         self._commit_if_needed()
         return total_count
 
-    def cleanup_old_pending_deletions(self, grace_period_days: int = 30, cleanup_confirmed_days: int = 7) -> dict[str, int]:
+    def cleanup_old_pending_deletions(self, cleanup_confirmed_days: int = 7) -> dict[str, int]:
         """清理已确认/已恢复的历史记录。
 
-        pending 记录必须由用户手动确认或恢复；这里不再按时间自动确认，避免待确认列表静默消失。
-        grace_period_days 参数保留用于兼容旧调用。
+        pending 记录必须由用户手动确认或恢复；这里不再按时间自动确认。
         """
-        del grace_period_days
         auto_confirmed = 0
 
         # 清理过期的已确认/已恢复记录

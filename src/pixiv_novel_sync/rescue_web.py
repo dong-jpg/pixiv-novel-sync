@@ -94,7 +94,10 @@ def _catalog_stale(refreshed_at: Any, settings: Settings) -> bool:
     value = str(refreshed_at or "").strip()
     if not value:
         return True
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return True
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     else:

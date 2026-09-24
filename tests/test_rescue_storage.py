@@ -76,6 +76,32 @@ def test_refresh_matches_full_rebuild_for_the_same_novel(db: Database) -> None:
     assert full is not None and full["title"] != refreshed["title"]
 
 
+def test_bad_catalog_timestamp_is_stale_and_pending_removal_is_flagged(db: Database) -> None:
+    from types import SimpleNamespace
+
+    from pixiv_novel_sync.rescue_web import _catalog_stale
+
+    settings = SimpleNamespace(
+        sync=SimpleNamespace(
+            auto_sync_novel_status_interval_hours=24,
+            auto_sync_series_status_interval_hours=24,
+        )
+    )
+    assert _catalog_stale("not-a-timestamp", settings) is True
+
+    _seed_novel(db, novel_id=82, status="deleted")
+    db.conn.execute(
+        """
+        INSERT INTO pending_deletions (item_type, item_id, title, reason, status)
+        VALUES ('novel', 82, '待删', 'missing', 'pending')
+        """
+    )
+    db.conn.commit()
+    payload = db.evaluate_rescue_novel(82)
+    assert payload is not None
+    assert payload["pending_removal"] is True
+
+
 def test_novel_text_maintains_has_content(db: Database) -> None:
     _seed_novel(db, novel_id=90, text="正文")
     assert db.conn.execute(

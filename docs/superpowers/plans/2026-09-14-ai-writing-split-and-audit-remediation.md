@@ -319,7 +319,7 @@
 - [x] **T2-54 重建触发点收敛**
   `quick_sync.py:84`（bookmark）、`:169` / `services.py:239`（user_backup）、`tasks.py:209`（following_novels）改为「有状态或来源变更才重建」，让三种状态检查与 pending 检测负责；`_replace_catalog_memberships` 改差量。
 
-- [ ] **T2-55 杂项**
+- [x] **T2-55 杂项**
   `_catalog_stale` 对非法 `refreshed_at` 视为 stale；`dashboard_novel_detail.html:355-362` 三态显示 partial；`evaluate_rescue_*` 加 `pending_removal` 字段并在详情页提示；`dashboard_pending_deletions.html:218-233` 终态集合加 `cancelled` 且 unmount 清 interval，列表加载失败显示错误；恢复后刷新失败返回固定文案 + `restored: true`；实时路径也读 `has_content`；`cleanup_old_pending_deletions` 删无用参数；确认移除弹窗说明「会连同其它来源一起删」。
 
 ### 2.7 前端公共

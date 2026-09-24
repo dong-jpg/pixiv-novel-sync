@@ -259,7 +259,7 @@ def test_cleanup_old_pending_deletions_does_not_auto_confirm_pending(db: Databas
     )
     db.conn.commit()
 
-    result = db.cleanup_old_pending_deletions(grace_period_days=1, cleanup_confirmed_days=7)
+    result = db.cleanup_old_pending_deletions(cleanup_confirmed_days=7)
 
     assert result["auto_confirmed"] == 0
     assert result["cleaned_up"] == 1

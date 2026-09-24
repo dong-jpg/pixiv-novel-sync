@@ -2179,7 +2179,13 @@ def create_app(
             )
             if record is None:
                 return jsonify({"error": "记录不存在或已处理"}), 404
-            return jsonify({"ok": True, "message": "已恢复"})
+            if record.get("refresh_failed"):
+                return jsonify({
+                    "ok": True,
+                    "restored": True,
+                    "message": "已恢复，但救援目录刷新失败",
+                })
+            return jsonify({"ok": True, "restored": True, "message": "已恢复"})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         finally:

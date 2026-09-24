@@ -147,7 +147,7 @@ class FakeDatabase:
     def update_watermark(self, key: str, value: dict[str, object]) -> None:
         self.watermark_updates.append((key, value))
 
-    def cleanup_old_pending_deletions(self, grace_period_days: int = 30, cleanup_confirmed_days: int = 7) -> dict[str, int]:
+    def cleanup_old_pending_deletions(self, cleanup_confirmed_days: int = 7) -> dict[str, int]:
         """Phase 3.2: Mock cleanup方法"""
         return {"auto_confirmed": 0, "cleaned_up": 0}
 

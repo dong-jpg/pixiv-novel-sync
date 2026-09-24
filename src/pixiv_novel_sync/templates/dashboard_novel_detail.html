@@ -353,13 +353,15 @@
           <h2 class="text-sm font-bold text-gray-900">救援状态与人工纠错</h2>
           <p class="text-xs text-gray-500 mt-1">
             <span v-if="novel.rescue.rescue_state === 'success'">已完整救援，正文来自私人备份。</span>
+            <span v-else-if="novel.rescue.rescue_state === 'partial'">只救援了部分章节，正文可能不完整。</span>
             <span v-else>当前未进入救援列表。</span>
             Pixiv 状态：{{ novel.rescue.remote_status || 'unknown' }}
           </p>
+          <p v-if="novel.rescue.pending_removal" class="text-xs text-amber-700 mt-1">这本书还在待确认删除里，确认后会从本地移除。</p>
         </div>
         <span class="self-start px-2 py-1 rounded text-xs font-medium"
-              :class="novel.rescue.rescue_state === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-600'">
-          {{ novel.rescue.rescue_state === 'success' ? '完整救援' : '自动判断' }}
+              :class="novel.rescue.rescue_state === 'success' ? 'bg-emerald-50 text-emerald-700' : (novel.rescue.rescue_state === 'partial' ? 'bg-amber-50 text-amber-700' : 'bg-gray-100 text-gray-600')">
+          {{ novel.rescue.rescue_state === 'success' ? '完整救援' : (novel.rescue.rescue_state === 'partial' ? '部分救援' : '自动判断') }}
         </span>
       </div>
       <input v-model="rescueOverride.note" maxlength="500" type="text" placeholder="纠错备注（可选）"

@@ -1010,7 +1010,19 @@ class RescueMixin:
             "updated_at": row.get("updated_at"),
             "override_action": row.get("override_action"),
             "override_note": str(row.get("override_note") or ""),
+            "pending_removal": self._pending_removal("series", int(row["series_id"])),
         }
+
+    def _pending_removal(self, item_type: str, item_id: int) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT 1 FROM pending_deletions
+            WHERE item_type = ? AND item_id = ? AND status = 'pending'
+            LIMIT 1
+            """,
+            (item_type, int(item_id)),
+        ).fetchone()
+        return row is not None
 
     def evaluate_rescue_series(self, series_id: int) -> dict[str, Any] | None:
         rows = self._series_summary_rows(int(series_id))
@@ -1049,6 +1061,7 @@ class RescueMixin:
                 n.last_checked_at,
                 n.last_seen_at AS updated_at,
                 nt.text_raw,
+                COALESCE(nt.has_content, 0) AS has_content,
                 ro.action AS override_action,
                 ro.note AS override_note
             FROM novels n
@@ -1064,7 +1077,10 @@ class RescueMixin:
 
     def _novel_evaluation_payload(self, data: dict[str, Any]) -> dict[str, Any]:
         text_raw = str(data.get("text_raw") or "")
-        body_complete = bool(text_raw.strip())
+        if data.get("has_content") is None:
+            body_complete = bool(text_raw.strip())
+        else:
+            body_complete = bool(int(data.get("has_content") or 0))
 
         remote_status = str(data.get("remote_status") or "unknown")
         own_unavailable = self._remote_unavailable(
@@ -1111,6 +1127,7 @@ class RescueMixin:
             "updated_at": data.get("updated_at"),
             "override_action": data.get("override_action"),
             "override_note": str(data.get("override_note") or ""),
+            "pending_removal": self._pending_removal("novel", int(data["novel_id"])),
         }
 
     def evaluate_rescue_novel(self, novel_id: int) -> dict[str, Any] | None:
