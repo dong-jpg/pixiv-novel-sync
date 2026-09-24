@@ -299,7 +299,7 @@
 - [x] **T2-48 搜索计划**
   `preferences.py:209-216` `precise_queries` 用 `zip(primary_tags[:6], keywords)`；`broad_queries` 改用 `secondary_tags` 或精炼词；`build_search_plan` 产出 `exclude_terms` 并在 `_search_novels` 应用；客户端 `search_plan` 服务端归一化（queries ≤ 20、limit 1..100、query ≤ 200 字）。
 
-- [ ] **T2-49 去重与评分**
+- [x] **T2-49 去重与评分**
   `recommendations.py:190` 增加系列级归档排除（`SELECT 1 FROM novels WHERE series_id=?`）；`:400-432` 标签重合剔除画像 `primary_tags` 与通用标签后再计数；`_score` 给 `author_id ∈ preferred_authors` 加分；热度上限降到 < 12；字数按 `text_length / preferred_min_length` 对数分级；`existing` 在 `run()` 开头加载一次。
 
 - [ ] **T2-50 前端字段与超时**

@@ -176,6 +176,96 @@ def test_build_search_plan_enforces_minimum_length_filters(tmp_path: Path):
     db.close()
 
 
+def test_archived_series_and_generic_tag_overlap_do_not_false_positive(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    db.conn.execute("INSERT INTO users (user_id, name, raw_json) VALUES (9, 'A', '{}')")
+    db.conn.execute(
+        """
+        INSERT INTO novels (
+            novel_id, title, user_id, series_id, visible, restrict_value, x_restrict,
+            text_length, total_bookmarks, total_views, tags_json, raw_json, meta_hash
+        ) VALUES (10, '已归档', 9, 77, 1, 'public', 0, 10, 0, 0, '[]', '{}', 'h')
+        """
+    )
+    db.conn.commit()
+    service = RecommendationService(db, make_settings(tmp_path))
+    profile = {
+        "profile": {
+            "positive_preferences": {"tags": ["甜文"], "keywords": []},
+            "search_strategy": {"primary_tags": ["甜文"]},
+            "reading_bias": {"preferred_authors": ["9"], "preferred_min_length": 5000},
+        }
+    }
+    filters = {"single_min_chars": 1000, "exclude_archived": True}
+    filter_state = {
+        "archived_novel_ids": set(),
+        "recommended_novel_ids": set(),
+        "dismissed_novel_ids": set(),
+        "recommended_series_ids": set(),
+        "dismissed_series_ids": set(),
+        "muted_authors": set(),
+        "muted_tags": set(),
+    }
+    archived_series = SimpleNamespace(
+        id=3, text_length=8000, title="系列篇", caption="", tags=["甜文"],
+        user=SimpleNamespace(id=9, name="A"), total_bookmarks=10,
+        series=SimpleNamespace(id=77),
+    )
+    assert service._candidate_to_item(None, archived_series, {"query": "甜文"}, profile, filters, filter_state) is None
+
+    existing = [{
+        "author_id": 9,
+        "title": "完全不同的标题",
+        "tags": ["甜文", "原创", "R-18", "小说"],
+    }]
+    distinctive = SimpleNamespace(
+        id=4, text_length=8000, title="另一篇", caption="",
+        tags=["甜文", "原创", "R-18", "小说"],
+        user=SimpleNamespace(id=9, name="A"), total_bookmarks=10,
+    )
+    kept = service._candidate_to_item(
+        None, distinctive, {"query": "甜文"}, profile, filters, filter_state,
+        existing_items=existing,
+    )
+    assert kept is not None
+
+    crowded = SimpleNamespace(
+        id=5, text_length=8000, title="再一篇", caption="",
+        tags=["校园", "恋爱", "日常", "甜文"],
+        user=SimpleNamespace(id=9, name="A"), total_bookmarks=10,
+    )
+    dropped = service._candidate_to_item(
+        None, crowded, {"query": "甜文"}, profile, filters, filter_state,
+        existing_items=[{
+            "author_id": 9,
+            "title": "毫不相似",
+            "tags": ["校园", "恋爱", "日常", "甜文"],
+        }],
+    )
+    assert dropped is None
+
+    plain = SimpleNamespace(
+        id=6, text_length=8000, title="作者加分", caption="", tags=["甜文"],
+        user=SimpleNamespace(id=9, name="A"), total_bookmarks=10_000_000,
+    )
+    other = SimpleNamespace(
+        id=7, text_length=8000, title="作者加分", caption="", tags=["甜文"],
+        user=SimpleNamespace(id=3, name="B"), total_bookmarks=10_000_000,
+    )
+    preferred = service._score(plain, ["甜文"], profile, 0)
+    stranger = service._score(other, ["甜文"], profile, 0)
+    assert preferred[0] - stranger[0] == 8
+    bookmark_only = service._score(
+        SimpleNamespace(title="", caption="", total_bookmarks=10_000_000, text_length=0, user=None),
+        [],
+        {"profile": {}},
+        0,
+    )[0]
+    assert bookmark_only < 12
+    db.close()
+
+
 def test_candidate_filters_short_single_and_scores(tmp_path: Path):
     db = Database(tmp_path / "rec.db")
     db.init_schema()

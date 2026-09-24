@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import math
 from collections.abc import Callable
 from typing import Any
 
@@ -14,6 +15,7 @@ from .sync.utils import retry_on_pixiv_error
 
 # 单个系列拉取章节时的安全翻页上限，避免异常或循环的 next_url 造成无限翻页
 _SERIES_PAGE_SAFETY_LIMIT = 50
+_GENERIC_OVERLAP_TAGS = {"原创", "R-18", "R-18G", "小说"}
 
 
 class RecommendationService:
@@ -106,6 +108,7 @@ class RecommendationService:
             _emit("phase", {"phase": "登录 Pixiv"})
             api = self.api or self._login_api()
             filter_state = self.db.get_recommendation_filter_state()
+            existing_items = list(self.db.get_recent_recommendation_items(limit=100, status="new"))
             # Phase 5.6: 系列去重+memo缓存
             seen_series: set[int] = set()
             series_length_cache: dict[int, tuple[int, int]] = {}
@@ -141,6 +144,7 @@ class RecommendationService:
                         item = self._candidate_to_item(
                             api, novel, query, profile, plan.get("filters") or {}, filter_state,
                             series_length_cache, pending_items=pending_items,
+                            existing_items=existing_items,
                         )
                     except InterruptedError:
                         raise
@@ -273,6 +277,7 @@ class RecommendationService:
         filter_state: dict[str, Any],
         series_length_cache: dict[int, tuple[int, int]] | None = None,
         pending_items: list[dict[str, Any]] | None = None,
+        existing_items: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         novel_id = int(getattr(novel, "id", 0) or 0)
         if not novel_id:
@@ -291,10 +296,26 @@ class RecommendationService:
         title = str(getattr(novel, "title", "") or "")
         author_id = int(getattr(getattr(novel, "user", None), "id", 0) or 0)
         tags = self._tags(novel)
-        if self._is_similar_to_existing(title, author_id, tags, filters, pending_items=pending_items):
+        profile_data = profile.get("profile") or profile
+        primary_tags = set((profile_data.get("search_strategy") or {}).get("primary_tags") or [])
+        if self._is_similar_to_existing(
+            title,
+            author_id,
+            tags,
+            filters,
+            pending_items=pending_items,
+            existing_items=existing_items,
+            ignored_tags=primary_tags | _GENERIC_OVERLAP_TAGS,
+        ):
             return None
 
         series_id = self._series_id(novel)
+        if (
+            filters.get("exclude_archived", True)
+            and series_id
+            and self._series_has_archived_novel(series_id)
+        ):
+            return None
         recommended_series = filter_state.get("recommended_series_ids", set())
         dismissed_series = filter_state.get("dismissed_series_ids", set())
         if (
@@ -408,20 +429,31 @@ class RecommendationService:
         score = 0.0
         score += len(matched_tags) * 12
         score += len(matched_keywords) * 6
-        # 7.5: 书签对数归一化(避免高书签作品权重过大)
-        import math
         bookmarks = int(getattr(novel, "total_bookmarks", 0) or 0)
         if bookmarks > 0:
-            score += min(15, math.log10(bookmarks + 1) * 5)
-        # 7.5: 负向惩罚
+            score += min(11, math.log10(bookmarks + 1) * 5)
         score -= len(negative_tags) * 20
         score -= len(negative_keywords) * 10
 
-        if series_total_text_length >= 20000:
-            score += 10
-        elif int(getattr(novel, "text_length", 0) or 0) >= 5000:
-            score += 5
+        bias = profile_data.get("reading_bias") or {}
+        preferred_authors = {str(item) for item in (bias.get("preferred_authors") or []) if str(item)}
+        author = getattr(novel, "user", None)
+        author_id = int(getattr(author, "id", 0) or 0) if author else 0
+        author_name = str(getattr(author, "name", "") or "") if author else ""
+        if str(author_id) in preferred_authors or author_name in preferred_authors:
+            score += 8
+        preferred_min = max(1, int(bias.get("preferred_min_length") or 5000))
+        length = series_total_text_length or int(getattr(novel, "text_length", 0) or 0)
+        if length > 0:
+            score += min(10, math.log1p(length / preferred_min) * 4)
         return round(score, 2), {"tags": matched_tags, "keywords": matched_keywords, "negative_tags": negative_tags, "negative_keywords": negative_keywords}
+
+    def _series_has_archived_novel(self, series_id: int) -> bool:
+        row = self.db.conn.execute(
+            "SELECT 1 FROM novels WHERE series_id = ? LIMIT 1",
+            (series_id,),
+        ).fetchone()
+        return row is not None
 
     def _series_id(self, novel: Any) -> int | None:
         series = getattr(novel, "series", None)
@@ -500,29 +532,31 @@ class RecommendationService:
         tags: list[str],
         filters: dict[str, Any],
         pending_items: list[dict[str, Any]] | None = None,
+        existing_items: list[dict[str, Any]] | None = None,
+        ignored_tags: set[str] | None = None,
     ) -> bool:
         """检测与已推荐项目的相似度,避免重复推荐
 
         pending_items: 本轮尚未落库的内存候选（原子发布模式下同一轮内的去重依据）。
+        existing_items: run() 开头加载的一轮快照，避免每个候选再查一次库。
         """
         threshold = float(filters.get("similarity_threshold", 0.8))
-        existing = self.db.get_recent_recommendation_items(limit=100, status="new")
-        existing = list(existing) + list(pending_items or [])
+        if existing_items is None:
+            existing = list(self.db.get_recent_recommendation_items(limit=100, status="new"))
+        else:
+            existing = list(existing_items)
+        existing.extend(pending_items or [])
+        ignore = ignored_tags or set()
 
         for item in existing:
-            # 相同作者+高度相似标题
-            if item["author_id"] == author_id:
-                similarity = difflib.SequenceMatcher(None, title, item["title"]).ratio()
-                if similarity >= threshold:
-                    return True
-
-            # 相同作者+标签高度重合
-            if item["author_id"] == author_id:
-                existing_tags = set(item.get("tags") or [])
-                common_tags = set(tags) & existing_tags
-                if len(common_tags) >= 3 and len(existing_tags) > 0:
-                    overlap_ratio = len(common_tags) / len(existing_tags)
-                    if overlap_ratio >= 0.7:
-                        return True
+            if item.get("author_id") != author_id:
+                continue
+            similarity = difflib.SequenceMatcher(None, title, str(item.get("title") or "")).ratio()
+            if similarity >= threshold:
+                return True
+            existing_tags = set(item.get("tags") or []) - ignore
+            common_tags = (set(tags) - ignore) & existing_tags
+            if len(common_tags) >= 3 and existing_tags and len(common_tags) / len(existing_tags) >= 0.7:
+                return True
 
         return False
