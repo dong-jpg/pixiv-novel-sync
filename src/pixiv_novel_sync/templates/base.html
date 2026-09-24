@@ -336,6 +336,7 @@
       },
     };
 
+    window.TASK_LABELS = {[ task_labels | tojson ]};
     window.initVueApp = function(setupFunc) {
       const { createApp } = Vue;
       const app = createApp(setupFunc);

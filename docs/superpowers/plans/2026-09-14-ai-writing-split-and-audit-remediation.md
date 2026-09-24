@@ -330,7 +330,7 @@
 - [x] **T2-57 公共 `formatDbTime` / `toast`**
   `base.html` 提供 `window.formatDbTime(value, opts)` 与 `window.toast()`；替换 `user_detail.html:79`、`series_detail.html:58`、`pending_deletions.html:87`、`follows.html:104`、`settings_models.html:132` 及全部 `alert()` / 页顶 message。
 
-- [ ] **T2-58 任务命名统一**
+- [x] **T2-58 任务命名统一**
   后端在 `shell-data` 或 `base.html` 下发 `TASK_LABELS`，删 `dashboard.html:181`、`dashboard_logs.html:369/677`、`settings_sync.html:402/604` 三份副本与 `following_series` 死键。
 
 - [ ] **T2-59 `app-modal` 无障碍**

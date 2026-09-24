@@ -253,6 +253,8 @@ TASK_LABELS = {
     "pending_deletion_detection": "检测取消收藏/追更",
     "preference_analyze": "增量分析本地偏好",
     "recommendation_run": "生成推荐",
+    "keyword_clean": "关键词清洗",
+    "manual": "手工同步",
 }
 
 

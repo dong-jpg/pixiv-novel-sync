@@ -178,20 +178,6 @@
     setup() {
       const { ref, computed, onMounted, onUnmounted } = Vue;
 
-      // 任务类型 → 中文名。与后端 web/managers.py TASK_LABELS、
-      // dashboard_logs.html getTaskTypeName 对齐；横条里显示当前活动任务名用。
-      const TASK_TYPE_LABELS = {
-        bookmark: '同步收藏小说', bookmarks: '同步收藏小说',
-        following_users: '同步关注列表', following_list: '同步关注列表',
-        following_novels: '同步关注小说', subscribed_series: '同步追更系列',
-        user_backup: '全量备份用户', user_status: '检查用户状态',
-        novel_status: '检查小说状态', series_status: '检查系列状态',
-        pending_deletion_detection: '检测取消收藏',
-        manual: '手工同步',
-        preference_analyze: '增量分析本地偏好', recommendation_run: '生成推荐',
-      };
-
-
       // ── State ──
       const stats = ref({ novels_count: 0, users_count: 0, series_count: 0, pending_count: 0 });
       const loadingStats = ref(true);
@@ -232,7 +218,7 @@
         const list = job.task_list || [];
         const idx = Math.min(job.current_task_index || 0, Math.max(list.length - 1, 0));
         const key = list[idx] || job.job_type || '';
-        return TASK_TYPE_LABELS[key] || key || '';
+        return (window.TASK_LABELS || {})[key] || key || '';
       });
 
       // ── Data Fetching ──

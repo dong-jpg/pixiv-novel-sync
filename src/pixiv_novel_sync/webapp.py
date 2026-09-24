@@ -2218,5 +2218,9 @@ def create_app(
         finally:
             db.close()
 
+    @app.context_processor
+    def inject_task_labels():
+        return {"task_labels": TASK_LABELS}
+
     return app
 

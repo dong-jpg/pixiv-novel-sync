@@ -413,9 +413,11 @@ def test_dashboard_current_task_name_uses_chinese_labels():
     不再显示英文内部键。活动列表面板移除后，映射表仍由 currentTaskName 使用。"""
     html = read(TEMPLATES / "dashboard.html")
 
-    assert "TASK_TYPE_LABELS" in html
+    assert "window.TASK_LABELS" in html
     assert "currentTaskName" in html
-    assert "novel_status: '检查小说状态'" in html
+    assert "following_series" not in html
+    base = read(TEMPLATES / "base.html")
+    assert "window.TASK_LABELS" in base
 
 
 def test_dashboard_status_bar_keeps_autosync_toggle_and_stop():

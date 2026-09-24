@@ -656,20 +656,7 @@
         return map[status] || { label: status, type: 'gray' };
       };
 
-      const getTaskTypeName = (type) => {
-        const map = {
-          'bookmark': '收藏同步', 'bookmarks': '收藏同步',
-          'following_users': '关注用户', 'following_list': '关注列表', 'following_novels': '关注小说', 'following_series': '关注系列',
-          'subscribed_series': '追更系列',
-          'user_status': '检查用户状态', 'novel_status': '检查小说状态', 'series_status': '检查系列状态',
-          'pending_deletion_detection': '检测取消',
-          'preference_analyze': '增量分析本地偏好', 'recommendation_run': '生成推荐',
-          'manual': '手工任务',
-          // AI 任务（与后端 storage/tasks.py 的 _AI_TASK_LABELS 对齐）
-          'keyword_clean': '关键词清洗'
-        };
-        return map[type] || type;
-      };
+      const getTaskTypeName = (type) => (window.TASK_LABELS || {})[type] || type;
 
       const ABORT_REASON_LABELS = {
         'rate_limited': '疑似 Pixiv 限流，已中止本轮',
