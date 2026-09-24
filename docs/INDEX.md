@@ -2,7 +2,7 @@
 
 **项目**: Pixiv Novel Sync
 **维护者**: dong-jpg
-**最近更新**: 2026-09-14
+**最近更新**: 2026-09-24
 
 ---
 
@@ -47,9 +47,7 @@
 
 ### 进行中
 
-> **2026-08-24 核实结论：下列 3 份实施计划均未开始实施。** 抽查交付物全部缺失：`refresh_rescue_entities()`、`recommendation_search_plans` 表、`JobType.RECOMMENDATION_SYNC`、task log owner lease、`explanation_source` 字段在代码中均不存在；计划引用的测试文件（`test_rescue_catalog_refresh` / `test_rescue_catalog_filters` / `test_recommendation_search_plans` / `test_recommendation_feedback` / `test_recommendation_sync` / `test_preference_streams` / `test_task_log_leases`）都没有创建。计划内 checkbox 也全为未勾选。（第 4 份「AI 偏好注入与成人 Agent 整改计划」涉及 AI 写作/成人模块，已随模块移至 `ai-writing` 分支，不在本索引维护。）
->
-> 提交 `104c717 fix: full audit remediation` 完成的是 2026-08-05 那一轮整改，**不是**这些计划。因此它们描述的是**目标状态，不是当前行为**——阅读代码时不要以此为准。
+> **2026-09-24：** 2026-08-14 三份计划没有按原文整份落地。能用更小改动盖住的，已经进了 2026-09-14 整改（救援增量刷新、推荐搜索计划、目录差量）。明确不做的是 task log owner lease、分页游标、trash manifest、AI 总结 / 解释来源、成人偏好注入、审查阶段实时 progress，以及 `recommendation_search_plans` 表和 `JobType.RECOMMENDATION_SYNC`。2026-08-28 吞吐计划已拆成 phase 1–3。这些文件描述的是当时的目标，不是当前行为。
 
 | 文档 | 说明 |
 |------|------|

@@ -355,7 +355,7 @@
 - [ ] **T3-03 文档修正**（报告 §6 表逐条）
   重点：`JOB_SYSTEM.md` :65/:75/:82/:95/:138/:159/§3.5/§5 `novel_status_batch_size`；`UNIFIED` §5.3/§7.2/§10.2/§18/:201/:310/§12.1；`PREFERENCE` §7.2/§7.4/§13.5/§10；`RESCUE_USER_GUIDE` :129/:135/:137/§3.3/§4.1；`MODEL_ROUTING_GUIDE` :100/:112/:141；`frontend-api-contract` `follows` / `progress` / `logs days` / `users search` / `novels/{id}` 字段 / 三种信封形状 / `detail` 形状 / `preference_web.fail` 400 / 目录响应字段 / 成人 cancel body；`frontend-pages` partial 表补 `dashboard_ai_health_band.html`、`source_url`、系统页「立刻」→「一小时内」；`library-os-style-guide` Buttons / Forms / Tables 节与实现对齐或删 `library-*` 类；`INDEX.md` 把 4 份 08-14 计划改为「部分以其它方式实现，剩余：task_logs lease、pagination guard、trash manifest、AI 总结 / 解释、成人偏好注入、审查阶段实时 progress」，`2026-08-28-sync-throughput-and-budget.md` 标「已拆为 phase1-3」；`CLAUDE.md` 测试数、`except Exception` 描述、content-hash 描述、`Retry-After` 描述。
 
-- [ ] **T3-04 需求缺口决策**（做或明确不做，写进 UNIFIED）
+- [x] **T3-04 需求缺口决策**（做或明确不做，写进 UNIFIED）
   偏好：分析范围 + scope fingerprint、热度分布、`relationship_dynamics / tone / pacing / narrative_patterns`（或删 `preference_context` strong 档消费）、AI 结构化总结、三个 stream 端点、`runs/<id>`、`items/<id>/sync` + `RECOMMENDATION_SYNC`、屏蔽标签 / 待阅读 / 取消屏蔽 UI、多画像 UI、删除历史。同步：task_logs owner lease / heartbeat、seen-cursor、trash manifest + 启动重放、`novel_status_batch_size` 入 `SyncSettings` 或删文档、用户备份任务级重试。救援：`source_url` 进列表 / API / 模板，4593 项 fixture 与 `verify_rescue_performance.py`。
 
 ---
