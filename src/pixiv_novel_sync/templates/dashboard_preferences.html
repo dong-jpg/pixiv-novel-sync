@@ -20,6 +20,8 @@
   </div>
 
   <main class="space-y-4">
+      <section v-if="pageLoading" class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-sm text-pixiv-gray">正在加载偏好…</section>
+      <template v-else>
       <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
         <div class="flex items-start justify-between gap-3">
           <div>
@@ -29,7 +31,7 @@
           <a href="/dashboard/logs" class="text-xs px-3 py-1.5 bg-gray-100 rounded hover:bg-gray-200 whitespace-nowrap">查看任务日志</a>
         </div>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm mt-4">
-          <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-pixiv-gray">任务状态</div><div class="font-bold text-gray-900">{{ analysisJob?.status || '空闲' }}</div></div>
+          <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-pixiv-gray">任务状态</div><div class="font-bold text-gray-900">{{ taskStatusText(analysisJob?.status) }}</div></div>
           <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-pixiv-gray">本次处理</div><div class="font-bold text-gray-900">{{ analysisResult?.processed_this_run ?? '-' }}</div></div>
           <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-pixiv-gray">累计已分析</div><div class="font-bold text-gray-900">{{ analysisResult?.analyzed_total ?? selected?.stats?.novel_count ?? 0 }}</div></div>
           <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-pixiv-gray">剩余待分析</div><div class="font-bold text-gray-900">{{ analysisResult?.remaining ?? '-' }}</div></div>
@@ -148,6 +150,7 @@
           <p v-if="!recommendationItems.length" class="text-sm text-pixiv-gray text-center py-8">还没有推荐结果</p>
         </div>
       </section>
+      </template>
     </main>
 </div>
 {% endblock %}
@@ -160,6 +163,11 @@ window.initVueApp({
     const profiles = ref([]);
     const selected = ref(null);
     const loading = ref(false);
+    const pageLoading = ref(true);
+    const taskStatusText = (status) => ({
+      queued: '排队中', running: '运行中', succeeded: '已完成', failed: '失败',
+      cancelled: '已取消', partial: '部分完成',
+    }[status] || (status ? status : '空闲'));
     const recommendationLoading = ref(false);
     const searchPlan = ref(null);
     const recommendationItems = ref([]);
@@ -200,13 +208,13 @@ window.initVueApp({
         if (!job) throw new Error(window.errorText(data, res));
         if (onUpdate) onUpdate(job);
 
-        if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
+        if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled' || job.status === 'partial') {
           return job;
         }
 
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
-      throw new Error('任务超时');
+      return { status: 'running', background: true };
     }
 
     async function loadRecommendationItems() {
@@ -256,12 +264,14 @@ window.initVueApp({
 
         // 轮询job状态
         const result = await pollJob(jobId);
-        if (result.status === 'succeeded') {
+        if (result.background) {
+          showMessage('推书仍在后台运行，可到任务日志查看', 'warning');
+        } else if (result.status === 'succeeded') {
           await loadRecommendationItems();
-          const saved = result.result?.stats?.saved || 0;
+          const saved = result.stats?.stats?.saved || 0;
           showMessage(`推书完成：保存 ${saved} 条`);
         } else {
-          throw new Error(result.message || '推书失败');
+          throw new Error(result.error || result.message || '推书失败');
         }
       } catch (e) {
         showMessage(e.message || String(e), 'error');
@@ -316,7 +326,9 @@ window.initVueApp({
         });
         analysisJob.value = result;
         if (result.stats) analysisResult.value = result.stats;
-        if (result.status === 'succeeded') {
+        if (result.background) {
+          showMessage('分析仍在后台运行，可到任务日志查看', 'warning');
+        } else if (result.status === 'succeeded') {
           await loadProfiles();
           showMessage('本地偏好画像已增量更新');
         } else {
@@ -334,10 +346,11 @@ window.initVueApp({
         await loadProfiles();
         await loadRecommendationItems();
       } catch (e) { showMessage(e.message || String(e), 'error'); }
+      finally { pageLoading.value = false; }
     });
 
     return {
-      profiles, selected, loading, recommendationLoading, searchPlan, recommendationItems,
+      profiles, selected, loading, pageLoading, taskStatusText, recommendationLoading, searchPlan, recommendationItems,
       message, messageType, analysisJob, analysisResult, confidenceText, loadProfiles, analyze,
       buildSearchPlan, runRecommendations, loadRecommendationItems, feedback, muteAuthor, itemUrl,
     };

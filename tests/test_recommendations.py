@@ -48,6 +48,16 @@ def test_page_delay_forwards_stop_requested(tmp_path: Path, monkeypatch) -> None
     db.close()
 
 
+def test_preferences_page_keeps_running_jobs_in_the_background() -> None:
+    text = Path("src/pixiv_novel_sync/templates/dashboard_preferences.html").read_text(encoding="utf-8")
+    assert "任务超时" not in text
+    assert "仍在后台运行" in text
+    assert "result.stats?.stats?.saved" in text
+    assert "result.error || result.message" in text
+    assert "pageLoading" in text
+    assert "排队中" in text
+
+
 def test_build_search_plan_from_profile(tmp_path: Path):
     db = Database(tmp_path / "rec.db")
     db.init_schema()

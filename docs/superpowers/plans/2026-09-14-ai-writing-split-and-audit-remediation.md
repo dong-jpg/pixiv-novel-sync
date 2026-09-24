@@ -302,7 +302,7 @@
 - [x] **T2-49 去重与评分**
   `recommendations.py:190` 增加系列级归档排除（`SELECT 1 FROM novels WHERE series_id=?`）；`:400-432` 标签重合剔除画像 `primary_tags` 与通用标签后再计数；`_score` 给 `author_id ∈ preferred_authors` 加分；热度上限降到 < 12；字数按 `text_length / preferred_min_length` 对数分级；`existing` 在 `run()` 开头加载一次。
 
-- [ ] **T2-50 前端字段与超时**
+- [x] **T2-50 前端字段与超时**
   `dashboard_preferences.html` `result.stats?.stats?.saved` 与 `result.error || result.message`；去掉 5 分钟硬超时改「仍在后台运行」；任务状态中文化；初始 loading。
 
 - [ ] **T2-51 杂项**
