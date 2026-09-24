@@ -437,7 +437,7 @@
 - [ ] **T5-07** 小说 / 系列详情：阅读进度接后端三端点；救援按钮解释；字号档位提示；删除成功不用 `alert`。
 - [ ] **T5-08** 待删除页：确认框显示本地章数 / 字数；「忽略恢复」文案；按钮 loading；复用 `app-pagination`。
 - [ ] **T5-09** 关注作者页：错误态重试；状态 tab 补 `cleared / unknown`；搜索框。
-- [ ] **T5-10** 偏好页：合并「生成搜索计划」与「执行推书」；`scope` 参数与设置页关系说明。
+- [x] **T5-10** 偏好页：合并「生成搜索计划」与「执行推书」；`scope` 参数与设置页关系说明。
 - [ ] **T5-11** AI 创作（ai-writing）：SSE 中断引导到日志页续跑；路由 progress 渲染 `action/reason`；`detectAITells` 不用 `alert`；阅读页应用候选不跳回第 1 章；伏笔空态二次加载；pipeline 弹窗移动端布局。
 - [x] **T5-12** userscript（main）：章节级错误不清空面板；按 `response.status` 分支文案；失效判定只匹配 Pixiv 错误容器；SPA 路由变化重新触发；`API_ORIGIN` 可配置。
 

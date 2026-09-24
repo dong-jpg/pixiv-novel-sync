@@ -26,7 +26,7 @@
         <div class="flex items-start justify-between gap-3">
           <div>
             <h2 class="text-sm font-bold text-gray-900">增量分析进度</h2>
-            <p class="text-sm text-pixiv-gray mt-1">本地画像会持续更新同一个默认画像；定时任务每批处理未分析小说，已分析内容不会重复处理。</p>
+            <p class="text-sm text-pixiv-gray mt-1">本地画像会持续更新同一个默认画像。这里的最少字数只作用于这一次分析；定时跑不跑、隔多久跑，在设置页的调度里，不会被这次分析改掉。</p>
           </div>
           <a href="/dashboard/logs" class="text-xs px-3 py-1.5 bg-gray-100 rounded hover:bg-gray-200 whitespace-nowrap">查看任务日志</a>
         </div>
@@ -92,8 +92,7 @@
         <div class="flex items-center justify-between gap-3 mb-3">
           <h3 class="text-sm font-bold text-gray-900">推荐搜索词</h3>
           <div class="flex gap-2">
-            <button @click="buildSearchPlan" :disabled="recommendationLoading" class="text-xs px-3 py-1.5 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50">生成搜索计划</button>
-            <button @click="runRecommendations" :disabled="recommendationLoading || !searchPlan" class="text-xs px-3 py-1.5 bg-brand-500 text-white rounded hover:bg-brand-600 disabled:opacity-50">{{ recommendationLoading ? '推书中…' : '执行 Pixiv 推书' }}</button>
+            <button @click="runRecommendations" :disabled="recommendationLoading || !selected" class="text-xs px-3 py-1.5 bg-brand-500 text-white rounded hover:bg-brand-600 disabled:opacity-50">{{ recommendationLoading ? '推书中…' : '按当前画像推书' }}</button>
           </div>
         </div>
         <div class="space-y-3 text-sm">
