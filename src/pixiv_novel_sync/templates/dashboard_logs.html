@@ -406,7 +406,6 @@
       const continueError = ref('');
       const cancelRunning = ref(false);
       const cancelNotice = ref('');
-      let csrfToken = '';
       // main 已剥离写作流，历史 ai_jobs 没有可手动候选继续的任务类型
       const RESUMABLE_TASK_TYPES = new Set();
 
@@ -529,15 +528,6 @@
         }
       };
 
-      const ensureCsrfToken = async () => {
-        if (csrfToken) return csrfToken;
-        const response = await fetch('/api/csrf-token');
-        const data = await response.json();
-        if (!response.ok || !data.csrf_token) throw new Error(data.error || '无法获取安全令牌');
-        csrfToken = data.csrf_token;
-        return csrfToken;
-      };
-
       const refreshAiJobDetail = async (jobId) => {
         const response = await fetch('/api/dashboard/ai/jobs/' + encodeURIComponent(jobId));
         const payload = await response.json();
@@ -578,11 +568,10 @@
         continueOutput.value = '';
         continueError.value = '';
         try {
-          const token = await ensureCsrfToken();
           const randomPart = window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-          const response = await fetch(`/api/dashboard/ai/jobs/${encodeURIComponent(parent.job_id)}/continue`, {
+          const response = await window.csrfFetch(`/api/dashboard/ai/jobs/${encodeURIComponent(parent.job_id)}/continue`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               parent_job_id: parent.job_id,
               idempotency_key: `continue-${randomPart}`,
@@ -592,7 +581,7 @@
           });
           if (!response.ok) {
             const payload = await response.json();
-            throw new Error(payload.error || '继续任务请求失败');
+            throw new Error(window.errorText(payload, response));
           }
           if (!response.body) throw new Error('浏览器不支持流式响应');
           const reader = response.body.getReader();

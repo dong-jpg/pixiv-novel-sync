@@ -207,8 +207,8 @@ def test_rescue_detail_pages_support_manual_override_with_csrf():
     for html, item_type in ((novel, "novel"), (series, "series")):
         assert "rescueOverride" in html
         assert "rescueMessage" in html
-        assert "ensureCsrfToken" in html
-        assert "X-CSRF-Token" in html
+        assert "window.csrfFetch" in html
+        assert "ensureCsrfToken" not in html
         assert f"const itemType = '{item_type}'" in html
         assert "/api/dashboard/rescue-overrides/" in html
         assert "saveRescueOverride" in html

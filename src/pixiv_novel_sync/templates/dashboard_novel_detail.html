@@ -431,26 +431,16 @@
       const rescueMessage = ref('');
       const rescueMessageType = ref('success');
       const savingRescue = ref(false);
-      let csrfToken = '';
 
       const syncRescueOverride = (rescue) => {
         rescueOverride.action = rescue?.override_action || '';
         rescueOverride.note = rescue?.override_note || '';
       };
 
-      const ensureCsrfToken = async () => {
-        if (csrfToken) return csrfToken;
-        const response = await fetch('/api/csrf-token');
-        const data = await response.json();
-        if (!response.ok || !data.csrf_token) throw new Error(data.error || '无法获取安全令牌');
-        csrfToken = data.csrf_token;
-        return csrfToken;
-      };
-
       const refreshRescueState = async () => {
         const response = await fetch(`/api/dashboard/novels/${encodeURIComponent(novelId)}`);
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || '刷新救援状态失败');
+        if (!response.ok) throw new Error(window.errorText(data, response));
         novel.value.rescue = data.rescue;
         syncRescueOverride(data.rescue);
       };
@@ -459,14 +449,13 @@
         savingRescue.value = true;
         rescueMessage.value = '';
         try {
-          const token = await ensureCsrfToken();
-          const response = await fetch(`/api/dashboard/rescue-overrides/${itemType}/${novelId}`, {
+          const response = await window.csrfFetch(`/api/dashboard/rescue-overrides/${itemType}/${novelId}`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action, note: rescueOverride.note })
           });
           const data = await response.json();
-          if (!response.ok || data.ok === false) throw new Error(data.error || '保存失败');
+          if (!response.ok || data.ok === false) throw new Error(window.errorText(data, response));
           await refreshRescueState();
           rescueMessageType.value = 'success';
           rescueMessage.value = '人工纠错已保存';
@@ -482,13 +471,11 @@
         savingRescue.value = true;
         rescueMessage.value = '';
         try {
-          const token = await ensureCsrfToken();
-          const response = await fetch(`/api/dashboard/rescue-overrides/${itemType}/${novelId}`, {
-            method: 'DELETE',
-            headers: { 'X-CSRF-Token': token }
+          const response = await window.csrfFetch(`/api/dashboard/rescue-overrides/${itemType}/${novelId}`, {
+            method: 'DELETE'
           });
           const data = await response.json();
-          if (!response.ok || data.ok === false) throw new Error(data.error || '恢复失败');
+          if (!response.ok || data.ok === false) throw new Error(window.errorText(data, response));
           await refreshRescueState();
           rescueMessageType.value = 'success';
           rescueMessage.value = '已恢复自动判断';
@@ -675,7 +662,7 @@
         seriesInfo, chapterIndex, prevNovelId, nextNovelId,
         formattedContent, formatNumber, formatTextLength, formatDate,
         fontSize, cycleFontSize, rescueOverride, rescueMessage, rescueMessageType,
-        savingRescue, ensureCsrfToken, saveRescueOverride, clearRescueOverride
+        savingRescue, saveRescueOverride, clearRescueOverride
       };
     }
   });
