@@ -327,7 +327,7 @@
 - [x] **T2-56 五处手写 fetch 迁 `csrfFetch`**
   `dashboard_novel_detail.html:439-490`、`dashboard_series_detail.html:203-254`、`dashboard_logs.html:540-603`；改 `tests/test_frontend_library_os.py:395-407` 断言为「含 `window.csrfFetch`、不含 `ensureCsrfToken` 副本」。
 
-- [ ] **T2-57 公共 `formatDbTime` / `toast`**
+- [x] **T2-57 公共 `formatDbTime` / `toast`**
   `base.html` 提供 `window.formatDbTime(value, opts)` 与 `window.toast()`；替换 `user_detail.html:79`、`series_detail.html:58`、`pending_deletions.html:87`、`follows.html:104`、`settings_models.html:132` 及全部 `alert()` / 页顶 message。
 
 - [ ] **T2-58 任务命名统一**

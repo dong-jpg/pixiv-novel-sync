@@ -85,7 +85,7 @@
                 <app-badge type="gray">{{ item.item_type === 'novel' ? '小说' : '系列' }}</app-badge>
               </div>
               <div class="text-xs text-pixiv-gray truncate">作者: {{ item.author_name || '未知' }}</div>
-              <div class="text-[10px] text-gray-400 font-mono mt-1 truncate">检测于 {{ (item.detected_at || '-').substring(0, 16) }}</div>
+              <div class="text-[10px] text-gray-400 font-mono mt-1 truncate">检测于 {{ formatDbTime(item.detected_at) || '-' }}</div>
             </div>
 
             <div class="flex gap-2 mt-3 pt-3 border-t border-gray-100">
@@ -180,9 +180,9 @@
             loadPending(currentPage.value);
           } else {
             const data = await resp.json().catch(() => ({}));
-            alert(errorText(data, resp));
+            window.toast(errorText(data, resp));
           }
-        } catch (e) { alert('网络错误'); }
+        } catch (e) { window.toast('网络错误'); }
       };
 
       const restoreDeletion = async (id) => {
@@ -192,9 +192,9 @@
             loadPending(currentPage.value);
           } else {
             const data = await resp.json().catch(() => ({}));
-            alert(errorText(data, resp));
+            window.toast(errorText(data, resp));
           }
-        } catch (e) { alert('网络错误'); }
+        } catch (e) { window.toast('网络错误'); }
       };
 
       const triggerDetection = async () => {
@@ -205,11 +205,11 @@
           if (resp.ok) {
             pollDetectionStatus(data.job ? data.job.job_id : null);
           } else {
-            alert('启动检测失败：' + errorText(data, resp));
+            window.toast('启动检测失败：' + errorText(data, resp));
             detecting.value = false;
           }
         } catch (e) {
-          alert('请求失败');
+          window.toast('请求失败');
           detecting.value = false;
         }
       };

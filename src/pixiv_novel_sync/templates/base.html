@@ -226,6 +226,32 @@
       }
       return `HTTP ${response ? response.status : '?'}`;
     };
+    window.formatDbTime = function (value, opts) {
+      if (value == null || value === '' || value === '-') return value ? String(value) : '';
+      let iso = String(value).trim();
+      if (!iso.includes('T')) iso = iso.replace(' ', 'T');
+      if (!/[zZ]$|[+-]\d\d:?\d\d$/.test(iso)) iso += 'Z';
+      const parsed = new Date(iso);
+      if (Number.isNaN(parsed.getTime())) return String(value);
+      return parsed.toLocaleString('zh-CN', Object.assign({
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+      }, opts || {}));
+    };
+    window.toast = function (message, type) {
+      let el = document.getElementById('app-toast');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'app-toast';
+        el.setAttribute('role', 'status');
+        document.body.appendChild(el);
+      }
+      el.textContent = message || '';
+      el.className = 'fixed bottom-4 right-4 z-[80] max-w-sm px-4 py-3 rounded-lg shadow-lg text-sm ' +
+        (type === 'error' ? 'bg-red-600 text-white' : 'bg-gray-900 text-white');
+      clearTimeout(window._toastTimer);
+      window._toastTimer = setTimeout(function () { el.classList.add('hidden'); }, 3500);
+    };
 
     // SSE 流式读取。此前 ai / wizard / reader 三页共写了 7 份几乎相同的
     // getReader + 手工切帧代码，任何一处修 bug 都修不全，统一收在这里。
@@ -313,6 +339,8 @@
     window.initVueApp = function(setupFunc) {
       const { createApp } = Vue;
       const app = createApp(setupFunc);
+      app.config.globalProperties.formatDbTime = window.formatDbTime;
+      app.config.globalProperties.toast = window.toast;
       if (typeof registerGlobalComponents === 'function') {
         registerGlobalComponents(app);
       }

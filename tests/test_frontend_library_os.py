@@ -382,6 +382,20 @@ def test_dashboard_recommendations_are_a_paged_list_not_a_card_grid():
     assert 'class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">' not in html
 
 
+def test_shared_time_and_toast_helpers_exist():
+    html = read(TEMPLATES / "base.html")
+    assert "window.formatDbTime" in html
+    assert "window.toast" in html
+    for name in (
+        "dashboard_user_detail.html",
+        "dashboard_series_detail.html",
+        "dashboard_pending_deletions.html",
+        "dashboard_follows.html",
+        "dashboard_settings_models.html",
+    ):
+        assert "formatDbTime(" in read(TEMPLATES / name)
+
+
 def test_dashboard_header_is_a_rounded_library_card_not_a_square_sticky_bar():
     """截图里控制台头部是通栏直角横条，与下方 22px 圆角卡片割裂。
 

@@ -101,7 +101,7 @@
 
           <!-- Updated time -->
           <div class="text-[10px] text-gray-400 font-mono mt-2">
-            更新于 {{ (item.updated_at || '-').substring(0, 10) }}
+            更新于 {{ formatDbTime(item.updated_at) || '-' }}
           </div>
         </div>
       </a>

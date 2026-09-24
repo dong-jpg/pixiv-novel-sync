@@ -130,7 +130,7 @@
               <div class="rounded border border-gray-100 bg-gray-50 px-2 py-1.5"><div class="text-gray-500">已发现可用</div><div class="font-semibold text-gray-900">{{ modelCatalog(provider).discovered_available }}</div></div>
               <div class="rounded border border-gray-100 bg-gray-50 px-2 py-1.5"><div class="text-gray-500">可路由</div><div class="font-semibold text-gray-900">{{ modelCatalog(provider).routable }}</div></div>
             </div>
-            <div v-if="provider.models_synced_at" class="text-xs text-gray-500">最近成功：{{ provider.models_synced_at }}</div>
+            <div v-if="provider.models_synced_at" class="text-xs text-gray-500">最近成功：{{ formatDbTime(provider.models_synced_at) }}</div>
             <div v-if="provider.models_sync_error" class="text-xs text-amber-700">最近同步错误：{{ provider.models_sync_error }}</div>
             <div v-if="modelSyncOperations[provider.id] && ['failed', 'cancelled', 'timeout', 'timed_out'].includes(modelSyncOperations[provider.id].status)" class="text-xs text-amber-700">旧目录仍可使用</div>
             <div class="text-xs text-amber-700">模型池发生故障转移时，Prompt 可能发送到链中的其他 Provider，请确认隐私边界。</div>

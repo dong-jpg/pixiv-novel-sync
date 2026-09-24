@@ -76,7 +76,7 @@
               </app-badge>
             </div>
             <div v-if="user.last_checked_at" class="text-xs text-gray-400 mt-2 font-mono">
-              最后检查: {{ user.last_checked_at }}
+              最后检查: {{ formatDbTime(user.last_checked_at) }}
             </div>
           </div>
 

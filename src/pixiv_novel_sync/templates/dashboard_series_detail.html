@@ -55,7 +55,7 @@
           <app-badge type="blue">{{ series.total_novels }} 章</app-badge>
           <app-badge type="gray" v-if="series.total_text_length">{{ formatTextLength(series.total_text_length) }}</app-badge>
           <app-badge :type="statusConfig(series.status).type">{{ statusConfig(series.status).label }}</app-badge>
-          <app-badge type="gray" v-if="series.last_checked_at">检查于 {{ series.last_checked_at.substring(0, 10) }}</app-badge>
+          <app-badge type="gray" v-if="series.last_checked_at">检查于 {{ formatDbTime(series.last_checked_at) }}</app-badge>
         </div>
 
         <div class="text-sm text-pixiv-gray mb-4 inline-flex items-center gap-1.5 self-center md:self-start">
@@ -340,13 +340,13 @@
           const res = await csrfFetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`, { method: 'DELETE' });
           const data = await res.json();
           if (res.ok) {
-            alert('系列已删除');
+            window.toast('系列已删除');
             window.location.href = '/dashboard/novels?category=following';
           } else {
-            alert('删除失败: ' + (data.error || '未知错误'));
+            window.toast('删除失败: ' + (data.error || '未知错误'));
           }
         } catch (e) {
-          alert('删除失败');
+          window.toast('删除失败');
         } finally {
           deleting.value = false;
         }

@@ -342,7 +342,7 @@
           });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            alert('切换定时同步失败：' + errorText(data, res));
+            window.toast('切换定时同步失败：' + errorText(data, res));
           }
           await fetchAutoSync();
         } finally { togglingAutoSync.value = false; }
@@ -358,7 +358,7 @@
           const res = await csrfFetch(url, { method: 'POST' });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            alert('停止当前任务失败：' + errorText(data, res));
+            window.toast('停止当前任务失败：' + errorText(data, res));
           }
           setTimeout(() => { fetchJobStatus(); fetchAutoSync(); }, 1000);
         } catch (e) {}

@@ -521,7 +521,7 @@
           if (!res.ok) throw new Error('加载详情失败');
           selectedLog.value = await res.json();
         } catch(e) {
-          alert('加载日志详情失败');
+          window.toast('加载日志详情失败');
           modalOpen.value = false;
         } finally {
           detailLoading.value = false;
