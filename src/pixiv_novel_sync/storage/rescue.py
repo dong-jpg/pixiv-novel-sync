@@ -747,37 +747,16 @@ class RescueMixin:
                 }
 
             rows: list[dict[str, Any]] = []
-            should_rebuild = (
-                target_exists
-                or normalized_type == "novel"
-                or bool(existing_series_ids)
-            )
+            should_rebuild = bool(novel_ids) or bool(existing_series_ids)
             if should_rebuild:
                 series_rows = self._catalog_series_rows(existing_series_ids)
                 rescue_series_ids = {
                     int(row["series_id"])
                     for row in series_rows
                 }
-                rebuild_novel_ids = set(novel_ids)
-                if rebuild_novel_ids and series_ids:
-                    placeholders = ", ".join("?" for _ in rebuild_novel_ids)
-                    current_rows = self.conn.execute(
-                        f"""
-                        SELECT novel_id, series_id
-                        FROM novels
-                        WHERE novel_id IN ({placeholders})
-                        """,
-                        tuple(sorted(rebuild_novel_ids)),
-                    ).fetchall()
-                    rebuild_novel_ids = {
-                        int(row["novel_id"])
-                        for row in current_rows
-                        if row["series_id"] is None
-                        or int(row["series_id"]) in existing_series_ids
-                    }
                 novel_rows = self._catalog_novel_rows(
                     rescue_series_ids,
-                    rebuild_novel_ids,
+                    novel_ids,
                 )
                 rows = series_rows + novel_rows
                 self._insert_catalog_rows(rows, refreshed_at)

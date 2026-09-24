@@ -310,7 +310,7 @@
 
 ### 2.6 救援
 
-- [ ] **T2-52 增量刷新与全量一致**
+- [x] **T2-52 增量刷新与全量一致**
   `storage/rescue.py:761-777` 删 `existing_series_ids` 过滤，`should_rebuild = bool(novel_ids) or bool(existing_series_ids)`；补「`refresh_rescue_item` 结果 == `rebuild_rescue_catalog` 结果」等价断言。
 
 - [ ] **T2-53 认证不碰库 + 限速前置**

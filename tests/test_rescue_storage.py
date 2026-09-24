@@ -57,6 +57,25 @@ def _seed_novel(
     db.conn.commit()
 
 
+def test_refresh_matches_full_rebuild_for_the_same_novel(db: Database) -> None:
+    _seed_novel(db, novel_id=81, status="deleted", title="系列里的一篇")
+    db.upsert_source(SourceRecord(81, "bookmark_public", "1"))
+    db.rebuild_rescue_catalog()
+    full = db.get_rescue_catalog_item("novel", 81)
+    db.conn.execute("UPDATE novels SET title = '改过的标题' WHERE novel_id = 81")
+    db.conn.commit()
+    db.refresh_rescue_item("novel", 81)
+    refreshed = db.get_rescue_catalog_item("novel", 81)
+    db.rebuild_rescue_catalog()
+    rebuilt = db.get_rescue_catalog_item("novel", 81)
+    assert refreshed is not None and rebuilt is not None
+    assert refreshed["title"] == rebuilt["title"] == "改过的标题"
+    assert {key: refreshed[key] for key in refreshed if key != "refreshed_at"} == {
+        key: rebuilt[key] for key in rebuilt if key != "refreshed_at"
+    }
+    assert full is not None and full["title"] != refreshed["title"]
+
+
 def test_novel_text_maintains_has_content(db: Database) -> None:
     _seed_novel(db, novel_id=90, text="正文")
     assert db.conn.execute(
