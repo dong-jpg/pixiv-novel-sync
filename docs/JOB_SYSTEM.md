@@ -202,7 +202,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 | following_list | 3 | ✗ | True | 24 | "" | |
 | following_novels | 3 | ✓ | True | 6 | "" | `auto_sync_following_novels_users_limit`(0=全部)、`following_max_novels_per_author`(留空=不限) |
 | user_status | 3 | ✓ | True | 6 | "" | 已知受限用户按 `users.restricted_streak` 降频(≥3 轮判不出状态 → 每 7 天才巡检一次) |
-| novel_status | 3 | ✓ | True | 6 | "" | `novel_status_batch_size`(默认 800) |
+| novel_status | 3 | ✓ | True | 6 | "" | 批大小是代码常量 `NOVEL_STATUS_BATCH_SIZE`（800），不是设置页字段 |
 | series_status | 3 | ✓ | True | 6 | "" | |
 | user_backup | 3 | ✓ | False | 24 | "" | 复用 `auto_sync_following_novels_users_limit` |
 | pending_deletion_detection(设置字段名为 `auto_sync_pending_detection_*`) | 3 | ✗ | True | 12 | "" | |

@@ -80,7 +80,7 @@ The actual Pixiv work sits below this layer: `sync_engine.py:BookmarkNovelSyncSe
 
 ### Rate limiting, circuit breakers, and resumability
 
-`rate_limiter.py:RateLimiter.wait()` is a **minimum-interval spacer, not a token bucket** — it sleeps only the remainder of `delay_seconds_between_pages` since `_last_request_time`, with no jitter and no backoff. Exponential backoff lives separately in `sync/utils.py:retry_on_pixiv_error` (`min(base_delay * 2**attempt, 60.0)` for 429s, flat delay for network errors), which `BookmarkNovelSyncService.__init__` monkey-patches onto six `pixivpy3` methods at `sync_engine.py:212` — a new API call is unprotected unless its name is added to that list. `Retry-After` is only parsed for AI providers, never for Pixiv.
+`rate_limiter.py:RateLimiter.wait()` is a **minimum-interval spacer, not a token bucket** — it sleeps only the remainder of `delay_seconds_between_pages` since `_last_request_time`, with no jitter and no backoff. Exponential backoff lives separately in `sync/utils.py:retry_on_pixiv_error` (`min(base_delay * 2**attempt, 60.0)` for 429s, flat delay for network errors), which `BookmarkNovelSyncService.__init__` monkey-patches onto six `pixivpy3` methods at `sync_engine.py:212` — a new API call is unprotected unless its name is added to that list. `Retry-After` is parsed for AI providers and the wait is `min(60, max(2**attempt, retry_after or 0))`. Pixiv retries do not parse `Retry-After`.
 
 Two independent circuit breakers set `stats["aborted_reason"]`, which is what turns a green job amber:
 

@@ -352,7 +352,7 @@
 - [x] **T3-02 死代码**
   `settings.py:437-449` pytz 分支与 `:456-530 _simple_cron_next_run`；`storage/pending_and_watermarks.py:101 restore_pending_deletion`；`storage/schema.py:316 _fix_stale_running_logs`；`storage/novels.py:542 export_stats` 与 `storage_db.py:50` 二选一；`web/utils.py:577 _remove_archive_files` + `storage_files.py:149 remove_novel_archive`（抽 `_collect_archive_paths` 两处共用）；`storage/rescue.py:795,821` 与 `storage/recommendations.py:333` 仅测试方法移到测试 helper；`jobs/tasks.py:417-418 rate_limit` 分支；`cli.py:128` 不可达 `parser.error`，`cli.py:104` `sync-bookmarks` 按 `truncated` 退出非零；`web/__init__.py` 急切导入清空；`webapp.py:34,54,55` 与 `ai/service.py:3` 未使用导入；`storage/ai/model_sync.py:334 empty_authoritative` 路径。
 
-- [ ] **T3-03 文档修正**（报告 §6 表逐条）
+- [x] **T3-03 文档修正**（报告 §6 表逐条）
   重点：`JOB_SYSTEM.md` :65/:75/:82/:95/:138/:159/§3.5/§5 `novel_status_batch_size`；`UNIFIED` §5.3/§7.2/§10.2/§18/:201/:310/§12.1；`PREFERENCE` §7.2/§7.4/§13.5/§10；`RESCUE_USER_GUIDE` :129/:135/:137/§3.3/§4.1；`MODEL_ROUTING_GUIDE` :100/:112/:141；`frontend-api-contract` `follows` / `progress` / `logs days` / `users search` / `novels/{id}` 字段 / 三种信封形状 / `detail` 形状 / `preference_web.fail` 400 / 目录响应字段 / 成人 cancel body；`frontend-pages` partial 表补 `dashboard_ai_health_band.html`、`source_url`、系统页「立刻」→「一小时内」；`library-os-style-guide` Buttons / Forms / Tables 节与实现对齐或删 `library-*` 类；`INDEX.md` 把 4 份 08-14 计划改为「部分以其它方式实现，剩余：task_logs lease、pagination guard、trash manifest、AI 总结 / 解释、成人偏好注入、审查阶段实时 progress」，`2026-08-28-sync-throughput-and-budget.md` 标「已拆为 phase1-3」；`CLAUDE.md` 测试数、`except Exception` 描述、content-hash 描述、`Retry-After` 描述。
 
 - [x] **T3-04 需求缺口决策**（做或明确不做，写进 UNIFIED）
