@@ -305,7 +305,7 @@
 - [x] **T2-50 前端字段与超时**
   `dashboard_preferences.html` `result.stats?.stats?.saved` 与 `result.error || result.message`；去掉 5 分钟硬超时改「仍在后台运行」；任务状态中文化；初始 loading。
 
-- [ ] **T2-51 杂项**
+- [x] **T2-51 杂项**
   `run()` 返回值去掉 `items`；`create_recommendation_mute` upsert 后 `SELECT id`；`PUT /profiles/<id>` 校验 payload 且拒绝把唯一默认画像置非默认；`min_text_length` 变更重建累加器；`_row_to_recommendation_item` 补 `source_url`，两模板改用；`preferences.py:223-224` themes / scenes 语义与 `preference_context` 对齐或改标签。
 
 ### 2.6 救援

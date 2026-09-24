@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from pixiv_novel_sync.preferences import PreferenceAnalyzer
 from pixiv_novel_sync.recommendations import RecommendationService, _SERIES_PAGE_SAFETY_LIMIT
 from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings
@@ -45,6 +47,51 @@ def test_page_delay_forwards_stop_requested(tmp_path: Path, monkeypatch) -> None
     service._page_delay()
 
     assert observed == [{"stop_requested": stop_requested}]
+    db.close()
+
+
+def test_profile_update_rejects_unknown_fields_and_the_only_default(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    profile_id = db.create_preference_profile({
+        "name": "默认", "source_scope": {}, "stats": {}, "profile": {}, "is_default": True,
+    })
+    with pytest.raises(ValueError, match="未知字段"):
+        db.update_preference_profile(profile_id, {"nope": 1})
+    with pytest.raises(ValueError, match="唯一的默认"):
+        db.update_preference_profile(profile_id, {"is_default": False})
+    db.update_preference_profile(profile_id, {"name": "改名"})
+    assert db.get_preference_profile(profile_id)["name"] == "改名"
+
+    run_id = db.create_recommendation_run(profile_id, {"queries": []})
+    item_id = db.upsert_recommendation_item({
+        "run_id": run_id, "profile_id": profile_id, "item_type": "novel",
+        "novel_id": 42, "title": "链接", "tags": [], "score": 1, "matched": {},
+    })
+    item = db.get_recommendation_item(item_id)
+    assert item["source_url"] == "https://www.pixiv.net/novel/show.php?id=42"
+    db.close()
+
+
+def test_min_text_length_change_rebuilds_the_accumulator(tmp_path: Path):
+    db = Database(tmp_path / "rec.db")
+    db.init_schema()
+    db.merge_preference_batch(
+        {"keyword": {"旧词": 3}},
+        {"novel_count": 2, "series_novel_count": 0, "total_chars": 4000, "length_buckets": {}, "source_dist": {}, "x_restrict_dist": {}},
+        [1, 2],
+        1000,
+    )
+    db.merge_preference_batch(
+        {"keyword": {"新词": 1}},
+        {"novel_count": 1, "series_novel_count": 0, "total_chars": 2000, "length_buckets": {}, "source_dist": {}, "x_restrict_dist": {}},
+        [3],
+        5000,
+    )
+    acc = db.get_preference_accumulator()
+    assert acc["min_text_length"] == 5000
+    assert acc["novel_count"] == 1
+    assert db.top_preference_terms("keyword", 10) == [{"name": "新词", "count": 1}]
     db.close()
 
 

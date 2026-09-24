@@ -221,7 +221,7 @@ class PreferenceAnalyzer:
             "positive_preferences": {
                 "tags": primary_tags,
                 "keywords": top_keywords[:25],
-                "themes": title_keywords[:10],
+                "themes": [item["name"] for item in stats.get("top_tag_pairs", [])[:10]] or title_keywords[:10],
                 "scenes_or_situations": caption_keywords[:10],
             },
             "negative_preferences": {

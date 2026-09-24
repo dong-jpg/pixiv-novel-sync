@@ -5,7 +5,7 @@ import json
 import sqlite3
 from typing import Any
 
-from .utils import _LazyNovelMembership
+from .utils import _LazyNovelMembership, novel_source_url, series_source_url
 
 
 class RecommendationsMixin:
@@ -59,6 +59,25 @@ class RecommendationsMixin:
         return int(cursor.lastrowid)
 
     def update_preference_profile(self, profile_id: int, data: dict[str, Any]) -> None:
+        allowed = {"name", "description", "source_scope", "stats", "profile", "is_default"}
+        if not isinstance(data, dict) or not data:
+            raise ValueError("画像内容不能为空")
+        unknown = set(data) - allowed
+        if unknown:
+            raise ValueError("不能保存未知字段：" + "、".join(sorted(unknown)))
+        for key in ("source_scope", "stats", "profile"):
+            if key in data and not isinstance(data[key], dict):
+                raise ValueError(f"{key} 必须是对象")
+        current = self.get_preference_profile(profile_id)
+        if current is None:
+            raise ValueError("偏好画像不存在")
+        if "is_default" in data and not data["is_default"] and current.get("is_default"):
+            others = self.conn.execute(
+                "SELECT COUNT(*) FROM preference_profiles WHERE is_default = 1 AND id != ?",
+                (profile_id,),
+            ).fetchone()[0]
+            if int(others) == 0:
+                raise ValueError("不能取消唯一的默认画像")
         fields: list[str] = []
         params: list[Any] = []
         for key in ("name", "description"):
@@ -200,6 +219,17 @@ class RecommendationsMixin:
     ) -> None:
         """单事务合并一批分析结果: UPSERT 词项计数 + 累加标量 + 记录已分析小说。"""
         with self.transaction():
+            existing = self.conn.execute(
+                "SELECT min_text_length, novel_count FROM preference_accumulator WHERE id = 1"
+            ).fetchone()
+            if (
+                existing is not None
+                and int(existing["min_text_length"]) != int(min_text_length)
+                and int(existing["novel_count"] or 0) > 0
+            ):
+                self.conn.execute("DELETE FROM preference_term_counts")
+                self.conn.execute("DELETE FROM preference_analyzed_novels")
+                self.conn.execute("DELETE FROM preference_accumulator")
             # 1. UPSERT 词项计数
             for term_type, counter in term_deltas.items():
                 if not counter:
@@ -347,6 +377,10 @@ class RecommendationsMixin:
         )
         item["x_restrict"] = int(item.get("x_restrict") or 0)
         item.pop("risk_notes_json", None)
+        if item.get("item_type") == "series":
+            item["source_url"] = series_source_url(item.get("series_id"))
+        else:
+            item["source_url"] = novel_source_url(item.get("novel_id"))
         return item
 
     def upsert_recommendation_item(self, data: dict[str, Any]) -> int:

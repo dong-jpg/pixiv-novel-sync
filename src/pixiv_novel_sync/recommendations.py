@@ -174,7 +174,7 @@ class RecommendationService:
                 for item in pending_items:
                     self.db.upsert_recommendation_item(item)
                 self.db.update_recommendation_run(run_id, "succeeded", stats=stats)
-            return {"run_id": run_id, "stats": stats, "items": self.db.list_recommendation_items(limit=100)}
+            return {"run_id": run_id, "stats": stats}
         except InterruptedError:
             # 用户取消：不写任何 item，仅把 run 标记为 cancelled
             self.db.update_recommendation_run(run_id, "cancelled", stats=stats, error_message="用户取消")

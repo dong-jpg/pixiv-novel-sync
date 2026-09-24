@@ -308,6 +308,7 @@
       const retryRecommendationItems = () => loadRecommendationItems(recommendationPage.value);
 
       const recommendationItemUrl = (item) => {
+        if (item?.source_url) return item.source_url;
         if (item?.item_type === 'series' && item.series_id) return 'https://www.pixiv.net/novel/series/' + encodeURIComponent(item.series_id);
         if (item?.novel_id) return 'https://www.pixiv.net/novel/show.php?id=' + encodeURIComponent(item.novel_id);
         return '/dashboard/preferences';
