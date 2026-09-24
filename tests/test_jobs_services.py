@@ -7,6 +7,11 @@ import pytest
 from pixiv_novel_sync.jobs import services
 
 
+def test_catalog_rebuild_skips_when_nothing_was_written() -> None:
+    assert services._catalog_inputs_changed({"novels": 0, "skipped": 4}) is False
+    assert services._catalog_inputs_changed({"texts_updated": 1}) is True
+
+
 class DummyReporter:
     def __init__(self) -> None:
         self.logs: list[tuple[str, str]] = []

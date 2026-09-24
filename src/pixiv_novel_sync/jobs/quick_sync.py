@@ -12,7 +12,7 @@ from ..storage_db import Database, prepare_schema
 from ..storage_files import FileStorage
 from ..sync_engine import BookmarkNovelSyncService
 from . import services as job_services
-from .services import JobReporter, _rebuild_rescue_catalog
+from .services import JobReporter, _catalog_inputs_changed, _rebuild_rescue_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,8 @@ def run_bookmark_sync(
         _raise_if_stopped(stop_requested)
         if claim_finalization is not None and not claim_finalization():
             raise InterruptedError("Task stopped by user")
-        bookmark_stats.update(_rebuild_rescue_catalog(db))
+        if _catalog_inputs_changed(bookmark_stats):
+            bookmark_stats.update(_rebuild_rescue_catalog(db))
         logger.info("Bookmark sync finished: %s", json.dumps(bookmark_stats, ensure_ascii=False))
         return bookmark_stats
     finally:
@@ -177,7 +178,8 @@ def run_scheduled_user_backup(
             if claim_finalization is not None and not claim_finalization():
                 result["stopped"] = True
             else:
-                result.update(_rebuild_rescue_catalog(db, reporter))
+                if _catalog_inputs_changed(result):
+                    result.update(_rebuild_rescue_catalog(db, reporter))
 
         if reporter is not None:
             level = "info" if result["stopped"] else "success"

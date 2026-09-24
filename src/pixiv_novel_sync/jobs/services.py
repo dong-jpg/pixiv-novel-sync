@@ -69,6 +69,11 @@ def _report_catalog_log(reporter: JobReporter | None, level: str, message: str) 
         logger.warning("救援目录日志记录失败: %s", exc)
 
 
+def _catalog_inputs_changed(stats: dict[str, Any]) -> bool:
+    """收藏、备份、关注作者同步只有真正写下小说或资源时才刷新救援目录。"""
+    return any(int(stats.get(key) or 0) > 0 for key in ("novels", "texts_updated", "assets_downloaded"))
+
+
 def _rebuild_rescue_catalog(db: Any, reporter: JobReporter | None = None) -> dict[str, int]:
     try:
         started_at = perf_counter()
@@ -241,7 +246,7 @@ def run_user_backup_task(
             stats["incomplete"] = True
         if not stats.get("stopped") and stop_requested is not None and stop_requested():
             stats["stopped"] = True
-        if rebuild_catalog and not stats.get("stopped"):
+        if rebuild_catalog and not stats.get("stopped") and _catalog_inputs_changed(stats):
             if claim_finalization is not None and not claim_finalization():
                 stats["stopped"] = True
             else:

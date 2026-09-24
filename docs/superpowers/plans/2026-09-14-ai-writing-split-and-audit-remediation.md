@@ -316,7 +316,7 @@
 - [x] **T2-53 认证不碰库 + 限速前置**
   `rescue_web.py:158-175` 顺序改 IP 限速 → `app.extensions` 缓存的 `(token_hash, prefix)` 比对 → 视图单次 `open_db()`；`rotate` 时刷新缓存。补 `DELETE /api/dashboard/rescue-token`（撤销）。
 
-- [ ] **T2-54 重建触发点收敛**
+- [x] **T2-54 重建触发点收敛**
   `quick_sync.py:84`（bookmark）、`:169` / `services.py:239`（user_backup）、`tasks.py:209`（following_novels）改为「有状态或来源变更才重建」，让三种状态检查与 pending 检测负责；`_replace_catalog_memberships` 改差量。
 
 - [ ] **T2-55 杂项**

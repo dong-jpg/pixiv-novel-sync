@@ -633,15 +633,34 @@ class RescueMixin:
             )
 
     def _replace_catalog_memberships(self) -> None:
-        self.conn.execute("DELETE FROM rescue_catalog_memberships")
-        self.conn.execute(
-            """
-            INSERT INTO rescue_catalog_memberships (novel_id, series_id)
-            SELECT n.novel_id, n.series_id
-            FROM novels n
-            JOIN series se ON se.series_id = n.series_id
-            """
-        )
+        desired = {
+            (int(row["novel_id"]), int(row["series_id"]))
+            for row in self.conn.execute(
+                """
+                SELECT n.novel_id, n.series_id
+                FROM novels n
+                JOIN series se ON se.series_id = n.series_id
+                """
+            )
+        }
+        current = {
+            (int(row["novel_id"]), int(row["series_id"]))
+            for row in self.conn.execute(
+                "SELECT novel_id, series_id FROM rescue_catalog_memberships"
+            )
+        }
+        stale = current - desired
+        fresh = desired - current
+        if stale:
+            self.conn.executemany(
+                "DELETE FROM rescue_catalog_memberships WHERE novel_id = ? AND series_id = ?",
+                list(stale),
+            )
+        if fresh:
+            self.conn.executemany(
+                "INSERT INTO rescue_catalog_memberships (novel_id, series_id) VALUES (?, ?)",
+                list(fresh),
+            )
 
     def _update_catalog_meta(self, refreshed_at: str, duration_ms: int) -> None:
         item_count = int(self.conn.execute("SELECT COUNT(*) FROM rescue_catalog").fetchone()[0])

@@ -4,7 +4,7 @@ from collections.abc import Callable
 from numbers import Number
 from typing import Any
 
-from pixiv_novel_sync.jobs.services import JobReporter, _rebuild_rescue_catalog
+from pixiv_novel_sync.jobs.services import JobReporter, _catalog_inputs_changed, _rebuild_rescue_catalog
 
 
 def _is_addable_number(value: Any) -> bool:
@@ -189,7 +189,8 @@ def _run_direct_sync_task(
             raise InterruptedError("Task stopped by user")
         if claim_finalization is not None and not claim_finalization():
             raise InterruptedError("Task stopped by user")
-        stats.update(_rebuild_rescue_catalog(db, _job_reporter_from_context(context)))
+        if task_type != "following_novels" or _catalog_inputs_changed(stats):
+            stats.update(_rebuild_rescue_catalog(db, _job_reporter_from_context(context)))
         return stats
     finally:
         db.close()
