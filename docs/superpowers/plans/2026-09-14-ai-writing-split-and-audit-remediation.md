@@ -346,7 +346,7 @@
 
 ## 阶段 3：main 清理与文档
 
-- [ ] **T3-01 删无生产调用方路由**（保留在契约里的标「仅 API」）
+- [x] **T3-01 删无生产调用方路由**（保留在契约里的标「仅 API」）
   `POST /oauth/start`、`GET /oauth/callback`、`POST /oauth/sync-callback/<id>`、`GET /api/dashboard/follows`、`POST /api/dashboard/settings`（全量）、`POST /api/dashboard/sync/start`、`GET /api/dashboard/pending-deletions/count`、`POST /api/dashboard/settings/reload`（T2-34）、`POST /api/dashboard/ai/jobs/cleanup`、`GET /api/dashboard/recommendations/runs`。**接上而不是删**：`/novels/<id>/progress` 三端点（阅读进度换设备可用）、`POST /novels/export-epub`（加按钮）、`DELETE /novels/<id>` / `/users/<id>` / `/bookmarks/<id>`（详情页加入口或删）、`POST /api/auth/logout`（侧栏加退出）、`POST /profiles/<id>/default` / `DELETE /profiles/<id>`（偏好页加多画像 UI 或删）。
 
 - [ ] **T3-02 死代码**

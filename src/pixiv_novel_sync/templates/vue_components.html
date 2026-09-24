@@ -107,9 +107,12 @@ function registerGlobalComponents(app) {
           </div>
         </div>
         <div v-if="user && !user.is_premium && user.user_id" class="text-[10px] text-gray-400 mb-2 -mt-1">普通账号</div>
-        <div class="flex items-center gap-2 text-[11px] font-bold">
-          <span :class="['w-2 h-2 rounded-full flex-shrink-0', autoSyncRunning ? 'bg-green-400 pulse-soft' : 'bg-gray-300']"></span>
-          <span :class="autoSyncRunning ? 'text-green-600' : 'text-gray-400'">{{ autoSyncRunning ? '定时同步已启用' : '定时同步未启用' }}</span>
+        <div class="flex items-center justify-between gap-2 text-[11px] font-bold">
+          <span class="inline-flex items-center gap-2 min-w-0">
+            <span :class="['w-2 h-2 rounded-full flex-shrink-0', autoSyncRunning ? 'bg-green-400 pulse-soft' : 'bg-gray-300']"></span>
+            <span :class="autoSyncRunning ? 'text-green-600' : 'text-gray-400'">{{ autoSyncRunning ? '定时同步已启用' : '定时同步未启用' }}</span>
+          </span>
+          <button type="button" @click="logout" class="text-gray-400 hover:text-red-600">退出</button>
         </div>
       </div>
     `,
@@ -126,7 +129,11 @@ function registerGlobalComponents(app) {
           if (autoRes.ok) { const d = await autoRes.json(); autoSyncRunning.value = d.running; }
         } catch(e) {}
       });
-      return { user, autoSyncRunning };
+      const logout = async () => {
+        await window.csrfFetch('/api/auth/logout', { method: 'POST' });
+        location.href = '/api/auth/login';
+      };
+      return { user, autoSyncRunning, logout };
     }
   });
 

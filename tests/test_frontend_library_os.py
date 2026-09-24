@@ -382,6 +382,15 @@ def test_dashboard_recommendations_are_a_paged_list_not_a_card_grid():
     assert 'class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">' not in html
 
 
+def test_sidebar_logout_and_novel_detail_actions():
+    footer = read(TEMPLATES / "vue_components.html")
+    assert "/api/auth/logout" in footer
+    detail = read(TEMPLATES / "dashboard_novel_detail.html")
+    assert "export-epub" in detail
+    assert "/progress" in detail
+    assert "deleteThisNovel" in detail
+
+
 def test_idle_dashboard_polls_slowly_and_mobile_bar_has_ops():
     html = read(TEMPLATES / "dashboard.html")
     assert "20000" in html

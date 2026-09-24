@@ -44,7 +44,7 @@ Used by: 浏览器登录流程（配置 `DASHBOARD_TOKEN` 时）。
 
 ### POST /api/auth/logout
 
-清除登录会话。响应：
+侧栏「退出」调用。清除登录会话。响应：
 
 ```json
 { "ok": true }
@@ -163,6 +163,8 @@ Query：`days`（观测窗口，夹到 1–30，默认 3）。
 
 ### POST /api/dashboard/sync/start
 
+仅 API。页面用按任务类型启动的同步接口，这个全量入口留给脚本和测试。
+
 Start full manual sync. Body may be `{}`.
 
 ### POST /api/dashboard/check-bookmarks
@@ -216,7 +218,9 @@ Stops the active auto-sync task.
 
 ### GET /api/dashboard/follows
 
-Used by: follows page（`/dashboard/follows`）。
+仅 API。关注页实际读取 `/api/dashboard/users`。
+
+Used by: 无页面。保留给脚本。
 
 Query params:
 
@@ -591,6 +595,8 @@ Query:
 
 ### GET /api/dashboard/pending-deletions/count
 
+仅 API。侧栏数量来自 `/api/dashboard/shell-data`。
+
 Sidebar/count use if needed.
 
 ### POST /api/dashboard/pending-deletions/detect
@@ -641,6 +647,8 @@ Body:
 ### POST /api/dashboard/recommendations/run
 
 ### GET /api/dashboard/recommendations/runs
+
+仅 API。页面不展示历史轮次。多画像的设默认和删除也不做页面。
 
 ### GET /api/dashboard/recommendations/items
 
@@ -780,7 +788,7 @@ main 分支只保留 AI job 的读取、清理与手动续接端点；写作端�
 
 - `GET /api/dashboard/ai/jobs`
 - `GET /api/dashboard/ai/jobs/{job_id}`
-- `POST /api/dashboard/ai/jobs/cleanup`
+- `POST /api/dashboard/ai/jobs/cleanup`（仅 API，调度器直接清过期任务）
 
 ### GET /api/dashboard/ai/jobs/<job_id>
 
@@ -827,10 +835,10 @@ Frontend expects streams to terminate with `done` or `error`.
 - `POST /api/token-jobs`
 - `GET /api/token-jobs/{job_id}`
 - `POST /api/save-token`
-- `POST /oauth/start`
+- `POST /oauth/start`（仅 API。Pixiv 固定回调地址，页面不走这条）
 - `GET /oauth/task/{task_id}`
-- `GET /oauth/callback`
-- `POST /oauth/sync-callback/{task_id}`
+- `GET /oauth/callback`（仅 API）
+- `POST /oauth/sync-callback/{task_id}`（仅 API）
 - `POST /oauth/exchange/{task_id}`
 - `POST /oauth/save/{task_id}`
 
