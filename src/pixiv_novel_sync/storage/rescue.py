@@ -1427,3 +1427,7 @@ class RescueMixin:
         )
         self._commit_if_needed()
         return self.get_rescue_token_record() or {}
+
+    def clear_rescue_token_record(self) -> None:
+        self.conn.execute("DELETE FROM rescue_api_token WHERE singleton_id = 1")
+        self._commit_if_needed()

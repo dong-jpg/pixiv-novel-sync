@@ -1039,6 +1039,18 @@ def test_rescue_public_api_rejects_options(client, path: str) -> None:
     assert "no-store" in response.headers["Cache-Control"]
 
 
+def test_revoke_rescue_token_rejects_the_old_bearer(app, client) -> None:
+    token = _rotate_token(client)
+    revoked = client.delete("/api/dashboard/rescue-token")
+    assert revoked.status_code == 200
+    assert revoked.get_json()["data"]["configured"] is False
+    response = client.get(
+        "/api/rescue/v1/novels/10",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 401
+
+
 def test_rescue_public_api_returns_429_when_limiter_rejects(app, client, monkeypatch) -> None:
     token = _rotate_token(client)
     limiter = app.extensions["rescue_rate_limiter"]

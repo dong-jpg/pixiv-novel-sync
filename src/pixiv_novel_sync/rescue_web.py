@@ -9,6 +9,7 @@ import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from functools import wraps
+from pathlib import Path
 from typing import Any, Callable
 
 from flask import Flask, Response, jsonify, request
@@ -151,28 +152,51 @@ def register_rescue_routes(
         prepare_schema(db)
         return db
 
+    def _token_cache() -> dict[str, tuple[str, str] | None]:
+        return app.extensions.setdefault("rescue_token_cache", {})
+
+    def _cache_key() -> str:
+        return str(Path(current_settings().storage.db_path).resolve())
+
+    def _load_token_cache() -> tuple[str, str] | None:
+        cache = _token_cache()
+        key = _cache_key()
+        if key not in cache:
+            db = open_db()
+            try:
+                record = db.get_rescue_token_record()
+            finally:
+                db.close()
+            cache[key] = None if not record else (
+                str(record["token_hash"]),
+                str(record.get("token_prefix") or ""),
+            )
+        return cache[key]
+
+    def _store_token_cache(record: dict | None) -> None:
+        if not record:
+            _token_cache()[_cache_key()] = None
+            return
+        _token_cache()[_cache_key()] = (
+            str(record["token_hash"]),
+            str(record.get("token_prefix") or ""),
+        )
+
     def public_auth(view):
         @wraps(view)
         def wrapped(*args, **kwargs):
             try:
+                address = client_addr() or request.remote_addr or "unknown"
+                if not limiter.allow(address):
+                    return _public_error("救援 API 请求过于频繁", 429)
                 candidate = _bearer_token()
                 if candidate is None:
                     return _public_error("需要救援 Token", 401)
-                db = open_db()
-                try:
-                    record = db.get_rescue_token_record()
-                finally:
-                    db.close()
-                if not record or not secrets.compare_digest(
-                    str(record["token_hash"]), _token_digest(candidate)
+                cached = _load_token_cache()
+                if not cached or not secrets.compare_digest(
+                    cached[0], _token_digest(candidate)
                 ):
                     return _public_error("救援 Token 无效", 401)
-                key = (
-                    client_addr() or request.remote_addr or "unknown",
-                    record["token_prefix"],
-                )
-                if not limiter.allow(key):
-                    return _public_error("救援 API 请求过于频繁", 429)
                 return view(*args, **kwargs)
             except Exception:
                 logger.exception("救援 API 读取失败：%s", request.path)
@@ -308,6 +332,7 @@ def register_rescue_routes(
         db = open_db()
         try:
             record = db.save_rescue_token_record(_token_digest(token), token_prefix)
+            _store_token_cache(record)
         finally:
             db.close()
         return jsonify(
@@ -320,6 +345,17 @@ def register_rescue_routes(
                 },
             }
         )
+
+    @app.delete("/api/dashboard/rescue-token")
+    @dashboard_safe
+    def revoke_rescue_token():
+        db = open_db()
+        try:
+            db.clear_rescue_token_record()
+            _store_token_cache(None)
+        finally:
+            db.close()
+        return jsonify({"ok": True, "data": {"configured": False}})
 
     @app.route(
         "/api/rescue/v1/novels/<int:novel_id>",
