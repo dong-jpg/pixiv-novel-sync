@@ -65,6 +65,9 @@ def make_client(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ai_web, "AIWritingService", factory)
     app = Flask(__name__, template_folder=str(tmp_path))
+    # conftest 的 CSRF shim 对变更请求调 session_transaction()，裸 Flask 需要
+    # secret_key 才能开签名 cookie 会话。
+    app.secret_key = "test-secret"
     settings = SimpleNamespace(storage=SimpleNamespace(db_path=tmp_path / "test.db"))
     ai_web.register_ai_routes(app, settings)
     return app.test_client(), services[0]

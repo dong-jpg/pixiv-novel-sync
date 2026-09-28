@@ -40,6 +40,9 @@ def test_stream_close_cancels_upstream_generator(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(AIWritingService, "stream_continue", fake_stream_continue)
     app = Flask(__name__)
+    # conftest 的 CSRF shim 对变更请求调 session_transaction()，裸 Flask 需要
+    # secret_key 才能开签名 cookie 会话，否则 open_session 返回 None 直接 RuntimeError。
+    app.secret_key = "test-secret"
     register_ai_routes(app, make_settings(tmp_path))
     client = app.test_client()
 

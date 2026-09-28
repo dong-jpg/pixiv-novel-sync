@@ -5,7 +5,7 @@ import os
 import secrets
 import threading
 import uuid
-from collections.abc import Generator, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -41,7 +41,98 @@ class AIServiceError(RuntimeError):
 class AIConflictError(AIServiceError):
     def __init__(self, message: str, *, data: dict[str, Any] | None = None) -> None:
         super().__init__(message)
-        self.data = data
+        self.data = data or {}
+
+
+def _utf8_len(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def _utf8_tail(text: str, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return ""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[-max_bytes:].decode("utf-8", errors="ignore")
+
+
+def _utf8_prefix(text: str, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return ""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _message_utf8_bytes(messages: list[dict[str, str]]) -> int:
+    return sum(
+        _utf8_len(str(message.get("content") or ""))
+        for message in messages
+    )
+
+
+def _fit_route_messages(
+    messages: list[dict[str, str]],
+    input_budget: int,
+) -> list[dict[str, str]]:
+    fitted = [dict(message) for message in messages]
+    if not fitted:
+        return fitted
+    if _message_utf8_bytes(fitted) <= input_budget:
+        return fitted
+    fixed_bytes = _message_utf8_bytes(fitted[:-1])
+    remaining = input_budget - fixed_bytes
+    if remaining <= 0:
+        raise AIServiceError("Prompt 固定内容超过可用输入预算")
+    fitted[-1]["content"] = _utf8_tail(
+        str(fitted[-1].get("content") or ""),
+        remaining,
+    )
+    return fitted
+
+
+def _fit_tail_text_messages(
+    build_messages: Callable[[str], list[dict[str, str]]],
+    text: str,
+    input_budget: int,
+) -> list[dict[str, str]]:
+    bounded_text = text
+    for _ in range(8):
+        messages = build_messages(bounded_text)
+        total_bytes = _message_utf8_bytes(messages)
+        if total_bytes <= input_budget:
+            return messages
+        current_bytes = _utf8_len(bounded_text)
+        if current_bytes <= 0:
+            break
+        next_bytes = max(0, current_bytes - (total_bytes - input_budget))
+        if next_bytes >= current_bytes:
+            next_bytes = current_bytes - 1
+        bounded_text = _utf8_tail(bounded_text, next_bytes)
+    raise AIServiceError("Prompt 固定内容超过可用输入预算")
+
+
+def _drop_oldest_history_messages(
+    messages: list[dict[str, str]],
+    input_budget: int,
+) -> list[dict[str, str]]:
+    """从最旧的非 system 消息开始丢，直到字节数落进预算；最后一条仍超限再裁尾。"""
+    fitted = [dict(message) for message in messages]
+    while len(fitted) > 1 and _message_utf8_bytes(fitted) > input_budget:
+        drop_at = next(
+            (
+                index
+                for index, message in enumerate(fitted[:-1])
+                if message.get("role") != "system"
+            ),
+            None,
+        )
+        if drop_at is None:
+            break
+        fitted.pop(drop_at)
+    return _fit_route_messages(fitted, input_budget)
 
 
 class AINotFoundError(AIServiceError):

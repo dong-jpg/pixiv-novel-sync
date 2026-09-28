@@ -148,8 +148,6 @@ class SchemaMixin:
         self._migrate_rescue_tables()
         # 迁移：创建同步水位线表
         self._migrate_sync_watermarks_table()
-        # 迁移：创建/升级预检查表。旧服务端库可能已有无 scope 的 sync_check_list。
-        self.init_sync_check_table()
         # 迁移：创建 AI 创作工作台相关表
         self._migrate_ai_tables()
         # 迁移：创建偏好画像与推书相关表
@@ -1077,6 +1075,16 @@ class SchemaMixin:
                 )
 
         with self.transaction() as conn:
+            # 成人表是否已存在：用于把下面那次全库 foreign_key_check 限制在
+            # 「首次建立成人表」时跑一次。init_schema 是每次打开连接都会重跑的
+            # 幂等迁移，重复做全库外键扫描会在 GB 级生产库上拖垮每个 Web 请求
+            # （见 tests/test_schema_idle_init.py）。
+            adult_tables_existed = bool(
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'ai_polish_applications'"
+                ).fetchone()
+            )
             add_column(
                 "ai_writing_projects",
                 "adult_content_enabled",
@@ -1257,15 +1265,18 @@ class SchemaMixin:
                     ),
                 )
 
-            adult_violations = [
-                row
-                for row in conn.execute("PRAGMA foreign_key_check").fetchall()
-                if str(row[0]).startswith("ai_")
-            ]
-            if adult_violations:
-                raise RuntimeError(
-                    f"成人润色迁移外键校验失败: {adult_violations[:5]!r}"
-                )
+            # 全库 foreign_key_check 只在首次建立成人表时跑一次（见函数开头
+            # 的 adult_tables_existed 判定）。重复的幂等迁移不再做全库扫描。
+            if not adult_tables_existed:
+                adult_violations = [
+                    row
+                    for row in conn.execute("PRAGMA foreign_key_check").fetchall()
+                    if str(row[0]).startswith("ai_")
+                ]
+                if adult_violations:
+                    raise RuntimeError(
+                        f"成人润色迁移外键校验失败: {adult_violations[:5]!r}"
+                    )
 
     def _migrate_reading_progress_table(self) -> None:
         """创建阅读进度追踪表。"""

@@ -996,7 +996,10 @@ def create_app(
             _login_failures.clear(client)
             session.clear()
             session["authenticated"] = True
-            session["authenticated_at"] = time.time()
+            # 纳秒整数：成人 owner 校验（ai/adult_auth.py:require_adult_owner）要求
+            # int 类型，并与 access token 的 iat（time_ns）同单位比较。
+            # _authenticated_session_fresh 对秒/纳秒两种量级都兼容。
+            session["authenticated_at"] = time.time_ns()
             _get_csrf_token()
             return redirect("/")
         _login_failures.record_failure(client, now)
