@@ -36,10 +36,10 @@
 
 ### 0.2 任务
 
-- [ ] **T0-01 提交工作树、确认分支拓扑**
+- [x] **T0-01 提交工作树、确认分支拓扑**
   `git add src/pixiv_novel_sync/templates/token_login.html && git commit -m "fix: 登录页按 has_refresh_token 判定并走 /oauth/save 落盘"`；`git checkout ai-writing && git merge --ff-only main && git checkout main`。验收：两分支 HEAD 相同。
 
-- [ ] **T0-02 删除整文件（main）**
+- [x] **T0-02 删除整文件（main）**
   - `ai/services/{generation,projects,chat_wizard,adult}.py`
   - `ai/{retrieval,chunking,detection,preference_context,adult_auth,adult_policies,adult_prompt,adult_types,adult_validation}.py`
   - `storage/ai/{documents,writing,adult}.py`
@@ -47,40 +47,40 @@
   - 测试：`tests/ai_adult_testkit.py`、`tests/test_ai_adult_*.py`（13 个）、`test_ai_prompts.py`、`test_ai_retrieval.py`、`test_ai_page_routes.py`、`test_ai_import_atomicity.py`、`test_ai_project_covers.py`、`test_style_control.py`、`test_ai_service_parsing.py`、`test_ai_web_int_parsing.py`、`test_ai_service_stream_continue.py`、`test_ai_web_stream.py`、`test_ai_multibatch_routing.py`
   - 文档：`docs/AI_WRITING_STUDIO_PLAN.md`、`docs/ADULT_POLISH_USER_GUIDE.md`、`docs/QWEN_EMBEDDING_INTEGRATION.md`；`docs/superpowers/` 下 `2026-07-16-ai-cover-style-controls`、`2026-07-16-ai-page-layout-refactor`、`2026-07-17-ai-project-overview-single-panel*`、`2026-07-23-adult-polish-agent*`、`2026-08-14-ai-preference-adult-remediation`、`2026-09-02-dashboard-ai-page-split-design`（模型目录 / 池 / 路由 / 设置页可操作性的 spec 与 plan 保留）
 
-- [ ] **T0-03 新建 `ai/services/keyword_clean.py`**
+- [x] **T0-03 新建 `ai/services/keyword_clean.py`**
   `AIKeywordCleanMixin`：原样搬 `generation.py` 的 `_forward_route` / `_route_result_message` / `_conclude_route`（:26-117）与 `clean_keywords`（:766-830）。`ai/prompts.py` 瘦身为 `DEFAULT_KEYWORD_CLEAN_PROMPT` + `build_keyword_clean_messages`（:929-963）+ `safe_prompt_preview`（:228，若 admin 仍用）。
 
-- [ ] **T0-04 改 `ai/service.py` 与 `ai/services/__init__.py`**
+- [x] **T0-04 改 `ai/service.py` 与 `ai/services/__init__.py`**
   `AIWritingService(AIKeywordCleanMixin, AIAdminMixin, AIServiceCore)`，类名不改（`jobs/tasks.py` 与 8 个测试引用它，也减少日后合并冲突），docstring 注明「main 上只承载关键词清洗」。`__init__` 去掉四个写作 mixin 与 `AdultRouteRequest` / `PreparedAdultJob` 导出。
 
-- [ ] **T0-05 改 `ai/services/core.py`**
+- [x] **T0-05 改 `ai/services/core.py`**
   删 `_get_retriever`（:92-126）、`_resolve_preference_context` / `_preference_project` / `_fit_preference_messages`（:136-252）、`RouteJobContext.preference_context`、`_start_route_job` 的 `preference_payload` / `preference_project` 参数与 :358-374 注入、`_stream_route` :586-595 注入、retrieval / preference_context 导入、`close()` 的 retriever 关闭。
 
-- [ ] **T0-06 改 `ai/services/admin.py`**
+- [x] **T0-06 改 `ai/services/admin.py`**
   删 `create_document`、drafts 四个、`_resolve_input_text`、style / novel profile 各五个、prompt template 五个 + `seed_builtin_templates`、`get_draft_history` / `fork_draft`（:1258-1306, 1519-1554, 1590-1742, 1902-1929）。`seed_builtin_agents`（:1743-1900）只留 `general` 与 `keyword_clean`。`_normalize_agent_payload` :1404 白名单缩为 `{None, "general", "keyword_clean"}`。`update_agent_bindings` :1221-1229 去掉成人拒绝。删 `ADULT_AI_TASK_TYPES` 与五个写作 `DEFAULT_*_PROMPT` 导入（:40-50）。`stream_job_with_next_model` 保留。
 
-- [ ] **T0-07 改存储层**
+- [x] **T0-07 改存储层**
   - `storage/ai/core.py`：删 `_ADULT_AI_TASK_TYPES_SQL` 及四处 WHERE 片段（:865,941,1460,1482），删 `request_adult_job_cancel` / `bind_adult_application_access`（:1497-1609），`ADULT_AI_TASK_TYPES` 常量整个删掉。
   - `storage/tasks.py`：删 :7-11 与 :253。
   - `storage_db.py` / `storage/ai/__init__.py`：去掉 `AiDocumentsMixin` / `AiWritingMixin` / `AdultStorageMixin`。
   - `storage/schema.py`：删 `_migrate_ai_writing_tables`（:878-990）、`_migrate_adult_polish_tables`（:991-1198）及 `init_schema` :161/:164 的调用；`_migrate_ai_tables` 删 `ai_drafts` / `ai_documents` / `ai_style_profiles` / `ai_novel_profiles` / `ai_prompt_templates` 建表（:755-809）与 :814-816 三个索引；**新增** `owner_scope` / `idempotency_key_hash` 两个带 `PRAGMA table_info` 守卫的 `ADD COLUMN`。
 
-- [ ] **T0-08 改 `ai_web.py`**
+- [x] **T0-08 改 `ai_web.py`**
   只保留 :745-1015（health / probe / providers / model-sync / provider-models / model-pools / agents / bindings）、:1568-1648（jobs list / get / continue / cleanup）、:1874（agents/seed）。删页面路由 :714-744、成人全部、documents、四个裸 `*/stream`、drafts、distill、profiles、detect、prompt-templates、series/search、projects / chapters / notes / states / foreshadows / retrieval / chat / pipeline；删对应 helper（`_safe_ai_cover_*`、`_validated_ai_cover`、`adult_*`、`_require_project`、`stream_response`）与导入 :25-50 中的写作项。
 
-- [ ] **T0-09 改 `webapp.py`**
+- [x] **T0-09 改 `webapp.py`**
   `_SETTINGS_PAGES`（:944）去掉 `adult`；`/api/dashboard/logs` :1755-1770 去掉成人 owner 判定，`category == "ai"` 直接 `owner_scope = ""` 或让 `get_ai_task_logs` 不再接收该参数。
 
-- [ ] **T0-10 改模板**
+- [x] **T0-10 改模板**
   `vue_components.html` 删 :24-25 与 :39；`dashboard_settings_nav.html` 删 :11；`dashboard_novels.html` 删 `ai` tab（:60-76, :124, :410, :485-500）与 `/dashboard/novels/ai/` 链接；`base.html` `aiApi` 删 `styleProfiles` / `novelProfiles`（:305-312）；`dashboard_logs.html` `AI_TASK_OPTIONS`（:398 附近）与 :692 标签表只留 `keyword_clean`，`RESUMABLE_TASK_TYPES` 同步；`dashboard_settings_agents.html` task_type 两处下拉（:42-54, :100-111）只留 general / keyword_clean，删全部 adult 过滤；`dashboard_ai_health_band.html` 保留。
 
-- [ ] **T0-11 改混合测试**
+- [x] **T0-11 改混合测试**
   `test_frontend_library_os.py`（删 AI 三页 / 向导 / 成人页存在性断言）、`test_ai_model_router_integration.py`（AST 守卫改为遍历 `ai/services/` 现存文件，删依赖写作方法的用例）、`test_settings_sections.py`（`_SETTINGS_PAGES` 去 `adult`）、`test_unified_task_logs.py` / `test_webapp_security.py` / `test_ai_model_ui.py` / `test_preferences.py` / `test_ai_agent_batch_bindings.py` / `test_ai_web_stream_response.py`（各 1–5 处）。`test_ai_model_docs.py` 读 `docs/frontend-pages.md`，删节后确认被断言字符串仍在。
 
-- [ ] **T0-12 改文档**
+- [x] **T0-12 改文档**
   `README.md` 删「AI 创作」（:120）「成人本地润色 Agent」（:134）两节，补「AI 写作模块在 `ai-writing` 分支」。`docs/frontend-pages.md` 删 :268-320、:368 起 AI 节；`docs/frontend-api-contract.md` 删 :786-823、:824-861 写作端点、:882 起 SSE / longform / chat 节。`docs/INDEX.md`、`docs/UNIFIED_PROJECT_REQUIREMENTS.md`、`CLAUDE.md`（AI subsystem / Adult / Frontend 三节）同步删节，`CLAUDE.md` 顶部注明分支分工。`docs/AUDIT_REPORT_2026-09-14.md` §0 加一行「AI 创作与成人润色条目在 `ai-writing` 分支处理」。
 
-- [ ] **T0-13 提交并标记合并**
+- [x] **T0-13 提交并标记合并**
   `main` 上提交 `chore: 剥离 AI 写作模块到 ai-writing 分支`。然后 `git checkout ai-writing && git merge -s ours main -m "merge: 记录 main 的写作模块剥离，不生效" && git checkout main`。**没有这一步，以后 `git merge main` 会把写作模块当删除合并掉。**
 
 ### 0.3 验收（我来做）
@@ -95,49 +95,49 @@
 
 ## 阶段 1：main 止血（P0 / P1，各几行到几十行）
 
-- [x] **T1-01 登录页 Token 落盘**（进行中，工作树已改）
+- [x] **T1-01 登录页 Token 落盘**
   `token_login.html:182,221,251` 改判 `has_refresh_token`，兑换成功调 `POST /oauth/save/<id>`。验收：补 `tests/test_webapp_security.py` 用例 grep 模板不含 `data.refresh_token`；手动走「粘贴回调 URL」流程 `.env` 出现 `PIXIV_REFRESH_TOKEN`。
 
-- [ ] **T1-02 调度器 stop / submit 竞态**
+- [x] **T1-02 调度器 stop / submit 竞态**
   `web/managers.py:802-818`：`stopped_during_submit` 分支仍调用 `run_task`（runner 会立即 `mark_cancelled`），或直接 `shared_job_manager.mark_cancelled(job_id)` 并回写 `task_logs` 为 `cancelled`。改 `tests/test_webapp_jobs.py:112` 的断言（现钉死为只 cancel）。验收：新用例「stop 后 submit 一次 → `_has_active_shared_jobs()` 为 False，task_log 终态 cancelled」。
 
-- [ ] **T1-03 `_submit_shared_job` 幽灵 QUEUED**
+- [x] **T1-03 `_submit_shared_job` 幽灵 QUEUED**
   `webapp.py:578-595`：先 `create_task_log` 再 `submit`；或 except 里 `mark_failed`。顺手把 DB IO 挪出 `shared_job_manager._lock`。验收：mock `create_task_log` 抛异常后 `_has_active_shared_jobs()` 为 False。
 
-- [ ] **T1-04 `following_novels` 取消不落水位**
+- [x] **T1-04 `following_novels` 取消不落水位**
   `sync_engine.py:1164-1175` 作者循环包 `try/finally: _save_watermark()`。验收：用例「第 2 个作者抛 `InterruptedError` → `sync_watermarks.following_novels` 含第 1 个作者时间戳」。
 
-- [ ] **T1-05 `cleanup_stale_pending` 零命中不提交**
+- [x] **T1-05 `cleanup_stale_pending` 零命中不提交**
   `storage/pending_and_watermarks.py:172-192` 无条件 `_commit_if_needed()`。验收：用例「0 行后 `conn.in_transaction` 为 False」。
 
-- [ ] **T1-06 Provider / Agent 的 `or 默认值`**
+- [x] **T1-06 Provider / Agent 的 `or 默认值`**
   `storage/ai/core.py:220-223,370-372`、`ai/services/admin.py:1487-1490,1506-1509` 改 `default if x is None else x`。验收：`create_ai_provider({"max_retries":0})` → `_load_provider_config().max_retries == 0`；`temperature=0` 同理。
 
-- [ ] **T1-07 `localhost` opt-in 被拒**
+- [x] **T1-07 `localhost` opt-in 被拒**
   `ai/providers.py:93-111 _is_blocked_ip` 先判 `is_loopback`（`allow_private` 放行）再判 `is_reserved`；`_resolve_target :177-181` 对回环主机名放行。验收：`PIXIV_AI_ALLOW_PRIVATE_HOSTS=1` 下 `validate_base_url("http://localhost:11434", resolve=True)` 与 `http://[::1]:11434` 通过，`http://169.254.169.254` 仍拒。
 
-- [ ] **T1-08 Anthropic `/v1/v1/messages`**
+- [x] **T1-08 Anthropic `/v1/v1/messages`**
   `ai/providers.py:1060-1065` 提炼 `_resolve_base_url()`，`:1094-1095` 生成路径共用。验收：`base_url` 以 `/v1` 结尾时 discovery 与 generate URL 前缀一致。
 
-- [ ] **T1-09 推荐候选级异常 + 全失败判黄**
+- [x] **T1-09 推荐候选级异常 + 全失败判黄**
   `recommendations.py:116` 包 `try / except InterruptedError: raise / except Exception: errors += 1; continue`；`_series_length` 失败返 `(0, 0)`；`search_novel` / `novel_series` 加 `retry_on_pixiv_error`。`:132-135` 前：`errors > 0` 置顶层 `incomplete=True` + `aborted_reason="search_errors"`；`searched > 0 and errors == searched` 记 `failed` 并抛。验收：用例「一个候选 `novel_series` 抛 `PixivError` → run succeeded 且 items 含其余候选」「全部 search 抛 → task_log partial/failed」。
 
-- [ ] **T1-10 日志页两处**
+- [x] **T1-10 日志页两处**
   `dashboard_logs.html:369-370` 下拉值改 `bookmark` / `following_users`；`:642-645 formatDate` 用 T2-20 的公共 `formatDbTime`（先本地补 `Z`）。验收：选「收藏同步」有结果；Safari / Chrome 时间与首页一致。
 
-- [ ] **T1-11 首页状态条数据源**
+- [x] **T1-11 首页状态条数据源**
   `dashboard.html:255-265` 以 `autoSyncStatus.current_job` 为准，或 `latestJob` 非 running 时不带 `job_id`。验收：调度器起新任务后 3 s 内状态条显示任务名。
 
-- [ ] **T1-12 收藏卡片头像 / R-18**
+- [x] **T1-12 收藏卡片头像 / R-18**
   `storage/bookmarks.py:54-72` 补 `n.x_restrict, u.raw_json AS author_raw_json` 并做 `list_following_series` 同款头像提取。验收：收藏 tab 出现头像与 R-18 徽标。
 
-- [ ] **T1-13 `user_backup` 截断不标 truncated**
+- [x] **T1-13 `user_backup` 截断不标 truncated**
   `jobs/services.py:161-174` 独立上限（新增 `SyncSettings.user_backup_max_pages_per_run`，或固定 200）；触顶 `stats["truncated"] = True; stats["incomplete"] = True`。注意 `test_every_incomplete_marker_declares_why` 只 grep `sync_engine.py`，这里在 `services.py`，补一条同款守卫。验收：task_log 为 partial。
 
-- [ ] **T1-14 `deploy.sh` `rm -rf` 数据路径**
+- [x] **T1-14 `deploy.sh` `rm -rf` 数据路径**
   `deploy.sh:38-51` else 分支改为 clone 到临时目录再 `rsync -a --exclude data --exclude .env --exclude config/config.yaml`，或 `rm -rf` 前检测 `data/` 存在即中止。验收：目录含 `data/` 且无 `.git` 时脚本拒绝。
 
-- [ ] **T1-15 sync_check 去留**
+- [x] **T1-15 sync_check 去留**
   推荐**删掉整套**：`sync_check.py`、`web/managers.py:920-992 SyncJobManager` + `:245-259 SyncJobState`、`sync_engine.py:302-372 check_bookmarks_existence`、`POST /api/dashboard/check-bookmarks`、`webapp.py:34` 再导出、`web/utils.py:170-175` 死分支、`jobs/quick_sync.py` 的 `run_check_bookmarks_task`、CLI `sync-check`。`sync_engine.py:1053-1060` 的 `existing_streak` 改为 `db.novel_archive_complete(novel_id)` 判定。验收：grep `sync_check` 在 `src/` 为空；CLI 子命令表 8 个；`pytest -k rescue or bookmark` 绿。
 
 ---
@@ -366,7 +366,7 @@
 
 ### 4.1 AI 创作 P0 / P1
 
-- [ ] **T4-01 预算单位统一（P0）**
+- [ ] **T4-01 预算单位统一（P0）**（进行中：helper 已挪进 `services/core.py`，五个流与向导尚未接线）
   把 `projects.py:42-90` 的 `_utf8_tail / _fit_route_messages / _fit_tail_text_messages` 挪到 `services/core.py`；`generation.py:155-158,174,241,578,650-653,709-723` 五个流一律改用；`_smart_context` 段长与蒸馏批大小按字节；`chat_wizard.py:107-146` 按字节从最旧轮丢历史，用户消息在 `_start_route_job` 成功后再写；`tests/test_ai_model_router_integration.py:1246` AST 守卫覆盖 `services/` 全部 `stream_*`。验收：22000 字中文 `stream_continue / rewrite / audit / plan` 不 overflow；6 轮长对话后向导仍可发。
 
 - [ ] **T4-02 向导弹窗 prop（P0）**
