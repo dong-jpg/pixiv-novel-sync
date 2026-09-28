@@ -560,12 +560,16 @@ def test_refresh_missing_series_cleans_catalog_and_sources(db: Database) -> None
     db.conn.commit()
     result = db.refresh_rescue_item("series", 260)
 
-    assert result["items"] == 0
-    assert result["sources"] == 0
+    # T2-52：系列行没了，但系列里的小说仍有来源记录——增量刷新与全量重建
+    # 一致，保留这篇小说（旧行为直接丢弃，与 rebuild 结果不一致）。
     assert db.get_rescue_catalog_item("series", 260) is None
     assert db.list_rescue_catalog_sources("series", 260) == []
+    assert db.get_rescue_catalog_item("novel", 261) is not None
+    assert result["items"] == 1
+    db.rebuild_rescue_catalog()
+    assert db.get_rescue_catalog_item("novel", 261) is not None
     assert db.conn.execute(
-        "SELECT COUNT(*) FROM rescue_catalog WHERE series_id = 260"
+        "SELECT COUNT(*) FROM rescue_catalog WHERE series_id = 260 AND item_type = 'series'"
     ).fetchone()[0] == 0
     assert db.conn.execute(
         "SELECT COUNT(*) FROM rescue_catalog_memberships WHERE series_id = 260"

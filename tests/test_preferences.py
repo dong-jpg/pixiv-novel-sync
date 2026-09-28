@@ -144,6 +144,9 @@ def _make_feedback_app(tmp_path: Path):
         storage=StorageSettings(public_dir=tmp_path / "public", private_dir=tmp_path / "private", db_path=tmp_path / "prefs.db"),
     )
     app = Flask(__name__)
+    # conftest 的 CSRF shim 对变更请求调 session_transaction()，裸 Flask 需要
+    # secret_key 才能开签名 cookie 会话，否则 open_session 返回 None 直接 RuntimeError。
+    app.secret_key = "test-secret"
     register_preference_routes(app, settings)
     return app, settings
 
@@ -228,6 +231,7 @@ def test_recommendation_items_endpoint_returns_envelope_with_page(tmp_path: Path
         storage=StorageSettings(public_dir=tmp_path / "public", private_dir=tmp_path / "private", db_path=tmp_path / "env.db"),
     )
     app = Flask(__name__)
+    app.secret_key = "test-secret"
     register_preference_routes(app, settings)
     _seed_recommendation_runs(settings.storage.db_path, runs=2, items_per_run=3)
     client = app.test_client()

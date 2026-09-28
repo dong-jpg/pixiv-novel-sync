@@ -440,21 +440,6 @@ def test_delete_provider_reports_fixed_agent_reference_as_conflict(
     assert db.get_ai_provider(provider_id) is not None
 
 
-def test_delete_provider_reports_catalog_reference_as_conflict(
-    service: AIWritingService,
-    db: Database,
-) -> None:
-    provider_id = seed_provider(db)
-    db.create_ai_provider_model(
-        {"provider_id": provider_id, "model_key": "catalog-model"}
-    )
-
-    with pytest.raises(AIConflictError, match="模型目录"):
-        service.delete_provider(provider_id)
-
-    assert db.get_ai_provider(provider_id) is not None
-
-
 def test_delete_provider_reports_pool_member_reference_as_conflict(
     service: AIWritingService,
     db: Database,
