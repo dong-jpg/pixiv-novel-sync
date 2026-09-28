@@ -873,19 +873,31 @@ def test_events_stream_stops_at_total_deadline(
     """events() 轮询必须有总时长上限，超时输出 failed 事件并结束。"""
     monkeypatch.setattr(model_sync_module, "_MODEL_SYNC_DEADLINE_SECONDS", 0)
 
+    operation = {
+        "operation_id": "op-timeout",
+        "provider_id": 1,
+        "generation": 1,
+        "status": "running",
+        "pages": 0,
+        "discovered_count": 0,
+        "result_digest": None,
+        "error_code": None,
+        "error_message": None,
+    }
+
+    class _FakeEventsDB:
+        def get_model_sync_operation(self, _operation_id: str) -> dict:
+            return dict(operation)
+
+        def close(self) -> None:
+            pass
+
     class ForeverRunningCoordinator:
+        def _db(self):
+            return _FakeEventsDB()
+
         def get(self, operation_id: str) -> dict:
-            return {
-                "operation_id": operation_id,
-                "provider_id": 1,
-                "generation": 1,
-                "status": "running",
-                "pages": 0,
-                "discovered_count": 0,
-                "result_digest": None,
-                "error_code": None,
-                "error_message": None,
-            }
+            return dict(operation)
 
     events = list(
         ModelSyncCoordinator.events(

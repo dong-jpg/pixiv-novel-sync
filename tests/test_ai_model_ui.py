@@ -131,7 +131,9 @@ def test_logs_template_contains_attempts_budget_and_continue_endpoint():
         "partial",
         "attempt_count",
         "route_summary",
-        "X-CSRF-Token",
+        # 续跑是变更请求，必须走 window.csrfFetch（它负责带 X-CSRF-Token），
+        # 模板不再手拼头。
+        "window.csrfFetch",
     ):
         assert text in LOG_TEMPLATE
 
@@ -218,10 +220,12 @@ def test_provider_card_and_agent_row_show_inherited_health():
 
 
 def test_provider_form_collapses_advanced_fields_and_probes_before_save():
-    for text in ("probe-models", "probedModels", "toggleProbedModel", "advancedOpen", "从已有 Provider 复制"):
+    for text in ("probe-models", "probedModels", "advancedOpen", "从已有 Provider 复制"):
         assert text in TEMPLATE
     # /v1 建议是一键按钮，不是静默改写
     assert "试试" in TEMPLATE and "/v1" in TEMPLATE
+    # 探测结果是只读预览（T2-60）：勾选写目录的交互已删，防止误导成已保存
+    assert "toggleProbedModel" not in TEMPLATE
 
 
 def test_model_catalog_rows_can_toggle_enabled():

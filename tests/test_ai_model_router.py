@@ -326,6 +326,7 @@ def test_route_contract_field_order_and_immutability() -> None:
         "top_p",
         "resume_candidate_index",
         "is_cancelled",
+        "route_deadline_at",
     ]
     assert [field.name for field in fields(RouteResult)] == [
         "job_id",

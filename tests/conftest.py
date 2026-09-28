@@ -44,6 +44,12 @@ def isolate_runtime_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
     monkeypatch.delenv("PIXIV_DASHBOARD_TOKEN", raising=False)
     monkeypatch.delenv("ENV_PATH", raising=False)
+    # load_dotenv 会把测试 .env 里的键写进进程环境；用例内部再 delenv 会把
+    # 污染值记成「原值」，teardown 时原样放回（实测 DASHBOARD_TRUST_PROXY=true
+    # 泄漏后，后续无 token 用例全部 403）。这里在每个用例开头兜底清掉。
+    monkeypatch.delenv("DASHBOARD_TRUST_PROXY", raising=False)
+    monkeypatch.delenv("DASHBOARD_TRUSTED_PROXY_HOPS", raising=False)
+    monkeypatch.delenv("PIXIV_COOKIE_SECURE", raising=False)
     monkeypatch.setenv("PIXIV_DB_PATH", str(tmp_path / "state" / "test.db"))
     monkeypatch.setenv("PIXIV_PUBLIC_DIR", str(tmp_path / "public"))
     monkeypatch.setenv("PIXIV_PRIVATE_DIR", str(tmp_path / "private"))
