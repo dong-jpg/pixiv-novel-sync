@@ -43,6 +43,22 @@ def test_global_components_use_library_os_classes():
 
     assert "library-nav-link" in html
     assert "library-badge" in html
+
+
+def test_app_modal_usages_bind_is_open_prop():
+    """app-modal 的 prop 是 isOpen，模板必须写 :is-open。
+
+    历史上 dashboard_wizard.html 写成 :open= 加 size="lg"，Vue 把 open 当成
+    未声明 attr 落到根元素上，isOpen 缺省为 undefined，弹窗永远打不开。
+    """
+    import re
+
+    for path in sorted(TEMPLATES.glob("*.html")):
+        html = read(path)
+        for tag in re.findall(r"<app-modal\b[^>]*>", html):
+            assert ":is-open" in tag, f"{path.name}: {tag}"
+            assert ":open=" not in tag, f"{path.name}: {tag}"
+            assert "size=" not in tag, f"{path.name}: {tag}"
     assert "library-modal" in html
     assert "Library OS" in html
 

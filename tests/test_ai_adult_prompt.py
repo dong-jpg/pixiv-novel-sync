@@ -256,3 +256,21 @@ def test_restore_character_tokens_rejects_multiple_tokens_for_one_identity():
 
     with pytest.raises(AdultInputError, match="一对一|身份"):
         restore_character_tokens(token_a, {token_a: fact, token_b: fact})
+
+
+def test_restore_character_tokens_allows_trailing_whitespace_after_token():
+    """占位符后紧跟换行/空格是正常排版，不得误判为「占位符变体」。
+
+    旧实现给每个字符（含末字符）都挂 [\\s零宽]*，token 后面只要有空白，
+    match.group(0) 就带尾随空白 != token，正常候选被 safety_blocked。
+    """
+    prompt = _build()
+    token = next(iter(prompt.token_map))
+
+    assert restore_character_tokens(f"{token}\n下一段。", prompt.token_map) == "安娜\n下一段。"
+    assert restore_character_tokens(f"{token} 说：", prompt.token_map) == "安娜 说："
+    assert restore_character_tokens(f"（{token}）\r\n", prompt.token_map) == "（安娜）\r\n"
+
+    # 字符之间的分隔仍然是变体，fail-closed 不放宽
+    with pytest.raises(AdultInputError, match="变体|占位符"):
+        restore_character_tokens(f"{token[:6]} {token[6:]}握住他的手。", prompt.token_map)

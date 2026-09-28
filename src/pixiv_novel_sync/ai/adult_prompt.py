@@ -446,9 +446,9 @@ def _token_variant_issue(candidate: str, token_map: Mapping[str, AdultCharacterF
         return "未知占位符"
 
     for token in token_map:
-        pattern = "".join(
-            re.escape(char) + f"[\\s{_ZERO_WIDTH}]*" for char in token
-        )
+        # 分隔只允许出现在字符之间：尾随空白/零宽属于正常排版，不是变体。
+        separator = f"[\\s{_ZERO_WIDTH}]*"
+        pattern = separator.join(re.escape(char) for char in token)
         match = re.search(pattern, candidate, re.IGNORECASE)
         if match is not None and match.group(0) != token:
             return "占位符变体"

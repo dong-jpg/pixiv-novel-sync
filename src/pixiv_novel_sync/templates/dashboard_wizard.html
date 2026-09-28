@@ -143,7 +143,7 @@
     </div>
   </section>
 
-  <app-modal :open="showImportModal" title="导入到自动写作项目" size="lg" @close="showImportModal = false">
+  <app-modal :is-open="showImportModal" title="导入到自动写作项目" @close="showImportModal = false">
     <div class="space-y-4">
       <div class="flex gap-2"><button @click="importMode = 'create'" class="px-3 py-2 rounded-lg text-sm" :class="importMode === 'create' ? 'bg-brand-500 text-white' : 'bg-gray-100'">创建新项目</button><button @click="importMode = 'merge'" class="px-3 py-2 rounded-lg text-sm" :class="importMode === 'merge' ? 'bg-brand-500 text-white' : 'bg-gray-100'">合并到项目</button></div>
       <select v-if="importMode === 'merge'" v-model.number="importTargetProjectId" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"><option :value="0">选择目标项目</option><option v-for="project in projectList" :key="project.id" :value="project.id">{{ project.name }}</option></select>
@@ -159,7 +159,7 @@
     </div>
   </app-modal>
 
-  <app-modal :open="showImportMaterialModal" title="导入已有素材" size="lg" @close="showImportMaterialModal = false">
+  <app-modal :is-open="showImportMaterialModal" title="导入已有素材" @close="showImportMaterialModal = false">
     <div class="space-y-3">
       <input v-model="materialTitle" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="会话名称">
       <input ref="materialFileInput" type="file" accept=".txt,.md,text/plain,text/markdown" class="hidden" @change="onMaterialFileSelected">
