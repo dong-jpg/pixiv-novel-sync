@@ -29,7 +29,7 @@ pixiv-novel-sync web-token-ui  # Flask UI on http://127.0.0.1:5010 (--host/--por
 Tests (`testpaths=tests`, `pythonpath=src` in `pyproject.toml`):
 
 ```bash
-pytest                                    # full suite: ~6 min, 1150 passed / 4 skipped
+pytest                                    # full suite: ~5 min, 1253 passed / 4 skipped
 pytest tests/test_preferences.py           # one file
 pytest tests/test_jobs_runner.py::test_x   # one test
 pytest -k "rescue"                         # by keyword
@@ -167,7 +167,7 @@ Generation flows through the route-job lifecycle in `ai/services/core.py` (`_sta
 - Prefer heavy, deferred imports inside functions (as `cli.py` and `jobs/tasks.py` do) to keep CLI startup fast.
 - Some tests assert on non-Python files, so behaviour changes can require doc/asset edits to stay green: `test_ai_model_docs.py` (README + `docs/`), `test_frontend_library_os.py` (templates + style guide), `test_rescue_userscript.py` (userscript), `test_deployment_contract.py` (`deploy/systemd/*` vs `scripts/install_server.sh`), `test_recommendation_scheduling.py` (every scheduler task has a web label), `test_sync_engine_incremental.py` (greps `sync_engine.py` source for raw sleeps).
 - Source-of-truth order when docs disagree (from `docs/UNIFIED_PROJECT_REQUIREMENTS.md` §1.2): code and tests > `README.md` > `docs/frontend-api-contract.md` > `docs/frontend-pages.md` / `docs/library-os-style-guide.md` > this file. `docs/INDEX.md` maps active vs archived docs.
-- `docs/superpowers/plans/` and `specs/` describe **target** state; as of 2026-09-14 the three "进行中" plans remain unimplemented (`refresh_rescue_entities`, `recommendation_search_plans`, `JobType.RECOMMENDATION_SYNC` and `explanation_source` appear nowhere in `src/` or `tests/`), while `2026-09-14-ai-writing-split-and-audit-remediation.md` is the current mainline being executed (stage 0 — the writing-module split — is done). `KNOWLEDGE_GRAPH.md`, `API_COMPLETE.md`, and `docs/archive/` are historical snapshots. None of these describe current behaviour.
+- `docs/superpowers/plans/` and `specs/` describe **target** state; as of 2026-09-28 the old "进行中" plans' four gap items are decided **OUT** in `docs/UNIFIED_PROJECT_REQUIREMENTS.md` §1.3 (`refresh_rescue_entities`, `recommendation_search_plans`, `JobType.RECOMMENDATION_SYNC` and `explanation_source` appear nowhere in `src/` or `tests/`, and must not be added), while `2026-09-14-ai-writing-split-and-audit-remediation.md` is the current mainline being executed (stages 0–3 and 5 are done; stage 4 runs on the `ai-writing` branch). `KNOWLEDGE_GRAPH.md`, `API_COMPLETE.md`, and `docs/archive/` are historical snapshots. None of these describe current behaviour.
 
 ## Deploy
 

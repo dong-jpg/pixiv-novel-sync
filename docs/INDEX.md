@@ -47,15 +47,22 @@
 
 ### 进行中
 
-> **2026-09-24：** 2026-08-14 三份计划没有按原文整份落地。能用更小改动盖住的，已经进了 2026-09-14 整改（救援增量刷新、推荐搜索计划、目录差量）。明确不做的是 task log owner lease、分页游标、trash manifest、AI 总结 / 解释来源、成人偏好注入、审查阶段实时 progress，以及 `recommendation_search_plans` 表和 `JobType.RECOMMENDATION_SYNC`。2026-08-28 吞吐计划已拆成 phase 1–3。这些文件描述的是当时的目标，不是当前行为。
+> **2026-09-28：** 2026-08-14 三份计划没有按原文整份落地。能用更小改动盖住的，已经进了 2026-09-14 整改（救援增量刷新、推荐搜索计划、目录差量）。明确不做的是 task log owner lease、分页游标、trash manifest、AI 总结 / 解释来源、成人偏好注入、审查阶段实时 progress，以及 `recommendation_search_plans` 表和 `JobType.RECOMMENDATION_SYNC`。2026-08-28 吞吐计划已拆成 phase 1–3。这些文件描述的是当时的目标，不是当前行为。
 
 | 文档 | 说明 |
 |------|------|
+| [superpowers/plans/2026-09-14-ai-writing-split-and-audit-remediation.md](superpowers/plans/2026-09-14-ai-writing-split-and-audit-remediation.md) | **当前主线**：AI 写作模块剥离到 `ai-writing` 分支 + 2026-09-14 审计全部发现的整改任务（T0–T5 编号，含验收清单）。main 侧 T0–T3、T5 已完成；T4 在 `ai-writing` 进行中 |
 | [superpowers/specs/2026-08-14-complete-audit-remediation-design.md](superpowers/specs/2026-08-14-complete-audit-remediation-design.md) | 2026-08-13 审计的完整整改设计（本轮主线设计） |
 | [superpowers/plans/2026-08-14-runtime-integrity-remediation.md](superpowers/plans/2026-08-14-runtime-integrity-remediation.md) | 运行时完整性整改实施计划（未开始） |
-| [superpowers/plans/2026-09-14-ai-writing-split-and-audit-remediation.md](superpowers/plans/2026-09-14-ai-writing-split-and-audit-remediation.md) | **当前主线**：AI 写作模块剥离到 `ai-writing` 分支 + 2026-09-14 审计全部发现的整改任务（T0–T5 编号，含验收清单） |
 | [superpowers/plans/2026-08-14-rescue-completion.md](superpowers/plans/2026-08-14-rescue-completion.md) | 救援目录收尾实施计划（未开始） |
 | [superpowers/plans/2026-08-14-recommendation-completion.md](superpowers/plans/2026-08-14-recommendation-completion.md) | 推荐系统收尾实施计划（未开始） |
+| [superpowers/specs/2026-08-28-sync-budget-and-settings-redesign-design.md](superpowers/specs/2026-08-28-sync-budget-and-settings-redesign-design.md) | 同步吞吐 / 预算与设置页重做设计（已拆成 phase 1–3） |
+| [superpowers/plans/2026-08-28-sync-throughput-and-budget.md](superpowers/plans/2026-08-28-sync-throughput-and-budget.md) | 2026-08-28 吞吐与预算原始计划（SUPERSEDED，拆成下面三份 phase） |
+| [superpowers/plans/2026-08-28-phase1-sync-throughput.md](superpowers/plans/2026-08-28-phase1-sync-throughput.md) | 吞吐 phase 1 实施计划 |
+| [superpowers/plans/2026-08-28-phase2-schedule-budget.md](superpowers/plans/2026-08-28-phase2-schedule-budget.md) | 吞吐 phase 2 排期与预算实施计划 |
+| [superpowers/plans/2026-08-28-phase3-settings-ai-pages.md](superpowers/plans/2026-08-28-phase3-settings-ai-pages.md) | 吞吐 phase 3 设置与 AI 页实施计划 |
+| [superpowers/specs/2026-09-03-ai-settings-operability-design.md](superpowers/specs/2026-09-03-ai-settings-operability-design.md) | AI 设置页可操作性设计 |
+| [superpowers/plans/2026-09-03-ai-settings-operability.md](superpowers/plans/2026-09-03-ai-settings-operability.md) | AI 设置页可操作性实施计划 |
 
 ### 已完成
 
@@ -102,7 +109,7 @@
 
 AI 创作与成人润色功能在 `ai-writing` 分支维护，其文档（含成人 Agent 的 fail-closed、Provider scope、角色确认、两阶段 JSON review 约束）随模块一并迁出，main 分支不再收录。`2026-08-14-complete-audit-remediation-design.md` 描述的是**尚未实施**的下一轮目标，不能当作当前行为依据。仓库中不存在的 `.superpowers/sdd/task-11-brief.md` 不再作为活动清单引用。
 
-测试基线：`python -m pytest -q` → 1150 passed, 4 skipped（2026-09-15 剥离 AI 写作模块后实测）。
+测试基线：`python -m pytest -q` → 1253 passed, 4 skipped（2026-09-28 实测）。
 
 归档包含 14 份顶层文档 + 6 份 superpowers 已完成计划，涵盖：
 - 2026-06-16 全量审计系列（AUDIT_REPORT / EXECUTIVE_SUMMARY / COMPLETION_REPORT / CRITICAL_BUGS_FIX_PLAN / BUGS_FIXED_REPORT / ACTION_CHECKLIST）
