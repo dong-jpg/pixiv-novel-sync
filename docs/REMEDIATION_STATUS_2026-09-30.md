@@ -5,27 +5,27 @@
 ## 结论与交付边界
 
 - 已按数据安全、预算/并发、功能闭环、文档的顺序实施整改；最终验收以本页证据为准，不以旧计划空勾推算完成率。
-- 09-14 跨分支计划的 **123 个编号仓库任务已按实现和自动回归核实，未勾选为 0**；这不是整个项目“100% 完成”，也不包含下方尚待完成的交付与外部验收。
-- **修改尚未提交、推送或部署**。本地分支提交与远端并未因工作区修改而更新；不能宣称生产环境已修复，也不能保证代码不存在任何隐藏缺陷。
+- 09-14 跨分支计划的 **123 个编号仓库任务已按实现和自动回归核实，未勾选为 0**；这不是整个项目“100% 完成”，不能替代下方尚待完成的发布与外部验收。
+- **代码整改已分别提交并推送到 `origin/main` 与 `origin/ai-writing`，未部署**。推送使用非强制原子更新；不能宣称生产环境已修复，也不能保证代码不存在任何隐藏缺陷。
 - 10-08 发现上轮系统临时目录中的 main 工作树与测试日志已不存在。本轮从 main 重建持久隔离工作树，按共享文件/补丁恢复并重新验证，未沿用丢失日志的成功结论。
 - 写作和成人功能只在 ai-writing；没有整支反向合入 main。历史报告与历史计划分别整合，原文留存以便追溯。
 
 ## 分支检查
 
-10-08 重新枚举本地引用并查询 `git ls-remote --heads origin`；各提交仍与 09-30 审查一致，因此历史计划创建顺序不变。
+10-08 按用户授权完成提交和推送，并用 `git ls-remote --heads origin` 核对远端。提交前基线为 main `364c8b7`、ai-writing `6fa9f9f`，旧远端 main 为 `d7425ba`；本轮后续提交不改变历史计划的首次 Git 提交顺序。下表记录**代码交付提交**，其后仅追加交付状态文档；最新分支 HEAD 以 Git 引用为准。
 
 | 引用/工作区 | 当前状态 |
 |---|---|
-| `ai-writing`，`6fa9f9f` | 当前主工作区，包含本轮共享及写作/成人未提交修复 |
-| `main`，`364c8b7` | 已提交引用未变化；共享整改在基于该提交的独立工作区验证，尚未写入 main 提交 |
+| `ai-writing`，`05b461d` | 共享及写作/成人整改已提交；已创建并推送远端同名分支 |
+| `main`，`dd23ad8` | 共享整改已在持久隔离工作树提交，远端 main 已正常快进 |
 | 三条 `worktree-agent-*`，`3f5860a` | 同一历史起点，已被 main 与 ai-writing 包含；没有独立未合入成果，不重复开发 |
-| 远端 `main` / `origin/main`，`d7425ba` | 远端仅此分支，仍是旧版本；不能以本地测试替代远端发布 |
+| `origin/main` / `origin/ai-writing` | 代码交付时远端分别核验为 `dd23ad8` / `05b461d`；推送完成不代表部署完成 |
 
 工作区位置：
 
 - ai-writing：`D:/gitcode/pixiv-novel-sync`
-- main 基线隔离树（detached HEAD）：`C:/Users/dong/.codex/worktrees/main-remediation-verification/pixiv-novel-sync`
-- 旧 `C:/Users/dong/AppData/Local/Temp/pns-audit/main-tree` 注册已失去磁盘目录；保留注册以便追溯，本轮不依赖它。
+- main 持久隔离树（已重新绑定 main）：`C:/Users/dong/.codex/worktrees/main-remediation-verification/pixiv-novel-sync`
+- 旧 `C:/Users/dong/AppData/Local/Temp/pns-audit/main-tree` 已失去磁盘目录；提交前核对后只清理这一条失效 Git 注册，没有删除任何现有工作目录。
 
 ## 整改覆盖与实现评价
 
@@ -61,18 +61,27 @@ T4-02/09 是已有提交的修复，不计为本轮重新开发。成人偏好�
 
 | 验证 | 结果 |
 |---|---|
-| main 基线隔离树 `python -m pytest -q -ra` | **1309 passed，6 skipped**，288.21 秒，退出码 0 |
-| ai-writing 最终全量 `python -m pytest -q -ra` | **1785 passed，6 skipped**，421.45 秒，退出码 0 |
+| main 提交前全量 `python -m pytest -q -ra` | **1309 passed，6 skipped**，377.31 秒，退出码 0 |
+| ai-writing 提交前全量 `python -m pytest -q -ra` | **1785 passed，6 skipped**，523.93 秒，退出码 0 |
 | 成人末轮独立复核 | 50 + 7 项定向通过；移除策略 guard 的进程内反向测试按预期失败，恢复后竞态与正常 apply 均通过 |
 | 两工作树 `python -m compileall -q src tests` / `python -m pyflakes src tests` / `git diff --check` | 均通过；静态清理覆盖生产代码及测试，不删减原测试断言 |
 | 模板脚本 `node --check` | ai-writing 26 段、main 17 段通过（按项目 Jinja 分隔符处理；不是浏览器验收） |
 | 合成数据库跨分支初始化 | ai-writing → main → ai-writing，56 张表和策略历史 sentinel 均保留；未访问生产库 |
 | 最终文档同步后的文档/前端/推荐定向 | ai-writing **85 passed**；main **74 passed**；包含末轮阅读动作及仅删除未用导入的推荐测试 |
-| 更新文档的本地链接 | ai-writing 61 份、169 处；main 54 份、213 处，文件目标均存在；不包含外链可达性或页内锚点验收 |
+| 更新文档的本地链接 | 两工作区本轮更新文档的相对链接文件目标均存在；不包含外链可达性或页内锚点验收 |
 
 ai-writing 首轮完整结果为 **9 failed、1733 passed、4 skipped**：失败均来自成人旧策略占位夹具或在流关闭后检查“仍未取消”的旧断言。已修改三个成人测试文件：使用真实发布策略元数据，并分别断言运行期间未取消、退出后停止。**没有弱化生产策略 guard**；修正夹具后的 1742 passed 为中间基线，追加末轮修复与回归后的最终结果为上表的 1785 passed。
 
-每个工作树的 6 个 skip 包括 3 个符号链接权限用例和 3 个 POSIX 文件 mode 用例，均因 Windows 限制跳过，不是功能通过；Linux 发布前仍需运行对应安全用例。日志与复核材料在本地主工作区 `.superpowers/verification-2026-10-08/`（Git 忽略的诊断产物，不替代本报告）。最终全量日志分别为 `main-release.log`、`ai-writing-release.log`，对应 `.exit` 文件均为 0；定向重叠用例不与全量数相加。
+每个工作树的 6 个 skip 包括 3 个符号链接权限用例和 3 个 POSIX 文件 mode 用例，均因 Windows 限制跳过，不是功能通过；Linux 发布前仍需运行对应安全用例。日志与复核材料在本地主工作区 `.superpowers/verification-2026-10-08/`（Git 忽略的诊断产物，不替代本报告）。提交前全量日志分别为 `main-prepush.log`、`ai-writing-prepush.log`，对应 `.exit` 文件均为 0；定向重叠用例不与全量数相加。
+
+## 10-08 Git 交付记录
+
+- main 代码整改提交：`dd23ad8fa9dd69aabc823a47ca23dadcf07656e7`。
+- ai-writing 代码整改提交：`05b461da61611350f176e4a23ba6310003997ab4`。
+- 两个提交的 tree 均与经验证的暂存快照一致；提交前再次运行完整套件和静态检查。新增 CJS 文件末尾的多余空行在暂存检查中发现并清理，Node 行为回归再次通过，未改变实现或断言。
+- `git push --atomic --set-upstream origin` 同次推送两条分支，main 正常快进、ai-writing 新建远端引用；随后独立查询远端确认上述完整提交号。没有强制推送、重写历史、反向合入写作分支或执行部署。
+- 两个有效工作树保留；原有 `audit_routes.py` / `audit_routes_out.txt` 内容未改动且未纳入提交。历史 agent 分支没有独立成果，不重复推送。
+- 本节记录已完成的**代码交付**；随后的文档收尾提交只回写报告、执行台账及相关活跃文档的交付状态，不修改生产代码。
 
 ## 文档整合
 
@@ -83,7 +92,7 @@ ai-writing 首轮完整结果为 **9 failed、1733 passed、4 skipped**：失败
 
 ## 仍须完成的发布/外部验收（按优先级）
 
-1. **交付与可回滚性**：审阅两工作区差异，分别提交共享与写作修改；发布前备份实际数据库和归档目录。当前没有执行 commit/push/部署，也未处理用户原有 `audit_routes.py` / `audit_routes_out.txt`。
+1. **发布与可回滚性**：Git 代码交付已完成；部署前仍须备份实际数据库和归档目录、确认回滚步骤。本轮没有执行部署或操作生产数据。
 2. **Linux 与生产库副本**：运行平台安全用例，用脱敏生产库副本做迁移、回退与备份恢复演练；合成 56 表实验不能替代该验收。
 3. **真实 Pixiv / Provider**：用目标账户及服务商验证认证、限流、取消、预算与故障切换；不以 fake router 或离线样本冒充实连。
 4. **浏览器/移动端**：在实际支持的浏览器核验保存冲突、SSE 断连、Pipeline 重试、成人升级/重审、布局与交互；脚本语法和 CJS 状态回归不是视觉验收。
