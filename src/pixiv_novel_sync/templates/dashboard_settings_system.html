@@ -44,7 +44,7 @@
         </div>
       </div>
 
-      <div class="flex items-center gap-4">
+      <div class="flex flex-wrap items-center gap-4">
         <button @click="saveSettings" :disabled="saving"
                 class="px-5 py-2 bg-brand-500 text-white hover:bg-brand-600 font-medium text-sm rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50">
           {{ saving ? '保存中...' : '保存系统设置' }}
@@ -121,20 +121,24 @@
     </div>
   </section>
 
-  <app-modal title="救援 API Token" :is-open="!!rescueTokenPlaintext" @close="closeRescueToken">
+  <app-modal title="救援 API Token" :is-open="!!rescueTokenPlaintext" :close-on-backdrop="false" @close="closeRescueToken">
     <div class="space-y-4">
       <div class="p-3 bg-amber-50 border border-amber-100 rounded-lg text-sm text-amber-800">
         这是唯一一次显示完整 Token。关闭此窗口后页面会立即清空明文，无法再次查看。
       </div>
       <div>
-        <label class="block text-xs font-medium text-gray-600 mb-1.5">完整 Token</label>
-        <textarea readonly :value="rescueTokenPlaintext" rows="3"
+        <label for="rescue-token-plaintext" class="block text-xs font-medium text-gray-600 mb-1.5">完整 Token</label>
+        <textarea id="rescue-token-plaintext" readonly :value="rescueTokenPlaintext" rows="3" aria-describedby="rescue-token-copy-help"
                   class="w-full px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 font-mono text-sm break-all resize-none"></textarea>
+        <p id="rescue-token-copy-help" class="mt-2 text-sm text-gray-600">也可点击「选中 Token」，长按选区并选择「复制」，或按 Ctrl/Cmd+C 手动复制。复制不会重新签发 Token。</p>
+        <button type="button" @click="selectRescueToken" class="library-btn mt-2">选中 Token</button>
       </div>
+      <p v-if="rescueTokenCopyMessage" :role="rescueTokenCopyType === 'error' ? 'alert' : 'status'" class="text-sm break-words"
+         :class="rescueTokenCopyType === 'error' ? 'text-red-600' : 'text-emerald-700'">{{ rescueTokenCopyMessage }}</p>
     </div>
     <template #footer>
       <button @click="closeRescueToken" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200">关闭并清空</button>
-      <button @click="copyRescueToken" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600">复制 Token</button>
+      <button @click="copyRescueToken" :disabled="copyingRescueToken" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600 disabled:opacity-50">{{ copyingRescueToken ? '复制中…' : '复制 Token' }}</button>
     </template>
   </app-modal>
 </div>
@@ -144,7 +148,7 @@
 <script>
   initVueApp({
     setup() {
-      const { ref, onMounted } = Vue;
+      const { ref, onMounted, onUnmounted } = Vue;
 
       const settings = ref(null);
       const saving = ref(false);
@@ -162,6 +166,10 @@
       const rescueTokenMessage = ref('');
       const rescueTokenMessageType = ref('success');
       const rotatingRescueToken = ref(false);
+      const rescueTokenCopyMessage = ref('');
+      const rescueTokenCopyType = ref('success');
+      const copyingRescueToken = ref(false);
+      let rescueTokenGeneration = 0;
 
       const showSaveStatus = (msg, success) => {
         saveMessage.value = msg;
@@ -249,11 +257,16 @@
 
       async function rotateRescueToken() {
         if (!confirm('轮换后旧 Token 会立即失效，确认继续吗？')) return;
+        const generation = ++rescueTokenGeneration;
         rotatingRescueToken.value = true;
         rescueTokenMessage.value = '';
+        rescueTokenCopyMessage.value = '';
+        rescueTokenCopyType.value = 'success';
+        copyingRescueToken.value = false;
         try {
           const res = await window.csrfFetch('/api/dashboard/rescue-token/rotate', { method: 'POST' });
           const data = await res.json().catch(() => ({}));
+          if (generation !== rescueTokenGeneration) return;
           if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
           rescueTokenPlaintext.value = (data.data && data.data.token) || '';
           rescueTokenStatus.value = {
@@ -264,38 +277,64 @@
           rescueTokenMessageType.value = 'success';
           rescueTokenMessage.value = 'Token 已轮换，请在关闭窗口前复制。';
         } catch (err) {
+          if (generation !== rescueTokenGeneration) return;
           rescueTokenMessageType.value = 'error';
           rescueTokenMessage.value = String(err.message || err) || 'Token 轮换失败';
         } finally {
-          rotatingRescueToken.value = false;
+          if (generation === rescueTokenGeneration) rotatingRescueToken.value = false;
         }
       }
-      async function copyRescueToken() {
+      function selectRescueToken() {
         if (!rescueTokenPlaintext.value) return;
+        const field = document.getElementById('rescue-token-plaintext');
+        if (!field) return;
+        field.focus({ preventScroll: true });
+        field.select();
+      }
+      async function copyRescueToken() {
+        if (!rescueTokenPlaintext.value || copyingRescueToken.value) return;
+        const generation = rescueTokenGeneration;
+        copyingRescueToken.value = true;
+        rescueTokenCopyMessage.value = '';
         try {
           await navigator.clipboard.writeText(rescueTokenPlaintext.value);
-          rescueTokenMessageType.value = 'success';
-          rescueTokenMessage.value = 'Token 已复制';
+          if (generation !== rescueTokenGeneration) return;
+          rescueTokenCopyType.value = 'success';
+          rescueTokenCopyMessage.value = 'Token 已复制';
         } catch (err) {
-          rescueTokenMessageType.value = 'error';
-          rescueTokenMessage.value = '复制失败，请手动复制';
+          if (generation !== rescueTokenGeneration) return;
+          selectRescueToken();
+          rescueTokenCopyType.value = 'error';
+          rescueTokenCopyMessage.value = '复制失败，请选中 Token 后长按选区，或按 Ctrl/Cmd+C 手动复制。';
+        } finally {
+          if (generation === rescueTokenGeneration) copyingRescueToken.value = false;
         }
       }
 
       // 关闭即清空明文：页面上不留第二次查看的机会
-      const closeRescueToken = () => { rescueTokenPlaintext.value = ''; };
+      const closeRescueToken = () => {
+        rescueTokenGeneration += 1;
+        rescueTokenPlaintext.value = '';
+        rescueTokenCopyMessage.value = '';
+        rescueTokenCopyType.value = 'success';
+        copyingRescueToken.value = false;
+        rotatingRescueToken.value = false;
+        rescueTokenMessage.value = '';
+      };
 
       onMounted(() => {
         loadSettings();
         fetchCacheStatus();
         loadRescueTokenStatus();
       });
+      onUnmounted(closeRescueToken);
 
       return {
         settings, saving, saveMessage, saveSuccess, saveSettings,
         loadingCache, clearingCache, cacheData, cacheMessage, cacheSuccess,
         fetchCacheStatus, clearCache,
         rescueTokenStatus, rescueTokenPlaintext, rescueTokenMessage, rescueTokenMessageType,
+        rescueTokenCopyMessage, rescueTokenCopyType, copyingRescueToken, selectRescueToken,
         rotatingRescueToken, loadRescueTokenStatus, rotateRescueToken, copyRescueToken, closeRescueToken,
       };
     }

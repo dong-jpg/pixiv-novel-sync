@@ -2,10 +2,27 @@
 
 {% block title %}Agent 绑定 - Pixiv 小说同步器{% endblock %}
 
+{% block extra_head %}
+<style>
+  .management-agents { overflow-wrap: anywhere; }
+  .management-agents #ai-agents > div { min-width: 0; }
+  .management-agents select { min-width: 0; max-width: 100%; width: 100%; text-overflow: ellipsis; }
+  .management-agents .agent-candidate-controls {
+    display: flex; flex-direction: column; gap: .5rem;
+    min-width: 0; max-width: 100%; width: 100%;
+  }
+  .management-agents .agent-candidate-controls select { flex: 1 1 auto; }
+  .management-agents .agent-candidate-controls button { flex-shrink: 0; }
+  @media (min-width: 640px) {
+    .management-agents .agent-candidate-controls { flex-direction: row; align-items: center; flex: 1 1 20rem; width: auto; }
+  }
+</style>
+{% endblock %}
+
 {% block content %}
 {# 设置页第三分页：Agent 的绑定、提示词与采样参数。
    Agent 配置存在数据库里，走 ai_web.py 的端点，不经过 /api/dashboard/settings。 #}
-<div class="library-page px-6 lg:px-8 pt-6 max-w-6xl mx-auto space-y-5 pb-8">
+<div class="library-page management-agents px-6 lg:px-8 pt-6 max-w-6xl mx-auto space-y-5 pb-8">
   <div class="library-page-header">
     <div>
       <p class="library-kicker">Settings</p>
@@ -29,7 +46,7 @@
         <p class="text-sm text-pixiv-gray mt-1">创作页会按任务类型默认选择最优 Agent。</p>
       </div>
       <div class="flex gap-2 mb-2 flex-wrap">
-        <select v-model.number="seedProviderId" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+        <select v-model.number="seedProviderId" class="min-w-0 flex-1 px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
           <option :value="0">选择 Provider 初始化默认 Agent</option>
           <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
         </select>
@@ -152,8 +169,9 @@
         <h2 class="library-section-title mb-1">候选模型链</h2>
         <p class="text-xs text-pixiv-gray">按真实路由顺序解析，不会发起任何生成请求</p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="agent-candidate-controls">
         <select v-model.number="candidateAgentId" @change="loadCandidateChain(candidateAgentId)"
+                aria-label="选择 Agent 查看候选链"
                 class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
           <option :value="0">选择 Agent 查看候选链</option>
           <option v-for="agent in filteredAgents" :key="agent.id" :value="agent.id">{{ agent.name }}（{{ agent.task_type }}）</option>
@@ -175,10 +193,10 @@
       </div>
       <ol v-if="candidateChain.candidates.length" class="space-y-1">
         <li v-for="candidate in candidateChain.candidates" :key="candidate.order"
-            class="flex items-baseline gap-2 text-sm">
+            class="flex flex-wrap min-w-0 items-baseline gap-2 text-sm">
           <span class="w-6 flex-shrink-0 text-brand-600 font-bold">{{ candidateOrderMark(candidate.order) }}</span>
           <span class="font-mono text-gray-900 truncate">{{ candidate.provider_name }} / {{ candidate.model_key }}</span>
-          <span class="text-xs text-pixiv-gray flex-shrink-0">（{{ candidateSourceLabel(candidate) }}）</span>
+          <span class="min-w-0 max-w-full text-xs text-pixiv-gray">（{{ candidateSourceLabel(candidate) }}）</span>
         </li>
       </ol>
       <p v-else class="text-sm text-amber-700">候选链为空：绑定的 Provider 或模型当前不可路由（已停用，或不满足必需能力）。</p>

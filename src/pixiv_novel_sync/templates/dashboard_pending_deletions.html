@@ -25,7 +25,7 @@
     <!-- Tab Filter + Summary -->
     <div class="flex flex-col sm:flex-row justify-between items-center gap-4 px-5 py-4 border-b border-gray-100 bg-gray-50">
       <!-- Tabs -->
-      <div class="flex items-center gap-1 p-0.5 bg-gray-100 rounded-lg">
+      <div class="flex flex-wrap items-center gap-1 p-0.5 bg-gray-100 rounded-lg min-w-0">
         <button v-for="tab in tabOptions" :key="tab.value" @click="switchTab(tab.value)"
                 class="px-4 py-1.5 text-sm font-medium rounded-md transition-all"
                 :class="currentType === tab.value ? 'bg-white text-brand-500 shadow-sm' : 'text-pixiv-gray hover:text-gray-900'">
@@ -34,7 +34,7 @@
       </div>
 
       <!-- Summary -->
-      <div class="text-sm text-pixiv-gray">
+      <div v-if="!loading && !loadError" class="text-sm text-pixiv-gray">
         共 <span class="font-medium text-gray-900">{{ totalItems }}</span> 条待确认
       </div>
     </div>
@@ -53,7 +53,11 @@
       </div>
     </div>
 
-    <p v-else-if="loadError" class="px-5 py-4 text-sm text-red-600">{{ loadError }}</p>
+    <div v-else-if="loadError" role="alert" class="px-5 py-4 space-y-3 text-sm">
+      <p class="text-red-600 break-words">{{ loadError }}</p>
+      <button type="button" @click="retryPending" class="library-btn">重试加载</button>
+      <p class="text-pixiv-gray">仅重新读取当前筛选和页码，不会启动检测或执行删除。</p>
+    </div>
     <!-- Empty State -->
     <div v-else-if="!items.length" class="py-16 text-center">
       <svg class="mx-auto h-12 w-12 text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
@@ -113,15 +117,16 @@
       // State
       const items = ref([]);
       const loading = ref(true);
-      const currentPage = ref(1);
+      const pendingQuery = window.readListQuery({ page: 1, type: '' });
+      const currentPage = ref(pendingQuery.page);
       const totalPages = ref(1);
       const totalItems = ref(0);
-      const pendingQuery = window.readListQuery({ page: 1, type: '' });
       const currentType = ref(pendingQuery.type);
       const detecting = ref(false);
       const loadError = ref('');
       const busyId = ref(0);
       let detectionTimer = null;
+      let pendingRequestId = 0;
 
       const tabOptions = [
         { value: '', label: '全部' },
@@ -138,33 +143,42 @@
       };
 
       // Data fetching
-      const loadPending = async (page, type) => {
-        if (type === undefined) type = currentType.value;
+      const loadPending = async (page = currentPage.value, type = currentType.value) => {
+        const requestId = ++pendingRequestId;
+        // 保存用户选择而不是上次成功的响应；失败后重试仍读同一页/筛选。
+        currentPage.value = page;
+        currentType.value = type || '';
+        window.writeListQuery({ page: currentPage.value, type: currentType.value });
         loading.value = true;
+        loadError.value = '';
         let url = '/api/dashboard/pending-deletions?page=' + page;
         if (type) url += '&item_type=' + encodeURIComponent(type);
 
         try {
           const resp = await fetch(url);
-          const data = await resp.json();
-          loadError.value = '';
-          items.value = data.items || [];
-          currentPage.value = data.page || 1;
+          const data = await resp.json().catch(() => null);
+          if (requestId !== pendingRequestId) return;
+          if (!resp.ok || (data && data.ok === false)) {
+            throw new Error(window.errorText(data, resp));
+          }
+          if (!data || !Array.isArray(data.items)) {
+            throw new Error('待确认列表响应格式错误');
+          }
+          items.value = data.items;
+          currentPage.value = data.page || page;
           totalPages.value = data.total_pages || 1;
           totalItems.value = data.total || 0;
-          currentType.value = type || '';
-        } catch (err) {
-          loadError.value = '待确认列表加载失败';
-          console.error('Failed to load pending deletions', err);
-        } finally {
           window.writeListQuery({ page: currentPage.value, type: currentType.value });
-          loading.value = false;
+        } catch (err) {
+          if (requestId !== pendingRequestId) return;
+          loadError.value = '待确认列表加载失败：' + (err.message || '网络错误');
+        } finally {
+          if (requestId === pendingRequestId) loading.value = false;
         }
       };
 
-      const switchTab = (type) => {
-        loadPending(1, type);
-      };
+      const switchTab = (type) => loadPending(1, type);
+      const retryPending = () => loadPending(currentPage.value, currentType.value);
 
       // Actions
       const confirmDeletion = async (item) => {
@@ -245,12 +259,13 @@
         loadPending(pendingQuery.page, pendingQuery.type);
       });
       onUnmounted(() => {
+        pendingRequestId += 1;
         if (detectionTimer) clearInterval(detectionTimer);
       });
 
       return {
         items, loading, loadError, busyId, currentPage, totalPages, totalItems, currentType, detecting,
-        tabOptions, getPixivUrl, loadPending, switchTab,
+        tabOptions, getPixivUrl, loadPending, switchTab, retryPending,
         confirmDeletion, restoreDeletion, triggerDetection
       };
     }

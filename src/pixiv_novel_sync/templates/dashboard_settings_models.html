@@ -2,21 +2,27 @@
 
 {% block title %}模型与 Provider - Pixiv 小说同步器{% endblock %}
 
+{% block extra_head %}
+<style>
+  .management-models { overflow-wrap: anywhere; }
+  .management-models section > div { min-width: 0; }
+  .management-models .management-editor { min-width: 0; scroll-margin-top: 1rem; }
+  .management-models fieldset { min-width: 0; }
+  .management-models select { min-width: 0; max-width: 100%; width: 100%; }
+</style>
+{% endblock %}
+
 {% block content %}
 {# 设置页第二分页：Provider 凭据、模型目录同步、模型池候选顺序。
    这三块的配置存在数据库里，走 ai_web.py 自己的端点，完全不经过
    /api/dashboard/settings，所以本页没有「保存分区」按钮。
    变更类请求一律走 base.html 的 window.csrfFetch，失败原因用 window.errorText 读。 #}
-<div class="library-page px-6 lg:px-8 pt-6 max-w-6xl mx-auto space-y-5 pb-8">
+<div class="library-page management-models px-6 lg:px-8 pt-6 max-w-6xl mx-auto space-y-5 pb-8">
   <div class="library-page-header">
     <div>
       <p class="library-kicker">Settings</p>
       <h1 class="text-2xl font-bold text-gray-900 mb-1">模型与 Provider</h1>
       <p class="text-sm text-pixiv-gray">Provider 凭据、模型目录同步与模型池候选顺序</p>
-    </div>
-    <div class="library-actions">
-      <span v-if="aiMessage" class="text-sm font-medium"
-            :class="aiMessageType === 'error' ? 'text-red-600' : (aiMessageType === 'warning' ? 'text-amber-600' : 'text-green-600')">{{ aiMessage }}</span>
     </div>
   </div>
 
@@ -26,12 +32,13 @@
 
   <!-- 1. Provider 与模型目录 -->
   <section id="ai-api" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-3">
+    <div id="provider-editor" class="management-editor bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-3">
       <div>
         <h2 class="text-xl font-bold text-gray-900">Provider 设置</h2>
         <p class="text-sm text-pixiv-gray mt-1">配置模型服务商。API key 只写入不回显，加密存储。</p>
       </div>
-      <input v-model="providerForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="名称">
+      <label for="provider-name" class="block text-sm font-medium text-gray-700">Provider 名称</label>
+      <input id="provider-name" v-model="providerForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="名称">
       <select v-model="providerForm.provider_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
         <option value="openai_compatible">OpenAI 兼容 —— 填到 /v1 为止，或网关根地址</option>
         <option value="anthropic">Anthropic —— 官方 /v1/messages 或同协议网关</option>
@@ -84,12 +91,16 @@
         <button @click="saveProvider" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">{{ providerForm.id ? '更新 Provider' : '保存 Provider' }}</button>
         <button v-if="providerForm.id" @click="resetProviderForm" class="px-4 py-2 bg-gray-100 rounded-lg text-sm">取消编辑</button>
       </div>
+      <p v-if="aiMessages['provider-form']" :role="aiMessages['provider-form'].type === 'error' ? 'alert' : 'status'" class="text-sm"
+         :class="aiMessages['provider-form'].type === 'error' ? 'text-red-600' : (aiMessages['provider-form'].type === 'warning' ? 'text-amber-700' : 'text-green-700')">{{ aiMessages['provider-form'].text }}</p>
     </div>
-    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+    <div id="provider-list" class="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-xl font-bold text-gray-900">已配置 Provider</h2>
         <button @click="loadProviders" class="text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">刷新</button>
       </div>
+      <p v-if="aiMessages['provider-list']" :role="aiMessages['provider-list'].type === 'error' ? 'alert' : 'status'" class="mb-3 text-sm"
+         :class="aiMessages['provider-list'].type === 'error' ? 'text-red-600' : 'text-green-700'">{{ aiMessages['provider-list'].text }}</p>
       <div class="space-y-2">
         <div v-for="provider in providers" :key="provider.id" class="border border-gray-100 rounded-lg p-3 text-sm">
           <div class="flex items-center gap-2">
@@ -117,7 +128,7 @@
           <div class="mt-3 border-t border-gray-100 pt-3 space-y-3">
             <div class="flex items-center justify-between gap-2 flex-wrap">
               <div class="text-xs font-semibold text-gray-700">模型目录</div>
-              <div class="flex items-center gap-2">
+              <div class="flex flex-wrap items-center gap-2">
                 <button @click="modelCatalogExpanded[provider.id] = !modelCatalogExpanded[provider.id]" class="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">{{ modelCatalogExpanded[provider.id] ? '收起' : '展开' }}</button>
                 <button @click="loadProviderModels(provider.id)" class="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">刷新目录</button>
                 <button @click="syncProviderModels(provider.id)" :disabled="modelSyncBusy(provider.id)" class="text-xs px-2 py-1 rounded bg-brand-50 text-brand-600 hover:bg-brand-100 disabled:opacity-50">
@@ -182,6 +193,8 @@
             <button @click="testProvider(provider.id)" :disabled="testingProviderId === provider.id" class="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-50">{{ testingProviderId === provider.id ? '测试中…' : '测试' }}</button>
             <button @click="deleteProvider(provider.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
           </div>
+          <p v-if="aiMessages['provider-' + provider.id]" :role="aiMessages['provider-' + provider.id].type === 'error' ? 'alert' : 'status'" class="mt-3 text-sm"
+             :class="aiMessages['provider-' + provider.id].type === 'error' ? 'text-red-600' : (aiMessages['provider-' + provider.id].type === 'warning' ? 'text-amber-700' : 'text-green-700')">{{ aiMessages['provider-' + provider.id].text }}</p>
         </div>
         <p v-if="!providers.length" class="text-sm text-pixiv-gray text-center py-8">暂无 Provider</p>
       </div>
@@ -189,12 +202,24 @@
   </section>
   <!-- 2. 模型池（id 保留旧的 ai-model-pools，老链接的 #hash 仍能定位） -->
   <section id="ai-model-pools" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-4">
+    <div id="pool-editor" :aria-busy="poolLoading" class="management-editor bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-4">
       <div>
-        <h2 class="text-xl font-bold text-gray-900">模型池编辑</h2>
+        <h2 id="pool-editor-title" tabindex="-1" :aria-describedby="poolLoadError ? 'pool-load-error' : null" class="text-xl font-bold text-gray-900">模型池编辑</h2>
         <p class="text-sm text-pixiv-gray mt-1">按顺序配置候选模型与后备模型池，Agent 绑定池后按这个顺序失败转移。</p>
       </div>
-      <input v-model="poolForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="模型池名称">
+      <p v-if="poolWriting" role="status" class="text-sm text-pixiv-gray">模型池变更处理中，完成前暂不可修改、切换或重置编辑器。</p>
+      <p v-else-if="poolLoading" role="status" class="text-sm text-pixiv-gray">正在读取所选模型池，读取完成后可编辑…</p>
+      <div v-if="poolLoadError" id="pool-load-error" role="alert" class="space-y-3 text-sm">
+        <p class="text-red-600">无法读取模型池 #{{ selectedPoolId }}：{{ poolLoadError }}</p>
+        <p class="text-pixiv-gray">保留的表单暂不可编辑或保存。请重试读取所选模型池，或取消选择并新建。</p>
+        <div class="flex flex-wrap gap-2">
+          <button type="button" @click="retryModelPool" :disabled="poolWriting" class="library-btn disabled:opacity-50">重试读取</button>
+        </div>
+      </div>
+      <button v-if="poolLoading || poolLoadError" type="button" @click="resetPoolForm(true)" :disabled="poolWriting" class="library-btn disabled:opacity-50">取消选择并新建</button>
+      <fieldset :disabled="!poolEditorReady" class="space-y-4">
+      <label for="pool-name" class="block text-sm font-medium text-gray-700">模型池名称</label>
+      <input id="pool-name" v-model="poolForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="模型池名称">
       <textarea v-model="poolForm.description" rows="2" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="说明（可选）"></textarea>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <select v-model="poolForm.pool_kind" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
@@ -218,13 +243,17 @@
       </div>
       <div class="space-y-2">
         <div class="flex items-center justify-between gap-2"><h3 class="text-sm font-semibold text-gray-900">有序成员</h3><span class="text-xs text-gray-500">candidate {{ poolCandidateCount(poolForm) }} / 64</span></div>
-        <div v-for="(member, index) in poolForm.members" :key="member.provider_model_id" class="flex items-center gap-2 border border-gray-100 rounded-lg px-2 py-2 text-xs">
-          <span class="w-5 text-center text-gray-500">{{ index + 1 }}</span>
-          <div class="min-w-0 flex-1"><div class="font-medium text-gray-900 truncate">{{ member.model_key }}</div><div class="text-gray-500 truncate">{{ providerName(member.provider_id) }}</div></div>
+        <div v-for="(member, index) in poolForm.members" :key="member.provider_model_id" class="flex flex-wrap items-center gap-2 border border-gray-100 rounded-lg px-2 py-2 text-xs">
+          <div class="min-w-0 flex flex-1 basis-full sm:basis-auto items-center gap-2">
+            <span class="w-5 shrink-0 text-center text-gray-500">{{ index + 1 }}</span>
+            <div class="min-w-0 flex-1"><div class="font-medium text-gray-900 truncate">{{ member.model_key }}</div><div class="text-gray-500 truncate">{{ providerName(member.provider_id) }}</div></div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
           <label class="flex items-center gap-1"><input type="checkbox" v-model="member.enabled">启用</label>
           <button @click="movePoolMember(index, -1)" :disabled="index === 0" title="上移" class="w-7 h-7 rounded bg-gray-100 disabled:opacity-30">↑</button>
           <button @click="movePoolMember(index, 1)" :disabled="index === poolForm.members.length - 1" title="下移" class="w-7 h-7 rounded bg-gray-100 disabled:opacity-30">↓</button>
           <button @click="removePoolMember(index)" title="移除" class="w-7 h-7 rounded bg-red-50 text-red-600">×</button>
+          </div>
         </div>
         <div v-if="!poolForm.members.length" class="text-xs text-gray-500 py-3 text-center">尚未添加模型</div>
       </div>
@@ -244,16 +273,19 @@
         </div>
       </div>
       <div v-if="poolForm.referenced_by_agents.length" class="text-xs text-gray-600">Agent 引用：{{ poolForm.referenced_by_agents.map(item => item.name).join('、') }}</div>
-      <p v-if="poolError" class="text-sm text-red-600">{{ poolError }}</p>
+      <p v-if="poolError" role="alert" class="text-sm text-red-600">{{ poolError }}</p>
       <div class="flex gap-2 flex-wrap">
-        <button @click="saveModelPool" :disabled="poolSaving || !poolForm.name || (poolForm.enabled && !poolForm.members.length)" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ poolForm.id ? '保存模型池' : '创建模型池' }}</button>
+        <button @click="saveModelPool" :disabled="poolSaving || !poolForm.name || (poolForm.enabled && !poolForm.members.length)" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ poolSaving ? '保存中…' : (poolForm.id ? '保存模型池' : '创建模型池') }}</button>
         <button v-if="poolForm.id" @click="resetPoolForm" class="px-4 py-2 bg-gray-100 rounded-lg text-sm">新建</button>
       </div>
+      <p v-if="aiMessages['pool-form']" :role="aiMessages['pool-form'].type === 'error' ? 'alert' : 'status'" class="text-sm"
+         :class="aiMessages['pool-form'].type === 'error' ? 'text-red-600' : 'text-green-700'">{{ aiMessages['pool-form'].text }}</p>
+      </fieldset>
 
       {# 最近尝试记录：GET /api/dashboard/ai/model-pools/<id>/attempts。
          字段名用的是该端点的投影（provider_name / pool_name / pool_position），不是
          日志页那套 *_snapshot——池端点已经改过一遍名，照抄日志页会得到一排 undefined。 #}
-      <div v-if="poolForm.id" class="border-t border-gray-100 pt-3 space-y-2" data-hook="pool-attempts">
+      <div v-if="poolForm.id && poolEditorReady" class="border-t border-gray-100 pt-3 space-y-2" data-hook="pool-attempts">
         <div class="flex items-center justify-between gap-2">
           <h3 class="text-sm font-bold text-gray-900">最近尝试记录</h3>
           <button @click="loadPoolAttempts(poolForm.id)" :disabled="poolAttemptsLoading"
@@ -281,14 +313,16 @@
         </div>
       </div>
     </div>
-    <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+    <div id="pool-list" class="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
       <div class="flex items-center justify-between mb-3"><h2 class="text-xl font-bold text-gray-900">模型池列表</h2><button @click="loadModelPools" class="text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">刷新</button></div>
+      <p v-if="aiMessages['pool-list']" :role="aiMessages['pool-list'].type === 'error' ? 'alert' : 'status'" class="mb-3 text-sm"
+         :class="aiMessages['pool-list'].type === 'error' ? 'text-red-600' : 'text-green-700'">{{ aiMessages['pool-list'].text }}</p>
       <div class="space-y-2">
         <div v-for="pool in modelPools" :key="pool.id" class="border border-gray-100 rounded-lg p-3 text-sm">
           <div class="flex items-start justify-between gap-2"><div><div class="font-semibold text-gray-900">{{ pool.name }}</div><div class="text-xs text-gray-500 mt-1">{{ pool.pool_kind }} · version {{ pool.version }} · {{ pool.members.length }} 个成员</div></div><span class="text-xs px-2 py-1 rounded" :class="pool.enabled ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-600'">{{ pool.enabled ? '已启用' : '未启用' }}</span></div>
           <div class="text-xs text-gray-500 mt-2">后备：{{ pool.fallback_pool_name || '无' }}</div>
           <div class="text-xs text-gray-500">Agent 引用：{{ pool.referenced_by_agents.length }}</div>
-          <div class="flex gap-2 mt-2"><button @click="editModelPool(pool)" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600">编辑</button><button @click="deleteModelPool(pool)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600">删除</button></div>
+          <div class="flex gap-2 mt-2"><button @click="editModelPool(pool)" :disabled="poolWriting" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 disabled:opacity-50">编辑</button><button @click="deleteModelPool(pool)" :disabled="poolWriting || poolLoading" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 disabled:opacity-50">删除</button></div>
         </div>
         <div v-if="!modelPools.length" class="text-sm text-gray-500 text-center py-8">暂无模型池</div>
       </div>
@@ -301,7 +335,7 @@
 <script>
   initVueApp({
     setup() {
-      const { ref, reactive, computed, onMounted } = Vue;
+      const { ref, reactive, computed, onMounted, nextTick } = Vue;
 
       const providers = ref([]);
       const testingProviderId = ref(0);
@@ -324,9 +358,22 @@
       const poolProviderModels = reactive({});
       const poolProviderFilter = ref(0);
       const poolModelSearch = ref('');
-      const poolSaving = ref(false);
+      // 单一写操作持有编辑器，直到其变更、读回和错误处理全部结束。
+      // poolLoading 只表示读取阶段，不能释放写操作的所有权。
+      const poolWriteOperation = ref('');
+      const poolWriting = computed(() => poolWriteOperation.value !== '');
+      const poolSaving = computed(() => poolWriteOperation.value === 'save');
+      const poolLoading = ref(false);
+      const selectedPoolId = ref(0);
+      const poolLoadError = ref('');
       const poolError = ref('');
+      let poolEditRequestId = 0;
+      let poolAttemptsRequestId = 0;
+      let editorFocusId = 0;
       const poolForm = reactive({ id: 0, name: '', description: '', pool_kind: 'custom', fallback_pool_id: null, enabled: false, original_enabled: false, version: 1, members: [], referenced_by_agents: [], referenced_by_pools: [] });
+      // 请求目标与旧快照分开：读取失败不能把上一个池重新变成可写表单。
+      const poolEditorReady = computed(() => !poolWriting.value && !poolLoading.value && !poolLoadError.value
+        && (!selectedPoolId.value || selectedPoolId.value === Number(poolForm.id)));
       const poolAttempts = ref([]);
       const poolAttemptsError = ref('');
       const poolAttemptsLoading = ref(false);
@@ -341,13 +388,21 @@
       const probeStatus = ref('');
       const probeRetryWithV1 = ref('');
       const MODEL_SYNC_EVENTS = new Set(['started', 'page', 'empty_confirmation_required', 'completed', 'failed', 'cancelled']);
-      const aiMessage = ref('');
-      const aiMessageType = ref('success');
+      const aiMessages = reactive({});
 
-      const showAiMessage = (msg, type = 'success') => {
-        aiMessage.value = msg;
-        aiMessageType.value = type;
-        setTimeout(() => { aiMessage.value = ''; }, 4000);
+      // 每个操作区保留自己的反馈，不被四秒定时器或其他区域的成功消息抹掉。
+      const showAiMessage = (msg, type = 'success', area = 'provider-form') => {
+        aiMessages[area] = { text: msg, type };
+      };
+      const focusEditor = (editorId, fieldId) => {
+        const focusId = ++editorFocusId;
+        nextTick(() => {
+          if (focusId !== editorFocusId) return;
+          const editor = document.getElementById(editorId);
+          const field = document.getElementById(fieldId);
+          if (editor) editor.scrollIntoView({ behavior: 'auto', block: 'start' });
+          if (field) field.focus({ preventScroll: true });
+        });
       };
 
       // 变更类请求走 base.html 的 window.csrfFetch（它负责带上 X-CSRF-Token）：
@@ -380,12 +435,13 @@
         const search = String(modelSearch[providerId] || '').trim();
         const query = search ? `?search=${encodeURIComponent(search)}` : '';
         const previous = providerModels[providerId];
+        delete aiMessages['provider-' + providerId];
         try {
           const data = await aiApi(`/api/dashboard/ai/providers/${providerId}/models${query}`);
           providerModels[providerId] = data || { items: [], total: 0, discovered_available: 0, routable: 0 };
         } catch (e) {
           if (!previous) providerModels[providerId] = { items: [], total: 0, discovered_available: 0, routable: 0 };
-          showAiMessage(e.message || '读取模型目录失败', 'error');
+          showAiMessage(e.message || '读取模型目录失败', 'error', 'provider-' + providerId);
         }
       };
       const manualModelForm = (providerId) => {
@@ -398,7 +454,7 @@
         const form = manualModelForm(providerId);
         const modelKey = String(form.model_key || '').trim();
         if (!modelKey) {
-          showAiMessage('model_key 不能为空', 'error');
+          showAiMessage('model_key 不能为空', 'error', 'provider-' + providerId);
           return;
         }
         const capabilities = String(form.manual_capabilities || '').split(',').map(item => item.trim()).filter(Boolean);
@@ -417,9 +473,9 @@
           });
           manualModelForms[providerId] = { model_key: '', manual_display_name: '', manual_capabilities: '', manual_context_window: null };
           await loadProviderModels(providerId);
-          showAiMessage('人工模型已添加');
+          showAiMessage('人工模型已添加', 'success', 'provider-' + providerId);
         } catch (e) {
-          showAiMessage(e.message || '人工模型添加失败', 'error');
+          showAiMessage(e.message || '人工模型添加失败', 'error', 'provider-' + providerId);
         }
       };
       const deleteManualModel = async (providerId, modelId) => {
@@ -427,9 +483,9 @@
         try {
           await aiApi(`/api/dashboard/ai/provider-models/${modelId}`, { method: 'DELETE' });
           await loadProviderModels(providerId);
-          showAiMessage('人工模型已删除');
+          showAiMessage('人工模型已删除', 'success', 'provider-' + providerId);
         } catch (e) {
-          showAiMessage(e.message || '人工模型删除失败', 'error');
+          showAiMessage(e.message || '人工模型删除失败', 'error', 'provider-' + providerId);
         }
       };
       const loadModelSyncOperation = async (providerId, operationId) => {
@@ -471,7 +527,7 @@
         if (eventName === 'failed' || eventName === 'cancelled') {
           updateModelSyncState(providerId, { status: eventName, error_message: data.error_message || data.message || '' });
           emptyConfirmations[providerId] = null;
-          showAiMessage('同步失败，旧目录仍可使用', 'warning');
+          showAiMessage('同步失败，旧目录仍可使用', 'warning', 'provider-' + providerId);
         }
       };
       // 目录同步的 SSE 刻意保留手写读取（没有改用 window.streamSSE）：它要按
@@ -509,7 +565,7 @@
           await consumeModelSyncEvents(providerId, operationId);
         } catch (e) {
           updateModelSyncState(providerId, { status: 'failed', error_message: e.message || '模型同步失败' });
-          showAiMessage('同步失败，旧目录仍可使用', 'warning');
+          showAiMessage('同步失败，旧目录仍可使用', 'warning', 'provider-' + providerId);
         }
       };
       const cancelModelSync = async (providerId) => {
@@ -519,9 +575,9 @@
         try {
           await aiApi(`/api/dashboard/ai/model-sync-operations/${operationId}`, { method: 'DELETE' });
           updateModelSyncState(providerId, { status: 'cancelled' });
-          showAiMessage('已请求取消同步', 'warning');
+          showAiMessage('已请求取消同步', 'warning', 'provider-' + providerId);
         } catch (e) {
-          showAiMessage(e.message || '取消同步失败', 'error');
+          showAiMessage(e.message || '取消同步失败', 'error', 'provider-' + providerId);
         }
       };
       const confirmEmptyCatalog = async (providerId) => {
@@ -536,9 +592,9 @@
           emptyConfirmations[providerId] = null;
           updateModelSyncState(providerId, { status: 'succeeded' });
           await loadProviderModels(providerId);
-          showAiMessage('空目录已确认');
+          showAiMessage('空目录已确认', 'success', 'provider-' + providerId);
         } catch (e) {
-          showAiMessage(e.message || '空目录确认失败', 'error');
+          showAiMessage(e.message || '空目录确认失败', 'error', 'provider-' + providerId);
         }
       };
       // 刷新页面后接回未完成的同步：operation_id 存在 localStorage 里
@@ -609,10 +665,24 @@
         });
         return items;
       });
-      const resetPoolForm = () => {
+      // 内部复位只供拥有编辑器的写操作使用；页面事件必须经过下面的入口守卫。
+      const resetPoolEditor = (locate = false) => {
+        poolEditRequestId += 1;
+        poolAttemptsRequestId += 1;
+        poolLoading.value = false;
+        selectedPoolId.value = 0;
+        poolLoadError.value = '';
+        poolAttemptsLoading.value = false;
+        poolError.value = '';
+        delete aiMessages['pool-form'];
         Object.assign(poolForm, { id: 0, name: '', description: '', pool_kind: 'custom', fallback_pool_id: null, enabled: false, original_enabled: false, version: 1, members: [], referenced_by_agents: [], referenced_by_pools: [] });
         poolAttempts.value = [];
         poolAttemptsError.value = '';
+        if (locate === true) focusEditor('pool-editor', 'pool-name');
+      };
+      const resetPoolForm = (locate = false) => {
+        if (poolWriting.value) return;
+        resetPoolEditor(locate);
       };
       const attemptStatusLabel = (attempt) => ATTEMPT_STATUS_LABELS[attempt.status] || attempt.status || '未知';
       const attemptStatusClass = (attempt) => {
@@ -638,33 +708,54 @@
       // 直接读 data.message 会把鉴权网关的 detail 形状显示成空白。
       const loadPoolAttempts = async (poolId) => {
         const id = Number(poolId || 0);
+        const requestId = ++poolAttemptsRequestId;
         poolAttemptsError.value = '';
         if (!id) {
           poolAttempts.value = [];
+          poolAttemptsLoading.value = false;
           return;
         }
         poolAttemptsLoading.value = true;
         try {
-          poolAttempts.value = await aiApi(`/api/dashboard/ai/model-pools/${id}/attempts?limit=20`) || [];
+          const attempts = await aiApi(`/api/dashboard/ai/model-pools/${id}/attempts?limit=20`);
+          if (requestId !== poolAttemptsRequestId) return;
+          poolAttempts.value = attempts || [];
         } catch (e) {
+          if (requestId !== poolAttemptsRequestId) return;
           poolAttempts.value = [];
           poolAttemptsError.value = e.message || '读取尝试记录失败';
         } finally {
-          poolAttemptsLoading.value = false;
+          if (requestId === poolAttemptsRequestId) poolAttemptsLoading.value = false;
         }
       };
 
       const loadModelPools = async () => {
+        delete aiMessages['pool-list'];
         try {
           modelPools.value = await aiApi('/api/dashboard/ai/model-pools');
         } catch (e) {
-          poolError.value = e.message || '读取模型池失败';
+          showAiMessage(e.message || '读取模型池失败', 'error', 'pool-list');
         }
       };
-      const editModelPool = async (pool) => {
+      // 私有读回保持原有 GET/代次逻辑；写操作传 false，不移动独立 Provider 表单的焦点。
+      const readPoolEditor = async (pool, locate = true) => {
+        const requestId = ++poolEditRequestId;
+        selectedPoolId.value = Number(pool.id);
+        poolLoadError.value = '';
+        poolAttemptsRequestId += 1;
+        poolAttempts.value = [];
+        poolAttemptsError.value = '';
+        poolAttemptsLoading.value = false;
+        poolLoading.value = true;
         poolError.value = '';
+        if (locate) {
+          delete aiMessages['pool-form'];
+          // 先定位到可聚焦的标题；旧表单禁用，不能误改另一个池。
+          focusEditor('pool-editor', 'pool-editor-title');
+        }
         try {
           const detail = await aiApi(`/api/dashboard/ai/model-pools/${pool.id}`);
+          if (requestId !== poolEditRequestId) return;
           Object.assign(poolForm, {
             id: detail.id,
             name: detail.name || '',
@@ -678,21 +769,44 @@
             referenced_by_agents: detail.referenced_by_agents || [],
             referenced_by_pools: detail.referenced_by_pools || []
           });
+          poolLoading.value = false;
+          if (locate) nextTick(() => {
+            // 用户已离开标题（例如转去编辑 Provider）时，不抢回焦点。
+            if (requestId !== poolEditRequestId || document.activeElement?.id !== 'pool-editor-title') return;
+            const field = document.getElementById('pool-name');
+            if (field) field.focus({ preventScroll: true });
+          });
           // 打开池就顺带拉最近尝试：改成员顺序前先看清上一轮谁成功、谁失败
           await loadPoolAttempts(detail.id);
         } catch (e) {
-          poolError.value = e.message || '读取模型池失败';
+          if (requestId !== poolEditRequestId) return;
+          poolLoadError.value = e.message || '读取模型池失败';
+        } finally {
+          if (requestId === poolEditRequestId) poolLoading.value = false;
         }
       };
+      const editModelPool = (pool, locate = true) => {
+        if (poolWriting.value) return;
+        return readPoolEditor(pool, locate);
+      };
+      const retryModelPool = () => {
+        if (poolWriting.value || poolLoading.value || !selectedPoolId.value) return;
+        return editModelPool({ id: selectedPoolId.value });
+      };
       const addPoolMember = (model) => {
+        if (!poolEditorReady.value) return;
         if (poolForm.members.length >= 64) {
           poolError.value = '单个模型池最多包含 64 个成员';
           return;
         }
         poolForm.members.push({ provider_model_id: model.id, provider_id: model.provider_id, model_key: model.model_key, enabled: true });
       };
-      const removePoolMember = (index) => poolForm.members.splice(index, 1);
+      const removePoolMember = (index) => {
+        if (!poolEditorReady.value) return;
+        poolForm.members.splice(index, 1);
+      };
       const movePoolMember = (index, direction) => {
+        if (!poolEditorReady.value) return;
         const target = index + direction;
         if (target < 0 || target >= poolForm.members.length) return;
         const [member] = poolForm.members.splice(index, 1);
@@ -711,8 +825,10 @@
         return result.version;
       };
       const saveModelPool = async () => {
-        if (!poolForm.name || (poolForm.enabled && !poolForm.members.length)) return;
-        poolSaving.value = true;
+        if (poolWriting.value || !poolEditorReady.value || !poolForm.name || (poolForm.enabled && !poolForm.members.length)) return;
+        poolWriteOperation.value = 'save';
+        // 反馈代表本次保存，而不是历史记录；失败或冲突不能留着上次的成功。
+        delete aiMessages['pool-form'];
         poolError.value = '';
         let poolId = poolForm.id;
         try {
@@ -745,36 +861,42 @@
             poolForm.version = enabled.version;
           }
           await loadModelPools();
-          await editModelPool({ id: poolId });
-          showAiMessage('模型池已保存');
+          await readPoolEditor({ id: poolId }, false);
+          showAiMessage('模型池已保存', 'success', 'pool-form');
         } catch (e) {
           if (e.status === 409 && poolId) {
             await loadModelPools();
-            await editModelPool({ id: poolId });
+            await readPoolEditor({ id: poolId }, false);
             poolError.value = '模型池版本冲突，已重新加载服务端数据';
           } else {
             poolError.value = e.message || '模型池保存失败';
           }
         } finally {
-          poolSaving.value = false;
+          poolWriteOperation.value = '';
         }
       };
       const deleteModelPool = async (pool) => {
+        // 不与已有写操作或尚未确定编辑对象的 GET 争用同一份快照。
+        if (poolWriting.value || poolLoading.value) return;
         if (!confirm(`确认删除模型池“${pool.name}”？`)) return;
+        poolWriteOperation.value = 'delete';
         try {
           await aiApi(`/api/dashboard/ai/model-pools/${pool.id}`, { method: 'DELETE' });
-          if (poolForm.id === pool.id) resetPoolForm();
+          if (poolForm.id === pool.id) resetPoolEditor();
           await loadModelPools();
-          showAiMessage('模型池已删除');
+          showAiMessage('模型池已删除', 'success', 'pool-list');
         } catch (e) {
-          poolError.value = e.message || '模型池删除失败';
+          showAiMessage(e.message || '模型池删除失败', 'error', 'pool-list');
+        } finally {
+          poolWriteOperation.value = '';
         }
       };
       const loadProviders = async () => {
+        delete aiMessages['provider-list'];
         try {
           providers.value = await aiApi('/api/dashboard/ai/providers');
         } catch (e) {
-          showAiMessage(e.message || '读取 Provider 失败', 'error');
+          showAiMessage(e.message || '读取 Provider 失败', 'error', 'provider-list');
           return;
         }
         // 目录与池候选各要一份 provider 模型列表；老页面在 onMounted 里重复拉了两遍，
@@ -785,7 +907,10 @@
         ]);
         await recoverModelSyncOperations();
       };
-      const resetProviderForm = () => Object.assign(providerForm, { id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
+      const resetProviderForm = () => {
+        delete aiMessages['provider-form'];
+        Object.assign(providerForm, { id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
+      };
       const lintBaseUrl = () => {
         const url = (providerForm.base_url || '').trim();
         baseUrlHint.value = '';
@@ -814,6 +939,8 @@
           enabled: provider.enabled !== false,
         });
         baseUrlHint.value = '';
+        delete aiMessages['provider-form'];
+        focusEditor('provider-editor', 'provider-name');
       };
       async function probeModels() {
         probeStatus.value = '探测中…';
@@ -854,9 +981,13 @@
           });
           await loadProviderModels(providerId);
           await loadAiHealth();
-        } catch (e) { showAiMessage(e.message, 'error'); }
+        } catch (e) { showAiMessage(e.message, 'error', 'provider-' + providerId); }
       }
-      const editProvider = (provider) => Object.assign(providerForm, { id: provider.id, name: provider.name || '', provider_type: provider.provider_type || 'openai_compatible', base_url: provider.base_url || '', default_model: provider.default_model || '', api_key: '', timeout_seconds: provider.timeout_seconds || 120, max_retries: provider.max_retries || 2, context_window: provider.context_window || 128000, stream_enabled: provider.stream_enabled !== false, enabled: provider.enabled !== false });
+      const editProvider = (provider) => {
+        Object.assign(providerForm, { id: provider.id, name: provider.name || '', provider_type: provider.provider_type || 'openai_compatible', base_url: provider.base_url || '', default_model: provider.default_model || '', api_key: '', timeout_seconds: provider.timeout_seconds || 120, max_retries: provider.max_retries || 2, context_window: provider.context_window || 128000, stream_enabled: provider.stream_enabled !== false, enabled: provider.enabled !== false });
+        delete aiMessages['provider-form'];
+        focusEditor('provider-editor', 'provider-name');
+      };
       const saveProvider = async () => {
         try {
           const payload = { ...providerForm };
@@ -876,8 +1007,8 @@
         const bound = providerHealth(id)?.bound_agent_count || 0;
         const hint = bound ? `有 ${bound} 个 Agent 绑在这里，删除后它们会失去模型。` : '没有 Agent 绑在这里。';
         if (!confirm('确认删除 Provider？' + hint)) return;
-        try { await aiApi('/api/dashboard/ai/providers/' + id, { method: 'DELETE' }); await loadProviders(); showAiMessage('Provider 已删除'); }
-        catch (e) { showAiMessage(e.message, 'error'); }
+        try { await aiApi('/api/dashboard/ai/providers/' + id, { method: 'DELETE' }); await loadProviders(); showAiMessage('Provider 已删除', 'success', 'provider-list'); }
+        catch (e) { showAiMessage(e.message, 'error', 'provider-' + id); }
       };
       const testProvider = async (id) => {
         testingProviderId.value = id;
@@ -902,13 +1033,14 @@
         modelCatalog, modelSyncBusy, loadProviderModels, loadModelSyncOperation,
         manualModelForm, createManualModel, deleteManualModel,
         syncProviderModels, cancelModelSync, confirmEmptyCatalog, recoverModelSyncOperations,
-        modelPools, poolProviderFilter, poolModelSearch, poolSaving, poolError, poolForm,
+        modelPools, poolProviderFilter, poolModelSearch, poolSaving, poolWriting, poolLoading, poolError, poolForm,
+        selectedPoolId, poolLoadError, poolEditorReady, retryModelPool,
         poolAttempts, poolAttemptsError, poolAttemptsLoading,
         attemptStatusLabel, attemptStatusClass, attemptLatency, formatAttemptTime, loadPoolAttempts,
         availablePoolModels, providerName, poolProviderSummary, poolCandidateCount,
         loadModelPools, resetPoolForm, editModelPool, addPoolMember, removePoolMember,
-        movePoolMember, replacePoolMembers, saveModelPool, deleteModelPool,
-        aiMessage, aiMessageType, providerForm,
+        movePoolMember, saveModelPool, deleteModelPool,
+        aiMessages, providerForm,
         loadProviders, resetProviderForm, editProvider, saveProvider, deleteProvider, testProvider,
         aiHealth, aiHealthLoading, loadAiHealth, providerHealth,
         advancedOpen, baseUrlHint, lintBaseUrl, copyFromProvider,
