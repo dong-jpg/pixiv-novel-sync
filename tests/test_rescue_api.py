@@ -1097,9 +1097,9 @@ def test_dashboard_rescue_override_uses_existing_csrf_protection(
     csrf_app.config.update(TESTING=True)
     _seed_rescue_data(db_path)
     csrf_client = csrf_app.test_client()
-    with csrf_client.session_transaction() as session:
-        session["authenticated"] = True
-        session["authenticated_at"] = time.time()
+    assert csrf_client.post(
+        "/api/auth/login", data={"token": "admin-secret"}
+    ).status_code == 302
 
     blocked = csrf_client.put(
         "/api/dashboard/rescue-overrides/novel/10",

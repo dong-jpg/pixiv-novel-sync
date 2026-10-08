@@ -27,6 +27,8 @@ def test_no_dashboard_token_allows_localhost(tmp_path, monkeypatch):
 def _local_app(tmp_path, monkeypatch):
     monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
     monkeypatch.delenv("PIXIV_FLASK_SECRET", raising=False)
+    # This fixture tests authentication/CSRF, not a real Pixiv sync.
+    monkeypatch.setattr(webapp_module, "execute_task", lambda *_args, **_kwargs: {})
     env_path = tmp_path / ".env"
     env_path.write_text("PIXIV_REFRESH_TOKEN=test\n", encoding="utf-8")
     app = create_app(env_path=str(env_path), start_scheduler=False)

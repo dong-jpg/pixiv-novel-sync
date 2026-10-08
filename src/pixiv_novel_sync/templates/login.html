@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>登录 · Pixiv Novel Sync</title>
+    <style>
+        * { box-sizing: border-box; }
+        html { color-scheme: light; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            min-height: 100svh;
+            display: grid;
+            place-items: center;
+            padding: 24px 16px;
+            padding: max(24px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+                     max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+            background: #f5f7fb;
+            color: #172033;
+            font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+            font-size: 16px;
+            line-height: 1.6;
+        }
+        main {
+            width: 100%;
+            max-width: 28rem;
+            min-width: 0;
+            padding: clamp(20px, 5vw, 32px);
+            border: 1px solid #dde3ed;
+            border-radius: 20px;
+            background: #fff;
+            box-shadow: 0 12px 36px #1720330a;
+            overflow-wrap: anywhere;
+        }
+        .brand { margin: 0 0 6px; color: #46546b; font-weight: 600; }
+        h1 { margin: 0; font-size: 1.75rem; line-height: 1.3; }
+        .intro { margin: 12px 0 24px; color: #46546b; }
+        label { display: block; font-weight: 600; }
+        input[type="password"] {
+            display: block;
+            width: 100%;
+            min-width: 0;
+            min-height: 48px;
+            margin-top: 8px;
+            padding: 12px;
+            border: 1px solid #8996aa;
+            border-radius: 10px;
+            color: inherit;
+            background: #fff;
+            font: inherit;
+            font-size: 16px;
+        }
+        .remember {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-height: 48px;
+            margin-top: 16px;
+            cursor: pointer;
+            font-weight: 400;
+        }
+        input[type="checkbox"] { flex: 0 0 20px; width: 20px; height: 20px; margin: 0; accent-color: #2459bc; }
+        .hint { margin: 4px 0 24px; color: #46546b; font-size: .875rem; }
+        button {
+            width: 100%;
+            min-height: 48px;
+            padding: 12px 16px;
+            border: 0;
+            border-radius: 10px;
+            background: #2459bc;
+            color: #fff;
+            font: inherit;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        button:hover { background: #1c489b; }
+        input:focus-visible, button:focus-visible { outline: 3px solid #1d4ed8; outline-offset: 3px; }
+        .error { margin: 0 0 20px; padding: 12px; border: 1px solid #f0b4b4; border-radius: 10px; background: #fff1f1; color: #9b1c1c; }
+    </style>
+</head>
+<body>
+    <main aria-labelledby="login-title">
+        <p class="brand">Pixiv Novel Sync</p>
+        <h1 id="login-title">登录你的书库</h1>
+        <p class="intro">输入访问密码，继续阅读与管理收藏。</p>
+        {% if error %}<p class="error" id="login-error" role="alert">{[ error ]}</p>{% endif %}
+        <form method="post" action="{[ url_for('auth_login') ]}">
+            <input type="hidden" name="next" value="{[ next_path ]}">
+            <label for="token">访问密码</label>
+            <input id="token" name="token" type="password" placeholder="访问密码"
+                   autocomplete="current-password" required{% if error %} aria-describedby="login-error"{% endif %}>
+            <label class="remember" for="remember-device">
+                <input id="remember-device" name="remember_device" type="checkbox" value="1"
+                       aria-describedby="remember-hint"{% if remember_device %} checked{% endif %}>
+                <span>在此设备保持登录30天</span>
+            </label>
+            <p class="hint" id="remember-hint">仅在私人设备勾选。未勾选时，登录随浏览器会话结束，最长保留7天。</p>
+            <button type="submit">登录</button>
+        </form>
+    </main>
+</body>
+</html>

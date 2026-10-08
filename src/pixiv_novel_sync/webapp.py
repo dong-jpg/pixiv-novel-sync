@@ -11,12 +11,13 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
 import requests as http_requests
-from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, send_file
+from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, send_file, url_for
 
 from . import __version__
 from .jobs.manager import JobManager
@@ -29,6 +30,17 @@ from .storage_db import Database, prepare_schema
 from .storage_files import FileStorage
 from .utils_env import secure_atomic_write
 from .utils_naming import safe_name
+from .web.auth_sessions import (
+    AUTH_EXPIRY_KEY,
+    AUTH_SESSION_KEY,
+    BROWSER_SESSION_SECONDS,
+    REMEMBER_SESSION_SECONDS,
+    AbsoluteAuthSessionInterface,
+    credential_version,
+    hash_session_id,
+    safe_next_path,
+    session_record_is_current,
+)
 from .web.managers import AutoSyncScheduler, SettingsManager, TASK_LABELS
 from .web.managers import SCHEDULER_TASK_CONFIGS, scheduler_task_log_type
 from .web.utils import (
@@ -487,6 +499,9 @@ def create_app(
     # 加固 cookie：HttpOnly + SameSite=Lax。
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_REFRESH_EACH_REQUEST"] = False
+    app.permanent_session_lifetime = timedelta(seconds=REMEMBER_SESSION_SECONDS)
+    app.session_interface = AbsoluteAuthSessionInterface()
     settings_manager = SettingsManager(config_path)
     # Secure 必须在 load() 之后看环境变量：DASHBOARD_TRUST_PROXY / PIXIV_COOKIE_SECURE
     # 通常只写在 .env 里，create_app 进来时进程环境还没有它们。
@@ -776,23 +791,29 @@ def create_app(
     _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
     _login_failures = _LoginFailureTracker()
     app.config["login_failure_tracker"] = _login_failures
-    _SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
-    def _authenticated_session_fresh() -> bool:
-        if not session.get("authenticated"):
+    def _authenticated_session_fresh(current_settings: Settings) -> bool:
+        token_hash = hash_session_id(session.get(AUTH_SESSION_KEY))
+        if token_hash is None:
+            if any(key in session for key in (AUTH_SESSION_KEY, "authenticated", "authenticated_at")):
+                session.clear()
             return False
-        started = session.get("authenticated_at")
-        if isinstance(started, (int, float)) and started > 10**12:
-            age = (time.time_ns() - float(started)) / 1_000_000_000
-        elif isinstance(started, (int, float)):
-            age = time.time() - float(started)
-        else:
-            session.clear()
-            return False
-        if age > _SESSION_MAX_AGE_SECONDS:
+        # Do not clear/modify the cookie until verification has completed. A
+        # transient connection/read error must fail closed but remain retryable.
+        db = _open_database(current_settings)
+        try:
+            record = db.get_web_auth_session(token_hash)
+        finally:
+            db.close()
+        version = credential_version(app.secret_key, str(current_settings.dashboard_token))
+        if not session_record_is_current(record, version, time.time()):
             session.clear()
             return False
         return True
+
+    def _auth_storage_unavailable(exc: Exception):
+        logger.warning("Dashboard authentication storage unavailable (%s)", type(exc).__name__)
+        return jsonify({"error": "authentication temporarily unavailable; please retry"}), 503
 
     def _get_csrf_token() -> str:
         token = session.get("csrf_token")
@@ -876,7 +897,8 @@ def create_app(
         path = request.path
         if path.startswith("/api/rescue/v1/"):
             return
-        token = settings_manager.load(env_path=env_path).dashboard_token
+        current_settings = settings_manager.load(env_path=env_path)
+        token = current_settings.dashboard_token
         if not token:
             # 安全加固：未配置 token 时仅允许真正的本机访问。
             # 若检测到代理头但未显式信任代理，说明很可能暴露在反代后，
@@ -896,7 +918,11 @@ def create_app(
             return
         if path.startswith("/static/"):
             return
-        if _authenticated_session_fresh():
+        try:
+            authenticated = _authenticated_session_fresh(current_settings)
+        except Exception as exc:
+            return _auth_storage_unavailable(exc)
+        if authenticated:
             blocked = _csrf_blocked(path)
             if blocked is not None:
                 return blocked
@@ -904,7 +930,8 @@ def create_app(
         # API 请求返回 401，页面请求重定向到登录
         if path.startswith("/api/"):
             return jsonify({"error": "unauthorized"}), 401
-        return redirect("/api/auth/login")
+        next_path = request.full_path if request.query_string else request.path
+        return redirect(url_for("auth_login", next=safe_next_path(next_path)))
 
     @app.after_request
     def _add_security_headers(response):
@@ -942,38 +969,64 @@ def create_app(
 
     @app.route("/api/auth/login", methods=["GET", "POST"])
     def auth_login():
-        token = settings_manager.load(env_path=env_path).dashboard_token
+        current_settings = settings_manager.load(env_path=env_path)
+        token = current_settings.dashboard_token
         if not token:
             return redirect("/")
-        if request.method == "GET":
+        next_path = safe_next_path(request.form.get("next", request.args.get("next")))
+        remember_device = request.method == "POST" and request.form.get("remember_device") == "1"
+
+        def login_page(error: str | None = None, status: int = 200):
             return Response(
-                '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>Login</title>'
-                '<style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f5f5f5}'
-                'form{background:white;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1)}'
-                'input{display:block;margin:1rem 0;padding:0.5rem;width:250px}'
-                'button{padding:0.5rem 1.5rem;background:#4a90d9;color:white;border:none;border-radius:4px;cursor:pointer}</style></head>'
-                '<body><form method="POST"><h2>Pixiv Novel Sync</h2>'
-                '<input name="token" type="password" placeholder="访问密码" autofocus>'
-                '<button type="submit">登录</button></form></body></html>',
+                render_template(
+                    "login.html", error=error, next_path=next_path, remember_device=remember_device,
+                ),
+                status=status,
                 content_type="text/html; charset=utf-8",
             )
+
+        if request.method == "GET":
+            return login_page()
         import hmac as _hmac
         now = time.time()
         client = _client_addr()
         if _login_failures.is_blocked(client, now):
-            return jsonify({"error": "too many login attempts"}), 429
+            response = login_page("尝试次数过多，请稍后再试。", 429)
+            response.headers["Retry-After"] = str(int(_login_failures.window_seconds))
+            return response
         input_token = request.form.get("token", "")
         # compare_digest 两边编码成 bytes：DASHBOARD_TOKEN 含中文等非 ASCII 时，
         # str 版本会直接抛 TypeError 变成 500，而不是按「密码错」计一次 401。
         if _hmac.compare_digest(input_token.encode("utf-8"), str(token).encode("utf-8")):
+            session_id = secrets.token_urlsafe(32)
+            lifetime = REMEMBER_SESSION_SECONDS if remember_device else BROWSER_SESSION_SECONDS
+            expires_at = now + lifetime
+            try:
+                db = _open_database(current_settings)
+                try:
+                    db.replace_web_auth_session(
+                        token_hash=hash_session_id(session_id),
+                        credential_version=credential_version(app.secret_key, str(token)),
+                        created_at=now,
+                        expires_at=expires_at,
+                        persistent=remember_device,
+                        previous_token_hash=hash_session_id(session.get(AUTH_SESSION_KEY)),
+                    )
+                finally:
+                    db.close()
+            except Exception as exc:
+                logger.warning("Dashboard login storage unavailable (%s)", type(exc).__name__)
+                return login_page("登录服务暂时不可用，请稍后重试。", 503)
+            # Only replace the browser cookie after the insert AND revoke commit.
             _login_failures.clear(client)
             session.clear()
-            session["authenticated"] = True
-            session["authenticated_at"] = time.time()
+            session.permanent = remember_device
+            session[AUTH_SESSION_KEY] = session_id
+            session[AUTH_EXPIRY_KEY] = expires_at
             _get_csrf_token()
-            return redirect("/")
+            return redirect(next_path)
         _login_failures.record_failure(client, now)
-        return Response("密码错误", status=401, content_type="text/plain; charset=utf-8")
+        return login_page("密码错误，请重试。", 401)
 
     @app.get("/api/csrf-token")
     def csrf_token():
@@ -981,8 +1034,17 @@ def create_app(
 
     @app.route("/api/auth/logout", methods=["POST"])
     def auth_logout():
-        session.pop("authenticated", None)
-        session.pop("authenticated_at", None)
+        token_hash = hash_session_id(session.get(AUTH_SESSION_KEY))
+        if token_hash is not None:
+            try:
+                db = _open_database(settings_manager.load(env_path=env_path))
+                try:
+                    db.revoke_web_auth_session(token_hash)
+                finally:
+                    db.close()
+            except Exception as exc:
+                return _auth_storage_unavailable(exc)
+        session.clear()
         return jsonify({"ok": True})
 
     @app.get("/proxy/image")

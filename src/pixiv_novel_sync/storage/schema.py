@@ -127,6 +127,15 @@ class SchemaMixin:
 
         -- Phase 5性能:高频WHERE条件索引
         CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+
+        CREATE TABLE IF NOT EXISTS web_auth_sessions (
+            token_hash TEXT PRIMARY KEY,
+            credential_version TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
+            persistent INTEGER NOT NULL CHECK (persistent IN (0, 1))
+        );
+        CREATE INDEX IF NOT EXISTS idx_web_auth_sessions_expiry ON web_auth_sessions(expires_at);
         """
         )
         # 迁移：为旧版 users 表添加 status、last_checked_at、restricted_streak 字段

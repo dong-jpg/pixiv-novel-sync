@@ -17,6 +17,7 @@ from .storage.pending_and_watermarks import PendingAndWatermarksMixin
 from .storage.reading_progress import ReadingProgressMixin
 from .storage.recommendations import RecommendationsMixin
 from .storage.rescue import RescueMixin
+from .storage.web_auth_sessions import WebAuthSessionsMixin
 from .storage.ai.core import AiCoreMixin
 from .storage.ai.catalog import CatalogMixin
 from .storage.ai.model_sync import ModelSyncStorageMixin
@@ -47,6 +48,7 @@ class Database(
     ReadingProgressMixin,
     RecommendationsMixin,
     RescueMixin,
+    WebAuthSessionsMixin,
     AiCoreMixin,
     CatalogMixin,
     ModelSyncStorageMixin,
