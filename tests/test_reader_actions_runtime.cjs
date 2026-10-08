@@ -21,7 +21,7 @@ function mount(name, saved) {
   const document = {documentElement: {scrollHeight: 2000}, referrer: ''};
   const localStorage = {getItem: key => local.get(key) || null,
     setItem: (key, value) => local.set(key, value), removeItem: key => local.delete(key)};
-  const context = {window, document, localStorage, location: window.location, URLSearchParams, AbortController,
+  const context = {window, document, localStorage, location: window.location, URL, URLSearchParams, AbortController,
     setTimeout: () => 0, clearTimeout() {}, console,
     confirm: message => window.confirm(message),
     csrfFetch: (...args) => window.csrfFetch(...args),
@@ -32,6 +32,8 @@ function mount(name, saved) {
       onMounted: fn => mounted.push(fn), onUnmounted() {}, nextTick: fn => ticks.push(fn)},
   };
   const html = fs.readFileSync(path.join(templateRoot, name), 'utf8');
+  const navigation = fs.readFileSync(path.join(templateRoot, 'navigation_helpers.html'), 'utf8');
+  vm.runInNewContext(navigation.match(/<script>([\s\S]*?)<\/script>/)[1], context);
   vm.runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], context);
   return {state, window, calls, notices, local, context, html, events, async start() {
     mounted.forEach(fn => fn());

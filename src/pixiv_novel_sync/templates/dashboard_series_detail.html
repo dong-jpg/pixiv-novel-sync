@@ -7,11 +7,11 @@
   <div class="library-page-header sr-only"><h1>系列详情</h1></div>
 
   <!-- Back Link -->
-  <a :href="backHref" class="inline-flex items-center gap-1.5 text-sm font-medium text-pixiv-gray hover:text-brand-500 transition-colors">
+  <a :href="backHref" class="inline-flex min-h-[44px] items-center gap-1.5 text-sm font-medium text-pixiv-gray hover:text-brand-500 transition-colors">
     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
     </svg>
-    返回追更列表
+    返回来源
   </a>
 
   <!-- Hero Section -->
@@ -60,7 +60,7 @@
 
         <div class="text-sm text-pixiv-gray mb-4 inline-flex items-center gap-1.5 self-center md:self-start">
           <svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
-          <a v-if="series.user_id" :href="'/dashboard/users/' + encodeURIComponent(series.user_id)" class="text-brand-500 hover:text-brand-600 font-medium hover:underline">{{ series.author_name || '未知' }}</a>
+          <a v-if="series.user_id" :href="detailHref('/dashboard/users/' + encodeURIComponent(series.user_id))" @click="rememberScroll" class="inline-flex min-h-[44px] items-center text-brand-500 hover:text-brand-600 font-medium hover:underline">{{ series.author_name || '未知' }}</a>
           <span v-else class="font-medium text-gray-700">{{ series.author_name || '未知' }}</span>
         </div>
 
@@ -136,7 +136,7 @@
 
       <div v-else>
         <a v-for="(novel, index) in chaptersWithProgress" :key="novel.novel_id"
-           :href="'/dashboard/novels/' + encodeURIComponent(novel.novel_id)"
+           :href="detailHref('/dashboard/novels/' + encodeURIComponent(novel.novel_id))" @click="rememberScroll"
            class="flex items-center gap-4 px-6 py-4 transition-colors group border-b border-gray-50 last:border-b-0"
            :class="novel.percent > 0 && novel.percent < 100 ? 'bg-brand-50/60 border-l-[3px] border-l-brand-500' : 'hover:bg-gray-50 border-l-[3px] border-l-transparent'">
 
@@ -173,21 +173,18 @@
 {% endblock %}
 
 {% block extra_scripts %}
+{% include "navigation_helpers.html" %}
 <script>
   initVueApp({
     setup() {
-      const { ref, computed, onMounted } = Vue;
+      const { ref, computed, onMounted, onUnmounted, nextTick } = Vue;
+      const scrollState = window.createDashboardScrollState();
+      const rememberScroll = scrollState.save;
+      const detailHref = (target) => window.withDashboardReturn(target);
 
       const pathParts = window.location.pathname.split('/');
       const seriesId = Number(pathParts[pathParts.length - 1] || 0);
-      const backHref = (() => {
-        const from = new URLSearchParams(location.search).get('from');
-        if (from && from.startsWith('/')) return from;
-        if (document.referrer && document.referrer.startsWith(location.origin + '/dashboard')) {
-          return document.referrer.slice(location.origin.length);
-        }
-        return '/dashboard/novels?category=following';
-      })();
+      const backHref = window.safeDashboardReturn(new URLSearchParams(location.search).get('from'), '/dashboard/novels?category=following');
       const itemType = 'series';
       const progressPrefix = 'pixivNovelSync:reading:';
 
@@ -276,6 +273,7 @@
           error.value = '加载失败，请检查网络';
         } finally {
           loading.value = false;
+          if (!error.value) nextTick(scrollState.restore);
         }
       };
 
@@ -337,24 +335,22 @@
 
       const continueReading = () => {
         if (continueNovelId.value) {
-          window.location.href = `/dashboard/novels/${encodeURIComponent(continueNovelId.value)}`;
+          rememberScroll();
+          window.location.href = detailHref(`/dashboard/novels/${encodeURIComponent(continueNovelId.value)}`);
         }
       };
 
       const deleteSeries = async () => {
-        if (!confirm('确定要删除这个系列吗？\n注意：系列下的小说不会被删除，只会解除关联。此操作不可撤销。')) return;
+        if (deleting.value || !confirm('确定要删除这个系列吗？\n注意：系列下的小说不会被删除，只会解除关联。此操作不可撤销。')) return;
         deleting.value = true;
         try {
-          const res = await csrfFetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`, { method: 'DELETE' });
+          const res = await window.csrfFetch(`/api/dashboard/series/${encodeURIComponent(seriesId)}`, { method: 'DELETE' });
           const data = await res.json();
-          if (res.ok) {
-            window.toast('系列已删除');
-            window.location.href = '/dashboard/novels?category=following';
-          } else {
-            window.toast('删除失败: ' + (data.error || '未知错误'));
-          }
+          if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
+          window.toast('系列已删除');
+          window.location.href = backHref;
         } catch (e) {
-          window.toast('删除失败');
+          window.toast(e.message || '删除失败', 'error');
         } finally {
           deleting.value = false;
         }
@@ -363,9 +359,11 @@
       onMounted(() => {
         fetchDetail();
       });
+      onUnmounted(scrollState.dispose);
 
       return {
         series, loading, error, deleting, continueNovelId, backHref,
+        detailHref, rememberScroll,
         formatTextLength, formatNumber, statusConfig, chapterStatusConfig,
         chaptersWithProgress, continueReading, deleteSeries,
         rescueOverride, rescueMessage, rescueMessageType, savingRescue,

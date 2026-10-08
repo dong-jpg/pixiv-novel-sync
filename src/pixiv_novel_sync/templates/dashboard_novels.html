@@ -141,7 +141,7 @@
     <!-- Card Grid: Bookmark Novels -->
     <div v-else-if="filters.category === 'bookmark'" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 pt-2">
       <a v-for="item in items" :key="item.novel_id"
-         :href="'/dashboard/novels/' + encodeURIComponent(item.novel_id)"
+         :href="detailHref('/dashboard/novels/' + encodeURIComponent(item.novel_id))" @click="rememberScroll"
          class="group bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden hover:shadow-md hover:-translate-y-0.5 transition-all duration-200">
 
         <!-- Cover Area -->
@@ -209,7 +209,7 @@
     <!-- Card Grid: Following Series -->
     <div v-else-if="filters.category === 'following'" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 pt-2">
       <a v-for="item in items" :key="item.series_id"
-         :href="'/dashboard/series/' + encodeURIComponent(item.series_id)"
+         :href="detailHref('/dashboard/series/' + encodeURIComponent(item.series_id))" @click="rememberScroll"
          class="group bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden hover:shadow-md hover:-translate-y-0.5 transition-all duration-200">
 
         <!-- Cover Area -->
@@ -262,9 +262,10 @@
 
     <!-- Card Grid: Rescue Archive -->
     <div v-else-if="filters.category === 'rescue'" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 pt-2">
-      <a v-for="item in items" :key="item.item_type + '-' + item.item_id"
-         :href="item.content_kind === 'series' ? ('/dashboard/series/' + encodeURIComponent(item.item_id)) : ('/dashboard/novels/' + encodeURIComponent(item.item_id))"
-         class="group bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden hover:shadow-md hover:-translate-y-0.5 transition-all duration-200">
+      <article v-for="item in items" :key="item.item_type + '-' + item.item_id"
+         class="group min-w-0 bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden hover:shadow-md transition-all duration-200">
+        <a :href="detailHref(item.content_kind === 'series' ? ('/dashboard/series/' + encodeURIComponent(item.item_id)) : ('/dashboard/novels/' + encodeURIComponent(item.item_id)))"
+           @click="rememberScroll" class="block">
         <div class="aspect-[3/4] relative overflow-hidden">
           <div class="absolute inset-0" :style="'background: linear-gradient(135deg, ' + getGradient(item.title || item.item_id) + ')' "></div>
           <div v-if="!item.cover_url" class="absolute inset-0 flex items-center justify-center">
@@ -287,13 +288,15 @@
             <span v-else>正文已完整备份</span>
           </div>
         </div>
-        <div class="p-3">
+        <div class="p-3 pb-0">
           <h3 class="text-sm font-bold text-gray-900 group-hover:text-brand-600 transition-colors line-clamp-2 leading-snug mb-2" :title="item.title">
             {{ item.title || (item.item_type === 'series' ? '未命名系列' : '未命名小说') }}
           </h3>
           <div class="text-xs text-gray-500 truncate mb-1.5">{{ item.author_name || '未知作者' }}</div>
-          <div class="h-10 overflow-hidden mb-1.5 text-[11px] leading-5 text-gray-500"
-               :title="(item.sources || []).map(source => source.label).join('、') || '来源未记录'">
+        </div>
+        </a>
+        <div class="px-3 pb-3">
+          <div class="h-10 overflow-hidden mb-1.5 text-xs leading-5 text-gray-500">
             <div v-if="(item.sources || []).length" class="flex flex-wrap content-start gap-x-1">
               <span v-for="source in (item.sources || [])"
                     :key="source.kind + ':' + (source.user_id || '')"
@@ -303,11 +306,19 @@
             </div>
             <span v-else>来源未记录</span>
           </div>
+          <button v-if="(item.sources || []).length" type="button" class="rescue-source-toggle"
+                  @click.stop="toggleSources(item)" :aria-expanded="sourcesExpanded(item)"
+                  :aria-controls="'rescue-sources-' + sourceKey(item)">
+            {{ sourcesExpanded(item) ? '收起来源' : '展开全部来源（' + item.sources.length + '）' }}
+          </button>
+          <ul v-if="sourcesExpanded(item)" :id="'rescue-sources-' + sourceKey(item)" class="rescue-source-list">
+            <li v-for="(source, index) in (item.sources || [])" :key="index">{{ source.label }}</li>
+          </ul>
           <div class="text-[11px] text-gray-400">
             更新于 {{ formatDate(item.last_checked_at || item.updated_at) }}
           </div>
         </div>
-      </a>
+      </article>
     </div>
 
     <!-- Pagination + Page Size -->
@@ -328,6 +339,7 @@
 {% endblock %}
 
 {% block extra_scripts %}
+{% include "navigation_helpers.html" %}
 <style>
   .custom-select {
     background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
@@ -341,12 +353,26 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
+  .rescue-source-toggle {
+    min-height: 44px; width: 100%; padding: 8px 4px; margin-bottom: 6px;
+    color: #0369a1; text-align: left; font-size: 12px; border-radius: 6px;
+    overflow-wrap: anywhere;
+  }
+  .rescue-source-toggle:focus-visible { outline: 2px solid #0096fa; outline-offset: 2px; }
+  .rescue-source-list {
+    list-style: disc; padding: 8px 8px 8px 20px; margin-bottom: 8px;
+    background: #f8fafc; border-radius: 6px; font-size: 12px; color: #475569;
+    overflow-wrap: anywhere;
+  }
 </style>
 
 <script>
   initVueApp({
     setup() {
-      const { ref, reactive, watch, onMounted } = Vue;
+      const { ref, reactive, watch, onMounted, onUnmounted, nextTick } = Vue;
+      const scrollState = window.createDashboardScrollState();
+      const rememberScroll = scrollState.save;
+      const detailHref = (target) => window.withDashboardReturn(target);
 
       // State
       const items = ref([]);
@@ -359,17 +385,36 @@
       const rescueCatalog = reactive({ refreshed_at: '', stale: false });
 
       // Filters
-      const initialQuery = window.readListQuery({ category: 'bookmark', search: '', sort: '', page: 1 });
+      const initialQuery = window.readListQuery({
+        category: 'bookmark', search: '', sort: '', page: 1, page_size: 10,
+        state: 'all', content_kind: 'all', source_kind: 'all'
+      });
       const filters = reactive({
         category: ['bookmark', 'following', 'rescue'].includes(initialQuery.category) ? initialQuery.category : 'bookmark',
         search: initialQuery.search,
         sort: initialQuery.sort
       });
-      page.value = initialQuery.page;
+      page.value = Math.max(1, Math.floor(initialQuery.page));
+      pageSize.value = [10, 20, 40, 60].includes(initialQuery.page_size) ? initialQuery.page_size : 10;
       const rescueFilters = reactive({
-        state: 'all',
-        content_kind: 'all',
-        source_kind: 'all'
+        state: ['all', 'success', 'partial'].includes(initialQuery.state) ? initialQuery.state : 'all',
+        content_kind: ['all', 'series', 'series_chapter', 'standalone'].includes(initialQuery.content_kind) ? initialQuery.content_kind : 'all',
+        source_kind: ['all', 'bookmark', 'subscribed_series', 'following_user', 'user_backup'].includes(initialQuery.source_kind) ? initialQuery.source_kind : 'all'
+      });
+      const expandedSources = ref(new Set());
+      const sourceKey = item => item.item_type + '-' + item.item_id;
+      const sourcesExpanded = item => expandedSources.value.has(sourceKey(item));
+      const toggleSources = (item) => {
+        const next = new Set(expandedSources.value);
+        const key = sourceKey(item);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        expandedSources.value = next;
+      };
+      const writeQuery = () => window.writeListQuery({
+        category: filters.category, search: filters.search, sort: filters.sort,
+        page: page.value, page_size: pageSize.value,
+        state: rescueFilters.state, content_kind: rescueFilters.content_kind, source_kind: rescueFilters.source_kind
       });
 
       let fetchAbortController = null;
@@ -407,7 +452,9 @@
         if (fetchAbortController) {
           fetchAbortController.abort();
         }
-        fetchAbortController = new AbortController();
+        const controller = new AbortController();
+        fetchAbortController = controller;
+        writeQuery();
 
         try {
           if (filters.category === 'rescue') {
@@ -421,9 +468,10 @@
               sort: filters.sort === 'updated_desc' ? 'updated_desc' : 'checked_desc'
             });
             const response = await fetch('/api/dashboard/rescues?' + params.toString(), {
-              signal: fetchAbortController.signal
+              signal: controller.signal
             });
             const result = await response.json();
+            if (controller !== fetchAbortController || controller.signal.aborted) return;
             if (!response.ok || result.ok === false) throw new Error(result.error || '救援数据加载失败');
             const data = result.data || {};
             items.value = data.items || [];
@@ -432,6 +480,7 @@
             totalPages.value = data.total_pages || 1;
             rescueCatalog.refreshed_at = data.refreshed_at || '';
             rescueCatalog.stale = Boolean(data.stale);
+            expandedSources.value = new Set();
             return;
           }
 
@@ -444,19 +493,21 @@
           if (filters.sort) params.append('sort', filters.sort);
 
           const res = await fetch(`/api/dashboard/novels?${params.toString()}`, {
-            signal: fetchAbortController.signal
+            signal: controller.signal
           });
 
           if (!res.ok) throw new Error('API Request Failed');
 
           const data = await res.json();
+          if (controller !== fetchAbortController || controller.signal.aborted) return;
           items.value = data.items || [];
           totalItems.value = data.total || 0;
           page.value = data.page || 1;
           totalPages.value = data.total_pages || 1;
+          expandedSources.value = new Set();
 
         } catch (err) {
-          if (err.name !== 'AbortError') {
+          if (controller === fetchAbortController && !controller.signal.aborted && err.name !== 'AbortError') {
             console.error(err);
             const backendMessage = String(err.message || '').trim();
             const displayError = backendMessage &&
@@ -468,25 +519,23 @@
             items.value = [];
           }
         } finally {
-          window.writeListQuery({
-            category: filters.category,
-            search: filters.search,
-            sort: filters.sort,
-            page: page.value,
-          });
-          if (fetchAbortController && !fetchAbortController.signal.aborted) {
+          if (controller === fetchAbortController && !controller.signal.aborted) {
+            writeQuery();
             loading.value = false;
+            if (!error.value) nextTick(scrollState.restore);
           }
         }
       };
 
       const handlePageChange = (newPage) => {
+        scrollState.cancel();
         page.value = newPage;
         fetchData();
         window.scrollTo({ top: 0, behavior: 'smooth' });
       };
 
       const onPageSizeChange = () => {
+        scrollState.cancel();
         page.value = 1;
         fetchData();
       };
@@ -524,6 +573,7 @@
 
       // Watchers
       watch(() => filters.category, () => {
+        scrollState.cancel();
         page.value = 1;
         if (filters.category === 'rescue' && !['', 'updated_desc'].includes(filters.sort)) {
           filters.sort = '';
@@ -532,17 +582,23 @@
       });
 
       watch(() => [rescueFilters.state, rescueFilters.content_kind, rescueFilters.source_kind], () => {
+        scrollState.cancel();
         if (filters.category !== 'rescue') return;
         page.value = 1;
         fetchData();
       });
 
       watch(() => filters.sort, () => {
+        scrollState.cancel();
         page.value = 1;
         fetchData();
       });
 
       watch(() => filters.search, () => {
+        scrollState.cancel();
+        // Invalidate immediately, not 400ms later: the old request must not
+        // relabel its results with the newly typed query during the debounce.
+        fetchAbortController?.abort();
         clearTimeout(searchTimeout);
         searchTimeout = setTimeout(() => {
           page.value = 1;
@@ -553,9 +609,15 @@
       onMounted(() => {
         fetchData();
       });
+      onUnmounted(() => {
+        scrollState.dispose();
+        fetchAbortController?.abort();
+        clearTimeout(searchTimeout);
+      });
 
       return {
         items, totalItems, page, pageSize, totalPages, loading, error, filters, rescueFilters, rescueCatalog,
+        detailHref, rememberScroll, sourceKey, sourcesExpanded, toggleSources,
         handlePageChange, onPageSizeChange, formatTextLength, formatCount, formatDate, formatCatalogDate, getGradient
       };
     }

@@ -1,0 +1,152 @@
+<script>
+  (() => {
+    const defaultReturn = '/dashboard/novels';
+    const dashboardPath = /^\/dashboard(?:\/|$)/;
+    const forbidden = /[\\\u0000-\u001f\u007f-\u009f]/;
+    // U+0080..U+009F are valid UTF-8 byte pairs even next to a malformed
+    // sequence. Check them independently; decoding the whole run may throw.
+    const encodedC1 = /%c2%[89][0-9a-f]/i;
+
+    const isDashboardPath = (value) => {
+      if (typeof value !== 'string') return false;
+      // Separate ORIGINAL components, before decoding. An encoded ?/# is still
+      // pathname data and must never hide the dot segments that follow it.
+      const pathname = value.split(/[?#]/, 1)[0];
+      if (!dashboardPath.test(pathname)) return false;
+      try {
+        const parsed = new URL(value, window.location.origin);
+        if (parsed.origin !== window.location.origin || !dashboardPath.test(parsed.pathname)) return false;
+      } catch { return false; }
+      let decoded = [pathname, value.slice(pathname.length)];
+      for (let depth = 0; depth < 10; depth++) {
+        if (decoded.some(part => forbidden.test(part) || encodedC1.test(part))) return false;
+        const path = decoded[0];
+        if (!dashboardPath.test(path) || path.includes('//') || /\/(?:\.|\.\.)(?:\/|$)/.test(path)) return false;
+        try {
+          // The first pass validates URL encoding. Later passes only inspect
+          // nested escapes: a decoded literal '%' in a search term is not an
+          // invalid URL. Still expose encoded controls beside that literal.
+          const next = decoded.map(component => depth === 0 ? decodeURIComponent(component) : component.replace(/(?:%[0-9a-f]{2})+/gi, part => {
+            try { return decodeURIComponent(part); }
+            catch { return part.replace(/%([0-7][0-9a-f])/gi, (_, byte) => String.fromCharCode(parseInt(byte, 16))); }
+          }));
+          if (next.every((part, index) => part === decoded[index])) return true;
+          decoded = next;
+        } catch { return false; }
+      }
+      return false;
+    };
+
+    window.safeDashboardReturn = (value, fallback = defaultReturn) => (
+      isDashboardPath(value) ? value : (isDashboardPath(fallback) ? fallback : defaultReturn)
+    );
+
+    window.withDashboardReturn = (target, from = window.location.pathname + window.location.search) => {
+      const url = new URL(window.safeDashboardReturn(target), window.location.origin);
+      url.searchParams.set('from', window.safeDashboardReturn(from));
+      return url.pathname + url.search + url.hash;
+    };
+
+    // Each page owns this lifecycle: restore after data + nextTick, cancel on query
+    // changes, save on link activation/pagehide, and dispose on Vue unmount.
+    window.createDashboardScrollState = () => {
+      const currentPath = () => window.location.pathname + window.location.search;
+      const keyFor = path => 'pixivNovelSync:listScroll:' + path;
+      const entryPath = currentPath();
+      const readPosition = () => {
+        try {
+          const saved = JSON.parse(window.sessionStorage.getItem(keyFor(currentPath())) || 'null');
+          return typeof saved?.scrollY === 'number' && Number.isFinite(saved.scrollY) && saved.scrollY >= 0
+            ? saved.scrollY : null;
+        } catch { return null; }
+      };
+      const savedY = readPosition();
+      let pending = savedY !== null && !window.location.hash;
+      let ready = false;
+      let initialRestoreConsumed = false;
+      let disposed = false;
+      let active = true;
+      const history = window.history;
+      const previousRestoration = history?.scrollRestoration;
+      const ownRestoration = () => {
+        if (history && previousRestoration !== undefined) history.scrollRestoration = 'manual';
+      };
+      const releaseRestoration = () => {
+        if (history && previousRestoration !== undefined) history.scrollRestoration = previousRestoration;
+      };
+      const interactionEvents = ['scroll', 'wheel', 'touchstart', 'pointerdown', 'keydown'];
+      const detachInteractions = () => {
+        interactionEvents.forEach(name => window.removeEventListener(name, cancel, true));
+      };
+      const cancel = () => {
+        pending = false;
+        detachInteractions();
+      };
+      const attachInteractions = () => {
+        if (!pending || !active || disposed) return;
+        if (currentPath() !== entryPath || window.location.hash) { cancel(); return; }
+        interactionEvents.forEach(name => window.addEventListener(name, cancel, {capture: true, passive: true}));
+      };
+      const scrollTo = (top) => {
+        const max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+        window.scrollTo({top: Math.min(top, max), behavior: 'auto'});
+      };
+      const restore = () => {
+        if (disposed || initialRestoreConsumed) return;
+        ready = true;
+        // A render can finish while suspended. Record readiness, but leave its
+        // one permitted restore (or prior user cancellation) for persisted resume.
+        if (!active) return;
+        initialRestoreConsumed = true;
+        const shouldRestore = pending && currentPath() === entryPath && !window.location.hash;
+        cancel(); // Remove listeners BEFORE our programmatic scroll event.
+        if (shouldRestore) scrollTo(savedY);
+      };
+      const save = () => {
+        // Never replace a useful saved position with a loading/error skeleton's zero.
+        if (disposed || !ready || !active) return;
+        try {
+          const scrollY = Math.max(0, Math.round(window.scrollY));
+          if (Number.isFinite(scrollY)) {
+            window.sessionStorage.setItem(keyFor(currentPath()), JSON.stringify({scrollY}));
+          }
+        } catch { /* Storage may be disabled/full; navigation must still work. */ }
+      };
+      const pagehide = () => {
+        save();
+        active = false;
+        detachInteractions(); // Lifecycle suspension is NOT user cancellation.
+        releaseRestoration();
+      };
+      const pageshow = (event) => {
+        if (!event.persisted || disposed) return;
+        active = true;
+        ownRestoration();
+        if (!initialRestoreConsumed) {
+          attachInteractions();
+          if (ready) restore();
+          return;
+        }
+        cancel();
+        const position = readPosition();
+        // Already-consumed initial loads reuse their rendered list and the latest
+        // saved position. No new fetch or second initial restore is scheduled.
+        if (ready && position !== null && !window.location.hash) scrollTo(position);
+      };
+      const dispose = () => {
+        if (disposed) return;
+        save();
+        disposed = true;
+        cancel();
+        window.removeEventListener('pagehide', pagehide);
+        window.removeEventListener('pageshow', pageshow);
+        releaseRestoration();
+      };
+      ownRestoration();
+      attachInteractions();
+      window.addEventListener('pagehide', pagehide);
+      window.addEventListener('pageshow', pageshow);
+      return {save, restore, cancel, dispose};
+    };
+  })();
+</script>

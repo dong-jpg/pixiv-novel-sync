@@ -8,9 +8,9 @@
   <!-- Sticky Header -->
   <div class="sticky top-0 z-20 bg-pixiv-bg/95 backdrop-blur-sm border-b border-gray-100 px-4 sm:px-6 py-4">
     <div class="flex items-center gap-2">
-      <a class="inline-flex items-center gap-1 text-sm font-bold text-gray-500 hover:text-brand-500 transition-colors" href="/dashboard/follows">
+      <a class="inline-flex min-h-[44px] shrink-0 items-center gap-1 text-sm font-bold text-gray-500 hover:text-brand-500 transition-colors" :href="backHref">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        关注作者
+        返回来源
       </a>
       <span v-if="user" class="text-gray-300">/</span>
       <span v-if="user" class="text-sm font-bold text-gray-900 truncate">{{ user.name || '未命名用户' }}</span>
@@ -152,7 +152,7 @@
         <!-- Series cards -->
         <template v-if="category === 'series'">
           <a v-for="item in items" :key="item.series_id"
-             :href="'/dashboard/series/' + encodeURIComponent(item.series_id)"
+             :href="detailHref('/dashboard/series/' + encodeURIComponent(item.series_id))" @click="rememberScroll"
              class="group flex gap-3 p-3 bg-white rounded-xl border border-gray-100 hover:border-brand-300 hover:shadow-md transition-all">
             <div class="w-[58px] h-[80px] flex-shrink-0 bg-gray-100 rounded-lg overflow-hidden">
               <img v-if="item.cover_url"
@@ -176,7 +176,7 @@
         <!-- Novel cards -->
         <template v-else>
           <a v-for="item in items" :key="item.novel_id"
-             :href="'/dashboard/novels/' + encodeURIComponent(item.novel_id)"
+             :href="detailHref('/dashboard/novels/' + encodeURIComponent(item.novel_id))" @click="rememberScroll"
              class="group flex gap-3 p-3 bg-white rounded-xl border border-gray-100 hover:border-brand-300 hover:shadow-md transition-all">
             <div class="w-[58px] h-[80px] flex-shrink-0 bg-gray-100 rounded-lg overflow-hidden">
               <img v-if="item.cover_url"
@@ -229,6 +229,7 @@
 {% endblock %}
 
 {% block extra_scripts %}
+{% include "navigation_helpers.html" %}
 <style>
   .line-clamp-2 {
     display: -webkit-box;
@@ -240,7 +241,11 @@
 <script>
   initVueApp({
     setup() {
-      const { ref, reactive, watch, onMounted } = Vue;
+      const { ref, reactive, watch, onMounted, onUnmounted, nextTick } = Vue;
+      const scrollState = window.createDashboardScrollState();
+      const rememberScroll = scrollState.save;
+      const detailHref = (target) => window.withDashboardReturn(target);
+      const backHref = window.safeDashboardReturn(new URLSearchParams(location.search).get('from'), '/dashboard/follows');
 
       const userId = Number(location.pathname.split('/').pop() || 0);
 
@@ -261,6 +266,13 @@
       const totalPages = ref(1);
       const loadingItems = ref(true);
       const itemError = ref(null);
+      let itemsRequest = 0;
+      const writeQuery = () => window.writeListQuery({ category: category.value, page: page.value, from: backHref });
+      const restoreList = () => {
+        if (!loadingUser.value && !loadingItems.value && user.value && !userError.value && !itemError.value) {
+          nextTick(scrollState.restore);
+        }
+      };
 
       // ── Toast ──
       const toast = reactive({ visible: false, message: '', timeout: null });
@@ -293,32 +305,42 @@
       // ── Fetch user detail ──
       const fetchUser = async () => {
         if (userAbort) userAbort.abort();
-        userAbort = new AbortController();
+        const controller = new AbortController();
+        userAbort = controller;
         loadingUser.value = true;
         userError.value = '';
         try {
-          const res = await fetch('/api/dashboard/users/' + encodeURIComponent(userId), { signal: userAbort.signal });
+          const res = await fetch('/api/dashboard/users/' + encodeURIComponent(userId), { signal: controller.signal });
           if (res.ok) {
-            user.value = await res.json();
+            const data = await res.json();
+            if (controller !== userAbort || controller.signal.aborted) return;
+            user.value = data;
           } else if (res.status === 404) {
+            if (controller !== userAbort || controller.signal.aborted) return;
             user.value = null;
           } else {
+            if (controller !== userAbort || controller.signal.aborted) return;
             user.value = null;
             userError.value = '用户资料加载失败';
           }
         } catch (e) {
-          if (e.name === 'AbortError') return;
+          if (controller !== userAbort || controller.signal.aborted || e.name === 'AbortError') return;
           user.value = null;
           userError.value = '网络错误，用户资料没有加载到';
         } finally {
-          loadingUser.value = false;
+          if (controller === userAbort && !controller.signal.aborted) {
+            loadingUser.value = false;
+            restoreList();
+          }
         }
       };
 
       // ── Fetch novels / series ──
       const fetchItems = async () => {
+        const request = ++itemsRequest;
         loadingItems.value = true;
         itemError.value = null;
+        writeQuery();
         try {
           const params = new URLSearchParams({
             page: page.value,
@@ -327,20 +349,26 @@
           const res = await fetch('/api/dashboard/users/' + encodeURIComponent(userId) + '/novels?' + params);
           if (!res.ok) throw new Error('Failed to load items');
           const data = await res.json();
+          if (request !== itemsRequest) return;
           items.value = data.items || [];
           totalItems.value = data.total || 0;
           page.value = data.page || 1;
           totalPages.value = data.total_pages || 1;
         } catch (e) {
+          if (request !== itemsRequest) return;
           itemError.value = '加载失败，请检查网络连接或稍后重试。';
           items.value = [];
         } finally {
-          window.writeListQuery({ category: category.value, page: page.value });
-          loadingItems.value = false;
+          if (request === itemsRequest) {
+            writeQuery();
+            loadingItems.value = false;
+            restoreList();
+          }
         }
       };
 
       const handlePageChange = (newPage) => {
+        scrollState.cancel();
         page.value = newPage;
         fetchItems();
         window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -389,6 +417,7 @@
 
       // ── Watchers ──
       watch(category, () => {
+        scrollState.cancel();
         page.value = 1;
         fetchItems();
       });
@@ -397,9 +426,16 @@
         fetchUser();
         fetchItems();
       });
+      onUnmounted(() => {
+        scrollState.dispose();
+        userAbort?.abort();
+        itemsRequest++;
+        clearTimeout(toast.timeout);
+      });
 
       return {
         user, userError, loadingUser, checking, syncing,
+        backHref, detailHref, rememberScroll,
         category, items, totalItems, page, totalPages, loadingItems, itemError,
         toast,
         statusLabel, statusType, statusDotClass,

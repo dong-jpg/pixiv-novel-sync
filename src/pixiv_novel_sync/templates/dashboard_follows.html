@@ -66,7 +66,7 @@
     <!-- Grid: User Cards -->
     <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
       <a v-for="item in items" :key="item.user_id"
-         :href="'/dashboard/users/' + encodeURIComponent(item.user_id)"
+         :href="detailHref('/dashboard/users/' + encodeURIComponent(item.user_id))" @click="rememberScroll"
          class="group bg-white rounded-xl border border-gray-100 shadow-sm p-5 hover:border-brand-300 hover:shadow-md transition-all">
         <div class="flex flex-col items-center text-center">
           <!-- Avatar -->
@@ -122,10 +122,14 @@
 {% endblock %}
 
 {% block extra_scripts %}
+{% include "navigation_helpers.html" %}
 <script>
   initVueApp({
     setup() {
-      const { ref, watch, onMounted } = Vue;
+      const { ref, watch, onMounted, onUnmounted, nextTick } = Vue;
+      const scrollState = window.createDashboardScrollState();
+      const rememberScroll = scrollState.save;
+      const detailHref = (target) => window.withDashboardReturn(target);
 
       const items = ref([]);
       const totalItems = ref(0);
@@ -153,7 +157,9 @@
         error.value = null;
 
         if (fetchAbortController) fetchAbortController.abort();
-        fetchAbortController = new AbortController();
+        const controller = new AbortController();
+        fetchAbortController = controller;
+        window.writeListQuery({ page: page.value, status: status.value, q: search.value });
 
         try {
           const params = new URLSearchParams({
@@ -163,30 +169,33 @@
             search: search.value
           });
           const res = await fetch('/api/dashboard/users?' + params, {
-            signal: fetchAbortController.signal
+            signal: controller.signal
           });
           if (!res.ok) throw new Error('API request failed');
 
           const data = await res.json();
+          if (controller !== fetchAbortController || controller.signal.aborted) return;
           items.value = data.items || [];
           totalItems.value = data.total || 0;
           page.value = data.page || 1;
           totalPages.value = data.total_pages || 1;
         } catch (err) {
-          if (err.name !== 'AbortError') {
+          if (controller === fetchAbortController && !controller.signal.aborted && err.name !== 'AbortError') {
             console.error(err);
             error.value = '加载失败，请检查网络连接或稍后重试。';
             items.value = [];
           }
         } finally {
-          window.writeListQuery({ page: page.value, status: status.value, q: search.value });
-          if (fetchAbortController && !fetchAbortController.signal.aborted) {
+          if (controller === fetchAbortController && !controller.signal.aborted) {
+            window.writeListQuery({ page: page.value, status: status.value, q: search.value });
             loading.value = false;
+            if (!error.value) nextTick(scrollState.restore);
           }
         }
       };
 
       const handlePageChange = (newPage) => {
+        scrollState.cancel();
         page.value = newPage;
         fetchData();
         window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -205,14 +214,20 @@
       const statusDotClass = (s) => (statusMap[s] || statusMap.unknown).dotClass;
 
       watch(status, () => {
+        scrollState.cancel();
         page.value = 1;
         fetchData();
       });
 
       onMounted(() => fetchData());
+      onUnmounted(() => {
+        scrollState.dispose();
+        fetchAbortController?.abort();
+      });
 
       return {
         items, totalItems, page, totalPages, loading, error, status, search, tabs,
+        detailHref, rememberScroll,
         fetchData, handlePageChange, statusLabel, statusBadgeClass, statusDotClass
       };
     }

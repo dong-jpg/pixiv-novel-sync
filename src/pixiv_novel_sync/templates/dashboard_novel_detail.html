@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 
 {% block title %}小说详情 - Pixiv 小说同步器{% endblock %}
+{% block body_class %}pns-reader-page{% endblock %}
 
 {% block extra_head %}
 <style>
@@ -8,7 +9,7 @@
   body { background: #fff !important; }
   .app-sidebar { display: none !important; }
   .app-main { margin-left: 0 !important; }
-  .mobile-bottom-bar { display: none !important; }
+  .library-reader-page { padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px)); }
 
   /* ========== Reading Progress Bar ========== */
   .reading-progress-bar {
@@ -62,6 +63,7 @@
     transition: color 0.15s;
     white-space: nowrap;
     flex-shrink: 0;
+    min-height: 44px;
   }
   .nav-back:hover { color: #0096fa; }
   .nav-back svg { width: 16px; height: 16px; }
@@ -70,28 +72,6 @@
     color: #999;
     font-variant-numeric: tabular-nums;
   }
-  .nav-font-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
-    border: 1px solid #e5e5e5;
-    background: #fff;
-    color: #666;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.15s;
-    flex-shrink: 0;
-    user-select: none;
-  }
-  .nav-font-btn:hover {
-    border-color: #0096fa;
-    color: #0096fa;
-    background: #f0f8ff;
-  }
 
   /* ========== Novel Header ========== */
   .novel-header {
@@ -99,6 +79,7 @@
     margin: 0 auto;
     padding: 2.5rem 20px 1.5rem;
     text-align: center;
+    overflow-wrap: anywhere;
   }
   .novel-header .novel-title {
     font-size: 1.75rem;
@@ -113,6 +94,10 @@
     margin-bottom: 0.5rem;
   }
   .novel-header .novel-author a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    max-width: 100%;
     color: #0096fa;
     text-decoration: none;
     font-size: 0.875rem;
@@ -185,7 +170,7 @@
   .reader-body-wrapper {
     max-width: 680px;
     margin: 0 auto;
-    padding: 1.5rem 20px 6rem;
+    padding: 1.5rem 20px;
   }
   .reader-body {
     font-family: "BIZ UDMincho", "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP", "Noto Serif SC", "Source Han Serif SC", "SimSun", serif;
@@ -205,57 +190,86 @@
     text-indent: 0;
   }
 
-  /* ========== Fixed Bottom Chapter Nav ========== */
-  .chapter-bottom-bar {
+  /* One reader-owned toolbar for standalone books AND series, not a second global bar. */
+  .reader-toolbar {
     position: fixed;
     bottom: 0;
     left: 0;
     right: 0;
-    z-index: 100;
+    z-index: 40;
     background: rgba(255,255,255,0.95);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
     border-top: 1px solid rgba(0,0,0,0.06);
+    padding: 8px max(12px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left));
   }
-  .chapter-bottom-inner {
+  .reader-toolbar-inner {
     max-width: 800px;
     margin: 0 auto;
-    padding: 10px 20px;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .reader-tool {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-  }
-  .chapter-nav-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 13px;
-    font-weight: 500;
-    color: #0096fa;
-    text-decoration: none;
-    padding: 6px 14px;
-    border-radius: 8px;
-    transition: all 0.15s;
-    white-space: nowrap;
-  }
-  .chapter-nav-btn:hover {
-    background: #f0f8ff;
-  }
-  .chapter-nav-btn.disabled {
-    color: #ccc;
-    pointer-events: none;
-  }
-  .chapter-nav-btn svg { width: 16px; height: 16px; }
-  .chapter-info {
-    font-size: 12px;
-    color: #999;
-    text-align: center;
-    flex: 1;
+    justify-content: center;
+    min-height: 44px;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    padding: 6px 4px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #fff;
+    color: #374151;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+  .reader-tool-primary { background: #0096fa; border-color: #0096fa; color: #fff; }
+  .reader-tool:disabled { opacity: 0.5; cursor: default; }
+  .reader-tool:focus-visible, .chapter-jump:focus-visible {
+    outline: 2px solid #0096fa;
+    outline-offset: 2px;
+  }
+  .reader-action-list { display: flex; flex-direction: column; gap: 8px; }
+  .reader-feedback-dialog .library-modal-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+  }
+  .reader-action-feedback {
+    width: 100%;
+    min-width: 0;
+    max-height: min(8rem, 30vh);
+    max-height: min(8rem, 30dvh);
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .reader-action-list button, .chapter-jump {
+    min-height: 44px;
+    padding: 10px 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    text-align: left;
+    font-size: 14px;
+    overflow-wrap: anywhere;
+  }
+  .chapter-jump { display: flex; align-items: center; color: #0096fa; text-decoration: none; }
+  .chapter-jump[aria-current="page"] { background: #f0f8ff; font-weight: 700; }
+  .reader-action-list button:disabled { opacity: 0.5; }
+  .reader-chapter-nav { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .reader-chapter-nav .chapter-jump { flex: 1; }
+  .reader-chapter-list { display: grid; gap: 8px; }
+  .reader-danger { color: #b91c1c; background: #fff5f5; }
+  .novel-header .series-badge {
+    min-width: 0;
+    min-height: 44px;
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
 
   /* ========== States ========== */
@@ -277,10 +291,8 @@
   @media (max-width: 640px) {
     .novel-header { padding: 2rem 16px 1rem; }
     .novel-header .novel-title { font-size: 1.4rem; }
-    .reader-body-wrapper { padding: 1rem 16px 5rem; }
+    .reader-body-wrapper { padding: 1rem 16px; }
     .reader-top-nav-inner { padding: 8px 16px; }
-    .chapter-bottom-inner { padding: 8px 12px; }
-    .chapter-nav-btn { padding: 6px 10px; font-size: 12px; }
     .rescue-control-panel { padding: 0 16px; }
   }
 </style>
@@ -299,12 +311,9 @@
   <div class="reader-top-nav-inner">
     <a :href="backHref" class="nav-back">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
-      返回列表
+      返回来源
     </a>
     <span class="nav-progress" v-if="!loading && !error">{{ progressPercent }}%</span>
-    <button class="nav-font-btn" @click="cycleFontSize" :title="'字号 ' + fontSizeLabel">
-      <span style="font-size:11px;">{{ fontSizeLabel }}</span>
-    </button>
   </div>
 </div>
 
@@ -320,7 +329,7 @@
   <div class="novel-header">
     <h1 class="novel-title">{{ novel.title || '无标题' }}</h1>
     <div class="novel-author">
-      <a v-if="novel.user_id" :href="'/dashboard/users/' + novel.user_id">{{ novel.author_name || '未知' }}</a>
+      <a v-if="novel.user_id" :href="detailHref('/dashboard/users/' + novel.user_id)">{{ novel.author_name || '未知' }}</a>
       <span v-else style="color:#666; font-size:0.875rem;">{{ novel.author_name || '未知' }}</span>
     </div>
     <div class="novel-stats">
@@ -341,15 +350,8 @@
         {{ formatDate(novel.create_date) }}
       </span>
     </div>
-    <div class="flex flex-wrap gap-2 mt-3">
-      <button type="button" @click="exportEpub" class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white">导出 EPUB</button>
-      <button type="button" @click="saveServerProgress" :disabled="progressBusy" class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white disabled:opacity-50">记下阅读进度</button>
-      <button type="button" @click="resetServerProgress" :disabled="progressBusy" class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white disabled:opacity-50">重置阅读进度</button>
-      <button type="button" @click="removeLocalBookmark" :disabled="removingBookmark" class="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 bg-red-50 disabled:opacity-50">移除本地收藏记录</button>
-      <button type="button" @click="deleteThisNovel" class="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 bg-red-50">删除本地归档</button>
-    </div>
-    <p class="text-[11px] text-gray-400 mt-2">字号分小、中、大三档。救援按钮只改本地是否把这本书算进救援目录，不会向 Pixiv 发请求。</p>
-    <a v-if="novel.series_id && seriesInfo" :href="'/dashboard/series/' + novel.series_id" class="series-badge">
+    <p class="text-xs text-gray-400 mt-2">底部工具可原地保存进度、调整小/中/大/特大字号或切换章节；导出和管理操作在「更多」中。救援纠错只改本地状态，不会向 Pixiv 发请求。</p>
+    <a v-if="novel.series_id && seriesInfo" :href="detailHref('/dashboard/series/' + novel.series_id)" class="series-badge">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
       {{ seriesInfo.title || '系列' }} ({{ chapterIndex + 1 }}/{{ seriesInfo.total_novels }})
     </a>
@@ -398,27 +400,57 @@
     <div class="reader-body" :class="'fs-' + fontSize" v-html="formattedContent"></div>
   </div>
 
-  <!-- Fixed bottom chapter nav (series only) -->
-  <div class="chapter-bottom-bar" v-if="novel.series_id && seriesInfo">
-    <div class="chapter-bottom-inner">
-      <a :href="prevNovelId ? ('/dashboard/novels/' + prevNovelId) : null"
-         class="chapter-nav-btn" :class="{ disabled: !prevNovelId }">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-        上一章
-      </a>
-      <span class="chapter-info">第 {{ chapterIndex + 1 }} / {{ seriesInfo.total_novels }} 章</span>
-      <a :href="nextNovelId ? ('/dashboard/novels/' + nextNovelId) : null"
-         class="chapter-nav-btn" :class="{ disabled: !nextNovelId }">
-        下一章
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-      </a>
+  <nav class="reader-toolbar" aria-label="阅读工具">
+    <div class="reader-toolbar-inner">
+      <button type="button" class="reader-tool reader-tool-primary" @click="saveServerProgress" :disabled="progressBusy">{{ progressBusy ? '保存中…' : '保存进度' }}</button>
+      <button type="button" class="reader-tool" @click="cycleFontSize" :aria-label="'切换字号，当前' + fontSizeLabel">字号 · {{ fontSizeLabel }}</button>
+      <button type="button" class="reader-tool" @click="showChapters = true" :disabled="!seriesInfo || !seriesInfo.novels || !seriesInfo.novels.length" aria-haspopup="dialog">章节</button>
+      <button type="button" class="reader-tool" @click="showReaderActions = true" aria-haspopup="dialog">更多</button>
     </div>
-  </div>
+  </nav>
+
+  <app-modal :is-open="showChapters" @close="showChapters = false" title="章节导航" class="reader-feedback-dialog">
+    <template v-if="seriesInfo">
+      <p class="text-sm text-gray-500 mb-3">{{ seriesInfo.title }} · 第 {{ chapterIndex + 1 }} / {{ seriesInfo.total_novels }} 章</p>
+      <nav class="reader-chapter-nav" aria-label="相邻章节">
+        <a v-if="prevNovelId" :href="chapterHref(prevNovelId)" class="chapter-jump">上一章</a>
+        <a v-if="nextNovelId" :href="chapterHref(nextNovelId)" class="chapter-jump">下一章</a>
+        <a :href="detailHref('/dashboard/series/' + novel.series_id)" class="chapter-jump">系列详情</a>
+      </nav>
+      <nav class="reader-chapter-list" aria-label="全部章节">
+        <a v-for="chapter in seriesInfo.novels" :key="chapter.novel_id" :href="chapterHref(chapter.novel_id)"
+           :aria-current="chapter.novel_id === novel.novel_id ? 'page' : null" class="chapter-jump">{{ chapter.title || '未命名章节' }}</a>
+      </nav>
+    </template>
+    <template #footer v-if="readerActionMessage">
+      <div id="reader-chapter-action-feedback" class="reader-action-feedback" tabindex="0"
+           :role="readerActionMessageType === 'error' ? 'alert' : 'status'"
+           :aria-live="readerActionMessageType === 'error' ? 'assertive' : 'polite'" aria-atomic="true"
+           :class="readerActionMessageType === 'error' ? 'text-red-700' : 'text-emerald-700'">{{ readerActionMessage }}</div>
+    </template>
+  </app-modal>
+
+  <app-modal :is-open="showReaderActions" @close="showReaderActions = false" title="阅读与归档管理" class="reader-feedback-dialog">
+    <p class="text-sm text-gray-500 mb-3">重置、移除或删除均需确认；失败时保留当前正文与进度。</p>
+    <div class="reader-action-list">
+      <button type="button" @click="exportEpub" :disabled="exportingEpub">{{ exportingEpub ? '正在导出 EPUB…' : '导出 EPUB' }}</button>
+      <button type="button" @click="resetServerProgress" :disabled="progressBusy" class="reader-danger">重置阅读进度</button>
+      <button type="button" @click="removeLocalBookmark" :disabled="removingBookmark" class="reader-danger">移除本地收藏记录</button>
+      <button type="button" @click="deleteThisNovel" :disabled="deletingNovel" class="reader-danger">{{ deletingNovel ? '删除中…' : '删除本地归档' }}</button>
+    </div>
+    <template #footer>
+      <div id="reader-action-feedback" class="reader-action-feedback" tabindex="0"
+           :role="readerActionMessageType === 'error' ? 'alert' : 'status'"
+           :aria-live="readerActionMessageType === 'error' ? 'assertive' : 'polite'" aria-atomic="true"
+           :class="!readerActionMessage ? 'text-gray-500' : (readerActionMessageType === 'error' ? 'text-red-700' : 'text-emerald-700')">{{ readerActionMessage || '操作结果会显示在这里。' }}</div>
+    </template>
+  </app-modal>
 </template>
 </div>
 {% endblock %}
 
 {% block extra_scripts %}
+{% include "navigation_helpers.html" %}
 <script>
   initVueApp({
     setup() {
@@ -435,6 +467,19 @@
       const progressPercent = ref(0);
       const progressBusy = ref(false);
       const removingBookmark = ref(false);
+      const deletingNovel = ref(false);
+      const showReaderActions = ref(false);
+      const showChapters = ref(false);
+      const exportingEpub = ref(false);
+      const readerActionMessage = ref('');
+      const readerActionMessageType = ref('success');
+      const reportReaderAction = (message, type = 'success') => {
+        readerActionMessage.value = String(message || '');
+        readerActionMessageType.value = type;
+        // The shared body toast is below modal overlays. Keep results in their
+        // live footer until the next action; use the toast only on the plain reader.
+        if (!showReaderActions.value && !showChapters.value) window.toast(message, type);
+      };
       const isScrolled = ref(false);
       const seriesInfo = ref(null);
       const rescueOverride = Vue.reactive({ action: '', note: '' });
@@ -509,14 +554,10 @@
       const fontSizeIdx = ref(savedFontIdx);
       const fontSize = computed(() => fontSizes[fontSizeIdx.value]);
       const fontSizeLabel = computed(() => ['小', '中', '大', '特大'][fontSizeIdx.value] || '中');
-      const backHref = computed(() => {
-        const from = new URLSearchParams(location.search).get('from');
-        if (from && from.startsWith('/')) return from;
-        if (document.referrer && document.referrer.startsWith(location.origin + '/dashboard')) {
-          return document.referrer.slice(location.origin.length);
-        }
-        return '/dashboard/novels';
-      });
+      const backHref = computed(() => window.safeDashboardReturn(new URLSearchParams(location.search).get('from'), '/dashboard/novels'));
+      const detailHref = (target) => window.withDashboardReturn(target);
+      // Keep the original parent when changing chapters, rather than chaining readers.
+      const chapterHref = (id) => window.withDashboardReturn('/dashboard/novels/' + encodeURIComponent(id), backHref.value);
       const cycleFontSize = () => {
         fontSizeIdx.value = (fontSizeIdx.value + 1) % fontSizes.length;
         try { localStorage.setItem('pixivNovelSync:fontSize', fontSizes[fontSizeIdx.value]); } catch {}
@@ -681,11 +722,13 @@
         fetchDetail();
         window.addEventListener('scroll', handleScroll, { passive: true });
         window.addEventListener('beforeunload', saveProgress);
+        window.addEventListener('pagehide', saveProgress);
       });
 
       onUnmounted(() => {
         window.removeEventListener('scroll', handleScroll);
         window.removeEventListener('beforeunload', saveProgress);
+        window.removeEventListener('pagehide', saveProgress);
         clearTimeout(scrollThrottle);
       });
 
@@ -693,6 +736,7 @@
         if (progressBusy.value) return;
         restorePending = false;
         progressBusy.value = true;
+        readerActionMessage.value = '';
         try {
           saveProgress();
           const progress = progressPercent.value;
@@ -702,73 +746,91 @@
             body: JSON.stringify({ progress, status }),
           });
           const data = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(window.errorText(data, res));
+          if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
           restorePending = false;
-          window.toast('阅读进度已记到账号');
-        } catch (e) { window.toast(e.message || '保存阅读进度失败', 'error'); }
+          reportReaderAction('阅读进度已记到账号');
+        } catch (e) { reportReaderAction(e.message || '保存阅读进度失败', 'error'); }
         finally { progressBusy.value = false; }
       };
       const resetServerProgress = async () => {
         if (progressBusy.value || !confirm('清除账号和本机的阅读进度并回到页首？')) return;
         restorePending = false;
         progressBusy.value = true;
+        readerActionMessage.value = '';
         try {
           const res = await window.csrfFetch('/api/dashboard/novels/' + encodeURIComponent(novelId) + '/progress', { method: 'DELETE' });
           const data = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(window.errorText(data, res));
+          if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
           restorePending = false;
           clearTimeout(scrollThrottle);
           scrollThrottle = null;
           try { localStorage.removeItem(storageKey); } catch {}
           window.scrollTo({top: 0, behavior: 'auto'});
           progressPercent.value = 0;
-          window.toast('阅读进度已重置');
-        } catch (e) { window.toast(e.message || '重置阅读进度失败', 'error'); }
+          reportReaderAction('阅读进度已重置');
+        } catch (e) { reportReaderAction(e.message || '重置阅读进度失败', 'error'); }
         finally { progressBusy.value = false; }
       };
       const removeLocalBookmark = async () => {
         if (removingBookmark.value || !confirm('仅移除本地收藏记录？小说归档会保留，不会取消 Pixiv 收藏；下次同步可能重新加入。')) return;
         removingBookmark.value = true;
+        readerActionMessage.value = '';
         try {
           const res = await window.csrfFetch('/api/dashboard/bookmarks/' + encodeURIComponent(novelId), { method: 'DELETE' });
           const data = await res.json().catch(() => ({}));
           if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
-          window.toast('本地收藏记录已移除，归档仍保留');
-        } catch (e) { window.toast(e.message || '移除收藏记录失败', 'error'); }
+          reportReaderAction('本地收藏记录已移除，归档仍保留');
+        } catch (e) { reportReaderAction(e.message || '移除收藏记录失败', 'error'); }
         finally { removingBookmark.value = false; }
       };
       const exportEpub = async () => {
-        const res = await window.csrfFetch('/api/dashboard/novels/export-epub', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ novel_ids: [Number(novelId)] }),
-        });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          window.toast(window.errorText(data, res), 'error');
-          return;
+        if (exportingEpub.value) return;
+        exportingEpub.value = true;
+        readerActionMessage.value = '';
+        let objectUrl = null;
+        try {
+          const res = await window.csrfFetch('/api/dashboard/novels/export-epub', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ novel_ids: [Number(novelId)] }),
+          });
+          const contentType = String(res.headers?.get('Content-Type') || '').toLowerCase();
+          // A JSON business/auth error must not be downloaded as a fake EPUB.
+          if (!res.ok || contentType.includes('json')) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(window.errorText(data, res));
+          }
+          const blob = await res.blob();
+          objectUrl = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = objectUrl;
+          link.download = (novel.value && novel.value.title ? novel.value.title : novelId) + '.epub';
+          link.click();
+          reportReaderAction('已请求下载 EPUB');
+        } catch (e) { reportReaderAction(e.message || '导出 EPUB 失败', 'error'); }
+        finally {
+          if (objectUrl) URL.revokeObjectURL(objectUrl);
+          exportingEpub.value = false;
         }
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = (novel.value && novel.value.title ? novel.value.title : novelId) + '.epub';
-        link.click();
-        URL.revokeObjectURL(url);
       };
       const deleteThisNovel = async () => {
-        if (!confirm('删除这本小说的本地归档？此操作不可撤销。')) return;
-        const res = await window.csrfFetch('/api/dashboard/novels/' + encodeURIComponent(novelId), { method: 'DELETE' });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.ok === false) {
-          window.toast(window.errorText(data, res), 'error');
-          return;
-        }
-        location.href = backHref.value;
+        if (deletingNovel.value || !confirm('删除这本小说的本地归档？此操作不可撤销。')) return;
+        deletingNovel.value = true;
+        readerActionMessage.value = '';
+        try {
+          const res = await window.csrfFetch('/api/dashboard/novels/' + encodeURIComponent(novelId), { method: 'DELETE' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
+          reportReaderAction('本地归档已删除，正在返回来源');
+          location.href = backHref.value;
+        } catch (e) { reportReaderAction(e.message || '删除本地归档失败', 'error'); }
+        finally { deletingNovel.value = false; }
       };
 
       return {
         novel, loading, error, progressPercent, isScrolled, backHref, fontSizeLabel,
+        detailHref, chapterHref, showReaderActions, showChapters, deletingNovel,
+        exportingEpub, readerActionMessage, readerActionMessageType,
         exportEpub, saveServerProgress, resetServerProgress, progressBusy, removeLocalBookmark, removingBookmark, deleteThisNovel,
         seriesInfo, chapterIndex, prevNovelId, nextNovelId,
         formattedContent, formatNumber, formatTextLength, formatDate,
