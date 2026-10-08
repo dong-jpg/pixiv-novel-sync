@@ -4,7 +4,7 @@
 -->
 <script>
 function registerGlobalComponents(app) {
-  const { ref, onMounted } = Vue;
+  const { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } = Vue;
 
   const ICONS = {
     home: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>',
@@ -16,16 +16,17 @@ function registerGlobalComponents(app) {
     sparkles: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4m2 14v-4m-2 2h4m6-14l2.286 6.857L22 12l-2.714 2.143L17 21l-2.286-6.857L12 12l2.714-2.143L17 3z"/>',
     edit: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>',
     heart: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/>',
+    more: '<circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/>',
   };
 
   const NAV_ITEMS = [
-    { path: '/dashboard', label: '控制台', icon: 'home', exact: true },
-    { path: '/dashboard/novels', label: '小说库', icon: 'book' },
+    { path: '/dashboard', label: '控制台', mobileLabel: '首页', icon: 'home', exact: true },
+    { path: '/dashboard/novels', label: '小说库', mobileLabel: '书库', icon: 'book' },
     { path: '/dashboard/preferences', label: '偏好与推荐', icon: 'heart' },
-    { path: '/dashboard/follows', label: '作者与系列', icon: 'users' },
+    { path: '/dashboard/follows', label: '作者与系列', mobileLabel: '作者与系列', icon: 'users', activePaths: ['/dashboard/users', '/dashboard/series'] },
     { type: 'divider', label: 'Operations' },
     { path: '/dashboard/pending-deletions', label: '待确认删除', icon: 'trash', hasBadge: true },
-    { path: '/dashboard/logs', label: '任务日志', icon: 'clipboard' },
+    { path: '/dashboard/logs', label: '任务日志', mobileLabel: '任务', icon: 'clipboard' },
     // 设置已拆成四个一级页面。父项的 path 留作高亮前缀（四个子页都在 /dashboard/settings
     // 下），href 才是实际落点：/dashboard/settings 只是一个 302。
     {
@@ -40,10 +41,150 @@ function registerGlobalComponents(app) {
   ];
 
   function isActive(currentPath, item) {
-    if (item.exact) return currentPath === item.path;
-    // 前缀匹配只能回答「在不在这个分组里」。设置的四个子页共用 /dashboard/settings
-    // 前缀，父项一律高亮，看不出当前是哪一页——子项在模板里按 path 精确匹配。
-    return currentPath.startsWith(item.path);
+    const path = String(currentPath || '').split(/[?#]/)[0].replace(/\/+$/, '');
+    return [item.path, ...(item.activePaths || [])].some(prefix =>
+      prefix && (path === prefix || (!item.exact && path.startsWith(prefix + '/'))));
+  }
+
+  // Both navigation surfaces share one in-flight request, including during resize.
+  const loggingOut = ref(false);
+  const logoutError = ref('');
+  async function logout() {
+    if (loggingOut.value) return;
+    loggingOut.value = true;
+    logoutError.value = '';
+    try {
+      const response = await window.csrfFetch('/api/auth/logout', { method: 'POST' });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || (data && data.ok === false)) throw new Error(window.errorText(data, response));
+      if (!data || data.ok !== true) throw new Error('退出未得到确认，请重试。');
+      window.location.href = '/api/auth/login';
+    } catch (err) {
+      logoutError.value = err.message || '退出失败，请稍后重试。';
+    } finally {
+      loggingOut.value = false;
+    }
+  }
+  const logoutState = { logout, loggingOut, logoutError };
+
+  // One stack owns focus, inert state and the scroll lock. A lower dialog may be
+  // removed independently; it must not unlock the page or steal the top's focus.
+  const modalStack = [];
+  let modalSequence = 0;
+  let nextTitleId = 0;
+  let restorePage = null;
+  const topModal = () => modalStack[modalStack.length - 1];
+  const visible = el => el && el.isConnected && el.getClientRects().length > 0 &&
+    window.getComputedStyle(el).visibility !== 'hidden' && !el.closest('[inert], [aria-hidden="true"]');
+  function focusElement(el, preventScroll = false) {
+    if (!visible(el) || typeof el.focus !== 'function' || el.matches(':disabled')) return false;
+    el.focus({ preventScroll });
+    return document.activeElement === el;
+  }
+  function tabStops(dialog) {
+    return Array.from(dialog.querySelectorAll('a[href], area[href], button, input, select, textarea, iframe, [tabindex], [contenteditable="true"]'))
+      .filter(el => el.tabIndex >= 0 && !el.matches(':disabled') && visible(el))
+      // Positive tabindex precedes the normal DOM-ordered (zero) sequence.
+      .sort((a, b) => (a.tabIndex || Infinity) - (b.tabIndex || Infinity));
+  }
+  function focusDialog(entry) {
+    focusElement(tabStops(entry.dialog)[0] || entry.dialog);
+  }
+  function onModalKeydown(event) {
+    const entry = topModal();
+    if (!entry || event.isComposing) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      entry.close();
+    } else if (event.key === 'Tab') {
+      const stops = tabStops(entry.dialog);
+      const index = stops.indexOf(document.activeElement);
+      if (!stops.length || index === -1 || (event.shiftKey ? index === 0 : index === stops.length - 1)) {
+        event.preventDefault();
+        focusElement((event.shiftKey ? stops[stops.length - 1] : stops[0]) || entry.dialog);
+      }
+    }
+  }
+  function onModalFocus(event) {
+    const entry = topModal();
+    if (!entry) return;
+    if (entry.dialog.contains(event.target)) entry.lastFocus = event.target;
+    else focusDialog(entry);
+  }
+  function lockPage() {
+    const saved = [];
+    const save = (element, property) => {
+      const value = element.style.getPropertyValue(property);
+      const priority = element.style.getPropertyPriority(property);
+      saved.push(() => value ? element.style.setProperty(property, value, priority) : element.style.removeProperty(property));
+    };
+    save(document.body, 'overflow');
+    save(document.documentElement, 'overflow');
+    save(document.body, 'padding-right');
+    const scrollbar = Math.max(0, window.innerWidth - document.documentElement.clientWidth);
+    if (scrollbar) {
+      const padding = parseFloat(window.getComputedStyle(document.body).paddingRight) || 0;
+      document.body.style.setProperty('padding-right', (padding + scrollbar) + 'px');
+    }
+    document.body.style.setProperty('overflow', 'hidden');
+    document.documentElement.style.setProperty('overflow', 'hidden');
+    const background = document.getElementById('app');
+    const wasInert = background && background.inert;
+    if (background) background.inert = true;
+    document.addEventListener('keydown', onModalKeydown, true);
+    document.addEventListener('focusin', onModalFocus, true);
+    restorePage = () => {
+      document.removeEventListener('keydown', onModalKeydown, true);
+      document.removeEventListener('focusin', onModalFocus, true);
+      saved.forEach(restore => restore());
+      if (background) background.inert = wasInert;
+    };
+  }
+  function updateModalStack() {
+    modalStack.forEach(entry => {
+      const top = entry === topModal();
+      entry.dialog.inert = !top;
+      entry.dialog.setAttribute('aria-modal', top ? 'true' : 'false');
+      if (top) entry.dialog.removeAttribute('aria-hidden');
+      else entry.dialog.setAttribute('aria-hidden', 'true');
+    });
+  }
+  function activateModal(entry) {
+    if (!modalStack.length) lockPage();
+    entry.layer.value = 100 + ++modalSequence;
+    entry.lastFocus = entry.dialog;
+    modalStack.push(entry);
+    // Move focus before applying aria-hidden to the previously active dialog.
+    entry.dialog.inert = false;
+    entry.dialog.removeAttribute('aria-hidden');
+    focusElement(entry.dialog);
+    updateModalStack();
+  }
+  function deactivateModal(entry) {
+    const index = modalStack.indexOf(entry);
+    if (index === -1) return;
+    const wasTop = entry === topModal();
+    modalStack.splice(index, 1);
+    // A child may still point to a trigger in a parent that has just unmounted.
+    modalStack.forEach(other => {
+      if (entry.dialog.contains(other.previousFocus)) other.previousFocus = entry.previousFocus;
+    });
+    entry.dialog.inert = false;
+    entry.dialog.removeAttribute('aria-hidden');
+    updateModalStack();
+    if (!modalStack.length) {
+      restorePage();
+      restorePage = null;
+      modalSequence = 0;
+    }
+    if (wasTop) {
+      const top = topModal();
+      if (!top) focusElement(entry.previousFocus, true);
+      else if (!top.dialog.contains(entry.previousFocus) || !focusElement(entry.previousFocus, true)) {
+        if (!focusElement(top.lastFocus)) focusDialog(top);
+      }
+    }
   }
 
   app.component('app-sidebar-nav', {
@@ -54,7 +195,8 @@ function registerGlobalComponents(app) {
           <div class="text-[10px] font-black text-gray-400 uppercase tracking-[.18em]">{{ item.label }}</div>
         </div>
         <template v-else>
-          <a :href="item.href || item.path" :class="['library-nav-link sidebar-link', isActive(item) && 'active']">
+          <a :href="item.href || item.path" :class="['library-nav-link sidebar-link', isActive(item) && 'active']"
+             :aria-current="isActive(item) ? 'page' : null">
             <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" v-html="icons[item.icon]"></svg>
             <span>{{ item.label }}</span>
             <span v-if="item.hasBadge && pendingCount > 0" class="ml-auto bg-red-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full leading-none">
@@ -112,8 +254,10 @@ function registerGlobalComponents(app) {
             <span :class="['w-2 h-2 rounded-full flex-shrink-0', autoSyncRunning ? 'bg-green-400 pulse-soft' : 'bg-gray-300']"></span>
             <span :class="autoSyncRunning ? 'text-green-600' : 'text-gray-400'">{{ autoSyncRunning ? '定时同步已启用' : '定时同步未启用' }}</span>
           </span>
-          <button type="button" @click="logout" class="text-gray-400 hover:text-red-600">退出</button>
+          <button type="button" @click="logout" :disabled="loggingOut" :aria-busy="loggingOut"
+                  class="library-btn !px-2 text-gray-400 hover:text-red-600">{{ loggingOut ? '退出中…' : '退出' }}</button>
         </div>
+        <p v-if="logoutError" class="library-logout-error" role="alert">{{ logoutError }}</p>
       </div>
     `,
     setup() {
@@ -129,27 +273,96 @@ function registerGlobalComponents(app) {
           if (autoRes.ok) { const d = await autoRes.json(); autoSyncRunning.value = d.running; }
         } catch(e) {}
       });
-      const logout = async () => {
-        await window.csrfFetch('/api/auth/logout', { method: 'POST' });
-        location.href = '/api/auth/login';
-      };
-      return { user, autoSyncRunning, logout };
+      return { user, autoSyncRunning, ...logoutState };
     }
   });
 
   app.component('app-mobile-bar', {
     props: ['currentPath'],
     template: `
-      <nav class="mobile-bottom-bar">
-        <a v-for="item in mobileItems" :key="item.path" :href="item.href || item.path" :class="{ active: isActive(item) }">
-          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" v-html="icons[item.icon]"></svg>
+      <nav ref="bar" class="mobile-bottom-bar" aria-label="主导航">
+        <a v-for="item in mobileItems" :key="item.path" :href="item.href || item.path"
+           class="mobile-bar-item" :class="{ active: isActive(item) }" :aria-current="isActive(item) ? 'page' : null">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true" v-html="icons[item.icon]"></svg>
           <span>{{ item.label }}</span>
         </a>
+        <button type="button" class="mobile-bar-item" :class="{ active: moreActive || moreOpen }"
+                aria-haspopup="dialog" aria-controls="mobile-more-dialog" :aria-expanded="moreOpen" @click="moreOpen = true">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true" v-html="icons.more"></svg>
+          <span>更多</span>
+        </button>
       </nav>
+      <app-modal id="mobile-more-dialog" title="更多" :is-open="moreOpen" @close="closeMore">
+        <nav class="mobile-more-links" aria-label="更多导航">
+          <div v-for="item in moreItems" :key="item.path">
+            <a :href="item.href || item.path" class="mobile-more-link" :class="{ active: isActive(item) }"
+               :aria-current="currentPath === (item.href || item.path) ? 'page' : null" @click="closeMore">
+              <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true" v-html="icons[item.icon]"></svg>
+              <span>{{ item.label }}</span>
+            </a>
+            <div v-if="item.children" class="mobile-more-children">
+              <a v-for="child in item.children" :key="child.path" :href="child.path" class="mobile-more-link"
+                 :class="{ active: currentPath === child.path }" :aria-current="currentPath === child.path ? 'page' : null" @click="closeMore">
+                {{ child.label }}
+              </a>
+            </div>
+          </div>
+        </nav>
+        <p v-if="logoutError" class="library-logout-error" role="alert">{{ logoutError }}</p>
+        <template #footer>
+          <button type="button" class="library-btn" @click="closeMore">关闭</button>
+          <button type="button" class="library-btn" :disabled="loggingOut" :aria-busy="loggingOut" @click="logout">
+            {{ loggingOut ? '退出中…' : '退出登录' }}
+          </button>
+        </template>
+      </app-modal>
     `,
     setup(props) {
-      const mobileItems = NAV_ITEMS.filter(i => !i.type && ['home','book','heart','trash','clipboard','cog'].includes(i.icon));
-      return { mobileItems, icons: ICONS, isActive: (item) => isActive(props.currentPath, item) };
+      const mobileItems = NAV_ITEMS.filter(item => item.mobileLabel).map(item => ({ ...item, label: item.mobileLabel }));
+      const moreItems = NAV_ITEMS.filter(item => !item.type && !item.mobileLabel);
+      const moreOpen = ref(false);
+      const moreActive = computed(() => moreItems.some(item => isActive(props.currentPath, item)));
+      const closeMore = () => { moreOpen.value = false; };
+      const bar = ref(null);
+      let observer, media, previousBarHeight;
+      const updateBarHeight = () => {
+        const height = bar.value && Math.ceil(bar.value.getBoundingClientRect().height);
+        if (height > 0) document.documentElement.style.setProperty('--mobile-bar-height', height + 'px');
+      };
+      const onBreakpoint = () => { if (!media.matches) closeMore(); };
+      watch(() => props.currentPath, closeMore);
+      onMounted(() => {
+        const style = document.documentElement.style;
+        previousBarHeight = [style.getPropertyValue('--mobile-bar-height'), style.getPropertyPriority('--mobile-bar-height')];
+        updateBarHeight();
+        if (typeof window.ResizeObserver === 'function') {
+          observer = new window.ResizeObserver(updateBarHeight);
+          observer.observe(bar.value);
+        }
+        window.addEventListener('resize', updateBarHeight);
+        window.addEventListener('pagehide', closeMore);
+        media = window.matchMedia('(max-width: 1023px)');
+        if (media.addEventListener) media.addEventListener('change', onBreakpoint);
+        else media.addListener(onBreakpoint);
+        onBreakpoint();
+      });
+      onBeforeUnmount(() => {
+        closeMore();
+        if (observer) observer.disconnect();
+        window.removeEventListener('resize', updateBarHeight);
+        window.removeEventListener('pagehide', closeMore);
+        if (media) {
+          if (media.removeEventListener) media.removeEventListener('change', onBreakpoint);
+          else media.removeListener(onBreakpoint);
+        }
+        if (previousBarHeight) {
+          const style = document.documentElement.style;
+          if (previousBarHeight[0]) style.setProperty('--mobile-bar-height', ...previousBarHeight);
+          else style.removeProperty('--mobile-bar-height');
+        }
+      });
+      return { mobileItems, moreItems, moreOpen, moreActive, closeMore, bar, icons: ICONS,
+        isActive: item => isActive(props.currentPath, item), ...logoutState };
     }
   });
 
@@ -157,14 +370,14 @@ function registerGlobalComponents(app) {
     props: { page: { type: Number, required: true }, pages: { type: Number, required: true } },
     emits: ['update:page'],
     template: `
-      <div v-if="pages > 1" class="flex items-center justify-center gap-2 mt-8">
-        <button @click="go(page - 1)" :disabled="page <= 1" class="library-btn !min-h-0 !py-1.5" :class="page <= 1 && 'opacity-40 cursor-not-allowed'">&larr;</button>
-        <span class="text-sm text-gray-500 px-2">第 <strong class="text-gray-900">{{ page }}</strong> / <strong class="text-gray-900">{{ pages }}</strong> 页</span>
-        <button @click="go(page + 1)" :disabled="page >= pages" class="library-btn !min-h-0 !py-1.5" :class="page >= pages && 'opacity-40 cursor-not-allowed'">&rarr;</button>
-      </div>
+      <nav v-if="pages > 1" class="library-pagination" aria-label="分页">
+        <button type="button" aria-label="上一页" @click="go(page - 1)" :disabled="page <= 1" class="library-btn" :class="page <= 1 && 'opacity-40 cursor-not-allowed'">&larr;</button>
+        <span class="library-pagination-status text-sm text-gray-500 px-2" aria-live="polite" aria-atomic="true">第 <strong class="text-gray-900">{{ page }}</strong> / <strong class="text-gray-900">{{ pages }}</strong> 页</span>
+        <button type="button" aria-label="下一页" @click="go(page + 1)" :disabled="page >= pages" class="library-btn" :class="page >= pages && 'opacity-40 cursor-not-allowed'">&rarr;</button>
+      </nav>
     `,
     setup(props, { emit }) {
-      const go = (p) => { if (p >= 1 && p <= props.pages) emit('update:page', p); };
+      const go = p => { if (Number.isInteger(p) && p >= 1 && p <= props.pages && p !== props.page) emit('update:page', p); };
       return { go };
     }
   });
@@ -184,41 +397,55 @@ function registerGlobalComponents(app) {
   });
 
   app.component('app-modal', {
-    props: { title: { type: String, required: true }, isOpen: { type: Boolean, required: true } },
-    emits: ['close'],
-    data() {
-      return {
-        titleId: 'modal-title-' + Math.random().toString(36).slice(2),
-        previousFocus: null,
-      };
+    inheritAttrs: false,
+    props: {
+      title: { type: String, required: true },
+      isOpen: { type: Boolean, required: true },
+      closeOnBackdrop: { type: Boolean, default: true },
     },
-    watch: {
-      isOpen(open) {
-        if (open) {
-          this.previousFocus = document.activeElement;
-          this.$nextTick(() => { if (this.$refs.dialog) this.$refs.dialog.focus(); });
-        } else if (this.previousFocus && this.previousFocus.focus) {
-          this.previousFocus.focus();
+    emits: ['close'],
+    setup(props, { emit }) {
+      const dialog = ref(null);
+      const layer = ref(100);
+      const titleId = 'modal-title-' + ++nextTitleId;
+      let entry = null, generation = 0, disposed = false;
+      const requestClose = () => { if (entry && entry === topModal()) emit('close'); };
+      const onBackdrop = () => { if (props.closeOnBackdrop) requestClose(); };
+      const syncOpen = open => {
+        const revision = ++generation;
+        if (!open) {
+          if (entry) deactivateModal(entry);
+          entry = null;
+          return;
         }
-      },
+        if (entry) return;
+        const previousFocus = document.activeElement;
+        nextTick(() => {
+          if (disposed || !props.isOpen || revision !== generation || !dialog.value) return;
+          entry = { dialog: dialog.value, previousFocus, layer, close: requestClose };
+          activateModal(entry);
+        });
+      };
+      watch(() => props.isOpen, syncOpen, { flush: 'post' });
+      onMounted(() => syncOpen(props.isOpen));
+      onBeforeUnmount(() => { disposed = true; syncOpen(false); });
+      return { dialog, layer, titleId, requestClose, onBackdrop };
     },
     template: `
-      <div v-if="isOpen" class="library-modal fixed inset-0 z-[100] overflow-y-auto" @keydown.esc="$emit('close')">
-        <div class="fixed inset-0 bg-slate-950/45 backdrop-blur-sm transition-opacity" @click="$emit('close')"></div>
-        <div class="flex min-h-screen items-center justify-center p-4">
-          <div ref="dialog" role="dialog" aria-modal="true" :aria-labelledby="titleId" tabindex="-1"
-               class="relative bg-white rounded-[24px] shadow-2xl w-full max-w-2xl overflow-hidden border border-gray-100 outline-none">
-            <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-white to-blue-50/60">
-              <h3 :id="titleId" class="text-base font-black text-gray-950">{{ title }}</h3>
-              <button type="button" aria-label="关闭" @click="$emit('close')" class="text-gray-400 hover:text-gray-700 p-1 rounded-lg hover:bg-white">
+      <teleport to="body">
+        <div v-if="isOpen" class="library-modal" :style="{ zIndex: layer }" @click.self="onBackdrop">
+          <div ref="dialog" v-bind="$attrs" role="dialog" aria-modal="true" :aria-labelledby="titleId" tabindex="-1" class="library-modal-dialog">
+            <div class="library-modal-header">
+              <h3 :id="titleId">{{ title }}</h3>
+              <button type="button" aria-label="关闭" @click="requestClose" class="library-modal-close">
                 <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
               </button>
             </div>
-            <div class="px-6 py-5 max-h-[70vh] overflow-y-auto"><slot></slot></div>
-            <div v-if="$slots.footer" class="px-6 py-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-2"><slot name="footer"></slot></div>
+            <div class="library-modal-body"><slot></slot></div>
+            <div v-if="$slots.footer" class="library-modal-footer"><slot name="footer"></slot></div>
           </div>
         </div>
-      </div>
+      </teleport>
     `
   });
 }

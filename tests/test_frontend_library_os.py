@@ -427,7 +427,13 @@ def test_app_modal_is_a_dialog():
     assert 'role="dialog"' in html
     assert 'aria-modal="true"' in html
     assert 'aria-label="关闭"' in html
-    assert "@keydown.esc" in html
+    # Escape is now owned by the shared modal stack, not each nested dialog.
+    # Executable top-only Escape/focus/unmount coverage lives in the shell VM tests.
+    assert "event.key === 'Escape'" in html
+    assert "const entry = topModal()" in html
+    assert "entry.close()" in html
+    assert "document.addEventListener('keydown', onModalKeydown, true)" in html
+    assert "document.removeEventListener('keydown', onModalKeydown, true)" in html
 
 
 def test_shared_time_and_toast_helpers_exist():
