@@ -1,0 +1,268 @@
+<!-- Page-local components and state: included before initVueApp, never in base.html. -->
+<style>
+  .pns-recommendations-page .dashboard-content { min-width: 0; }
+  .pns-recommendations-page .dashboard-summary,
+  .pns-recommendations-page .recommendation-panel { padding: 12px; }
+  .pns-recommendations-page .dashboard-overview { margin-bottom: 0; flex-direction: column; gap: 12px; }
+  .pns-recommendations-page .dashboard-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; width: 100%; }
+  .pns-recommendations-page .dashboard-stat { flex-direction: column; gap: 2px; padding: 6px; min-height: 44px; text-align: center; }
+  .pns-recommendations-page .dashboard-stat-icon { display: none; }
+  .pns-recommendations-page .dashboard-stat-value { font-size: 16px; overflow-wrap: anywhere; }
+  .pns-recommendations-page .dashboard-task-controls { margin-top: 8px; border-top: 1px solid var(--library-line); }
+  .pns-recommendations-page .dashboard-task-summary { min-height: 44px; padding: 12px 0; cursor: pointer; font-size: 13px; color: var(--library-muted); }
+  .pns-recommendations-page .dashboard-task-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .pns-recommendations-page .dashboard-task-actions > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+  .pns-recommendations-page .recommendation-panel-header {
+    display: flex; flex-direction: column; align-items: stretch; gap: 12px; margin-bottom: 12px;
+  }
+  .pns-recommendations-page .recommendation-panel-header > * { min-width: 0; }
+  .pns-recommendations-page .recommendation-controls {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0;
+  }
+  .pns-recommendations-page .recommendation-controls > * {
+    min-height: 44px; max-width: 100%;
+  }
+  .pns-recommendations-page .recommendation-filter {
+    display: inline-flex; align-items: center; gap: 8px; padding: 8px; cursor: pointer;
+    font-size: 14px; color: var(--library-muted);
+  }
+  .pns-recommendations-page .recommendation-filter input { width: 18px; height: 18px; flex-shrink: 0; }
+  .pns-recommendations-page .recommendation-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .pns-recommendations-page .recommendation-card {
+    min-width: 0; max-width: 100%; padding: 12px; border: 1px solid var(--library-line);
+    border-radius: 18px; background: var(--library-surface);
+  }
+  .pns-recommendations-page .recommendation-title-link {
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+    min-height: 3em; line-height: 1.5; font-size: 16px; font-weight: 800;
+    overflow-wrap: anywhere; color: var(--library-ink);
+  }
+  .pns-recommendations-page a.recommendation-title-link:hover { color: var(--library-accent-strong); }
+  .pns-recommendations-page .recommendation-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; }
+  .pns-recommendations-page .recommendation-author,
+  .pns-recommendations-page .recommendation-time { font-size: 12px; color: var(--library-muted); overflow-wrap: anywhere; }
+  .pns-recommendations-page .recommendation-author { margin-top: 8px; }
+  .pns-recommendations-page .recommendation-reason-text {
+    margin-top: 8px; font-size: 14px; line-height: 1.65; color: var(--library-ink); overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: pre-line;
+  }
+  .pns-recommendations-page .recommendation-reason-text.is-expanded { display: block; overflow: visible; }
+  .pns-recommendations-page .recommendation-reason-toggle {
+    min-height: 44px; margin-top: 4px; padding: 8px; font-size: 13px; color: var(--library-accent-strong);
+  }
+  .pns-recommendations-page .recommendation-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .pns-recommendations-page .recommendation-tag {
+    max-width: 100%; overflow-wrap: anywhere; font-size: 12px; padding: 3px 7px;
+    background: var(--library-surface-soft); color: var(--library-muted); border-radius: 8px;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+  }
+  .pns-recommendations-page .recommendation-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .pns-recommendations-page .recommendation-actions button { min-height: 44px; min-width: 44px; }
+  .pns-recommendations-page .recommendation-actions button:disabled { opacity: .6; cursor: wait; }
+  .pns-recommendations-page .recommendation-interested { color: #166534; background: #f0fdf4; border-color: #bbf7d0; }
+  .pns-recommendations-page .recommendation-dismissed { color: #b91c1c; background: #fef2f2; border-color: #fecaca; }
+  .pns-recommendations-page .recommendation-notice { margin: 8px 0; font-size: 14px; overflow-wrap: anywhere; }
+  .pns-recommendations-page .recommendation-state { padding: 20px 12px; text-align: center; overflow-wrap: anywhere; }
+  .pns-recommendations-page .preference-management > summary { min-height: 44px; padding: 10px 0; cursor: pointer; }
+  .pns-recommendations-page .preference-management-content { min-width: 0; overflow-wrap: anywhere; }
+  .pns-recommendations-page .preference-management-heading { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .pns-recommendations-page .preference-management-heading > div { flex: 1 1 16rem; min-width: 0; }
+  .pns-recommendations-page .preference-management summary { min-height: 44px; }
+  @media (min-width: 768px) {
+    .pns-recommendations-page .dashboard-summary,
+    .pns-recommendations-page .recommendation-panel { padding: 20px; }
+    .pns-recommendations-page .dashboard-stat { flex-direction: row; padding: 8px 12px; gap: 10px; text-align: left; }
+    .pns-recommendations-page .dashboard-stat-icon { display: flex; }
+    .pns-recommendations-page .dashboard-stat-value { font-size: 18px; }
+    .pns-recommendations-page .recommendation-card { padding: 16px; }
+    .pns-recommendations-page .recommendation-panel-header { flex-direction: row; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; }
+    .pns-recommendations-page .recommendation-panel-header > :first-child { flex: 1 1 16rem; }
+    .pns-recommendations-page .recommendation-controls { flex: 0 1 auto; }
+  }
+</style>
+<script>
+  // The card is presentational. Both pages share one request/state controller below.
+  window.registerPageComponents = function (app) {
+    app.component('recommendation-card', {
+      props: {
+        item: { type: Object, required: true }, busy: { type: Boolean, default: false },
+        error: { type: String, default: '' }, allowMute: { type: Boolean, default: false },
+      },
+      emits: ['feedback', 'mute-author'],
+      setup(props, { emit }) {
+        const { ref, computed } = Vue;
+        const reasonExpanded = ref(false);
+        const toggleReason = () => { reasonExpanded.value = !reasonExpanded.value; };
+        const itemUrl = computed(() => {
+          const item = props.item;
+          if (item.item_type === 'series' && item.series_id) return 'https://www.pixiv.net/novel/series/' + encodeURIComponent(item.series_id);
+          if (item.novel_id) return 'https://www.pixiv.net/novel/show.php?id=' + encodeURIComponent(item.novel_id);
+          // Older records may only have source_url. Never turn one into a script/external-host link.
+          try {
+            const url = new URL(item.source_url);
+            if (url.protocol === 'https:' && url.hostname === 'www.pixiv.net' && url.pathname.startsWith('/novel/')) return url.href;
+          } catch (_) {}
+          return '';
+        });
+        const lengthText = computed(() => {
+          const item = props.item;
+          const length = Number(item.item_type === 'series' ? item.series_total_text_length : item.text_length) || 0;
+          if (!length) return item.item_type === 'series' ? '系列' : '单篇';
+          return length >= 10000 ? (length / 10000).toFixed(1) + ' 万字' : length.toLocaleString('zh-CN') + ' 字';
+        });
+        const timeText = computed(() => window.formatDbTime(props.item.created_at, {
+          month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+        }));
+        const statusText = computed(() => ({new: '新推荐', interested: '感兴趣', dismissed: '不感兴趣', saved: '已保存', muted: '已屏蔽'}[props.item.status] || props.item.status || '新推荐'));
+        const sendFeedback = type => { if (!props.busy) emit('feedback', type); };
+        const muteAuthor = () => { if (!props.busy && props.allowMute && props.item.author_id) emit('mute-author'); };
+        return { reasonExpanded, toggleReason, itemUrl, lengthText, timeText, statusText, sendFeedback, muteAuthor };
+      },
+      template: `
+        <article class="recommendation-card" :aria-busy="busy">
+          <h3>
+            <a v-if="itemUrl" :href="itemUrl" target="_blank" rel="noopener noreferrer" class="recommendation-title-link" :title="item.title || '未命名作品'">{{ item.title || '未命名作品' }}</a>
+            <span v-else class="recommendation-title-link">{{ item.title || '未命名作品' }}</span>
+          </h3>
+          <div class="recommendation-meta">
+            <app-badge type="gray">{{ statusText }}</app-badge>
+            <app-badge :type="item.item_type === 'series' ? 'brand' : 'blue'">{{ item.item_type === 'series' ? '系列' : '单篇' }}</app-badge>
+            <app-badge type="yellow">{{ item.score || 0 }} 分</app-badge>
+            <span v-if="timeText" class="recommendation-time">{{ timeText }}</span>
+          </div>
+          <p class="recommendation-author">{{ item.author_name || '未知作者' }} · {{ lengthText }}</p>
+          <p :id="'recommendation-reason-' + item.id" class="recommendation-reason-text" :class="{ 'is-expanded': reasonExpanded }">{{ item.reason || item.caption || '暂无推荐理由' }}</p>
+          <button v-if="item.reason || item.caption" type="button" class="recommendation-reason-toggle" @click="toggleReason" :aria-expanded="reasonExpanded" :aria-controls="'recommendation-reason-' + item.id">{{ reasonExpanded ? '收起理由' : '展开理由' }}</button>
+          <div v-if="item.tags?.length" class="recommendation-tags" aria-label="作品标签">
+            <span v-for="(tag, index) in item.tags.slice(0, 4)" :key="index" class="recommendation-tag" :title="tag">{{ tag }}</span>
+            <span v-if="item.tags.length > 4" class="recommendation-tag">+{{ item.tags.length - 4 }} 个标签</span>
+          </div>
+          <div class="recommendation-actions" aria-label="推荐反馈">
+            <button type="button" class="library-btn recommendation-interested" :disabled="busy" @click="sendFeedback('interested')">感兴趣</button>
+            <button type="button" class="library-btn recommendation-dismissed" :disabled="busy" @click="sendFeedback('dismissed')">不感兴趣</button>
+            <button v-if="allowMute && item.author_id" type="button" class="library-btn" :disabled="busy" @click="muteAuthor">屏蔽作者</button>
+          </div>
+          <p v-if="busy" class="recommendation-notice library-muted" role="status">正在提交反馈…</p>
+          <p v-if="error" class="recommendation-notice text-red-700" role="alert">{{ error }}</p>
+        </article>
+      `,
+    });
+  };
+
+  window.useRecommendations = function () {
+    const { ref, watch, onUnmounted } = Vue;
+    const recommendationItems = ref([]), loadingRecommendations = ref(true), recommendationError = ref('');
+    const recommendationPage = ref(1), recommendationTotalPages = ref(1), recommendationTotal = ref(0);
+    const hideFeedback = ref(true), feedbackBusy = ref({}), feedbackErrors = ref({});
+    const feedbackNotice = ref(''), feedbackNoticeType = ref('success');
+    let requestGeneration = 0, disposed = false;
+
+    async function readResponse(response) {
+      const data = await response.json().catch(() => null);
+      if (!response.ok || data?.ok === false) throw new Error(window.errorText(data, response));
+      if (!data || data.ok !== true) throw new Error('响应格式错误，请重试');
+      return data.data;
+    }
+
+    async function loadRecommendationItems(page = 1) {
+      if (disposed) return false;
+      const target = Number.isInteger(Number(page)) && Number(page) > 0 ? Number(page) : 1;
+      const generation = ++requestGeneration;
+      recommendationPage.value = target;
+      loadingRecommendations.value = true;
+      recommendationError.value = '';
+      const status = hideFeedback.value ? '&status=new' : '';
+      try {
+        const response = await fetch(`/api/dashboard/recommendations/items?page=${target}&page_size=10${status}`);
+        const envelope = await readResponse(response);
+        if (disposed || generation !== requestGeneration) return false;
+        if (!Array.isArray(envelope?.items) || !Number.isInteger(envelope.page) || envelope.page < 1
+            || !Number.isInteger(envelope.total_pages) || envelope.total_pages < envelope.page
+            || !Number.isInteger(envelope.total) || envelope.total < 0) {
+          throw new Error('推荐结果格式错误，请重试');
+        }
+        // The existing paged API clamps a vanished last page and returns its rows.
+        // Its page/count/items must be committed together, never filtered locally.
+        recommendationItems.value = envelope.items;
+        recommendationPage.value = envelope.page;
+        recommendationTotalPages.value = envelope.total_pages;
+        recommendationTotal.value = envelope.total;
+        return true;
+      } catch (error) {
+        if (!disposed && generation === requestGeneration) {
+          recommendationError.value = window.errorText({ error: error.message || '推荐结果加载失败' });
+        }
+        return false;
+      } finally {
+        if (!disposed && generation === requestGeneration) loadingRecommendations.value = false;
+      }
+    }
+    const retryRecommendationItems = () => loadRecommendationItems(recommendationPage.value);
+    watch(hideFeedback, () => { loadRecommendationItems(1); }, { flush: 'sync' });
+
+    const changeRecommendationPage = page => {
+      if (disposed || !Number.isInteger(page) || page < 1 || page > recommendationTotalPages.value
+          || page === recommendationPage.value) return false;
+      const loading = loadRecommendationItems(page);
+      // Only an explicit page choice moves the viewport. Do this synchronously:
+      // fetch completion must never undo a subsequent user scroll or focus change.
+      const heading = document.getElementById('recommendation-results-heading');
+      heading?.focus({ preventScroll: true });
+      heading?.scrollIntoView({ behavior: 'instant', block: 'start' });
+      return loading;
+    };
+
+    async function post(url, body) {
+      return readResponse(await window.csrfFetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      }));
+    }
+
+    async function submitFeedback(item, type, mute = false) {
+      if (disposed || feedbackBusy.value[item.id] || !['interested', 'dismissed', 'saved', 'muted'].includes(type)) return false;
+      feedbackBusy.value[item.id] = true;
+      feedbackErrors.value[item.id] = '';
+      feedbackNotice.value = '';
+      let authorMuted = false;
+      try {
+        if (mute) {
+          await post('/api/dashboard/recommendations/mutes', { mute_type: 'author', mute_value: String(item.author_id), reason: item.author_name });
+          authorMuted = true;
+          if (disposed) return false;
+        }
+        await post('/api/dashboard/recommendations/items/' + encodeURIComponent(item.id) + '/feedback', { feedback_type: type });
+        if (disposed) return false;
+        feedbackNoticeType.value = 'success';
+        feedbackNotice.value = mute ? '已屏蔽作者' : '已记录反馈：' + ({ interested: '感兴趣', dismissed: '不感兴趣', saved: '已保存', muted: '已屏蔽' }[type]);
+        // Use the latest requested page/filter, not the selection at POST time.
+        // A failed refresh is a list error; the confirmed POST must not be retried as a failure.
+        await loadRecommendationItems(recommendationPage.value);
+        return true;
+      } catch (error) {
+        if (!disposed) {
+          const prefix = authorMuted ? '作者已屏蔽，但推荐状态更新失败：' : mute ? '屏蔽失败：' : '反馈失败：';
+          feedbackErrors.value[item.id] = prefix + window.errorText({ error: error.message || '网络错误，请重试' });
+          feedbackNoticeType.value = 'error';
+          feedbackNotice.value = feedbackErrors.value[item.id];
+          // Mute already committed changes to every new row for this author.
+          // Reconcile even if trailing feedback failed; never repeat either POST.
+          if (authorMuted) await loadRecommendationItems(recommendationPage.value);
+        }
+        return false;
+      } finally {
+        if (!disposed) delete feedbackBusy.value[item.id];
+      }
+    }
+    const sendRecommendationFeedback = (item, type) => submitFeedback(item, type);
+    const muteRecommendationAuthor = item => {
+      if (disposed || feedbackBusy.value[item.id] || !item.author_id || !window.confirm(`屏蔽作者 ${item.author_name || item.author_id}？`)) return false;
+      return submitFeedback(item, 'muted', true);
+    };
+    onUnmounted(() => { disposed = true; ++requestGeneration; });
+    return {
+      recommendationItems, loadingRecommendations, recommendationError, recommendationPage, recommendationTotalPages,
+      recommendationTotal, hideFeedback, feedbackBusy, feedbackErrors, feedbackNotice, feedbackNoticeType,
+      loadRecommendationItems, retryRecommendationItems, changeRecommendationPage, sendRecommendationFeedback, muteRecommendationAuthor,
+    };
+  };
+</script>

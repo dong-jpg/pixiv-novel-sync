@@ -337,15 +337,19 @@ def test_recommendation_cards_link_to_pixiv_original_not_local_detail():
     """
     dashboard = read(TEMPLATES / "dashboard.html")
     preferences = read(TEMPLATES / "dashboard_preferences.html")
+    card = read(TEMPLATES / "recommendation_components.html")
 
-    assert "https://www.pixiv.net/novel/show.php?id=" in dashboard
-    assert "https://www.pixiv.net/novel/series/" in dashboard
-    # 首页不能再用本地详情页当推荐卡片的跳转目标
-    assert "'/dashboard/novels/' +" not in dashboard
-    assert "'/dashboard/series/' +" not in dashboard
-
-    assert "https://www.pixiv.net/novel/show.php?id=" in preferences
-    assert "itemUrl" in preferences
+    # 两页现在实际复用同一卡片，链接断言迁移到它的实现，不再要求复制 URL 逻辑。
+    for html in (dashboard, preferences):
+        assert '{% include "recommendation_components.html" %}' in html
+        assert '<recommendation-card' in html
+    assert "https://www.pixiv.net/novel/show.php?id=" in card
+    assert "https://www.pixiv.net/novel/series/" in card
+    assert ':href="itemUrl"' in card
+    assert 'target="_blank" rel="noopener noreferrer"' in card
+    for html in (dashboard, preferences, card):
+        assert "'/dashboard/novels/' +" not in html
+        assert "'/dashboard/series/' +" not in html
 
 
 def test_dashboard_cards_use_library_os_surface_classes():
@@ -376,8 +380,11 @@ def test_dashboard_recommendations_are_a_paged_list_not_a_card_grid():
     assert "app-pagination" in html
     assert "recommendationPage" in html
     assert "recommendationTotalPages" in html
-    # 分页信封由带 page 参数的请求取回
-    assert "recommendations/items?page=" in html
+    # 分页信封由两页共用的数据层取回，不在页面中重复实现请求。
+    assert "window.useRecommendations()" in html
+    shared = read(TEMPLATES / "recommendation_components.html")
+    assert "recommendations/items?page=" in shared
+    assert "page_size=10" in shared
     # 不再是三列卡片网格
     assert 'class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">' not in html
 
@@ -459,7 +466,11 @@ def test_dashboard_header_is_a_rounded_library_card_not_a_square_sticky_bar():
 
     assert "sticky top-0 z-30 bg-white/80 backdrop-blur-md" not in html
     header = html.split("</header>")[0]
-    assert 'class="library-card"' in header
+    # 允许同一 Library OS 表面附加页内紧凑布局类，但不能退回裸方形横条。
+    header_tag = header.split("<header", 1)[1].split(">", 1)[0]
+    classes = header_tag.split('class="', 1)[1].split('"', 1)[0].split()
+    assert "library-card" in classes
+    assert "dashboard-summary" in classes
 
 
 def test_dashboard_current_task_name_uses_chinese_labels():

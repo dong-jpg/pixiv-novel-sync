@@ -3,32 +3,75 @@
 {% block title %}偏好分析 - Pixiv 小说同步器{% endblock %}
 
 {% block content %}
-<div class="library-page px-4 sm:px-6 lg:px-8 py-6 max-w-7xl mx-auto">
-  <div class="library-page-header sr-only"><h1>偏好与推荐</h1></div>
-  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
-    <div>
-      <h1 class="text-2xl font-bold text-gray-900">偏好分析</h1>
-      <p class="text-sm text-pixiv-gray mt-1">基于本地归档小说生成偏好画像、搜索词和推书依据</p>
+<div class="library-page pns-recommendations-page max-w-7xl mx-auto">
+  <header class="library-page-header flex-col sm:flex-row">
+    <div class="min-w-0">
+      <h1 class="text-2xl font-bold text-gray-900">偏好与推荐</h1>
+      <p class="text-sm library-muted mt-1">先选想读的作品，再按需调整画像与搜索</p>
     </div>
-    <button @click="analyze" :disabled="loading" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-brand-600">
-      {{ loading ? '增量分析中…' : '继续增量分析本地偏好' }}
-    </button>
-  </div>
+    <a href="#preference-management" class="library-btn">画像与搜索设置</a>
+  </header>
 
-  <div v-if="message" class="mb-4 px-4 py-3 rounded-lg text-sm" :class="messageType === 'error' ? 'bg-red-50 text-red-700 border border-red-100' : 'bg-green-50 text-green-700 border border-green-100'">
-    {{ message }}
-  </div>
+  <div class="space-y-4">
+    <section id="recommendation-results" class="library-card recommendation-panel" :aria-busy="loadingRecommendations">
+      <div class="recommendation-panel-header">
+        <div>
+          <h2 id="recommendation-results-heading" tabindex="-1" class="library-section-title">推书结果</h2>
+          <p class="text-sm library-muted mt-1">最新一轮在前 · 作品在 Pixiv 原站打开</p>
+        </div>
+        <div class="recommendation-controls">
+          <button type="button" @click="loadRecommendationItems(1)" :disabled="loadingRecommendations" class="library-btn disabled:opacity-50">刷新</button>
+          <label class="recommendation-filter">
+            <input type="checkbox" v-model="hideFeedback" class="rounded border-gray-300">
+            隐藏已反馈
+          </label>
+        </div>
+      </div>
+      <p v-if="feedbackNotice" class="recommendation-notice" :class="feedbackNoticeType === 'error' ? 'text-red-700' : 'text-green-700'" :role="feedbackNoticeType === 'error' ? 'alert' : 'status'">{{ feedbackNotice }}</p>
+      <p v-if="!loadingRecommendations && !recommendationError" class="text-xs library-muted mb-3">共 {{ recommendationTotal }} 条{{ hideFeedback ? '未反馈推荐' : '推荐' }}</p>
+      <div v-if="loadingRecommendations" class="recommendation-state library-muted" role="status">正在加载推荐…</div>
+      <div v-else-if="recommendationError" class="recommendation-state border border-red-100 bg-red-50 rounded-xl" role="alert">
+        <p class="text-sm text-red-700">推荐结果加载失败：{{ recommendationError }}</p>
+        <button type="button" @click="retryRecommendationItems" class="library-btn mt-3">重试</button>
+      </div>
+      <template v-else-if="recommendationItems.length">
+        <div class="recommendation-list">
+          <recommendation-card v-for="item in recommendationItems" :key="item.id" :item="item" :allow-mute="true"
+            :busy="feedbackBusy[item.id]" :error="feedbackErrors[item.id]"
+            @feedback="sendRecommendationFeedback(item, $event)" @mute-author="muteRecommendationAuthor(item)"></recommendation-card>
+        </div>
+        <app-pagination :page="recommendationPage" :pages="recommendationTotalPages" @update:page="changeRecommendationPage"></app-pagination>
+      </template>
+      <div v-else class="recommendation-state text-sm library-muted border border-dashed border-gray-200 rounded-xl">
+        {{ hideFeedback ? '暂无未反馈的推荐。取消隐藏可查看感兴趣或已保存的结果。' : '还没有推书结果。展开下方「画像与搜索设置」，按当前画像推书。' }}
+      </div>
+    </section>
 
-  <main class="space-y-4">
+    <div v-if="profileError" id="profile-load-error" class="library-card" role="alert">
+      <p class="text-sm text-red-700 break-words">偏好画像加载失败：{{ profileError }}</p>
+      <button type="button" @click="retryProfiles" :disabled="pageLoading" class="library-btn mt-3 disabled:opacity-50">{{ pageLoading ? '正在重试…' : '重试加载画像' }}</button>
+    </div>
+    <details id="preference-management" class="library-card preference-management">
+      <summary class="library-section-title">画像与搜索设置 <span v-if="profileError" class="text-sm text-red-700">· 画像加载失败</span></summary>
+      <div class="preference-management-content space-y-4 mt-4">
+        <div class="preference-management-heading">
+          <div class="text-sm library-muted">基于本地归档小说生成偏好画像、搜索词和推书依据</div>
+          <button type="button" @click="analyze" :disabled="loading" class="library-btn library-btn-primary disabled:opacity-50">
+            {{ loading ? '增量分析中…' : '继续增量分析本地偏好' }}
+          </button>
+        </div>
+        <div v-if="message" class="px-4 py-3 rounded-lg text-sm" :class="messageType === 'error' ? 'bg-red-50 text-red-700 border border-red-100' : 'bg-green-50 text-green-700 border border-green-100'" :role="messageType === 'error' ? 'alert' : 'status'">
+          {{ message }}
+        </div>
       <section v-if="pageLoading" class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-sm text-pixiv-gray">正在加载偏好…</section>
       <template v-else>
       <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-        <div class="flex items-start justify-between gap-3">
+        <div class="preference-management-heading">
           <div>
             <h2 class="text-sm font-bold text-gray-900">增量分析进度</h2>
             <p class="text-sm text-pixiv-gray mt-1">本地画像会持续更新同一个默认画像。这里的最少字数只作用于这一次分析；定时跑不跑、隔多久跑，在设置页的调度里，不会被这次分析改掉。</p>
           </div>
-          <a href="/dashboard/logs" class="text-xs px-3 py-1.5 bg-gray-100 rounded hover:bg-gray-200 whitespace-nowrap">查看任务日志</a>
+          <a href="/dashboard/logs" class="library-btn">查看任务日志</a>
         </div>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm mt-4">
           <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-pixiv-gray">任务状态</div><div class="font-bold text-gray-900">{{ taskStatusText(analysisJob?.status) }}</div></div>
@@ -89,10 +132,10 @@
       </section>
 
       <section v-if="selected" class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-        <div class="flex items-center justify-between gap-3 mb-3">
+        <div class="preference-management-heading mb-3">
           <h3 class="text-sm font-bold text-gray-900">推荐搜索词</h3>
           <div class="flex gap-2">
-            <button @click="runRecommendations" :disabled="recommendationLoading || !selected" class="text-xs px-3 py-1.5 bg-brand-500 text-white rounded hover:bg-brand-600 disabled:opacity-50">{{ recommendationLoading ? '推书中…' : '按当前画像推书' }}</button>
+            <button type="button" @click="runRecommendations" :disabled="recommendationLoading || !selected" class="library-btn library-btn-primary disabled:opacity-50">{{ recommendationLoading ? '推书中…' : '按当前画像推书' }}</button>
           </div>
         </div>
         <div class="space-y-3 text-sm">
@@ -118,43 +161,15 @@
         </div>
       </section>
 
-      <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-        <div class="flex items-center justify-between gap-3 mb-3">
-          <h3 class="text-sm font-bold text-gray-900">推书结果</h3>
-          <button @click="loadRecommendationItems" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">刷新</button>
-        </div>
-        <div class="space-y-3">
-          <article v-for="item in recommendationItems" :key="item.id" class="border border-gray-100 rounded-lg p-3 hover:bg-gray-50" :class="item.status === 'dismissed' || item.status === 'muted' ? 'opacity-50' : ''">
-            <div class="flex items-start justify-between gap-3">
-              <div class="min-w-0">
-                <div class="flex items-center gap-2 flex-wrap">
-                  <a :href="itemUrl(item)" target="_blank" rel="noopener noreferrer" class="text-sm font-bold text-gray-900 hover:text-brand-600">{{ item.title }}</a>
-                  <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{{ {new:'新推荐', interested:'感兴趣', dismissed:'不感兴趣', saved:'已保存', muted:'已屏蔽'}[item.status] || item.status }}</span>
-                  <span class="text-[10px] px-1.5 py-0.5 rounded" :class="item.item_type === 'series' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'">{{ item.item_type === 'series' ? '系列' : '单篇' }}</span>
-                  <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{{ item.score }} 分</span>
-                </div>
-                <div class="text-xs text-pixiv-gray mt-1">{{ item.author_name || '未知作者' }} · {{ item.item_type === 'series' ? ('系列总字数 ' + item.series_total_text_length) : ('字数 ' + item.text_length) }}</div>
-                <p class="text-xs text-gray-700 mt-2 line-clamp-2">{{ item.reason || item.caption }}</p>
-                <div class="flex flex-wrap gap-1.5 mt-2">
-                  <span v-for="tag in item.tags?.slice(0, 8) || []" :key="tag" class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{{ tag }}</span>
-                </div>
-              </div>
-              <div class="flex flex-col gap-1 flex-shrink-0">
-                <button @click="feedback(item, 'interested')" class="text-xs px-2 py-1 bg-green-50 text-green-700 rounded">感兴趣</button>
-                <button @click="feedback(item, 'dismissed')" class="text-xs px-2 py-1 bg-red-50 text-red-600 rounded">不感兴趣</button>
-                <button @click="muteAuthor(item)" class="text-xs px-2 py-1 bg-gray-100 text-gray-600 rounded">屏蔽作者</button>
-              </div>
-            </div>
-          </article>
-          <p v-if="!recommendationItems.length" class="text-sm text-pixiv-gray text-center py-8">还没有推荐结果</p>
-        </div>
-      </section>
       </template>
-    </main>
+      </div>
+    </details>
+  </div>
 </div>
 {% endblock %}
 
 {% block extra_scripts %}
+{% include "recommendation_components.html" %}
 <script>
 window.initVueApp({
   setup() {
@@ -163,13 +178,15 @@ window.initVueApp({
     const selected = ref(null);
     const loading = ref(false);
     const pageLoading = ref(true);
+    const profileError = ref('');
     const taskStatusText = (status) => ({
       queued: '排队中', running: '运行中', succeeded: '已完成', failed: '失败',
       cancelled: '已取消', partial: '部分完成',
     }[status] || (status ? status : '空闲'));
     const recommendationLoading = ref(false);
     const searchPlan = ref(null);
-    const recommendationItems = ref([]);
+    const recommendations = window.useRecommendations();
+    const { loadRecommendationItems } = recommendations;
     const message = ref('');
     const messageType = ref('success');
     const analysisJob = ref(null);
@@ -186,16 +203,35 @@ window.initVueApp({
       setTimeout(() => { if (message.value === text) message.value = ''; }, 3500);
     }
 
-    // 统一走 base.html 的 window.csrfFetch：鉴权门只在「已认证 session」分支校验
-    // CSRF，本地无 DASHBOARD_TOKEN 开发时永不触发，自建副本漏一个头就是生产专属 403。
+    // Keep all mutations on the shared authenticated/CSRF-aware transport.
     const fetchJson = window.csrfFetch;
 
     async function loadProfiles() {
-      const res = await fetch('/api/dashboard/preferences/profiles');
-      const data = await res.json();
-      if (!data.ok) throw new Error(window.errorText(data, res));
-      profiles.value = data.data || [];
-      selected.value = profiles.value.find(p => p.is_default) || profiles.value[0] || null;
+      pageLoading.value = true;
+      try {
+        const res = await fetch('/api/dashboard/preferences/profiles');
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(window.errorText(data, res));
+        profiles.value = data.data || [];
+        selected.value = profiles.value.find(p => p.is_default) || profiles.value[0] || null;
+        profileError.value = '';
+      } catch (error) {
+        // Independent of transient job messages and visible even with management closed.
+        profileError.value = window.errorText({ error: error.message || '偏好画像加载失败' });
+        throw error;
+      } finally {
+        pageLoading.value = false;
+      }
+    }
+
+    async function retryProfiles() {
+      if (pageLoading.value) return false;
+      try {
+        await loadProfiles();
+        return true;
+      } catch (_) {
+        return false; // The persistent profile error panel owns this read-only failure.
+      }
     }
 
     async function pollJob(jobId, maxWaitMs = 300000, onUpdate = null) {
@@ -214,22 +250,6 @@ window.initVueApp({
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
       return { status: 'running', background: true };
-    }
-
-    async function loadRecommendationItems() {
-      const res = await fetch('/api/dashboard/recommendations/items?limit=100');
-      const data = await res.json();
-      if (!data.ok) throw new Error(window.errorText(data, res));
-      recommendationItems.value = data.data || [];
-    }
-
-    // 推来的书尚未归档到本地，跳本地详情页会 404；这里直接指向 Pixiv 原站，
-    // 让用户能真正打开作品 / 系列页阅读。
-    function itemUrl(item) {
-      if (item.source_url) return item.source_url;
-      if (item.item_type === 'series' && item.series_id) return 'https://www.pixiv.net/novel/series/' + encodeURIComponent(item.series_id);
-      if (item.novel_id) return 'https://www.pixiv.net/novel/show.php?id=' + encodeURIComponent(item.novel_id);
-      return '#';
     }
 
     async function buildSearchPlan() {
@@ -280,30 +300,6 @@ window.initVueApp({
       }
     }
 
-    async function feedback(item, type) {
-      const res = await fetchJson(`/api/dashboard/recommendations/items/${item.id}/feedback`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feedback_type: type })
-      });
-      const data = await res.json();
-      if (!data.ok) return showMessage('反馈失败：' + window.errorText(data, res), 'error');
-      await loadRecommendationItems();
-    }
-
-    async function muteAuthor(item) {
-      if (!item.author_id || !confirm(`屏蔽作者 ${item.author_name || item.author_id}？`)) return;
-      const res = await fetchJson('/api/dashboard/recommendations/mutes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mute_type: 'author', mute_value: String(item.author_id), reason: item.author_name })
-      });
-      const data = await res.json();
-      if (!data.ok) return showMessage('屏蔽失败：' + window.errorText(data, res), 'error');
-      await feedback(item, 'muted');
-      showMessage('已屏蔽作者');
-    }
-
     async function analyze() {
       loading.value = true;
       try {
@@ -342,17 +338,18 @@ window.initVueApp({
     }
 
     onMounted(async () => {
+      // Profile loading/failure must never gate the independent recommendation list.
+      loadRecommendationItems();
       try {
         await loadProfiles();
-        await loadRecommendationItems();
-      } catch (e) { showMessage(e.message || String(e), 'error'); }
-      finally { pageLoading.value = false; }
+      } catch (_) { /* The profile error panel persists until a successful read. */ }
     });
 
     return {
-      profiles, selected, loading, pageLoading, taskStatusText, recommendationLoading, searchPlan, recommendationItems,
-      message, messageType, analysisJob, analysisResult, confidenceText, loadProfiles, analyze,
-      buildSearchPlan, runRecommendations, loadRecommendationItems, feedback, muteAuthor, itemUrl,
+      ...recommendations,
+      profiles, selected, loading, pageLoading, profileError, taskStatusText, recommendationLoading, searchPlan,
+      message, messageType, analysisJob, analysisResult, confidenceText, loadProfiles, retryProfiles, analyze,
+      buildSearchPlan, runRecommendations,
     };
   }
 });
