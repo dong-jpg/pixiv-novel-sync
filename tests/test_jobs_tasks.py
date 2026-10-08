@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from pixiv_novel_sync.jobs import tasks as tasks_module
 from pixiv_novel_sync.jobs.tasks import (
     _build_progress_callback,
     build_default_task_list,

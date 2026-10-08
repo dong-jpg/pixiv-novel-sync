@@ -74,13 +74,6 @@ class OAuthManager:
             self._cleanup_locked()
             return self._tasks.get(task_id)
 
-    def find_task_by_state(self, state: str) -> OAuthTask | None:
-        with self._lock:
-            self._cleanup_locked()
-            for task in self._tasks.values():
-                if task.state == state:
-                    return task
-            return None
 
     def exchange_code(self, task: OAuthTask, code: str) -> OAuthTask:
         headers = self._build_oauth_headers()
@@ -151,19 +144,6 @@ class OAuthManager:
         for key, value in updates.items():
             os.environ[key] = value
 
-    def sync_state_from_callback_url(self, task: OAuthTask, callback_url: str) -> OAuthTask:
-        parsed = urlparse(callback_url.strip())
-        query = parse_qs(parsed.query)
-        state = (query.get("state") or [""])[0]
-        code = (query.get("code") or [""])[0]
-        if not code:
-            raise ValueError("callback URL 中缺少 code")
-        if not state:
-            raise ValueError("callback URL 中缺少 state")
-        task.state = state
-        task.pixiv_callback_url = callback_url.strip()
-        task.message = "已根据 Pixiv callback URL 同步 state，可继续兑换 token"
-        return task
 
     def _build_login_url(self, state: str, code_challenge: str, callback_url: str) -> str:
         # redirect_uri 必须是 Pixiv 注册的地址，登录后 Pixiv 会回调到这个地址

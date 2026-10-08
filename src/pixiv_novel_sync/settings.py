@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 import logging
@@ -446,14 +446,11 @@ def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: s
         tz = ZoneInfo("UTC")
     base_dt = datetime.fromtimestamp(base_time, tz=tz)
 
-    # 简单实现：查找下一个匹配的时间
-    # 这里使用简化的实现，实际项目中建议使用croniter库
     try:
-        # 尝试导入croniter
         from croniter import croniter
     except ImportError:
-        # 如果没有croniter，使用简化的实现
-        return _simple_cron_next_run(parsed, base_dt)
+        logger.warning("未安装 croniter，无法计算下次运行时间")
+        return None
 
     try:
         # 项目约定 6 段 cron 为 "秒 分 时 日 月 周"。croniter 默认把第 6 段当作
@@ -472,57 +469,3 @@ def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: s
         # 的契约：保存设置时用户会收到 500 而非友好校验提示，调度循环也会整轮中断。
         logger.warning("无法解析 cron 表达式 %r: %s", cron_expr, exc)
         return None
-
-
-def _simple_cron_next_run(parsed: dict[str, Any], base_dt: datetime) -> float | None:
-    """简化的cron下次运行时间计算
-    
-    注意：这是一个简化的实现，只支持基本的cron表达式
-    对于复杂的cron表达式，建议安装croniter库
-    """
-    # 解析各个字段
-    def parse_field(field: str, min_val: int, max_val: int) -> list[int]:
-        if field == "*":
-            return list(range(min_val, max_val + 1))
-        elif "," in field:
-            return [int(x) for x in field.split(",")]
-        elif "-" in field:
-            start, end = field.split("-")
-            return list(range(int(start), int(end) + 1))
-        elif "/" in field:
-            base, step = field.split("/")
-            if base == "*":
-                base_val = min_val
-            else:
-                base_val = int(base)
-            return list(range(base_val, max_val + 1, int(step)))
-        else:
-            return [int(field)]
-    
-    try:
-        minutes = parse_field(parsed["minute"], 0, 59)
-        hours = parse_field(parsed["hour"], 0, 23)
-        days = parse_field(parsed["day"], 1, 31)
-        months = parse_field(parsed["month"], 1, 12)
-        cron_weekdays = parse_field(parsed["weekday"], 0, 6)
-        # cron 约定: 0=Sunday, 1=Monday, ..., 6=Saturday
-        # Python datetime.weekday(): 0=Monday, ..., 6=Sunday
-        # 转换: cron day -> python day: (cron - 1) % 7
-        python_weekdays = [(d - 1) % 7 for d in cron_weekdays]
-    except (ValueError, IndexError):
-        return None
-
-    # 查找下一个匹配的时间
-    current = base_dt + timedelta(minutes=1)
-    current = current.replace(second=0, microsecond=0)
-
-    for _ in range(366 * 24 * 60):  # 最多检查一年
-        if (current.minute in minutes and
-            current.hour in hours and
-            current.day in days and
-            current.month in months and
-            current.weekday() in python_weekdays):
-            return current.timestamp()
-        current += timedelta(minutes=1)
-    
-    return None

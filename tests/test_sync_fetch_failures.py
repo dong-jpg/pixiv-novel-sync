@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService, RemoteListTruncated
+from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
 from pixiv_novel_sync.web.managers import AutoSyncScheduler
 from tests.test_sync_engine_incremental import _settings
 

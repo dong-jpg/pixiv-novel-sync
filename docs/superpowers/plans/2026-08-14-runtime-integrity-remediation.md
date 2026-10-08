@@ -1,5 +1,11 @@
 # Runtime Integrity Remediation Implementation Plan
 
+> **2026-09-30 审计口径：** 不按原文执行；部分转09-14，其余按OUT。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** 不按原文执行。task log lease、seen-cursor、trash manifest 已在 UNIFIED §1.3 标为 OUT。相邻修复进了 2026-09-14。空勾保留。
+
+> 导航：[历史计划整合](../../archive/HISTORY_PLANS.md)；当前状态见 [整改状态](../../REMEDIATION_STATUS_2026-09-30.md)。本文保留历史正文与勾选，写作/成人部分不适用于 main。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 修复 task log 误回收、无界分页、Provider 重试、归档删除/恢复、部署契约和静态错误。

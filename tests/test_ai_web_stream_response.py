@@ -7,7 +7,6 @@ from pathlib import Path
 from flask import Flask
 
 from pixiv_novel_sync.ai.models import AIStreamChunk
-from pixiv_novel_sync.ai.service import AIWritingService
 from pixiv_novel_sync.ai_web import register_ai_routes
 from pixiv_novel_sync.settings import Settings, StorageSettings
 

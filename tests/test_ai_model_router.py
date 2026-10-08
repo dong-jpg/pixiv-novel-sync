@@ -27,7 +27,7 @@ from pixiv_novel_sync.ai.model_router import (
 )
 from pixiv_novel_sync.ai.models import AIAgentConfig, AIProviderConfig, AIStreamChunk
 from pixiv_novel_sync.ai.providers import AIProvider, AIProviderError
-from pixiv_novel_sync.ai.service import AIConflictError, AIWritingService
+from pixiv_novel_sync.ai.service import AIWritingService
 from pixiv_novel_sync.ai.services import core as service_core
 from pixiv_novel_sync.storage_db import Database
 
@@ -1777,3 +1777,23 @@ def valid_continue_payload(
         "candidate_snapshot_hash": snapshot.snapshot_hash,
         "resume_candidate_index": 2,
     }
+
+
+def test_candidate_fit_uses_provider_cost(router, route_request, monkeypatch):
+    request = route_request
+    monkeypatch.setattr(router, "estimate_messages", lambda snapshot, messages: (100000, "provider"))
+    assert not router._candidate_fits(request, request.candidate_snapshot.candidates[0])
+
+
+@pytest.mark.parametrize('stage', ['internal', 'validation'])
+def test_internal_fallback_discards_failed_candidate_output(route_router, internal_request, fake_providers, stage):
+    from dataclasses import replace
+    observed = []
+    request = replace(internal_request, stage=stage, on_delta=observed.append)
+    fake_providers.partial_then_fail('p1', 'FAILED_SUMMARY|', AIProviderError('drop', category='network', scope='model'))
+    fake_providers.succeed('p2', [AIStreamChunk(type='delta', text='GOOD_SUMMARY'), normal_done()])
+    captured = collect_generator_return(route_router.execute_stream(request))
+    assert captured.return_value.finish_state == 'succeeded'
+    assert captured.return_value.output_text == 'GOOD_SUMMARY'
+    assert ''.join(c.text for c in captured.items if c.type == 'delta') == 'GOOD_SUMMARY'
+    assert observed == ['GOOD_SUMMARY']

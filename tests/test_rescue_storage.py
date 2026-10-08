@@ -6,6 +6,7 @@ import pytest
 
 from pixiv_novel_sync.models import NovelTextRecord, SourceRecord
 from pixiv_novel_sync.storage_db import Database
+from rescue_catalog_test_helpers import get_rescue_catalog_item, list_rescue_catalog_sources
 
 
 @pytest.fixture
@@ -61,13 +62,13 @@ def test_refresh_matches_full_rebuild_for_the_same_novel(db: Database) -> None:
     _seed_novel(db, novel_id=81, status="deleted", title="系列里的一篇")
     db.upsert_source(SourceRecord(81, "bookmark_public", "1"))
     db.rebuild_rescue_catalog()
-    full = db.get_rescue_catalog_item("novel", 81)
+    full = get_rescue_catalog_item(db, "novel", 81)
     db.conn.execute("UPDATE novels SET title = '改过的标题' WHERE novel_id = 81")
     db.conn.commit()
     db.refresh_rescue_item("novel", 81)
-    refreshed = db.get_rescue_catalog_item("novel", 81)
+    refreshed = get_rescue_catalog_item(db, "novel", 81)
     db.rebuild_rescue_catalog()
-    rebuilt = db.get_rescue_catalog_item("novel", 81)
+    rebuilt = get_rescue_catalog_item(db, "novel", 81)
     assert refreshed is not None and rebuilt is not None
     assert refreshed["title"] == rebuilt["title"] == "改过的标题"
     assert {key: refreshed[key] for key in refreshed if key != "refreshed_at"} == {
@@ -202,7 +203,7 @@ def test_rebuild_catalog_classifies_items_and_sources(db: Database) -> None:
         ("series", 200, "series"),
         ("novel", 203, "standalone"),
     ]
-    sources = db.list_rescue_catalog_sources("series", 200)
+    sources = list_rescue_catalog_sources(db, "series", 200)
     assert {item["source_kind"] for item in sources} == {
         "following_user", "subscribed_series"
     }
@@ -225,7 +226,7 @@ def test_catalog_refresh_failure_keeps_previous_snapshot(
         db.rebuild_rescue_catalog()
 
     assert db.get_rescue_catalog_meta() == before
-    item = db.get_rescue_catalog_item("novel", 210)
+    item = get_rescue_catalog_item(db, "novel", 210)
     assert item is not None
     assert item["rescue_state"] == "success"
 
@@ -237,8 +238,8 @@ def test_catalog_refresh_failure_after_replace_keeps_previous_snapshot(
     _seed_novel(db, 211, status="deleted", text="old body", title="old title")
     db.upsert_source(SourceRecord(211, "bookmark_public", "1"))
     db.rebuild_rescue_catalog()
-    before_item = db.get_rescue_catalog_item("novel", 211)
-    before_sources = db.list_rescue_catalog_sources("novel", 211)
+    before_item = get_rescue_catalog_item(db, "novel", 211)
+    before_sources = list_rescue_catalog_sources(db, "novel", 211)
     before_meta = db.get_rescue_catalog_meta()
 
     db.conn.execute("UPDATE novels SET title = 'new title' WHERE novel_id = 211")
@@ -253,8 +254,8 @@ def test_catalog_refresh_failure_after_replace_keeps_previous_snapshot(
     with pytest.raises(RuntimeError, match="boom after catalog insert"):
         db.rebuild_rescue_catalog()
 
-    assert db.get_rescue_catalog_item("novel", 211) == before_item
-    assert db.list_rescue_catalog_sources("novel", 211) == before_sources
+    assert get_rescue_catalog_item(db, "novel", 211) == before_item
+    assert list_rescue_catalog_sources(db, "novel", 211) == before_sources
     assert db.get_rescue_catalog_meta() == before_meta
 
 
@@ -274,8 +275,8 @@ def test_refresh_failure_after_scope_delete_keeps_previous_snapshot(
     )
     db.upsert_source(SourceRecord(212, "bookmark_public", "1"))
     db.rebuild_rescue_catalog()
-    before_item = db.get_rescue_catalog_item("novel", 212)
-    before_sources = db.list_rescue_catalog_sources("novel", 212)
+    before_item = get_rescue_catalog_item(db, "novel", 212)
+    before_sources = list_rescue_catalog_sources(db, "novel", 212)
     before_meta = db.get_rescue_catalog_meta()
     before_memberships = [
         tuple(row)
@@ -307,8 +308,8 @@ def test_refresh_failure_after_scope_delete_keeps_previous_snapshot(
     with pytest.raises(RuntimeError, match="boom after membership refresh"):
         db.refresh_rescue_item("novel", 212)
 
-    assert db.get_rescue_catalog_item("novel", 212) == before_item
-    assert db.list_rescue_catalog_sources("novel", 212) == before_sources
+    assert get_rescue_catalog_item(db, "novel", 212) == before_item
+    assert list_rescue_catalog_sources(db, "novel", 212) == before_sources
     assert db.get_rescue_catalog_meta() == before_meta
     assert [
         tuple(row)
@@ -327,8 +328,8 @@ def test_refresh_novel_rebuilds_suppressed_old_parent(
     _seed_novel(db, 215, series_id=214, status="normal", text="chapter one")
     _seed_novel(db, 216, series_id=214, status="normal", text="chapter two")
     db.rebuild_rescue_catalog()
-    assert db.get_rescue_catalog_item("novel", 215) is None
-    parent = db.get_rescue_catalog_item("series", 214)
+    assert get_rescue_catalog_item(db, "novel", 215) is None
+    parent = get_rescue_catalog_item(db, "series", 214)
     assert (parent["local_count"], parent["complete_count"]) == (2, 2)
 
     if mutation == "detach":
@@ -340,11 +341,11 @@ def test_refresh_novel_rebuilds_suppressed_old_parent(
     result = db.refresh_rescue_item("novel", 215)
 
     assert result["items"] == 1
-    parent = db.get_rescue_catalog_item("series", 214)
+    parent = get_rescue_catalog_item(db, "series", 214)
     assert parent is not None
     assert parent["rescue_state"] == "partial"
     assert (parent["local_count"], parent["complete_count"]) == (1, 1)
-    assert db.get_rescue_catalog_item("novel", 216) is None
+    assert get_rescue_catalog_item(db, "novel", 216) is None
     assert db.conn.execute(
         "SELECT 1 FROM rescue_catalog_memberships WHERE novel_id = 215"
     ).fetchone() is None
@@ -360,20 +361,20 @@ def test_refresh_rescue_item_preserves_full_refresh_meta_and_unrelated_rows(
     db.upsert_source(SourceRecord(218, "user_backup", "2"))
     db.rebuild_rescue_catalog()
     before_meta = db.get_rescue_catalog_meta()
-    before_unrelated = db.get_rescue_catalog_item("novel", 218)
-    before_unrelated_sources = db.list_rescue_catalog_sources("novel", 218)
+    before_unrelated = get_rescue_catalog_item(db, "novel", 218)
+    before_unrelated_sources = list_rescue_catalog_sources(db, "novel", 218)
     db.conn.execute("UPDATE novels SET title = 'new target' WHERE novel_id = 217")
     db.conn.commit()
     monkeypatch.setattr(db, "_catalog_timestamp", lambda: "2099-01-01 00:00:00")
 
     db.refresh_rescue_item("novel", 217)
 
-    target = db.get_rescue_catalog_item("novel", 217)
+    target = get_rescue_catalog_item(db, "novel", 217)
     assert target["title"] == "new target"
     assert target["refreshed_at"] == "2099-01-01 00:00:00"
     assert db.get_rescue_catalog_meta() == before_meta
-    assert db.get_rescue_catalog_item("novel", 218) == before_unrelated
-    assert db.list_rescue_catalog_sources("novel", 218) == before_unrelated_sources
+    assert get_rescue_catalog_item(db, "novel", 218) == before_unrelated
+    assert list_rescue_catalog_sources(db, "novel", 218) == before_unrelated_sources
 
 
 def test_refresh_rescue_item_does_not_initialize_catalog_meta(db: Database) -> None:
@@ -383,7 +384,7 @@ def test_refresh_rescue_item_does_not_initialize_catalog_meta(db: Database) -> N
     result = db.refresh_rescue_item("novel", 219)
 
     assert result["items"] == 1
-    assert db.get_rescue_catalog_item("novel", 219) is not None
+    assert get_rescue_catalog_item(db, "novel", 219) is not None
     assert db.get_rescue_catalog_meta() is None
 
 
@@ -399,20 +400,20 @@ def test_refresh_novel_reclassifies_parent_and_all_chapters(db: Database) -> Non
     entered = db.refresh_rescue_item("novel", 221)
 
     assert entered["items"] == 1
-    assert db.get_rescue_catalog_item("series", 220)["content_kind"] == "series"
-    assert db.get_rescue_catalog_item("novel", 221) is None
-    assert db.get_rescue_catalog_item("novel", 222) is None
-    assert db.get_rescue_catalog_item("novel", 223) is not None
+    assert get_rescue_catalog_item(db, "series", 220)["content_kind"] == "series"
+    assert get_rescue_catalog_item(db, "novel", 221) is None
+    assert get_rescue_catalog_item(db, "novel", 222) is None
+    assert get_rescue_catalog_item(db, "novel", 223) is not None
 
     db.conn.execute("UPDATE series SET status = 'normal' WHERE series_id = 220")
     db.conn.commit()
     exited = db.refresh_rescue_item("novel", 221)
 
     assert exited["items"] == 0
-    assert db.get_rescue_catalog_item("series", 220) is None
-    assert db.get_rescue_catalog_item("novel", 221) is None
-    assert db.get_rescue_catalog_item("novel", 222) is None
-    assert db.get_rescue_catalog_item("novel", 223) is not None
+    assert get_rescue_catalog_item(db, "series", 220) is None
+    assert get_rescue_catalog_item(db, "novel", 221) is None
+    assert get_rescue_catalog_item(db, "novel", 222) is None
+    assert get_rescue_catalog_item(db, "novel", 223) is not None
 
 
 def _seed_reparented_series_catalog(db: Database) -> None:
@@ -430,23 +431,23 @@ def _seed_reparented_series_catalog(db: Database) -> None:
     db.upsert_source(SourceRecord(271, "bookmark_public", "1"))
     db.upsert_source(SourceRecord(281, "following_user_scan", "2"))
     db.rebuild_rescue_catalog()
-    assert db.get_rescue_catalog_item("novel", 271) is not None
-    assert db.get_rescue_catalog_item("series", 280)["rescue_state"] == "partial"
+    assert get_rescue_catalog_item(db, "novel", 271) is not None
+    assert get_rescue_catalog_item(db, "series", 280)["rescue_state"] == "partial"
 
     db.conn.execute("UPDATE novels SET series_id = 280 WHERE novel_id = 271")
     db.conn.commit()
 
 
 def _assert_reparented_series_catalog(db: Database) -> None:
-    assert db.get_rescue_catalog_item("series", 270) is None
-    target = db.get_rescue_catalog_item("series", 280)
+    assert get_rescue_catalog_item(db, "series", 270) is None
+    target = get_rescue_catalog_item(db, "series", 280)
     assert target is not None
     assert target["rescue_state"] == "success"
     assert (target["local_count"], target["complete_count"]) == (2, 2)
-    assert db.get_rescue_catalog_item("novel", 271) is None
+    assert get_rescue_catalog_item(db, "novel", 271) is None
     assert [
         source["source_kind"]
-        for source in db.list_rescue_catalog_sources("series", 280)
+        for source in list_rescue_catalog_sources(db, "series", 280)
     ] == ["bookmark", "following_user"]
     assert db.conn.execute(
         "SELECT series_id FROM rescue_catalog_memberships WHERE novel_id = 271"
@@ -478,25 +479,25 @@ def test_refresh_series_rebuilds_series_and_chapter_rows(db: Database) -> None:
     _seed_novel(db, 231, series_id=230, status="deleted", text="可恢复章节")
     _seed_novel(db, 232, series_id=230, status="normal", text="普通章节")
     db.rebuild_rescue_catalog()
-    assert db.get_rescue_catalog_item("novel", 231)["content_kind"] == "series_chapter"
+    assert get_rescue_catalog_item(db, "novel", 231)["content_kind"] == "series_chapter"
 
     db.conn.execute("UPDATE series SET status = 'deleted' WHERE series_id = 230")
     db.conn.commit()
     entered = db.refresh_rescue_item("series", 230)
 
     assert entered["items"] == 1
-    assert db.get_rescue_catalog_item("series", 230) is not None
-    assert db.get_rescue_catalog_item("novel", 231) is None
-    assert db.get_rescue_catalog_item("novel", 232) is None
+    assert get_rescue_catalog_item(db, "series", 230) is not None
+    assert get_rescue_catalog_item(db, "novel", 231) is None
+    assert get_rescue_catalog_item(db, "novel", 232) is None
 
     db.conn.execute("UPDATE series SET status = 'normal' WHERE series_id = 230")
     db.conn.commit()
     exited = db.refresh_rescue_item("series", 230)
 
     assert exited["items"] == 1
-    assert db.get_rescue_catalog_item("series", 230) is None
-    assert db.get_rescue_catalog_item("novel", 231)["content_kind"] == "series_chapter"
-    assert db.get_rescue_catalog_item("novel", 232) is None
+    assert get_rescue_catalog_item(db, "series", 230) is None
+    assert get_rescue_catalog_item(db, "novel", 231)["content_kind"] == "series_chapter"
+    assert get_rescue_catalog_item(db, "novel", 232) is None
 
 
 def test_refresh_standalone_novel_updates_only_target_and_sources(db: Database) -> None:
@@ -521,22 +522,22 @@ def test_refresh_standalone_novel_updates_only_target_and_sources(db: Database) 
 
     assert result["items"] == 1
     assert result["sources"] == 1
-    target = db.get_rescue_catalog_item("novel", 240)
+    target = get_rescue_catalog_item(db, "novel", 240)
     assert target["title"] == "新标题"
     assert target["content_kind"] == "standalone"
     assert [
         source["source_kind"]
-        for source in db.list_rescue_catalog_sources("novel", 240)
+        for source in list_rescue_catalog_sources(db, "novel", 240)
     ] == ["user_backup"]
-    assert db.get_rescue_catalog_item("novel", 241)["title"] == "局部刷新哨兵"
+    assert get_rescue_catalog_item(db, "novel", 241)["title"] == "局部刷新哨兵"
 
 
 def test_refresh_missing_novel_cleans_catalog_and_sources(db: Database) -> None:
     _seed_novel(db, 250, status="deleted", text="将被删除")
     db.upsert_source(SourceRecord(250, "bookmark_public", "1"))
     db.rebuild_rescue_catalog()
-    assert db.get_rescue_catalog_item("novel", 250) is not None
-    assert db.list_rescue_catalog_sources("novel", 250)
+    assert get_rescue_catalog_item(db, "novel", 250) is not None
+    assert list_rescue_catalog_sources(db, "novel", 250)
 
     db.conn.execute("DELETE FROM novels WHERE novel_id = 250")
     db.conn.commit()
@@ -544,8 +545,8 @@ def test_refresh_missing_novel_cleans_catalog_and_sources(db: Database) -> None:
 
     assert result["items"] == 0
     assert result["sources"] == 0
-    assert db.get_rescue_catalog_item("novel", 250) is None
-    assert db.list_rescue_catalog_sources("novel", 250) == []
+    assert get_rescue_catalog_item(db, "novel", 250) is None
+    assert list_rescue_catalog_sources(db, "novel", 250) == []
 
 
 def test_refresh_missing_series_cleans_catalog_and_sources(db: Database) -> None:
@@ -553,8 +554,8 @@ def test_refresh_missing_series_cleans_catalog_and_sources(db: Database) -> None
     _seed_novel(db, 261, series_id=260, status="deleted", text="章节")
     db.upsert_source(SourceRecord(261, "following_user_scan", "2"))
     db.rebuild_rescue_catalog()
-    assert db.get_rescue_catalog_item("series", 260) is not None
-    assert db.list_rescue_catalog_sources("series", 260)
+    assert get_rescue_catalog_item(db, "series", 260) is not None
+    assert list_rescue_catalog_sources(db, "series", 260)
 
     db.conn.execute("DELETE FROM series WHERE series_id = 260")
     db.conn.commit()
@@ -562,12 +563,12 @@ def test_refresh_missing_series_cleans_catalog_and_sources(db: Database) -> None
 
     # T2-52：系列行没了，但系列里的小说仍有来源记录——增量刷新与全量重建
     # 一致，保留这篇小说（旧行为直接丢弃，与 rebuild 结果不一致）。
-    assert db.get_rescue_catalog_item("series", 260) is None
-    assert db.list_rescue_catalog_sources("series", 260) == []
-    assert db.get_rescue_catalog_item("novel", 261) is not None
+    assert get_rescue_catalog_item(db, "series", 260) is None
+    assert list_rescue_catalog_sources(db, "series", 260) == []
+    assert get_rescue_catalog_item(db, "novel", 261) is not None
     assert result["items"] == 1
     db.rebuild_rescue_catalog()
-    assert db.get_rescue_catalog_item("novel", 261) is not None
+    assert get_rescue_catalog_item(db, "novel", 261) is not None
     assert db.conn.execute(
         "SELECT COUNT(*) FROM rescue_catalog WHERE series_id = 260 AND item_type = 'series'"
     ).fetchone()[0] == 0
@@ -791,7 +792,7 @@ def test_rebuild_catalog_normalizes_all_sources_and_author_names(db: Database) -
 
     db.rebuild_rescue_catalog()
 
-    sources = db.list_rescue_catalog_sources("series", 600)
+    sources = list_rescue_catalog_sources(db, "series", 600)
     assert [source["source_kind"] for source in sources] == [
         "bookmark",
         "subscribed_series",
@@ -822,7 +823,7 @@ def test_rebuild_catalog_adds_subscribed_series_without_chapter_source(
 
     assert [
         source["source_kind"]
-        for source in db.list_rescue_catalog_sources("series", 610)
+        for source in list_rescue_catalog_sources(db, "series", 610)
     ] == ["subscribed_series"]
 
 
@@ -935,8 +936,8 @@ def test_delete_novel_cleans_rescue_override(db: Database) -> None:
     db.delete_novel(1)
 
     assert db.get_rescue_override("novel", 1) is None
-    assert db.get_rescue_catalog_item("novel", 1) is None
-    assert db.list_rescue_catalog_sources("novel", 1) == []
+    assert get_rescue_catalog_item(db, "novel", 1) is None
+    assert list_rescue_catalog_sources(db, "novel", 1) == []
 
 
 def test_delete_novel_rebuilds_suppressed_parent_and_sources(db: Database) -> None:
@@ -949,18 +950,18 @@ def test_delete_novel_rebuilds_suppressed_parent_and_sources(db: Database) -> No
     before_meta = db.get_rescue_catalog_meta()
     assert {
         source["source_kind"]
-        for source in db.list_rescue_catalog_sources("series", 20)
+        for source in list_rescue_catalog_sources(db, "series", 20)
     } == {"bookmark", "following_user"}
 
     db.delete_novel(21)
 
-    parent = db.get_rescue_catalog_item("series", 20)
+    parent = get_rescue_catalog_item(db, "series", 20)
     assert parent is not None
     assert parent["rescue_state"] == "partial"
     assert (parent["local_count"], parent["complete_count"]) == (1, 1)
     assert [
         source["source_kind"]
-        for source in db.list_rescue_catalog_sources("series", 20)
+        for source in list_rescue_catalog_sources(db, "series", 20)
     ] == ["following_user"]
     assert db.get_rescue_catalog_meta() == before_meta
     assert db.conn.execute(
@@ -979,8 +980,8 @@ def test_delete_series_cleans_rescue_override(db: Database) -> None:
 
     assert chapter_ids == [10]
     assert db.get_rescue_override("series", 9) is None
-    assert db.get_rescue_catalog_item("series", 9) is None
-    assert db.list_rescue_catalog_sources("series", 9) == []
+    assert get_rescue_catalog_item(db, "series", 9) is None
+    assert list_rescue_catalog_sources(db, "series", 9) == []
     assert db.conn.execute(
         "SELECT COUNT(*) FROM rescue_catalog WHERE series_id = 9"
     ).fetchone()[0] == 0
@@ -999,12 +1000,12 @@ def test_delete_series_cleans_rescue_override(db: Database) -> None:
 
     db.refresh_rescue_item("novel", 10)
 
-    restored = db.get_rescue_catalog_item("novel", 10)
+    restored = get_rescue_catalog_item(db, "novel", 10)
     assert restored is not None
     assert restored["content_kind"] == "standalone"
     assert [
         source["source_kind"]
-        for source in db.list_rescue_catalog_sources("novel", 10)
+        for source in list_rescue_catalog_sources(db, "novel", 10)
     ] == ["bookmark"]
 
 
@@ -1016,8 +1017,8 @@ def test_delete_series_preserves_historical_membership_until_chapter_refresh(
     _seed_novel(db, 31, series_id=40, status="deleted", text="kept body")
     db.upsert_source(SourceRecord(31, "bookmark_public", "1"))
     db.rebuild_rescue_catalog()
-    assert db.get_rescue_catalog_item("series", 40) is not None
-    assert db.get_rescue_catalog_item("novel", 31) is None
+    assert get_rescue_catalog_item(db, "series", 40) is not None
+    assert get_rescue_catalog_item(db, "novel", 31) is None
     assert db.conn.execute(
         "SELECT series_id FROM rescue_catalog_memberships WHERE novel_id = 31"
     ).fetchone()[0] == 40
@@ -1043,13 +1044,13 @@ def test_delete_series_preserves_historical_membership_until_chapter_refresh(
     for novel_id in chapter_ids:
         db.refresh_rescue_item("novel", novel_id)
 
-    assert db.get_rescue_catalog_item("series", 40) is None
-    restored = db.get_rescue_catalog_item("novel", 31)
+    assert get_rescue_catalog_item(db, "series", 40) is None
+    restored = get_rescue_catalog_item(db, "novel", 31)
     assert restored is not None
     assert restored["content_kind"] == "standalone"
     assert [
         source["source_kind"]
-        for source in db.list_rescue_catalog_sources("novel", 31)
+        for source in list_rescue_catalog_sources(db, "novel", 31)
     ] == ["bookmark"]
     assert db.conn.execute(
         "SELECT 1 FROM rescue_catalog_memberships WHERE novel_id = 31"

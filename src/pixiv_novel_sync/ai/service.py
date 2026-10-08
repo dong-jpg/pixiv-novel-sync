@@ -25,6 +25,7 @@ class AIWritingService(
 
 
 __all__ = [
+    "create_provider",
     "AIWritingService",
     "AIServiceError",
     "AIConflictError",

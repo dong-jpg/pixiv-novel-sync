@@ -98,7 +98,9 @@ def main() -> None:
     elif args.command == "sync-bookmarks":
         from .jobs.quick_sync import run_bookmark_sync
 
-        run_bookmark_sync(settings)
+        stats = run_bookmark_sync(settings)
+        if stats.get("truncated"):
+            raise SystemExit(1)
     elif args.command == "db-stats":
         from .storage_db import Database, prepare_schema
 
@@ -122,8 +124,6 @@ def main() -> None:
         "user-backup",
     }:
         raise SystemExit(run_job_command(args, settings))
-    else:
-        parser.error(f"Unsupported command: {args.command}")
 
 
 def run_auth_check(config_path: str | Path, env_path: str | Path | None) -> None:

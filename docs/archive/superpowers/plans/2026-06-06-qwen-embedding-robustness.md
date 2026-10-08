@@ -1,5 +1,11 @@
 # Qwen Embedding Robustness Implementation Plan
 
+> **2026-09-30 审计口径：** 写作分支历史实现；main 有意移除检索。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** ai-writing 的历史实现已落地：embedding_blob、按 hash 复用、失败回退 TF-IDF。勾选框没有回写。
+
+> 导航：[历史计划整合](../../HISTORY_PLANS.md)；当前状态见 [整改状态](../../../REMEDIATION_STATUS_2026-09-30.md)。本文保留历史正文与勾选，写作/成人部分不适用于 main。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make Qwen/OpenAI-compatible embedding retrieval resilient, cheaper, and documented.

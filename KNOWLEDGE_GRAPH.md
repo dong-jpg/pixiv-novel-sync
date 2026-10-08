@@ -1,5 +1,7 @@
 # pixiv-novel-sync 知识图谱
 
+> **历史快照**：历史材料统一由 [历史报告整合](docs/archive/HISTORY_REPORTS.md) 导航；本文保留当时证据，当前实现与验证以 [整改状态](docs/REMEDIATION_STATUS_2026-09-30.md) 为准。涉及写作/成人的历史描述不代表 main 当前功能。
+
 > [!WARNING]
 > **历史快照，不是当前事实来源。** 本文档保留特定时间点的项目结构、模块和数据流描述，行数、模板数量与接口可能已经变化。当前入口请查阅 [README.md](README.md)，前端接口请查阅 [docs/frontend-api-contract.md](docs/frontend-api-contract.md)，最终行为以代码为准。
 

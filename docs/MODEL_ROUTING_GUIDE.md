@@ -1,5 +1,7 @@
 # AI 模型路由使用指南
 
+> **适用范围（2026-10-08）**：本文描述 main 的 Provider、模型目录/池、Agent、ModelRouter 和关键词清洗基础设施；写作/成人模块仅在 ai-writing。最新回归结果见 [整改状态](REMEDIATION_STATUS_2026-09-30.md)，不以旧审计中的写作失败描述 main。
+
 本指南面向在 Web 界面（AI 设置页）配置 AI 模型的用户，解释模型目录（catalog）、模型池（pool）、Agent 绑定与失败转移（failover）的实际行为。所有描述以当前代码实现为准。
 
 ## 1. 核心概念
@@ -30,7 +32,7 @@
 
 ### 1.3 Agent 绑定：fixed vs pool
 
-每个 Agent（写作/审查等任务的执行单元）通过 `binding_type` 决定用哪个模型：
+每个 Agent（main 中用于偏好关键词清洗等 AI 基础任务）通过 `binding_type` 决定用哪个模型：
 
 - **fixed（固定绑定）**：只用一个模型——Agent 上配置的 `model`，未配置时退回 Provider 的 `default_model`。候选列表恒为 1 项，**没有失败转移**：这个模型失败，任务就失败。固定模型不要求一定存在于目录中；但一旦 Agent 声明了 `required_capabilities`，该模型就必须存在于可路由目录中且具备全部所需能力，否则直接报错。
 - **pool（池绑定）**：Agent 指向一个模型池，运行时把池链展开成一个有序候选列表（见第 3 节），失败时按顺序转移到下一个候选。
@@ -102,6 +104,8 @@ Agent 可声明 `required_capabilities`（只能来自 1.1 的五个固定枚举
 ## 4. PromptBudget 与失败转移（failover）
 
 ### 4.1 PromptBudget（输入预算）
+
+2026-10-08：共享路由统一按 token 估算输入预算，不把 `input_budget` 当 UTF-8 字节上限；候选窗口检测使用同一 Provider/heuristic 估算契约。Router 的 internal/validation 阶段仅在候选完整成功后发布输出，失败候选残片不混入重试结果。这是基础设施语义，不表示 main 恢复写作历史裁剪、摘要业务或成人审查功能。
 
 任务启动前，路由器对整个候选快照计算统一预算：
 

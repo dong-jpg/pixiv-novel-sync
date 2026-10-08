@@ -4,10 +4,9 @@ import hashlib
 import logging
 import os
 import shutil
-import time
 from pathlib import Path
 from collections.abc import Callable
-from typing import Iterable
+from typing import Any, Iterable
 
 import requests
 
@@ -180,6 +179,38 @@ class FileStorage:
             str(title),
         )
         return self.asset_path(novel_dir, "cover", filename)
+
+    def _collect_archive_paths(
+        self, archive_refs: Iterable[dict[str, Any]]
+    ) -> tuple[list[Path], list[Path]]:
+        """Collect candidates only; callers must check storage boundaries before mutation."""
+        novel_dirs: list[Path] = []
+        asset_paths: list[Path] = []
+        for ref in archive_refs:
+            try:
+                novel_id = int(ref.get("novel_id") or 0)
+                user_id = int(ref.get("user_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not novel_id:
+                continue
+            novel_dirs.append(
+                self.resolve_archive_dir(
+                    str(ref.get("restrict_value") or "public"),
+                    ref.get("archive_dir"),
+                    user_id,
+                    str(ref.get("author_name") or "unknown"),
+                    novel_id,
+                    str(ref.get("title") or f"novel_{novel_id}"),
+                )
+            )
+            for path in ref.get("asset_paths") or []:
+                if path:
+                    asset_path = Path(path)
+                    asset_paths.append(asset_path)
+                    if asset_path.parent.parent.name == "assets":
+                        novel_dirs.append(asset_path.parent.parent.parent)
+        return novel_dirs, asset_paths
 
     def remove_novel_archive(self, novel_dirs: Iterable[Path], asset_paths: Iterable[Path] = ()) -> dict[str, int]:
         """删除小说归档目录和已记录的散落资源文件。"""

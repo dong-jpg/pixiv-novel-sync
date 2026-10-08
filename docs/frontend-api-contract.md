@@ -1,5 +1,7 @@
 # Frontend API Contract
 
+> **契约更新（2026-10-08，main）**：本页只更新共享 API。增量分析保留未提供的画像字段，推荐区分查询/候选错误；已删除的旧路由不再列为可调用端点。最新验证及环境边界见 [整改状态](REMEDIATION_STATUS_2026-09-30.md)。
+
 本文档记录 Library OS 前端当前依赖的后端接口。后端重构时应优先保持路径、方法和主要字段兼容；如需调整，请在对接时同步更新前端适配层。
 
 > AI 写作相关端点（创作项目 / 章节 / 草稿 / 文档 / 蒸馏档案 / Prompt 模板 / chat / 写作类 SSE stream / 成人润色）随 AI 写作模块移到 `ai-writing` 分支维护，main 分支契约不再记载；main 只保留 Provider / 模型目录 / 模型同步 / 模型池 / Agent 绑定 / AI job 读取与续接等基础设施端点。
@@ -264,7 +266,7 @@ Expected detail fields include:
 
 ### GET /api/dashboard/novels/{novel_id}/progress
 
-Used by: 小说阅读页阅读进度恢复。
+Used by: 小说阅读页阅读进度恢复。本机无记录时按服务端百分比恢复实际滚动位置；已有本机位置优先。异步读取期间用户主动滚动时不强行跳回旧位置。
 
 无进度记录时返回默认值：
 
@@ -286,7 +288,7 @@ Used by: 小说阅读页阅读进度恢复。
 
 ### DELETE /api/dashboard/novels/{novel_id}/progress
 
-删除阅读进度记录。成功返回 `{ "success": true }`。
+删除阅读进度记录。成功返回 `{ "success": true }`。阅读页“重置阅读进度”在确认后调用；仅成功时清除本机记录并回到页首，失败保留当前位置。
 
 ### POST /api/dashboard/novels/export-epub
 
@@ -468,9 +470,7 @@ Starts author sync.
 
 删除小说记录并清理磁盘归档文件；响应额外包含 `archive_cleanup` 清理结果。
 
-### DELETE /api/dashboard/users/{user_id}
-
-删除用户及其所有小说与归档文件；响应额外包含 `archive_cleanup`。
+原 `DELETE /api/dashboard/users/{user_id}` 已移除：没有生产页面调用，且与后台备份同时运行时不能保证删除结果。T3-01 采用原计划允许的删接口方案，不新增批量用户删除按钮；存储层内部级联删除及其测试保留。
 
 ### DELETE /api/dashboard/series/{series_id}
 
@@ -478,7 +478,7 @@ Starts author sync.
 
 ### DELETE /api/dashboard/bookmarks/{novel_id}
 
-仅删除收藏记录，不删除小说本体。
+仅删除本地收藏记录，不删除小说本体、不取消 Pixiv 收藏；下一次同步可能重新加入。阅读页“移除本地收藏记录”经确认后调用，并显示失败或成功结果。
 
 ## Logs APIs
 
@@ -512,7 +512,7 @@ Returns settings object consumed by settings form.
 
 ### POST /api/dashboard/settings
 
-Saves settings. Body is the edited settings object。全量端点，与分区端点并存。
+仅 API。Saves settings. Body is the edited settings object。全量端点仅为脚本/兼容调用保留；页面必须使用分区端点，不能将未加载字段写成默认值。
 
 ### PUT /api/dashboard/settings/<section>
 
@@ -593,11 +593,7 @@ Query:
 - `page`
 - type/status filters where available。
 
-### GET /api/dashboard/pending-deletions/count
-
-仅 API。侧栏数量来自 `/api/dashboard/shell-data`。
-
-Sidebar/count use if needed.
+侧栏待删除数量来自 `GET /api/dashboard/shell-data`。旧 `/api/dashboard/pending-deletions/count` 已从当前 main 工作区移除，不应新增调用。
 
 ### POST /api/dashboard/pending-deletions/detect
 
@@ -630,11 +626,15 @@ Body:
 }
 ```
 
+增量分析不传 `name` / `description` 时保留已有值；仅显式提供字段才覆盖。前端不要每次发送固定默认名称覆盖用户命名。
+
 ### PUT /api/dashboard/preferences/profiles/{profile_id}
 
 ### POST /api/dashboard/preferences/profiles/{profile_id}/default
 
 ### DELETE /api/dashboard/preferences/profiles/{profile_id}
+
+画像设默认和删除仅 API，保留既有脚本兼容接口；完整多画像页面工作流按 UNIFIED §1.3 为 OUT，不为消除旧计划空勾而新增该功能。
 
 ### POST /api/dashboard/recommendations/search-plan
 
@@ -646,9 +646,9 @@ Body:
 
 ### POST /api/dashboard/recommendations/run
 
-### GET /api/dashboard/recommendations/runs
+推荐统计分别记录 `query_errors`（搜索请求错误）与 `candidate_errors`（单个候选异常），`errors` 保留总数；只有所有已尝试查询都失败才判定“全部搜索失败”，单个坏候选不会误判整轮失败。
 
-仅 API。页面不展示历史轮次。多画像的设默认和删除也不做页面。
+旧 `GET /api/dashboard/recommendations/runs` 已从当前 main 工作区移除。页面不展示历史轮次；多画像的设默认和删除也不做页面。
 
 ### GET /api/dashboard/recommendations/items
 
@@ -831,14 +831,13 @@ Frontend expects streams to terminate with `done` or `error`.
 
 ## Token/OAuth APIs
 
+当前 main 工作区已删除 `/oauth/start`、`/oauth/callback`、`/oauth/sync-callback/{task_id}`。OAuth 任务统一从 `POST /api/token-jobs` 创建；工作区修改不表示远端旧版本或生产部署已更新。
+
 - `GET /api/token-config`
 - `POST /api/token-jobs`
 - `GET /api/token-jobs/{job_id}`
 - `POST /api/save-token`
-- `POST /oauth/start`（仅 API。Pixiv 固定回调地址，页面不走这条）
 - `GET /oauth/task/{task_id}`
-- `GET /oauth/callback`（仅 API）
-- `POST /oauth/sync-callback/{task_id}`（仅 API）
 - `POST /oauth/exchange/{task_id}`
 - `POST /oauth/save/{task_id}`
 

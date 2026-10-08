@@ -1,4 +1,3 @@
-import sqlite3
 from pathlib import Path
 
 from pixiv_novel_sync.models import NovelRecord, NovelTextRecord, SourceRecord, UserRecord

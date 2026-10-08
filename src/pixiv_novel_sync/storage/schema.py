@@ -3,7 +3,6 @@
 本模块包含所有数据库表结构定义和迁移逻辑。
 """
 import logging
-import sqlite3
 import time
 
 from .utils import PIXIV_NOVEL_URL_PREFIX, PIXIV_SERIES_URL_PREFIX

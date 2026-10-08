@@ -1,5 +1,11 @@
 # 阶段二：调度预算重排 Implementation Plan
 
+> **2026-09-30 审计口径：** 代码主体存在；生产灰度/观察未验证。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** 代码侧的 restricted_streak 和新 cron 已在。生产灰度无法从仓库证明。勾选框没有回写。
+
+> 导航：[历史计划整合](../../archive/HISTORY_PLANS.md)；当前状态见 [整改状态](../../REMEDIATION_STATUS_2026-09-30.md)。本文保留历史正文与勾选，写作/成人部分不适用于 main。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 按实测预算重排 11 个定时任务的 cron，并给「已知受限用户」降频巡检，让 P1/P2 优先级机制真正有机会生效。

@@ -729,7 +729,6 @@ def test_run_progress_callback_can_cancel(tmp_path: Path):
         # 首个 phase 事件即请求取消
         raise InterruptedError("stop")
 
-    import pytest
     with pytest.raises(InterruptedError):
         service.run(profile_id=profile_id, progress_callback=progress_callback)
     db.close()
@@ -881,7 +880,6 @@ def test_partial_search_errors_mark_incomplete_but_still_publish(tmp_path: Path)
     回归：单个查询的 API 异常曾直接冒出炸掉整轮，让本可入库的候选全丢；现在
     per-query try/except 累加 errors 并继续，只要不是全败就正常发布。
     """
-    import pytest
 
     db = Database(tmp_path / "rec.db")
     db.init_schema()

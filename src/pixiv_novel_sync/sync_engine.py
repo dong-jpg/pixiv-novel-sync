@@ -1933,8 +1933,6 @@ class BookmarkNovelSyncService:
             return self._sync_novel_inner(novel_id, novel, restrict, download_assets, write_markdown, write_raw_text, source_type, source_key)
         except InterruptedError:
             raise
-        except InterruptedError:
-            raise
         except Exception as e:
             unavailable_reason = _pixiv_content_unavailable_reason(e)
             if unavailable_reason:

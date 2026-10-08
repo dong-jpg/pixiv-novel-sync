@@ -1,5 +1,11 @@
 # 同步吞吐修复与预算重排 实施计划
 
+> **2026-09-30 审计口径：** SUPERSEDED，拆为phase1–3。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** SUPERSEDED。已拆成 phase1、phase2、phase3，不再按本文件开工。
+
+> 导航：[历史计划整合](../../archive/HISTORY_PLANS.md)；当前状态见 [整改状态](../../REMEDIATION_STATUS_2026-09-30.md)。本文保留历史正文与勾选，写作/成人部分不适用于 main。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 修掉三个实测到的同步吞吐缺陷（FTS 全表扫描、单作者吃满整轮配额、系列分页被锁死），再依据新的耗时基线重排定时任务预算。

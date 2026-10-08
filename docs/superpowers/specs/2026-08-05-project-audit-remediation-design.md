@@ -2,7 +2,7 @@
 
 > 状态：用户已确认修复全部审计问题，并要求把成人描写局部润色 Agent 纳入同一轮交付
 > 日期：2026-08-05
-> 成人功能详细规格：[`2026-07-23-adult-polish-agent-design.md`](2026-07-23-adult-polish-agent-design.md)
+> 成人功能详细规格：`2026-07-23-adult-polish-agent-design.md`（ai-writing 分支原路径 `docs/superpowers/specs/2026-07-23-adult-polish-agent-design.md`；main 不收录）
 
 ## 1. 目标
 
@@ -59,7 +59,7 @@
 
 ### 3.5 成人描写局部润色 Agent
 
-成人功能完整遵循现有 [`2026-07-23-adult-polish-agent-design.md`](2026-07-23-adult-polish-agent-design.md) 和 [`../plans/2026-07-23-adult-polish-agent.md`](../plans/2026-07-23-adult-polish-agent.md)，不采用删减版。关键不可弱化边界如下：
+成人功能完整遵循现有 `2026-07-23-adult-polish-agent-design.md`（ai-writing 分支原路径 `docs/superpowers/specs/2026-07-23-adult-polish-agent-design.md`；main 不收录） 和 `../plans/2026-07-23-adult-polish-agent.md`（ai-writing 分支原路径 `docs/superpowers/plans/2026-07-23-adult-polish-agent.md`；main 不收录），不采用删减版。关键不可弱化边界如下：
 
 - 仅处理用户明确选择的一个连续片段，前后文只读，不进入默认章节 Pipeline。
 - 只允许已认证 Dashboard 会话；未配置认证、owner 不匹配或仅凭可猜 job ID 的请求全部拒绝。

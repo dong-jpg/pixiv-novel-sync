@@ -1,10 +1,16 @@
 # 项目审计问题完整修复 Implementation Plan
 
+> **2026-09-30 审计口径：** 历史整改主体存在；后续审计已取代总括结论。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** 代码抽查已落地。勾选框没有回写，不代表没做。当前行为以代码和 docs/INDEX.md 为准。
+
+> 导航：[历史计划整合](../../archive/HISTORY_PLANS.md)；当前状态见 [整改状态](../../REMEDIATION_STATUS_2026-09-30.md)。本文保留历史正文与勾选，写作/成人部分不适用于 main。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. 本轮未获授权使用子代理，必须在当前任务内顺序执行。
 
 **Goal:** 修复审计确认的取消/循环、推荐、AI 偏好注入、自动调度和 API 文档缺口，并与既有成人描写局部润色 Agent 完整计划合并交付。
 
-**Architecture:** 运行时任务统一经过 `JobSpec`、`JobManager`、`JobRunner` 和 `execute_task`；取消信号传到实际等待点。推荐和 AI 项目通过幂等 SQLite 迁移补齐字段，偏好 prompt 由独立纯函数构造并在服务层统一注入。成人功能不在本文件重复定义，完整执行已批准的 [`2026-07-23-adult-polish-agent.md`](2026-07-23-adult-polish-agent.md)，复用当前 `ModelRouter`。
+**Architecture:** 运行时任务统一经过 `JobSpec`、`JobManager`、`JobRunner` 和 `execute_task`；取消信号传到实际等待点。推荐和 AI 项目通过幂等 SQLite 迁移补齐字段，偏好 prompt 由独立纯函数构造并在服务层统一注入。成人功能不在本文件重复定义，完整执行已批准的 `2026-07-23-adult-polish-agent.md`（ai-writing 分支原路径 `docs/superpowers/plans/2026-07-23-adult-polish-agent.md`；main 不收录），复用当前 `ModelRouter`。
 
 **Tech Stack:** Python 3.10+、Flask 3、SQLite/WAL、Vue 3 CDN、pytest、现有 `pixivpy3` 与 AI `ModelRouter`。
 

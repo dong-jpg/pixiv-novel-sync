@@ -231,6 +231,8 @@ def run_user_backup_task(
 
         if stopped:
             _report_log(reporter, "info", f"用户全量备份已停止: {user_name} ({user_id})")
+        elif total_failed:
+            _report_log(reporter, "warning", f"用户全量备份部分完成: {user_name} ({user_id}), 同步 {total_novels} 本, 失败 {total_failed} 本")
         else:
             _report_log(reporter, "success", f"用户全量备份完成: {user_name} ({user_id}), 同步 {total_novels} 本")
         stats = {
@@ -240,6 +242,8 @@ def run_user_backup_task(
             "assets_downloaded": total_assets,
             "stopped": stopped,
         }
+        if total_failed:
+            stats.update(failed=total_failed, incomplete=True, aborted_reason="novel_backup_errors")
         if truncated_by_page_cap:
             # 触顶翻页上限属于异常截断，必须让任务日志显示 partial
             stats["truncated"] = True

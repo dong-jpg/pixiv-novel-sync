@@ -343,7 +343,9 @@
     </div>
     <div class="flex flex-wrap gap-2 mt-3">
       <button type="button" @click="exportEpub" class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white">导出 EPUB</button>
-      <button type="button" @click="saveServerProgress" class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white">记下阅读进度</button>
+      <button type="button" @click="saveServerProgress" :disabled="progressBusy" class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white disabled:opacity-50">记下阅读进度</button>
+      <button type="button" @click="resetServerProgress" :disabled="progressBusy" class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white disabled:opacity-50">重置阅读进度</button>
+      <button type="button" @click="removeLocalBookmark" :disabled="removingBookmark" class="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 bg-red-50 disabled:opacity-50">移除本地收藏记录</button>
       <button type="button" @click="deleteThisNovel" class="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 bg-red-50">删除本地归档</button>
     </div>
     <p class="text-[11px] text-gray-400 mt-2">字号分小、中、大三档。救援按钮只改本地是否把这本书算进救援目录，不会向 Pixiv 发请求。</p>
@@ -431,6 +433,8 @@
       const loading = ref(true);
       const error = ref(null);
       const progressPercent = ref(0);
+      const progressBusy = ref(false);
+      const removingBookmark = ref(false);
       const isScrolled = ref(false);
       const seriesInfo = ref(null);
       const rescueOverride = Vue.reactive({ action: '', note: '' });
@@ -606,6 +610,8 @@
       };
 
       const handleScroll = () => {
+        // Any intervening scroll invalidates initial restoration, even a round trip to 0.
+        restorePending = false;
         isScrolled.value = window.scrollY > 10;
         if (scrollThrottle) return;
         scrollThrottle = setTimeout(() => {
@@ -633,17 +639,19 @@
 
             // Restore scroll after render
             nextTick(async () => {
-              const saved = readSavedProgress();
+              let saved = readSavedProgress();
+              const initialScrollY = window.scrollY;
               if (!saved) {
                 try {
                   const progressRes = await fetch('/api/dashboard/novels/' + encodeURIComponent(novelId) + '/progress');
                   if (progressRes.ok) {
                     const stored = await progressRes.json();
-                    if (stored && stored.progress) progressPercent.value = Number(stored.progress) || 0;
+                    const percent = Math.max(0, Math.min(100, Number(stored?.progress) || 0));
+                    saved = { scrollY: Math.max(0, document.documentElement.scrollHeight - window.innerHeight) * percent / 100 };
                   }
                 } catch (e) {}
               }
-              if (restorePending && saved && saved.scrollY > 0 && !window.location.hash) {
+              if (restorePending && saved && saved.scrollY > 0 && !window.location.hash && window.scrollY === initialScrollY) {
                 window.scrollTo({ top: Math.min(saved.scrollY, document.documentElement.scrollHeight), behavior: 'auto' });
               }
               saveProgress();
@@ -682,16 +690,52 @@
       });
 
       const saveServerProgress = async () => {
-        const progress = Math.max(0, Math.min(100, Math.round((progressPercent.value || 0))));
-        const status = progress >= 100 ? 'completed' : (progress > 0 ? 'reading' : 'unread');
-        const res = await window.csrfFetch('/api/dashboard/novels/' + encodeURIComponent(novelId) + '/progress', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ progress, status }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) window.toast(window.errorText(data, res), 'error');
-        else window.toast('阅读进度已记到账号');
+        if (progressBusy.value) return;
+        restorePending = false;
+        progressBusy.value = true;
+        try {
+          saveProgress();
+          const progress = progressPercent.value;
+          const status = progress >= 100 ? 'completed' : (progress > 0 ? 'reading' : 'unread');
+          const res = await window.csrfFetch('/api/dashboard/novels/' + encodeURIComponent(novelId) + '/progress', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ progress, status }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(window.errorText(data, res));
+          restorePending = false;
+          window.toast('阅读进度已记到账号');
+        } catch (e) { window.toast(e.message || '保存阅读进度失败', 'error'); }
+        finally { progressBusy.value = false; }
+      };
+      const resetServerProgress = async () => {
+        if (progressBusy.value || !confirm('清除账号和本机的阅读进度并回到页首？')) return;
+        restorePending = false;
+        progressBusy.value = true;
+        try {
+          const res = await window.csrfFetch('/api/dashboard/novels/' + encodeURIComponent(novelId) + '/progress', { method: 'DELETE' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(window.errorText(data, res));
+          restorePending = false;
+          clearTimeout(scrollThrottle);
+          scrollThrottle = null;
+          try { localStorage.removeItem(storageKey); } catch {}
+          window.scrollTo({top: 0, behavior: 'auto'});
+          progressPercent.value = 0;
+          window.toast('阅读进度已重置');
+        } catch (e) { window.toast(e.message || '重置阅读进度失败', 'error'); }
+        finally { progressBusy.value = false; }
+      };
+      const removeLocalBookmark = async () => {
+        if (removingBookmark.value || !confirm('仅移除本地收藏记录？小说归档会保留，不会取消 Pixiv 收藏；下次同步可能重新加入。')) return;
+        removingBookmark.value = true;
+        try {
+          const res = await window.csrfFetch('/api/dashboard/bookmarks/' + encodeURIComponent(novelId), { method: 'DELETE' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
+          window.toast('本地收藏记录已移除，归档仍保留');
+        } catch (e) { window.toast(e.message || '移除收藏记录失败', 'error'); }
+        finally { removingBookmark.value = false; }
       };
       const exportEpub = async () => {
         const res = await window.csrfFetch('/api/dashboard/novels/export-epub', {
@@ -725,7 +769,7 @@
 
       return {
         novel, loading, error, progressPercent, isScrolled, backHref, fontSizeLabel,
-        exportEpub, saveServerProgress, deleteThisNovel,
+        exportEpub, saveServerProgress, resetServerProgress, progressBusy, removeLocalBookmark, removingBookmark, deleteThisNovel,
         seriesInfo, chapterIndex, prevNovelId, nextNovelId,
         formattedContent, formatNumber, formatTextLength, formatDate,
         fontSize, cycleFontSize, rescueOverride, rescueMessage, rescueMessageType,

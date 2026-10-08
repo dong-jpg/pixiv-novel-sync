@@ -1299,7 +1299,6 @@ class AIAdminMixin:
             raise AIServiceError(
                 f"内部策略字段不允许通过普通 Agent 接口提交：{', '.join(forbidden)}"
             )
-        task_type = payload.get("task_type")
         data = {
             key: payload[key]
             for key in (

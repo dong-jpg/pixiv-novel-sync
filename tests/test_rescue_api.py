@@ -9,6 +9,7 @@ import pytest
 
 from pixiv_novel_sync.models import SourceRecord
 from pixiv_novel_sync.storage_db import Database
+from rescue_catalog_test_helpers import get_rescue_catalog_item
 from pixiv_novel_sync.webapp import SettingsManager, create_app
 
 
@@ -625,7 +626,7 @@ def test_delete_series_route_refreshes_unbound_chapters_and_historical_parent(
         )
         db.conn.commit()
         db.rebuild_rescue_catalog()
-        assert db.get_rescue_catalog_item("series", 40) is not None
+        assert get_rescue_catalog_item(db, "series", 40) is not None
         db.conn.execute("UPDATE novels SET series_id = 30 WHERE novel_id = 31")
         db.conn.commit()
     finally:
@@ -642,10 +643,10 @@ def test_delete_series_route_refreshes_unbound_chapters_and_historical_parent(
     assert response.status_code == 200
     db = Database(db_path)
     try:
-        chapter = db.get_rescue_catalog_item("novel", 31)
+        chapter = get_rescue_catalog_item(db, "novel", 31)
         assert chapter is not None
         assert chapter["content_kind"] == "standalone"
-        assert db.get_rescue_catalog_item("series", 40) is None
+        assert get_rescue_catalog_item(db, "series", 40) is None
         assert db.conn.execute(
             "SELECT series_id FROM novels WHERE novel_id = 31"
         ).fetchone()[0] is None
@@ -706,10 +707,10 @@ def test_delete_historical_series_route_keeps_current_chapter_and_reclassifies(
         ).fetchone()
         assert row is not None
         assert row["series_id"] == 30
-        chapter = db.get_rescue_catalog_item("novel", 31)
+        chapter = get_rescue_catalog_item(db, "novel", 31)
         assert chapter is not None
         assert chapter["content_kind"] == "series_chapter"
-        assert db.get_rescue_catalog_item("series", 40) is None
+        assert get_rescue_catalog_item(db, "series", 40) is None
     finally:
         db.close()
 
@@ -845,10 +846,10 @@ def test_confirm_pending_historical_series_does_not_delete_current_chapter(
         ).fetchone()
         assert row is not None
         assert row["series_id"] == 30
-        chapter = db.get_rescue_catalog_item("novel", 31)
+        chapter = get_rescue_catalog_item(db, "novel", 31)
         assert chapter is not None
         assert chapter["content_kind"] == "series_chapter"
-        assert db.get_rescue_catalog_item("series", 40) is None
+        assert get_rescue_catalog_item(db, "series", 40) is None
     finally:
         db.close()
 
@@ -906,7 +907,7 @@ def test_delete_series_refresh_failure_rolls_back_and_can_retry(
         assert db.conn.execute(
             "SELECT COUNT(*) FROM novels WHERE series_id = 60"
         ).fetchone()[0] == 2
-        assert db.get_rescue_catalog_item("series", 60) is not None
+        assert get_rescue_catalog_item(db, "series", 60) is not None
     finally:
         db.close()
 

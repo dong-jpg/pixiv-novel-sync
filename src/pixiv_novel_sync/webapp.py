@@ -49,8 +49,10 @@ from .web.utils import (
 
 # 经 webapp 再导出：jobs/services.py 依赖 _check_novel_status/_check_series_status，
 # tests/test_archive_integrity.py 依赖 _remove_archive_files
-from .web.utils import _check_novel_status, _check_series_status  # noqa: F401
-from .web.utils import _remove_archive_files  # noqa: F401
+from .web.utils import _check_novel_status as _check_novel_status, _check_series_status as _check_series_status  # noqa: F401
+from .web.utils import _remove_archive_files as _remove_archive_files  # noqa: F401
+
+__all__ = ["create_app", "_check_novel_status", "_check_series_status", "_remove_archive_files"]
 
 logger = logging.getLogger(__name__)
 
@@ -141,40 +143,16 @@ class _ArchiveTrash:
         )
         self._moves: list[tuple[Path, Path]] = []
         self.stats = dict(_EMPTY_ARCHIVE_STATS)
-        novel_dirs: list[Path] = []
-        asset_paths: list[Path] = []
-        for ref in archive_refs:
-            try:
-                novel_id = int(ref.get("novel_id") or 0)
-                user_id = int(ref.get("user_id") or 0)
-            except (TypeError, ValueError):
-                continue
-            if not novel_id:
-                continue
-            novel_dirs.append(
-                self._storage.resolve_archive_dir(
-                    str(ref.get("restrict_value") or "public"),
-                    ref.get("archive_dir"),
-                    user_id,
-                    str(ref.get("author_name") or "unknown"),
-                    novel_id,
-                    str(ref.get("title") or f"novel_{novel_id}"),
-                )
-            )
-            for path in ref.get("asset_paths") or []:
-                if path:
-                    asset_path = Path(path)
-                    asset_paths.append(asset_path)
-                    if asset_path.parent.parent.name == "assets":
-                        novel_dirs.append(asset_path.parent.parent.parent)
-        self._novel_dirs = novel_dirs
-        self._asset_paths = asset_paths
+        self._novel_dirs, self._asset_paths = self._storage._collect_archive_paths(archive_refs)
 
     def _move_to_trash(self, source: Path) -> None:
         self._trash_root.mkdir(parents=True, exist_ok=True)
+        # 在搬走唯一副本前标记；崩溃或恢复失败时禁止按年龄清除。
+        (self._trash_root / ".recovery-required").touch(exist_ok=True)
         dest = self._trash_root / str(len(self._moves))
-        shutil.move(str(source), str(dest))
+        # move 跨卷时会先复制再删源；删除中途失败也必须追踪完整目标副本。
         self._moves.append((source, dest))
+        shutil.move(str(source), str(dest))
 
     def stage(self) -> None:
         """把所有待删文件/目录搬进 trash（尚未真正删除）。"""
@@ -240,24 +218,35 @@ class _ArchiveTrash:
 
     def rollback(self) -> None:
         """DB 失败：把文件移回原位。"""
+        pending: list[tuple[Path, Path]] = []
         for source, dest in reversed(self._moves):
             try:
+                if not dest.exists() and not dest.is_symlink():
+                    if source.exists() or source.is_symlink():
+                        continue  # 搬移尚未产生目标，源副本仍完整保留。
+                    raise FileNotFoundError(f"归档源与暂存均缺失: {source}")
+                if source.exists() or source.is_symlink():
+                    raise FileExistsError(f"恢复目标已存在，保留双方副本: {source}")
                 source.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(dest), str(source))
             except Exception as exc:
-                logger.error("归档回收站回滚失败 %s -> %s: %s", dest, source, exc)
-        self._moves.clear()
-        shutil.rmtree(self._trash_root, ignore_errors=True)
+                pending.append((source, dest))
+                logger.error("归档回收站回滚失败，副本保留于 %s -> %s: %s", dest, source, exc)
+        self._moves = list(reversed(pending))
+        if not pending:
+            shutil.rmtree(self._trash_root, ignore_errors=True)
 
 
 def _sweep_stale_trash(trash_root: Path, *, max_age_seconds: float = 86400) -> int:
-    """删掉回收站里超过一天的暂存目录。进程崩溃后没人 commit/rollback 的目录靠它收尾。"""
+    """清理过期旧暂存；带恢复标记的副本保留供人工恢复。"""
     if not trash_root.is_dir():
         return 0
     cutoff = time.time() - max_age_seconds
     removed = 0
     for child in trash_root.iterdir():
         try:
+            if child.is_symlink() or (child / ".recovery-required").exists():
+                continue
             if child.stat().st_mtime >= cutoff:
                 continue
             if child.is_dir():
@@ -280,8 +269,8 @@ def _remove_archive_files_atomic(
     DB 删除抛异常时文件被移回原位，异常继续向上抛。
     """
     trash = _ArchiveTrash(settings, archive_refs)
-    trash.stage()
     try:
+        trash.stage()
         db_delete()
     except BaseException:
         trash.rollback()
@@ -778,13 +767,11 @@ def create_app(
         "/api/auth/login",
         "/api/csrf-token",
         "/api/health",
-        "/oauth/callback",
     }
 
     _CSRF_EXEMPT_PATHS = {
         "/api/auth/login",
         "/api/health",
-        "/oauth/callback",
     }
     _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
     _login_failures = _LoginFailureTracker()
@@ -1156,69 +1143,12 @@ def create_app(
         manager.save_to_env(refresh_token, user_id)
         return jsonify({"ok": True, "message": "已写入 .env"})
 
-    @app.post("/oauth/start")
-    def oauth_start():
-        external_base_url = _external_base_url(request)
-        task = oauth_manager.create_task(external_base_url)
-        return jsonify(
-            {
-                "task_id": task.task_id,
-                "status": task.status,
-                "message": task.message,
-                "login_url": task.login_url,
-                "callback_url": task.callback_url,
-                "mode": "oauth",
-            }
-        )
-
     @app.get("/oauth/task/<task_id>")
     def oauth_task(task_id: str):
         task = oauth_manager.get_task(task_id)
         if task is None:
             return jsonify({"error": "task not found"}), 404
         return jsonify(_oauth_task_public_payload(task, mode="oauth"))
-
-    @app.get("/oauth/callback")
-    def oauth_callback():
-        error = request.args.get("error")
-        if error:
-            return redirect(f"/token-login?error={error}")
-
-        code = request.args.get("code")
-        state = request.args.get("state")
-        if not code or not state:
-            return redirect("/token-login?error=回调参数缺失")
-
-        task = oauth_manager.find_task_by_state(state)
-        if task is None:
-            return redirect("/token-login?error=登录任务不存在或已过期")
-
-        try:
-            oauth_manager.exchange_code(task, code)
-        except Exception as exc:
-            task.status = "failed"
-            task.message = f"token 交换失败：{exc}"
-            return redirect("/token-login?error=token交换失败")
-
-        return redirect(f"/token-login?oauth_task={task.task_id}")
-
-    @app.post("/oauth/sync-callback/<task_id>")
-    def oauth_sync_callback(task_id: str):
-        task = oauth_manager.get_task(task_id)
-        if task is None:
-            return jsonify({"error": "task not found"}), 404
-        payload = request.get_json(silent=True) or {}
-        callback_url = str(payload.get("callback_url") or "").strip()
-        if not callback_url:
-            return jsonify({"error": "missing callback_url"}), 400
-        try:
-            oauth_manager.sync_state_from_callback_url(task, callback_url)
-        except Exception as exc:
-            task.status = "failed"
-            task.message = f"callback 同步失败：{exc}"
-            return jsonify({"error": task.message}), 400
-        task.status = "pending"
-        return jsonify({"ok": True, "message": task.message, "state": task.state})
 
     @app.post("/oauth/exchange/<task_id>")
     def oauth_exchange(task_id: str):
@@ -2007,22 +1937,6 @@ def create_app(
         finally:
             db.close()
     
-    @app.delete("/api/dashboard/users/<int:user_id>")
-    def delete_user(user_id: int):
-        """删除用户及其所有小说"""
-        current_settings = settings_manager.load(env_path=env_path)
-        db = _open_database(current_settings)
-        try:
-            archive_refs = db.list_novel_archive_refs(user_id=user_id)
-            archive_cleanup = _remove_archive_files_atomic(
-                current_settings, archive_refs, lambda: db.delete_user(user_id)
-            )
-            return jsonify({"ok": True, "message": "用户及其相关数据已删除", "archive_cleanup": archive_cleanup})
-        except Exception as exc:
-            return jsonify({"error": str(exc)}), 500
-        finally:
-            db.close()
-    
     @app.delete("/api/dashboard/series/<int:series_id>")
     def delete_series(series_id: int):
         """删除系列"""
@@ -2083,16 +1997,6 @@ def create_app(
         return jsonify({
             "pending_count": pending_count
         })
-
-    @app.get("/api/dashboard/pending-deletions/count")
-    def pending_deletion_count():
-        current_settings = settings_manager.load(env_path=env_path)
-        db = _open_database(current_settings)
-        try:
-            count = db.get_pending_deletion_count()
-        finally:
-            db.close()
-        return jsonify({"count": count})
 
     @app.post("/api/dashboard/pending-deletions/detect")
     def trigger_pending_detection():

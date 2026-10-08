@@ -1,5 +1,11 @@
 # Recommendation Completion Implementation Plan
 
+> **2026-09-30 审计口径：** 不按原文执行；部分转09-14，其余按OUT。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** 不按原文执行。recommendation_search_plans、RECOMMENDATION_SYNC 和 AI 总结为 OUT。排除已忽略条目是 09-14 的 T2-46。空勾保留。
+
+> 导航：[历史计划整合](../../archive/HISTORY_PLANS.md)；当前状态见 [整改状态](../../REMEDIATION_STATUS_2026-09-30.md)。本文保留历史正文与勾选，写作/成人部分不适用于 main。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 完成偏好分析范围、搜索计划 CRUD、推荐原子发布、反馈/屏蔽/队列、立即同步和流式任务接口。

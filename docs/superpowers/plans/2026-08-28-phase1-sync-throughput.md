@@ -1,5 +1,11 @@
 # 阶段一：同步吞吐修复 Implementation Plan
 
+> **2026-09-30 审计口径：** 代码主体存在；生产耗时指标未新验证。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** 代码已落地（FTS rowid、作者配额、系列分页上限）。勾选框没有回写。
+
+> 导航：[历史计划整合](../../archive/HISTORY_PLANS.md)；当前状态见 [整改状态](../../REMEDIATION_STATUS_2026-09-30.md)。本文保留历史正文与勾选，写作/成人部分不适用于 main。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 消除同步链路的三个吞吐缺陷——FTS 全表扫描（单篇 40 秒）、`following_novels` 每轮只覆盖 1 个作者、系列章节被分页上限锁死——在不改动任何定时频率、不增加任何 Pixiv 请求的前提下把单篇耗时从 51 秒降到约 11 秒。

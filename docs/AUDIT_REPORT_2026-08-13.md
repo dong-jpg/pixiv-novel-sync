@@ -1,5 +1,7 @@
 # 项目审计报告（2026-08-13）
 
+> **历史快照**：历史材料统一由 [历史报告整合](archive/HISTORY_REPORTS.md) 导航；本文保留当时证据，当前实现与验证以 [整改状态](REMEDIATION_STATUS_2026-09-30.md) 为准。涉及写作/成人的历史描述不代表 main 当前功能。
+
 ## 范围与证据
 
 本轮检查覆盖需求/README/API/页面文档、近期 2026-08-06 至 2026-08-12 成人润色与模型路由提交、`src/pixiv_novel_sync/` 全部主要模块、测试、部署脚本和调用引用。
@@ -112,6 +114,6 @@ OpenAI-compatible 空流 fallback 在 `ai/providers.py:867-874,917-924`、Anthro
 
 ## 文档治理
 
-本轮新增 [ADULT_POLISH_USER_GUIDE.md](ADULT_POLISH_USER_GUIDE.md) 作为用户级操作与排障入口。README/API 契约已经提供快速说明和开发者字段，但不能替代该指南。
+本轮新增 ADULT_POLISH_USER_GUIDE.md（ai-writing 分支原路径 `docs/ADULT_POLISH_USER_GUIDE.md`；main 不收录） 作为用户级操作与排障入口。README/API 契约已经提供快速说明和开发者字段，但不能替代该指南。
 
 文档状态漂移已在索引和统一需求中修正：成人设计与 Logo 设计不再标记为“等待实施”，已完成能力与当前缺口分开列出；生产 Cloudflare 状态仍标记为待服务器核验。

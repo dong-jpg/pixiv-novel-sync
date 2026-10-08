@@ -451,8 +451,6 @@ def _run_recommendation_run_task(settings: Any, context: dict[str, Any]) -> dict
                 raise InterruptedError("Task stopped by user")
             if event_type == "phase":
                 reporter.add_log("info", str(data.get("phase", "")))
-            elif event_type == "rate_limit":
-                reporter.add_log("warning", f"等待 {data.get('seconds', 1)} 秒")
 
         try:
             result = service.run(

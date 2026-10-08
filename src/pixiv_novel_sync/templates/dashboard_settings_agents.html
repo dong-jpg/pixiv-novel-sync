@@ -73,6 +73,12 @@
       <textarea v-model="agentForm.system_prompt" rows="8" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="System prompt"></textarea>
       <div class="grid grid-cols-2 gap-3">
         <input type="number" step="0.1" v-model.number="agentForm.temperature" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="temperature">
+        <label class="text-xs text-gray-600">上下文窗口（token）
+          <input type="number" min="1" step="1" v-model.number="agentForm.context_window" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+        </label>
+        <label class="text-xs text-gray-600">Top P（0–1）
+          <input type="number" min="0" max="1" step="0.05" v-model.number="agentForm.top_p" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+        </label>
         <input type="number" v-model.number="agentForm.max_tokens" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="max_tokens">
       </div>
       <label class="flex items-center gap-2 text-sm text-gray-700">
@@ -397,7 +403,7 @@
 
       const resetAgentForm = () => Object.assign(agentForm, { id: 0, name: '', task_type: 'keyword_clean', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0, required_capabilities: [], system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
       const editAgent = (agent) => {
-        Object.assign(agentForm, { id: agent.id, name: agent.name || '', task_type: agent.task_type || 'keyword_clean', binding_type: agent.binding_type || 'fixed', provider_id: agent.provider_id || 0, model: agent.model || '', model_pool_id: agent.model_pool_id || 0, required_capabilities: [...(agent.required_capabilities || [])], system_prompt: agent.system_prompt || '', temperature: agent.temperature || 0.8, top_p: agent.top_p || 0.9, max_tokens: agent.max_tokens || 4000, context_window: agent.context_window || 16000, enabled: agent.enabled !== false });
+        Object.assign(agentForm, { id: agent.id, name: agent.name || '', task_type: agent.task_type || 'keyword_clean', binding_type: agent.binding_type || 'fixed', provider_id: agent.provider_id || 0, model: agent.model || '', model_pool_id: agent.model_pool_id || 0, required_capabilities: [...(agent.required_capabilities || [])], system_prompt: agent.system_prompt || '', temperature: agent.temperature ?? 0.8, top_p: agent.top_p ?? 0.9, max_tokens: agent.max_tokens || 4000, context_window: agent.context_window || 16000, enabled: agent.enabled !== false });
         // 编辑时顺带解析候选链：改绑定前先看清它现在会调哪些模型
         candidateAgentId.value = agent.id;
         loadCandidateChain(agent.id);

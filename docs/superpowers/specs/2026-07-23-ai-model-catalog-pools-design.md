@@ -1,9 +1,13 @@
 # AI 模型目录与模型池设计
 
-> 状态：规格已确认，实施计划已建立，正在实施
+> **2026-09-30 复核：** 调度器清理 `ai_jobs` 和模型同步 operation 时用 `sync.task_log_retention_days`，默认 14 天。下文里的「三天」是当时的默认参数，不是现在的调度保留期。
+
+> main 仅保留模型目录/池/统一路由等 AI 基础设施；历史写作/成人说明不代表 main 功能。
+
+> 状态：第一阶段已落地。当前行为以代码、[模型路由指南](../../MODEL_ROUTING_GUIDE.md) 和 [UNIFIED](../../UNIFIED_PROJECT_REQUIREMENTS.md) §12 为准。
 > 日期：2026-07-23
 > 依赖：现有 `AIWritingService`、Provider/Agent 配置、SQLite、SSE 流式输出
-> 后续规格：[成人描写局部润色 Agent 设计](2026-07-23-adult-polish-agent-design.md)
+> 后续规格：成人描写局部润色 Agent 设计（ai-writing 分支原路径 `docs/superpowers/specs/2026-07-23-adult-polish-agent-design.md`；main 不收录）
 
 ## 1. 目标
 

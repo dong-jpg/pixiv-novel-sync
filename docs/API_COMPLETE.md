@@ -1,5 +1,7 @@
 # Pixiv Novel Sync - 完整 API 文档
 
+> **历史快照**：历史材料统一由 [历史报告整合](archive/HISTORY_REPORTS.md) 导航；本文保留当时证据，当前实现与验证以 [整改状态](REMEDIATION_STATUS_2026-09-30.md) 为准。涉及写作/成人的历史描述不代表 main 当前功能。
+
 > [!WARNING]
 > **历史快照，不是当前事实来源。** 本文档保留 2026-06-16 的接口记录，端点数量、字段和版本可能已经变化。当前前端依赖请查阅 [frontend-api-contract.md](frontend-api-contract.md)，最终行为以代码为准。
 
@@ -1128,7 +1130,7 @@ async function syncBookmarks() {
 ## 📚 相关文档
 
 - [README.md](../README.md) - 项目总览
-- [AI_WRITING_STUDIO_PLAN.md](AI_WRITING_STUDIO_PLAN.md) - AI 创作功能详解
+- AI_WRITING_STUDIO_PLAN.md（ai-writing 分支原路径 `docs/AI_WRITING_STUDIO_PLAN.md`；main 不收录） - AI 创作功能详解
 - [PREFERENCE_RECOMMENDER_REQUIREMENTS.md](PREFERENCE_RECOMMENDER_REQUIREMENTS.md) - 推荐系统需求
 
 ---

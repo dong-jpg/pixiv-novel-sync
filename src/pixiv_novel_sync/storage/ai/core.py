@@ -1456,7 +1456,7 @@ class AiCoreMixin:
             keep_failed_days = keep_days
         with self.transaction() as conn:
             cur = conn.execute(
-                f"""
+                """
                 DELETE FROM ai_jobs
                 WHERE ((status IN ('succeeded', 'partial', 'done', 'completed', 'success')
                        AND created_at < datetime('now', ? || ' days'))

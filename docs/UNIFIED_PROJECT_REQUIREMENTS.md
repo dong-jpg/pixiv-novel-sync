@@ -1,8 +1,10 @@
 # Pixiv Novel Sync 统一项目需求规格
 
+> 本轮 main 工作区整改与最新验证统一记录在 [整改状态](REMEDIATION_STATUS_2026-09-30.md)；历史审计保留修复前证据，不是当前失败列表。
+
 > 版本：v1.1（文档整合与状态校准版）
 > 整合日期：2026-07-28
-> 状态更新：2026-08-14；2026-09-15 AI 写作 / 成人润色需求（第 10.3、11、13 节）随模块移至 `ai-writing` 分支，main 分支只保留 AI 基础设施需求（第 12 节）与关键词清洗。
+> 状态更新：2026-10-08（仓库整改与外部验收分开记录）；2026-09-15 AI 写作 / 成人润色需求（第 10.3、11、13 节）随模块移至 `ai-writing` 分支，main 分支只保留 AI 基础设施需求（第 12 节）与关键词清洗。
 > 项目：Pixiv Novel Sync
 > 文档性质：需求基线、现行契约索引、状态与来源追溯
 > 覆盖范围：整合输入为 56 份正式 Markdown 与 23 份补充 Markdown（共 79 份，不含本文）
@@ -11,7 +13,7 @@
 
 本文件把项目入口、功能需求、前端契约、审计报告、设计规格、实施计划、任务 brief/report 和历史归档中的有效要求合并为一个可检索的基线。它同时回答四个问题：系统必须提供什么、必须遵守哪些边界、哪些能力已经落地、后续应按什么顺序补齐。
 
-本文不是把所有旧文字直接拼接。重复要求只保留一份；已替代或已经证明过时的方案保留在第 13 节；仅作为历史记录的报告不重新变成现行开发任务。
+本文不是把所有旧文字直接拼接。重复要求只保留一份；已替代或已经证明过时的方案保留在 §1.3、第 19 节及历史材料中；仅作为历史记录的报告不重新变成现行开发任务。
 
 ### 1.1 需求状态标记
 
@@ -156,7 +158,7 @@
 
 - `CURRENT` 支持每项任务的 interval-hours 和 cron；cron 优先，错误 cron 返回无下一次时间而不泄漏异常。
 - `MUST` 自动调度具备重载、停止、状态查询、限速顺延和重启后的安全初始化；开发 reloader 不得启动重复调度器。
-- `MUST` 任务日志保留默认 3 天；同步任务和 AI 任务在同一日志页可按 category、task type、状态、时间筛选。
+- `MUST` 调度器按 `sync.task_log_retention_days` 清理任务日志，默认 14 天；同步任务和 AI 任务在同一日志页可按 category、task type、状态、时间筛选。直接调用清理函数而不传天数时，参数默认仍是 3 天。
 - `MUST` AI `ai_jobs` 与 `task_logs` 继续分表，但日志页面提供统一投影、真实 job ID、详情、输入/输出摘要和脱敏错误。
 
 ### 7.3 取消和并发
@@ -232,18 +234,18 @@
 - `MUST` 从本地 `novels`、`novel_texts`、`series`、`users`、`sources`、`novel_fts` 统计标签、关键词、作者、长度、来源、系列占比、限制等级和热度。
 - `MUST` 支持全部归档、收藏、追更、指定作者/标签/时间范围、排除短文和排除失效项等分析范围；默认使用本地可见正文，过滤正文少于 1,000 字的样本。
 - `MUST` 画像为版本化 JSON，目标结构包括摘要、正向标签/关键词/题材/关系/情境/语气/节奏/叙事模式、负向排除项、搜索策略、阅读偏差和置信度。当前审计已删除无生产者/消费者的部分正向维度；恢复这些维度时必须同时实现生产、消费和回归测试，不能只加空字段。
-- `MUST` 本地统计不依赖 LLM；可选 AI 层基于统计和抽样文本总结偏好，AI 不可用时保留原始统计并优雅降级。
-- `MUST` 分析作为后台 job 支持流式进度、失败重试、多个版本、手动命名、删除和一个默认画像。
+- `MUST` 本地统计不依赖 LLM；main 的可选 AI 层用于关键词清洗，AI 不可用时保留本地结果并优雅降级。AI 结构化偏好总结为 §1.3 的 OUT。
+- `CURRENT` 分析作为共享后台 job，通过任务状态轮询查看进度；保留画像版本、命名、删除和默认画像的已有 API。增量分析仅显式提供 name/description 时覆盖原值；偏好 SSE 与完整多画像工作流为 §1.3 的 OUT。
 
 ### 10.2 搜索计划与推荐
 
-- `MUST` 搜索计划包含宽泛、精准、组合和实验性查询、排除词、原因和 limit，并允许用户编辑、保存和去重。
+- `MUST` 当次请求的搜索计划包含宽泛、精准、组合和实验性查询、排除词、原因和 limit，并在服务端截断、去重后执行。`recommendation_search_plans` 表与跨次计划 CRUD 为 §1.3 的 OUT。
 - `MUST` 推荐执行分页搜索、限速、详情补全、候选合并和历史去重；单篇正文少于 5,000 字、系列总字数少于 20,000 字的候选过滤，不设上限。
 - `MUST` 默认排除已归档、历史 dismiss、屏蔽作者和屏蔽标签；系列去重必须按 series ID 跨 run 生效，不能只按单篇 novel ID。
 - `MUST` 推荐结果保存标题、作者、标签、限制等级、字数、热度、score、命中标签/关键词/偏好、风险说明、来源查询和状态。
-- `MUST` 规则分可解释：标签命中权重最高，标题/简介关键词次之，作者偏好和系列长度加分，热度只能轻微加分，负向冲突扣分或剔除；AI 只生成解释，不独占排序控制。
+- `MUST` 规则分可解释：标签命中权重最高，标题/简介关键词次之，作者偏好和系列长度加分，热度只能轻微加分，负向冲突扣分或剔除；当前解释由确定性规则生成，不将其描述为 AI 结构化总结。
 - `MUST` 支持感兴趣、不感兴趣、屏蔽作者、屏蔽标签、加入待阅读/待同步、立即同步单篇/系列；反馈和屏蔽在下一次推荐中生效。
-- `PARTIAL` 当前推荐核心与任务日志已有实现证据，但 AI 偏好总结、创作注入、若干 stream 接口和部分前端操作仍是缺口（`x_restrict`/risk 字段与跨 run 系列去重已实现于 `recommendations.py`，2026-08-14 复核结案）。
+- `CURRENT` 推荐核心、任务日志、`x_restrict`/risk 和跨 run 系列去重已有实现；本轮将 query_errors 与 candidate_errors 分开统计，避免坏候选误判全部查询失败。AI 总结和偏好/推荐 stream 端点为 §1.3 的 OUT；创作注入不属于 main。
 
 ### 10.3 推荐与 AI 创作连接（已移至 `ai-writing` 分支）
 
@@ -291,7 +293,7 @@ main 分支保留的 AI 范围：
 - `MUST` 每个 job 保存候选快照 hash、候选索引、池版本、Agent 版本、Provider 配置 hash 和实际 attempt；attempt 保存状态、阶段、模型、脱敏错误和时间。
 - `MUST` `partial` 是正式终态，不等同 running；提供基于原 snapshot 的手动“下一个模型继续”，不得按新配置重新解析候选。
 - `MUST` job owner、lease、heartbeat、generation 和终态使用 CAS；stale job 只回收过期租约，不能误杀其他进程的有效任务。
-- `MUST` Provider 同步支持 queued/running/needs_empty_confirmation/succeeded/failed/cancelled，空目录必须二次确认；同步 operation 保存最小状态，默认 3 天清理。
+- `MUST` Provider 同步支持 queued/running/needs_empty_confirmation/succeeded/failed/cancelled，空目录必须二次确认；同步 operation 保存最小状态，调度器按 `sync.task_log_retention_days` 清理，默认 14 天；直接调用清理函数而不传天数时，参数默认仍是 3 天。
 - `MUST` 单页同步响应最多 4 MiB、单次最多 20 MiB、最多 100 页和 5,000 个模型；同步总超时 10 分钟；复用现有 SSRF/DNS/Host-SNI/禁重定向/脱敏。
 - `DONE` AI 模型目录、模型池与统一路由第一阶段 Task 1-22 已完成，包括 Schema、目录同步、池图与 CAS、`ModelRouter`、全调用链迁移、审计、手工续接、设置页和日志页；验收以对应提交及全量测试为准。
 - `OUT` 第一阶段不实现跨任务健康计数、冷却、权重轮询、成本排序和后台定时目录刷新。
@@ -355,7 +357,7 @@ main 分支保留的 AI 范围：
 
 - 同步分页、去重、限速、取消、失败保留成功数据、用户/小说/系列状态。
 - SQLite 迁移、外键、事务回滚、FTS 转义、路径边界、文件原子替换和并发快照。
-- 任务状态、单 active job、调度 cron、日志投影、3 天清理和取消终态。
+- 任务状态、单 active job、调度 cron、日志投影、`task_log_retention_days` 默认 14 天的清理和取消终态。
 - 救援资格、覆盖优先级、目录重建/增量回滚、来源筛选、stale/503、Token 和 userscript 安全。
 - 偏好空数据、短文本过滤、画像 JSON、推荐去重/评分/反馈/屏蔽、AI 不可用降级。
 - Provider SSRF、模型规范化、池循环/CAS、路由切换、partial、续接快照和敏感字段脱敏。
@@ -375,15 +377,18 @@ main 分支保留的 AI 范围：
 - 救援单项实时 API、userscript、正文完整度字段、预计算目录和来源展示的基础 Task 1-5。
 - AI 模型目录、模型池与统一路由第一阶段 Task 1-22：目录同步、池图与 CAS、`ModelRouter`、全调用链、审计、`partial`、手工续接、设置页和日志页。
 
-### 18.2 当前主线（`MUST/PLANNED`）
+### 18.2 当前主线（main）
 
-1. 完成救援目录剩余纠错/删除接线、前端完整筛选、部署性能验收和全量回归。
-2. 完成偏好 AI 总结、推荐失败/取消隔离、搜索计划 CRUD、屏蔽标签/待同步/立即同步（成人入口的偏好注入随成人润色在 `ai-writing` 分支处理）。
+1. 本轮共享整改覆盖归档搬移登记与回滚副本保护、定时备份不完整状态传播、推荐分层错误计数、增量画像字段保留，以及共享模型路由预算与内部输出隔离。最新实现/验证统一见 [整改状态](REMEDIATION_STATUS_2026-09-30.md) 与 09-30 执行台账；09-14 计划保留逐项验收及分支归属。
+2. 当前 main 工作区已移除旧待删除计数、推荐历史轮次、三个遗留 OAuth 路由及简单 cron 解析回退。工作区修改不表示提交、远端或现网已经更新。
+3. §1.3 的搜索计划表/跨次 CRUD、RECOMMENDATION_SYNC、explanation_source、偏好 SSE、AI 结构化总结、完整多画像、task_logs owner lease、seen-cursor、完整 trash manifest/启动重放等仍为 **OUT**，不得在本节重新列为开发任务。保留恢复副本不等于新增完整 manifest 系统。
+4. 写作/成人整改仅在 ai-writing；main 不恢复相关模块、页面、路由、测试或已迁出的文档。生产迁移、真实 Provider/Pixiv、证书与灰度观察不由离线回归或合成数据库初始化证明，也不重新纳入 §1.3 已排除的代码任务。
 
-### 18.3 后续体验改进
+### 18.3 后续体验维护
 
-- 完成封面在小说库的一致展示。（AI 项目总览单面板、自动写作/向导模板拆分、AI 阅读与项目总览封面等条目随 AI 写作模块在 `ai-writing` 分支处理。）
-- 统一任务日志筛选、详情、过期提示和移动端布局；保持 AI `ai_jobs` 与同步 `task_logs` 的分表边界。
+- main 维护小说库、偏好/推荐、救援与 AI 基础设施设置页面；本轮 Agent 表单补充 context_window/top_p 并保留合法零值。
+- 任务日志筛选、详情与移动端布局继续保持 AI `ai_jobs` 和同步 `task_logs` 分表边界；浏览器/移动端实际验收与自动回归分开记录。
+- AI 项目总览、写作/向导、章节 Pipeline 与成人交互只在 ai-writing，不是 main 待办。
 
 ## 19. 历史候选与明确非目标
 
@@ -405,7 +410,8 @@ main 分支保留的 AI 范围：
 | 来源组 | 文件 |
 |--------|------|
 | 根目录与开发指导 | `README.md`、`CLAUDE.md`、`assets/logo-design.md` |
-| 当前参考 | `docs/INDEX.md`、`docs/AUDIT_REPORT_2026-07-02.md`、`docs/AUDIT_REPORT_2026-07-03.md`、`docs/AUDIT_REPORT_2026-08-13.md`、`docs/frontend-api-contract.md`、`docs/frontend-pages.md`、`docs/library-os-style-guide.md`、`docs/JOB_SYSTEM.md`、`docs/MODEL_ROUTING_GUIDE.md`、`docs/RESCUE_USER_GUIDE.md`、`docs/PREFERENCE_RECOMMENDER_REQUIREMENTS.md` |
+| 当前参考 | `docs/INDEX.md`、`docs/REMEDIATION_STATUS_2026-09-30.md`、`docs/frontend-api-contract.md`、`docs/frontend-pages.md`、`docs/library-os-style-guide.md`、`docs/JOB_SYSTEM.md`、`docs/MODEL_ROUTING_GUIDE.md`、`docs/RESCUE_USER_GUIDE.md`、`docs/PREFERENCE_RECOMMENDER_REQUIREMENTS.md` |
+| 历史审计与汇编 | `docs/AUDIT_REPORT_2026-07-02.md`、`docs/AUDIT_REPORT_2026-07-03.md`、`docs/AUDIT_REPORT_2026-08-13.md`、`docs/AUDIT_REPORT_2026-09-14.md`、`docs/AUDIT_REPORT_2026-09-30.md`、`docs/PLAN_AUDIT_2026-09-30.md`、`docs/archive/HISTORY_REPORTS.md`、`docs/archive/HISTORY_PLANS.md` |
 | 历史顶层快照 | `docs/API_COMPLETE.md`、`KNOWLEDGE_GRAPH.md` |
 | 活跃规格与计划 | `docs/superpowers/specs/` 与 `docs/superpowers/plans/`；AI 模型第一阶段以 `2026-07-27-ai-model-catalog-pools-unified-requirements.md` 和已完成实施计划为追溯基线 |
 | 归档顶层 | `docs/archive/` 下审计、完成报告、优化路线图和模块拆分文档 |
@@ -422,8 +428,8 @@ main 分支保留的 AI 范围：
 1. `.superpowers/sdd/progress.md` 的 AI Task 3 状态落后于 Task 3 report、提交记录和 2026-07-27 统一需求，应以后者为准。
 2. `.superpowers/sdd/task-1-brief.md` 与 `model-task-1-brief.md` 内容相同，无法与同名救援 report 可靠配对；必须用模型前缀和最终报告消歧。
 3. 救援 Task 3 report 含多轮复审，后文修正了前文的 meta、删除和历史 membership 语义，应采用文件最后的复审结论。
-4. 多份计划复选框未维护，但代码和下游文档已证明部分能力存在；状态不能只由 checkbox 推断。
-5. Cloudflare 计划未勾选，而救援设计把 HTTPS 写作已有约束；实际部署状态必须通过服务器检查，不能仅凭仓库文档宣称完成。
+4. 多份历史计划复选框未维护，空勾不等于未做，已勾也不等于完整验收。09-30 审查与 10-08 后续验证分开记录，最新状态查整改状态和当前执行台账，不回写历史快照。
+5. Cloudflare 的仓库配置与现网证书/Full (strict) 验收是两件事；后者必须通过服务器检查，不能仅凭仓库文档、离线回归或合成数据库初始化宣称完成。
 6. 当前 API 同时存在 raw JSON 与 `{ok,data}`/`{ok,error}` envelope；统一响应形状是后续重构目标，不能假设现有所有端点已经一致。
 7. README 写“10 个定时任务”，历史知识图谱出现过 8/9 个版本；准确数量必须从当前 task registry 生成，不采用历史硬编码数字。
 8. Embedding 索引文件名在文档间存在差异；实际名称必须以当前代码和迁移测试为准。

@@ -840,8 +840,6 @@ def test_health_endpoint_makes_no_network_call(tmp_path, monkeypatch) -> None:
 
 def test_test_provider_falls_back_to_first_routable_model(tmp_path, monkeypatch) -> None:
     """想验证一个新 Provider 通不通，不该被「先填默认模型」挡住。"""
-    from pixiv_novel_sync.ai.service import AIServiceError
-
     app, db_path = _app(tmp_path, monkeypatch)
     db = Database(db_path)
     db.init_schema()

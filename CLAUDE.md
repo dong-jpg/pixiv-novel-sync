@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+Current main remediation status and verification (2026-10-08): [docs/REMEDIATION_STATUS_2026-09-30.md](docs/REMEDIATION_STATUS_2026-09-30.md). Historical [reports](docs/archive/HISTORY_REPORTS.md) and [plans](docs/archive/HISTORY_PLANS.md) are indexed separately; their old findings and test counts are snapshots, not the current backlog.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 > **分支分工**：`main` 只保留偏好关键词清洗所需的 AI 基础设施（providers / 模型目录 / 模型池 / ModelRouter / Agent / keyword_clean）。AI 写作模块（创作项目 / 章节 / 向导 / 蒸馏 / 检索 / 成人润色，即 `ai/services/{generation,projects,chat_wizard,adult}.py`、`ai/retrieval.py`、`ai/detection.py`、`storage/ai/{writing,documents,adult}.py` 及对应模板/路由/测试/文档）在 `ai-writing` 分支维护。存量库中的写作表不删——迁移只加不减；`ai_jobs.owner_scope` / `idempotency_key_hash` 两列也在 main 上保留（`storage/schema.py:_migrate_ai_tables` 带守卫的 ADD COLUMN）。本文档只描述 main 分支的现实。
@@ -29,7 +31,7 @@ pixiv-novel-sync web-token-ui  # Flask UI on http://127.0.0.1:5010 (--host/--por
 Tests (`testpaths=tests`, `pythonpath=src` in `pyproject.toml`):
 
 ```bash
-pytest                                    # full suite: ~5 min, 1253 passed / 4 skipped
+pytest                                    # latest main results: docs/REMEDIATION_STATUS_2026-09-30.md
 pytest tests/test_preferences.py           # one file
 pytest tests/test_jobs_runner.py::test_x   # one test
 pytest -k "rescue"                         # by keyword
@@ -128,7 +130,7 @@ Two eligibility rules are easy to get wrong because they look like they belong t
 
 ### Pixiv authentication
 
-Tokens come from Pixiv's OAuth PKCE flow in `oauth_helper.py:OAuthManager`: `create_task` mints state plus an S256 challenge, `exchange_code` POSTs to `oauth.secure.pixiv.net/auth/token` with the well-known Android client credentials, and `save_to_env` is the **single** function that persists the result — it upserts `PIXIV_REFRESH_TOKEN` into `.env` at mode 0o600 and also mutates `os.environ`. `.env` is the only persistence point; `auth.py:PixivAuthManager` reads the token and never writes a rotated one back. `redirect_uri` is always the fixed Pixiv-registered value, so the per-task `/oauth/callback` route effectively never fires from Pixiv — the real paths are pasting the callback URL or pasting the token. Playwright is declared in `pyproject.toml` but imported lazily and fully optional: auto-login only runs when `PIXIV_USERNAME`/`PIXIV_PASSWORD` are set, and a missing browser degrades to an error string. Note that token responses are redacted to `has_refresh_token` (asserted by `tests/test_webapp_security.py`), so any UI that gates on a plaintext `refresh_token` field will misreport a successful login.
+Tokens come from Pixiv's OAuth PKCE flow in `oauth_helper.py:OAuthManager`: `create_task` mints state plus an S256 challenge, `exchange_code` POSTs to `oauth.secure.pixiv.net/auth/token` with the well-known Android client credentials, and `save_to_env` is the **single** function that persists the result — it upserts `PIXIV_REFRESH_TOKEN` into `.env` at mode 0o600 and also mutates `os.environ`. `.env` is the only persistence point; `auth.py:PixivAuthManager` reads the token and never writes a rotated one back. `redirect_uri` is always the fixed Pixiv-registered value. The legacy `/oauth/start`, `/oauth/callback` and `/oauth/sync-callback/{task_id}` routes have been removed from the current main worktree. Create OAuth tasks through `/api/token-jobs`; the real input paths are pasting the callback URL or pasting the token. Playwright is declared in `pyproject.toml` but imported lazily and fully optional: auto-login only runs when `PIXIV_USERNAME`/`PIXIV_PASSWORD` are set, and a missing browser degrades to an error string. Note that token responses are redacted to `has_refresh_token` (asserted by `tests/test_webapp_security.py`), so any UI that gates on a plaintext `refresh_token` field will misreport a successful login.
 
 ### Preferences and recommendations
 
@@ -167,7 +169,7 @@ Generation flows through the route-job lifecycle in `ai/services/core.py` (`_sta
 - Prefer heavy, deferred imports inside functions (as `cli.py` and `jobs/tasks.py` do) to keep CLI startup fast.
 - Some tests assert on non-Python files, so behaviour changes can require doc/asset edits to stay green: `test_ai_model_docs.py` (README + `docs/`), `test_frontend_library_os.py` (templates + style guide), `test_rescue_userscript.py` (userscript), `test_deployment_contract.py` (`deploy/systemd/*` vs `scripts/install_server.sh`), `test_recommendation_scheduling.py` (every scheduler task has a web label), `test_sync_engine_incremental.py` (greps `sync_engine.py` source for raw sleeps).
 - Source-of-truth order when docs disagree (from `docs/UNIFIED_PROJECT_REQUIREMENTS.md` §1.2): code and tests > `README.md` > `docs/frontend-api-contract.md` > `docs/frontend-pages.md` / `docs/library-os-style-guide.md` > this file. `docs/INDEX.md` maps active vs archived docs.
-- `docs/superpowers/plans/` and `specs/` describe **target** state; as of 2026-09-28 the old "进行中" plans' four gap items are decided **OUT** in `docs/UNIFIED_PROJECT_REQUIREMENTS.md` §1.3 (`refresh_rescue_entities`, `recommendation_search_plans`, `JobType.RECOMMENDATION_SYNC` and `explanation_source` appear nowhere in `src/` or `tests/`, and must not be added), while `2026-09-14-ai-writing-split-and-audit-remediation.md` is the current mainline being executed (stages 0–3 and 5 are done; stage 4 runs on the `ai-writing` branch). `KNOWLEDGE_GRAPH.md`, `API_COMPLETE.md`, and `docs/archive/` are historical snapshots. None of these describe current behaviour.
+- `docs/superpowers/plans/` and `specs/` preserve historical requirements, not current failure lists. The excluded items remain **OUT** in `docs/UNIFIED_PROJECT_REQUIREMENTS.md` §1.3; do not reintroduce `refresh_rescue_entities`, `recommendation_search_plans`, `JobType.RECOMMENDATION_SYNC` or `explanation_source`. The 09-14 plan supplies task/branch requirements; the 09-30 execution ledger and `docs/REMEDIATION_STATUS_2026-09-30.md` hold current implementation and verification. Writing/adult tasks remain on `ai-writing`, not main. `KNOWLEDGE_GRAPH.md`, `API_COMPLETE.md` and old audit/archive reports are historical snapshots.
 
 ## Deploy
 

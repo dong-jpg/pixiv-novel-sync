@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from pixiv_novel_sync.storage_db import Database
+from rescue_catalog_test_helpers import get_rescue_catalog_item
 
 
 def _insert_rescue_novels(db: Database, start: int, stop: int) -> None:
@@ -206,7 +207,7 @@ def test_catalog_list_joins_existing_write_transaction(tmp_path: Path) -> None:
     db.init_schema()
     _insert_rescue_novels(db, 1, 2)
     db.rebuild_rescue_catalog()
-    original_title = db.get_rescue_catalog_item("novel", 1)["title"]
+    original_title = get_rescue_catalog_item(db, "novel", 1)["title"]
     try:
         with pytest.raises(RuntimeError, match="rollback outer"):
             with db.transaction() as conn:

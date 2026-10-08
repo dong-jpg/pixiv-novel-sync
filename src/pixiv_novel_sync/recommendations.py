@@ -100,7 +100,7 @@ class RecommendationService:
             else self.build_search_plan(profile)
         )
         run_id = self.db.create_recommendation_run(int(profile["id"]), plan)
-        stats = {"searched": 0, "candidates": 0, "saved": 0, "filtered": 0, "errors": 0, "series_deduped": 0}
+        stats = {"searched": 0, "candidates": 0, "saved": 0, "filtered": 0, "errors": 0, "query_errors": 0, "candidate_errors": 0, "series_deduped": 0}
         # 原子发布：先在内存收集全部候选，全部生成完成后再单事务写入。
         # 中途异常/取消不落任何 item，不会用半截结果覆盖上一轮推荐。
         pending_items: list[dict[str, Any]] = []
@@ -129,6 +129,7 @@ class RecommendationService:
                     raise
                 except Exception:
                     stats["errors"] += 1
+                    stats["query_errors"] += 1
                     continue
                 for novel in novels:
                     stats["candidates"] += 1
@@ -151,6 +152,7 @@ class RecommendationService:
                     except Exception:
                         # 单个候选的 API/数据异常不应炸掉整轮
                         stats["errors"] += 1
+                        stats["candidate_errors"] += 1
                         continue
                     if item is None:
                         stats["filtered"] += 1
@@ -166,7 +168,7 @@ class RecommendationService:
             if stats["errors"] > 0:
                 stats["incomplete"] = True
                 stats["aborted_reason"] = "search_errors"
-            if stats["searched"] > 0 and stats["errors"] == stats["searched"]:
+            if stats["searched"] > 0 and stats["query_errors"] == stats["searched"]:
                 self.db.update_recommendation_run(run_id, "failed", stats=stats, error_message="全部搜索查询失败")
                 raise RuntimeError("推荐搜索全部失败")
             # 单事务发布：全部 upsert + run 终态一起提交，失败则整体回滚
