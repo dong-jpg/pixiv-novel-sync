@@ -48,6 +48,8 @@ Required tokens for tests and future maintainers:
 - `library-sidebar`: fixed desktop sidebar, 260px wide。
 - `library-main`: content region, `margin-left: 260px` on desktop。
 - `mobile-bottom-bar`: mobile navigation, shown under 1024px。
+- 手机最多五项：首页、书库、作者与系列、任务、更多。更多使用共享弹窗；阅读页以 `pns-reader-page` 替换为专用工具条，不能叠放两条底栏。
+- 页面底部留白随实际底栏高度和 `env(safe-area-inset-bottom)` 调整；不能靠隐藏整页横滚掩盖不可达控件。
 
 ### Page
 
@@ -96,10 +98,13 @@ Guideline:
 - Primary sync/save/generate actions use `library-btn library-btn-primary`。
 - Secondary filter/refresh/export actions use `library-btn`。
 - Destructive actions should still use red Tailwind classes or future `library-btn-danger`。
+- 手机主要按钮、分页与弹窗操作触控范围至少44px；登录主控件至少48px。图标可小，命中区域不能随图标缩小。
 
 ### Forms
 
 Use `library-input` for text/select/textarea when migrating markup.
+
+手机输入文字至少16px；flex/grid 子项使用 `min-width: 0` 与限宽，长 Provider/Agent/模型选项不得撑宽整页。编辑操作应滚动定位并聚焦表单，错误靠近操作且不定时消失。
 
 Focus state:
 
@@ -142,6 +147,10 @@ Recommended mapping:
 Global component class includes `library-modal`.
 
 Used for log detail, confirmations, and settings dialogs.
+
+`app-modal` 默认允许遮罩关闭，可用 `:close-on-backdrop="false"` 保护一次性内容。窗口可滚动且 footer 可换行；Tab 留在顶层窗口、Escape 只关闭顶层、关闭后恢复触发点焦点。不要绕开共用背景滚动锁或另写互相冲突的弹窗锁。Token 复制结果必须在弹窗内展示，明确关闭后清空明文。
+
+弹窗内发起的操作必须在当前弹窗内回显结果，不能只调用位于遮罩下的全局 toast。错误持续到用户处理/重试，使用可访问的 alert；很长的结果文本应有可滚动、可聚焦的有限高度区域。
 
 ### Terminal/log blocks
 
@@ -228,8 +237,10 @@ Do not change:
 
 - Desktop: fixed sidebar + content margin。
 - Tablet/mobile: hide sidebar, show bottom nav。
-- Cards collapse to single column under 900-1024px。
+- 推荐结果使用单列阅读卡片；管理表单在手机堆叠。封面书库可保留紧凑双列，不将其与推荐文字卡片混为一种布局。
 - Page padding reduces to 16-22px on mobile。
+- 验收至少覆盖360/390/430px、短横屏与桌面；以实际 DOM 尺寸和交互检查整页溢出，不将 Node/CSS 断言冒充浏览器或真机验收。
+- 宽表仅在局部容器横滚；推荐标题、理由和按钮先换行或分区，不能让固定宽度的附属列挤走正文。
 
 ## Accessibility notes
 

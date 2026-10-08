@@ -1,9 +1,11 @@
 # 项目文档索引
 
-**最近更新：2026-10-08**
+**最近更新：2026-10-09**
 
 ## 当前状态：从这里开始
 
+- [移动优先改造报告](MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)：安卓 Chromium、登录保持、推荐/阅读/管理页面，本地验证与未部署边界。
+- [移动优先执行计划](superpowers/plans/2026-10-08-mobile-first-web.md)：当前移动改造任务与验收记录，独立于此前服务器整改。
 - [本轮整改执行状态](REMEDIATION_STATUS_2026-09-30.md)：当前实现、最新验证、分支与环境验收边界。它替代历史报告中的“当前状态”说明。
 - [本轮执行台账](superpowers/plans/2026-09-30-prioritized-completion.md)：按优先级推进及验证记录。
 - [09-14原任务清单](superpowers/plans/2026-09-14-ai-writing-split-and-audit-remediation.md)：逐项验收要求；不能把checkbox统计当项目完成率。

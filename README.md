@@ -21,6 +21,8 @@
 
 > **开发状态（2026-10-08）**：本轮恢复 main 的归档恢复、任务状态、推荐容错与模型预算等共享整改，并将历史报告/历史计划分开整合。main 与 ai-writing 的代码整改已分别提交、推送；最新验证、交付记录和环境验收边界以 [整改状态](docs/REMEDIATION_STATUS_2026-09-30.md) 为准。main 不包含写作/成人模块；生产部署前仍需独立备份与环境验证。
 
+> **移动改造（2026-10-09，本地分支）**：`codex/mobile-first-main` 增加可选30天登录保持，优化推荐、导航、阅读返回和管理表单。详见 [移动改造报告](docs/MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。本轮未合并、推送或部署；安卓真机与生产环境仍需复测。
+
 ## Features
 
 <table>
@@ -153,9 +155,13 @@ Dashboard 内的救援目录入口是 /dashboard/novels?category=rescue。
 | .env | 本地 secret、Pixiv token、Dashboard token 和 AI 加密密钥 |
 | config/config.yaml | 同步任务、限速、存储目录、自动调度和 cron |
 | DASHBOARD_TOKEN | 公网或反向代理部署必须配置；留空时仅允许本机访问 |
+| PIXIV_FLASK_SECRET | 会话签名与口令版本校验密钥；与数据库一起保持稳定，改变后需重新登录 |
+| PIXIV_COOKIE_SECURE | HTTPS 部署建议显式设为 `1`；只在隔离本机 HTTP 开发环境使用 `0` |
 | PIXIV_NOVEL_SYNC_AI_SECRET_KEY | 保存 AI Provider key 前必须配置，配置后应保持稳定 |
 
 不要提交 .env、data/、生成数据库、日志或真实 token。AI Provider key 会加密保存；模型池 fallback 可能把同一 Prompt 发给多个 Provider，保存配置前请确认数据范围。
+
+移动登录可勾选“在此设备保持登录30天”（默认不勾选）；服务端固定到期，不随访问无限续期。未勾选时使用浏览器会话，服务端最长7天。只在私人设备勾选；清除站点数据、无痕模式或换浏览器仍需登录。退出会撤销当前设备会话，修改生效访问密码会使旧会话失效；密码不存入本地缓存。升级到此认证格式后，旧版登录需重新输入一次密码。
 
 ## Development
 

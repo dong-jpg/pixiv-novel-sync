@@ -6,6 +6,8 @@
 
 ## 本轮交互更新（2026-10-08，main）
 
+移动优先补充于2026-10-09，位于本地 `codex/mobile-first-main` 分支；登录、推荐、阅读与管理的实际验收和未部署边界见 [移动改造报告](MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。下文契约描述当前分支代码，不等同于生产站点已经更新。
+
 - 偏好页增量分析不再发送固定 `name`；未提供的名称/描述由服务端保留。
 - Agent 设置表单可编辑 `context_window` 和 `top_p`；编辑时保留合法的零值，不用默认值覆盖 `temperature=0` / `top_p=0`。
 - 定时备份的不完整状态进入“部分完成”，取消不计失败用户；旧待删除计数与推荐历史轮次路由已移除。
@@ -45,6 +47,8 @@
 - 提供 `library-shell`、`library-sidebar`、`library-main`。
 - 保留 `window.initVueApp(setupFunc)`。
 - Include `vue_components.html`。
+- 提供 `body_class` Jinja block；`pns-reader-page` 在手机断点隐藏全局底栏，阅读页负责自己的工具栏与底部留白。
+- `window.registerPageComponents(app)` 为可选页面钩子，在全局组件注册之后、`app.mount('#app')` 之前执行，不改变现有 `initVueApp(options)` 调用方式。
 
 关键 CSS/DOM：
 
@@ -69,6 +73,10 @@
 - `app-badge`
 - `app-modal`
 
+手机底栏固定为首页、书库、作者与系列、任务、更多，不继续增加底栏项目。更多收纳偏好、待确认删除、四个设置页和退出；桌面保留侧栏。退出须检查 HTTP 与 `{ok:true}`，错误保留并允许重试。
+
+`app-modal` 保留 `title` / `isOpen` / `close` / 默认与 footer 插槽，新增默认 `true` 的 `closeOnBackdrop`。弹窗 Teleport 到 body，支持焦点保持/返回、Escape、背景滚动锁、多个弹窗的锁持有与卸载清理；窄屏可滚动、footer 可换行。一次性 Token 弹窗必须传 `:close-on-backdrop="false"`，显式关闭仍由页面清空明文。
+
 Shared APIs：
 
 - `GET /api/dashboard/shell-data`
@@ -76,6 +84,10 @@ Shared APIs：
 - `GET /api/dashboard/auto-sync/status`
 
 ## 页面详情
+
+### `/api/auth/login`
+
+Template: `login.html`（独立模板，不继承 base）。访问密码输入16px，主控件至少48px，记住选项默认不勾选。错误、限流和存储故障在页内显示；不将密码写入 HTML 回显或 localStorage，允许浏览器密码管理器。勾选后固定30天；未勾选为浏览器会话且服务端最长7天。普通访问不滚动续期，退出后服务端撤销，旧版 Cookie 需要首次重新登录。详细字段与部署前提见 [认证契约](frontend-api-contract.md#认证与健康检查-apis)。
 
 ### `/dashboard`
 
@@ -87,7 +99,9 @@ Template: `dashboard.html`
 
 原先下方的「最近活动」时间线与「定时任务」列表面板已移除：推书列表上来后它们信息重复，任务历史归「任务日志」页、逐项调度状态归设置页的调度表。
 
-「最近推书结果」是列表 + `app-pagination` 翻页（每页 10 条），数据来自 `GET /api/dashboard/recommendations/items?page=&page_size=` 的分页信封，最新一轮推书整体排最前、轮内按分数；每行点击跳转 Pixiv 原站（`source_url` 同款格式）。
+「最近推书结果」复用 `recommendation_components.html` 的单列卡片与分页控制器（每页10条）。手机统计为紧凑四列，任务控制可展开；区块标题和筛选操作可换行，不挤占正文。卡片标题至少两行，理由可展开，标签限量；只有标题链接跳转 Pixiv，反馈按钮不包在外链内。
+
+隐藏已反馈默认启用，分页请求传 `status=new`，服务端过滤/计数/有效页保持一致。显式翻页立即定位结果标题；反馈刷新、重试与过滤不偷偷延迟滚动。反馈请求防重复，错误留在卡片/结果区域；末页消失采用服务端回落页。
 
 APIs:
 
@@ -101,7 +115,7 @@ APIs:
 关键交互：
 
 - 定时同步全局启停与停止当前任务（均在运行状态条）。
-- 推书列表翻页；刷新按钮回到第一页。
+- 推书列表翻页并定位结果标题；刷新按钮回到第一页但不强制移动当前视口。
 - 任务状态轮询（`fetchJobStatus` 每 3 秒、`fetchAutoSync` 每 10 秒）。
 
 ### `/dashboard/novels`
@@ -139,6 +153,10 @@ APIs:
 - 字号切换。
 - 系列上一章/下一章。
 - 返回小说库/系列。
+
+手机使用独立“保存进度 / 字号 / 章节 / 更多”工具栏，隐藏全站底栏。保存采样当前位置，不跳回页首；重置、移除和删除仍须确认。章节与管理使用共享弹窗，管理结果在弹窗内部持续可见；失败不关闭正文、不清除进度。
+
+五个阅读/列表页面使用 `navigation_helpers.html`：`safeDashboardReturn` / `withDashboardReturn` 校验站内 dashboard 路径，`createDashboardScrollState` 仅在 sessionStorage 保存路径+查询对应的像素位置。显式返回和浏览器返回保留筛选/页码，延迟恢复遇到用户手动操作就取消；不依赖 referrer，不缓存密码或正文。存储被禁用时仍保留 URL 上下文，但不能保证像素位置持久化。
 
 ### `/dashboard/follows`
 
@@ -190,6 +208,8 @@ Template: `dashboard_pending_deletions.html`
 
 用途：展示本地归档中疑似已取消收藏/追更的项目。
 
+HTTP/业务/JSON错误与真正空列表区分。失败保留已选择的筛选和页码，提供原地“重试加载”；重试只发同一列表 GET，不启动检测、确认或恢复。请求代次保护避免旧响应覆盖新筛选。
+
 APIs:
 
 - `GET /api/dashboard/pending-deletions`
@@ -218,6 +238,8 @@ APIs:
 - `POST /api/dashboard/ai/jobs/<job_id>/continue`
 
 ### 设置（四个一级页面）
+
+移动管理约定：Provider/模型池编辑会定位并聚焦正确表单；池读取失败保持旧快照不可写，可只读重试或取消新建。池写操作独占编辑状态直到回读/错误处理完成，期间禁止改选、新建和池删除，独立Provider编辑不被锁定。错误在操作区域持续显示，不能把上一操作成功留给下一次失败。Agent候选选择器在窄屏堆叠限宽；一次性Token复制反馈在弹窗内部，遮罩不关闭，明确关闭后清空明文。
 
 `/dashboard/settings` 只做 302，一律落到 `/dashboard/settings/sync`。旧的单页 + URL hash 分区导航已经废弃，改为四个独立路由，各自一个模板、一个 Vue 应用，共享 Jinja 导航条 `dashboard_settings_nav.html`（纯静态链接，高亮取 `request.path`）。侧栏「设置」在 Operations 分组下展开为同名的四个二级项。成人润色设置页随 AI 写作模块移到 `ai-writing` 分支。
 
@@ -272,6 +294,8 @@ Template: `dashboard_preferences.html`
 
 用途：偏好画像、推荐搜索计划、推荐反馈、屏蔽管理。
 
+默认先展示与首页相同的推荐卡片/过滤/分页；画像、增量分析和搜索管理折叠在结果之后。画像读取独立于推荐，不因画像失败挡住推荐；画像错误在折叠内容之外持续提示，并提供只读重试。推荐部分失败（例如作者屏蔽已成功但反馈失败）必须明确说明并重新读取实际列表。
+
 APIs:
 
 - Preference profile APIs。
@@ -297,6 +321,8 @@ APIs:
 已进入「待确认删除」（`pending`）的条目不出现在本列表：本人取消收藏 / 追更的作品以「等你决定」为准，避免同一作品同时挂在待确认与拯救两个列表里。
 
 页面还展示目录的 `refreshed_at`，`stale` 为真时提示「数据可能已过期」。
+
+来源摘要保留紧凑显示，另有44px“展开全部来源”按钮，展开项按类型+ID独立，不依赖 hover，也不会误触作品链接。
 
 API：`GET /api/dashboard/rescues`。
 
@@ -348,6 +374,8 @@ APIs:
 | --- | --- | --- |
 | `dashboard_settings_nav.html` | 四个 `dashboard_settings_*.html` | 设置页导航条，纯静态链接 |
 | `dashboard_ai_health_band.html` | `dashboard_settings_models.html`、`dashboard_settings_agents.html` | AI 配置只读健康横幅，数据来自 `GET /api/dashboard/ai/health` |
+| `recommendation_components.html` | `dashboard.html`、`dashboard_preferences.html` | 推荐卡片、共享列表/反馈控制器、页内注册钩子与局部样式 |
+| `navigation_helpers.html` | 小说库、关注作者、作者详情、系列详情、小说阅读 | 安全返回 URL、列表滚动保存/取消/恢复，不读取正文或凭据 |
 
 ## Validation checklist
 

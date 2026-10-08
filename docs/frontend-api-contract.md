@@ -2,6 +2,8 @@
 
 > **契约更新（2026-10-08，main）**：本页只更新共享 API。增量分析保留未提供的画像字段，推荐区分查询/候选错误；已删除的旧路由不再列为可调用端点。最新验证及环境边界见 [整改状态](REMEDIATION_STATUS_2026-09-30.md)。
 
+> **移动分支补充（2026-10-09）**：登录新增可撤销的可选30天会话，首页/偏好统一使用已有分页接口。字段与失败响应见下文；本地验收、不代表现网生效，见 [移动报告](MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。
+
 本文档记录 Library OS 前端当前依赖的后端接口。后端重构时应优先保持路径、方法和主要字段兼容；如需调整，请在对接时同步更新前端适配层。
 
 > AI 写作相关端点（创作项目 / 章节 / 草稿 / 文档 / 蒸馏档案 / Prompt 模板 / chat / 写作类 SSE stream / 成人润色）随 AI 写作模块移到 `ai-writing` 分支维护，main 分支契约不再记载；main 只保留 Provider / 模型目录 / 模型同步 / 模型池 / Agent 绑定 / AI job 读取与续接等基础设施端点。
@@ -41,12 +43,18 @@
 
 Used by: 浏览器登录流程（配置 `DASHBOARD_TOKEN` 时）。
 
-- `GET`：返回内置登录表单 HTML；未配置 `DASHBOARD_TOKEN` 时直接重定向到 `/`。
-- `POST`：表单字段 `token`（`application/x-www-form-urlencoded`）。校验成功后写入会话并重定向到 `/`；失败返回 `401` 纯文本「密码错误」。同一客户端 5 分钟内失败 5 次后返回 `429` 与 `{ "error": "too many login attempts" }`。
+- `GET`：返回独立 `login.html`，不加载受保护的公共框架或业务 API；未配置 `DASHBOARD_TOKEN` 时仍重定向到 `/`。
+- `POST`：表单编码 `application/x-www-form-urlencoded`。`token` 为访问密码；只有 `remember_device=1` 才启用记住设备，默认不勾选；`next` 为经校验的站内返回路径。
+- 未勾选：浏览器会话 Cookie，服务端最长 **7天**。勾选：Cookie 与服务端记录均固定 **30天**，普通访问和 CSRF 刷新不延长期限。浏览器的“恢复上次会话”可能保留会话 Cookie，但不能突破服务端期限。
+- 成功时旋转随机标识并撤销本浏览器旧记录，302 返回安全的 `next`（默认 `/`）。拒绝外域、协议相对地址、反斜杠、控制字符及登录自循环。页面认证重定向保留路径和查询参数。
+- 密码错误 `401`、限流 `429`、认证存储故障 `503` 均返回同一登录页内的错误提示，绝不回显密码。限流仍为同一客户端5分钟内5次失败，`429` 带 `Retry-After`。
+- `web_auth_sessions` 只存随机标识 SHA-256、以 Flask secret 为密钥的口令版本 HMAC、创建/到期时间和持久标记；不存密码或原始随机标识。Cookie 使用签名、HttpOnly、SameSite=Lax；HTTPS 部署需 `PIXIV_COOKIE_SECURE=1` 或既有可信 HTTPS 代理配置。
+- 生效访问密码改变后旧会话失效；稳定的 Flask secret/数据库允许未过期会话跨服务重启使用。旧版无服务端记录的 Cookie 需要重新登录一次。
+- 认证存储不可用时受保护请求返回 `503` 并保留 Cookie 供恢复后重试，不能降级为放行、密码错误或成功退出。无口令的本机边界、CSRF、独立救援 Bearer 认证和 Referrer-Policy 保持不变。
 
 ### POST /api/auth/logout
 
-侧栏「退出」调用。清除登录会话。响应：
+桌面侧栏或手机「更多 → 退出登录」调用，仍需 CSRF。先撤销当前服务端会话记录，再清除 Cookie；旧 Cookie 无法重放，其他设备不受影响。仅 HTTP 成功且返回以下确认时，前端才跳转登录页；存储故障 `503` 必须保持当前页并显示可重试错误。
 
 ```json
 { "ok": true }
@@ -658,9 +666,11 @@ Query:
 - `limit`
 - `page`、`page_size`（可选）
 
-不带 `page` 时返回平铺数组（按 `score DESC, updated_at DESC`，受 `limit` 截断），偏好页与 `recommendations.run` 的返回值依赖这个旧形状。
+响应外层保持 `{ok:true,data:...}`。不带 `page` 时 `data` 为平铺数组（按 `score DESC, updated_at DESC`，受 `limit` 截断），保留供旧调用方与 `recommendations.run` 使用；当前首页和偏好页均改用分页接口。
 
 带 `page` 时返回分页信封 `{ items, page, page_size, total, total_pages }`，排序为 `run_id DESC, score DESC, id DESC`——最新一轮推书整体排最前、轮内按分数。排序键刻意用 `run_id`：同一本书被新一轮重推时 upsert 会刷新 `run_id` 与 `updated_at`，而 `created_at` 停在首次入库；反馈操作也会刷 `updated_at`，拿那两个排序会让老结果跳回第一页。`page_size` 夹到 1–50，越界 `page` 夹回最后一页。`page` 非数字返回 `400`。
+
+两页固定每页10条；“隐藏已反馈”传 `status=new`，由服务端先过滤再计数/分页，不能先取一页再在客户端隐藏。取消勾选时不传 `status`，仍遵循后端默认排除 dismissed/muted 的规则，并非完整历史查询。过滤改变回第一页；前端拒绝迟到响应、采用服务端有效页。确认反馈或作者屏蔽后重新读取最新筛选/页码；屏蔽成功但后续反馈失败也必须刷新列表并明确提示部分失败，不自动重复 POST。
 
 ### POST /api/dashboard/recommendations/items/{item_id}/feedback
 
