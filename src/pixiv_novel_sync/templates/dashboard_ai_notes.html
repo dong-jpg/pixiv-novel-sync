@@ -42,6 +42,7 @@
     <div class="flex items-center justify-between mb-3">
       <h2 class="font-bold text-gray-900">伏笔追踪</h2>
       <div class="flex gap-2 flex-wrap">
+        <select v-model.number="rawImportChapterId" aria-label="回收依据章节" class="text-xs border rounded"><option :value="0">选择回收依据章节</option><option v-for="ch in chapters" :key="ch.id" :value="ch.id">第{{ ch.chapter_number }}章</option></select>
         <button @click="autoResolveForeshadows" :disabled="autoResolving" class="text-xs px-3 py-1.5 bg-purple-50 text-purple-700 border border-purple-200 rounded-lg hover:bg-purple-100 disabled:opacity-50">🤖 AI自动回收</button>
         <button @click="openRawImportModal('foreshadow')" class="text-xs px-3 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg hover:bg-indigo-100">导入原始输出</button>
         <button @click="showForeshadowForm = !showForeshadowForm" class="text-xs px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg">添加伏笔</button>
@@ -81,6 +82,8 @@
       </div>
       <p v-if="!filteredForeshadows.length" class="text-sm text-pixiv-gray text-center py-6">暂无符合条件的伏笔</p>
     </div>
+    <p v-if="streamProgress" role="status" class="text-xs text-gray-600">{{ streamProgress }}</p>
+    <a v-if="currentJobId" href="/dashboard/logs" class="text-xs text-blue-600">中断后到任务日志查看产出并续跑</a>
     <pre v-if="streamOutput" class="mt-3 whitespace-pre-wrap text-xs text-gray-700 bg-gray-50 rounded-lg p-3 max-h-64 overflow-y-auto">{{ streamOutput }}</pre>
   </section>
 
@@ -161,6 +164,7 @@
       const toastMessage = ref('');
       const toastType = ref('success');
       let toastTimer = null;
+      const streamProgress = ref('');
       const streamOutput = ref('');
       const currentJobId = ref('');
 
@@ -249,7 +253,7 @@
         } catch (e) { showMessage(e.message, 'error'); }
       }
       async function resolveForeshadow(id) {
-        try { await api('/api/dashboard/ai/foreshadows/' + id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ status: 'resolved', resolved_chapter: chapters.value.length }) }); await loadForeshadows(); }
+        try { await api('/api/dashboard/ai/foreshadows/' + id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ status: 'resolved', resolved_chapter: Math.max(0, ...chapters.value.map(ch => Number(ch.chapter_number) || 0)) }) }); await loadForeshadows(); }
         catch (e) { showMessage(e.message, 'error'); }
       }
       async function deleteForeshadow(id) {
@@ -257,31 +261,39 @@
         try { await api('/api/dashboard/ai/foreshadows/' + id, { method: 'DELETE' }); await loadForeshadows(); }
         catch (e) { showMessage(e.message, 'error'); }
       }
-      // 整本回顾式回收：不带 chapter_id，让后端从全书上下文里判断哪些伏笔已经落地。
-      // 章节页 pipeline 的 foreshadow 步骤是「写完这一章顺手回收」，两者参数不同。
+      // 用户选择回收依据章节，避免使用缺省章节或章节总数。
       async function autoResolveForeshadows() {
         if (autoResolving.value) return;
+        if (!rawImportChapterId.value) { showMessage('请选择回收依据章节', 'error'); return; }
         autoResolving.value = true;
         streamOutput.value = '';
+        let completed = false;
         try {
+          const agents = await window.aiApi.agents();
+          const agent = ['resolve_foreshadow', 'general'].map(type => agents.find(a => a.enabled !== false && a.task_type === type)).find(Boolean);
+          if (!agent) throw new Error('请先配置伏笔回收 Agent');
           await window.streamSSE('/api/dashboard/ai/projects/' + projectId + '/foreshadows/auto-resolve/stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(preferencePayload({ project_id: projectId })),
+            body: JSON.stringify(preferencePayload({ project_id: projectId, chapter_id: rawImportChapterId.value, agent_id: agent.id })),
           }, {
-            onEvent: async (event, data) => {
+            onEvent: (event, data) => {
               if (event === 'metadata') {
                 currentJobId.value = data.job_id || '';
+              } else if (event === 'progress') {
+                streamProgress.value = [data.action, data.reason, data.message].filter(Boolean).join(' · ');
               } else if (event === 'delta') {
                 streamOutput.value += data.text || '';
               } else if (event === 'error') {
                 throw new Error(data.message || '回收失败');
               } else if (event === 'done') {
-                showMessage('伏笔自动回收完成', 'success');
-                await loadForeshadows();
+                completed = true;
               }
             },
           });
+          if (!completed) throw new Error('连接中断，请到任务日志查看并续跑');
+          await loadForeshadows();
+          showMessage('伏笔自动回收完成', 'success');
         } catch (e) {
           showMessage(e.message, 'error');
         } finally {
@@ -327,7 +339,7 @@
       });
 
       // setup() 的返回值是模板唯一的渲染作用域，漏一个名字就是点了没反应
-      return {
+      return { streamProgress,
         projectId, message, messageType, toastMessage, toastType, streamOutput, currentJobId,
         currentProject, chapters, foreshadows, foreshadowFilter, filteredForeshadows,
         showForeshadowForm, newForeshadow, autoResolving,

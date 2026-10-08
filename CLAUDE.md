@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+Current remediation status and verification: `docs/REMEDIATION_STATUS_2026-09-30.md`. Historical reports and plans are consolidated separately under `docs/archive/HISTORY_REPORTS.md` and `HISTORY_PLANS.md`; old audit findings are snapshots, not current failure lists.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Commands
@@ -27,7 +29,7 @@ pixiv-novel-sync web-token-ui  # Flask UI on http://127.0.0.1:5010 (--host/--por
 Tests (`testpaths=tests`, `pythonpath=src` in `pyproject.toml`):
 
 ```bash
-pytest                                    # full suite: ~7 min, 1596 passed / 4 skipped
+pytest                                    # current results: docs/REMEDIATION_STATUS_2026-09-30.md
 pytest tests/test_preferences.py           # one file
 pytest tests/test_jobs_runner.py::test_x   # one test
 pytest -k "rescue"                         # by keyword
@@ -169,7 +171,7 @@ Generation methods are generators (`stream_*` → `Iterator[AIStreamChunk]`) wra
 - Prefer heavy, deferred imports inside functions (as `cli.py` and `jobs/tasks.py` do) to keep CLI startup fast.
 - Some tests assert on non-Python files, so behaviour changes can require doc/asset edits to stay green: `test_ai_model_docs.py` (README + `docs/`), `test_frontend_library_os.py` (templates + style guide), `test_rescue_userscript.py` (userscript), `test_deployment_contract.py` (`deploy/systemd/*` vs `scripts/install_server.sh`), `test_recommendation_scheduling.py` (every scheduler task has a web label), `test_sync_engine_incremental.py` (greps `sync_engine.py` source for raw sleeps).
 - Source-of-truth order when docs disagree (from `docs/UNIFIED_PROJECT_REQUIREMENTS.md` §1.2): code and tests > `README.md` > `docs/frontend-api-contract.md` > `docs/frontend-pages.md` / `docs/library-os-style-guide.md` > this file. `docs/INDEX.md` maps active vs archived docs.
-- `docs/superpowers/plans/` and `specs/` describe **target** state; as of 2026-09-28 the old "进行中" plans' four gap items are decided **OUT** in `docs/UNIFIED_PROJECT_REQUIREMENTS.md` §1.3 (`refresh_rescue_entities`, `recommendation_search_plans`, `JobType.RECOMMENDATION_SYNC` and `explanation_source` appear nowhere in `src/` or `tests/`, and must not be added), while `2026-09-14-ai-writing-split-and-audit-remediation.md` is the current mainline being executed (stages 0–3 and 5 done on `main`; stage 4 is this branch's remaining work). `KNOWLEDGE_GRAPH.md`, `API_COMPLETE.md`, and `docs/archive/` are historical snapshots. None of these describe current behaviour.
+- `docs/superpowers/plans/` and `specs/` describe **target** state. The older plans' excluded items remain **OUT** in `docs/UNIFIED_PROJECT_REQUIREMENTS.md` §1.3 (`refresh_rescue_entities`, `recommendation_search_plans`, `JobType.RECOMMENDATION_SYNC` and `explanation_source` must not be added). The 09-14 plan supplies task requirements; the 09-30 execution ledger and `docs/REMEDIATION_STATUS_2026-09-30.md` record current implementation, fresh verification and remaining acceptance. Do not reuse pre-fix audit failures as the current backlog. `KNOWLEDGE_GRAPH.md`, `API_COMPLETE.md`, and old audit/archive reports are historical snapshots, not current behaviour contracts.
 
 ## Deploy
 

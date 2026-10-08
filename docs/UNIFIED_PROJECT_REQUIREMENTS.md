@@ -1,8 +1,10 @@
 # Pixiv Novel Sync 统一项目需求规格
 
+> 本轮工作区修复与最新验证统一记录在 [整改状态](REMEDIATION_STATUS_2026-09-30.md)；历史审计保留修复前证据，不是当前失败列表。
+
 > 版本：v1.1（文档整合与状态校准版）
 > 整合日期：2026-07-28
-> 状态更新：2026-08-14
+> 状态更新：2026-10-08（仓库整改与外部验收分开记录）
 > 项目：Pixiv Novel Sync
 > 文档性质：需求基线、现行契约索引、状态与来源追溯
 > 覆盖范围：整合输入为 56 份正式 Markdown 与 23 份补充 Markdown（共 79 份，不含本文）
@@ -156,7 +158,7 @@
 
 - `CURRENT` 支持每项任务的 interval-hours 和 cron；cron 优先，错误 cron 返回无下一次时间而不泄漏异常。
 - `MUST` 自动调度具备重载、停止、状态查询、限速顺延和重启后的安全初始化；开发 reloader 不得启动重复调度器。
-- `MUST` 任务日志保留默认 3 天；同步任务和 AI 任务在同一日志页可按 category、task type、状态、时间筛选。
+- `MUST` 调度器按 `sync.task_log_retention_days` 清理任务日志，默认 14 天；同步任务和 AI 任务在同一日志页可按 category、task type、状态、时间筛选。直接调用清理函数时参数默认仍是 3 天。
 - `MUST` AI `ai_jobs` 与 `task_logs` 继续分表，但日志页面提供统一投影、真实 job ID、详情、输入/输出摘要和脱敏错误。
 
 ### 7.3 取消和并发
@@ -240,13 +242,13 @@
 
 ### 10.2 搜索计划与推荐
 
-- `MUST` 搜索计划包含宽泛、精准、组合和实验性查询、排除词、原因和 limit，并允许用户编辑、保存和去重。
+- `MUST` 当次请求里的搜索计划包含宽泛、精准、组合和实验性查询、排除词、原因和 limit，并在服务端截断、去重后执行。`recommendation_search_plans` 表和跨次保存不在范围内，见 §1.3。
 - `MUST` 推荐执行分页搜索、限速、详情补全、候选合并和历史去重；单篇正文少于 5,000 字、系列总字数少于 20,000 字的候选过滤，不设上限。
 - `MUST` 默认排除已归档、历史 dismiss、屏蔽作者和屏蔽标签；系列去重必须按 series ID 跨 run 生效，不能只按单篇 novel ID。
 - `MUST` 推荐结果保存标题、作者、标签、限制等级、字数、热度、score、命中标签/关键词/偏好、风险说明、来源查询和状态。
 - `MUST` 规则分可解释：标签命中权重最高，标题/简介关键词次之，作者偏好和系列长度加分，热度只能轻微加分，负向冲突扣分或剔除；AI 只生成解释，不独占排序控制。
 - `MUST` 支持感兴趣、不感兴趣、屏蔽作者、屏蔽标签、加入待阅读/待同步、立即同步单篇/系列；反馈和屏蔽在下一次推荐中生效。
-- `PARTIAL` 当前推荐核心与任务日志已有实现证据，但 AI 偏好总结、创作注入、若干 stream 接口和部分前端操作仍是缺口（`x_restrict`/risk 字段与跨 run 系列去重已实现于 `recommendations.py`，2026-08-14 复核结案）。
+- `PARTIAL` 推荐核心、排除词、任务日志、`x_restrict`/risk 和跨 run 系列去重已在 `recommendations.py`。AI 偏好总结和三个 stream 端点是 §1.3 的 OUT。普通创作链可以按强度注入偏好；成人注入未实现字段已移除并明确拒绝，避免假支持。
 
 ### 10.3 推荐与 AI 创作连接
 
@@ -306,7 +308,7 @@
 - `MUST` 每个 job 保存候选快照 hash、候选索引、池版本、Agent 版本、Provider 配置 hash 和实际 attempt；attempt 保存状态、阶段、模型、脱敏错误和时间。
 - `MUST` `partial` 是正式终态，不等同 running；提供基于原 snapshot 的手动“下一个模型继续”，不得按新配置重新解析候选。
 - `MUST` job owner、lease、heartbeat、generation 和终态使用 CAS；stale job 只回收过期租约，不能误杀其他进程的有效任务。
-- `MUST` Provider 同步支持 queued/running/needs_empty_confirmation/succeeded/failed/cancelled，空目录必须二次确认；同步 operation 保存最小状态，默认 3 天清理。
+- `MUST` Provider 同步支持 queued/running/needs_empty_confirmation/succeeded/failed/cancelled，空目录必须二次确认；同步 operation 只保存最小状态。调度器按 `task_log_retention_days` 清理，默认 14 天；函数参数默认值仍是 3 天。
 - `MUST` 单页同步响应最多 4 MiB、单次最多 20 MiB、最多 100 页和 5,000 个模型；同步总超时 10 分钟；复用现有 SSRF/DNS/Host-SNI/禁重定向/脱敏。
 - `DONE` AI 模型目录、模型池与统一路由第一阶段 Task 1-22 已完成，包括 Schema、目录同步、池图与 CAS、`ModelRouter`、全调用链迁移、审计、手工续接、设置页和日志页；验收以对应提交及全量测试为准。
 - `OUT` 第一阶段不实现跨任务健康计数、冷却、权重轮询、成本排序和后台定时目录刷新。
@@ -322,7 +324,7 @@
 - `MUST` Provider delta 只在服务端内存缓冲；完整事实、安全、差异和策略校验通过后才能发送候选，partial 缓冲必须丢弃。
 - `MUST` 应用时在 `BEGIN IMMEDIATE` 内重验章节 revision、正文和片段 hash、角色事实、策略、binding、owner 和 warning acknowledgment，再以乐观锁写回。
 - `MUST` 成人审计输入、通用日志和应用记录不得保存原片段、上下文、完整 Prompt、Provider 原始响应、未完成/安全阻断候选或 API key；完整校验后的未应用候选只允许临时保存在 owner-scoped `ai_jobs.output_text`，应用或保留期清理后删除。
-- `PARTIAL` 当前成人请求虽然保留 `preference_profile_id` 与注入强度字段，但阅读页未发送、服务端未将画像注入成人 Prompt；取消回调也未传入 ModelRouter，progress 在同步路由完成后才发送。详见 `docs/AUDIT_REPORT_2026-08-13.md`。
+- `OUT` 成人偏好注入按T4-18允许的删字段方案收口：请求契约不再接受画像/注入强度字段，不能把字段存在误当功能实现。取消与审查进度的当前状态见 `docs/REMEDIATION_STATUS_2026-09-30.md`，08-13报告仅为历史。
 
 ## 14. 视觉、响应式与可访问性
 
@@ -377,7 +379,7 @@
 
 - 同步分页、去重、限速、取消、失败保留成功数据、用户/小说/系列状态。
 - SQLite 迁移、外键、事务回滚、FTS 转义、路径边界、文件原子替换和并发快照。
-- 任务状态、单 active job、调度 cron、日志投影、3 天清理和取消终态。
+- 任务状态、单 active job、调度 cron、日志投影、`task_log_retention_days` 默认 14 天的清理和取消终态。
 - 救援资格、覆盖优先级、目录重建/增量回滚、来源筛选、stale/503、Token 和 userscript 安全。
 - 偏好空数据、短文本过滤、画像 JSON、推荐去重/评分/反馈/屏蔽、AI 不可用降级。
 - Provider SSRF、模型规范化、池循环/CAS、路由切换、partial、续接快照和敏感字段脱敏。
@@ -400,15 +402,15 @@
 
 ### 18.2 当前主线（`MUST/PLANNED`）
 
-1. 完成救援目录剩余纠错/删除接线、前端完整筛选、部署性能验收和全量回归。
-2. 完成偏好 AI 总结、推荐失败/取消隔离、搜索计划 CRUD、屏蔽标签/待同步/立即同步和成人入口的偏好注入。
-3. 补齐成人局部润色的实时 progress、取消/断连传播和对应回归测试；核心安全审查与事实保护边界已实施。
+0. 本轮共享修复已覆盖归档恢复副本保护、备份不完整状态、推荐分层错误计数与画像字段保留；验证见 `docs/REMEDIATION_STATUS_2026-09-30.md`。这不重启OUT的完整trash manifest/多画像系统。
+1. 写作/成人收口依09-14任务与09-30执行台账推进；当前验收状态统一看 `docs/REMEDIATION_STATUS_2026-09-30.md`，不再沿用修复前的“仅T4-02/09完成”结论。
+2. 两分支当前工作区已移除遗留路由与简单cron回退，静态检查和回归按最新状态文档记录。未提交工作区不等于远端已更新。
+3. §1.3 列出的搜索计划表、`RECOMMENDATION_SYNC`、偏好 SSE、AI 总结、lease、游标和 trash manifest 不再排进主线。
 
 ### 18.3 后续体验改进
 
-- 完成 AI 项目总览单面板、自动写作/向导模板拆分的最终复核和视觉回归。
-- 完成封面在小说库、AI 阅读和项目总览的一致展示；补充风格控制 UI 和标签。
-- 统一任务日志筛选、详情、过期提示和移动端布局；保持 AI `ai_jobs` 与同步 `task_logs` 的分表边界。
+- AI 项目总览单面板、写作/向导拆页、封面路由和风格控制 UI 在 `ai-writing` 上；本轮补充了 T5-11 的章节/Agent 选择、路由进度与中断提示，以及 T4-06 的生成前风格设置保存。自动回归与浏览器/移动端实际验收仍须区分，结果见整改状态。
+- 任务日志筛选和移动端布局已按 T5-03 做过一轮。AI `ai_jobs` 与同步 `task_logs` 继续分表。
 
 ## 19. 历史候选与明确非目标
 
@@ -430,7 +432,7 @@
 | 来源组 | 文件 |
 |--------|------|
 | 根目录与开发指导 | `README.md`、`CLAUDE.md`、`assets/logo-design.md` |
-| 当前参考 | `docs/INDEX.md`、`docs/AUDIT_REPORT_2026-07-02.md`、`docs/AUDIT_REPORT_2026-07-03.md`、`docs/AUDIT_REPORT_2026-08-13.md`、`docs/frontend-api-contract.md`、`docs/frontend-pages.md`、`docs/library-os-style-guide.md`、`docs/JOB_SYSTEM.md`、`docs/MODEL_ROUTING_GUIDE.md`、`docs/RESCUE_USER_GUIDE.md`、`docs/ADULT_POLISH_USER_GUIDE.md`、`docs/PREFERENCE_RECOMMENDER_REQUIREMENTS.md`、`docs/QWEN_EMBEDDING_INTEGRATION.md` |
+| 当前参考 | `docs/INDEX.md`、`docs/AUDIT_REPORT_2026-09-30.md`、`docs/AUDIT_REPORT_2026-09-14.md`、`docs/AUDIT_REPORT_2026-08-13.md`、`docs/AUDIT_REPORT_2026-07-03.md`、`docs/AUDIT_REPORT_2026-07-02.md`、`docs/frontend-api-contract.md`、`docs/frontend-pages.md`、`docs/library-os-style-guide.md`、`docs/JOB_SYSTEM.md`、`docs/MODEL_ROUTING_GUIDE.md`、`docs/RESCUE_USER_GUIDE.md`、`docs/ADULT_POLISH_USER_GUIDE.md`、`docs/PREFERENCE_RECOMMENDER_REQUIREMENTS.md`、`docs/QWEN_EMBEDDING_INTEGRATION.md` |
 | 历史顶层快照 | `docs/API_COMPLETE.md`、`docs/AI_WRITING_STUDIO_PLAN.md`、`KNOWLEDGE_GRAPH.md` |
 | 活跃规格与计划 | `docs/superpowers/specs/` 与 `docs/superpowers/plans/`；AI 模型第一阶段以 `2026-07-27-ai-model-catalog-pools-unified-requirements.md` 和已完成实施计划为追溯基线 |
 | 归档顶层 | `docs/archive/` 下审计、完成报告、优化路线图和模块拆分文档 |
@@ -447,8 +449,8 @@
 1. `.superpowers/sdd/progress.md` 的 AI Task 3 状态落后于 Task 3 report、提交记录和 2026-07-27 统一需求，应以后者为准。
 2. `.superpowers/sdd/task-1-brief.md` 与 `model-task-1-brief.md` 内容相同，无法与同名救援 report 可靠配对；必须用模型前缀和最终报告消歧。
 3. 救援 Task 3 report 含多轮复审，后文修正了前文的 meta、删除和历史 membership 语义，应采用文件最后的复审结论。
-4. 多份计划复选框未维护，但代码和下游文档已证明部分能力存在；状态不能只由 checkbox 推断。
-5. Cloudflare 计划未勾选，而救援设计把 HTTPS 写作已有约束；实际部署状态必须通过服务器检查，不能仅凭仓库文档宣称完成。
+4. 多份历史计划复选框未维护，空勾不一定是未做。09-30 审查曾撤回 T3-01/T3-02 等勾选；后续修复与 10-08 重新验证统一记录在整改状态和当前执行台账，不回写历史审查快照。状态不能只由 checkbox 推断。
+5. Cloudflare 的仓库脚本已把应用绑到本机端口。Origin CA 和 Full (strict) 不在仓库里，现网是否生效必须到服务器上看。
 6. 当前 API 同时存在 raw JSON 与 `{ok,data}`/`{ok,error}` envelope；统一响应形状是后续重构目标，不能假设现有所有端点已经一致。
 7. README 写“10 个定时任务”，历史知识图谱出现过 8/9 个版本；准确数量必须从当前 task registry 生成，不采用历史硬编码数字。
 8. Embedding 索引文件名在文档间存在差异；实际名称必须以当前代码和迁移测试为准。

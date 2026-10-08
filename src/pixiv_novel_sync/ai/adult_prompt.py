@@ -35,6 +35,12 @@ _ANALYSIS_PREFIX = re.compile(
 
 
 @dataclass(frozen=True, slots=True)
+class AdultNameVariant(AdultCharacterFact):
+    # 保留身份事实；表面写法仅用于无损还原。
+    surface: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class AdultPrompt:
     boundary: str
     sections: Mapping[str, str]
@@ -184,7 +190,7 @@ def _masked_replacer(by_name: Mapping[str, AdultCharacterFact], token_by_id: Map
         return lambda text: text
     pattern = re.compile("|".join(re.escape(name) for name in names))
     return lambda text: pattern.sub(
-        lambda match: token_by_id[by_name[match.group(0)].character_id],
+        lambda match: token_by_id[match.group(0)],
         text,
     )
 
@@ -267,9 +273,15 @@ def build_adult_prompt(
         forbidden_text=forbidden_text,
         used=used_random,
     )
+    names_pattern = re.compile("|".join(re.escape(name) for name in sorted(by_name, key=lambda name: (-len(name), name))))
+    name_hits = [match.group(0) for match in names_pattern.finditer(raw_context)]
+    for fact in facts:
+        for alias in fact.aliases:
+            if raw_context.count(alias) > name_hits.count(alias):
+                raise AdultInputError("角色别名存在子串歧义，请修改别名后重试")
     token_by_id: dict[str, str] = {}
-    for ordinal, fact in enumerate(facts):
-        token_by_id[fact.character_id] = _choose_random_value(
+    for ordinal, name in enumerate(by_name):
+        token_by_id[name] = _choose_random_value(
             prefix=_TOKEN_PREFIX,
             suffix=f"_{ordinal}",
             forbidden_text=forbidden_text + boundary,
@@ -339,7 +351,12 @@ def build_adult_prompt(
         },
     ]
     token_map = MappingProxyType(
-        {token_by_id[fact.character_id]: fact for fact in facts}
+        {token_by_id[name]: AdultNameVariant(
+            character_id=fact.character_id, revision=fact.revision,
+            canonical_name=fact.canonical_name, aliases=fact.aliases,
+            age_years=fact.age_years, age_basis=fact.age_basis,
+            fictional=fact.fictional, active=fact.active, surface=name,
+        ) for name, fact in by_name.items()}
     )
     return AdultPrompt(
         boundary=boundary,
@@ -471,22 +488,26 @@ def restore_character_tokens(
 ) -> str:
     if not isinstance(candidate, str) or not isinstance(token_map, Mapping):
         raise AdultInputError("候选或占位符映射无效")
-    character_ids: set[str] = set()
+    character_ids: set[tuple[str, str]] = set()
     for token, fact in token_map.items():
         if not isinstance(token, str) or _TOKEN_KEY.fullmatch(token) is None:
             raise AdultInputError("占位符格式无效")
         if not isinstance(fact, AdultCharacterFact):
             raise AdultInputError("占位符角色事实无效")
-        if fact.character_id in character_ids:
-            raise AdultInputError("占位符必须一对一对应身份")
-        character_ids.add(fact.character_id)
+        surface = fact.surface if isinstance(fact, AdultNameVariant) else fact.canonical_name
+        if surface not in _character_names(fact):
+            raise AdultInputError("占位符表面名称不属于该身份")
+        identity = (fact.character_id, surface)
+        if identity in character_ids:
+            raise AdultInputError("占位符必须一对一对应身份及名称")
+        character_ids.add(identity)
     issue = _token_variant_issue(candidate, token_map)
     if issue is not None:
         raise AdultInputError(issue)
     if not token_map:
         return candidate
     pattern = re.compile("|".join(re.escape(token) for token in token_map))
-    restored = pattern.sub(lambda match: token_map[match.group(0)].canonical_name, candidate)
+    restored = pattern.sub(lambda match: (token_map[match.group(0)].surface if isinstance(token_map[match.group(0)], AdultNameVariant) else token_map[match.group(0)].canonical_name), candidate)
     if _token_variant_issue(restored, token_map) is not None:
         raise AdultInputError("还原后仍存在占位符")
     return restored

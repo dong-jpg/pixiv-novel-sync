@@ -96,7 +96,7 @@ class FakeModelRouter:
             output_reserve=1_000,
             message_overhead=6,
             safety_margin=256,
-            estimator="utf8_bytes",
+            estimator="heuristic",
         )
         self.resolve_calls: list[tuple[int, str, CandidateSnapshot | None]] = []
         self.budget_calls: list[tuple[int, CandidateSnapshot, list[dict[str, str]], int]] = []
@@ -652,6 +652,10 @@ def test_continue_uses_internal_route_then_main_without_internal_body(
         [AIStreamChunk(type="delta", text="摘要")],
     )
     fake_router.queue_result(
+        success_result("pending", "摘要"),
+        [AIStreamChunk(type="delta", text="摘要")],
+    )
+    fake_router.queue_result(
         success_result("pending", "续写"),
         [AIStreamChunk(type="delta", text="续写")],
     )
@@ -660,9 +664,17 @@ def test_continue_uses_internal_route_then_main_without_internal_body(
 
     assert [request.stage for request in fake_router.requests] == [
         "internal",
+        "internal",
         "main",
     ]
-    assert fake_router.requests[0].job_id == fake_router.requests[1].job_id
+    from pixiv_novel_sync.ai.services.core import _message_tokens
+    assert len({r.job_id for r in fake_router.requests}) == 1
+    assert all(_message_tokens(r.messages) <= 1000 for r in fake_router.requests)
+    assert not fake_router.results
+    # Both summary requests together must cover the head, without duplication.
+    head_chars = sum("".join(m["content"] for m in r.messages).count("前文")
+                     for r in fake_router.requests[:-1])
+    assert head_chars == 850
     assert collected_delta(chunks) == "续写"
     assert chunks[-1].type == "done"
     job = db.get_ai_job(fake_router.requests[-1].job_id)
@@ -1623,3 +1635,111 @@ def test_generation_has_no_synthetic_batch_delta_calls() -> None:
             offenders.append(node)
 
     assert offenders == []
+
+
+@pytest.mark.parametrize("method", ["stream_continue", "stream_rewrite", "stream_audit", "stream_plan", "stream_distill_style", "stream_distill_novel"])
+def test_large_chinese_generation_obeys_token_budget(service, fixed_agent, fake_router, monkeypatch, method):
+    from pixiv_novel_sync.ai.services.core import _message_tokens
+    original = fake_router.build_prompt_budget
+    def checked_budget(agent, snapshot, messages, max_tokens):
+        assert _message_tokens(messages) <= fake_router.budget.input_budget
+        return original(agent, snapshot, messages, max_tokens)
+    monkeypatch.setattr(fake_router, "build_prompt_budget", checked_budget)
+    monkeypatch.setattr(service, "_sleep_unless_cancelled", lambda *args: None)
+    chunks = list(getattr(service, method)({
+        "agent_id": fixed_agent.id, "source_type": "manual", "text": "龘" * 22000,
+        "smart_context": False, "full_text": True, "context_chars": 22000, "batch_size": 8,
+    }))
+    assert chunks[-1].type == "done", chunks[-1].data
+    assert fake_router.requests
+    if "distill" in method:
+        assert sum(m["content"].count("龘") for r in fake_router.requests for m in r.messages) == 22000
+    for request in fake_router.requests:
+        assert _message_tokens(request.messages) <= fake_router.budget.input_budget
+
+
+def test_final_route_uses_provider_estimator(service, fixed_agent, fake_router, db, monkeypatch):
+    monkeypatch.setattr(fake_router, "estimate_messages", lambda snapshot, messages: (
+        sum(len(m["content"]) * 2 for m in messages), "provider"
+    ), raising=False)
+    context = service._start_route_job(db, "rewrite", fixed_agent, {}, messages=MESSAGES, max_tokens=1000)
+    list(service._stream_route(context, [{"role": "user", "content": "文" * 6000}]))
+    assert sum(len(m["content"]) * 2 for m in fake_router.requests[-1].messages) <= context.prompt_budget.input_budget
+
+
+def test_wizard_six_rounds_retain_affordable_history(service, fixed_agent, fake_router, db):
+    session = db.create_ai_chat_session({"agent_id": fixed_agent.id, "scope": "wizard", "title": "budget"})
+    for turn in range(6):
+        answer = "答" * 500
+        fake_router.queue_result(success_result("pending", answer), [AIStreamChunk(type="delta", text=answer)])
+        chunks = list(service.stream_chat({"session_id": session, "user_message": "问" * 500}))
+        assert chunks[-1].type == "done"
+        assert len(fake_router.requests[-1].messages) == 2 + turn * 2
+    assert len(db.list_ai_chat_messages(session)) == 12
+
+
+def test_large_chinese_summary_cost_and_source_coverage(service, fixed_agent, fake_router):
+    from pixiv_novel_sync.ai.services.core import _message_tokens
+    chunks = list(service.stream_continue({
+        "agent_id": fixed_agent.id, "source_type": "manual", "text": "龘" * 22000,
+        "smart_context": True, "context_chars": 22000,
+    }))
+    assert chunks[-1].type == "done"
+    internal = [r for r in fake_router.requests if r.stage == "internal"]
+    assert 1 <= len(internal) <= 4
+    assert sum(m["content"].count("龘") for r in internal for m in r.messages) == 22000 - int(fake_router.budget.input_budget * .3)
+    assert all(_message_tokens(r.messages) <= fake_router.budget.input_budget for r in fake_router.requests)
+
+
+@pytest.mark.parametrize("method", ["stream_continue", "stream_rewrite", "stream_audit", "stream_plan", "stream_distill_style", "stream_distill_novel"])
+def test_job_input_uses_document_reference_not_pasted_body(service, fixed_agent, fake_router, db, method):
+    text = "private-pasted-body" * 50
+    chunks = list(getattr(service, method)({"agent_id": fixed_agent.id, "text": text, "smart_context": False}))
+    assert chunks[-1].type == "done"
+    job = db.get_ai_job(fake_router.requests[-1].job_id)
+    assert "text" not in job["input"]
+    assert text not in json.dumps(job["input"])
+    assert job["input"]["source_type"] == "document"
+    assert service._resolve_input_text(db, job["input"]) == text
+
+
+def test_pasted_source_reference_survives_resume_without_duplicate_document(service, fixed_agent, fake_router, db, monkeypatch):
+    text = "resume-private-source" * 20
+    list(service.stream_rewrite({"agent_id": fixed_agent.id, "text": text}))
+    parent = db.get_ai_job(fake_router.requests[-1].job_id)
+    monkeypatch.setattr(fake_router, "validate_resume_snapshot", lambda _agent, snapshot, *_args: snapshot, raising=False)
+    chunks = list(service.stream_job_with_next_model(parent["job_id"], {
+        "parent_job_id": parent["job_id"], "candidate_snapshot_hash": parent["candidate_snapshot_hash"],
+        "resume_candidate_index": 0, "idempotency_key": "budget-private-resume-key",
+    }))
+    assert chunks[-1].type == "done", chunks[-1].data
+    child = db.get_ai_job(fake_router.requests[-1].job_id)
+    assert child["input"]["document_id"] == parent["input"]["document_id"]
+    assert "text" not in child["input"]
+    assert text in rendered_request(fake_router)
+    assert db.conn.execute("SELECT COUNT(*) FROM ai_documents").fetchone()[0] == 1
+
+
+def test_pasted_source_document_rolls_back_when_job_creation_fails(service, fixed_agent, db, monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("job write failed")
+    monkeypatch.setattr(db, "create_ai_job", fail)
+    payload = {"text": "private body"}
+    with pytest.raises(RuntimeError, match="job write failed"):
+        service._start_route_job(db, "rewrite", fixed_agent, payload, messages=MESSAGES, max_tokens=1000)
+    assert payload == {"text": "private body"}
+    assert db.conn.execute("SELECT COUNT(*) FROM ai_documents").fetchone()[0] == 0
+
+
+def test_resume_estimator_only_inspects_remaining_candidates(service, fixed_agent, fake_router, db, monkeypatch):
+    context = service._start_route_job(db, "rewrite", fixed_agent, {}, messages=MESSAGES, max_tokens=1000)
+    candidates = context.candidate_snapshot.candidates
+    snapshot = replace(context.candidate_snapshot, candidates=(candidates[0], replace(candidates[0], candidate_index=1)))
+    context = replace(context, candidate_snapshot=snapshot, resume_candidate_index=1)
+    seen = []
+    def estimate(snapshot, messages):
+        seen.extend(c.candidate_index for c in snapshot.candidates)
+        return 1, "provider"
+    monkeypatch.setattr(fake_router, "estimate_messages", estimate, raising=False)
+    assert service._route_estimator(context)(MESSAGES) == 1
+    assert seen == [1]

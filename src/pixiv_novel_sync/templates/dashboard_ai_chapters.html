@@ -103,18 +103,20 @@
           </div>
           <div>
             <label class="block text-xs font-medium text-pixiv-gray mb-1.5">正文内容</label>
-            <textarea v-model="chapterEditForm.content" rows="20" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif" placeholder="章节正文..."></textarea>
+            <textarea v-model="chapterEditForm.content" :disabled="savingChapter || pipelinePreparing || streaming || pipelineRunning" rows="20" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-serif" placeholder="章节正文..."></textarea>
           </div>
           <div v-if="!chapterEditForm.title || !chapterEditForm.outline" class="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">
             这个章节缺少标题或大纲。空白新建章节不会自动生成这些内容；可以点「生成构思」，或先在「项目与规划」页生成长篇规划后再创建章节。
           </div>
           <div class="flex flex-wrap gap-2">
-            <button @click="saveCurrentChapter" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">保存章节</button>
+            <button @click="saveCurrentChapter" :disabled="savingChapter || pipelinePreparing || streaming || pipelineRunning" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">保存章节</button>
             <button @click="previewChapterContext" :disabled="contextPreviewLoading || streaming || !chapterContinueAgent" class="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm disabled:opacity-50">{{ contextPreviewLoading ? '预览中...' : '预览上下文' }}</button>
             <button @click="startChapterContinue" :disabled="streaming" class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm disabled:opacity-50">{{ streaming ? '续写中...' : 'AI 续写' }}</button>
             <button @click="startChapterPlan" :disabled="streaming" class="px-4 py-2 bg-amber-500 text-white rounded-lg text-sm disabled:opacity-50">生成构思</button>
             <button @click="autoUpdateState" :disabled="streaming" class="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm disabled:opacity-50">更新状态</button>
-            <button @click="appendOutput" v-if="streamOutput && !streaming" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">追加到正文</button>
+            <span v-if="streamProgress" class="text-xs text-gray-600">{{ streamProgress }}</span>
+            <a v-if="currentJobId" href="/dashboard/logs" class="text-xs text-blue-600">任务日志 / 中断后续跑</a>
+            <button @click="appendOutput" v-if="streamOutput && !streaming && !pipelineRunning && !streamAutosaved" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">追加到正文</button>
           </div>
           <p class="text-xs text-pixiv-gray">普通「AI 续写」会流式生成并自动写回当前章节正文；完成后页面会刷新正文。右侧输出仍保留本次新增内容，方便复制或二次处理——但离开本页不保留。</p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -142,7 +144,7 @@
             <textarea v-model="chapterKeyEventsText" rows="3" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="事件1&#10;事件2"></textarea>
           </div>
           <div class="flex gap-2 items-center flex-wrap">
-            <button @click="saveCurrentChapter" class="px-3 py-1.5 bg-brand-500 text-white rounded text-xs">保存</button>
+            <button @click="saveCurrentChapter" :disabled="savingChapter || pipelinePreparing || streaming || pipelineRunning" class="px-3 py-1.5 bg-brand-500 text-white rounded text-xs">保存</button>
             <button @click="indexChapter" class="px-3 py-1.5 bg-gray-100 rounded text-xs">索引到检索库</button>
             <span v-if="chapterActionStatus" class="text-xs text-green-600">{{ chapterActionStatus }}</span>
           </div>
@@ -317,6 +319,8 @@
     setup() {
       const { ref, reactive, computed, onMounted } = Vue;
       const projectId = {[ project_id ]};
+      let chapterOpenRequest = 0;
+      let foreshadowsLoaded = false;
       let chapterDashboardReq = 0;  // 章节产出面板请求令牌，防止快速切章时旧请求覆盖新章节数据
 
       const agents = ref([]);
@@ -401,6 +405,17 @@
         foreshadow: ['resolve_foreshadow', 'general'],
         audit: ['audit', 'general'],
       };
+      const savingChapter = ref(false);
+      const pipelinePreparing = ref(false);
+      const streamAutosaved = ref(false);
+      const streamProgress = ref('');
+      let pipelineAbortController = null;
+      let pipelineCancelled = false;
+      function cancelPipeline() {
+        pipelineCancelled = true;
+        pipelineAbortController?.abort();
+      }
+      Vue.onBeforeUnmount(cancelPipeline);
       function bestAgentId(kind) {
         const priorities = AGENT_PRIORITY[kind] || [kind, 'general'];
         const enabled = agents.value.filter(a => a.enabled !== false);
@@ -408,7 +423,7 @@
           const matched = enabled.find(a => a.task_type === type);
           if (matched) return matched.id;
         }
-        return enabled[0]?.id || 0;
+        return 0;
       }
       function applyBestAgentDefaults(force = false) {
         if (force || !chapterContinueAgent.value) chapterContinueAgent.value = bestAgentId('continue');
@@ -434,6 +449,7 @@
       // 本页所有生成流的公共出口：帧解析在 window.streamSSE 里，这里只负责把
       // 事件映射到页面状态。
       async function routeStream(url, payload) {
+        let completed = false;
         await window.streamSSE(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -441,14 +457,16 @@
         }, {
           onEvent: (event, data) => {
             if (event === 'metadata') currentJobId.value = data.job_id || '';
-            if (event === 'progress') streamOutput.value += '\n[' + (data.phase || 'progress') + '] ' + (data.message || '处理中…') + '\n';
+            if (event === 'progress') streamProgress.value = [data.action, data.reason, data.message].filter(Boolean).join(' · ');
+            if (event === 'done') { completed = true; streamAutosaved.value = !!data.autosaved; }
             if (event === 'delta') streamOutput.value += data.text || '';
             if (event === 'error') throw new Error(data.message || '生成失败');
           },
         });
+        if (!completed) throw new Error('连接已中断，已保存的产出可在任务日志查看并续跑');
       }
       async function startStream(url, payload) {
-        streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
+        streaming.value = true; streamOutput.value = ''; currentJobId.value = ''; streamAutosaved.value = false; streamProgress.value = '';
         try {
           await routeStream(url, payload);
           if (!streamOutput.value.trim()) {
@@ -470,7 +488,7 @@
         try {
           const report = await api('/api/dashboard/ai/detect-ai-tells', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: streamOutput.value }) });
           const issues = (report.issues || []).map(i => `[${i.severity}] ${i.message}`).join('；');
-          alert(`AI 痕迹评分：${report.score.toFixed(0)}/100（越高越像人写）` + (issues ? '\n问题：' + issues : ''));
+          showMessage(`AI 痕迹评分：${report.score.toFixed(0)}/100（越高越像人写）` + (issues ? '\n问题：' + issues : ''));
         } catch (e) { showMessage(e.message, 'error'); }
       }
       // ── 项目 / 章节 / 伏笔数据 ────────────────────────────────
@@ -497,7 +515,7 @@
         } catch { chapters.value = []; }
       }
       async function loadForeshadows() {
-        try { foreshadows.value = await api('/api/dashboard/ai/projects/' + projectId + '/foreshadows'); }
+        try { foreshadows.value = await api('/api/dashboard/ai/projects/' + projectId + '/foreshadows'); foreshadowsLoaded = true; }
         catch { foreshadows.value = []; }
       }
 
@@ -586,8 +604,10 @@
         catch (e) { showMessage(e.message, 'error'); }
       }
       // ── 单章工作区 ────────────────────────────────────────────
-      function resetChapterWorkspace() {
+      function resetForChapterSwitch() {
         streamOutput.value = '';
+        streamAutosaved.value = false;
+        streamProgress.value = '';
         currentJobId.value = '';
         pipelineSteps.value = [];
         pipelineCurrentStep.value = '';
@@ -615,12 +635,19 @@
         if (ch) openChapter(ch);
       }
       function backToChapterList() {
+        if (savingChapter.value || pipelinePreparing.value || streaming.value || pipelineRunning.value) return;
+        chapterOpenRequest++;
         currentChapter.value = null;
-        resetChapterWorkspace();
+        resetForChapterSwitch();
         syncChapterQuery(0);
       }
       async function openChapter(ch) {
-        resetChapterWorkspace();
+        if (savingChapter.value || pipelinePreparing.value || streaming.value || pipelineRunning.value) return;
+        const request = ++chapterOpenRequest;
+        try { ch = await api('/api/dashboard/ai/chapters/' + ch.id); }
+        catch (e) { showMessage(e.message, 'error'); return; }
+        if (request !== chapterOpenRequest) return;
+        resetForChapterSwitch();
         currentChapter.value = { ...ch };
         Object.assign(chapterEditForm, { title: ch.title || '', content: ch.content || '', outline: ch.outline || '', summary: ch.summary || '' });
         chapterKeyEventsText.value = (ch.key_events || []).join('\n');
@@ -629,7 +656,7 @@
         syncChapterQuery(ch.id);
         // 伏笔只在进入工作区时拉：到期提醒需要它，列表视图不需要，
         // 这样页面装载仍然只有 3 个请求（§3.2）。
-        if (!foreshadows.value.length) loadForeshadows();
+        if (!foreshadowsLoaded) await loadForeshadows();
         await Vue.nextTick();
         // 同步加载产出面板（带请求令牌，防止快速切章时旧请求覆盖新章节数据）
         const reqId = ++chapterDashboardReq;
@@ -645,22 +672,52 @@
           }
         }
       }
-      async function saveCurrentChapter() {
+      async function reloadCurrentChapter() {
         if (!currentChapter.value) return;
-        const keyEvents = chapterKeyEventsText.value.split('\n').map(s => s.trim()).filter(Boolean);
+        const id = currentChapter.value.id;
+        const fresh = await api('/api/dashboard/ai/chapters/' + id);
+        if (currentChapter.value?.id !== id) return;
+        currentChapter.value = fresh;
+        Object.assign(chapterEditForm, { title: fresh.title || '', content: fresh.content || '', outline: fresh.outline || '', summary: fresh.summary || '' });
+        chapterKeyEventsText.value = (fresh.key_events || []).join('\n');
+        await loadChapterDashboard();
+      }
+      async function saveCurrentChapter() {
+        if (!currentChapter.value || savingChapter.value || streaming.value || pipelineRunning.value) return false;
+        savingChapter.value = true;
+        const id = currentChapter.value.id;
+        const submitted = { ...chapterEditForm };
+        const submittedEvents = chapterKeyEventsText.value;
+        const keyEvents = submittedEvents.split('\n').map(s => s.trim()).filter(Boolean);
         try {
-          await api('/api/dashboard/ai/chapters/' + currentChapter.value.id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ ...chapterEditForm, key_events: keyEvents }) });
-          currentChapter.value = { ...currentChapter.value, ...chapterEditForm, key_events: keyEvents, word_count: (chapterEditForm.content || '').length };
-          chapterActionStatus.value = '已保存';
-          showMessage('章节已保存');
-        } catch (e) { showMessage(e.message, 'error'); }
+          let fresh = await api('/api/dashboard/ai/chapters/' + id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ ...submitted, key_events: keyEvents, expected_revision: currentChapter.value.chapter_revision }) });
+          if (!fresh || fresh.id !== id || fresh.chapter_revision == null) fresh = await api('/api/dashboard/ai/chapters/' + id);
+          if (currentChapter.value?.id !== id) return false;
+          currentChapter.value = fresh;
+          let dirty = false;
+          for (const key of Object.keys(submitted)) {
+            if (chapterEditForm[key] === submitted[key]) chapterEditForm[key] = fresh[key] || '';
+            else dirty = true;
+          }
+          if (chapterKeyEventsText.value === submittedEvents) chapterKeyEventsText.value = (fresh.key_events || []).join('\n');
+          else dirty = true;
+          await loadChapterDashboard();
+          if (currentChapter.value?.id !== id) return false;
+          // 最后一次 await 之后再检查，防止刷新产出面板期间的输入被后续生成覆盖。
+          dirty = dirty || Object.keys(submitted).some(key => chapterEditForm[key] !== (fresh[key] || ''))
+            || chapterKeyEventsText.value !== (fresh.key_events || []).join('\n');
+          chapterActionStatus.value = dirty ? '已保存提交版本，仍有未保存修改' : '已保存';
+          showMessage(chapterActionStatus.value, dirty ? 'warning' : 'success');
+          return !dirty;
+        } catch (e) { showMessage(e.message, 'error'); return false; }
+        finally { savingChapter.value = false; }
       }
       async function previewChapterContext() {
         if (!currentChapter.value || !currentProject.value) return;
         if (!chapterContinueAgent.value) { showMessage('请选择续写 Agent', 'error'); return; }
         contextPreviewLoading.value = true;
         try {
-          await saveCurrentChapter();
+          if (!(await saveCurrentChapter())) return;
           contextPreview.value = await api('/api/dashboard/ai/projects/' + projectId + '/context/preview', {
             method: 'POST', headers: {'Content-Type':'application/json'},
             body: JSON.stringify(preferencePayload({
@@ -677,13 +734,15 @@
       }
       async function startChapterContinue() {
         if (!chapterContinueAgent.value) { showMessage('请选择续写 Agent', 'error'); return; }
-        await saveCurrentChapter();
+        if (!(await saveCurrentChapter())) return;
         const payload = preferencePayload({ agent_id: chapterContinueAgent.value, project_id: projectId, chapter_id: currentChapter.value?.id, instruction: chapterInstruction.value });
         await startStream('/api/dashboard/ai/chapters/continue/stream', payload);
         if (currentChapter.value) {
           try {
             const fresh = await api('/api/dashboard/ai/chapters/' + currentChapter.value.id);
             currentChapter.value = fresh;
+            const autosave = fresh.metadata?.continue_autosave;
+            streamAutosaved.value = !!(autosave && autosave.job_id === currentJobId.value && autosave.saved_chars > 0);
             Object.assign(chapterEditForm, { title: fresh.title || '', content: fresh.content || '', outline: fresh.outline || '', summary: fresh.summary || '' });
             chapterKeyEventsText.value = (fresh.key_events || []).join('\n');
             chapterActionStatus.value = 'AI 续写已自动保存';
@@ -704,7 +763,7 @@
       async function autoUpdateState() {
         if (!chapterContinueAgent.value) { showMessage('请选择 Agent', 'error'); return; }
         if (!chapterEditForm.content.trim()) { showMessage('章节内容为空', 'error'); return; }
-        await saveCurrentChapter();
+        if (!(await saveCurrentChapter())) return;
         const payload = preferencePayload({ agent_id: chapterContinueAgent.value, project_id: projectId, chapter_id: currentChapter.value?.id });
         streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
         try {
@@ -716,6 +775,7 @@
         finally { streaming.value = false; }
       }
       function appendOutput() {
+        if (streamAutosaved.value || streaming.value || pipelineRunning.value) return;
         if (!streamOutput.value) return;
         chapterEditForm.content = (chapterEditForm.content || '') + '\n' + streamOutput.value;
         streamOutput.value = '';
@@ -723,7 +783,7 @@
       }
       async function indexChapter() {
         if (!currentChapter.value) return;
-        await saveCurrentChapter();
+        if (!(await saveCurrentChapter())) return;
         try { await api('/api/dashboard/ai/projects/' + projectId + '/chapters/' + currentChapter.value.id + '/index', { method: 'POST' }); chapterActionStatus.value = '已保存并索引到检索库'; showMessage('已索引到检索库'); }
         catch (e) { showMessage(e.message, 'error'); }
       }
@@ -784,31 +844,56 @@
         const el = pipelineOutputRef.value;
         if (el) el.scrollTop = el.scrollHeight;
       }
-      async function startChapterPipeline(autoRetryFailed = true) {
+      function mergePipelineSteps(incoming, preserve) {
+        const previous = preserve ? [...(currentChapter.value?.metadata?.pipeline?.steps || []), ...pipelineSteps.value] : [];
+        const byName = new Map(previous.map(step => [step.name, step]));
+        const labels = {pending: '等待', running: '运行中', done: '完成', failed: '失败', skipped: '跳过', cancelled: '已取消'};
+        for (const step of incoming) {
+          const status = step.status || 'pending';
+          byName.set(step.name, { ...step, label: step.label || pipelineStepLabel(step.name), status, statusLabel: labels[status] || status });
+        }
+        pipelineSteps.value = pipelineAllSteps.map(step => byName.get(step.id)).filter(Boolean);
+      }
+      async function startChapterPipeline(autoRetryFailed = true, retry = false) {
+        if (pipelinePreparing.value) return;
+        if (autoRetryFailed) pipelineCancelled = false;
+        if (pipelineCancelled || streaming.value) return;
         if (!currentChapter.value || pipelineRunning.value) return;
         const steps = pipelineSelectedSteps.value.slice();
         if (!steps.length) { showMessage('至少选择一个步骤', 'error'); return; }
-        // 启动前把档案与风格设定写回项目：后端读的是库里的值，不是这里的 payload
-        if (!(await saveProjectProfiles())) return;
-        if (!(await saveProjectStyleControl())) return;
-        applyBestAgentDefaults();
-        // 自动填充未指定的 agent_id
+        const targetChapterId = currentChapter.value.id;
         const agent_ids = {};
-        for (const s of pipelineAllSteps) {
-          if (!steps.includes(s.id)) continue;
-          if (s.id === 'index' || s.id === 'detect') continue;
-          let aid = pipelineAgentIds[s.id] || bestAgentId(s.id);
-          agent_ids[s.id] = aid || 0;
-        }
-        pipelineRunning.value = true;
+        pipelinePreparing.value = true;
+        try {
+          if (!(await saveCurrentChapter())) return;
+          // 启动前把档案与风格设定写回项目：后端读的是库里的值，不是这里的 payload
+          if (!(await saveProjectProfiles())) return;
+          if (!(await saveProjectStyleControl())) return;
+          applyBestAgentDefaults();
+          // 自动填充未指定的 agent_id
+          for (const s of pipelineAllSteps) {
+            if (!steps.includes(s.id)) continue;
+            if (s.id === 'index' || s.id === 'detect') continue;
+            let aid = pipelineAgentIds[s.id] || bestAgentId(s.id);
+            agent_ids[s.id] = aid || 0;
+          }
+          const dirty = Object.keys(chapterEditForm).some(key => chapterEditForm[key] !== (currentChapter.value?.[key] || ''))
+            || chapterKeyEventsText.value !== (currentChapter.value?.key_events || []).join('\n');
+          if (currentChapter.value?.id !== targetChapterId || dirty) {
+            showMessage('还有未保存修改，请先保存后再启动 Pipeline', 'warning');
+            return;
+          }
+          pipelineRunning.value = true;
+        } finally { pipelinePreparing.value = false; }
         pipelineCurrentStep.value = '';
-        pipelineSteps.value = steps.map(name => ({ name, label: pipelineStepLabel(name), status: 'pending', statusLabel: '等待' }));
+        mergePipelineSteps(steps.map(name => ({ name, status: 'pending' })), retry);
         streamOutput.value = '';
         try {
           const payload = preferencePayload({
             project_id: projectId,
             chapter_id: currentChapter.value.id,
             steps,
+            retry,
             agent_ids,
             instruction: chapterInstruction.value,
             output_chars: 3000,
@@ -816,14 +901,17 @@
             context_chars: 8000,
           });
           let curStepName = '';
+          pipelineAbortController = new AbortController();
+          let completed = false;
           await window.streamSSE('/api/dashboard/ai/chapters/pipeline/stream', {
+            signal: pipelineAbortController.signal,
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
           }, {
             onEvent: (event, data) => {
               if (event === 'metadata') {
-                if (data.steps) pipelineSteps.value = data.steps.map(s => ({ name: s.name, label: s.label, status: 'pending', statusLabel: '等待' }));
+                if (data.steps) mergePipelineSteps(data.steps, retry);
               } else if (event === 'step_start') {
                 curStepName = data.step;
                 pipelineCurrentStep.value = data.step;
@@ -850,7 +938,11 @@
                 }
                 dashboardTab.value = 'pipeline';
                 showMessage('步骤"' + (data.label || data.step) + '"失败，已跳过并继续：' + (data.error || ''), 'warning');
+              } else if (event === 'progress') {
+                const progress = data.progress || data;
+                streamProgress.value = [progress.action, progress.reason, progress.message].filter(Boolean).join(' · ');
               } else if (event === 'done') {
+                completed = true;
                 const failedSteps = pipelineSteps.value.filter(s => s.status === 'failed').map(s => s.name);
                 if (autoRetryFailed && failedSteps.length) {
                   showMessage('Pipeline 完成，但有 ' + failedSteps.length + ' 个步骤失败，请稍候自动重试', 'warning');
@@ -863,16 +955,17 @@
             },
           });
           // 重新加载章节数据 + dashboard
-          await openChapter(currentChapter.value);
-          await loadChapterDashboard();
-          await loadForeshadows();
+          if (!completed) throw new Error('连接中断，请到任务日志查看产出并续跑');
           const failed = pipelineSteps.value.filter(s => s.status === 'failed').map(s => s.name);
-          if (autoRetryFailed && failed.length) {
+          await reloadCurrentChapter();
+          await loadForeshadows();
+          if (autoRetryFailed && !pipelineCancelled && failed.length) {
             pipelineRunning.value = false;
             await retryFailedPipelineSteps(failed, 3);
           }
         } catch (e) {
-          showMessage(e.message, 'error');
+          showMessage(pipelineCancelled ? '已取消；已保存的产出仍保留' : e.message, 'error');
+          await reloadCurrentChapter();
         } finally {
           pipelineRunning.value = false;
           pipelineCurrentStep.value = '';
@@ -881,28 +974,36 @@
       async function runSingleStep(stepName) {
         if (!currentChapter.value || pipelineRunning.value) return;
         const endpoint = `/api/dashboard/ai/chapters/${stepName}/stream`;
+        const kind = stepName === 'extract-summary' ? 'summary' : 'polish_dialogue';
+        const agentId = pipelineAgentIds[kind] || bestAgentId(kind);
+        if (!agentId) { showMessage('请配置可用的 Agent', 'error'); return; }
+        if (!(await saveCurrentChapter())) return;
         pipelineRunning.value = true;
         streamOutput.value = '';
         try {
           const payload = preferencePayload({
             project_id: projectId,
             chapter_id: currentChapter.value.id,
-            agent_id: 0,
+            agent_id: agentId,
+            text: chapterEditForm.content,
           });
           await window.streamSSE(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
           }, {
-            onEvent: async (event, data) => {
+            onEvent: (event, data) => {
               if (event === 'delta') {
                 streamOutput.value += data.text || '';
+              } else if (event === 'error') {
+                throw new Error(data.message || '执行失败');
               } else if (event === 'done') {
                 showMessage(`${stepName === 'extract-summary' ? '摘要提取' : '润色'}完成`, 'success');
-                await openChapter(currentChapter.value);
+
               }
             },
           });
+          await reloadCurrentChapter();
         } catch (e) {
           showMessage(e.message, 'error');
         } finally {
@@ -911,10 +1012,11 @@
       }
       async function retryPipelineStep(stepName) {
         if (!currentChapter.value || pipelineRunning.value) return;
+        pipelineCancelled = false;
         const savedSelected = pipelineSelectedSteps.value.slice();
         pipelineSelectedSteps.value = [stepName];
         try {
-          await startChapterPipeline(false);
+          await startChapterPipeline(false, true);
         } finally {
           pipelineSelectedSteps.value = savedSelected;
         }
@@ -926,7 +1028,7 @@
         try {
           for (const stepName of uniqueSteps) {
             let succeeded = false;
-            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            for (let attempt = 1; attempt <= maxAttempts && !pipelineCancelled; attempt++) {
               const label = pipelineStepLabel(stepName);
               showMessage('正在重试步骤"' + label + '"（' + attempt + '/' + maxAttempts + '）', 'warning');
               const idx = pipelineSteps.value.findIndex(x => x.name === stepName);
@@ -936,9 +1038,9 @@
                 pipelineSteps.value[idx].error = '';
               }
               pipelineSelectedSteps.value = [stepName];
-              await startChapterPipeline(false);
+              await startChapterPipeline(false, true);
               const latest = pipelineSteps.value.find(x => x.name === stepName);
-              if (latest && latest.status !== 'failed') {
+              if (latest && ['done', 'skipped'].includes(latest.status)) {
                 succeeded = true;
                 break;
               }
@@ -963,6 +1065,8 @@
         }
         batchPipelineRunning.value = true;
         Object.assign(batchPipelineProgress, { total: batchSelectedChapterIds.value.length, succeeded: 0, failed: 0, currentLabel: '准备开始' });
+        let completed = false;
+        batchPipelineProgress.status = 'running';
         try {
           const payload = preferencePayload({
             project_id: projectId,
@@ -992,16 +1096,25 @@
               } else if (event === 'error') {
                 throw new Error(data.message || '批量生成失败');
               } else if (event === 'done') {
-                batchPipelineProgress.succeeded = data.succeeded || batchPipelineProgress.succeeded;
-                batchPipelineProgress.failed = data.failed || batchPipelineProgress.failed;
+                completed = true;
+                batchPipelineProgress.succeeded = data.succeeded ?? batchPipelineProgress.succeeded;
+                batchPipelineProgress.failed = data.failed ?? batchPipelineProgress.failed;
                 batchPipelineProgress.total = data.total || batchPipelineProgress.total;
               }
             },
           });
+          if (!completed) throw new Error('批量连接中断，已保存的章节保留，请到任务日志查看并续跑');
+          batchPipelineProgress.status = batchPipelineProgress.failed ? 'partial' : 'succeeded';
+          batchPipelineProgress.currentLabel = batchPipelineProgress.failed ? '部分完成' : '已完成';
           await loadChapters();
           showMessage('批量生成完成：成功 ' + batchPipelineProgress.succeeded + ' 章，失败 ' + batchPipelineProgress.failed + ' 章');
-        } catch (e) { showMessage(e.message, 'error'); }
-        finally { batchPipelineRunning.value = false; batchPipelineProgress.currentLabel = '已完成'; }
+        } catch (e) {
+          batchPipelineProgress.status = completed ? 'failed' : 'interrupted';
+          batchPipelineProgress.currentLabel = '已中断 · ' + batchPipelineProgress.currentLabel;
+          showMessage(e.message, 'error');
+          await loadChapters();
+        }
+        finally { batchPipelineRunning.value = false; }
       }
       // 流式输出时自动跟随到底
       let _autoScrollTimer = null;
@@ -1043,6 +1156,7 @@
       return {
         projectId, agents, message, messageType, toastMessage, toastType,
         streaming, streamOutput, currentJobId, continueAgents,
+        savingChapter, pipelinePreparing, streamAutosaved, streamProgress, cancelPipeline,
         currentProject, chapters, currentChapter, foreshadows, chapterForeshadowAlerts,
         projectMetaForm, chapterEditForm, chapterKeyEventsText, chapterContinueAgent,
         chapterInstruction, chapterActionStatus,

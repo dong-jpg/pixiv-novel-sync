@@ -5,9 +5,9 @@ from collections.abc import Generator, Iterator
 from dataclasses import replace
 from typing import Any
 
-from ..chunking import estimate_token_count, get_tail_context, split_text_by_chars
+from ..chunking import get_tail_context, split_text_by_chars
 from ..detection import detect_ai_tells
-from ..model_router import PromptBudget, RouteResult
+from ..model_router import PromptBudget, RouteResult, estimate_token_count
 from ..models import AIStreamChunk
 from ..prompts import (
     build_audit_messages,
@@ -19,10 +19,58 @@ from ..prompts import (
     build_style_distill_messages,
     build_summarize_messages,
 )
-from .core import RouteJobContext
+from .core import (
+    AIServiceError,
+    RouteJobContext,
+    _fit_route_messages,
+    _fit_tail_text_messages,
+    _split_prompt_text,
+)
+
+
+def _chunks_that_fit_tokens(chunks: list[str], token_budget: int, *, maximum: int) -> int:
+    total = 0
+    count = 0
+    limit = max(int(token_budget or 0), 1)
+    for chunk in chunks:
+        size = max(estimate_token_count(chunk), 1)
+        if count and total + size > limit:
+            break
+        total += size
+        count += 1
+        if count >= maximum:
+            break
+    return max(count, 1)
+
+
+class _DistillationCancelled(AIServiceError):
+    """Cancellation during the inter-batch wait, not a generation failure."""
 
 
 class AIGenerationMixin:
+    def _sleep_unless_cancelled(self, db: Any, context: RouteJobContext, seconds: float) -> None:
+        """蒸馏批次之间的间隔。任务已请求取消时停下。"""
+        getter = getattr(db, "get_ai_job", None)
+
+        def _cancelled() -> bool:
+            if getter is None:
+                return False
+            job = getter(context.job_id)
+            return isinstance(job, dict) and bool(job.get("cancel_requested"))
+
+        if _cancelled():
+            raise _DistillationCancelled("蒸馏已取消")
+        deadline = time.monotonic() + max(float(seconds), 0)
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            before = time.monotonic()
+            time.sleep(min(0.2, remaining))
+            # 测试会把 sleep 换成空函数。这时不能空转等墙钟。
+            if time.monotonic() - before < 0.01:
+                break
+            if _cancelled():
+                raise _DistillationCancelled("蒸馏已取消")
+
     def _forward_route(
         self,
         context: RouteJobContext,
@@ -152,14 +200,14 @@ class AIGenerationMixin:
                 type="metadata",
                 data={"job_id": route_context.job_id},
             )
-            effective_chars = max(
-                1,
-                min(context_chars, route_context.prompt_budget.input_budget),
-            )
+            input_budget = route_context.prompt_budget.input_budget
+            requested_tokens = max(1, min(
+                estimate_token_count(get_tail_context(context, context_chars)), input_budget,
+            ))
             if smart:
                 effective_budget = replace(
                     route_context.prompt_budget,
-                    input_budget=effective_chars,
+                    input_budget=requested_tokens,
                 )
                 for item in self._smart_context(
                     context,
@@ -170,16 +218,19 @@ class AIGenerationMixin:
                         yield item
                     else:
                         context = item
-            else:
-                context = get_tail_context(context, effective_chars)
-            messages = build_continue_messages(
-                system_prompt=agent.system_prompt,
-                context=context,
-                instruction=payload.get("instruction"),
-                output_chars=payload.get("output_chars"),
-                style_prompt=payload.get("style_prompt"),
-                novel_prompt=payload.get("novel_prompt"),
-                plan_text=payload.get("plan_text"),
+            messages = _fit_tail_text_messages(
+                lambda bounded: build_continue_messages(
+                    system_prompt=agent.system_prompt,
+                    context=bounded,
+                    instruction=payload.get("instruction"),
+                    output_chars=payload.get("output_chars"),
+                    style_prompt=payload.get("style_prompt"),
+                    novel_prompt=payload.get("novel_prompt"),
+                    plan_text=payload.get("plan_text"),
+                ),
+                context,
+                input_budget,
+                estimator=self._route_estimator(route_context),
             )
             result = yield from self._forward_route(
                 route_context,
@@ -238,12 +289,16 @@ class AIGenerationMixin:
                 type="metadata",
                 data={"job_id": route_context.job_id},
             )
-            text = get_tail_context(text, route_context.prompt_budget.input_budget)
-            messages = build_rewrite_messages(
-                system_prompt=agent.system_prompt,
-                text=text,
-                rewrite_type=payload.get("rewrite_type"),
-                instruction=payload.get("instruction"),
+            messages = _fit_tail_text_messages(
+                lambda bounded: build_rewrite_messages(
+                    system_prompt=agent.system_prompt,
+                    text=bounded,
+                    rewrite_type=payload.get("rewrite_type"),
+                    instruction=payload.get("instruction"),
+                ),
+                text,
+                route_context.prompt_budget.input_budget,
+                estimator=self._route_estimator(route_context),
             )
             result = yield from self._forward_route(
                 route_context,
@@ -292,8 +347,8 @@ class AIGenerationMixin:
             if user_batch_size > 0:
                 batch_size = user_batch_size
             else:
-                usable_chars = int(agent.context_window * 1.5 * 0.7)
-                batch_size = min(5, max(3, usable_chars // chunk_char_size))
+                token_budget = max(int(agent.context_window) - int(agent.max_tokens) - 256, 1)
+                batch_size = _chunks_that_fit_tokens(all_chunks, token_budget, maximum=5)
 
             if not full_text_mode and len(all_chunks) > batch_size:
                 # 采样模式：均匀取样
@@ -316,7 +371,7 @@ class AIGenerationMixin:
 
             first_messages = build_style_distill_messages(
                 system_prompt=agent.system_prompt,
-                text_chunks=batches[0],
+                text_chunks=[],
                 existing_profile=existing_profile,
             )
             route_context = self._start_route_job(
@@ -339,14 +394,31 @@ class AIGenerationMixin:
 
             last_result: RouteResult | None = None
             for batch_idx, batch_chunks in enumerate(batches):
+                # Repartition against the current accumulated profile, without
+                # dropping source text even when a user requests a large batch.
+                build_batch = lambda part: build_style_distill_messages(
+                    system_prompt=agent.system_prompt, text_chunks=[part],
+                    existing_profile=existing_profile,
+                )
+                parts = _split_prompt_text(
+                    "\n\n".join(batch_chunks), build_batch,
+                    self._route_input_budget(route_context, build_batch("")),
+                    estimator=self._route_estimator(route_context),
+                )
+                batches[batch_idx:batch_idx + 1] = [[part] for part in parts]
+                batch_chunks = batches[batch_idx]
                 is_last = batch_idx == len(batches) - 1
                 # 批次间间隔 2 秒，避免触发网关限流
                 if batch_idx > 0:
-                    time.sleep(2)
-                messages = build_style_distill_messages(
-                    system_prompt=agent.system_prompt,
-                    text_chunks=batch_chunks,
-                    existing_profile=existing_profile,
+                    self._sleep_unless_cancelled(db, route_context, 2)
+                messages = _fit_route_messages(
+                    build_style_distill_messages(
+                        system_prompt=agent.system_prompt,
+                        text_chunks=batch_chunks,
+                        existing_profile=existing_profile,
+                    ),
+                    route_context.prompt_budget.input_budget,
+                    estimator=self._route_estimator(route_context),
                 )
                 yield AIStreamChunk(
                     type="progress",
@@ -388,6 +460,10 @@ class AIGenerationMixin:
                 replace(last_result, output_text=output),
                 output_json={"chars": len(output)},
             )
+        except _DistillationCancelled as exc:
+            if route_context is not None:
+                self._cancel_route_job(db, route_context, str(exc))
+            yield AIStreamChunk(type="error", data={"message": str(exc)})
         except GeneratorExit:
             if route_context is not None:
                 self._cancel_route_job(db, route_context, "客户端断开连接")
@@ -422,8 +498,8 @@ class AIGenerationMixin:
             if user_batch_size > 0:
                 batch_size = user_batch_size
             else:
-                usable_chars = int(agent.context_window * 1.5 * 0.8)
-                batch_size = min(8, max(5, usable_chars // chunk_char_size))
+                token_budget = max(int(agent.context_window) - int(agent.max_tokens) - 256, 1)
+                batch_size = _chunks_that_fit_tokens(all_chunks, token_budget, maximum=8)
 
             if not full_text_mode and len(all_chunks) > batch_size:
                 step = len(all_chunks) // batch_size
@@ -444,7 +520,7 @@ class AIGenerationMixin:
 
             first_messages = build_novel_distill_messages(
                 system_prompt=agent.system_prompt,
-                text_chunks=batches[0],
+                text_chunks=[],
                 existing_profile=existing_profile,
             )
             route_context = self._start_route_job(
@@ -467,13 +543,30 @@ class AIGenerationMixin:
 
             last_result: RouteResult | None = None
             for batch_idx, batch_chunks in enumerate(batches):
+                # Repartition against the current accumulated profile, without
+                # dropping source text even when a user requests a large batch.
+                build_batch = lambda part: build_novel_distill_messages(
+                    system_prompt=agent.system_prompt, text_chunks=[part],
+                    existing_profile=existing_profile,
+                )
+                parts = _split_prompt_text(
+                    "\n\n".join(batch_chunks), build_batch,
+                    self._route_input_budget(route_context, build_batch("")),
+                    estimator=self._route_estimator(route_context),
+                )
+                batches[batch_idx:batch_idx + 1] = [[part] for part in parts]
+                batch_chunks = batches[batch_idx]
                 is_last = batch_idx == len(batches) - 1
                 if batch_idx > 0:
-                    time.sleep(2)
-                messages = build_novel_distill_messages(
-                    system_prompt=agent.system_prompt,
-                    text_chunks=batch_chunks,
-                    existing_profile=existing_profile,
+                    self._sleep_unless_cancelled(db, route_context, 2)
+                messages = _fit_route_messages(
+                    build_novel_distill_messages(
+                        system_prompt=agent.system_prompt,
+                        text_chunks=batch_chunks,
+                        existing_profile=existing_profile,
+                    ),
+                    route_context.prompt_budget.input_budget,
+                    estimator=self._route_estimator(route_context),
                 )
                 yield AIStreamChunk(
                     type="progress",
@@ -513,6 +606,10 @@ class AIGenerationMixin:
                 replace(last_result, output_text=output),
                 output_json={"chars": len(output)},
             )
+        except _DistillationCancelled as exc:
+            if route_context is not None:
+                self._cancel_route_job(db, route_context, str(exc))
+            yield AIStreamChunk(type="error", data={"message": str(exc)})
         except GeneratorExit:
             if route_context is not None:
                 self._cancel_route_job(db, route_context, "客户端断开连接")
@@ -575,12 +672,16 @@ class AIGenerationMixin:
                 "job_id": route_context.job_id,
                 "rule_detection": {"score": rule_report.score, "issues_count": len(rule_report.issues)},
             })
-            text = get_tail_context(text, route_context.prompt_budget.input_budget)
-            messages = build_audit_messages(
-                system_prompt=agent.system_prompt,
-                text=text,
-                audit_dimensions=payload.get("audit_dimensions"),
-                rule_detection_context=rule_context,
+            messages = _fit_tail_text_messages(
+                lambda bounded: build_audit_messages(
+                    system_prompt=agent.system_prompt,
+                    text=bounded,
+                    audit_dimensions=payload.get("audit_dimensions"),
+                    rule_detection_context=rule_context,
+                ),
+                text,
+                route_context.prompt_budget.input_budget,
+                estimator=self._route_estimator(route_context),
             )
             result = yield from self._forward_route(
                 route_context,
@@ -647,15 +748,24 @@ class AIGenerationMixin:
                 type="metadata",
                 data={"job_id": route_context.job_id},
             )
-            context = get_tail_context(
-                context,
-                min(context_chars, route_context.prompt_budget.input_budget),
+            messages = _fit_tail_text_messages(
+                lambda bounded: build_plan_messages(
+                    system_prompt=system_prompt,
+                    context=bounded,
+                    instruction=payload.get("instruction"),
+                    novel_prompt=payload.get("novel_prompt"),
+                ),
+                get_tail_context(context, context_chars),
+                route_context.prompt_budget.input_budget,
+                estimator=self._route_estimator(route_context),
             )
-            messages = build_plan_messages(
-                system_prompt=system_prompt,
-                context=context,
-                instruction=payload.get("instruction"),
-                novel_prompt=payload.get("novel_prompt"),
+            context = next(
+                (
+                    str(message.get("content") or "")
+                    for message in reversed(messages)
+                    if message.get("role") != "system"
+                ),
+                "",
             )
             result = yield from self._forward_route(
                 route_context,
@@ -709,7 +819,7 @@ class AIGenerationMixin:
         est_tokens = estimate_token_count(text)
         max_tokens = prompt_budget.input_budget
         if est_tokens <= max_tokens:
-            yield get_tail_context(text, max_tokens)
+            yield text
             return
         # 保留尾部 30% 字符作为续接锚点（含最近的完整场景）
         tail_chars = max(1, int(max_tokens * 0.3))
@@ -718,9 +828,14 @@ class AIGenerationMixin:
         if not head.strip():
             yield tail
             return
-        # 分段摘要：每 8000 字一段
-        segment_size = 8000
-        segments = [head[i:i + segment_size] for i in range(0, len(head), segment_size)]
+        # Include wrappers and focus in every internal request's token cost.
+        summary_focus = "Preserve plot, characters and continuity for the next chapter."
+        segments = _split_prompt_text(
+            head,
+            lambda part: build_summarize_messages(text=part, focus=summary_focus),
+            self._route_input_budget(route_context, build_summarize_messages(text="", focus=summary_focus)),
+            estimator=self._route_estimator(route_context),
+        )
         summary_parts: list[str] = []
         for idx, seg in enumerate(segments, 1):
             yield AIStreamChunk(
@@ -729,7 +844,7 @@ class AIGenerationMixin:
             )
             messages = build_summarize_messages(
                 text=seg,
-                focus=f"第 {idx}/{len(segments)} 段，请保留与后续剧情衔接相关的关键信息。",
+                focus=summary_focus,
             )
             seg_summary: list[str] = []
             result = yield from self._forward_route(

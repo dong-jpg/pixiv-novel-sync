@@ -225,7 +225,7 @@ def test_oauth_exchange_response_redacts_tokens(tmp_path, monkeypatch):
     app = create_app(env_path=str(env_path), start_scheduler=False)
     client = app.test_client()
 
-    start_response = client.post("/oauth/start")
+    start_response = client.post("/api/token-jobs")
     start_payload = start_response.get_json()
     task_id = start_payload["task_id"]
     login_query = parse_qs(urlparse(start_payload["login_url"]).query)

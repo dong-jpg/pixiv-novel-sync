@@ -6,7 +6,7 @@ import hmac
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ...ai.adult_types import (
@@ -603,6 +603,38 @@ class AdultStorageMixin:
                 raise RuntimeError("成人审查绑定更新失败")
             return self._adult_review_binding_row(row)
 
+    def upgrade_adult_policy_state(self, expected_rows, released_rows):
+        """受控升级：只接受调用方已校验的发布策略，保留历史且并发变更失败。"""
+        fields = ("policy_kind", "policy_id", "policy_version", "policy_hash", "prompt_hash", "schema_hash")
+        def indexed(rows):
+            values = {row["policy_kind"]: {key: row[key] for key in fields} for row in rows}
+            if len(rows) != 2 or set(values) != {"safety", "fact_guard"}:
+                raise AdultConflictError("成人策略集合无效")
+            return values
+        expected, released = indexed(expected_rows), indexed(released_rows)
+        with self.transaction() as conn:
+            current = indexed(self.list_adult_policy_state())
+            if current != expected:
+                raise AdultConflictError("成人策略版本已变化，请刷新后重试")
+            changed = [kind for kind in current if current[kind] != released[kind]]
+            for kind in changed:
+                old, new = current[kind], released[kind]
+                if isinstance(new["policy_version"], bool) or not isinstance(new["policy_version"], int) or new["policy_version"] <= old["policy_version"]:
+                    raise AdultConflictError("成人策略只允许升级版本，禁止同版本覆盖或降级")
+                for row in (old, new):
+                    historical = conn.execute("SELECT * FROM ai_adult_policy_history WHERE policy_kind=? AND policy_version=?", (kind, row["policy_version"])).fetchone()
+                    if historical is not None:
+                        if any(historical[key] != row[key] for key in fields):
+                            raise AdultConflictError("成人策略历史与发布内容冲突")
+                    else:
+                        conn.execute("INSERT INTO ai_adult_policy_history (policy_kind,policy_id,policy_version,policy_hash,prompt_hash,schema_hash,updated_at) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)", tuple(row[key] for key in fields))
+                conn.execute("UPDATE ai_adult_policy_state SET policy_id=?,policy_version=?,policy_hash=?,prompt_hash=?,schema_hash=?,updated_at=CURRENT_TIMESTAMP WHERE policy_kind=?", tuple(new[key] for key in fields[1:]) + (kind,))
+            if changed:
+                # 既有候选必须按新策略重审；正在执行的旧策略任务不得晚到提交。
+                conn.execute("UPDATE ai_jobs SET output_json=json_set(COALESCE(output_json,'{}'),'$.code','policy_upgrade_required') WHERE job_id IN (SELECT source_job_id FROM ai_polish_applications WHERE applied_at IS NULL)")
+                conn.execute("UPDATE ai_jobs SET status='failed',output_text='',output_json=json_set(COALESCE(output_json,'{}'),'$.code','policy_upgrade_required'),finished_at=CURRENT_TIMESTAMP,lease_until=NULL WHERE task_type IN ('adult_polish','adult_safety_review','adult_fact_guard') AND status='running'")
+            return self.list_adult_policy_state()
+
     def list_adult_policy_state(self) -> list[dict[str, Any]]:
         return [
             dict(row)
@@ -670,6 +702,7 @@ class AdultStorageMixin:
                 safe_input,
                 owner_token=owner_token,
                 stage="main",
+                route_deadline_at=(datetime.now(timezone.utc) + timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S"),
                 parent_job_id=parent_job_id,
             )
             conn.execute(
@@ -702,6 +735,33 @@ class AdultStorageMixin:
         item = self._ai_job_from_row(row, include_attempts=True)
         item["owner_token"] = str(row["owner_token"])
         return item
+
+    def finish_adult_review_success(self, job_id: str, owner_token: str, output_json: dict[str, Any]) -> bool:
+        # 与取消请求共用写事务锁，最后检查和成功 CAS 之间不可插入取消。
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT status,cancel_requested FROM ai_jobs WHERE job_id=? AND owner_token=? "
+                "AND task_type IN ('adult_safety_review','adult_fact_guard')",
+                (job_id, owner_token),
+            ).fetchone()
+            if row is None or row["status"] != "running" or row["cancel_requested"] or self.ai_job_should_stop(job_id):
+                return False
+            return self.finish_ai_job_cas(job_id, owner_token, "succeeded", output_text="", output_json=output_json)
+
+    def request_adult_review_cancel(self, job_id: str, owner_scope: str) -> bool:
+        """取消已存候选的活跃重审，不删除候选，也不跨 owner 操作。"""
+        with self.transaction() as conn:
+            children = conn.execute(
+                "SELECT child.job_id FROM ai_jobs AS child JOIN ai_jobs AS parent ON parent.job_id=child.parent_job_id "
+                "WHERE parent.job_id=? AND parent.owner_scope=? AND child.owner_scope=? "
+                "AND parent.task_type='adult_polish' AND parent.status='succeeded' "
+                "AND child.task_type IN ('adult_safety_review','adult_fact_guard') AND child.status='running'",
+                (job_id, owner_scope, owner_scope),
+            ).fetchall()
+            requested = False
+            for child in children:
+                requested = self.request_ai_job_cancel(child["job_id"]) or requested
+            return requested
 
     def create_adult_review_job(
         self,
@@ -758,6 +818,7 @@ class AdultStorageMixin:
                 safe_input,
                 owner_token=owner_token,
                 stage="validation",
+                route_deadline_at=(datetime.now(timezone.utc) + timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S"),
                 parent_job_id=parent_job_id,
             )
             conn.execute(
@@ -891,6 +952,10 @@ class AdultStorageMixin:
                 if existing["owner_scope"] != data["owner_scope"]:
                     raise ValueError("成人候选 application owner 不匹配")
                 raise ValueError("成人 job owner CAS 失败")
+            if self.ai_job_should_stop(str(data["source_job_id"])):
+                raise ValueError("成人 job owner/deadline 已停止，不能提交候选")
+            # 策略可能在预检后、建 job 前升级；必须与候选写入处于同一写事务。
+            self._assert_adult_current_policy(values, snapshots)
             cursor = conn.execute(
                 f"""
                 INSERT INTO ai_polish_applications ({', '.join(columns)})
@@ -907,7 +972,7 @@ class AdultStorageMixin:
                   AND status = 'running'
                 """,
                 (
-                    candidate,
+                    candidate if data.get("applicable") else "",
                     _json(
                         {
                             "validation_hash": data["validation_hash"],
@@ -975,6 +1040,8 @@ class AdultStorageMixin:
         safe_validation = _validation_payload(validation)
         safe_snapshots = _safe_snapshot(dict(snapshots))
         with self.transaction() as conn:
+            self._assert_adult_current_policy({"safety_policy_hash": safety_policy_hash, "safety_prompt_hash": safety_prompt_hash, "fact_guard_prompt_hash": fact_guard_prompt_hash}, safe_snapshots)
+            self._assert_adult_completed_reviews(job_id, owner_scope, safe_snapshots)
             updated = conn.execute(
                 """
                 UPDATE ai_polish_applications
@@ -1007,6 +1074,34 @@ class AdultStorageMixin:
             )
             if updated.rowcount != 1:
                 raise AdultConflictError("成人润色校验快照已变化")
+            conn.execute(
+                "UPDATE ai_jobs SET output_json=json_set(COALESCE(output_json,'{}'),'$.code','succeeded','$.validation_hash',?) "
+                "WHERE job_id=? AND owner_scope=? AND status='succeeded'",
+                (safe_validation["validation_hash"], job_id, owner_scope),
+            )
+
+    def _assert_adult_current_policy(self, application: Mapping[str, Any], snapshots: Mapping[str, Any]) -> None:
+        current = {row["policy_kind"]: row for row in self.list_adult_policy_state()}
+        policy_hashes = snapshots.get("policy_hashes") or {}
+        for kind, policy_hash, prompt_hash in (
+            ("safety", application.get("safety_policy_hash"), application.get("safety_prompt_hash")),
+            ("fact_guard", policy_hashes.get("fact_guard"), application.get("fact_guard_prompt_hash")),
+        ):
+            row = current.get(kind)
+            if row is None or row["policy_hash"] != policy_hash or row["prompt_hash"] != prompt_hash:
+                raise AdultConflictError("数据库成人策略已升级，必须使用当前策略重新审查")
+
+    def _assert_adult_completed_reviews(self, job_id: str, owner_scope: str, snapshots: Mapping[str, Any]) -> None:
+        review_ids = snapshots.get("review_job_ids")
+        if not isinstance(review_ids, Mapping) or set(review_ids) != {"safety", "fact_guard"}:
+            raise AdultConflictError("成人审查任务快照缺失，请重新审查")
+        for kind, task_type in (("safety", "adult_safety_review"), ("fact_guard", "adult_fact_guard")):
+            row = self.conn.execute(
+                "SELECT status,cancel_requested FROM ai_jobs WHERE job_id=? AND parent_job_id=? AND owner_scope=? AND task_type=?",
+                (review_ids[kind], job_id, owner_scope, task_type),
+            ).fetchone()
+            if row is None or row["status"] != "succeeded" or row["cancel_requested"]:
+                raise AdultConflictError("成人审查已取消或终态不完整，不能应用")
 
     def apply_adult_polish(
         self,
@@ -1052,6 +1147,9 @@ class AdultStorageMixin:
                     "chapter_hash_after": str(application["chapter_hash_after"]),
                     "already_applied": True,
                 }
+            snapshots = json.loads(application.get("snapshots_json") or "{}")
+            self._assert_adult_current_policy(application, snapshots)
+            self._assert_adult_completed_reviews(job_id, owner_scope, snapshots)
             if expected_snapshot is None:
                 raise AdultConflictError("成人润色应用快照缺失")
             if int(snapshot_value("application_id") or 0) != int(
@@ -1063,7 +1161,7 @@ class AdultStorageMixin:
 
             job = conn.execute(
                 """
-                SELECT status, output_text FROM ai_jobs
+                SELECT status, output_text, output_json FROM ai_jobs
                 WHERE job_id = ? AND task_type = 'adult_polish'
                   AND owner_scope = ?
                 """,
@@ -1071,6 +1169,8 @@ class AdultStorageMixin:
             ).fetchone()
             if job is None or job["status"] != "succeeded":
                 raise AdultConflictError("成人润色任务终态已变化")
+            if (json.loads(job["output_json"] or "{}" )).get("code") == "policy_upgrade_required":
+                raise AdultConflictError("成人策略升级后候选尚未重审")
             candidate = job["output_text"]
             if not isinstance(candidate, str) or not candidate:
                 raise AdultConflictError("成人润色候选已过期，请重新生成")

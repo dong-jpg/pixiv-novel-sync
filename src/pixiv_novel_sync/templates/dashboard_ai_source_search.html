@@ -34,8 +34,7 @@ function createAiSourceSearchComponent(config) {
       },
       async search() {
         try {
-          const res = await fetch(config.url(this.query));
-          const data = await res.json();
+          const data = await window.aiApi.request(config.url(this.query));
           this.results = config.items(data);
         } catch {
           this.results = [];

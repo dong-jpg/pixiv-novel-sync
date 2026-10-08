@@ -324,3 +324,105 @@ def test_later_batch_failure_is_partial_without_fallback(
     job = batch_setup.db.get_ai_job(_job_id(chunks))
     assert job["status"] == "partial"
     assert job["output_text"] == "半截"
+
+
+@pytest.mark.parametrize("kind", ["style", "novel"])
+def test_distill_cancel_during_inter_batch_wait_stops_and_terminalizes(
+    batch_setup: BatchSetup,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    """Exercise the real wait helper, router and DB, not a no-op sleep stub."""
+    import time
+    from types import SimpleNamespace
+
+    from pixiv_novel_sync.ai.services import generation
+
+    batch_setup.db.update_ai_agent(
+        batch_setup.agent.id, {"task_type": f"distill_{kind}"},
+    )
+    for provider, model, output in (
+        ("p1", "m1", "第一批"),
+        ("p1", "m1", "不应启动第二批"),
+        ("p2", "m2", "不应切换候选"),
+    ):
+        batch_setup.registry.queue(
+            provider, model,
+            [AIStreamChunk(type="delta", text=output), normal_done()],
+        )
+
+    stream = getattr(batch_setup.service, f"stream_distill_{kind}")(
+        _payload(batch_setup.agent.id)
+    )
+    chunks = [next(stream)]
+    job_id = _job_id(chunks)
+    waits = []
+
+    def cancel_after_entering_sleep(seconds: float) -> None:
+        # The helper's entry check has already seen cancel_requested=False.
+        # Inject cancellation only after it starts waiting, then really sleep.
+        waits.append(seconds)
+        assert batch_setup.registry.calls == [("p1", "m1")]
+        assert not batch_setup.db.get_ai_job(job_id)["cancel_requested"]
+        assert batch_setup.db.request_ai_job_cancel(job_id)
+        time.sleep(seconds)
+
+    # Patch this module's clock only; do not change the router's global time.
+    monkeypatch.setattr(generation, "time", SimpleNamespace(
+        monotonic=time.monotonic, sleep=cancel_after_entering_sleep,
+    ))
+    try:
+        chunks.extend(stream)
+    finally:
+        stream.close()
+
+    assert waits == [pytest.approx(0.2)]
+    assert batch_setup.registry.calls == [("p1", "m1")]
+    assert [c.data["batch"] for c in chunks
+            if c.type == "progress" and (c.data or {}).get("phase") == "batch"] == [1]
+    assert chunks[-1].type == "error"
+    assert "取消" in chunks[-1].data["message"]
+    assert not any(c.type in {"delta", "done"} for c in chunks)
+    job = batch_setup.db.get_ai_job(job_id)
+    assert job["cancel_requested"]
+    assert job["status"] == "cancelled"
+    assert job["finished_at"]
+    assert batch_setup.db.conn.execute(
+        "SELECT lease_until FROM ai_jobs WHERE job_id = ?", (job_id,),
+    ).fetchone()[0] is None
+    assert "取消" in job["error_message"]
+
+
+@pytest.mark.parametrize("kind", ["style", "novel"])
+def test_distill_wait_non_cancellation_error_remains_failed(
+    batch_setup: BatchSetup,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    import time
+    from types import SimpleNamespace
+
+    from pixiv_novel_sync.ai.services import generation
+
+    batch_setup.db.update_ai_agent(
+        batch_setup.agent.id, {"task_type": f"distill_{kind}"},
+    )
+    batch_setup.registry.queue(
+        "p1", "m1", [AIStreamChunk(type="delta", text="第一批"), normal_done()],
+    )
+
+    def broken_sleep(_seconds):
+        raise OSError("等待设施故障")
+
+    monkeypatch.setattr(generation, "time", SimpleNamespace(
+        monotonic=time.monotonic, sleep=broken_sleep,
+    ))
+    chunks = list(getattr(batch_setup.service, f"stream_distill_{kind}")(
+        _payload(batch_setup.agent.id)
+    ))
+    assert batch_setup.registry.calls == [("p1", "m1")]
+    assert chunks[-1].type == "error"
+    assert chunks[-1].data["message"] == "等待设施故障"
+    job = batch_setup.db.get_ai_job(_job_id(chunks))
+    assert job["status"] == "failed"
+    assert not job["cancel_requested"]

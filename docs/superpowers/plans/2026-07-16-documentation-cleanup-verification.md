@@ -1,5 +1,9 @@
 # 文档清理与最终验证实施计划
 
+> **2026-09-30 审计口径：** 历史清理；需持续更新，不宜永久 DONE。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** 文档清理已做过一轮。计划里的「日志默认保留 3 天」已被 sync.task_log_retention_days 默认 14 天取代，不要再按 3 天改文档。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让文档与最终实现一致，清理确定可再生的缓存，并用完整验证证明四个阶段可以安全推送。

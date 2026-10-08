@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from pixiv_novel_sync.ai.adult_policies import FACT_GUARD_POLICY, SAFETY_POLICY
 from pixiv_novel_sync.ai.adult_types import (
     AdultCharacterFact,
     AdultValidationResult,
@@ -25,7 +26,7 @@ CHARACTER_B_ID = "22222222-2222-4222-8222-222222222222"
 
 
 def valid_adult_payload(_seed: Any = None, **overrides: Any) -> dict[str, Any]:
-    target = "安娜握住他的手，停顿片刻后仍保持原来的称呼和视角。"
+    target = "安娜握住林舟的手，停顿片刻后仍保持原来的称呼和视角。"
     chapter = f"前文。{target}后文。"
     start = len("前文。")
     payload: dict[str, Any] = {
@@ -61,7 +62,7 @@ def character_fact(
         character_id=character_id,
         revision=revision,
         canonical_name=name,
-        aliases=(name[:1],),
+        aliases=(),
         age_years=age_years,
         age_basis="项目设定",
         fictional=fictional,
@@ -139,7 +140,9 @@ def application_row(**overrides: Any) -> dict[str, Any]:
         "adult_characters_hash": "d" * 64,
         "participant_hash": "e" * 64,
         "provider_scope_hash": "f" * 64,
-        "safety_policy_hash": "1" * 64,
+        "safety_policy_hash": SAFETY_POLICY.expected_hash,
+        "safety_prompt_hash": raw_sha256(SAFETY_POLICY.prompt_template),
+        "fact_guard_prompt_hash": raw_sha256(FACT_GUARD_POLICY.prompt_template),
         "validator_policy_hash": "2" * 64,
         "validation_hash": "3" * 64,
         "warning_ack_hash": "",
@@ -147,7 +150,12 @@ def application_row(**overrides: Any) -> dict[str, Any]:
         "applicable": True,
         "candidate": "候选片段",
         "access_token_hash": "4" * 64,
-        "snapshots": {},
+        "snapshots": {
+            "policy_hashes": {
+                "safety": SAFETY_POLICY.expected_hash,
+                "fact_guard": FACT_GUARD_POLICY.expected_hash,
+            },
+        },
     }
     row.update(overrides)
     return row
@@ -303,7 +311,7 @@ def seed_adult_project(db: Any) -> None:
         project_id = db.create_ai_writing_project({"name": "adult-project", "settings": {}})
         assert project_id == 1
     if db.get_ai_chapter(9) is None:
-        chapter = "前文。安娜握住他的手，停顿片刻后仍保持原来的称呼和视角。后文。"
+        chapter = "前文。安娜握住林舟的手，停顿片刻后仍保持原来的称呼和视角。后文。"
         chapter_id = db.create_ai_chapter(
             {
                 "project_id": 1,
@@ -339,8 +347,8 @@ def seed_adult_project(db: Any) -> None:
         db.conn.execute("UPDATE ai_agents SET id = 7 WHERE id = ?", (agent_id,))
 
     characters = (
-        (CHARACTER_A_ID, "安娜", "[\"安\"]", 25),
-        (CHARACTER_B_ID, "林舟", "[\"林\"]", 27),
+        (CHARACTER_A_ID, "安娜", "[]", 25),
+        (CHARACTER_B_ID, "林舟", "[]", 27),
     )
     db.conn.executemany(
         """

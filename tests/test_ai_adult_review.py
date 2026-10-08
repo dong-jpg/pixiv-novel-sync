@@ -11,6 +11,7 @@ import pytest
 
 from ai_adult_testkit import (
     CHARACTER_A_ID,
+    CHARACTER_B_ID,
     safe_validation,
     seed_adult_project,
     structural_validation,
@@ -210,7 +211,7 @@ def prepared(service: AIWritingService, fake_router: ReviewRouter):
         }
     )
     payload = valid_adult_payload(
-        participant_character_ids=[CHARACTER_A_ID],
+        participant_character_ids=[CHARACTER_A_ID, CHARACTER_B_ID],
         provider_scope_hash=scope_hash,
     )
     return service.prepare_adult_job(
@@ -259,9 +260,9 @@ def test_fact_guard_receives_names_aliases_and_locked_terms(
     assert isinstance(request, RouteRequest)
     content = request.messages[-1]["content"]
     assert '"canonical_name":"安娜"' in content
-    assert '"aliases":["安"]' in content
+    assert '"aliases":[]' in content
     # protected_terms 以 JSON 形式注入提示词
-    assert '"安娜"' in content and '"安"' in content
+    assert '"安娜"' in content and '"林舟"' in content
 
 
 def _raw_candidate(prepared: Any, candidate: str | None = None) -> str:
@@ -467,7 +468,7 @@ def test_structural_block_is_persisted_but_not_applicable(
     job = db.get_adult_job(prepared.job_id, "owner-a")
     assert job is not None
     assert job["status"] == "failed"
-    assert job["output_text"] == candidate
+    assert job["output_text"] == ""
 
 
 def test_safe_candidate_is_committed_before_candidate_event(
@@ -634,7 +635,7 @@ def test_main_stream_runs_both_reviews_without_exposing_delta(
         }
     )
     payload = valid_adult_payload(
-        participant_character_ids=[CHARACTER_A_ID],
+        participant_character_ids=[CHARACTER_A_ID, CHARACTER_B_ID],
         provider_scope_hash=scope_hash,
         idempotency_key="adult-request-key-stream-0002",
     )
@@ -699,3 +700,80 @@ def test_review_requests_carry_cancel_checker_and_staged_progress(
     for event in progress:
         assert "secret" not in (event.data or {})
         assert "api_key" not in (event.data or {})
+
+
+def test_nonvisible_local_block_stops_before_reviews(service, fake_router, prepared, monkeypatch):
+    import pixiv_novel_sync.ai.services.adult as adult
+    monkeypatch.setattr(adult, "run_local_adult_checks", lambda *args: structural_validation("number_changed"))
+    events = list(service.finish_adult_candidate(prepared, _raw_candidate(prepared)))
+    assert fake_router.execute_count == 0
+    assert events[-1].data["code"] == "local_blocked"
+    assert events[-1].data["blocking_issues"] == ["number_changed"]
+
+
+def test_review_cancelled_result_preserves_cancelled_outcome(service, fake_router, prepared, db):
+    fake_router.results = [RouteResult(job_id="ignored", output_text="", candidate_snapshot_hash="", attempts=(), finish_state="cancelled")]
+    events = list(service.finish_adult_candidate(prepared, _raw_candidate(prepared)))
+    assert events[-1].data["code"] == "cancelled"
+    assert db.get_adult_job(prepared.job_id, "owner-a")["status"] == "cancelled"
+
+
+def test_review_progress_is_streamed_before_review_completion(service, fake_router, prepared, monkeypatch):
+    import threading
+    from pixiv_novel_sync.ai.models import AIStreamChunk
+    released = threading.Event()
+    def execute_stream(request):
+        yield AIStreamChunk(type="progress", data={"action": "attempt", "secret": "hidden"})
+        assert released.wait(2), "progress buffered until review completion"
+        return fake_router.execute(request)
+    monkeypatch.setattr(fake_router, "execute_stream", execute_stream, raising=False)
+    stream = service.finish_adult_candidate(prepared, _raw_candidate(prepared))
+    try:
+        first = next(stream)
+        assert first.type == "progress"
+        assert "secret" not in first.data
+        released.set()
+        assert list(stream)[-1].type == "done"
+    finally:
+        released.set()
+        stream.close()
+
+
+def test_live_review_renews_parent_lease_past_main_route_heartbeat(db, service, fake_router, prepared, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    import pixiv_novel_sync.ai.services.adult as adult_module
+    future = datetime.now(timezone.utc) + timedelta(seconds=61)
+    class FutureDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return future
+    monkeypatch.setattr(adult_module, "datetime", FutureDatetime, raising=False)
+    execute = fake_router.execute
+    def during_review(request):
+        db.conn.execute("UPDATE ai_jobs SET heartbeat_at=?,lease_until=? WHERE job_id=?", ((future-timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S"), (future+timedelta(seconds=45)).strftime("%Y-%m-%d %H:%M:%S"), request.job_id))
+        db.fail_stale_ai_jobs(now=future)
+        assert db.get_adult_job(prepared.job_id, "owner-a")["status"] == "running"
+        return execute(request)
+    monkeypatch.setattr(fake_router, "execute", during_review)
+    events = list(service.finish_adult_candidate(prepared, _raw_candidate(prepared)))
+    assert events[-1].type == "done", events[-1]
+
+
+@pytest.mark.parametrize("phase", ["review", "commit"])
+def test_parent_deadline_expiring_during_review_or_commit_never_publishes_candidate(db, service, fake_router, prepared, monkeypatch, phase):
+    if phase == "review":
+        execute = fake_router.execute
+        def expire(request):
+            db.conn.execute("UPDATE ai_jobs SET route_deadline_at='2000-01-01 00:00:00' WHERE job_id=?", (prepared.job_id,))
+            return execute(request)
+        monkeypatch.setattr(fake_router, "execute", expire)
+    else:
+        save = Database.save_candidate_application
+        def expire_before_save(database, data):
+            db.conn.execute("UPDATE ai_jobs SET route_deadline_at='2000-01-01 00:00:00' WHERE job_id=?", (prepared.job_id,))
+            return save(database, data)
+        monkeypatch.setattr(Database, "save_candidate_application", expire_before_save)
+    events = list(service.finish_adult_candidate(prepared, _raw_candidate(prepared)))
+    assert not any(event.type in {"candidate", "done"} for event in events)
+    assert db.get_adult_job(prepared.job_id, "owner-a")["status"] != "succeeded"
+    assert db.get_application_for_owner(prepared.job_id, "owner-a") is None

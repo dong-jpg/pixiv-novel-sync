@@ -34,8 +34,6 @@ _ALLOWED_FIELDS = frozenset(
         "idempotency_key",
         "provider_scope_hash",
         "parent_job_id",
-        "preference_profile_id",
-        "preference_injection_strength",
     }
 )
 
@@ -81,8 +79,6 @@ class AdultPolishRequest:
     idempotency_key: str
     provider_scope_hash: str
     parent_job_id: str | None = None
-    preference_profile_id: int | None = None
-    preference_injection_strength: str = "off"
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,22 +254,6 @@ def parse_adult_request(payload: Mapping[str, Any]) -> AdultPolishRequest:
     if not isinstance(instruction, str) or len(instruction) > 1_000:
         raise AdultInputError("instruction 最多 1000 个码点")
 
-    preference_profile_id = payload.get("preference_profile_id")
-    if preference_profile_id is not None:
-        preference_profile_id = _integer(
-            preference_profile_id,
-            "preference_profile_id",
-            minimum=1,
-        )
-    preference_strength = payload.get("preference_injection_strength", "off")
-    if not isinstance(preference_strength, str) or preference_strength not in {
-        "off",
-        "light",
-        "standard",
-        "strong",
-    }:
-        raise AdultInputError("preference_injection_strength 无效")
-
     return AdultPolishRequest(
         project_id=_integer(payload.get("project_id"), "project_id", minimum=1),
         chapter_id=_integer(payload.get("chapter_id"), "chapter_id", minimum=1),
@@ -291,8 +271,6 @@ def parse_adult_request(payload: Mapping[str, Any]) -> AdultPolishRequest:
         idempotency_key=str(_ascii_key(payload.get("idempotency_key"), "幂等键")),
         provider_scope_hash=_hash(payload.get("provider_scope_hash"), "provider_scope_hash"),
         parent_job_id=_ascii_key(payload.get("parent_job_id"), "parent_job_id", optional=True),
-        preference_profile_id=preference_profile_id,
-        preference_injection_strength=str(preference_strength),
     )
 
 

@@ -1,5 +1,7 @@
 # CLI Job Services Implementation Plan
 
+> **2026-09-30 审计口径：** 历史主体已落地。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../../PLAN_AUDIT_2026-09-30.md)。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Extract shared job services so CLI `user-backup`, `status-check`, and `pending-deletion-detection` execute real logic instead of returning “not available yet”.

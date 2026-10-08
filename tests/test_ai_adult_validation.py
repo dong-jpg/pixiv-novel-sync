@@ -318,3 +318,24 @@ def test_provider_scope_hash_matches_explicit_canonical_summary():
     digest = compute_provider_scope_hash(scopes)
 
     assert digest == canonical_sha256(adult_validation.provider_scope_summary(scopes))
+
+
+def test_large_diff_is_bounded_and_never_uses_character_sequence_matcher(monkeypatch):
+    import random
+    import time
+    import pixiv_novel_sync.ai.adult_validation as validation
+    rng = random.Random(20260930)
+    original = "".join(rng.choice("天地玄黄宇宙洪荒") for _ in range(12000))
+    candidate = "".join(rng.choice("天地玄黄宇宙洪荒") for _ in range(36000))
+    def forbidden(*args, **kwargs):
+        raise AssertionError("large character diff must use bounded fallback")
+    monkeypatch.setattr(validation.difflib, "SequenceMatcher", forbidden)
+    started = time.perf_counter()
+    summary = validation._diff_summary(original, candidate)
+    assert time.perf_counter() - started < 1
+    assert summary["inserted"] - summary["deleted"] == 24000
+
+
+def test_compatibility_ideograph_minor_words_fail_closed():
+    result = _check(candidate=ORIGINAL + "幼女")
+    assert "minor_present" in result.blocking_issues

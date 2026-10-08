@@ -124,6 +124,10 @@ def run_scheduled_user_backup(
         stopped = False
         completed_users = 0
         failed_users = 0
+        failed_novels = 0
+        truncated = False
+        incomplete = False
+        incomplete_reasons: set[str] = set()
         for index, user_id in enumerate(batch):
             if stop_requested is not None and stop_requested():
                 stopped = True
@@ -142,12 +146,22 @@ def run_scheduled_user_backup(
                     stop_requested=stop_requested,
                     rebuild_catalog=False,
                 )
+            except InterruptedError:
+                stopped = True
+                break
             except Exception as exc:
                 failed_users += 1
+                incomplete = True
+                incomplete_reasons.add("user_backup_errors")
                 logger.warning("用户 %s 备份失败，跳过并继续轮转: %s", user_id, exc)
                 if reporter is not None:
                     reporter.add_log("warning", f"用户 {user_id} 备份失败，已跳过: {exc}")
                 continue
+            truncated = truncated or bool(stats.get("truncated"))
+            if stats.get("incomplete") or stats.get("truncated") or stats.get("aborted_reason"):
+                incomplete = True
+                incomplete_reasons.add(str(stats.get("aborted_reason") or "user_backup_incomplete"))
+            failed_novels += int(stats.get("failed", 0) or 0)
             for key in totals:
                 if key == "failed_users":
                     continue
@@ -174,6 +188,12 @@ def run_scheduled_user_backup(
             )
 
         result: dict[str, Any] = {**totals, "stopped": stopped}
+        if failed_novels:
+            result["failed"] = failed_novels
+        if incomplete:
+            result.update(incomplete=True, aborted_reason=",".join(sorted(incomplete_reasons)))
+        if truncated:
+            result["truncated"] = True
         if not stopped:
             if claim_finalization is not None and not claim_finalization():
                 result["stopped"] = True
@@ -182,8 +202,8 @@ def run_scheduled_user_backup(
                     result.update(_rebuild_rescue_catalog(db, reporter))
 
         if reporter is not None:
-            level = "info" if result["stopped"] else "success"
-            suffix = "已停止" if result["stopped"] else "完成"
+            level = "info" if result["stopped"] else ("warning" if incomplete else "success")
+            suffix = "已停止" if result["stopped"] else ("部分完成" if incomplete else "完成")
             reporter.add_log(
                 level,
                 f"全量备份{suffix}: 同步 {totals['novels']} 本, "

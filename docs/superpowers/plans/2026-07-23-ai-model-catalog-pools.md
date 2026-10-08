@@ -1,5 +1,7 @@
 # AI Model Catalog and Pools Implementation Plan
 
+> **2026-09-30 审计口径：** 历史基础已勾选；当前续写集成有失败。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在不破坏既有固定 Agent 的前提下，增加 Provider 模型目录、有序模型池、后备池、统一跨 Provider 路由、可审计尝试记录和管理页面。

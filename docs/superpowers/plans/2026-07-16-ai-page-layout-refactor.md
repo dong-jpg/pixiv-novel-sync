@@ -1,5 +1,9 @@
 # AI 页面拆分与首页布局实施计划
 
+> **2026-09-30 审计口径：** 写作分支页面拆分存在。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** 代码已落地，模板后来又拆过：写作页在 dashboard_ai_projects.html，向导在 dashboard_wizard.html。勾选框没有回写。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将自动写作与创作向导拆成独立页面状态边界，并完成首页模块对齐、推荐错误态和关键前端回归。

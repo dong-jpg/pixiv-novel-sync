@@ -4,7 +4,7 @@ import json
 import re
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from typing import Any
 
 from ...storage_db import Database
@@ -22,72 +22,17 @@ from ..prompts import (
     compose_style_control_prompt,
     safe_prompt_preview,
 )
-from .core import AIServiceError, RouteJobContext
+from .core import (
+    AIServiceError,
+    RouteJobContext,
+    _fit_route_messages,
+    _fit_tail_text_messages,
+)
 
 # M4: 状态解析的模型输出可能受源文本提示注入影响，诱导伪造海量伏笔。
 # 单次状态更新对新增伏笔数量与单条长度设硬上限，作为数据完整性兜底。
 _MAX_STATE_NEW_FORESHADOWS = 200
 _MAX_STATE_FORESHADOW_DESC_LEN = 2000
-
-
-def _utf8_tail(text: str, max_bytes: int) -> str:
-    if max_bytes <= 0:
-        return ""
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return text
-    return encoded[-max_bytes:].decode("utf-8", errors="ignore")
-
-
-def _fit_route_messages(
-    messages: list[dict[str, str]],
-    input_budget: int,
-) -> list[dict[str, str]]:
-    fitted = [dict(message) for message in messages]
-    if not fitted:
-        return fitted
-    total_bytes = sum(
-        len(str(message.get("content") or "").encode("utf-8"))
-        for message in fitted
-    )
-    if total_bytes <= input_budget:
-        return fitted
-    fixed_bytes = sum(
-        len(str(message.get("content") or "").encode("utf-8"))
-        for message in fitted[:-1]
-    )
-    remaining = input_budget - fixed_bytes
-    if remaining <= 0:
-        raise AIServiceError("Prompt 固定内容超过可用输入预算")
-    fitted[-1]["content"] = _utf8_tail(
-        str(fitted[-1].get("content") or ""),
-        remaining,
-    )
-    return fitted
-
-
-def _fit_tail_text_messages(
-    build_messages: Callable[[str], list[dict[str, str]]],
-    text: str,
-    input_budget: int,
-) -> list[dict[str, str]]:
-    bounded_text = text
-    for _ in range(8):
-        messages = build_messages(bounded_text)
-        total_bytes = sum(
-            len(str(message.get("content") or "").encode("utf-8"))
-            for message in messages
-        )
-        if total_bytes <= input_budget:
-            return messages
-        current_bytes = len(bounded_text.encode("utf-8"))
-        if current_bytes <= 0:
-            break
-        next_bytes = max(0, current_bytes - (total_bytes - input_budget))
-        if next_bytes >= current_bytes:
-            next_bytes = current_bytes - 1
-        bounded_text = _utf8_tail(bounded_text, next_bytes)
-    raise AIServiceError("Prompt 固定内容超过可用输入预算")
 
 
 class AIProjectsMixin:
@@ -183,17 +128,17 @@ class AIProjectsMixin:
 
     def delete_writing_project(self, project_id: int) -> None:
         retriever = self._get_retriever()
-        retriever.delete_project(project_id)
         db = self._db()
         try:
             db.delete_ai_writing_project(project_id)
+            retriever.delete_project(project_id)
         finally:
             db.close()
 
     def list_chapters(self, project_id: int) -> list[dict[str, Any]]:
         db = self._db()
         try:
-            return db.list_ai_chapters(project_id)
+            return db.list_ai_chapters(project_id, include_content=False)
         finally:
             db.close()
 
@@ -230,52 +175,53 @@ class AIProjectsMixin:
         created: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         try:
-            if not db.get_ai_writing_project(project_id):
-                raise AIServiceError("写作项目不存在")
-            existing_numbers = {int(ch["chapter_number"]) for ch in db.list_ai_chapter_refs(project_id)}
-            for raw in chapters:
-                try:
-                    chapter_number = int(raw.get("chapter_number") or 0)
-                except (TypeError, ValueError):
-                    chapter_number = 0
-                if chapter_number <= 0:
-                    skipped.append({"chapter_number": raw.get("chapter_number"), "reason": "invalid_number"})
-                    continue
-                if chapter_number in existing_numbers:
-                    skipped.append({"chapter_number": chapter_number, "reason": "exists"})
-                    continue
-                metadata = dict(raw.get("metadata") or {})
-                metadata_fields = {
-                    "target_words": raw.get("target_words"),
-                    "summary_outline": raw.get("outline") or raw.get("summary_outline"),
-                    "detailed_outline": raw.get("detailed_outline") or raw.get("expanded_outline"),
-                    "volume_number": raw.get("volume_number"),
-                    "story_function": raw.get("story_function"),
-                    "key_events": raw.get("key_events"),
-                    "foreshadow_refs": raw.get("foreshadow_refs"),
-                    "scene_beats": raw.get("scene_beats"),
-                    "writing_notes": raw.get("writing_notes"),
-                }
-                for key, value in metadata_fields.items():
-                    if value:
-                        metadata[key] = value
-                outline_text = (
-                    str(raw.get("detailed_outline") or "").strip()
-                    or str(raw.get("expanded_outline") or "").strip()
-                    or str(raw.get("outline") or raw.get("summary_outline") or "").strip()
-                )
-                chapter_payload = {
-                    "project_id": project_id,
-                    "chapter_number": chapter_number,
-                    "title": str(raw.get("title") or "").strip() or f"第{chapter_number}章",
-                    "outline": outline_text,
-                }
-                chapter_id = db.create_ai_chapter(chapter_payload)
-                if metadata:
-                    db.patch_ai_chapter_metadata(chapter_id, metadata)
-                existing_numbers.add(chapter_number)
-                created.append({"id": chapter_id, "chapter_number": chapter_number})
-            return {"created": created, "skipped": skipped}
+            with db.transaction():
+                if not db.get_ai_writing_project(project_id):
+                    raise AIServiceError("写作项目不存在")
+                existing_numbers = {int(ch["chapter_number"]) for ch in db.list_ai_chapter_refs(project_id)}
+                for raw in chapters:
+                    try:
+                        chapter_number = int(raw.get("chapter_number") or 0)
+                    except (TypeError, ValueError):
+                        chapter_number = 0
+                    if chapter_number <= 0:
+                        skipped.append({"chapter_number": raw.get("chapter_number"), "reason": "invalid_number"})
+                        continue
+                    if chapter_number in existing_numbers:
+                        skipped.append({"chapter_number": chapter_number, "reason": "exists"})
+                        continue
+                    metadata = dict(raw.get("metadata") or {})
+                    metadata_fields = {
+                        "target_words": raw.get("target_words"),
+                        "summary_outline": raw.get("outline") or raw.get("summary_outline"),
+                        "detailed_outline": raw.get("detailed_outline") or raw.get("expanded_outline"),
+                        "volume_number": raw.get("volume_number"),
+                        "story_function": raw.get("story_function"),
+                        "key_events": raw.get("key_events"),
+                        "foreshadow_refs": raw.get("foreshadow_refs"),
+                        "scene_beats": raw.get("scene_beats"),
+                        "writing_notes": raw.get("writing_notes"),
+                    }
+                    for key, value in metadata_fields.items():
+                        if value:
+                            metadata[key] = value
+                    outline_text = (
+                        str(raw.get("detailed_outline") or "").strip()
+                        or str(raw.get("expanded_outline") or "").strip()
+                        or str(raw.get("outline") or raw.get("summary_outline") or "").strip()
+                    )
+                    chapter_payload = {
+                        "project_id": project_id,
+                        "chapter_number": chapter_number,
+                        "title": str(raw.get("title") or "").strip() or f"第{chapter_number}章",
+                        "outline": outline_text,
+                    }
+                    chapter_id = db.create_ai_chapter(chapter_payload)
+                    if metadata:
+                        db.patch_ai_chapter_metadata(chapter_id, metadata)
+                    existing_numbers.add(chapter_number)
+                    created.append({"id": chapter_id, "chapter_number": chapter_number})
+                return {"created": created, "skipped": skipped}
         finally:
             db.close()
 
@@ -285,21 +231,10 @@ class AIProjectsMixin:
             before = db.get_ai_chapter(chapter_id)
             if not before:
                 raise AIServiceError("章节不存在")
-            old_project_id = int(before.get("project_id") or 0)
-            old_number = int(before.get("chapter_number") or 0)
-            db.update_ai_chapter(chapter_id, payload)
+            db.update_ai_chapter(chapter_id, payload, expected_revision=payload.get("expected_revision", payload.get("chapter_revision")))
             if {"summary", "key_events"} & set(payload):
-                after = db.get_ai_chapter(chapter_id)
-                if after:
-                    project_id = int(after.get("project_id") or old_project_id)
-                    chapter_number = int(after.get("chapter_number") or old_number)
-                    summary = after.get("summary") or ""
-                    key_events = after.get("key_events") or []
-                    retriever = self._get_retriever()
-                    if summary.strip() or key_events:
-                        retriever.index_chapter(project_id, chapter_number, summary, key_events)
-                    else:
-                        retriever.delete_chapter(project_id, chapter_number)
+                # 正文事务已提交；索引入口另取写事务，重新读取当前版本而非提交时快照。
+                self.index_chapter_for_retrieval(int(before["project_id"]), chapter_id)
         finally:
             db.close()
 
@@ -358,6 +293,8 @@ class AIProjectsMixin:
             db.close()
 
     def update_project_state(self, project_id: int, state_type: str, content: str) -> None:
+        if state_type not in {"character_state", "plot_progress", "world_state", "pending_hooks"}:
+            raise AIServiceError("不支持的项目状态类型")
         db = self._db()
         try:
             db.upsert_ai_project_state(project_id, state_type, content)
@@ -437,22 +374,8 @@ class AIProjectsMixin:
         start = cleaned.find("{")
         if start < 0:
             raise AIServiceError("模型未返回有效 JSON 对象")
-        # 7.7: 括号配平,找到第一个完整JSON对象的结束位置
-        depth = 0
-        end = -1
-        for i in range(start, len(cleaned)):
-            if cleaned[i] == "{":
-                depth += 1
-            elif cleaned[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    end = i
-                    break
-        if end < 0:
-            raise AIServiceError("模型未返回有效 JSON 对象(括号不配对)")
-        json_text = cleaned[start:end + 1]
         try:
-            data = json.loads(json_text)
+            data, _ = json.JSONDecoder().raw_decode(cleaned, start)
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise AIServiceError("模型返回的 JSON 对象无法解析") from exc
         if not isinstance(data, dict):
@@ -925,6 +848,13 @@ class AIProjectsMixin:
         project_id = self._safe_int(payload.get("project_id"), 0, "project_id", min_value=0)
         chapter_id = self._safe_int(payload.get("chapter_id"), 0, "chapter_id", min_value=0)
         chapter = db.get_ai_chapter(chapter_id) if chapter_id else None
+        if chapter_id and not chapter:
+            raise AIServiceError("章节不存在")
+        if chapter:
+            actual_project_id = int(chapter.get("project_id") or 0)
+            if project_id and project_id != actual_project_id:
+                raise AIServiceError("章节不属于该项目")
+            project_id = actual_project_id
         chapter_number = chapter["chapter_number"] if chapter else self._safe_int(payload.get("chapter_number"), 1, "chapter_number", min_value=1)
         project_context = self._build_project_context_with_db(db, project_id, chapter_number) if project_id else ""
         existing_content = ""
@@ -1052,7 +982,6 @@ class AIProjectsMixin:
             project_id = built["project_id"]
             chapter = built["chapter"]
             chapter_number = built["chapter_number"]
-            existing_content = built["existing_content"]
 
             def build_route_messages(context_text: str) -> list[dict[str, str]]:
                 return build_continue_messages(
@@ -1124,8 +1053,12 @@ class AIProjectsMixin:
                 )
                 if not generated and status not in {"succeeded", "cancelled", "failed"}:
                     return
-                content = f"{existing_content}{generated}"
-                db.update_ai_chapter(chapter_id, {"content": content, "status": "draft"})
+                with db.transaction():
+                    current = db.get_ai_chapter(chapter_id)
+                    if not current:
+                        raise AIServiceError("章节不存在")
+                    content = (current.get("content") or "") + generated[last_saved_chars:]
+                    db.update_ai_chapter(chapter_id, {"content": content, "status": "draft"}, expected_revision=current["chapter_revision"])
                 last_saved_chars = len(generated)
                 last_saved_at = time.time()
                 db.patch_ai_chapter_metadata(chapter_id, {
@@ -1245,6 +1178,9 @@ class AIProjectsMixin:
             chapter = db.get_ai_chapter(chapter_id)
             if not chapter or not chapter.get("content"):
                 raise AIServiceError("章节内容为空，无法更新状态")
+
+            if int(chapter.get("project_id") or 0) != project_id:
+                raise AIServiceError("章节不属于该项目")
 
             # 获取现有状态
             states = db.get_all_project_states(project_id)
@@ -1395,6 +1331,8 @@ class AIProjectsMixin:
                             continue
                         parts = line.split("|")
                         description = parts[0].strip()[:_MAX_STATE_FORESHADOW_DESC_LEN]
+                        if description.strip("。.!！ ").lower() in {"无", "暂无", "无新增伏笔", "暂无新增伏笔", "none", "null", "n/a"}:
+                            continue
                         importance = "normal"
                         if len(parts) > 1:
                             imp = parts[1].strip().lower()
@@ -1411,28 +1349,30 @@ class AIProjectsMixin:
                             added += 1
 
     def index_chapter_for_retrieval(self, project_id: int, chapter_id: int) -> None:
-        """将章节摘要和关键事件索引到检索库。"""
+        """以主库写事务串行化最新快照与索引写入，防止跨连接倒序覆盖。"""
+        # 检索器配置可能通过另一连接读取主库，必须在持有写锁之前完成。
+        retriever = self._get_retriever()
         db = self._db()
         try:
-            chapter = db.get_ai_chapter(chapter_id)
-            if not chapter:
-                raise AIServiceError("章节不存在")
-            actual_project_id = int(chapter.get("project_id") or 0)
-            if actual_project_id != int(project_id):
-                raise AIServiceError("章节不属于该项目")
-            chapter_number = int(chapter["chapter_number"])
-            summary = chapter.get("summary") or ""
-            key_events = chapter.get("key_events") or []
-            retriever = self._get_retriever()
-            if summary.strip() or key_events:
-                retriever.index_chapter(
-                    project_id=project_id,
-                    chapter_number=chapter_number,
-                    summary=summary,
-                    key_events=key_events,
-                )
-            else:
-                retriever.delete_chapter(project_id, chapter_number)
+            with db.transaction():
+                chapter = db.get_ai_chapter(chapter_id)
+                if not chapter:
+                    raise AIServiceError("章节不存在")
+                actual_project_id = int(chapter.get("project_id") or 0)
+                if actual_project_id != int(project_id):
+                    raise AIServiceError("章节不属于该项目")
+                chapter_number = int(chapter["chapter_number"])
+                summary = chapter.get("summary") or ""
+                key_events = chapter.get("key_events") or []
+                if summary.strip() or key_events:
+                    retriever.index_chapter(
+                        project_id=project_id,
+                        chapter_number=chapter_number,
+                        summary=summary,
+                        key_events=key_events,
+                    )
+                else:
+                    retriever.delete_chapter(project_id, chapter_number)
         finally:
             db.close()
 
@@ -1587,20 +1527,25 @@ class AIProjectsMixin:
         # Only allow resolving foreshadows that actually belong to this project. The
         # model output is driven by untrusted chapter text, so a hallucinated/echoed
         # id from another project must not be flipped to "resolved" here.
-        project_foreshadow_ids = {int(f["id"]) for f in db.list_ai_foreshadows(project_id)}
+        project_foreshadows = {int(f["id"]): f for f in db.list_ai_foreshadows(project_id)}
         for r in parsed.get("resolved") or []:
             try:
                 fs_id = int(r.get("id"))
             except (TypeError, ValueError):
                 warnings.append("模型返回了无效的伏笔 id，已跳过")
                 continue
-            if fs_id not in project_foreshadow_ids:
+            if fs_id not in project_foreshadows:
                 warnings.append(f"模型返回的伏笔 id={fs_id} 不属于该项目，已跳过")
                 continue
+            existing = project_foreshadows[fs_id]
+            notes = str(existing.get("notes") or "")
+            evidence = str(r.get("evidence") or "")[:500]
+            if evidence and evidence not in notes:
+                notes = "\n".join(filter(None, [notes, evidence]))
             db.update_ai_foreshadow(fs_id, {
                 "status": "resolved",
                 "resolved_chapter": chapter.get("chapter_number"),
-                "notes": (r.get("evidence") or "")[:500],
+                "notes": notes,
             })
             resolved_records.append({"id": fs_id, "evidence": r.get("evidence", "")})
         still_pending = [int(x) for x in (parsed.get("still_pending") or []) if str(x).isdigit()]
@@ -1630,6 +1575,8 @@ class AIProjectsMixin:
             chapter = db.get_ai_chapter(chapter_id)
             if not chapter or not (chapter.get("content") or "").strip():
                 raise AIServiceError("章节内容为空")
+            if int(chapter.get("project_id") or 0) != project_id:
+                raise AIServiceError("章节不属于该项目")
             pending = db.list_ai_foreshadows(project_id, status="pending")
             if not pending:
                 skipped_job_id = uuid.uuid4().hex
@@ -1826,6 +1773,45 @@ class AIProjectsMixin:
             db.close()
 
     def stream_chapter_pipeline(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
+        chapter_id = int(payload.get("chapter_id") or 0)
+        project_id = int(payload.get("project_id") or 0)
+        db = self._db()
+        try:
+            chapter = db.get_ai_chapter(chapter_id)
+            if not chapter or int(chapter["project_id"]) != project_id:
+                raise AIServiceError("章节不存在或不属于所属项目")
+        finally:
+            db.close()
+        stream = self._stream_chapter_pipeline_impl(payload)
+        pipeline_id = None
+        terminal = False
+        try:
+            for chunk in stream:
+                if chunk.type == "metadata":
+                    pipeline_id = (chunk.data or {}).get("pipeline_id", pipeline_id)
+                if chunk.type == "done":
+                    terminal = True
+                yield chunk
+        finally:
+            try:
+                stream.close()
+            finally:
+                if pipeline_id and not terminal:
+                    db = self._db()
+                    try:
+                        with db.transaction():
+                            current = db.get_ai_chapter(chapter_id)
+                            pipeline = ((current or {}).get("metadata") or {}).get("pipeline") or {}
+                            if pipeline.get("id") == pipeline_id and pipeline.get("status") == "running":
+                                pipeline.update(status="cancelled", current_step=None, finished_at=int(time.time()))
+                                for step in pipeline.get("steps", []):
+                                    if step.get("status") in {"running", "pending"}:
+                                        step.update(status="cancelled", finished_at=int(time.time()))
+                                db.patch_ai_chapter_metadata(chapter_id, {"pipeline": pipeline})
+                    finally:
+                        db.close()
+
+    def _stream_chapter_pipeline_impl(self, payload: dict[str, Any]) -> Iterator[AIStreamChunk]:
         """章节自动 Pipeline。
         payload: {
           project_id, chapter_id,
@@ -1856,27 +1842,35 @@ class AIProjectsMixin:
         pipeline_id = uuid.uuid4().hex
         started = time.time()
         db = self._db()
-        # 初始化 chapter.metadata.pipeline
+        # 重试只重置所选步骤，未重试的结果与警告仍属于同一工作区。
         try:
-            db.patch_ai_chapter_metadata(chapter_id, {
-                "pipeline": {
-                    "id": pipeline_id,
-                    "status": "running",
-                    "current_step": None,
-                    "started_at": int(started),
-                    "warnings": [],
-                    "steps": [{"name": s, "status": "pending"} for s in steps],
-                }
-            })
+            with db.transaction():
+                chapter = db.get_ai_chapter(chapter_id)
+                previous = ((chapter or {}).get("metadata") or {}).get("pipeline") or {}
+                retry = payload.get("retry") is True
+                retained_steps = [dict(item) for item in previous.get("steps", []) if item.get("name") not in steps] if retry else []
+                by_name = {item["name"]: item for item in retained_steps}
+                by_name.update({step: {"name": step, "status": "pending"} for step in steps})
+                pipeline_steps = [by_name[name] for name in self.PIPELINE_STEP_ORDER if name in by_name]
+                warnings = [item for item in previous.get("warnings", []) if item.get("step") not in steps] if retry else []
+                db.patch_ai_chapter_metadata(chapter_id, {
+                    "pipeline": {
+                        "id": pipeline_id,
+                        "retry_of": previous.get("id") if retry else None,
+                        "status": "running",
+                        "current_step": None,
+                        "started_at": int(started),
+                        "warnings": warnings,
+                        "steps": pipeline_steps,
+                    }
+                })
         finally:
             db.close()
 
         yield AIStreamChunk(type="metadata", data={
             "pipeline_id": pipeline_id,
-            "steps": [{"name": s, "label": self.PIPELINE_STEP_LABEL.get(s, s)} for s in steps],
+            "steps": [{**item, "label": self.PIPELINE_STEP_LABEL.get(item["name"], item["name"])} for item in pipeline_steps],
         })
-
-        latest_text: str | None = None  # 多步骤间共享章节正文（用于润色/去AI味/审计）
 
         def _emit_step(step_name: str, status: str, **extra) -> None:
             patch = {"name": step_name, "status": status, **extra}
@@ -1895,8 +1889,8 @@ class AIProjectsMixin:
                 },
             )
 
-        failed_steps = 0
-        skipped_steps = 0
+        failed_steps = sum(item.get("status") == "failed" for item in retained_steps)
+        skipped_steps = sum(item.get("status") == "skipped" for item in retained_steps)
         for idx, step in enumerate(steps):
             step_label = self.PIPELINE_STEP_LABEL.get(step, step)
             self._patch_pipeline(chapter_id, {"current_step": step})
@@ -1920,12 +1914,6 @@ class AIProjectsMixin:
                     # 因此 step_output 只是新生成片段。必须拼接章节已有正文后再写回，
                     # 否则会用续写片段整段覆盖原文，造成不可逆的数据丢失（与单步
                     # stream_chapter_continue 的 existing_content + generated 行为对齐）。
-                    pre_db = self._db()
-                    try:
-                        _pre_ch = pre_db.get_ai_chapter(chapter_id)
-                        existing_content = (_pre_ch.get("content") if _pre_ch else "") or ""
-                    finally:
-                        pre_db.close()
                     parts: list[str] = []
                     job_id = ""
                     for chunk in self.stream_chapter_continue(sub_payload):
@@ -1940,12 +1928,16 @@ class AIProjectsMixin:
                             raise AIServiceError((chunk.data or {}).get("message", "续写失败"))
                     generated = "".join(parts)
                     if generated:
-                        step_output = f"{existing_content}{generated}"
-                        latest_text = step_output
+                        step_output = generated
                         # 写回章节 content（已有正文 + 续写片段）
                         sub_db = self._db()
                         try:
-                            sub_db.update_ai_chapter(chapter_id, {"content": step_output, "status": "draft"})
+                            with sub_db.transaction():
+                                current = sub_db.get_ai_chapter(chapter_id)
+                                if not current:
+                                    raise AIServiceError("章节不存在")
+                                step_output = (current.get("content") or "") + generated
+                                sub_db.update_ai_chapter(chapter_id, {"content": step_output, "status": "draft"}, expected_revision=current["chapter_revision"])
                         finally:
                             sub_db.close()
                     step_meta = {"job_id": job_id, "chars": len(generated)}
@@ -1954,7 +1946,7 @@ class AIProjectsMixin:
                     sub_db = self._db()
                     try:
                         ch = sub_db.get_ai_chapter(chapter_id)
-                        text = latest_text if latest_text is not None else (ch.get("content") if ch else "")
+                        text = (ch.get("content") if ch else "")
                     finally:
                         sub_db.close()
                     if not (text or "").strip():
@@ -1983,10 +1975,9 @@ class AIProjectsMixin:
                             raise AIServiceError((chunk.data or {}).get("message", "润色失败"))
                     step_output = "".join(parts)
                     if step_output.strip():
-                        latest_text = step_output
                         sub_db = self._db()
                         try:
-                            sub_db.update_ai_chapter(chapter_id, {"content": step_output})
+                            sub_db.update_ai_chapter(chapter_id, {"content": step_output}, expected_revision=ch["chapter_revision"])
                         finally:
                             sub_db.close()
                     step_meta = {"job_id": job_id, "chars": len(step_output)}
@@ -1995,7 +1986,7 @@ class AIProjectsMixin:
                     sub_db = self._db()
                     try:
                         ch = sub_db.get_ai_chapter(chapter_id)
-                        text = latest_text if latest_text is not None else (ch.get("content") if ch else "")
+                        text = (ch.get("content") if ch else "")
                     finally:
                         sub_db.close()
                     if not (text or "").strip():
@@ -2025,10 +2016,9 @@ class AIProjectsMixin:
                             raise AIServiceError((chunk.data or {}).get("message", "去AI味失败"))
                     step_output = "".join(parts)
                     if step_output.strip():
-                        latest_text = step_output
                         sub_db = self._db()
                         try:
-                            sub_db.update_ai_chapter(chapter_id, {"content": step_output})
+                            sub_db.update_ai_chapter(chapter_id, {"content": step_output}, expected_revision=ch["chapter_revision"])
                         finally:
                             sub_db.close()
                     step_meta = {"job_id": job_id, "chars": len(step_output)}
@@ -2115,7 +2105,7 @@ class AIProjectsMixin:
                     sub_db = self._db()
                     try:
                         ch = sub_db.get_ai_chapter(chapter_id)
-                        text = latest_text if latest_text is not None else (ch.get("content") if ch else "")
+                        text = (ch.get("content") if ch else "")
                     finally:
                         sub_db.close()
                     if not (text or "").strip():
@@ -2155,7 +2145,7 @@ class AIProjectsMixin:
                     sub_db = self._db()
                     try:
                         ch = sub_db.get_ai_chapter(chapter_id)
-                        text = latest_text if latest_text is not None else (ch.get("content") if ch else "")
+                        text = (ch.get("content") if ch else "")
                     finally:
                         sub_db.close()
                     if not (text or "").strip():
@@ -2181,12 +2171,8 @@ class AIProjectsMixin:
                     step_meta = {"score": score, "issues": len(issues_dump)}
 
                 elif step == "index":
-                    try:
-                        self.index_chapter_for_retrieval(project_id, chapter_id)
-                        step_meta = {"indexed": True}
-                    except Exception as e:
-                        step_meta = {"indexed": False, "error": str(e)}
-                        self._append_pipeline_warning(chapter_id, {"step": step, "message": str(e)})
+                    self.index_chapter_for_retrieval(project_id, chapter_id)
+                    step_meta = {"indexed": True}
 
                 _emit_step(step, "done", finished_at=int(time.time()), **step_meta)
                 yield AIStreamChunk(type="custom", data={"event": "step_done", "step": step, "meta": step_meta})

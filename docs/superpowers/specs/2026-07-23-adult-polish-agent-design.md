@@ -1,5 +1,7 @@
 # 成人描写局部润色 Agent 设计
 
+> **2026-09-30 复核：** 调度器清理未应用候选时用的是 `sync.task_log_retention_days`，默认 14 天，不是下文写的 3 天。手工清理接口不传天数时参数默认仍是 3。下文其余安全边界仍然有效。
+
 > 状态：核心流程已实施（2026-08-06 至 2026-08-12）；偏好注入、实时 progress 和取消/断连传播仍待补齐。当前用户操作以 [../../ADULT_POLISH_USER_GUIDE.md](../../ADULT_POLISH_USER_GUIDE.md) 和 [../../frontend-api-contract.md](../../frontend-api-contract.md) 为准。
 > 日期：2026-07-23
 > 前置依赖：[AI 模型目录与模型池设计](2026-07-23-ai-model-catalog-pools-design.md)

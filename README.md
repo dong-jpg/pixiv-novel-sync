@@ -19,6 +19,8 @@
 
 ---
 
+> **开发状态（2026-10-08）**：本轮按优先级修复数据恢复、任务状态、预算与写作交互，并分别整合历史报告/历史计划。当前结果、未提交修改及环境验收边界以 [整改状态](docs/REMEDIATION_STATUS_2026-09-30.md) 为准；main不包含写作/成人模块，生产部署前仍须独立备份与环境验证。
+
 ## Features
 
 <table>
@@ -142,7 +144,7 @@ pixiv-novel-sync sync bookmark following_novels subscribed_series
 5. 建立结构化的虚构角色记录，填写年龄依据和 `fictional=true`；启用项目成人内容后，确认当前角色 revision。
 6. 阅读页先获取并确认当前 Provider scope，再生成候选；warning、Provider scope、角色或章节 revision 变化都必须重新生成。
 
-成人路由不支持无 token 的本地单用户例外，也不会自动加入普通 Pipeline。候选正文仅在未应用期间按三天策略保留；应用后任务正文会清理，应用记录只保留章节/候选/校验/策略和 Provider snapshot hash 等元数据，不保留正文。固定安全策略、两阶段 JSON review、角色事实、锁定词和章节范围任一校验失败都会 fail closed。连接中断时可使用同一 job 的 signed events 恢复脱敏校验和候选状态。完整的请求字段、SSE 事件和错误语义见 [`docs/frontend-api-contract.md`](docs/frontend-api-contract.md)。
+成人路由不支持无 token 的本地单用户例外，也不会自动加入普通 Pipeline。未应用的候选正文由调度器按 `sync.task_log_retention_days` 保留，默认 14 天；手工清理接口不传天数时仍是 3 天。应用后任务正文会清理，应用记录只保留章节/候选/校验/策略和 Provider snapshot hash 等元数据，不保留正文。固定安全策略、两阶段 JSON review、角色事实、锁定词和章节范围任一校验失败都会 fail closed。连接中断时可使用同一 job 的 signed events 恢复脱敏校验和候选状态。完整的请求字段、SSE 事件和错误语义见 [`docs/frontend-api-contract.md`](docs/frontend-api-contract.md)。
 
 ### 智能推荐
 

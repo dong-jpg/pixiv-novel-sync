@@ -1,5 +1,9 @@
 # AI Preference And Adult Remediation Implementation Plan
 
+> **2026-09-30 审计口径：** 不按原文执行；部分转09-14，其余按OUT。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** 不按原文执行。成人偏好注入和审查进度改到 2026-09-14 的 T4，2026-09-30 核对时尚未完成。空勾保留。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 实现可选 AI 偏好总结/推荐解释、成人偏好注入、成人实时 progress 和端到端取消。

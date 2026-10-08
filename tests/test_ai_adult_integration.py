@@ -7,7 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from ai_adult_testkit import CHARACTER_A_ID, seed_adult_project, valid_adult_payload
+from ai_adult_testkit import CHARACTER_A_ID, CHARACTER_B_ID, seed_adult_project, valid_adult_payload
 from pixiv_novel_sync.ai.model_router import (
     CandidateSnapshot,
     ModelCandidate,
@@ -198,7 +198,7 @@ def test_adult_polish_end_to_end_changes_only_target_and_records_snapshots(
     scope_data = scope_response.get_json()["data"]
     payload = valid_adult_payload(
         provider_scope_hash=scope_data["provider_scope_hash"],
-        participant_character_ids=[CHARACTER_A_ID],
+        participant_character_ids=[CHARACTER_A_ID, CHARACTER_B_ID],
     )
 
     stream = client.post(
@@ -220,6 +220,17 @@ def test_adult_polish_end_to_end_changes_only_target_and_records_snapshots(
     candidate = events["candidate"][0]["candidate"]
     assert validation["warning_ack_hash"] == ""
 
+    # 幂等 POST 可以重新签发凭证，但必须在签发阶段绑定，不能等 apply 覆盖。
+    replayed_post = client.post('/api/dashboard/ai/polish/adult/stream', json=payload, headers=headers, buffered=True)
+    assert replayed_post.status_code == 200
+    metadata = _parse_sse(replayed_post)["metadata"][0]
+    token_db = Database(db_path)
+    try:
+        scope = token_db.conn.execute("SELECT owner_scope FROM ai_jobs WHERE job_id=?", (job_id,)).fetchone()[0]
+        stored_token_hash = token_db.get_application_for_owner(job_id, scope)["access_token_hash"]
+        assert stored_token_hash == hashlib.sha256(metadata["access_token"].encode()).hexdigest()
+    finally:
+        token_db.close()
     apply = client.post(
         f"/api/dashboard/ai/polish/adult/{job_id}/apply",
         json={"warning_ack_hash": validation["warning_ack_hash"]},
@@ -229,6 +240,9 @@ def test_adult_polish_end_to_end_changes_only_target_and_records_snapshots(
         },
     )
     assert apply.status_code == 200
+    applied_events = _parse_sse(client.get(f"/api/dashboard/ai/polish/adult/{job_id}/events", headers={"X-Adult-Access-Token": metadata["access_token"]}, buffered=True))
+    assert applied_events["done"][0]["status"] == "applied"
+    assert "candidate" not in applied_events
 
     database = Database(db_path)
     try:
@@ -302,7 +316,7 @@ def test_adult_polish_disconnect_replay_restores_validation_before_apply(
     scope_data = scope_response.get_json()["data"]
     payload = valid_adult_payload(
         provider_scope_hash=scope_data["provider_scope_hash"],
-        participant_character_ids=[CHARACTER_A_ID],
+        participant_character_ids=[CHARACTER_A_ID, CHARACTER_B_ID],
     )
 
     stream = client.post(
@@ -326,6 +340,7 @@ def test_adult_polish_disconnect_replay_restores_validation_before_apply(
     )
     assert replay.status_code == 200
     replay_events = _parse_sse(replay)
+    assert replay_events["metadata"][0]["access_token"] == metadata["access_token"]
     assert "validation" in replay_events
     assert "candidate" in replay_events
     assert "done" in replay_events

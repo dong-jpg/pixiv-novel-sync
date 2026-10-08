@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -21,6 +22,7 @@ from ..preference_context import (
     normalize_preference_strength,
 )
 from ..model_router import (
+    estimate_token_count,
     CandidateSnapshot,
     ModelRouter,
     PromptBudget,
@@ -44,95 +46,104 @@ class AIConflictError(AIServiceError):
         self.data = data or {}
 
 
-def _utf8_len(text: str) -> int:
-    return len(text.encode("utf-8"))
-
-
-def _utf8_tail(text: str, max_bytes: int) -> str:
-    if max_bytes <= 0:
-        return ""
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return text
-    return encoded[-max_bytes:].decode("utf-8", errors="ignore")
-
-
-def _utf8_prefix(text: str, max_bytes: int) -> str:
-    if max_bytes <= 0:
-        return ""
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return text
-    return encoded[:max_bytes].decode("utf-8", errors="ignore")
-
-
-def _message_utf8_bytes(messages: list[dict[str, str]]) -> int:
-    return sum(
-        _utf8_len(str(message.get("content") or ""))
-        for message in messages
-    )
+def _message_tokens(messages: list[dict[str, str]]) -> int:
+    return sum(estimate_token_count(str(m.get("content") or "")) for m in messages)
 
 
 def _fit_route_messages(
     messages: list[dict[str, str]],
     input_budget: int,
+    *,
+    estimator: Callable[[list[dict[str, str]]], int] = _message_tokens,
 ) -> list[dict[str, str]]:
     fitted = [dict(message) for message in messages]
-    if not fitted:
+    if not fitted or estimator(fitted) <= input_budget:
         return fitted
-    if _message_utf8_bytes(fitted) <= input_budget:
-        return fitted
-    fixed_bytes = _message_utf8_bytes(fitted[:-1])
-    remaining = input_budget - fixed_bytes
-    if remaining <= 0:
+    trim_index = next((i for i in range(len(fitted) - 1, -1, -1)
+                       if fitted[i].get("role") not in {"system", "developer"}), None)
+    if trim_index is None:
         raise AIServiceError("Prompt 固定内容超过可用输入预算")
-    fitted[-1]["content"] = _utf8_tail(
-        str(fitted[-1].get("content") or ""),
-        remaining,
+    def build(text: str) -> list[dict[str, str]]:
+        result = [dict(message) for message in fitted]
+        result[trim_index]["content"] = text
+        return result
+    return _fit_tail_text_messages(
+        build, str(fitted[trim_index].get("content") or ""), input_budget,
+        estimator=estimator,
     )
-    return fitted
 
 
 def _fit_tail_text_messages(
     build_messages: Callable[[str], list[dict[str, str]]],
     text: str,
     input_budget: int,
+    *,
+    estimator: Callable[[list[dict[str, str]]], int] = _message_tokens,
 ) -> list[dict[str, str]]:
-    bounded_text = text
-    for _ in range(8):
-        messages = build_messages(bounded_text)
-        total_bytes = _message_utf8_bytes(messages)
-        if total_bytes <= input_budget:
-            return messages
-        current_bytes = _utf8_len(bounded_text)
-        if current_bytes <= 0:
-            break
-        next_bytes = max(0, current_bytes - (total_bytes - input_budget))
-        if next_bytes >= current_bytes:
-            next_bytes = current_bytes - 1
-        bounded_text = _utf8_tail(bounded_text, next_bytes)
-    raise AIServiceError("Prompt 固定内容超过可用输入预算")
+    messages = build_messages(text)
+    if estimator(messages) <= input_budget:
+        return messages
+    best = build_messages("")
+    if estimator(best) > input_budget:
+        raise AIServiceError("Prompt 固定内容超过可用输入预算")
+    low, high = 0, len(text)
+    while low < high:
+        size = (low + high + 1) // 2
+        candidate = build_messages(text[-size:])
+        if estimator(candidate) <= input_budget:
+            low, best = size, candidate
+        else:
+            high = size - 1
+    return best
+
+
+def _split_prompt_text(
+    text: str,
+    build_messages: Callable[[str], list[dict[str, str]]],
+    input_budget: int,
+    *,
+    estimator: Callable[[list[dict[str, str]]], int] = _message_tokens,
+) -> list[str]:
+    """Partition without loss, charging the rendered prompt for every segment."""
+    parts = []
+    while text:
+        low, high = 0, len(text)
+        while low < high:
+            size = (low + high + 1) // 2
+            if estimator(build_messages(text[:size])) <= input_budget:
+                low = size
+            else:
+                high = size - 1
+        if not low:
+            raise AIServiceError("Prompt 固定内容超过可用输入预算")
+        parts.append(text[:low])
+        text = text[low:]
+    return parts
 
 
 def _drop_oldest_history_messages(
     messages: list[dict[str, str]],
     input_budget: int,
+    *,
+    estimator: Callable[[list[dict[str, str]]], int] = _message_tokens,
+    budget_for_messages: Callable[[list[dict[str, str]]], int] | None = None,
 ) -> list[dict[str, str]]:
-    """从最旧的非 system 消息开始丢，直到字节数落进预算；最后一条仍超限再裁尾。"""
     fitted = [dict(message) for message in messages]
-    while len(fitted) > 1 and _message_utf8_bytes(fitted) > input_budget:
-        drop_at = next(
-            (
-                index
-                for index, message in enumerate(fitted[:-1])
-                if message.get("role") != "system"
-            ),
-            None,
-        )
-        if drop_at is None:
+    fixed_roles = {"system", "developer"}
+    # max_history 可能切在一轮中间；不把失去提问的回答发送给模型。
+    first_user = next((i for i, m in enumerate(fitted) if m.get("role") == "user"), None)
+    if first_user is not None:
+        fitted = [m for i, m in enumerate(fitted) if i >= first_user or m.get("role") in fixed_roles]
+    def budget() -> int:
+        return budget_for_messages(fitted) if budget_for_messages else input_budget
+    while estimator(fitted) > budget():
+        users = [i for i, m in enumerate(fitted) if m.get("role") == "user"]
+        if len(users) < 2:
             break
-        fitted.pop(drop_at)
-    return _fit_route_messages(fitted, input_budget)
+        start, end = users[0], users[1]
+        fitted = [m for i, m in enumerate(fitted)
+                  if not start <= i < end or m.get("role") in fixed_roles]
+    return _fit_route_messages(fitted, budget(), estimator=estimator)
 
 
 class AINotFoundError(AIServiceError):
@@ -161,7 +172,7 @@ class AIServiceCore:
         self.db_path = db_path
         self.secret_manager = secret_manager or AISecretManager()
         self._retriever: BaseRetriever | None = None
-        self._retriever_config_key: tuple[str | None, str | None, str, int] | None = None
+        self._retriever_config_key: tuple[str | None, str | None, str, int, bool] | None = None
         self._retriever_lock = threading.Lock()  # 7.7: 保护retriever缓存
         self._provider_cache: dict[tuple[Any, ...], AIProvider] = {}
         self._provider_cache_by_id: dict[int, tuple[Any, ...]] = {}
@@ -186,22 +197,27 @@ class AIServiceCore:
                 os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_API_KEY")
                 or os.getenv("QWEN_EMBEDDING_API_KEY")
             )
+            use_embeddings = os.getenv("PIXIV_NOVEL_SYNC_USE_EMBEDDINGS", "false").strip().lower() in {
+                "1", "true", "yes", "on",
+            }
             embedding_model = (
                 os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_MODEL")
                 or os.getenv("QWEN_EMBEDDING_MODEL")
-                or "Qwen3-Embedding-8B"
+                or ("paraphrase-multilingual-MiniLM-L12-v2"
+                    if use_embeddings and not embedding_base_url else "Qwen3-Embedding-8B")
             )
             timeout_raw = os.getenv("PIXIV_NOVEL_SYNC_EMBEDDING_TIMEOUT", "60")
             try:
                 embedding_timeout = max(int(timeout_raw), 1)
             except ValueError:
                 embedding_timeout = 60
-            config_key = (embedding_base_url, embedding_api_key, embedding_model, embedding_timeout)
+            config_key = (embedding_base_url, embedding_api_key, embedding_model, embedding_timeout, use_embeddings)
             if self._retriever is None or self._retriever_config_key != config_key:
                 if self._retriever is not None and hasattr(self._retriever, "close"):
                     self._retriever.close()  # type: ignore[attr-defined]
                 self._retriever = create_retriever(
                     self.db_path,
+                    use_embeddings=use_embeddings,
                     model_name=embedding_model,
                     api_base_url=embedding_base_url,
                     api_key=embedding_api_key,
@@ -301,36 +317,19 @@ class AIServiceCore:
         messages: list[dict[str, str]],
         input_budget: int,
     ) -> list[dict[str, str]]:
-        total_bytes = sum(
-            len(str(message.get("content") or "").encode("utf-8"))
-            for message in messages
-        )
-        if total_bytes <= input_budget or not messages:
-            return messages
-
-        trim_index = next(
-            (
-                index
-                for index in range(len(messages) - 1, -1, -1)
-                if messages[index].get("role") != "system"
-            ),
-            -1,
-        )
+        trim_index = next((i for i in range(len(messages) - 1, -1, -1)
+                           if messages[i].get("role") != "system"), -1)
         if trim_index < 0:
-            raise AIServiceError("偏好画像与固定 Prompt 超过可用输入预算")
-        fixed_bytes = total_bytes - len(
-            str(messages[trim_index].get("content") or "").encode("utf-8")
+            if _message_tokens(messages) > input_budget:
+                raise AIServiceError("偏好画像与固定 Prompt 超过可用输入预算")
+            return messages
+        def build(text: str) -> list[dict[str, str]]:
+            result = [dict(m) for m in messages]
+            result[trim_index]["content"] = text
+            return result
+        return _fit_tail_text_messages(
+            build, str(messages[trim_index].get("content") or ""), input_budget,
         )
-        remaining = input_budget - fixed_bytes
-        if remaining <= 0:
-            raise AIServiceError("偏好画像与固定 Prompt 超过可用输入预算")
-
-        encoded = str(messages[trim_index].get("content") or "").encode("utf-8")
-        messages[trim_index]["content"] = encoded[-remaining:].decode(
-            "utf-8",
-            errors="ignore",
-        )
-        return messages
 
     def _provider_cache_key(self, config: AIProviderConfig) -> tuple[Any, ...]:
         return (
@@ -462,17 +461,33 @@ class AIServiceCore:
             deadline = (
                 datetime.now(timezone.utc) + timedelta(minutes=30)
             ).strftime("%Y-%m-%d %H:%M:%S")
-            db.create_ai_job(
-                job_id,
-                task_type,
-                agent.id,
-                job_input_data,
-                owner_token=owner_token,
-                stage="main",
-                route_deadline_at=deadline,
-                parent_job_id=parent_job_id,
-                idempotency_key=idempotency_key,
-            )
+            # Keep pasted source out of job listings while retaining a durable
+            # document reference for resume. Commit the source and job atomically.
+            with db.transaction():
+                raw_text = job_input_data.pop("text", None)
+                if raw_text is not None and job_input_data.get("source_type") not in {
+                    "archive_novel", "archive_series", "document",
+                }:
+                    source_text = str(raw_text)
+                    document_id = db.create_ai_document({
+                        "title": f"AI job source {job_id}",
+                        "source_type": "manual",
+                        "content": source_text,
+                        "content_hash": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+                        "metadata": {"job_id": job_id},
+                    })
+                    job_input_data.update(source_type="document", document_id=document_id)
+                db.create_ai_job(
+                    job_id,
+                    task_type,
+                    agent.id,
+                    job_input_data,
+                    owner_token=owner_token,
+                    stage="main",
+                    route_deadline_at=deadline,
+                    parent_job_id=parent_job_id,
+                    idempotency_key=idempotency_key,
+                )
         else:
             if (
                 parent_job_id is not None
@@ -638,6 +653,32 @@ class AIServiceCore:
 
         return generate()
 
+    def _route_estimator(
+        self, context: RouteJobContext,
+    ) -> Callable[[list[dict[str, str]]], int]:
+        estimate = getattr(self.model_router, "estimate_messages", None)
+        if not callable(estimate) or not hasattr(context, "candidate_snapshot"):
+            return _message_tokens
+        snapshot = context.candidate_snapshot
+        if context.resume_candidate_index:
+            snapshot = CandidateSnapshot(
+                candidates=tuple(c for c in snapshot.candidates
+                                 if c.candidate_index >= context.resume_candidate_index),
+                snapshot_hash=snapshot.snapshot_hash,
+                agent_config_hash=snapshot.agent_config_hash,
+                binding_version=snapshot.binding_version,
+            )
+        return lambda messages: estimate(snapshot, messages)[0]
+
+    @staticmethod
+    def _route_input_budget(
+        context: RouteJobContext, messages: list[dict[str, str]],
+    ) -> int:
+        budget = context.prompt_budget
+        return min(budget.input_budget, budget.effective_context_window
+                   - budget.output_reserve - budget.safety_margin
+                   - (4 * len(messages) + 2))
+
     def _stream_route(
         self,
         context: RouteJobContext,
@@ -670,10 +711,10 @@ class AIServiceCore:
                 route_messages,
                 context.preference_context,
             )
-            route_messages = self._fit_preference_messages(
-                route_messages,
-                context.prompt_budget.input_budget,
-            )
+        route_messages = _fit_route_messages(
+            route_messages, self._route_input_budget(context, route_messages),
+            estimator=self._route_estimator(context),
+        )
         request = RouteRequest(
             job_id=context.job_id,
             stage=stage,

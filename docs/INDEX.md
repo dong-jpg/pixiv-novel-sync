@@ -1,131 +1,45 @@
 # 项目文档索引
 
-**项目**: Pixiv Novel Sync
-**维护者**: dong-jpg
-**最近更新**: 2026-09-24
+**最近更新：2026-10-08**
 
----
+## 当前状态：从这里开始
 
-当前文档分为三部分：**活跃参考**（顶层，持续维护）、**开发计划**（superpowers/，进行中的设计）、**历史归档**（archive/，已完成不再维护）。
+- [本轮整改执行状态](REMEDIATION_STATUS_2026-09-30.md)：当前实现、最新验证、分支与环境验收边界。它替代历史报告中的“当前状态”说明。
+- [本轮执行台账](superpowers/plans/2026-09-30-prioritized-completion.md)：按优先级推进及验证记录。
+- [09-14原任务清单](superpowers/plans/2026-09-14-ai-writing-split-and-audit-remediation.md)：逐项验收要求；不能把checkbox统计当项目完成率。
 
-## 活跃参考文档（顶层）
+main提供归档/同步/推荐/救援与AI基础设施；写作和成人功能在ai-writing。工作区已修改不等于远端已推送或现网已部署。
 
-### 入口与审计
+## 活跃参考
 
-| 文档 | 用途 |
-|------|------|
-| [../README.md](../README.md) | 项目入口：功能介绍、快速开始、配置说明 |
-| [../CLAUDE.md](../CLAUDE.md) | 开发约定：命令、架构分层、代码风格（根目录 `AGENTS.md` 已于 2026-08-20 删除，约定统一收在此处） |
-| [UNIFIED_PROJECT_REQUIREMENTS.md](UNIFIED_PROJECT_REQUIREMENTS.md) | 全项目统一需求、实现状态与来源追溯 |
-| [AUDIT_REPORT_2026-07-02.md](AUDIT_REPORT_2026-07-02.md) | 审计：修复 8 类严重 bug + 5 类中等问题 |
-| [AUDIT_REPORT_2026-07-03.md](AUDIT_REPORT_2026-07-03.md) | 审计：EPUB 回归修复 + 死代码清理 + 文档整改 |
-| [AUDIT_REPORT_2026-08-13.md](AUDIT_REPORT_2026-08-13.md) | 审计：任务终态、推荐发布、成人路由取消、分页边界与需求覆盖 |
-| [AUDIT_REPORT_2026-09-14.md](AUDIT_REPORT_2026-09-14.md) | 最新一轮全项目审计：登录落盘、调度器锁死、每请求 init_schema、AI 中文预算、成人别名恢复、需求覆盖矩阵与 35 条无调用路由 |
+| 文档 | 路径 |
+|---|---|
+| [项目入口](../README.md) | README.md |
+| [需求与OUT决策](UNIFIED_PROJECT_REQUIREMENTS.md) | docs/UNIFIED_PROJECT_REQUIREMENTS.md |
+| [任务/调度/恢复](JOB_SYSTEM.md) | docs/JOB_SYSTEM.md |
+| [页面与交互](frontend-pages.md) | docs/frontend-pages.md |
+| [API契约](frontend-api-contract.md) | docs/frontend-api-contract.md |
+| [模型与预算](MODEL_ROUTING_GUIDE.md) | docs/MODEL_ROUTING_GUIDE.md |
+| [偏好与推荐](PREFERENCE_RECOMMENDER_REQUIREMENTS.md) | docs/PREFERENCE_RECOMMENDER_REQUIREMENTS.md |
+| [救援使用](RESCUE_USER_GUIDE.md) | docs/RESCUE_USER_GUIDE.md |
+| [成人润色与安全](ADULT_POLISH_USER_GUIDE.md) | docs/ADULT_POLISH_USER_GUIDE.md |
+| [检索与Embedding](QWEN_EMBEDDING_INTEGRATION.md) | docs/QWEN_EMBEDDING_INTEGRATION.md |
+| [界面规范](library-os-style-guide.md) | docs/library-os-style-guide.md |
 
-> 2026-08-20 的提交 `ed081db` 修复了一次生产事故（`novel_status` 被 Pixiv 限流时把 5499 篇仍存在的小说误判为已删除），引入三态状态判定、双熔断、分批轮转与 `partial` 任务终态。该事故没有独立审计报告，行为说明见 [JOB_SYSTEM.md](JOB_SYSTEM.md) 第 3.5 节。
+## 仍有效的专项需求基线
 
-### API 与前端契约
+- [AI模型目录、模型池与统一路由需求](superpowers/specs/2026-07-27-ai-model-catalog-pools-unified-requirements.md)：保留为已实施约束，不因历史计划整合而丢失入口。
 
-| 文档 | 用途 |
-|------|------|
-| [frontend-api-contract.md](frontend-api-contract.md) | 前端依赖的后端端点契约 |
-| [frontend-pages.md](frontend-pages.md) | 前端页面/模板/路由清单 |
-| [library-os-style-guide.md](library-os-style-guide.md) | 前端视觉设计系统指南 |
+## 历史材料：报告与计划分开整合
 
-### 功能设计
+- [历史报告整合](archive/HISTORY_REPORTS.md)：旧审计、阶段完成报告、结构快照、重复优化建议。
+- [历史执行计划整合](archive/HISTORY_PLANS.md)：旧计划的分期、替代与OUT关系，以及原文索引。
+- [09-30审查快照](AUDIT_REPORT_2026-09-30.md)：修复前的缺陷证据；不再以其中旧测试结果描述新工作区。
+- [全分支计划时间线](PLAN_AUDIT_2026-09-30.md)：32份历史计划的首次Git提交与分支快照。
+- [原始归档目录](archive/README.md)：保留原文便于追溯。归档不代表其中全部建议已实现。
 
-| 文档 | 用途 |
-|------|------|
-| [PREFERENCE_RECOMMENDER_REQUIREMENTS.md](PREFERENCE_RECOMMENDER_REQUIREMENTS.md) | 偏好推荐系统需求规格 |
-| [QWEN_EMBEDDING_INTEGRATION.md](QWEN_EMBEDDING_INTEGRATION.md) | Qwen embedding 检索配置指南 |
-| [ADULT_POLISH_USER_GUIDE.md](ADULT_POLISH_USER_GUIDE.md) | 成人局部润色 Agent 的配置、使用、恢复和故障排查 |
-| [MODEL_ROUTING_GUIDE.md](MODEL_ROUTING_GUIDE.md) | AI 模型目录/模型池/统一路由用户指南（发现、绑定、failover、排错） |
-| [RESCUE_USER_GUIDE.md](RESCUE_USER_GUIDE.md) | 救援功能用户指南（userscript、Token、目录筛选、只读 API、排错） |
-| [JOB_SYSTEM.md](JOB_SYSTEM.md) | 任务系统开发者文档（管线、状态机、取消协议、新增 task_type、auto_sync 配置） |
+superpowers历史plans/specs继续留在原路径，不批量改勾、不删除原文消除待办。现有明确OUT的lease/cursor/完整trash manifest等不重新实施；修复当前数据恢复流程的缺陷不等于新增完整manifest系统。
 
-## 开发计划（superpowers/）
+## 维护规则
 
-归档口径说明：`superpowers/` 下的 plans/specs 一律**留在原目录**、在本索引标注状态（进行中 / 已完成），不再移动到 `archive/`；只有顶层一次性文档才进入 `archive/`。已完成条目仅作实施记录，当前行为仍以代码与活跃参考文档为准。
-
-### 进行中
-
-> **2026-09-28：** 2026-08-14 几份计划没有按原文整份落地。能用更小改动盖住的，已经进了 2026-09-14 整改。明确不做的是 task log owner lease、分页游标、trash manifest、AI 总结 / 解释来源、`recommendation_search_plans` 表和 `JobType.RECOMMENDATION_SYNC`。成人偏好注入和审查阶段实时 progress 在 `ai-writing` 上按 T4 处理。2026-08-28 吞吐计划已拆成 phase 1–3。这些文件描述的是当时的目标，不是当前行为。
-
-| 文档 | 说明 |
-|------|------|
-| [superpowers/plans/2026-09-14-ai-writing-split-and-audit-remediation.md](superpowers/plans/2026-09-14-ai-writing-split-and-audit-remediation.md) | **当前主线**：AI 写作模块剥离到 `ai-writing` 分支 + 2026-09-14 审计全部发现的整改任务（T0–T5 编号，含验收清单）。T0–T3、T5 已完成；T4（ai-writing 专属）进行中 |
-| [superpowers/specs/2026-08-14-complete-audit-remediation-design.md](superpowers/specs/2026-08-14-complete-audit-remediation-design.md) | 2026-08-13 审计的完整整改设计（本轮主线设计） |
-| [superpowers/plans/2026-08-14-runtime-integrity-remediation.md](superpowers/plans/2026-08-14-runtime-integrity-remediation.md) | 运行时完整性整改实施计划（未开始） |
-| [superpowers/plans/2026-08-14-rescue-completion.md](superpowers/plans/2026-08-14-rescue-completion.md) | 救援目录收尾实施计划（未开始） |
-| [superpowers/plans/2026-08-14-recommendation-completion.md](superpowers/plans/2026-08-14-recommendation-completion.md) | 推荐系统收尾实施计划（未开始） |
-| [superpowers/plans/2026-08-14-ai-preference-adult-remediation.md](superpowers/plans/2026-08-14-ai-preference-adult-remediation.md) | AI 偏好注入与成人 Agent 整改实施计划（未开始） |
-| [superpowers/specs/2026-08-28-sync-budget-and-settings-redesign-design.md](superpowers/specs/2026-08-28-sync-budget-and-settings-redesign-design.md) | 同步吞吐 / 预算与设置页重做设计（已拆成 phase 1–3） |
-| [superpowers/plans/2026-08-28-sync-throughput-and-budget.md](superpowers/plans/2026-08-28-sync-throughput-and-budget.md) | 2026-08-28 吞吐与预算原始计划（SUPERSEDED，拆成下面三份 phase） |
-| [superpowers/plans/2026-08-28-phase1-sync-throughput.md](superpowers/plans/2026-08-28-phase1-sync-throughput.md) | 吞吐 phase 1 实施计划 |
-| [superpowers/plans/2026-08-28-phase2-schedule-budget.md](superpowers/plans/2026-08-28-phase2-schedule-budget.md) | 吞吐 phase 2 排期与预算实施计划 |
-| [superpowers/plans/2026-08-28-phase3-settings-ai-pages.md](superpowers/plans/2026-08-28-phase3-settings-ai-pages.md) | 吞吐 phase 3 设置与 AI 页实施计划 |
-| [superpowers/specs/2026-09-03-ai-settings-operability-design.md](superpowers/specs/2026-09-03-ai-settings-operability-design.md) | AI 设置页可操作性设计 |
-| [superpowers/plans/2026-09-03-ai-settings-operability.md](superpowers/plans/2026-09-03-ai-settings-operability.md) | AI 设置页可操作性实施计划 |
-| [superpowers/specs/2026-09-02-dashboard-ai-page-split-design.md](superpowers/specs/2026-09-02-dashboard-ai-page-split-design.md) | /dashboard/ai 拆分为一级页面设计（ai-writing） |
-
-### 已完成
-
-| 文档 | 说明 |
-|------|------|
-| [superpowers/plans/2026-06-26-job-cancellation-hardening.md](superpowers/plans/2026-06-26-job-cancellation-hardening.md) | 任务取消硬化计划（已实施，取消协议详见 [JOB_SYSTEM.md](JOB_SYSTEM.md)） |
-| [superpowers/specs/2026-07-14-release-blocker-fixes-design.md](superpowers/specs/2026-07-14-release-blocker-fixes-design.md) | 发布阻塞问题修复设计 |
-| [superpowers/plans/2026-07-14-release-blocker-fixes.md](superpowers/plans/2026-07-14-release-blocker-fixes.md) | 发布阻塞问题修复实施计划 |
-| [superpowers/specs/2026-07-16-nine-optimization-completion-design.md](superpowers/specs/2026-07-16-nine-optimization-completion-design.md) | 九项优化收尾设计 |
-| [superpowers/plans/2026-07-16-ai-cover-style-controls.md](superpowers/plans/2026-07-16-ai-cover-style-controls.md) | AI 封面与风格控制实施计划 |
-| [superpowers/plans/2026-07-16-ai-page-layout-refactor.md](superpowers/plans/2026-07-16-ai-page-layout-refactor.md) | AI 页面布局重构实施计划 |
-| [superpowers/plans/2026-07-16-documentation-cleanup-verification.md](superpowers/plans/2026-07-16-documentation-cleanup-verification.md) | 文档清理与核对实施计划 |
-| [superpowers/plans/2026-07-16-preference-task-log-closure.md](superpowers/plans/2026-07-16-preference-task-log-closure.md) | 偏好任务日志收口实施计划 |
-| [superpowers/specs/2026-07-17-ai-project-overview-single-panel-design.md](superpowers/specs/2026-07-17-ai-project-overview-single-panel-design.md) | AI 项目总览单面板设计 |
-| [superpowers/plans/2026-07-17-ai-project-overview-single-panel.md](superpowers/plans/2026-07-17-ai-project-overview-single-panel.md) | AI 项目总览单面板实施计划 |
-| [superpowers/plans/2026-07-20-cloudflare-https.md](superpowers/plans/2026-07-20-cloudflare-https.md) | Cloudflare HTTPS 部署实施计划 |
-| [superpowers/specs/2026-07-21-rescue-library-userscript-design.md](superpowers/specs/2026-07-21-rescue-library-userscript-design.md) | 救援库与 userscript 设计 |
-| [superpowers/plans/2026-07-21-rescue-library-userscript.md](superpowers/plans/2026-07-21-rescue-library-userscript.md) | 救援库与 userscript 实施计划 |
-| [superpowers/specs/2026-07-21-rescue-catalog-sources-design.md](superpowers/specs/2026-07-21-rescue-catalog-sources-design.md) | 救援目录来源筛选设计 |
-| [superpowers/plans/2026-07-22-rescue-catalog-sources.md](superpowers/plans/2026-07-22-rescue-catalog-sources.md) | 救援目录来源筛选实施计划 |
-| [superpowers/specs/2026-07-23-adult-polish-agent-design.md](superpowers/specs/2026-07-23-adult-polish-agent-design.md) | 成人描写局部润色 Agent 设计 |
-| [superpowers/plans/2026-07-23-adult-polish-agent.md](superpowers/plans/2026-07-23-adult-polish-agent.md) | 成人描写局部润色 Agent 实施计划 |
-| [superpowers/specs/2026-07-23-ai-model-catalog-pools-design.md](superpowers/specs/2026-07-23-ai-model-catalog-pools-design.md) | AI 模型目录、模型池和故障转移设计 |
-| [superpowers/plans/2026-07-23-ai-model-catalog-pools.md](superpowers/plans/2026-07-23-ai-model-catalog-pools.md) | AI 模型目录与模型池实施计划 |
-| [superpowers/specs/2026-07-27-ai-model-catalog-pools-unified-requirements.md](superpowers/specs/2026-07-27-ai-model-catalog-pools-unified-requirements.md) | AI 模型目录与统一路由需求基线 |
-| [superpowers/specs/2026-07-28-ai-model-routing-completion-design.md](superpowers/specs/2026-07-28-ai-model-routing-completion-design.md) | AI 模型统一路由收尾设计 |
-| [superpowers/specs/2026-08-04-github-readme-and-logo-refresh-design.md](superpowers/specs/2026-08-04-github-readme-and-logo-refresh-design.md) | GitHub README 首屏与静态 Logo 刷新设计 |
-| [superpowers/plans/2026-08-04-github-readme-and-logo-refresh.md](superpowers/plans/2026-08-04-github-readme-and-logo-refresh.md) | GitHub README 与静态 Logo 刷新实施计划 |
-| [superpowers/specs/2026-08-05-project-audit-remediation-design.md](superpowers/specs/2026-08-05-project-audit-remediation-design.md) | 2026-08-05 项目审计整改设计 |
-| [superpowers/plans/2026-08-05-project-audit-remediation.md](superpowers/plans/2026-08-05-project-audit-remediation.md) | 2026-08-05 项目审计整改实施计划 |
-
-## 历史参考与归档
-
-以下顶层文档是特定时间点的历史快照，不是当前事实来源。当前行为以代码、[README.md](../README.md) 和 [frontend-api-contract.md](frontend-api-contract.md) 为准。
-
-| 文档 | 历史用途 |
-|------|----------|
-| [API_COMPLETE.md](API_COMPLETE.md) | 2026-06-16 的完整 API 快照 |
-| [AI_WRITING_STUDIO_PLAN.md](AI_WRITING_STUDIO_PLAN.md) | AI 创作工作台的阶段性设计与实施记录 |
-| [../KNOWLEDGE_GRAPH.md](../KNOWLEDGE_GRAPH.md) | 旧项目结构、模块和数据流快照 |
-
-### `docs/archive/` 归档
-
-`docs/archive/` 存放已完成的阶段性文档（旧审计报告、一次性完成报告、优化路线图、拆分计划等）。这些文档描述的工作已经做完，不再维护，仅作归档参考。详见 [archive/README.md](archive/README.md)。
-
-## 当前状态说明
-
-当前行为以**代码与测试**为第一来源，其次是 [README.md](../README.md)、[frontend-api-contract.md](frontend-api-contract.md)、[frontend-pages.md](frontend-pages.md) 和 [JOB_SYSTEM.md](JOB_SYSTEM.md)。
-
-成人 Agent 的**已实现**约束（fail-closed、Provider scope、角色确认、两阶段 JSON review）见 [ADULT_POLISH_USER_GUIDE.md](ADULT_POLISH_USER_GUIDE.md) 与 `docs/superpowers/specs/2026-07-23-adult-polish-agent-design.md`（该轮已落地）。`2026-08-14-complete-audit-remediation-design.md` 描述的是**尚未实施**的下一轮目标，不能当作当前行为依据。仓库中不存在的 `.superpowers/sdd/task-11-brief.md` 不再作为活动清单引用。
-
-测试基线：`python -m pytest -q` → 1596 passed, 4 skipped（2026-09-28 于 `ai-writing` 实测）。
-
-归档包含 14 份顶层文档 + 6 份 superpowers 已完成计划，涵盖：
-- 2026-06-16 全量审计系列（AUDIT_REPORT / EXECUTIVE_SUMMARY / COMPLETION_REPORT / CRITICAL_BUGS_FIX_PLAN / BUGS_FIXED_REPORT / ACTION_CHECKLIST）
-- 优化路线图系列（OPTIMIZATION_ROADMAP / OPTIMIZATION_REVIEW_2026-06-26 / OPTIMIZATION_PLAN_2026-06-30）
-- 模块化系列（MODULARIZATION_PLAN / MODULARIZATION_COMPLETE / MANAGER_EXTRACTION_COMPLETE / IMPLEMENTATION_RECORD / ALL_TASKS_COMPLETED）
-- superpowers 已完成计划（qwen-embedding-robustness / cli-job-services / unified-job-queue / web-jobspec-runner 及对应 specs）
-
----
-
-如需查找历史信息，先看 [archive/README.md](archive/README.md) 的归档清单。如需当前状态，看 [README.md](../README.md) 与最新审计报告。
+当前行为以代码、回归测试和活跃契约为准；状态变化统一更新整改状态与对应任务，不在多份旧审计中反复回写。真实Provider/Pixiv、生产迁移/灰度、浏览器与移动端验收必须注明环境，不得由离线全绿推断完成。

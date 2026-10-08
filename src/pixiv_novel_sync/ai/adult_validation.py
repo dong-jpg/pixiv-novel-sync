@@ -206,6 +206,19 @@ def _perspective(text: str) -> str | None:
 
 
 def _diff_summary(original: str, candidate: str) -> dict[str, int]:
+    # 大片段采用公共前后缀摘要，O(n+m)，避免重复中文触发二次复杂度。
+    if len(original) * len(candidate) > 1_000_000:
+        prefix = 0
+        limit = min(len(original), len(candidate))
+        while prefix < limit and original[prefix] == candidate[prefix]:
+            prefix += 1
+        suffix = 0
+        while suffix < limit - prefix and original[-suffix - 1] == candidate[-suffix - 1]:
+            suffix += 1
+        old_length = len(original) - prefix - suffix
+        new_length = len(candidate) - prefix - suffix
+        common = min(old_length, new_length)
+        return {"inserted": new_length - common, "deleted": old_length - common, "replaced": common}
     inserted = deleted = replaced_count = 0
     matcher = difflib.SequenceMatcher(None, original, candidate, autojunk=False)
     for opcode, first_start, first_end, second_start, second_end in matcher.get_opcodes():
@@ -419,13 +432,16 @@ def run_local_adult_checks(
         warnings.add("new_number")
     new_number_hashes = tuple(sorted(raw_sha256(token) for token in new_numbers))
 
+    # 仅词表比较使用规范化副本；原始正文与锁定词仍逐字校验。
+    normalized_original = unicodedata.normalize("NFKC", original)
+    normalized_candidate = unicodedata.normalize("NFKC", candidate)
     original_ages = _ages(original)
     candidate_ages = _ages(candidate)
     if any(age < 18 for age in candidate_ages) or any(
-        word in candidate for word in _MINOR_WORDS
+        word in normalized_candidate for word in _MINOR_WORDS
     ):
         blocking.add("minor_present")
-    if any(word in candidate for word in _UNKNOWN_AGE_WORDS):
+    if any(word in normalized_candidate for word in _UNKNOWN_AGE_WORDS):
         blocking.add("age_unknown")
     if original_ages != candidate_ages and (original_ages or candidate_ages):
         blocking.add("age_changed")
@@ -435,7 +451,7 @@ def run_local_adult_checks(
         (_RELATIONSHIP_WORDS, "relationship_changed"),
         (_CONSENT_WORDS, "consent_changed"),
     ):
-        if _fact_tokens(original, words) != _fact_tokens(candidate, words):
+        if _fact_tokens(normalized_original, words) != _fact_tokens(normalized_candidate, words):
             blocking.add(code)
 
     original_paragraphs = _paragraph_count(original)

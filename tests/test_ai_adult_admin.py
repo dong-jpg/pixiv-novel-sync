@@ -255,7 +255,7 @@ def test_review_binding_unexpected_validation_error_is_left_disabled(
     binding = service.list_adult_review_bindings()["safety"]
     assert binding["enabled"] is False
     assert binding["binding_type"] is None
-    assert binding["version"] == 2
+    assert binding["version"] == 1
 
 
 class _RouteDatabase:
@@ -365,3 +365,13 @@ def test_settings_allows_disabling_binding_when_policy_state_mismatches():
     assert disabled_guard in html
     assert policy_guard in html
     assert html.index(disabled_guard) < html.index(policy_guard)
+
+
+def test_invalid_review_update_preserves_previous_enabled_binding(db, service):
+    provider_id, _ = _seed_model(db, capabilities=["json"])
+    original = service.update_adult_review_binding("safety", {"binding_type":"fixed", "provider_id":provider_id, "model":"json-model", "enabled":True}, expected_version=1)
+    with pytest.raises(AIServiceError):
+        service.update_adult_review_binding("safety", {"binding_type":"invalid", "enabled":True}, expected_version=original["version"])
+    current = service.list_adult_review_bindings()["safety"]
+    assert current["enabled"] is True
+    assert current["version"] == original["version"]

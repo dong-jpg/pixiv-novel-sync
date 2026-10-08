@@ -316,7 +316,17 @@ def test_main_route_request_carries_cancel_checker(
     service: AIWritingService,
     fake_router: GenerationRouter,
     adult_payload: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
 ):
+    execute = fake_router.execute
+    running_cancel_states = []
+
+    def observe_running_request(request):
+        assert callable(request.is_cancelled)
+        running_cancel_states.append(request.is_cancelled())
+        return execute(request)
+
+    monkeypatch.setattr(fake_router, "execute", observe_running_request)
     events = list(
         service.stream_adult_polish(adult_payload, "owner-a", "lease-a")
     )
@@ -324,8 +334,9 @@ def test_main_route_request_carries_cancel_checker(
     assert any(event.type == "metadata" for event in events)
     request = fake_router.requests[0]
     assert callable(request.is_cancelled)
-    # 未取消时回调返回 False
-    assert request.is_cancelled() is False
+    # 运行期间未取消；流退出后父租约停止事件必须让回调返回 True。
+    assert running_cancel_states == [False]
+    assert request.is_cancelled() is True
 
 
 def test_cancel_checker_reflects_db_cancel_flag(
@@ -419,3 +430,64 @@ def test_progress_events_are_whitelisted(
     for event in progress:
         assert set(event.data or {}) <= set(_ADULT_PROGRESS_FIELDS)
     assert not any(event.type == "delta" for event in events)
+
+
+def test_participant_must_be_named_in_target_before_routing(service, fake_router, adult_payload, db):
+    from pixiv_novel_sync.ai.service import AIServiceError
+    content = "前文林舟。安娜独自坐在窗边，静静地看着窗外的雨水缓缓落下。后文。"
+    target = content[5:-3]
+    db.conn.execute("UPDATE ai_chapters SET content=? WHERE id=9", (content,))
+    adult_payload.update(target_start=5, target_end=len(content)-3, chapter_content_hash=raw_sha256(content), target_text_hash=raw_sha256(target))
+    with pytest.raises(AIServiceError, match="目标片段.*点名"):
+        service.prepare_adult_job(adult_payload, "owner-a", owner_token="lease-a")
+    assert not fake_router.resolve_calls
+
+
+def test_context_bystander_does_not_become_target_participant(service, fake_router, adult_payload, db):
+    from ai_adult_testkit import CHARACTER_A_ID
+    content = "前文林舟。安娜独自坐在窗边，静静地看着窗外的雨水缓缓落下。后文。"
+    target = content[5:-3]
+    db.conn.execute("UPDATE ai_chapters SET content=? WHERE id=9", (content,))
+    adult_payload.update(target_start=5, target_end=len(content)-3, chapter_content_hash=raw_sha256(content), target_text_hash=raw_sha256(target), participant_character_ids=[CHARACTER_A_ID])
+    prepared = service.prepare_adult_job(adult_payload, "owner-a", owner_token="lease-a")
+    assert prepared.target == target
+
+
+def test_preflight_checks_both_review_budgets_before_creating_job(service, fake_router, adult_payload, db, monkeypatch):
+    from pixiv_novel_sync.ai.model_router import ModelRouteError
+    from pixiv_novel_sync.ai.service import AIServiceError
+    original = fake_router.build_prompt_budget
+    seen = []
+    def budget(agent, snapshot, messages, max_tokens):
+        seen.append(agent.task_type)
+        if agent.task_type == "adult_fact_guard":
+            raise ModelRouteError("审查输入预算不足")
+        return original(agent, snapshot, messages, max_tokens)
+    monkeypatch.setattr(fake_router, "build_prompt_budget", budget)
+    with pytest.raises(AIServiceError, match="审查输入预算不足"):
+        service.prepare_adult_job(adult_payload, "owner-a")
+    assert "adult_safety_review" in seen
+    assert db.conn.execute("SELECT COUNT(*) FROM ai_jobs WHERE task_type='adult_polish'").fetchone()[0] == 0
+
+
+def test_generation_keepalive_has_no_text_and_closes_underlying_stream(service, fake_router, adult_payload, monkeypatch):
+    from pixiv_novel_sync.ai.models import AIStreamChunk
+    import pixiv_novel_sync.ai.services.adult as adult_module
+    now = [0.0]
+    closed = []
+    monkeypatch.setattr(adult_module.time, "monotonic", lambda: now[0])
+    def execute_stream(request):
+        try:
+            now[0] = 3.0
+            yield AIStreamChunk(type="delta", text="never expose")
+        finally:
+            closed.append(True)
+    monkeypatch.setattr(fake_router, "execute_stream", execute_stream)
+    stream = service.stream_adult_polish(adult_payload, "owner-a", "lease-a")
+    assert next(stream).type == "metadata"
+    event = next(stream)
+    assert event.type == "progress"
+    assert event.data == {"phase": "generate", "action": "keepalive"}
+    assert not event.text
+    stream.close()
+    assert closed == [True]

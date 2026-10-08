@@ -1,5 +1,9 @@
 # 救援目录预计算与来源展示实施计划
 
+> **2026-09-30 审计口径：** 基础来源目录存在；不代表后续性能承诺完成。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** 代码抽查已落地。勾选框没有回写，不代表没做。当前行为以代码和 docs/INDEX.md 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
 **目标：** 将“拯救成功”从每次请求全库实时扫描改为可增量刷新的预计算目录，并展示系列、系列单章、独立小说及全部来源。

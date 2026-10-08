@@ -1,5 +1,7 @@
 # 成人局部润色使用指南
 
+> **2026-09-30 更新**：重新生成携带旧job访问令牌，并在新任务metadata到达前保留旧候选；事件重放不续签token。参与者仅按目标片段校验，掩码恢复保留原名字/别名表面形式。策略升级是显式操作并保留版本历史；旧候选不得直接应用。成人偏好画像字段已从请求契约移除，传入会被拒绝，不表示已经支持偏好注入。当前验证边界见 [整改状态](REMEDIATION_STATUS_2026-09-30.md)。
+
 本文说明当前版本成人局部润色 Agent 的配置、使用边界和故障排查。它是面向 Dashboard 用户的操作文档；字段级 API 约定仍以 [frontend-api-contract.md](frontend-api-contract.md) 为准。
 
 ## 功能边界
@@ -21,6 +23,12 @@
 
 Provider scope 可能覆盖多个 Provider。模型池故障转移可能把同一 Prompt 发送给多个 Provider，确认前应检查数据范围和服务商策略。
 
+### 策略版本升级
+
+设置页发现随代码发布的新策略时，先核对 `safety`、`fact_guard` 的当前存储版本，再显式确认升级。升级保留历史版本，不会在普通读取或启动时悄悄覆盖策略。它也不是上传自定义安全策略的接口。
+
+升级后，旧候选必须重新审查，旧 warning 确认不能复用。若前端收到新的校验摘要，请重新阅读并确认；旧进程不能在预检与任务创建之间跨过升级后继续发布旧策略候选。若升级期间任务失败，可获取新 scope 后重新生成。
+
 ## 生成、恢复与应用
 
 - 请求使用原始章节文本计算 Unicode code point 范围和 hash；不要先规范化换行，也不要把 `target_text`、前后文或 Prompt 作为请求字段提交。
@@ -28,7 +36,7 @@ Provider scope 可能覆盖多个 Provider。模型池故障转移可能把同�
 - 网络中断后，可在 token 有效期内调用同一 job 的 signed events 接口读取一次当前数据库快照。它可能重放已完成候选，`running` 时只返回当前状态后结束，不会续接原 Provider SSE；仍在运行时需要稍后再次查询。刷新页面或丢失/过期 token 后不能依赖该接口恢复。
 - `warning` 只允许在界面展示 scoped `warning_ack_hash` 后确认；blocking code、过期 revision、Provider scope 变化或 409 冲突必须重新生成/重新确认。
 - 应用候选前，服务端会在事务内重新验证章节 revision、正文和片段 hash、角色事实、策略、binding、owner 和 warning acknowledgment。应用只替换目标区间，不会自动写入普通 Pipeline。
-- 未应用候选默认最多保留三天；启用后台调度时每小时执行一次清理，也可通过 AI job cleanup API 手工触发。应用成功后 job 的候选正文会清理，应用记录只保留 hash、校验摘要、策略和 Provider/model snapshot 等元数据。
+- 未应用候选由调度器按 `sync.task_log_retention_days` 清理，默认 14 天，每小时跑一次。手工调用 AI job cleanup API 时，`keep_days` 不传则仍按 3 天。应用成功后 job 的候选正文会清理，应用记录只保留 hash、校验摘要、策略和 Provider/model snapshot 等元数据。
 
 ## 常见问题
 

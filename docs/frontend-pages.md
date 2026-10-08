@@ -2,7 +2,13 @@
 
 本文档记录 Library OS 前端页面、模板、主要接口与交互。前端重写保持 Flask/Jinja 页面路由不变。
 
+## 本轮交互收口（2026-09-30）
+
+写作端增加章节/Agent选择、revision冲突保护、Pipeline终态与重试保留、路由进度和中断日志入口；成人重新生成保留旧候选并携带令牌。工作区最新验证及环境验收边界见 [整改状态](REMEDIATION_STATUS_2026-09-30.md)。
+
 ## 页面总览
+
+10-08 共享入口补齐：小说阅读页可确认后重置阅读进度、移除本地收藏记录，不取消 Pixiv 收藏；请求失败保持当前位置。阅读恢复在无本机记录时按服务端百分比滚动到对应位置，保留本机位置优先级；任何手动滚动或显式保存/重置使旧恢复失效。无生产调用、可能与后台备份竞争的批量用户删除 API 按 T3-01 允许方案移除，不新增其按钮。以上有 Node 运行期回归，不代替真机视觉验收。
 
 | Route | Template | 页面用途 | Library OS 状态 |
 | --- | --- | --- | --- |
@@ -377,7 +383,7 @@ Template: `dashboard_ai_reader.html`
 3. 调用 stream，观察 `metadata`、`progress`、两阶段 `validation`、`candidate` 和 `done`；若连接中断，使用 signed `/events` 恢复同一 job 的 validation/candidate/done 状态；warning 候选只有拿到 scoped `warning_ack_hash` 后才允许应用。
 4. 仅对当前章节 revision、角色确认 revision、Provider scope 和校验 hash 都未变化的候选调用 apply。发生 `409` 时重新选择/确认并生成，不在前端重放旧正文。
 
-候选展示只提供只读前后文、原片段、Unicode-safe diff 和校验 code；应用成功后重新加载章节，后端只替换目标区间。未应用候选按三天清理，应用后不保留任务正文。
+候选展示只提供只读前后文、原片段、Unicode-safe diff 和校验 code；应用成功后重新加载章节，后端只替换目标区间。未应用候选由调度器按 `sync.task_log_retention_days` 清理，默认 14 天；手工清理不传天数时仍是 3 天。应用后不保留任务正文。
 
 ### `/token-login`
 

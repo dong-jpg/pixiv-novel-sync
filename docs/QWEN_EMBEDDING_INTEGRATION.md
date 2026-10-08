@@ -1,5 +1,7 @@
 # Qwen3-Embedding-8B 接入方案
 
+> **2026-09-30 配置补充**：本地embedding可通过 `PIXIV_NOVEL_SYNC_USE_EMBEDDINGS=true` 显式启用；未启用不加载本地模型，配置变化会刷新retriever缓存。API embedding请求校验目标URL，禁止绕过Provider地址安全约束。实际本地模型下载/真实API验收见 [整改状态](REMEDIATION_STATUS_2026-09-30.md)。
+
 当前已为 AI 写作工作室的项目记忆检索增加 OpenAI-compatible embedding 接口。配置以下环境变量后，章节摘要、关键事件索引和项目上下文搜索会优先使用远程 embedding 检索；未配置时仍回退到现有 TF-IDF 检索。
 
 ```env

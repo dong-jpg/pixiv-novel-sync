@@ -274,3 +274,25 @@ def test_restore_character_tokens_allows_trailing_whitespace_after_token():
     # 字符之间的分隔仍然是变体，fail-closed 不放宽
     with pytest.raises(AdultInputError, match="变体|占位符"):
         restore_character_tokens(f"{token[:6]} {token[6:]}握住他的手。", prompt.token_map)
+
+
+def test_alias_surface_round_trip_is_lossless():
+    fact = replace(character_fact("林舟"), aliases=("阿舟",))
+    target = "森林里，林舟和阿舟是同一个人的两种称呼。"
+    prompt = _build(target=target, characters=(fact,), protected_terms=())
+    masked = prompt.sections["target"].split("\n", 1)[1].rsplit("\n", 1)[0]
+    assert restore_character_tokens(masked, prompt.token_map) == target
+    assert len(prompt.token_map) == 2
+
+
+def test_short_alias_is_rejected_at_service_boundary():
+    from pixiv_novel_sync.ai.services.adult import _normalize_character
+    from pixiv_novel_sync.ai.service import AIServiceError
+    with pytest.raises(AIServiceError, match="别名.*2"):
+        _normalize_character({"canonical_name": "林舟", "aliases": ["林"], "age_basis": "设定", "fictional": True})
+
+
+def test_alias_substring_collision_is_fail_closed():
+    fact = replace(character_fact("小安娜"), aliases=("小安",))
+    with pytest.raises(AdultInputError, match="别名"):
+        _build(target="小安娜停下脚步，小安转过身来。", characters=(fact,), protected_terms=())

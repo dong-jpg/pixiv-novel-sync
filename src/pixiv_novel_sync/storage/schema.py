@@ -1169,6 +1169,18 @@ class SchemaMixin:
                 )
                 """,
                 """
+                CREATE TABLE IF NOT EXISTS ai_adult_policy_history (
+                    policy_kind TEXT NOT NULL CHECK(policy_kind IN ('safety','fact_guard')),
+                    policy_id TEXT NOT NULL,
+                    policy_version INTEGER NOT NULL CHECK(policy_version > 0),
+                    policy_hash TEXT NOT NULL,
+                    prompt_hash TEXT NOT NULL,
+                    schema_hash TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (policy_kind, policy_version)
+                )
+                """,
+                """
                 CREATE TABLE IF NOT EXISTS ai_polish_applications (
                     id INTEGER PRIMARY KEY,
                     source_job_id TEXT NOT NULL UNIQUE,

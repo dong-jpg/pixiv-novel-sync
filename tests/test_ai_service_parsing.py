@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +22,17 @@ class FakeDB:
         self.project = {"id": 1, "name": "测试项目", "description": "", "outline": "", "settings": {}}
         self.chapters: list[dict] = []
         self.updated_projects: list[tuple[int, dict]] = []
+
+    @contextmanager
+    def transaction(self):
+        """模拟持久化状态的提交/回滚，不跳过生产事务入口。"""
+        snapshot = deepcopy(self.__dict__)
+        try:
+            yield self
+        except BaseException:
+            self.__dict__.clear()
+            self.__dict__.update(snapshot)
+            raise
 
     def get_ai_chapter(self, chapter_id: int):
         return {"id": chapter_id, "project_id": 1, "chapter_number": 3, "content": "章节正文"}
@@ -287,3 +300,17 @@ def test_stream_longform_plan_details_includes_project_style(monkeypatch, tmp_pa
     assert chunks[-1].type == "done"
     assert "抒情唯美" in captured["messages"][-1]["content"]
     assert captured["task_type"] == "longform_plan_details"
+
+
+
+def test_fake_parsing_db_transaction_rolls_back_mutable_state():
+    db = FakeDB()
+    with db.transaction():
+        db.chapters.append({"chapter_number": 1})
+    with pytest.raises(RuntimeError):
+        with db.transaction():
+            db.chapters.append({"chapter_number": 2})
+            db.project["outline"] = "未提交大纲"
+            raise RuntimeError("rollback")
+    assert db.chapters == [{"chapter_number": 1}]
+    assert db.project["outline"] == ""

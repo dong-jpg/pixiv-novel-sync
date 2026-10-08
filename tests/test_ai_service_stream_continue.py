@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
-from pixiv_novel_sync.ai.model_router import PromptBudget, RouteResult
+import pytest
+
+from pixiv_novel_sync.storage.ai.writing import ChapterRevisionConflict
+from pixiv_novel_sync.ai.model_router import PromptBudget, RouteResult, estimate_token_count
 from pixiv_novel_sync.ai.models import AIAgentConfig, AIStreamChunk
 from pixiv_novel_sync.ai.service import AIServiceError, AIWritingService
 
@@ -108,6 +113,63 @@ def test_stream_continue_completes_after_smart_context_fallback(monkeypatch, tmp
     assert finish_calls[-1][1] == "续写正文"
 
 
+def test_stream_rewrite_fits_long_chinese_to_token_budget(monkeypatch, tmp_path):
+    service = AIWritingService(Path(tmp_path / "test.db"))
+    fake_db = FakeDB()
+    agent = AIAgentConfig(
+        id=1,
+        name="改写",
+        task_type="rewrite",
+        provider_id=2,
+        model="model-a",
+        system_prompt="system",
+        context_window=8000,
+    )
+    budget = 4000
+    route_context = SimpleNamespace(
+        job_id="rewrite-job",
+        prompt_budget=PromptBudget(
+            effective_context_window=8000,
+            input_budget=budget,
+            output_reserve=1000,
+            message_overhead=32,
+            safety_margin=256,
+            estimator="heuristic",
+        ),
+    )
+    captured: dict[str, int] = {}
+
+    monkeypatch.setattr(service, "_db", lambda: fake_db)
+    monkeypatch.setattr(service, "_load_agent_config", lambda _db, _agent_id: agent)
+    monkeypatch.setattr(service, "_resolve_input_text", lambda _db, _payload: "林" * 22000)
+    monkeypatch.setattr(
+        service,
+        "_start_route_job",
+        lambda *args, **kwargs: route_context,
+    )
+
+    def stream_route(_context, messages, **_options):
+        total = sum(estimate_token_count(str(message.get("content") or "")) for message in messages)
+        captured["tokens"] = total
+        yield AIStreamChunk(type="delta", text="改写结果")
+        return RouteResult(
+            job_id="rewrite-job",
+            output_text="改写结果",
+            candidate_snapshot_hash="a" * 64,
+            attempts=(),
+            finish_state="succeeded",
+        )
+
+    monkeypatch.setattr(service, "_stream_route", stream_route)
+    monkeypatch.setattr(service, "_finish_route_job", lambda *args, **kwargs: True)
+    monkeypatch.setattr(service, "_cancel_route_job", lambda *args, **kwargs: None)
+
+    chunks = list(service.stream_rewrite({"agent_id": 1, "smart_context": False}))
+
+    assert chunks[-1].type == "done"
+    assert budget - 2 <= captured["tokens"] <= budget
+
+
 class FakeChapterDB(FakeDB):
     def __init__(self) -> None:
         super().__init__()
@@ -115,15 +177,28 @@ class FakeChapterDB(FakeDB):
             "id": 3,
             "project_id": 4,
             "chapter_number": 2,
+            "chapter_revision": 0,
             "content": "已有正文",
             "outline": "章节大纲",
             "metadata": {},
         }
         self.updated_chapters: list[tuple[int, dict]] = []
         self.metadata_patches: list[tuple[int, dict]] = []
+        self.expected_revisions: list[int | None] = []
+
+    @contextmanager
+    def transaction(self):
+        """回滚正文、revision 和写入记录，模拟真实存储事务。"""
+        snapshot = deepcopy(self.__dict__)
+        try:
+            yield self
+        except BaseException:
+            self.__dict__.clear()
+            self.__dict__.update(snapshot)
+            raise
 
     def get_ai_chapter(self, chapter_id: int):
-        return self.chapter if chapter_id == 3 else None
+        return deepcopy(self.chapter) if chapter_id == self.chapter["id"] else None
 
     def get_ai_writing_project(self, _project_id: int):
         return {"id": 4, "outline": "项目大纲", "settings": {}}
@@ -140,12 +215,27 @@ class FakeChapterDB(FakeDB):
     def list_ai_chapters(self, _project_id: int):
         return []
 
-    def update_ai_chapter(self, chapter_id: int, payload: dict):
-        self.updated_chapters.append((chapter_id, payload))
+    def update_ai_chapter(self, chapter_id: int, payload: dict, *, expected_revision: int | None = None):
+        if not payload:
+            return
+        if expected_revision is not None:
+            if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 0:
+                raise ValueError("expected_revision 必须是非负整数")
+            if chapter_id != self.chapter["id"] or expected_revision != self.chapter["chapter_revision"]:
+                raise ChapterRevisionConflict("章节版本冲突，请重新加载后再保存")
+        if chapter_id != self.chapter["id"]:
+            return
+        self.updated_chapters.append((chapter_id, deepcopy(payload)))
+        self.expected_revisions.append(expected_revision)
+        self.chapter.update(deepcopy(payload))
+        if "content" in payload:
+            self.chapter["word_count"] = len(payload["content"] or "")
+        self.chapter["chapter_revision"] += 1
 
     def patch_ai_chapter_metadata(self, chapter_id: int, patch: dict):
-        self.metadata_patches.append((chapter_id, patch))
-        return patch
+        self.metadata_patches.append((chapter_id, deepcopy(patch)))
+        self.chapter["metadata"].update(deepcopy(patch))
+        return deepcopy(self.chapter["metadata"])
 
 
 def make_chapter_agent() -> AIAgentConfig:
@@ -303,7 +393,8 @@ def test_stream_chapter_continue_closes_route_when_autosave_fails(
         finally:
             closed["value"] = True
 
-    def fail_autosave(_chapter_id, _payload):
+    def fail_autosave(_chapter_id, _payload, *, expected_revision=None):
+        assert expected_revision == fake_db.chapter["chapter_revision"]
         raise AIServiceError("自动保存失败")
 
     monkeypatch.setattr(service, "_stream_route", stream_route)
@@ -397,3 +488,26 @@ def test_stream_polish_injects_project_style(monkeypatch, tmp_path):
 
     assert chunks[-1].type == "done"
     assert "抒情唯美" in captured["instruction"]
+
+
+
+def test_fake_chapter_db_enforces_cas_and_rolls_back():
+    db = FakeChapterDB()
+    before = db.get_ai_chapter(3)
+    db.update_ai_chapter(3, {"content": "新正文"}, expected_revision=0)
+    assert db.get_ai_chapter(3)["chapter_revision"] == 1
+    assert before["content"] == "已有正文"
+    assert db.expected_revisions == [0]
+    with pytest.raises(ChapterRevisionConflict):
+        db.update_ai_chapter(3, {"content": "旧快照"}, expected_revision=0)
+    assert db.get_ai_chapter(3)["content"] == "新正文"
+    with pytest.raises(RuntimeError):
+        with db.transaction():
+            db.update_ai_chapter(3, {"content": "待回滚"}, expected_revision=1)
+            db.patch_ai_chapter_metadata(3, {"test": True})
+            raise RuntimeError("rollback")
+    assert db.get_ai_chapter(3)["content"] == "新正文"
+    assert db.get_ai_chapter(3)["chapter_revision"] == 1
+    assert db.get_ai_chapter(3)["metadata"] == {}
+    assert db.expected_revisions == [0]
+    assert db.metadata_patches == []

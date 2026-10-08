@@ -1,6 +1,17 @@
 from __future__ import annotations
 
+import socket
+
+import pytest
+
 from pixiv_novel_sync.ai import retrieval
+
+
+@pytest.fixture(autouse=True)
+def public_embedding_dns(monkeypatch):
+    """请求替身使用保留测试域名；安全解析仍走真实校验逻辑。"""
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, port, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", port))])
+
 from pixiv_novel_sync.ai.retrieval import APIEmbeddingRetriever, TFIDFRetriever, create_retriever
 
 
@@ -43,7 +54,8 @@ class FakeEmbeddingResponse:
 def test_api_embedding_retriever_uses_openai_compatible_endpoint(tmp_path, monkeypatch):
     calls = []
 
-    def fake_post(url, headers, json, timeout):
+    def fake_post(url, headers, json, timeout, allow_redirects):
+        assert allow_redirects is False
         calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
         vectors = []
         for index, text in enumerate(json["input"]):
@@ -74,7 +86,8 @@ def test_api_embedding_retriever_uses_openai_compatible_endpoint(tmp_path, monke
 def test_api_embedding_retriever_empty_index_search_skips_api_call(tmp_path, monkeypatch):
     calls = []
 
-    def fake_post(url, headers, json, timeout):
+    def fake_post(url, headers, json, timeout, allow_redirects):
+        assert allow_redirects is False
         calls.append(json["input"])
         return FakeEmbeddingResponse({"data": []})
 
@@ -92,7 +105,8 @@ def test_api_embedding_retriever_empty_index_search_skips_api_call(tmp_path, mon
 
 
 def test_api_embedding_retriever_stores_vectors_as_blob(tmp_path, monkeypatch):
-    def fake_post(url, headers, json, timeout):
+    def fake_post(url, headers, json, timeout, allow_redirects):
+        assert allow_redirects is False
         return FakeEmbeddingResponse({
             "data": [
                 {"index": index, "embedding": [1.0, 0.0]}
@@ -121,7 +135,8 @@ def test_api_embedding_retriever_stores_vectors_as_blob(tmp_path, monkeypatch):
 def test_api_embedding_retriever_skips_unchanged_chapter(tmp_path, monkeypatch):
     calls = []
 
-    def fake_post(url, headers, json, timeout):
+    def fake_post(url, headers, json, timeout, allow_redirects):
+        assert allow_redirects is False
         calls.append(json["input"])
         return FakeEmbeddingResponse({
             "data": [

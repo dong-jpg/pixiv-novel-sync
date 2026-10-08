@@ -738,7 +738,6 @@ class RescueMixin:
         with self.transaction():
             series_ids: set[int] = set()
             novel_ids: set[int] = set()
-            target_exists = self._rescue_item_exists(normalized_type, normalized_id)
 
             if normalized_type == "novel":
                 novel_ids.add(normalized_id)
@@ -790,22 +789,6 @@ class RescueMixin:
             "duration_ms": duration_ms,
         }
 
-    def get_rescue_catalog_item(
-        self,
-        item_type: str,
-        item_id: int,
-    ) -> dict[str, Any] | None:
-        normalized_type = self._validate_rescue_item_type(item_type)
-        row = self.conn.execute(
-            """
-            SELECT *
-            FROM rescue_catalog
-            WHERE item_type = ? AND item_id = ?
-            """,
-            (normalized_type, int(item_id)),
-        ).fetchone()
-        return dict(row) if row else None
-
     def get_rescue_catalog_meta(self) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
@@ -815,25 +798,6 @@ class RescueMixin:
             """
         ).fetchone()
         return dict(row) if row else None
-
-    def list_rescue_catalog_sources(
-        self,
-        item_type: str,
-        item_id: int,
-    ) -> list[dict[str, Any]]:
-        normalized_type = self._validate_rescue_item_type(item_type)
-        rows = self.conn.execute(
-            """
-            SELECT source_kind, source_type, source_key,
-                   source_user_id, source_user_name
-            FROM rescue_catalog_sources
-            WHERE item_type = ? AND item_id = ?
-            """,
-            (normalized_type, int(item_id)),
-        ).fetchall()
-        result = [dict(row) for row in rows]
-        result.sort(key=self._source_sort_key)
-        return result
 
     def get_rescue_override(
         self,

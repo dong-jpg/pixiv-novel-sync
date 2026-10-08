@@ -8,7 +8,7 @@ from ..models import AIStreamChunk
 from ..prompts import (
     build_chat_messages,
 )
-from .core import AIServiceError, RouteJobContext
+from .core import AIServiceError, RouteJobContext, _drop_oldest_history_messages
 
 # M4: LLM 产物直接落库，源文本（归档小说/聊天）可能夹带提示注入，诱导模型
 # 伪造海量章节/伏笔。持久化前对数量与长度设硬上限，作为数据完整性兜底。
@@ -103,15 +103,10 @@ class AIChatWizardMixin:
                 raise AIServiceError("会话未绑定 Agent")
             agent = self._load_agent_config(db, agent_id)
 
-            # 写入用户消息
-            db.append_ai_chat_message(session_id, "user", user_message)
-
-            # 加载历史
+            # 用户消息等路由任务真正建起来再落库，失败时不留下没有回复的句子。
             max_history = int(payload.get("max_history") or 40)
             all_msgs = db.list_ai_chat_messages(session_id)
-            # 去掉刚写入的最后一条 user（构建时再单独追加）
-            history_msgs = all_msgs[:-1] if all_msgs else []
-            # 截断：只保留最近 max_history 条
+            history_msgs = list(all_msgs)
             if len(history_msgs) > max_history:
                 history_msgs = history_msgs[-max_history:]
             history = [{"role": m["role"], "content": m["content"]} for m in history_msgs]
@@ -131,7 +126,6 @@ class AIChatWizardMixin:
                 user_message=user_message,
                 extra_system_context=extra,
             )
-
             route_context = self._start_route_job(
                 db,
                 "chat",
@@ -140,10 +134,17 @@ class AIChatWizardMixin:
                     "session_id": session_id,
                     "history_count": len(history_msgs),
                 },
-                messages=messages,
+                messages=[m for m in messages if m.get("role") == "system"],
                 max_tokens=agent.max_tokens,
                 preference_payload=payload,
             )
+            messages = _drop_oldest_history_messages(
+                messages,
+                self._route_input_budget(route_context, messages),
+                estimator=self._route_estimator(route_context),
+                budget_for_messages=lambda kept: self._route_input_budget(route_context, kept),
+            )
+            db.append_ai_chat_message(session_id, "user", user_message)
             yield AIStreamChunk(type="metadata", data={
                 "job_id": route_context.job_id, "session_id": session_id,
                 "history_count": len(history_msgs),
@@ -364,6 +365,10 @@ class AIChatWizardMixin:
             if not isinstance(chapter, dict):
                 raise AIServiceError(f"第 {index} 个章节必须是字典")
             chapter_number = chapter.get("chapter_number")
+            if isinstance(chapter_number, str):
+                numeric = chapter_number.strip()
+                if numeric.isascii() and numeric.isdecimal() and len(numeric) <= 10:
+                    chapter_number = int(numeric)
             if isinstance(chapter_number, bool) or not isinstance(chapter_number, int):
                 raise AIServiceError(f"第 {index} 个章节的 chapter_number 必须是整数")
             if not 1 <= chapter_number <= 2147483647:
@@ -420,7 +425,11 @@ class AIChatWizardMixin:
                     if not new_val:
                         continue
                     existing_val = existing.get(key)
-                    should_update = key in allow or not (existing_val or "").strip() if isinstance(existing_val, str) else key in allow
+                    should_update = (
+                        key in allow
+                        or existing_val is None
+                        or (isinstance(existing_val, str) and not existing_val.strip())
+                    )
                     if should_update:
                         update_payload[key] = new_val
                 new_settings = normalized_project["settings"]

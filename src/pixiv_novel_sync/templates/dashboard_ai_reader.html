@@ -155,6 +155,10 @@
             </div>
             <div class="flex flex-wrap gap-3"><button type="button" @click="generateAdultCandidate" :disabled="adultStatus === 'running' || !canGenerateAdult" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium disabled:opacity-50">{{ adultStatus === 'running' ? '生成中' : '生成候选' }}</button><button v-if="jobId" type="button" @click="regenerateAdultCandidate" :disabled="adultStatus === 'running'" class="px-4 py-2 border border-gray-300 rounded-lg text-sm disabled:opacity-50">重新生成</button></div>
             <p v-if="adultError" class="text-sm text-red-600" role="alert">{{ adultError }}</p><p v-if="adultProgress" class="text-xs text-gray-500">{{ adultProgress }}</p>
+            <div v-if="jobId" class="flex gap-3">
+              <button type="button" @click="cancelAdultGeneration" :disabled="adultStatus !== 'running'">取消</button>
+              <button type="button" @click="queryAdultEvents">重新查询</button>
+            </div>
             <div v-if="candidate" class="space-y-3">
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-3"><label class="text-xs font-medium text-gray-600">选段前文（只读）<textarea readonly :value="beforeContext" rows="3" class="mt-1 w-full p-3 border border-gray-200 rounded-lg bg-gray-50 text-sm"></textarea></label><label class="text-xs font-medium text-gray-600">选段后文（只读）<textarea readonly :value="afterContext" rows="3" class="mt-1 w-full p-3 border border-gray-200 rounded-lg bg-gray-50 text-sm"></textarea></label></div>
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-3"><label class="text-xs font-medium text-gray-600">原片段（只读）<textarea readonly :value="selectedTargetText" rows="6" class="mt-1 w-full p-3 border border-gray-200 rounded-lg bg-gray-50 text-sm"></textarea></label><label class="text-xs font-medium text-gray-600">候选片段（只读）<textarea readonly :value="candidate" rows="6" class="mt-1 w-full p-3 border border-gray-200 rounded-lg bg-gray-50 text-sm"></textarea></label></div>
@@ -385,10 +389,14 @@ initVueApp({
       });
     }
     function consumeAdultEvent(event, data) {
+      if (event === 'metadata' && data.job_id && data.job_id !== jobId.value) {
+        resetAdultCandidate();
+        adultStatus.value = 'running';
+      }
       if (data.job_id) jobId.value = data.job_id;
       if (data.access_token) accessToken.value = data.access_token;
       if (event === 'progress') {
-        adultProgress.value = [data.phase, data.stage, data.provider_name, data.model_key].filter(Boolean).join(' / ');
+        adultProgress.value = [data.phase, data.stage, data.action, data.reason, data.provider_name, data.model_key].filter(Boolean).join(' / ');
       } else if (event === 'validation') {
         validation.value = data;
         warnings.value = Array.isArray(data.warnings) ? data.warnings : [];
@@ -398,9 +406,11 @@ initVueApp({
       } else if (event === 'candidate' && typeof data.candidate === 'string') {
         candidate.value = data.candidate;
       } else if (event === 'done') {
-        adultStatus.value = data.applicable === false ? 'failed' : 'succeeded';
+        adultStatus.value = data.status === 'applied' ? 'applied' : (data.applicable === false ? 'failed' : 'succeeded');
+      } else if (event === 'cancelled' || event === 'applied') {
+        adultStatus.value = event;
       } else if (event === 'error') {
-        adultStatus.value = 'failed';
+        adultStatus.value = data.code === 'cancelled' ? 'cancelled' : 'failed';
         adultError.value = data.message || data.code || '成人润色失败';
       }
     }
@@ -422,19 +432,26 @@ initVueApp({
     }
     async function startAdultGeneration(url, parentJobId) {
       if (!canGenerateAdult.value) return;
-      resetAdultCandidate();
+      const previousStatus = adultStatus.value;
+      const previousJobId = jobId.value;
+      adultError.value = '';
       adultStatus.value = 'running';
       try {
         await streamAdultEvents(
           url,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...(parentJobId ? { 'X-Adult-Access-Token': accessToken.value } : {}) },
             body: JSON.stringify(await buildAdultPayload(parentJobId))
           },
           true
         );
       } catch (eventError) {
+        if (jobId.value === previousJobId) {
+          adultStatus.value = previousStatus;
+          adultError.value = eventError.message || '成人润色请求失败';
+          return;
+        }
         if (jobId.value && accessToken.value) {
           try {
             await recoverAdultEvents(jobId.value);
@@ -446,6 +463,21 @@ initVueApp({
         adultStatus.value = 'failed';
         adultError.value = eventError.message || '成人润色请求失败';
       }
+    }
+    async function cancelAdultGeneration() {
+      if (!jobId.value || !accessToken.value) return;
+      try {
+        const response = await window.csrfFetch('/api/dashboard/ai/polish/adult/' + encodeURIComponent(jobId.value) + '/cancel', {
+          method: 'POST', headers: { 'X-Adult-Access-Token': accessToken.value }
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.ok === false) throw new Error(window.errorText(data, response));
+        await queryAdultEvents();
+      } catch (eventError) { adultError.value = eventError.message || '取消失败'; }
+    }
+    async function queryAdultEvents() {
+      try { await recoverAdultEvents(jobId.value); }
+      catch (eventError) { adultError.value = eventError.message || '重新查询失败'; }
     }
     function generateAdultCandidate() {
       return startAdultGeneration('/api/dashboard/ai/polish/adult/stream');
@@ -497,6 +529,7 @@ initVueApp({
       }
     }
     async function loadReader() {
+      const previousChapterId = currentChapterId.value;
       loading.value = true;
       error.value = '';
       try {
@@ -505,7 +538,8 @@ initVueApp({
         if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
         project.value = data.data.project;
         chapters.value = data.data.chapters || [];
-        currentChapterId.value = chapters.value[0]?.id || 0;
+        currentChapterId.value = chapters.value.some(chapter => Number(chapter.id) === Number(previousChapterId))
+          ? previousChapterId : (chapters.value[0]?.id || 0);
       } catch (e) {
         error.value = e.message || '加载失败';
       } finally {
@@ -552,7 +586,7 @@ initVueApp({
       participantCharacterIds, lockedTermsInput, instruction, intensity, selectedTargetText, beforeContext, afterContext,
       adultAgents, availableAdultCharacters, providerScopeGroups, diffParts,
       canGenerateAdult, applyDisabled, captureAdultSelection, loadProviderScope, generateAdultCandidate,
-      regenerateAdultCandidate, applyAdultCandidate
+      regenerateAdultCandidate, applyAdultCandidate, cancelAdultGeneration, queryAdultEvents
     };
   }
 });

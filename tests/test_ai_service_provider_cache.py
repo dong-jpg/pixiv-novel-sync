@@ -124,3 +124,26 @@ def test_close_closes_cached_providers_and_retriever(monkeypatch, tmp_path: Path
     assert service._provider_cache_by_id == {}
     assert service._retriever is None
     assert service._retriever_config_key is None
+
+
+def test_retriever_local_embeddings_flag_is_forwarded_and_invalidates_cache(monkeypatch, tmp_path):
+    from pixiv_novel_sync.ai.services import core
+    calls = []
+    class Retriever:
+        closed = False
+        def close(self):
+            self.closed = True
+    def create(*args, **kwargs):
+        calls.append(kwargs)
+        return Retriever()
+    monkeypatch.setattr(core, "create_retriever", create)
+    monkeypatch.setenv("PIXIV_NOVEL_SYNC_USE_EMBEDDINGS", "false")
+    service = AIWritingService(tmp_path / "test.db")
+    first = service._get_retriever()
+    monkeypatch.setenv("PIXIV_NOVEL_SYNC_USE_EMBEDDINGS", "true")
+    second = service._get_retriever()
+    assert second is not first
+    assert first.closed
+    assert calls[0]["use_embeddings"] is False
+    assert calls[1]["use_embeddings"] is True
+    service.close()

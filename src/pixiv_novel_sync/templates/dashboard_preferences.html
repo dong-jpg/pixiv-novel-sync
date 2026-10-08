@@ -311,7 +311,7 @@ window.initVueApp({
         const res = await fetchJson('/api/dashboard/preferences/profiles/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: '本地偏好画像', is_default: true, scope: { min_text_length: 1000, max_batches: 10 } })
+          body: JSON.stringify({ is_default: true, scope: { min_text_length: 1000, max_batches: 10 } })
         });
         const data = await res.json();
         if (!data.ok) throw new Error(window.errorText(data, res));

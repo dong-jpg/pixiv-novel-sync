@@ -71,8 +71,7 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
             job_type=JobType.PREFERENCE_ANALYZE,
             params={
                 "scope": payload.get("scope", {}),
-                "name": payload.get("name") or "本地偏好画像",
-                "description": payload.get("description") or "基于本地归档小说自动统计生成",
+                **{key: payload[key] for key in ("name", "description") if key in payload},
                 "is_default": bool(payload.get("is_default", True)),
             },
         )
@@ -167,17 +166,6 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
         except RuntimeError as exc:
             return fail(exc)
         return ok({"job_id": job.job_id})
-
-    @app.get("/api/dashboard/recommendations/runs")
-    def list_recommendation_runs():
-        instance = db()
-        try:
-            limit = int(request.args.get("limit") or 20)
-            return ok(instance.list_recommendation_runs(limit=limit))
-        except Exception as exc:
-            return fail(exc)
-        finally:
-            instance.close()
 
     @app.get("/api/dashboard/recommendations/items")
     def list_recommendation_items():

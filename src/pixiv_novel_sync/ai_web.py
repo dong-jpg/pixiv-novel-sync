@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import logging
 import re
 import secrets
@@ -38,15 +37,15 @@ from .ai.adult_auth import (
 from .ai.adult_types import (
     AdultConflictError,
     AdultInputError,
-    parse_adult_request,
-    raw_sha256,
     warning_ack_hash,
 )
 from .ai.adult_validation import compute_provider_scope_hash
 from .ai.services.adult import _review_agent_config
 from .ai.models import AIStreamChunk
+from .ai.model_router import ModelRouteError
 from .settings import Settings
 from .storage.ai.core import ADULT_AI_TASK_TYPES
+from .storage.ai.writing import ChapterRevisionConflict
 from .storage_files import FileStorage
 
 logger = logging.getLogger(__name__)
@@ -213,7 +212,7 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
         if status is None:
             if isinstance(exc, AINotFoundError):
                 status = 404
-            elif isinstance(exc, AIConflictError):
+            elif isinstance(exc, (AIConflictError, ChapterRevisionConflict)):
                 status = 409
             else:
                 status = 400
@@ -252,7 +251,7 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             return ""
 
     def adult_fail(exc: Exception, status: int = 400):
-        message = str(exc) if isinstance(exc, AIServiceError) else "请求无法处理"
+        message = str(exc) if isinstance(exc, (AIServiceError, ModelRouteError)) else "请求无法处理"
         return jsonify({"ok": False, "error": message}), status
 
     def adult_no_store(response: Response) -> Response:
@@ -275,7 +274,7 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             return adult_fail(exc, 409)
         if isinstance(exc, AdultInputError):
             return adult_fail(exc, 422)
-        if isinstance(exc, AIServiceError):
+        if isinstance(exc, (AIServiceError, ModelRouteError)):
             return adult_fail(exc, 400)
         logger.warning(context)
         return adult_fail(RuntimeError(), 400)
@@ -425,34 +424,6 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             ),
         }
 
-    def validate_adult_stream_preflight(payload: dict[str, Any]) -> None:
-        parsed = parse_adult_request(payload)
-        db = service._db()
-        try:
-            project = db.get_ai_writing_project(parsed.project_id)
-            chapter = db.get_ai_chapter(parsed.chapter_id)
-            if project is None or chapter is None:
-                raise AIServiceError("写作项目或章节不存在")
-            if int(chapter.get("project_id") or 0) != parsed.project_id:
-                raise AIServiceError("章节不属于当前写作项目")
-            content = chapter.get("content")
-            if not isinstance(content, str):
-                raise AIServiceError("章节正文无效")
-            if int(chapter.get("chapter_revision") or 0) != parsed.chapter_revision:
-                raise AIConflictError("409: 章节 revision 已变化")
-            if raw_sha256(content) != parsed.chapter_content_hash:
-                raise AIConflictError("409: 章节正文已变化")
-            if parsed.target_end > len(content):
-                raise AIServiceError("目标片段超出章节正文范围")
-            target = content[parsed.target_start : parsed.target_end]
-            if raw_sha256(target) != parsed.target_text_hash:
-                raise AIConflictError("409: 目标片段已变化")
-        finally:
-            db.close()
-        snapshots = adult_provider_snapshots(parsed.agent_id)
-        if compute_provider_scope_hash(snapshots) != parsed.provider_scope_hash:
-            raise AIConflictError("409: Provider 范围已变化，请重新确认")
-
     def adult_access_from_request(owner: AdultOwner, job_id: str) -> str:
         token = request.headers.get("X-Adult-Access-Token")
         verify_adult_access(token, owner, job_id)
@@ -463,10 +434,11 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
         chunks: Iterator,
         owner: AdultOwner,
         execution_owner_token: str | None = None,
+        replay_access_token: str | None = None,
     ) -> Response:
         allowed = {"metadata", "progress", "validation", "candidate", "done", "error"}
         event_fields = {
-            "metadata": {"job_id", "parent_job_id", "replayed"},
+            "metadata": {"job_id", "parent_job_id", "replayed", "access_token"},
             "progress": {
                 "job_id",
                 "phase",
@@ -501,11 +473,13 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
                 "warning_ack_hash",
             },
             "candidate": {"job_id", "applicable", "validation_hash", "replayed"},
-            "done": {"job_id", "applicable", "validation_hash", "replayed"},
-            "error": {"job_id", "code", "message", "replayed"},
+            "done": {"job_id", "applicable", "validation_hash", "replayed", "status"},
+            "error": {"job_id", "code", "message", "replayed", "blocking_issues"},
         }
         error_messages = {
             "adult_polish_failed": "成人润色任务失败",
+            "local_blocked": "成人润色候选未通过本地检查",
+            "policy_upgrade_required": "策略已升级，请重新审查或重新生成候选",
             "cancelled": "成人润色任务已取消",
             "generation_failed": "成人润色任务未成功完成",
             "idempotent_in_progress": "相同的成人润色请求正在执行",
@@ -564,7 +538,8 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
                                 {"code": "route_contract_error", "message": "成人润色任务响应无效"},
                             )
                             return
-                        access_token = sign_adult_access(owner, job_id)
+                        access_token = replay_access_token or data.get("access_token") or sign_adult_access(owner, job_id)
+                        verify_adult_access(access_token, owner, job_id)
                         data["access_token"] = access_token
                     elif event == "candidate":
                         candidate = getattr(chunk, "text", None)
@@ -580,7 +555,15 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
                         code = str(data.get("code") or "adult_polish_failed")
                         if code not in error_messages:
                             code = "adult_polish_failed"
+                        local_codes = data.get("blocking_issues")
                         data = {
+                            **({"blocking_issues": [item for item in local_codes if item in {
+                                "number_changed", "age_changed", "minor_present", "age_unknown", "new_character",
+                                "participant_changed", "participant_mapping_unknown", "participant_mapping_ambiguous",
+                                "participant_unknown", "participant_inactive", "adult_confirmation_missing", "real_person",
+                                "pregnancy_changed", "relationship_changed", "consent_changed", "locked_term_missing",
+                                "protected_term_missing", "format_marker_missing", "format_marker_changed",
+                                "target_range_mismatch", "target_hash_mismatch"}]} if code == "local_blocked" and isinstance(local_codes, list) else {}),
                             "code": code,
                             "message": error_messages[code],
                             **(
@@ -686,6 +669,8 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
                         yield sse(event_name, payload)
             except GeneratorExit:
                 raise
+            except AIServiceError as exc:
+                yield sse("error", {"message": str(exc)})
             except Exception:
                 logger.warning("AI SSE 输出失败")
                 yield sse("error", {"message": "AI 响应中断"})
@@ -1057,6 +1042,17 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
         except Exception as exc:
             return adult_route_fail(exc, "更新成人审查绑定失败")
 
+    @app.post("/api/dashboard/ai/adult-policies/upgrade")
+    def upgrade_ai_adult_policies():
+        try:
+            adult_owner()
+            payload = require_json_object()
+            if set(payload) != {"expected_versions"}:
+                raise AIServiceError("策略升级请求字段无效")
+            return ok(service.upgrade_adult_policies(payload["expected_versions"]))
+        except Exception as exc:
+            return adult_route_fail(exc, "成人策略升级失败")
+
     @app.post("/api/dashboard/ai/polish/adult/scope")
     def get_ai_adult_provider_scope():
         try:
@@ -1213,13 +1209,13 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
         try:
             owner = adult_owner()
             payload = require_json_object()
-            validate_adult_stream_preflight(payload)
             execution_owner_token = secrets.token_urlsafe(32)
             chunks = service.stream_adult_polish(
                 payload,
                 owner.scope,
                 execution_owner_token,
                 raise_preflight=True,
+                access_token_factory=lambda job_id: sign_adult_access(owner, job_id),
             )
             return adult_stream_response(chunks, owner, execution_owner_token)
         except PermissionError as exc:
@@ -1270,6 +1266,12 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
                     application = db.get_application_for_owner(job_id, owner.scope)
                 finally:
                     db.close()
+                if isinstance(application, dict) and application.get("applied_at") is not None:
+                    yield AIStreamChunk(type="done", data={"job_id": job_id, "status": "applied", "replayed": True})
+                    return
+                if (job.get("output") or {}).get("code") == "policy_upgrade_required":
+                    yield AIStreamChunk(type="error", data={"job_id": job_id, "code": "policy_upgrade_required"})
+                    return
                 if isinstance(application, dict):
                     validation = application.get("validation")
                     if not isinstance(validation, dict):
@@ -1399,7 +1401,7 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
                         },
                     )
 
-            return adult_stream_response(replay(), owner)
+            return adult_stream_response(replay(), owner, replay_access_token=request.headers.get("X-Adult-Access-Token"))
         except PermissionError as exc:
             return adult_fail(exc, 403)
         except Exception:
@@ -1417,6 +1419,8 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             db = service._db()
             try:
                 requested = db.request_adult_job_cancel(job_id, owner.scope)
+                if not requested:
+                    requested = db.request_adult_review_cancel(job_id, owner.scope)
             finally:
                 db.close()
             return ok({"cancel_requested": requested})
@@ -1439,13 +1443,13 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             if supplied_parent not in {None, job_id}:
                 raise AIConflictError("409: 父成人润色任务不匹配")
             payload["parent_job_id"] = job_id
-            validate_adult_stream_preflight(payload)
             execution_owner_token = secrets.token_urlsafe(32)
             chunks = service.stream_adult_polish(
                 payload,
                 owner.scope,
                 execution_owner_token,
                 raise_preflight=True,
+                access_token_factory=lambda job_id: sign_adult_access(owner, job_id),
             )
             return adult_stream_response(chunks, owner, execution_owner_token)
         except PermissionError as exc:
@@ -1474,29 +1478,6 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
             warning_ack_hash = payload.get("warning_ack_hash")
             if not isinstance(warning_ack_hash, str) or len(warning_ack_hash) > 64:
                 raise AIServiceError("warning_ack_hash 无效")
-            access_hash = hashlib.sha256(access_token.encode("utf-8")).hexdigest()
-            db = service._db()
-            try:
-                binding = db.bind_adult_application_access(
-                    job_id,
-                    owner.scope,
-                    access_hash,
-                )
-            finally:
-                db.close()
-            if binding is None:
-                raise AIConflictError("409: 成人润色候选不可应用")
-            if binding["applied"]:
-                return ok(
-                    {
-                        "application_id": binding["application_id"],
-                        "chapter_revision_after": binding[
-                            "chapter_revision_after"
-                        ],
-                        "chapter_hash_after": binding["chapter_hash_after"],
-                        "idempotent": True,
-                    }
-                )
             return ok(
                 service.apply_adult_polish(
                     job_id,
@@ -2071,8 +2052,13 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
     @app.put("/api/dashboard/ai/chapters/<int:chapter_id>")
     def update_chapter(chapter_id: int):
         try:
-            service.update_chapter(chapter_id, json_payload())
-            return ok()
+            payload = require_json_object()
+            if "content" in payload:
+                revision = payload.get("expected_revision")
+                if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+                    raise AIServiceError("保存正文必须提供非负整数 expected_revision，请刷新章节后重试")
+            service.update_chapter(chapter_id, payload)
+            return ok(service.get_chapter(chapter_id))
         except Exception as exc:
             return fail(exc)
 

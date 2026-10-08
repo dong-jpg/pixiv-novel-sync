@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import threading
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -12,6 +11,7 @@ import pytest
 
 from ai_adult_testkit import (
     CHARACTER_A_ID,
+    CHARACTER_B_ID,
     FakeModelRouter,
     run_concurrently,
     safe_validation,
@@ -209,7 +209,7 @@ def _prepare_candidate(
 ) -> tuple[Any, str]:
     scope_hash = compute_provider_scope_hash(fake_router.snapshots)
     payload = valid_adult_payload(
-        participant_character_ids=[CHARACTER_A_ID],
+        participant_character_ids=[CHARACTER_A_ID, CHARACTER_B_ID],
         provider_scope_hash=scope_hash,
         idempotency_key=idempotency_key,
     )
@@ -880,3 +880,110 @@ def test_startup_repairs_only_orphaned_adult_candidate(
     assert general is not None
     assert general["status"] == "succeeded"
     assert general["output_text"] == "non-adult output"
+
+
+def test_old_process_and_storage_cannot_apply_after_database_policy_upgrade(db, service, fake_router, prepared):
+    from pixiv_novel_sync.ai.service import AIServiceError
+    job, _ = prepared
+    original = db.get_ai_chapter(9)["content"]
+    application = db.get_application_for_owner(job.job_id, "owner-a")
+    snapshot = service._build_apply_snapshot(db, application, db.get_adult_job(job.job_id, "owner-a"))
+    previous = db.list_adult_policy_state()
+    released = [{**row, "policy_version": row["policy_version"] + 1, "policy_hash": "d" * 64, "prompt_hash": "e" * 64, "schema_hash": "f" * 64} for row in previous]
+    db.upgrade_adult_policy_state(previous, released)
+    calls = fake_router.execute_count
+    with pytest.raises((AIServiceError, AdultConflictError)):
+        service.apply_adult_polish(job.job_id, "owner-a", "", job.access_token)
+    with pytest.raises(AdultConflictError):
+        db.apply_adult_polish(job.job_id, "owner-a", "", raw_sha256(job.access_token), snapshot)
+    assert fake_router.execute_count == calls
+    assert db.get_ai_chapter(9)["content"] == original
+    assert db.get_application_for_owner(job.job_id, "owner-a")["applied_at"] is None
+
+
+def test_accepted_revalidation_cancel_between_parse_and_success_cas_never_applies(db, service, prepared, monkeypatch):
+    from pixiv_novel_sync.ai.service import AIServiceError
+    job, _ = prepared
+    original = db.get_ai_chapter(9)["content"]
+    db.conn.execute("UPDATE ai_polish_applications SET safety_policy_hash=? WHERE source_job_id=?", ("0" * 64, job.job_id))
+    parse = service._parse_review_output
+    calls = []
+    def parse_then_cancel(*args, **kwargs):
+        calls.append(True)
+        if len(calls) == 2:
+            assert db.request_adult_review_cancel(job.job_id, "owner-a") is True
+        return parse(*args, **kwargs)
+    monkeypatch.setattr(service, "_parse_review_output", parse_then_cancel)
+    with pytest.raises((AIServiceError, AdultConflictError)):
+        service.apply_adult_polish(job.job_id, "owner-a", "", job.access_token)
+    assert db.get_ai_chapter(9)["content"] == original
+    assert db.get_application_for_owner(job.job_id, "owner-a")["applied_at"] is None
+    assert db.conn.execute("SELECT COUNT(*) FROM ai_jobs WHERE parent_job_id=? AND status='succeeded' AND cancel_requested=1", (job.job_id,)).fetchone()[0] == 0
+
+
+def test_upgrade_warning_is_replayable_then_acknowledged_through_events(db, service, prepared, monkeypatch, tmp_path):
+    import time
+    from flask import Flask
+    import pixiv_novel_sync.ai_web as web
+    from pixiv_novel_sync.ai.adult_auth import AdultOwner, sign_adult_access
+    from test_ai_adult_web import _settings
+    from test_ai_adult_integration import _parse_sse
+    job, _ = prepared
+    db.conn.execute("UPDATE ai_polish_applications SET safety_policy_hash=? WHERE source_job_id=?", ("0" * 64, job.job_id))
+    db.conn.execute("UPDATE ai_jobs SET output_json=json_set(output_json,'$.code','policy_upgrade_required') WHERE job_id=?", (job.job_id,))
+    revalidate = service._run_stored_revalidation
+    def with_warning(*args):
+        result, safety, fact = revalidate(*args)
+        result = replace(result, warnings=("perspective_changed",), perspective_warning=True, validation_hash="")
+        return replace(result, validation_hash=compute_validation_hash(result)), safety, fact
+    monkeypatch.setattr(service, "_run_stored_revalidation", with_warning)
+    with pytest.raises(AdultConflictError, match="warning"):
+        service.apply_adult_polish(job.job_id, "owner-a", "", job.access_token)
+    app = Flask(__name__)
+    app.secret_key = "revalidation-events-key"
+    settings = _settings(tmp_path, "dashboard-secret")
+    settings = replace(settings, storage=replace(settings.storage, db_path=db.path))
+    owner = AdultOwner(scope="owner-a", authenticated_at=time.time_ns())
+    monkeypatch.setattr(web, "require_adult_owner", lambda settings: owner)
+    web.register_ai_routes(app, settings)
+    with app.app_context():
+        token = sign_adult_access(owner, job.job_id)
+    response = app.test_client().get(f"/api/dashboard/ai/polish/adult/{job.job_id}/events", headers={"X-Adult-Access-Token": token}, buffered=True)
+    events = _parse_sse(response)
+    assert "error" not in events, events
+    ack = events["validation"][0]["warning_ack_hash"]
+    assert ack
+    service.apply_adult_polish(job.job_id, "owner-a", ack, job.access_token)
+    assert db.get_application_for_owner(job.job_id, "owner-a")["applied_at"] is not None
+
+
+def test_policy_upgrade_between_preflight_and_job_creation_never_publishes_candidate(db, service, fake_router, monkeypatch):
+    original_content = db.get_ai_chapter(9)["content"]
+    resolve = fake_router.resolve_candidates
+    upgraded = []
+    def upgrade_then_resolve(*args, **kwargs):
+        if not upgraded:
+            previous = db.list_adult_policy_state()
+            released = [{**row, "policy_version": row["policy_version"] + 1,
+                         "policy_hash": "d" * 64, "prompt_hash": "e" * 64,
+                         "schema_hash": "f" * 64} for row in previous]
+            db.upgrade_adult_policy_state(previous, released)
+            upgraded.append(True)
+        return resolve(*args, **kwargs)
+    monkeypatch.setattr(fake_router, "resolve_candidates", upgrade_then_resolve)
+    payload = valid_adult_payload(
+        participant_character_ids=[CHARACTER_A_ID, CHARACTER_B_ID],
+        provider_scope_hash=compute_provider_scope_hash(fake_router.snapshots),
+        idempotency_key="upgrade-between-preflight-and-job",
+    )
+    job = service.prepare_adult_job(payload, "owner-a", owner_token="lease-a")
+    candidate = job.target.replace("停顿片刻", "略作停顿")
+    events = list(service.finish_adult_candidate(job, _raw_candidate(job, candidate)))
+    assert upgraded
+    assert not any(event.type in {"candidate", "done"} for event in events)
+    assert events[-1].type == "error"
+    assert db.get_application_for_owner(job.job_id, "owner-a") is None
+    parent = db.get_adult_job(job.job_id, "owner-a")
+    assert parent["status"] != "succeeded"
+    assert not parent.get("output_text")
+    assert db.get_ai_chapter(9)["content"] == original_content

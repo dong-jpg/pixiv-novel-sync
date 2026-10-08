@@ -24,6 +24,8 @@ from typing import Any
 
 import requests as http_requests
 
+from .providers import validate_base_url
+
 
 class RetrievalEntry:
     __slots__ = ("project_id", "chapter_number", "content", "entry_type", "score")
@@ -60,6 +62,7 @@ class TFIDFRetriever(BaseRetriever):
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._lock = threading.Lock()
         # Phase 5.7: 手动缓存(LRU无法用于实例方法)
+        self._cache_generation = 0
         self._search_cache: dict[tuple[int, str, int], list[RetrievalEntry]] = {}
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS retrieval_entries (
@@ -99,6 +102,8 @@ class TFIDFRetriever(BaseRetriever):
                             (project_id, chapter_number, event, "key_event", json.dumps(tokens, ensure_ascii=False)),
                         )
             self.conn.commit()
+            self._cache_generation += 1
+            self._search_cache.clear()
 
     def search(self, project_id: int, query: str, top_k: int = 5) -> list[RetrievalEntry]:
         # ✅ Bug #2 修复: 缓存检查也需要在锁保护下
@@ -113,6 +118,7 @@ class TFIDFRetriever(BaseRetriever):
             return []
 
         with self._lock:
+            generation = self._cache_generation
             rows = self.conn.execute(
                 "SELECT project_id, chapter_number, content, entry_type, tokens_json FROM retrieval_entries WHERE project_id = ?",
                 (project_id,),
@@ -167,6 +173,8 @@ class TFIDFRetriever(BaseRetriever):
 
         # ✅ Bug #2 修复: 缓存写入也需要在锁保护下
         with self._lock:
+            if generation != self._cache_generation:
+                return top_results
             # Phase 5.7: 存入缓存(限制缓存大小)
             if len(self._search_cache) >= 128:
                 # 简单FIFO清理,删除最早的一半
@@ -181,6 +189,7 @@ class TFIDFRetriever(BaseRetriever):
         with self._lock:
             self.conn.execute("DELETE FROM retrieval_entries WHERE project_id = ?", (project_id,))
             self.conn.commit()
+            self._cache_generation += 1
             # Phase 5.7: 清除相关缓存
             keys_to_remove = [k for k in self._search_cache.keys() if k[0] == project_id]
             for k in keys_to_remove:
@@ -193,6 +202,7 @@ class TFIDFRetriever(BaseRetriever):
                 (project_id, chapter_number),
             )
             self.conn.commit()
+            self._cache_generation += 1
             # Phase 5.7: 清除相关缓存
             keys_to_remove = [k for k in self._search_cache.keys() if k[0] == project_id]
             for k in keys_to_remove:
@@ -331,7 +341,7 @@ class OpenAICompatibleEmbeddingClient:
     """Small client for OpenAI-compatible embedding APIs such as Qwen endpoints."""
 
     def __init__(self, base_url: str, api_key: str, model_name: str, timeout: int = 60) -> None:
-        self.base_url = base_url.rstrip("/")
+        self.base_url = validate_base_url(base_url).rstrip("/")
         self.api_key = api_key
         self.model_name = model_name
         self.timeout = timeout
@@ -345,14 +355,16 @@ class OpenAICompatibleEmbeddingClient:
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        endpoint = validate_base_url(self.endpoint)
         response = http_requests.post(
-            self.endpoint,
+            endpoint,
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             },
             json={"model": self.model_name, "input": texts},
             timeout=self.timeout,
+            allow_redirects=False,
         )
         response.raise_for_status()
         payload = response.json()

@@ -133,7 +133,7 @@ def _safe_snapshot(value: Any) -> Any:
 
 def _job_to_dict_unified(job: Any) -> dict[str, Any] | None:
     """6.9: 统一两套job序列化"""
-    from ..jobs.models import JobSource, JobState
+    from ..jobs.models import JobSource
 
     if job is None:
         return None
@@ -568,32 +568,5 @@ def _check_series_status(api: Any, series_id: int) -> str:
 def _remove_archive_files(settings: Settings, archive_refs: list[dict[str, Any]]) -> dict[str, int]:
     """Remove local archive files for DB rows that are about to be deleted."""
     storage = FileStorage(settings)
-    novel_dirs: list[Path] = []
-    asset_paths: list[Path] = []
-    for ref in archive_refs:
-        try:
-            novel_id = int(ref.get("novel_id") or 0)
-            user_id = int(ref.get("user_id") or 0)
-        except (TypeError, ValueError):
-            continue
-        if not novel_id:
-            continue
-        novel_dirs.append(
-            storage.resolve_archive_dir(
-                str(ref.get("restrict_value") or "public"),
-                ref.get("archive_dir"),
-                user_id,
-                str(ref.get("author_name") or "unknown"),
-                novel_id,
-                str(ref.get("title") or f"novel_{novel_id}"),
-            )
-        )
-        for path in ref.get("asset_paths") or []:
-            if path:
-                asset_path = Path(path)
-                asset_paths.append(asset_path)
-                # pathlib.Path.parent 永不抛 IndexError——到根返回自身。
-                # 原 try/except IndexError 是死代码；直接计算即可。
-                if asset_path.parent.parent.name == "assets":
-                    novel_dirs.append(asset_path.parent.parent.parent)
+    novel_dirs, asset_paths = storage._collect_archive_paths(archive_refs)
     return storage.remove_novel_archive(novel_dirs, asset_paths)

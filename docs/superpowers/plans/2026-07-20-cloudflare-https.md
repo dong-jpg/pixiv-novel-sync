@@ -1,5 +1,9 @@
 # Cloudflare HTTPS 部署实施计划
 
+> **2026-09-30 审计口径：** 仓库配置存在；证书/Full strict 未验证。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** 仓库内 deploy/nginx 已把应用绑到 127.0.0.1:5011。Origin CA 与 Full (strict) 不在仓库，不能当成现网已验收。
+
 > **供自动化执行者使用：**必须使用 `executing-plans`，逐项执行并在每个检查点验证结果。
 
 **目标：**为 `pixiv.dongboapp.com` 配置可持久化的 Cloudflare `Full (strict)` HTTPS，并保持应用仅监听本机端口。

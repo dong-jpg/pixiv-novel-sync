@@ -1,6 +1,8 @@
 # AI 模型目录与模型池设计
 
-> 状态：规格已确认，实施计划已建立，正在实施
+> **2026-09-30 复核：** 调度器清理 `ai_jobs` 和模型同步 operation 时用 `sync.task_log_retention_days`，默认 14 天。下文里的「三天」是当时的默认参数，不是现在的调度周期。
+
+> 状态：第一阶段已落地。当前行为以代码、`MODEL_ROUTING_GUIDE.md` 和 UNIFIED §12 为准。
 > 日期：2026-07-23
 > 依赖：现有 `AIWritingService`、Provider/Agent 配置、SQLite、SSE 流式输出
 > 后续规格：[成人描写局部润色 Agent 设计](2026-07-23-adult-polish-agent-design.md)

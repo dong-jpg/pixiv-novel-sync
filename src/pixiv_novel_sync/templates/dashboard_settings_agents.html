@@ -53,6 +53,8 @@
         <option value="distill_novel">小说蒸馏</option>
         <option value="keyword_clean">关键词清洗</option>
         <option value="general">通用</option>
+        <option value="polish_dialogue">对话润色</option>
+        <option value="polish_psychology">心理润色</option>
       </select>
       <div class="grid grid-cols-2 rounded-lg bg-gray-100 p-1 text-sm">
         <label class="flex items-center justify-center gap-2 px-3 py-2 rounded cursor-pointer" :class="agentForm.binding_type === 'fixed' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'"><input type="radio" v-model="agentForm.binding_type" value="fixed" class="sr-only">固定模型</label>
@@ -85,6 +87,12 @@
       <textarea v-model="agentForm.system_prompt" rows="8" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="System prompt"></textarea>
       <div class="grid grid-cols-2 gap-3">
         <input type="number" step="0.1" v-model.number="agentForm.temperature" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="temperature">
+        <label class="text-xs text-gray-600">上下文窗口（token）
+          <input type="number" min="1" step="1" v-model.number="agentForm.context_window" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+        </label>
+        <label class="text-xs text-gray-600">Top P（0–1）
+          <input type="number" min="0" max="1" step="0.05" v-model.number="agentForm.top_p" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+        </label>
         <input type="number" v-model.number="agentForm.max_tokens" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="max_tokens">
       </div>
       <label class="flex items-center gap-2 text-sm text-gray-700">
@@ -110,6 +118,10 @@
           <option value="distill_novel">小说蒸馏</option>
           <option value="keyword_clean">关键词清洗</option>
           <option value="general">通用</option>
+          <option value="extract_summary">章节摘要</option>
+          <option value="resolve_foreshadow">伏笔回收</option>
+          <option value="polish_dialogue">对话润色</option>
+          <option value="polish_psychology">心理润色</option>
         </select>
       </div>
       <div class="flex items-center gap-2 flex-wrap mb-2">
@@ -425,7 +437,7 @@
 
       const resetAgentForm = () => Object.assign(agentForm, { id: 0, name: '', task_type: 'continue', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0, required_capabilities: [], system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
       const editAgent = (agent) => {
-        Object.assign(agentForm, { id: agent.id, name: agent.name || '', task_type: agent.task_type || 'continue', binding_type: agent.binding_type || 'fixed', provider_id: agent.provider_id || 0, model: agent.model || '', model_pool_id: agent.model_pool_id || 0, required_capabilities: [...(agent.required_capabilities || [])], system_prompt: agent.system_prompt || '', temperature: agent.temperature || 0.8, top_p: agent.top_p || 0.9, max_tokens: agent.max_tokens || 4000, context_window: agent.context_window || 16000, enabled: agent.enabled !== false });
+        Object.assign(agentForm, { id: agent.id, name: agent.name || '', task_type: agent.task_type || 'continue', binding_type: agent.binding_type || 'fixed', provider_id: agent.provider_id || 0, model: agent.model || '', model_pool_id: agent.model_pool_id || 0, required_capabilities: [...(agent.required_capabilities || [])], system_prompt: agent.system_prompt || '', temperature: agent.temperature ?? 0.8, top_p: agent.top_p ?? 0.9, max_tokens: agent.max_tokens || 4000, context_window: agent.context_window || 16000, enabled: agent.enabled !== false });
         // 编辑时顺带解析候选链：改绑定前先看清它现在会调哪些模型
         candidateAgentId.value = agent.id;
         loadCandidateChain(agent.id);

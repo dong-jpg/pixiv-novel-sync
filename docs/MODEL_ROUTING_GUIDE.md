@@ -103,6 +103,8 @@ Agent 可声明 `required_capabilities`（只能来自 1.1 的五个固定枚举
 
 ### 4.1 PromptBudget（输入预算）
 
+2026-09-30：预算裁剪统一按token估算，不把input_budget当UTF-8字节上限。Provider候选检测使用同一估算器；写作历史按完整轮次删除并按保留消息数重算开销，固定system/developer提示不能裁剪。内部摘要/validation的候选输出仅在正常完成后发布，失败候选残片不混入重试结果。手工续跑仅考虑剩余候选。
+
 任务启动前，路由器对整个候选快照计算统一预算：
 
 ```

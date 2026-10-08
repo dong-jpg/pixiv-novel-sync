@@ -1,5 +1,9 @@
 # AI 封面与风格控制实施计划
 
+> **2026-09-30 审计口径：** 写作分支基础功能存在；不是 T4-06 完成证明。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** 代码抽查已落地。勾选框没有回写，不代表没做。当前行为以代码和 docs/INDEX.md 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 为 AI 创作项目增加安全的本地封面，并让项目级风格设置拥有清晰保存语义且覆盖关键正文生成路径。

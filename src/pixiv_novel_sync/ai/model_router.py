@@ -704,6 +704,48 @@ class ModelRouter:
         finally:
             db.close()
 
+    @staticmethod
+    def _estimate_with_providers(
+        provider_instances: list[AIProvider],
+        messages: list[dict[str, str]],
+    ) -> tuple[int, Literal["provider", "heuristic"]]:
+        estimates = [
+            provider.estimate_message_tokens(messages)
+            for provider in provider_instances
+        ]
+        if estimates and all(
+            isinstance(estimate, int)
+            and not isinstance(estimate, bool)
+            and estimate > 0
+            for estimate in estimates
+        ):
+            estimator: Literal["provider", "heuristic"] = "provider"
+            estimated_input = max(int(estimate) for estimate in estimates)
+        else:
+            estimator = "heuristic"
+            estimated_input = sum(
+                estimate_token_count(str(message.get("content", "")))
+                for message in messages
+            )
+        return estimated_input, estimator
+
+    def estimate_messages(
+        self,
+        snapshot: CandidateSnapshot,
+        messages: list[dict[str, str]],
+    ) -> tuple[int, Literal["provider", "heuristic"]]:
+        """Use the same all-provider/fallback contract as budget construction."""
+        db = self._db_factory()
+        try:
+            provider_ids = dict.fromkeys(c.provider_id for c in snapshot.candidates)
+            providers = [
+                self._get_provider(self._load_provider_config(db, provider_id))
+                for provider_id in provider_ids
+            ]
+        finally:
+            db.close()
+        return self._estimate_with_providers(providers, messages)
+
     def build_prompt_budget(
         self,
         agent: AIAgentConfig,
@@ -756,24 +798,9 @@ class ModelRouter:
         if input_budget <= 0:
             raise ModelRouteError("Prompt 输入预算必须大于 0")
 
-        estimates = [
-            provider.estimate_message_tokens(messages)
-            for provider in provider_instances
-        ]
-        if estimates and all(
-            isinstance(estimate, int)
-            and not isinstance(estimate, bool)
-            and estimate > 0
-            for estimate in estimates
-        ):
-            estimator: Literal["provider", "heuristic", "utf8_bytes"] = "provider"
-            estimated_input = max(int(estimate) for estimate in estimates)
-        else:
-            estimator = "heuristic"
-            estimated_input = sum(
-                estimate_token_count(str(message.get("content", "")))
-                for message in messages
-            )
+        estimated_input, estimator = self._estimate_with_providers(
+            provider_instances, messages,
+        )
         if estimated_input > input_budget:
             raise ModelRouteError("Prompt 内容超过可用输入预算")
 
@@ -978,17 +1005,19 @@ class ModelRouter:
         reason = error.finish_reason
         return reason if reason in _ATTEMPT_FINISH_REASONS else "error"
 
-    @staticmethod
     def _candidate_fits(
+        self,
         request: RouteRequest,
         candidate: ModelCandidate,
+        provider: AIProvider | None = None,
     ) -> bool:
         if candidate.context_window is None:
             return True
         overhead = 4 * len(request.messages) + 2
-        content_tokens = sum(
-            estimate_token_count(str(message.get("content", "")))
-            for message in request.messages
+        content_tokens, _ = (
+            self._estimate_with_providers([provider], request.messages)
+            if provider is not None else
+            self.estimate_messages(request.candidate_snapshot, request.messages)
         )
         return (
             content_tokens + overhead + request.max_tokens + _SAFETY_MARGIN
@@ -1186,30 +1215,6 @@ class ModelRouter:
 
                 started_at = time.monotonic()
                 current_output_started = False
-                if not self._candidate_fits(request, candidate):
-                    db.finish_ai_model_attempt(
-                        request.job_id,
-                        current_attempt,
-                        request.owner_token,
-                        "failed",
-                        error_scope="model",
-                        error_message="Prompt 超过候选模型上下文窗口",
-                        error_category="context_overflow",
-                        finish_reason="error",
-                        output_started=False,
-                        latency_ms=0,
-                    )
-                    current_attempt = None
-                    yield self._emit_progress(
-                        request,
-                        self._route_progress(
-                            request,
-                            candidate,
-                            action="switch",
-                            reason="context_overflow",
-                        ),
-                    )
-                    continue
 
                 try:
                     try:
@@ -1226,6 +1231,11 @@ class ModelRouter:
                             category="provider_configuration",
                             scope="provider",
                         ) from error
+                    if not self._candidate_fits(request, candidate, provider):
+                        raise AIProviderError(
+                            "Prompt exceeds candidate context window",
+                            category="context_overflow", scope="model",
+                        )
                     current_iterator = iter(
                         provider.stream_generate(
                             request.messages,
@@ -1262,9 +1272,10 @@ class ModelRouter:
                                     return self._terminal_race_result(db, request)
                                 current_output_started = True
                             attempt_parts.append(chunk.text)
-                            output_parts.append(chunk.text)
-                            request.on_delta(chunk.text)
-                            yield chunk
+                            if request.stage == "main":
+                                output_parts.append(chunk.text)
+                                request.on_delta(chunk.text)
+                                yield chunk
                             continue
                         if chunk.type == "done":
                             saw_done = True
@@ -1316,6 +1327,12 @@ class ModelRouter:
                     ):
                         return self._terminal_race_result(db, request)
                     current_attempt = None
+                    if request.stage != "main":
+                        # 内部/审查输出仅在候选完整成功后发布，失败残片不得污染重试。
+                        output_parts = attempt_parts
+                        completed_text = "".join(output_parts)
+                        request.on_delta(completed_text)
+                        yield AIStreamChunk(type="delta", text=completed_text)
                     return self._result(
                         db,
                         request,

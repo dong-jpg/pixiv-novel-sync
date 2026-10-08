@@ -52,7 +52,7 @@ def service(db):
 def _character_payload(name: str = "安娜", **overrides):
     payload = {
         "canonical_name": name,
-        "aliases": [name[:1]],
+        "aliases": ["小" + name[-1]],
         "age_years": 25,
         "age_basis": "项目设定",
         "fictional": True,
@@ -159,7 +159,7 @@ def test_confirmation_is_sorted_hashed_and_invalidated_by_character_change(
 
     updated = service.update_adult_character(
         first["character_id"],
-        {"aliases": ["安", "娜娜"]},
+        {"aliases": ["小安", "娜娜"]},
         expected_revision=1,
     )
     invalidated = service.get_adult_confirmation(1)

@@ -1,5 +1,7 @@
 # Frontend API Contract
 
+> **2026-09-30 写作契约更新（ai-writing）**：保存章节正文必须传非负整数 `expected_revision`，版本冲突返回409并保留客户端编辑；客户端收到成功响应后使用返回的新revision。成人 `POST /api/dashboard/ai/adult-policies/upgrade` 接受 `expected_versions` 进行显式CAS升级，保留版本历史并使旧候选先重新审查。成人请求不再接受 `preference_profile_id`/注入强度等未实现字段。详细状态见 [整改状态](REMEDIATION_STATUS_2026-09-30.md)。
+
 本文档记录 Library OS 前端当前依赖的后端接口。后端重构时应优先保持路径、方法和主要字段兼容；如需调整，请在对接时同步更新前端适配层。
 
 ## 通用约定
@@ -269,7 +271,7 @@ Expected detail fields include:
 
 ### GET /api/dashboard/novels/{novel_id}/progress
 
-Used by: 小说阅读页阅读进度恢复。
+Used by: 小说阅读页阅读进度恢复。本机无记录时按服务端百分比恢复实际滚动位置；已有本机位置优先。异步读取期间用户主动滚动时不强行跳回旧位置。
 
 无进度记录时返回默认值：
 
@@ -291,7 +293,7 @@ Used by: 小说阅读页阅读进度恢复。
 
 ### DELETE /api/dashboard/novels/{novel_id}/progress
 
-删除阅读进度记录。成功返回 `{ "success": true }`。
+删除阅读进度记录。成功返回 `{ "success": true }`。阅读页“重置阅读进度”在确认后调用；仅成功时清除本机记录并回到页首，失败保留当前位置。
 
 ### POST /api/dashboard/novels/export-epub
 
@@ -473,9 +475,7 @@ Starts author sync.
 
 删除小说记录并清理磁盘归档文件；响应额外包含 `archive_cleanup` 清理结果。
 
-### DELETE /api/dashboard/users/{user_id}
-
-删除用户及其所有小说与归档文件；响应额外包含 `archive_cleanup`。
+原 `DELETE /api/dashboard/users/{user_id}` 已移除：没有生产页面调用，且与后台备份同时运行时不能保证删除结果。T3-01 采用原计划允许的删接口方案，不新增批量用户删除按钮；存储层内部级联删除及其测试保留。
 
 ### DELETE /api/dashboard/series/{series_id}
 
@@ -483,7 +483,7 @@ Starts author sync.
 
 ### DELETE /api/dashboard/bookmarks/{novel_id}
 
-仅删除收藏记录，不删除小说本体。
+仅删除本地收藏记录，不删除小说本体、不取消 Pixiv 收藏；下一次同步可能重新加入。阅读页“移除本地收藏记录”经确认后调用，并显示失败或成功结果。
 
 ## Logs APIs
 
@@ -517,7 +517,7 @@ Returns settings object consumed by settings form.
 
 ### POST /api/dashboard/settings
 
-Saves settings. Body is the edited settings object。全量端点，与分区端点并存。
+仅 API。Saves settings. Body is the edited settings object。全量端点仅为脚本/兼容调用保留；页面必须使用分区端点，不能将未加载字段写成默认值。
 
 ### PUT /api/dashboard/settings/<section>
 
@@ -598,11 +598,7 @@ Query:
 - `page`
 - type/status filters where available。
 
-### GET /api/dashboard/pending-deletions/count
-
-仅 API。侧栏数量来自 `/api/dashboard/shell-data`。
-
-Sidebar/count use if needed.
+侧栏待删除数量来自 `GET /api/dashboard/shell-data`。两分支当前工作区均已移除旧 `/api/dashboard/pending-deletions/count`，不应新增调用。
 
 ### POST /api/dashboard/pending-deletions/detect
 
@@ -641,6 +637,8 @@ Body:
 
 ### DELETE /api/dashboard/preferences/profiles/{profile_id}
 
+画像设默认和删除仅 API，保留既有脚本兼容接口；完整多画像页面工作流按 UNIFIED §1.3 为 OUT，不为消除旧计划空勾而新增该功能。
+
 ### POST /api/dashboard/recommendations/search-plan
 
 Body:
@@ -651,9 +649,7 @@ Body:
 
 ### POST /api/dashboard/recommendations/run
 
-### GET /api/dashboard/recommendations/runs
-
-仅 API。页面不展示历史轮次。多画像的设默认和删除也不做页面。
+两分支当前工作区均已移除 `GET /api/dashboard/recommendations/runs`。页面不展示历史轮次；多画像的设默认和删除也不做页面。
 
 ### GET /api/dashboard/recommendations/items
 
@@ -801,6 +797,7 @@ Body:
 | `PUT`/`DELETE` | `/api/dashboard/ai/projects/{project_id}/characters/{character_id}` | 必须提交 `expected_revision`，冲突返回 `409`。 |
 | `GET`/`PUT` | `/api/dashboard/ai/projects/{project_id}/adult-confirmation` | 读取或 CAS 更新成人开关、虚构成年人确认、角色 revision 列表；读取响应同时返回按确认顺序派生的 `character_ids`，供阅读页筛选可参与角色。 |
 | `GET`/`PUT` | `/api/dashboard/ai/adult-review-bindings/{review_kind}` | `review_kind` 为 `safety` 或 `fact_guard`；固定/池 binding 必须声明 `json` 能力和 `expected_version`。 |
+| `POST` | `/api/dashboard/ai/adult-policies/upgrade` | body 精确为 `{ "expected_versions": { "safety": 1, "fact_guard": 1 } }`，数值须取当前存储版本；只升级到随代码发布且校验通过的策略，不接受自定义策略正文。版本冲突返回 `409`。 |
 | `POST` | `/api/dashboard/ai/polish/adult/scope` | body 精确为 `{ "agent_id": number }`；返回 `groups` 与 `provider_scope_hash`。 |
 | `POST` | `/api/dashboard/ai/polish/adult/stream` | 提交无正文请求（见下方字段），返回成人 SSE。 |
 | `GET` | `/api/dashboard/ai/polish/adult/{job_id}` | 返回脱敏 job 元数据；成功候选只在未应用且仍保留时返回。 |
@@ -811,11 +808,15 @@ Body:
 
 stream/regenerate 的请求字段是 `project_id`、`chapter_id`、`agent_id`、`target_start`、`target_end`、`chapter_content_hash`、`target_text_hash`、`chapter_revision`、`participant_character_ids`、`adult_characters_confirmed`、`intensity`、`locked_terms`、`instruction`、`idempotency_key` 和 `provider_scope_hash`；重新生成另加 `parent_job_id`。`target_text`、`before`、`after`、Prompt、system prompt 和 Provider 原始响应均禁止提交、持久化或通过 API 返回。offset 使用 Unicode code point，前端必须从原始章节文本计算 hash，不得先规范化换行。
 
+`preference_profile_id` 和偏好注入强度不属于成人请求契约，传入会被拒绝。参与者按目标片段校验，周边只读上下文中的其他角色不会自动成为参与者。
+
 ### SSE 事件与脱敏
 
 成人 stream 只允许 `metadata`、`progress`、`validation`、`candidate`、`done`、`error` 六类事件。`metadata` 返回 `job_id`、`parent_job_id`、`replayed` 和有效期 10 分钟的 `access_token`；`progress` 只返回脱敏阶段/模型摘要，状态重放接口在任务仍运行时至少返回 `{ "job_id": "...", "status": "running" }` 后结束；`validation` 返回结构校验摘要、warning/blocking code、`validation_hash`，有 warning 时额外返回 scoped `warning_ack_hash`；`candidate` 含完整候选正文，成功且未应用/未清理时也可从 owner/job token 保护的详情与状态重放接口读取，但不会进入通用 AI job JSON。任何 provider 错误都映射为固定中文错误码和消息。
 
 SSE 响应必须带：`Cache-Control: no-store, no-cache, must-revalidate, max-age=0`、`Pragma: no-cache`、`X-Robots-Tag: noindex, nofollow, noarchive`、`X-Content-Type-Options: nosniff` 和 `X-Accel-Buffering: no`。job JSON 读取同样使用 `no-store`、`Pragma`、`X-Robots-Tag` 和 `nosniff`。
+
+`events` 重放沿用请求携带的 token，不延长其有效期。重新生成携带旧 job 的 token；前端在新任务 `metadata` 到达前保留旧候选，避免预检失败导致候选丢失。策略升级使旧校验失效；旧候选只有重新审查通过并取得新的 warning acknowledgment 后才可应用。候选写入事务和最终应用事务都检查当前数据库策略，防止旧 worker 越过升级边界。
 
 ### 状态码、保留与重试
 
@@ -824,7 +825,7 @@ SSE 响应必须带：`Cache-Control: no-store, no-cache, must-revalidate, max-a
 - `409`：章节内容/revision、角色确认 revision、Provider scope、Agent/binding/policy snapshot、lease 或 warning 校验发生变化；必须重新获取 scope 并重新生成。
 - `422`：请求字段、范围、hash、参与角色或 idempotency key 格式非法；`400` 表示已认证但配置/路由不可用。
 
-未应用候选采用默认三天清理策略；后台 scheduler 启用时每小时检查，也可通过 AI job cleanup API 手工触发。应用后章节正文只写入目标区间，任务 `output_text` 清理，应用记录仅保留 hash、校验摘要、策略和 Provider/model snapshot。应用不会自动成为普通 Pipeline step，也不会因网络/Provider 变化自动重试。成人路由始终要求 Dashboard token，即使请求来自 localhost；运行顺序和前置配置见 `frontend-pages.md` 的成人配置页说明。
+未应用候选由调度器按 `sync.task_log_retention_days` 清理，默认 14 天，每小时检查一次。手工调用 AI job cleanup API 且不传 `keep_days` 时仍按 3 天。应用后章节正文只写入目标区间，任务 `output_text` 清理，应用记录仅保留 hash、校验摘要、策略和 Provider/model snapshot。应用不会自动成为普通 Pipeline step，也不会因网络/Provider 变化自动重试。成人路由始终要求 Dashboard token，即使请求来自 localhost；运行顺序和前置配置见 `frontend-pages.md` 的成人配置页说明。
 
 ## AI content and job APIs
 
@@ -956,6 +957,8 @@ Frontend expects streams to terminate with `done` or `error`.
 
 封面上传使用 `multipart/form-data` 的 `cover` 字段，支持 JPEG、PNG、WebP，最大 10 MiB；成功返回 `cover_url`。文件类型、扩展名或文件头不一致返回 400，项目或封面不存在返回 404。读取接口直接返回图片内容，删除成功返回 `cover_url: null`。
 
+章节正文保存须携带读取时的非负整数 `expected_revision`；版本不匹配返回 `409`，不得覆盖服务端新正文或客户端未保存编辑。成功后使用响应的新 revision；提交期间继续输入的编辑仍需保留。Pipeline 重试保留已经完成的步骤与结果，批量 SSE 提前结束不能显示为全部成功。
+
 ## AI chat/session APIs
 
 - `GET /api/dashboard/ai/chat/sessions`
@@ -969,14 +972,13 @@ Frontend expects streams to terminate with `done` or `error`.
 
 ## Token/OAuth APIs
 
+两分支当前工作区均已删除 `/oauth/start`、`/oauth/callback`、`/oauth/sync-callback/{task_id}`。OAuth任务统一从 `/api/token-jobs` 创建；已提交旧版本/远端不因此自动更新。
+
 - `GET /api/token-config`
 - `POST /api/token-jobs`
 - `GET /api/token-jobs/{job_id}`
 - `POST /api/save-token`
-- `POST /oauth/start`（仅 API。Pixiv 固定回调地址，页面不走这条）
 - `GET /oauth/task/{task_id}`
-- `GET /oauth/callback`（仅 API）
-- `POST /oauth/sync-callback/{task_id}`（仅 API）
 - `POST /oauth/exchange/{task_id}`
 - `POST /oauth/save/{task_id}`
 

@@ -97,3 +97,12 @@ def test_warning_ack_hash_sorts_and_deduplicates_codes():
 
     assert first == second
     assert len(first) == 64
+
+
+def test_unused_adult_preference_fields_are_rejected():
+    from ai_adult_testkit import valid_adult_payload
+    from pixiv_novel_sync.ai.adult_types import AdultInputError, parse_adult_request
+    import pytest
+    for field, value in (("preference_profile_id", 1), ("preference_injection_strength", "strong")):
+        with pytest.raises(AdultInputError, match="未知字段"):
+            parse_adult_request(valid_adult_payload(**{field: value}))

@@ -1,5 +1,9 @@
 # 阶段三：设置页拆分与 AI 页面公共层 实施计划
 
+> **2026-09-30 审计口径：** 代码主体存在；浏览器/移动端未新验收。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** 代码已落地（设置拆页、window.csrfFetch、Agent 候选接口）。勾选框没有回写。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把 1817 行的设置页拆成五个一级页面并支持分区独立保存，抽出前端公共层消除 4 处 csrfFetch / 7 处 SSE 重复，新增 Agent 候选模型链预览。

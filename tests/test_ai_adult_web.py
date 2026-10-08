@@ -17,6 +17,7 @@ from ai_adult_testkit import (
 )
 from pixiv_novel_sync.ai.service import AIConflictError, AIWritingService
 from pixiv_novel_sync.ai.adult_auth import AdultOwner, sign_adult_access
+from pixiv_novel_sync.ai.adult_policies import SAFETY_POLICY
 from pixiv_novel_sync.ai_web import register_ai_routes
 from pixiv_novel_sync.settings import Settings, StorageSettings
 from pixiv_novel_sync.storage_db import Database
@@ -530,7 +531,7 @@ def test_adult_events_replay_validation_and_warning_ack_hash(tmp_path):
     assert b'"warning_ack_hash": "' in response.data
     expected_ack = warning_ack_hash(
         validation.validation_hash,
-        "1" * 64,
+        SAFETY_POLICY.expected_hash,
         "2" * 64,
         validation.warnings,
     )
@@ -828,7 +829,7 @@ def test_webapp_logs_scope_adult_jobs_and_csrf_blocks_adult_mutation(
     assert blocked_mutation.get_json()["error"] == "csrf token invalid"
 
 
-def test_adult_apply_verifies_signed_access_and_binds_only_its_hash(
+def test_adult_apply_verifies_signed_access_without_rebinding_existing_hash(
     tmp_path,
     monkeypatch,
 ):
@@ -885,9 +886,7 @@ def test_adult_apply_verifies_signed_access_and_binds_only_its_hash(
     try:
         application = db.get_application_for_owner("adult-job", scope)
         assert application is not None
-        assert application["access_token_hash"] == hashlib.sha256(
-            token.encode("utf-8")
-        ).hexdigest()
+        assert application["access_token_hash"] == "4" * 64
         assert token not in str(application)
     finally:
         db.close()
@@ -974,7 +973,7 @@ def test_adult_character_routes_cover_project_scoped_crud(tmp_path):
         f"/api/dashboard/ai/projects/{project_id}/characters",
         json={
             "canonical_name": "安娜",
-            "aliases": ["安"],
+            "aliases": ["小安"],
             "age_years": 25,
             "age_basis": "项目设定",
             "fictional": True,
@@ -1134,7 +1133,6 @@ def test_adult_regenerate_rejects_malformed_payload_before_stream(
         calls.append((payload, owner_scope, owner_token))
         return iter(())
 
-    monkeypatch.setattr(AIWritingService, "stream_adult_polish", fake_stream)
     client = app.test_client()
     _authenticate(client)
     response = client.post(
@@ -1305,7 +1303,7 @@ def test_adult_stream_initialization_failure_does_not_log_raw_exception(
     def fail_parse(_payload):
         raise RuntimeError("raw provider response must not be logged")
 
-    monkeypatch.setattr("pixiv_novel_sync.ai_web.parse_adult_request", fail_parse)
+    monkeypatch.setattr("pixiv_novel_sync.ai.services.adult.parse_adult_request", fail_parse)
     with caplog.at_level("WARNING", logger="pixiv_novel_sync.ai_web"):
         response = client.post(
             "/api/dashboard/ai/polish/adult/stream",
@@ -1474,3 +1472,17 @@ def test_adult_stream_maps_stale_chapter_and_provider_scope_to_409(tmp_path):
 
     assert stale_chapter.status_code == 409
     assert stale_scope.status_code == 409
+
+
+def test_adult_scope_preserves_actionable_model_route_error(tmp_path, monkeypatch):
+    from pixiv_novel_sync.ai.model_router import ModelRouter, ModelRouteError
+    app = _app(tmp_path)
+    client = app.test_client()
+    _authenticate(client)
+    _configured_adult_payload(tmp_path, app, client)
+    def reject(*args, **kwargs):
+        raise ModelRouteError("候选模型审查预算不足，请缩短选段")
+    monkeypatch.setattr(ModelRouter, "resolve_candidates", reject)
+    response = client.post("/api/dashboard/ai/polish/adult/scope", json={"agent_id": 7})
+    assert response.status_code == 400
+    assert "候选模型审查预算不足" in response.get_json()["error"]

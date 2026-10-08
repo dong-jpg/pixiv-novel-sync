@@ -124,3 +124,38 @@ def test_reader_handles_element_boundary_ranges_when_counting_codepoints():
     html = Path("src/pixiv_novel_sync/templates/dashboard_ai_reader.html").read_text(encoding="utf-8")
     assert "selectNodeContents(root)" in html
     assert "boundaryCodePointOffset" in html
+
+
+def test_regenerate_preserves_candidate_until_new_metadata_and_sends_token():
+    html = Path("src/pixiv_novel_sync/templates/dashboard_ai_reader.html").read_text(encoding="utf-8")
+    start = html.split("async function startAdultGeneration", 1)[1].split("function generateAdultCandidate", 1)[0]
+    assert "resetAdultCandidate()" not in start
+    assert "'X-Adult-Access-Token': accessToken.value" in start
+    consume = html.split("function consumeAdultEvent", 1)[1].split("async function streamAdultEvents", 1)[0]
+    assert "event === 'metadata'" in consume
+    assert "resetAdultCandidate()" in consume
+    assert '@click="cancelAdultGeneration"' in html
+    assert '@click="queryAdultEvents"' in html
+
+
+def test_settings_keeps_unknown_age_and_exposes_token_budget():
+    html = Path("src/pixiv_novel_sync/templates/dashboard_settings_adult.html").read_text(encoding="utf-8")
+    assert "age_years: 18" not in html
+    assert "character.age_years || 18" not in html
+    assert 'v-model.number="adultAgentForm.context_window"' in html
+    assert 'v-model.number="adultAgentForm.max_tokens"' in html
+    assert "character_ids: [...adultConfirmation.character_ids]" in html
+
+
+def test_adult_web_has_one_preflight_and_never_rebinds_token_on_apply():
+    source = Path("src/pixiv_novel_sync/ai_web.py").read_text(encoding="utf-8")
+    assert "validate_adult_stream_preflight" not in source
+    assert "bind_adult_application_access" not in source
+    assert "access_token_factory=" in source
+
+
+def test_applying_adult_candidate_keeps_current_reader_chapter():
+    html = Path("src/pixiv_novel_sync/templates/dashboard_ai_reader.html").read_text(encoding="utf-8")
+    load = html.split("async function loadReader()", 1)[1].split("function selectChapter", 1)[0]
+    assert "const previousChapterId = currentChapterId.value" in load
+    assert "chapters.value.some" in load

@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
+import queue
+import threading
 import secrets
 import time
 import unicodedata
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
+from contextlib import contextmanager, nullcontext
+from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from typing import Any, Literal
 
@@ -44,7 +49,7 @@ from ..adult_validation import (
     compute_validation_hash,
     run_local_adult_checks,
 )
-from ..model_router import CandidateSnapshot, PromptBudget, RouteRequest, RouteResult
+from ..model_router import CandidateSnapshot, ModelRouteError, PromptBudget, RouteRequest, RouteResult
 from ..models import AIAgentConfig, AIStreamChunk
 from .core import AIConflictError, AIServiceError
 
@@ -175,6 +180,8 @@ class PreparedAdultJob:
     prompt_budget: PromptBudget
     job_input: Mapping[str, Any]
     validation_parent_terminal: bool = False
+    parent_lease_managed: bool = False
+    parent_stop_event: threading.Event = field(default_factory=threading.Event, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +193,7 @@ class ReviewResult:
     binding_hash: str
     provider_snapshot: Mapping[str, Any]
     model_snapshot: str
+    job_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +225,10 @@ class ApplySnapshot:
     candidate_hash: str
 
 
+class AdultCancelled(AIServiceError):
+    pass
+
+
 class AdultReviewUnavailable(AIServiceError):
     pass
 
@@ -245,6 +257,8 @@ def _normalize_character(data: Mapping[str, Any]) -> dict[str, Any]:
     aliases: list[str] = []
     for value in raw_aliases:
         alias = _bounded_text(value, "角色别名", 100)
+        if len(alias) < 2:
+            raise AIServiceError("角色别名至少需要 2 个码点")
         if alias not in aliases:
             aliases.append(alias)
 
@@ -385,7 +399,7 @@ def _review_agent_config(
         temperature=0.0,
         top_p=1.0,
         max_tokens=2_000,
-        context_window=16_000,
+        context_window=128_000,
         enabled=True,
         binding_type=binding_type,
         model_pool_id=model_pool_id,
@@ -485,6 +499,28 @@ def _review_model_snapshot(
         ):
             return str(attempt["model_key"])
     return snapshot.candidates[0].model_key if snapshot.candidates else ""
+
+
+def _adult_review_messages(
+    review_kind: str,
+    characters: Sequence[AdultCharacterFact],
+    protected_terms: Sequence[str],
+    original: str,
+    candidate: str,
+) -> list[dict[str, str]]:
+    policy = SAFETY_POLICY if review_kind == "safety" else FACT_GUARD_POLICY
+    participant_facts = [{"character_id": fact.character_id, "canonical_name": fact.canonical_name,
+                          "aliases": fact.aliases, "age_years": fact.age_years, "fictional": fact.fictional}
+                         for fact in characters]
+    allowed_names = [{"character_id": fact.character_id, "canonical_name": fact.canonical_name,
+                      "aliases": list(fact.aliases)} for fact in characters]
+    terms = tuple(dict.fromkeys((*protected_terms, *(name for fact in characters for name in (fact.canonical_name, *fact.aliases)))))
+    return [
+        {"role": "system", "content": f"{policy.policy_text}\n输出 Schema：{_compact_json(policy.output_schema)}"},
+        {"role": "user", "content": policy.prompt_template.format(
+            participant_facts=_compact_json(participant_facts), allowed_names=_compact_json(allowed_names),
+            protected_terms=_compact_json(terms), original=original, candidate=candidate)},
+    ]
 
 
 class AIAdultPolishMixin:
@@ -661,15 +697,22 @@ class AIAdultPolishMixin:
                 db = self._db()
                 try:
                     job = db.get_ai_job(job_id, owner_scope)
+                    deadline_stop = job is not None and job.get("status") == "running" and db.ai_job_should_stop(job_id)
                 finally:
                     db.close()
             except Exception:
-                return False
-            if job is not None and str(job.get("status") or "") == "cancelled":
+                logging.getLogger(__name__).warning("成人取消状态查询失败，安全停止任务", exc_info=True)
+                state["cancelled"] = True
+                return True
+            if deadline_stop or job is None or str(job.get("status") or "") == "cancelled" or bool(job.get("cancel_requested")):
                 state["cancelled"] = True
             return bool(state["cancelled"])
 
         return is_cancelled
+
+    def _adult_prepared_cancel_checker(self, prepared: PreparedAdultJob):
+        cancelled = self._adult_cancel_checker(prepared.job_id, prepared.owner_scope)
+        return lambda: prepared.parent_stop_event.is_set() or cancelled()
 
     def _run_adult_review(
         self,
@@ -789,6 +832,10 @@ class AIAdultPolishMixin:
             sanitized["stage"] = review_kind
             on_progress(sanitized)
 
+        child_cancelled = self._adult_cancel_checker(child_job_id, prepared.owner_scope)
+        def review_cancelled():
+            return prepared.parent_stop_event.is_set() or (is_cancelled is not None and is_cancelled()) or child_cancelled()
+
         route_request = AdultRouteRequest(
             job_id=child_job_id,
             stage="validation",
@@ -802,10 +849,27 @@ class AIAdultPolishMixin:
             top_p=agent.top_p,
             participant_facts=participant_facts,
             protected_terms=protected_terms,
-            is_cancelled=is_cancelled,
+            is_cancelled=review_cancelled,
         )
         try:
-            result = self.model_router.execute(route_request.to_route_request())
+            executor = getattr(self.model_router, "execute_stream", None)
+            if callable(executor):
+                stream = executor(route_request.to_route_request())
+                try:
+                    while True:
+                        try:
+                            chunk = next(stream)
+                        except StopIteration as stopped:
+                            result = stopped.value
+                            break
+                        if chunk.type == "progress":
+                            forward_progress(chunk.data or {})
+                finally:
+                    stream.close()
+            else:
+                result = self.model_router.execute(route_request.to_route_request())
+            if review_cancelled() or result.finish_state == "cancelled":
+                raise AdultCancelled("成人审查已取消")
             raw_output = "".join(output_parts)
             if (
                 output_invalid
@@ -820,6 +884,7 @@ class AIAdultPolishMixin:
                 allowed_issues,
             )
             review = ReviewResult(
+                job_id=child_job_id,
                 safe=safe,
                 issue_codes=issue_codes,
                 policy_hash=policy.expected_hash,
@@ -835,11 +900,9 @@ class AIAdultPolishMixin:
             )
             db = self._db()
             try:
-                if not db.finish_ai_job_cas(
+                if not db.finish_adult_review_success(
                     child_job_id,
                     child_owner_token,
-                    "succeeded",
-                    output_text="",
                     output_json={
                         "safe": review.safe,
                         "issue_codes": list(review.issue_codes),
@@ -849,10 +912,19 @@ class AIAdultPolishMixin:
                         "model_snapshot": review.model_snapshot,
                     },
                 ):
+                    if self._adult_cancel_checker(child_job_id, prepared.owner_scope, min_interval=0)():
+                        raise AdultCancelled("成人审查已取消")
                     raise AdultReviewUnavailable("成人审查任务终态冲突")
             finally:
                 db.close()
             return review
+        except AdultCancelled:
+            db = self._db()
+            try:
+                db.finish_ai_job_cas(child_job_id, child_owner_token, "cancelled", output_text="", error_message="成人审查已取消")
+            finally:
+                db.close()
+            raise
         except AdultReviewUnavailable:
             db = self._db()
             try:
@@ -892,24 +964,8 @@ class AIAdultPolishMixin:
             if not isinstance(candidate, str) or not candidate:
                 raise AdultReviewUnavailable("成人安全审查候选无效")
             participant_facts = self._review_participant_facts(prepared)
-            allowed_names = self._review_allowed_names(prepared)
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        f"{SAFETY_POLICY.policy_text}\n"
-                        f"输出 Schema：{_compact_json(SAFETY_POLICY.output_schema)}"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": SAFETY_POLICY.prompt_template.format(
-                        participant_facts=_compact_json(participant_facts),
-                        allowed_names=_compact_json(allowed_names),
-                        candidate=candidate,
-                    ),
-                },
-            ]
+            messages = _adult_review_messages("safety", prepared.participant_characters,
+                                              prepared.prompt.protected_terms, prepared.target, candidate)
             return self._run_adult_review(
                 prepared,
                 review_kind="safety",
@@ -919,6 +975,8 @@ class AIAdultPolishMixin:
                 on_progress=on_progress,
                 is_cancelled=is_cancelled,
             )
+        except AdultCancelled:
+            raise
         except AdultReviewUnavailable:
             raise
         except Exception as exc:
@@ -954,24 +1012,8 @@ class AIAdultPolishMixin:
                     )
                 )
             )
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        f"{FACT_GUARD_POLICY.policy_text}\n"
-                        f"输出 Schema：{_compact_json(FACT_GUARD_POLICY.output_schema)}"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": FACT_GUARD_POLICY.prompt_template.format(
-                        participant_facts=_compact_json(participant_facts),
-                        protected_terms=_compact_json(protected_terms),
-                        original=original,
-                        candidate=candidate,
-                    ),
-                },
-            ]
+            messages = _adult_review_messages("fact_guard", prepared.participant_characters,
+                                              prepared.prompt.protected_terms, original, candidate)
             return self._run_adult_review(
                 prepared,
                 review_kind="fact_guard",
@@ -982,6 +1024,8 @@ class AIAdultPolishMixin:
                 on_progress=on_progress,
                 is_cancelled=is_cancelled,
             )
+        except AdultCancelled:
+            raise
         except AdultReviewUnavailable:
             raise
         except Exception as exc:
@@ -1046,6 +1090,7 @@ class AIAdultPolishMixin:
             "main_route": self._snapshot_payload(prepared.main_snapshot),
             "safety_route": dict(safety_result.provider_snapshot),
             "fact_guard_route": dict(fact_result.provider_snapshot),
+            "review_job_ids": {"safety": safety_result.job_id, "fact_guard": fact_result.job_id},
             "model_snapshots": {
                 "safety": safety_result.model_snapshot,
                 "fact_guard": fact_result.model_snapshot,
@@ -1062,6 +1107,8 @@ class AIAdultPolishMixin:
                 "locked_terms": list(prepared.request.locked_terms),
             },
         }
+        if prepared.parent_stop_event.is_set():
+            raise AdultCancelled("成人主任务已停止")
         db = self._db()
         try:
             db.save_candidate_application(
@@ -1110,7 +1157,108 @@ class AIAdultPolishMixin:
             db.close()
         return finalized
 
-    def finish_adult_candidate(
+    def _stream_adult_review(self, callback, *args, is_cancelled):
+        # 同步审查接口保留给应用重审；有界队列将其进度实时转交 SSE。
+        events = queue.Queue(maxsize=32)
+        stopped = threading.Event()
+        def cancelled():
+            return stopped.is_set() or is_cancelled()
+        def put(kind, value):
+            while not stopped.is_set():
+                try:
+                    events.put((kind, value), timeout=0.1)
+                    return
+                except queue.Full:
+                    continue
+            raise AdultCancelled("成人审查连接已关闭")
+        def worker():
+            try:
+                result = callback(*args, on_progress=lambda data: put("progress", data), is_cancelled=cancelled)
+                put("result", result)
+            except BaseException as exc:
+                if not stopped.is_set():
+                    put("error", exc)
+        thread = threading.Thread(target=worker, daemon=True, name="adult-review")
+        thread.start()
+        try:
+            while True:
+                try:
+                    kind, value = events.get(timeout=2)
+                except queue.Empty:
+                    yield AIStreamChunk(type="progress", data={"phase": "validation", "action": "keepalive"})
+                    continue
+                if kind == "result":
+                    return value
+                if kind == "error":
+                    raise value
+                yield AIStreamChunk(type="progress", data=_sanitize_progress(value))
+        finally:
+            stopped.set()
+            thread.join(timeout=1)
+
+    @contextmanager
+    def _adult_parent_lease(self, prepared: PreparedAdultJob):
+        """主路由停止 heartbeat 后，整个本地校验/双审查阶段仍持有父租约。"""
+        stopped = prepared.parent_stop_event
+        def renew():
+            db = self._db()
+            try:
+                if db.ai_job_should_stop(prepared.job_id):
+                    db.request_adult_job_cancel(prepared.job_id, prepared.owner_scope, prepared.owner_token)
+                    return False
+                lease = (datetime.now(timezone.utc) + timedelta(seconds=45)).strftime("%Y-%m-%d %H:%M:%S")
+                return db.heartbeat_ai_job(prepared.job_id, prepared.owner_token, lease)
+            finally:
+                db.close()
+        if not renew():
+            raise AdultCancelled("成人主任务已停止")
+        def heartbeat():
+            while not stopped.wait(10):
+                try:
+                    if not renew():
+                        stopped.set()
+                        break
+                except Exception:
+                    stopped.set()
+                    logging.getLogger(__name__).warning("成人父任务续期失败", exc_info=True)
+                    break
+        thread = threading.Thread(target=heartbeat, name="adult-parent-heartbeat", daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stopped.set()
+            thread.join(timeout=1)
+
+    def finish_adult_candidate(self, prepared, raw_candidate):
+        stream = self._finish_adult_candidate(prepared, raw_candidate)
+        if not isinstance(prepared, PreparedAdultJob):
+            yield from stream
+            return
+        try:
+            with (nullcontext() if prepared.parent_lease_managed else self._adult_parent_lease(prepared)):
+                for chunk in stream:
+                    if chunk.type == "error":
+                        db = self._db()
+                        try:
+                            job = db.get_adult_job(prepared.job_id, prepared.owner_scope)
+                        finally:
+                            db.close()
+                        if job is not None and job.get("status") == "cancelled":
+                            yield self._adult_error("cancelled", "成人润色任务已取消", prepared.job_id)
+                            return
+                    yield chunk
+        except AdultCancelled:
+            db = self._db()
+            try:
+                db.request_adult_job_cancel(prepared.job_id, prepared.owner_scope, prepared.owner_token)
+            finally:
+                db.close()
+            yield self._adult_error("cancelled", "成人润色任务已取消", prepared.job_id)
+        finally:
+            stream.close()
+
+    def _finish_adult_candidate(
         self,
         prepared: PreparedAdultJob,
         raw_candidate: str,
@@ -1191,34 +1339,21 @@ class AIAdultPolishMixin:
             )
             return
 
-        safety_critical = {
-            "adult_confirmation_missing",
-            "age_unknown",
-            "minor_present",
-            "new_character",
-            "participant_changed",
-            "participant_inactive",
-            "participant_mapping_ambiguous",
-            "participant_mapping_unknown",
-            "participant_unknown",
-            "real_person",
-        }
-        if safety_critical.intersection(local_result.blocking_issues):
+        hidden_blocks = set(local_result.blocking_issues) - self._VISIBLE_STRUCTURAL_ISSUES
+        if hidden_blocks:
             db = self._db()
             try:
                 self._finish_adult_failure(
                     prepared,
                     db,
-                    code="safety_blocked",
+                    code="local_blocked",
                     message="成人润色候选未通过本地安全检查",
                 )
             finally:
                 db.close()
-            yield self._adult_error(
-                "safety_blocked",
-                "成人润色候选未通过安全检查",
-                prepared.job_id,
-            )
+            yield AIStreamChunk(type="error", data={"code": "local_blocked",
+                "message": "成人润色候选未通过本地检查", "job_id": prepared.job_id,
+                "blocking_issues": sorted(hidden_blocks)})
             return
 
         review_progress: list[dict[str, Any]] = []
@@ -1229,17 +1364,10 @@ class AIAdultPolishMixin:
             for data in pending:
                 yield AIStreamChunk(type="progress", data=data)
 
-        review_cancelled = self._adult_cancel_checker(
-            prepared.job_id,
-            prepared.owner_scope,
-        )
+        review_cancelled = self._adult_prepared_cancel_checker(prepared)
         try:
-            safety_result = self.run_adult_safety_review(
-                prepared,
-                candidate,
-                on_progress=review_progress.append,
-                is_cancelled=review_cancelled,
-            )
+            safety_result = yield from self._stream_adult_review(
+                self.run_adult_safety_review, prepared, candidate, is_cancelled=review_cancelled)
         except AdultReviewUnavailable:
             yield from flush_review_progress()
             db = self._db()
@@ -1278,13 +1406,8 @@ class AIAdultPolishMixin:
             return
 
         try:
-            fact_result = self.run_adult_fact_guard(
-                prepared,
-                prepared.target,
-                candidate,
-                on_progress=review_progress.append,
-                is_cancelled=review_cancelled,
-            )
+            fact_result = yield from self._stream_adult_review(
+                self.run_adult_fact_guard, prepared, prepared.target, candidate, is_cancelled=review_cancelled)
         except AdultReviewUnavailable:
             yield from flush_review_progress()
             db = self._db()
@@ -1562,6 +1685,7 @@ class AIAdultPolishMixin:
                 application.get("validator_policy_hash")
                 != VALIDATOR_POLICY_HASH,
                 stored_fact_policy_hash != FACT_GUARD_POLICY.expected_hash,
+                not isinstance(snapshots, Mapping) or not snapshots.get("review_job_ids"),
             )
         )
 
@@ -1761,13 +1885,15 @@ class AIAdultPolishMixin:
         if local_result.blocking_issues:
             raise AdultConflictError("成人润色候选重审出现阻断项")
         try:
-            safety_result = self.run_adult_safety_review(prepared, candidate)
+            cancelled = self._adult_prepared_cancel_checker(prepared)
+            safety_result = self.run_adult_safety_review(prepared, candidate, is_cancelled=cancelled)
             if not safety_result.safe:
                 raise AdultConflictError("成人润色候选未通过安全重审")
             fact_result = self.run_adult_fact_guard(
                 prepared,
                 prepared.target,
                 candidate,
+                is_cancelled=cancelled,
             )
             if not fact_result.safe:
                 raise AdultConflictError("成人润色候选未通过事实重审")
@@ -1791,6 +1917,7 @@ class AIAdultPolishMixin:
         db = self._db()
         try:
             with db.transaction():
+                self._verify_adult_policy_state(db)
                 application = db.get_application_for_owner(
                     safe_job_id,
                     safe_owner_scope,
@@ -1838,6 +1965,7 @@ class AIAdultPolishMixin:
             prepared: PreparedAdultJob | None = None
             candidate = ""
             with db.transaction():
+                self._verify_adult_policy_state(db)
                 application = db.get_application_for_owner(
                     safe_job_id,
                     safe_owner_scope,
@@ -1890,6 +2018,7 @@ class AIAdultPolishMixin:
             needs_warning_ack = bool(validation.warnings)
             result: dict[str, Any] | None = None
             with db.transaction():
+                self._verify_adult_policy_state(db)
                 application = db.get_application_for_owner(
                     safe_job_id,
                     safe_owner_scope,
@@ -1921,6 +2050,7 @@ class AIAdultPolishMixin:
                         ),
                         "safety_route": dict(safety_result.provider_snapshot),
                         "fact_guard_route": dict(fact_result.provider_snapshot),
+                        "review_job_ids": {"safety": safety_result.job_id, "fact_guard": fact_result.job_id},
                         "model_snapshots": {
                             "safety": safety_result.model_snapshot,
                             "fact_guard": fact_result.model_snapshot,
@@ -2014,8 +2144,6 @@ class AIAdultPolishMixin:
             "instruction_hash": raw_sha256(request.instruction),
             "idempotency_key_hash": raw_sha256(request.idempotency_key),
             "parent_job_id": request.parent_job_id,
-            "preference_profile_id": request.preference_profile_id,
-            "preference_injection_strength": request.preference_injection_strength,
         }
         data["request_hash"] = canonical_sha256(data)
         return data
@@ -2094,13 +2222,12 @@ class AIAdultPolishMixin:
     ) -> None:
         allowed = set(participant_ids)
         for fact in characters:
-            if fact.character_id in allowed:
-                continue
             names = (fact.canonical_name, *fact.aliases)
-            if any(name and name in context for name in names):
-                raise AIServiceError(
-                    "目标或上下文中的已确认角色必须列入本次参与者"
-                )
+            named = any(name and name in context for name in names)
+            if fact.character_id in allowed and not named:
+                raise AIServiceError("参与者必须在目标片段被点名，请扩大选段或移除未出场参与者")
+            if named and fact.character_id not in allowed:
+                raise AIServiceError("目标片段中的已确认角色必须列入本次参与者")
 
     def prepare_adult_job(
         self,
@@ -2181,7 +2308,7 @@ class AIAdultPolishMixin:
                 self._verify_named_participants(
                     characters,
                     request.participant_character_ids,
-                    before + target + after,
+                    target,
                 )
                 project_facts, project_facts_hash = build_project_facts_snapshot(
                     db,
@@ -2254,6 +2381,13 @@ class AIAdultPolishMixin:
                 prompt.user_messages,
                 agent.max_tokens,
             )
+            # 审查保留完整原文/候选与策略，不允许裁剪以绕过安全判断。
+            for kind, review_agent, review_snapshot in (
+                ("safety", safety_agent, safety_snapshot),
+                ("fact_guard", fact_guard_agent, fact_guard_snapshot),
+            ):
+                messages = _adult_review_messages(kind, participants, prompt.protected_terms, target, target * 3)
+                self.model_router.build_prompt_budget(review_agent, review_snapshot, messages, review_agent.max_tokens)
             job_input = self._adult_job_input(
                 request,
                 project_facts_hash=project_facts_hash,
@@ -2396,7 +2530,7 @@ class AIAdultPolishMixin:
                 prompt_budget=prompt_budget,
                 job_input=MappingProxyType(job_input),
             )
-        except AdultInputError as exc:
+        except (AdultInputError, ModelRouteError) as exc:
             raise AIServiceError(str(exc)) from exc
         finally:
             db.close()
@@ -2433,6 +2567,7 @@ class AIAdultPolishMixin:
         owner_token: str,
         *,
         raise_preflight: bool = False,
+        access_token_factory: Callable[[str], str] | None = None,
     ) -> Iterator[AIStreamChunk]:
         try:
             prepared = self.prepare_adult_job(
@@ -2440,7 +2575,7 @@ class AIAdultPolishMixin:
                 owner_scope,
                 owner_token=owner_token,
             )
-        except (AIServiceError, AIConflictError) as exc:
+        except (AdultInputError, AIServiceError, AIConflictError) as exc:
             if raise_preflight:
                 raise
             return iter((self._adult_error("preflight_failed", str(exc)),))
@@ -2451,9 +2586,32 @@ class AIAdultPolishMixin:
                 (self._adult_error("preflight_failed", "成人润色前置校验失败"),)
             )
 
+        if access_token_factory is not None:
+            prepared = replace(prepared, access_token=access_token_factory(prepared.job_id))
+            if prepared.reused and prepared.status == "succeeded":
+                # 幂等 POST 的重新签发显式轮换凭证；GET 重放和 apply 均不修改绑定。
+                db = self._db()
+                try:
+                    binding = db.bind_adult_application_access(
+                        prepared.job_id, prepared.owner_scope, raw_sha256(prepared.access_token)
+                    )
+                    if binding is None:
+                        raise AIConflictError("409: 成人候选已失效，无法签发访问凭证")
+                finally:
+                    db.close()
         return self._stream_prepared_adult_polish(prepared)
 
-    def _stream_prepared_adult_polish(
+    def _stream_prepared_adult_polish(self, prepared: PreparedAdultJob) -> Iterator[AIStreamChunk]:
+        if prepared.reused:
+            yield from self._stream_prepared_adult_polish_body(prepared)
+            return
+        try:
+            with self._adult_parent_lease(prepared):
+                yield from self._stream_prepared_adult_polish_body(replace(prepared, parent_lease_managed=True))
+        except AdultCancelled:
+            yield self._adult_error("cancelled", "成人润色任务已取消", prepared.job_id)
+
+    def _stream_prepared_adult_polish_body(
         self,
         prepared: PreparedAdultJob,
     ) -> Iterator[AIStreamChunk]:
@@ -2464,6 +2622,7 @@ class AIAdultPolishMixin:
                 "job_id": prepared.job_id,
                 "parent_job_id": prepared.request.parent_job_id,
                 "replayed": prepared.reused,
+                "access_token": prepared.access_token,
             },
         )
         if prepared.reused:
@@ -2518,12 +2677,11 @@ class AIAdultPolishMixin:
             on_progress=on_progress,
             temperature=prepared.agent.temperature,
             top_p=prepared.agent.top_p,
-            is_cancelled=self._adult_cancel_checker(
-                prepared.job_id,
-                prepared.owner_scope,
-            ),
+            is_cancelled=self._adult_prepared_cancel_checker(prepared),
         )
         result: RouteResult | None = None
+        stream = None
+        last_keepalive = time.monotonic()
         try:
             # 直接消费路由流：progress 白名单化后实时转发；delta 只进服务端有界
             # 缓冲（on_delta），绝不进入浏览器。
@@ -2535,6 +2693,9 @@ class AIAdultPolishMixin:
                     except StopIteration as stopped:
                         result = stopped.value
                         break
+                    if time.monotonic() - last_keepalive >= 2:
+                        last_keepalive = time.monotonic()
+                        yield AIStreamChunk(type="progress", data={"phase": "generate", "action": "keepalive"})
                     if str(getattr(chunk, "type", "")) != "progress":
                         continue
                     raw = getattr(chunk, "data", None)
@@ -2567,6 +2728,9 @@ class AIAdultPolishMixin:
                 prepared.job_id,
             )
             return
+        finally:
+            if stream is not None:
+                stream.close()
 
         for progress in progress_events:
             yield AIStreamChunk(type="progress", data=progress)
@@ -2651,7 +2815,29 @@ class AIAdultPolishMixin:
         matches = stored is not None and all(
             stored.get(key) == value for key, value in expected.items()
         )
-        return {**expected, "stored_matches": matches}
+        return {**expected, "stored_matches": matches, "stored_policy_version": stored.get("policy_version") if stored else None,
+                "upgrade_available": stored is not None and isinstance(stored.get("policy_version"), int) and stored["policy_version"] < bundle.version}
+
+    def upgrade_adult_policies(self, expected_versions):
+        if not isinstance(expected_versions, Mapping) or set(expected_versions) != set(_ADULT_REVIEW_KINDS):
+            raise AIServiceError("必须提交两个策略的当前版本")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in expected_versions.values()):
+            raise AIServiceError("策略版本必须是正整数")
+        verify_adult_policy_bundle()
+        db = self._db()
+        try:
+            rows = db.list_adult_policy_state()
+            if {row["policy_kind"]: row["policy_version"] for row in rows} != dict(expected_versions):
+                raise AIConflictError("409: 成人策略版本已变化")
+            released = [{"policy_kind": kind, **{key: value for key, value in self._adult_policy_metadata({}, kind).items() if key in {"policy_id", "policy_version", "policy_hash", "prompt_hash", "schema_hash"}}} for kind in _ADULT_REVIEW_KINDS]
+            try:
+                db.upgrade_adult_policy_state(rows, released)
+            except AdultConflictError as exc:
+                raise _service_conflict(exc) from exc
+            self._verify_adult_policy_state(db)
+            return self.list_adult_review_bindings()
+        finally:
+            db.close()
 
     @classmethod
     def _verify_adult_policy_state(cls, db: Database) -> None:
@@ -2785,14 +2971,6 @@ class AIAdultPolishMixin:
                         },
                     )
             except Exception as exc:
-                try:
-                    db.cas_update_review_binding(
-                        review_kind,
-                        expected_version=expected_version,
-                        route={"enabled": False},
-                    )
-                except AdultConflictError as conflict:
-                    raise _service_conflict(conflict) from conflict
                 if isinstance(exc, (AIServiceError, ValueError)):
                     raise AIServiceError(
                         f"成人审查绑定配置无效: {exc}"
@@ -2849,7 +3027,7 @@ class AIAdultPolishMixin:
                 "temperature": binding.get("temperature", 0.7),
                 "top_p": binding.get("top_p", 0.9),
                 "max_tokens": binding.get("max_tokens", 12_000),
-                "context_window": binding.get("context_window", 16_000),
+                "context_window": binding.get("context_window", 64_000),
                 "enabled": binding.get("enabled", True),
             }
         )

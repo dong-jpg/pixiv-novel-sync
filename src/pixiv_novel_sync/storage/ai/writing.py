@@ -7,6 +7,10 @@ import sqlite3
 from typing import Any
 
 
+class ChapterRevisionConflict(ValueError):
+    """章节已被其他写入者更新。"""
+
+
 class AiWritingMixin:
     """AI 写作相关的数据库操作混入类。"""
 
@@ -120,6 +124,7 @@ class AiWritingMixin:
     def delete_ai_writing_project(self, project_id: int) -> None:
         # 1.2: 统一用 transaction() 上下文,不再手写 BEGIN IMMEDIATE/commit/rollback。
         with self.transaction() as conn:
+            conn.execute("UPDATE ai_chat_sessions SET imported_project_id = NULL WHERE imported_project_id = ?", (project_id,))
             conn.execute("DELETE FROM ai_chapters WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM ai_foreshadows WHERE project_id = ?", (project_id,))
             conn.execute("DELETE FROM ai_project_states WHERE project_id = ?", (project_id,))
@@ -134,9 +139,10 @@ class AiWritingMixin:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def list_ai_chapters(self, project_id: int) -> list[dict[str, Any]]:
+    def list_ai_chapters(self, project_id: int, *, include_content: bool = True) -> list[dict[str, Any]]:
+        columns = "*" if include_content else "id, project_id, chapter_number, title, summary, key_events_json, outline, word_count, status, metadata_json, chapter_revision, created_at, updated_at"
         rows = self.conn.execute(
-            "SELECT * FROM ai_chapters WHERE project_id = ? ORDER BY chapter_number ASC",
+            f"SELECT {columns} FROM ai_chapters WHERE project_id = ? ORDER BY chapter_number ASC",
             (project_id,),
         ).fetchall()
         return [self._row_to_chapter(row) for row in rows]
@@ -168,7 +174,7 @@ class AiWritingMixin:
             self._commit_if_needed()
             return int(cursor.lastrowid)
 
-    def update_ai_chapter(self, chapter_id: int, data: dict[str, Any]) -> None:
+    def update_ai_chapter(self, chapter_id: int, data: dict[str, Any], *, expected_revision: int | None = None) -> None:
         allowed = {"title", "content", "summary", "key_events", "outline", "status", "metadata"}
         fields: list[str] = []
         params: list[Any] = []
@@ -194,8 +200,16 @@ class AiWritingMixin:
         fields.append("chapter_revision = chapter_revision + 1")
         fields.append("updated_at = CURRENT_TIMESTAMP")
         params.append(chapter_id)
+        where = "id = ?"
+        if expected_revision is not None:
+            if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 0:
+                raise ValueError("expected_revision 必须是非负整数")
+            where += " AND chapter_revision = ?"
+            params.append(expected_revision)
         with self._lock:
-            self.conn.execute(f"UPDATE ai_chapters SET {', '.join(fields)} WHERE id = ?", params)
+            cursor = self.conn.execute(f"UPDATE ai_chapters SET {', '.join(fields)} WHERE {where}", params)
+            if expected_revision is not None and cursor.rowcount != 1:
+                raise ChapterRevisionConflict("章节版本冲突，请重新加载后再保存")
             self._commit_if_needed()
 
     def patch_ai_chapter_metadata(self, chapter_id: int, patch: dict[str, Any]) -> dict[str, Any]:

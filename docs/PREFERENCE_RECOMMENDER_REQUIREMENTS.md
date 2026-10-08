@@ -1,9 +1,14 @@
 # 性癖分析与 Pixiv 推书模块需求文档
 
+> **2026-09-30 行为更新**：查询异常与候选异常分开统计，单个坏候选不再误判全部搜索失败；Web增量分析保留未提供的 name/description，仅显式提供字段才覆盖已有画像。详见 [整改状态](REMEDIATION_STATUS_2026-09-30.md)。
+
+
 > 版本：v0.1  
 > 日期：2026-06-01  
 > 适用项目：pixiv-novel-sync  
 > 目标：基于已归档小说，自动分析个人偏好画像，生成关键词/搜索词/标签，并在 Pixiv 中发现可能感兴趣的单篇小说或系列，同时把偏好画像接入 AI 创作流程。
+>
+> **2026-09-30：** 本文是 2026-06-01 的需求稿。搜索计划表、`RECOMMENDATION_SYNC`、偏好 SSE 和 AI 结构化总结已明确不做，见 [UNIFIED_PROJECT_REQUIREMENTS.md](UNIFIED_PROJECT_REQUIREMENTS.md) §1.3。当前行为以代码和 UNIFIED 为准。
 
 ---
 

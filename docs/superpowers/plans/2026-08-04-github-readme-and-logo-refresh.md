@@ -1,5 +1,9 @@
 # GitHub README And Logo Refresh Implementation Plan
 
+> **2026-09-30 审计口径：** 静态文档/素材存在；历史步骤未逐项新验收。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** 代码抽查已落地。勾选框没有回写，不代表没做。当前行为以代码和 docs/INDEX.md 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
 **Goal:** Refresh the GitHub project introduction page and static Logo so the repository presents Pixiv Novel Sync as a polished local archive, writing studio, and discovery tool.

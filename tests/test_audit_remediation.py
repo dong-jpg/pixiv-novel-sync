@@ -17,6 +17,7 @@ import pytest
 from pixiv_novel_sync import settings as settings_module
 from pixiv_novel_sync.models import NovelRecord, NovelTextRecord, UserRecord
 from pixiv_novel_sync.storage_db import Database
+from rescue_catalog_test_helpers import get_rescue_catalog_item
 from pixiv_novel_sync.storage_files import FileStorage
 from pixiv_novel_sync.web.managers import AutoSyncScheduler
 from pixiv_novel_sync.webapp import _LoginFailureTracker, create_app
@@ -283,12 +284,12 @@ def test_delete_user_cleans_rescue_catalog_rows(tmp_path: Path) -> None:
     )
     _seed_rescue_novel(db, 31, series_id=40)
     db.rebuild_rescue_catalog()
-    assert db.get_rescue_catalog_item("novel", 31) is not None or \
-        db.get_rescue_catalog_item("series", 40) is not None
+    assert get_rescue_catalog_item(db, "novel", 31) is not None or \
+        get_rescue_catalog_item(db, "series", 40) is not None
 
     db.delete_user(2)
 
-    assert db.get_rescue_catalog_item("novel", 31) is None
+    assert get_rescue_catalog_item(db, "novel", 31) is None
     assert db.conn.execute(
         "SELECT COUNT(*) FROM rescue_catalog_sources WHERE item_type = 'novel' AND item_id = 31"
     ).fetchone()[0] == 0
@@ -296,7 +297,7 @@ def test_delete_user_cleans_rescue_catalog_rows(tmp_path: Path) -> None:
         "SELECT COUNT(*) FROM rescue_catalog_memberships WHERE novel_id = 31"
     ).fetchone()[0] == 0
     # 父系列被刷新：无成员正文后不应再作为可救援系列存在
-    assert db.get_rescue_catalog_item("series", 40) is None
+    assert get_rescue_catalog_item(db, "series", 40) is None
     db.close()
 
 
@@ -352,7 +353,7 @@ def test_restore_pending_deletion_returns_the_item_to_the_rescue_catalog(tmp_pat
     db.add_pending_deletion("novel", 51, "unbookmarked", "小说", "作者", "")
 
     db.rebuild_rescue_catalog()
-    assert db.get_rescue_catalog_item("novel", 51) is None
+    assert get_rescue_catalog_item(db, "novel", 51) is None
 
     rows = db.conn.execute(
         "SELECT id FROM pending_deletions WHERE item_type = 'novel' AND item_id = 51"
@@ -360,7 +361,7 @@ def test_restore_pending_deletion_returns_the_item_to_the_rescue_catalog(tmp_pat
     record = db.restore_pending_deletion_atomic(int(rows[0]["id"]), bookmark_source_key="777")
 
     assert record is not None
-    assert db.get_rescue_catalog_item("novel", 51) is not None
+    assert get_rescue_catalog_item(db, "novel", 51) is not None
     db.close()
 
 
@@ -505,5 +506,6 @@ def test_cache_status_truncates_large_directories(tmp_path, monkeypatch) -> None
 # ---------------------------------------------------------------------------
 
 def test_settings_annotations_resolve() -> None:
-    hints = typing.get_type_hints(settings_module._simple_cron_next_run)
-    assert "base_dt" in hints
+    hints = typing.get_type_hints(settings_module.cron_to_next_run)
+    assert hints["cron_expr"] is str
+    assert "base_time" in hints

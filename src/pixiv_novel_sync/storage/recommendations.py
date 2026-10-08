@@ -354,10 +354,6 @@ class RecommendationsMixin:
         ).fetchall()
         return [self._row_to_recommendation_run(row) for row in rows]
 
-    def get_recommendation_run(self, run_id: int) -> dict[str, Any] | None:
-        row = self.conn.execute("SELECT * FROM recommendation_runs WHERE id = ?", (run_id,)).fetchone()
-        return self._row_to_recommendation_run(row) if row else None
-
     def _row_to_recommendation_item(self, row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
         for source, target, fallback in (("tags_json", "tags", []), ("matched_json", "matched", {})):

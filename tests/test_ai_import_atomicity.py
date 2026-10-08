@@ -173,7 +173,7 @@ def test_parse_and_save_state_rolls_back_states_when_foreshadow_write_fails(
         },
         {
             "project": {"name": "新项目", "settings": {}},
-            "chapters": [{"chapter_number": "1", "title": "章节号不是整数"}],
+            "chapters": [{"chapter_number": "1.5", "title": "章节号不是整数"}],
             "foreshadows": [],
         },
         {
@@ -423,3 +423,20 @@ def test_import_wizard_payload_deduplicates_foreshadows_after_clipping(
 
     foreshadows = db.list_ai_foreshadows(project_id)
     assert [item["description"] for item in foreshadows] == [shared_prefix]
+
+
+@pytest.mark.parametrize("chapter_number", ["1", " 02 ", 3])
+def test_wizard_accepts_numeric_strings_and_fills_missing_fields(db, service, chapter_number):
+    project_id = db.create_ai_writing_project({"name": "existing", "description": None, "outline": None})
+    session = _create_session(db)
+    result = service._import_wizard_payload(db, {
+        "project": {"description": "new description", "outline": "new outline"},
+        "chapters": [{"chapter_number": chapter_number, "title": "chapter"}],
+        "foreshadows": [],
+    }, session, "merge", project_id, [])
+    assert result == project_id
+    assert db.list_ai_chapters(project_id)[0]["chapter_number"] == int(chapter_number)
+    project = db.get_ai_writing_project(project_id)
+    assert project["description"] == "new description"
+    assert project["outline"] == "new outline"
+    assert project["name"] == "existing"

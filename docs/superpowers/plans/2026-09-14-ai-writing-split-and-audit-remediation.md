@@ -1,5 +1,7 @@
 # AI 写作模块拆分 + 2026-09-14 审计整改 Implementation Plan
 
+> **2026-10-08 收口说明**：本计划为跨分支任务总台账，T4/T5-11 的实现证据来自 ai-writing，不表示 main 恢复了写作功能。编号任务按代码与自动回归核实；勾选不是 commit/push/部署或真机验收。最终结果见 [当前整改报告](../../REMEDIATION_STATUS_2026-09-30.md)；正文保留的 09-30 与本日首轮核对为历史快照，最后一节记录后续关闭情况。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把尚不成熟的 AI 写作模块（项目 / 章节 / 向导 / 蒸馏 / 成人润色 / 检索）从 `main` 剥离到 `ai-writing` 分支，`main` 只保留偏好关键词清洗所需的 AI 基础设施；随后按优先级修掉 [AUDIT_REPORT_2026-09-14.md](../../AUDIT_REPORT_2026-09-14.md) 的全部发现。
@@ -10,6 +12,8 @@
 
 **Source:** `docs/AUDIT_REPORT_2026-09-14.md`（每条任务的证据行号都在报告里，本计划只写「改什么、怎么验」）。
 
+> **2026-09-30 审计修订：** 项目尚未全部完成。除 T3、T4、T5-11 外，撤回 T1-09（候选/查询错误混计）、T1-13（定时备份丢失截断状态）、T2-15（恢复失败仍删除暂存副本）、T2-47（Web 入口仍覆盖画像字段）的完成勾选。T2-20 的失败用户继续轮转已经实现，但终态传播仍有缺口，随 T1-13 收口。详见 [最新报告](../../AUDIT_REPORT_2026-09-30.md) 与 [全分支时间线](../../PLAN_AUDIT_2026-09-30.md)。
+
 ## Global Constraints
 
 - 变更类前端请求一律 `window.csrfFetch`，错误文案一律 `window.errorText`；不得自建 `ensureCsrfToken` 或手拼 `X-CSRF-Token`。
@@ -17,7 +21,7 @@
 - 成人润色子系统是 fail-closed 的：本计划里成人任务全部是「该通过的没通过」或「恢复非同构」，**不得放宽任何校验**。
 - 存储迁移只加不减：不写任何 `DROP TABLE` / `DROP COLUMN`，`main` 与 `ai-writing` 必须能打开同一个生产库。
 - 每个任务完成后 `python -m compileall -q src tests`；每个阶段结束跑全量 `pytest -q`（`main` 基线 1492 passed / 4 skipped，阶段 0 后会减少）。
-- 修 bug 时同步补回归测试；已有测试把��误行为钉死的（`tests/test_webapp_jobs.py:112`、`tests/test_frontend_library_os.py:395-407`）要一起改断言方向。
+- 修 bug 时同步补回归测试；已有测试把错误行为钉死的（`tests/test_webapp_jobs.py:112`、`tests/test_frontend_library_os.py:395-407`）要一起改断言方向。
 - 分支纪律：阶段 0 之后 **基础设施修复只在 `main` 做**，定期 `git checkout ai-writing && git merge main`；写作 / 成人修复只在 `ai-writing` 做，永不反向合并。
 
 ---
@@ -346,10 +350,12 @@
 
 ## 阶段 3：main 清理与文档
 
-- [x] **T3-01 删无生产调用方路由**（保留在契约里的标「仅 API」）
+> **2026-09-30 续核：** ai-writing 工作区已删除上述遗留路由（另含 `/oauth/sync-callback/<id>`）及 `_simple_cron_next_run`，但尚未提交，也未进入 main。main 的这些残留仍在；当前 pyflakes 还有未使用导入。T3-01/T3-02 尚不满足指定分支与完整验收，撤回完成勾选。详见 `docs/AUDIT_REPORT_2026-09-30.md`。
+
+- [x] **T3-01 删无生产调用方路由**（保留在契约里的标「仅 API」；末轮取舍及证据见文末）
   `POST /oauth/start`、`GET /oauth/callback`、`POST /oauth/sync-callback/<id>`、`GET /api/dashboard/follows`、`POST /api/dashboard/settings`（全量）、`POST /api/dashboard/sync/start`、`GET /api/dashboard/pending-deletions/count`、`POST /api/dashboard/settings/reload`（T2-34）、`POST /api/dashboard/ai/jobs/cleanup`、`GET /api/dashboard/recommendations/runs`。**接上而不是删**：`/novels/<id>/progress` 三端点（阅读进度换设备可用）、`POST /novels/export-epub`（加按钮）、`DELETE /novels/<id>` / `/users/<id>` / `/bookmarks/<id>`（详情页加入口或删）、`POST /api/auth/logout`（侧栏加退出）、`POST /profiles/<id>/default` / `DELETE /profiles/<id>`（偏好页加多画像 UI 或删）。
 
-- [x] **T3-02 死代码**
+- [x] **T3-02 死代码**（保留经确认有兼容作用的 empty_authoritative 协议，不误删为空目录安全确认服务的字段）
   `settings.py:437-449` pytz 分支与 `:456-530 _simple_cron_next_run`；`storage/pending_and_watermarks.py:101 restore_pending_deletion`；`storage/schema.py:316 _fix_stale_running_logs`；`storage/novels.py:542 export_stats` 与 `storage_db.py:50` 二选一；`web/utils.py:577 _remove_archive_files` + `storage_files.py:149 remove_novel_archive`（抽 `_collect_archive_paths` 两处共用）；`storage/rescue.py:795,821` 与 `storage/recommendations.py:333` 仅测试方法移到测试 helper；`jobs/tasks.py:417-418 rate_limit` 分支；`cli.py:128` 不可达 `parser.error`，`cli.py:104` `sync-bookmarks` 按 `truncated` 退出非零；`web/__init__.py` 急切导入清空；`webapp.py:34,54,55` 与 `ai/service.py:3` 未使用导入；`storage/ai/model_sync.py:334 empty_authoritative` 路径。
 
 - [x] **T3-03 文档修正**（报告 §6 表逐条）
@@ -362,64 +368,66 @@
 
 ## 阶段 4：ai-writing 分支专属
 
-先 `git checkout ai-writing && git merge main`，再做本阶段。
+先 `git checkout ai-writing && git merge main`，再做本阶段。`main` 已合入。2026-09-30 续核：已提交并核对 T4-02 与 T4-09；T4-01 的接线与字节裁剪已有未提交修改，但全量测试仍有 1 个失败，不算完成。
 
 ### 4.1 AI 创作 P0 / P1
 
-- [ ] **T4-01 预算单位统一（P0）**（进行中：helper 已挪进 `services/core.py`，五个流与向导尚未接线）
+> **预算契约校正：** 原任务要求“按字节”，但当前 ModelRouter 的 input_budget 仍是 token 预算（provider/heuristic estimator）。400个汉字固定提示在1000预算下被字节fitter误拒绝已复现；实施前必须先统一单位/换算契约，不能继续把字节数直接和token上限比较，也不能仅修改失败断言来勾完成。
+
+- [x] **T4-01 预算单位统一（P0）**（已按下述契约校正统一 token 估算；旧字节比较与摘要集成失败已修复，工作区未提交）
   把 `projects.py:42-90` 的 `_utf8_tail / _fit_route_messages / _fit_tail_text_messages` 挪到 `services/core.py`；`generation.py:155-158,174,241,578,650-653,709-723` 五个流一律改用；`_smart_context` 段长与蒸馏批大小按字节；`chat_wizard.py:107-146` 按字节从最旧轮丢历史，用户消息在 `_start_route_job` 成功后再写；`tests/test_ai_model_router_integration.py:1246` AST 守卫覆盖 `services/` 全部 `stream_*`。验收：22000 字中文 `stream_continue / rewrite / audit / plan` 不 overflow；6 轮长对话后向导仍可发。
 
-- [ ] **T4-02 向导弹窗 prop（P0）**
+- [x] **T4-02 向导弹窗 prop（P0）**（`6fa9f9f`）
   `dashboard_wizard.html:146,162` `:is-open`，删 `size`。补 prop 名守卫测试。
 
-- [ ] **T4-03 死按钮**
+- [x] **T4-03 死按钮**
   `dashboard_ai_notes.html:260-270` 带 `chapter_id`（下拉复用 `rawImportChapterId`）或后端无 `chapter_id` 时整本回顾；`dashboard_ai_chapters.html:881-911` `agent_id` 用 `pipelineAgentIds.*` / `bestAgentId`，`onEvent` 处理 `error`。
 
-- [ ] **T4-04 Pipeline 工作区与收口**
+- [x] **T4-04 Pipeline 工作区与收口**
   `dashboard_ai_chapters.html:589-623,866-873` 拆 `resetForChapterSwitch()` / `reloadCurrentChapter()`，pipeline 完成只调后者，`failed` 列表在 reset 前快照；`projects.py:1828-2226` 顶层 `try/finally` 未写终态则 `cancelled`；`dashboard_ai_pipeline_modal.html` 加取消按钮；`ai_web.py:687-691 stream_response` 对 `AIServiceError` 透传原文。
 
-- [ ] **T4-05 章节乐观锁与并发**
+- [x] **T4-05 章节乐观锁与并发**
   `storage/ai/writing.py:171-199 update_ai_chapter` 加 `expected_revision` + `WHERE chapter_revision=?`，不匹配 409；`ai_web.py:2064-2070` PUT 带 revision；`projects.py:1055,1127 save_generated` 重读当前 content；前端 `streaming || pipelineRunning` 时禁用正文编辑与保存；「追加到正文」在 `autosaved` 后隐藏。
 
-- [ ] **T4-06 项目页写回 `style_control`**
+- [x] **T4-06 项目页写回 `style_control`**
   `dashboard_ai_project.html:639-663` 两个生成前 `saveProjectStyleControl()`。
 
-- [ ] **T4-07 杂项**
+- [x] **T4-07 杂项**
   `retrieval.py:78-101 index_chapter` 清缓存；`projects.py:432-460 _extract_json_object` 用 `json.JSONDecoder.raw_decode`；草稿加读取 UI 或下线草稿 API；Agent 表单加 `context_window / top_p`，task_type 下拉补三项；删项目在事务里清 `ai_chat_sessions.imported_project_id`，索引删除放事务提交后；`new_foreshadows` 过滤「无」；`PUT /states/<type>` 白名单；章节归属校验；`create_chapters_from_plan` 事务化；章节列表接口不拉全量正文；`ai_jobs.input_json` 不存粘贴全文；蒸馏 sleep 可取消；Pipeline 默认 Agent 不回退到 wizard / adult；向导导入 `chapter_number` 容忍字符串、`:423` 条件优先级、伏笔回收不覆盖 `notes`、`notes.html:252` 用章节号；`dashboard_ai_source_search.html:37` 裸 fetch；`_get_retriever` 传 `use_embeddings` 或删本地模型分支；embedding 请求走 `validate_base_url`。
 
 ### 4.2 成人润色 P1 / P2（不放宽校验）
 
-- [ ] **T4-08 别名掩码恢复同构（P1）**
+- [x] **T4-08 别名掩码恢复同构（P1）**
   `adult_prompt.py:181-189,279-287,488-489`：每个 (character, name-variant) 一个 token，恢复时写回被掩码的原表面字串；`services/adult.py:247 _normalize_character` 拒绝长度 < 2 的别名；`build_adult_prompt` 对「别名命中数 > 名字独立词命中数」fail-closed。验收：「森林里，林舟…」恢复后逐字相同；「小安握住他的手」不被改成「安娜」。
 
-- [ ] **T4-09 占位符尾随空白（P1）**
+- [x] **T4-09 占位符尾随空白（P1）**（`6fa9f9f`）
   `adult_prompt.py:448-454` 改 `"[\\s…]*".join(re.escape(c) for c in token)`；补 token 后跟换行 / 空格用例。
 
-- [ ] **T4-10 参与者规则统一（P1）**
+- [x] **T4-10 参与者规则统一（P1）**
   `services/adult.py:2089-2103,2181-2185 _verify_named_participants` 只扫 `target`；「参与者必须在目标片段被点名」前移到 `prepare_adult_job` 预检并给可操作文案；testkit 默认 payload 恢复真实角色名。
 
-- [ ] **T4-11 审查 / 主 Agent 预算（P1）**
+- [x] **T4-11 审查 / 主 Agent 预算（P1）**
   `services/adult.py:387-388,2851-2852`：`prepare_adult_job` 同时预估两个审查阶段预算（`len(target)·3` 上界）并在开 SSE 前拒绝；审查窗口取 `min(候选模型窗口, 常量)`；`dashboard_settings_adult.html` 暴露 `context_window / max_tokens`；`ModelRouteError` 映射为带原文的 400。依赖 T4-01 / T2-43 的估算器修正。
 
-- [ ] **T4-12 阅读页重新生成 403（P1）**
+- [x] **T4-12 阅读页重新生成 403（P1）**
   `dashboard_ai_reader.html:423-436` regenerate 带 `X-Adult-Access-Token`，`resetAdultCandidate()` 延到新 metadata 到达后；加取消按钮（调 `/cancel`）与「重新查询」按钮。
 
-- [ ] **T4-13 断连与进度**
+- [x] **T4-13 断连与进度**
   `services/adult.py:2538-2539` delta 循环每 2 s yield 一个不含文本的 `progress {"phase":"generate","action":"keepalive"}`；审查阶段（`:808,1224-1306`）改 `execute_stream` 实时转发；`:2527-2569` 加 `finally: stream.close()`。
 
-- [ ] **T4-14 阻断与取消语义**
+- [x] **T4-14 阻断与取消语义**
   本地校验出现任何非可见阻断立即 fail-closed（`:1194-1222`），错误码 `local_blocked` 并附可展示 code；`_run_adult_review:810-817` 对 `finish_state == "cancelled"` 抛 `AdultCancelled`，`finish_adult_candidate` 失败分支后读 job 状态为 `cancelled` 则改发 `cancelled`。
 
-- [ ] **T4-15 deadline 与回收**
+- [x] **T4-15 deadline 与回收**
   `storage/ai/adult.py:666-674,750-762` 主 / 子任务写 `route_deadline_at`；调度器周期 `fail_stale_ai_jobs()`（与 T2-40 共用）。
 
-- [ ] **T4-16 `_diff_summary` 复杂度**
+- [x] **T4-16 `_diff_summary` 复杂度**
   `adult_validation.py:208-227` 先阻断判定再算 diff；超阈值改段级 diff 或 `quick_ratio`。验收：12000×36000 随机中文 < 1 s。
 
-- [ ] **T4-17 策略升级路径**（用户已确认非有意）
+- [x] **T4-17 策略升级路径**（用户已确认非有意）
   `ai_adult_policy_state` 增加受控迁移：`version` 升级时写入新行并把旧候选标 `policy_upgrade_required`；设置页显示升级入口。
 
-- [ ] **T4-18 杂项成人**
+- [x] **T4-18 杂项成人**
   `dashboard_settings_adult.html:190,291` 年龄默认留空、编辑显示原值；`ai_web.py:428-454 validate_adult_stream_preflight` 删除；`access_token_hash` 同义反复二选一（删 bind + 比较，或签发时写入 nonce 哈希）；`/events` 重放不再签发新 token；`_adult_cancel_checker` 异常记日志；已应用任务 `/events` 返回 `applied` 而非 `adult_polish_failed`；审查绑定保存失败不静默停用旧绑定；确认接口支持子集；非 applicable 候选不写 `output_text`；词表检查 NFKC；`_run_stored_revalidation` 传取消回调；成人偏好注入（`preference_context` 复用 + context hash 进审计输入）或从 `adult_types.py:261-275` 删掉字段并更新契约。
 
 ---
@@ -438,7 +446,7 @@
 - [x] **T5-08** 待删除页：确认框显示本地章数 / 字数；「忽略恢复」文案；按钮 loading；复用 `app-pagination`。
 - [x] **T5-09** 关注作者页：错误态重试；状态 tab 补 `cleared / unknown`；搜索框。
 - [x] **T5-10** 偏好页：合并「生成搜索计划」与「执行推书」；`scope` 参数与设置页关系说明。
-- [ ] **T5-11** AI 创作（ai-writing）：SSE 中断引导到日志页续跑；路由 progress 渲染 `action/reason`；`detectAITells` 不用 `alert`；阅读页应用候选不跳回第 1 章；伏笔空态二次加载；pipeline 弹窗移动端布局。
+- [x] **T5-11** AI 创作（ai-writing）：SSE 中断引导到日志页续跑；路由 progress 渲染 `action/reason`；`detectAITells` 不用 `alert`；阅读页应用候选不跳回第 1 章；伏笔空态二次加载；pipeline 弹窗移动端布局。仓库实现/状态/布局契约回归已通过，真实移动端交互验收仍另列。
 - [x] **T5-12** userscript（main）：章节级错误不清空面板；按 `response.status` 分支文案；失效判定只匹配 Pixiv 错误容器；SPA 路由变化重新触发；`API_ORIGIN` 可配置。
 
 ---
@@ -451,3 +459,112 @@
 4. `git log --graph main ai-writing`：`main` 的每个修复提交在 `ai-writing` 上都能 `git branch --contains` 找到；`ai-writing` 的提交不出现在 `main`。
 5. 生产库副本在两分支上 `init_schema()` 均成功且表未减少。
 6. `docs/AUDIT_REPORT_2026-09-14.md` 每条 P0 / P1 在本计划有对应 T 编号；完成后在报告 §1 表加「状态」列。
+
+---
+
+## 附录：2026-10-08 未勾项实现与自动回归核对
+
+> 本附录为当日首轮逐项复核快照，曾留下四项待办。不要按其旧“未勾”描述重复开发；后续已处理，见文末收口补记与当前整改报告。
+
+### 口径与边界
+
+- 本次从 23 个未勾项逐项核对，只新增 19 个仓库内完成勾选，保留 T3-01、T3-02、T4-07、T5-11。正文历史原文、任务规格和已有修改均保留；上文 09-30 的“整合中”“测试失败”等是历史记录，当前核对以本附录为准。
+- 核对位置为 `D:/gitcode/pixiv-novel-sync` 的 `ai-writing` 工作区，基底 HEAD `6fa9f9ffb78ca56dcc4839f798ba47bde97b27b0`，证据包含未提交实现与测试。勾选仅表示实现与对应自动回归已核实，不代表提交、推送、交付、两分支最终验收或生产验证。本轮未修改代码、测试或其他文档，未 commit/push。
+- 已阅读 `docs/REMEDIATION_STATUS_2026-09-30.md`，不以其滞后状态替代代码与回归。主代理最终提供：恢复后的 main 新树全量 **1272 passed / 4 skipped（444.71 s）**；ai-writing 新进程最终全量 **1742 passed / 4 skipped（498.83 s）**，9 个旧夹具/回调断言失败全部消失；文档/前端定向 **54 passed**。两分支 compileall、pyflakes、diff check 通过；脚本语法 main 17 / ai-writing 26 段通过；合成数据库跨分支往返保留 56 表及策略历史；成人新策略 guard 的独立及反向验证通过。这些是主代理提供的证据，不冒充本次独立运行，也不宣称 main 最终交付或任何外部环境已验收。最终结果由主代理写入当前台账/报告；全量通过不替代下表尚未覆盖的原规格要求。
+- 原有 OUT 不重启，包括完整多画像工作流、task_logs lease、seen-cursor、完整 trash manifest 启动重放等。T4-18 按原任务允许的“删除未实现偏好字段并更新契约”方案核对，不要求重新实现成人偏好注入。
+- 真实 Pixiv/Provider、完整浏览器与移动端交互、生产库副本、真实部署/证书和生产观察均未验收；合成 DB、Node VM 行为回归和模板语法检查不能替代上述验收。正文验收清单及外部交付要求不作完成标记。
+
+### 本次自动回归证据
+
+以下均在本工作区运行，使用 `PYTHONDONTWRITEBYTECODE=1` 与 `pytest -p no:cacheprovider`；前端可执行回归实际使用 Node，未跳过。
+
+| 组 | 结果 | 范围 |
+|---|---|---|
+| R1 | **216 passed，80.94 s，exit 0** | 共享整改关键用例、写作/CAS/Pipeline、Node 行为、Agent 表单、预算/路由/长中文/向导/多批蒸馏 |
+| R2 | **133 passed，50.40 s，exit 0** | 导入原子性、解析、检索及缓存、页面/全 AI AST 路由守卫、任务存储回收、设置/调度、Web 安全与备份原因守卫 |
+| R3 | **219 passed，48.78 s，exit 0** | 全部 `test_ai_adult*.py` 与策略历史 schema；运行前后 `src/`、`tests/` 下 `.py/.html/.cjs` SHA-256 比较无变化 |
+
+复现命令（PowerShell，仓库根目录）：
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+$env:PYTHONIOENCODING='utf-8'
+$r1 = @(
+  'tests/test_priority_remediation.py', 'tests/test_archive_trash.py',
+  'tests/test_recommendations.py::test_all_search_queries_failing_marks_run_failed_and_publishes_nothing',
+  'tests/test_jobs_services.py::test_run_user_backup_task_page_cap_marks_truncated_and_incomplete',
+  'tests/test_jobs_tasks.py::test_preference_analyze_keeps_manual_fields_when_nothing_new',
+  'tests/test_user_backup_rotation.py', 'tests/test_writing_remediation.py',
+  'tests/test_frontend_behavior_runtime.py', 'tests/test_agent_form_controls.py',
+  'tests/test_ai_budget_contract.py', 'tests/test_ai_model_router.py',
+  'tests/test_ai_model_router_integration.py', 'tests/test_ai_service_stream_continue.py',
+  'tests/test_ai_multibatch_routing.py'
+)
+python -m pytest -q -p no:cacheprovider @r1
+$r2 = @(
+  'tests/test_ai_import_atomicity.py', 'tests/test_ai_service_parsing.py',
+  'tests/test_ai_service_provider_cache.py', 'tests/test_ai_retrieval.py',
+  'tests/test_ai_page_routes.py',
+  'tests/test_ai_model_docs.py::test_only_router_provider_implementation_and_connection_test_call_provider',
+  'tests/test_ai_job_routing_storage.py', 'tests/test_settings_sections.py',
+  'tests/test_webapp_security.py',
+  'tests/test_sync_engine_incremental.py::test_user_backup_incomplete_marker_declares_why'
+)
+python -m pytest -q -p no:cacheprovider @r2
+$adult = @(Get-ChildItem -LiteralPath tests -Filter 'test_ai_adult*.py' | Sort-Object Name | ForEach-Object FullName)
+python -m pytest -q -p no:cacheprovider @adult tests/test_adult_policy_history_schema.py
+```
+
+早先混合定向运行是 **534 passed / 9 failed**，不作为全绿证据。9 个失败涉及旧成人夹具缺策略快照，以及在流关闭后仍断言取消回调为 false；主代理随后修正 3 个测试文件。本次在磁盘更新后完整重跑成人组得到 R3，未自行修改测试或放宽校验。该混合运行不是主代理的 ai-writing 全量运行。
+
+### 23 项逐项结论
+
+下表文件路径均相对仓库根目录；`services/` 指 `src/pixiv_novel_sync/ai/services/`，`templates/` 指 `src/pixiv_novel_sync/templates/`。测试名用于定位对应断言，不以单纯“文件存在”作为证据。
+
+| 项目 | 本次结论 | 实现与对应回归 |
+|---|---|---|
+| T1-09 | 新增完成 | `recommendations.py` 分离 query/candidate errors，候选失败继续发布其余候选，搜索/系列查询经重试，全部 query 失败不发布。R1：`test_one_bad_recommendation_candidate_keeps_good_candidate`、`test_all_search_queries_failing_marks_run_failed_and_publishes_nothing`。 |
+| T1-13 | 新增完成 | `jobs/services.py` 独立页数上限及 truncated/incomplete；`jobs/quick_sync.py` 汇总定时备份终态与原因。R1：page cap、`test_scheduled_backup_propagates_terminal_state`（截断/失败/取消）；R2：备份 incomplete 原因守卫。T2-20 的终态传播缺口一并核对，不改其历史勾选。 |
+| T2-15 | 新增完成 | `webapp.py` 启动清扫、confirm 先 stage 后事务；失败恢复 pending，回滚失败保留暂存，恢复目标重建不覆盖，跨卷部分删除保留完整副本。R1：`test_archive_trash.py` 两项及 `test_priority_remediation.py` 恢复/清扫/跨卷故障用例。不扩大为 OUT 的完整 manifest 重放。 |
+| T2-47 | 新增完成 | `jobs/tasks.py` 保留缺省 name/description、负向偏好和旧精炼词，零增量跳过 AI；`preference_web.py` 不构造未提交的字段，模板不强写名称。R1：`test_preference_analyze_keeps_manual_fields_when_nothing_new`、参数化 `test_preference_endpoint_preserves_omitted_fields`、前端名称守卫。 |
+| T3-01 | 保留未勾 | 5 个旧端点 AST 删除守卫通过；follows、sync/start、AI cleanup 已标仅 API，小说删除/EPUB/退出已有接线。但用户/收藏删除仍注册，未见模板调用或删除；全量 settings 契约未标仅 API，阅读进度 DELETE 未见页面接线。不能用 5 个路由的守卫覆盖整项。完整多画像仍是 OUT，不把它重新列为开发要求。 |
+| T3-02 | 保留未勾 | cron 回退与旧 OAuth 方法守卫通过，不能代表整项。`web/__init__.py` 仍急切导入；`webapp._ArchiveTrash` 与 `web/utils._remove_archive_files` 仍重复收集路径，未抽 `_collect_archive_paths`；`cli.main` 的 `sync-bookmarks` 丢弃统计返回值，未按 truncated 非零退出，尾部不可达 `parser.error` 仍在；推荐 `rate_limit` 回调、`empty_authoritative` 路径也仍在。详见下节。 |
+| T4-01 | 新增完成 | `services/core.py` 共用 token fitter、provider estimator 与消息开销预算；generation 的摘要/蒸馏按渲染后 prompt 估算；wizard 按整轮裁剪且路由成功后写入用户消息。R1：预算契约、22000 中文六生成入口、六轮向导、摘要源覆盖、provider 估算与剩余候选；R2：`test_ai_model_docs.py` 全 AI 目录 AST 守卫覆盖 services（等效加强原定局部守卫）。按正文预算契约校正核对 token 单位，保留历史“按字节”原文，不将字节直接与 token 上限比较。 |
+| T4-03 | 新增完成 | notes 选择回收依据 chapter_id；chapters 单步传正确 Agent 并处理 error。R1：`test_frontend_writing_contract` 的 notes/Agent 断言；Node 实际执行单步，断言 agent_id=7 和 SSE 注入错误可见。 |
+| T4-04 | 新增完成 | chapters 分离切章 reset 与 reload，重试前快照失败步骤，取消阻止重试；projects 顶层 finally 关闭子流并按 pipeline id 收口 cancelled；Web 保留可操作 AIServiceError。R1：pipeline/batch close、HTTP disconnect/error、失败重试保留旧结果及 Node 取消/重试/EOF 用例。 |
+| T4-05 | 新增完成 | `storage/ai/writing.py` SQL revision CAS；Web 强制整数 revision 并返 409；续写在事务内重读正文；前端生成/保存期间禁写，autosaved 后不再追加。R1：双数据库并发仅一方成功、HTTP 缺失/非法/过期 revision、续写保留人工修改；Node 保存竞态、禁止重复追加及运行时禁存。 |
+| T4-06 | 新增完成 | `templates/dashboard_ai_project.html` 两个规划入口先 await 保存 style_control，失败则不调用流。R1：`test_plan_generation_saves_style_first` 对两入口检查调用顺序。 |
+| T4-07 | 保留未勾（回归覆盖缺口） | 已见检索缓存失效/并发保护、raw_decode、草稿读取 UI、Agent 字段/类型、项目删库后删索引、导入关联清理、状态白名单、章节归属、计划事务、轻量章节列表、输入 document 引用、无效伏笔过滤、数字字符串章号及优先级修正、备注保留、章节号回收、共享请求 helper、embedding 配置/URL 校验。R1/R2 对这些主体有回归。蒸馏等待取消和默认 Agent 排除 wizard/adult 实现已见，但未找到对应自动断言；现有多批测试替换 sleep，长中文测试直接替换 `_sleep_unless_cancelled`，不能据此覆盖等待中取消。保持大项未勾，不误报为已确认功能故障。 |
+| T4-08 | 新增完成 | `ai/adult_prompt.py` 按角色+名称变体建立 token 并保存 surface，歧义 fail-closed；services 拒绝短别名。R3：`test_alias_surface_round_trip_is_lossless`、`test_short_alias_is_rejected_at_service_boundary`、`test_alias_substring_collision_is_fail_closed`，并保留占位符变体阻断测试。 |
+| T4-10 | 新增完成 | `prepare_adult_job` 对 target 预检点名参与者，周边旁观者不混入，testkit 使用真实角色名。R3：`test_participant_must_be_named_in_target_before_routing`、`test_context_bystander_does_not_become_target_participant`。 |
+| T4-11 | 新增完成 | 开 SSE 前估算主任务和 safety/fact_guard 两阶段（candidate=target*3）；router 取候选/Agent 最小窗口；设置页暴露预算；ModelRouteError 保留可操作原文。R3：双审查预算预检、完整 prepare 在 SSE 前执行、scope 错误映射与表单守卫；R1：最小候选窗口预算回归。 |
+| T4-12 | 新增完成 | reader regenerate 带访问令牌，新 metadata 才清旧候选，取消和重新查询接线。R3：Node 执行 403 保留候选/令牌及新 metadata 后轮换；模板取消/查询守卫与 Web regenerate 鉴权用例。 |
+| T4-13 | 新增完成 | generation 每 2 s 发送无正文 keepalive，finally 关闭流；审查通过 execute_stream 与队列实时转发。R3：`test_generation_keepalive_has_no_text_and_closes_underlying_stream`、`test_review_progress_is_streamed_before_review_completion`、断连/transport failure 关闭与取消用例。 |
+| T4-14 | 新增完成 | 本地非可见阻断先于审查 fail-closed，返回 local_blocked/code；审查 cancelled 抛 AdultCancelled，失败发送前重读终态。R3：`test_nonvisible_local_block_stops_before_reviews`、`test_review_cancelled_result_preserves_cancelled_outcome`，另覆盖重审取消与 CAS 竞争不应用候选。 |
+| T4-15 | 新增完成 | `storage/ai/adult.py` 主/子任务均存 30 分钟 deadline；`web/managers.py` 调度循环调用 fail_stale_ai_jobs。R3：主子 deadline、审查期间父 lease 延长、deadline 到期不发布；R2：回收存储用例和 `test_scheduler_cleanup_reads_retention_from_settings` 调度接线守卫。 |
+| T4-16 | 新增完成 | `adult_validation.py` 先建立阻断结论，超阈值 diff 用公共前后缀线性摘要，避免字符级 SequenceMatcher。R3：`test_large_diff_is_bounded_and_never_uses_character_sequence_matcher`，12000×36000 随机中文限时 <1 s。 |
+| T4-17 | 新增完成 | 受控事务新增策略历史并更新当前版本、旧候选标 policy_upgrade_required，设置页有升级入口；未删表/列。R3：版本/CAS、同版本拒改、注入失败全事务回滚、旧进程/存储 guard、升级与提交竞态，以及 `test_adult_policy_history_schema_is_additive_and_versioned`。不等同生产库副本迁移验收。 |
+| T4-18 | 新增完成 | 空年龄/原值、单一 preflight、签发令牌时存哈希、events 重放复用令牌、取消查询失败记录并安全停止、applied 重放、审查绑定失败保留、确认子集、非 applicable 不留正文、NFKC、重审取消回调均已核对。偏好字段已删除并在契约明确拒绝。R3：frontend/types、events/apply/绑定、非可见阻断、兼容汉字及 stored-revalidation cancel 等回归。 |
+| T5-11 | 保留未勾（回归覆盖缺口） | 已见日志续跑指引、action/reason 渲染、detectAITells 改 showMessage、保留当前章、空伏笔加载标记及移动单列/滚动布局。R1 的 Node EOF/重试、空伏笔守卫与 R3 的保留章节守卫通过；尚未找到 progress 文案、detectAITells 非 alert 结果呈现和移动布局的对应断言，不能用 setup/语法检查替代。移动端真实交互仍是外部验收，不勾选。 |
+
+### 首轮复核时的剩余与交接（后续已处理）
+
+1. **T3-01：路由收口未完整实现。** 保留 API 的标识、阅读进度第三端点及用户/收藏删除的页面接线或删除取舍仍需按原规格闭合；旧多画像需求按 OUT 保持，不重启。5 端点 AST 守卫通过不覆盖这些缺口。
+2. **T3-02：代码清理与 CLI 退出语义仍有遗漏。** 最直接的行为缺口是 `cli.main` 调 `run_bookmark_sync(settings)` 后丢弃结果，truncated 不使 CLI 非零退出；其余包括急切导入、路径收集重复、不可达分支。即使 pyflakes/全量通过，也不证明这些未覆盖要求完成。`empty_authoritative` 有适配器到存储的字段传递，但当前 provider 固定 false，原定路径清理仍未闭合，不能仅因符号存在就断言它是线上故障。
+3. **T4-07：实现已见，自动回归仍不足以整项勾选。** 至少补蒸馏等待中取消、仅有 wizard/adult 候选时不被选为 Pipeline 默认 Agent 的回归；不要求修改既有功能或扩大范围。
+4. **T5-11：部分 UX 子要求缺自动断言。** 至少补 progress 的 action/reason 呈现、检测结果不用 alert、移动单列/滚动布局的仓库内回归。真实浏览器/移动设备验收另行进行，不能以离线检查替代。
+
+**本次新增勾选：** T1-09、T1-13、T2-15、T2-47、T4-01、T4-03、T4-04、T4-05、T4-06、T4-08、T4-10、T4-11、T4-12、T4-13、T4-14、T4-15、T4-16、T4-17、T4-18。除此以外不改勾选；全量最终结果与当前报告由主代理维护。
+
+## 2026-10-08 末轮收口补记
+
+| 首轮剩余项 | 已实施及证据 |
+|---|---|
+| T3-01 | 全量 settings 标仅 API；进度 DELETE 和本地收藏删除接入阅读页。按“详情入口或删”取舍移除无生产调用且会与后台备份竞争的用户批量删除 Web 路由，存储层内部级联方法保留。进度 GET 恢复实际位置，往返手动滚动和保存/旧 GET 交错不会覆盖当前选择。`test_reader_actions_runtime.py` 2 passed，独立复核关闭三项竞态发现；旧 EPUB/退出/小说删除已有入口。多画像 OUT 保持。 |
+| T3-02 | CLI truncated 返回 1；清理无调用包级转导出、推荐死分支、连续重复取消处理、测试专用查询；归档路径收集器由两个调用方共用，原边界/恢复保护不变。两树 R1 162 passed，R2 455 passed/2 symlink skips；独立限定复核通过。empty_authoritative 有现存适配器与存储协议以及正反测试，有意保留兼容，而不是将“内置默认 false”误当不可达。 |
+| T4-07 | 新真实等待取消用例先检出 failed≠cancelled；专用取消分类修复后两种蒸馏均 cancelled，普通等待故障仍 failed。Node 覆盖仅 wizard/adult 候选不得自动选中，保留合法默认候选对照。 |
+| T5-11 | Node 新增 15 个行为用例（原 12 个保留），验证 action/reason 呈现、检测结果 message/toast 且无 alert；两个 HTMLParser 静态布局用例覆盖移动单列与滚动区域。扩展写作定向 206 passed；这不是实际浏览器/移动设备的几何/触摸验收。 |
+
+另修复低于熔断阈值的单本备份失败仍报全成功：真实父子备份链用例先红后绿，两树各 133 passed。静态清理扩至 `src tests`，只删除已确认未使用的测试导入，保留测试断言。
+
+上述编号任务均为仓库内实现/自动回归收口。真实 Pixiv/Provider、Linux 权限测试、生产库副本迁移、部署/证书/灰度、浏览器与移动端仍须独立环境验收；尚未提交/推送。最终全量数字统一记录到整改报告，不把定向重叠用例相加或把旧基线冒充新快照。

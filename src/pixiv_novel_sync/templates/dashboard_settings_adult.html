@@ -24,6 +24,7 @@
 
   {% include 'dashboard_ai_health_band.html' %}
 
+  <button v-if="adultReviewKinds.some(kind => adultReviewBindings[kind].upgrade_available)" @click="upgradeAdultPolicies" class="px-4 py-2 border rounded-lg">升级固定审查策略（旧候选需重审）</button>
   <!-- 1. 成人润色 Agent -->
   <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-3">
     <div>
@@ -43,6 +44,10 @@
       <button @click="seedAdultPolishAgent" :disabled="adultAgentSaving || !adultAgentBindingValid" class="h-10 px-4 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ adultAgentSaving ? '保存中' : '保存成人润色 Agent' }}</button>
     </div>
   </section>
+  <div class="grid grid-cols-2 gap-3">
+    <label>上下文窗口（token）<input type="number" min="1024" v-model.number="adultAgentForm.context_window"></label>
+    <label>最大输出（token）<input type="number" min="1" v-model.number="adultAgentForm.max_tokens"></label>
+  </div>
   <!-- 2. 项目角色确认 -->
   <section class="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-4">
     <div>
@@ -70,6 +75,7 @@
         <label class="flex items-center gap-2 text-sm text-gray-700"><input v-model="adultConfirmation.adult_content_enabled" type="checkbox" class="rounded border-gray-300">启用成人内容</label>
         <label class="flex items-center gap-2 text-sm text-gray-700"><input v-model="adultConfirmation.fictional_characters_confirmed" type="checkbox" class="rounded border-gray-300">我确认参与角色均为虚构成年人</label>
       </div>
+      <div class="flex flex-wrap gap-3"><label v-for="character in sortedCharacters" :key="character.character_id"><input type="checkbox" v-model="adultConfirmation.character_ids" :value="character.character_id"> {{ character.canonical_name }}</label></div>
       <label class="flex items-center gap-2 text-sm text-gray-700"><input v-model="adultConfirmation.adult_characters_confirmed" type="checkbox" class="rounded border-gray-300">我确认下列角色与版本</label>
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
         <input v-model="adultCharacterForm.canonical_name" class="px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="角色名">
@@ -176,18 +182,18 @@
         policy_hash: '',
         prompt_hash: '',
         schema_hash: '',
-        stored_matches: false
+        stored_matches: false, upgrade_available: false, stored_policy_version: null
       });
       const adultReviewBindings = reactive({ safety: adultReviewDefaults('safety'), fact_guard: adultReviewDefaults('fact_guard') });
       const adultReviewSaving = reactive({ safety: false, fact_guard: false });
-      const adultAgentForm = reactive({ name: '成人描写润色', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0 });
+      const adultAgentForm = reactive({ context_window: 64000, max_tokens: 12000, name: '成人描写润色', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0 });
       const adultAgentSaving = ref(false);
       const adultProjectId = ref(0);
       const adultProjectLoading = ref(false);
       const adultProjectError = ref('');
       const adultCharacters = ref([]);
       const adultConfirmation = reactive({ adult_content_enabled: false, adult_characters_confirmed: false, fictional_characters_confirmed: false, adult_confirmation_revision: 0, character_ids: [] });
-      const adultCharacterForm = reactive({ character_id: '', revision: 0, canonical_name: '', aliases: '', age_years: 18, age_basis: '', fictional: true });
+      const adultCharacterForm = reactive({ character_id: '', revision: 0, canonical_name: '', aliases: '', age_years: '', age_basis: '', fictional: true });
       const adultCharacterSaving = ref(false);
       const adultConfirmationSaving = ref(false);
 
@@ -235,6 +241,14 @@
           required_capabilities: ['json']
         });
       };
+      const upgradeAdultPolicies = async () => {
+        if (!confirm('升级固定审查策略？旧候选必须重新审查，正在执行的成人任务将停止。')) return;
+        try {
+          await aiApi('/api/dashboard/ai/adult-policies/upgrade', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({expected_versions: Object.fromEntries(adultReviewKinds.map(kind => [kind, adultReviewBindings[kind].stored_policy_version]))}) });
+          await loadAdultReviewBindings();
+          showAiMessage('固定策略已升级，旧候选必须重新审查');
+        } catch (e) { showAiMessage(e.message || '策略升级失败', 'error'); }
+      };
       const loadAdultReviewBindings = async () => {
         try {
           await Promise.all(adultReviewKinds.map(kind => loadAdultReviewBinding(kind)));
@@ -246,7 +260,7 @@
         if (!adultAgentBindingValid.value) return;
         adultAgentSaving.value = true;
         try {
-          const payload = { name: String(adultAgentForm.name || '').trim() || '成人描写润色', binding_type: adultAgentForm.binding_type };
+          const payload = { name: String(adultAgentForm.name || '').trim() || '成人描写润色', binding_type: adultAgentForm.binding_type, context_window: Number(adultAgentForm.context_window), max_tokens: Number(adultAgentForm.max_tokens) };
           if (adultAgentForm.binding_type === 'pool') {
             payload.model_pool_id = Number(adultAgentForm.model_pool_id || 0);
           } else {
@@ -261,7 +275,7 @@
           adultAgentSaving.value = false;
         }
       };
-      const resetAdultCharacterForm = () => Object.assign(adultCharacterForm, { character_id: '', revision: 0, canonical_name: '', aliases: '', age_years: 18, age_basis: '', fictional: true });
+      const resetAdultCharacterForm = () => Object.assign(adultCharacterForm, { character_id: '', revision: 0, canonical_name: '', aliases: '', age_years: '', age_basis: '', fictional: true });
       const loadAdultProject = async () => {
         if (!adultProjectId.value) {
           adultCharacters.value = [];
@@ -288,7 +302,7 @@
         revision: Number(character.revision || 0),
         canonical_name: character.canonical_name || '',
         aliases: Array.isArray(character.aliases) ? character.aliases.join(', ') : '',
-        age_years: Number(character.age_years || 18),
+        age_years: character.age_years ?? '',
         age_basis: character.age_basis || '',
         fictional: character.fictional === true
       });
@@ -299,7 +313,7 @@
         const payload = {
           canonical_name: adultCharacterForm.canonical_name.trim(),
           aliases: adultCharacterForm.aliases.split(',').map(item => item.trim()).filter(Boolean),
-          age_years: Number(adultCharacterForm.age_years),
+          age_years: adultCharacterForm.age_years === '' ? null : Number(adultCharacterForm.age_years),
           age_basis: adultCharacterForm.age_basis.trim(),
           fictional: adultCharacterForm.fictional === true
         };
@@ -340,7 +354,7 @@
               adult_content_enabled: adultConfirmation.adult_content_enabled === true,
               adult_characters_confirmed: adultConfirmation.adult_characters_confirmed === true,
               fictional_characters_confirmed: adultConfirmation.fictional_characters_confirmed === true,
-              character_ids: sortedCharacters.value.map(character => character.character_id)
+              character_ids: [...adultConfirmation.character_ids]
             })
           });
           await loadAdultProject();
@@ -404,7 +418,7 @@
         adultProjectId, adultProjectLoading, adultProjectError, adultCharacters, adultConfirmation,
         adultCharacterForm, adultCharacterSaving, adultConfirmationSaving, sortedCharacters,
         loadAdultProject, editAdultCharacter, saveAdultCharacter, deactivateAdultCharacter,
-        saveAdultConfirmation, saveAdultReviewBinding, loadAdultReviewBindings,
+        saveAdultConfirmation, saveAdultReviewBinding, loadAdultReviewBindings, upgradeAdultPolicies,
         aiHealth, aiHealthLoading, loadAiHealth,
       };
     }

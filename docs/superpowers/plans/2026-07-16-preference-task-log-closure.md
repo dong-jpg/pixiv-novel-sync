@@ -1,5 +1,9 @@
 # 偏好与任务日志闭环实施计划
 
+> **2026-09-30 审计口径：** 历史主体存在；原步骤未逐项新验收。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** 偏好日志收口已落地。计划里的「日志保留 3 天」已被默认 14 天取代。勾选框没有回写。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让 AI 清洗关键词进入真实搜索策略，并让同步任务与 AI 创作任务在统一任务日志页获得完整筛选和详情能力。

@@ -1,5 +1,8 @@
 # Job System 开发者文档
 
+> **2026-09-30 行为更新**：定时备份传播 `truncated/incomplete/aborted_reason`，用户失败显示部分完成，取消不计失败用户。归档暂存在搬移前登记；恢复失败或目标冲突保留双方副本，带 `.recovery-required` 标记的目录不会被启动清扫删除。人工恢复应根据错误日志核对原路径与暂存路径，不要直接清空 `.trash`。这不是完整manifest/自动重放系统。验证见 [整改状态](REMEDIATION_STATUS_2026-09-30.md)。
+
+
 > 本文描述同步/后台任务(非 AI 生成)的统一 Job 管线。以源码为准:
 > `src/pixiv_novel_sync/jobs/{models,manager,runner,tasks}.py`、
 > `src/pixiv_novel_sync/web/managers.py`、`src/pixiv_novel_sync/webapp.py`、
@@ -72,7 +75,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 - `create_app` 里按 `_scheduler_registry_key(db_path)` 的模块级注册表 + Werkzeug reloader 检测(`WERKZEUG_RUN_MAIN`)保证只启动一份。
 - 调度器持有回调:`submit_task=_submit_scheduler_task`(内部走 `_submit_shared_job(..., is_auto_sync=True, run_async=False)`)、`run_task=_run_shared_web_job`、`cancel_task=shared_job_manager.request_cancel`——即定时任务与手动 web 任务**共用同一个 JobManager**,天然互斥。
 - 主循环(`_run_scheduler_loop`,空闲时每 30s 醒一次):每轮重新 `load_settings`;`auto_sync_enabled=False` 则空转;为新任务补 `_task_next_run`,然后 `_collect_due_tasks` 收集所有到点任务、按 `(priority, 逾期最久)` 排序、**只提交第一个**(详见 3.6)。可让位的长任务跑在独立线程上,主线程同时轮询是否有更高优先级任务到点。
-- 附带职责:每小时清理超过 3 天的 `task_logs` 与 AI jobs(`cleanup_old_task_logs(days=3)` / `cleanup_ai_jobs(keep_days=3)`);首轮尝试初始化救援目录。
+- 附带职责:每小时按 `sync.task_log_retention_days`（默认14天）清理 `task_logs`、AI jobs 和模型同步 operation。调度器显式传入配置天数；直接调用清理函数而不传参数时，函数默认仍是3天。首轮尝试初始化救援目录。
 - `stop()` 会取消当前定时任务并停线程;lifecycle claim/release 回调防止多 owner 竞争。
 
 ## 3. 协作式取消协议

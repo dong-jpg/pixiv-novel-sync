@@ -1,8 +1,21 @@
 <script>
 window.aiOutputPanelComponent = {
-  props: ['title', 'text', 'jobId', 'streaming', 'showDetect'],
+  props: ['title', 'text', 'jobId', 'streaming', 'showDetect', 'progress'],
   emits: ['save', 'detect'],
+  data() { return { drafts: [], draftsOpen: false, draftLoading: false, draftError: '', draftPage: 1, draftPages: 1 }; },
   template: `
+    <p v-if="progress" role="status" class="text-xs text-gray-600">{{ progress }}</p>
+    <a v-if="jobId" href="/dashboard/logs" class="text-xs text-blue-600">中断后到任务日志查看产出并续跑</a>
+    <button @click="loadDrafts(1)" :disabled="draftLoading" class="text-xs text-blue-600 py-2">读取已保存草稿</button>
+    <section v-if="draftsOpen" class="p-4 border rounded-lg space-y-2">
+      <button @click="draftsOpen = false" class="text-xs">关闭草稿</button>
+      <p v-if="draftError" role="alert">{{ draftError }}</p>
+      <p v-if="!drafts.length && !draftLoading">暂无草稿</p>
+      <details v-for="draft in drafts" :key="draft.id"><summary>{{ draft.title }}</summary><pre class="whitespace-pre-wrap max-h-96 overflow-auto">{{ draft.content }}</pre></details>
+      <button @click="loadDrafts(draftPage - 1)" :disabled="draftLoading || draftPage <= 1">上一页</button>
+      <span>{{ draftPage }} / {{ draftPages }}</span>
+      <button @click="loadDrafts(draftPage + 1)" :disabled="draftLoading || draftPage >= draftPages">下一页</button>
+    </section>
     <div v-if="text || streaming" class="bg-white border border-gray-100 shadow-sm p-5 flex flex-col rounded-lg">
       <div class="flex items-center justify-between gap-3 mb-3">
         <h2 class="text-sm font-bold text-gray-900">{{ title }}</h2>
@@ -23,6 +36,14 @@ window.aiOutputPanelComponent = {
     text() { this.$nextTick(() => this.autoScroll()); }
   },
   methods: {
+    async loadDrafts(page) {
+      this.draftsOpen = true; this.draftLoading = true; this.draftError = '';
+      try {
+        const data = await window.aiApi.request('/api/dashboard/ai/drafts?page=' + page);
+        this.drafts = data.items || []; this.draftPage = data.page; this.draftPages = data.total_pages;
+      } catch (error) { this.draftError = window.errorText(error); }
+      finally { this.draftLoading = false; }
+    },
     autoScroll() {
       const el = this.$refs.contentRef;
       if (el && this.streaming) el.scrollTop = el.scrollHeight;

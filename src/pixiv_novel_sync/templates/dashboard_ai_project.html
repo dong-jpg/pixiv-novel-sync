@@ -265,6 +265,8 @@
         <span class="text-[10px] text-pixiv-gray">离开本页不保留输出（规划结果已落库）</span>
         <button v-if="streamOutput && !longformPlanning && !longformDetailPlanning" @click="streamOutput = ''" class="ml-auto text-xs text-pixiv-gray hover:text-gray-700">清空</button>
       </div>
+    <p v-if="streamProgress" role="status" class="text-xs text-gray-600">{{ streamProgress }}</p>
+    <a v-if="currentJobId" href="/dashboard/logs" class="text-xs text-blue-600">中断后到任务日志查看产出并续跑</a>
       <pre class="p-3 text-xs whitespace-pre-wrap font-mono text-gray-700 max-h-64 overflow-auto">{{ streamOutput || '等待模型输出…' }}</pre>
     </div>
     <div v-if="longformPlan.project_outline || longformPlan.chapters.length" class="bg-white/80 rounded-lg border border-indigo-100 p-3 space-y-3">
@@ -335,6 +337,7 @@
       const toastType = ref('success');
       let toastTimer = null;
       const streaming = ref(false);
+      const streamProgress = ref('');
       const streamOutput = ref('');
       const currentJobId = ref('');
 
@@ -418,6 +421,8 @@
       // 映射到页面状态，并把 plan 交回调用方。
       async function routeStream(url, payload) {
         let plan = null;
+        let completed = false;
+        streamProgress.value = '';
         await window.streamSSE(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -425,13 +430,14 @@
         }, {
           onEvent: (event, data) => {
             if (event === 'metadata') currentJobId.value = data.job_id || '';
-            if (event === 'progress') streamOutput.value += '\n[' + (data.phase || 'progress') + '] ' + (data.message || '处理中…') + '\n';
+            if (event === 'progress') streamProgress.value = [data.action, data.reason, data.message].filter(Boolean).join(' · ');
             if (event === 'delta') streamOutput.value += data.text || '';
             if (event === 'longform_plan' || event === 'longform_plan_details') plan = data.plan;
-            if (event === 'done' && data.plan) plan = data.plan;
+            if (event === 'done') { completed = true; if (data.plan) plan = data.plan; }
             if (event === 'error') throw new Error(data.message || '生成失败');
           },
         });
+        if (!completed) throw new Error('连接中断，请到任务日志查看产出并续跑');
         return plan;
       }
 
@@ -641,6 +647,7 @@
         if (!longformPlanForm.target_words) { showMessage('请填写目标总字数', 'error'); return; }
         longformPlanning.value = true; streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
         try {
+          if (!(await saveProjectStyleControl())) return;
           const plan = await routeStream('/api/dashboard/ai/projects/' + projectId + '/longform-plan/stream', preferencePayload(longformPlanForm));
           if (!plan) throw new Error('模型未返回可用规划');
           applyPlan(plan);
@@ -653,6 +660,7 @@
         if (!longformDetailForm.agent_id) { showMessage('请选择详细梗概 Agent', 'error'); return; }
         longformDetailPlanning.value = true; streaming.value = true; streamOutput.value = ''; currentJobId.value = '';
         try {
+          if (!(await saveProjectStyleControl())) return;
           const plan = await routeStream('/api/dashboard/ai/projects/' + projectId + '/longform-plan/details/stream', preferencePayload(longformDetailForm));
           if (!plan) throw new Error('模型未返回可用详细梗概');
           applyPlan(plan);
@@ -684,7 +692,7 @@
         ]);
       });
 
-      return {
+      return { streamProgress,
         projectId, agents, styleProfiles, novelProfiles, preferenceProfiles, preferenceStrengths,
         message, messageType, toastMessage, toastType, streaming, streamOutput, currentJobId,
         currentProject, coverBusy, chapters, styleTagInput, projectMetaForm, STYLE_SLIDERS,

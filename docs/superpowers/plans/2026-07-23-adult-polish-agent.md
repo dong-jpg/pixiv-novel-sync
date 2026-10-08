@@ -1,5 +1,7 @@
 # 成人描写局部润色 Agent Implementation Plan
 
+> **2026-09-30 审计口径：** 历史基础已勾选；后续成人缺陷仍未收口。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在已认证的 Dashboard 章节详情中提供一个只处理单一连续片段的 `adult_polish` Agent；候选文本必须经过服务端固定安全策略、事实保护校验和差异预览，用户明确确认后才以乐观锁事务写回章节。

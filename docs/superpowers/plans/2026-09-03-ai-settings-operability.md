@@ -1,5 +1,9 @@
 # AI 设置页可操作性重做 Implementation Plan
 
+> **2026-09-30 审计口径：** 代码主体存在；实连Provider未验证。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+
+> **2026-09-30 复核：** 代码已落地（健康投影、探测与同步分开、批量改绑）。勾选框没有回写。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让 AI 设置三页说出「现在到底在用什么、坏没坏」，并把配置 Provider 与批量改绑从十几次点击压到一次。
