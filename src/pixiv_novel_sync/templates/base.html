@@ -218,6 +218,10 @@
       .library-page button, .library-page [role="button"], .library-actions a {
         min-width: 44px; min-height: 44px; max-width: 100%; white-space: normal; overflow-wrap: anywhere;
       }
+      .library-page label:has(input[type="checkbox"]), .library-page label:has(input[type="radio"]),
+      .library-modal label:has(input[type="checkbox"]), .library-modal label:has(input[type="radio"]) {
+        min-width: 44px; min-height: 44px;
+      }
       .library-page input:not([type="checkbox"]):not([type="radio"]), .library-page select, .library-page textarea,
       .library-modal input:not([type="checkbox"]):not([type="radio"]), .library-modal select, .library-modal textarea {
         min-width: 0; max-width: 100%; min-height: 44px; font-size: 16px !important;

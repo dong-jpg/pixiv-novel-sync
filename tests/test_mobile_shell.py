@@ -124,6 +124,22 @@ def test_modal_has_bounded_scrollable_content_and_wrapping_footer():
     assert "max-h-[70vh]" not in modal
 
 
+def test_mobile_choice_labels_expand_the_hit_area_without_enlarging_the_glyph():
+    # CUA regression: sync toggles were 20px high although text fields were 44px.
+    mobile_css = source("base.html").split("@media(max-width:1023px)", 1)[1]
+    selectors = (
+        '.library-page label:has(input[type="checkbox"])',
+        '.library-page label:has(input[type="radio"])',
+        '.library-modal label:has(input[type="checkbox"])',
+        '.library-modal label:has(input[type="radio"])',
+    )
+    for selector in selectors:
+        assert selector in mobile_css
+    rule = mobile_css.split(selectors[-1], 1)[1].split("}", 1)[0]
+    assert "min-height: 44px" in rule
+    assert "min-width: 44px" in rule
+
+
 def test_mobile_shell_runtime():
     node = shutil.which("node")
     if node is None:
