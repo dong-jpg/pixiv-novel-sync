@@ -6,7 +6,7 @@
 
 ## 本轮交互更新（2026-10-08，main）
 
-移动优先补充于2026-10-09，位于本地 `codex/mobile-first-main` 分支；登录、推荐、阅读与管理的实际验收和未部署边界见 [移动改造报告](MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。下文契约描述当前分支代码，不等同于生产站点已经更新。
+移动优先改造于2026-10-09从 `codex/mobile-first-main` 集成到 `main`；登录、推荐、阅读与管理的实际验收和未部署边界见 [移动改造报告](MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。下文契约描述 `main` 代码，不等同于生产站点已经更新。
 
 - 偏好页增量分析不再发送固定 `name`；未提供的名称/描述由服务端保留。
 - Agent 设置表单可编辑 `context_window` 和 `top_p`；编辑时保留合法的零值，不用默认值覆盖 `temperature=0` / `top_p=0`。

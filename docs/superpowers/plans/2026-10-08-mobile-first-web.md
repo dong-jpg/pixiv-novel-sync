@@ -10,6 +10,8 @@
 
 ## Global Constraints
 
+以下约束记录已完成的本地实施阶段。2026-10-09用户随后明确授权合并与推送，交付变更见文末；该追加授权不包含服务器部署。
+
 - 工作目录为 `C:/Users/dong/.codex/worktrees/main-remediation-verification/pixiv-novel-sync`，分支 `codex/mobile-first-main`，基线 `481f8a93b24abbcd9d9049da4da8ba023fe3c53b`。
 - 用户已批准移动优先、桌面兼容、可选记住30天并要求开始实施；详细约束见 `docs/superpowers/specs/2026-10-08-mobile-first-web-design.md`。
 - 不访问服务器、真实 .env、私钥、生产数据库或真实Provider；不推送、不部署、不恢复main中已删除的写作/成人模块。
@@ -113,4 +115,12 @@ CREATE INDEX IF NOT EXISTS idx_web_auth_sessions_expiry ON web_auth_sessions(exp
 - 全量pytest：1430 passed、6 Windows符号链接/POSIX权限限制skip，exit0；被中断的运行不计通过。
 - 五个任务与整分支复核均通过；最终WB-1批量改绑弹窗错误、WB-2推荐刷新卡片卸载问题已修复，补丁代码提交e6f5cde。
 - 补丁后Cua验证：延迟成功/失败推荐回读保留卡片及展开/新焦点；批量错误在活动弹窗持续显示，取消保留选择。全量编译/静态/脚本/差异检查通过。
-- 当前为本地分支codex/mobile-first-main交付，未合并、推送或部署；真实安卓与Linux/生产环境边界见移动改造报告。
+- 本地验收完成时处于codex/mobile-first-main，尚未合并、推送或部署；后续授权见下节。真实安卓与Linux/生产环境边界见移动改造报告。
+
+## 合并交付追加授权（2026-10-09）
+
+- 用户要求：“开始合并推送吧，我待会儿自己部署”。
+- `main` 从 `481f8a9` 快进到验收点 `689cdfe`，完整保留移动改造的11个提交；没有代码合并冲突。
+- 推送目标为 `origin/main`；须在 `main` 上通过完整回归后再推送。不合并 `ai-writing`，不混入原有服务器文档的未提交改动。
+- `main` 上重新验证：1430 passed、6 Windows平台限制skip，exit0；静态检查、编译检查及交付文档链接检查通过。
+- 保留原有工作区和移动开发分支以便回溯。服务器备份、更新和真机/生产验收由用户执行，本次不连接服务器或执行部署。
