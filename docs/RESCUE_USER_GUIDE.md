@@ -44,22 +44,35 @@
 
 ---
 
-## 2. 安装 Tampermonkey 用户脚本与救援 Token
+## 2. 安装用户脚本与救援 Token（自用）
 
 ### 2.1 安装用户脚本
 
-1. 在浏览器安装 [Tampermonkey](https://www.tampermonkey.net/) 扩展；
-2. 打开仓库中的 `userscripts/pixiv-rescue.user.js`，将其内容添加为新的用户脚本（或通过 Tampermonkey 的「实用工具 → 导入」）；
-3. 脚本只在以下页面生效：
-   - `https://www.pixiv.net/novel/show.php*`（小说页）
-   - `https://www.pixiv.net/novel/series/*`（系列页）
-4. 脚本默认请求的服务器地址由脚本内的 `API_ORIGIN` 常量决定。若你的部署域名不同，需要修改脚本开头的 `API_ORIGIN` 以及 `@connect` / `@namespace` 中的域名。
+**安装入口：[直接安装 Pixiv 私人备份救援脚本](https://raw.githubusercontent.com/dong-jpg/pixiv-novel-sync/main/userscripts/pixiv-rescue.user.js)。**
 
-脚本的触发逻辑是**保守的**：只有当页面出现明确的失效标记（如「この作品は削除されています」「该作品已被删除」「Page not found」等），且在约 1.2 秒的等待窗口内页面始终没有渲染出正常正文 / 章节列表时，才会请求救援 API。正常页面不会被改动。
+当前采用 GitHub 直装、自用服务器的方式，不上架油叉，也不需要注册脚本平台账号。GitHub 上公开的只有脚本源码，不包含你的 Token、访问密码、数据库或备份正文。
+
+1. 在支持用户脚本的手机浏览器中打开上述链接，在出现的脚本安装页面确认安装。若浏览器已有内置脚本管理功能，无需再装一套油猴；否则需要 [Tampermonkey](https://www.tampermonkey.net/) 等兼容管理器。
+2. 如果链接只显示 JavaScript 源码或下载文件，没有安装提示：
+   - 在浏览器的脚本管理中使用 **“从链接安装”或“导入”**，粘贴同一条安装链接（菜单名称因浏览器而异）；
+   - 若只支持源码导入/新建脚本，复制**完整文件**，包括开头的 `// ==UserScript==` 元信息块，再保存并启用；支持文件导入的管理器也可导入下载的 `.user.js` 文件。
+3. 安装后确认脚本已启用，并允许其在 Pixiv 页面运行、连接 `pixiv.dongboapp.com`。不要额外授予“任意网站”权限。
+4. 打开一个 Pixiv 小说或系列页面，在浏览器的脚本菜单中执行 **“设置或更新救援 Token”**，填写你已有救援 Token。没有 Token 时按第 2.2 节处理。
+
+脚本只在以下页面生效：
+
+- `https://www.pixiv.net/novel/show.php*`（小说页）
+- `https://www.pixiv.net/novel/series/*`（系列页）
+
+默认服务由 `DEFAULT_API_ORIGIN` 指定，当前为 `https://pixiv.dongboapp.com`；自用安装无需改地址或代码。保留原有 `@name` 和 `@namespace`，避免升级时被识别成另一份脚本。浏览器至少需要支持 `GM_xmlhttpRequest`、`GM_getValue`、`GM_setValue` 和 `GM_registerMenuCommand`；能安装油叉脚本并不保证支持每一种 GM API。
+
+脚本的触发逻辑是**保守的**：只有健康检查未通过、且检测到明确失效标记（如「この作品は削除されています」「该作品已被删除」「Page not found」）时，才会请求救援 API；对未知或仍在加载的页面最多观察约 1.2 秒。正常页面不会被改动。
 
 ### 2.2 生成救援 Token（写入 / 轮换）
 
-救援 API 使用独立的**救援 Token**认证。Token 由服务端管理路由生成，全局只有一个（单例存储）：
+救援 API 使用独立的**救援 Token**认证。**已有救援 Token 可以直接复用，不要为了安装或更新脚本再次轮换。** 首次未配置或确实遗失时，由你登录系统维护页的“救援 API”区块生成；明文只显示一次，请妥善保存，不要发送到聊天或提交到仓库。
+
+Token 由服务端管理路由生成，全局只有一个（单例存储）：
 
 - `GET /api/dashboard/rescue-token/status` — 查看当前 Token 状态，返回：
   - `configured`：是否已配置；
@@ -78,12 +91,23 @@
 
 ### 2.3 在脚本中填写 Token
 
-安装脚本后，在 Pixiv 页面点击 Tampermonkey 图标，脚本菜单里有两项命令：
+安装脚本后，在 Pixiv 小说或系列页面打开浏览器的脚本管理菜单（Tampermonkey 用户点击扩展图标），脚本菜单里有两项命令：
 
 - **「设置或更新救援 Token」**：弹窗粘贴 rotate 返回的完整 Token。Token 只保存在 Tampermonkey 的脚本存储（`GM_setValue`）里，不会写入页面或 Cookie；
 - **「清除救援 Token」**：删除已保存的 Token。
 
 未设置 Token 时访问失效页面，脚本会提示「未设置救援 Token，请通过油猴菜单完成设置」。
+
+填写的是**救援 Token**，不是网站访问密码或 `DASHBOARD_TOKEN`。安装链接和更新链接都不应附带 Token；也不要把 Token 直接写进脚本源码。
+
+### 2.4 后续更新与保留配置
+
+脚本通过 `@updateURL` 和 `@downloadURL` 指向同一个 GitHub main 原始文件。支持这些元信息的管理器可按自身设置检查自动更新；更新频率、是否需要确认以及保存数据的方式取决于你的浏览器/管理器，脚本本身不增加更新轮询。
+
+- 支持更新检查的管理器：在脚本管理里启用更新，或使用“检查更新”。新版本通过递增 `@version` 识别。
+- 不支持自动更新的内置管理器：重新打开第 2.1 节的同一条安装链接，按提示覆盖更新；若使用手动源码导入，也需要手动更新源码。
+- **不要先卸载旧脚本。** 保持 `@name`、`@namespace` 及 `pixivRescueToken` 存储键不变，正常覆盖更新可继续使用既有配置；最终是否保留存储由管理器决定，请先保管好 Token。卸载脚本、清除浏览器数据或更换设备后可能需要重新填写。
+- 若弹出“新建另一份脚本”而非“更新”，先确认是否使用了同一脚本管理器，以及是否曾手改名称/namespace，避免同一页面运行两份脚本。
 
 ---
 

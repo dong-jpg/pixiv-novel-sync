@@ -1,8 +1,14 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.1.0
+// @version      0.1.1
 // @description  仅在 Pixiv 小说或系列明确失效时，从私人备份读取并标记救援内容。
+// @author       dong-jpg
+// @license      MIT
+// @homepageURL  https://github.com/dong-jpg/pixiv-novel-sync/tree/main
+// @supportURL   https://github.com/dong-jpg/pixiv-novel-sync/issues
+// @downloadURL  https://raw.githubusercontent.com/dong-jpg/pixiv-novel-sync/main/userscripts/pixiv-rescue.user.js
+// @updateURL    https://raw.githubusercontent.com/dong-jpg/pixiv-novel-sync/main/userscripts/pixiv-rescue.user.js
 // @match        https://www.pixiv.net/novel/show.php*
 // @match        https://www.pixiv.net/novel/series/*
 // @grant        GM_xmlhttpRequest
