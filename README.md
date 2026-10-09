@@ -1,214 +1,141 @@
-<div align="center">
-  <img src="assets/logo.svg" alt="Pixiv Novel Sync" width="420"/>
+<p align="center">
+  <img src="assets/main-logo.svg" width="112" height="112" alt="Pixiv Novel Sync：书页与同步环图标">
+</p>
 
-  # Pixiv Novel Sync
+# Pixiv Novel Sync
 
-  <strong>从收藏，到灵感，再到下一章。</strong>
+**把喜欢的小说，留在自己的书库里。**
 
-  <p>本地归档 Pixiv 小说，并基于阅读偏好发现新作品。AI 写作模块（项目 / 章节 / 创作向导 / 成人润色）在 <code>ai-writing</code> 分支单独维护。</p>
+同步 Pixiv 小说收藏，归档正文，在自己的私人书库中检索、阅读与发现下一部作品。
 
-  ![Python](https://img.shields.io/badge/Python-3.10+-2A211B.svg)
-  ![Flask](https://img.shields.io/badge/Flask-3.x-B75A3C.svg)
-  ![SQLite](https://img.shields.io/badge/SQLite-local--first-4A7C74.svg)
-  ![License](https://img.shields.io/badge/license-MIT-6E5D50.svg)
+[书库体验](#书库体验) · [快速开始](#快速开始) · [部署与安全](#部署与安全) · [可选 AI](#可选进阶) · [文档](#文档与开发)
 
-  <a href="#features">Features</a> ·
-  <a href="#quick-start">Quick Start</a> ·
-  <a href="#docs">Docs</a>
-</div>
+## 分支选择
 
----
+- **main：私人书库。** 面向同步、归档、阅读和规则推荐；main 不包含写作模块。
+- **写作需求：** 请使用独立维护的 [ai-writing 分支](https://github.com/dong-jpg/pixiv-novel-sync/tree/ai-writing)，项目、章节和创作向导不在本分支中提供。
 
-> **开发状态（2026-10-08）**：本轮恢复 main 的归档恢复、任务状态、推荐容错与模型预算等共享整改，并将历史报告/历史计划分开整合。main 与 ai-writing 的代码整改已分别提交、推送；最新验证、交付记录和环境验收边界以 [整改状态](docs/REMEDIATION_STATUS_2026-09-30.md) 为准。main 不包含写作/成人模块；生产部署前仍需独立备份与环境验证。
+## 书库体验
 
-> **移动改造（2026-10-09，main）**：`main` 已集成原 `codex/mobile-first-main` 的可选30天登录保持，以及推荐、导航、阅读返回和管理表单优化。详见 [移动改造报告](docs/MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。本次交付仅合并与推送代码，服务器由维护者自行部署；安卓真机与生产环境仍需复测。
+- **同步与追更**：同步公开收藏、私密收藏、关注作者的作品和追更系列，可手动运行或按计划更新。
+- **本地归档**：保存正文、作者、标签、系列与已下载的封面和插图，支持全文检索和待删除恢复。
+- **移动阅读**：在手机浏览器阅读、保存阅读进度，也可导出 EPUB 到自己的阅读器。
+- **规则推荐**：依据本地统计和规则整理阅读偏好、搜索 Pixiv 并筛选候选，支持反馈及屏蔽作者、标签。
+- **本地救援**：从私人备份中查找失效作品，书库入口为 `/dashboard/novels?category=rescue`。
 
-## Features
+已归档文件可以本地保存或导出阅读；网页仍使用 CDN，不承诺完整离线网页。
 
-<table>
-<tr>
-<td width="33%" valign="top">
+### 原站救援阅读
 
-### Library
+救援仅读取已经存在的私人本地备份，不能恢复从未归档的作品，也不能绕过访问限制。
 
-- 同步公开收藏、私密收藏、关注用户作品和追更系列。
-- 保存标题、标签、作者、系列、正文、封面和插图等本地资料。
-- 提供全文搜索、阅读进度、EPUB 导出和待删除恢复。
-- 通过 userscript 在 Pixiv 原站失效页面读取本地救援备份。
+在 `/dashboard/settings/system` 生成独立救援 Token（明文只显示一次），安装 [用户脚本](userscripts/pixiv-rescue.user.js) 并在脚本菜单配置 Token，即可在 Pixiv 原站明确失效的小说或系列页读取备份。正常页面不会请求救援 API。
 
-</td>
-<td width="33%" valign="top">
+这需要支持用户脚本扩展的浏览器；安卓原生 Chrome 默认不支持。安装与连接设置见 [救援指南](docs/RESCUE_USER_GUIDE.md)。
 
-### AI Infrastructure
+## 快速开始
 
-- Provider、模型目录、有序模型池和统一 ModelRouter fallback。
-- Agent 绑定（固定 / 池）与候选模型链预览。
-- 偏好关键词清洗是 main 分支唯一的 AI 生成调用点。
-- AI 写作模块（项目 / 章节 / 创作向导 / 蒸馏 / 成人润色）在 `ai-writing` 分支。
+需要 Git 和 Python ≥ 3.10。项目使用 Flask + SQLite，无需前端构建。
 
-</td>
-<td width="33%" valign="top">
-
-### Discovery
-
-- 从本地小说库统计标签、关键词、作者、长度和来源偏好。
-- 生成搜索计划并自动执行 Pixiv 检索。
-- 对候选作品打分、去重、解释命中理由并保存结果。
-- 支持不感兴趣、屏蔽作者、屏蔽标签和反馈闭环。
-
-</td>
-</tr>
-</table>
-
-## Quick Start
-
-### 1. 创建虚拟环境
+### 1. 选择 main 并创建环境
 
 ~~~bash
+git clone --branch main --single-branch https://github.com/dong-jpg/pixiv-novel-sync.git
+cd pixiv-novel-sync
 python -m venv .venv
 ~~~
 
-Linux / macOS:
+### 2. 激活环境并安装
+
+Linux / macOS：
 
 ~~~bash
 source .venv/bin/activate
 ~~~
 
-Windows PowerShell:
+Windows PowerShell：
 
 ~~~powershell
 .venv\Scripts\Activate.ps1
 ~~~
 
-### 2. 安装
+激活后安装：
 
 ~~~bash
 pip install -e .
 ~~~
 
-开发和测试环境：
+### 3. 复制本地配置
 
-~~~bash
-pip install -e ".[test]"
-~~~
+首次安装时复制示例；已有配置请勿覆盖。
 
-### 3. 创建本地配置
+Linux / macOS：
 
 ~~~bash
 cp .env.example .env
 cp config/config.yaml.example config/config.yaml
 ~~~
 
-至少在 .env 中配置 Pixiv refresh token。也可以启动服务后访问 http://localhost:5010/token-login 通过 OAuth 登录生成 token。
+Windows PowerShell：
 
-### 4. 启动 Web UI
+~~~powershell
+Copy-Item .env.example .env
+Copy-Item config/config.yaml.example config/config.yaml
+~~~
+
+同步前在 `.env` 填写 `PIXIV_REFRESH_TOKEN`，也可启动后通过 [本地 Token 登录](http://127.0.0.1:5010/token-login) 获取。追更系列另需配置登录 Pixiv 网页后的 `PIXIV_WEB_COOKIE`。
+
+### 4. 启动书库与首次同步
 
 ~~~bash
 pixiv-novel-sync web-token-ui
 ~~~
 
-默认访问 http://127.0.0.1:5010/dashboard。
+访问 [本地书库](http://127.0.0.1:5010/dashboard)。默认仅监听 `127.0.0.1:5010`，不直接对公网开放。
 
-## Core Workflows
-
-### 同步归档
-
-在 Dashboard 中启动同步任务，或通过 CLI 手动同步主要来源：
+在 Dashboard 中启动同步，或另开位于项目目录、已激活虚拟环境的终端执行：
 
 ~~~bash
 pixiv-novel-sync sync bookmark following_novels subscribed_series
 ~~~
 
-任务统一写入日志页，可取消、筛选和查看进度；任务日志默认保留 14 天，天数由 sync.task_log_retention_days 控制（系统维护页可改）。自动同步的 interval 和 cron 配置在 config/config.yaml 中维护。
+## 部署与安全
 
-### AI 基础设施
+Linux Web 部署入口是 [deploy.sh](deploy.sh)，使用 APT、Nginx 与 systemd，并配置虚拟环境。执行前先审阅脚本并备份；更新现有安装时会将安装目录代码重置为 `origin/main`。
 
-AI 写作模块（创作项目、章节工作区、创作向导、蒸馏与成人润色）在 `ai-writing` 分支；main 分支只保留它运行所需的 AI 基础设施。
+[scripts/install_server.sh](scripts/install_server.sh) 仅保留给旧 timer 同步部署，不是新版 Web 入口。
 
-- /dashboard/settings/models：AI Provider、模型目录、模型池与该池最近的真实尝试记录。
-- /dashboard/settings/agents：Agent 绑定，以及「这个 Agent 会依次调用哪些模型」的候选链预览。
+- **公网访问**：公网或反向代理部署必须为 `DASHBOARD_TOKEN` 设置强随机访问密码，并使用 HTTPS；留空时仅允许本机访问。HTTPS 下显式配置 `PIXIV_COOKIE_SECURE=1`，不要在公网关闭 Secure cookie。
+- **会话密钥**：固定 `PIXIV_FLASK_SECRET` 并保持稳定，用于会话签名；变更后需要重新登录。
+- **设备登录**：仅在私人设备选择“保持登录 30 天”（默认不勾选）。会话固定到期，不因访问无限续期；密码不保存到浏览器缓存。
+- **敏感数据与备份**：不要公开 `.env`、令牌、数据库、私密备份与日志，也不要提交到仓库。备份应覆盖 `.env`、`config/config.yaml`、SQLite 数据库和归档文件；使用 AI 或救援时，同时妥善保管相应密钥与 Token。
+- **任务与留存**：任务日志默认保留 14 天，通过 `sync.task_log_retention_days` 调整（系统维护页可改）。自动同步与限速在 `config/config.yaml` 中配置，详见 [任务系统](docs/JOB_SYSTEM.md)。
 
-所有业务生成路径统一经过 ModelRouter。固定 Agent 保持指定 Provider/模型语义，池绑定 Agent 按候选快照顺序执行 fallback；一次请求可能触达多个 Provider，前端必须展示并确认完整 Provider 范围。
+## 可选进阶
 
-模型目录可通过 \`/api/dashboard/ai/providers/<provider_id>/models/sync\` 同步，也可以保留手工模型。模型池按成员顺序和后备池展开候选；单个 job 最多尝试 16 个候选、发起 32 次网络请求、运行 30 分钟。
+无需配置 AI Provider，也能同步、阅读和使用规则推荐。main 的 AI 生成仅用于偏好关键词清洗（`clean_keywords`），失败时降级为原始统计词；未接入 AI 偏好总结或 AI 推荐解释。
 
-main 分支上唯一的 AI 生成调用是推荐偏好的关键词清洗（`clean_keywords`），失败时优雅降级回原始统计词。
+- 在 `/dashboard/settings/models` 管理 Provider、模型目录和有序模型池；在 `/dashboard/settings/agents` 选择固定模型或模型池，并预览候选链。
+- 模型目录可通过 `/api/dashboard/ai/providers/<provider_id>/models/sync` 同步，也可保留手工模型。模型池按成员顺序和后备池展开；单个 job 最多尝试 16 个候选、发起 32 次网络请求、运行 30 分钟。
+- 保存 Provider API key 前须设置并保持 `PIXIV_NOVEL_SYNC_AI_SECRET_KEY` 稳定，用于加密保存凭据。跨 Provider fallback 可能将同一 Prompt 发给多个 Provider；启用前确认完整 Provider 范围，只提交你愿意交给这些服务的数据。
 
-### 智能推荐
+配置细节与调用预算见 [模型路由指南](docs/MODEL_ROUTING_GUIDE.md)。
 
-/dashboard/preferences 提供偏好画像、搜索计划、推荐任务、结果反馈和屏蔽管理。当前推荐逻辑以本地统计和可解释规则为主；AI 仅用于关键词清洗，结构化偏好总结和 AI 推荐解释仍未接入。
+## 文档与开发
 
-推荐既可在页面手动触发，也可在 /dashboard/settings/sync 的调度表配置定时执行（`auto_sync_recommendation_run_*`，默认关闭）。启用前需先生成默认偏好画像，否则任务会失败；定时推荐与其他同步任务共用同一个任务队列，不会并行抢 Pixiv 搜索配额。
+- [文档索引](docs/INDEX.md)：使用说明、版本状态、历史报告和开发计划。
+- [前端 API 契约](docs/frontend-api-contract.md) 与 [页面清单](docs/frontend-pages.md)：接口、路由和前端入口。
+- [开发约定](CLAUDE.md)：目录结构、命令与代码约定。
 
-### Pixiv 原站救援阅读
-
-1. 在 /dashboard/settings/system 的「救援 API」区块生成独立救援 Token，明文只显示一次。
-2. 安装 userscripts/pixiv-rescue.user.js，并通过油猴菜单写入救援 Token。
-3. 脚本只在 Pixiv 小说或系列明确失效时读取本地备份；正常页面不会请求救援 API。
-
-Dashboard 内的救援目录入口是 /dashboard/novels?category=rescue。
-
-## Configuration & Security
-
-| 配置 | 用途 |
-|------|------|
-| .env | 本地 secret、Pixiv token、Dashboard token 和 AI 加密密钥 |
-| config/config.yaml | 同步任务、限速、存储目录、自动调度和 cron |
-| DASHBOARD_TOKEN | 公网或反向代理部署必须配置；留空时仅允许本机访问 |
-| PIXIV_FLASK_SECRET | 会话签名与口令版本校验密钥；与数据库一起保持稳定，改变后需重新登录 |
-| PIXIV_COOKIE_SECURE | HTTPS 部署建议显式设为 `1`；只在隔离本机 HTTP 开发环境使用 `0` |
-| PIXIV_NOVEL_SYNC_AI_SECRET_KEY | 保存 AI Provider key 前必须配置，配置后应保持稳定 |
-
-不要提交 .env、data/、生成数据库、日志或真实 token。AI Provider key 会加密保存；模型池 fallback 可能把同一 Prompt 发给多个 Provider，保存配置前请确认数据范围。
-
-移动登录可勾选“在此设备保持登录30天”（默认不勾选）；服务端固定到期，不随访问无限续期。未勾选时使用浏览器会话，服务端最长7天。只在私人设备勾选；清除站点数据、无痕模式或换浏览器仍需登录。退出会撤销当前设备会话，修改生效访问密码会使旧会话失效；密码不存入本地缓存。升级到此认证格式后，旧版登录需重新输入一次密码。
-
-## Development
-
-项目代码位于 src/pixiv_novel_sync/：
-
-~~~text
-src/pixiv_novel_sync/
-├── cli.py                 # 命令入口
-├── webapp.py              # Flask 应用工厂
-├── ai/                    # Provider、模型目录、模型池、ModelRouter 与关键词清洗
-├── jobs/                  # 共享 JobSpec、JobRunner 和任务分派
-├── storage/               # SQLite mixin、schema 和各领域存储
-├── web/                   # Web 管理器和工具函数
-└── templates/             # 服务端渲染页面和 Vue islands
-~~~
-
-常用检查：
+代码位于 [src/pixiv_novel_sync/](src/pixiv_novel_sync/)。安装测试依赖并运行：
 
 ~~~bash
+pip install -e ".[test]"
 python -m pytest -q
-python -m pytest tests/test_preferences.py -q
-python -m compileall -q src
-git diff --check
 ~~~
 
-当前 pyproject.toml 只配置 pytest 的 testpaths 和 pythonpath；Black、Flake8、Pylint、mypy 尚未作为仓库必跑工具配置。
+## 许可证与反馈
 
-## Docs
+本项目采用 [MIT License](LICENSE)。
 
-- [文档索引](docs/INDEX.md)：当前文档入口、历史归档和开发计划。
-- [统一项目需求](docs/UNIFIED_PROJECT_REQUIREMENTS.md)：现行需求、状态和来源追溯。
-- [前端 API 契约](docs/frontend-api-contract.md)：Dashboard 页面依赖的 API 形状。
-- [页面清单](docs/frontend-pages.md)：路由、模板和前端入口。
-- [任务系统](docs/JOB_SYSTEM.md)：Job 管线、状态机、取消协议和 auto_sync 配置。
-- [开发约定](CLAUDE.md)：目录结构、命令、测试和代码约定。
-
-## Deploy
-
-根目录 deploy.sh 是推荐的 Web 部署入口，会配置 venv、Nginx 和 systemd。scripts/install_server.sh 仅保留给旧 timer 同步部署场景。
-
-对外部署时务必设置 DASHBOARD_TOKEN，并使用 HTTPS。备份时同时保存 data/、SQLite 数据库、.env、AI secret 和救援 Token。
-
-## License
-
-本项目采用 [MIT License](LICENSE) 开源协议。
-
-## Support
-
-- 问题反馈：[GitHub Issues](https://github.com/dong-jpg/pixiv-novel-sync/issues)
-- 功能建议：[GitHub Discussions](https://github.com/dong-jpg/pixiv-novel-sync/discussions)
+问题与功能建议请提交 [GitHub Issues](https://github.com/dong-jpg/pixiv-novel-sync/issues)，交流使用经验可前往 [GitHub Discussions](https://github.com/dong-jpg/pixiv-novel-sync/discussions)。
