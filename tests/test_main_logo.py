@@ -62,6 +62,31 @@ def test_main_logo_is_static_self_contained_vector_without_font_dependencies() -
     assert any(node.tag in {f"{NS}{shape}" for shape in shapes} for node in root.iter())
 
 
+def test_main_logo_has_a_light_background_and_contrasting_symbols() -> None:
+    def luminance(color: str) -> float:
+        channels = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+        linear = [
+            value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+            for value in channels
+        ]
+        return sum(value * weight for value, weight in zip(linear, (0.2126, 0.7152, 0.0722)))
+
+    root = read_logo()
+    background = root.find(f"{NS}rect")
+    assert background is not None
+    background_luminance = luminance(background.attrib["fill"])
+    assert background_luminance >= 0.65, "Keep the requested light background"
+    colors = {
+        value for node in root.iter(f"{NS}path")
+        for key, value in node.attrib.items()
+        if key in {"fill", "stroke"} and value.startswith("#")
+    }
+    assert colors
+    for color in colors:
+        light, dark = sorted((background_luminance, luminance(color)), reverse=True)
+        assert (light + 0.05) / (dark + 0.05) >= 3, f"Low-contrast symbol: {color}"
+
+
 @pytest.mark.parametrize("placement", ("before", "inside", "after"))
 def test_main_logo_rejects_stylesheet_processing_instructions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, placement: str

@@ -1,11 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="main-logo-title main-logo-desc">
   <title id="main-logo-title">Pixiv Novel Sync · 私人书库</title>
-  <desc id="main-logo-desc">墨蓝底色上，两段青蓝色同步箭头环绕一本打开的书，象征小说归档、阅读与持续同步。</desc>
-  <rect x="4" y="4" width="120" height="120" rx="28" fill="#102C43"/>
+  <desc id="main-logo-desc">浅天蓝底色上，两段蓝青色同步箭头环绕一本打开的书，象征小说归档、阅读与持续同步。</desc>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#E5F5FF"/>
   <g fill="none" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M25 51a41 41 0 0 1 74-13m-10 2 12 1-1-12" stroke="#42D3DC"/>
-    <path d="M103 77a41 41 0 0 1-74 13m10-2-12-1 1 12" stroke="#58ACF4"/>
+    <path d="M25 51a41 41 0 0 1 74-13m-10 2 12 1-1-12" stroke="#008BA7"/>
+    <path d="M103 77a41 41 0 0 1-74 13m10-2-12-1 1 12" stroke="#287FDE"/>
   </g>
-  <path d="M34 48c9-3 20-1 28 5v31c-9-6-19-8-28-5Z" fill="#F1FAFF"/>
-  <path d="M66 53c8-6 19-8 28-5v31c-9-3-19-1-28 5Z" fill="#B8E3F4"/>
+  <path d="M34 48c9-3 20-1 28 5v31c-9-6-19-8-28-5Z" fill="#2079CF"/>
+  <path d="M66 53c8-6 19-8 28-5v31c-9-3-19-1-28 5Z" fill="#0796AE"/>
 </svg>
