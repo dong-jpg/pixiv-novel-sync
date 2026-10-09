@@ -138,6 +138,155 @@ function serveItems(m, rows) {
   };
 }
 
+// Evaluate the shipped page's conditional branches, including every ancestor and
+// preceding v-if/v-else-if sibling. This is a markup/controller contract, NOT a
+// DOM, Vue renderer, focus or geometry simulation; those checks belong to CUA.
+function recommendationBranches(m, name) {
+  const html = fs.readFileSync(path.join(templateRoot, name), 'utf8')
+    .split('{% block content %}')[1].split('{% endblock %}')[0]
+    .replace(/<!--[\s\S]*?-->|\{#[\s\S]*?#\}|\{%[\s\S]*?%\}/g, '');
+  const root = {attrs: {}, children: []}, stack = [root], nodes = [];
+  for (const match of html.matchAll(/<\/?([a-z][\w-]*)\b(?:[^<>"']|"[^"]*"|'[^']*')*>/gi)) {
+    const tag = match[1].toLowerCase();
+    if (match[0].startsWith('</')) {
+      const node = stack.pop();
+      assert.equal(node.tag, tag, 'Inspect balanced production markup, not a copied branch');
+      node.body = html.slice(node.start, match.index);
+      continue;
+    }
+    const attrs = Object.fromEntries(Array.from(match[0].matchAll(/\s+([^\s=<>/]+)(?:="([^"]*)")?/g),
+      ([, key, value]) => [key, value ?? '']));
+    const parent = stack.at(-1);
+    const node = {tag, attrs, parent, previous: parent.children.at(-1), children: [], start: match.index + match[0].length};
+    parent.children.push(node);
+    nodes.push(node);
+    if (!['input', 'br', 'hr', 'img', 'meta', 'link'].includes(tag) && !match[0].endsWith('/>')) stack.push(node);
+  }
+  assert.equal(stack.length, 1);
+  const scope = vm.createContext({});
+  for (const [key, value] of Object.entries(m.state)) {
+    Object.defineProperty(scope, key, {get: () => value && typeof value === 'object' && 'value' in value ? value.value : value});
+  }
+  const evaluate = expression => vm.runInContext(expression, scope);
+  const visible = node => {
+    if (!node.parent) return true;
+    if (!visible(node.parent)) return false;
+    const attrs = node.attrs;
+    if ('v-show' in attrs && !evaluate(attrs['v-show'])) return false;
+    if ('v-else-if' in attrs || 'v-else' in attrs) {
+      let previous = node.previous;
+      while (previous) {
+        const condition = previous.attrs['v-if'] ?? previous.attrs['v-else-if'];
+        assert.notEqual(condition, undefined, 'Else branches must follow a real conditional sibling');
+        if (evaluate(condition)) return false;
+        if ('v-if' in previous.attrs) break;
+        previous = previous.previous;
+      }
+      assert.ok(previous, 'An else branch must have a preceding v-if');
+    }
+    return !('v-if' in attrs || 'v-else-if' in attrs) || Boolean(evaluate(attrs['v-if'] ?? attrs['v-else-if']));
+  };
+  const panel = nodes.find(node => node.attrs.id === 'recommendation-results');
+  const insidePanel = node => node === panel || Boolean(node.parent && insidePanel(node.parent));
+  const panelNodes = nodes.filter(insidePanel);
+  const card = panelNodes.find(node => node.tag === 'recommendation-card');
+  assert.ok(card && panel);
+  assert.equal(card.attrs[':key'], 'item.id', 'Reconciliation must retain stable card identity');
+  for (let parent = card.parent; parent !== root; parent = parent.parent) {
+    assert.equal(parent.attrs[':key'], undefined, 'Do not remount a populated list via an ancestor key');
+  }
+  const text = node => node.body.replace(/\{\{([\s\S]*?)\}\}/g, (_, expression) => String(evaluate(expression)))
+    .replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  return () => ({
+    cardIds: visible(card) ? Array.from(m.state.recommendationItems.value, row => row.id) : [],
+    busy: Boolean(evaluate(panel.attrs[':aria-busy'])),
+    statuses: panelNodes.filter(node => node.attrs.role === 'status' && visible(node)).map(text),
+    errors: panelNodes.filter(node => node.attrs.role === 'alert' && visible(node)).map(text),
+    empty: panelNodes.some(node => node.tag === 'div' && node.attrs.class?.includes('recommendation-state')
+      && node.body?.includes('暂无未反馈的推荐') && visible(node)),
+  });
+}
+
+for (const name of pages) {
+  for (const refresh of ['manual', 'feedback']) {
+    for (const outcome of ['success', 'http', 'network']) {
+      test(`WB-2: ${name} retains populated card branches through ${refresh} refresh ${outcome}`, async () => {
+        const m = mount(name), rows = Array.from({length: 10}, (_, i) => item(i + 1));
+        m.get = async () => response(envelope(rows));
+        m.state.hideFeedback.value = false;
+        await tick();
+        const view = recommendationBranches(m, name), ids = rows.map(row => row.id);
+        assert.deepEqual(view().cardIds, ids, 'The baseline populated branch is selected');
+        const pending = deferred();
+        m.get = () => pending.promise;
+        const updating = refresh === 'feedback' ? m.feedback(m.state.recommendationItems.value[8], 'interested') : m.load(1);
+        await tick();
+        const during = view(), locked = m.state.feedbackBusy.value[9];
+        const updatedRows = rows.map(row => ({...row, status: row.id === 9 && refresh === 'feedback' ? 'interested' : row.status}));
+        if (outcome === 'network') pending.reject(new Error('Fixture refresh offline'));
+        else pending.resolve(outcome === 'http'
+          ? response({ok: false, detail: 'Fixture refresh rejected'}, 503) : response(envelope(updatedRows)));
+        await updating;
+        assert.deepEqual(during.cardIds, ids, 'loading must not deselect the actual cards or any ancestor branch');
+        assert.equal(during.busy, true);
+        assert.match(during.statuses.join(' '), /刷新/, 'A populated read is non-destructive refresh, not initial loading');
+        assert.equal(during.empty, false);
+        assert.equal(during.errors.length, 0);
+        if (refresh === 'feedback') assert.equal(locked, true, 'Keep the item mutation lock through reconciliation');
+        assert.deepEqual(view().cardIds, ids, 'Success or failure must retain populated cards');
+        assert.equal(view().busy, false);
+        assert.equal(view().statuses.length, 0);
+        assert.equal(view().empty, false);
+        assert.equal(m.state.recommendationTotal.value, 10);
+        assert.equal(m.state.recommendationPage.value, 1);
+        if (outcome === 'success') {
+          assert.equal(view().errors.length, 0);
+          assert.equal(m.state.recommendationItems.value[8].status, updatedRows[8].status);
+        } else {
+          await m.advanceTime(5001);
+          assert.match(view().errors.join(' '), /Fixture refresh/);
+          assert.equal(Boolean(m.state.feedbackErrors.value[9]), false, 'Do not retry a confirmed POST as a failed write');
+          const retry = deferred(), writes = m.writes.length;
+          m.get = () => retry.promise;
+          const retrying = m.state.retryRecommendationItems(), retryView = view();
+          retry.resolve(response(envelope(updatedRows)));
+          await retrying;
+          assert.deepEqual(retryView.cardIds, ids);
+          assert.equal(retryView.busy, true);
+          assert.equal(retryView.errors.length, 0);
+          assert.equal(m.writes.length, writes, 'The list retry is GET-only');
+          assert.equal(new URL(m.gets.at(-1).url, 'https://unit.invalid').search, '?page=1&page_size=10');
+          assert.deepEqual(view().cardIds, ids);
+          assert.equal(view().errors.length, 0);
+        }
+      });
+    }
+  }
+
+  test(`WB-2: ${name} still selects initial loading, initial error and genuine empty branches`, async () => {
+    const m = mount(name), view = recommendationBranches(m, name), pending = deferred();
+    m.get = () => pending.promise;
+    const initial = m.load(1), loading = view();
+    pending.resolve(response({ok: false, detail: 'Fixture initial failure'}, 503));
+    await initial;
+    assert.deepEqual(loading.cardIds, []);
+    assert.equal(loading.busy, true);
+    assert.match(loading.statuses.join(' '), /加载/);
+    assert.equal(loading.empty, false);
+    assert.match(view().errors.join(' '), /Fixture initial failure/);
+    assert.equal(view().empty, false);
+    m.get = async () => response(envelope([item(1)]));
+    await m.state.retryRecommendationItems();
+    assert.deepEqual(view().cardIds, [1]);
+    m.get = async () => response(envelope([]));
+    await m.load(1);
+    assert.deepEqual(view().cardIds, []);
+    assert.equal(view().empty, true, 'A real empty response must still replace old cards');
+    assert.equal(view().errors.length + view().statuses.length, 0);
+    assert.equal(m.state.recommendationTotal.value, 0);
+  });
+}
+
 for (const name of pages) {
   test(`${name}: hidden feedback does not leave a false empty first page`, async () => {
     const m = mount(name);

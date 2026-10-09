@@ -115,6 +115,23 @@ def test_agent_long_option_controls_stack_on_mobile_and_can_shrink():
     assert not re.search(r"overflow-x\s*:\s*(hidden|clip)", html)
 
 
+def test_agent_batch_rebind_feedback_and_recovery_stay_inside_the_shared_modal():
+    html = source(PAGES[2])
+    modal = re.search(r'<app-modal\b[^>]*title="确认批量改绑"[\s\S]*?</app-modal>', html)
+    assert modal
+    modal = modal[0]
+    assert ':is-open="!!batchPreview"' in modal
+    assert '@close="closeBatchRebind"' in modal
+    assert '@click="closeBatchRebind"' in modal
+    assert ':aria-busy="batchRebindBusy"' in modal
+    assert 'v-if="batchRebindError"' in modal and 'role="alert"' in modal
+    assert '{{ batchRebindError }}' in modal
+    assert 'role="status"' in modal
+    assert '@click="batchRebind"' in modal and ':disabled="batchRebindBusy"' in modal
+    assert '重试应用' in modal
+    assert '关闭' in modal and '不会取消' in modal
+
+
 def test_token_modal_keeps_copy_feedback_and_manual_selection_inside():
     html = source(PAGES[3])
     modal = re.search(r'<app-modal\b[^>]*title="救援 API Token"[\s\S]*?</app-modal>', html)

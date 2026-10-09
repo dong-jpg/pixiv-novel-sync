@@ -29,10 +29,14 @@
       </div>
       <p v-if="feedbackNotice" class="recommendation-notice" :class="feedbackNoticeType === 'error' ? 'text-red-700' : 'text-green-700'" :role="feedbackNoticeType === 'error' ? 'alert' : 'status'">{{ feedbackNotice }}</p>
       <p v-if="!loadingRecommendations && !recommendationError" class="text-xs library-muted mb-3">共 {{ recommendationTotal }} 条{{ hideFeedback ? '未反馈推荐' : '推荐' }}</p>
-      <div v-if="loadingRecommendations" class="recommendation-state library-muted" role="status">正在加载推荐…</div>
+      <div v-if="loadingRecommendations" class="library-muted" :class="recommendationItems.length ? 'text-xs mb-3' : 'recommendation-state'" role="status">{{ recommendationItems.length ? '正在刷新推荐，保留当前结果…' : '正在加载推荐…' }}</div>
       <div v-else-if="recommendationError" class="recommendation-state border border-red-100 bg-red-50 rounded-xl" role="alert">
         <p class="text-sm text-red-700">推荐结果加载失败：{{ recommendationError }}</p>
         <button type="button" @click="retryRecommendationItems" class="library-btn mt-3">重试</button>
+      </div>
+      <!-- Busy/error notices must not unmount the keyed cards or their expanded reasons. -->
+      <div v-if="!loadingRecommendations && !recommendationError && !recommendationItems.length" class="recommendation-state text-sm library-muted border border-dashed border-gray-200 rounded-xl">
+        {{ hideFeedback ? '暂无未反馈的推荐。取消隐藏可查看感兴趣或已保存的结果。' : '还没有推书结果。展开下方「画像与搜索设置」，按当前画像推书。' }}
       </div>
       <template v-else-if="recommendationItems.length">
         <div class="recommendation-list">
@@ -42,9 +46,6 @@
         </div>
         <app-pagination :page="recommendationPage" :pages="recommendationTotalPages" @update:page="changeRecommendationPage"></app-pagination>
       </template>
-      <div v-else class="recommendation-state text-sm library-muted border border-dashed border-gray-200 rounded-xl">
-        {{ hideFeedback ? '暂无未反馈的推荐。取消隐藏可查看感兴趣或已保存的结果。' : '还没有推书结果。展开下方「画像与搜索设置」，按当前画像推书。' }}
-      </div>
     </section>
 
     <div v-if="profileError" id="profile-load-error" class="library-card" role="alert">

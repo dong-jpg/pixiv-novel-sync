@@ -946,6 +946,271 @@ test('agents: long fixture names survive selection and preview remains a read-on
   assert.equal(m.calls[0].method, 'GET');
 });
 
+function batchFixture() {
+  const m = mount('dashboard_settings_agents.html');
+  m.state.agents.value = [1, 2].map(id => ({id, name: `Fixture agent ${id}`, binding_summary: 'Fixture old binding'}));
+  m.state.providers.value = [{id: 7, name: 'Fixture provider'}];
+  m.state.selectedAgentIds.value = [1, 2];
+  const binding = {binding_type: 'fixed', provider_id: 7, model: 'fixture-model', model_pool_id: 0};
+  m.state.openBatchRebind(binding);
+  return {m, binding};
+}
+
+function replyToBatch(m, write) {
+  m.replyWith((url, options, request) => {
+    if (url === '/api/dashboard/ai/agents/bindings' && request.method === 'PUT') return write(request);
+    assert.equal(request.method, 'GET');
+    if (url === '/api/dashboard/ai/agents') return envelope(plain(m.state.agents.value));
+    assert.equal(url, '/api/dashboard/ai/health');
+    return envelope({agents: []});
+  });
+}
+
+// Run the actual shared modal controller with the actual caller's bindings.
+// Only lifecycle scheduling and DOM boundaries are doubled. Inert/focus *calls*
+// below are integration contracts, not rendered-browser accessibility evidence.
+async function batchDialog(m) {
+  const markup = m.html.match(/<app-modal\b[^>]*title="确认批量改绑"[\s\S]*?<\/app-modal>/)?.[0];
+  assert.ok(markup);
+  const scope = vm.createContext({});
+  for (const [key, value] of Object.entries(m.state)) {
+    const isRef = value && typeof value === 'object' && 'value' in value;
+    Object.defineProperty(scope, key, {get: () => isRef ? value.value : value,
+      set: next => { assert.ok(isRef, 'Only Vue refs are assigned by these page events'); value.value = next; }});
+  }
+  const evaluate = expression => vm.runInContext(expression, scope);
+  const action = expression => { const result = evaluate(expression); return typeof result === 'function' ? result() : result; };
+  const applyTag = markup.match(/<button\b[^>]*@click="batchRebind"[^>]*>/)[0];
+  const closeExpression = markup.match(/@close="([^"]+)"/)[1];
+  const cancelExpression = markup.match(/<button\b[^>]*@click="([^"]+)"[^>]*>取消<\/button>/)[1];
+  const listeners = new Map(), mounted = [], unmounted = [], watchers = [], components = new Map();
+  const document = {activeElement: null,
+    addEventListener(type, fn) { listeners.set(type, fn); },
+    removeEventListener(type) { listeners.delete(type); },
+  };
+  const element = parent => {
+    const attrs = new Map(), styles = new Map();
+    const node = {parent, inert: false, isConnected: true,
+      style: {getPropertyValue: key => styles.get(key) || '', getPropertyPriority: () => '',
+        setProperty: (key, value) => styles.set(key, value), removeProperty: key => styles.delete(key)},
+      setAttribute: (key, value) => attrs.set(key, value), removeAttribute: key => attrs.delete(key),
+      getAttribute: key => attrs.get(key), getClientRects: () => [{}], matches: () => false,
+      querySelectorAll: () => [],
+      closest() { return node.inert || attrs.get('aria-hidden') === 'true' ? node : parent?.closest(); },
+      contains(other) { return other === node || Boolean(other?.parent && node.contains(other.parent)); },
+      focus() { document.activeElement = node; },
+    };
+    return node;
+  };
+  document.body = element();
+  document.documentElement = element();
+  document.documentElement.clientWidth = 390;
+  const appRoot = element(document.body), opener = element(appRoot), dialog = element(document.body);
+  document.getElementById = id => id === 'app' ? appRoot : null;
+  document.activeElement = opener;
+  const Vue = {
+    ref: value => ({value}), computed: getter => ({get value() { return getter(); }}),
+    nextTick: fn => Promise.resolve().then(fn),
+    onMounted: fn => mounted.push(fn), onBeforeUnmount: fn => unmounted.push(fn),
+    watch(getter, fn) { watchers.push({getter, fn, value: getter()}); },
+  };
+  const context = vm.createContext({Vue, document, window: {...m.window, innerWidth: 390,
+    getComputedStyle: () => ({visibility: 'visible', paddingRight: '0px'})}});
+  vm.runInContext(source('vue_components.html').match(/<script>([\s\S]*?)<\/script>/)[1], context);
+  context.registerGlobalComponents({component: (name, definition) => components.set(name, definition)});
+  const isOpen = () => Boolean(evaluate(markup.match(/:is-open="([^"]+)"/)[1]));
+  const props = {title: '确认批量改绑', isOpen: isOpen(), closeOnBackdrop: true};
+  const state = components.get('app-modal').setup(props, {emit(event) {
+    assert.equal(event, 'close'); action(closeExpression);
+  }});
+  state.dialog.value = dialog;
+  for (const fn of mounted) fn();
+  await flush();
+  const sync = async () => {
+    props.isOpen = isOpen();
+    for (const watcher of watchers) {
+      const value = watcher.getter();
+      if (value !== watcher.value) { watcher.value = value; watcher.fn(value); }
+    }
+    await flush();
+  };
+  return {appRoot, dialog, document, opener, sync,
+    apply: () => action(applyTag.match(/@click="([^"]+)"/)[1]),
+    applyDisabled: () => Boolean(evaluate(applyTag.match(/:disabled="([^"]+)"/)?.[1] || 'false')),
+    message(role) {
+      const panel = markup.match(new RegExp(`<p\\b[^>]*role="${role}"[^>]*>([\\s\\S]*?)<\\/p>`));
+      if (!props.isOpen || !panel || !evaluate(panel[0].match(/v-if="([^"]+)"/)[1])) return '';
+      return panel[1].replace(/\{\{([\s\S]*?)\}\}/g, (_, expression) => String(evaluate(expression)));
+    },
+    async close(via = 'button') {
+      if (via === 'cancel') action(cancelExpression);
+      else if (via === 'backdrop') state.onBackdrop();
+      else if (via === 'escape') listeners.get('keydown')?.({key: 'Escape', preventDefault() {}, stopPropagation() {}});
+      else state.requestClose();
+      await sync();
+    },
+    unmount() { for (const fn of unmounted) fn(); },
+  };
+}
+
+for (const failure of ['http', 'network']) {
+  test(`WB-1: ${failure} rejection persists inside the active shared Agent dialog and retries the same payload`, async () => {
+    const {m, binding} = batchFixture(), preview = m.state.batchPreview.value;
+    m.replyWith(() => response({ok: false, detail: 'Older header notice'}, 503));
+    await m.state.loadModelPools(); // Start the existing four-second header timer.
+    replyToBatch(m, async () => {
+      if (failure === 'network') throw new Error('Fixture batch offline');
+      return response({ok: false, detail: 'Fixture batch rejected'}, 400);
+    });
+    const dialog = await batchDialog(m);
+    await dialog.apply();
+    assert.equal(m.state.batchPreview.value, preview);
+    assert.deepEqual(plain(m.state.selectedAgentIds.value), [1, 2]);
+    assert.deepEqual(JSON.parse(m.calls.find(call => call.method === 'PUT').options.body), {agent_ids: [1, 2], binding});
+    assert.match(dialog.message('alert'), /Fixture batch/, 'The failure must be bound inside the active modal, not the inert header');
+    assert.equal(dialog.appRoot.inert, true);
+    assert.equal(dialog.dialog.getAttribute('aria-modal'), 'true');
+    m.advance(4001);
+    assert.equal(m.state.aiMessage.value, '');
+    assert.match(dialog.message('alert'), /Fixture batch/);
+    const pending = deferred();
+    replyToBatch(m, () => pending.promise);
+    const retrying = dialog.apply();
+    const during = {error: dialog.message('alert'), status: dialog.message('status'), disabled: dialog.applyDisabled()};
+    pending.resolve(envelope({updated: 2}));
+    await retrying;
+    await dialog.sync();
+    assert.equal(during.error, '', 'Only explicit retry clears the operation error');
+    assert.match(during.status, /改绑/);
+    assert.equal(during.disabled, true);
+    const writes = m.calls.filter(call => call.method === 'PUT');
+    assert.equal(writes.length, 2);
+    assert.equal(writes[1].options.body, writes[0].options.body);
+    assert.ok(writes.every(call => call.via === 'csrfFetch'));
+    assert.equal(m.state.batchPreview.value, null);
+    assert.equal(m.state.batchRebindBusy.value, false);
+    assert.deepEqual(plain(m.state.selectedAgentIds.value), []);
+    assert.equal(dialog.appRoot.inert, false);
+    assert.equal(dialog.document.activeElement, dialog.opener);
+  });
+}
+
+for (const via of ['cancel', 'button', 'escape', 'backdrop']) {
+  test(`WB-1: shared dialog ${via} clears only confirmation/error, keeps selection, and reopens cleanly`, async () => {
+    const {m, binding} = batchFixture();
+    replyToBatch(m, () => response({ok: false, detail: 'Fixture batch rejected'}, 400));
+    const dialog = await batchDialog(m);
+    await dialog.apply();
+    await dialog.close(via);
+    assert.equal(m.state.batchPreview.value, null);
+    assert.equal(m.state.batchRebindError?.value, '');
+    assert.deepEqual(plain(m.state.selectedAgentIds.value), [1, 2]);
+    assert.equal(dialog.appRoot.inert, false);
+    m.state.openBatchRebind(binding);
+    await dialog.sync();
+    assert.ok(m.state.batchPreview.value);
+    assert.equal(dialog.message('alert'), '');
+    assert.equal(dialog.appRoot.inert, true);
+    assert.equal(m.calls.length, 1, 'Close/reopen must not write or reload');
+  });
+}
+
+test('WB-1: repeated apply and close/reopen cannot overlap an in-flight rebind', async () => {
+  const {m, binding} = batchFixture(), pending = deferred();
+  replyToBatch(m, () => pending.promise);
+  const dialog = await batchDialog(m);
+  const first = dialog.apply(), duplicate = dialog.apply();
+  const disabled = dialog.applyDisabled();
+  await dialog.close('cancel');
+  m.state.openBatchRebind(binding);
+  const whilePending = m.state.batchPreview.value;
+  pending.resolve(response({ok: false, detail: 'Fixture late rejection'}, 400));
+  await Promise.all([first, duplicate]);
+  assert.equal(m.calls.length, 1, 'The handler must guard duplicate calls, not only disable the button');
+  assert.equal(disabled, true);
+  assert.equal(whilePending, null, 'Closing is not cancellation: keep write ownership until settlement');
+  assert.equal(m.state.batchRebindBusy.value, false);
+  assert.equal(m.state.batchRebindError.value, '');
+  m.state.openBatchRebind(binding);
+  await dialog.sync();
+  assert.ok(m.state.batchPreview.value);
+  assert.equal(dialog.message('alert'), '');
+});
+
+for (const outcome of ['success', 'http', 'network']) {
+  test(`WB-1: a closed rebind's late ${outcome} cannot clear a newer selection or restore dialog feedback`, async () => {
+    const {m, binding} = batchFixture(), pending = deferred();
+    replyToBatch(m, () => pending.promise);
+    const dialog = await batchDialog(m), saving = dialog.apply();
+    await dialog.close('escape');
+    m.state.selectedAgentIds.value = [2];
+    if (outcome === 'network') pending.reject(new Error('Fixture abandoned write'));
+    else pending.resolve(outcome === 'success' ? envelope({updated: 2}) : response({ok: false, detail: 'Fixture abandoned write'}, 400));
+    await saving;
+    assert.deepEqual(plain(m.state.selectedAgentIds.value), [2]);
+    assert.equal(m.state.batchPreview.value, null);
+    assert.equal(m.state.batchRebindError?.value, '');
+    assert.equal(m.state.batchRebindBusy?.value, false);
+    m.state.openBatchRebind({...binding, model: 'fixture-next-model'});
+    await dialog.sync();
+    assert.equal(m.state.batchPreview.value.binding.model, 'fixture-next-model');
+    assert.equal(dialog.message('alert'), '');
+    assert.equal(m.calls.filter(call => call.method === 'PUT').length, 1);
+  });
+}
+
+for (const outcome of ['success', 'failure']) {
+  test(`WB-1: unmount invalidates a pending rebind's late ${outcome} and prevents new batch actions`, async () => {
+    const {m, binding} = batchFixture(), pending = deferred();
+    replyToBatch(m, () => pending.promise);
+    const saving = m.state.batchRebind();
+    m.unmount();
+    if (outcome === 'failure') pending.reject(new Error('Fixture disposed write'));
+    else pending.resolve(envelope({updated: 2}));
+    await saving;
+    assert.equal(m.state.batchPreview.value, null);
+    assert.equal(m.state.batchRebindError?.value, '');
+    assert.equal(m.state.batchRebindBusy?.value, false);
+    assert.equal(m.state.aiMessage.value, '');
+    m.state.openBatchRebind(binding);
+    await m.state.batchRebind();
+    assert.equal(m.state.batchPreview.value, null);
+    assert.equal(m.calls.length, 1, 'A disposed operation must not start reconciliation or another write');
+  });
+}
+
+test('WB-1: a confirmation snapshots its selected IDs and binding rather than a later mutable form', async () => {
+  const {m, binding} = batchFixture(), expected = {agent_ids: [1, 2], binding: {...binding}};
+  binding.model = 'unconfirmed-model';
+  m.state.selectedAgentIds.value = [2];
+  replyToBatch(m, () => response({ok: false, detail: 'Fixture rejected snapshot'}, 400));
+  await m.state.batchRebind();
+  assert.deepEqual(JSON.parse(m.calls[0].options.body), expected);
+  assert.equal(m.state.batchPreview.value.binding.model, expected.binding.model);
+  assert.deepEqual(plain(m.state.selectedAgentIds.value), [2], 'Failure must not overwrite current selection');
+});
+
+test('WB-1: confirmed PUT with failed read-back is not a retryable write failure and retains its in-flight lock', async () => {
+  const {m, binding} = batchFixture(), readback = deferred();
+  m.replyWith((url, options, request) => request.method === 'PUT' ? envelope({updated: 2}) : readback.promise);
+  const saving = m.state.batchRebind();
+  await flush();
+  const closed = m.state.batchPreview.value, busy = m.state.batchRebindBusy?.value;
+  m.state.openBatchRebind(binding);
+  const attemptedReopen = m.state.batchPreview.value;
+  readback.reject(new Error('Fixture read-back offline'));
+  await saving;
+  assert.equal(closed, null);
+  assert.equal(busy, true);
+  assert.equal(attemptedReopen, null);
+  assert.equal(m.state.batchRebindError?.value, '');
+  assert.equal(m.state.batchRebindBusy.value, false);
+  assert.match(m.state.aiMessage.value, /已改绑.*刷新.*Fixture read-back offline/);
+  assert.equal(m.state.aiMessageType.value, 'warning');
+  await m.state.batchRebind();
+  assert.equal(m.calls.filter(call => call.method === 'PUT').length, 1);
+});
+
 function tokenModal(m) { return m.html.match(/<app-modal\b[^>]*title="救援 API Token"[\s\S]*?<\/app-modal>/)?.[0] || ''; }
 
 test('token: clipboard rejection is visible inside the modal and selects a manual fallback', async () => {
