@@ -5,6 +5,7 @@
 ## 当前状态：从这里开始
 
 - [本轮整改执行状态](REMEDIATION_STATUS_2026-09-30.md)：当前实现、最新验证、分支与环境验收边界。它替代历史报告中的“当前状态”说明。
+- [服务器部署与体检](SERVER_DEPLOYMENT_REPORT_2026-10-08.md)：main 手工部署、Nginx 与源站证书修复、严格 TLS 验证及近期日志。
 - [本轮执行台账](superpowers/plans/2026-09-30-prioritized-completion.md)：按优先级推进及验证记录。
 - [09-14原任务清单](superpowers/plans/2026-09-14-ai-writing-split-and-audit-remediation.md)：逐项验收要求；不能把checkbox统计当项目完成率。
 

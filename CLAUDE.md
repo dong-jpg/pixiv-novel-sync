@@ -1,6 +1,8 @@
 # CLAUDE.md
 
-Current remediation status and verification: `docs/REMEDIATION_STATUS_2026-09-30.md`. Historical reports and plans are consolidated separately under `docs/archive/HISTORY_REPORTS.md` and `HISTORY_PLANS.md`; old audit findings are snapshots, not current failure lists.
+Current remediation status and verification: `docs/REMEDIATION_STATUS_2026-09-30.md`; production server state: `docs/SERVER_DEPLOYMENT_REPORT_2026-10-08.md`. Historical reports and plans are consolidated separately under `docs/archive/HISTORY_REPORTS.md` and `HISTORY_PLANS.md`; old audit findings are snapshots, not current failure lists.
+
+Branch topology: `main` carries sync / rescue / recommendation plus the shared AI infrastructure and is what production runs; the AI-writing and adult-polish features exist **only** on `ai-writing` (not yet deployed). Check which branch you are on before touching those subsystems.
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -24,7 +26,7 @@ pixiv-novel-sync web-token-ui  # Flask UI on http://127.0.0.1:5010 (--host/--por
 | `db-stats` | prints `db.export_stats()` |
 | `web-token-ui` | runs the Flask app |
 
-`sync` defaults its empty task list inside `run_job_command`, but `status-check` must yield `tasks is None` for the same trick — hence the `set_defaults(tasks=None)` + `default=argparse.SUPPRESS` pair at `cli.py:31-36`. Replacing that with a plain `default=[]` submits a job with zero tasks.
+`sync` defaults its empty task list inside `run_job_command`, but `status-check` must yield `tasks is None` for the same trick — hence the `set_defaults(tasks=None)` + `default=argparse.SUPPRESS` pair at `cli.py:29-35`. Replacing that with a plain `default=[]` submits a job with zero tasks.
 
 Tests (`testpaths=tests`, `pythonpath=src` in `pyproject.toml`):
 
