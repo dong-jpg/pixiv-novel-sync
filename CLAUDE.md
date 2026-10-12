@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Current main remediation status and verification (2026-10-08): [docs/REMEDIATION_STATUS_2026-09-30.md](docs/REMEDIATION_STATUS_2026-09-30.md). Historical [reports](docs/archive/HISTORY_REPORTS.md) and [plans](docs/archive/HISTORY_PLANS.md) are indexed separately; their old findings and test counts are snapshots, not the current backlog.
+Current main remediation status and verification (2026-10-08): [docs/REMEDIATION_STATUS_2026-09-30.md](docs/REMEDIATION_STATUS_2026-09-30.md); production server state: [docs/SERVER_DEPLOYMENT_REPORT_2026-10-08.md](docs/SERVER_DEPLOYMENT_REPORT_2026-10-08.md). Historical [reports](docs/archive/HISTORY_REPORTS.md) and [plans](docs/archive/HISTORY_PLANS.md) are indexed separately; their old findings and test counts are snapshots, not the current backlog.
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -26,7 +26,7 @@ pixiv-novel-sync web-token-ui  # Flask UI on http://127.0.0.1:5010 (--host/--por
 | `db-stats` | prints `db.export_stats()` |
 | `web-token-ui` | runs the Flask app |
 
-`sync` defaults its empty task list inside `run_job_command`, but `status-check` must yield `tasks is None` for the same trick — hence the `set_defaults(tasks=None)` + `default=argparse.SUPPRESS` pair at `cli.py:31-36`. Replacing that with a plain `default=[]` submits a job with zero tasks.
+`sync` defaults its empty task list inside `run_job_command`, but `status-check` must yield `tasks is None` for the same trick — hence the `set_defaults(tasks=None)` + `default=argparse.SUPPRESS` pair at `cli.py:29-35`. Replacing that with a plain `default=[]` submits a job with zero tasks.
 
 Tests (`testpaths=tests`, `pythonpath=src` in `pyproject.toml`):
 
