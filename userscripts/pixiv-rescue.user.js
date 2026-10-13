@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.2.0
+// @version      0.2.1
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容。
 // @author       dong-jpg
 // @license      MIT
@@ -41,8 +41,19 @@
     '该作品无法浏览',
     '作品不存在',
     'This work has been deleted',
-    'Page not found'
+    'Page not found',
+    // 列表页（收藏/追更）白块的实际文案变体
+    '削除されたか、存在しなくなっています',
+    'この作品は非公開',
+    '非公開の作品',
+    '作品の削除',
+    '該当作品は削除',
+    '此作品已删除',
+    '该作品不可见'
   ];
+  // 列表页白块的判定阈值：Pixiv 失效卡片只有一句提示文案，健康卡片至少有
+  // 标题+作者+标签。放到 64 字仍能排除几乎所有健康卡片。
+  const BROKEN_CARD_TEXT_LIMIT = 64;
 
   function registerTokenMenus() {
     GM_registerMenuCommand('设置或更新救援 Token', function () {
@@ -283,11 +294,18 @@
   }
 
   function cardIsBroken(card) {
-    const text = String(card.textContent || '').trim();
-    if (text.length > 24) return false;
-    return UNAVAILABLE_MARKERS.some(function (marker) {
-      return text.includes(marker);
-    });
+    // 先看链接元素本身；Pixiv 的卡片结构是嵌套的，提示文案可能在链接的
+    // 祖先容器里（白块卡片整体替换掉了标题/封面区），所以再向上查两层。
+    const targets = [card, card.parentElement, card.parentElement && card.parentElement.parentElement];
+    for (const node of targets) {
+      if (!node) continue;
+      const text = String(node.textContent || '').trim();
+      if (!text || text.length > BROKEN_CARD_TEXT_LIMIT) continue;
+      if (UNAVAILABLE_MARKERS.some(function (marker) {
+        return text.includes(marker);
+      })) return true;
+    }
+    return false;
   }
 
   function collectBrokenCards() {
@@ -497,6 +515,11 @@
     const pushState = history.pushState;
     history.pushState = function () {
       pushState.apply(history, arguments);
+      onRoute();
+    };
+    const replaceState = history.replaceState;
+    history.replaceState = function () {
+      replaceState.apply(history, arguments);
       onRoute();
     };
     window.addEventListener('popstate', onRoute);

@@ -65,10 +65,12 @@ def test_userscript_matches_list_pages_without_disturbing_healthy_cards() -> Non
     assert "/api/rescue/v1/lookup" in script
     assert "personal_hold" in script
     # 健康卡片不进候选：文本超过阈值的卡片直接跳过
-    assert "text.length > 24) return false;" in script
+    assert "text.length > BROKEN_CARD_TEXT_LIMIT) continue;" in script
     # 列表页只在失效卡片上打标记，不渲染救援面板、不动原页面
     assert "pixiv-rescue-card-badge" in script
     assert "handleListPage" in script
+    # Pixiv SPA 兼容：replaceState 也要触发路由重判
+    assert "history.replaceState" in script
 
 
 @pytest.fixture(scope="module")
