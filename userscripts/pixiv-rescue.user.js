@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.2.1
+// @version      0.2.2
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容。
 // @author       dong-jpg
 // @license      MIT
@@ -293,43 +293,82 @@
     return window.location.pathname === '/following/watchlist/novels';
   }
 
+  function climbToCard(node) {
+    // 列表卡片通常是 <li> 或固定层级的 div；先找最近的 li，找不到再向上爬几层，
+    // 以「文本仍只有失效提示」为界——再往上就混进整页文本了。
+    const li = node.closest('li');
+    if (li) return li;
+    let current = node;
+    for (let i = 0; i < 5 && current.parentElement; i += 1) {
+      current = current.parentElement;
+      if (String(current.textContent || '').trim().length > BROKEN_CARD_TEXT_LIMIT * 3) break;
+    }
+    return current;
+  }
+
+  function elementMatchesUnavailable(node) {
+    if (!node) return false;
+    const text = String(node.textContent || '').trim();
+    if (!text || text.length > BROKEN_CARD_TEXT_LIMIT) return false;
+    return UNAVAILABLE_MARKERS.some(function (marker) {
+      return text.includes(marker);
+    });
+  }
+
   function cardIsBroken(card) {
     // 先看链接元素本身；Pixiv 的卡片结构是嵌套的，提示文案可能在链接的
     // 祖先容器里（白块卡片整体替换掉了标题/封面区），所以再向上查两层。
     const targets = [card, card.parentElement, card.parentElement && card.parentElement.parentElement];
     for (const node of targets) {
-      if (!node) continue;
-      const text = String(node.textContent || '').trim();
-      if (!text || text.length > BROKEN_CARD_TEXT_LIMIT) continue;
-      if (UNAVAILABLE_MARKERS.some(function (marker) {
-        return text.includes(marker);
-      })) return true;
+      if (elementMatchesUnavailable(node)) return true;
     }
     return false;
   }
 
   function collectBrokenCards() {
-    const cards = document.querySelectorAll('a[href*="/novel/show.php?id="], a[href*="/novel/series/"]');
     const novelIds = new Set();
     const seriesIds = new Set();
     const broken = [];
-    cards.forEach(function (card) {
+
+    function register(card, id, type) {
+      card.setAttribute(ROOT_ATTRIBUTE, 'card');
+      broken.push({ type: type, id: id, card: card });
+      if (type === 'novel') novelIds.add(id);
+      else if (type === 'series') seriesIds.add(id);
+      else {
+        // 无链接的白块拿不到类型：两头都查，命中哪个算哪个
+        novelIds.add(id);
+        seriesIds.add(id);
+      }
+    }
+
+    // 1) 有链接的失效卡片
+    document.querySelectorAll('a[href*="/novel/show.php?id="], a[href*="/novel/series/"]').forEach(function (card) {
       if (card.getAttribute(ROOT_ATTRIBUTE) === 'card') return;
       if (card.querySelector('[' + ROOT_ATTRIBUTE + '="badge"]')) return;
       if (!cardIsBroken(card)) return;
       const href = card.getAttribute('href') || '';
       const seriesMatch = href.match(/\/novel\/series\/(\d+)/);
       const novelMatch = href.match(/[?&]id=(\d+)/);
-      if (seriesMatch) {
-        card.setAttribute(ROOT_ATTRIBUTE, 'card');
-        broken.push({ type: 'series', id: seriesMatch[1], card: card });
-        seriesIds.add(seriesMatch[1]);
-      } else if (novelMatch) {
-        card.setAttribute(ROOT_ATTRIBUTE, 'card');
-        broken.push({ type: 'novel', id: novelMatch[1], card: card });
-        novelIds.add(novelMatch[1]);
-      }
+      if (seriesMatch) register(card, seriesMatch[1], 'series');
+      else if (novelMatch) register(card, novelMatch[1], 'novel');
     });
+
+    // 2) 无链接的白块：系列被删/隐藏时 Pixiv 不再渲染链接，但卡片上通常还留着
+    //    data-gtm-value（作品 ID）之类的数据属性（列表项本身还没从收藏数据里消失）。
+    document.querySelectorAll('[data-gtm-value]').forEach(function (node) {
+      const value = String(node.getAttribute('data-gtm-value') || '').trim();
+      if (!/^\d{3,12}$/.test(value)) return;
+      const card = climbToCard(node);
+      if (!card || card === document.body) return;
+      if (card.getAttribute(ROOT_ATTRIBUTE) === 'card') return;
+      if (card.querySelector('a[href*="/novel/show.php?id="], a[href*="/novel/series/"]')) return;
+      if (card.querySelector('[' + ROOT_ATTRIBUTE + '="badge"]')) return;
+      // 卡片本身（或其附近文本）必须就是失效提示，避免把健康卡片的 gtm 值也抓进来
+      if (!cardIsBroken(card) && !elementMatchesUnavailable(card)) return;
+      register(card, value, 'unknown');
+    });
+
     return { broken: broken, novelIds: novelIds, seriesIds: seriesIds };
   }
 
@@ -349,7 +388,10 @@
       const series = {};
       (data.series || []).forEach(function (item) { series[item.series_id] = item; });
       found.broken.forEach(function (entry) {
-        const match = entry.type === 'novel' ? novels[entry.id] : series[entry.id];
+        const novelMatch = novels[entry.id];
+        const seriesMatch = series[entry.id];
+        const match = entry.type === 'series' ? seriesMatch
+          : (entry.type === 'novel' ? novelMatch : (seriesMatch || novelMatch));
         if (!match) return;
         const badge = element('div', 'pixiv-rescue-card-badge');
         badge.textContent = '已备份：' + (match.title || '未命名') +
