@@ -18,6 +18,8 @@ def test_userscript_metadata_and_security_contract() -> None:
 
     assert "@match        https://www.pixiv.net/novel/show.php*" in script
     assert "@match        https://www.pixiv.net/novel/series/*" in script
+    assert "@match        https://www.pixiv.net/users/*/bookmarks/novels*" in script
+    assert "@match        https://www.pixiv.net/following/watchlist/novels*" in script
     assert "@connect     pixiv.dongboapp.com" in script
     assert "GM_xmlhttpRequest" in script
     assert "GM_getValue" in script
@@ -52,6 +54,21 @@ def test_userscript_does_not_replace_healthy_pixiv_pages() -> None:
     assert "isSeriesPageHealthy" in script
     assert "if (isNovelPageHealthy()) return;" in script
     assert "if (isSeriesPageHealthy()) return;" in script
+
+
+def test_userscript_matches_list_pages_without_disturbing_healthy_cards() -> None:
+    script = _script()
+
+    assert "isBookmarksListPage" in script
+    assert "isWatchlistPage" in script
+    assert "cardIsBroken" in script
+    assert "/api/rescue/v1/lookup" in script
+    assert "personal_hold" in script
+    # 健康卡片不进候选：文本超过阈值的卡片直接跳过
+    assert "text.length > 24) return false;" in script
+    # 列表页只在失效卡片上打标记，不渲染救援面板、不动原页面
+    assert "pixiv-rescue-card-badge" in script
+    assert "handleListPage" in script
 
 
 @pytest.fixture(scope="module")

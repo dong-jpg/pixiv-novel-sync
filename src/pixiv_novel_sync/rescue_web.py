@@ -393,6 +393,7 @@ def register_rescue_routes(
             "complete_count",
             "last_checked_at",
             "updated_at",
+            "personal_hold",
         }
         data = {key: item.get(key) for key in fields}
         data["source_notice"] = "内容来自私人备份，并非 Pixiv 官方恢复"
@@ -427,6 +428,7 @@ def register_rescue_routes(
             "complete_count",
             "last_checked_at",
             "updated_at",
+            "personal_hold",
         }
         data = {key: item.get(key) for key in fields}
         data["source_notice"] = "内容来自私人备份，并非 Pixiv 官方恢复"
@@ -452,3 +454,71 @@ def register_rescue_routes(
             return _public_error("救援内容不存在", 404)
         payload["source_notice"] = "内容来自私人备份，并非 Pixiv 官方恢复"
         return jsonify({"ok": True, "data": payload})
+
+    @app.route(
+        "/api/rescue/v1/lookup",
+        methods=["GET"],
+        provide_automatic_options=False,
+    )
+    @public_auth
+    def rescue_lookup():
+        """按 ID 批量查收藏/追更列表页上的条目有没有备份。
+
+        油猴脚本在收藏页/追更页抓到 Pixiv 渲染的空白/失效卡片后，拿卡片里的
+        novel_id / series_id 来这里问「备份里有没有、标题是什么」。一次最多 40 个，
+        刻意不返回正文——列表页只需要认出「这是哪部作品」，点进去才走明细接口。
+        """
+        raw_ids = str(request.args.get("novel_ids", "") or "")
+        raw_series_ids = str(request.args.get("series_ids", "") or "")
+        novel_ids: list[int] = []
+        series_ids: list[int] = []
+        for chunk in raw_ids.split(","):
+            chunk = chunk.strip()
+            if chunk.isdigit() and len(chunk) < 12 and chunk not in novel_ids:
+                novel_ids.append(int(chunk))
+        for chunk in raw_series_ids.split(","):
+            chunk = chunk.strip()
+            if chunk.isdigit() and len(chunk) < 12 and chunk not in series_ids:
+                series_ids.append(int(chunk))
+        if len(novel_ids) + len(series_ids) > 40:
+            return _public_error("一次最多查询 40 个 ID", 400)
+        if not novel_ids and not series_ids:
+            return _public_error("需要提供 novel_ids 或 series_ids", 400)
+
+        db = open_db()
+        try:
+            novels = [db.get_rescue_novel(value) for value in novel_ids]
+            series = [db.get_rescue_series(value) for value in series_ids]
+        finally:
+            db.close()
+        slim_novels = [
+            {
+                "novel_id": item["novel_id"],
+                "title": item.get("title"),
+                "author_name": item.get("author_name"),
+                "cover_url": item.get("cover_url"),
+                "series_id": item.get("series_id"),
+                "rescue_state": item.get("rescue_state"),
+                "personal_hold": bool(item.get("personal_hold")),
+            }
+            for item in novels
+            if item is not None
+        ]
+        slim_series = [
+            {
+                "series_id": item["series_id"],
+                "title": item.get("title"),
+                "author_name": item.get("author_name"),
+                "cover_url": item.get("cover_url"),
+                "rescue_state": item.get("rescue_state"),
+                "personal_hold": bool(item.get("personal_hold")),
+            }
+            for item in series
+            if item is not None
+        ]
+        return jsonify(
+            {
+                "ok": True,
+                "data": {"novels": slim_novels, "series": slim_series},
+            }
+        )

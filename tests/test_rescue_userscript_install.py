@@ -38,12 +38,15 @@ def test_personal_install_keeps_identity_and_minimal_permissions() -> None:
         "GM_xmlhttpRequest", "GM_getValue", "GM_setValue", "GM_registerMenuCommand",
     }
     assert set(fields.get("match", [])) == {
-        "https://www.pixiv.net/novel/show.php*", "https://www.pixiv.net/novel/series/*",
+        "https://www.pixiv.net/novel/show.php*",
+        "https://www.pixiv.net/novel/series/*",
+        "https://www.pixiv.net/users/*/bookmarks/novels*",
+        "https://www.pixiv.net/following/watchlist/novels*",
     }
     assert "require" not in fields and "resource" not in fields
     version = fields.get("version", [""])
     assert len(version) == 1 and re.fullmatch(r"\d+\.\d+\.\d+", version[0])
-    assert tuple(map(int, version[0].split("."))) >= (0, 1, 1)
+    assert tuple(map(int, version[0].split("."))) >= (0, 2, 0)
 
 
 def test_personal_install_identifies_its_author_license_and_source() -> None:

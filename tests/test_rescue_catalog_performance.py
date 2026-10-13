@@ -266,9 +266,10 @@ def test_catalog_list_query_count_is_constant_and_uses_sql_pagination(
     normalized_second_sql = [
         " ".join(statement.upper().split()) for statement in second_selects
     ]
+    # personal_hold 批查固定 2 条（novels / series 各一），翻页与数据量都无关
     assert len(small_selects) == len(selects)
-    assert len(small_selects) <= 4
-    assert len(second_selects) <= 4
+    assert len(small_selects) <= 6
+    assert len(second_selects) <= 6
     assert small_payload["total"] == 20
     assert payload["total"] == 200
     assert len(payload["items"]) == 25
@@ -288,6 +289,12 @@ def test_catalog_list_query_count_is_constant_and_uses_sql_pagination(
         "rescue_catalog",
         "rescue_catalog_sources",
         "rescue_catalog_meta",
+        # personal_hold 批查：小说看 sources 的 bookmark_ 行、系列看 series.is_subscribed，
+        # 都要以 pending_deletions 排除「本人已取消」的条目。这是目录列表的固定开销。
+        "novels",
+        "series",
+        "sources",
+        "pending_deletions",
     }
     assert {table for table, _column in small_reads | reads | second_reads} <= allowed_tables
 

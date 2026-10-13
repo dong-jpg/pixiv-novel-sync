@@ -46,6 +46,103 @@ class RescueMixin:
     # 「本人主动关联」的来源：收藏与追更。following_user_scan / user_backup 是批量
     # 扫来的，本人未必在乎——生产实测 365 条拯救成功里 bookmark 来源为 0，全是这两类。
     _PERSONAL_SOURCE_KINDS = frozenset({"bookmark", "subscribed_series"})
+    # 「本人现在是否还持有这件东西」的判据：
+    #   小说 = 本地还有 bookmark_ 来源行且没进待确认删除；
+    #   系列 = 还标着 is_subscribed 且没进待确认删除。
+    # 之所以不把「用户自己取消收藏」当拯救，是因为那等于承认「我一松手它就成了我的
+    # 战利品」——取消收藏/追更只写 pending_deletions 并等用户点「确认移除」，这段
+    # 窗口里条目若同时被 Pixiv 下架，就会既进拯救目录、又挂待确认删除，用户读到的是
+    # 「我取消的东西被算成拯救」。pending 存在即视为「本人已放手」，两边都以它为准。
+    # 变量 ?item_id 由调用方以参数形式提供（单条查询与列表批查两种入口共用）。
+    _PERSONAL_HOLD_SQL = {
+        "novel": (
+            "EXISTS (SELECT 1 FROM sources s "
+            "WHERE s.novel_id = ?item_id AND s.source_type LIKE 'bookmark_%') "
+            "AND NOT EXISTS (SELECT 1 FROM pending_deletions pd "
+            "WHERE pd.item_type = 'novel' AND pd.item_id = ?item_id "
+            "AND pd.status = 'pending')"
+        ),
+        "series": (
+            "EXISTS (SELECT 1 FROM series se WHERE se.series_id = ?item_id "
+            "AND se.is_subscribed = 1) "
+            "AND NOT EXISTS (SELECT 1 FROM pending_deletions pd "
+            "WHERE pd.item_type = 'series' AND pd.item_id = ?item_id "
+            "AND pd.status = 'pending')"
+        ),
+    }
+
+    def _personal_hold_sql(self, item_type: str) -> str:
+        normalized_type = self._validate_rescue_item_type(item_type)
+        return self._PERSONAL_HOLD_SQL[normalized_type]
+
+    def _personal_holds_item(self, item_type: str, item_id: int) -> bool:
+        normalized_id = int(item_id)
+        sql = self._personal_hold_sql(item_type)
+        placeholders = (normalized_id,) * sql.count("?item_id")
+        row = self.conn.execute(
+            "SELECT " + sql.replace("?item_id", "?"),
+            placeholders,
+        ).fetchone()
+        return bool(row and row[0])
+
+    def _personal_hold_batch(self, keys: set[tuple[str, int]]) -> dict[tuple[str, int], bool]:
+        """对一批 (item_type, item_id) 求 personal_hold。
+
+        单条 `_personal_hold_sql` 的 EXISTS 已经很快，但拯救列表一页最多 100 条，
+        逐条查询就是 100 次往返；这里把 id 收拢成两个 `IN (...)` 一次问完。
+        """
+        held: dict[tuple[str, int], bool] = {}
+        novel_ids = sorted(novel_id for item_type, novel_id in keys if item_type == "novel")
+        series_ids = sorted(
+            series_id for item_type, series_id in keys if item_type == "series"
+        )
+        # 两条 UNION ALL 拼成一条语句：查询条数不随页里 series/novel 的构成变化
+        # （拯救列表的性能契约断言「翻页与数据量都不改变 SELECT 条数」，分两条发
+        # 会在「本页恰好只有小说/只有系列」时条数漂移）。
+        union_parts: list[str] = []
+        union_params: list[Any] = []
+        if novel_ids:
+            placeholders = ", ".join("?" for _ in novel_ids)
+            union_parts.append(
+                f"""
+                SELECT 'novel' AS item_type, n.novel_id AS item_id,
+                       EXISTS (SELECT 1 FROM sources s
+                               WHERE s.novel_id = n.novel_id
+                                 AND s.source_type LIKE 'bookmark_%') AS has_hold,
+                       EXISTS (SELECT 1 FROM pending_deletions pd
+                               WHERE pd.item_type = 'novel'
+                                 AND pd.item_id = n.novel_id
+                                 AND pd.status = 'pending') AS is_pending
+                FROM novels n
+                WHERE n.novel_id IN ({placeholders})
+                """
+            )
+            union_params.extend(novel_ids)
+        if series_ids:
+            placeholders = ", ".join("?" for _ in series_ids)
+            union_parts.append(
+                f"""
+                SELECT 'series' AS item_type, se.series_id AS item_id,
+                       COALESCE(se.is_subscribed, 0) AS has_hold,
+                       EXISTS (SELECT 1 FROM pending_deletions pd
+                               WHERE pd.item_type = 'series'
+                                 AND pd.item_id = se.series_id
+                                 AND pd.status = 'pending') AS is_pending
+                FROM series se
+                WHERE se.series_id IN ({placeholders})
+                """
+            )
+            union_params.extend(series_ids)
+        if union_parts:
+            rows = self.conn.execute(
+                " UNION ALL ".join(union_parts),
+                tuple(union_params),
+            ).fetchall()
+            for row in rows:
+                held[(str(row["item_type"]), int(row["item_id"]))] = bool(
+                    row["has_hold"] and not row["is_pending"]
+                )
+        return held
 
     @classmethod
     def _validate_rescue_item_type(cls, item_type: str) -> str:
@@ -998,6 +1095,9 @@ class RescueMixin:
         payload = self.evaluate_rescue_series(int(series_id))
         if payload is None or payload["rescue_state"] is None:
             return None
+        # 与 get_rescue_novel 同理：读接口不受 pending 排除约束，但要把「本人是否
+        # 还在追更」带出去，供油猴脚本判断要不要渲染救援面板。
+        payload["personal_hold"] = self._personal_holds_item("series", int(series_id))
         return payload
 
     @staticmethod
@@ -1112,6 +1212,9 @@ class RescueMixin:
         payload = self._novel_evaluation_payload(data)
         if payload["rescue_state"] is None:
             return None
+        # 读接口不受 pending 排除约束（目录决定「能浏览什么」，接口只负责按 ID 取回备份），
+        # 但要把「本人是否还持有」如实带出去，让油猴脚本能自己决定要不要渲染救援面板。
+        payload["personal_hold"] = self._personal_holds_item("novel", int(novel_id))
         return payload
 
     def list_rescues(
@@ -1323,6 +1426,13 @@ class RescueMixin:
             )
             if item_type_value == "novel":
                 item["novel_id"] = item_id_value
+
+        hold_map = self._personal_hold_batch(
+            {(str(item["item_type"]), int(item["item_id"])) for item in items}
+        ) if items else {}
+        for item in items:
+            key = (str(item["item_type"]), int(item["item_id"]))
+            item["personal_hold"] = bool(hold_map.get(key, False))
 
         return {
             "items": items,

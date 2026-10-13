@@ -686,6 +686,54 @@ def test_list_rescues_marks_whether_the_user_still_holds_the_item(db: Database) 
     assert items[("novel", 850)]["personal_relation"] is False
 
 
+def test_personal_hold_distinguishes_cancelled_from_still_held(db: Database) -> None:
+    """「拯救成功」的口径：本人还收藏/追更、但 Pixiv 已打不开才算。
+
+    用户自己取消收藏/追更只写 pending_deletions 等「确认移除」，这段窗口里条目
+    若同时被 Pixiv 下架，personal_relation（来源快照）仍会是 True——因为它看的是
+    sources 表的历史来源行。personal_hold 以「本地来源行/订阅标记 + 无 pending」
+    为准，pending 一出现就视为本人已放手，不再是拯救。
+    """
+    _seed_novel(db, 870, status="deleted", text="还在收藏，被 Pixiv 删了")
+    db.upsert_source(SourceRecord(870, "bookmark_public", "1"))
+
+    _seed_novel(db, 871, status="deleted", text="取消收藏后又被删")
+    db.upsert_source(SourceRecord(871, "bookmark_public", "1"))
+    db.add_pending_deletion("novel", 871, "unbookmarked", "取消收藏后又被删", "作者", "")
+
+    _seed_series(db, 880, status="deleted", total_novels=1)
+    _seed_novel(db, 881, series_id=880, status="deleted", text="章节")
+    db.conn.execute("UPDATE series SET is_subscribed = 1 WHERE series_id = 880")
+    db.conn.execute("UPDATE series SET is_subscribed = 1 WHERE series_id = 882")
+
+    _seed_series(db, 882, status="deleted", total_novels=1)
+    _seed_novel(db, 883, series_id=882, status="deleted", text="章节")
+    db.add_pending_deletion("series", 882, "unfollowed_series", "取消追更", "作者", "")
+    db.conn.commit()
+
+    # 871/882 带 pending，目录本就不收；personal_hold 在读接口上也要如实为 False
+    assert db.get_rescue_novel(871) is None or (
+        db.get_rescue_novel(871) or {}
+    ).get("personal_hold") is False
+    novel870 = db.get_rescue_novel(870)
+    assert novel870 is not None and novel870["personal_hold"] is True
+    series880 = db.get_rescue_series(880)
+    assert series880 is not None and series880["personal_hold"] is True
+    series882 = db.get_rescue_series(882)
+    assert series882 is None or series882.get("personal_hold") is False
+
+    # 列表批查与单条查询口径一致
+    db.rebuild_rescue_catalog()
+    items = {
+        (item["item_type"], item["item_id"]): item
+        for item in db.list_rescues(page=1, page_size=50)["items"]
+    }
+    assert items[("novel", 870)]["personal_hold"] is True
+    assert items[("series", 880)]["personal_hold"] is True
+    assert ("novel", 871) not in items
+    assert ("series", 882) not in items
+
+
 def test_rebuild_catalog_classifies_complete_and_partial_series(db: Database) -> None:
     _seed_series(db, 300, status="deleted", total_novels=2)
     _seed_novel(db, 301, series_id=300, text="一")

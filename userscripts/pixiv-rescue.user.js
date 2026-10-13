@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.1.1
-// @description  仅在 Pixiv 小说或系列明确失效时，从私人备份读取并标记救援内容。
+// @version      0.2.0
+// @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容。
 // @author       dong-jpg
 // @license      MIT
 // @homepageURL  https://github.com/dong-jpg/pixiv-novel-sync/tree/main
@@ -11,6 +11,8 @@
 // @updateURL    https://raw.githubusercontent.com/dong-jpg/pixiv-novel-sync/main/userscripts/pixiv-rescue.user.js
 // @match        https://www.pixiv.net/novel/show.php*
 // @match        https://www.pixiv.net/novel/series/*
+// @match        https://www.pixiv.net/users/*/bookmarks/novels*
+// @match        https://www.pixiv.net/following/watchlist/novels*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -183,7 +185,8 @@
       '.pixiv-rescue-directory li{padding:8px 0;border-bottom:1px solid #f3f4f6}',
       '.pixiv-rescue-viewer{margin-top:18px;padding-top:18px;border-top:1px solid #d1d5db}',
       '.pixiv-rescue-error{max-width:760px;margin:16px auto;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px}',
-      '@media(max-width:640px){.pixiv-rescue-root{margin:12px auto;padding:0 10px}.pixiv-rescue-panel{padding:16px}.pixiv-rescue-title{font-size:20px}}'
+      '@media(max-width:640px){.pixiv-rescue-root{margin:12px auto;padding:0 10px}.pixiv-rescue-panel{padding:16px}.pixiv-rescue-title{font-size:20px}}',
+      '.pixiv-rescue-card-badge{position:relative;z-index:1;margin:4px;padding:4px 8px;border-radius:4px;background:#dc2626;color:#fff;font-size:12px;font-weight:700;line-height:1.4}'
     ].join('');
     document.head.append(style);
   }
@@ -267,6 +270,83 @@
       viewer.prepend(note);
     }
     note.textContent = rescueErrorText(error, false);
+  }
+
+  // ── 收藏页 / 追更页列表匹配 ──────────────────────────────────
+
+  function isBookmarksListPage() {
+    return /^\/users\/\d+\/bookmarks\/novels/.test(window.location.pathname);
+  }
+
+  function isWatchlistPage() {
+    return window.location.pathname === '/following/watchlist/novels';
+  }
+
+  function cardIsBroken(card) {
+    const text = String(card.textContent || '').trim();
+    if (text.length > 24) return false;
+    return UNAVAILABLE_MARKERS.some(function (marker) {
+      return text.includes(marker);
+    });
+  }
+
+  function collectBrokenCards() {
+    const cards = document.querySelectorAll('a[href*="/novel/show.php?id="], a[href*="/novel/series/"]');
+    const novelIds = new Set();
+    const seriesIds = new Set();
+    const broken = [];
+    cards.forEach(function (card) {
+      if (card.getAttribute(ROOT_ATTRIBUTE) === 'card') return;
+      if (card.querySelector('[' + ROOT_ATTRIBUTE + '="badge"]')) return;
+      if (!cardIsBroken(card)) return;
+      const href = card.getAttribute('href') || '';
+      const seriesMatch = href.match(/\/novel\/series\/(\d+)/);
+      const novelMatch = href.match(/[?&]id=(\d+)/);
+      if (seriesMatch) {
+        card.setAttribute(ROOT_ATTRIBUTE, 'card');
+        broken.push({ type: 'series', id: seriesMatch[1], card: card });
+        seriesIds.add(seriesMatch[1]);
+      } else if (novelMatch) {
+        card.setAttribute(ROOT_ATTRIBUTE, 'card');
+        broken.push({ type: 'novel', id: novelMatch[1], card: card });
+        novelIds.add(novelMatch[1]);
+      }
+    });
+    return { broken: broken, novelIds: novelIds, seriesIds: seriesIds };
+  }
+
+  function buildLookupPath(novelIds, seriesIds) {
+    const parts = [];
+    if (novelIds.size) parts.push('novel_ids=' + encodeURIComponent(Array.from(novelIds).join(',')));
+    if (seriesIds.size) parts.push('series_ids=' + encodeURIComponent(Array.from(seriesIds).join(',')));
+    return '/api/rescue/v1/lookup?' + parts.join('&');
+  }
+
+  function markBrokenCards() {
+    const found = collectBrokenCards();
+    if (!found.broken.length) return;
+    apiGet(buildLookupPath(found.novelIds, found.seriesIds)).then(function (data) {
+      const novels = {};
+      (data.novels || []).forEach(function (item) { novels[item.novel_id] = item; });
+      const series = {};
+      (data.series || []).forEach(function (item) { series[item.series_id] = item; });
+      found.broken.forEach(function (entry) {
+        const match = entry.type === 'novel' ? novels[entry.id] : series[entry.id];
+        if (!match) return;
+        const badge = element('div', 'pixiv-rescue-card-badge');
+        badge.textContent = '已备份：' + (match.title || '未命名') +
+          (match.personal_hold ? '' : '（本人已取消收藏/追更）');
+        entry.card.prepend(badge);
+      });
+    }).catch(function () {
+      // 列表页查询失败不打扰原页面：明细页才是救援主场
+    });
+  }
+
+  function handleListPage() {
+    if (!isBookmarksListPage() && !isWatchlistPage()) return;
+    markBrokenCards();
+    window.setInterval(markBrokenCards, 3000);
   }
 
   function renderSeriesChapter(viewer, data) {
@@ -427,7 +507,11 @@
       handleNovelPage();
       return;
     }
-    if (window.location.pathname.startsWith('/novel/series/')) handleSeriesPage();
+    if (window.location.pathname.startsWith('/novel/series/')) {
+      handleSeriesPage();
+      return;
+    }
+    if (isBookmarksListPage() || isWatchlistPage()) handleListPage();
   }
 
   if (document.readyState === 'loading') {
