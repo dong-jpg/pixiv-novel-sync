@@ -522,3 +522,56 @@ def register_rescue_routes(
                 "data": {"novels": slim_novels, "series": slim_series},
             }
         )
+
+    @app.route(
+        "/api/rescue/v1/series",
+        methods=["GET"],
+        provide_automatic_options=False,
+    )
+    @public_auth
+    def rescue_series_list():
+        """分页列出救援目录里的系列，供油猴脚本在 Pixiv 收藏页渲染「拯救系列」tab。
+
+        目录里 series 条目天然就是「系列本体不可用」的系列；state/personal_hold
+        照常带出，让 tab 里能区分「完整救援 / 部分救援」和「还在追更 / 已放手」。
+        """
+        db = open_db()
+        try:
+            payload = db.list_rescues(
+                page=_safe_page(request.args.get("page"), 1),
+                page_size=_safe_page(request.args.get("page_size"), 24, 100),
+                state=str(request.args.get("state", "all")),
+                item_type="series",
+                search=str(request.args.get("search", "")),
+                sort=str(request.args.get("sort", "checked_desc")),
+            )
+        except ValueError as exc:
+            return _public_error(str(exc), 400)
+        finally:
+            db.close()
+        items = [
+            {
+                "series_id": item["item_id"],
+                "title": item.get("title"),
+                "author_name": item.get("author_name"),
+                "cover_url": item.get("cover_url"),
+                "rescue_state": item.get("rescue_state"),
+                "expected_count": item.get("expected_count"),
+                "local_count": item.get("local_count"),
+                "complete_count": item.get("complete_count"),
+                "personal_hold": bool(item.get("personal_hold")),
+                "last_checked_at": item.get("last_checked_at"),
+            }
+            for item in payload.get("items", [])
+        ]
+        return jsonify(
+            {
+                "ok": True,
+                "data": {
+                    "items": items,
+                    "page": payload.get("page"),
+                    "total": payload.get("total"),
+                    "total_pages": payload.get("total_pages"),
+                },
+            }
+        )

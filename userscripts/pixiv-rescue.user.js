@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.2.2
-// @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容。
+// @version      0.3.0
+// @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
 // @homepageURL  https://github.com/dong-jpg/pixiv-novel-sync/tree/main
@@ -13,6 +13,7 @@
 // @match        https://www.pixiv.net/novel/series/*
 // @match        https://www.pixiv.net/users/*/bookmarks/novels*
 // @match        https://www.pixiv.net/following/watchlist/novels*
+// @match        https://www.pixiv.net/novel/bookmark_new.php*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -197,7 +198,15 @@
       '.pixiv-rescue-viewer{margin-top:18px;padding-top:18px;border-top:1px solid #d1d5db}',
       '.pixiv-rescue-error{max-width:760px;margin:16px auto;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px}',
       '@media(max-width:640px){.pixiv-rescue-root{margin:12px auto;padding:0 10px}.pixiv-rescue-panel{padding:16px}.pixiv-rescue-title{font-size:20px}}',
-      '.pixiv-rescue-card-badge{position:relative;z-index:1;margin:4px;padding:4px 8px;border-radius:4px;background:#dc2626;color:#fff;font-size:12px;font-weight:700;line-height:1.4}'
+      '.pixiv-rescue-card-badge{position:relative;z-index:1;margin:4px;padding:4px 8px;border-radius:4px;background:#dc2626;color:#fff;font-size:12px;font-weight:700;line-height:1.4}',
+      '.pixiv-rescue-tab-link{display:inline-flex;align-items:center;min-height:32px;margin:0 6px;padding:6px 12px;border-bottom:2px solid transparent;color:#333;font-size:14px;text-decoration:none;cursor:pointer}',
+      '.pixiv-rescue-tab-link.pixiv-rescue-tab-active{border-bottom-color:#dc2626;color:#dc2626;font-weight:700}',
+      '.pixiv-rescue-tab{max-width:1200px;margin:16px auto;padding:0 16px}',
+      '.pixiv-rescue-tab-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}',
+      '.pixiv-rescue-tab-card{display:flex;flex-direction:column;gap:6px;padding:12px;border:1px solid #e5e7eb;border-radius:8px;background:#fff}',
+      '.pixiv-rescue-tab-title{font-size:15px;font-weight:700;color:#111827;line-height:1.4;overflow-wrap:anywhere}',
+      '.pixiv-rescue-tab-meta{font-size:12px;color:#6b7280;line-height:1.6}',
+      '.pixiv-rescue-tab-pager{margin:12px 0;text-align:center}'
     ].join('');
     document.head.append(style);
   }
@@ -409,6 +418,129 @@
     window.setInterval(markBrokenCards, 3000);
   }
 
+  // ── 收藏页（bookmark_new.php）「拯救系列」tab ─────────────────
+
+  function isNovelBookmarksPage() {
+    return window.location.pathname === '/novel/bookmark_new.php';
+  }
+
+  function renderSeriesCard(item) {
+    const card = element('div', 'pixiv-rescue-tab-card');
+    const title = element('div', 'pixiv-rescue-tab-title', item.title || '未命名系列');
+    const meta = element('div', 'pixiv-rescue-tab-meta');
+    const coverage = item.complete_count !== undefined
+      ? '已备份 ' + (item.complete_count ?? '?') + ' / ' + (item.expected_count ?? '?') + ' 章'
+      : '';
+    const stateText = item.rescue_state === 'success' ? '完整救援' : '部分救援';
+    const holdText = item.personal_hold ? '仍在追更' : '已取消追更';
+    meta.textContent = [coverage, stateText, holdText, item.author_name || '']
+      .filter(Boolean).join(' · ');
+    const open = element('button', 'pixiv-rescue-button', '查看章节');
+    open.type = 'button';
+    open.addEventListener('click', function () {
+      // 系列本体在 Pixiv 已打不开；把 ID 塞进系列页 URL，让 handleSeriesPage
+      // 的「不可用 → 救援」管线接管渲染。
+      window.location.href = 'https://www.pixiv.net/novel/series/' + encodeURIComponent(String(item.series_id));
+    });
+    card.append(title, meta, open);
+    return card;
+  }
+
+  function renderRescueSeriesTabBody(container) {
+    clearNode(container);
+    const grid = element('div', 'pixiv-rescue-tab-grid');
+    container.append(grid);
+    let currentPage = 1;
+    let hasMore = false;
+
+    function loadPage(page) {
+      grid.append(element('div', 'pixiv-rescue-tab-meta', '正在加载拯救系列…'));
+      apiGet('/api/rescue/v1/series?page=' + encodeURIComponent(String(page)) + '&page_size=24')
+        .then(function (data) {
+          clearNode(grid);
+          const items = Array.isArray(data.items) ? data.items : [];
+          items.forEach(function (item) {
+            grid.append(renderSeriesCard(item));
+          });
+          if (!items.length) {
+            grid.append(element('div', 'pixiv-rescue-tab-meta', '没有可展示的拯救系列。'));
+          }
+          currentPage = Math.max(1, Number(data.page || page));
+          const totalPages = Math.max(currentPage, Number(data.total_pages || currentPage));
+          hasMore = currentPage < totalPages;
+          const pager = container.querySelector('[data-rescue-tab-pager]');
+          if (pager) pager.remove();
+          if (hasMore) {
+            const pager = element('div', 'pixiv-rescue-tab-pager');
+            pager.setAttribute('data-rescue-tab-pager', '');
+            const more = element('button', 'pixiv-rescue-button', '加载更多');
+            more.type = 'button';
+            more.addEventListener('click', function () {
+              more.disabled = true;
+              loadPage(currentPage + 1);
+            });
+            pager.append(more);
+            container.append(pager);
+          }
+        })
+        .catch(function (error) {
+          clearNode(grid);
+          grid.append(element('div', 'pixiv-rescue-error', rescueErrorText(error, true)));
+        });
+    }
+
+    loadPage(1);
+  }
+
+  function injectRescueSeriesTab() {
+    // Pixiv 的 tab 区是若干 <a>（收藏/关注的新作分栏）。找到它，在其后追加一个
+    // 「拯救系列」入口；找不到就退化为页面顶部插入按钮。
+    const tabs = document.querySelectorAll('nav a, [role="tablist"] a, section a[href*="bookmark_new.php"]');
+    let tabHost = null;
+    tabs.forEach(function (tab) {
+      if (tab.textContent && tab.textContent.includes('小説') && !tabHost) tabHost = tab.parentElement;
+    });
+    if (!tabHost) {
+      // 兜底：找页面上第一个 h1/h2 附近
+      const heading = document.querySelector('h1, h2');
+      tabHost = heading ? heading.parentElement : document.querySelector('main') || document.body;
+    }
+    if (!tabHost || document.querySelector('[' + ROOT_ATTRIBUTE + '="tab"]')) return;
+
+    const tabLink = element('a', 'pixiv-rescue-tab-link', '拯救系列');
+    tabLink.setAttribute(ROOT_ATTRIBUTE, 'tab');
+    tabLink.setAttribute('href', '#pixiv-rescue-series');
+    tabHost.append(tabLink);
+
+    const container = element('section', 'pixiv-rescue-tab');
+    container.setAttribute(ROOT_ATTRIBUTE, 'tab-body');
+    container.style.display = 'none';
+
+    let loaded = false;
+    tabLink.addEventListener('click', function (event) {
+      event.preventDefault();
+      const active = container.style.display === 'none';
+      container.style.display = active ? '' : 'none';
+      tabLink.classList.toggle('pixiv-rescue-tab-active', active);
+      if (active && !loaded) {
+        loaded = true;
+        renderRescueSeriesTabBody(container);
+      }
+    });
+
+    const mountPoint = tabHost.closest('section, div') || tabHost.parentElement;
+    if (mountPoint && mountPoint !== document.body) {
+      mountPoint.parentElement.insertBefore(container, mountPoint.nextSibling);
+    } else {
+      (document.querySelector('main') || document.body).append(container);
+    }
+  }
+
+  function handleNovelBookmarksPage() {
+    if (!isNovelBookmarksPage()) return;
+    injectRescueSeriesTab();
+  }
+
   function renderSeriesChapter(viewer, data) {
     clearNode(viewer);
     viewer.append(element('h2', 'pixiv-rescue-title', data.title || '未命名章节'));
@@ -576,7 +708,11 @@
       handleSeriesPage();
       return;
     }
-    if (isBookmarksListPage() || isWatchlistPage()) handleListPage();
+    if (isBookmarksListPage() || isWatchlistPage()) {
+      handleListPage();
+      return;
+    }
+    if (isNovelBookmarksPage()) handleNovelBookmarksPage();
   }
 
   if (document.readyState === 'loading') {

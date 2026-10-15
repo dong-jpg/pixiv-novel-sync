@@ -42,11 +42,12 @@ def test_personal_install_keeps_identity_and_minimal_permissions() -> None:
         "https://www.pixiv.net/novel/series/*",
         "https://www.pixiv.net/users/*/bookmarks/novels*",
         "https://www.pixiv.net/following/watchlist/novels*",
+        "https://www.pixiv.net/novel/bookmark_new.php*",
     }
     assert "require" not in fields and "resource" not in fields
     version = fields.get("version", [""])
     assert len(version) == 1 and re.fullmatch(r"\d+\.\d+\.\d+", version[0])
-    assert tuple(map(int, version[0].split("."))) >= (0, 2, 0)
+    assert tuple(map(int, version[0].split("."))) >= (0, 3, 0)
 
 
 def test_personal_install_identifies_its_author_license_and_source() -> None:

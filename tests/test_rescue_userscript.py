@@ -20,6 +20,7 @@ def test_userscript_metadata_and_security_contract() -> None:
     assert "@match        https://www.pixiv.net/novel/series/*" in script
     assert "@match        https://www.pixiv.net/users/*/bookmarks/novels*" in script
     assert "@match        https://www.pixiv.net/following/watchlist/novels*" in script
+    assert "@match        https://www.pixiv.net/novel/bookmark_new.php*" in script
     assert "@connect     pixiv.dongboapp.com" in script
     assert "GM_xmlhttpRequest" in script
     assert "GM_getValue" in script
@@ -73,6 +74,11 @@ def test_userscript_matches_list_pages_without_disturbing_healthy_cards() -> Non
     # 类型未知时 novel/series 两头都查，命中哪个算哪个
     assert "data-gtm-value" in script
     assert "'unknown'" in script
+    # bookmark_new.php 顶部的「拯救系列」tab：复用救援系列列表接口分页渲染
+    assert "isNovelBookmarksPage" in script
+    assert "'/api/rescue/v1/series?page='" in script
+    assert "injectRescueSeriesTab" in script
+    assert "拯救系列" in script
     # Pixiv SPA 兼容：replaceState 也要触发路由重判
     assert "history.replaceState" in script
 
