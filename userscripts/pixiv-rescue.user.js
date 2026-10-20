@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.3.5
+// @version      0.3.6
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -109,6 +109,16 @@
         '。当前浏览器/管理器未提供，救援功能不可用。请换用支持完整 GM API 的管理器（如 Tampermonkey）。';
       (document.body || document.documentElement).prepend(bar);
       return false;
+    }
+    // GM_registerMenuCommand 缺失不致命（只是没有菜单入口，Token 还能通过
+    // 管理器自带的方式设置），但不做兜底会在 registerTokenMenus 里抛错、
+    // 让后面所有初始化（包括页面处理）全部不执行——这同样是「页面零反应」
+    // 的一种来源。降级为无菜单模式继续运行。
+    if (typeof GM_registerMenuCommand !== 'function') {
+      window.GM_registerMenuCommand = function () {};
+    }
+    if (typeof GM_setValue !== 'function') {
+      window.GM_setValue = function () {};
     }
     return true;
   }
@@ -859,6 +869,9 @@
 
   function start() {
     if (!checkRuntimeSupport()) return;
+    // 隐形加载标记：控制台可查 window.__pixivRescueLoaded 区分
+    // 「脚本没注入」与「注入了但没识别到目标」。零可见输出的排查入口。
+    window.__pixivRescueLoaded = true;
     registerTokenMenus();
     routeRescue();
     let lastHref = window.location.href;
