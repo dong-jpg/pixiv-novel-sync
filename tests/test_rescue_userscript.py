@@ -103,6 +103,10 @@ def test_userscript_locks_a14_fixes() -> None:
     assert "clearNode(grid)" not in load_page_body
     # interval 防重复注册
     assert "__pixivRescueListInterval" in script
+    # 0.3.2：请求失败不再静默——Token 缺失/失效与网络故障显示页面级提示条
+    assert "showRescueNotice" in script
+    assert "救援脚本未设置 Token" in script
+    assert "data-pixiv-rescue-notice" in script
 
 
 @pytest.fixture(scope="module")

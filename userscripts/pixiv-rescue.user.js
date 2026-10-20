@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.3.1
+// @version      0.3.2
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -55,6 +55,32 @@
   // 列表页白块的判定阈值：Pixiv 失效卡片只有一句提示文案，健康卡片至少有
   // 标题+作者+标签。放到 64 字仍能排除几乎所有健康卡片。
   const BROKEN_CARD_TEXT_LIMIT = 64;
+
+  // 请求失败提示条：旧版失败完全静默（Token 缺失/失效/网络错误都只是 reject
+  // 后被吞），用户无从知道「为什么没有救援标记」。同一种错误只提示一次，
+  // 不随每轮扫描刷屏。
+  let lastNoticeKey = null;
+  function showRescueNotice(kind) {
+    const messages = {
+      missing_token: '救援脚本未设置 Token：点 Tampermonkey 菜单「设置或更新救援 Token」后刷新页面',
+      unauthorized: '救援 Token 无效：请到网站设置页轮换 Token 后重新填写',
+      network_error: '无法连接救援服务，救援标记暂不可用',
+      network_timeout: '救援服务响应超时，救援标记暂不可用',
+      server_error: '救援服务暂时出错，救援标记暂不可用'
+    };
+    if (lastNoticeKey === kind) return;
+    if (document.querySelector('[data-pixiv-rescue-notice]')) return;
+    lastNoticeKey = kind;
+    addStyles();
+    const bar = element('div', 'pixiv-rescue-notice-bar', messages[kind] || '救援标记暂不可用');
+    bar.setAttribute('data-pixiv-rescue-notice', '');
+    const close = element('button', 'pixiv-rescue-button', '知道了');
+    close.type = 'button';
+    close.addEventListener('click', function () { bar.remove(); });
+    bar.append(close);
+    const host = document.querySelector('main') || document.body;
+    host.prepend(bar);
+  }
 
   function registerTokenMenus() {
     GM_registerMenuCommand('设置或更新救援 Token', function () {
@@ -206,7 +232,8 @@
       '.pixiv-rescue-tab-card{display:flex;flex-direction:column;gap:6px;padding:12px;border:1px solid #e5e7eb;border-radius:8px;background:#fff}',
       '.pixiv-rescue-tab-title{font-size:15px;font-weight:700;color:#111827;line-height:1.4;overflow-wrap:anywhere}',
       '.pixiv-rescue-tab-meta{font-size:12px;color:#6b7280;line-height:1.6}',
-      '.pixiv-rescue-tab-pager{margin:12px 0;text-align:center}'
+      '.pixiv-rescue-tab-pager{margin:12px 0;text-align:center}',
+      '.pixiv-rescue-notice-bar{display:flex;align-items:center;gap:12px;justify-content:center;max-width:760px;margin:12px auto;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px;line-height:1.6}'
     ].join('');
     document.head.append(style);
   }
@@ -447,7 +474,7 @@
             (match.personal_hold ? '' : '（本人已取消收藏/追更）');
           entry.card.prepend(badge);
         });
-      }).catch(function () {
+      }).catch(function (error) {
         // 失败撤销 pending 标记：下一轮扫描（3 秒后）会对这些卡片重试。
         // A14-03 的根因是旧版在查询前就写永久标记且失败不撤销。
         batch.entries.forEach(function (entry) {
@@ -455,6 +482,12 @@
             entry.card.removeAttribute(ROOT_ATTRIBUTE);
           }
         });
+        // 不再静默：Token 缺失/失效、网络故障给出可见提示（同种错误只提示一次）
+        const kind = error && error.message;
+        if (kind === 'missing_token' || kind === 'unauthorized' ||
+            kind === 'network_error' || kind === 'network_timeout' || kind === 'server_error') {
+          showRescueNotice(kind);
+        }
       });
     });
   }
