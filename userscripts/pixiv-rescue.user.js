@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.3.6
+// @version      0.3.7
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -449,16 +449,22 @@
       return state === 'card' || state === 'card-pending';
     }
 
-    // 1) 有链接的失效卡片
-    document.querySelectorAll('a[href*="/novel/show.php?id="], a[href*="/novel/series/"]').forEach(function (card) {
-      if (alreadyHandled(card)) return;
-      if (card.querySelector('[' + ROOT_ATTRIBUTE + '="badge"]')) return;
-      if (!cardIsBroken(card)) return;
-      const href = card.getAttribute('href') || '';
+    // 1) 有链接的失效卡片。去重键是共享容器（div.works-item / li）而不是链接
+    // 自身：手机端生产实测同一失效卡有两个嵌套 <a>（outer-router-link 外层 +
+    // 内层，href 相同），旧版在链接上打标记，第二个链接不认第一个，同一张卡
+    // 注册两次、两个「已备份」徽标叠在同一张卡上（用户看到的挤压重影）。
+    const handledCards = new Set();
+    document.querySelectorAll('a[href*="/novel/show.php?id="], a[href*="/novel/series/"]').forEach(function (link) {
+      const card = link.closest('div.works-item, li') || link;
+      if (handledCards.has(card)) return;
+      if (alreadyHandled(card)) { handledCards.add(card); return; }
+      if (card.querySelector('[' + ROOT_ATTRIBUTE + '="badge"]')) { handledCards.add(card); return; }
+      if (!cardIsBroken(link)) return;
+      const href = link.getAttribute('href') || '';
       const seriesMatch = href.match(/\/novel\/series\/(\d+)/);
       const novelMatch = href.match(/[?&]id=(\d+)/);
-      if (seriesMatch) register(card, seriesMatch[1], 'series');
-      else if (novelMatch) register(card, novelMatch[1], 'novel');
+      if (seriesMatch) { handledCards.add(card); register(card, seriesMatch[1], 'series'); }
+      else if (novelMatch) { handledCards.add(card); register(card, novelMatch[1], 'novel'); }
     });
 
     // 2) 无链接的白块：系列被删/隐藏时 Pixiv 不再渲染链接，但卡片上通常还留着

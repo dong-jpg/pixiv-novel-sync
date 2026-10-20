@@ -119,6 +119,9 @@ def test_userscript_locks_a14_fixes() -> None:
     assert "div.works-item" in script
     # 失效文案距链接卡片 3 层深，cardIsBroken 上查四层
     assert "for (let i = 0; i < 4 && node && node.parentElement; i += 1)" in script
+    # 0.3.7：去重键是共享容器（同一失效卡的双嵌套 <a> 只注册一次，单徽标）
+    assert "link.closest('div.works-item, li') || link" in script
+    assert "handledCards" in script
 
 
 @pytest.fixture(scope="module")
