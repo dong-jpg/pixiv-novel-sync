@@ -43,6 +43,12 @@ def test_personal_install_keeps_identity_and_minimal_permissions() -> None:
         "https://www.pixiv.net/users/*/bookmarks/novels*",
         "https://www.pixiv.net/following/watchlist/novels*",
         "https://www.pixiv.net/novel/bookmark_new.php*",
+        # 0.3.3：手机端语言前缀路径（/en/、/zh/ 等）——仅 Pixiv 站内语言前缀
+        "https://www.pixiv.net/*/novel/show.php*",
+        "https://www.pixiv.net/*/novel/series/*",
+        "https://www.pixiv.net/*/users/*/bookmarks/novels*",
+        "https://www.pixiv.net/*/following/watchlist/novels*",
+        "https://www.pixiv.net/*/novel/bookmark_new.php*",
     }
     assert "require" not in fields and "resource" not in fields
     version = fields.get("version", [""])

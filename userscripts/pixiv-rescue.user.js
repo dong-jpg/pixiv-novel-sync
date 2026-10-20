@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.3.2
+// @version      0.3.3
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -14,6 +14,11 @@
 // @match        https://www.pixiv.net/users/*/bookmarks/novels*
 // @match        https://www.pixiv.net/following/watchlist/novels*
 // @match        https://www.pixiv.net/novel/bookmark_new.php*
+// @match        https://www.pixiv.net/*/novel/show.php*
+// @match        https://www.pixiv.net/*/novel/series/*
+// @match        https://www.pixiv.net/*/users/*/bookmarks/novels*
+// @match        https://www.pixiv.net/*/following/watchlist/novels*
+// @match        https://www.pixiv.net/*/novel/bookmark_new.php*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -80,6 +85,25 @@
     bar.append(close);
     const host = document.querySelector('main') || document.body;
     host.prepend(bar);
+  }
+
+  // ── 手机端兼容 ─────────────────────────────────────────────
+  // 部分手机脚本管理器（X浏览器/Via 等）对 GM API 支持不齐：缺 GM_xmlhttpRequest
+  // 时 apiGet 一调用就抛 TypeError，整个脚本静默死亡——页面什么都没有，用户
+  // 无从排查。这里在启动最前面做能力检测并给出可见提示。
+  function checkRuntimeSupport() {
+    const missing = [];
+    if (typeof GM_getValue !== 'function') missing.push('GM_getValue');
+    if (typeof GM_xmlhttpRequest !== 'function') missing.push('GM_xmlhttpRequest');
+    if (missing.length) {
+      const bar = document.createElement('div');
+      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;padding:10px 14px;background:#fef2f2;color:#991b1b;font:13px/1.6 -apple-system,sans-serif;border-bottom:1px solid #fca5a5';
+      bar.textContent = '救援脚本需要脚本管理器支持 ' + missing.join('、') +
+        '。当前浏览器/管理器未提供，救援功能不可用。请换用支持完整 GM API 的管理器（如 Tampermonkey）。';
+      (document.body || document.documentElement).prepend(bar);
+      return false;
+    }
+    return true;
   }
 
   function registerTokenMenus() {
@@ -321,12 +345,23 @@
 
   // ── 收藏页 / 追更页列表匹配 ──────────────────────────────────
 
+  // Pixiv 非日语界面会给路径加语言前缀（/en/、/zh/ 等）。统一在这里剥掉，
+  // 各页判定只写无前缀形态，避免每处正则都要枚举语言。
+  function pathWithoutLangPrefix() {
+    const path = window.location.pathname;
+    // 命中语言前缀时保留开头的「/」：剥的是 /en/ 段而不是整个前缀串
+    const m = path.match(/^\/(en|zh|ja|ko|fr|de|it|es|pt|ru|th|vi|id|ms|pl|hu|nl|sv|da|fi|no|tr|ar|he|fa|hi|bn|ta|tl|uk|el|ro|bg|sr|hr|sk|sl|lt|lv|et|ka|az|kk|uz|mn|my|km|lo|si|ne)(\/|$)/);
+    if (!m) return path;
+    const rest = path.slice(m[1].length + 1); // 去掉「/语言」
+    return rest.startsWith('/') ? rest : '/' + rest;
+  }
+
   function isBookmarksListPage() {
-    return /^\/users\/\d+\/bookmarks\/novels/.test(window.location.pathname);
+    return /^\/users\/\d+\/bookmarks\/novels/.test(pathWithoutLangPrefix());
   }
 
   function isWatchlistPage() {
-    return window.location.pathname === '/following/watchlist/novels';
+    return pathWithoutLangPrefix() === '/following/watchlist/novels';
   }
 
   function climbToCard(node) {
@@ -504,7 +539,7 @@
   // ── 收藏页（bookmark_new.php）「拯救系列」tab ─────────────────
 
   function isNovelBookmarksPage() {
-    return window.location.pathname === '/novel/bookmark_new.php';
+    return pathWithoutLangPrefix() === '/novel/bookmark_new.php';
   }
 
   function renderSeriesCard(item) {
@@ -736,7 +771,7 @@
   }
 
   function seriesIdFromPage() {
-    const match = window.location.pathname.match(/\/novel\/series\/(\d+)/);
+    const match = pathWithoutLangPrefix().match(/\/novel\/series\/(\d+)/);
     return match ? match[1] : null;
   }
 
@@ -792,6 +827,7 @@
   }
 
   function start() {
+    if (!checkRuntimeSupport()) return;
     registerTokenMenus();
     routeRescue();
     let lastHref = window.location.href;
@@ -816,11 +852,11 @@
   }
 
   function routeRescue() {
-    if (window.location.pathname === '/novel/show.php') {
+    if (pathWithoutLangPrefix() === '/novel/show.php') {
       handleNovelPage();
       return;
     }
-    if (window.location.pathname.startsWith('/novel/series/')) {
+    if (pathWithoutLangPrefix().startsWith('/novel/series/')) {
       handleSeriesPage();
       return;
     }

@@ -21,6 +21,9 @@ def test_userscript_metadata_and_security_contract() -> None:
     assert "@match        https://www.pixiv.net/users/*/bookmarks/novels*" in script
     assert "@match        https://www.pixiv.net/following/watchlist/novels*" in script
     assert "@match        https://www.pixiv.net/novel/bookmark_new.php*" in script
+    # 手机端语言前缀路径（/en/ 等）也要注入（0.3.3）
+    assert "@match        https://www.pixiv.net/*/novel/show.php*" in script
+    assert "@match        https://www.pixiv.net/*/users/*/bookmarks/novels*" in script
     assert "@connect     pixiv.dongboapp.com" in script
     assert "GM_xmlhttpRequest" in script
     assert "GM_getValue" in script
@@ -107,6 +110,9 @@ def test_userscript_locks_a14_fixes() -> None:
     assert "showRescueNotice" in script
     assert "救援脚本未设置 Token" in script
     assert "data-pixiv-rescue-notice" in script
+    # 0.3.3：手机端兼容——GM API 能力检测 + 语言前缀路径剥离
+    assert "checkRuntimeSupport" in script
+    assert "pathWithoutLangPrefix" in script
 
 
 @pytest.fixture(scope="module")
