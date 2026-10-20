@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.1.0
+// @version      0.1.1
 // @description  仅在 Pixiv 小说或系列明确失效时，从私人备份读取并标记救援内容。
 // @match        https://www.pixiv.net/novel/show.php*
 // @match        https://www.pixiv.net/novel/series/*
@@ -371,15 +371,34 @@
     return match ? match[1] : null;
   }
 
+  // SPA 切页后旧请求的应答不能渲染进新页面（A14-05）：每次 routeRescue 递增代次，
+  // 异步回调里核对代次与目标 ID，不一致直接丢弃。
+  function routeGeneration() {
+    return Number(window.__pixivRescueRouteGen || 0);
+  }
+
+  function bumpRouteGeneration() {
+    window.__pixivRescueRouteGen = routeGeneration() + 1;
+    return window.__pixivRescueRouteGen;
+  }
+
   function handleNovelPage() {
     if (isNovelPageHealthy()) return;
     const novelId = novelIdFromPage();
     if (!novelId) return;
+    const generation = bumpRouteGeneration();
     waitForUnavailableState(isNovelPageHealthy).then(function (unavailable) {
       if (!unavailable) return;
+      if (routeGeneration() !== generation || novelIdFromPage() !== novelId) return;
       apiGet('/api/rescue/v1/novels/' + encodeURIComponent(novelId))
-        .then(renderNovel)
-        .catch(renderError);
+        .then(function (data) {
+          if (routeGeneration() !== generation || novelIdFromPage() !== novelId) return;
+          renderNovel(data);
+        })
+        .catch(function (error) {
+          if (routeGeneration() !== generation || novelIdFromPage() !== novelId) return;
+          renderError(error);
+        });
     });
   }
 
@@ -387,13 +406,19 @@
     if (isSeriesPageHealthy()) return;
     const seriesId = seriesIdFromPage();
     if (!seriesId) return;
+    const generation = bumpRouteGeneration();
     waitForUnavailableState(isSeriesPageHealthy).then(function (unavailable) {
       if (!unavailable) return;
+      if (routeGeneration() !== generation || seriesIdFromPage() !== seriesId) return;
       apiGet('/api/rescue/v1/series/' + encodeURIComponent(seriesId))
         .then(function (data) {
+          if (routeGeneration() !== generation || seriesIdFromPage() !== seriesId) return;
           renderSeries(data, seriesId);
         })
-        .catch(renderError);
+        .catch(function (error) {
+          if (routeGeneration() !== generation || seriesIdFromPage() !== seriesId) return;
+          renderError(error);
+        });
     });
   }
 

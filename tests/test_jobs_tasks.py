@@ -949,3 +949,80 @@ def test_recommendation_run_cancel_marks_job_cancelled(tmp_path, monkeypatch):
     runner.run(state.job_id)
 
     assert manager.get_job(state.job_id).status == JobStatus.CANCELLED
+
+
+def test_preference_analyze_cancel_accepted_never_publishes_profile(tmp_path, monkeypatch):
+    """A14-02：取消已被接受后，增量统计可以保留，但默认画像绝不能被覆盖发布。"""
+    from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobStatus, JobType
+    from pixiv_novel_sync.jobs.runner import JobRunner
+    from pixiv_novel_sync.jobs.manager import JobManager
+
+    published = {"create": 0, "update": 0}
+
+    class FakeReporter:
+        def add_log(self, level, message):
+            pass
+
+    class FakeDb:
+        def __init__(self, path):
+            pass
+
+        def init_schema(self):
+            pass
+
+        def get_default_preference_profile(self):
+            return {"id": 7, "stats": {"refined_keywords": ["old_keyword"]}, "profile": {}}
+
+        def create_preference_profile(self, data):
+            published["create"] += 1
+            return 99
+
+        def update_preference_profile(self, profile_id, data):
+            published["update"] += 1
+
+        def close(self):
+            pass
+
+    class FakeAnalyzer:
+        def __init__(self, db):
+            pass
+
+        def analyze_incremental(self, batch_size, max_batches, min_text_length=1000, progress=None):
+            return {"processed_this_run": 3, "analyzed_total": 3, "remaining": 0, "done": True}
+
+        def rebuild_profile_from_accumulator(self):
+            return {
+                "source_scope": {"incremental": True},
+                "stats": {"top_keywords": [{"name": "new_keyword"}]},
+                "profile": {"positive_preferences": {"tags": ["新tag"]}},
+            }
+
+        def build_profile(self, stats):
+            return {"positive_preferences": {"tags": ["新tag"]}}
+
+    monkeypatch.setattr("pixiv_novel_sync.jobs.tasks._job_reporter_from_context", lambda context: FakeReporter())
+    monkeypatch.setattr("pixiv_novel_sync.preferences.PreferenceAnalyzer", FakeAnalyzer)
+    monkeypatch.setattr("pixiv_novel_sync.jobs.tasks.PreferenceAnalyzer", FakeAnalyzer, raising=False)
+    monkeypatch.setattr("pixiv_novel_sync.storage_db.Database", lambda path: FakeDb(path))
+
+    settings = SimpleNamespace(storage=SimpleNamespace(db_path=tmp_path / "pref.db"), sync=SimpleNamespace(preference_analyze_batch_size=200))
+    manager = JobManager()
+    spec = JobSpec(
+        source=JobSource.WEB,
+        task_types=["preference_analyze"],
+        job_type=JobType.PREFERENCE_ANALYZE,
+        params={},
+    )
+    state = manager.submit(spec)
+
+    def executor(task_type, context):
+        # 模拟统计批次完成后、AI 清洗/画像发布前取消到达
+        manager.request_cancel(state.job_id)
+        return execute_task(task_type, settings, context)
+
+    runner2 = JobRunner(manager, executor)
+    runner2.run(state.job_id)
+
+    # 任务按取消收口，且默认画像没有任何写入
+    assert manager.get_job(state.job_id).status == JobStatus.CANCELLED
+    assert published == {"create": 0, "update": 0}

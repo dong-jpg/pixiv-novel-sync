@@ -21,6 +21,72 @@ T = TypeVar('T')
 # 明确的限流标志：完整 token，避免 "rate" 子串误匹配 moderate/generate 等词
 _RATE_LIMIT_TOKENS = ("rate limit", "rate-limit", "ratelimit", "too many requests", "429")
 
+# 重试补丁覆盖的 pixivpy 方法名单。sync_engine 的六方法之外，状态检查还用到
+# user_detail——名单收在这里供各调用点共享，新增 API 调用时记得登记
+# （tests/test_retry_coverage.py 断言名单与方法调用点一致）。
+RETRY_PATCHED_METHODS = (
+    "user_bookmarks_novel",
+    "user_following",
+    "user_novels",
+    "novel_detail",
+    "novel_series",
+    "webview_novel",
+    "user_detail",
+)
+
+
+def response_is_pixiv_error_page(result: Any) -> bool:
+    """判断分页响应是否是 Pixiv 的错误对象（而非正常列表页）。
+
+    pixivpy 被限流/鉴权失败时不抛异常，而是返回 ``{"error": {...}}`` 形态的
+    JsonDict。分页代码若只看 ``getattr(result, "novels", [])``，会把错误页当成
+    「空的最后一页」记为成功——A14-01 的根因。此函数只做「是不是错误页」判定，
+    不区分错误类型（限流/鉴权/参数错），调用方应按失败处理。
+    """
+    error = None
+    if isinstance(result, dict):
+        error = result.get("error")
+    else:
+        try:
+            error = getattr(result, "error", None)
+        except Exception:  # pragma: no cover - 异常属性访问的兜底
+            error = None
+    if error is None:
+        return False
+    # 正常响应不会带非空 error 字段；str（如 "ok"）或 dict 都算错误页。
+    # 用「error 键存在且值非 None」而非文案匹配，保持与判定器同一 fail-safe 方向。
+    return not (isinstance(error, str) and not error.strip())
+
+
+def apply_pixiv_retry_patch(
+    api: Any,
+    stop_requested: Callable[[], bool] | None = None,
+    max_retries: int = 3,
+    base_delay: float = 5.0,
+    method_names: tuple[str, ...] = RETRY_PATCHED_METHODS,
+) -> None:
+    """把 retry_on_pixiv_error 就地打到 api 对象上；重复调用幂等。
+
+    sync_engine.BookmarkNovelSyncService 与 jobs/services 的各任务共用同一个
+    AppPixivAPI 实例，但重试补丁以前只在 service 构造时打一次，名单外的调用点
+    （状态检查的 user_detail 等）裸奔。统一从这里打：已包装的方法（检测
+    ``_pixiv_retry_original`` 标记）不重复包装。
+    """
+    for method_name in method_names:
+        if not hasattr(api, method_name):
+            continue
+        current = getattr(api, method_name)
+        if getattr(current, "_pixiv_retry_original", None) is not None:
+            continue  # 已包装过，避免叠加退避
+        original = current
+        wrapped = retry_on_pixiv_error(
+            max_retries=max_retries,
+            base_delay=base_delay,
+            stop_requested=stop_requested,
+        )(original)
+        wrapped._pixiv_retry_original = original  # type: ignore[attr-defined]
+        setattr(api, method_name, wrapped)
+
 
 def _extract_status_code(exc: Exception) -> int | None:
     """尽力从异常对象上取 HTTP 状态码。

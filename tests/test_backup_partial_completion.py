@@ -215,3 +215,50 @@ def test_existing_failure_thresholds_still_abort_user(
         assert _task_log_status_for_stats(result) == "partial"
     assert len(backup_case.visited) == int(expected_failure.split("/")[1])
     assert backup_case.rebuilds == []
+
+
+class _ErrorPageApi:
+    """第一页正常、第二页回 {"error": {...}} 的假 api（A14-01 场景）。"""
+
+    def __init__(self, first_page_novels):
+        self.first_page_novels = first_page_novels
+        self.calls = 0
+
+    def user_novels(self, **query):
+        self.calls += 1
+        if self.calls == 1:
+            return SimpleNamespace(
+                novels=list(self.first_page_novels),
+                next_url="page-2",
+            )
+        return {"error": {"message": "Rate Limit"}}
+
+    def parse_qs(self, value):
+        return {"user_id": 1, "page": 2} if value == "page-2" else None
+
+
+@pytest.mark.parametrize("entry", ["direct", "scheduled"])
+def test_upstream_error_page_marks_backup_partial_not_success(backup_case, entry, monkeypatch):
+    """A14-01：错误页曾被 getattr(result, "novels", []) 当成空页记成功。"""
+    novels = [SimpleNamespace(id=n, title=str(n)) for n in range(1, 6)]
+    error_api = _ErrorPageApi(novels)
+
+    # fixture 已 mock _sync_novel_inner / 目录重建；这里只把 api 换成错误页版本
+    monkeypatch.setattr(services, "_login", lambda settings: error_api)
+
+    if entry == "direct":
+        result = run_backup(backup_case, entry)
+        # 第一页的 5 本正常同步；错误页不算任何一本失败，但必须标 partial
+        assert result["novels"] == 5
+        assert result.get("failed", 0) == 0
+        assert result["incomplete"] is True
+        assert result["aborted_reason"] == "upstream_error_page"
+        assert _task_log_status_for_stats(result) == "partial"
+        assert any(level == "error" for level, _ in backup_case.logs)
+    else:
+        # 调度路径：users 表只有 user 1，错误页同样要聚合为 partial
+        result = run_backup(backup_case, entry)
+        assert result["novels"] == 5
+        assert result["incomplete"] is True
+        assert result["aborted_reason"] == "upstream_error_page"
+        assert _task_log_status_for_stats(result) == "partial"

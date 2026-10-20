@@ -315,6 +315,7 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
 
     reporter = _job_reporter_from_context(context)
     stop_requested = _stop_requested_from_context(context)
+    claim_finalization = context.get("claim_finalization")
     reporter.add_log("info", "=== 开始增量分析本地偏好 ===")
 
     db = Database(settings.storage.db_path)
@@ -364,6 +365,11 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
             keep_refined_keywords()
             reporter.add_log("info", "本次没有新小说，沿用已有精炼词")
         else:
+            # A14-02 修复第一处：AI 清洗可能耗时数分钟，进入前先响应取消——
+            # 旧版在这里不查取消，导致「取消已被接受，任务终态是 cancelled，
+            # 画像却被清洗结果覆盖」的不一致。
+            if stop_requested is not None and stop_requested():
+                raise InterruptedError("Task stopped by user")
             # 机械分词的 top_keywords 含大量噪声口语词，用 AI 提炼成可搜索关键词。
             # 调用失败时沿用上一轮精炼词，不再退回未清洗的高频词。
             try:
@@ -372,8 +378,14 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
                     from pixiv_novel_sync.ai.service import AIWritingService
 
                     ai_service = AIWritingService(settings.storage.db_path)
-                    top_tags = [item["name"] for item in stats.get("top_tags", [])[:40] if item.get("name")]
-                    cleaned = ai_service.clean_keywords(raw_keywords, tags=top_tags)
+                    try:
+                        top_tags = [item["name"] for item in stats.get("top_tags", [])[:40] if item.get("name")]
+                        cleaned = ai_service.clean_keywords(raw_keywords, tags=top_tags)
+                    finally:
+                        # 服务持有 Provider 连接池，用完必须显式关闭（P3 资源卫生）
+                        close_service = getattr(ai_service, "close", None)
+                        if callable(close_service):
+                            close_service()
                     if cleaned and cleaned.get("keywords"):
                         stats["refined_keywords"] = cleaned["keywords"]
                         stats["refined_keywords_dropped_sample"] = cleaned.get("dropped_sample", [])
@@ -381,9 +393,20 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
                     else:
                         keep_refined_keywords()
                         reporter.add_log("info", "未配置可用 AI 或清洗无结果，沿用已有精炼词")
+            except InterruptedError:
+                # 取消信号必须穿透清洗的兜底 except，否则任务终态与画像状态不一致
+                raise
             except Exception as exc:
                 keep_refined_keywords()
                 reporter.add_log("warning", f"关键词清洗跳过（{exc}）")
+
+        # A14-02 修复第二处：发布默认画像是对外可见的终态副作用，与取消必须互斥。
+        # 在写入前领取 FinalizationClaim——取消已接受的场合 claim 会失败，
+        # 任务按 cancelled 收口，不再覆盖画像。
+        if stop_requested is not None and stop_requested():
+            raise InterruptedError("Task stopped by user")
+        if claim_finalization is not None and not claim_finalization():
+            raise InterruptedError("Task stopped by user")
 
         rebuilt["stats"] = stats
         rebuilt["profile"] = _merge_saved_negative_preferences(

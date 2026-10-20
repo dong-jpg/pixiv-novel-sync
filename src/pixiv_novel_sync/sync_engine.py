@@ -18,7 +18,8 @@ from .storage_db import Database
 from .storage_files import FileStorage
 from .utils_env import secure_atomic_write
 from .sync.utils import (
-    retry_on_pixiv_error,
+    apply_pixiv_retry_patch,
+    response_is_pixiv_error_page,
     _to_plain,
     _extract_tags,
     _extract_cover_url,
@@ -297,21 +298,12 @@ class BookmarkNovelSyncService:
         # Phase 3.4: 统一限速器
         self.rate_limiter = RateLimiter(default_delay=self.settings.sync.delay_seconds_between_pages)
 
-        # 动态包装API核心方法,自动处理429和网络错误重试
-        for method_name in ["user_bookmarks_novel", "user_following", "user_novels", "novel_detail", "novel_series", "webview_novel"]:
-            if hasattr(self.api, method_name):
-                original = getattr(self.api, method_name)
-                setattr(
-                    self.api,
-                    method_name,
-                    retry_on_pixiv_error(
-                        max_retries=3,
-                        base_delay=5.0,
-                        stop_requested=lambda: bool(
-                            self.stop_requested and self.stop_requested()
-                        ),
-                    )(original),
-                )
+        # 动态包装API核心方法,自动处理429和网络错误重试。
+        # 补丁幂等：service 与状态检查任务共用同一 api 实例时不会叠加包装。
+        apply_pixiv_retry_patch(
+            self.api,
+            stop_requested=lambda: bool(self.stop_requested and self.stop_requested()),
+        )
 
     def sync(self, user_id: int, restricts: Iterable[str], download_assets: bool = True, write_markdown: bool = True, write_raw_text: bool = True, progress_callback: Any = None, phase_name: str = "同步中") -> dict[str, int]:
         stats = _empty_stats()
@@ -361,6 +353,14 @@ class BookmarkNovelSyncService:
                 page_count += 1
                 if progress_callback:
                     progress_callback("page", {"page": page_count, "restrict": restrict})
+                if response_is_pixiv_error_page(result):
+                    # 限流/鉴权失败时 pixivpy 不抛异常而是回 {"error": {...}}，
+                    # 不能当成「空的最后一页」记成功（A14-01 同类问题）
+                    logger.error("user_bookmarks_novel 返回错误页，按失败处理: %s", result)
+                    stats["failed"] = int(stats.get("failed") or 0) + 1
+                    stats["incomplete"] = True
+                    stats["aborted_reason"] = "fetch_failed"
+                    break
                 novels = getattr(result, "novels", []) or []
                 for novel in novels:
                     # 检查是否达到实际同步数量限制
@@ -482,7 +482,14 @@ class BookmarkNovelSyncService:
             following_page_count += 1
             if progress_callback:
                 progress_callback("page", {"page": following_page_count})
-            
+
+            if response_is_pixiv_error_page(following_result):
+                # 错误页按失败处理，不能当空页继续（见 sync() 的同类守卫）
+                logger.error("user_following 返回错误页，按失败处理: %s", following_result)
+                stats["failed"] = int(stats.get("failed") or 0) + 1
+                stats["incomplete"] = True
+                stats["aborted_reason"] = "fetch_failed"
+                break
             users = getattr(following_result, "user_previews", []) or []
             for user_preview in users:
                 user = getattr(user_preview, "user", user_preview)
@@ -556,6 +563,13 @@ class BookmarkNovelSyncService:
             page_count += 1
             if progress_callback:
                 progress_callback("page", {"page": page_count})
+
+            if response_is_pixiv_error_page(following_result):
+                # 错误页与接口异常同等对待：列表不完整，调用方需标记未取完
+                logger.error("user_following 返回错误页，按失败处理: %s", following_result)
+                incomplete = True
+                fetch_failed = True
+                break
 
             for user_preview in (getattr(following_result, "user_previews", []) or []):
                 user = getattr(user_preview, "user", user_preview)
@@ -958,6 +972,13 @@ class BookmarkNovelSyncService:
                 following_page_count += 1
                 if progress_callback:
                     progress_callback("page", {"page": following_page_count})
+                if response_is_pixiv_error_page(following_result):
+                    logger.error("user_following 返回错误页，按失败处理: %s", following_result)
+                    stats["failed"] = int(stats.get("failed") or 0) + 1
+                    stats["incomplete"] = True
+                    stats["aborted_reason"] = "fetch_failed"
+                    _save_watermark()
+                    return stats
                 users = getattr(following_result, "user_previews", []) or []
 
                 for user_preview in users:
@@ -1852,6 +1873,13 @@ class BookmarkNovelSyncService:
                 page_count += 1
                 if progress_callback:
                     progress_callback("phase", {"phase": f"获取收藏列表 ({restrict}) 第{page_count}页"})
+                if response_is_pixiv_error_page(result):
+                    # 错误页意味着远端集合不完整；继续差集会把拉不到的收藏误判为
+                    # 「已取消收藏」。与分页异常同等抛出，交由上层中止检测。
+                    raise RuntimeError(
+                        f"user_bookmarks_novel 返回错误页（{restrict} 第 {page_count} 页），"
+                        "远端列表不完整，中止取消检测以防误判"
+                    )
                 for novel in (getattr(result, "novels", []) or []):
                     remote_ids.add(int(novel.id))
                 next_query = self.api.parse_qs(getattr(result, "next_url", None))
@@ -1903,6 +1931,9 @@ class BookmarkNovelSyncService:
             max_page = page_info.get("maxPage", 1)
             for page_num in range(2, max_page + 1):
                 paged_url = endpoint.replace("p=1", f"p={page_num}")
+                # 与 _fetch_remote_bookmark_ids 同一限速通道：直连 www.pixiv.net 的
+                # Cookie 接口此前零间隔连续翻页，是同文件内唯一的无速请求路径
+                self.rate_limiter.wait(stop_requested=self.stop_requested)
                 paged_resp = http_requests.get(paged_url, headers=headers, proxies=proxies,
                                                 timeout=self.settings.pixiv.timeout, verify=self.settings.pixiv.verify_ssl)
                 if paged_resp.status_code != 200:

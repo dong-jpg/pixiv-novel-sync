@@ -10,6 +10,7 @@ from typing import Any
 from pixiv_novel_sync.auth import PixivAuthManager
 from pixiv_novel_sync.storage_db import Database, prepare_schema
 from pixiv_novel_sync.storage_files import FileStorage
+from pixiv_novel_sync.sync.utils import apply_pixiv_retry_patch, response_is_pixiv_error_page
 from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
 
 logger = logging.getLogger(__name__)
@@ -162,6 +163,7 @@ def run_user_backup_task(
         total_seen = 0
         stopped = False
         truncated_by_page_cap = False
+        total_failed_page = False
         next_query: dict[str, Any] | None = {"user_id": user_id}
         # 翻页上限兜底：防止 API 返回自引用 next_url 导致死循环
         # 备份是整库导出，不能共用 max_pages_per_run=2 那种轻量上限
@@ -185,6 +187,19 @@ def run_user_backup_task(
 
             result = api.user_novels(**next_query)
             page_count += 1
+            if response_is_pixiv_error_page(result):
+                # A14-01：Pixiv 限流/鉴权失败时 pixivpy 不抛异常而是回
+                # {"error": {...}}。旧代码 getattr(result, "novels", []) 把它当
+                # 「空的最后一页」记成功，备份没拉到数据却是绿灯。错误页必须按
+                # 失败收口：标记 incomplete 让任务日志显示 partial，并停止翻页。
+                message = (
+                    f"用户全量备份遇到上游错误页（第 {page_count} 页），停止翻页: "
+                    f"{user_name} ({user_id})"
+                )
+                logger.error("%s: %s", message, result)
+                _report_log(reporter, "error", message)
+                total_failed_page = True
+                break
             novels = getattr(result, "novels", []) or []
             total_seen += len(novels)
             for novel in novels:
@@ -231,7 +246,7 @@ def run_user_backup_task(
 
         if stopped:
             _report_log(reporter, "info", f"用户全量备份已停止: {user_name} ({user_id})")
-        elif total_failed:
+        elif total_failed or total_failed_page:
             _report_log(reporter, "warning", f"用户全量备份部分完成: {user_name} ({user_id}), 同步 {total_novels} 本, 失败 {total_failed} 本")
         else:
             _report_log(reporter, "success", f"用户全量备份完成: {user_name} ({user_id}), 同步 {total_novels} 本")
@@ -244,6 +259,9 @@ def run_user_backup_task(
         }
         if total_failed:
             stats.update(failed=total_failed, incomplete=True, aborted_reason="novel_backup_errors")
+        if total_failed_page:
+            # 上游错误页：数据没拉全却没有任何单本失败，必须单独标记
+            stats.update(incomplete=True, aborted_reason="upstream_error_page")
         if truncated_by_page_cap:
             # 触顶翻页上限属于异常截断，必须让任务日志显示 partial
             stats["truncated"] = True
@@ -574,6 +592,11 @@ def _login(settings: Any) -> Any:
     if getattr(settings.pixiv, "user_id", None) is None:
         settings.pixiv.user_id = auth_result.user_id
     _persist_self_profile(settings, auth_result)
+    # 统一给 api 打重试补丁：状态检查（user_detail）等不经过
+    # BookmarkNovelSyncService 的调用点以前完全没有重试/退避保护，
+    # 瞬时网络错误直接进 unknown 计数或空页路径。补丁幂等，service
+    # 构造时会再打一次但不会叠加。
+    apply_pixiv_retry_patch(api)
     return api
 
 
