@@ -1,5 +1,20 @@
 # AI 写作模块拆分 + 2026-09-14 审计整改 Implementation Plan
 
+## 2026-10-14 复核追加事项（尚未修复）
+
+原123个编号任务的勾选保留为10-08历史验收，不能推出目前没有遗漏。38份全分支计划按首次提交时间重新核对，见 [10-14时间线](../../PLAN_AUDIT_2026-10-14.md)；以下新发现以 [审查证据](../../AUDIT_REPORT_2026-10-14.md) 为准：
+
+- [x] **A14-01（两分支）**：校验用户备份的Pixiv错误JSON，区分失败与合法空页，传播父任务失败/部分完成；保留失败后继续轮转的正常设计。（2026-10-20 两分支修复：upstream_error_page + 共享错误页判定接入各分页站点）
+- [x] **A14-02（两分支）**：把共享任务取消传入关键词清洗，画像发布前通过FinalizationClaim与取消互斥；已完成统计批次可保留。（2026-10-20 两分支修复：清洗前取消轮询 + 发布前 claim）
+- [x] **A14-03（main）**：列表救援失败后撤销请求中状态，允许有界重试与Token恢复。（2026-10-20 脚本 0.3.1：pending 两态标记，失败撤销后 3 秒重扫重试）
+- [x] **A14-04（main）**：lookup按两类ID合计最多40分批并去重；补21张未知类型卡片与单批失败回归。（2026-10-20 脚本 0.3.1：buildLookupBatches 含 39+1 边界拆批）
+- [x] **A14-05（两分支）**：等待/请求/渲染全程绑定路由代次，丢弃或取消切页后的旧响应。（2026-10-20 两分支修复：main 脚本 0.3.1 / ai-writing 脚本 0.1.1）
+- [x] **A14-C1（main）**：清理已无调用的`_replay_resume_child`与`_conclude_route`；ai-writing对应方法有调用，保留。（2026-10-20 main 已删除）
+
+main全量1458 passed/6 skipped、ai-writing全量1785 passed/6 skipped并未覆盖以上缺陷；本轮最小复现仍能触发。完整运行记录、分支归属及Linux/真实服务/真机/生产验收在 [当前整改状态](../../REMEDIATION_STATUS_2026-09-30.md)。本轮仅更新文档，不将上述空框改为完成。
+
+
+
 > **2026-10-08 收口说明**：本计划为跨分支任务总台账，T4/T5-11 的实现证据来自 ai-writing，不表示 main 恢复了写作功能。编号任务按代码与自动回归核实；勾选不是 commit/push/部署或真机验收。最终结果见 [当前整改报告](../../REMEDIATION_STATUS_2026-09-30.md)；正文保留的 09-30 与本日首轮核对为历史快照，最后一节记录后续关闭情况。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

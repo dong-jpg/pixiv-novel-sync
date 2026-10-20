@@ -174,16 +174,6 @@ class AIAdminMixin:
             raise AIConflictError("候选快照没有未尝试的模型")
         return next_index
 
-    def _replay_resume_child(
-        self,
-        db: Database,
-        child_id: str,
-    ) -> Iterator[AIStreamChunk]:
-        child = db.get_ai_job(child_id)
-        if child is None:
-            raise AIConflictError("继续任务 child job 不存在")
-        return self._stream_replayed_route_job(child)
-
     def stream_job_with_next_model(
         self,
         job_id: str,

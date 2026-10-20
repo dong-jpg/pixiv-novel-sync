@@ -64,50 +64,6 @@ class AIKeywordCleanMixin:
             return "生成任务已取消"
         return "所有候选模型均不可用"
 
-    def _conclude_route(
-        self,
-        db: Any,
-        context: RouteJobContext,
-        result: RouteResult,
-        *,
-        output_json: dict[str, Any] | None = None,
-        done_data: dict[str, Any] | None = None,
-    ) -> AIStreamChunk:
-        output = result.output_text
-        if result.finish_state == "succeeded":
-            self._finish_route_job(
-                db,
-                context,
-                "succeeded",
-                output,
-                output_json=output_json,
-            )
-            data = {"job_id": context.job_id, "chars": len(output)}
-            if done_data:
-                data.update(done_data)
-            return AIStreamChunk(type="done", data=data)
-
-        message = self._route_result_message(result)
-        if result.finish_state == "partial" and output:
-            self._finish_route_job(
-                db,
-                context,
-                "partial",
-                output,
-                error_message=message,
-            )
-        elif result.finish_state == "cancelled":
-            self._cancel_route_job(db, context, message)
-        else:
-            self._finish_route_job(
-                db,
-                context,
-                "failed",
-                output,
-                error_message=message,
-            )
-        return AIStreamChunk(type="error", data={"message": message})
-
     def clean_keywords(
         self,
         raw_keywords: list[str],

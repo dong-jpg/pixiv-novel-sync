@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -1139,7 +1140,11 @@ class RescueMixin:
         ).fetchone()
         return dict(row) if row else None
 
-    def _novel_evaluation_payload(self, data: dict[str, Any]) -> dict[str, Any]:
+    def _novel_evaluation_payload(
+        self,
+        data: dict[str, Any],
+        parent_lookup: Callable[[int], dict[str, Any] | None] | None = None,
+    ) -> dict[str, Any]:
         text_raw = str(data.get("text_raw") or "")
         if data.get("has_content") is None:
             body_complete = bool(text_raw.strip())
@@ -1161,7 +1166,13 @@ class RescueMixin:
         elif body_complete:
             series_id = data.get("series_id")
             if series_id is not None:
-                parent = self.get_rescue_series(int(series_id))
+                # 批量路径传入 parent_lookup（父系列已一次性评好）；单条路径
+                # 保持原行为，惰性按需评估
+                parent = (
+                    parent_lookup(int(series_id))
+                    if parent_lookup is not None
+                    else self.get_rescue_series(int(series_id))
+                )
                 if parent is not None:
                     eligibility_reason = "parent_series_unavailable"
                     rescue_state = str(parent["rescue_state"])
@@ -1216,6 +1227,68 @@ class RescueMixin:
         # 但要把「本人是否还持有」如实带出去，让油猴脚本能自己决定要不要渲染救援面板。
         payload["personal_hold"] = self._personal_holds_item("novel", int(novel_id))
         return payload
+
+    def get_rescue_items_batch(
+        self,
+        novel_ids: list[int],
+        series_ids: list[int],
+    ) -> dict[str, dict[str, Any]]:
+        """批量版的「按 ID 取备份」，供 /api/rescue/v1/lookup 一次请求查 ≤40 个 ID。
+
+        逐个 get_rescue_novel/get_rescue_series 在 40 ID 时要跑 40~80 次聚合
+        （小说评估还会为父系列各再查一次）。这里把行查询、父系列评估、
+        personal_hold、pending_removal 全部合并成按批的 IN (...) 查询；
+        语义与单条版一致：无备份/无救援状态 → 不出现在返回 map 里。
+        """
+        novels = {}
+        series = {}
+        with self.read_transaction():
+            for novel_id in novel_ids:
+                data = self._novel_rescue_row(int(novel_id))
+                if data is None:
+                    continue
+                novels[int(novel_id)] = data
+            for series_id in series_ids:
+                payload = self.evaluate_rescue_series(int(series_id))
+                if payload is not None and payload.get("rescue_state") is not None:
+                    series[int(series_id)] = payload
+
+            # 父系列评估批量化：小说的 rescue_state 可能继承自父系列
+            parent_ids = sorted({
+                int(data["series_id"])
+                for data in novels.values()
+                if data.get("series_id") is not None
+                and int(data["series_id"]) not in series
+            })
+            parent_map: dict[int, dict[str, Any]] = {}
+            for parent_id in parent_ids:
+                payload = self.evaluate_rescue_series(parent_id)
+                if payload is not None and payload.get("rescue_state") is not None:
+                    parent_map[parent_id] = payload
+
+            # personal_hold / pending_removal 批量化
+            hold_keys: set[tuple[str, int]] = set()
+            for novel_id in novels:
+                hold_keys.add(("novel", novel_id))
+                data = novels[novel_id]
+                if data.get("series_id") is not None:
+                    pass  # 父系列 hold 不进小说 payload，与单条版语义一致
+            for series_id in series:
+                hold_keys.add(("series", series_id))
+            hold_map = self._personal_hold_batch(hold_keys)
+
+            results: dict[str, dict[str, Any]] = {}
+            for novel_id, data in novels.items():
+                payload = self._novel_evaluation_payload(data, parent_lookup=parent_map.get)
+                if payload["rescue_state"] is None:
+                    continue
+                payload["personal_hold"] = hold_map.get(("novel", novel_id), False)
+                results[f"novel:{novel_id}"] = payload
+            for series_id, payload in series.items():
+                payload = dict(payload)
+                payload["personal_hold"] = hold_map.get(("series", series_id), False)
+                results[f"series:{series_id}"] = payload
+            return results
 
     def list_rescues(
         self,
@@ -1460,7 +1533,7 @@ class RescueMixin:
             SELECT COUNT(*)
             FROM novels n
             JOIN novel_texts nt ON nt.novel_id = n.novel_id
-            WHERE n.series_id = ? AND TRIM(COALESCE(nt.text_raw, '')) != ''
+            WHERE n.series_id = ? AND nt.has_content = 1
             """,
             (int(series_id),),
         ).fetchone()
@@ -1483,7 +1556,7 @@ class RescueMixin:
                 FROM novels n
                 JOIN novel_texts nt ON nt.novel_id = n.novel_id
                 WHERE n.series_id = ?
-                  AND TRIM(COALESCE(nt.text_raw, '')) != ''
+                  AND nt.has_content = 1
             )
             SELECT * FROM available
             ORDER BY chapter_number ASC

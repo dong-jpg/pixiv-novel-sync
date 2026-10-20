@@ -293,12 +293,19 @@
           const status = latestJob.value && latestJob.value.status;
           const busy = status === 'running' || status === 'queued' || status === 'cancel_requested';
           pollInterval = setInterval(async () => {
+            // 标签页隐藏时跳过本轮请求（setInterval 继续走，只是不发请求）：
+            // 空闲 20s / 忙碌 3s 的节奏是既有契约（frontend_library_os 测试锁定），
+            // 这里只去掉「后台标签页白白轮询」的部分
+            if (document.hidden) return;
             await fetchJobStatus();
             armJobPoll();
           }, busy ? 3000 : 20000);
         };
         armJobPoll();
-        autoSyncInterval = setInterval(fetchAutoSync, 10000);
+        autoSyncInterval = setInterval(() => {
+          if (document.hidden) return;
+          fetchAutoSync();
+        }, 10000);
       });
 
       onUnmounted(() => {

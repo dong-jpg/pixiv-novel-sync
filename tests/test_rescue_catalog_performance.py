@@ -340,3 +340,42 @@ def test_empty_initialized_catalog_skips_source_query(tmp_path: Path) -> None:
         "rescue_catalog",
         "rescue_catalog_meta",
     }
+
+
+def test_public_rescue_endpoints_return_503_before_catalog_ready(tmp_path: Path) -> None:
+    """P2-1：目录首建完成前，公开端点回 503 而非 500（与 dashboard 端点同一契约）。"""
+    from flask import Flask
+
+    from pixiv_novel_sync.rescue_web import register_rescue_routes
+    from pixiv_novel_sync.settings import PixivSettings, Settings, StorageSettings, SyncSettings
+
+    db = Database(tmp_path / "rescue503.db")
+    try:
+        db.init_schema()
+        # token_hash 是 SHA-256 hex（rescue_web._token_digest 的同构值）
+        import hashlib
+        db.save_rescue_token_record(hashlib.sha256(b"rsq_test").hexdigest(), "rsq_test")
+    finally:
+        db.close()
+
+    settings = Settings(
+        pixiv=PixivSettings(refresh_token="", access_token=None, proxy=None,
+                            timeout=30, verify_ssl=True, user_id=1),
+        sync=SyncSettings(enabled=False, initial_manual_only=True, download_assets=False,
+                          write_markdown=False, write_raw_text=False, bookmark_restricts=["public"],
+                          max_items_per_run=None, max_pages_per_run=None,
+                          delay_seconds_between_items=0, delay_seconds_between_pages=0),
+        storage=StorageSettings(public_dir=tmp_path / "p", private_dir=tmp_path / "v",
+                                db_path=tmp_path / "rescue503.db"),
+    )
+
+    app = Flask(__name__)
+    register_rescue_routes(app, lambda: settings, lambda: "127.0.0.1")
+    client = app.test_client()
+
+    # 空目录（rescue_catalog_meta 为空）：列表端点回 503「尚未生成」。
+    # lookup/明细端点按设计不做目录门控（CLAUDE.md：目录决定能浏览什么，
+    # 明细接口服务已知 ID 的备份），未知 ID 回空集/404，不算目录未就绪。
+    response = client.get("/api/rescue/v1/series", headers={"Authorization": "Bearer rsq_test"})
+    assert response.status_code == 503, (response.status_code, response.get_json())
+    assert "尚未生成" in response.get_json()["error"]

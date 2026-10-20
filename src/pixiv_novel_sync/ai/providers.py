@@ -314,11 +314,17 @@ def _iter_sse_lines(response: requests.Response) -> Iterator[str]:
     split on newlines ourselves, and decode through one incremental decoder.
     """
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    replaced_chars = 0
     buffer = ""
     for chunk in response.iter_content(chunk_size=None):
         if not chunk:
             continue
-        buffer += decoder.decode(chunk)
+        text = decoder.decode(chunk)
+        # errors="replace" 会把坏网关/截断产生的非 UTF-8 字节静默换成 U+FFFD，
+        # 正文缺段却正常收口。这里计数并在收尾时告警，让「清洗结果不是有效 JSON」
+        # 这类下游症状能追溯到上游乱码。
+        replaced_chars += text.count("�")
+        buffer += text
         if len(buffer.encode("utf-8")) > _MAX_SSE_LINE_BYTES and "\n" not in buffer:
             raise AIProviderError(
                 "SSE 单行超过 1 MiB 上限",
@@ -340,7 +346,13 @@ def _iter_sse_lines(response: requests.Response) -> Iterator[str]:
             buffer = buffer[idx + 1:]
     tail = decoder.decode(b"", final=True)
     if tail:
+        replaced_chars += tail.count("�")
         buffer += tail
+    if replaced_chars:
+        logger.warning(
+            "SSE 流解码出现 %d 个替换字符（U+FFFD），上游可能返回了非 UTF-8 字节或被中间代理截断",
+            replaced_chars,
+        )
     if buffer:
         if len(buffer.encode("utf-8")) > _MAX_SSE_LINE_BYTES:
             raise AIProviderError(
@@ -590,7 +602,27 @@ class AIProvider:
             response._content = bytes(body)
             response._content_consumed = True
         elif not requested_stream:
-            _ = response.content
+            # 非流式回退也要限读：stream=True 下 .content 是一次性整读，
+            # 无 Content-Length 的超大响应会先整个进内存再被上限拒绝
+            # （与 _response_error_details 同一上限）。
+            body = bytearray()
+            try:
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    if isinstance(chunk, str):
+                        chunk = chunk.encode("utf-8")
+                    if len(body) + len(chunk) > _MAX_ERROR_BODY_BYTES:
+                        raise AIProviderError(
+                            "AI API 响应体超过 "
+                            f"{_byte_limit_label(_MAX_ERROR_BODY_BYTES)} 上限"
+                        )
+                    body.extend(chunk)
+            except BaseException:
+                response.close()
+                raise
+            response._content = bytes(body)
+            response._content_consumed = True
         return response
 
     def _post(self, url: str, **kwargs: Any) -> requests.Response:
@@ -1440,19 +1472,31 @@ def _response_error_details(
             category="upstream_error",
             scope="provider",
         )
+    # 限读累计而不是 .content 整读：stream=True 下 .content 会把（可能无
+    # Content-Length 的）错误体一次性读进内存，上限检查发生在事后。
+    raw_body = bytearray()
     try:
-        raw_body = response.content or b""
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            if isinstance(chunk, str):
+                chunk = chunk.encode("utf-8", errors="replace")
+            if len(raw_body) + len(chunk) > _MAX_ERROR_BODY_BYTES:
+                response.close()
+                raise AIProviderError(
+                    "错误响应体超过 1 MiB 上限",
+                    category="upstream_error",
+                    scope="provider",
+                )
+            raw_body.extend(chunk)
+    except AIProviderError:
+        raise
     except Exception:
-        raw_body = b""
-    if isinstance(raw_body, str):
-        raw_body = raw_body.encode("utf-8", errors="replace")
-    if len(raw_body) > _MAX_ERROR_BODY_BYTES:
-        response.close()
-        raise AIProviderError(
-            "错误响应体超过 1 MiB 上限",
-            category="upstream_error",
-            scope="provider",
-        )
+        raw_body = bytearray()
+    # 填回 _content，让后面的 response.json()/response.text 复用已限读的内容，
+    # 不再触发第二次网络读取
+    response._content = bytes(raw_body)
+    response._content_consumed = True
     detail_parts: list[str] = []
     display_message = ""
     try:

@@ -201,6 +201,10 @@ def register_rescue_routes(
                 ):
                     return _public_error("救援 Token 无效", 401)
                 return view(*args, **kwargs)
+            except CatalogNotReadyError:
+                # 与 dashboard 端点同一契约：目录首建完成前公开端点也回 503 而非 500，
+                # 让用户脚本把「还没准备好」和「服务出错」区分开
+                return _public_error("救援目录尚未生成", 503)
             except Exception:
                 logger.exception("救援 API 读取失败：%s", request.path)
                 return _public_error("救援内容读取失败", 500)
@@ -487,8 +491,9 @@ def register_rescue_routes(
 
         db = open_db()
         try:
-            novels = [db.get_rescue_novel(value) for value in novel_ids]
-            series = [db.get_rescue_series(value) for value in series_ids]
+            # 批量取：单条版在 40 ID 时要跑 40~80 次聚合查询（每本小说还会为
+            # 父系列再评一次），这里按批合并为行查询 + 批量 hold/pending 判定
+            batch = db.get_rescue_items_batch(novel_ids, series_ids)
         finally:
             db.close()
         slim_novels = [
@@ -501,7 +506,7 @@ def register_rescue_routes(
                 "rescue_state": item.get("rescue_state"),
                 "personal_hold": bool(item.get("personal_hold")),
             }
-            for item in novels
+            for item in (batch.get(f"novel:{value}") for value in novel_ids)
             if item is not None
         ]
         slim_series = [
@@ -513,7 +518,7 @@ def register_rescue_routes(
                 "rescue_state": item.get("rescue_state"),
                 "personal_hold": bool(item.get("personal_hold")),
             }
-            for item in series
+            for item in (batch.get(f"series:{value}") for value in series_ids)
             if item is not None
         ]
         return jsonify(

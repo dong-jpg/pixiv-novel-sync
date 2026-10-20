@@ -709,18 +709,22 @@ class ModelRouter:
         provider_instances: list[AIProvider],
         messages: list[dict[str, str]],
     ) -> tuple[int, Literal["provider", "heuristic"]]:
-        estimates = [
-            provider.estimate_message_tokens(messages)
-            for provider in provider_instances
-        ]
-        if estimates and all(
-            isinstance(estimate, int)
+        # 逐个 provider 判定，而不是 all-or-nothing：基类 estimate_message_tokens
+        # 返回 None（main 上三个适配器都未覆盖），旧的 all() 契约让「任一
+        # provider 未实现」拖累全部回退启发式——真实分词器接上以后也永远不可达。
+        valid_estimates = [
+            int(estimate)
+            for estimate in (
+                provider.estimate_message_tokens(messages)
+                for provider in provider_instances
+            )
+            if isinstance(estimate, int)
             and not isinstance(estimate, bool)
             and estimate > 0
-            for estimate in estimates
-        ):
+        ]
+        if valid_estimates:
             estimator: Literal["provider", "heuristic"] = "provider"
-            estimated_input = max(int(estimate) for estimate in estimates)
+            estimated_input = max(valid_estimates)
         else:
             estimator = "heuristic"
             estimated_input = sum(
@@ -1070,7 +1074,10 @@ class ModelRouter:
     ) -> RouteResult:
         job = db.get_ai_job(request.job_id)
         if job is None:
-            return self._result(db, request, "", "cancelled")
+            # 记录已被清理（cleanup_ai_jobs / delete_ai_job）：这是竞态中遇到的
+            # 「孤儿」，不是用户取消。归 failed_before_output 让消费端按失败
+            # 处理（keyword_clean 的降级路径），而不是误报「生成任务已取消」。
+            return self._result(db, request, "", "failed_before_output")
         status = job.get("status")
         if status == "partial":
             finish_state = "partial"

@@ -1,8 +1,68 @@
-# 整改与完成情况报告（2026-10-08 复核）
+# 整改与完成情况报告（2026-10-14 复核）
 
-本文件沿用 09-30 路径，作为本轮**唯一当前状态入口**。[09-30 审查](AUDIT_REPORT_2026-09-30.md)和[按首次 Git 提交排序的计划时间线](PLAN_AUDIT_2026-09-30.md)保留修复前快照，不把旧失败数字当成当前结果。
+本文件沿用09-30路径，作为**当前状态入口**。最新依据为 [10-14审查](AUDIT_REPORT_2026-10-14.md) 和 [全分支计划时间线](PLAN_AUDIT_2026-10-14.md)；09-30审查及下面的10-08整改记录保留为历史快照。
 
-## 结论与交付边界
+## 10-14 当前结论
+
+**项目尚未完全开发完成。** 两分支现有全量回归通过，但本轮补充复现了5项P2缺陷，仍未修复；main另有两处无调用私有方法待清理。原123项仓库整改完成是10-08历史验收，不代表当前所有功能、异常边界与生产验收均完成。
+
+| 分支 | 已核对本地/远端HEAD | 本轮全量回归 | 当前范围 |
+|---|---|---|---|
+| main | `57def50cabb0d9e8fbf0e90cde7fa5d9cef04109` | 1458 passed / 6 skipped，375.02秒，退出0 | 含移动改造、独立品牌、救援脚本0.2.2 |
+| ai-writing | `314389360efe6c543f769c2d7336872279a8b0bc` | 1785 passed / 6 skipped，449.19秒，退出0 | 含写作/成人；未合入main上述专属变更 |
+
+两分支compileall与pyflakes均通过，用户脚本Node语法均通过。每条分支的6个skip都是Windows符号链接权限/POSIX mode限制，不能算安全验收通过。详细版本、复现、静态检查与证据边界见 [10-14审查报告](AUDIT_REPORT_2026-10-14.md)。
+
+本轮 `git fetch --all --tags` 与 `git ls-remote --heads origin` 确认只有上述两条远端分支；没有遗留的独立agent分支成果。现工作树为main `D:/gitcode/pixiv-novel-sync`，ai-writing `C:/Users/dong/.codex/worktrees/audit-ai-writing/pixiv-novel-sync`。以下10-08记录中的旧工作树路径只保留历史意义。
+
+## 10-14 待处理代码事项
+
+| 编号 | 优先级/分支 | 确认问题 | 状态 |
+|---|---|---|---|
+| A14-01 | P2 / 两分支 | 用户备份把上游错误JSON视为空成功；错误不进入失败/部分完成统计 | **两分支已修复（2026-10-20）** |
+| A14-02 | P2 / 两分支 | 偏好清洗期间取消已接受，随后仍写入默认画像，任务却显示cancelled | **两分支已修复（2026-10-20）** |
+| A14-03 | P2 / main | 列表卡片请求失败后永久标记，后续扫描不再重试 | **已修复（2026-10-20，脚本 0.3.1）** |
+| A14-04 | P2 / main | 21张未知类型卡片产生42个ID，整批超出lookup上限 | **已修复（2026-10-20，脚本 0.3.1）** |
+| A14-05 | P2 / 两分支 | SPA切换目标后迟到响应仍把旧作品正文插入新页面 | **两分支已修复（2026-10-20，main 0.3.1 / ai-writing 0.1.1）** |
+| A14-C1 | P3 / main | `_replay_resume_child`、`_conclude_route` 两处私有方法无调用；ai-writing对应方法仍在使用 | **main 已删除（2026-10-20）** |
+
+### 2026-10-20 修复批次（main）
+
+审查报告（见会话内 AUDIT_REPORT_2026-10-19 汇总）确定的下列问题同批修复，全部有新增回归测试锁定：
+
+- **A14-01**：`jobs/services.py` user_backup 对 `{"error": {...}}` 错误页按失败收口（`aborted_reason="upstream_error_page"`、任务日志 partial）；`sync/utils.py:response_is_pixiv_error_page` 共享判定，`sync_engine.py` 五个分页站点（收藏/关注列表×3/收藏ID反查）同步接入，错误页不再被当空页。
+- **A14-02**：`jobs/tasks.py` 偏好分析在 AI 清洗前轮询取消、画像发布前领取 `FinalizationClaim`；取消接受后画像零写入，任务按 cancelled 收口。
+- **A14-03/04/05 + P2-5**：用户脚本 0.3.1——卡片 pending 两态标记失败可重试；lookup 按 novel+series 合计 40 分批；明细页请求带路由代次守卫；系列 tab「加载更多」改追加式；列表页 interval 防重复注册。
+- **P2-1**：`rescue_web.py:public_auth` 增加 `CatalogNotReadyError → 503` 分支，公开列表端点与 dashboard 端点契约一致。
+- **P2-2（修正版）**：重试补丁统一为 `sync/utils.py:apply_pixiv_retry_patch`（幂等，名单含 `user_detail`），`_login` 与 `BookmarkNovelSyncService` 共用；状态检查不再裸奔。
+- **P2-4**：`ai/providers.py` 非流式回退与错误体读取均改为 64 KiB 分块限读（1 MiB 上限），不再先整读后检查。
+- **新发现（既有 bug）**：`storage/schema.py:_migrate_ai_tables` 中 `owner_scope`/`idempotency_key_hash` 补列在路由迁移整表重建 ai_jobs **之前**执行，被重建抹掉——新库需跑两次 init_schema 才有这两列。已改为迁移后补列，新库一次建齐。
+- **P3 批**：`_atomic_write_yaml` 随机临时名+模块级写锁；`list_rescue_series_chapters` 改用 `has_content`（免逐章 TRIM 正文）；`cleanup_ai_jobs` 落实 `owner_scope` 过滤；watchlist 直连翻页接入 rate_limiter；SSE 解码替换字符计数告警；`_terminal_race_result` 孤儿任务不再误报「已取消」；删除 main 无调用的 `_replay_resume_child`/`_conclude_route`；`preference_analyze` 用后显式关闭 `AIWritingService`。
+- **性能批（同日第二批）**：`get_rescue_items_batch` 批量 lookup（40 ID 从 40~80 次聚合降为按批）；`crypto.py` 进程级 PBKDF2 KDF 缓存（ai_health 每请求每 provider 数百毫秒 → 首次后零成本）；`_estimate_with_providers` 逐 provider 判定（真实分词器不再被基类 None 拖累）；`fail_stale_ai_jobs` 拆出整点分支改 5 分钟节流（孤儿 AI 任务最长 1 小时 → 5 分钟收口）；`idx_rescue_catalog_item_type` 索引（新系列端点全表扫 → covering index）；dashboard 空闲轮询补 `document.hidden` 门控（20s/3s 节奏为既有契约不动）；dashboard_logs 继续任务切 `window.streamSSE`+`errorText`。
+
+**ai-writing 移植（同日）**：A14-01/02 六文件补丁移植 + A14-05 脚本 0.1.1；全量 1788 passed / 6 skipped。
+
+**明确保留**：`rebuild_rescue_catalog` 增量化（实测 5000 本库 577 ms，收益/风险比不足，见 [10-20 报告](AUDIT_REPORT_2026-10-20.md)）；webapp/sync_engine 大文件拆分；Linux 安全回归与生产外部验收边界沿用 10-14。
+
+验证：main `python -m pytest -q` 全量 **1464 passed / 6 skipped**（基线 1458 → 新增回归后 1464）；ai-writing **1788 passed / 6 skipped**（基线 1785）；`python -m compileall -q src tests` 两分支通过；用户脚本 `node --check` 两分支通过。
+
+这次只进行审查、复现和文档更新；生产代码及现有测试未修改。新缺陷不是已修复项，两个工作树的文档变更尚未提交/推送，也未部署。原有 `audit_routes.py` / `audit_routes_out.txt` 保留不动。
+
+## 10-14 计划核对和外部验收
+
+已按可追溯的首次Git提交时间核对 [38份计划/行动清单](PLAN_AUDIT_2026-10-14.md)：29份共享、3份仅main、6份仅ai-writing；另查早期页面需求、偏好需求及统一规格。保留原始checkbox，区分主体已实施、部分实施、替代、OUT和外部验收，不使用勾选比例宣称完成。
+
+以下仍待完成：Linux安全用例、脱敏生产库的迁移/回退/备份恢复、真实Pixiv/Provider认证与限流/取消/预算、安卓真机、Cloudflare账户侧Full(strict)、真实SSE及长期观察。10-09移动改造已有Chromium窄视口/合成数据验收，不能继续把该本地工作写成未做，也不能扩大为真机或生产验收。
+
+服务器最新**留存记录**仍为10-08的main `481f8a9` 与源站TLS/Nginx验证；本轮未重新检查现网版本。后续main提交已经在远端，不代表已部署。main的30天设备登录、品牌、列表救援不属于当前ai-writing的已交付能力。
+
+---
+
+以下保留10-08整改/交付原始记录；其中“本轮”“当前”“最新”均指该历史阶段，现状以上方10-14结论为准。
+
+
+
+## 10-08 历史结论与交付边界
 
 - 已按数据安全、预算/并发、功能闭环、文档的顺序实施整改；最终验收以本页证据为准，不以旧计划空勾推算完成率。
 - 09-14 跨分支计划的 **123 个编号仓库任务已按实现和自动回归核实，未勾选为 0**；这不是整个项目“100% 完成”，不能替代下方尚待完成的发布与外部验收。
@@ -10,7 +70,7 @@
 - 10-08 发现上轮系统临时目录中的 main 工作树与测试日志已不存在。本轮从 main 重建持久隔离工作树，按共享文件/补丁恢复并重新验证，未沿用丢失日志的成功结论。
 - 写作和成人功能只在 ai-writing；没有整支反向合入 main。历史报告与历史计划分别整合，原文留存以便追溯。
 
-## 分支检查
+## 10-08 历史分支检查
 
 10-08 按用户授权完成提交和推送，并用 `git ls-remote --heads origin` 核对远端。提交前基线为 main `364c8b7`、ai-writing `6fa9f9f`，旧远端 main 为 `d7425ba`；本轮后续提交不改变历史计划的首次 Git 提交顺序。下表记录**代码交付提交**，其后仅追加交付状态文档；最新分支 HEAD 以 Git 引用为准。
 
@@ -90,7 +150,7 @@ ai-writing 首轮完整结果为 **9 failed、1733 passed、4 skipped**：失败
 - [09-14 任务规格](superpowers/plans/2026-09-14-ai-writing-split-and-audit-remediation.md)和[09-30 执行台账](superpowers/plans/2026-09-30-prioritized-completion.md)记录本轮仓库事项；历史空勾不会被无差别改为完成。
 - 活跃 README、开发指导、需求、任务系统、前端页面/契约、模型路由、偏好及 ai-writing 成人/Embedding 指南按当前行为更新。main 文档不恢复已拆除的写作功能。
 
-## 仍须完成的发布/外部验收（按优先级）
+## 10-08 当时的发布/外部验收清单
 
 1. **发布与可回滚性**：Git 代码交付已完成，main 已由用户部署。后续切换版本或回退前仍须完整备份实际数据库和归档目录、确认恢复步骤；本次保留的 Nginx 配置备份不等于业务数据恢复点。
 2. **Linux 与生产库副本**：运行平台安全用例，用脱敏生产库副本做迁移、回退与备份恢复演练；合成 56 表实验不能替代该验收。

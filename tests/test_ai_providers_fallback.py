@@ -88,7 +88,10 @@ def test_post_forces_streaming_transport_and_buffers_non_stream_response(monkeyp
 
     assert response is fake_response
     assert calls[0]["stream"] is True
-    assert fake_response.content_reads == 1
+    # 非流式回退经 iter_content 限读物化（不再用 .content 一次性整读），
+    # 物化结果填回 _content 供后续 json()/text 复用。
+    assert getattr(fake_response, "_content_consumed", False) is True
+    assert getattr(fake_response, "_content", b"") is not None
 
 
 def test_post_keeps_streaming_response_body_lazy(monkeypatch):

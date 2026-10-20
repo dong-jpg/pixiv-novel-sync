@@ -1455,15 +1455,22 @@ class AiCoreMixin:
         if keep_failed_days is None:
             keep_failed_days = keep_days
         with self.transaction() as conn:
+            # owner_scope 收了参数就必须落实：ai-writing 分支按 owner 清理时，
+            # None（缺省）= 全部，传值 = 只清该 scope（列已随迁移保留在 main 上）。
             cur = conn.execute(
                 """
                 DELETE FROM ai_jobs
                 WHERE ((status IN ('succeeded', 'partial', 'done', 'completed', 'success')
-                       AND created_at < datetime('now', ? || ' days'))
+                       AND created_at < datetime('now', :keep_days || ' days'))
                    OR (status IN ('failed', 'error', 'cancelled')
-                       AND created_at < datetime('now', ? || ' days')))
+                       AND created_at < datetime('now', :keep_failed_days || ' days')))
+                  AND (:owner_scope IS NULL OR owner_scope = :owner_scope)
                 """,
-                (f"-{int(keep_days)}", f"-{int(keep_failed_days)}"),
+                {
+                    "keep_days": f"-{int(keep_days)}",
+                    "keep_failed_days": f"-{int(keep_failed_days)}",
+                    "owner_scope": owner_scope,
+                },
             )
             return int(cur.rowcount or 0)
 

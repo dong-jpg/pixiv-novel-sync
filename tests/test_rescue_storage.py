@@ -1259,3 +1259,27 @@ def test_rescue_token_record_is_singleton(db: Database) -> None:
     assert first["token_hash"] == "hash-1"
     assert second["token_hash"] == "hash-2"
     assert db.conn.execute("SELECT COUNT(*) FROM rescue_api_token").fetchone()[0] == 1
+
+
+def test_rescue_items_batch_matches_single_item_semantics(db: Database) -> None:
+    """批量 lookup 与单条 get_rescue_novel/get_rescue_series 语义一致。"""
+    _seed_series(db, 80, status="deleted", total_novels=1)
+    _seed_novel(db, 81, series_id=80, text="章节正文", status="deleted")
+    _seed_novel(db, 82, text="独立正文", status="deleted")
+    _seed_novel(db, 83, text="正常小说", status="normal")  # 无救援状态
+    db.conn.commit()
+
+    single_novel = db.get_rescue_novel(81)
+    single_standalone = db.get_rescue_novel(82)
+    single_series = db.get_rescue_series(80)
+
+    batch = db.get_rescue_items_batch([81, 82, 83, 999], [80, 998])
+
+    # 有救援状态的都在；无状态（正常小说）/不存在的 ID 不在
+    assert set(batch.keys()) == {"novel:81", "novel:82", "series:80"}
+    # 字段与单条版一致（挑关键字段）
+    assert batch["novel:81"]["rescue_state"] == single_novel["rescue_state"]
+    assert batch["novel:81"]["personal_hold"] == single_novel["personal_hold"]
+    assert batch["novel:82"]["rescue_state"] == single_standalone["rescue_state"]
+    assert batch["series:80"]["rescue_state"] == single_series["rescue_state"]
+    assert batch["series:80"]["personal_hold"] == single_series["personal_hold"]

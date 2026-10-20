@@ -599,11 +599,14 @@ def pool_setup_provider_ids(snapshot: CandidateSnapshot) -> tuple[int, ...]:
     return tuple(dict.fromkeys(candidate.provider_id for candidate in snapshot.candidates))
 
 
-def test_prompt_budget_uses_provider_estimator_only_when_all_are_positive(
+def test_prompt_budget_uses_provider_estimator_when_any_provider_provides_one(
     router: ModelRouter,
     pool_agent: AIAgentConfig,
     provider_state: dict[str, Any],
 ) -> None:
+    """逐 provider 判定（2026-10-20 修正）：任一 provider 给出有效估计就用
+    provider 估计（取最大），不再要求全部 provider 都实现——旧 all-or-nothing
+    契约让基类返回 None 时真实分词器永远不可达。"""
     snapshot = router.resolve_candidates(pool_agent)
     provider_ids = pool_setup_provider_ids(snapshot)
     provider_state["estimates"] = {provider_id: 123 for provider_id in provider_ids}
@@ -616,7 +619,21 @@ def test_prompt_budget_uses_provider_estimator_only_when_all_are_positive(
     )
     assert budget.estimator == "provider"
 
-    provider_state["estimates"][provider_ids[-1]] = 0
+    # 部分 provider 缺估计（None）：其余 provider 的估计仍然生效
+    provider_state["estimates"][provider_ids[-1]] = None
+    mixed = router.build_prompt_budget(
+        pool_agent,
+        snapshot,
+        MESSAGES,
+        max_tokens=1_000,
+    )
+    assert mixed.estimator == "provider"
+
+    # 全部无效（0 / None 混合）才回退启发式
+    provider_state["estimates"] = {
+        provider_id: (0 if idx == 0 else None)
+        for idx, provider_id in enumerate(provider_ids)
+    }
     fallback = router.build_prompt_budget(
         pool_agent,
         snapshot,

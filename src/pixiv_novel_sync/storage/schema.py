@@ -590,6 +590,8 @@ class SchemaMixin:
 
             CREATE INDEX IF NOT EXISTS idx_rescue_catalog_kind_state
                 ON rescue_catalog(content_kind, rescue_state);
+            CREATE INDEX IF NOT EXISTS idx_rescue_catalog_item_type
+                ON rescue_catalog(item_type, last_checked_at DESC, item_id DESC);
             CREATE INDEX IF NOT EXISTS idx_rescue_catalog_checked
                 ON rescue_catalog(last_checked_at DESC, item_id DESC);
             CREATE INDEX IF NOT EXISTS idx_rescue_catalog_updated
@@ -845,8 +847,18 @@ class SchemaMixin:
                 "ALTER TABLE ai_providers ADD COLUMN stream_enabled INTEGER NOT NULL DEFAULT 1"
             )
 
+        self.conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            with self.transaction():
+                migrate_model_routing_schema(self.conn)
+        finally:
+            self.conn.execute("PRAGMA foreign_keys=ON")
+
         # ai_jobs 的 owner_scope / idempotency_key_hash 两列原先由成人迁移添加，
         # 剥离后挪到这里（带守卫的 ADD COLUMN），通用查询与 ai-writing 分支都依赖它们。
+        # 必须放在 migrate_model_routing_schema 之后：路由迁移在新库上会整表重建
+        # ai_jobs（_create_ai_jobs_table 不含这两列），先加列会被重建抹掉——
+        # 旧顺序正是靠「跑两次 init_schema 才补上」掩盖的。
         ai_job_columns = {
             row[1] for row in self.conn.execute("PRAGMA table_info(ai_jobs)").fetchall()
         }
@@ -854,13 +866,6 @@ class SchemaMixin:
             self.conn.execute("ALTER TABLE ai_jobs ADD COLUMN owner_scope TEXT")
         if "idempotency_key_hash" not in ai_job_columns:
             self.conn.execute("ALTER TABLE ai_jobs ADD COLUMN idempotency_key_hash TEXT")
-
-        self.conn.execute("PRAGMA foreign_keys=OFF")
-        try:
-            with self.transaction():
-                migrate_model_routing_schema(self.conn)
-        finally:
-            self.conn.execute("PRAGMA foreign_keys=ON")
 
     def _migrate_pending_deletions_table(self) -> None:
         """创建待确认删除表"""

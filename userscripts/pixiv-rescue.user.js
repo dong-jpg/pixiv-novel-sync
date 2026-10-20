@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.3.0
+// @version      0.3.1
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -340,7 +340,9 @@
     const broken = [];
 
     function register(card, id, type) {
-      card.setAttribute(ROOT_ATTRIBUTE, 'card');
+      // 标记为 pending 而非终态：查询失败时会撤销（见 markBrokenCards 的 catch），
+      // 下一轮扫描允许重试。A14-03 的根因就是这里先写了永久标记。
+      card.setAttribute(ROOT_ATTRIBUTE, 'card-pending');
       broken.push({ type: type, id: id, card: card });
       if (type === 'novel') novelIds.add(id);
       else if (type === 'series') seriesIds.add(id);
@@ -351,9 +353,16 @@
       }
     }
 
+    // 卡片已被处理过（终态 card / 处理中 card-pending）都跳过，等待中的卡片由
+    // 上一轮的回调负责收尾——pending 挂太久（请求超时等）会由 catch 撤销。
+    function alreadyHandled(card) {
+      const state = card.getAttribute(ROOT_ATTRIBUTE);
+      return state === 'card' || state === 'card-pending';
+    }
+
     // 1) 有链接的失效卡片
     document.querySelectorAll('a[href*="/novel/show.php?id="], a[href*="/novel/series/"]').forEach(function (card) {
-      if (card.getAttribute(ROOT_ATTRIBUTE) === 'card') return;
+      if (alreadyHandled(card)) return;
       if (card.querySelector('[' + ROOT_ATTRIBUTE + '="badge"]')) return;
       if (!cardIsBroken(card)) return;
       const href = card.getAttribute('href') || '';
@@ -370,7 +379,7 @@
       if (!/^\d{3,12}$/.test(value)) return;
       const card = climbToCard(node);
       if (!card || card === document.body) return;
-      if (card.getAttribute(ROOT_ATTRIBUTE) === 'card') return;
+      if (alreadyHandled(card)) return;
       if (card.querySelector('a[href*="/novel/show.php?id="], a[href*="/novel/series/"]')) return;
       if (card.querySelector('[' + ROOT_ATTRIBUTE + '="badge"]')) return;
       // 卡片本身（或其附近文本）必须就是失效提示，避免把健康卡片的 gtm 值也抓进来
@@ -381,6 +390,9 @@
     return { broken: broken, novelIds: novelIds, seriesIds: seriesIds };
   }
 
+  // /api/rescue/v1/lookup 的单次上限：novel_ids + series_ids 合计 40（A14-04）
+  const LOOKUP_BATCH_LIMIT = 40;
+
   function buildLookupPath(novelIds, seriesIds) {
     const parts = [];
     if (novelIds.size) parts.push('novel_ids=' + encodeURIComponent(Array.from(novelIds).join(',')));
@@ -388,34 +400,72 @@
     return '/api/rescue/v1/lookup?' + parts.join('&');
   }
 
+  // 按 novel+series 合计 ≤40 切批；返回的每批是 {entries, novelIds, seriesIds}。
+  // unknown 类型一张卡占 2 个槽位（novel+series 各一），必须在加入前判断是否
+  // 放得下——先加后查会让单批到 41，服务端 400 后陷入「撤销-重试」循环。
+  // 单批失败只影响该批的卡片，下一轮扫描重试（见 markBrokenCards 的 catch）。
+  function buildLookupBatches(broken) {
+    const batches = [];
+    let current = { entries: [], novelIds: new Set(), seriesIds: new Set() };
+    function closeBatch() {
+      if (current.entries.length) batches.push(current);
+      current = { entries: [], novelIds: new Set(), seriesIds: new Set() };
+    }
+    broken.forEach(function (entry) {
+      const novelNew = (entry.type === 'novel' || entry.type === 'unknown') && !current.novelIds.has(entry.id) ? 1 : 0;
+      const seriesNew = (entry.type === 'series' || entry.type === 'unknown') && !current.seriesIds.has(entry.id) ? 1 : 0;
+      if (current.novelIds.size + current.seriesIds.size + novelNew + seriesNew > LOOKUP_BATCH_LIMIT) {
+        closeBatch();
+      }
+      current.entries.push(entry);
+      if (novelNew) current.novelIds.add(entry.id);
+      if (seriesNew) current.seriesIds.add(entry.id);
+    });
+    closeBatch();
+    return batches;
+  }
+
   function markBrokenCards() {
     const found = collectBrokenCards();
     if (!found.broken.length) return;
-    apiGet(buildLookupPath(found.novelIds, found.seriesIds)).then(function (data) {
-      const novels = {};
-      (data.novels || []).forEach(function (item) { novels[item.novel_id] = item; });
-      const series = {};
-      (data.series || []).forEach(function (item) { series[item.series_id] = item; });
-      found.broken.forEach(function (entry) {
-        const novelMatch = novels[entry.id];
-        const seriesMatch = series[entry.id];
-        const match = entry.type === 'series' ? seriesMatch
-          : (entry.type === 'novel' ? novelMatch : (seriesMatch || novelMatch));
-        if (!match) return;
-        const badge = element('div', 'pixiv-rescue-card-badge');
-        badge.textContent = '已备份：' + (match.title || '未命名') +
-          (match.personal_hold ? '' : '（本人已取消收藏/追更）');
-        entry.card.prepend(badge);
+    buildLookupBatches(found.broken).forEach(function (batch) {
+      apiGet(buildLookupPath(batch.novelIds, batch.seriesIds)).then(function (data) {
+        const novels = {};
+        (data.novels || []).forEach(function (item) { novels[item.novel_id] = item; });
+        const series = {};
+        (data.series || []).forEach(function (item) { series[item.series_id] = item; });
+        batch.entries.forEach(function (entry) {
+          const novelMatch = novels[entry.id];
+          const seriesMatch = series[entry.id];
+          const match = entry.type === 'series' ? seriesMatch
+            : (entry.type === 'novel' ? novelMatch : (seriesMatch || novelMatch));
+          // 这批已成功应答：卡片转终态，不再重复查询（无备份的也转，避免每轮空查）
+          entry.card.setAttribute(ROOT_ATTRIBUTE, 'card');
+          if (!match) return;
+          const badge = element('div', 'pixiv-rescue-card-badge');
+          badge.textContent = '已备份：' + (match.title || '未命名') +
+            (match.personal_hold ? '' : '（本人已取消收藏/追更）');
+          entry.card.prepend(badge);
+        });
+      }).catch(function () {
+        // 失败撤销 pending 标记：下一轮扫描（3 秒后）会对这些卡片重试。
+        // A14-03 的根因是旧版在查询前就写永久标记且失败不撤销。
+        batch.entries.forEach(function (entry) {
+          if (entry.card.getAttribute(ROOT_ATTRIBUTE) === 'card-pending') {
+            entry.card.removeAttribute(ROOT_ATTRIBUTE);
+          }
+        });
       });
-    }).catch(function () {
-      // 列表页查询失败不打扰原页面：明细页才是救援主场
     });
   }
 
   function handleListPage() {
     if (!isBookmarksListPage() && !isWatchlistPage()) return;
     markBrokenCards();
-    window.setInterval(markBrokenCards, 3000);
+    // SPA 切页会重复进入本函数：interval 只注册一次，避免叠加扫描（泄漏修复）
+    if (!window.__pixivRescueListInterval) {
+      window.__pixivRescueListInterval = window.setInterval(markBrokenCards, 3000);
+    }
   }
 
   // ── 收藏页（bookmark_new.php）「拯救系列」tab ─────────────────
@@ -454,18 +504,21 @@
     let hasMore = false;
 
     function loadPage(page) {
-      grid.append(element('div', 'pixiv-rescue-tab-meta', '正在加载拯救系列…'));
+      const loadingNote = element('div', 'pixiv-rescue-tab-meta', '正在加载拯救系列…');
+      grid.append(loadingNote);
       apiGet('/api/rescue/v1/series?page=' + encodeURIComponent(String(page)) + '&page_size=24')
         .then(function (data) {
-          clearNode(grid);
+          loadingNote.remove();
+          // 追加而不是清空：旧版 clearNode(grid) 会把上一页卡片全部丢弃，
+          // 「加载更多」实际变成「跳到下一页」，已看的系列在 tab 会话内无法回看。
           const items = Array.isArray(data.items) ? data.items : [];
           items.forEach(function (item) {
             grid.append(renderSeriesCard(item));
           });
-          if (!items.length) {
+          if (!items.length && !grid.children.length) {
             grid.append(element('div', 'pixiv-rescue-tab-meta', '没有可展示的拯救系列。'));
           }
-          currentPage = Math.max(1, Number(data.page || page));
+          currentPage = Math.max(currentPage, Math.max(1, Number(data.page || page)));
           const totalPages = Math.max(currentPage, Number(data.total_pages || currentPage));
           hasMore = currentPage < totalPages;
           const pager = container.querySelector('[data-rescue-tab-pager]');
@@ -484,8 +537,13 @@
           }
         })
         .catch(function (error) {
-          clearNode(grid);
-          grid.append(element('div', 'pixiv-rescue-error', rescueErrorText(error, true)));
+          loadingNote.remove();
+          if (!grid.children.length) {
+            grid.append(element('div', 'pixiv-rescue-error', rescueErrorText(error, true)));
+          } else {
+            // 已有卡片时只在 pager 位置提示，不清空已加载内容
+            grid.append(element('div', 'pixiv-rescue-error', rescueErrorText(error, true)));
+          }
         });
     }
 
@@ -649,15 +707,34 @@
     return match ? match[1] : null;
   }
 
+  // SPA 切页后旧请求的应答不能渲染进新页面（A14-05）：每次 routeRescue 递增代次，
+  // 异步回调里核对代次与目标 ID，不一致直接丢弃。
+  function routeGeneration() {
+    return Number(window.__pixivRescueRouteGen || 0);
+  }
+
+  function bumpRouteGeneration() {
+    window.__pixivRescueRouteGen = routeGeneration() + 1;
+    return window.__pixivRescueRouteGen;
+  }
+
   function handleNovelPage() {
     if (isNovelPageHealthy()) return;
     const novelId = novelIdFromPage();
     if (!novelId) return;
+    const generation = bumpRouteGeneration();
     waitForUnavailableState(isNovelPageHealthy).then(function (unavailable) {
       if (!unavailable) return;
+      if (routeGeneration() !== generation || novelIdFromPage() !== novelId) return;
       apiGet('/api/rescue/v1/novels/' + encodeURIComponent(novelId))
-        .then(renderNovel)
-        .catch(renderError);
+        .then(function (data) {
+          if (routeGeneration() !== generation || novelIdFromPage() !== novelId) return;
+          renderNovel(data);
+        })
+        .catch(function (error) {
+          if (routeGeneration() !== generation || novelIdFromPage() !== novelId) return;
+          renderError(error);
+        });
     });
   }
 
@@ -665,13 +742,19 @@
     if (isSeriesPageHealthy()) return;
     const seriesId = seriesIdFromPage();
     if (!seriesId) return;
+    const generation = bumpRouteGeneration();
     waitForUnavailableState(isSeriesPageHealthy).then(function (unavailable) {
       if (!unavailable) return;
+      if (routeGeneration() !== generation || seriesIdFromPage() !== seriesId) return;
       apiGet('/api/rescue/v1/series/' + encodeURIComponent(seriesId))
         .then(function (data) {
+          if (routeGeneration() !== generation || seriesIdFromPage() !== seriesId) return;
           renderSeries(data, seriesId);
         })
-        .catch(renderError);
+        .catch(function (error) {
+          if (routeGeneration() !== generation || seriesIdFromPage() !== seriesId) return;
+          renderError(error);
+        });
     });
   }
 

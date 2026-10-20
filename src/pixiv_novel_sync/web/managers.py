@@ -284,6 +284,7 @@ class AutoSyncScheduler:
     # 本轮刚刚被让位的任务名，由 _run_single_task 写入、主循环消费一次
     _pending_preemption: set[str] = field(default_factory=set)
     _last_cleanup_time: float = 0.0  # 上次清理日志的时间
+    _last_stale_check_time: float = 0.0  # 上次判死孤儿 AI 任务的时间
     _catalog_initialization_attempted: bool = False
     _schedule_restored: bool = False  # 是否已从 task_logs 做过一次重启补偿
     _lifecycle_claim: Callable[[AutoSyncScheduler], bool] | None = field(default=None, repr=False)
@@ -418,8 +419,24 @@ class AutoSyncScheduler:
                     self._catalog_initialization_attempted = True
                     self._initialize_rescue_catalog(settings)
 
-                # 清理超过3天的任务日志（每小时执行一次）
+                # 判死孤儿 AI 任务：不再等整点清理（最长 1 小时才收口，期间
+                # /api/dashboard/ai/jobs 一直显示 running）。独立节流 5 分钟跑一次，
+                # fail_stale_ai_jobs 本身只处理租约过期的行，成本与 ai_jobs 规模成正比。
                 now_ts = time.time()
+                if now_ts - self._last_stale_check_time > 300:
+                    db = None
+                    try:
+                        db = Database(settings.storage.db_path)
+                        prepare_schema(db)
+                        db.fail_stale_ai_jobs()
+                        self._last_stale_check_time = now_ts
+                    except Exception as exc:
+                        logger.warning("Failed to fail stale AI jobs: %s", exc)
+                    finally:
+                        if db:
+                            db.close()
+
+                # 清理超过3天的任务日志（每小时执行一次）
                 if now_ts - self._last_cleanup_time > 3600:
                     db = None
                     try:
@@ -430,7 +447,6 @@ class AutoSyncScheduler:
                         retention_days = max(int(settings.sync.task_log_retention_days or 14), 1)
                         db.cleanup_old_task_logs(days=retention_days)
                         db.cleanup_ai_jobs(keep_days=retention_days)
-                        db.fail_stale_ai_jobs()
                         db.cleanup_model_sync_operations(keep_days=retention_days)
                         self._last_cleanup_time = now_ts
                     except Exception as exc:

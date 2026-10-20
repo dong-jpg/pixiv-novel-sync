@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import threading
 from dataclasses import dataclass, field
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -21,6 +22,30 @@ class AISecretError(RuntimeError):
 # 更换为随机 per-install 盐会使全部存量 v2 密文失效，收益（Low）不抵迁移风险，
 # 故保持固定盐。若未来需要，应引入 v3 KDF + 存储随机盐并做透明升级。
 _APP_SALT = b"pixiv-novel-sync-ai-secret-v2"
+
+# 进程级 KDF 结果缓存：PBKDF2 480k 迭代约数百毫秒，而 AISecretManager 是按请求
+# 新建的（ai_health 每次请求对每个 provider 解一次密）。secret 未变时派生结果
+# 确定，进程内缓存一份即可让后续实例零成本复用；secret 轮换时自动失效。
+_KDF_CACHE_LOCK = threading.Lock()
+_KDF_CACHE: dict[tuple[str, int], Fernet] = {}
+
+
+def _cached_v2_fernet(secret: str) -> Fernet:
+    with _KDF_CACHE_LOCK:
+        cached = _KDF_CACHE.get(("v2", hash(secret)))
+        if cached is not None:
+            return cached
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=_APP_SALT,
+        iterations=480_000,
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(secret.encode("utf-8")))
+    fernet = Fernet(key)
+    with _KDF_CACHE_LOCK:
+        _KDF_CACHE[("v2", hash(secret))] = fernet
+    return fernet
 
 
 @dataclass(slots=True)
@@ -47,17 +72,10 @@ class AISecretManager:
         return self._cache_fernet_v1
 
     def _fernet_v2(self) -> Fernet:
-        """新版 KDF：PBKDF2-SHA256，480000 次迭代。"""
+        """新版 KDF：PBKDF2-SHA256，480000 次迭代（进程级缓存派生结果）。"""
         secret = self._get_secret()
         if secret != self._cache_secret_v2 or self._cache_fernet_v2 is None:
-            kdf = PBKDF2HMAC(
-                algorithm=hashes.SHA256(),
-                length=32,
-                salt=_APP_SALT,
-                iterations=480_000,
-            )
-            key = base64.urlsafe_b64encode(kdf.derive(secret.encode("utf-8")))
-            self._cache_fernet_v2 = Fernet(key)
+            self._cache_fernet_v2 = _cached_v2_fernet(secret)
             self._cache_secret_v2 = secret
         return self._cache_fernet_v2
 

@@ -83,6 +83,28 @@ def test_userscript_matches_list_pages_without_disturbing_healthy_cards() -> Non
     assert "history.replaceState" in script
 
 
+def test_userscript_locks_a14_fixes() -> None:
+    """锁定 2026-10-20 批次修复：失败重试、40 ID 分批、路由代次、tab 追加。"""
+    script = _script()
+
+    # A14-03：卡片标记是 pending 两态，失败撤销后下一轮扫描可重试
+    assert "'card-pending'" in script
+    assert "removeAttribute(ROOT_ATTRIBUTE)" in script
+    # A14-04：lookup 按 novel+series 合计 40 切批
+    assert "LOOKUP_BATCH_LIMIT = 40" in script
+    assert "buildLookupBatches" in script
+    # A14-05：SPA 切页后旧请求应答按路由代次丢弃
+    assert "routeGeneration" in script
+    assert "bumpRouteGeneration" in script
+    assert "novelIdFromPage() !== novelId" in script
+    # P2-5：系列 tab「加载更多」是追加而非清空（loadPage 内不得再 clearNode(grid)）
+    assert "loadingNote.remove()" in script
+    load_page_body = script.split("function loadPage(page)", 1)[1].split("function ", 1)[0]
+    assert "clearNode(grid)" not in load_page_body
+    # interval 防重复注册
+    assert "__pixivRescueListInterval" in script
+
+
 @pytest.fixture(scope="module")
 def rescue_browser():
     playwright = pytest.importorskip("playwright.sync_api")
