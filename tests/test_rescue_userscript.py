@@ -113,6 +113,12 @@ def test_userscript_locks_a14_fixes() -> None:
     # 0.3.3：手机端兼容——GM API 能力检测 + 语言前缀路径剥离
     assert "checkRuntimeSupport" in script
     assert "pathWithoutLangPrefix" in script
+    # 0.3.5：手机端真实 DOM 修复——文案「该作品无法显示」+ 官方类名锚点
+    assert "'该作品无法显示'" in script
+    assert "invisible-work-container" in script
+    assert "div.works-item" in script
+    # 失效文案距链接卡片 3 层深，cardIsBroken 上查四层
+    assert "for (let i = 0; i < 4 && node && node.parentElement; i += 1)" in script
 
 
 @pytest.fixture(scope="module")

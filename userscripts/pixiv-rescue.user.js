@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.3.3
+// @version      0.3.5
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -55,7 +55,11 @@
     '作品の削除',
     '該当作品は削除',
     '此作品已删除',
-    '该作品不可见'
+    '该作品不可见',
+    // 2026-10-20 生产实测（手机端 lang=zh 收藏页）：失效卡片的实际文案是
+    // 「该作品无法显示」。旧列表缺少这六个字，卡片识别全部落空——这正是
+    // 「页面上什么都没有」的根因。DOM 探针见 docs/AUDIT_REPORT_2026-10-20.md。
+    '该作品无法显示'
   ];
   // 列表页白块的判定阈值：Pixiv 失效卡片只有一句提示文案，健康卡片至少有
   // 标题+作者+标签。放到 64 字仍能排除几乎所有健康卡片。
@@ -65,6 +69,9 @@
   // 后被吞），用户无从知道「为什么没有救援标记」。同一种错误只提示一次，
   // 不随每轮扫描刷屏。
   let lastNoticeKey = null;
+  // Token 探测只做一次：没识别到失效卡片时用一次 lookup 判断 Token 配置，
+  // 避免「卡片识别失败」与「脚本没运行」在用户眼里无法区分。
+  let tokenProbed = false;
   function showRescueNotice(kind) {
     const messages = {
       missing_token: '救援脚本未设置 Token：点 Tampermonkey 菜单「设置或更新救援 Token」后刷新页面',
@@ -365,10 +372,10 @@
   }
 
   function climbToCard(node) {
-    // 列表卡片通常是 <li> 或固定层级的 div；先找最近的 li，找不到再向上爬几层，
-    // 以「文本仍只有失效提示」为界——再往上就混进整页文本了。
-    const li = node.closest('li');
-    if (li) return li;
+    // 列表卡片容器：手机端生产实测是 div.works-item（不是 li）。先锚定已知
+    // 容器类，退回 li，最后才按「文本仍只有失效提示」向上爬。
+    const card = node.closest('div.works-item, li');
+    if (card && card !== document.body) return card;
     let current = node;
     for (let i = 0; i < 5 && current.parentElement; i += 1) {
       current = current.parentElement;
@@ -388,10 +395,20 @@
 
   function cardIsBroken(card) {
     // 先看链接元素本身；Pixiv 的卡片结构是嵌套的，提示文案可能在链接的
-    // 祖先容器里（白块卡片整体替换掉了标题/封面区），所以再向上查两层。
-    const targets = [card, card.parentElement, card.parentElement && card.parentElement.parentElement];
-    for (const node of targets) {
-      if (elementMatchesUnavailable(node)) return true;
+    // 祖先容器里（白块卡片整体替换掉了标题/封面区），所以再向上查四层。
+    // 层数依据 2026-10-20 手机端生产 DOM 实测：文案在 a.outer-router-link 内
+    // 第 3 层 div（f-title-xs → novel-info → works-item-novel-content → a），
+    // 旧版只查两层导致「该作品无法显示」永远识别不到。
+    const targets = [card];
+    let node = card;
+    for (let i = 0; i < 4 && node && node.parentElement; i += 1) {
+      node = node.parentElement;
+      targets.push(node);
+    }
+    for (const target of targets) {
+      if (elementMatchesUnavailable(target)) return true;
+      // Pixiv 官方的「不可见作品」容器类名：比文案匹配更稳定的结构信号
+      if (typeof target.className === 'string' && target.className.includes('invisible-work-container')) return true;
     }
     return false;
   }
@@ -489,7 +506,21 @@
 
   function markBrokenCards() {
     const found = collectBrokenCards();
-    if (!found.broken.length) return;
+    if (!found.broken.length) {
+      // 没识别到失效卡片 ≠ 一切正常：Token 缺失时旧版在这里静默 return，
+      // 用户永远看不到配置提示。用一次轻量 lookup 探测 Token 状态（只发一次）。
+      if (!tokenProbed) {
+        tokenProbed = true;
+        apiGet('/api/rescue/v1/lookup?novel_ids=1').catch(function (error) {
+          const kind = error && error.message;
+          if (kind === 'missing_token' || kind === 'unauthorized' ||
+              kind === 'network_error' || kind === 'network_timeout' || kind === 'server_error') {
+            showRescueNotice(kind);
+          }
+        });
+      }
+      return;
+    }
     buildLookupBatches(found.broken).forEach(function (batch) {
       apiGet(buildLookupPath(batch.novelIds, batch.seriesIds)).then(function (data) {
         const novels = {};
