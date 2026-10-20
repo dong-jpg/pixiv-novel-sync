@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Current main remediation status and verification (2026-10-08): [docs/REMEDIATION_STATUS_2026-09-30.md](docs/REMEDIATION_STATUS_2026-09-30.md); production server state: [docs/SERVER_DEPLOYMENT_REPORT_2026-10-08.md](docs/SERVER_DEPLOYMENT_REPORT_2026-10-08.md). Historical [reports](docs/archive/HISTORY_REPORTS.md) and [plans](docs/archive/HISTORY_PLANS.md) are indexed separately; their old findings and test counts are snapshots, not the current backlog.
+Current main remediation status and verification (2026-10-20): [docs/REMEDIATION_STATUS_2026-09-30.md](docs/REMEDIATION_STATUS_2026-09-30.md); production server state: [docs/SERVER_DEPLOYMENT_REPORT_2026-10-20.md](docs/SERVER_DEPLOYMENT_REPORT_2026-10-20.md). Historical [reports](docs/archive/HISTORY_REPORTS.md) and [plans](docs/archive/HISTORY_PLANS.md) are indexed separately; their old findings and test counts are snapshots, not the current backlog.
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
