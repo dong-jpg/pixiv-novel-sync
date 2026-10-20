@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.3.7
+// @version      0.4.1
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -265,7 +265,19 @@
       '.pixiv-rescue-viewer{margin-top:18px;padding-top:18px;border-top:1px solid #d1d5db}',
       '.pixiv-rescue-error{max-width:760px;margin:16px auto;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px}',
       '@media(max-width:640px){.pixiv-rescue-root{margin:12px auto;padding:0 10px}.pixiv-rescue-panel{padding:16px}.pixiv-rescue-title{font-size:20px}}',
-      '.pixiv-rescue-card-badge{position:relative;z-index:1;margin:4px;padding:4px 8px;border-radius:4px;background:#dc2626;color:#fff;font-size:12px;font-weight:700;line-height:1.4}',
+      // 徽标是绝对定位角标：失效卡是 grid 布局，旧版把徽标当普通子元素 prepend，
+      // 会被吸进第一个网格单元与标题文字重叠。脱离布局流浮在卡片右上角。
+      // 注意：这个数组经 join('') 拼接，注释必须保持在字符串元素之间的合法
+      // JS 位置——否则注释会吞掉 join 的逗号让前后两条 CSS 粘连成废规则
+      // （0.3.8 的 position:absolute 就这么失效过一次）。
+      '.pixiv-rescue-card-badge{position:relative;z-index:10;margin:6px 8px;padding:5px 8px;border-radius:4px;background:#dc2626;color:#fff;font-size:12px;font-weight:700;line-height:1.4;overflow-wrap:anywhere}',
+      '.pixiv-rescue-card-badge::after{content:"";display:block}',
+      // 宿主容器需要 position 才能让角标锚定：works-item/li 默认静态。
+      // 注意：数组里的字符串元素是 CSS，行内注释照上一条说明保持在逗号之间。
+      'div.works-item[data-pixiv-rescue="card"]{position:relative}',
+      'li[data-pixiv-rescue="card"]{position:relative}',
+      'div.works-item[data-pixiv-rescue="card-pending"]{position:relative}',
+      'li[data-pixiv-rescue="card-pending"]{position:relative}',
       '.pixiv-rescue-tab-link{display:inline-flex;align-items:center;min-height:32px;margin:0 6px;padding:6px 12px;border-bottom:2px solid transparent;color:#333;font-size:14px;text-decoration:none;cursor:pointer}',
       '.pixiv-rescue-tab-link.pixiv-rescue-tab-active{border-bottom-color:#dc2626;color:#dc2626;font-weight:700}',
       '.pixiv-rescue-tab{max-width:1200px;margin:16px auto;padding:0 16px}',
@@ -551,10 +563,26 @@
           // 这批已成功应答：卡片转终态，不再重复查询（无备份的也转，避免每轮空查）
           entry.card.setAttribute(ROOT_ATTRIBUTE, 'card');
           if (!match) return;
+          // 有备份时直接替换失效占位文案：「该作品无法显示」横贯整卡
+          // （316/412px），角标无处安放必与它重叠——替换成信息量更大的
+          // 徽标（含原作标题 + 救援入口提示），无备份时保持 Pixiv 原样。
           const badge = element('div', 'pixiv-rescue-card-badge');
           badge.textContent = '已备份：' + (match.title || '未命名') +
             (match.personal_hold ? '' : '（本人已取消收藏/追更）');
-          entry.card.prepend(badge);
+          const placeholder = Array.from(entry.card.querySelectorAll('div, span, p'))
+            .find(function (el) {
+              return el.childElementCount === 0 && elementMatchesUnavailable(el);
+            });
+          if (placeholder && placeholder.parentElement) {
+            placeholder.replaceWith(badge);
+          } else {
+            // 找不到占位文案（结构变化）：退回角标浮层，容器补 relative
+            const cardStyle = window.getComputedStyle(entry.card);
+            if (cardStyle.position === 'static') {
+              entry.card.style.position = 'relative';
+            }
+            entry.card.prepend(badge);
+          }
         });
       }).catch(function (error) {
         // 失败撤销 pending 标记：下一轮扫描（3 秒后）会对这些卡片重试。
@@ -576,6 +604,10 @@
 
   function handleListPage() {
     if (!isBookmarksListPage() && !isWatchlistPage()) return;
+    // 徽标/提示条的样式只在明细页与错误路径注入过，列表页此前从不调
+    // addStyles——徽标 CSS 根本没进页面，角标定位全部失效（0.3.8 实测
+    // pos:static 的根因）。
+    addStyles();
     markBrokenCards();
     // SPA 切页会重复进入本函数：interval 只注册一次，避免叠加扫描（泄漏修复）
     if (!window.__pixivRescueListInterval) {

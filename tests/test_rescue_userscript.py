@@ -122,6 +122,10 @@ def test_userscript_locks_a14_fixes() -> None:
     # 0.3.7：去重键是共享容器（同一失效卡的双嵌套 <a> 只注册一次，单徽标）
     assert "link.closest('div.works-item, li') || link" in script
     assert "handledCards" in script
+    # 0.4.0/0.4.1：列表页注入样式（旧版徽标 CSS 从未进列表页）+ 占位文案替换
+    # 模式（「该作品无法显示」横贯整卡 316/412px，角标无处安放必重叠）
+    assert "addStyles()" in script
+    assert "placeholder.replaceWith(badge)" in script
 
 
 @pytest.fixture(scope="module")
