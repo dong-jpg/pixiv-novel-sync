@@ -144,6 +144,11 @@ def test_userscript_locks_a14_fixes() -> None:
     assert "'尚无此页'" in script
     # 列表页首屏快速轮询窗口（SPA 分批渲染时避免错过卡片）
     assert "fastScanUntil" in script
+    # 0.6.3：点击意图优先——从救援卡点进来时直接渲染，不依赖页面文案；
+    # 另加 1s URL 变化兜底（Pixiv 内部路由可能绕过 history hook）
+    assert "consumeRescueIntent" in script
+    assert "pixivRescueIntent" in script
+    assert "window.setInterval(onRoute, 1000)" in script
     assert "'.pixiv-rescue-rescued-cover{position:relative;flex:0 0 64px;width:64px;height:90px" in script
 
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.6.2
+// @version      0.6.3
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -676,12 +676,22 @@
     card.classList.add('pixiv-rescue-rescued-card');
 
     const link = element('a', 'pixiv-rescue-rescued-link');
-    // 点击跳转到 Pixiv 正文页（与正常卡片一致），页面到达后 handleNovelPage
-    // 检测到失效态会在该页渲染备份正文。旧版是站内弹窗，用户反馈遮挡收藏页
-    // 且不符合「像正常小说一样进正文页」的预期。
+    // 点击跳转到 Pixiv 正文页（与正常卡片一致），页面到达后渲染备份正文。
+    // 关键：点击时把「这是已救援作品」的意图写进 sessionStorage，目标页直接
+    // 据此渲染——不依赖 Pixiv 页面的失效文案（不同版本/语言/渲染时机下文案
+    // 千变万化，生产已连续踩坑「该作品无法显示」「尚无此页」）。
     link.href = isNovel
       ? '/novel/show.php?id=' + encodeURIComponent(String(match.novel_id))
       : '/novel/series/' + encodeURIComponent(String(match.series_id || match.novel_id));
+    link.addEventListener('click', function () {
+      try {
+        sessionStorage.setItem('pixivRescueIntent', JSON.stringify({
+          type: isNovel ? 'novel' : 'series',
+          id: isNovel ? match.novel_id : (match.series_id || match.novel_id),
+          at: Date.now()
+        }));
+      } catch (_error) { /* 隐私模式等场景下写失败，退回文案识别 */ }
+    });
 
     const coverBox = element('div', 'pixiv-rescue-rescued-cover');
     const mark = element('span', 'pixiv-rescue-mark', '拯救');
@@ -1098,14 +1108,26 @@
     return window.__pixivRescueRouteGen;
   }
 
+  // 读取「点击卡片的救援意图」：存在且与当前页面 ID 匹配、且足够新（30 秒）
+  // 时返回 true。这是「用户明确从救援卡点进来」的直接信号，不需要识别文案。
+  function consumeRescueIntent(expectedType, expectedId) {
+    try {
+      const raw = sessionStorage.getItem('pixivRescueIntent');
+      if (!raw) return false;
+      const intent = JSON.parse(raw);
+      if (!intent || intent.type !== expectedType) return false;
+      if (String(intent.id) !== String(expectedId)) return false;
+      if (Date.now() - Number(intent.at || 0) > 30000) return false;
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
   function handleNovelPage() {
-    if (isNovelPageHealthy()) return;
     const novelId = novelIdFromPage();
     if (!novelId) return;
     const generation = bumpRouteGeneration();
-    // 已删作品的 Pixiv 正文页是 SPA 空壳：没有 <main>、也没有失效文案，
-    // pageSaysUnavailable() 检测不到，旧流程会等满 1.2 秒后误判「健康」放弃。
-    // 因此先探一次备份：查得到就直接渲染，查不到再走原来的失效观察流程。
     const renderBackup = function () {
       apiGet('/api/rescue/v1/novels/' + encodeURIComponent(novelId))
         .then(function (data) {
@@ -1117,6 +1139,17 @@
           renderError(error);
         });
     };
+    // 最高优先级：用户刚从救援卡点进来。意图匹配就直接渲染，完全不看
+    // Pixiv 页面文案或健康态——文案在不同版本/语言/渲染时机下千变万化
+    // （已踩坑「该作品无法显示」「尚无此页」），这个信号是确定性的。
+    if (consumeRescueIntent('novel', novelId)) {
+      renderBackup();
+      return;
+    }
+    if (isNovelPageHealthy()) return;
+    // 已删作品的 Pixiv 正文页是 SPA 空壳：没有 <main>、也没有失效文案，
+    // pageSaysUnavailable() 检测不到，旧流程会等满 1.2 秒后误判「健康」放弃。
+    // 因此先探一次备份：查得到就直接渲染，查不到再走原来的失效观察流程。
     const looksEmpty = !document.querySelector('main') || pageSaysUnavailable();
     if (looksEmpty) {
       // 空壳或已显示失效文案：直接尝试备份（查不到时 renderError 会提示）
@@ -1131,7 +1164,6 @@
   }
 
   function handleSeriesPage() {
-    if (isSeriesPageHealthy()) return;
     const seriesId = seriesIdFromPage();
     if (!seriesId) return;
     const generation = bumpRouteGeneration();
@@ -1147,6 +1179,12 @@
           renderError(error);
         });
     };
+    // 与 handleNovelPage 同理：点击意图优先于任何页面文案/健康态判断
+    if (consumeRescueIntent('series', seriesId)) {
+      renderBackup();
+      return;
+    }
+    if (isSeriesPageHealthy()) return;
     const looksEmpty = !document.querySelector('main') || pageSaysUnavailable();
     if (looksEmpty) {
       renderBackup();
@@ -1185,6 +1223,10 @@
       onRoute();
     };
     window.addEventListener('popstate', onRoute);
+    // 兜底：Pixiv 的内部路由器可能用我们 hook 不到的方式切换 URL（不同版本
+    // 用不同的 history 封装）。定时比对 href，变化就重跑路由——这是廉价且
+    // 不依赖对方实现的最后保险。
+    window.setInterval(onRoute, 1000);
   }
 
   function routeRescue() {
