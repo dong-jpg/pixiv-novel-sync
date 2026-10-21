@@ -49,6 +49,9 @@ def test_personal_install_keeps_identity_and_minimal_permissions() -> None:
         "https://www.pixiv.net/*/users/*/bookmarks/novels*",
         "https://www.pixiv.net/*/following/watchlist/novels*",
         "https://www.pixiv.net/*/novel/bookmark_new.php*",
+        # 0.6.6：全域兜底——部分管理器对带查询参数的 match 处理不一致，
+        # 导致 show.php?id= 漏注入；脚本内 routeRescue 严格限定目标路径
+        "https://www.pixiv.net/*",
     }
     assert "require" not in fields and "resource" not in fields
     version = fields.get("version", [""])

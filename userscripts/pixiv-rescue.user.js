@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.6.5
+// @version      0.6.6
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -19,6 +19,11 @@
 // @match        https://www.pixiv.net/*/users/*/bookmarks/novels*
 // @match        https://www.pixiv.net/*/following/watchlist/novels*
 // @match        https://www.pixiv.net/*/novel/bookmark_new.php*
+// 全域兜底：部分脚本管理器对带查询参数的 match pattern 处理不一致，导致
+// 小说正文页（show.php?id=...）漏注入（实测 window.__pixivRescueLoaded
+// 为 undefined，收藏页却正常）。脚本内部 routeRescue 严格限定目标路径，
+// 其余页面立即返回，无副作用。
+// @match        https://www.pixiv.net/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -1205,15 +1210,26 @@
     });
   }
 
+  function isTargetPage() {
+    const path = pathWithoutLangPrefix();
+    return path === '/novel/show.php'
+      || path.startsWith('/novel/series/')
+      || isBookmarksListPage()
+      || isWatchlistPage()
+      || isNovelBookmarksPage();
+  }
+
   function start() {
     if (!checkRuntimeSupport()) return;
-    // 隐形加载标记：控制台可查 window.__pixivRescueLoaded 区分
-    // 「脚本没注入」与「注入了但没识别到目标」。零可见输出的排查入口。
+    // 全域 @match 兜底会把脚本注入每个 pixiv 页面：非目标页面不注册任何
+    // 钩子/定时器，只保留一个 SPA 路由监听（Pixiv 站内跳转后可能进入目标页）。
+    // 隐形加载标记始终设置，便于用控制台区分「未注入」与「已注入」。
     window.__pixivRescueLoaded = true;
     registerTokenMenus();
     // document-start 时 body 还不存在：先挂路由钩子，再在 DOM 就绪后跑路由，
     // 避免面板被挂到 <html> 下（body 之外的节点 Pixiv 渲染后不可见）。
     const routeWhenReady = function () {
+      if (!isTargetPage()) return;
       if (document.body) {
         routeRescue();
       } else {
