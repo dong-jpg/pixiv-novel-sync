@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.6.4
+// @version      0.6.5
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -184,8 +184,8 @@
     close.type = 'button';
     close.addEventListener('click', function () { bar.remove(); });
     bar.append(close);
-    const host = document.querySelector('main') || document.body;
-    host.prepend(bar);
+    const host = document.querySelector('main') || document.body || document.documentElement;
+    if (host) host.prepend(bar);
   }
 
   // ── 手机端兼容 ─────────────────────────────────────────────
@@ -420,7 +420,7 @@
       '.pixiv-rescue-tab-pager{margin:12px 0;text-align:center}',
       '.pixiv-rescue-notice-bar{display:flex;align-items:center;gap:12px;justify-content:center;max-width:760px;margin:12px auto;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px;line-height:1.6}'
     ].join('');
-    document.head.append(style);
+    (document.head || document.documentElement).append(style);
   }
 
   function element(tagName, className, text) {
@@ -439,7 +439,9 @@
     if (root) return root;
     root = element('section', 'pixiv-rescue-root');
     root.setAttribute(ROOT_ATTRIBUTE, 'content');
-    const target = document.querySelector('main') || document.body;
+    // document-start 时 body 可能还不存在：退到 documentElement，否则 append 抛错
+    const target = document.querySelector('main') || document.body || document.documentElement;
+    if (!target) return root; // 极端情况：不做挂载，调用方继续即可
     target.append(root);
     return root;
   }
@@ -1209,14 +1211,23 @@
     // 「脚本没注入」与「注入了但没识别到目标」。零可见输出的排查入口。
     window.__pixivRescueLoaded = true;
     registerTokenMenus();
-    routeRescue();
+    // document-start 时 body 还不存在：先挂路由钩子，再在 DOM 就绪后跑路由，
+    // 避免面板被挂到 <html> 下（body 之外的节点 Pixiv 渲染后不可见）。
+    const routeWhenReady = function () {
+      if (document.body) {
+        routeRescue();
+      } else {
+        document.addEventListener('DOMContentLoaded', routeRescue, { once: true });
+      }
+    };
+    routeWhenReady();
     let lastHref = window.location.href;
     function onRoute() {
       if (window.location.href === lastHref) return;
       lastHref = window.location.href;
       const old = document.querySelector('[' + ROOT_ATTRIBUTE + '="content"]');
       if (old) old.remove();
-      routeRescue();
+      routeWhenReady();
     }
     const pushState = history.pushState;
     history.pushState = function () {
@@ -1251,9 +1262,12 @@
     if (isNovelBookmarksPage()) handleNovelBookmarksPage();
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start, { once: true });
-  } else {
-    start();
-  }
+  // 立即启动，不等 DOMContentLoaded。
+  // @run-at document-start 时 readyState 为 'loading'，旧代码把 start 挂到
+  // DOMContentLoaded 上——若脚本注入晚于该事件（Tampermonkey 在部分浏览器/
+  // 场景下会延迟注入），监听器永不再触发，start() 一次都不执行：页面零反应、
+  // window.__pixivRescueLoaded 为 undefined。这就是「点击后仍显示尚无此页」
+  // 的根因。路由函数内部对 DOM 缺失已有兜底（getRoot 用 main||body，
+  // body 可能为 null 时退到 documentElement），直接跑即可。
+  start();
 })();

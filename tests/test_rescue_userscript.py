@@ -153,6 +153,12 @@ def test_userscript_locks_a14_fixes() -> None:
     assert "pixiv_rescue=1" in script
     assert "params.get('pixiv_rescue') === '1'" in script
     assert "@run-at       document-start" in script
+    # 0.6.5：不再把 start 挂到 DOMContentLoaded 上——晚注入（注入时该事件
+    # 已过）会让监听器永不触发、脚本零反应。必须立即启动。
+    assert "addEventListener('DOMContentLoaded', start" not in script
+    assert "  start();\n})();" in script
+    # document-start 时 body/head 可能为空，需兜底
+    assert "document.body || document.documentElement" in script
     assert "'.pixiv-rescue-rescued-cover{position:relative;flex:0 0 64px;width:64px;height:90px" in script
 
 
