@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.6.3
+// @version      0.6.4
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -24,7 +24,7 @@
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @connect     pixiv.dongboapp.com
-// @run-at       document-idle
+// @run-at       document-start
 // ==/UserScript==
 
 (function () {
@@ -676,13 +676,13 @@
     card.classList.add('pixiv-rescue-rescued-card');
 
     const link = element('a', 'pixiv-rescue-rescued-link');
-    // 点击跳转到 Pixiv 正文页（与正常卡片一致），页面到达后渲染备份正文。
-    // 关键：点击时把「这是已救援作品」的意图写进 sessionStorage，目标页直接
-    // 据此渲染——不依赖 Pixiv 页面的失效文案（不同版本/语言/渲染时机下文案
-    // 千变万化，生产已连续踩坑「该作品无法显示」「尚无此页」）。
+    // 跳转到 Pixiv 正文页并带 &pixiv_rescue=1 标记。目标页据此直接渲染备份，
+    // 完全不依赖 Pixiv 的失效文案——生产已连续踩坑不同文案（「该作品无法
+    // 显示」「尚无此页」），这类识别天然脆弱。URL 参数跨整页导航可靠，
+    // sessionStorage 作为第二重信号（隐私模式下可能失效）。
     link.href = isNovel
-      ? '/novel/show.php?id=' + encodeURIComponent(String(match.novel_id))
-      : '/novel/series/' + encodeURIComponent(String(match.series_id || match.novel_id));
+      ? '/novel/show.php?id=' + encodeURIComponent(String(match.novel_id)) + '&pixiv_rescue=1'
+      : '/novel/series/' + encodeURIComponent(String(match.series_id || match.novel_id)) + '?pixiv_rescue=1';
     link.addEventListener('click', function () {
       try {
         sessionStorage.setItem('pixivRescueIntent', JSON.stringify({
@@ -690,7 +690,7 @@
           id: isNovel ? match.novel_id : (match.series_id || match.novel_id),
           at: Date.now()
         }));
-      } catch (_error) { /* 隐私模式等场景下写失败，退回文案识别 */ }
+      } catch (_error) { /* 隐私模式等场景下写失败，退回 URL 标记 */ }
     });
 
     const coverBox = element('div', 'pixiv-rescue-rescued-cover');
@@ -1111,6 +1111,12 @@
   // 读取「点击卡片的救援意图」：存在且与当前页面 ID 匹配、且足够新（30 秒）
   // 时返回 true。这是「用户明确从救援卡点进来」的直接信号，不需要识别文案。
   function consumeRescueIntent(expectedType, expectedId) {
+    // URL 标记参数是跨整页导航最可靠的信号：sessionStorage 在部分浏览器
+    // 的跨页跳转/隐私模式下会丢，URL 参数不会。
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('pixiv_rescue') === '1') return true;
+    } catch (_error) { /* ignore */ }
     try {
       const raw = sessionStorage.getItem('pixivRescueIntent');
       if (!raw) return false;

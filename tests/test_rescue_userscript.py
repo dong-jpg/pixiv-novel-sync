@@ -149,6 +149,10 @@ def test_userscript_locks_a14_fixes() -> None:
     assert "consumeRescueIntent" in script
     assert "pixivRescueIntent" in script
     assert "window.setInterval(onRoute, 1000)" in script
+    # 0.6.4：URL 标记跨整页导航可靠传递意图；document-start 保证尽早就位
+    assert "pixiv_rescue=1" in script
+    assert "params.get('pixiv_rescue') === '1'" in script
+    assert "@run-at       document-start" in script
     assert "'.pixiv-rescue-rescued-cover{position:relative;flex:0 0 64px;width:64px;height:90px" in script
 
 
