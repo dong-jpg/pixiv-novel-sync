@@ -70,8 +70,10 @@ def test_userscript_matches_list_pages_without_disturbing_healthy_cards() -> Non
     assert "personal_hold" in script
     # 健康卡片不进候选：文本超过阈值的卡片直接跳过
     assert "text.length > BROKEN_CARD_TEXT_LIMIT) return false;" in script
-    # 列表页只在失效卡片上打标记，不渲染救援面板、不动原页面
-    assert "pixiv-rescue-card-badge" in script
+    # 列表页只在失效卡片上重建为正常卡片外观（封面+标题+作者+小「拯救」标识），
+    # 不渲染救援面板、不动健康卡片
+    assert "pixiv-rescue-rescued-card" in script
+    assert "pixiv-rescue-mark" in script
     assert "handleListPage" in script
     # 系列被删/隐藏时卡片没有链接：靠 data-gtm-value 里的作品 ID 兜底识别，
     # 类型未知时 novel/series 两头都查，命中哪个算哪个
@@ -122,10 +124,14 @@ def test_userscript_locks_a14_fixes() -> None:
     # 0.3.7：去重键是共享容器（同一失效卡的双嵌套 <a> 只注册一次，单徽标）
     assert "link.closest('div.works-item, li') || link" in script
     assert "handledCards" in script
-    # 0.4.0/0.4.1：列表页注入样式（旧版徽标 CSS 从未进列表页）+ 占位文案替换
-    # 模式（「该作品无法显示」横贯整卡 316/412px，角标无处安放必重叠）
+    # 0.4.0/0.4.1：列表页注入样式（旧版徽标 CSS 从未进列表页）
     assert "addStyles()" in script
-    assert "placeholder.replaceWith(badge)" in script
+    # 0.5.0：失效卡重建为正常卡片（封面+标题+作者）+ 小「拯救」标识，
+    # 不再用整块红色警告；封面经 blob 取回，Token 只走 header
+    assert "renderRescuedCard" in script
+    assert "apiGetBlobUrl" in script
+    assert "pixiv-rescue-mark" in script
+    assert "/cover" in script
 
 
 @pytest.fixture(scope="module")

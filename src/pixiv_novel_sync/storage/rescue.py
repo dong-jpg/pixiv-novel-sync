@@ -1228,6 +1228,37 @@ class RescueMixin:
         payload["personal_hold"] = self._personal_holds_item("novel", int(novel_id))
         return payload
 
+    def get_rescue_cover_asset(self, novel_id: int) -> dict[str, Any] | None:
+        """取某篇小说的本地封面资产（救援列表卡片重建用）。
+
+        返回 {"local_path": 相对库根路径, "restrict_value": public|private}；
+        没有封面记录时返回 None。文件是否真实存在由调用方校验。
+        """
+        row = self.conn.execute(
+            """
+            SELECT a.local_path, n.restrict_value
+            FROM assets a
+            JOIN novels n ON n.novel_id = a.novel_id
+            WHERE a.novel_id = ? AND a.asset_type = 'cover'
+            ORDER BY a.downloaded_at DESC
+            LIMIT 1
+            """,
+            (int(novel_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "local_path": str(row["local_path"] or ""),
+            "restrict_value": str(row["restrict_value"] or "public"),
+        }
+
+    def has_rescue_cover(self, novel_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM assets WHERE novel_id = ? AND asset_type = 'cover' LIMIT 1",
+            (int(novel_id),),
+        ).fetchone()
+        return row is not None
+
     def get_rescue_items_batch(
         self,
         novel_ids: list[int],

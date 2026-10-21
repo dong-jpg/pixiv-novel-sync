@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import secrets
 import threading
 import time
@@ -12,7 +13,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request, send_file
 
 from .settings import Settings
 from .storage.rescue import CatalogNotReadyError
@@ -404,6 +405,46 @@ def register_rescue_routes(
         return jsonify({"ok": True, "data": data})
 
     @app.route(
+        "/api/rescue/v1/novels/<int:novel_id>/cover",
+        methods=["GET"],
+        provide_automatic_options=False,
+    )
+    @public_auth
+    def rescue_novel_cover(novel_id: int):
+        """返回本地归档的封面图，供油猴脚本把失效卡片重建为正常卡片样式。
+
+        Pixiv 原封面 URL 对已删除作品通常已失效，只有本地备份可用。
+        文件路径来自 assets 表（同步时记录），这里做库根解析与穿越校验。
+        """
+        db = open_db()
+        try:
+            asset = db.get_rescue_cover_asset(novel_id)
+        finally:
+            db.close()
+        if asset is None:
+            return _public_error("该备份没有封面", 404)
+        rel = asset["local_path"]
+        if not rel:
+            return _public_error("该备份没有封面", 404)
+        current = current_settings()
+        base = (
+            current.storage.private_dir
+            if asset["restrict_value"] == "private"
+            else current.storage.public_dir
+        )
+        candidate = (Path(base).resolve() / rel).resolve()
+        # 穿越校验：解析后必须仍在库根内
+        if not str(candidate).startswith(str(Path(base).resolve()) + os.sep) or not candidate.is_file():
+            return _public_error("封面文件不存在", 404)
+        response = send_file(
+            candidate,
+            conditional=True,
+            max_age=86400,
+        )
+        response.headers["Cache-Control"] = "private, max-age=86400"
+        return response
+
+    @app.route(
         "/api/rescue/v1/series/<int:series_id>",
         methods=["GET"],
         provide_automatic_options=False,
@@ -494,6 +535,8 @@ def register_rescue_routes(
             # 批量取：单条版在 40 ID 时要跑 40~80 次聚合查询（每本小说还会为
             # 父系列再评一次），这里按批合并为行查询 + 批量 hold/pending 判定
             batch = db.get_rescue_items_batch(novel_ids, series_ids)
+            # 本地封面可用性：油猴据此决定是否把失效卡重建为带封面的正常卡片
+            cover_flags = {value: db.has_rescue_cover(value) for value in novel_ids}
         finally:
             db.close()
         slim_novels = [
@@ -505,6 +548,7 @@ def register_rescue_routes(
                 "series_id": item.get("series_id"),
                 "rescue_state": item.get("rescue_state"),
                 "personal_hold": bool(item.get("personal_hold")),
+                "has_cover": bool(cover_flags.get(item["novel_id"], False)),
             }
             for item in (batch.get(f"novel:{value}") for value in novel_ids)
             if item is not None

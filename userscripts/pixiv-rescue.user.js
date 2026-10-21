@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.4.1
+// @version      0.5.0
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -186,6 +186,35 @@
     return String(document.body && document.body.textContent || '');
   }
 
+  // 二进制 GET（封面图）：Token 只走 Authorization 头，不放进 URL——
+  // 否则会进 nginx access log 和浏览器历史。返回 object URL 供 <img> 使用。
+  function apiGetBlobUrl(path) {
+    const token = String(GM_getValue(TOKEN_KEY, '') || '').trim();
+    if (!token) return Promise.reject(new Error('missing_token'));
+    return new Promise(function (resolve, reject) {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: apiOrigin() + path,
+        headers: { Authorization: 'Bearer ' + token },
+        responseType: 'blob',
+        timeout: 15000,
+        onload: function (response) {
+          if (response.status < 200 || response.status >= 300) {
+            reject(new Error(response.status === 404 ? 'not_found' : 'request_failed'));
+            return;
+          }
+          try {
+            resolve(URL.createObjectURL(response.response));
+          } catch (_error) {
+            reject(new Error('request_failed'));
+          }
+        },
+        onerror: function () { reject(new Error('network_error')); },
+        ontimeout: function () { reject(new Error('network_timeout')); }
+      });
+    });
+  }
+
   function pageSaysUnavailable() {
     const nodes = document.querySelectorAll(
       '[class*="error"], [class*="Error"], .error-message, main h1, main h2'
@@ -270,8 +299,17 @@
       // 注意：这个数组经 join('') 拼接，注释必须保持在字符串元素之间的合法
       // JS 位置——否则注释会吞掉 join 的逗号让前后两条 CSS 粘连成废规则
       // （0.3.8 的 position:absolute 就这么失效过一次）。
-      '.pixiv-rescue-card-badge{position:relative;z-index:10;margin:6px 8px;padding:5px 8px;border-radius:4px;background:#dc2626;color:#fff;font-size:12px;font-weight:700;line-height:1.4;overflow-wrap:anywhere}',
-      '.pixiv-rescue-card-badge::after{content:"";display:block}',
+            // 重建后的「正常卡片」外观：沿用 Pixiv 卡片的信息层级（封面左、文字右），
+      // 只在封面右上角放一个小「拯救」标识；不再整块红色（用户反馈像警告）。
+      '.pixiv-rescue-rescued-card{padding:0}',
+      '.pixiv-rescue-rescued-link{display:flex;gap:12px;padding:10px 0;color:inherit;text-decoration:none;align-items:flex-start}',
+      '.pixiv-rescue-rescued-cover{position:relative;flex:0 0 96px;width:96px;height:96px;border-radius:4px;overflow:hidden;background:#f3f4f6}',
+      '.pixiv-rescue-rescued-img{width:100%;height:100%;object-fit:cover;display:block}',
+      '.pixiv-rescue-mark{position:absolute;top:0;left:0;z-index:2;padding:1px 6px;border-radius:0 0 4px 0;background:rgba(37,99,235,.92);color:#fff;font-size:11px;font-weight:600;line-height:1.6;letter-spacing:.5px}',
+      '.pixiv-rescue-rescued-body{min-width:0;flex:1 1 auto}',
+      '.pixiv-rescue-rescued-title{font-size:15px;font-weight:700;line-height:1.5;color:#1f2937;overflow-wrap:anywhere}',
+      '.pixiv-rescue-rescued-author{margin-top:6px;font-size:12px;color:#6b7280}',
+      '.pixiv-rescue-rescued-hint{margin-top:4px;font-size:11px;color:#9ca3af}',
       // 宿主容器需要 position 才能让角标锚定：works-item/li 默认静态。
       // 注意：数组里的字符串元素是 CSS，行内注释照上一条说明保持在逗号之间。
       'div.works-item[data-pixiv-rescue="card"]{position:relative}',
@@ -532,6 +570,46 @@
     return batches;
   }
 
+  // 把失效卡片重建为「正常卡片」外观：封面 + 标题 + 作者，右上角一个小巧的
+  // 「拯救」标识。用户反馈红色整块太像警告，且备份本身有封面却没用上。
+  // 无封面（或封面加载失败）时退化为纯文字卡片，不显示破图。
+  function renderRescuedCard(card, match, isSeries) {
+    const title = match.title || '未命名';
+    const author = match.author_name || '';
+    const isNovel = !isSeries && match.novel_id;
+    // 清空 Pixiv 的失效占位内容，保留外层容器（布局/间距由它维持）
+    clearNode(card);
+    card.classList.add('pixiv-rescue-rescued-card');
+
+    const link = element('a', 'pixiv-rescue-rescued-link');
+    link.href = isNovel
+      ? 'https://www.pixiv.net/novel/show.php?id=' + encodeURIComponent(String(match.novel_id))
+      : 'https://www.pixiv.net/novel/series/' + encodeURIComponent(String(match.series_id || match.novel_id));
+
+    const coverBox = element('div', 'pixiv-rescue-rescued-cover');
+    const mark = element('span', 'pixiv-rescue-mark', '拯救');
+    coverBox.append(mark);
+    if (match.has_cover && isNovel) {
+      const img = element('img', 'pixiv-rescue-rescued-img');
+      img.alt = '';
+      img.loading = 'lazy';
+      coverBox.append(img);
+      apiGetBlobUrl('/api/rescue/v1/novels/' + encodeURIComponent(String(match.novel_id)) + '/cover')
+        .then(function (url) { img.src = url; })
+        .catch(function () { img.remove(); });
+    }
+
+    const body = element('div', 'pixiv-rescue-rescued-body');
+    body.append(element('div', 'pixiv-rescue-rescued-title', title));
+    if (author) body.append(element('div', 'pixiv-rescue-rescued-author', author));
+    if (!match.personal_hold) {
+      body.append(element('div', 'pixiv-rescue-rescued-hint', '本人已取消收藏/追更'));
+    }
+
+    link.append(coverBox, body);
+    card.append(link);
+  }
+
   function markBrokenCards() {
     const found = collectBrokenCards();
     if (!found.broken.length) {
@@ -563,26 +641,7 @@
           // 这批已成功应答：卡片转终态，不再重复查询（无备份的也转，避免每轮空查）
           entry.card.setAttribute(ROOT_ATTRIBUTE, 'card');
           if (!match) return;
-          // 有备份时直接替换失效占位文案：「该作品无法显示」横贯整卡
-          // （316/412px），角标无处安放必与它重叠——替换成信息量更大的
-          // 徽标（含原作标题 + 救援入口提示），无备份时保持 Pixiv 原样。
-          const badge = element('div', 'pixiv-rescue-card-badge');
-          badge.textContent = '已备份：' + (match.title || '未命名') +
-            (match.personal_hold ? '' : '（本人已取消收藏/追更）');
-          const placeholder = Array.from(entry.card.querySelectorAll('div, span, p'))
-            .find(function (el) {
-              return el.childElementCount === 0 && elementMatchesUnavailable(el);
-            });
-          if (placeholder && placeholder.parentElement) {
-            placeholder.replaceWith(badge);
-          } else {
-            // 找不到占位文案（结构变化）：退回角标浮层，容器补 relative
-            const cardStyle = window.getComputedStyle(entry.card);
-            if (cardStyle.position === 'static') {
-              entry.card.style.position = 'relative';
-            }
-            entry.card.prepend(badge);
-          }
+          renderRescuedCard(entry.card, match, entry.type === 'series');
         });
       }).catch(function (error) {
         // 失败撤销 pending 标记：下一轮扫描（3 秒后）会对这些卡片重试。
