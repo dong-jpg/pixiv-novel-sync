@@ -1259,6 +1259,40 @@ class RescueMixin:
         ).fetchone()
         return row is not None
 
+    def get_rescue_series_cover_asset(self, series_id: int) -> dict[str, Any] | None:
+        """系列没有独立封面资产，退而用系列下第一篇有本地封面的小说。
+
+        返回结构与 get_rescue_cover_asset 相同；没有可用封面时返回 None。
+        """
+        row = self.conn.execute(
+            """
+            SELECT a.local_path, n.restrict_value
+            FROM novels n
+            JOIN assets a ON a.novel_id = n.novel_id AND a.asset_type = 'cover'
+            WHERE n.series_id = ?
+            ORDER BY n.create_date ASC, n.novel_id ASC
+            LIMIT 1
+            """,
+            (int(series_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "local_path": str(row["local_path"] or ""),
+            "restrict_value": str(row["restrict_value"] or "public"),
+        }
+
+    def has_rescue_series_cover(self, series_id: int) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT 1 FROM novels n
+            JOIN assets a ON a.novel_id = n.novel_id AND a.asset_type = 'cover'
+            WHERE n.series_id = ? LIMIT 1
+            """,
+            (int(series_id),),
+        ).fetchone()
+        return row is not None
+
     def get_rescue_items_batch(
         self,
         novel_ids: list[int],

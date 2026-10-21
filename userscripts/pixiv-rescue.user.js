@@ -589,12 +589,16 @@
     const coverBox = element('div', 'pixiv-rescue-rescued-cover');
     const mark = element('span', 'pixiv-rescue-mark', '拯救');
     coverBox.append(mark);
-    if (match.has_cover && isNovel) {
+    if (match.has_cover) {
+      const coverId = isNovel ? match.novel_id : (match.series_id || match.novel_id);
+      const coverPath = isNovel
+        ? '/api/rescue/v1/novels/' + encodeURIComponent(String(coverId)) + '/cover'
+        : '/api/rescue/v1/series/' + encodeURIComponent(String(coverId)) + '/cover';
       const img = element('img', 'pixiv-rescue-rescued-img');
       img.alt = '';
       img.loading = 'lazy';
       coverBox.append(img);
-      apiGetBlobUrl('/api/rescue/v1/novels/' + encodeURIComponent(String(match.novel_id)) + '/cover')
+      apiGetBlobUrl(coverPath)
         .then(function (url) { img.src = url; })
         .catch(function () { img.remove(); });
     }

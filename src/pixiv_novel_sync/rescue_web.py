@@ -404,6 +404,46 @@ def register_rescue_routes(
         data["source_notice"] = "内容来自私人备份，并非 Pixiv 官方恢复"
         return jsonify({"ok": True, "data": data})
 
+    def _cover_response(asset: dict | None):
+        """把 assets 记录解析成本地文件并返回 send_file 响应。
+
+        assets.local_path 记录的是下载时 str(target)——相对当时的工作目录
+        （生产即项目根），不是相对 public_dir。先按 cwd 解析；失败再按库根
+        解析兜底，两者做同一套「解析后仍在预期根内」的穿越校验。
+        """
+        if asset is None:
+            return _public_error("该备份没有封面", 404)
+        rel = asset["local_path"]
+        if not rel:
+            return _public_error("该备份没有封面", 404)
+        current = current_settings()
+        library_root = (
+            current.storage.private_dir
+            if asset["restrict_value"] == "private"
+            else current.storage.public_dir
+        )
+        candidate: Path | None = None
+        for base in (Path.cwd(), Path(library_root).resolve()):
+            try:
+                resolved_base = base.resolve()
+                resolved = (resolved_base / rel).resolve()
+            except (OSError, ValueError):
+                continue
+            if not str(resolved).startswith(str(resolved_base) + os.sep):
+                continue
+            if resolved.is_file():
+                candidate = resolved
+                break
+        if candidate is None:
+            return _public_error("封面文件不存在", 404)
+        response = send_file(
+            candidate,
+            conditional=True,
+            max_age=86400,
+        )
+        response.headers["Cache-Control"] = "private, max-age=86400"
+        return response
+
     @app.route(
         "/api/rescue/v1/novels/<int:novel_id>/cover",
         methods=["GET"],
@@ -414,35 +454,28 @@ def register_rescue_routes(
         """返回本地归档的封面图，供油猴脚本把失效卡片重建为正常卡片样式。
 
         Pixiv 原封面 URL 对已删除作品通常已失效，只有本地备份可用。
-        文件路径来自 assets 表（同步时记录），这里做库根解析与穿越校验。
         """
         db = open_db()
         try:
             asset = db.get_rescue_cover_asset(novel_id)
         finally:
             db.close()
-        if asset is None:
-            return _public_error("该备份没有封面", 404)
-        rel = asset["local_path"]
-        if not rel:
-            return _public_error("该备份没有封面", 404)
-        current = current_settings()
-        base = (
-            current.storage.private_dir
-            if asset["restrict_value"] == "private"
-            else current.storage.public_dir
-        )
-        candidate = (Path(base).resolve() / rel).resolve()
-        # 穿越校验：解析后必须仍在库根内
-        if not str(candidate).startswith(str(Path(base).resolve()) + os.sep) or not candidate.is_file():
-            return _public_error("封面文件不存在", 404)
-        response = send_file(
-            candidate,
-            conditional=True,
-            max_age=86400,
-        )
-        response.headers["Cache-Control"] = "private, max-age=86400"
-        return response
+        return _cover_response(asset)
+
+    @app.route(
+        "/api/rescue/v1/series/<int:series_id>/cover",
+        methods=["GET"],
+        provide_automatic_options=False,
+    )
+    @public_auth
+    def rescue_series_cover(series_id: int):
+        """系列封面：系列本身不下载封面，用系列下第一篇有本地封面的小说替代。"""
+        db = open_db()
+        try:
+            asset = db.get_rescue_series_cover_asset(series_id)
+        finally:
+            db.close()
+        return _cover_response(asset)
 
     @app.route(
         "/api/rescue/v1/series/<int:series_id>",
@@ -537,6 +570,9 @@ def register_rescue_routes(
             batch = db.get_rescue_items_batch(novel_ids, series_ids)
             # 本地封面可用性：油猴据此决定是否把失效卡重建为带封面的正常卡片
             cover_flags = {value: db.has_rescue_cover(value) for value in novel_ids}
+            series_cover_flags = {
+                value: db.has_rescue_series_cover(value) for value in series_ids
+            }
         finally:
             db.close()
         slim_novels = [
@@ -561,6 +597,7 @@ def register_rescue_routes(
                 "cover_url": item.get("cover_url"),
                 "rescue_state": item.get("rescue_state"),
                 "personal_hold": bool(item.get("personal_hold")),
+                "has_cover": bool(series_cover_flags.get(item["series_id"], False)),
             }
             for item in (batch.get(f"series:{value}") for value in series_ids)
             if item is not None
