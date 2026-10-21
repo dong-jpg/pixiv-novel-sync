@@ -180,7 +180,9 @@ Token 由服务端管理路由生成，全局只有一个（单例存储）：
 
 - `GET /api/rescue/v1/novels/<novel_id>` — 单篇小说（含 `text_raw` 正文、标题、作者、标签、救援状态等字段）；
 - `GET /api/rescue/v1/series/<series_id>` — 系列元数据（标题、简介、封面、`expected_count` / `local_count` / `complete_count` 备份进度等）；
-- `GET /api/rescue/v1/series/<series_id>/chapters?page=&page_size=` — 系列章节目录（按创建时间排序编号，page_size 上限 100，每章附 `api_path` 指向对应小说端点）。
+- `GET /api/rescue/v1/series/<series_id>/chapters?page=&page_size=` — 系列章节目录（按创建时间排序编号，page_size 上限 100，每章附 `api_path` 指向对应小说端点）；
+- `GET /api/rescue/v1/lookup?novel_ids=<逗号分隔>&series_ids=<逗号分隔>` — 收藏/追更列表页的批量反查（novel + series 合计上限 40），返回标题、作者、`rescue_state`、`personal_hold` 与 `has_cover`，**不返回正文**；
+- `GET /api/rescue/v1/novels/<novel_id>/cover`、`GET /api/rescue/v1/series/<series_id>/cover` — 本地归档封面图（`image/jpeg` 等，`Cache-Control: private, max-age=86400`）。系列本身不单独下载封面，回退使用系列下首章小说的封面。Pixiv 原封面 URL 对已删除作品通常已失效，列表页重建卡片必须走本地端点。
 
 统一约定：
 
@@ -245,6 +247,19 @@ Token 由服务端管理路由生成，全局只有一个（单例存储）：
 - 确认页面确实出现了失效文案（脚本按固定的日 / 中 / 英文案匹配，见脚本内 `UNAVAILABLE_MARKERS`）；页面能正常显示正文时脚本不会介入；
 - 检查 Tampermonkey 是否允许连接你的服务器域名（`@connect` 声明）；
 - 「无法连接救援服务 / 响应超时」提示说明服务器不可达（超时 15 秒），检查服务与域名解析。
+
+### 收藏 / 追更列表页「什么都看不到」
+
+脚本在列表页有三种可见输出，**任何一种出现都说明脚本已注入**：红色提示条（Token 缺失/失效/网络故障）、「脚本管理器不支持 GM_xxx」提示条、失效卡被重建为「封面 + 标题 + 作者 + 拯救标识」。三者皆无 = 脚本没在这个页面运行。
+
+排查顺序：
+
+1. **确认版本**：脚本管理器里版本应 ≥ 0.5.0；旧版不识别手机端失效卡片。
+2. **确认注入**：在页面控制台执行 `window.__pixivRescueLoaded`，返回 `true` 说明脚本已运行（0.3.6+）。返回 `undefined` 说明未注入——检查脚本是否启用、`@match` 是否命中（手机端语言前缀 `/en/`、`/zh/` 等已支持）、Chrome 138+ 的 Tampermonkey MV3 是否开启了「允许用户脚本」（需要浏览器扩展页的开发者模式）。
+3. **确认 Token**：已注入但无徽标时，看是否出现 Token 提示条；无卡片时脚本也会主动探测一次 Token 状态。
+4. **确认卡被识别**：失效卡的真实文案随 Pixiv 改版变化（2026-10 生产实测列表页为「该作品无法显示」，容器类名 `invisible-work-container`，卡片容器 `div.works-item`，文案距链接 3 层）。若 Pixiv 再次改版导致识别失效，按这三个结构信号更新脚本。
+
+列表页重建卡片的样式：有本地封面时显示封面（封面通过 blob 请求取回，Token 只走 Authorization 头，不放进 URL），无封面时退化为纯文字卡片；右上角蓝底「拯救」小标识，其余排版与 Pixiv 正常卡片一致（2026-10-20 用户反馈后由整块红色改为正常卡片外观）。
 
 ### 500「救援纠错已保存，但目录增量刷新失败」
 
