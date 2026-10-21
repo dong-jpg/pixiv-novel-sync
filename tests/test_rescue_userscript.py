@@ -132,6 +132,12 @@ def test_userscript_locks_a14_fixes() -> None:
     assert "apiGetBlobUrl" in script
     assert "pixiv-rescue-mark" in script
     assert "/cover" in script
+    # 0.6.0：点击直开站内阅读器（不再跳 Pixiv）+ 本地缓存 + 首屏观察器
+    assert "openRescueReader" in script
+    assert "pixiv-rescue-reader-overlay" in script
+    assert "readLookupCache" in script
+    assert "readCoverCache" in script
+    assert "MutationObserver" in script
 
 
 @pytest.fixture(scope="module")

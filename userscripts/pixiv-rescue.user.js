@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.5.0
+// @version      0.6.0
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -37,6 +37,94 @@
   }
   const TOKEN_KEY = 'pixivRescueToken';
   const ROOT_ATTRIBUTE = 'data-pixiv-rescue';
+  // 本地缓存：收藏页每次进入都要重新 lookup + 拉封面，用户反馈「每次都要
+  // 等一会」。lookup 结果缓存 10 分钟（目录变更由同步任务驱动，10 分钟足够
+  // 新鲜）；封面 blob 缓存 24 小时（封面内容几乎不变）。缓存键带 token 前缀
+  // 哈希，轮换 Token 后旧缓存自然失效。
+  const LOOKUP_CACHE_KEY = 'pixivRescueLookupCache';
+  const COVER_CACHE_PREFIX = 'pixivRescueCover:';
+  const LOOKUP_CACHE_TTL_MS = 10 * 60 * 1000;
+  const COVER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+  function cacheKeySuffix() {
+    const token = String(GM_getValue(TOKEN_KEY, '') || '');
+    // 简单滚动哈希即可，避免把 Token 明文写进存储键
+    let h = 0;
+    for (let i = 0; i < token.length; i += 1) {
+      h = (h * 31 + token.charCodeAt(i)) | 0;
+    }
+    return String(h >>> 0);
+  }
+
+  function readLookupCache() {
+    try {
+      const raw = GM_getValue(LOOKUP_CACHE_KEY, '');
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.suffix !== cacheKeySuffix()) return {};
+      const now = Date.now();
+      const entries = parsed.entries || {};
+      const fresh = {};
+      Object.keys(entries).forEach(function (key) {
+        if (entries[key] && now - entries[key].at < LOOKUP_CACHE_TTL_MS) fresh[key] = entries[key];
+      });
+      return fresh;
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  function writeLookupCache(entries) {
+    try {
+      GM_setValue(LOOKUP_CACHE_KEY, JSON.stringify({
+        suffix: cacheKeySuffix(),
+        entries: entries
+      }));
+    } catch (_error) { /* 存储失败不影响功能 */ }
+  }
+
+  function cacheLookupResults(novels, series) {
+    const entries = readLookupCache();
+    const now = Date.now();
+    (novels || []).forEach(function (item) { entries['n:' + item.novel_id] = { at: now, item: item }; });
+    (series || []).forEach(function (item) { entries['s:' + item.series_id] = { at: now, item: item }; });
+    // 限制条目数，避免长期使用撑大存储
+    const keys = Object.keys(entries);
+    if (keys.length > 400) {
+      keys.sort(function (a, b) { return entries[a].at - entries[b].at; });
+      keys.slice(0, keys.length - 400).forEach(function (key) { delete entries[key]; });
+    }
+    writeLookupCache(entries);
+  }
+
+  function readCachedLookup(id, type) {
+    const entries = readLookupCache();
+    const entry = entries[(type === 'series' ? 's:' : 'n:') + id];
+    if (!entry) return null;
+    if (Date.now() - entry.at >= LOOKUP_CACHE_TTL_MS) return null;
+    return entry.item;
+  }
+
+  function readCoverCache(id, type) {
+    try {
+      const raw = GM_getValue(COVER_CACHE_PREFIX + cacheKeySuffix() + ':' + type + ':' + id, '');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || Date.now() - parsed.at >= COVER_CACHE_TTL_MS) return null;
+      return parsed.dataUrl;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function writeCoverCache(id, type, dataUrl) {
+    try {
+      GM_setValue(COVER_CACHE_PREFIX + cacheKeySuffix() + ':' + type + ':' + id, JSON.stringify({
+        at: Date.now(),
+        dataUrl: dataUrl
+      }));
+    } catch (_error) { /* 大图可能超存储配额，静默失败 */ }
+  }
   const UNAVAILABLE_MARKERS = [
     'この作品は削除されています',
     'この作品は閲覧できません',
@@ -324,6 +412,16 @@
       '.pixiv-rescue-tab-title{font-size:15px;font-weight:700;color:#111827;line-height:1.4;overflow-wrap:anywhere}',
       '.pixiv-rescue-tab-meta{font-size:12px;color:#6b7280;line-height:1.6}',
       '.pixiv-rescue-tab-pager{margin:12px 0;text-align:center}',
+      // 站内阅读器浮层（列表页卡片点击打开）
+      '.pixiv-rescue-reader-overlay{position:fixed;inset:0;z-index:2147483600;background:rgba(17,24,39,.55);display:flex;align-items:center;justify-content:center;padding:16px}',
+      '.pixiv-rescue-reader-panel{position:relative;width:min(760px,100%);max-height:92vh;overflow-y:auto;background:#fff;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.35);padding:24px 20px 20px}',
+      '.pixiv-rescue-reader-close{position:sticky;top:0;float:right;border:none;background:#f3f4f6;color:#374151;width:32px;height:32px;border-radius:50%;font-size:15px;cursor:pointer;z-index:2}',
+      '.pixiv-rescue-reader-close:hover{background:#e5e7eb}',
+      '.pixiv-rescue-reader-title{margin:0 0 6px;font-size:20px;line-height:1.4;font-weight:700;color:#111827;padding-right:40px}',
+      '.pixiv-rescue-reader-author{margin-bottom:8px;font-size:13px;color:#6b7280}',
+      '.pixiv-rescue-reader-notice{margin:10px 0 14px;padding:8px 10px;border-left:3px solid #2563eb;background:#eff6ff;color:#1e40af;font-size:12px;line-height:1.6}',
+      '.pixiv-rescue-reader-loading{padding:40px 0;text-align:center;color:#6b7280;font-size:14px}',
+      '.pixiv-rescue-reader-viewer{margin-top:12px}',
       '.pixiv-rescue-notice-bar{display:flex;align-items:center;gap:12px;justify-content:center;max-width:760px;margin:12px auto;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px;line-height:1.6}'
     ].join('');
     document.head.append(style);
@@ -582,15 +680,20 @@
     card.classList.add('pixiv-rescue-rescued-card');
 
     const link = element('a', 'pixiv-rescue-rescued-link');
-    link.href = isNovel
-      ? 'https://www.pixiv.net/novel/show.php?id=' + encodeURIComponent(String(match.novel_id))
-      : 'https://www.pixiv.net/novel/series/' + encodeURIComponent(String(match.series_id || match.novel_id));
+    // 点击直接打开站内阅读器读备份正文——不再跳 Pixiv 原页（原页对已删作品
+    // 只有失效提示，用户反馈「点进去还是跳原内容，没有还原备份」）。
+    link.href = '#';
+    link.addEventListener('click', function (event) {
+      event.preventDefault();
+      openRescueReader(match, isNovel);
+    });
 
     const coverBox = element('div', 'pixiv-rescue-rescued-cover');
     const mark = element('span', 'pixiv-rescue-mark', '拯救');
     coverBox.append(mark);
     if (match.has_cover) {
       const coverId = isNovel ? match.novel_id : (match.series_id || match.novel_id);
+      const coverType = isNovel ? 'novel' : 'series';
       const coverPath = isNovel
         ? '/api/rescue/v1/novels/' + encodeURIComponent(String(coverId)) + '/cover'
         : '/api/rescue/v1/series/' + encodeURIComponent(String(coverId)) + '/cover';
@@ -598,9 +701,28 @@
       img.alt = '';
       img.loading = 'lazy';
       coverBox.append(img);
-      apiGetBlobUrl(coverPath)
-        .then(function (url) { img.src = url; })
-        .catch(function () { img.remove(); });
+      // 封面优先读本地缓存（dataURL，24h），未命中再拉 blob 并回写。
+      // 每次进收藏页重复拉封面正是用户感知到的「等一会」之一。
+      const cachedCover = readCoverCache(coverId, coverType);
+      if (cachedCover) {
+        img.src = cachedCover;
+      } else {
+        apiGetBlobUrl(coverPath)
+          .then(function (url) {
+            img.src = url;
+            // blob URL 不能跨页面持久化：取回真实字节转 dataURL 存缓存
+            fetch(url).then(function (resp) { return resp.blob(); })
+              .then(function (blob) {
+                const fr = new FileReader();
+                fr.onload = function () {
+                  if (typeof fr.result === 'string') writeCoverCache(coverId, coverType, fr.result);
+                };
+                fr.readAsDataURL(blob);
+              })
+              .catch(function () { /* 缓存写失败不影响显示 */ });
+          })
+          .catch(function () { img.remove(); });
+      }
     }
 
     const body = element('div', 'pixiv-rescue-rescued-body');
@@ -612,6 +734,69 @@
 
     link.append(coverBox, body);
     card.append(link);
+  }
+
+  // 站内阅读器浮层：点击列表页的已救援卡片后直接在这里读备份正文/章节目录，
+  // 不再跳 Pixiv（原页对已删作品只剩失效提示）。支持 Esc、点遮罩关闭。
+  function openRescueReader(match, isNovel) {
+    addStyles();
+    const existing = document.querySelector('[data-pixiv-rescue="reader"]');
+    if (existing) existing.remove();
+    const overlay = element('div', 'pixiv-rescue-reader-overlay');
+    overlay.setAttribute(ROOT_ATTRIBUTE, 'reader');
+    const panel = element('div', 'pixiv-rescue-reader-panel');
+    const closeBtn = element('button', 'pixiv-rescue-reader-close', '✕');
+    closeBtn.type = 'button';
+    closeBtn.setAttribute('aria-label', '关闭');
+    closeBtn.addEventListener('click', function () { overlay.remove(); });
+    overlay.addEventListener('click', function (event) {
+      if (event.target === overlay) overlay.remove();
+    });
+    const onKey = function (event) {
+      if (event.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey); }
+    };
+    document.addEventListener('keydown', onKey);
+
+    const content = element('div', 'pixiv-rescue-reader-content');
+    content.append(element('div', 'pixiv-rescue-reader-loading', '正在读取备份…'));
+    panel.append(closeBtn, content);
+    overlay.append(panel);
+    (document.body || document.documentElement).append(overlay);
+
+    if (!isNovel && match.series_id) {
+      // 系列：先渲染元信息 + 章节目录，点章节再取正文
+      content.replaceChildren();
+      content.append(element('h2', 'pixiv-rescue-reader-title', match.title || '未命名系列'));
+      if (match.author_name) content.append(element('div', 'pixiv-rescue-reader-author', '作者：' + match.author_name));
+      content.append(element('div', 'pixiv-rescue-reader-notice', '内容来自私人备份，并非 Pixiv 官方恢复'));
+      const viewer = element('div', 'pixiv-rescue-reader-viewer');
+      content.append(viewer);
+      renderChapterDirectory(content, viewer, { items: [], page: 1, total_pages: 1 }, match.series_id);
+      apiGet('/api/rescue/v1/series/' + encodeURIComponent(String(match.series_id)) + '/chapters?page=1&page_size=100')
+        .then(function (directory) {
+          content.querySelector('.pixiv-rescue-directory')?.remove();
+          renderChapterDirectory(content, viewer, directory, match.series_id);
+        })
+        .catch(function (error) {
+          viewer.replaceChildren(element('div', 'pixiv-rescue-error', rescueErrorText(error, false)));
+        });
+      return;
+    }
+
+    const novelId = match.novel_id;
+    apiGet('/api/rescue/v1/novels/' + encodeURIComponent(String(novelId)))
+      .then(function (data) {
+        content.replaceChildren();
+        content.append(element('h2', 'pixiv-rescue-reader-title', data.title || match.title || '未命名备份小说'));
+        const author = data.author_name ? '作者：' + data.author_name : '';
+        if (author) content.append(element('div', 'pixiv-rescue-reader-author', author));
+        content.append(element('div', 'pixiv-rescue-reader-notice', data.source_notice || '内容来自私人备份，并非 Pixiv 官方恢复'));
+        renderText(content, data.text_raw || '备份正文为空');
+        panel.scrollTop = 0;
+      })
+      .catch(function (error) {
+        content.replaceChildren(element('div', 'pixiv-rescue-error', rescueErrorText(error, false)));
+      });
   }
 
   function markBrokenCards() {
@@ -631,12 +816,26 @@
       }
       return;
     }
-    buildLookupBatches(found.broken).forEach(function (batch) {
+    // 缓存命中：直接渲染，不发任何请求（每次进收藏页的等待主要来自这里）
+    const pendingEntries = [];
+    found.broken.forEach(function (entry) {
+      const cached = readCachedLookup(entry.id, entry.type === 'series' ? 'series' : 'novel');
+      if (cached) {
+        renderRescuedCard(entry.card, cached, entry.type === 'series');
+        entry.card.setAttribute(ROOT_ATTRIBUTE, 'card');
+      } else {
+        pendingEntries.push(entry);
+      }
+    });
+    if (!pendingEntries.length) return;
+    const pending = { broken: pendingEntries };
+    buildLookupBatches(pending.broken).forEach(function (batch) {
       apiGet(buildLookupPath(batch.novelIds, batch.seriesIds)).then(function (data) {
         const novels = {};
         (data.novels || []).forEach(function (item) { novels[item.novel_id] = item; });
         const series = {};
         (data.series || []).forEach(function (item) { series[item.series_id] = item; });
+        cacheLookupResults(data.novels, data.series);
         batch.entries.forEach(function (entry) {
           const novelMatch = novels[entry.id];
           const seriesMatch = series[entry.id];
@@ -672,6 +871,22 @@
     // pos:static 的根因）。
     addStyles();
     markBrokenCards();
+    // 首屏加速：Pixiv 列表是 SPA 动态渲染，进页面到卡片出现之间有等待。
+    // MutationObserver 在卡片节点插入时立刻扫一轮，不必等下一个 3 秒 tick；
+    // 观察器去抖，避免渲染风暴时重复扫描。
+    if (!window.__pixivRescueObserver) {
+      let scheduled = false;
+      const observer = new MutationObserver(function () {
+        if (scheduled) return;
+        scheduled = true;
+        window.setTimeout(function () {
+          scheduled = false;
+          if (isBookmarksListPage() || isWatchlistPage()) markBrokenCards();
+        }, 150);
+      });
+      observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+      window.__pixivRescueObserver = observer;
+    }
     // SPA 切页会重复进入本函数：interval 只注册一次，避免叠加扫描（泄漏修复）
     if (!window.__pixivRescueListInterval) {
       window.__pixivRescueListInterval = window.setInterval(markBrokenCards, 3000);
