@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.6.6
+// @version      0.7.0
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -40,6 +40,7 @@
     const custom = String(GM_getValue('pixivRescueOrigin', '') || '').trim();
     return (custom || DEFAULT_API_ORIGIN).replace(/\/$/, '');
   }
+  const SCRIPT_VERSION = '0.7.0';
   const TOKEN_KEY = 'pixivRescueToken';
   const ROOT_ATTRIBUTE = 'data-pixiv-rescue';
   // 本地缓存：收藏页每次进入都要重新 lookup + 拉封面，用户反馈「每次都要
@@ -197,16 +198,30 @@
   // 部分手机脚本管理器（X浏览器/Via 等）对 GM API 支持不齐：缺 GM_xmlhttpRequest
   // 时 apiGet 一调用就抛 TypeError，整个脚本静默死亡——页面什么都没有，用户
   // 无从排查。这里在启动最前面做能力检测并给出可见提示。
-  function checkRuntimeSupport() {
+  // GM API 是否齐备。手机端管理器可能在文档早期异步注入 GM 对象，因此
+  // 缺失时由 start() 重试，而不是立即放弃（旧版直接 return，脚本静默退出，
+  // 页面只剩 Pixiv 原生内容——与用户现象一致）。
+  function missingRuntimeApis() {
     const missing = [];
     if (typeof GM_getValue !== 'function') missing.push('GM_getValue');
     if (typeof GM_xmlhttpRequest !== 'function') missing.push('GM_xmlhttpRequest');
-    if (missing.length) {
+    return missing;
+  }
+
+  function showRuntimeUnsupported(missing) {
+    try {
       const bar = document.createElement('div');
       bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;padding:10px 14px;background:#fef2f2;color:#991b1b;font:13px/1.6 -apple-system,sans-serif;border-bottom:1px solid #fca5a5';
       bar.textContent = '救援脚本需要脚本管理器支持 ' + missing.join('、') +
         '。当前浏览器/管理器未提供，救援功能不可用。请换用支持完整 GM API 的管理器（如 Tampermonkey）。';
       (document.body || document.documentElement).prepend(bar);
+    } catch (_error) { /* ignore */ }
+  }
+
+  function checkRuntimeSupport() {
+    const missing = missingRuntimeApis();
+    if (missing.length) {
+      showRuntimeUnsupported(missing);
       return false;
     }
     // GM_registerMenuCommand 缺失不致命（只是没有菜单入口，Token 还能通过
@@ -1219,11 +1234,45 @@
       || isNovelBookmarksPage();
   }
 
-  function start() {
-    if (!checkRuntimeSupport()) return;
+  // 可见启动徽标：手机端脚本管理器常把脚本跑在沙箱里，页面控制台读不到
+  // window.__pixivRescueLoaded（沙箱 window !== page window），控制台诊断在
+  // 这类环境完全失效。用一个极小的角标证明「脚本跑到了这一步」。
+  function showBootBadge() {
+    try {
+      if (document.querySelector('[data-pixiv-rescue-boot]')) return;
+      const badge = document.createElement('div');
+      badge.setAttribute('data-pixiv-rescue-boot', '');
+      badge.textContent = '救援 ' + SCRIPT_VERSION;
+      badge.style.cssText = 'position:fixed;right:6px;bottom:6px;z-index:2147483647;padding:2px 6px;border-radius:4px;background:rgba(37,99,235,.85);color:#fff;font:10px/1.5 -apple-system,sans-serif;pointer-events:none;opacity:.75';
+      (document.body || document.documentElement).appendChild(badge);
+      window.setTimeout(function () { try { badge.remove(); } catch (_e) {} }, 6000);
+    } catch (_error) { /* 诊断徽标失败不能影响主流程 */ }
+  }
+
+  // 可见错误条：沙箱里抛的异常在控制台看不到，直接画到页面上
+  function showFatalError(error) {
+    try {
+      const bar = document.createElement('div');
+      bar.setAttribute('data-pixiv-rescue-fatal', '');
+      bar.textContent = '救援脚本出错：' + String(error && error.message || error).slice(0, 200);
+      bar.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:2147483647;padding:10px 14px;background:#fef2f2;color:#991b1b;font:12px/1.6 -apple-system,sans-serif;border-bottom:1px solid #fca5a5';
+      (document.body || document.documentElement).prepend(bar);
+    } catch (_ignored) { /* 连错误条都画不出来就只能作罢 */ }
+  }
+
+  function start(attempt) {
+    showBootBadge();
+    if (!checkRuntimeSupport()) {
+      // 手机脚本管理器可能稍后才注入 GM 对象：在 5 秒内重试，超时才放弃
+      const tries = Number(attempt || 0);
+      if (tries < 10 && missingRuntimeApis().length) {
+        window.setTimeout(function () { start(tries + 1); }, 500);
+      }
+      return;
+    }
     // 全域 @match 兜底会把脚本注入每个 pixiv 页面：非目标页面不注册任何
     // 钩子/定时器，只保留一个 SPA 路由监听（Pixiv 站内跳转后可能进入目标页）。
-    // 隐形加载标记始终设置，便于用控制台区分「未注入」与「已注入」。
+    // 沙箱环境下页面控制台读不到这个标记，仅作调试辅助。
     window.__pixivRescueLoaded = true;
     registerTokenMenus();
     // document-start 时 body 还不存在：先挂路由钩子，再在 DOM 就绪后跑路由，
@@ -1285,5 +1334,9 @@
   // window.__pixivRescueLoaded 为 undefined。这就是「点击后仍显示尚无此页」
   // 的根因。路由函数内部对 DOM 缺失已有兜底（getRoot 用 main||body，
   // body 可能为 null 时退到 documentElement），直接跑即可。
-  start();
+  try {
+    start();
+  } catch (error) {
+    showFatalError(error);
+  }
 })();

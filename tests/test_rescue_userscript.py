@@ -156,7 +156,12 @@ def test_userscript_locks_a14_fixes() -> None:
     # 0.6.5：不再把 start 挂到 DOMContentLoaded 上——晚注入（注入时该事件
     # 已过）会让监听器永不触发、脚本零反应。必须立即启动。
     assert "addEventListener('DOMContentLoaded', start" not in script
-    assert "  start();\n})();" in script
+    # 0.7.0：顶层 try/catch 包裹（可见错误条），start 仍立即调用
+    assert "    start();\n  } catch (error) {\n    showFatalError(error);" in script
+    # 0.7.0：可见诊断（沙箱环境控制台读不到标记）+ GM API 缺失时重试
+    assert "showBootBadge" in script
+    assert "showFatalError" in script
+    assert "missingRuntimeApis" in script
     # document-start 时 body/head 可能为空，需兜底
     assert "document.body || document.documentElement" in script
     assert "'.pixiv-rescue-rescued-cover{position:relative;flex:0 0 64px;width:64px;height:90px" in script
