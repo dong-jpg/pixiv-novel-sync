@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.6.1
+// @version      0.6.2
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -136,6 +136,10 @@
     '作品不存在',
     'This work has been deleted',
     'Page not found',
+    // 2026-10-21 生产实测：已删作品的正文页显示「尚无此页」+「回到主页」
+    // （SPA 渲染的 404 占位）。旧列表遗漏，导致跳转到正文页后脚本不渲染。
+    // 只收「尚无此页」——「回到主页」太泛，任何 404 页都有，会误伤。
+    '尚无此页',
     // 列表页（收藏/追更）白块的实际文案变体
     '削除されたか、存在しなくなっています',
     'この作品は非公開',
@@ -160,6 +164,8 @@
   // Token 探测只做一次：没识别到失效卡片时用一次 lookup 判断 Token 配置，
   // 避免「卡片识别失败」与「脚本没运行」在用户眼里无法区分。
   let tokenProbed = false;
+  // 列表页快速轮询窗口的截止时间戳（见 handleListPage）
+  let fastScanUntil = 0;
   function showRescueNotice(kind) {
     const messages = {
       missing_token: '救援脚本未设置 Token：点 Tampermonkey 菜单「设置或更新救援 Token」后刷新页面',
@@ -807,11 +813,34 @@
         scheduled = true;
         window.setTimeout(function () {
           scheduled = false;
-          if (isBookmarksListPage() || isWatchlistPage()) markBrokenCards();
+          if (!isBookmarksListPage() && !isWatchlistPage()) return;
+          markBrokenCards();
+          // 快速通道：首次看到失效卡但还没渲染完时，短时间内多扫几次。
+          // 用户反馈「有时等很久没反应、刷新一下几秒就出来」——SPA 分批
+          // 渲染时，单靠 150ms 去抖可能刚好错过卡片插入的那一批。
+          fastScanUntil = Date.now() + 15000;
         }, 150);
       });
       observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
       window.__pixivRescueObserver = observer;
+    }
+    // 快速轮询窗口：进入列表页后 15 秒内每 500ms 扫一次（SPA 分批渲染），
+    // 之后交给 3 秒 interval。定时器用链式 setTimeout，避免两个 interval 叠加。
+    fastScanUntil = Date.now() + 15000;
+    if (!window.__pixivRescueFastScan) {
+      const fastTick = function () {
+        if (!isBookmarksListPage() && !isWatchlistPage()) {
+          window.__pixivRescueFastScan = null;
+          return;
+        }
+        markBrokenCards();
+        if (Date.now() < fastScanUntil) {
+          window.__pixivRescueFastScan = window.setTimeout(fastTick, 500);
+        } else {
+          window.__pixivRescueFastScan = null;
+        }
+      };
+      window.__pixivRescueFastScan = window.setTimeout(fastTick, 500);
     }
     // SPA 切页会重复进入本函数：interval 只注册一次，避免叠加扫描（泄漏修复）
     if (!window.__pixivRescueListInterval) {

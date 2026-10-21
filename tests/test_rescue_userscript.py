@@ -140,6 +140,10 @@ def test_userscript_locks_a14_fixes() -> None:
     assert "openRescueReader" not in script
     # 已删作品正文页是 SPA 空壳（无 main、无失效文案）：直接探备份渲染
     assert "looksEmpty" in script
+    # 0.6.2：正文页 404 占位文案「尚无此页」必须被识别（生产实测缺失点）
+    assert "'尚无此页'" in script
+    # 列表页首屏快速轮询窗口（SPA 分批渲染时避免错过卡片）
+    assert "fastScanUntil" in script
     assert "'.pixiv-rescue-rescued-cover{position:relative;flex:0 0 64px;width:64px;height:90px" in script
 
 
