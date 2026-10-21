@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.6.0
+// @version      0.6.1
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -391,9 +391,9 @@
       // 只在封面右上角放一个小「拯救」标识；不再整块红色（用户反馈像警告）。
       '.pixiv-rescue-rescued-card{padding:0}',
       '.pixiv-rescue-rescued-link{display:flex;gap:12px;padding:10px 0;color:inherit;text-decoration:none;align-items:flex-start}',
-      '.pixiv-rescue-rescued-cover{position:relative;flex:0 0 96px;width:96px;height:96px;border-radius:4px;overflow:hidden;background:#f3f4f6}',
+      '.pixiv-rescue-rescued-cover{position:relative;flex:0 0 64px;width:64px;height:90px;border-radius:2px;overflow:hidden;background:#f3f4f6}',
       '.pixiv-rescue-rescued-img{width:100%;height:100%;object-fit:cover;display:block}',
-      '.pixiv-rescue-mark{position:absolute;top:0;left:0;z-index:2;padding:1px 6px;border-radius:0 0 4px 0;background:rgba(37,99,235,.92);color:#fff;font-size:11px;font-weight:600;line-height:1.6;letter-spacing:.5px}',
+      '.pixiv-rescue-mark{position:absolute;top:0;left:0;z-index:2;padding:0 4px;border-radius:0 0 3px 0;background:rgba(37,99,235,.92);color:#fff;font-size:10px;font-weight:600;line-height:1.5}',
       '.pixiv-rescue-rescued-body{min-width:0;flex:1 1 auto}',
       '.pixiv-rescue-rescued-title{font-size:15px;font-weight:700;line-height:1.5;color:#1f2937;overflow-wrap:anywhere}',
       '.pixiv-rescue-rescued-author{margin-top:6px;font-size:12px;color:#6b7280}',
@@ -412,16 +412,6 @@
       '.pixiv-rescue-tab-title{font-size:15px;font-weight:700;color:#111827;line-height:1.4;overflow-wrap:anywhere}',
       '.pixiv-rescue-tab-meta{font-size:12px;color:#6b7280;line-height:1.6}',
       '.pixiv-rescue-tab-pager{margin:12px 0;text-align:center}',
-      // 站内阅读器浮层（列表页卡片点击打开）
-      '.pixiv-rescue-reader-overlay{position:fixed;inset:0;z-index:2147483600;background:rgba(17,24,39,.55);display:flex;align-items:center;justify-content:center;padding:16px}',
-      '.pixiv-rescue-reader-panel{position:relative;width:min(760px,100%);max-height:92vh;overflow-y:auto;background:#fff;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.35);padding:24px 20px 20px}',
-      '.pixiv-rescue-reader-close{position:sticky;top:0;float:right;border:none;background:#f3f4f6;color:#374151;width:32px;height:32px;border-radius:50%;font-size:15px;cursor:pointer;z-index:2}',
-      '.pixiv-rescue-reader-close:hover{background:#e5e7eb}',
-      '.pixiv-rescue-reader-title{margin:0 0 6px;font-size:20px;line-height:1.4;font-weight:700;color:#111827;padding-right:40px}',
-      '.pixiv-rescue-reader-author{margin-bottom:8px;font-size:13px;color:#6b7280}',
-      '.pixiv-rescue-reader-notice{margin:10px 0 14px;padding:8px 10px;border-left:3px solid #2563eb;background:#eff6ff;color:#1e40af;font-size:12px;line-height:1.6}',
-      '.pixiv-rescue-reader-loading{padding:40px 0;text-align:center;color:#6b7280;font-size:14px}',
-      '.pixiv-rescue-reader-viewer{margin-top:12px}',
       '.pixiv-rescue-notice-bar{display:flex;align-items:center;gap:12px;justify-content:center;max-width:760px;margin:12px auto;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px;line-height:1.6}'
     ].join('');
     document.head.append(style);
@@ -680,13 +670,12 @@
     card.classList.add('pixiv-rescue-rescued-card');
 
     const link = element('a', 'pixiv-rescue-rescued-link');
-    // 点击直接打开站内阅读器读备份正文——不再跳 Pixiv 原页（原页对已删作品
-    // 只有失效提示，用户反馈「点进去还是跳原内容，没有还原备份」）。
-    link.href = '#';
-    link.addEventListener('click', function (event) {
-      event.preventDefault();
-      openRescueReader(match, isNovel);
-    });
+    // 点击跳转到 Pixiv 正文页（与正常卡片一致），页面到达后 handleNovelPage
+    // 检测到失效态会在该页渲染备份正文。旧版是站内弹窗，用户反馈遮挡收藏页
+    // 且不符合「像正常小说一样进正文页」的预期。
+    link.href = isNovel
+      ? '/novel/show.php?id=' + encodeURIComponent(String(match.novel_id))
+      : '/novel/series/' + encodeURIComponent(String(match.series_id || match.novel_id));
 
     const coverBox = element('div', 'pixiv-rescue-rescued-cover');
     const mark = element('span', 'pixiv-rescue-mark', '拯救');
@@ -734,69 +723,6 @@
 
     link.append(coverBox, body);
     card.append(link);
-  }
-
-  // 站内阅读器浮层：点击列表页的已救援卡片后直接在这里读备份正文/章节目录，
-  // 不再跳 Pixiv（原页对已删作品只剩失效提示）。支持 Esc、点遮罩关闭。
-  function openRescueReader(match, isNovel) {
-    addStyles();
-    const existing = document.querySelector('[data-pixiv-rescue="reader"]');
-    if (existing) existing.remove();
-    const overlay = element('div', 'pixiv-rescue-reader-overlay');
-    overlay.setAttribute(ROOT_ATTRIBUTE, 'reader');
-    const panel = element('div', 'pixiv-rescue-reader-panel');
-    const closeBtn = element('button', 'pixiv-rescue-reader-close', '✕');
-    closeBtn.type = 'button';
-    closeBtn.setAttribute('aria-label', '关闭');
-    closeBtn.addEventListener('click', function () { overlay.remove(); });
-    overlay.addEventListener('click', function (event) {
-      if (event.target === overlay) overlay.remove();
-    });
-    const onKey = function (event) {
-      if (event.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey); }
-    };
-    document.addEventListener('keydown', onKey);
-
-    const content = element('div', 'pixiv-rescue-reader-content');
-    content.append(element('div', 'pixiv-rescue-reader-loading', '正在读取备份…'));
-    panel.append(closeBtn, content);
-    overlay.append(panel);
-    (document.body || document.documentElement).append(overlay);
-
-    if (!isNovel && match.series_id) {
-      // 系列：先渲染元信息 + 章节目录，点章节再取正文
-      content.replaceChildren();
-      content.append(element('h2', 'pixiv-rescue-reader-title', match.title || '未命名系列'));
-      if (match.author_name) content.append(element('div', 'pixiv-rescue-reader-author', '作者：' + match.author_name));
-      content.append(element('div', 'pixiv-rescue-reader-notice', '内容来自私人备份，并非 Pixiv 官方恢复'));
-      const viewer = element('div', 'pixiv-rescue-reader-viewer');
-      content.append(viewer);
-      renderChapterDirectory(content, viewer, { items: [], page: 1, total_pages: 1 }, match.series_id);
-      apiGet('/api/rescue/v1/series/' + encodeURIComponent(String(match.series_id)) + '/chapters?page=1&page_size=100')
-        .then(function (directory) {
-          content.querySelector('.pixiv-rescue-directory')?.remove();
-          renderChapterDirectory(content, viewer, directory, match.series_id);
-        })
-        .catch(function (error) {
-          viewer.replaceChildren(element('div', 'pixiv-rescue-error', rescueErrorText(error, false)));
-        });
-      return;
-    }
-
-    const novelId = match.novel_id;
-    apiGet('/api/rescue/v1/novels/' + encodeURIComponent(String(novelId)))
-      .then(function (data) {
-        content.replaceChildren();
-        content.append(element('h2', 'pixiv-rescue-reader-title', data.title || match.title || '未命名备份小说'));
-        const author = data.author_name ? '作者：' + data.author_name : '';
-        if (author) content.append(element('div', 'pixiv-rescue-reader-author', author));
-        content.append(element('div', 'pixiv-rescue-reader-notice', data.source_notice || '内容来自私人备份，并非 Pixiv 官方恢复'));
-        renderText(content, data.text_raw || '备份正文为空');
-        panel.scrollTop = 0;
-      })
-      .catch(function (error) {
-        content.replaceChildren(element('div', 'pixiv-rescue-error', rescueErrorText(error, false)));
-      });
   }
 
   function markBrokenCards() {
@@ -1148,9 +1074,10 @@
     const novelId = novelIdFromPage();
     if (!novelId) return;
     const generation = bumpRouteGeneration();
-    waitForUnavailableState(isNovelPageHealthy).then(function (unavailable) {
-      if (!unavailable) return;
-      if (routeGeneration() !== generation || novelIdFromPage() !== novelId) return;
+    // 已删作品的 Pixiv 正文页是 SPA 空壳：没有 <main>、也没有失效文案，
+    // pageSaysUnavailable() 检测不到，旧流程会等满 1.2 秒后误判「健康」放弃。
+    // 因此先探一次备份：查得到就直接渲染，查不到再走原来的失效观察流程。
+    const renderBackup = function () {
       apiGet('/api/rescue/v1/novels/' + encodeURIComponent(novelId))
         .then(function (data) {
           if (routeGeneration() !== generation || novelIdFromPage() !== novelId) return;
@@ -1160,6 +1087,17 @@
           if (routeGeneration() !== generation || novelIdFromPage() !== novelId) return;
           renderError(error);
         });
+    };
+    const looksEmpty = !document.querySelector('main') || pageSaysUnavailable();
+    if (looksEmpty) {
+      // 空壳或已显示失效文案：直接尝试备份（查不到时 renderError 会提示）
+      renderBackup();
+      return;
+    }
+    waitForUnavailableState(isNovelPageHealthy).then(function (unavailable) {
+      if (!unavailable) return;
+      if (routeGeneration() !== generation || novelIdFromPage() !== novelId) return;
+      renderBackup();
     });
   }
 
@@ -1168,9 +1106,8 @@
     const seriesId = seriesIdFromPage();
     if (!seriesId) return;
     const generation = bumpRouteGeneration();
-    waitForUnavailableState(isSeriesPageHealthy).then(function (unavailable) {
-      if (!unavailable) return;
-      if (routeGeneration() !== generation || seriesIdFromPage() !== seriesId) return;
+    // 与 handleNovelPage 同理：已删系列的 Pixiv 页也是 SPA 空壳，没有失效文案。
+    const renderBackup = function () {
       apiGet('/api/rescue/v1/series/' + encodeURIComponent(seriesId))
         .then(function (data) {
           if (routeGeneration() !== generation || seriesIdFromPage() !== seriesId) return;
@@ -1180,6 +1117,16 @@
           if (routeGeneration() !== generation || seriesIdFromPage() !== seriesId) return;
           renderError(error);
         });
+    };
+    const looksEmpty = !document.querySelector('main') || pageSaysUnavailable();
+    if (looksEmpty) {
+      renderBackup();
+      return;
+    }
+    waitForUnavailableState(isSeriesPageHealthy).then(function (unavailable) {
+      if (!unavailable) return;
+      if (routeGeneration() !== generation || seriesIdFromPage() !== seriesId) return;
+      renderBackup();
     });
   }
 

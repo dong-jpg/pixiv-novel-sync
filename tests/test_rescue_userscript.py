@@ -132,12 +132,15 @@ def test_userscript_locks_a14_fixes() -> None:
     assert "apiGetBlobUrl" in script
     assert "pixiv-rescue-mark" in script
     assert "/cover" in script
-    # 0.6.0：点击直开站内阅读器（不再跳 Pixiv）+ 本地缓存 + 首屏观察器
-    assert "openRescueReader" in script
-    assert "pixiv-rescue-reader-overlay" in script
+    # 0.6.0/0.6.1：本地缓存 + 首屏观察器；点击走 Pixiv 正文页（同正常卡片），
+    # 由 handleNovelPage 在该页渲染备份，不再用遮挡收藏页的站内弹窗
     assert "readLookupCache" in script
     assert "readCoverCache" in script
     assert "MutationObserver" in script
+    assert "openRescueReader" not in script
+    # 已删作品正文页是 SPA 空壳（无 main、无失效文案）：直接探备份渲染
+    assert "looksEmpty" in script
+    assert "'.pixiv-rescue-rescued-cover{position:relative;flex:0 0 64px;width:64px;height:90px" in script
 
 
 @pytest.fixture(scope="module")
