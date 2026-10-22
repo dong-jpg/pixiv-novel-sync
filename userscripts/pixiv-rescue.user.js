@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.7.1
+// @version      0.7.2
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -40,7 +40,7 @@
     const custom = String(GM_getValue('pixivRescueOrigin', '') || '').trim();
     return (custom || DEFAULT_API_ORIGIN).replace(/\/$/, '');
   }
-  const SCRIPT_VERSION = '0.7.1';
+  const SCRIPT_VERSION = '0.7.2';
   const TOKEN_KEY = 'pixivRescueToken';
   const ROOT_ATTRIBUTE = 'data-pixiv-rescue';
   // 本地缓存：收藏页每次进入都要重新 lookup + 拉封面，用户反馈「每次都要
@@ -1159,14 +1159,23 @@
   function handleNovelPage() {
     const novelId = novelIdFromPage();
     if (!novelId) return;
+    window.__pixivRescueDebug = true;
+    showStep('novel 页 id=' + novelId);
     const generation = bumpRouteGeneration();
     const renderBackup = function () {
+      showStep('请求备份 ' + novelId);
       apiGet('/api/rescue/v1/novels/' + encodeURIComponent(novelId))
         .then(function (data) {
-          if (routeGeneration() !== generation || novelIdFromPage() !== novelId) return;
+          showStep('收到备份，准备渲染');
+          if (routeGeneration() !== generation || novelIdFromPage() !== novelId) {
+            showStep('代次/ID 已变，放弃渲染 (gen ' + generation + '->' + routeGeneration() + ', id ' + novelId + '->' + novelIdFromPage() + ')');
+            return;
+          }
           renderNovel(data);
+          showStep('已渲染，字数 ' + String((data.text_raw || '').length));
         })
         .catch(function (error) {
+          showStep('备份请求失败: ' + (error && error.message));
           if (routeGeneration() !== generation || novelIdFromPage() !== novelId) return;
           renderError(error);
         });
@@ -1175,9 +1184,11 @@
     // Pixiv 页面文案或健康态——文案在不同版本/语言/渲染时机下千变万化
     // （已踩坑「该作品无法显示」「尚无此页」），这个信号是确定性的。
     if (consumeRescueIntent('novel', novelId)) {
+      showStep('意图匹配（URL/sessionStorage）');
       renderBackup();
       return;
     }
+    showStep('无意图，判健康: ' + isNovelPageHealthy());
     if (isNovelPageHealthy()) return;
     // 已删作品的 Pixiv 正文页是 SPA 空壳：没有 <main>、也没有失效文案，
     // pageSaysUnavailable() 检测不到，旧流程会等满 1.2 秒后误判「健康」放弃。
@@ -1262,6 +1273,22 @@
       bar.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:2147483647;padding:10px 14px;background:#fef2f2;color:#991b1b;font:12px/1.6 -apple-system,sans-serif;border-bottom:1px solid #fca5a5';
       (document.body || document.documentElement).prepend(bar);
     } catch (_ignored) { /* 连错误条都画不出来就只能作罢 */ }
+  }
+
+  // 分步状态：把渲染链路的关键节点画在页面上（手机沙箱环境无法看控制台）。
+  // 只在「救援意图」页面上显示，避免污染普通页面。
+  function showStep(step) {
+    try {
+      if (!window.__pixivRescueDebug) return;
+      let bar = document.querySelector('[data-pixiv-rescue-step]');
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.setAttribute('data-pixiv-rescue-step', '');
+        bar.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:2147483646;padding:6px 10px;background:#eff6ff;color:#1e40af;font:11px/1.5 -apple-system,sans-serif;border-bottom:1px solid #bfdbfe';
+        (document.body || document.documentElement).appendChild(bar);
+      }
+      bar.textContent = '救援流程：' + step;
+    } catch (_error) { /* ignore */ }
   }
 
   function start(attempt) {
