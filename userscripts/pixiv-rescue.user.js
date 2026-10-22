@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.7.0
+// @version      0.7.1
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -40,7 +40,7 @@
     const custom = String(GM_getValue('pixivRescueOrigin', '') || '').trim();
     return (custom || DEFAULT_API_ORIGIN).replace(/\/$/, '');
   }
-  const SCRIPT_VERSION = '0.7.0';
+  const SCRIPT_VERSION = '0.7.1';
   const TOKEN_KEY = 'pixivRescueToken';
   const ROOT_ATTRIBUTE = 'data-pixiv-rescue';
   // 本地缓存：收藏页每次进入都要重新 lookup + 拉封面，用户反馈「每次都要
@@ -999,10 +999,11 @@
     });
 
     const mountPoint = tabHost.closest('section, div') || tabHost.parentElement;
-    if (mountPoint && mountPoint !== document.body) {
+    if (mountPoint && mountPoint !== document.body && mountPoint.parentElement) {
       mountPoint.parentElement.insertBefore(container, mountPoint.nextSibling);
     } else {
-      (document.querySelector('main') || document.body).append(container);
+      const host = document.querySelector('main') || document.body || document.documentElement;
+      if (host) host.append(container);
     }
   }
 
@@ -1019,6 +1020,9 @@
   }
 
   function renderChapterDirectory(panel, viewer, data, seriesId) {
+    // 异步回调可能在页面已切走、panel 被清空后才到达：此时 viewer 已脱离
+    // panel，insertBefore 会抛 "Cannot read properties of null"。直接放弃本轮。
+    if (!panel || !viewer || !panel.contains(viewer)) return;
     let list = panel.querySelector('.pixiv-rescue-directory');
     if (!list) {
       list = element('ol', 'pixiv-rescue-directory');
@@ -1292,7 +1296,11 @@
       lastHref = window.location.href;
       const old = document.querySelector('[' + ROOT_ATTRIBUTE + '="content"]');
       if (old) old.remove();
-      routeWhenReady();
+      try {
+        routeWhenReady();
+      } catch (error) {
+        showFatalError(error);
+      }
     }
     const pushState = history.pushState;
     history.pushState = function () {

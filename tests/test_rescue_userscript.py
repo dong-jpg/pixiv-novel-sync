@@ -162,6 +162,10 @@ def test_userscript_locks_a14_fixes() -> None:
     assert "showBootBadge" in script
     assert "showFatalError" in script
     assert "missingRuntimeApis" in script
+    # 0.7.1：异步回调迟到时的空指针守卫（生产报错
+    # "Cannot read properties of null (reading 'insertBefore')"）
+    assert "!panel.contains(viewer)" in script
+    assert "mountPoint.parentElement)" in script
     # document-start 时 body/head 可能为空，需兜底
     assert "document.body || document.documentElement" in script
     assert "'.pixiv-rescue-rescued-cover{position:relative;flex:0 0 64px;width:64px;height:90px" in script
