@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -221,6 +222,50 @@ def test_userscript_reader_is_a_fixed_layer_not_page_flow() -> None:
         assert removed not in script, removed
     # 正文接口放宽超时（20 万字 JSON 约 216 KB）
     assert "FULL_TEXT_TIMEOUT_MS = 30000" in script
+
+
+def test_userscript_bounds_cover_cache_and_list_scan() -> None:
+    """0.9.1：封面缓存有上限；列表页 3 秒扫描离开列表页后不再干活。
+
+    封面 dataURL 单张几十 KB，旧版只在读取时判过期、从不删除；脚本没有
+    GM_listValues，旧键永远留在存储里，直到管理器配额写满后 GM_setValue
+    静默失败。列表页 interval 注册后永不停止，SPA 跳出列表页后仍每 3 秒
+    全页扫描一次。
+    """
+    script = _script()
+
+    # 一个 GM 键记录最近使用的封面键，上限约 150，淘汰/过期用 '' 覆盖清掉
+    assert "const COVER_CACHE_INDEX_KEY = 'pixivRescueCoverLru';" in script
+    assert "const COVER_CACHE_MAX_ENTRIES = 150;" in script
+    assert "if (kept.length >= COVER_CACHE_MAX_ENTRIES || expired)" in script
+    assert "GM_setValue(entry.key, '');" in script
+    # 读到过期/损坏的封面也立即清掉（旧版只返回 null，值留在存储里）：
+    # at 传 0 即视为过期，随这一轮淘汰一起清成 ''
+    read_body = script.split("function readCoverCache(", 1)[1].split("\n  }\n", 1)[0]
+    assert "updateCoverIndex(dataKey, 0);" in read_body
+    assert "updateCoverIndex(dataKey, cached.at);" in read_body
+    # 先记账再写值：存储里不出现索引不知道的封面键
+    write_body = script.split("function writeCoverCache(", 1)[1].split("\n  }\n", 1)[0]
+    assert "if (!updateCoverIndex(dataKey, now)) return;" in write_body
+    assert write_body.index("updateCoverIndex(") < write_body.index("GM_setValue(")
+    # 不扩权限（@grant 集合由 test_rescue_userscript_install.py 锁定）：
+    # 也不调用未授权的 GM_listValues / GM_deleteValue
+    assert "GM_listValues(" not in script
+    assert "GM_deleteValue(" not in script
+
+    # 手机端以右下角「救援 <SCRIPT_VERSION>」角标认版本，必须与 @version 一致
+    header_version = re.search(r"^// @version\s+(\S+)$", script, re.MULTILINE)
+    const_version = re.search(r"const SCRIPT_VERSION = '([^']+)';", script)
+    assert header_version and const_version
+    assert header_version.group(1) == const_version.group(1)
+    assert tuple(map(int, const_version.group(1).split("."))) >= (0, 9, 1)
+
+    # interval 只注册一次，但每次 tick 先确认还在列表页
+    tick = script.split("__pixivRescueListInterval = window.setInterval(", 1)[1].split("}, 3000);", 1)[0]
+    assert tick.startswith("function () {")
+    assert "if (!isBookmarksListPage() && !isWatchlistPage()) return;" in tick
+    assert "markBrokenCards();" in tick
+    assert "setInterval(markBrokenCards, 3000)" not in script
 
 
 @pytest.fixture(scope="module")
@@ -588,4 +633,165 @@ def test_userscript_fixture_rescue_intent_survives_failure_with_retry(rescue_bro
     )
     page.get_by_role("button", name="重试").click()
     page.get_by_text("重试成功的正文").wait_for(state="visible")
+    page.close()
+
+
+# ── 列表页（收藏 / 追更）────────────────────────────────────────────
+
+LIST_TOKEN = "rsq_test"
+LIST_PATH = "/users/1/bookmarks/novels"
+LOOKUP_URL = "https://pixiv.dongboapp.com/api/rescue/v1/lookup?novel_ids="
+# 1×1 透明 PNG：封面接口的 blob 应答
+TINY_PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+)
+
+
+def _broken_card_html(novel_id: int) -> str:
+    """2026-10-20 手机端实测的失效卡片：div.works-item 内只剩一句失效文案。"""
+    return (
+        f"<li><div class='works-item'><a href='/novel/show.php?id={novel_id}'>"
+        "<div><div><div>该作品无法显示</div></div></div></a></div></li>"
+    )
+
+
+def _cover_key_suffix(token: str) -> str:
+    """复刻脚本 cacheKeySuffix 的滚动哈希（h * 31 + charCode，32 位截断）。"""
+    h = 0
+    for char in token:
+        h = (h * 31 + ord(char)) & 0xFFFFFFFF
+    return str(h)
+
+
+def _install_list_script(page, html: str, responses: dict[str, dict], store: dict[str, str]) -> None:
+    """列表页装载：document-start 注入，GM 存储是可读写的真实 Map，封面走 blob。"""
+    page.add_init_script(
+        "window.__rescueResponses = " + json.dumps(responses, ensure_ascii=False) + ";"
+        "window.__rescueStore = new Map(Object.entries(" + json.dumps(store) + "));"
+        "window.__rescuePng = " + json.dumps(TINY_PNG_BASE64) + ";"
+    )
+    page.add_init_script(
+        """
+        window.__rescueRequests = [];
+        window.GM_getValue = (key, fallback) => window.__rescueStore.has(key) ? window.__rescueStore.get(key) : fallback;
+        window.GM_setValue = (key, value) => { window.__rescueStore.set(key, value); };
+        window.GM_registerMenuCommand = () => {};
+        window.GM_xmlhttpRequest = (options) => {
+          window.__rescueRequests.push({url: options.url, method: options.method});
+          setTimeout(() => {
+            if (options.responseType === 'blob') {
+              const bytes = Uint8Array.from(atob(window.__rescuePng), c => c.charCodeAt(0));
+              options.onload({status: 200, response: new Blob([bytes], {type: 'image/png'})});
+              return;
+            }
+            const payload = window.__rescueResponses[options.url];
+            if (!payload) {
+              options.onload({status: 404, responseText: JSON.stringify({ok: false, error: 'missing fixture'})});
+              return;
+            }
+            options.onload({status: 200, responseText: JSON.stringify({ok: true, data: payload})});
+          }, 0);
+        };
+        """
+    )
+    page.add_init_script(_script())
+    page.route("http://pixiv.test/**", lambda route: route.fulfill(
+        status=200, headers={"Content-Type": "text/html; charset=utf-8"}, body=html))
+    page.goto("http://pixiv.test" + LIST_PATH)
+
+
+def test_userscript_fixture_cover_cache_is_bounded_and_clears_evicted(rescue_browser) -> None:
+    """回归：封面缓存写满后 GM_setValue 静默失败（旧版从不删除任何封面键）。
+
+    预置一份满额的最近使用列表（其中一条已过期），再让一张失效卡的封面过期
+    重取：新封面排到最前，列表仍是上限条数，被挤出与过期的键都被清成 ''。
+    """
+    page = rescue_browser.new_page()
+    now_ms = int(page.evaluate("Date.now()"))
+    prefix = "pixivRescueCover:" + _cover_key_suffix(LIST_TOKEN) + ":novel:"
+    real_key = prefix + "101"
+    fresh_at = now_ms - 10 * 60 * 1000
+    expired_at = now_ms - 25 * 60 * 60 * 1000
+    seed_keys = [prefix + str(900000 + i) for i in range(151)]
+    expired_key = seed_keys[75]
+    index = [{"key": key, "at": expired_at if key == expired_key else fresh_at} for key in seed_keys]
+    store = {
+        "pixivRescueToken": LIST_TOKEN,
+        "pixivRescueCoverLru": json.dumps(index),
+        # 旧版留下、未进索引的过期封面：读到即清掉并重取
+        real_key: json.dumps({"at": expired_at, "dataUrl": "data:image/png;base64,stale"}),
+    }
+    for entry in index:
+        store[entry["key"]] = json.dumps({"at": entry["at"], "dataUrl": "data:image/png;base64,seed"})
+    responses = {
+        LOOKUP_URL + "101": {
+            "novels": [{"novel_id": 101, "title": "备份小说", "author_name": "作者", "has_cover": True,
+                        "personal_hold": True}],
+            "series": [],
+        }
+    }
+    _install_list_script(page, "<ul id='list'>" + _broken_card_html(101) + "</ul>", responses, store)
+
+    page.wait_for_function(
+        """([key, staleAt]) => {
+          const raw = window.__rescueStore.get(key);
+          if (!raw) return false;
+          const value = JSON.parse(raw);
+          return value.at > staleAt && value.dataUrl.startsWith('data:image/png;base64,');
+        }""",
+        arg=[real_key, expired_at],
+    )
+    result = page.evaluate(
+        """() => ({
+          index: JSON.parse(window.__rescueStore.get('pixivRescueCoverLru')),
+          store: Object.fromEntries(window.__rescueStore),
+          urls: window.__rescueRequests.map(item => item.url),
+        })"""
+    )
+    keys = [entry["key"] for entry in result["index"]]
+    assert keys[0] == real_key
+    assert len(keys) == 150 and len(set(keys)) == 150
+    # 过期封面没有被当成命中：确实重新拉了封面
+    assert "https://pixiv.dongboapp.com/api/rescue/v1/novels/101/cover" in result["urls"]
+    # 索引里的键都有值；不在索引里的封面键全部清成 ''（没有无主的 dataURL）
+    cover_keys = [key for key in result["store"] if key.startswith("pixivRescueCover:")]
+    for key in cover_keys:
+        assert bool(result["store"][key]) == (key in keys), key
+    assert expired_key not in keys and result["store"][expired_key] == ""
+    # 挤出的是最久未用的尾部，最近使用的头部保留
+    assert seed_keys[-1] not in keys and result["store"][seed_keys[-1]] == ""
+    assert seed_keys[0] in keys
+    page.close()
+
+
+def test_userscript_fixture_list_interval_idles_off_list_page(rescue_browser) -> None:
+    """回归：列表页 3 秒 interval 永不停止，SPA 跳出列表页后仍在全页扫描。"""
+    page = rescue_browser.new_page()
+    responses = {
+        LOOKUP_URL + "777001": {
+            "novels": [{"novel_id": 777001, "title": "列表页备份", "author_name": "作者",
+                        "has_cover": False, "personal_hold": True}],
+            "series": [],
+        }
+    }
+    _install_list_script(page, "<ul id='list'></ul>", responses, {"pixivRescueToken": LIST_TOKEN})
+    insert_card = "html => document.getElementById('list').insertAdjacentHTML('beforeend', html)"
+    lookups = "() => window.__rescueRequests.filter(item => item.url.includes('/lookup?')).length"
+
+    # 列表页上：新插入的失效卡会被扫到并重建
+    page.evaluate(insert_card, _broken_card_html(777001))
+    page.locator(".pixiv-rescue-rescued-card").wait_for(state="visible")
+    before = page.evaluate(lookups)
+
+    # SPA 跳出列表页：之后出现的失效卡不应再被扫描（至少等过一个 3 秒 tick）
+    page.evaluate("() => history.pushState({}, '', '/discovery')")
+    page.evaluate(insert_card, _broken_card_html(777002))
+    page.wait_for_timeout(3600)
+    assert page.evaluate(lookups) == before
+
+    # 回到列表页：扫描恢复，跳出期间插入的卡片被补扫
+    page.evaluate("path => history.pushState({}, '', path)", LIST_PATH)
+    page.wait_for_function(
+        "() => window.__rescueRequests.some(item => item.url.endsWith('/lookup?novel_ids=777002'))"
+    )
     page.close()
