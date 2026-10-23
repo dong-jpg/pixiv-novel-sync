@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.9.0
+// @version      0.9.1
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -40,15 +40,22 @@
     const custom = String(GM_getValue('pixivRescueOrigin', '') || '').trim();
     return (custom || DEFAULT_API_ORIGIN).replace(/\/$/, '');
   }
-  const SCRIPT_VERSION = '0.9.0';
+  const SCRIPT_VERSION = '0.9.1';
   const TOKEN_KEY = 'pixivRescueToken';
   const ROOT_ATTRIBUTE = 'data-pixiv-rescue';
   // 本地缓存：收藏页每次进入都要重新 lookup + 拉封面，用户反馈「每次都要
   // 等一会」。lookup 结果缓存 10 分钟（目录变更由同步任务驱动，10 分钟足够
   // 新鲜）；封面 blob 缓存 24 小时（封面内容几乎不变）。缓存键带 token 前缀
   // 哈希，轮换 Token 后旧缓存自然失效。
+  // 封面是一键一张 dataURL（单张几十 KB）。脚本没有 GM_listValues，无法枚举
+  // 存储里有哪些键：0.9.0 及以前只在读取时判过期、从不删除，旧键一直留到
+  // 管理器配额写满、GM_setValue 静默失败。现在用一个 GM 键记录最近使用的
+  // 封面键（上限 COVER_CACHE_MAX_ENTRIES），被挤出或过期的键用 '' 覆盖清掉
+  // ——同样没有 GM_deleteValue，键名本身留下，但只剩几十字节。
   const LOOKUP_CACHE_KEY = 'pixivRescueLookupCache';
   const COVER_CACHE_PREFIX = 'pixivRescueCover:';
+  const COVER_CACHE_INDEX_KEY = 'pixivRescueCoverLru';
+  const COVER_CACHE_MAX_ENTRIES = 150;
   const LOOKUP_CACHE_TTL_MS = 10 * 60 * 1000;
   const COVER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -111,22 +118,83 @@
     return entry.item;
   }
 
-  function readCoverCache(id, type) {
+  function coverCacheKey(id, type) {
+    return COVER_CACHE_PREFIX + cacheKeySuffix() + ':' + type + ':' + id;
+  }
+
+  // 最近使用列表：[{key, at}]，最近用过的在前，at 是该封面写入缓存的时间。
+  // 只认 COVER_CACHE_PREFIX 开头的键：淘汰时要把键清成 ''，列表万一被写坏
+  // 也不能波及 Token 等其他存储。
+  function readCoverIndex() {
     try {
-      const raw = GM_getValue(COVER_CACHE_PREFIX + cacheKeySuffix() + ':' + type + ':' + id, '');
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      if (!parsed || Date.now() - parsed.at >= COVER_CACHE_TTL_MS) return null;
-      return parsed.dataUrl;
+      const parsed = JSON.parse(GM_getValue(COVER_CACHE_INDEX_KEY, '') || '[]');
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(function (entry) {
+        return entry && typeof entry.key === 'string' && entry.key.startsWith(COVER_CACHE_PREFIX) &&
+          typeof entry.at === 'number';
+      });
     } catch (_error) {
-      return null;
+      return [];
     }
+  }
+
+  // 把 key 移到列表最前，顺带把过期与超出上限的旧键清成 ''。at 传 0 即视为
+  // 已过期，随这一轮一起清掉（用于丢弃读到的过期/损坏封面）。返回列表是否
+  // 写成功；存储出错只影响缓存，不影响显示。
+  function updateCoverIndex(key, at) {
+    try {
+      const now = Date.now();
+      const entries = [{ key: key, at: at }];
+      readCoverIndex().forEach(function (entry) {
+        if (entry.key !== key) entries.push(entry);
+      });
+      const kept = [];
+      const seen = new Set();
+      entries.forEach(function (entry) {
+        if (seen.has(entry.key)) return;
+        seen.add(entry.key);
+        const expired = now - entry.at >= COVER_CACHE_TTL_MS;
+        if (kept.length >= COVER_CACHE_MAX_ENTRIES || expired) {
+          GM_setValue(entry.key, '');
+        } else {
+          kept.push(entry);
+        }
+      });
+      GM_setValue(COVER_CACHE_INDEX_KEY, JSON.stringify(kept));
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function readCoverCache(id, type) {
+    const dataKey = coverCacheKey(id, type);
+    let cached = null;
+    try {
+      const raw = GM_getValue(dataKey, '');
+      if (!raw) return null;
+      cached = JSON.parse(raw);
+    } catch (_error) { /* 损坏的值按过期处理 */ }
+    if (cached && typeof cached.dataUrl === 'string' && cached.dataUrl &&
+        typeof cached.at === 'number' && Date.now() - cached.at < COVER_CACHE_TTL_MS) {
+      // 读到即算「最近使用」：常看的封面不会被挤出；0.9.0 及以前写下、
+      // 还没进列表的键也借这次读取补登记
+      updateCoverIndex(dataKey, cached.at);
+      return cached.dataUrl;
+    }
+    // 过期或损坏：旧版只返回 null，值一直占着存储
+    updateCoverIndex(dataKey, 0);
+    return null;
   }
 
   function writeCoverCache(id, type, dataUrl) {
     try {
-      GM_setValue(COVER_CACHE_PREFIX + cacheKeySuffix() + ':' + type + ':' + id, JSON.stringify({
-        at: Date.now(),
+      const dataKey = coverCacheKey(id, type);
+      const now = Date.now();
+      // 先记账再写值：记账失败就不写，存储里不留列表管不到的封面
+      if (!updateCoverIndex(dataKey, now)) return;
+      GM_setValue(dataKey, JSON.stringify({
+        at: now,
         dataUrl: dataUrl
       }));
     } catch (_error) { /* 大图可能超存储配额，静默失败 */ }
@@ -957,9 +1025,15 @@
       };
       window.__pixivRescueFastScan = window.setTimeout(fastTick, 500);
     }
-    // SPA 切页会重复进入本函数：interval 只注册一次，避免叠加扫描（泄漏修复）
+    // SPA 切页会重复进入本函数：interval 只注册一次，避免叠加扫描（泄漏修复）。
+    // 它从不停止，跳出列表页后每个 tick 先看路径再决定扫不扫——0.9.0 及以前
+    // 在正文页、首页上也每 3 秒全页扫一遍。不 clearInterval：回到列表页时
+    // 不必重新注册，下一个 tick 就恢复扫描。
     if (!window.__pixivRescueListInterval) {
-      window.__pixivRescueListInterval = window.setInterval(markBrokenCards, 3000);
+      window.__pixivRescueListInterval = window.setInterval(function () {
+        if (!isBookmarksListPage() && !isWatchlistPage()) return;
+        markBrokenCards();
+      }, 3000);
     }
   }
 
