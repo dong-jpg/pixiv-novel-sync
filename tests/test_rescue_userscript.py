@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -52,12 +53,24 @@ def test_userscript_uses_fixed_api_paths_and_safe_rendering() -> None:
 
 
 def test_userscript_does_not_replace_healthy_pixiv_pages() -> None:
+    """0.9.0：作品是否还在问 Pixiv 自己的 ajax，不再猜页面 DOM。
+
+    2026-10-23 真机页实测：手机站健康正文页同样没有 <main>，旧版
+    「无 main ⇒ 空壳」的判断让每个健康正文页都去请求备份、在页尾塞一条
+    「未找到可用的救援数据」。Pixiv ajax 对已删作品稳定返回 404 + error:true。
+    """
     script = _script()
 
-    assert "isNovelPageHealthy" in script
-    assert "isSeriesPageHealthy" in script
-    assert "if (isNovelPageHealthy()) return;" in script
-    assert "if (isSeriesPageHealthy()) return;" in script
+    assert "function pixivWorkState(type, id)" in script
+    assert "'/ajax/novel/series/'" in script
+    assert "'/ajax/novel/'" in script
+    assert "if (isStale() || state === 'available') return;" in script
+    # 「确认失效」只认 404/410，403 等歧义状态不当成被删
+    assert "response.status === 404 || response.status === 410" in script
+    # 旧的 DOM 猜测已整体删除
+    for removed in ("looksEmpty", "isNovelPageHealthy", "isSeriesPageHealthy",
+                    "pageSaysUnavailable", "waitForUnavailableState"):
+        assert removed not in script, removed
 
 
 def test_userscript_matches_list_pages_without_disturbing_healthy_cards() -> None:
@@ -138,9 +151,8 @@ def test_userscript_locks_a14_fixes() -> None:
     assert "readCoverCache" in script
     assert "MutationObserver" in script
     assert "openRescueReader" not in script
-    # 已删作品正文页是 SPA 空壳（无 main、无失效文案）：直接探备份渲染
-    assert "looksEmpty" in script
-    # 0.6.2：正文页 404 占位文案「尚无此页」必须被识别（生产实测缺失点）
+    # 0.6.2：「尚无此页」留在失效文案表里（列表页卡片识别仍用文案表；
+    # 正文页 0.9.0 起改问 Pixiv ajax，不再靠文案或 <main> 判断）
     assert "'尚无此页'" in script
     # 列表页首屏快速轮询窗口（SPA 分批渲染时避免错过卡片）
     assert "fastScanUntil" in script
@@ -171,6 +183,46 @@ def test_userscript_locks_a14_fixes() -> None:
     assert "'.pixiv-rescue-rescued-cover{position:relative;flex:0 0 64px;width:64px;height:90px" in script
 
 
+def test_userscript_reader_is_a_fixed_layer_not_page_flow() -> None:
+    """0.9.0：正文/系列备份渲染进脚本自有的固定全屏阅读层（生产根因）。
+
+    2026-10-23 真机页实测：手机站已删作品页是 SPA 404 空壳，一个
+    position:absolute、不透明背景的通栏容器从 y=48 起铺满 2000+px。0.7.x 把
+    面板当普通块元素追加到 body，被它整块盖住——20 万字全在 DOM 里，用户什么
+    都看不到；而所有 E2E 只断言了「面板存在」。0.8.0（未发布）改成事后命中测试
+    + 升级覆盖，依赖时机且会把健康正文页滚到页尾。可见性必须由 CSS 保证。
+    """
+    script = _script()
+
+    root_css = script.split("'.pixiv-rescue-root{", 1)[1].split("'", 1)[0]
+    assert "position:fixed" in root_css
+    assert "top:0;right:0;bottom:0;left:0" in root_css
+    assert "z-index:2147483600" in root_css
+    # 正文可达 45 万像素高：阅读层自带滚动，且不把滚动链到背后的 Pixiv 页面
+    assert "overflow-y:auto" in root_css
+    assert "overscroll-behavior:contain" in root_css
+    # 能退回 Pixiv 原页面，且收起后还能再打开（不是一次性弹窗）
+    assert "'回到 Pixiv 页面'" in script
+    assert "'查看私人备份'" in script
+    assert "pixiv-rescue-root--minimized" in script
+    # 挂载与保活：body 未就绪时等它出现；SPA 摘掉节点就挂回去；切页销毁
+    assert "function mountReaderRoot(node)" in script
+    assert "keepReaderAttached();" in script
+    assert "destroyReader();" in script
+    # 请求往返期间有可见占位；超时等错误给「重试」
+    assert "正在读取备份" in script
+    assert "renderError(error, show)" in script
+    # 提示条也是固定定位（插进页面流同样会被 404 空壳盖住）
+    notice_css = script.split("'.pixiv-rescue-notice-bar{", 1)[1].split("'", 1)[0]
+    assert "position:fixed" in notice_css
+    # 0.7.2 临时诊断与 0.8.0 事后检测机制都已移除
+    for removed in ("showStep", "__pixivRescueDebug", "elementsFromPoint",
+                    "ensureRootVisible", "pixiv-rescue-root--overlay", "getRoot("):
+        assert removed not in script, removed
+    # 正文接口放宽超时（20 万字 JSON 约 216 KB）
+    assert "FULL_TEXT_TIMEOUT_MS = 30000" in script
+
+
 @pytest.fixture(scope="module")
 def rescue_browser():
     playwright = pytest.importorskip("playwright.sync_api")
@@ -183,13 +235,34 @@ def rescue_browser():
         browser.close()
 
 
+PIXIV_AJAX_BODIES = {
+    # 2026-10-23 生产实测的 Pixiv ajax 应答形状
+    "available": (200, '{"error":false,"message":"","body":{"id":"101","title":"健康作品"}}'),
+    "unavailable": (404, '{"error":true,"message":"","body":[]}'),
+    # 状态不明：限流/网关错误等，应答甚至不是 JSON
+    "unknown": (500, "<html>upstream error</html>"),
+}
+
+
 def _install_script(
     page,
     html: str,
     responses: dict[str, dict],
     path: str = "/novel/show.php?id=101",
-) -> None:
+    ajax_state: str = "available",
+    at_document_start: bool = False,
+) -> list[str]:
+    """装载脚本并返回 Pixiv ajax 请求记录（正文/系列页判定作品存活用）。
+
+    默认在页面加载完后注入（模拟晚注入的管理器）；at_document_start=True 时
+    走 init script，在 body 解析出来之前就运行（模拟 Tampermonkey document-start）。
+    """
     script = _script()
+    ajax_hits: list[str] = []
+    if at_document_start:
+        page.add_init_script(
+            "window.__rescueResponses = " + json.dumps(responses, ensure_ascii=False) + ";"
+        )
     page.add_init_script(
         """
         window.__rescueRequests = [];
@@ -209,40 +282,92 @@ def _install_script(
         };
         """
     )
-    page.route(
-        "http://pixiv.test/**",
-        lambda route: route.fulfill(
-            status=200,
-            headers={"Content-Type": "text/html; charset=utf-8"},
-            body=html,
-        ),
-    )
+    if at_document_start:
+        page.add_init_script(script)
+
+    def fulfill(route) -> None:
+        if "/ajax/" in route.request.url:
+            ajax_hits.append(route.request.url)
+            status, body = PIXIV_AJAX_BODIES[ajax_state]
+            route.fulfill(status=status, headers={"Content-Type": "application/json"}, body=body)
+            return
+        route.fulfill(status=200, headers={"Content-Type": "text/html; charset=utf-8"}, body=html)
+
+    page.route("http://pixiv.test/**", fulfill)
     page.goto("http://pixiv.test" + path)
-    page.evaluate("responses => { window.__rescueResponses = responses; }", responses)
-    page.add_script_tag(content=script)
+    if not at_document_start:
+        page.evaluate("responses => { window.__rescueResponses = responses; }", responses)
+        page.add_script_tag(content=script)
+    return ajax_hits
+
+
+def _reader_state(page) -> dict:
+    """阅读层是否真的「用户看得见」：在面板位置做命中测试，而不是数 DOM 节点。"""
+    return page.evaluate(
+        """() => {
+          const root = document.querySelector('[data-pixiv-rescue="content"]');
+          if (!root) return { present: false };
+          const target = root.querySelector('.pixiv-rescue-panel, .pixiv-rescue-error') || root;
+          const rect = target.getBoundingClientRect();
+          const x = Math.max(1, Math.min(innerWidth - 2, Math.max(rect.left, 0) + 20));
+          const y = Math.max(1, Math.min(innerHeight - 2, Math.max(rect.top, 0) + 20));
+          const top = (document.elementsFromPoint(x, y) || [])[0];
+          return {
+            present: true,
+            mode: root.getAttribute('data-pixiv-rescue-mode'),
+            position: getComputedStyle(root).position,
+            hit: Boolean(top) && (top === root || root.contains(top)),
+          };
+        }"""
+    )
 
 
 def test_userscript_fixture_keeps_healthy_novel_untouched(rescue_browser) -> None:
     page = rescue_browser.new_page()
     html = "<main><article class='novel-text'>这是原始正文内容，不应触发救援接口。</article></main>"
-    _install_script(page, html, {})
+    ajax_hits = _install_script(page, html, {}, ajax_state="available")
 
-    page.wait_for_timeout(50)
+    page.wait_for_timeout(300)
+    assert ajax_hits == ["http://pixiv.test/ajax/novel/101"]
     assert page.evaluate("window.__rescueRequests") == []
     assert page.locator("[data-pixiv-rescue]").count() == 0
     assert page.locator(".novel-text").inner_text() == "这是原始正文内容，不应触发救援接口。"
     page.close()
 
 
-def test_userscript_fixture_leaves_unknown_page_untouched(rescue_browser) -> None:
-    page = rescue_browser.new_page()
-    html = "<main><div class='loading'>正在加载 Pixiv 内容…</div></main>"
-    _install_script(page, html, {})
+def test_userscript_fixture_leaves_healthy_touch_page_without_main_untouched(rescue_browser) -> None:
+    """回归 2026-10-23：手机站健康正文页没有 <main>（Vue 挂在 #spa-contents）。
 
-    page.wait_for_timeout(1800)
+    0.7.2 把「无 main」当成已删空壳：每个健康正文页都请求备份、在页尾塞一条
+    「未找到可用的救援数据」；未发布的 0.8.0 还会把页面滚到页尾。
+    """
+    page = rescue_browser.new_page()
+    html = (
+        "<div id='spa-contents'><div class='novel-content'>"
+        + "健康正文。" * 400
+        + "</div></div>"
+    )
+    ajax_hits = _install_script(page, html, {}, ajax_state="available", at_document_start=True)
+
+    page.wait_for_timeout(1500)
+    assert ajax_hits == ["http://pixiv.test/ajax/novel/101"]
     assert page.evaluate("window.__rescueRequests") == []
     assert page.locator("[data-pixiv-rescue]").count() == 0
-    assert page.locator(".loading").count() == 1
+    assert page.locator("[data-pixiv-rescue-notice]").count() == 0
+    assert page.evaluate("window.scrollY") == 0
+    page.close()
+
+
+def test_userscript_fixture_stays_silent_when_pixiv_state_unknown_and_no_backup(rescue_browser) -> None:
+    """Pixiv ajax 状态不明（限流/网关错误）时：查得到备份才出现，查不到不打扰。"""
+    page = rescue_browser.new_page()
+    html = "<main><article class='novel-text'>也许好好的正文</article></main>"
+    _install_script(page, html, {}, ajax_state="unknown")
+
+    page.wait_for_function("() => window.__rescueRequests.length === 1")
+    page.wait_for_timeout(200)
+    assert page.locator("[data-pixiv-rescue]").count() == 0
+    assert page.locator("[data-pixiv-rescue-notice]").count() == 0
     page.close()
 
 
@@ -257,15 +382,18 @@ def test_userscript_fixture_renders_deleted_novel_as_text(rescue_browser) -> Non
             "rescue_state": "success",
         }
     }
-    _install_script(page, html, responses)
+    # 无救援标记：靠 Pixiv ajax 404 判定已失效，再查备份
+    _install_script(page, html, responses, ajax_state="unavailable")
 
-    page.wait_for_timeout(100)
+    page.locator(".pixiv-rescue-body").wait_for(state="visible")
     assert page.locator("[data-pixiv-rescue]").count() == 1
     assert "拯救数据" in page.locator("[data-pixiv-rescue]").inner_text()
     assert "第一行" in page.locator("[data-pixiv-rescue]").inner_text()
     assert "<script>alert('xss')</script>" in page.locator("[data-pixiv-rescue]").inner_text()
     assert page.locator("[data-pixiv-rescue] script").count() == 0
     assert page.locator(".error").count() == 1
+    state = _reader_state(page)
+    assert state["hit"] is True and state["mode"] == "reader" and state["position"] == "fixed"
     page.close()
 
 
@@ -292,12 +420,11 @@ def test_userscript_fixture_loads_only_clicked_series_chapter(rescue_browser) ->
             "rescue_state": "partial",
         },
     }
-    _install_script(page, html, responses, path="/novel/series/202")
+    _install_script(page, html, responses, path="/novel/series/202", ajax_state="unavailable")
 
-    page.wait_for_timeout(100)
     page.get_by_role("button", name="加载目录").click()
     page.get_by_role("button", name="第二章").click()
-    page.wait_for_timeout(100)
+    page.get_by_text("第二章正文").wait_for(state="visible")
     urls = page.evaluate("window.__rescueRequests.map(item => item.url)")
     assert urls.count("https://pixiv.dongboapp.com/api/rescue/v1/novels/302") == 1
     assert "https://pixiv.dongboapp.com/api/rescue/v1/novels/301" not in urls
@@ -326,7 +453,7 @@ def test_userscript_fixture_loads_additional_series_pages(rescue_browser) -> Non
             "total_pages": 2,
         },
     }
-    _install_script(page, html, responses, path="/novel/series/204")
+    _install_script(page, html, responses, path="/novel/series/204", ajax_state="unavailable")
 
     page.get_by_role("button", name="加载目录").click()
     page.get_by_role("button", name="加载更多章节").click()
@@ -340,11 +467,125 @@ def test_userscript_fixture_loads_additional_series_pages(rescue_browser) -> Non
 
 
 def test_userscript_fixture_preserves_pixiv_error_when_api_fails(rescue_browser) -> None:
+    """Pixiv 确认已删、备份里也没有：不开阅读层，只给一条固定定位的提示。"""
     page = rescue_browser.new_page()
     html = "<main><div class='error'>この作品は削除されています</div></main>"
-    _install_script(page, html, {}, path="/novel/show.php?id=999")
+    _install_script(page, html, {}, path="/novel/show.php?id=999", ajax_state="unavailable")
 
-    page.locator(".pixiv-rescue-error").wait_for(state="visible")
+    notice = page.locator("[data-pixiv-rescue-notice]")
+    notice.wait_for(state="visible")
+    assert "私人备份里也没有收录" in notice.inner_text()
+    assert page.locator("[data-pixiv-rescue]").count() == 0
     assert page.locator(".error").count() == 1
     assert "この作品は削除されています" in page.locator(".error").inner_text()
+    page.close()
+
+
+def test_userscript_fixture_series_load_more_failure_keeps_directory(rescue_browser) -> None:
+    """「加载更多章节」失败只在面板里提示，不再把整个系列面板换成错误条。"""
+    page = rescue_browser.new_page()
+    responses = {
+        "https://pixiv.dongboapp.com/api/rescue/v1/series/205": {
+            "series_id": 205, "title": "长系列", "rescue_state": "partial",
+            "source_notice": "内容来自私人备份，并非 Pixiv 官方恢复",
+        },
+        "https://pixiv.dongboapp.com/api/rescue/v1/series/205/chapters": {
+            "items": [{"novel_id": 501, "title": "第一章"}], "page": 1, "total_pages": 2,
+        },
+    }
+    _install_script(page, "<div id='spa-contents'></div>", responses,
+                    path="/novel/series/205?pixiv_rescue=1")
+
+    page.get_by_role("button", name="加载目录").click()
+    page.get_by_role("button", name="加载更多章节").click()
+    page.locator(".pixiv-rescue-directory-error").wait_for(state="visible")
+    assert page.get_by_role("button", name="第一章").is_visible()
+    assert page.get_by_text("长系列").is_visible()
+    page.close()
+
+
+# 2026-10-23 真机页实测的手机站 404 空壳（已删作品页）：没有 <main>；Vue 挂在
+# #spa-contents，里面一个 position:absolute、不透明背景（rgb(245,245,245)）的
+# 通栏容器从 y=48 起铺 2000+px，「尚无此页」「回到主页」和推荐流都画在它里面。
+# 0.7.x 追加到 body 的静态面板被它整块盖住：DOM 里文字齐全，用户什么都看不到。
+PIXIV_404_SHELL = (
+    "<div id='container' style='position:relative'>"
+    "<div id='spa-contents' style='height:48px'>pixiv 头部"
+    "<div><div style='position:absolute;top:48px;left:0;width:100%;height:2132px;"
+    "background:rgb(245,245,245)'>"
+    "<div style='padding:116px 16px 64px'>尚无此页<button>回到主页</button></div>"
+    "</div></div></div></div>"
+)
+
+
+def test_userscript_fixture_reader_beats_pixiv_404_shell(rescue_browser) -> None:
+    """回归 2026-10-23 生产根因：404 空壳的绝对定位不透明背景盖住了 0.7.x 的面板。
+
+    断言是命中测试（用户真能看见），不是 locator 计数（DOM 存在）——旧 E2E 只断言
+    `panel: true`，面板被盖住了却一路绿灯。走 document-start 注入：body 还没解析
+    时脚本已经在跑，阅读层要等 body 出现再挂载。
+    """
+    page = rescue_browser.new_page()
+    responses = {
+        "https://pixiv.dongboapp.com/api/rescue/v1/novels/101": {
+            "title": "备份小说",
+            "text_raw": "被 404 空壳挡住的正文",
+            "source_notice": "内容来自私人备份，并非 Pixiv 官方恢复",
+            "rescue_state": "success",
+        }
+    }
+    ajax_hits = _install_script(page, PIXIV_404_SHELL, responses,
+                                path="/novel/show.php?id=101&pixiv_rescue=1", at_document_start=True)
+
+    page.get_by_text("被 404 空壳挡住的正文").wait_for(state="visible")
+    state = _reader_state(page)
+    assert state["hit"] is True, "阅读层被 Pixiv 404 背景层遮挡，用户看不见"
+    assert state["mode"] == "reader" and state["position"] == "fixed"
+    # 带救援标记：用户意图明确，不再多问一次 Pixiv
+    assert ajax_hits == []
+    page.close()
+
+
+def test_userscript_fixture_reader_minimizes_and_reopens(rescue_browser) -> None:
+    """层叠极高的遮挡层也盖不住；「回到 Pixiv 页面」收起为胶囊，可再打开。"""
+    page = rescue_browser.new_page()
+    responses = {
+        "https://pixiv.dongboapp.com/api/rescue/v1/novels/101": {
+            "title": "备份小说",
+            "text_raw": "压在最上层的正文",
+            "source_notice": "内容来自私人备份，并非 Pixiv 官方恢复",
+            "rescue_state": "success",
+        }
+    }
+    harder_shell = (
+        "<div style='position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483000;"
+        "background:rgb(245,245,245)'>更高层叠的遮挡层</div>"
+    )
+    _install_script(page, harder_shell, responses, path="/novel/show.php?id=101&pixiv_rescue=1")
+
+    page.get_by_text("压在最上层的正文").wait_for(state="visible")
+    assert _reader_state(page)["hit"] is True
+    page.get_by_role("button", name="回到 Pixiv 页面").click()
+    page.get_by_role("button", name="查看私人备份").wait_for(state="visible")
+    assert page.get_by_text("压在最上层的正文").is_hidden()
+    assert _reader_state(page)["mode"] == "minimized"
+    page.get_by_role("button", name="查看私人备份").click()
+    page.get_by_text("压在最上层的正文").wait_for(state="visible")
+    assert _reader_state(page)["mode"] == "reader"
+    page.close()
+
+
+def test_userscript_fixture_rescue_intent_survives_failure_with_retry(rescue_browser) -> None:
+    """带标记进入但备份请求失败：阅读层里给错误与「重试」，不是死路。"""
+    page = rescue_browser.new_page()
+    _install_script(page, PIXIV_404_SHELL, {}, path="/novel/show.php?id=101&pixiv_rescue=1")
+
+    page.locator(".pixiv-rescue-error").wait_for(state="visible")
+    assert _reader_state(page)["hit"] is True
+    page.evaluate(
+        """() => { window.__rescueResponses['https://pixiv.dongboapp.com/api/rescue/v1/novels/101'] =
+             { title: '重试后的备份', text_raw: '重试成功的正文', rescue_state: 'success' }; }"""
+    )
+    page.get_by_role("button", name="重试").click()
+    page.get_by_text("重试成功的正文").wait_for(state="visible")
     page.close()

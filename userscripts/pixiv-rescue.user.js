@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.7.2
+// @version      0.9.0
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -40,7 +40,7 @@
     const custom = String(GM_getValue('pixivRescueOrigin', '') || '').trim();
     return (custom || DEFAULT_API_ORIGIN).replace(/\/$/, '');
   }
-  const SCRIPT_VERSION = '0.7.2';
+  const SCRIPT_VERSION = '0.9.0';
   const TOKEN_KEY = 'pixivRescueToken';
   const ROOT_ATTRIBUTE = 'data-pixiv-rescue';
   // 本地缓存：收藏页每次进入都要重新 lookup + 拉封面，用户反馈「每次都要
@@ -178,7 +178,8 @@
       unauthorized: '救援 Token 无效：请到网站设置页轮换 Token 后重新填写',
       network_error: '无法连接救援服务，救援标记暂不可用',
       network_timeout: '救援服务响应超时，救援标记暂不可用',
-      server_error: '救援服务暂时出错，救援标记暂不可用'
+      server_error: '救援服务暂时出错，救援标记暂不可用',
+      not_found: '这部作品在 Pixiv 上已无法查看，私人备份里也没有收录'
     };
     if (lastNoticeKey === kind) return;
     if (document.querySelector('[data-pixiv-rescue-notice]')) return;
@@ -190,8 +191,10 @@
     close.type = 'button';
     close.addEventListener('click', function () { bar.remove(); });
     bar.append(close);
-    const host = document.querySelector('main') || document.body || document.documentElement;
-    if (host) host.prepend(bar);
+    // 提示条是 position:fixed（见 CSS）：插进页面流会被手机站 404 空壳的
+    // 绝对定位背景盖住，与 0.7.x 正文面板「渲染了却看不见」同一个坑。
+    const host = document.body || document.documentElement;
+    if (host) host.append(bar);
   }
 
   // ── 手机端兼容 ─────────────────────────────────────────────
@@ -255,7 +258,10 @@
     });
   }
 
-  function apiGet(path) {
+  // timeoutMs：整本正文可达 20 万字（JSON 约 216 KB），手机网络 15 秒不够稳，
+  // 正文接口由调用方放宽；列表 lookup 等小请求保持 15 秒。
+  const FULL_TEXT_TIMEOUT_MS = 30000;
+  function apiGet(path, timeoutMs) {
     const token = String(GM_getValue(TOKEN_KEY, '') || '').trim();
     if (!token) return Promise.reject(new Error('missing_token'));
     return new Promise(function (resolve, reject) {
@@ -266,7 +272,7 @@
           Authorization: 'Bearer ' + token,
           Accept: 'application/json'
         },
-        timeout: 15000,
+        timeout: timeoutMs || 15000,
         onload: function (response) {
           let envelope;
           try {
@@ -294,10 +300,6 @@
         }
       });
     });
-  }
-
-  function pageText() {
-    return String(document.body && document.body.textContent || '');
   }
 
   // 二进制 GET（封面图）：Token 只走 Authorization 头，不放进 URL——
@@ -329,63 +331,31 @@
     });
   }
 
-  function pageSaysUnavailable() {
-    const nodes = document.querySelectorAll(
-      '[class*="error"], [class*="Error"], .error-message, main h1, main h2'
-    );
-    const text = Array.from(nodes).map(function (node) {
-      return String(node.textContent || '');
-    }).join('\n');
-    return UNAVAILABLE_MARKERS.some(function (marker) {
-      return text.includes(marker);
-    });
-  }
-
-  function hasSubstantialText(node) {
-    return Boolean(node && String(node.textContent || '').trim().length >= 12);
-  }
-
-  function isNovelPageHealthy() {
-    if (pageSaysUnavailable()) return false;
-    const selectors = [
-      '.novel-text',
-      '[data-gtm-value="novel-text"]',
-      '[class*="NovelText"]',
-      'article'
-    ];
-    return selectors.some(function (selector) {
-      return Array.from(document.querySelectorAll(selector)).some(hasSubstantialText);
-    });
-  }
-
-  function isSeriesPageHealthy() {
-    if (pageSaysUnavailable()) return false;
-    const chapterLinks = document.querySelectorAll('a[href*="/novel/show.php?id="]');
-    if (chapterLinks.length > 0) return true;
-    return Array.from(document.querySelectorAll('[class*="NovelSeries"], [class*="Series"]'))
-      .some(hasSubstantialText);
-  }
-
-  function waitForUnavailableState(healthyCheck) {
-    const deadline = Date.now() + 1200;
-    return new Promise(function (resolve) {
-      function inspect() {
-        if (healthyCheck()) {
-          resolve(false);
-          return;
-        }
-        if (pageSaysUnavailable()) {
-          resolve(true);
-          return;
-        }
-        if (Date.now() >= deadline) {
-          resolve(false);
-          return;
-        }
-        window.setTimeout(inspect, 100);
-      }
-      inspect();
-    });
+  // 作品在 Pixiv 上还在不在：问 Pixiv 自己的 ajax 接口，不再猜页面 DOM。
+  // 2026-10-23 生产实测：已删小说 /ajax/novel/<id> → 404 {error:true, body:[]}；
+  // 已删系列 /ajax/novel/series/<id> → 404 {error:true}；健康作品 → 200
+  // {error:false, body:{...}}。旧版按「有没有 <main>」「有没有失效文案」判断，
+  // 而手机站健康正文页同样没有 <main>——结果每个健康正文页都去请求备份，
+  // 再在页尾塞一条「未找到可用的救援数据」。
+  // 只有 404/410 才算「确认已失效」；403（仅好友可见、R-18 未开）等歧义状态
+  // 记为 unknown：备份有就给，没有就不提示，避免把「看不了」误报成「被删了」。
+  function pixivWorkState(type, id) {
+    const path = type === 'series'
+      ? '/ajax/novel/series/' + encodeURIComponent(id)
+      : '/ajax/novel/' + encodeURIComponent(id);
+    return fetch(path, { credentials: 'include', headers: { Accept: 'application/json' } })
+      .then(function (response) {
+        return response.json().then(function (payload) {
+          if (response.ok && payload && payload.error === false) return 'available';
+          if (response.status === 404 || response.status === 410) return 'unavailable';
+          return 'unknown';
+        }, function () {
+          return 'unknown';
+        });
+      })
+      .catch(function () {
+        return 'unknown';
+      });
   }
 
   function addStyles() {
@@ -393,7 +363,20 @@
     const style = document.createElement('style');
     style.setAttribute('data-pixiv-rescue-styles', '');
     style.textContent = [
-      '.pixiv-rescue-root{box-sizing:border-box;max-width:760px;margin:24px auto;padding:0 16px;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
+      // 正文/系列阅读层：脚本自有的固定全屏层，自带滚动，不进 Pixiv 页面流。
+      // 生产根因（2026-10-23 真机页实测）：手机站已删作品页是 SPA 404 空壳，
+      // 一个 position:absolute、不透明背景（rgb(245,245,245)）的通栏容器从
+      // y=48 起铺满 2000+px；0.7.x 把面板当普通块元素追加到 body，按 CSS 绘制
+      // 顺序被它整块盖住——20 万字全在 DOM 里，用户什么都看不到。
+      '.pixiv-rescue-root{position:fixed;top:0;right:0;bottom:0;left:0;z-index:2147483600;box-sizing:border-box;margin:0;padding:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;background:#f9fafb;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;text-align:left}',
+      // 收起态：只剩底部一颗「查看私人备份」胶囊，Pixiv 原页面完全可用
+      '.pixiv-rescue-root.pixiv-rescue-root--minimized{top:auto;right:auto;bottom:16px;bottom:calc(16px + env(safe-area-inset-bottom, 0px));left:50%;transform:translateX(-50%);overflow:visible;background:transparent}',
+      '.pixiv-rescue-root--minimized .pixiv-rescue-reader-bar,.pixiv-rescue-root--minimized .pixiv-rescue-reader-body{display:none}',
+      '.pixiv-rescue-reopen{display:none;min-height:40px;padding:8px 18px;border:0;border-radius:999px;background:#dc2626;color:#fff;font-size:14px;font-weight:700;box-shadow:0 6px 18px rgba(17,24,39,.25);cursor:pointer;white-space:nowrap}',
+      '.pixiv-rescue-root--minimized .pixiv-rescue-reopen{display:inline-flex;align-items:center}',
+      '.pixiv-rescue-reader-bar{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;border-bottom:1px solid #e5e7eb;background:#fff}',
+      '.pixiv-rescue-reader-label{font-size:13px;font-weight:700;color:#dc2626}',
+      '.pixiv-rescue-reader-body{box-sizing:border-box;max-width:760px;margin:0 auto;padding:16px 16px 48px}',
       '.pixiv-rescue-panel{border:2px solid #dc2626;border-radius:8px;background:#fff;padding:20px;box-shadow:0 8px 24px rgba(17,24,39,.12)}',
       '.pixiv-rescue-kicker{display:inline-flex;align-items:center;padding:4px 8px;border-radius:4px;background:#dc2626;color:#fff;font-size:12px;font-weight:700}',
       '.pixiv-rescue-title{margin:12px 0 4px;font-size:24px;line-height:1.4;font-weight:700;color:#111827}',
@@ -407,7 +390,9 @@
       '.pixiv-rescue-directory li{padding:8px 0;border-bottom:1px solid #f3f4f6}',
       '.pixiv-rescue-viewer{margin-top:18px;padding-top:18px;border-top:1px solid #d1d5db}',
       '.pixiv-rescue-error{max-width:760px;margin:16px auto;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px}',
-      '@media(max-width:640px){.pixiv-rescue-root{margin:12px auto;padding:0 10px}.pixiv-rescue-panel{padding:16px}.pixiv-rescue-title{font-size:20px}}',
+      // 章节切换后 scrollIntoView 到正文开头：留出粘性顶栏的高度，标题不被盖住
+      '.pixiv-rescue-viewer{scroll-margin-top:64px}',
+      '@media(max-width:640px){.pixiv-rescue-reader-body{padding:12px 10px 48px}.pixiv-rescue-panel{padding:16px}.pixiv-rescue-title{font-size:20px}}',
       // 徽标是绝对定位角标：失效卡是 grid 布局，旧版把徽标当普通子元素 prepend，
       // 会被吸进第一个网格单元与标题文字重叠。脱离布局流浮在卡片右上角。
       // 注意：这个数组经 join('') 拼接，注释必须保持在字符串元素之间的合法
@@ -438,7 +423,8 @@
       '.pixiv-rescue-tab-title{font-size:15px;font-weight:700;color:#111827;line-height:1.4;overflow-wrap:anywhere}',
       '.pixiv-rescue-tab-meta{font-size:12px;color:#6b7280;line-height:1.6}',
       '.pixiv-rescue-tab-pager{margin:12px 0;text-align:center}',
-      '.pixiv-rescue-notice-bar{display:flex;align-items:center;gap:12px;justify-content:center;max-width:760px;margin:12px auto;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px;line-height:1.6}'
+      // 提示条同样固定定位：插进页面流会被 404 空壳的绝对定位背景盖住
+      '.pixiv-rescue-notice-bar{position:fixed;left:12px;right:12px;bottom:12px;z-index:2147483640;display:flex;align-items:center;gap:12px;justify-content:center;max-width:760px;margin:0 auto;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px;line-height:1.6;box-shadow:0 6px 18px rgba(17,24,39,.15)}'
     ].join('');
     (document.head || document.documentElement).append(style);
   }
@@ -454,16 +440,92 @@
     while (node.firstChild) node.firstChild.remove();
   }
 
-  function getRoot() {
-    let root = document.querySelector('[' + ROOT_ATTRIBUTE + '="content"]');
-    if (root) return root;
-    root = element('section', 'pixiv-rescue-root');
-    root.setAttribute(ROOT_ATTRIBUTE, 'content');
-    // document-start 时 body 可能还不存在：退到 documentElement，否则 append 抛错
-    const target = document.querySelector('main') || document.body || document.documentElement;
-    if (!target) return root; // 极端情况：不做挂载，调用方继续即可
-    target.append(root);
-    return root;
+  // ── 阅读层（0.9.0）──────────────────────────────────────────
+  // 正文/系列备份统一渲染进脚本自有的固定全屏层（CSS 见 .pixiv-rescue-root）：
+  // 不进 Pixiv 页面流，就不会被它的绝对定位/不透明容器盖住，也不受它的布局、
+  // 滚动与渲染时机影响。0.8.0（未发布）的做法是先插页面流、再在 0~14 秒内做
+  // 命中测试检测遮挡、被盖住才升级覆盖——依赖时机，且在健康正文页上会把页面
+  // 一路滚到页尾。可见性应该由 CSS 保证，而不是事后检测。
+  let readerRoot = null;
+  let readerMountTimer = 0;
+
+  function attachReaderRoot(node) {
+    if (node.isConnected) return true;
+    if (!document.body) return false;
+    addStyles();
+    document.body.append(node);
+    return true;
+  }
+
+  // document-start 时 body 还没解析出来：短轮询等它出现再挂载。手机站
+  // DOMContentLoaded 实测约 4 秒（大量阻塞脚本），不值得为挂载干等那么久。
+  function mountReaderRoot(node) {
+    if (attachReaderRoot(node)) return;
+    window.clearInterval(readerMountTimer);
+    readerMountTimer = window.setInterval(function () {
+      if (readerRoot !== node || attachReaderRoot(node)) window.clearInterval(readerMountTimer);
+    }, 50);
+  }
+
+  // 打开（或复用）阅读层，返回清空后的内容容器
+  function openReader() {
+    if (!readerRoot) {
+      const root = element('section', 'pixiv-rescue-root');
+      root.setAttribute(ROOT_ATTRIBUTE, 'content');
+      root.setAttribute('aria-label', '私人备份阅读');
+      const bar = element('div', 'pixiv-rescue-reader-bar');
+      bar.append(element('span', 'pixiv-rescue-reader-label', '私人备份阅读'));
+      const close = element('button', 'pixiv-rescue-button', '回到 Pixiv 页面');
+      close.type = 'button';
+      close.addEventListener('click', minimizeReader);
+      bar.append(close);
+      const reopen = element('button', 'pixiv-rescue-reopen', '查看私人备份');
+      reopen.type = 'button';
+      reopen.addEventListener('click', restoreReader);
+      root.append(bar, element('div', 'pixiv-rescue-reader-body'), reopen);
+      readerRoot = root;
+    }
+    restoreReader();
+    mountReaderRoot(readerRoot);
+    const body = readerRoot.querySelector('.pixiv-rescue-reader-body');
+    clearNode(body);
+    readerRoot.scrollTop = 0;
+    return body;
+  }
+
+  // 「回到 Pixiv 页面」只收起为底部胶囊而不销毁：随时能再点开，不用重新请求
+  function minimizeReader() {
+    if (!readerRoot) return;
+    readerRoot.classList.add('pixiv-rescue-root--minimized');
+    readerRoot.setAttribute('data-pixiv-rescue-mode', 'minimized');
+  }
+
+  function restoreReader() {
+    if (!readerRoot) return;
+    readerRoot.classList.remove('pixiv-rescue-root--minimized');
+    readerRoot.setAttribute('data-pixiv-rescue-mode', 'reader');
+  }
+
+  // 切页时调用：先清引用再摘节点，保活逻辑就不会把它挂回去
+  function destroyReader() {
+    window.clearInterval(readerMountTimer);
+    const root = readerRoot;
+    readerRoot = null;
+    if (root) root.remove();
+  }
+
+  // 保活：Pixiv SPA 若整块重渲染 body 把阅读层摘掉，挂回去（随 1 秒路由轮询调用）
+  function keepReaderAttached() {
+    if (readerRoot && !readerRoot.isConnected) attachReaderRoot(readerRoot);
+  }
+
+  // 请求还没回来时的占位：用户立刻看到「脚本已经在工作」，而不是盯着空壳页面
+  function renderPending() {
+    const body = openReader();
+    const panel = element('div', 'pixiv-rescue-panel');
+    panel.append(element('span', 'pixiv-rescue-kicker', '拯救数据'));
+    panel.append(element('p', 'pixiv-rescue-meta', '正在读取备份…'));
+    body.append(panel);
   }
 
   function renderText(parent, text) {
@@ -482,9 +544,7 @@
   }
 
   function renderNovel(data) {
-    addStyles();
-    const root = getRoot();
-    clearNode(root);
+    const body = openReader();
     const panel = element('div', 'pixiv-rescue-panel');
     panel.append(element('span', 'pixiv-rescue-kicker', '拯救数据'));
     panel.append(element('h1', 'pixiv-rescue-title', data.title || '未命名备份小说'));
@@ -492,14 +552,35 @@
     panel.append(element('p', 'pixiv-rescue-meta', author));
     renderNotice(panel, data);
     renderText(panel, data.text_raw || '备份正文为空');
-    root.append(panel);
+    body.append(panel);
   }
 
-  function renderError(error) {
-    addStyles();
-    const root = getRoot();
-    clearNode(root);
-    root.append(element('div', 'pixiv-rescue-error', rescueErrorText(error, true)));
+  // 阅读层内的整页错误。retry 存在时给「重试」——超时/网络抖动不该是死路，
+  // 旧版只能整页刷新。
+  function renderError(error, retry) {
+    const body = openReader();
+    body.append(element('div', 'pixiv-rescue-error', rescueErrorText(error, true)));
+    // 错误代码直接画出来：手机沙箱里看不到控制台，这是唯一的排查线索
+    const code = error && error.message ? String(error.message) : '';
+    if (code) body.append(element('p', 'pixiv-rescue-meta', '错误代码：' + code));
+    if (typeof retry === 'function') {
+      const again = element('button', 'pixiv-rescue-button', '重试');
+      again.type = 'button';
+      again.addEventListener('click', retry);
+      body.append(again);
+    }
+  }
+
+  // 目录/加载更多失败：只在面板里提示，不清掉已加载的目录。
+  // 旧版这里走 renderError，一次「加载更多」失败就把整个系列面板换成错误条。
+  function renderDirectoryError(panel, viewer, error) {
+    let note = panel.querySelector('.pixiv-rescue-directory-error');
+    if (!note) {
+      note = element('div', 'pixiv-rescue-error pixiv-rescue-directory-error', '');
+      if (viewer && panel.contains(viewer)) panel.insertBefore(note, viewer);
+      else panel.append(note);
+    }
+    note.textContent = '目录没有读到：' + rescueErrorText(error, true);
   }
 
   function rescueErrorText(error, pageLevel) {
@@ -510,7 +591,9 @@
       rate_limited: '请求太频繁，请稍后再试。',
       server_error: '救援服务暂时出错，请稍后再试。',
       network_timeout: '救援服务响应超时，Pixiv 原页面已保留。',
-      network_error: '无法连接救援服务，Pixiv 原页面已保留。'
+      network_error: '无法连接救援服务，Pixiv 原页面已保留。',
+      // 整本正文 JSON 约 216 KB：部分手机管理器可能截断大应答，解析失败落到这里
+      invalid_response: '备份数据没有完整读到，请重试。'
     };
     return messages[error && error.message] || (pageLevel
       ? '未找到可用的救援数据，Pixiv 原页面已保留。'
@@ -900,9 +983,10 @@
     const open = element('button', 'pixiv-rescue-button', '查看章节');
     open.type = 'button';
     open.addEventListener('click', function () {
-      // 系列本体在 Pixiv 已打不开；把 ID 塞进系列页 URL，让 handleSeriesPage
-      // 的「不可用 → 救援」管线接管渲染。
-      window.location.href = 'https://www.pixiv.net/novel/series/' + encodeURIComponent(String(item.series_id));
+      // 带 ?pixiv_rescue=1：用户明确要看备份。部分救援的系列在 Pixiv 上仍然
+      // 存在（只缺几章），不带标记的话 handleSeriesPage 会判「作品还在」而不开阅读层。
+      window.location.href = 'https://www.pixiv.net/novel/series/'
+        + encodeURIComponent(String(item.series_id)) + '?pixiv_rescue=1';
     });
     card.append(title, meta, open);
     return card;
@@ -1017,12 +1101,16 @@
     viewer.append(element('h2', 'pixiv-rescue-title', data.title || '未命名章节'));
     renderNotice(viewer, data);
     renderText(viewer, data.text_raw || '备份正文为空');
+    // 目录可能很长：章节正文出现在目录下方，不滚过去用户会以为点了没反应
+    viewer.scrollIntoView(true);
   }
 
   function renderChapterDirectory(panel, viewer, data, seriesId) {
     // 异步回调可能在页面已切走、panel 被清空后才到达：此时 viewer 已脱离
     // panel，insertBefore 会抛 "Cannot read properties of null"。直接放弃本轮。
     if (!panel || !viewer || !panel.contains(viewer)) return;
+    const staleError = panel.querySelector('.pixiv-rescue-directory-error');
+    if (staleError) staleError.remove();
     let list = panel.querySelector('.pixiv-rescue-directory');
     if (!list) {
       list = element('ol', 'pixiv-rescue-directory');
@@ -1037,7 +1125,7 @@
       button.type = 'button';
       button.addEventListener('click', function () {
         button.disabled = true;
-        apiGet('/api/rescue/v1/novels/' + encodeURIComponent(String(chapter.novel_id)))
+        apiGet('/api/rescue/v1/novels/' + encodeURIComponent(String(chapter.novel_id)), FULL_TEXT_TIMEOUT_MS)
           .then(function (novel) {
             renderSeriesChapter(viewer, novel);
           })
@@ -1071,7 +1159,9 @@
           .then(function (nextDirectory) {
             renderChapterDirectory(panel, viewer, nextDirectory, seriesId);
           })
-          .catch(renderError)
+          .catch(function (error) {
+            renderDirectoryError(panel, viewer, error);
+          })
           .finally(function () {
             moreButton.disabled = false;
           });
@@ -1082,9 +1172,7 @@
   }
 
   function renderSeries(data, seriesId) {
-    addStyles();
-    const root = getRoot();
-    clearNode(root);
+    const body = openReader();
     const panel = element('div', 'pixiv-rescue-panel');
     panel.append(element('span', 'pixiv-rescue-kicker', '拯救数据'));
     panel.append(element('h1', 'pixiv-rescue-title', data.title || '未命名备份系列'));
@@ -1103,13 +1191,15 @@
           renderChapterDirectory(panel, viewer, directory, seriesId);
           loadButton.remove();
         })
-        .catch(renderError)
+        .catch(function (error) {
+          renderDirectoryError(panel, viewer, error);
+        })
         .finally(function () {
           loadButton.disabled = false;
         });
     });
     panel.append(loadButton, viewer);
-    root.append(panel);
+    body.append(panel);
   }
 
   function novelIdFromPage() {
@@ -1156,87 +1246,62 @@
     }
   }
 
+  // 正文页/系列页共用的救援流程。是否打开阅读层只看两个确定性信号：
+  //   1. 救援意图（URL 标记 / sessionStorage）：用户明确要看备份，立刻打开；
+  //   2. 无意图时问 Pixiv 自己的 ajax：作品还在 → 什么都不做（不请求备份、
+  //      不动 DOM）；确认失效或状态不明 → 静默查备份，查到才打开。
+  // 旧版的「页面文案」「有没有 <main>」「等 1.2 秒」全部删除——那些都是猜，
+  // 而且猜错的代价是在每个健康正文页底部塞一条「未找到可用的救援数据」。
+  function rescueDetailPage(type, id, isStale, loadBackup, renderBackup) {
+    const show = function () {
+      renderPending();
+      loadBackup()
+        .then(function (data) {
+          if (!isStale()) renderBackup(data);
+        })
+        .catch(function (error) {
+          if (!isStale()) renderError(error, show);
+        });
+    };
+    if (consumeRescueIntent(type, id)) {
+      show();
+      return;
+    }
+    pixivWorkState(type, id).then(function (state) {
+      if (isStale() || state === 'available') return;
+      loadBackup()
+        .then(function (data) {
+          if (!isStale()) renderBackup(data);
+        })
+        .catch(function (error) {
+          // 状态不明（403/限流/网络）时查不到就不提示：作品多半好好的，不打扰
+          if (isStale() || state !== 'unavailable') return;
+          showRescueNotice(error && error.message);
+        });
+    });
+  }
+
   function handleNovelPage() {
     const novelId = novelIdFromPage();
     if (!novelId) return;
-    window.__pixivRescueDebug = true;
-    showStep('novel 页 id=' + novelId);
     const generation = bumpRouteGeneration();
-    const renderBackup = function () {
-      showStep('请求备份 ' + novelId);
-      apiGet('/api/rescue/v1/novels/' + encodeURIComponent(novelId))
-        .then(function (data) {
-          showStep('收到备份，准备渲染');
-          if (routeGeneration() !== generation || novelIdFromPage() !== novelId) {
-            showStep('代次/ID 已变，放弃渲染 (gen ' + generation + '->' + routeGeneration() + ', id ' + novelId + '->' + novelIdFromPage() + ')');
-            return;
-          }
-          renderNovel(data);
-          showStep('已渲染，字数 ' + String((data.text_raw || '').length));
-        })
-        .catch(function (error) {
-          showStep('备份请求失败: ' + (error && error.message));
-          if (routeGeneration() !== generation || novelIdFromPage() !== novelId) return;
-          renderError(error);
-        });
-    };
-    // 最高优先级：用户刚从救援卡点进来。意图匹配就直接渲染，完全不看
-    // Pixiv 页面文案或健康态——文案在不同版本/语言/渲染时机下千变万化
-    // （已踩坑「该作品无法显示」「尚无此页」），这个信号是确定性的。
-    if (consumeRescueIntent('novel', novelId)) {
-      showStep('意图匹配（URL/sessionStorage）');
-      renderBackup();
-      return;
-    }
-    showStep('无意图，判健康: ' + isNovelPageHealthy());
-    if (isNovelPageHealthy()) return;
-    // 已删作品的 Pixiv 正文页是 SPA 空壳：没有 <main>、也没有失效文案，
-    // pageSaysUnavailable() 检测不到，旧流程会等满 1.2 秒后误判「健康」放弃。
-    // 因此先探一次备份：查得到就直接渲染，查不到再走原来的失效观察流程。
-    const looksEmpty = !document.querySelector('main') || pageSaysUnavailable();
-    if (looksEmpty) {
-      // 空壳或已显示失效文案：直接尝试备份（查不到时 renderError 会提示）
-      renderBackup();
-      return;
-    }
-    waitForUnavailableState(isNovelPageHealthy).then(function (unavailable) {
-      if (!unavailable) return;
-      if (routeGeneration() !== generation || novelIdFromPage() !== novelId) return;
-      renderBackup();
-    });
+    rescueDetailPage('novel', novelId, function () {
+      return routeGeneration() !== generation || novelIdFromPage() !== novelId;
+    }, function () {
+      return apiGet('/api/rescue/v1/novels/' + encodeURIComponent(novelId), FULL_TEXT_TIMEOUT_MS);
+    }, renderNovel);
   }
 
   function handleSeriesPage() {
     const seriesId = seriesIdFromPage();
     if (!seriesId) return;
     const generation = bumpRouteGeneration();
-    // 与 handleNovelPage 同理：已删系列的 Pixiv 页也是 SPA 空壳，没有失效文案。
-    const renderBackup = function () {
-      apiGet('/api/rescue/v1/series/' + encodeURIComponent(seriesId))
-        .then(function (data) {
-          if (routeGeneration() !== generation || seriesIdFromPage() !== seriesId) return;
-          renderSeries(data, seriesId);
-        })
-        .catch(function (error) {
-          if (routeGeneration() !== generation || seriesIdFromPage() !== seriesId) return;
-          renderError(error);
-        });
-    };
-    // 与 handleNovelPage 同理：点击意图优先于任何页面文案/健康态判断
-    if (consumeRescueIntent('series', seriesId)) {
-      renderBackup();
-      return;
-    }
-    if (isSeriesPageHealthy()) return;
-    const looksEmpty = !document.querySelector('main') || pageSaysUnavailable();
-    if (looksEmpty) {
-      renderBackup();
-      return;
-    }
-    waitForUnavailableState(isSeriesPageHealthy).then(function (unavailable) {
-      if (!unavailable) return;
-      if (routeGeneration() !== generation || seriesIdFromPage() !== seriesId) return;
-      renderBackup();
+    rescueDetailPage('series', seriesId, function () {
+      return routeGeneration() !== generation || seriesIdFromPage() !== seriesId;
+    }, function () {
+      return apiGet('/api/rescue/v1/series/' + encodeURIComponent(seriesId));
+    }, function (data) {
+      renderSeries(data, seriesId);
     });
   }
 
@@ -1275,20 +1340,12 @@
     } catch (_ignored) { /* 连错误条都画不出来就只能作罢 */ }
   }
 
-  // 分步状态：把渲染链路的关键节点画在页面上（手机沙箱环境无法看控制台）。
-  // 只在「救援意图」页面上显示，避免污染普通页面。
-  function showStep(step) {
-    try {
-      if (!window.__pixivRescueDebug) return;
-      let bar = document.querySelector('[data-pixiv-rescue-step]');
-      if (!bar) {
-        bar = document.createElement('div');
-        bar.setAttribute('data-pixiv-rescue-step', '');
-        bar.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:2147483646;padding:6px 10px;background:#eff6ff;color:#1e40af;font:11px/1.5 -apple-system,sans-serif;border-bottom:1px solid #bfdbfe';
-        (document.body || document.documentElement).appendChild(bar);
-      }
-      bar.textContent = '救援流程：' + step;
-    } catch (_error) { /* ignore */ }
+  // 0.7.2 的「救援流程：<步骤>」分步状态条（手机沙箱排查用的临时诊断）已移除：
+  // 阅读层的「正在读取备份…」占位本身就是脚本在工作的可见证据。
+
+  function isDetailPage() {
+    const path = pathWithoutLangPrefix();
+    return path === '/novel/show.php' || path.startsWith('/novel/series/');
   }
 
   function start(attempt) {
@@ -1306,11 +1363,12 @@
     // 沙箱环境下页面控制台读不到这个标记，仅作调试辅助。
     window.__pixivRescueLoaded = true;
     registerTokenMenus();
-    // document-start 时 body 还不存在：先挂路由钩子，再在 DOM 就绪后跑路由，
-    // 避免面板被挂到 <html> 下（body 之外的节点 Pixiv 渲染后不可见）。
+    // 正文/系列页的判定只依赖 URL 与网络（意图标记、Pixiv ajax、备份接口），
+    // 不读 DOM：立即开跑，阅读层自己等 body 出现再挂载。手机站 DOMContentLoaded
+    // 实测约 4 秒，旧版等它才发请求，白白多等这 4 秒。列表页要扫 DOM，仍等 body。
     const routeWhenReady = function () {
       if (!isTargetPage()) return;
-      if (document.body) {
+      if (document.body || isDetailPage()) {
         routeRescue();
       } else {
         document.addEventListener('DOMContentLoaded', routeRescue, { once: true });
@@ -1319,10 +1377,14 @@
     routeWhenReady();
     let lastHref = window.location.href;
     function onRoute() {
+      keepReaderAttached();
       if (window.location.href === lastHref) return;
       lastHref = window.location.href;
-      const old = document.querySelector('[' + ROOT_ATTRIBUTE + '="content"]');
-      if (old) old.remove();
+      destroyReader();
+      // 固定定位的提示条不随页面流消失，切页时一并清掉，并允许新页面重新提示
+      const notice = document.querySelector('[data-pixiv-rescue-notice]');
+      if (notice) notice.remove();
+      lastNoticeKey = null;
       try {
         routeWhenReady();
       } catch (error) {
@@ -1364,11 +1426,10 @@
 
   // 立即启动，不等 DOMContentLoaded。
   // @run-at document-start 时 readyState 为 'loading'，旧代码把 start 挂到
-  // DOMContentLoaded 上——若脚本注入晚于该事件（Tampermonkey 在部分浏览器/
-  // 场景下会延迟注入），监听器永不再触发，start() 一次都不执行：页面零反应、
-  // window.__pixivRescueLoaded 为 undefined。这就是「点击后仍显示尚无此页」
-  // 的根因。路由函数内部对 DOM 缺失已有兜底（getRoot 用 main||body，
-  // body 可能为 null 时退到 documentElement），直接跑即可。
+  // DOMContentLoaded 上——若脚本注入晚于该事件（部分管理器会延迟注入），
+  // 监听器永不再触发，start() 一次都不执行。注意这不是「点击后仍显示尚无此页」
+  // 的根因（0.6.5 曾这么认为）：真正的根因是面板被 404 空壳盖住，见阅读层注释。
+  // DOM 缺失由各路径自己兜底（阅读层等 body 出现再挂载，列表页等 DOMContentLoaded）。
   try {
     start();
   } catch (error) {
