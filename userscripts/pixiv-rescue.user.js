@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.9.1
+// @version      0.10.0
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -40,7 +40,13 @@
     const custom = String(GM_getValue('pixivRescueOrigin', '') || '').trim();
     return (custom || DEFAULT_API_ORIGIN).replace(/\/$/, '');
   }
-  const SCRIPT_VERSION = '0.9.1';
+  const SCRIPT_VERSION = '0.10.0';
+  // Pixiv 手机站正文容器的 gothic 字体栈（2026-10-23 实测 #novel-text-container
+  // 的内联 font-family，Aa 设置默认值）。阅读层正文用同一套，排版才能逐字对齐。
+  const PIXIV_GOTHIC_FONT = '"Avenir Next",Avenir,"Source Sans","Noto Sans",Roboto,Verdana,"Pingfang SC","Hiragino Sans GB","Lantinghei SC","Source Han Sans CN","Noto Sans CJK SC","Microsoft Yahei",DengXian,YuGothic,"Hiragino Kaku Gothic Pro",Meiryo,"Source Han Sans","Source Han Sans JP","Noto Sans CJK JP","Pingfang TC","Pingfang HK","Hiragino Sans CNS","Lantinghei TC","Source Han Sans TW","Source Han Sans HK","Noto Sans CJK TC","Microsoft JhengHei","Apple SD Gothic Neo","Source Han Sans K","Source Han Sans KR","Noto Sans CJK KR","Malgun Gothic",sans-serif';
+  // 用户在 Pixiv 正文页「Aa」里选的背景/字号/行距：在健康正文页上只读地记下来，
+  // 阅读层照着用（见 learnReaderTheme）
+  const READER_THEME_KEY = 'pixivRescueReaderTheme';
   const TOKEN_KEY = 'pixivRescueToken';
   const ROOT_ATTRIBUTE = 'data-pixiv-rescue';
   // 本地缓存：收藏页每次进入都要重新 lookup + 拉封面，用户反馈「每次都要
@@ -436,31 +442,92 @@
       // 一个 position:absolute、不透明背景（rgb(245,245,245)）的通栏容器从
       // y=48 起铺满 2000+px；0.7.x 把面板当普通块元素追加到 body，按 CSS 绘制
       // 顺序被它整块盖住——20 万字全在 DOM 里，用户什么都看不到。
-      '.pixiv-rescue-root{position:fixed;top:0;right:0;bottom:0;left:0;z-index:2147483600;box-sizing:border-box;margin:0;padding:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;background:#f9fafb;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;text-align:left}',
+      '.pixiv-rescue-root{position:fixed;top:0;right:0;bottom:0;left:0;z-index:2147483600;box-sizing:border-box;margin:0;padding:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;background:#fff;color:#1f1f1f;font-family:Helvetica,"Hiragino Kaku Gothic Pro","Segoe UI","Yu Gothic",Meiryo,sans-serif;text-align:left;-webkit-text-size-adjust:100%}',
       // 收起态：只剩底部一颗「查看私人备份」胶囊，Pixiv 原页面完全可用
       '.pixiv-rescue-root.pixiv-rescue-root--minimized{top:auto;right:auto;bottom:16px;bottom:calc(16px + env(safe-area-inset-bottom, 0px));left:50%;transform:translateX(-50%);overflow:visible;background:transparent}',
       '.pixiv-rescue-root--minimized .pixiv-rescue-reader-bar,.pixiv-rescue-root--minimized .pixiv-rescue-reader-body{display:none}',
-      '.pixiv-rescue-reopen{display:none;min-height:40px;padding:8px 18px;border:0;border-radius:999px;background:#dc2626;color:#fff;font-size:14px;font-weight:700;box-shadow:0 6px 18px rgba(17,24,39,.25);cursor:pointer;white-space:nowrap}',
+      '.pixiv-rescue-reopen{display:none;min-height:40px;padding:8px 18px;border:0;border-radius:999px;background:#0096fa;color:#fff;font-size:14px;font-weight:700;box-shadow:0 6px 18px rgba(0,0,0,.25);cursor:pointer;white-space:nowrap}',
       '.pixiv-rescue-root--minimized .pixiv-rescue-reopen{display:inline-flex;align-items:center}',
-      '.pixiv-rescue-reader-bar{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;border-bottom:1px solid #e5e7eb;background:#fff}',
-      '.pixiv-rescue-reader-label{font-size:13px;font-weight:700;color:#dc2626}',
-      '.pixiv-rescue-reader-body{box-sizing:border-box;max-width:760px;margin:0 auto;padding:16px 16px 48px}',
-      '.pixiv-rescue-panel{border:2px solid #dc2626;border-radius:8px;background:#fff;padding:20px;box-shadow:0 8px 24px rgba(17,24,39,.12)}',
-      '.pixiv-rescue-kicker{display:inline-flex;align-items:center;padding:4px 8px;border-radius:4px;background:#dc2626;color:#fff;font-size:12px;font-weight:700}',
-      '.pixiv-rescue-title{margin:12px 0 4px;font-size:24px;line-height:1.4;font-weight:700;color:#111827}',
-      '.pixiv-rescue-meta{margin:0 0 16px;color:#6b7280;font-size:13px;line-height:1.6}',
-      '.pixiv-rescue-notice{margin:12px 0;padding:10px 12px;border-left:3px solid #dc2626;background:#fef2f2;color:#991b1b;font-size:13px;line-height:1.6}',
-      '.pixiv-rescue-body{white-space:pre-wrap;overflow-wrap:anywhere;font-family:"Noto Serif SC","Yu Mincho",serif;font-size:16px;line-height:2;color:#374151}',
-      '.pixiv-rescue-button{display:inline-flex;align-items:center;justify-content:center;min-height:36px;margin:4px 8px 4px 0;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#374151;font-size:14px;cursor:pointer}',
-      '.pixiv-rescue-button:hover{border-color:#2563eb;color:#1d4ed8;background:#eff6ff}',
+      // 顶栏仿手机站 48px 白底导航条：左边「拯救数据」标识，右边退回 Pixiv
+      '.pixiv-rescue-reader-bar{position:sticky;top:0;z-index:2;box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:8px;height:48px;padding:0 12px 0 16px;border-bottom:1px solid rgba(0,0,0,.08);background:#fff}',
+      '.pixiv-rescue-reader-label{display:flex;align-items:center;gap:8px;min-width:0;font-size:13px;color:#858585;white-space:nowrap;overflow:hidden}',
+      '.pixiv-rescue-kicker{display:inline-flex;align-items:center;padding:2px 8px;border-radius:4px;background:#0096fa;color:#fff;font-size:12px;font-weight:700;line-height:18px}',
+      '.pixiv-rescue-reader-body{box-sizing:border-box;margin:0;padding:0 0 48px}',
+      '.pixiv-rescue-panel{background:#fff}',
+      // 作品信息区：尺寸与层级照 2026-10-23 手机站实测（标题 14px/700/22px，
+      // 简介 12px 灰，标签 12px，日期 10px #858585，封面 128×180 上圆角 8px）
+      '.pixiv-rescue-author{box-sizing:border-box;display:flex;align-items:center;gap:8px;height:56px;padding:0 16px;font-size:14px;font-weight:700;line-height:22px;color:#1f1f1f}',
+      '.pixiv-rescue-author-avatar{flex:0 0 40px;width:40px;height:40px;border-radius:50%;background:#e8e8e8}',
+      '.pixiv-rescue-author-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.pixiv-rescue-cover-band{position:relative;padding:16px 0 0;text-align:center;background:linear-gradient(135deg,#f0f0f0 50%,#e6e6e6 50%)}',
+      '.pixiv-rescue-cover-img{display:block;width:128px;height:180px;margin:0 auto;object-fit:cover;border-radius:8px 8px 0 0;background:#e0e0e0}',
+      '.pixiv-rescue-text-length{position:absolute;top:8px;right:8px;padding:0 8px;border-radius:16px;background:rgba(0,0,0,.2);color:#fff;font-size:10px;font-weight:700;line-height:16px}',
+      '.pixiv-rescue-title{margin:16px 16px 0;font-size:14px;font-weight:700;line-height:22px;color:#1f1f1f;overflow-wrap:anywhere}',
+      '.pixiv-rescue-caption{margin:4px 16px 0;font-size:12px;line-height:18px;color:#5c5c5c;white-space:pre-wrap;overflow-wrap:anywhere}',
+      '.pixiv-rescue-caption--collapsed{max-height:36px;overflow:hidden}',
+      '.pixiv-rescue-caption-more{display:block;margin:2px 16px 0 auto;padding:0;border:0;background:none;color:#858585;font-size:12px;line-height:18px;cursor:pointer}',
+      '.pixiv-rescue-tags{margin:12px 16px 0;font-size:12px;line-height:16px;color:#858585;overflow-wrap:anywhere}',
+      '.pixiv-rescue-tag{margin-right:8px;color:#205f82}',
+      '.pixiv-rescue-tag-r18{margin-right:8px;color:#ff4060;font-weight:700}',
+      '.pixiv-rescue-tag-translation{margin-left:4px;color:#858585;font-size:10px}',
+      '.pixiv-rescue-date{margin:12px 16px 0;font-size:10px;line-height:14px;color:#858585}',
+      '.pixiv-rescue-notice{margin:4px 16px 0;font-size:10px;line-height:14px;color:#adadad}',
+      // 按钮仿手机站「已关注」那种浅灰圆角胶囊
+      '.pixiv-rescue-button{display:inline-flex;align-items:center;justify-content:center;min-height:32px;margin:4px 8px 4px 0;padding:0 16px;border:0;border-radius:16px;background:#f2f2f2;color:#1f1f1f;font-size:14px;font-weight:700;line-height:20px;cursor:pointer}',
       '.pixiv-rescue-button:disabled{cursor:wait;opacity:.55}',
-      '.pixiv-rescue-directory{margin:16px 0 0;padding:0;list-style:none;border-top:1px solid #e5e7eb}',
-      '.pixiv-rescue-directory li{padding:8px 0;border-bottom:1px solid #f3f4f6}',
-      '.pixiv-rescue-viewer{margin-top:18px;padding-top:18px;border-top:1px solid #d1d5db}',
-      '.pixiv-rescue-error{max-width:760px;margin:16px auto;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px}',
-      // 章节切换后 scrollIntoView 到正文开头：留出粘性顶栏的高度，标题不被盖住
-      '.pixiv-rescue-viewer{scroll-margin-top:64px}',
-      '@media(max-width:640px){.pixiv-rescue-reader-body{padding:12px 10px 48px}.pixiv-rescue-panel{padding:16px}.pixiv-rescue-title{font-size:20px}}',
+      '.pixiv-rescue-reader-bar .pixiv-rescue-button{flex:0 0 auto;margin:0;font-size:13px}',
+      // 翻页条照手机站 nav.novel-pager-container：行高 45px、上下 1px 浅分隔线、#474747
+      '.pixiv-rescue-pager{box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;margin:16px 0 0;padding:0 8px;border-top:1px solid rgba(0,0,0,.08);border-bottom:1px solid rgba(0,0,0,.08);color:#474747;font-size:16px;line-height:45px;scroll-margin-top:48px}',
+      '.pixiv-rescue-pager--bottom{margin:0}',
+      '.pixiv-rescue-pager-label{flex:1 1 auto;text-align:center}',
+      '.pixiv-rescue-pager-button{flex:0 0 64px;margin:0;padding:0;border:0;background:none;color:#474747;font-size:14px;line-height:45px;cursor:pointer}',
+      '.pixiv-rescue-pager-button:disabled,.pixiv-rescue-pager--single .pixiv-rescue-pager-button{visibility:hidden}',
+      // 正文容器逐项照搬 2026-10-23 实测的 Pixiv 手机站 #novel-text-container
+      // （默认 Aa 设置 background-0/size-1/spacing-1）：16px、行高 1.8、#1f1f1f、
+      // 上下内边距 40px、pre-wrap；段落 p.novel-paragraph 底距 1.5em、左右 16px；
+      // 章节标题 h2.novel-chapter 20px/700/#969696、上下 1em、左右 26px。
+      // 每条都显式写死 font/margin：Pixiv 的全站样式会改 p/h2/b/i 的默认值。
+      '.pixiv-rescue-novel-text{box-sizing:border-box;width:100%;margin:0;padding:40px 0;background:#fff;color:#1f1f1f;font-family:' + PIXIV_GOTHIC_FONT + ';font-size:16px;font-weight:400;line-height:1.8;letter-spacing:normal;text-align:left;white-space:pre-wrap;overflow-wrap:break-word;word-break:normal}',
+      '.pixiv-rescue-text-start{height:1px}',
+      '.pixiv-rescue-novel-text .pixiv-rescue-para{margin:0 0 1.5em;padding:0 16px;font:inherit;font-size:inherit;line-height:inherit;color:inherit;white-space:pre-wrap}',
+      '.pixiv-rescue-novel-text .pixiv-rescue-chapter{margin:1em 0;padding:0 26px;font-family:inherit;font-size:20px;font-weight:700;line-height:1.8;color:#969696;white-space:pre-wrap}',
+      '.pixiv-rescue-novel-text b{font-weight:700}',
+      '.pixiv-rescue-novel-text i{font-style:italic}',
+      '.pixiv-rescue-novel-text ruby{white-space:normal}',
+      '.pixiv-rescue-novel-text rt{font-size:50%;line-height:normal}',
+      '.pixiv-rescue-novel-text .pixiv-rescue-jump{color:inherit;text-decoration:underline;cursor:pointer}',
+      '.pixiv-rescue-image-missing{margin:0 16px 1.5em;padding:24px 16px;border-radius:4px;background:rgba(0,0,0,.04);color:#858585;font-size:12px;line-height:18px;text-align:center;white-space:normal}',
+      '.pixiv-rescue-image-missing a{color:#205f82}',
+      // Aa 阅读设置的五种背景、三档字号、两档行距（同样实测自手机站 CSS）
+      '.pixiv-rescue-novel-text.background-1{background:#1f1f1f;color:#b7b7b7}',
+      '.pixiv-rescue-novel-text.background-2{background:#edf7ff;color:#4d3e2a}',
+      '.pixiv-rescue-novel-text.background-3{background:#fbf0d9;color:#4d3e2a}',
+      '.pixiv-rescue-novel-text.background-4{background:#f5f5f5;color:#333}',
+      '.pixiv-rescue-novel-text.size-0{font-size:12.8px}',
+      '.pixiv-rescue-novel-text.size-2{font-size:19.2px}',
+      '.pixiv-rescue-novel-text.spacing-0{line-height:normal}',
+      // 系列页：目录与章节阅读区沿用同一套排版
+      '.pixiv-rescue-series-head{padding:16px}',
+      '.pixiv-rescue-series-head .pixiv-rescue-title{margin:0;font-size:16px;line-height:24px}',
+      '.pixiv-rescue-series-meta{margin:4px 0 8px;font-size:12px;line-height:18px;color:#858585}',
+      '.pixiv-rescue-series-head .pixiv-rescue-notice{margin:0 0 8px}',
+      '.pixiv-rescue-directory{margin:0;padding:0;list-style:none;border-top:1px solid rgba(0,0,0,.08)}',
+      '.pixiv-rescue-directory li{padding:4px 16px;border-bottom:1px solid rgba(0,0,0,.08)}',
+      '.pixiv-rescue-directory .pixiv-rescue-button{display:block;width:100%;min-height:44px;margin:0;padding:0;border-radius:0;background:none;font-weight:400;text-align:left}',
+      '.pixiv-rescue-viewer{scroll-margin-top:48px}',
+      '.pixiv-rescue-viewer:empty{display:none}',
+      '.pixiv-rescue-pending{padding:48px 16px;color:#858585;font-size:14px;line-height:22px;text-align:center}',
+      '.pixiv-rescue-meta{margin:4px 16px 0;color:#858585;font-size:12px;line-height:18px}',
+      '.pixiv-rescue-error{margin:16px;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px;line-height:1.6}',
+      '.pixiv-rescue-reader-body > .pixiv-rescue-button{margin:0 16px}',
+      // PC 站（非手机 UA）：照 PC 阅读器——灰底上居中 704px 白卡，正文列 620px、
+      // 行高 32px、两端对齐、段距 32px（实测 PC 版 p 上下外边距 31/32px 折叠）
+      '.pixiv-rescue-root--pc{background:#f5f5f5}',
+      '.pixiv-rescue-root--pc .pixiv-rescue-reader-body{max-width:704px;margin:0 auto;background:#fff}',
+      '.pixiv-rescue-root--pc .pixiv-rescue-novel-text{padding:40px 42px;line-height:2;text-align:justify}',
+      '.pixiv-rescue-root--pc .pixiv-rescue-novel-text .pixiv-rescue-para{margin:0 0 2em;padding:0}',
+      '.pixiv-rescue-root--pc .pixiv-rescue-novel-text .pixiv-rescue-chapter{padding:0}',
+      '.pixiv-rescue-root--pc .pixiv-rescue-novel-text.spacing-0{line-height:normal}',
       // 徽标是绝对定位角标：失效卡是 grid 布局，旧版把徽标当普通子元素 prepend，
       // 会被吸进第一个网格单元与标题文字重叠。脱离布局流浮在卡片右上角。
       // 注意：这个数组经 join('') 拼接，注释必须保持在字符串元素之间的合法
@@ -492,7 +559,8 @@
       '.pixiv-rescue-tab-meta{font-size:12px;color:#6b7280;line-height:1.6}',
       '.pixiv-rescue-tab-pager{margin:12px 0;text-align:center}',
       // 提示条同样固定定位：插进页面流会被 404 空壳的绝对定位背景盖住
-      '.pixiv-rescue-notice-bar{position:fixed;left:12px;right:12px;bottom:12px;z-index:2147483640;display:flex;align-items:center;gap:12px;justify-content:center;max-width:760px;margin:0 auto;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px;line-height:1.6;box-shadow:0 6px 18px rgba(17,24,39,.15)}'
+      '.pixiv-rescue-notice-bar{position:fixed;left:12px;right:12px;bottom:12px;z-index:2147483640;display:flex;align-items:center;gap:12px;justify-content:center;max-width:760px;margin:0 auto;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px;line-height:1.6;box-shadow:0 6px 18px rgba(17,24,39,.15)}',
+      '.pixiv-rescue-notice-bar .pixiv-rescue-button{flex:0 0 auto;margin:0;background:#fff}'
     ].join('');
     (document.head || document.documentElement).append(style);
   }
@@ -541,8 +609,11 @@
       const root = element('section', 'pixiv-rescue-root');
       root.setAttribute(ROOT_ATTRIBUTE, 'content');
       root.setAttribute('aria-label', '私人备份阅读');
+      if (!isMobileUserAgent()) root.classList.add('pixiv-rescue-root--pc');
       const bar = element('div', 'pixiv-rescue-reader-bar');
-      bar.append(element('span', 'pixiv-rescue-reader-label', '私人备份阅读'));
+      const label = element('span', 'pixiv-rescue-reader-label');
+      label.append(element('span', 'pixiv-rescue-kicker', '拯救数据'), document.createTextNode('私人备份阅读'));
+      bar.append(label);
       const close = element('button', 'pixiv-rescue-button', '回到 Pixiv 页面');
       close.type = 'button';
       close.addEventListener('click', minimizeReader);
@@ -587,20 +658,17 @@
     if (readerRoot && !readerRoot.isConnected) attachReaderRoot(readerRoot);
   }
 
+  // 手机 UA 拿到的是 Pixiv 手机站（touch），其余是 PC 站：两边正文排版不同
+  function isMobileUserAgent() {
+    return /Android|iPhone|iPad|iPod|Mobile|HarmonyOS/i.test(navigator.userAgent || '');
+  }
+
   // 请求还没回来时的占位：用户立刻看到「脚本已经在工作」，而不是盯着空壳页面
   function renderPending() {
     const body = openReader();
     const panel = element('div', 'pixiv-rescue-panel');
-    panel.append(element('span', 'pixiv-rescue-kicker', '拯救数据'));
-    panel.append(element('p', 'pixiv-rescue-meta', '正在读取备份…'));
+    panel.append(element('p', 'pixiv-rescue-pending', '正在读取备份…'));
     body.append(panel);
-  }
-
-  function renderText(parent, text) {
-    const body = element('div', 'pixiv-rescue-body');
-    body.textContent = String(text || '');
-    parent.append(body);
-    return body;
   }
 
   function renderNotice(panel, data) {
@@ -611,16 +679,437 @@
     ));
   }
 
+  // 正文页按 Pixiv 手机站的版式重建：作者、封面、标题、简介、标签、日期，
+  // 再是「1 / N 页」与正文。只画备份里真有的数据，没有的（头像、收藏数、
+  // 浏览数、工具栏）不伪造。
   function renderNovel(data) {
     const body = openReader();
     const panel = element('div', 'pixiv-rescue-panel');
-    panel.append(element('span', 'pixiv-rescue-kicker', '拯救数据'));
-    panel.append(element('h1', 'pixiv-rescue-title', data.title || '未命名备份小说'));
-    const author = data.author_name ? '作者：' + data.author_name : '';
-    panel.append(element('p', 'pixiv-rescue-meta', author));
-    renderNotice(panel, data);
-    renderText(panel, data.text_raw || '备份正文为空');
+    renderWorkHeader(panel, data, { cover: true });
+    renderPixivText(panel, data.text_raw);
     body.append(panel);
+  }
+  // 字数照 Pixiv 的算法按码点计（代理对算一个字），封面右上角显示「52,813字」
+  function pixivTextLength(text) {
+    const value = String(text || '');
+    const surrogates = value.match(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g);
+    return value.length - (surrogates ? surrogates.length : 0);
+  }
+
+  // 日期照手机站的中文写法：「2026年10月20日下午3点00分」（按浏览器本地时区）。
+  // 时段分界取自手机站 JS 包里 moment.js zh-cn 的 meridiem（2026-10-23 实测）：
+  // 时×100+分 <600 凌晨、<900 早上、<1130 上午、<1230 中午、<1800 下午，其余晚上
+  function formatPixivDate(value) {
+    const date = new Date(String(value || ''));
+    if (Number.isNaN(date.getTime())) return '';
+    const hour = date.getHours();
+    const hm = hour * 100 + date.getMinutes();
+    const period = hm < 600 ? '凌晨' : hm < 900 ? '早上' : hm < 1130 ? '上午'
+      : hm < 1230 ? '中午' : hm < 1800 ? '下午' : '晚上';
+    const minute = String(date.getMinutes()).padStart(2, '0');
+    return date.getFullYear() + '年' + (date.getMonth() + 1) + '月' + date.getDate() + '日'
+      + period + (hour % 12 || 12) + '点' + minute + '分';
+  }
+
+  // 简介是 Pixiv 下发的 HTML：在不渲染的离线文档里取纯文本（不执行脚本、
+  // 不加载图片），<br> 换成换行。绝不把它当 HTML 插进页面。
+  function captionText(html) {
+    const source = String(html || '').replace(/<br\s*\/?>/gi, '\n');
+    try {
+      const doc = new DOMParser().parseFromString('<body>' + source + '</body>', 'text/html');
+      doc.querySelectorAll('script,style').forEach(function (node) { node.remove(); });
+      return String(doc.body.textContent || '').trim();
+    } catch (_error) {
+      return source.replace(/<[^>]*>/g, '').trim();
+    }
+  }
+
+  function workTags(data) {
+    return (Array.isArray(data.tags) ? data.tags : []).map(function (tag) {
+      if (typeof tag === 'string') return { name: tag, translated: '' };
+      if (tag && typeof tag === 'object') {
+        return { name: String(tag.name || ''), translated: String(tag.translated_name || '') };
+      }
+      return { name: '', translated: '' };
+    }).filter(function (tag) { return tag.name; });
+  }
+
+  // 封面：本地缓存（dataURL，24h）优先，未命中再经 blob 取回并回写缓存。
+  // 列表页救援卡与阅读层封面共用这一份逻辑。
+  function loadRescueCover(img, coverId, coverType, onFail) {
+    const cached = readCoverCache(coverId, coverType);
+    if (cached) {
+      img.src = cached;
+      return;
+    }
+    const coverPath = coverType === 'series'
+      ? '/api/rescue/v1/series/' + encodeURIComponent(String(coverId)) + '/cover'
+      : '/api/rescue/v1/novels/' + encodeURIComponent(String(coverId)) + '/cover';
+    apiGetBlobUrl(coverPath)
+      .then(function (url) {
+        img.src = url;
+        // blob URL 不能跨页面持久化：取回真实字节转 dataURL 存缓存
+        fetch(url).then(function (resp) { return resp.blob(); })
+          .then(function (blob) {
+            const fr = new FileReader();
+            fr.onload = function () {
+              if (typeof fr.result === 'string') writeCoverCache(coverId, coverType, fr.result);
+            };
+            fr.readAsDataURL(blob);
+          })
+          .catch(function () { /* 缓存写失败不影响显示 */ });
+      })
+      .catch(function () { if (onFail) onFail(); });
+  }
+  function renderWorkHeader(container, data, options) {
+    const lengthText = pixivTextLength(data.text_raw).toLocaleString('en-US') + '字';
+    if (data.author_name) {
+      const author = element('div', 'pixiv-rescue-author');
+      author.append(element('span', 'pixiv-rescue-author-avatar'),
+        element('span', 'pixiv-rescue-author-name', data.author_name));
+      container.append(author);
+    }
+    const date = element('div', 'pixiv-rescue-date', formatPixivDate(data.create_date));
+    if (options && options.cover && data.novel_id) {
+      const band = element('div', 'pixiv-rescue-cover-band');
+      const img = element('img', 'pixiv-rescue-cover-img');
+      img.alt = '';
+      band.append(img, element('span', 'pixiv-rescue-text-length', lengthText));
+      container.append(band);
+      // 没有本地封面就整条去掉，字数改挂到日期行（不留空白灰条）
+      loadRescueCover(img, data.novel_id, 'novel', function () {
+        band.remove();
+        date.textContent = [date.textContent, lengthText].filter(Boolean).join(' · ');
+      });
+    } else {
+      date.textContent = [date.textContent, lengthText].filter(Boolean).join(' · ');
+    }
+    container.append(element('h1', 'pixiv-rescue-title', data.title || '未命名备份小说'));
+    const caption = captionText(data.caption);
+    if (caption) {
+      const box = element('div', 'pixiv-rescue-caption', caption);
+      container.append(box);
+      // 手机站默认只露两行简介；长简介给「展开」
+      if (caption.length > 72 || caption.split('\n').length > 2) {
+        box.classList.add('pixiv-rescue-caption--collapsed');
+        const more = element('button', 'pixiv-rescue-caption-more', '展开');
+        more.type = 'button';
+        more.addEventListener('click', function () {
+          const collapsed = box.classList.toggle('pixiv-rescue-caption--collapsed');
+          more.textContent = collapsed ? '展开' : '收起';
+        });
+        container.append(more);
+      }
+    }
+    const tags = workTags(data);
+    if (tags.length) {
+      const line = element('div', 'pixiv-rescue-tags');
+      tags.forEach(function (tag) {
+        if (/^R-18G?$/.test(tag.name)) {
+          line.append(element('span', 'pixiv-rescue-tag-r18', tag.name), document.createTextNode(' '));
+          return;
+        }
+        const node = element('span', 'pixiv-rescue-tag', '#' + tag.name);
+        if (tag.translated) node.append(element('span', 'pixiv-rescue-tag-translation', tag.translated));
+        line.append(node, document.createTextNode(' '));
+      });
+      container.append(line);
+    }
+    container.append(date);
+    renderNotice(container, data);
+  }
+  // 正文按 Pixiv 手机站的规则还原（2026-10-23 逐项对照真实页面 DOM）：
+  //   空行分段（每段一个 p，段距 1.5em）；段内单个换行保留（pre-wrap）；
+  //   [newpage] 分页，一次只显示一页，上下各一条「k / N 页」；
+  //   [chapter:标题] → 章节标题，吞掉紧邻的一个换行；
+  //   [[rb:正文 > 注音]] → <ruby>；[b:…]/[i:…] → 粗体/斜体（可嵌套）；
+  //   [[jumpuri:文字 > URL]] → 链接（只放行 http/https）；[jump:N] →「Nページへ」；
+  //   [[emphasismark:文字 > •]] → 着重号；[uploadedimage:ID]/[pixivimage:ID] →
+  //   插图占位（备份未收录插图与正文的对应关系）。
+  // 全部用 DOM 节点 + textContent 构建，正文里的 <script> 只会是字面文字。
+  function renderPixivText(container, rawText) {
+    const pages = splitPixivPages(rawText);
+    const section = element('div', 'pixiv-rescue-novel-text pixiv-rescue-body');
+    section.setAttribute('lang', /[぀-ヿ]/.test(String(rawText || '').slice(0, 4000)) ? 'ja' : 'zh-CN');
+    applyReaderTheme(section, readReaderTheme());
+    let current = 0;
+    const move = function (delta) { show(current + delta, true); };
+    const top = renderPixivPager(move);
+    const bottom = renderPixivPager(move);
+    bottom.node.classList.add('pixiv-rescue-pager--bottom');
+    // 翻页后回到本页开头（顶部翻页条贴着粘性顶栏），和 Pixiv 一样一次只看一页
+    function show(index, scroll) {
+      current = Math.max(0, Math.min(pages.length - 1, index));
+      clearNode(section);
+      renderPixivPage(section, pages[current], function (page) { show(page, true); });
+      top.update(current, pages.length);
+      bottom.update(current, pages.length);
+      if (scroll) top.node.scrollIntoView(true);
+    }
+    container.append(top.node, section, bottom.node);
+    show(0, false);
+  }
+
+  function renderPixivPager(onMove) {
+    const nav = element('nav', 'pixiv-rescue-pager');
+    const prev = element('button', 'pixiv-rescue-pager-button', '上一页');
+    const label = element('span', 'pixiv-rescue-pager-label', '1 / 1 页');
+    const next = element('button', 'pixiv-rescue-pager-button', '下一页');
+    prev.type = 'button';
+    next.type = 'button';
+    prev.addEventListener('click', function () { onMove(-1); });
+    next.addEventListener('click', function () { onMove(1); });
+    nav.append(prev, label, next);
+    return {
+      node: nav,
+      update: function (index, total) {
+        label.textContent = (index + 1) + ' / ' + total + ' 页';
+        nav.classList.toggle('pixiv-rescue-pager--single', total <= 1);
+        prev.disabled = index <= 0;
+        next.disabled = index >= total - 1;
+      }
+    };
+  }
+
+  function splitPixivPages(rawText) {
+    const pages = String(rawText || '').replace(/\r\n?/g, '\n').split('[newpage]').map(function (page) {
+      return page.replace(/^\n+|\n+$/g, '');
+    });
+    // 只丢末尾的空页：中间的空页要保留，否则 [jump:N] 的页码会错位
+    while (pages.length > 1 && !pages[pages.length - 1].trim()) pages.pop();
+    return pages;
+  }
+
+  // 块级标记（章节标题、插图）把一页切成若干文本块，各文本块再按空行分段
+  const PIXIV_BLOCK_RE = /\n?\[chapter:([^\]\n]*)\]\n?|\n?\[(uploadedimage|pixivimage):([^\]\n]*)\]\n?/g;
+
+  function renderPixivPage(section, pageText, goToPage) {
+    // Pixiv 正文容器开头有一个 1px 的阅读进度埋点元素：逐段对照实测，少了它
+    // 全文会整体上移 1px，这里照样占位
+    const start = element('div', 'pixiv-rescue-text-start');
+    start.setAttribute('aria-hidden', 'true');
+    section.append(start);
+    const text = String(pageText || '');
+    if (!text.trim()) {
+      section.append(element('p', 'pixiv-rescue-para', '备份正文为空'));
+      return;
+    }
+    let last = 0;
+    let match;
+    PIXIV_BLOCK_RE.lastIndex = 0;
+    while ((match = PIXIV_BLOCK_RE.exec(text)) !== null) {
+      appendPixivParagraphs(section, text.slice(last, match.index), goToPage);
+      if (match[1] !== undefined) {
+        section.append(element('h2', 'pixiv-rescue-chapter', match[1]));
+      } else {
+        section.append(renderMissingImage(match[2], match[3]));
+      }
+      last = PIXIV_BLOCK_RE.lastIndex;
+    }
+    appendPixivParagraphs(section, text.slice(last), goToPage);
+  }
+
+  function appendPixivParagraphs(section, chunk, goToPage) {
+    chunk.split('\n\n').forEach(function (paragraph) {
+      if (!paragraph) return;
+      const p = element('p', 'pixiv-rescue-para');
+      renderPixivInline(p, paragraph, goToPage, 0);
+      section.append(p);
+    });
+  }
+  // 从 start 处的「[」起按括号深度找配对的「]」：标记可以嵌套
+  // （生产实测 [b:[i:[[jumpuri:… > …]]]]），配不上就当普通文字。
+  function findPixivClose(text, start) {
+    let depth = 0;
+    for (let i = start; i < text.length; i += 1) {
+      const ch = text.charAt(i);
+      if (ch === '[') depth += 1;
+      else if (ch === ']') {
+        depth -= 1;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
+  }
+
+  function matchPixivToken(text, start) {
+    const head = text.slice(start, start + 16);
+    let m = /^\[jump:(\d+)\]/.exec(head);
+    if (m) return { kind: 'jump', page: Number(m[1]), end: start + m[0].length };
+    m = /^\[\[(rb|jumpuri|emphasismark):/.exec(head);
+    if (m) {
+      const close = findPixivClose(text, start);
+      if (close < 0 || text.charAt(close - 1) !== ']') return null;
+      return { kind: m[1], body: text.slice(start + m[0].length, close - 1), end: close + 1 };
+    }
+    m = /^\[(b|i):/.exec(head);
+    if (m) {
+      const close = findPixivClose(text, start);
+      if (close < 0) return null;
+      return { kind: m[1], body: text.slice(start + m[0].length, close), end: close + 1 };
+    }
+    return null;
+  }
+
+  function renderPixivInline(parent, text, goToPage, depth) {
+    let plain = '';
+    let i = 0;
+    const flush = function () {
+      if (plain) parent.append(document.createTextNode(plain));
+      plain = '';
+    };
+    while (i < text.length) {
+      const open = text.indexOf('[', i);
+      if (open < 0) {
+        plain += text.slice(i);
+        break;
+      }
+      plain += text.slice(i, open);
+      const token = depth < 8 ? matchPixivToken(text, open) : null;
+      if (!token) {
+        plain += '[';
+        i = open + 1;
+        continue;
+      }
+      flush();
+      renderPixivToken(parent, token, goToPage, depth);
+      i = token.end;
+    }
+    flush();
+  }
+
+  function splitPixivPair(body, useLast) {
+    const at = useLast ? body.lastIndexOf('>') : body.indexOf('>');
+    if (at < 0) return [body, ''];
+    return [body.slice(0, at).replace(/[ \t]+$/, ''), body.slice(at + 1).trim()];
+  }
+
+  function renderPixivToken(parent, token, goToPage, depth) {
+    if (token.kind === 'b' || token.kind === 'i') {
+      const node = element(token.kind);
+      renderPixivInline(node, token.body, goToPage, depth + 1);
+      parent.append(node);
+      return;
+    }
+    if (token.kind === 'jump') {
+      // 页内跳转：Pixiv 显示「Nページへ」；不用 href，免得改 URL 触发路由轮询销毁阅读层
+      const link = element('a', 'pixiv-rescue-jump', token.page + 'ページへ');
+      link.setAttribute('role', 'link');
+      link.tabIndex = 0;
+      const go = function (event) {
+        event.preventDefault();
+        goToPage(token.page - 1);
+      };
+      link.addEventListener('click', go);
+      link.addEventListener('keydown', function (event) { if (event.key === 'Enter') go(event); });
+      parent.append(link);
+      return;
+    }
+    const pair = splitPixivPair(token.body, token.kind === 'jumpuri');
+    if (token.kind === 'rb') {
+      const ruby = element('ruby');
+      ruby.append(document.createTextNode(pair[0]), element('rp', '', '('), element('rt', '', pair[1]), element('rp', '', ')'));
+      parent.append(ruby);
+      return;
+    }
+    if (token.kind === 'jumpuri') {
+      const link = element('a', 'pixiv-rescue-jump');
+      if (/^https?:\/\//i.test(pair[1])) {
+        link.href = pair[1];
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer nofollow';
+      }
+      renderPixivInline(link, pair[0], goToPage, depth + 1);
+      parent.append(link);
+      return;
+    }
+    // emphasismark：着重号，Pixiv 用 text-emphasis（filled dot，下方）
+    const mark = element('span', 'pixiv-rescue-emphasis');
+    const style = /[﹅、]/.test(pair[1]) ? 'filled sesame' : 'filled dot';
+    mark.style.setProperty('text-emphasis-style', style);
+    mark.style.setProperty('-webkit-text-emphasis-style', style);
+    mark.style.setProperty('text-emphasis-position', 'under right');
+    mark.style.setProperty('-webkit-text-emphasis-position', 'under right');
+    renderPixivInline(mark, pair[0], goToPage, depth + 1);
+    parent.append(mark);
+  }
+
+  // 插图：备份没有存「插图 ID → 图片文件」的对应关系，如实给占位，不猜图
+  function renderMissingImage(kind, id) {
+    const box = element('div', 'pixiv-rescue-image-missing', '此处原有插图（私人备份未收录插图）');
+    if (kind === 'pixivimage' && /^\d+$/.test(String(id).split('-')[0])) {
+      box.append(document.createTextNode(' '));
+      const link = element('a', '', '到 Pixiv 查看作品');
+      link.href = 'https://www.pixiv.net/artworks/' + String(id).split('-')[0];
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      box.append(link);
+    }
+    return box;
+  }
+  // ── 阅读设置（Aa）────────────────────────────────────────────
+  // 用户在 Pixiv 正文页「Aa」里选的背景/字号/行距/字体存在 Pixiv 自己那边，
+  // 已删作品页上读不到。做法：在健康正文页上只读地看一眼 #novel-text-container
+  // 的 class（background-N size-N spacing-N）和字体，记进脚本存储；阅读层照用。
+  // 没记过就用手机站默认值（白底、标准字号、行距 1.8、gothic）。
+  function readReaderTheme() {
+    const fallback = { background: 0, size: 1, spacing: 1, font: '' };
+    try {
+      const saved = JSON.parse(GM_getValue(READER_THEME_KEY, '') || 'null');
+      if (!saved || typeof saved !== 'object') return fallback;
+      const pick = function (value, max, def) {
+        const n = Number(value);
+        return Number.isInteger(n) && n >= 0 && n <= max ? n : def;
+      };
+      const font = typeof saved.font === 'string' && saved.font.length <= 600 && !/[;{}<>]/.test(saved.font)
+        ? saved.font : '';
+      return {
+        background: pick(saved.background, 4, 0),
+        size: pick(saved.size, 2, 1),
+        spacing: pick(saved.spacing, 1, 1),
+        font: font
+      };
+    } catch (_error) {
+      return fallback;
+    }
+  }
+
+  function applyReaderTheme(section, theme) {
+    if (theme.background) section.classList.add('background-' + theme.background);
+    if (theme.size !== 1) section.classList.add('size-' + theme.size);
+    if (theme.spacing !== 1) section.classList.add('spacing-' + theme.spacing);
+    if (theme.font) section.style.fontFamily = theme.font;
+    section.setAttribute('data-pixiv-rescue-theme',
+      [theme.background, theme.size, theme.spacing].join('-'));
+  }
+
+  // 只读：不改 Pixiv 页面任何东西，只把它当前的 Aa 设置记下来（最多等 15 秒渲染）
+  function learnReaderTheme(isStale) {
+    const deadline = Date.now() + 15000;
+    const timer = window.setInterval(function () {
+      if (isStale() || Date.now() > deadline) {
+        window.clearInterval(timer);
+        return;
+      }
+      const box = document.getElementById('novel-text-container');
+      if (!box) return;
+      window.clearInterval(timer);
+      const cls = String(box.className || '');
+      const grab = function (name) {
+        const m = cls.match(new RegExp('(?:^|\\s)' + name + '-(\\d)(?:\\s|$)'));
+        return m ? Number(m[1]) : null;
+      };
+      const background = grab('background');
+      if (background === null) return;
+      try {
+        GM_setValue(READER_THEME_KEY, JSON.stringify({
+          background: background,
+          size: grab('size') === null ? 1 : grab('size'),
+          spacing: grab('spacing') === null ? 1 : grab('spacing'),
+          font: String(box.style.fontFamily || '').slice(0, 600)
+        }));
+      } catch (_error) { /* 存储失败就继续用默认值 */ }
+    }, 500);
   }
 
   // 阅读层内的整页错误。retry 存在时给「重试」——超时/网络抖动不该是死路，
@@ -871,36 +1360,12 @@
     coverBox.append(mark);
     if (match.has_cover) {
       const coverId = isNovel ? match.novel_id : (match.series_id || match.novel_id);
-      const coverType = isNovel ? 'novel' : 'series';
-      const coverPath = isNovel
-        ? '/api/rescue/v1/novels/' + encodeURIComponent(String(coverId)) + '/cover'
-        : '/api/rescue/v1/series/' + encodeURIComponent(String(coverId)) + '/cover';
       const img = element('img', 'pixiv-rescue-rescued-img');
       img.alt = '';
       img.loading = 'lazy';
       coverBox.append(img);
-      // 封面优先读本地缓存（dataURL，24h），未命中再拉 blob 并回写。
-      // 每次进收藏页重复拉封面正是用户感知到的「等一会」之一。
-      const cachedCover = readCoverCache(coverId, coverType);
-      if (cachedCover) {
-        img.src = cachedCover;
-      } else {
-        apiGetBlobUrl(coverPath)
-          .then(function (url) {
-            img.src = url;
-            // blob URL 不能跨页面持久化：取回真实字节转 dataURL 存缓存
-            fetch(url).then(function (resp) { return resp.blob(); })
-              .then(function (blob) {
-                const fr = new FileReader();
-                fr.onload = function () {
-                  if (typeof fr.result === 'string') writeCoverCache(coverId, coverType, fr.result);
-                };
-                fr.readAsDataURL(blob);
-              })
-              .catch(function () { /* 缓存写失败不影响显示 */ });
-          })
-          .catch(function () { img.remove(); });
-      }
+      // 每次进收藏页重复拉封面正是用户感知到的「等一会」之一：先读缓存
+      loadRescueCover(img, coverId, isNovel ? 'novel' : 'series', function () { img.remove(); });
     }
 
     const body = element('div', 'pixiv-rescue-rescued-body');
@@ -1172,9 +1637,8 @@
 
   function renderSeriesChapter(viewer, data) {
     clearNode(viewer);
-    viewer.append(element('h2', 'pixiv-rescue-title', data.title || '未命名章节'));
-    renderNotice(viewer, data);
-    renderText(viewer, data.text_raw || '备份正文为空');
+    renderWorkHeader(viewer, data, { cover: false });
+    renderPixivText(viewer, data.text_raw);
     // 目录可能很长：章节正文出现在目录下方，不滚过去用户会以为点了没反应
     viewer.scrollIntoView(true);
   }
@@ -1248,13 +1712,15 @@
   function renderSeries(data, seriesId) {
     const body = openReader();
     const panel = element('div', 'pixiv-rescue-panel');
-    panel.append(element('span', 'pixiv-rescue-kicker', '拯救数据'));
-    panel.append(element('h1', 'pixiv-rescue-title', data.title || '未命名备份系列'));
+    const head = element('div', 'pixiv-rescue-series-head');
+    head.append(element('h1', 'pixiv-rescue-title', data.title || '未命名备份系列'));
     const coverage = data.complete_count !== undefined
       ? '已备份 ' + data.complete_count + ' / ' + (data.expected_count || '?') + ' 章'
       : '';
-    panel.append(element('p', 'pixiv-rescue-meta', coverage));
-    renderNotice(panel, data);
+    head.append(element('p', 'pixiv-rescue-series-meta',
+      [data.author_name || '', coverage].filter(Boolean).join(' · ')));
+    renderNotice(head, data);
+    panel.append(head);
     const loadButton = element('button', 'pixiv-rescue-button', '加载目录');
     loadButton.type = 'button';
     const viewer = element('div', 'pixiv-rescue-viewer');
@@ -1272,7 +1738,8 @@
           loadButton.disabled = false;
         });
     });
-    panel.append(loadButton, viewer);
+    head.append(loadButton);
+    panel.append(viewer);
     body.append(panel);
   }
 
@@ -1342,7 +1809,12 @@
       return;
     }
     pixivWorkState(type, id).then(function (state) {
-      if (isStale() || state === 'available') return;
+      if (isStale()) return;
+      if (state === 'available') {
+        // 健康作品：不请求备份、不动页面，只顺带记下用户的 Aa 阅读设置
+        if (type === 'novel') learnReaderTheme(isStale);
+        return;
+      }
       loadBackup()
         .then(function (data) {
           if (!isStale()) renderBackup(data);

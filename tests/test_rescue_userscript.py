@@ -65,7 +65,10 @@ def test_userscript_does_not_replace_healthy_pixiv_pages() -> None:
     assert "function pixivWorkState(type, id)" in script
     assert "'/ajax/novel/series/'" in script
     assert "'/ajax/novel/'" in script
-    assert "if (isStale() || state === 'available') return;" in script
+    # 作品还在：不请求备份、不动页面（只读地记一下 Aa 阅读设置后就返回）
+    available_branch = script.split("if (state === 'available') {", 1)[1].split("return;", 1)[0]
+    assert "loadBackup" not in available_branch and "renderBackup" not in available_branch
+    assert "learnReaderTheme(isStale)" in available_branch
     # 「确认失效」只认 404/410，403 等歧义状态不当成被删
     assert "response.status === 404 || response.status === 410" in script
     # 旧的 DOM 猜测已整体删除
@@ -296,6 +299,7 @@ def _install_script(
     path: str = "/novel/show.php?id=101",
     ajax_state: str = "available",
     at_document_start: bool = False,
+    store: dict[str, str] | None = None,
 ) -> list[str]:
     """装载脚本并返回 Pixiv ajax 请求记录（正文/系列页判定作品存活用）。
 
@@ -304,6 +308,10 @@ def _install_script(
     """
     script = _script()
     ajax_hits: list[str] = []
+    if store is not None:
+        page.add_init_script(
+            "window.__rescueStore = new Map(Object.entries(" + json.dumps(store, ensure_ascii=False) + "));"
+        )
     if at_document_start:
         page.add_init_script(
             "window.__rescueResponses = " + json.dumps(responses, ensure_ascii=False) + ";"
@@ -311,8 +319,10 @@ def _install_script(
     page.add_init_script(
         """
         window.__rescueRequests = [];
-        window.GM_getValue = (key, fallback) => key === 'pixivRescueToken' ? 'rsq_test' : fallback;
-        window.GM_setValue = () => {};
+        // store 夹具：可读写的 GM 存储（Aa 阅读设置的学习与套用）；默认只读出 Token
+        window.GM_getValue = (key, fallback) => (window.__rescueStore && window.__rescueStore.has(key))
+          ? window.__rescueStore.get(key) : (key === 'pixivRescueToken' ? 'rsq_test' : fallback);
+        window.GM_setValue = (key, value) => { if (window.__rescueStore) window.__rescueStore.set(key, value); };
         window.GM_registerMenuCommand = () => {};
         window.GM_xmlhttpRequest = (options) => {
           window.__rescueRequests.push({url: options.url, method: options.method});
@@ -794,4 +804,185 @@ def test_userscript_fixture_list_interval_idles_off_list_page(rescue_browser) ->
     page.wait_for_function(
         "() => window.__rescueRequests.some(item => item.url.endsWith('/lookup?novel_ids=777002'))"
     )
+    page.close()
+
+
+def _css_rule(script: str, selector: str) -> str:
+    """取 addStyles 里以 selector 开头的那条 CSS（整行，含字体常量拼接）。"""
+    return script.split("'" + selector + "{", 1)[1].split("\n", 1)[0]
+
+
+def test_userscript_reader_typography_matches_pixiv_mobile() -> None:
+    """0.10.0：阅读层正文逐项照搬 2026-10-23 实测的 Pixiv 手机站排版。
+
+    实测值（#novel-text-container，默认 Aa 设置 background-0/size-1/spacing-1）：
+    16px、行高 1.8（28.8px）、#1f1f1f、白底、上下内边距 40px、pre-wrap；
+    p.novel-paragraph 底距 1.5em、左右 16px；h2.novel-chapter 20px/700/#969696、
+    上下 1em、左右 26px；翻页条行高 45px、#474747、上下 1px rgba(0,0,0,.08)。
+    """
+    script = _script()
+    font = script.split("const PIXIV_GOTHIC_FONT = '", 1)[1].split("';", 1)[0]
+    assert font.startswith('"Avenir Next",Avenir,"Source Sans","Noto Sans",Roboto,Verdana,"Pingfang SC"')
+    assert font.endswith('"Malgun Gothic",sans-serif')
+
+    text = _css_rule(script, ".pixiv-rescue-novel-text")
+    for value in ("padding:40px 0", "background:#fff", "color:#1f1f1f", "font-family:' + PIXIV_GOTHIC_FONT + '",
+                  "font-size:16px", "line-height:1.8", "white-space:pre-wrap", "overflow-wrap:break-word"):
+        assert value in text, value
+    para = _css_rule(script, ".pixiv-rescue-novel-text .pixiv-rescue-para")
+    assert "margin:0 0 1.5em" in para and "padding:0 16px" in para
+    chapter = _css_rule(script, ".pixiv-rescue-novel-text .pixiv-rescue-chapter")
+    for value in ("margin:1em 0", "padding:0 26px", "font-size:20px", "font-weight:700", "color:#969696"):
+        assert value in chapter, value
+    pager = _css_rule(script, ".pixiv-rescue-pager")
+    for value in ("line-height:45px", "color:#474747", "border-top:1px solid rgba(0,0,0,.08)"):
+        assert value in pager, value
+    # Aa 的五种背景（同样实测自手机站 CSS）
+    for selector, value in (
+        (".pixiv-rescue-novel-text.background-1", "background:#1f1f1f;color:#b7b7b7"),
+        (".pixiv-rescue-novel-text.background-2", "background:#edf7ff;color:#4d3e2a"),
+        (".pixiv-rescue-novel-text.background-3", "background:#fbf0d9;color:#4d3e2a"),
+        (".pixiv-rescue-novel-text.background-4", "background:#f5f5f5;color:#333"),
+    ):
+        assert value in _css_rule(script, selector), selector
+    # 旧版的衬线字体 + 行高 2 的自定义排版已删除
+    assert '"Noto Serif SC"' not in script
+    # 简介按纯文本处理，正文链接只放行 http/https
+    assert "new DOMParser().parseFromString(" in script
+    assert "/^https?:\\/\\//i.test(pair[1])" in script
+
+
+MOBILE_UA = (
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/127.0.0.0 Mobile Safari/537.36"
+)
+MARKUP_TEXT = (
+    "[chapter:第一章]\n第一段第一行\n第一段第二行\n\n"
+    "[[rb:漢字 > かんじ]]与[b:[i:粗斜体]]\n\n"
+    "[[jumpuri:安全链接 > https://example.com/a]] 和 [[jumpuri:坏链接 > javascript:alert(1)]]\n\n"
+    "[[emphasismark:重点 > •]]<script>alert('xss')</script>\n"
+    "[uploadedimage:123]\n[pixivimage:456]\n"
+    "[newpage]\n第二页正文 [jump:1]"
+)
+MARKUP_NOVEL = {
+    "novel_id": 101,
+    "title": "排版测试",
+    "author_name": "测试作者",
+    "caption": "第一行简介<br />第二行简介<script>bad()</script>",
+    "tags": [{"name": "R-18", "translated_name": None}, {"name": "原创", "translated_name": "original"}],
+    "create_date": "2026-10-20T15:00:00",
+    "text_raw": MARKUP_TEXT,
+    "source_notice": "内容来自私人备份，并非 Pixiv 官方恢复",
+    "rescue_state": "success",
+}
+
+
+def _computed(page, selector: str, props: list[str]) -> dict:
+    return page.evaluate(
+        "([sel, props]) => { const s = getComputedStyle(document.querySelector(sel));"
+        " return Object.fromEntries(props.map((p) => [p, s[p]])); }",
+        [selector, props],
+    )
+
+
+def test_userscript_fixture_renders_pixiv_markup_like_pixiv(rescue_browser) -> None:
+    """标记逐项按 Pixiv 手机站的 DOM 规则渲染，计算样式等于实测值，且不引入 XSS。"""
+    context = rescue_browser.new_context(user_agent=MOBILE_UA, viewport={"width": 412, "height": 915})
+    page = context.new_page()
+    responses = {"https://pixiv.dongboapp.com/api/rescue/v1/novels/101": MARKUP_NOVEL}
+    _install_script(page, PIXIV_404_SHELL, responses, path="/novel/show.php?id=101&pixiv_rescue=1")
+
+    page.locator(".pixiv-rescue-chapter").wait_for(state="visible")
+    assert "pixiv-rescue-root--pc" not in (page.locator("[data-pixiv-rescue='content']").get_attribute("class") or "")
+    body = page.locator(".pixiv-rescue-novel-text")
+    assert body.get_attribute("lang") == "ja"  # 正文含假名
+    assert page.locator(".pixiv-rescue-chapter").inner_text() == "第一章"
+    assert body.locator("ruby rt").inner_text() == "かんじ"
+    assert body.locator("b > i").inner_text() == "粗斜体"
+    safe = body.locator("a.pixiv-rescue-jump", has_text="安全链接")
+    assert safe.get_attribute("href") == "https://example.com/a"
+    assert safe.get_attribute("target") == "_blank" and "noopener" in safe.get_attribute("rel")
+    assert body.locator("a.pixiv-rescue-jump", has_text="坏链接").get_attribute("href") is None
+    assert "dot" in _computed(page, ".pixiv-rescue-emphasis", ["textEmphasisStyle"])["textEmphasisStyle"]
+    assert body.locator("script").count() == 0
+    assert "<script>alert('xss')</script>" in body.inner_text()
+    assert body.locator(".pixiv-rescue-image-missing").count() == 2
+    assert body.locator(".pixiv-rescue-image-missing a").get_attribute("href") == "https://www.pixiv.net/artworks/456"
+    # 空行分段，段内换行保留
+    assert body.locator(".pixiv-rescue-para").count() == 4
+    assert body.locator(".pixiv-rescue-para").first.inner_text() == "第一段第一行\n第一段第二行"
+    assert _computed(page, ".pixiv-rescue-novel-text",
+                     ["fontSize", "lineHeight", "color", "backgroundColor", "paddingTop", "whiteSpace"]) == {
+        "fontSize": "16px", "lineHeight": "28.8px", "color": "rgb(31, 31, 31)",
+        "backgroundColor": "rgb(255, 255, 255)", "paddingTop": "40px", "whiteSpace": "pre-wrap"}
+    assert _computed(page, ".pixiv-rescue-para", ["marginBottom", "paddingLeft", "paddingRight"]) == {
+        "marginBottom": "24px", "paddingLeft": "16px", "paddingRight": "16px"}
+    assert _computed(page, ".pixiv-rescue-chapter", ["fontSize", "fontWeight", "color", "marginTop", "paddingLeft"]) == {
+        "fontSize": "20px", "fontWeight": "700", "color": "rgb(150, 150, 150)", "marginTop": "20px", "paddingLeft": "26px"}
+    # 作品信息区：标题、作者、标签（R-18 红字）、简介纯文本、日期
+    assert page.locator(".pixiv-rescue-title").inner_text() == "排版测试"
+    assert page.locator(".pixiv-rescue-author-name").inner_text() == "测试作者"
+    assert page.locator(".pixiv-rescue-tag-r18").inner_text() == "R-18"
+    assert "#原创" in page.locator(".pixiv-rescue-tags").inner_text()
+    assert page.locator(".pixiv-rescue-caption").inner_text() == "第一行简介\n第二行简介"
+    assert page.locator(".pixiv-rescue-date").inner_text().startswith("2026年10月20日下午3点00分")
+    # 分页：一次一页，「下一页」翻页，[jump:1] 跳回第一页
+    labels = page.locator(".pixiv-rescue-pager-label")
+    assert labels.all_inner_texts() == ["1 / 2 页", "1 / 2 页"]
+    page.locator(".pixiv-rescue-pager").first.get_by_role("button", name="下一页").click()
+    assert labels.all_inner_texts() == ["2 / 2 页", "2 / 2 页"]
+    assert "第二页正文" in body.inner_text() and "第一段第一行" not in body.inner_text()
+    body.get_by_text("1ページへ").click()
+    assert labels.all_inner_texts() == ["1 / 2 页", "1 / 2 页"]
+    context.close()
+
+
+@pytest.mark.parametrize("create_date, expected", [
+    ("2026-10-20T11:30:00", "2026年10月20日中午11点30分"),
+    ("2026-10-20T12:30:00", "2026年10月20日下午12点30分"),
+    ("2026-10-20T05:59:00", "2026年10月20日凌晨5点59分"),
+    ("2026-10-20T18:00:00", "2026年10月20日晚上6点00分"),
+])
+def test_userscript_fixture_date_uses_pixiv_meridiem_boundaries(rescue_browser, create_date, expected) -> None:
+    """时段分界照手机站 JS 包里 moment.js zh-cn 的 meridiem（11:30 起中午、12:30 起下午）。"""
+    page = rescue_browser.new_page()
+    novel = dict(MARKUP_NOVEL, create_date=create_date)
+    _install_script(page, PIXIV_404_SHELL, {"https://pixiv.dongboapp.com/api/rescue/v1/novels/101": novel},
+                    path="/novel/show.php?id=101&pixiv_rescue=1")
+    page.locator(".pixiv-rescue-date").wait_for(state="visible")
+    assert page.locator(".pixiv-rescue-date").inner_text().startswith(expected)
+    page.close()
+
+
+def test_userscript_fixture_learns_reader_theme_read_only(rescue_browser) -> None:
+    """健康正文页上只读地记下用户的 Aa 设置：不请求备份、不改页面。"""
+    context = rescue_browser.new_context(user_agent=MOBILE_UA, viewport={"width": 412, "height": 915})
+    page = context.new_page()
+    html = (
+        "<section id='novel-text-container' class='horizontal background-3 size-2 spacing-0'"
+        " style='font-family: serif;'><p class='novel-paragraph horizontal'>健康正文</p></section>"
+    )
+    _install_script(page, html, {}, ajax_state="available", store={})
+
+    page.wait_for_function("() => window.__rescueStore.has('pixivRescueReaderTheme')", timeout=5000)
+    saved = json.loads(page.evaluate("() => window.__rescueStore.get('pixivRescueReaderTheme')"))
+    assert saved == {"background": 3, "size": 2, "spacing": 0, "font": "serif"}
+    assert page.evaluate("window.__rescueRequests") == []
+    assert page.locator("[data-pixiv-rescue]").count() == 0
+    assert page.locator("#novel-text-container").get_attribute("class") == "horizontal background-3 size-2 spacing-0"
+    context.close()
+
+
+def test_userscript_fixture_applies_learned_theme_to_reader(rescue_browser) -> None:
+    """记下的 Aa 设置套用到阅读层（这里是深色背景 + 大字号）；桌面 UA 走 PC 版式。"""
+    page = rescue_browser.new_page()
+    store = {"pixivRescueReaderTheme": json.dumps({"background": 1, "size": 2, "spacing": 1, "font": ""})}
+    responses = {"https://pixiv.dongboapp.com/api/rescue/v1/novels/101": MARKUP_NOVEL}
+    _install_script(page, PIXIV_404_SHELL, responses, path="/novel/show.php?id=101&pixiv_rescue=1", store=store)
+
+    page.locator(".pixiv-rescue-chapter").wait_for(state="visible")
+    assert page.locator(".pixiv-rescue-novel-text").get_attribute("data-pixiv-rescue-theme") == "1-2-1"
+    assert _computed(page, ".pixiv-rescue-novel-text", ["backgroundColor", "color", "fontSize"]) == {
+        "backgroundColor": "rgb(31, 31, 31)", "color": "rgb(183, 183, 183)", "fontSize": "19.2px"}
+    assert "pixiv-rescue-root--pc" in page.locator("[data-pixiv-rescue='content']").get_attribute("class")
     page.close()
