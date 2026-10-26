@@ -572,6 +572,88 @@ def test_rescue_parent_series_exposes_chapter_and_paginated_directory(client) ->
     assert chapter.get_json()["data"]["eligibility_reason"] == "parent_series_unavailable"
 
 
+def _seed_series_chapters(app) -> None:
+    """给已删系列 20 再加两章（章节 21 已在基础数据里，发布时间为空 → 排第 1）。"""
+    db = Database(Path(app.config["PIXIV_DB_PATH"]))
+    try:
+        for novel_id, status, created, text in (
+            (22, "deleted", "2026-01-02T10:00:00+09:00", "第二章" * 411 + "末"),
+            (23, "normal", "2026-01-03T10:00:00+09:00", "第三章" * 266 + "末末"),
+        ):
+            db.conn.execute(
+                """
+                INSERT INTO novels (
+                    novel_id, user_id, series_id, title, visible, restrict_value,
+                    x_restrict, text_length, total_bookmarks, total_views, tags_json,
+                    raw_json, meta_hash, status, create_date
+                ) VALUES (?, 1, 20, ?, 1, 'public', 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (novel_id, f"第{novel_id - 20}章", len(text), novel_id * 10, novel_id * 100,
+                 '["R-18", "设定"]', '{"is_original": true, "novel_ai_type": 1, "secret": "x"}',
+                 f"h{novel_id}", status, created),
+            )
+            db.conn.execute(
+                "INSERT INTO novel_texts (novel_id, text_raw, has_content, text_hash) VALUES (?, ?, 1, ?)",
+                (novel_id, text, f"t{novel_id}"),
+            )
+        db.conn.execute(
+            "INSERT INTO assets (novel_id, asset_type, remote_url, local_path, file_hash, downloaded_at) "
+            "VALUES (22, 'cover', 'https://i.pximg.net/c.jpg', 'covers/22.jpg', 'f22', '2026-01-02')"
+        )
+        db.conn.commit()
+        db.rebuild_rescue_catalog()
+    finally:
+        db.close()
+
+
+def test_rescue_series_chapters_expose_pixiv_card_fields(app, client) -> None:
+    """系列页卡片照 Pixiv：每章标签、收藏/浏览快照、原创/AI 标记、有无封面；头部总字数与更新时间。"""
+    _seed_series_chapters(app)
+    token = _rotate_token(client)
+    response = client.get(
+        "/api/rescue/v1/series/20/chapters", headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()["data"]
+    items = data["items"]
+    assert [(item["novel_id"], item["chapter_number"]) for item in items] == [(21, 1), (22, 2), (23, 3)]
+    second = items[1]
+    assert second["tags"] == ["R-18", "设定"]
+    assert (second["total_bookmarks"], second["total_views"], second["x_restrict"]) == (220, 2200, 1)
+    assert second["is_original"] is True and second["ai_type"] == 1
+    assert second["has_cover"] is True and items[2]["has_cover"] is False
+    # 原始 JSON 不外传
+    assert all("raw_json" not in item and "tags_json" not in item for item in items)
+    assert data["total_text_length"] == 4 + 1234 + 800
+    assert data["last_create_date"] == "2026-01-03T10:00:00+09:00"
+
+
+def test_rescue_novel_exposes_stats_and_series_navigation(app, client) -> None:
+    """正文页：同步时的收藏/浏览快照与原创标记；系列章节带「第几话」与上一话/下一话。"""
+    _seed_series_chapters(app)
+    token = _rotate_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    chapter = client.get("/api/rescue/v1/novels/22", headers=headers).get_json()["data"]
+    assert (chapter["total_bookmarks"], chapter["total_views"]) == (220, 2200)
+    assert chapter["is_original"] is True and chapter["ai_type"] == 1
+    assert chapter["series_nav"] == {
+        "series_id": 20,
+        "series_title": "救援系列",
+        "chapter_number": 2,
+        "chapter_total": 3,
+        "prev": {"novel_id": 21, "title": "系列章节", "chapter_number": 1},
+        "next": {"novel_id": 23, "title": "第3章", "chapter_number": 3},
+    }
+    first = client.get("/api/rescue/v1/novels/21", headers=headers).get_json()["data"]
+    assert first["series_nav"]["prev"] is None and first["series_nav"]["next"]["novel_id"] == 22
+    # 不属于系列的单篇没有系列导航；原始 JSON 不外传
+    standalone = client.get("/api/rescue/v1/novels/10", headers=headers).get_json()["data"]
+    assert standalone["series_nav"] is None
+    assert "raw_json" not in standalone and "secret" not in str(standalone)
+
+
 def test_dashboard_rescue_list_and_override_crud(client) -> None:
     listed = client.get("/api/dashboard/rescues?item_type=novel&state=success")
     assert listed.status_code == 200

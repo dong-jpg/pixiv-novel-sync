@@ -13,6 +13,24 @@ def _sqlite_casefold(value: Any) -> str:
     return str(value or "").casefold()
 
 
+def _work_flags(raw_json: Any) -> dict[str, Any]:
+    """从同步时存下的 app API 原始数据取「原创」「AI 生成」标记（救援卡片/正文页的标签行用）。
+
+    原始 JSON 本身绝不外传（其中有上游的其他字段），只摘这两个布尔/整数。
+    """
+    try:
+        raw = json.loads(str(raw_json or "{}"))
+    except (TypeError, ValueError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    try:
+        ai_type = int(raw.get("novel_ai_type") or 0)
+    except (TypeError, ValueError):
+        ai_type = 0
+    return {"is_original": bool(raw.get("is_original")), "ai_type": ai_type}
+
+
 class CatalogNotReadyError(RuntimeError):
     """Raised when the rescue catalog has not completed its first rebuild."""
 
@@ -1228,6 +1246,59 @@ class RescueMixin:
         payload["personal_hold"] = self._personal_holds_item("novel", int(novel_id))
         return payload
 
+    def get_rescue_novel_extras(self, novel_id: int, series_id: int | None) -> dict[str, Any]:
+        """救援正文页额外展示的数据：同步时的收藏/浏览快照、原创/AI 标记、系列导航。
+
+        系列导航（第几话、上一话/下一话）只在所属系列本身可救援时给出；章节序号
+        与 list_rescue_series_chapters 同一口径（已备份章节按发布时间排序），
+        这样系列页的「#N」与正文页的「上一话 #N-1」永远对得上。
+        """
+        row = self.conn.execute(
+            "SELECT total_bookmarks, total_views, x_restrict, raw_json FROM novels WHERE novel_id = ?",
+            (int(novel_id),),
+        ).fetchone()
+        extras: dict[str, Any] = {"series_nav": None}
+        if row is None:
+            return extras
+        extras["total_bookmarks"] = row["total_bookmarks"]
+        extras["total_views"] = row["total_views"]
+        extras["x_restrict"] = row["x_restrict"]
+        extras.update(_work_flags(row["raw_json"]))
+        if series_id is None:
+            return extras
+        series = self.get_rescue_series(int(series_id))
+        if series is None:
+            return extras
+        chapters = self.conn.execute(
+            """
+            SELECT n.novel_id, n.title
+            FROM novels n
+            JOIN novel_texts nt ON nt.novel_id = n.novel_id
+            WHERE n.series_id = ? AND nt.has_content = 1
+            ORDER BY n.create_date ASC, n.novel_id ASC
+            """,
+            (int(series_id),),
+        ).fetchall()
+        ids = [int(chapter["novel_id"]) for chapter in chapters]
+        if int(novel_id) not in ids:
+            return extras
+        index = ids.index(int(novel_id))
+
+        def neighbor(at: int) -> dict[str, Any] | None:
+            if at < 0 or at >= len(chapters):
+                return None
+            return {"novel_id": ids[at], "title": chapters[at]["title"], "chapter_number": at + 1}
+
+        extras["series_nav"] = {
+            "series_id": int(series_id),
+            "series_title": series.get("title"),
+            "chapter_number": index + 1,
+            "chapter_total": len(ids),
+            "prev": neighbor(index - 1),
+            "next": neighbor(index + 1),
+        }
+        return extras
+
     def get_rescue_cover_asset(self, novel_id: int) -> dict[str, Any] | None:
         """取某篇小说的本地封面资产（救援列表卡片重建用）。
 
@@ -1615,6 +1686,15 @@ class RescueMixin:
                     n.create_date,
                     n.status AS remote_status,
                     n.text_length,
+                    n.x_restrict,
+                    n.total_bookmarks,
+                    n.total_views,
+                    n.tags_json,
+                    n.raw_json,
+                    EXISTS (
+                        SELECT 1 FROM assets a
+                        WHERE a.novel_id = n.novel_id AND a.asset_type = 'cover'
+                    ) AS has_cover,
                     ROW_NUMBER() OVER (
                         ORDER BY n.create_date ASC, n.novel_id ASC
                     ) AS chapter_number
@@ -1632,14 +1712,30 @@ class RescueMixin:
         items = []
         for row in rows:
             item = dict(row)
+            # 卡片照 Pixiv 系列页：标签行（R-18/原创/标签）、字数·时长·收藏数
+            item["tags"] = self._decode_tags(item.pop("tags_json"))
+            item.update(_work_flags(item.pop("raw_json")))
+            item["has_cover"] = bool(item["has_cover"])
             item["api_path"] = f"/api/rescue/v1/novels/{item['novel_id']}"
             items.append(item)
+        # 系列头部「共N话 · 某日更新 · 总字数 · 总阅读时长」按全部已备份章节算，不只本页
+        totals = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(n.text_length), 0), MAX(n.create_date)
+            FROM novels n
+            JOIN novel_texts nt ON nt.novel_id = n.novel_id
+            WHERE n.series_id = ? AND nt.has_content = 1
+            """,
+            (int(series_id),),
+        ).fetchone()
         return {
             "items": items,
             "page": normalized_page,
             "page_size": normalized_size,
             "total": total,
             "total_pages": total_pages,
+            "total_text_length": int(totals[0] or 0) if totals else 0,
+            "last_create_date": totals[1] if totals else None,
             "rescue_state": series["rescue_state"],
             "expected_count": series["expected_count"],
             "local_count": series["local_count"],

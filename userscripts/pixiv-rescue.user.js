@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.10.0
+// @version      0.11.0
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；收藏页提供「拯救系列」tab。
 // @author       dong-jpg
 // @license      MIT
@@ -40,13 +40,14 @@
     const custom = String(GM_getValue('pixivRescueOrigin', '') || '').trim();
     return (custom || DEFAULT_API_ORIGIN).replace(/\/$/, '');
   }
-  const SCRIPT_VERSION = '0.10.0';
+  const SCRIPT_VERSION = '0.11.0';
   // Pixiv 手机站正文容器的 gothic 字体栈（2026-10-23 实测 #novel-text-container
   // 的内联 font-family，Aa 设置默认值）。阅读层正文用同一套，排版才能逐字对齐。
   const PIXIV_GOTHIC_FONT = '"Avenir Next",Avenir,"Source Sans","Noto Sans",Roboto,Verdana,"Pingfang SC","Hiragino Sans GB","Lantinghei SC","Source Han Sans CN","Noto Sans CJK SC","Microsoft Yahei",DengXian,YuGothic,"Hiragino Kaku Gothic Pro",Meiryo,"Source Han Sans","Source Han Sans JP","Noto Sans CJK JP","Pingfang TC","Pingfang HK","Hiragino Sans CNS","Lantinghei TC","Source Han Sans TW","Source Han Sans HK","Noto Sans CJK TC","Microsoft JhengHei","Apple SD Gothic Neo","Source Han Sans K","Source Han Sans KR","Noto Sans CJK KR","Malgun Gothic",sans-serif';
   // 用户在 Pixiv 正文页「Aa」里选的背景/字号/行距：在健康正文页上只读地记下来，
   // 阅读层照着用（见 learnReaderTheme）
   const READER_THEME_KEY = 'pixivRescueReaderTheme';
+  const SERIES_PROGRESS_KEY = 'pixivRescueSeriesProgress';
   const TOKEN_KEY = 'pixivRescueToken';
   const ROOT_ATTRIBUTE = 'data-pixiv-rescue';
   // 本地缓存：收藏页每次进入都要重新 lookup + 拉封面，用户反馈「每次都要
@@ -507,15 +508,70 @@
       '.pixiv-rescue-novel-text.size-2{font-size:19.2px}',
       '.pixiv-rescue-novel-text.spacing-0{line-height:normal}',
       // 系列页：目录与章节阅读区沿用同一套排版
-      '.pixiv-rescue-series-head{padding:16px}',
+      // 正文页信息区里的系列名（标题上方一行灰字）与收藏/浏览快照（实测 .work-stats）
+      '.pixiv-rescue-series-link{display:block;margin:16px 16px 0;font-size:12px;line-height:20px;color:#858585;text-decoration:none}',
+      '.pixiv-rescue-series-link + .pixiv-rescue-title{margin-top:0}',
+      '.pixiv-rescue-stats{margin:10px 16px 0;font-size:12px;line-height:16px;color:#858585}',
+      '.pixiv-rescue-stat{display:inline-flex;align-items:center;gap:4px;margin-right:16px;vertical-align:middle}',
+      '.pixiv-rescue-stat-icon{flex:0 0 auto;fill:currentColor}',
+      '.pixiv-rescue-stats + .pixiv-rescue-date{margin-top:12px}',
+      '.pixiv-rescue-tag-flag{margin-right:8px;color:#205f82;font-weight:700}',
+      // 章节末尾系列卡（实测 .novel-series-navigation：rgba(0,0,0,.04) 底、8px 圆角、
+      // 内边距 4/16/24px；按钮 14px/700/22px、#474747、圆角 100px、高 40px）
+      '.pixiv-rescue-series-card{margin:16px 16px 24px;padding:4px 16px 24px;border-radius:8px;background:rgba(0,0,0,.04)}',
+      '.pixiv-rescue-series-card-label{margin-top:4px;font-size:12px;line-height:20px;color:#858585;text-align:center}',
+      '.pixiv-rescue-series-card-title{display:block;font-size:14px;font-weight:700;line-height:22px;color:#1f1f1f;text-align:center;text-decoration:none;overflow-wrap:anywhere}',
+      '.pixiv-rescue-series-card-nav{margin-top:20px}',
+      '.pixiv-rescue-nav-button{display:block;box-sizing:border-box;margin:0;padding:9px 24px;border-radius:100px;background:rgba(0,0,0,.04);color:#474747;font-size:14px;font-weight:700;line-height:22px;text-align:center;text-decoration:none}',
+      '.pixiv-rescue-nav-button + .pixiv-rescue-nav-button{margin-top:8px}',
+      // 系列页头部（实测 .series-info-container / .text-information / a.read-link）
+      '.pixiv-rescue-series-head{padding:16px 16px 0}',
+      '.pixiv-rescue-series-badges{display:flex;gap:2px;margin-bottom:12px}',
+      '.pixiv-rescue-badge{display:inline-block;padding:3px 6px;border-radius:3px;color:#fff;font-size:10px;font-weight:700;line-height:10px}',
+      '.pixiv-rescue-badge-r18{background:#ff4060}',
+      '.pixiv-rescue-badge-original{background:#858585}',
       '.pixiv-rescue-series-head .pixiv-rescue-title{margin:0;font-size:16px;line-height:24px}',
-      '.pixiv-rescue-series-meta{margin:4px 0 8px;font-size:12px;line-height:18px;color:#858585}',
-      '.pixiv-rescue-series-head .pixiv-rescue-notice{margin:0 0 8px}',
-      '.pixiv-rescue-directory{margin:0;padding:0;list-style:none;border-top:1px solid rgba(0,0,0,.08)}',
-      '.pixiv-rescue-directory li{padding:4px 16px;border-bottom:1px solid rgba(0,0,0,.08)}',
-      '.pixiv-rescue-directory .pixiv-rescue-button{display:block;width:100%;min-height:44px;margin:0;padding:0;border-radius:0;background:none;font-weight:400;text-align:left}',
-      '.pixiv-rescue-viewer{scroll-margin-top:48px}',
-      '.pixiv-rescue-viewer:empty{display:none}',
+      '.pixiv-rescue-series-info{display:flex;flex-wrap:wrap;margin-top:8px;font-size:12px;line-height:16px;color:#858585}',
+      '.pixiv-rescue-series-info-item{margin-right:8px}',
+      '.pixiv-rescue-series-head .pixiv-rescue-notice{margin:4px 0 0}',
+      '.pixiv-rescue-read-actions{padding:20px 0}',
+      '.pixiv-rescue-read-link{display:block;box-sizing:border-box;padding:9px 24px;border-radius:100px;background:rgba(0,0,0,.88);color:#fff;font-size:14px;font-weight:700;line-height:22px;text-align:center;text-decoration:none}',
+      '.pixiv-rescue-read-link--secondary{margin-top:8px;background:rgba(0,0,0,.04);color:#474747}',
+      '.pixiv-rescue-series-tab{margin:0 16px;text-align:center}',
+      '.pixiv-rescue-series-tab-label{display:inline-block;padding:13px 16px 11px;border-bottom:2px solid #0096fa;font-size:14px;font-weight:700;line-height:22px;color:#1f1f1f}',
+      // 章节卡片（实测 .works-item-novel.is-dense：卡片宽 364px、64×90 封面、文字列左距 16px；
+      // 第二张起上外边距 22px + 上内边距 14px，相邻卡片间距 138px；分隔线占 1px，内边距让出 1px）
+      '.pixiv-rescue-directory{margin:16px 24px 0;padding:0;list-style:none}',
+      '.pixiv-rescue-chapter-item{margin:22px 0 0;padding:13px 0 0;border-top:1px solid rgba(0,0,0,.08)}',
+      '.pixiv-rescue-chapter-item:first-child{margin:0;padding:0;border-top:0}',
+      // 卡片最矮 102px（实测封面列 64×102：90px 封面 + 12px 留白）；内容不够高时
+      // 余量落在「浏览更多」上方，它贴底（实测短卡片 浏览更多 距封面顶 87px）
+      '.pixiv-rescue-chapter-card{position:relative;display:flex;align-items:stretch;min-height:102px;color:inherit;text-decoration:none}',
+      '.pixiv-rescue-chapter-cover{flex:0 0 64px;align-self:flex-start;width:64px;height:90px;border-radius:4px;overflow:hidden;background:#f0f0f0}',
+      '.pixiv-rescue-chapter-thumb{display:block;width:100%;height:100%;object-fit:cover}',
+      '.pixiv-rescue-chapter-cover--plain{box-sizing:border-box;display:flex;align-items:center;justify-content:center;padding:8px 6px;border:3px double #c9bb98;background:#f3ecd9}',
+      '.pixiv-rescue-chapter-cover-title{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;overflow:hidden;color:#5c5240;font-family:"Noto Serif CJK SC","Source Han Serif SC",serif;font-size:9px;line-height:13px;text-align:center;overflow-wrap:anywhere}',
+      '.pixiv-rescue-chapter-info{display:flex;flex-direction:column;flex:1 1 auto;min-width:0;padding-left:16px}',
+      '.pixiv-rescue-chapter-detail{display:flex;flex-direction:column;justify-content:space-between;flex:1 1 auto;align-items:flex-start;padding-right:40px}',
+      '.pixiv-rescue-chapter-more{display:block;margin-top:8px;font-size:12px;line-height:16px;color:#858585;cursor:pointer}',
+      '.pixiv-rescue-chapter-heart{position:absolute;right:0;bottom:6px;width:32px;height:32px;color:#1f1f1f;pointer-events:none}',
+      '.pixiv-rescue-chapter-heart svg{display:block}',
+      // 「作品情报」底部面板（实测 .bottom-popup：半透明遮罩、白底、标题 16px/700、全宽「阅读作品」）
+      '.pixiv-rescue-sheet-backdrop{position:fixed;top:0;right:0;bottom:0;left:0;z-index:5;background:rgba(0,0,0,.4)}',
+      '.pixiv-rescue-sheet{position:absolute;right:0;bottom:0;left:0;padding:0 16px 32px;padding-bottom:calc(32px + env(safe-area-inset-bottom, 0px));background:#fff}',
+      '.pixiv-rescue-sheet-head{position:relative;padding:12px 40px;text-align:center}',
+      '.pixiv-rescue-sheet-title{font-size:16px;font-weight:700;line-height:24px;color:#1f1f1f}',
+      '.pixiv-rescue-sheet-close{position:absolute;top:8px;right:0;width:32px;height:32px;padding:0;border:0;background:none;color:#858585;font-size:28px;line-height:32px;cursor:pointer}',
+      '.pixiv-rescue-sheet-tags{margin:16px 0 0;font-size:12px;line-height:16px;color:#3d7699;overflow-wrap:anywhere}',
+      '.pixiv-rescue-sheet-tags .pixiv-rescue-tag,.pixiv-rescue-sheet-tags .pixiv-rescue-tag-flag{color:#3d7699}',
+      '.pixiv-rescue-sheet .pixiv-rescue-read-link{margin-top:16px}',
+      '.pixiv-rescue-chapter-title{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;max-height:44px;overflow:hidden;font-size:14px;font-weight:700;line-height:22px;color:#1f1f1f;overflow-wrap:anywhere}',
+      '.pixiv-rescue-chapter-tags{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;align-self:stretch;max-height:60px;overflow:hidden;font-size:12px;line-height:20px;color:#3d7699;overflow-wrap:anywhere}',
+      '.pixiv-rescue-chapter-tags .pixiv-rescue-tag,.pixiv-rescue-chapter-tags .pixiv-rescue-tag-flag{color:#3d7699}',
+      '.pixiv-rescue-chapter-stats{display:flex;flex-wrap:wrap;align-items:center;font-size:12px;line-height:20px;color:#858585}',
+      '.pixiv-rescue-chapter-stat{display:inline-flex;align-items:center;gap:4px;margin-right:8px}',
+      '.pixiv-rescue-chapter-empty{padding:24px 0;color:#858585;font-size:14px;text-align:center}',
+      '.pixiv-rescue-directory [data-rescue-load-more]{margin-top:22px;padding:0;text-align:center}',
       '.pixiv-rescue-pending{padding:48px 16px;color:#858585;font-size:14px;line-height:22px;text-align:center}',
       '.pixiv-rescue-meta{margin:4px 16px 0;color:#858585;font-size:12px;line-height:18px}',
       '.pixiv-rescue-error{margin:16px;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px;line-height:1.6}',
@@ -687,7 +743,123 @@
     const panel = element('div', 'pixiv-rescue-panel');
     renderWorkHeader(panel, data, { cover: true });
     renderPixivText(panel, data.text_raw);
+    // 系列章节：文末照 Pixiv 放系列卡（「下一话 #N」「上一话 #N」），并记下阅读进度
+    if (data.series_nav) {
+      renderSeriesNavCard(panel, data.series_nav);
+      saveSeriesProgress(data.series_nav, data.novel_id);
+    }
     body.append(panel);
+  }
+
+  function rescueNovelUrl(novelId) {
+    return '/novel/show.php?id=' + encodeURIComponent(String(novelId)) + '&pixiv_rescue=1';
+  }
+
+  function rescueSeriesUrl(seriesId) {
+    return '/novel/series/' + encodeURIComponent(String(seriesId)) + '?pixiv_rescue=1';
+  }
+
+  function formatCount(value) {
+    return Number(value || 0).toLocaleString('en-US');
+  }
+
+  // 阅读时长照 Pixiv：readingTime = 字数 × 0.15 秒（2026-10-26 实测手机站
+  // series_content 接口，6 章比值全是 0.15），取整到分钟显示「2小时53分钟」「14分钟」；
+  // 不足 1 分钟不显示（Pixiv 的短篇卡片同样只显示字数）
+  function formatReadingTime(textLength) {
+    const minutes = Math.floor(Number(textLength || 0) * 0.15 / 60);
+    if (minutes < 1) return '';
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    return hours ? hours + '小时' + (rest ? rest + '分钟' : '') : rest + '分钟';
+  }
+
+  // 收藏（心形）与浏览（眼睛）图标：SVG 节点逐个创建，不拼 HTML
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const STAT_ICON_PATHS = {
+    like: 'M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z',
+    view: 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z'
+  };
+
+  function statIcon(kind) {
+    const size = kind === 'view' ? '14' : '12';
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', size);
+    svg.setAttribute('height', size);
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('class', 'pixiv-rescue-stat-icon');
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('fill', 'currentColor');
+    path.setAttribute('d', STAT_ICON_PATHS[kind]);
+    svg.append(path);
+    return svg;
+  }
+
+  function statItem(kind, value) {
+    const stat = element('span', 'pixiv-rescue-stat');
+    stat.append(statIcon(kind), element('span', 'pixiv-rescue-stat-count', formatCount(value)));
+    return stat;
+  }
+
+  // 正文页的收藏/浏览数：同步那一刻的快照（作品删了，Pixiv 上已经看不到了）
+  function renderStatsRow(container, data) {
+    if (data.total_bookmarks == null && data.total_views == null) return;
+    const row = element('div', 'pixiv-rescue-stats');
+    if (data.total_bookmarks != null) row.append(statItem('like', data.total_bookmarks));
+    if (data.total_views != null) row.append(statItem('view', data.total_views));
+    container.append(row);
+  }
+
+  // 章节末尾的系列卡照 Pixiv 手机站 .novel-series-navigation：灰底圆角卡里
+  // 「系列」、系列名，再是「下一话 #N」「上一话 #N」两颗胶囊（下一话在上）
+  function renderSeriesNavCard(container, nav) {
+    const card = element('div', 'pixiv-rescue-series-card');
+    card.append(element('div', 'pixiv-rescue-series-card-label', '系列'));
+    const title = element('a', 'pixiv-rescue-series-card-title', nav.series_title || '未命名系列');
+    title.href = rescueSeriesUrl(nav.series_id);
+    card.append(title);
+    const buttons = element('div', 'pixiv-rescue-series-card-nav');
+    [['下一话', nav.next], ['上一话', nav.prev]].forEach(function (pair) {
+      if (!pair[1]) return;
+      const link = element('a', 'pixiv-rescue-nav-button', pair[0] + ' #' + pair[1].chapter_number);
+      link.href = rescueNovelUrl(pair[1].novel_id);
+      buttons.append(link);
+    });
+    if (buttons.children.length) card.append(buttons);
+    container.append(card);
+  }
+
+  // 系列阅读进度（系列页的「继续阅读 #N」）：只存在脚本自己的存储里，最多记 200 个系列
+  function readSeriesProgressMap() {
+    try {
+      const map = JSON.parse(GM_getValue(SERIES_PROGRESS_KEY, '') || '{}');
+      return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  function readSeriesProgress(seriesId) {
+    const entry = readSeriesProgressMap()[String(seriesId)];
+    return entry && /^\d+$/.test(String(entry.novel_id)) ? entry : null;
+  }
+
+  function saveSeriesProgress(nav, novelId) {
+    try {
+      const map = readSeriesProgressMap();
+      map[String(nav.series_id)] = {
+        novel_id: Number(novelId),
+        chapter_number: Number(nav.chapter_number) || 0,
+        at: Date.now()
+      };
+      const keys = Object.keys(map);
+      if (keys.length > 200) {
+        keys.sort(function (a, b) { return (map[a].at || 0) - (map[b].at || 0); });
+        keys.slice(0, keys.length - 200).forEach(function (key) { delete map[key]; });
+      }
+      GM_setValue(SERIES_PROGRESS_KEY, JSON.stringify(map));
+    } catch (_error) { /* 存不下就不记进度，阅读不受影响 */ }
   }
   // 字数照 Pixiv 的算法按码点计（代理对算一个字），封面右上角显示「52,813字」
   function pixivTextLength(text) {
@@ -784,6 +956,13 @@
     } else {
       date.textContent = [date.textContent, lengthText].filter(Boolean).join(' · ');
     }
+    // 系列章节：标题上方一行灰色系列名（Pixiv 手机站同位置），带「#N」
+    if (data.series_nav) {
+      const series = element('a', 'pixiv-rescue-series-link',
+        (data.series_nav.series_title || '未命名系列') + ' #' + data.series_nav.chapter_number);
+      series.href = rescueSeriesUrl(data.series_nav.series_id);
+      container.append(series);
+    }
     container.append(element('h1', 'pixiv-rescue-title', data.title || '未命名备份小说'));
     const caption = captionText(data.caption);
     if (caption) {
@@ -801,22 +980,33 @@
         container.append(more);
       }
     }
-    const tags = workTags(data);
-    if (tags.length) {
-      const line = element('div', 'pixiv-rescue-tags');
-      tags.forEach(function (tag) {
-        if (/^R-18G?$/.test(tag.name)) {
-          line.append(element('span', 'pixiv-rescue-tag-r18', tag.name), document.createTextNode(' '));
-          return;
-        }
-        const node = element('span', 'pixiv-rescue-tag', '#' + tag.name);
-        if (tag.translated) node.append(element('span', 'pixiv-rescue-tag-translation', tag.translated));
-        line.append(node, document.createTextNode(' '));
-      });
-      container.append(line);
-    }
+    const line = renderTagLine('pixiv-rescue-tags', data, true);
+    if (line.children.length) container.append(line);
+    renderStatsRow(container, data);
     container.append(date);
     renderNotice(container, data);
+  }
+
+  // 标签行照 Pixiv：R-18（红、粗）→ AI生成/原创（粗）→ 其余「#标签」。
+  // 正文页的标签带译名（「#中文 Chinese」），系列页卡片不带（与 Pixiv 一致）。
+  function renderTagLine(className, data, withTranslation) {
+    const line = element('div', className);
+    const tags = workTags(data);
+    const push = function (node) { line.append(node, document.createTextNode(' ')); };
+    tags.filter(function (tag) { return /^R-18G?$/.test(tag.name); }).forEach(function (tag) {
+      push(element('span', 'pixiv-rescue-tag-r18', tag.name));
+    });
+    if (Number(data.ai_type) === 2) push(element('span', 'pixiv-rescue-tag-flag', 'AI生成'));
+    if (data.is_original) push(element('span', 'pixiv-rescue-tag-flag', '原创'));
+    tags.forEach(function (tag) {
+      if (/^R-18G?$/.test(tag.name)) return;
+      const node = element('span', 'pixiv-rescue-tag', '#' + tag.name);
+      if (withTranslation && tag.translated) {
+        node.append(element('span', 'pixiv-rescue-tag-translation', tag.translated));
+      }
+      push(node);
+    });
+    return line;
   }
   // 正文按 Pixiv 手机站的规则还原（2026-10-23 逐项对照真实页面 DOM）：
   //   空行分段（每段一个 p，段距 1.5em）；段内单个换行保留（pre-wrap）；
@@ -1130,12 +1320,11 @@
 
   // 目录/加载更多失败：只在面板里提示，不清掉已加载的目录。
   // 旧版这里走 renderError，一次「加载更多」失败就把整个系列面板换成错误条。
-  function renderDirectoryError(panel, viewer, error) {
+  function renderDirectoryError(panel, error) {
     let note = panel.querySelector('.pixiv-rescue-directory-error');
     if (!note) {
       note = element('div', 'pixiv-rescue-error pixiv-rescue-directory-error', '');
-      if (viewer && panel.contains(viewer)) panel.insertBefore(note, viewer);
-      else panel.append(note);
+      panel.append(note);
     }
     note.textContent = '目录没有读到：' + rescueErrorText(error, true);
   }
@@ -1155,15 +1344,6 @@
     return messages[error && error.message] || (pageLevel
       ? '未找到可用的救援数据，Pixiv 原页面已保留。'
       : '这一章没有读到，目录还在。');
-  }
-
-  function renderChapterError(viewer, error) {
-    let note = viewer.querySelector('.pixiv-rescue-chapter-error');
-    if (!note) {
-      note = element('div', 'pixiv-rescue-error pixiv-rescue-chapter-error', '');
-      viewer.prepend(note);
-    }
-    note.textContent = rescueErrorText(error, false);
   }
 
   // ── 收藏页 / 追更页列表匹配 ──────────────────────────────────
@@ -1635,50 +1815,151 @@
     injectRescueSeriesTab();
   }
 
-  function renderSeriesChapter(viewer, data) {
-    clearNode(viewer);
-    renderWorkHeader(viewer, data, { cover: false });
-    renderPixivText(viewer, data.text_raw);
-    // 目录可能很长：章节正文出现在目录下方，不滚过去用户会以为点了没反应
-    viewer.scrollIntoView(true);
+  // 系列页章节卡片照 Pixiv 手机站 .works-item-novel（2026-10-26 实测）：
+  // 64×90 封面、「#N 标题」14px/700 两行截断、标签行（R-18/原创/#标签，最多三行）、
+  // 「字数 · 时长 · ♥收藏数」。整张卡是链接：点进该章自己的正文页，由单篇阅读层渲染。
+  function renderChapterCard(chapter) {
+    const item = element('li', 'pixiv-rescue-chapter-item');
+    const link = element('a', 'pixiv-rescue-chapter-card');
+    link.href = rescueNovelUrl(chapter.novel_id);
+    const cover = element('div', 'pixiv-rescue-chapter-cover');
+    // 没有自定义封面的作品（Pixiv 上显示默认模板封面，备份里既没有图也没有地址；
+    // 生产实测已删作品约 9%）：画一张素色占位、印上标题，和 Pixiv 的默认封面一样能认出是哪章
+    const placeholder = function () {
+      clearNode(cover);
+      cover.classList.add('pixiv-rescue-chapter-cover--plain');
+      const label = element('span', 'pixiv-rescue-chapter-cover-title', chapter.title || '');
+      // 纯装饰：标题在卡片右侧已经有一份，读屏不该念两遍
+      label.setAttribute('aria-hidden', 'true');
+      cover.append(label);
+    };
+    if (chapter.has_cover) {
+      const img = element('img', 'pixiv-rescue-chapter-thumb');
+      img.alt = '';
+      cover.append(img);
+      lazyLoadCover(img, chapter.novel_id, placeholder);
+    } else {
+      placeholder();
+    }
+    const info = element('div', 'pixiv-rescue-chapter-info');
+    info.append(element('div', 'pixiv-rescue-chapter-title',
+      (chapter.chapter_number ? '#' + chapter.chapter_number + ' ' : '') + (chapter.title || '未命名章节')));
+    // 标签与统计行右侧留 40px 给收藏心形（实测 .tag-container 右内边距 40px），换行位置才与 Pixiv 一致
+    const detail = element('div', 'pixiv-rescue-chapter-detail');
+    const tags = renderTagLine('pixiv-rescue-chapter-tags', chapter, false);
+    if (tags.children.length) detail.append(tags);
+    const stats = element('div', 'pixiv-rescue-chapter-stats');
+    if (chapter.text_length != null) {
+      stats.append(element('span', 'pixiv-rescue-chapter-stat', formatCount(chapter.text_length) + '字'));
+      const minutes = formatReadingTime(chapter.text_length);
+      if (minutes) stats.append(element('span', 'pixiv-rescue-chapter-stat', minutes));
+    }
+    if (chapter.total_bookmarks != null) {
+      const like = element('span', 'pixiv-rescue-chapter-stat');
+      like.append(statIcon('like'), element('span', 'pixiv-rescue-stat-count', formatCount(chapter.total_bookmarks)));
+      stats.append(like);
+    }
+    if (stats.children.length) detail.append(stats);
+    // 「浏览更多」照 Pixiv：点开底部「作品情报」面板（完整标签 + 阅读作品），不跳页
+    const more = element('span', 'pixiv-rescue-chapter-more', '浏览更多');
+    more.setAttribute('role', 'button');
+    more.tabIndex = 0;
+    const openSheet = function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      openWorkInfoSheet(chapter);
+    };
+    more.addEventListener('click', openSheet);
+    more.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') openSheet(event);
+    });
+    detail.append(more);
+    info.append(detail);
+    // 收藏心形只是版式占位：作品在 Pixiv 上已删，收藏不了；不响应点击，不进无障碍树
+    link.append(cover, info, outlineHeart());
+    item.append(link);
+    return item;
   }
 
-  function renderChapterDirectory(panel, viewer, data, seriesId) {
-    // 异步回调可能在页面已切走、panel 被清空后才到达：此时 viewer 已脱离
-    // panel，insertBefore 会抛 "Cannot read properties of null"。直接放弃本轮。
-    if (!panel || !viewer || !panel.contains(viewer)) return;
+  function outlineHeart() {
+    const box = element('span', 'pixiv-rescue-chapter-heart');
+    box.setAttribute('aria-hidden', 'true');
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '32');
+    svg.setAttribute('height', '32');
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('fill', 'currentColor');
+    path.setAttribute('d', 'M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z');
+    svg.append(path);
+    box.append(svg);
+    return box;
+  }
+
+  // 「作品情报」底部面板（实测手机站 .bottom-popup）：标题、关闭、完整标签、「阅读作品」
+  function openWorkInfoSheet(chapter) {
+    if (!readerRoot) return;
+    const backdrop = element('div', 'pixiv-rescue-sheet-backdrop');
+    const sheet = element('div', 'pixiv-rescue-sheet');
+    sheet.setAttribute('role', 'dialog');
+    sheet.setAttribute('aria-modal', 'true');
+    sheet.setAttribute('aria-label', '作品情报');
+    const head = element('div', 'pixiv-rescue-sheet-head');
+    head.append(element('span', 'pixiv-rescue-sheet-title', '作品情报'));
+    const close = element('button', 'pixiv-rescue-sheet-close', '×');
+    close.type = 'button';
+    close.setAttribute('aria-label', '关闭');
+    head.append(close);
+    const read = element('a', 'pixiv-rescue-read-link', '阅读作品');
+    read.href = rescueNovelUrl(chapter.novel_id);
+    sheet.append(head, renderTagLine('pixiv-rescue-sheet-tags', chapter, false), read);
+    backdrop.append(sheet);
+    const dismiss = function () { backdrop.remove(); };
+    close.addEventListener('click', dismiss);
+    backdrop.addEventListener('click', function (event) { if (event.target === backdrop) dismiss(); });
+    readerRoot.append(backdrop);
+    close.focus();
+  }
+
+  // 封面滚到附近才取：76 话的系列不在打开时一口气拉 76 张图
+  let coverObserver = null;
+  function lazyLoadCover(img, novelId, onFail) {
+    const load = function () {
+      loadRescueCover(img, novelId, 'novel', onFail);
+    };
+    if (typeof IntersectionObserver !== 'function') {
+      load();
+      return;
+    }
+    if (!coverObserver) {
+      coverObserver = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) return;
+          coverObserver.unobserve(entry.target);
+          if (typeof entry.target.__pixivRescueLoad === 'function') entry.target.__pixivRescueLoad();
+        });
+      }, { rootMargin: '400px 0px' });
+    }
+    img.__pixivRescueLoad = load;
+    coverObserver.observe(img);
+  }
+
+  function renderChapterDirectory(panel, data, seriesId) {
     const staleError = panel.querySelector('.pixiv-rescue-directory-error');
     if (staleError) staleError.remove();
     let list = panel.querySelector('.pixiv-rescue-directory');
     if (!list) {
       list = element('ol', 'pixiv-rescue-directory');
-      panel.insertBefore(list, viewer);
+      panel.append(list);
     }
     const existingMore = list.querySelector('[data-rescue-load-more]');
     if (existingMore) existingMore.remove();
     const chapters = Array.isArray(data.items) ? data.items : [];
-    chapters.forEach(function (chapter, index) {
-      const item = element('li');
-      const button = element('button', 'pixiv-rescue-button', chapter.title || '第 ' + (index + 1) + ' 章');
-      button.type = 'button';
-      button.addEventListener('click', function () {
-        button.disabled = true;
-        apiGet('/api/rescue/v1/novels/' + encodeURIComponent(String(chapter.novel_id)), FULL_TEXT_TIMEOUT_MS)
-          .then(function (novel) {
-            renderSeriesChapter(viewer, novel);
-          })
-          .catch(function (error) {
-            renderChapterError(viewer, error);
-          })
-          .finally(function () {
-            button.disabled = false;
-          });
-      });
-      item.append(button);
-      list.append(item);
+    chapters.forEach(function (chapter) {
+      list.append(renderChapterCard(chapter));
     });
     if (!chapters.length && !list.children.length) {
-      list.append(element('li', '', '备份中没有可读取的章节。'));
+      list.append(element('li', 'pixiv-rescue-chapter-empty', '备份中没有可读取的章节。'));
     }
 
     const currentPage = Math.max(1, Number(data.page || 1));
@@ -1695,10 +1976,12 @@
           + '/chapters?page=' + encodeURIComponent(String(nextPage)) + '&page_size=100';
         apiGet(path)
           .then(function (nextDirectory) {
-            renderChapterDirectory(panel, viewer, nextDirectory, seriesId);
+            // 异步回调可能在切页、目录被清空后才到达：目录已不在面板里就放弃本轮
+            if (!panel.isConnected || !panel.contains(list)) return;
+            renderChapterDirectory(panel, nextDirectory, seriesId);
           })
           .catch(function (error) {
-            renderDirectoryError(panel, viewer, error);
+            if (panel.isConnected) renderDirectoryError(panel, error);
           })
           .finally(function () {
             moreButton.disabled = false;
@@ -1709,38 +1992,92 @@
     }
   }
 
+  // 系列页照搬 Pixiv 手机站（2026-10-26 实测）：作者、封面、R-18/原创标记、
+  // 系列名（16px/700）、「共N话 · 某日更新 · 总字数 · 总时长」、「从最初开始阅读」
+  // 黑色胶囊，再是「作品」下的章节卡片。追更/分享等对已删系列无效的按钮不画。
   function renderSeries(data, seriesId) {
+    const series = data.series;
+    const chapters = data.chapters;
+    const items = chapters && Array.isArray(chapters.items) ? chapters.items : [];
     const body = openReader();
     const panel = element('div', 'pixiv-rescue-panel');
+    if (series.author_name) {
+      const author = element('div', 'pixiv-rescue-author');
+      author.append(element('span', 'pixiv-rescue-author-avatar'),
+        element('span', 'pixiv-rescue-author-name', series.author_name));
+      panel.append(author);
+    }
+    const band = element('div', 'pixiv-rescue-cover-band');
+    const img = element('img', 'pixiv-rescue-cover-img');
+    img.alt = '';
+    band.append(img);
+    panel.append(band);
+    loadRescueCover(img, seriesId, 'series', function () { band.remove(); });
+
     const head = element('div', 'pixiv-rescue-series-head');
-    head.append(element('h1', 'pixiv-rescue-title', data.title || '未命名备份系列'));
-    const coverage = data.complete_count !== undefined
-      ? '已备份 ' + data.complete_count + ' / ' + (data.expected_count || '?') + ' 章'
-      : '';
-    head.append(element('p', 'pixiv-rescue-series-meta',
-      [data.author_name || '', coverage].filter(Boolean).join(' · ')));
-    renderNotice(head, data);
-    panel.append(head);
-    const loadButton = element('button', 'pixiv-rescue-button', '加载目录');
-    loadButton.type = 'button';
-    const viewer = element('div', 'pixiv-rescue-viewer');
-    loadButton.addEventListener('click', function () {
-      loadButton.disabled = true;
-      apiGet('/api/rescue/v1/series/' + encodeURIComponent(String(seriesId)) + '/chapters')
-        .then(function (directory) {
-          renderChapterDirectory(panel, viewer, directory, seriesId);
-          loadButton.remove();
-        })
-        .catch(function (error) {
-          renderDirectoryError(panel, viewer, error);
-        })
-        .finally(function () {
-          loadButton.disabled = false;
-        });
+    const badges = element('div', 'pixiv-rescue-series-badges');
+    const r18 = items.some(function (item) {
+      return Number(item.x_restrict) > 0 || workTags(item).some(function (tag) { return /^R-18G?$/.test(tag.name); });
     });
-    head.append(loadButton);
-    panel.append(viewer);
+    if (r18) badges.append(element('span', 'pixiv-rescue-badge pixiv-rescue-badge-r18', 'R-18'));
+    if (items.length && items.every(function (item) { return item.is_original; })) {
+      badges.append(element('span', 'pixiv-rescue-badge pixiv-rescue-badge-original', '原创'));
+    }
+    if (badges.children.length) head.append(badges);
+    head.append(element('h1', 'pixiv-rescue-title', series.title || '未命名备份系列'));
+    head.append(renderSeriesInfo(series, chapters));
+    renderNotice(head, series);
+    if (items.length) head.append(renderSeriesReadActions(seriesId, items[0]));
+    panel.append(head);
+    const tab = element('div', 'pixiv-rescue-series-tab');
+    tab.append(element('span', 'pixiv-rescue-series-tab-label', '作品'));
+    panel.append(tab);
+    if (chapters) renderChapterDirectory(panel, chapters, seriesId);
+    else renderDirectoryError(panel, data.chaptersError);
     body.append(panel);
+  }
+
+  // 「共25话 · 2026年1月27日更新 · 600,558字 · 25小时1分钟」；只备份了部分章节时
+  // 如实写「共12话（备份11话）」，不假装完整
+  function renderSeriesInfo(series, chapters) {
+    const line = element('div', 'pixiv-rescue-series-info');
+    const saved = chapters ? Number(chapters.total || 0) : Number(series.complete_count || 0);
+    const expected = Number(series.expected_count || 0);
+    const count = expected > saved ? '共' + expected + '话（备份' + saved + '话）' : '共' + saved + '话';
+    const parts = [count];
+    if (chapters) {
+      const updated = new Date(String(chapters.last_create_date || ''));
+      if (!Number.isNaN(updated.getTime())) {
+        parts.push(updated.getFullYear() + '年' + (updated.getMonth() + 1) + '月' + updated.getDate() + '日更新');
+      }
+      if (chapters.total_text_length) {
+        parts.push(formatCount(chapters.total_text_length) + '字');
+        const minutes = formatReadingTime(chapters.total_text_length);
+        if (minutes) parts.push(minutes);
+      }
+    }
+    parts.forEach(function (text) { line.append(element('span', 'pixiv-rescue-series-info-item', text)); });
+    return line;
+  }
+
+  // 「从最初开始阅读」；读过的系列另给「继续阅读 #N」（进度存在脚本自己的存储里）
+  function renderSeriesReadActions(seriesId, firstChapter) {
+    const box = element('div', 'pixiv-rescue-read-actions');
+    const progress = readSeriesProgress(seriesId);
+    if (progress && String(progress.novel_id) !== String(firstChapter.novel_id)) {
+      const resume = element('a', 'pixiv-rescue-read-link',
+        '继续阅读' + (progress.chapter_number ? ' #' + progress.chapter_number : ''));
+      resume.href = rescueNovelUrl(progress.novel_id);
+      box.append(resume);
+      const restart = element('a', 'pixiv-rescue-read-link pixiv-rescue-read-link--secondary', '从最初开始阅读');
+      restart.href = rescueNovelUrl(firstChapter.novel_id);
+      box.append(restart);
+    } else {
+      const start = element('a', 'pixiv-rescue-read-link', '从最初开始阅读');
+      start.href = rescueNovelUrl(firstChapter.novel_id);
+      box.append(start);
+    }
+    return box;
   }
 
   function novelIdFromPage() {
@@ -1845,7 +2182,16 @@
     rescueDetailPage('series', seriesId, function () {
       return routeGeneration() !== generation || seriesIdFromPage() !== seriesId;
     }, function () {
-      return apiGet('/api/rescue/v1/series/' + encodeURIComponent(seriesId));
+      // 系列信息与第一页目录一起取，页面一次画完（不再要求先点「加载目录」）。
+      // 目录失败不拖垮整页：系列头照常显示，目录位置给错误提示。
+      const base = '/api/rescue/v1/series/' + encodeURIComponent(seriesId);
+      return Promise.all([
+        apiGet(base),
+        apiGet(base + '/chapters').catch(function (error) { return { __error: error }; })
+      ]).then(function (results) {
+        const chapters = results[1] && results[1].__error ? null : results[1];
+        return { series: results[0], chapters: chapters, chaptersError: chapters ? null : results[1].__error };
+      });
     }, function (data) {
       renderSeries(data, seriesId);
     });

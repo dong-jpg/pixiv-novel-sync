@@ -417,6 +417,8 @@ Token 不接受 URL 查询参数或 Cookie。只允许 `GET` / `HEAD`；每个�
 - `rescue_state`、`remote_status`、`eligibility_reason`
 - `expected_count`、`local_count`、`complete_count`
 - `last_checked_at`、`updated_at`、`source_notice`
+- `total_bookmarks`、`total_views`（同步时的快照）、`x_restrict`、`is_original`、`ai_type`
+- `series_nav`：所属系列可救援时为 `{series_id, series_title, chapter_number, chapter_total, prev, next}`（`prev`/`next` 为 `{novel_id, title, chapter_number}` 或 `null`），否则为 `null`。章节序号与目录接口同一口径。
 
 ### GET /api/rescue/v1/series/<series_id>
 
@@ -424,7 +426,7 @@ Token 不接受 URL 查询参数或 Cookie。只允许 `GET` / `HEAD`；每个�
 
 ### GET /api/rescue/v1/series/<series_id>/chapters
 
-查询参数：`page`、`page_size`。返回有完整正文的章节目录；目录项只包含章节元数据与 `api_path`，正文通过小说接口按需读取。
+查询参数：`page`、`page_size`。返回有完整正文的章节目录（按发布时间排序）；目录项包含 `novel_id`、`title`、`chapter_number`、`create_date`、`remote_status`、`text_length`、`tags`、`total_bookmarks`、`total_views`、`x_restrict`、`is_original`、`ai_type`、`has_cover` 与 `api_path`，正文通过小说接口按需读取。分页之外另给全部已备份章节的 `total_text_length` 与 `last_create_date`（系列页头部「共N话 · 更新 · 字数 · 时长」用）。
 
 所有只读救援响应包含：
 

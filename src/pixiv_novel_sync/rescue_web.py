@@ -375,6 +375,11 @@ def register_rescue_routes(
         db = open_db()
         try:
             item = db.get_rescue_novel(novel_id)
+            extras = (
+                db.get_rescue_novel_extras(novel_id, item.get("series_id"))
+                if item is not None
+                else {}
+            )
         finally:
             db.close()
         if item is None:
@@ -401,6 +406,9 @@ def register_rescue_routes(
             "personal_hold",
         }
         data = {key: item.get(key) for key in fields}
+        # 收藏/浏览是同步时的快照；series_nav 只在所属系列可救援时有值
+        for key in ("total_bookmarks", "total_views", "x_restrict", "is_original", "ai_type", "series_nav"):
+            data[key] = extras.get(key)
         data["source_notice"] = "内容来自私人备份，并非 Pixiv 官方恢复"
         return jsonify({"ok": True, "data": data})
 

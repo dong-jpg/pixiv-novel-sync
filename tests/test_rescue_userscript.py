@@ -179,8 +179,9 @@ def test_userscript_locks_a14_fixes() -> None:
     assert "showFatalError" in script
     assert "missingRuntimeApis" in script
     # 0.7.1：异步回调迟到时的空指针守卫（生产报错
-    # "Cannot read properties of null (reading 'insertBefore')"）
-    assert "!panel.contains(viewer)" in script
+    # "Cannot read properties of null (reading 'insertBefore')"）；0.11.0 起目录
+    # 「加载更多」的回调在目录已离开面板时放弃本轮
+    assert "!panel.contains(list)" in script
     assert "mountPoint.parentElement)" in script
     # document-start 时 body/head 可能为空，需兜底
     assert "document.body || document.documentElement" in script
@@ -452,7 +453,8 @@ def test_userscript_fixture_renders_deleted_novel_as_text(rescue_browser) -> Non
     page.close()
 
 
-def test_userscript_fixture_loads_only_clicked_series_chapter(rescue_browser) -> None:
+def test_userscript_fixture_series_page_lists_chapters_without_fetching_text(rescue_browser) -> None:
+    """系列页直接列出章节卡片（不再先点「加载目录」），且不预取任何一章正文。"""
     page = rescue_browser.new_page()
     html = "<main><div class='error'>このシリーズは削除されています</div></main>"
     responses = {
@@ -464,26 +466,21 @@ def test_userscript_fixture_loads_only_clicked_series_chapter(rescue_browser) ->
         },
         "https://pixiv.dongboapp.com/api/rescue/v1/series/202/chapters": {
             "items": [
-                {"novel_id": 301, "title": "第一章"},
-                {"novel_id": 302, "title": "第二章"},
-            ]
-        },
-        "https://pixiv.dongboapp.com/api/rescue/v1/novels/302": {
-            "title": "第二章",
-            "text_raw": "第二章正文",
-            "source_notice": "内容来自私人备份，并非 Pixiv 官方恢复",
-            "rescue_state": "partial",
+                {"novel_id": 301, "title": "第一章", "chapter_number": 1},
+                {"novel_id": 302, "title": "第二章", "chapter_number": 2},
+            ],
+            "total": 2,
         },
     }
     _install_script(page, html, responses, path="/novel/series/202", ajax_state="unavailable")
 
-    page.get_by_role("button", name="加载目录").click()
-    page.get_by_role("button", name="第二章").click()
-    page.get_by_text("第二章正文").wait_for(state="visible")
+    cards = page.locator("a.pixiv-rescue-chapter-card")
+    cards.first.wait_for(state="visible")
+    assert cards.count() == 2
+    assert cards.nth(1).get_attribute("href") == "/novel/show.php?id=302&pixiv_rescue=1"
+    assert page.locator(".pixiv-rescue-chapter-title").all_inner_texts() == ["#1 第一章", "#2 第二章"]
     urls = page.evaluate("window.__rescueRequests.map(item => item.url)")
-    assert urls.count("https://pixiv.dongboapp.com/api/rescue/v1/novels/302") == 1
-    assert "https://pixiv.dongboapp.com/api/rescue/v1/novels/301" not in urls
-    assert "第二章正文" in page.locator("[data-pixiv-rescue]").inner_text()
+    assert not any("/api/rescue/v1/novels/" in url for url in urls)
     page.close()
 
 
@@ -510,9 +507,8 @@ def test_userscript_fixture_loads_additional_series_pages(rescue_browser) -> Non
     }
     _install_script(page, html, responses, path="/novel/series/204", ajax_state="unavailable")
 
-    page.get_by_role("button", name="加载目录").click()
     page.get_by_role("button", name="加载更多章节").click()
-    page.get_by_role("button", name="第一百零一章").wait_for(state="visible")
+    page.locator(".pixiv-rescue-chapter-title", has_text="第一百零一章").wait_for(state="visible")
     urls = page.evaluate("window.__rescueRequests.map(item => item.url)")
     assert urls.count(
         "https://pixiv.dongboapp.com/api/rescue/v1/series/204/chapters?page=2&page_size=100"
@@ -551,11 +547,10 @@ def test_userscript_fixture_series_load_more_failure_keeps_directory(rescue_brow
     _install_script(page, "<div id='spa-contents'></div>", responses,
                     path="/novel/series/205?pixiv_rescue=1")
 
-    page.get_by_role("button", name="加载目录").click()
     page.get_by_role("button", name="加载更多章节").click()
     page.locator(".pixiv-rescue-directory-error").wait_for(state="visible")
-    assert page.get_by_role("button", name="第一章").is_visible()
-    assert page.get_by_text("长系列").is_visible()
+    assert page.locator(".pixiv-rescue-chapter-title", has_text="第一章").is_visible()
+    assert page.locator(".pixiv-rescue-series-head .pixiv-rescue-title").inner_text() == "长系列"
     page.close()
 
 
@@ -986,3 +981,130 @@ def test_userscript_fixture_applies_learned_theme_to_reader(rescue_browser) -> N
         "backgroundColor": "rgb(31, 31, 31)", "color": "rgb(183, 183, 183)", "fontSize": "19.2px"}
     assert "pixiv-rescue-root--pc" in page.locator("[data-pixiv-rescue='content']").get_attribute("class")
     page.close()
+
+
+SERIES_ID = 301
+SERIES_RESPONSES = {
+    f"https://pixiv.dongboapp.com/api/rescue/v1/series/{SERIES_ID}": {
+        "series_id": SERIES_ID, "title": "测试系列", "author_name": "系列作者",
+        "rescue_state": "partial", "expected_count": 4, "complete_count": 3,
+        "source_notice": "内容来自私人备份，并非 Pixiv 官方恢复",
+    },
+    f"https://pixiv.dongboapp.com/api/rescue/v1/series/{SERIES_ID}/chapters": {
+        "items": [
+            # 字数取自 2026-10-26 实测的 Pixiv 卡片：69,437字 → 2小时53分钟；5,824字 → 14分钟
+            {"novel_id": 3011, "title": "开端", "chapter_number": 1, "text_length": 69437, "total_bookmarks": 6098,
+             "tags": ["R-18", "小説", "调教"], "is_original": True, "ai_type": 1, "has_cover": False},
+            {"novel_id": 3012, "title": "发展", "chapter_number": 2, "text_length": 5824, "total_bookmarks": 311,
+             "tags": ["R-18"], "is_original": True, "ai_type": 1, "has_cover": False},
+            {"novel_id": 3013, "title": "短章", "chapter_number": 3, "text_length": 126, "total_bookmarks": 127,
+             "tags": [], "is_original": True, "ai_type": 1, "has_cover": False},
+        ],
+        "total": 3, "page": 1, "total_pages": 1,
+        "total_text_length": 69437 + 5824 + 126, "last_create_date": "2026-01-27T10:00:00",
+    },
+}
+
+
+def test_userscript_fixture_series_page_matches_pixiv_layout(rescue_browser) -> None:
+    """系列页照 Pixiv：R-18/原创标记、「共N话（备份M话） · 更新 · 字数 · 时长」、黑色「从最初开始阅读」、章节卡片。"""
+    context = rescue_browser.new_context(user_agent=MOBILE_UA, viewport={"width": 412, "height": 915})
+    page = context.new_page()
+    _install_script(page, PIXIV_404_SHELL, SERIES_RESPONSES, path=f"/novel/series/{SERIES_ID}?pixiv_rescue=1")
+
+    page.locator("a.pixiv-rescue-chapter-card").first.wait_for(state="visible")
+    assert page.locator(".pixiv-rescue-author-name").inner_text() == "系列作者"
+    assert page.locator(".pixiv-rescue-badge").all_inner_texts() == ["R-18", "原创"]
+    assert page.locator(".pixiv-rescue-series-head .pixiv-rescue-title").inner_text() == "测试系列"
+    assert page.locator(".pixiv-rescue-series-info-item").all_inner_texts() == [
+        "共4话（备份3话）", "2026年1月27日更新", "75,387字", "3小时8分钟"]
+    start = page.locator("a.pixiv-rescue-read-link")
+    assert start.all_inner_texts() == ["从最初开始阅读"]
+    assert start.get_attribute("href") == "/novel/show.php?id=3011&pixiv_rescue=1"
+    # 卡片：标签行（R-18 → 原创 → #标签，不带译名）、「字数 · 时长 · 收藏」；不足 1 分钟不写时长
+    assert page.locator(".pixiv-rescue-chapter-title").all_inner_texts() == ["#1 开端", "#2 发展", "#3 短章"]
+    assert page.locator(".pixiv-rescue-chapter-tags").first.inner_text().split() == ["R-18", "原创", "#小説", "#调教"]
+    stats = page.locator(".pixiv-rescue-chapter-stats")
+    assert stats.nth(0).inner_text().split() == ["69,437字", "2小时53分钟", "6,098"]
+    assert stats.nth(1).inner_text().split() == ["5,824字", "14分钟", "311"]
+    assert stats.nth(2).inner_text().split() == ["126字", "127"]
+    # 没有本地封面：素色占位印上章节标题（Pixiv 对这类作品显示默认模板封面）
+    assert page.locator(".pixiv-rescue-chapter-cover--plain").count() == 3
+    assert page.locator(".pixiv-rescue-chapter-cover-title").first.inner_text() == "开端"
+    # 实测样式：系列名 16px/700/24px；黑色胶囊 rgba(0,0,0,.88)、圆角 100px；卡片标题 14px/700/22px
+    assert _computed(page, ".pixiv-rescue-series-head .pixiv-rescue-title", ["fontSize", "fontWeight", "lineHeight"]) == {
+        "fontSize": "16px", "fontWeight": "700", "lineHeight": "24px"}
+    assert _computed(page, "a.pixiv-rescue-read-link", ["backgroundColor", "borderTopLeftRadius", "color"]) == {
+        "backgroundColor": "rgba(0, 0, 0, 0.88)", "borderTopLeftRadius": "100px", "color": "rgb(255, 255, 255)"}
+    assert _computed(page, ".pixiv-rescue-chapter-title", ["fontSize", "fontWeight", "lineHeight"]) == {
+        "fontSize": "14px", "fontWeight": "700", "lineHeight": "22px"}
+    assert _reader_state(page)["hit"] is True
+    # 卡片右侧留 40px 给心形占位（实测 .tag-container 右内边距），心形不可点
+    assert _computed(page, ".pixiv-rescue-chapter-detail", ["paddingRight"]) == {"paddingRight": "40px"}
+    assert page.locator(".pixiv-rescue-chapter-heart").first.get_attribute("aria-hidden") == "true"
+    # 「浏览更多」打开「作品情报」面板，不跳页
+    page.locator(".pixiv-rescue-chapter-more").first.click()
+    sheet = page.get_by_role("dialog", name="作品情报")
+    sheet.wait_for(state="visible")
+    assert sheet.locator(".pixiv-rescue-sheet-tags").inner_text().split() == ["R-18", "原创", "#小説", "#调教"]
+    assert sheet.get_by_role("link", name="阅读作品").get_attribute("href") == "/novel/show.php?id=3011&pixiv_rescue=1"
+    assert page.url.endswith(f"/novel/series/{SERIES_ID}?pixiv_rescue=1")
+    sheet.get_by_role("button", name="关闭").click()
+    assert page.get_by_role("dialog", name="作品情报").count() == 0
+    context.close()
+
+
+def test_userscript_fixture_series_page_offers_continue_reading(rescue_browser) -> None:
+    """读过的系列多一颗「继续阅读 #N」（进度存在脚本自己的存储里）。"""
+    page = rescue_browser.new_page()
+    store = {"pixivRescueSeriesProgress": json.dumps(
+        {str(SERIES_ID): {"novel_id": 3012, "chapter_number": 2, "at": 1}})}
+    _install_script(page, PIXIV_404_SHELL, SERIES_RESPONSES, path=f"/novel/series/{SERIES_ID}?pixiv_rescue=1",
+                    store=store)
+
+    links = page.locator("a.pixiv-rescue-read-link")
+    links.first.wait_for(state="visible")
+    assert links.all_inner_texts() == ["继续阅读 #2", "从最初开始阅读"]
+    assert links.first.get_attribute("href") == "/novel/show.php?id=3012&pixiv_rescue=1"
+    page.close()
+
+
+def test_userscript_fixture_chapter_has_series_link_stats_and_nav(rescue_browser) -> None:
+    """系列章节：标题上方系列名 #N、收藏/浏览快照、文末「下一话 / 上一话」系列卡，并记下阅读进度。"""
+    context = rescue_browser.new_context(user_agent=MOBILE_UA, viewport={"width": 412, "height": 915})
+    page = context.new_page()
+    chapter = dict(MARKUP_NOVEL, novel_id=3012, title="发展", total_bookmarks=433, total_views=14525,
+                   is_original=True, series_nav={
+                       "series_id": SERIES_ID, "series_title": "测试系列", "chapter_number": 2, "chapter_total": 3,
+                       "prev": {"novel_id": 3011, "title": "开端", "chapter_number": 1},
+                       "next": {"novel_id": 3013, "title": "短章", "chapter_number": 3}})
+    _install_script(page, PIXIV_404_SHELL, {"https://pixiv.dongboapp.com/api/rescue/v1/novels/3012": chapter},
+                    path="/novel/show.php?id=3012&pixiv_rescue=1", store={})
+
+    page.locator(".pixiv-rescue-series-card").wait_for(state="visible")
+    series = page.locator("a.pixiv-rescue-series-link")
+    assert series.inner_text() == "测试系列 #2"
+    assert series.get_attribute("href") == f"/novel/series/{SERIES_ID}?pixiv_rescue=1"
+    assert page.locator(".pixiv-rescue-stats").inner_text().split() == ["433", "14,525"]
+    assert page.locator(".pixiv-rescue-tags").inner_text().split()[:2] == ["R-18", "原创"]
+    nav = page.locator("a.pixiv-rescue-nav-button")
+    assert nav.all_inner_texts() == ["下一话 #3", "上一话 #1"]
+    assert [nav.nth(i).get_attribute("href") for i in range(2)] == [
+        "/novel/show.php?id=3013&pixiv_rescue=1", "/novel/show.php?id=3011&pixiv_rescue=1"]
+    # 实测样式：rgba(0,0,0,.04) 底、#474747、14px/700、圆角 100px
+    assert _computed(page, "a.pixiv-rescue-nav-button", ["backgroundColor", "color", "fontSize", "fontWeight",
+                                                         "borderTopLeftRadius"]) == {
+        "backgroundColor": "rgba(0, 0, 0, 0.04)", "color": "rgb(71, 71, 71)", "fontSize": "14px",
+        "fontWeight": "700", "borderTopLeftRadius": "100px"}
+    progress = json.loads(page.evaluate("() => window.__rescueStore.get('pixivRescueSeriesProgress')"))
+    assert progress[str(SERIES_ID)]["novel_id"] == 3012 and progress[str(SERIES_ID)]["chapter_number"] == 2
+    # 单篇（无 series_nav）不画系列卡
+    assert "series_nav" not in MARKUP_NOVEL
+    context.close()
+
+
+def test_userscript_reading_time_uses_pixiv_ratio() -> None:
+    """阅读时长 = 字数 × 0.15 秒（实测 Pixiv series_content 的 readingTime / textLength）。"""
+    script = _script()
+    body = script.split("function formatReadingTime(", 1)[1].split("\n  }\n", 1)[0]
+    assert "* 0.15 / 60" in body and "if (minutes < 1) return '';" in body
