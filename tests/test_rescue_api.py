@@ -654,6 +654,55 @@ def test_rescue_novel_exposes_stats_and_series_navigation(app, client) -> None:
     assert "raw_json" not in standalone and "secret" not in str(standalone)
 
 
+def _set_user_raw_json(app, raw_json: str) -> None:
+    db = Database(Path(app.config["PIXIV_DB_PATH"]))
+    try:
+        db.conn.execute("UPDATE users SET raw_json = ? WHERE user_id = 1", (raw_json,))
+        db.conn.commit()
+    finally:
+        db.close()
+
+
+def test_rescue_series_list_and_lookup_expose_pixiv_series_card_fields(app, client) -> None:
+    """0.12.0「拯救系列」tab 与追更列表填空照搬 Pixiv 系列卡：已备份话数、最新一话、R-18、封面、作者头像。
+
+    章节数与最新一话只算已备份章节（has_content = 1），口径同章节目录；x_restrict 取系列内最大值。
+    """
+    _seed_series_chapters(app)
+    _set_user_raw_json(app, '{"profile_image_urls": {"medium": "https://i.pximg.net/user-profile/img/a_170.jpg"},'
+                            ' "secret": "x"}')
+    token = _rotate_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    expected = {
+        "user_id": 1, "chapter_count": 3, "last_create_date": "2026-01-03T10:00:00+09:00",
+        "latest_novel_id": 23, "x_restrict": 1, "has_cover": True,
+        "author_avatar_url": "https://i.pximg.net/user-profile/img/a_170.jpg",
+    }
+
+    listed = client.get("/api/rescue/v1/series?page=1&page_size=10", headers=headers)
+    assert listed.status_code == 200
+    data = listed.get_json()["data"]
+    assert [item["series_id"] for item in data["items"]] == [20]
+    card = data["items"][0]
+    assert {key: card[key] for key in expected} == expected
+    assert card["expected_count"] == 1 and card["rescue_state"] == "success"
+
+    looked_up = client.get("/api/rescue/v1/lookup?series_ids=20", headers=headers)
+    assert looked_up.status_code == 200
+    series = looked_up.get_json()["data"]["series"]
+    assert len(series) == 1
+    assert {key: series[0][key] for key in expected} == expected
+    assert series[0]["expected_count"] == 1
+    # 原始 JSON 不外传
+    for payload in (listed.get_json(), looked_up.get_json()):
+        assert "raw_json" not in str(payload) and "secret" not in str(payload)
+
+    # 头像只放行 Pixiv 图床的 https 地址
+    _set_user_raw_json(app, '{"profile_image_urls": {"medium": "http://evil.example/a.jpg"}}')
+    again = client.get("/api/rescue/v1/lookup?series_ids=20", headers=headers).get_json()["data"]["series"][0]
+    assert again["author_avatar_url"] is None
+
+
 def test_dashboard_rescue_list_and_override_crud(client) -> None:
     listed = client.get("/api/dashboard/rescues?item_type=novel&state=success")
     assert listed.status_code == 200

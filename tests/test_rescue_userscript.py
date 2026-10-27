@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 from pathlib import Path
@@ -96,11 +97,14 @@ def test_userscript_matches_list_pages_without_disturbing_healthy_cards() -> Non
     # 类型未知时 novel/series 两头都查，命中哪个算哪个
     assert "data-gtm-value" in script
     assert "'unknown'" in script
-    # bookmark_new.php 顶部的「拯救系列」tab：复用救援系列列表接口分页渲染
-    assert "isNovelBookmarksPage" in script
+    # 0.12.0：「拯救系列」不再是错放在 bookmark_new.php 页头上方的链接，而是接管手机站
+    # 新作页的第三个 tab（好P友新作），复用救援系列列表接口按页渲染
+    for removed in ("isNovelBookmarksPage", "injectRescueSeriesTab", "renderRescueSeriesTabBody",
+                    "handleNovelBookmarksPage", "pixiv-rescue-tab-"):
+        assert removed not in script, removed
+    assert "const RESCUE_FEED_PATH = '/novel/mypixiv_new.php';" in script
+    assert "const RESCUE_FEED_LABEL = '拯救系列';" in script
     assert "'/api/rescue/v1/series?page='" in script
-    assert "injectRescueSeriesTab" in script
-    assert "拯救系列" in script
     # Pixiv SPA 兼容：replaceState 也要触发路由重判
     assert "history.replaceState" in script
 
@@ -119,10 +123,11 @@ def test_userscript_locks_a14_fixes() -> None:
     assert "routeGeneration" in script
     assert "bumpRouteGeneration" in script
     assert "novelIdFromPage() !== novelId" in script
-    # P2-5：系列 tab「加载更多」是追加而非清空（loadPage 内不得再 clearNode(grid)）
-    assert "loadingNote.remove()" in script
-    load_page_body = script.split("function loadPage(page)", 1)[1].split("function ", 1)[0]
-    assert "clearNode(grid)" not in load_page_body
+    # 0.12.0：拯救系列 tab 翻页时旧列表留在原处（与 Pixiv 一样），只把翻页条换成转圈；
+    # 迟到的应答按代次丢弃，不会画进别的页
+    loading_body = script.split("function showRescueFeedLoading(", 1)[1].split("\n  }\n", 1)[0]
+    assert "clearNode(" not in loading_body
+    assert "generation !== rescueFeedGeneration || rescueFeed !== state" in script
     # interval 防重复注册
     assert "__pixivRescueListInterval" in script
     # 0.3.2：请求失败不再静默——Token 缺失/失效与网络故障显示页面级提示条
@@ -182,7 +187,8 @@ def test_userscript_locks_a14_fixes() -> None:
     # "Cannot read properties of null (reading 'insertBefore')"）；0.11.0 起目录
     # 「加载更多」的回调在目录已离开面板时放弃本轮
     assert "!panel.contains(list)" in script
-    assert "mountPoint.parentElement)" in script
+    # 0.12.0：追更列表填空的回调在切页/列表被换掉后放弃本轮
+    assert "pageParamFromUrl() !== page || !list.isConnected" in script
     # document-start 时 body/head 可能为空，需兜底
     assert "document.body || document.documentElement" in script
     assert "'.pixiv-rescue-rescued-cover{position:relative;flex:0 0 64px;width:64px;height:90px" in script
@@ -264,11 +270,13 @@ def test_userscript_bounds_cover_cache_and_list_scan() -> None:
     assert header_version.group(1) == const_version.group(1)
     assert tuple(map(int, const_version.group(1).split("."))) >= (0, 9, 1)
 
-    # interval 只注册一次，但每次 tick 先确认还在列表页
+    # interval 只注册一次，但每次 tick 先确认还在列表页；一轮扫描 = 失效卡重建 + 追更列表填空
     tick = script.split("__pixivRescueListInterval = window.setInterval(", 1)[1].split("}, 3000);", 1)[0]
     assert tick.startswith("function () {")
     assert "if (!isBookmarksListPage() && !isWatchlistPage()) return;" in tick
-    assert "markBrokenCards();" in tick
+    assert "scanListPage();" in tick
+    scan = script.split("function scanListPage() {", 1)[1].split("\n  }\n", 1)[0]
+    assert "markBrokenCards();" in scan and "fillWatchListBlanks();" in scan
     assert "setInterval(markBrokenCards, 3000)" not in script
 
 
@@ -668,8 +676,20 @@ def _cover_key_suffix(token: str) -> str:
     return str(h)
 
 
-def _install_list_script(page, html: str, responses: dict[str, dict], store: dict[str, str]) -> None:
-    """列表页装载：document-start 注入，GM 存储是可读写的真实 Map，封面走 blob。"""
+def _install_list_script(
+    page,
+    html: str,
+    responses: dict[str, dict],
+    store: dict[str, str],
+    path: str = LIST_PATH,
+    pixiv_json: dict[str, dict] | None = None,
+) -> list[str]:
+    """列表页装载：document-start 注入，GM 存储是可读写的真实 Map，封面走 blob。
+
+    pixiv_json：Pixiv 自己的同源 ajax（URL 片段 → JSON 应答），例如追更列表的
+    /touch/ajax/watch_list/novel；返回这些请求的记录。作者头像（i.pximg.net）回一张小图。
+    """
+    pixiv_hits: list[str] = []
     page.add_init_script(
         "window.__rescueResponses = " + json.dumps(responses, ensure_ascii=False) + ";"
         "window.__rescueStore = new Map(Object.entries(" + json.dumps(store) + "));"
@@ -700,9 +720,22 @@ def _install_list_script(page, html: str, responses: dict[str, dict], store: dic
         """
     )
     page.add_init_script(_script())
-    page.route("http://pixiv.test/**", lambda route: route.fulfill(
-        status=200, headers={"Content-Type": "text/html; charset=utf-8"}, body=html))
-    page.goto("http://pixiv.test" + LIST_PATH)
+
+    def fulfill(route) -> None:
+        url = route.request.url
+        for fragment, body in (pixiv_json or {}).items():
+            if fragment in url:
+                pixiv_hits.append(url)
+                route.fulfill(status=200, headers={"Content-Type": "application/json"},
+                              body=json.dumps(body, ensure_ascii=False))
+                return
+        route.fulfill(status=200, headers={"Content-Type": "text/html; charset=utf-8"}, body=html)
+
+    page.route("http://pixiv.test/**", fulfill)
+    page.route("https://i.pximg.net/**", lambda route: route.fulfill(
+        status=200, headers={"Content-Type": "image/png"}, body=base64.b64decode(TINY_PNG_BASE64)))
+    page.goto("http://pixiv.test" + path)
+    return pixiv_hits
 
 
 def test_userscript_fixture_cover_cache_is_bounded_and_clears_evicted(rescue_browser) -> None:
@@ -1108,3 +1141,370 @@ def test_userscript_reading_time_uses_pixiv_ratio() -> None:
     script = _script()
     body = script.split("function formatReadingTime(", 1)[1].split("\n  }\n", 1)[0]
     assert "* 0.15 / 60" in body and "if (minutes < 1) return '';" in body
+
+
+# ── 新作页「拯救系列」tab 与追更列表填空（0.12.0）────────────────────
+
+FEED_PATHS = {
+    "bookmark": "/novel/bookmark_new.php",
+    "watchlist": "/following/watchlist/novels",
+    "mypixiv": "/novel/mypixiv_new.php",
+}
+FEED_LABELS = {"bookmark": "已关注用户的新作", "watchlist": "追更列表新作", "mypixiv": "好P友新作"}
+SERIES_LIST_URL = "https://pixiv.dongboapp.com/api/rescue/v1/series"
+WATCH_AJAX = "/touch/ajax/watch_list/novel"
+# 夹具没有 Pixiv 的全站样式：补上与布局有关的几条实测值（body 无外边距、工具类间距、
+# 健康卡高 152、空白框 pv-16 + 90 高封面、1px 分隔线），间距断言才有意义。
+# 必须带 <!DOCTYPE html>：Pixiv 页面是标准模式，缺了它夹具进怪异模式，行高不算块的 strut
+# （「浏览更多」那一行会从实测的 18.4 变成 16）
+PIXIV_BASE_CSS = (
+    "<!DOCTYPE html><style>body{margin:0}.mv-16{margin-top:16px;margin-bottom:16px}.ph-16{padding-left:16px;padding-right:16px}"
+    ".c-mb-16{margin-bottom:16px}.pv-16{padding-top:16px;padding-bottom:16px}.ml-16{margin-left:16px}"
+    ".novel-series-thumbnail-detail{display:flex;height:152px}.novel-series-not-viewable-detail{display:flex}"
+    ".novel-series-not-viewable-detail .cover{width:64px;height:90px}"
+    "hr.divider{margin:0;border:0;border-top:1px solid rgba(0,0,0,.08)}</style>"
+)
+
+
+def _feed_heading(active: str) -> str:
+    """2026-10-26 实测的手机站新作页 tab 栏：激活 tab 带 router-link 类，文字包在 <h2> 里。"""
+    links = []
+    for key, label in FEED_LABELS.items():
+        if key == active:
+            links.append(f"<a href='{FEED_PATHS[key]}' aria-current='page' "
+                         "class='router-link-exact-active router-link-active active f-title-xs'>"
+                         f"<h2 class='f-title-xs'>{label}</h2></a>")
+        else:
+            links.append(f"<a href='{FEED_PATHS[key]}' class='f-title-xs'> {label} </a>")
+    return ("<div class='heading bg-c-white'><h1 class='f-title-xs c-gray-90'></h1><div class='tabs'>"
+            "<div class='v-nav-tabs wide center show'><!---->" + "".join(links) + "</div></div></div>")
+
+
+def _tab_texts(page) -> list[str]:
+    return page.evaluate("() => Array.from(document.querySelectorAll('.v-nav-tabs a')).map((a) => a.textContent.trim())")
+
+
+@pytest.mark.parametrize("active", ["bookmark", "watchlist", "mypixiv"])
+def test_userscript_fixture_feed_tab_is_renamed_on_all_feed_pages(rescue_browser, active) -> None:
+    """三个新作页都把第三个 tab「好P友新作」改名「拯救系列」；Vue 切路由重建 tab 栏后照样改。
+
+    只改文本节点、不换元素：激活态的 <a> 与 <h2> 还是 Pixiv 自己的（蓝色指示线由它画）。
+    改名在新节点插入的同一批变动里完成，下一个微任务里就已经是新名字（不会先露出原文案）。
+    """
+    context = rescue_browser.new_context(user_agent=MOBILE_UA, viewport={"width": 412, "height": 915})
+    page = context.new_page()
+    html = PIXIV_BASE_CSS + "<div id='app'>" + _feed_heading(active) + "</div>"
+    _install_list_script(page, html, {}, {"pixivRescueToken": LIST_TOKEN}, path=FEED_PATHS[active])
+
+    page.wait_for_function("() => document.querySelector('.v-nav-tabs a[href$=\"mypixiv_new.php\"]')"
+                           ".textContent.trim() === '拯救系列'")
+    assert _tab_texts(page) == ["已关注用户的新作", "追更列表新作", "拯救系列"]
+    if active == "mypixiv":
+        tab = page.locator(".v-nav-tabs a[href$='mypixiv_new.php']")
+        assert tab.locator("h2").inner_text() == "拯救系列"
+        assert "router-link-exact-active" in tab.get_attribute("class")
+
+    # Vue 切路由时整个 heading 连同 tab 栏重新创建
+    renamed_in_microtask = page.evaluate(
+        """(html) => new Promise((resolve) => {
+          const old = document.querySelector('.heading');
+          old.insertAdjacentHTML('afterend', html);
+          old.remove();
+          Promise.resolve().then(() => {
+            const link = document.querySelector('.v-nav-tabs a[href$="mypixiv_new.php"]');
+            resolve(link.textContent.trim());
+          });
+        })""",
+        _feed_heading(active),
+    )
+    assert renamed_in_microtask == "拯救系列"
+    assert _tab_texts(page) == ["已关注用户的新作", "追更列表新作", "拯救系列"]
+    # 其它两个 tab 与 Pixiv 自己的链接不动
+    assert page.locator(".v-nav-tabs a").evaluate_all("(links) => links.map((a) => a.getAttribute('href'))") == [
+        FEED_PATHS["bookmark"], FEED_PATHS["watchlist"], FEED_PATHS["mypixiv"]]
+    # 旧版错放在页头上方的「拯救系列」链接已删除
+    assert page.locator("[data-pixiv-rescue='tab'], .pixiv-rescue-tab-link").count() == 0
+    context.close()
+
+
+def _feed_series(series_id: int, index: int) -> dict:
+    return {
+        "series_id": series_id, "title": f"拯救系列{index}", "author_name": f"作者{index}",
+        "user_id": 7000 + index, "rescue_state": "partial" if index == 1 else "success",
+        "expected_count": 12 if index == 1 else None, "chapter_count": 11 if index == 1 else 5,
+        "last_create_date": "2026-09-19T12:00:00+09:00", "latest_novel_id": 9000 + index,
+        "x_restrict": 1 if index % 3 == 1 else 0, "has_cover": False,
+        "author_avatar_url": "https://i.pximg.net/user-profile/img/a_50.jpg" if index == 1 else None,
+        "personal_hold": True,
+    }
+
+
+FEED_PAGE_1 = SERIES_LIST_URL + "?page=1&page_size=10"
+FEED_PAGE_2 = SERIES_LIST_URL + "?page=2&page_size=10"
+FEED_RESPONSES = {
+    FEED_PAGE_1: {"items": [_feed_series(5000 + i, i) for i in range(1, 11)], "page": 1, "total": 12, "total_pages": 2},
+    FEED_PAGE_2: {"items": [_feed_series(5000 + i, i) for i in range(11, 13)], "page": 2, "total": 12, "total_pages": 2},
+}
+# mypixiv_new.php 的原生内容（2026-10-26 实测）：.nav-tab 子 tab、注释、原生内容块（空状态 + 翻页条）、
+# 广告框、推荐
+MYPIXIV_HTML = (
+    PIXIV_BASE_CSS + "<div id='app'>" + _feed_heading("mypixiv")
+    + "<div><div class='nav-tab'><div class='tab-list'><div class='tab-item small'> 插画・漫画 </div>"
+    "<div class='tab-item active small'> 小说 </div></div></div><!---->"
+    "<div id='native'><div class='pager-view-nav'></div><span id='pager-scroll-position'></span>"
+    "<div><div class='works-grid-list grid'></div></div>"
+    "<div class='notifications c-text-text3'><p>抱歉，目前没有作品</p></div>"
+    "<div><nav class='pager add-margin-above'><div class='pager'>"
+    "<a href='/novel/mypixiv_new.php' class='previous'>‹</a><a href='/novel/mypixiv_new.php' class='next'>›</a>"
+    "<div><ul class='pagenum'><li><a href='/novel/mypixiv_new.php' aria-current='page'>1</a></li></ul></div>"
+    "</div></nav></div></div>"
+    "<div id='ad'>广告</div><span id='recommend'>推荐</span></div></div>"
+)
+
+
+def _feed_requests(page, url: str) -> int:
+    return page.evaluate("(url) => window.__rescueRequests.filter((item) => item.url === url).length", url)
+
+
+def _row_title(page, title: str):
+    """按整串匹配卡片标题（封面占位上印着同样的标题，不能用 get_by_text）。"""
+    return page.locator(".pixiv-rescue-series-row-title-text", has_text=re.compile("^" + re.escape(title) + "$"))
+
+
+def test_userscript_fixture_rescue_feed_replaces_mypixiv_tab(rescue_browser) -> None:
+    """mypixiv_new.php：原生内容隐藏（不删），紧跟其后是拯救系列列表与 Pixiv 同款翻页条；pushState 切页。"""
+    context = rescue_browser.new_context(user_agent=MOBILE_UA, viewport={"width": 412, "height": 915},
+                                         timezone_id="Asia/Shanghai")
+    page = context.new_page()
+    _install_list_script(page, MYPIXIV_HTML, FEED_RESPONSES, {"pixivRescueToken": LIST_TOKEN},
+                         path=FEED_PATHS["mypixiv"])
+
+    rows = page.locator("[data-pixiv-rescue='feed'] .pixiv-rescue-series-row")
+    _row_title(page, "拯救系列1").wait_for(state="visible")
+    assert page.locator("#native").get_attribute("data-pixiv-rescue-hidden") == ""
+    assert page.locator("#native").is_hidden() and page.locator(".nav-tab").is_visible()
+    assert page.evaluate("() => document.querySelector('#native').nextElementSibling.getAttribute('data-pixiv-rescue')") == "feed"
+    assert page.locator("#ad").is_visible() and page.locator("#recommend").is_visible()
+    assert rows.count() == 10
+    # 卡片：链接全部带救援标记；部分备份写「12话（备份11话）」；R-18 角标；头像用 <img>
+    first = rows.nth(0)
+    assert first.locator(".pixiv-rescue-series-row-title-text").inner_text() == "拯救系列1"
+    assert first.locator("a.pixiv-rescue-series-row-cover").get_attribute("href") == "/novel/series/5001?pixiv_rescue=1"
+    assert first.locator("a.pixiv-rescue-series-row-title").get_attribute("href") == "/novel/series/5001?pixiv_rescue=1"
+    assert first.get_by_role("link", name="阅读最新话").get_attribute("href") == "/novel/show.php?id=9001&pixiv_rescue=1"
+    assert first.locator("a.pixiv-rescue-series-row-user").get_attribute("href") == "/users/7001/novels"
+    assert first.locator(".pixiv-rescue-series-row-meta span").all_inner_texts() == ["12话（备份11话）", "2026年9月19日更新"]
+    assert first.locator(".pixiv-rescue-series-row-badge").inner_text() == "R-18"
+    assert first.locator("img.pixiv-rescue-series-row-avatar").get_attribute("src").startswith("https://i.pximg.net/")
+    assert first.locator(".pixiv-rescue-mark").inner_text() == "拯救"
+    second = rows.nth(1)
+    assert second.locator(".pixiv-rescue-series-row-badge").count() == 0
+    assert second.locator(".pixiv-rescue-series-row-meta span").first.inner_text() == "5话"
+    # 拯救系列 tab 里没有可转发的 Pixiv 菜单，不画「…」
+    assert page.locator(".pixiv-rescue-series-row-menu").count() == 0
+    # 翻页条：5 个页码窗口（这里只有 2 页）、当前页、上一页/下一页
+    pager = page.locator("[data-pixiv-rescue='feed'] .pixiv-rescue-feed-pager")
+    current = pager.locator(".pixiv-rescue-feed-pagenum a[aria-current='page']")
+    assert pager.locator(".pixiv-rescue-feed-pagenum a").all_inner_texts() == ["1", "2"]
+    assert current.inner_text() == "1"
+    assert pager.get_by_role("link", name="上一页").get_attribute("href") == "/novel/mypixiv_new.php"
+    assert pager.get_by_role("link", name="下一页").get_attribute("href") == "/novel/mypixiv_new.php?p=2"
+    # 尺寸照 Pixiv：列表顶距容器 32（16 + 16）、带角标的单行卡高 152、卡距 185、「阅读最新话」高 32、
+    # 翻页条上距 36、高 35。「浏览更多」那一行沿用字体的行高 1.15，随夹具字体差 1px 以内
+    geometry = page.evaluate("""() => {
+      const box = (el) => el.getBoundingClientRect();
+      const feed = document.querySelector('[data-pixiv-rescue="feed"]');
+      const items = Array.from(feed.querySelectorAll('.pixiv-rescue-series-row')).map(box);
+      const hrs = Array.from(feed.querySelectorAll('hr.pixiv-rescue-divider')).map(box);
+      return { feedTop: box(feed).top, first: items[0], second: items[1], lastHr: hrs[hrs.length - 1],
+        pager: box(feed.querySelector('.pixiv-rescue-feed-pager')),
+        read: box(feed.querySelector('.pixiv-rescue-series-row-read')) };
+    }""")
+    assert round(geometry["first"]["top"] - geometry["feedTop"]) == 32
+    assert abs(geometry["first"]["height"] - 152) <= 1
+    assert abs(geometry["second"]["top"] - geometry["first"]["top"] - 185) <= 1
+    assert round(geometry["read"]["height"]) == 32
+    assert round(geometry["pager"]["top"] - geometry["lastHr"]["bottom"]) == 36
+    assert round(geometry["pager"]["height"]) == 35
+    assert _computed(page, ".pixiv-rescue-series-row-title-text", ["fontSize", "fontWeight", "lineHeight", "color"]) == {
+        "fontSize": "14px", "fontWeight": "700", "lineHeight": "22px", "color": "rgb(31, 31, 31)"}
+    assert _computed(page, ".pixiv-rescue-series-row-read", ["backgroundColor", "color", "borderTopLeftRadius"]) == {
+        "backgroundColor": "rgba(0, 0, 0, 0.88)", "color": "rgb(255, 255, 255)", "borderTopLeftRadius": "100px"}
+    assert _computed(page, ".pixiv-rescue-feed-pager-bar", ["backgroundColor"]) == {"backgroundColor": "rgb(74, 144, 226)"}
+
+    # pushState 切页：URL 带 ?p=2，state 形状同 vue-router 3；钩子/观察器/轮询都不会重复请求
+    pager.get_by_role("link", name="2", exact=True).click()
+    _row_title(page, "拯救系列11").wait_for(state="visible")
+    assert page.url.endswith("/novel/mypixiv_new.php?p=2")
+    assert re.fullmatch(r"\d+\.\d{3}", page.evaluate("history.state.key"))
+    assert rows.count() == 2
+    assert page.evaluate("() => document.querySelector('[data-pixiv-rescue=\"feed\"]').getBoundingClientRect().top") >= 0
+    page.wait_for_timeout(1300)
+    assert _feed_requests(page, FEED_PAGE_2) == 1
+    assert current.inner_text() == "2"
+    # 浏览器后退回到第 1 页
+    page.evaluate("() => history.back()")
+    _row_title(page, "拯救系列1").wait_for(state="visible")
+    assert "p=" not in page.url
+    assert _feed_requests(page, FEED_PAGE_1) == 2
+    # 「浏览更多」打开页面级「作品情报」面板：「查看目录」指向系列页，遮罩盖过 Pixiv 页头
+    rows.nth(0).get_by_text("浏览更多").click()
+    sheet = page.get_by_role("dialog", name="作品情报")
+    sheet.wait_for(state="visible")
+    assert sheet.get_by_role("link", name="查看目录").get_attribute("href") == "/novel/series/5001?pixiv_rescue=1"
+    assert page.locator(".pixiv-rescue-sheet-backdrop--page").count() == 1
+    sheet.get_by_role("button", name="关闭").click()
+    assert page.get_by_role("dialog", name="作品情报").count() == 0
+
+    # SPA 跳到别的 tab：撤掉列表、放回原生内容
+    page.evaluate("() => history.pushState({}, '', '/novel/bookmark_new.php')")
+    page.wait_for_function("() => !document.querySelector('[data-pixiv-rescue=\"feed\"]')")
+    assert page.locator("[data-pixiv-rescue-hidden]").count() == 0
+    assert page.locator("#native").is_visible()
+    context.close()
+
+
+def test_userscript_fixture_rescue_feed_error_retry_and_empty(rescue_browser) -> None:
+    """拯救系列 tab 读取失败：列表位置给提示与「重试」；备份里没有系列时照 Pixiv 写空状态，翻页条照画。"""
+    context = rescue_browser.new_context(user_agent=MOBILE_UA, viewport={"width": 412, "height": 915})
+    page = context.new_page()
+    _install_list_script(page, MYPIXIV_HTML, {}, {"pixivRescueToken": LIST_TOKEN}, path=FEED_PATHS["mypixiv"])
+
+    retry = page.locator("[data-pixiv-rescue='feed']").get_by_role("button", name="重试")
+    retry.wait_for(state="visible")
+    assert "拯救系列没有读到" in page.locator(".pixiv-rescue-feed-empty").inner_text()
+    assert page.locator("#native").is_hidden()
+    page.evaluate("(url) => { window.__rescueResponses[url] = { items: [], page: 1, total: 0, total_pages: 1 }; }",
+                  FEED_PAGE_1)
+    retry.click()
+    page.get_by_text("抱歉，目前没有拯救系列").wait_for(state="visible")
+    assert page.locator("[data-pixiv-rescue='feed'] .pixiv-rescue-feed-pagenum a").all_inner_texts() == ["1"]
+    assert _computed(page, ".pixiv-rescue-feed-empty", ["fontSize", "fontWeight", "color", "paddingTop"]) == {
+        "fontSize": "12px", "fontWeight": "700", "color": "rgb(133, 133, 133)", "paddingTop": "10px"}
+    context.close()
+
+
+def _watch_healthy(series_id: int) -> str:
+    """健康追更项（2026-10-26 实测结构节选）：每个系列 ID 一个 div，里面 div.c-mb-16 > 卡片 + 分隔线。"""
+    return (
+        f"<div><div class='c-mb-16'><div class='novel-series-thumbnail-detail c-mb-16'>"
+        f"<a href='/novel/series/{series_id}' class='cover-link'><div class='cover'></div></a>"
+        f"<div class='details'><a href='/novel/series/{series_id}'><div class='line-clamp'>健康系列{series_id}</div></a>"
+        "<a href='/users/1/novels' class='user-container'><div class='user-name'>作者</div></a>"
+        "<div class='meta-container'><span>3话</span><span class='ml-8'>2026年9月1日更新</span></div>"
+        "</div></div><hr class='divider'></div></div>"
+    )
+
+
+def _watch_blank(series_id: int) -> str:
+    """被删系列的空白框：DOM 里没有系列 ID（data-probe 只给测试定位用，脚本不读）；
+    三点图标在 Pixiv 上会打开它自己的底部菜单，这里只记下点击。"""
+    return (
+        "<div><div class='c-mb-16'><div class='c-mb-16'>"
+        f"<div class='novel-series-not-viewable-detail pv-16' data-probe='{series_id}'>"
+        "<div class='cover'></div><div class='details ml-16'><div> 该作品无法显示 </div>"
+        f"<div class='menu-icon' onclick='window.__menuClicks.push({series_id})'>⋯</div></div><!----></div>"
+        "</div><hr class='divider'></div></div>"
+    )
+
+
+def _watchlist_html(items: list[str]) -> str:
+    return (
+        PIXIV_BASE_CSS + "<script>window.__menuClicks = [];</script><div id='app'>" + _feed_heading("watchlist")
+        + "<div><div class='nav-tab'></div><div class='v-space-16'></div><div><span id='pager-scroll-position'></span>"
+        + "<div class='mv-16 ph-16' id='watch-list'>" + "".join(items) + "</div></div></div></div>"
+    )
+
+
+WATCH_LOOKUP_302_304 = "https://pixiv.dongboapp.com/api/rescue/v1/lookup?series_ids=302%2C304"
+# Pixiv 自己的 watch_list 应答（2026-10-26 实测形状）：被删的 302/304 不在 novelSeries 里
+WATCH_BODY = {
+    "error": False, "message": "",
+    "body": {"total": 5, "maxPage": 1, "watchedSeriesIds": ["301", "302", "303", "304", "305"],
+             "novelSeries": [{"id": "301"}, {"id": "303"}, {"id": "305"}]},
+}
+
+
+def test_userscript_fixture_watchlist_fills_deleted_series_in_place(rescue_browser) -> None:
+    """追更列表：被删系列的空白框按位置原地换成备份卡片，高度与健康项一致；备份里没有的照旧空着。
+
+    DOM 里没有系列 ID：靠 Pixiv watch_list 接口的有序 watchedSeriesIds 按位置对应
+    （未加载的项只渲染空 div，也占一个位置）。
+    """
+    context = rescue_browser.new_context(user_agent=MOBILE_UA, viewport={"width": 412, "height": 915},
+                                         timezone_id="Asia/Shanghai")
+    page = context.new_page()
+    items = [_watch_healthy(301), _watch_blank(302), "<div></div>", _watch_blank(304), _watch_healthy(305)]
+    responses = {WATCH_LOOKUP_302_304: {"novels": [], "series": [dict(_feed_series(302, 1), title="被删的追更系列")]}}
+    hits = _install_list_script(page, _watchlist_html(items), responses, {"pixivRescueToken": LIST_TOKEN},
+                                path=FEED_PATHS["watchlist"], pixiv_json={WATCH_AJAX: WATCH_BODY})
+
+    card = page.locator("[data-pixiv-rescue='watch-card']")
+    card.wait_for(state="visible")
+    assert card.count() == 1 and card.get_attribute("data-series-id") == "302"
+    # 卡片插在空白框父节点 div.c-mb-16 的最前面；空白框根节点（含底部菜单挂载位）留着，
+    # 只隐藏封面与文字、内边距归零
+    placement = page.evaluate("""() => {
+      const card = document.querySelector('[data-pixiv-rescue="watch-card"]');
+      const root = card.nextElementSibling;
+      return { first: card.parentElement.firstElementChild === card,
+        nested: card.parentElement.classList.contains('c-mb-16') && card.parentElement.parentElement.classList.contains('c-mb-16'),
+        probe: root.getAttribute('data-probe'), filled: root.getAttribute('data-pixiv-rescue-filled'),
+        rootHeight: root.getBoundingClientRect().height, comment: root.lastChild.nodeType === 8 };
+    }""")
+    assert placement == {"first": True, "nested": True, "probe": "302", "filled": "302", "rootHeight": 0, "comment": True}
+    assert page.locator("[data-probe='302'] .cover").is_hidden()
+    assert page.locator("[data-probe='302'] .details").is_hidden()
+    assert card.locator(".pixiv-rescue-series-row-title-text").inner_text() == "被删的追更系列"
+    assert card.locator(".pixiv-rescue-series-row-meta span").all_inner_texts() == ["12话（备份11话）", "2026年9月19日更新"]
+    assert card.get_by_role("link", name="阅读最新话").get_attribute("href") == "/novel/show.php?id=9001&pixiv_rescue=1"
+    assert card.locator("a.pixiv-rescue-series-row-title").get_attribute("href") == "/novel/series/302?pixiv_rescue=1"
+    # 备份里没有的被删系列（304）与未加载项（303）原样不动
+    assert page.locator("[data-probe='304']").get_attribute("data-pixiv-rescue-filled") is None
+    assert page.locator("[data-probe='304']").get_by_text("该作品无法显示").is_visible()
+    # 填空项高度与健康项一致（Pixiv 实测 169），卡距 185
+    boxes = page.evaluate("""() => Array.from(document.getElementById('watch-list').children)
+      .map((child) => { const r = child.getBoundingClientRect(); return { top: r.top, height: r.height }; })""")
+    assert abs(boxes[1]["height"] - boxes[0]["height"]) <= 1
+    assert abs(boxes[1]["top"] - boxes[0]["top"] - 185) <= 1
+
+    # 再扫几轮：自己画的卡片不会被当成失效卡再「救」一次，也不重复请求
+    page.wait_for_timeout(3600)
+    assert card.count() == 1 and page.locator(".pixiv-rescue-rescued-card").count() == 0
+    assert card.locator(".pixiv-rescue-series-row-title-text").inner_text() == "被删的追更系列"
+    urls = page.evaluate("window.__rescueRequests.map(item => item.url)")
+    assert urls.count(WATCH_LOOKUP_302_304) == 1
+    assert not any(url.startswith(LOOKUP_URL) and url != LOOKUP_URL + "1" for url in urls)
+    # Pixiv 的 watch_list 只问了一次：填完、判定完的空白框不再触发请求
+    assert len(hits) == 1 and "p=1&limit=10&new=1" in hits[0]
+
+    # 「…」转给被隐藏的 Pixiv 三点图标（它会打开 Pixiv 自己的「从追更列表中移除」菜单）
+    card.get_by_role("button", name="作品选项").click()
+    assert page.evaluate("window.__menuClicks") == [302]
+    # 移出追更后 Vue 把整块换成注释节点：卡片跟着撤掉
+    page.evaluate("() => document.querySelector('[data-probe=\"302\"]').replaceWith(document.createComment(''))")
+    page.wait_for_function("() => !document.querySelector('[data-pixiv-rescue=\"watch-card\"]')")
+    context.close()
+
+
+@pytest.mark.parametrize("watched", [["302", "301"], ["301", "302", "303"]], ids=["order", "count"])
+def test_userscript_fixture_watchlist_skips_fill_when_positions_disagree(rescue_browser, watched) -> None:
+    """位置对不上（健康卡 ID 与同下标的 ID 不一致，或项数与 ID 数不同）就不填，也不去查备份。"""
+    page = rescue_browser.new_page()
+    body = {"error": False, "message": "", "body": {"watchedSeriesIds": watched, "novelSeries": [{"id": "301"}]}}
+    hits = _install_list_script(page, _watchlist_html([_watch_healthy(301), _watch_blank(302)]), {},
+                                {"pixivRescueToken": LIST_TOKEN}, path=FEED_PATHS["watchlist"],
+                                pixiv_json={WATCH_AJAX: body})
+
+    page.wait_for_timeout(1500)
+    assert hits, "应当问过 Pixiv 的 watch_list 接口"
+    assert page.locator("[data-pixiv-rescue='watch-card']").count() == 0
+    assert page.locator("[data-probe='302']").get_attribute("data-pixiv-rescue-filled") is None
+    urls = page.evaluate("window.__rescueRequests.map(item => item.url)")
+    assert not any("series_ids=" in url for url in urls)
+    # 只有一张健康卡 + 一个空白框时，健康卡的链接上查四层总字数不到 64、还带着「该作品无法显示」：
+    # 旧的失效卡扫描会把它当成失效卡重画。Pixiv 的 .novel-series-thumbnail-detail 只给能显示的系列
+    assert page.locator(".novel-series-thumbnail-detail").count() == 1
+    assert page.locator(".pixiv-rescue-rescued-card, [data-pixiv-rescue='card'], "
+                        "[data-pixiv-rescue='card-pending']").count() == 0
+    page.close()

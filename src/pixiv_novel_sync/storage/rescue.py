@@ -1119,6 +1119,89 @@ class RescueMixin:
         payload["personal_hold"] = self._personal_holds_item("series", int(series_id))
         return payload
 
+    def get_rescue_series_cards(self, series_ids: list[int]) -> dict[int, dict[str, Any]]:
+        """批量读系列卡片字段（追更列表/拯救系列 tab 需要）：章节数、最新章节日期/ID、
+        R-18 标记、封面、作者头像。单次查询，避免 N+1。
+
+        章节数与最新一话只算已备份章节（has_content = 1），排序与
+        list_rescue_series_chapters 同一口径，卡片上的「N话」「阅读最新话」与系列页对得上。
+        """
+        if not series_ids:
+            return {}
+        ids_tuple = tuple(int(sid) for sid in series_ids)
+        placeholders = ", ".join("?" for _ in ids_tuple)
+        # 每个系列取：已备份章节数、最晚一章的创建日期+ID、所有章节最高 x_restrict、
+        # 有封面的章节数（>0 即为真，与 has_rescue_series_cover 同口径）、作者头像（users.raw_json）
+        rows = self.conn.execute(
+            f"""
+            SELECT
+                se.series_id,
+                se.user_id,
+                COALESCE((
+                    SELECT COUNT(*)
+                    FROM novels n2
+                    JOIN novel_texts nt2 ON nt2.novel_id = n2.novel_id
+                    WHERE n2.series_id = se.series_id AND nt2.has_content = 1
+                ), 0) AS chapter_count,
+                (
+                    SELECT n3.create_date
+                    FROM novels n3
+                    JOIN novel_texts nt3 ON nt3.novel_id = n3.novel_id
+                    WHERE n3.series_id = se.series_id AND nt3.has_content = 1
+                    ORDER BY n3.create_date DESC, n3.novel_id DESC
+                    LIMIT 1
+                ) AS last_create_date,
+                (
+                    SELECT n4.novel_id
+                    FROM novels n4
+                    JOIN novel_texts nt4 ON nt4.novel_id = n4.novel_id
+                    WHERE n4.series_id = se.series_id AND nt4.has_content = 1
+                    ORDER BY n4.create_date DESC, n4.novel_id DESC
+                    LIMIT 1
+                ) AS latest_novel_id,
+                COALESCE((
+                    SELECT MAX(n5.x_restrict)
+                    FROM novels n5
+                    WHERE n5.series_id = se.series_id
+                ), 0) AS x_restrict,
+                COALESCE((
+                    SELECT COUNT(*)
+                    FROM novels n6
+                    JOIN assets a ON a.novel_id = n6.novel_id AND a.asset_type = 'cover'
+                    WHERE n6.series_id = se.series_id
+                ), 0) AS cover_count,
+                u.raw_json AS user_raw_json
+            FROM series se
+            LEFT JOIN users u ON u.user_id = se.user_id
+            WHERE se.series_id IN ({placeholders})
+            """,
+            ids_tuple,
+        ).fetchall()
+        result: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            series_id = int(row["series_id"])
+            author_avatar_url: str | None = None
+            try:
+                user_data = json.loads(str(row["user_raw_json"] or "{}"))
+                if isinstance(user_data, dict):
+                    urls = user_data.get("profile_image_urls")
+                    if isinstance(urls, dict):
+                        medium = str(urls.get("medium") or "")
+                        if medium.startswith("https://i.pximg.net/"):
+                            author_avatar_url = medium
+            except (TypeError, ValueError):
+                pass
+            result[series_id] = {
+                "user_id": int(row["user_id"] or 0),
+                "chapter_count": int(row["chapter_count"] or 0),
+                "last_create_date": row["last_create_date"],
+                "latest_novel_id": int(row["latest_novel_id"]) if row["latest_novel_id"] else None,
+                "x_restrict": int(row["x_restrict"] or 0),
+                "has_cover": bool(int(row["cover_count"] or 0) > 0),
+                "author_avatar_url": author_avatar_url,
+            }
+        return result
+
     @staticmethod
     def _decode_tags(value: Any) -> list[Any]:
         try:

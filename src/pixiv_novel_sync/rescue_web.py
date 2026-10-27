@@ -84,6 +84,23 @@ def _safe_page(value: Any, default: int, maximum: int | None = None) -> int:
     return parsed
 
 
+def _series_card_fields(card: dict[str, Any] | None) -> dict[str, Any]:
+    """系列卡片字段（0.12.0「拯救系列」tab 与追更列表填空照搬 Pixiv 系列卡用）。
+
+    来自 db.get_rescue_series_cards；系列行缺失时给出安全的空值，字段集合保持不变。
+    """
+    card = card or {}
+    return {
+        "user_id": card.get("user_id"),
+        "chapter_count": card.get("chapter_count", 0),
+        "last_create_date": card.get("last_create_date"),
+        "latest_novel_id": card.get("latest_novel_id"),
+        "x_restrict": card.get("x_restrict", 0),
+        "has_cover": bool(card.get("has_cover", False)),
+        "author_avatar_url": card.get("author_avatar_url"),
+    }
+
+
 def _safe_item_type(item_type: str) -> str:
     normalized = str(item_type or "").strip().lower()
     if normalized not in {"novel", "series"}:
@@ -578,9 +595,8 @@ def register_rescue_routes(
             batch = db.get_rescue_items_batch(novel_ids, series_ids)
             # 本地封面可用性：油猴据此决定是否把失效卡重建为带封面的正常卡片
             cover_flags = {value: db.has_rescue_cover(value) for value in novel_ids}
-            series_cover_flags = {
-                value: db.has_rescue_series_cover(value) for value in series_ids
-            }
+            # 系列卡片字段（含 has_cover，与 has_rescue_series_cover 同口径）：追更列表填空用
+            series_cards = db.get_rescue_series_cards(series_ids) if series_ids else {}
         finally:
             db.close()
         slim_novels = [
@@ -605,7 +621,9 @@ def register_rescue_routes(
                 "cover_url": item.get("cover_url"),
                 "rescue_state": item.get("rescue_state"),
                 "personal_hold": bool(item.get("personal_hold")),
-                "has_cover": bool(series_cover_flags.get(item["series_id"], False)),
+                # 「12话（备份11话）」要用 Pixiv 上的总话数
+                "expected_count": item.get("expected_count"),
+                **_series_card_fields(series_cards.get(item["series_id"])),
             }
             for item in (batch.get(f"series:{value}") for value in series_ids)
             if item is not None
@@ -624,10 +642,11 @@ def register_rescue_routes(
     )
     @public_auth
     def rescue_series_list():
-        """分页列出救援目录里的系列，供油猴脚本在 Pixiv 收藏页渲染「拯救系列」tab。
+        """分页列出救援目录里的系列，供油猴脚本渲染「拯救系列」tab。
 
-        目录里 series 条目天然就是「系列本体不可用」的系列；state/personal_hold
-        照常带出，让 tab 里能区分「完整救援 / 部分救援」和「还在追更 / 已放手」。
+        0.12.0 起这个 tab 接管 Pixiv 新作页的「好P友新作」。目录里 series 条目天然就是
+        「系列本体不可用」的系列；state/personal_hold 照常带出，另附卡片字段（已备份话数、
+        最新一话、R-18、封面、作者头像），照搬 Pixiv 追更列表的系列卡。
         """
         db = open_db()
         try:
@@ -639,6 +658,8 @@ def register_rescue_routes(
                 search=str(request.args.get("search", "")),
                 sort=str(request.args.get("sort", "checked_desc")),
             )
+            series_ids = [item["item_id"] for item in payload.get("items", [])]
+            cards = db.get_rescue_series_cards(series_ids) if series_ids else {}
         except ValueError as exc:
             return _public_error(str(exc), 400)
         finally:
@@ -655,6 +676,7 @@ def register_rescue_routes(
                 "complete_count": item.get("complete_count"),
                 "personal_hold": bool(item.get("personal_hold")),
                 "last_checked_at": item.get("last_checked_at"),
+                **_series_card_fields(cards.get(item["item_id"])),
             }
             for item in payload.get("items", [])
         ]

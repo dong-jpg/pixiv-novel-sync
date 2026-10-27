@@ -59,14 +59,16 @@
 3. 安装后确认脚本已启用，并允许其在 Pixiv 页面运行、连接 `pixiv.dongboapp.com`。不要额外授予“任意网站”权限。
 4. 打开一个 Pixiv 小说或系列页面，在浏览器的脚本菜单中执行 **“设置或更新救援 Token”**，填写你已有救援 Token。没有 Token 时按第 2.2 节处理。
 
-脚本只在以下页面生效：
+脚本只在以下页面工作（含 `/en/`、`/zh/` 等语言前缀；元信息里另有一条 `https://www.pixiv.net/*` 兜底匹配，脚本内部仍按下列路径严格判断，其余页面立即返回）：
 
 - `https://www.pixiv.net/novel/show.php*`（小说页）
 - `https://www.pixiv.net/novel/series/*`（系列页）
+- `https://www.pixiv.net/users/*/bookmarks/novels*`（收藏列表）、`https://www.pixiv.net/following/watchlist/novels*`（追更列表）
+- 手机站「新作」页的三个 tab：`/novel/bookmark_new.php`、`/following/watchlist/novels`、`/novel/mypixiv_new.php`（第三个 tab 改为「拯救系列」，见第 5 节）
 
 默认服务由 `DEFAULT_API_ORIGIN` 指定，当前为 `https://pixiv.dongboapp.com`；自用安装无需改地址或代码。保留原有 `@name` 和 `@namespace`，避免升级时被识别成另一份脚本。浏览器至少需要支持 `GM_xmlhttpRequest`、`GM_getValue`、`GM_setValue` 和 `GM_registerMenuCommand`；能安装油叉脚本并不保证支持每一种 GM API。
 
-脚本的触发逻辑是**保守的**：只有健康检查未通过、且检测到明确失效标记（如「この作品は削除されています」「该作品已被删除」「Page not found」）时，才会请求救援 API；对未知或仍在加载的页面最多观察约 1.2 秒。正常页面不会被改动。
+脚本的触发逻辑是**保守的**：正文 / 系列页先问 Pixiv 自己的接口，作品还在就不请求备份、不改页面（详见第 5 节「正文 / 系列页没有出现备份阅读层」）；列表页只改 Pixiv 已经画成失效 / 空白的卡片，健康卡片不动。
 
 ### 2.2 生成救援 Token（写入 / 轮换）
 
@@ -181,7 +183,8 @@ Token 由服务端管理路由生成，全局只有一个（单例存储）：
 - `GET /api/rescue/v1/novels/<novel_id>` — 单篇小说（含 `text_raw` 正文、标题、作者、标签、救援状态等字段）；
 - `GET /api/rescue/v1/series/<series_id>` — 系列元数据（标题、简介、封面、`expected_count` / `local_count` / `complete_count` 备份进度等）；
 - `GET /api/rescue/v1/series/<series_id>/chapters?page=&page_size=` — 系列章节目录（按创建时间排序编号，page_size 上限 100，每章附 `api_path` 指向对应小说端点）；
-- `GET /api/rescue/v1/lookup?novel_ids=<逗号分隔>&series_ids=<逗号分隔>` — 收藏/追更列表页的批量反查（novel + series 合计上限 40），返回标题、作者、`rescue_state`、`personal_hold` 与 `has_cover`，**不返回正文**；
+- `GET /api/rescue/v1/lookup?novel_ids=<逗号分隔>&series_ids=<逗号分隔>` — 收藏/追更列表页的批量反查（novel + series 合计上限 40），返回标题、作者、`rescue_state`、`personal_hold` 与 `has_cover`，系列另带卡片字段（见下一条），**不返回正文**；
+- `GET /api/rescue/v1/series?page=&page_size=` — 救援目录里的系列分页列表（「拯救系列」tab 用，page_size 上限 100）。每项除标题、作者、救援状态、`expected_count` / `complete_count` 外，还有照搬 Pixiv 系列卡所需的字段：已备份话数 `chapter_count`、最新一话 `last_create_date` / `latest_novel_id`、`x_restrict`（R-18 角标）、`has_cover`、作者头像 `author_avatar_url`（只放行 `https://i.pximg.net/` 地址）；
 - `GET /api/rescue/v1/novels/<novel_id>/cover`、`GET /api/rescue/v1/series/<series_id>/cover` — 本地归档封面图（`image/jpeg` 等，`Cache-Control: private, max-age=86400`）。系列本身不单独下载封面，回退使用系列下首章小说的封面。Pixiv 原封面 URL 对已删除作品通常已失效，列表页重建卡片必须走本地端点。
 
 统一约定：
@@ -271,9 +274,18 @@ Token 由服务端管理路由生成，全局只有一个（单例存储）：
 
 > 2026-10-23 结论：0.6.x–0.7.x「点击救援卡后正文面板不显示」的根因不是注入时机、文案识别或意图传递，而是**遮挡**：手机站已删作品页是 SPA 404 空壳，一个 `position:absolute`、不透明背景的通栏容器从顶栏下方铺满 2000+px，旧版追加到 `body` 的面板被它整块盖住——20 万字都在 DOM 里，用户什么都看不到。当时的端到端检查只断言「面板存在」，同一轮截图里明明没有面板也一路绿灯。另外，手机站**健康**正文页同样没有 `<main>`，旧版「无 `<main>` ⇒ 已删」会让每个健康正文页都去请求备份、在页尾塞一条「未找到可用的救援数据」。现在的测试对阅读层做命中测试（命中栈顶必须是阅读层），并覆盖「健康页零请求、零 DOM 改动」。
 
+### 新作页「拯救系列」tab 与追更列表空白框（0.12.0）
+
+只针对 Pixiv **手机站**（PC 站没有这套页面结构，脚本不动它）。
+
+- **「拯救系列」tab**：「新作」页顶部三个 tab（已关注用户的新作 / 追更列表新作 / 好P友新作）里，第三个改名「拯救系列」，三个页面上都改。它仍指向 Pixiv 的 `/novel/mypixiv_new.php`，只是页面内容换成备份里的系列：Pixiv 原生内容隐藏（不删），子 tab「插画・漫画 / 小说」保留，原来那里有好P友作品的也一样被替换。列表每页 10 个系列，翻页条照 Pixiv（蓝条、左右箭头、最多 5 个页码，网址带 `?p=N`），浏览器前进 / 后退可用。数据来自 `GET /api/rescue/v1/series`。
+- **系列卡片**：照搬 Pixiv 追更列表的系列卡（2026-10-26 实测尺寸：封面 64×90、R-18 角标、两行标题、作者头像与名字、「10话 2026年9月19日更新」、「浏览更多」、黑色「阅读最新话」，单行标题的卡高 152、卡距 185）。只备份了部分章节时写「12话（备份11话）」，日期是已备份章节里最新一话的发布日。标题与封面进系列页、「阅读最新话」进最新一话，都打开备份阅读层；作者链到 Pixiv 作者页。封面左上角是蓝色「拯救」小角标，没有本地封面时用素色占位印上系列名。「浏览更多」打开「作品情报」面板，里面的「查看目录」进系列页。被删的系列没有追更铃铛。
+- **追更列表空白框**：`/following/watchlist/novels` 里被删的系列，Pixiv 显示成空白框「该作品无法显示」。脚本把备份卡片放回它在列表里原本的位置，高度与健康项一致。页面上没有系列 ID，脚本按位置对应：同源读一次 Pixiv 自己的 `/touch/ajax/watch_list/novel`（这一页有序的系列 ID，被删的不在作品数据里），列表项数与 ID 数一致、每张健康卡的 ID 也对得上时才填，否则这一轮不填、稍后再试。只有「Pixiv 作品数据里缺这个 ID」才算被删；因年龄限制、单篇等原因显示的空白框不填，备份里没有的也照旧空着。填好的卡片右侧是「…」，点它打开的仍是 Pixiv 自己的菜单（「从追更列表中移除」），移除后卡片随之消失。
+- 0.11.0 及以前错放在 `bookmark_new.php` 页头上方的「拯救系列」链接已删除。
+
 ### 收藏 / 追更列表页「什么都看不到」
 
-脚本在列表页有三种可见输出，**任何一种出现都说明脚本已注入**：红色提示条（Token 缺失/失效/网络故障）、「脚本管理器不支持 GM_xxx」提示条、失效卡被重建为「封面 + 标题 + 作者 + 拯救标识」。三者皆无 = 脚本没在这个页面运行。
+脚本在列表页有四种可见输出，**任何一种出现都说明脚本已注入**：红色提示条（Token 缺失/失效/网络故障）、「脚本管理器不支持 GM_xxx」提示条、失效卡被重建为「封面 + 标题 + 作者 + 拯救标识」、追更列表的空白框被换成备份卡片（0.12.0）。四者皆无 = 脚本没在这个页面运行。
 
 排查顺序：
 

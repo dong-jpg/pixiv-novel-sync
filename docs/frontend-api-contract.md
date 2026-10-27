@@ -428,7 +428,27 @@ Token 不接受 URL 查询参数或 Cookie。只允许 `GET` / `HEAD`；每个�
 
 查询参数：`page`、`page_size`。返回有完整正文的章节目录（按发布时间排序）；目录项包含 `novel_id`、`title`、`chapter_number`、`create_date`、`remote_status`、`text_length`、`tags`、`total_bookmarks`、`total_views`、`x_restrict`、`is_original`、`ai_type`、`has_cover` 与 `api_path`，正文通过小说接口按需读取。分页之外另给全部已备份章节的 `total_text_length` 与 `last_create_date`（系列页头部「共N话 · 更新 · 字数 · 时长」用）。
 
-所有只读救援响应包含：
+### GET /api/rescue/v1/series
+
+救援目录里的系列分页列表，供油猴脚本 0.12.0 的「拯救系列」tab（接管 Pixiv 手机站新作页的「好P友新作」）使用。查询参数：`page`、`page_size`（默认 24，上限 100；脚本每页取 10）、`state`、`search`、`sort`，取值与 `GET /api/dashboard/rescues` 相同。返回 `{items, page, total, total_pages}`。读的是救援目录快照：目录首建完成前回 `503`「救援目录尚未生成」，`pending` 待确认删除的系列不出现。
+
+每项包含 `series_id`、`title`、`author_name`、`cover_url`、`rescue_state`、`expected_count`、`local_count`、`complete_count`、`personal_hold`、`last_checked_at`，以及下面的系列卡片字段。
+
+### GET /api/rescue/v1/lookup
+
+收藏 / 追更列表页按 ID 批量反查备份：`novel_ids`、`series_ids` 为逗号分隔的数字 ID，合计最多 40 个，两者都为空回 `400`。返回 `{novels, series}`，只含有备份且符合救援条件的条目，不返回正文；不受 `pending` 排除约束（同明细接口）。
+
+- `novels` 每项：`novel_id`、`title`、`author_name`、`cover_url`、`series_id`、`rescue_state`、`personal_hold`、`has_cover`。
+- `series` 每项：`series_id`、`title`、`author_name`、`cover_url`、`rescue_state`、`personal_hold`、`expected_count`，以及下面的系列卡片字段（追更列表空白框原位替换用）。
+
+系列卡片字段（两个接口相同，照搬 Pixiv 追更列表的系列卡）：
+
+- `user_id`；`chapter_count`：已备份章节数（`novel_texts.has_content = 1`，与章节目录同一口径）。
+- `last_create_date`、`latest_novel_id`：已备份章节里发布时间最晚的一章（「某日更新」「阅读最新话」）。
+- `x_restrict`：系列内各章的最大值（1 为 R-18，2 为 R-18G）；`has_cover`：与 `GET /api/rescue/v1/series/<series_id>/cover` 同一口径。
+- `author_avatar_url`：作者头像，取自同步时保存的 `users.raw_json` 的 `profile_image_urls.medium`，只在以 `https://i.pximg.net/` 开头时给出，否则为 `null`；原始 JSON 不外传。
+
+所有只读救援明细响应（小说、系列、章节目录）包含：
 
 ```json
 {
