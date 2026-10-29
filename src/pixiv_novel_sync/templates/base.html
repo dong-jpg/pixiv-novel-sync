@@ -5,25 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <title>{% block title %}Pixiv 小说同步器{% endblock %}</title>
 
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-  tailwind.config = {
-    theme: {
-      extend: {
-        colors: {
-          brand: { 50:'#eef4ff',100:'#dce8ff',200:'#b8d0ff',300:'#8fb3ff',400:'#6f98ff',500:'#4f7cff',600:'#3b63db',700:'#2d4ca8',800:'#203675',900:'#162345' },
-          pixiv: { bg:'#f6f7fb',text:'#162033',gray:'#6b7280',light:'#8a94a6',border:'#e5e7ef' },
-          library: { bg:'#f6f7fb',surface:'#ffffff',ink:'#162033',muted:'#6b7280',line:'#e5e7ef',accent:'#4f7cff',success:'#20b486' },
-        },
-        fontFamily: {
-          sans: ['Inter','-apple-system','BlinkMacSystemFont','"Segoe UI"','"PingFang SC"','"Microsoft YaHei"','Arial','sans-serif'],
-          serif: ['"BIZ UDMincho"','"Noto Serif SC"','"Source Han Serif SC"','SimSun','serif'],
-        },
-      },
-    },
-  };
-  </script>
-  <script src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js"></script>
+  <script src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js" integrity="sha384-Z9a2xA0EIaURxthVmeQmPrgSC05eG8Lch8X4Y2+lXpTg9wcxPj2m3QNurDl5hLiS" crossorigin="anonymous"></script>
 
   <style>
     :root {
@@ -232,6 +214,10 @@
   </style>
 
   {% block extra_head %}{% endblock %}
+  {# Tailwind 生成的静态 CSS，改模板类名后用 python scripts/build_tailwind_css.py 重生成（会顺带更新 ?v=）。
+     必须是 <head> 的最后一个样式：原 Play CDN 把生成的 <style> 追加在 head 末尾，同权重时工具类
+     压过上面的 library-* 与页面 extra_head 规则，挪到前面会改变层叠结果。 #}
+  <link rel="stylesheet" href="/static/css/tailwind.css?v=67047e58f689">
 </head>
 <body class="antialiased {% block body_class %}{% endblock %}">
 

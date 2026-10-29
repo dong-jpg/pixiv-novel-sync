@@ -41,8 +41,8 @@
 
 职责：
 
-- 加载 Tailwind CDN。
-- 加载 Vue 3 CDN。
+- 引用仓库里预生成的 Tailwind 样式 `/static/css/tailwind.css?v=<内容哈希>`（放在 `<head>` 最后；改模板类名后运行 `python scripts/build_tailwind_css.py` 重生成）。
+- 加载 Vue 3 CDN（锁定版本，带 SRI）。
 - 定义 Library OS 全局 CSS tokens。
 - 提供 `library-shell`、`library-sidebar`、`library-main`。
 - 保留 `window.initVueApp(setupFunc)`。
