@@ -5,7 +5,7 @@ import logging
 import os
 import time
 import types
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, TypeVar
 
@@ -77,6 +77,32 @@ FOLLOWING_LIST_MAX_PAGES = 50
 # 关注的画师随时可能开始写小说。30 天 vs 自然轮转的 12.8 天，等于把这批作者的
 # 占用从每天约 6.6 个槽位压到约 2.8 个，省下的槽位归真实作者。
 NO_NOVELS_RECHECK_DAYS = 30
+
+# 已确认 deleted 的小说多久复查一次（天）。降频而非永久跳过（仿 NO_NOVELS_RECHECK_DAYS）：
+# 作品可能被恢复。状态检查与待删检测以前每轮都对它们重查 novel_detail，novel_status
+# 每批约 10% 是这种重复确认（审查性能 P21）。
+KNOWN_DELETED_RECHECK_DAYS = 7
+
+
+def _recently_confirmed_deleted_novel_ids(db: Any, days: int = KNOWN_DELETED_RECHECK_DAYS) -> set[int]:
+    """status='deleted' 且最近 ``days`` 天内复查过的小说 ID：本轮不必再发请求。
+
+    last_checked_at 由 novel_status 写（与 SQLite CURRENT_TIMESTAMP 同格式的 UTC 文本），
+    从未检查过的（NULL）不在其中。查询失败返回空集，即退回旧行为（全部重查）。
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        rows = db.conn.execute(
+            "SELECT novel_id FROM novels WHERE status = 'deleted' AND last_checked_at >= ?",
+            (cutoff,),
+        ).fetchall()
+    except InterruptedError:
+        raise
+    except Exception as exc:
+        logger.warning("读取近期已确认删除的小说失败，本轮全部重查: %s", exc)
+        return set()
+    return {int(row[0]) for row in rows}
+
 
 # 同一关注作者的作品列表连续拉取失败多少次后，照常写入 user_last_synced（推到队尾）。
 # user_last_synced 只在作者扫描自然结束时写：被让位、取消、出错的作者保持原时间戳、
@@ -1828,6 +1854,13 @@ class BookmarkNovelSyncService:
 
         # 5. 计算差集
         candidates = local_ids - remote_ids - existing_ids
+        # 已确认 deleted、近期复查过的候选不再逐本 novel_detail：结论早已一致，以前每轮都
+        # 重查、失败分支还不间隔（P21）。novel_status 每 KNOWN_DELETED_RECHECK_DAYS 天复查
+        # 一次，作品若被恢复，下一轮检测照常处理。
+        known_deleted = candidates & _recently_confirmed_deleted_novel_ids(self.db)
+        if known_deleted:
+            candidates -= known_deleted
+            stats["skipped_known_deleted"] = len(known_deleted)
         stats["total_checked"] = len(candidates)
         logger.info("Bookmark detection: remote=%d, local=%d, pending=%d, candidates=%d",
                      len(remote_ids), len(local_ids), len(existing_ids), len(candidates))

@@ -135,7 +135,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 ### 分批轮转与分页上限
 
-- `NOVEL_STATUS_BATCH_SIZE = 800`:`novel_status` 每轮按 `last_checked_at` 最久优先取一批,不再单次占满整个周期把其他任务挤后。
+- `NOVEL_STATUS_BATCH_SIZE = 800`:`novel_status` 每轮按 `last_checked_at` 最久优先取一批,不再单次占满整个周期把其他任务挤后。已确认 `deleted`、最近 `KNOWN_DELETED_RECHECK_DAYS = 7` 天内复查过的作品取批时就排除(名额让给后面的作品,stats 记 `deleted_recheck_deferred`),超过 7 天照常复查;待删检测的收藏候选同样跳过这些作品、不再逐本 `novel_detail`(stats 记 `skipped_known_deleted`)。`confirmed_missing` 与「已知删除不清零 missing 连击」不变。
 - `FOLLOWING_LIST_MAX_PAGES = 50`(`sync_engine.py`):关注列表枚举与作品分页上限解耦,避免 `max_pages_per_run` 把候选集截断。
 - `sync.bookmark_max_pages_per_run`:**收藏列表专用**翻页上限,留空则回落到 `max_pages_per_run`。`max_pages_per_run` 的语义是"关注作者作品列表 / 系列章节的单轮翻页上限",生产配成 2 是为了压体量;收藏复用同一个值会让每轮只看最新约 60 条就标 `truncated/incomplete`,历史收藏永远补不齐——而收藏是优先级最高的数据。解析在 `sync_engine._resolve_bookmark_max_pages`。
 - `sync.max_items_per_run` 在收藏同步里只计**真正发了详情请求、能归档**的条目:已归档跳过的不计,`content_unavailable`(作品已删或不可见,永远归档不了)也不计,但照常按 `delay_seconds_between_items` 间隔。预算只在碰到下一本**未归档**的收藏时才判定触顶,此时置 `truncated` / `incomplete` / `budget_exhausted`(日志黄色);剩下的全是已归档时不算截断。以前失效收藏占预算,攒够上限后排在后面的未归档收藏永远轮不到,而且触顶静默、日志一直绿色(审查 S8)。

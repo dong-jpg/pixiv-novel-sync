@@ -12,7 +12,11 @@ from pixiv_novel_sync.models import SourceRecord
 from pixiv_novel_sync.storage_db import Database, prepare_schema
 from pixiv_novel_sync.storage_files import FileStorage
 from pixiv_novel_sync.sync.utils import apply_pixiv_retry_patch, response_is_pixiv_error_page
-from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService, _iso_age_days
+from pixiv_novel_sync.sync_engine import (
+    BookmarkNovelSyncService,
+    _iso_age_days,
+    _recently_confirmed_deleted_novel_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -397,9 +401,21 @@ def run_novel_status_task(
     batch_size = _resolve_novel_status_batch_size(settings)
     # 本轮起始时间用于统计「还剩多少篇没轮到」，与 SQLite CURRENT_TIMESTAMP 同格式
     started_at = _db_utc_now()
+    deferred: set[int] = set()
+
+    def list_ids(db: Database) -> list[int]:
+        # 已确认 deleted、近期复查过的不进本批（P21）。在取批时排除而不是取完再丢：
+        # 丢掉的条目 last_checked_at 不会刷新，会每轮都占着队首的批次名额。
+        # 多取 len(deferred) 条，保证排除后仍能凑满一批。
+        deferred.update(_recently_confirmed_deleted_novel_ids(db))
+        ids = db.get_novel_ids_for_status_check(limit=batch_size + len(deferred))
+        return [novel_id for novel_id in ids if int(novel_id) not in deferred][:batch_size]
 
     def finalize_stats(db: Database, stats: dict[str, Any]) -> None:
-        remaining = int(db.count_novels_pending_status_check(started_at))
+        # 降频中的已删除作品本轮本来就不查，不算「待轮转」
+        remaining = max(int(db.count_novels_pending_status_check(started_at)) - len(deferred), 0)
+        if deferred:
+            stats["deleted_recheck_deferred"] = len(deferred)
         stats["batch_size"] = batch_size
         stats["remaining"] = remaining
         _report_log(
@@ -418,7 +434,7 @@ def run_novel_status_task(
         stop_requested=stop_requested,
         task_label="小说状态检查",
         total_label="小说",
-        list_ids=lambda db: db.get_novel_ids_for_status_check(limit=batch_size),
+        list_ids=list_ids,
         check_status=_check_novel_status,
         upsert_status=lambda db, item_id, status: db.upsert_novel_status(item_id, status),
         total_key="total_novels",
