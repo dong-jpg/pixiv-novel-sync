@@ -451,7 +451,9 @@ def parse_cron_expression(cron_expr: str) -> dict[str, Any] | None:
         return None
 
 
-def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: str = "UTC") -> float | None:
+def _cron_neighbor_run(
+    cron_expr: str, base_time: float | None = None, timezone: str = "UTC", *, previous: bool = False
+) -> float | None:
     """计算cron表达式的下次运行时间
     
     Args:
@@ -492,8 +494,8 @@ def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: s
             cron = croniter(cron_expr, base_dt, second_at_beginning=True)
         else:
             cron = croniter(cron_expr, base_dt)
-        next_dt = cron.get_next(datetime)
-        return next_dt.timestamp()
+        neighbor_dt = cron.get_prev(datetime) if previous else cron.get_next(datetime)
+        return neighbor_dt.timestamp()
     except Exception as exc:
         # croniter 对畸形表达式抛 CroniterNotAlphaError / CroniterBadCronError（构造时），
         # 对语法合法但永不出现的日期（如 "0 0 30 2 *" 2月30日）抛 CroniterBadDateError
@@ -501,3 +503,16 @@ def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: s
         # 的契约：保存设置时用户会收到 500 而非友好校验提示，调度循环也会整轮中断。
         logger.warning("无法解析 cron 表达式 %r: %s", cron_expr, exc)
         return None
+
+
+def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: str = "UTC") -> float | None:
+    """cron 在 base_time 之后的下一个触发时刻（时间戳）；解析失败返回 None。"""
+    return _cron_neighbor_run(cron_expr, base_time, timezone)
+
+
+def cron_to_prev_run(cron_expr: str, base_time: float | None = None, timezone: str = "UTC") -> float | None:
+    """cron 在 base_time 之前最近一个触发时刻（时间戳）；解析失败返回 None。
+
+    调度器重启补偿用：上次跑完早于这个时刻，说明这个槽被重启或崩溃错过了。
+    """
+    return _cron_neighbor_run(cron_expr, base_time, timezone, previous=True)
