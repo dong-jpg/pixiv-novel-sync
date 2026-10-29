@@ -444,92 +444,98 @@ class CatalogMixin:
 
         ``models`` 是已归一化记录（``model_key`` 键，见
         ``normalize_model_record`` 的输出），来自 Provider 发现结果。
+
+        没有变化的行不重写（P23）：原样重同步 5000 个模型时原来逐行 UPDATE，整段持
+        写锁。先一次读出该 Provider 现有的发现字段，在内存里比对，只把新增、内容变化、
+        重新出现的行交给 ``INSERT … ON CONFLICT DO UPDATE``，只把这次消失的行按 id 置
+        不可用。``updated`` 只数真正改写的行；``last_seen_at`` / ``updated_at`` 因此
+        记的是该条目发现状态最后一次变化的时间（整份目录最后同步时间看
+        ``ai_providers.models_synced_at``）。不再用 ``NOT IN (?, ?, …)`` 拼几千个
+        占位符，不依赖 SQLite 3.32 起才放宽的 999 个绑定参数上限。
         """
-        normalized_by_key: dict[str, dict[str, Any]] = {}
+        # 归一化校验与序列化只依赖输入，放在 BEGIN IMMEDIATE 之前，不占写锁。
+        discovered_fields: dict[str, tuple[Any, ...]] = {}
         for model in models:
             record = self._normalize_discovered_record(model)
-            normalized_by_key[record["model_key"]] = record
-        normalized = list(normalized_by_key.values())
-        inserted = 0
-        updated = 0
-        with self.transaction() as conn:
-            seen_keys: list[str] = []
-            for record in normalized:
-                model_key = record["model_key"]
-                seen_keys.append(model_key)
-                display_name = record["display_name"]
-                caps_json = json.dumps(
+            discovered_fields[record["model_key"]] = (
+                record["display_name"],
+                json.dumps(
                     record["capabilities"], ensure_ascii=False, separators=(",", ":")
-                )
-                context_window = record["context_window"]
-                metadata_json = record["metadata_json"]
-                existing = conn.execute(
-                    "SELECT id FROM ai_provider_models WHERE provider_id = ? AND model_key = ?",
-                    (provider_id, model_key),
-                ).fetchone()
-                if existing is None:
-                    conn.execute(
-                        """
-                        INSERT INTO ai_provider_models (
-                            provider_id, model_key, discovered, manual,
-                            discovered_available, discovered_display_name,
-                            discovered_capabilities_json, discovered_context_window,
-                            discovered_metadata_json, last_seen_at
-                        ) VALUES (?, ?, 1, 0, 1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                        """,
-                        (
-                            provider_id,
-                            model_key,
-                            display_name,
-                            caps_json,
-                            context_window,
-                            metadata_json,
-                        ),
-                    )
-                    inserted += 1
-                else:
-                    conn.execute(
-                        """
-                        UPDATE ai_provider_models
-                        SET discovered = 1,
-                            discovered_available = 1,
-                            discovered_display_name = ?,
-                            discovered_capabilities_json = ?,
-                            discovered_context_window = ?,
-                            discovered_metadata_json = ?,
-                            last_seen_at = CURRENT_TIMESTAMP,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                        """,
-                        (
-                            display_name,
-                            caps_json,
-                            context_window,
-                            metadata_json,
-                            int(existing[0]),
-                        ),
-                    )
-                    updated += 1
-
-            # 完整结果中未返回的已发现行：标记不可用
-            if seen_keys:
-                placeholders = ",".join("?" for _ in seen_keys)
-                conn.execute(
-                    f"""
-                    UPDATE ai_provider_models
-                    SET discovered_available = 0, updated_at = CURRENT_TIMESTAMP
-                    WHERE provider_id = ? AND discovered = 1
-                      AND model_key NOT IN ({placeholders})
+                ),
+                record["context_window"],
+                record["metadata_json"],
+            )
+        with self.transaction() as conn:
+            existing = {
+                row["model_key"]: row
+                for row in conn.execute(
+                    """
+                    SELECT id, model_key, discovered, discovered_available,
+                           discovered_display_name, discovered_capabilities_json,
+                           discovered_context_window, discovered_metadata_json
+                    FROM ai_provider_models
+                    WHERE provider_id = ?
                     """,
-                    [provider_id, *seen_keys],
+                    (provider_id,),
+                ).fetchall()
+            }
+            writes: list[tuple[Any, ...]] = []
+            inserted = 0
+            for model_key, fields in discovered_fields.items():
+                row = existing.get(model_key)
+                if row is None:
+                    inserted += 1
+                elif (
+                    bool(row["discovered"])
+                    and bool(row["discovered_available"])
+                    and (
+                        row["discovered_display_name"],
+                        row["discovered_capabilities_json"],
+                        row["discovered_context_window"],
+                        row["discovered_metadata_json"],
+                    ) == fields
+                ):
+                    continue
+                writes.append((provider_id, model_key, *fields))
+            if writes:
+                # 唯一一条写入语句：新行插入，冲突行（内容变化或重新出现）改写发现
+                # 字段，人工字段与用户 enabled 不在 SET 里，永不覆盖。
+                conn.executemany(
+                    """
+                    INSERT INTO ai_provider_models (
+                        provider_id, model_key, discovered, manual,
+                        discovered_available, discovered_display_name,
+                        discovered_capabilities_json, discovered_context_window,
+                        discovered_metadata_json, last_seen_at
+                    ) VALUES (?, ?, 1, 0, 1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(provider_id, model_key) DO UPDATE SET
+                        discovered = 1,
+                        discovered_available = 1,
+                        discovered_display_name = excluded.discovered_display_name,
+                        discovered_capabilities_json = excluded.discovered_capabilities_json,
+                        discovered_context_window = excluded.discovered_context_window,
+                        discovered_metadata_json = excluded.discovered_metadata_json,
+                        last_seen_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    writes,
                 )
-            else:
-                conn.execute(
+
+            # 完整结果中未返回、此前仍可用的已发现行：标记不可用
+            vanished = [
+                (int(row["id"]),)
+                for model_key, row in existing.items()
+                if model_key not in discovered_fields
+                and bool(row["discovered"])
+                and bool(row["discovered_available"])
+            ]
+            if vanished:
+                conn.executemany(
                     """
                     UPDATE ai_provider_models
                     SET discovered_available = 0, updated_at = CURRENT_TIMESTAMP
-                    WHERE provider_id = ? AND discovered = 1
+                    WHERE id = ?
                     """,
-                    (provider_id,),
+                    vanished,
                 )
-        return {"inserted": inserted, "updated": updated}
+        return {"inserted": inserted, "updated": len(writes) - inserted}
