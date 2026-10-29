@@ -415,6 +415,33 @@ def test_fixed_required_capability_needs_matching_catalog_model(
     assert snapshot.candidates[0].context_window == 4_000
 
 
+def test_matching_catalog_model_is_a_point_lookup(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P22：固定 Agent 查目录不再把整个 Provider 目录物化成 dict 再线性找。"""
+    provider_id = seed_provider(db, name="catalog-provider")
+    db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "m-routable", "manual_capabilities": ["json"]}
+    )
+    disabled = db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "m-disabled"}
+    )
+    db.update_ai_provider_model(disabled, {"enabled": 0})
+
+    def no_full_listing(*_args, **_kwargs):
+        raise AssertionError("匹配一个 model_key 不应物化整个目录")
+
+    monkeypatch.setattr(Database, "list_ai_provider_models", no_full_listing)
+
+    hit = ModelRouter._matching_catalog_model(db, provider_id, "m-routable")
+    assert hit is not None and hit["capabilities"] == ["json"]
+    # 与旧实现一致：只返回可路由条目，model_key 按字节精确比较
+    assert ModelRouter._matching_catalog_model(db, provider_id, "m-disabled") is None
+    assert ModelRouter._matching_catalog_model(db, provider_id, "M-ROUTABLE") is None
+    assert ModelRouter._matching_catalog_model(db, provider_id, "missing") is None
+
+
 def test_pool_resolution_preserves_member_then_fallback_order_and_deduplicates(
     router: ModelRouter,
     pool_agent: AIAgentConfig,

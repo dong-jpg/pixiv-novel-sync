@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from ...ai.model_catalog import (
@@ -33,6 +33,8 @@ _DISPLAY_NAME_MAX_BYTES = 800
 _CONTEXT_WINDOW_MIN = 256
 _CONTEXT_WINDOW_MAX = 10_000_000
 _METADATA_MAX_BYTES = 8192
+# 大 IN 列表的分批大小：SQLite 3.32 之前默认最多 999 个绑定参数。
+_IN_CHUNK = 900
 
 
 class CatalogMixin:
@@ -135,25 +137,97 @@ class CatalogMixin:
             ]
             if routable_only:
                 items = [item for item in items if item["routable"]]
+            counts = self._provider_model_counts(provider_id, provider_enabled)
+        return {"items": items, **counts}
 
-            counts = self.conn.execute(
-                """
-                SELECT COUNT(*) AS total,
-                       COALESCE(SUM(discovered_available = 1), 0) AS discovered_available,
-                       COALESCE(SUM(
-                           enabled = 1 AND (manual = 1 OR discovered_available = 1)
-                       ), 0) AS routable
-                FROM ai_provider_models
-                WHERE provider_id = ?
-                """,
-                (provider_id,),
-            ).fetchone()
+    def _provider_model_counts(
+        self,
+        provider_id: int,
+        provider_enabled: bool,
+    ) -> dict[str, int]:
+        counts = self.conn.execute(
+            """
+            SELECT COUNT(*) AS total,
+                   COALESCE(SUM(discovered_available = 1), 0) AS discovered_available,
+                   COALESCE(SUM(
+                       enabled = 1 AND (manual = 1 OR discovered_available = 1)
+                   ), 0) AS routable
+            FROM ai_provider_models
+            WHERE provider_id = ?
+            """,
+            (provider_id,),
+        ).fetchone()
         return {
-            "items": items,
             "total": int(counts["total"]),
             "discovered_available": int(counts["discovered_available"]),
             "routable": int(counts["routable"]) if provider_enabled else 0,
         }
+
+    def count_ai_provider_models(self, provider_id: int) -> dict[str, int]:
+        """目录的 total / discovered_available / routable 三个计数，不物化条目。
+
+        与 list_ai_provider_models 返回的计数同一条 SQL；只要计数的调用方（健康横幅）
+        用它，避免为数一个数把几千行连同两次 JSON 解析都读出来。
+        """
+        with self.read_transaction():
+            return self._provider_model_counts(
+                provider_id,
+                self._provider_enabled(provider_id),
+            )
+
+    def get_ai_provider_model_by_key(
+        self,
+        provider_id: int,
+        model_key: str,
+    ) -> dict[str, Any] | None:
+        """按 (provider_id, model_key) 点查一条目录条目，不物化整个目录。
+
+        走 UNIQUE(provider_id, model_key) 的自动索引。model_key 列是默认的 BINARY
+        排序，按字节精确匹配，与旧实现在内存里用 == 比较的结果一致（不折叠大小写）。
+        """
+        with self.read_transaction():
+            row = self.conn.execute(
+                """
+                SELECT * FROM ai_provider_models
+                WHERE provider_id = ? AND model_key = ?
+                """,
+                (int(provider_id), model_key),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._row_to_provider_model(
+                row,
+                provider_enabled=self._provider_enabled(int(provider_id)),
+            )
+
+    def get_ai_provider_models_by_ids(
+        self,
+        model_ids: Iterable[int],
+    ) -> dict[int, dict[str, Any]]:
+        """按 id 批量读目录条目（派生规则与 get_ai_provider_model 相同）。
+
+        IN 列表按 900 个一批，不依赖 SQLite 3.32 起才放宽的绑定参数上限。
+        """
+        unique_ids = list(dict.fromkeys(int(model_id) for model_id in model_ids))
+        result: dict[int, dict[str, Any]] = {}
+        provider_enabled: dict[int, bool] = {}
+        with self.read_transaction():
+            for start in range(0, len(unique_ids), _IN_CHUNK):
+                chunk = unique_ids[start:start + _IN_CHUNK]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = self.conn.execute(
+                    f"SELECT * FROM ai_provider_models WHERE id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    owner = int(row["provider_id"])
+                    if owner not in provider_enabled:
+                        provider_enabled[owner] = self._provider_enabled(owner)
+                    result[int(row["id"])] = self._row_to_provider_model(
+                        row,
+                        provider_enabled=provider_enabled[owner],
+                    )
+        return result
 
     def get_ai_provider_model(self, model_id: int) -> dict[str, Any] | None:
         row = self.conn.execute(

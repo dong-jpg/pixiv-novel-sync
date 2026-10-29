@@ -460,11 +460,11 @@ class ModelRouter:
         provider_id: int,
         model_key: str,
     ) -> dict[str, Any] | None:
-        result = db.list_ai_provider_models(provider_id, routable_only=True)
-        return next(
-            (item for item in result["items"] if item["model_key"] == model_key),
-            None,
-        )
+        # 按 (provider_id, model_key) 点查。旧实现把整个 Provider 目录物化成 dict
+        # （每行两次 JSON 解析）再线性找：5000 个模型时单次约 1 s，ai_health 还按
+        # 每个固定 Agent 再来一遍。(provider_id, model_key) 唯一，结果与旧实现一致。
+        item = db.get_ai_provider_model_by_key(provider_id, model_key)
+        return item if item is not None and item["routable"] else None
 
     @classmethod
     def _resolve_fixed(
