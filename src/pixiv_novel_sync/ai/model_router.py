@@ -24,6 +24,21 @@ from .providers import AIProvider, AIProviderError
 
 logger = logging.getLogger(__name__)
 
+
+def _utc_now() -> datetime:
+    """路由截止判定用的当前时间（单列出来，测试可以换成可控时钟）。"""
+    return datetime.now(timezone.utc)
+
+
+_ROUTE_DEADLINE_MESSAGE = "AI job 已超过路由截止时间"
+# 每个终态 cancelled 都写明原因：截止超时走 route_budget_exhausted（failed /
+# partial），只有真正的取消才是 cancelled，ai_jobs 里两者才能区分。
+_CANCEL_MESSAGES = {
+    "closed": "cancelled: AI 服务已关闭，任务中止",
+    "cancelled": "cancelled: 任务已取消",
+    "aborted": "cancelled: 调用方中止了路由（流被关闭）",
+}
+
 _ROUTE_STAGES = {"internal", "main", "validation"}
 _CONTEXT_WINDOW_MIN = 256
 _CONTEXT_WINDOW_MAX = 10_000_000
@@ -837,7 +852,68 @@ class ModelRouter:
             deadline = deadline.replace(tzinfo=timezone.utc)
         else:
             deadline = deadline.astimezone(timezone.utc)
-        return datetime.now(timezone.utc) >= deadline
+        return _utc_now() >= deadline
+
+    def _stop_reason(
+        self,
+        request: RouteRequest,
+    ) -> Literal["closed", "deadline", "cancelled"]:
+        """``_request_cancelled`` 为真时，判断是哪一种停止。
+
+        路由关闭优先；其次是截止时间（心跳在截止后也会置取消标记，所以先看截止，
+        超时才不会被记成取消）；剩下的是调用方取消或 ai_jobs.cancel_requested。
+        """
+        if self._closed.is_set():
+            return "closed"
+        try:
+            if self._deadline_expired(request.route_deadline_at):
+                return "deadline"
+        except ModelRouteError:
+            pass
+        return "cancelled"
+
+    def _finish_route_deadline(
+        self,
+        db: Any,
+        request: RouteRequest,
+        *,
+        attempt_index: int | None,
+        output_started: bool,
+        output_parts: list[str],
+        started_at: float,
+    ) -> RouteResult:
+        """运行中到达截止时间：按 MODEL_ROUTING_GUIDE 4.3 以 route_budget_exhausted
+        失败；主阶段已有输出时为 partial，保留已生成正文。"""
+        latency_ms = max(0, int((time.monotonic() - started_at) * 1000))
+        partial = request.stage == "main" and output_started
+        if attempt_index is not None:
+            db.finish_ai_model_attempt(
+                request.job_id,
+                attempt_index,
+                request.owner_token,
+                "partial" if partial else "failed",
+                error_scope="provider",
+                error_message=_ROUTE_DEADLINE_MESSAGE,
+                error_category="route_budget_exhausted",
+                finish_reason="error",
+                output_started=output_started,
+                latency_ms=latency_ms,
+            )
+        if partial:
+            db.finish_ai_job_cas(
+                request.job_id,
+                request.owner_token,
+                "partial",
+                output_text="".join(output_parts),
+                error_message=f"route_budget_exhausted: {_ROUTE_DEADLINE_MESSAGE}",
+            )
+            return self._terminal_race_result(db, request)
+        return self._finish_job_failure(
+            db,
+            request,
+            message=_ROUTE_DEADLINE_MESSAGE,
+            category="route_budget_exhausted",
+        )
 
     def _active_route_state(self, db: Any, request: RouteRequest) -> dict[str, Any]:
         state = db.get_ai_job_route_state(request.job_id, request.owner_token)
@@ -847,7 +923,7 @@ class ModelRouter:
         if stored_hash != request.candidate_snapshot.snapshot_hash:
             raise ModelRouteConflictError("AI job 候选快照不匹配")
         if self._deadline_expired(state.get("route_deadline_at")):
-            raise AIRouteBudgetExhausted("AI job 已超过路由截止时间")
+            raise AIRouteBudgetExhausted(_ROUTE_DEADLINE_MESSAGE)
         return state
 
     @staticmethod
@@ -1202,10 +1278,19 @@ class ModelRouter:
                     )
                     continue
                 if self._request_cancelled(request):
+                    reason = self._stop_reason(request)
+                    if reason == "deadline":
+                        return self._finish_job_failure(
+                            db,
+                            request,
+                            message=_ROUTE_DEADLINE_MESSAGE,
+                            category="route_budget_exhausted",
+                        )
                     db.finish_ai_job_cas(
                         request.job_id,
                         request.owner_token,
                         "cancelled",
+                        error_message=_CANCEL_MESSAGES[reason],
                     )
                     return self._terminal_race_result(db, request)
 
@@ -1373,6 +1458,20 @@ class ModelRouter:
                         error.category == "cancelled"
                         or error.finish_reason == "cancelled"
                     )
+                    stop_reason = self._stop_reason(request) if cancelled else None
+                    if stop_reason == "deadline":
+                        # 截止时间到达时 Provider 与路由都按「已取消」停下；这里改记
+                        # route_budget_exhausted，否则超时与用户取消在 ai_jobs 里无法区分。
+                        attempt_index = current_attempt
+                        current_attempt = None
+                        return self._finish_route_deadline(
+                            db,
+                            request,
+                            attempt_index=attempt_index,
+                            output_started=current_output_started,
+                            output_parts=output_parts,
+                            started_at=started_at,
+                        )
                     if cancelled:
                         db.finish_ai_model_attempt(
                             request.job_id,
@@ -1391,6 +1490,7 @@ class ModelRouter:
                             request.job_id,
                             request.owner_token,
                             "cancelled",
+                            error_message=_CANCEL_MESSAGES[stop_reason or "cancelled"],
                         )
                         return self._terminal_race_result(db, request)
 
@@ -1543,6 +1643,7 @@ class ModelRouter:
                 request.job_id,
                 request.owner_token,
                 "cancelled",
+                error_message=_CANCEL_MESSAGES["aborted"],
             )
             raise
         finally:
