@@ -990,6 +990,10 @@ class OpenAICompatibleProvider(AIProvider):
                         if not isinstance(delta, Mapping):
                             continue
                         text = delta.get("content") or ""
+                        # 与非流式分支一致：有的网关把 content 发成数组分段，
+                        # 当正文交出去会让下游拼接抛 TypeError。
+                        if not isinstance(text, str):
+                            text = ""
                         if text:
                             emitted_delta = True
                             produced_output = True
@@ -1275,6 +1279,8 @@ class AnthropicProvider(AIProvider):
                         elif event_type == "content_block_delta":
                             delta = event.get("delta") or {}
                             text = (delta.get("text") or "") if isinstance(delta, Mapping) else ""
+                            if not isinstance(text, str):
+                                text = ""
                             if text:
                                 emitted_delta = True
                                 produced_output = True

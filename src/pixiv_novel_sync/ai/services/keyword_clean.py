@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 from typing import Any
 
@@ -7,6 +8,8 @@ from ..model_router import RouteResult
 from ..models import AIStreamChunk
 from ..prompts import build_keyword_clean_messages
 from .core import RouteJobContext
+
+logger = logging.getLogger(__name__)
 
 
 class AIKeywordCleanMixin:
@@ -208,14 +211,25 @@ class AIKeywordCleanMixin:
             )
             return cleaned
         except Exception as exc:
+            # 任何异常都降级，不影响偏好分析主流程。这个分支自己不能再抛：
+            # 触发它的往往正是坏分段（非字符串正文）或写库失败，收口时再拼一次、
+            # 再写一次库都可能原样失败。
             if route_context is not None:
-                self._finish_route_job(
-                    db,
-                    route_context,
-                    "failed",
-                    "".join(output_parts),
-                    error_message=str(exc),
-                )
-            return None  # 任何异常都降级，不影响偏好分析主流程
+                try:
+                    self._finish_route_job(
+                        db,
+                        route_context,
+                        "failed",
+                        "".join(part for part in output_parts if isinstance(part, str)),
+                        error_message=str(exc),
+                    )
+                except Exception:
+                    logger.warning(
+                        "关键词清洗失败后收口 AI 任务也失败（job_id=%s，原始错误：%s）",
+                        route_context.job_id,
+                        exc,
+                        exc_info=True,
+                    )
+            return None
         finally:
             db.close()
