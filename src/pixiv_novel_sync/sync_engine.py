@@ -78,6 +78,12 @@ FOLLOWING_LIST_MAX_PAGES = 50
 # 占用从每天约 6.6 个槽位压到约 2.8 个，省下的槽位归真实作者。
 NO_NOVELS_RECHECK_DAYS = 30
 
+# 同一关注作者的作品列表连续拉取失败多少次后，照常写入 user_last_synced（推到队尾）。
+# user_last_synced 只在作者扫描自然结束时写：被让位、取消、出错的作者保持原时间戳、
+# 下一轮仍排在前面。但一个总是失败的作者不能永远霸占队首，所以失败计数存在
+# following_novels 水位的 user_fail_streak 里，满 3 次照常写，成功一次清零。
+FOLLOWING_AUTHOR_MAX_FAIL_STREAK = 3
+
 T = TypeVar('T')
 
 
@@ -696,14 +702,23 @@ class BookmarkNovelSyncService:
             if isinstance(raw_last_synced, dict)
             else {}
         )
+        raw_fail_streak = watermark.get("user_fail_streak")
+        user_fail_streak: dict[str, int] = {}
+        if isinstance(raw_fail_streak, dict):
+            for uid, count in raw_fail_streak.items():
+                try:
+                    user_fail_streak[str(uid)] = int(count)
+                except (TypeError, ValueError):
+                    continue
         current_user_max_ids: dict[str, int] = {}
         current_user_last_synced: dict[str, str] = {}
+        current_fail_streak: dict[str, int] = {}
         existing_streak_limit = 30
 
         def _save_watermark():
             # 即使本轮一本小说都没抓到（全跳过/作者没有作品），也必须落盘轮转时间，
             # 否则下一轮又会挑中同一批作者。
-            if not current_user_max_ids and not current_user_last_synced:
+            if not current_user_max_ids and not current_user_last_synced and not current_fail_streak:
                 return
             merged = dict(user_watermarks)
             for uid, new_max in current_user_max_ids.items():
@@ -712,10 +727,14 @@ class BookmarkNovelSyncService:
                     merged[uid] = new_max
             merged_last_synced = dict(user_last_synced)
             merged_last_synced.update(current_user_last_synced)
+            merged_fail_streak = dict(user_fail_streak)
+            merged_fail_streak.update(current_fail_streak)
             self.db.update_watermark("following_novels", {
                 "last_sync_time": datetime.now(timezone.utc).isoformat(),
                 "user_max_ids": merged,
                 "user_last_synced": merged_last_synced,
+                # 成功即清零的计数不必留着
+                "user_fail_streak": {uid: n for uid, n in merged_fail_streak.items() if n > 0},
             })
 
         safety_limit = max_pages or 100  # 单作者作品列表的翻页上限兜底，防止自引用 next_url 死循环
@@ -723,8 +742,13 @@ class BookmarkNovelSyncService:
         following_list_page_limit = FOLLOWING_LIST_MAX_PAGES
         user_progress_total = users_limit or 0
 
-        def _sync_author(user: Any) -> None:
-            """同步单个关注作者的作品列表（结果原地累加进 stats）。"""
+        def _scan_author(user: Any) -> bool | None:
+            """同步单个关注作者的作品列表（结果原地累加进 stats）。
+
+            返回 True 表示扫描自然结束（含配额、翻页上限、连续已存在早停），False 表示
+            作品列表拉取失败，None 表示没有作者 ID、什么也没做。让位与取消直接抛
+            InterruptedError。轮转时间戳由 _sync_author 按返回值决定写不写。
+            """
             nonlocal users_processed, synced_items
 
             author_id = getattr(user, "id", None)
@@ -734,8 +758,7 @@ class BookmarkNovelSyncService:
             author_name = getattr(user, "name", str(author_id))
             stats["following_users_scanned"] = stats.get("following_users_scanned", 0) + 1
             users_processed += 1
-            # 记录"本轮扫过该作者"，供下一轮按最久未同步轮转
-            current_user_last_synced[str(author_id)] = datetime.now(timezone.utc).isoformat()
+            author_fetch_failed = False
 
             logger.info("Syncing followed user novels for user_id=%s name=%s", author_id, author_name)
 
@@ -773,6 +796,7 @@ class BookmarkNovelSyncService:
                     stats["failed"] = int(stats.get("failed") or 0) + 1
                     stats["incomplete"] = True
                     stats["aborted_reason"] = "fetch_failed"
+                    author_fetch_failed = True
                     break
                 author_page_count += 1
                 if response_is_pixiv_error_page(novels_result):
@@ -782,6 +806,7 @@ class BookmarkNovelSyncService:
                     stats["failed"] = int(stats.get("failed") or 0) + 1
                     stats["incomplete"] = True
                     stats["aborted_reason"] = "fetch_failed"
+                    author_fetch_failed = True
                     break
                 novels = getattr(novels_result, "novels", []) or []
 
@@ -891,6 +916,46 @@ class BookmarkNovelSyncService:
                     if progress_callback:
                         progress_callback("rate_limit", {"seconds": page_delay})
                     _sleep_with_progress_cancel(page_delay, progress_callback)
+
+            return not author_fetch_failed
+
+        def _record_author_outcome(author_key: str, scanned_at: str, finished: bool) -> None:
+            if finished:
+                current_user_last_synced[author_key] = scanned_at
+                if user_fail_streak.get(author_key) or current_fail_streak.get(author_key):
+                    current_fail_streak[author_key] = 0
+                return
+            streak = int(current_fail_streak.get(author_key, user_fail_streak.get(author_key, 0))) + 1
+            current_fail_streak[author_key] = streak
+            if streak >= FOLLOWING_AUTHOR_MAX_FAIL_STREAK:
+                logger.warning(
+                    "关注作者 %s 连续 %d 次拉取作品列表失败，照常推到轮转队尾", author_key, streak
+                )
+                current_user_last_synced[author_key] = scanned_at
+
+        def _sync_author(user: Any) -> None:
+            """扫描一个作者，并按结果决定是否写 user_last_synced。
+
+            以前在扫描开始时就写：被让位、取消或出错的作者都算扫过，推后整圈（约 12.8 天），
+            正是 S1 的放大器。现在只在自然结束时写；拉取失败记一次失败，连续
+            FOLLOWING_AUTHOR_MAX_FAIL_STREAK 次照常写；让位/取消（InterruptedError）不写也不计数。
+            时间戳仍取扫描开始时刻，与旧语义一致。
+            """
+            author_id = getattr(user, "id", None)
+            if author_id is None:
+                return
+            author_key = str(int(author_id))
+            scanned_at = datetime.now(timezone.utc).isoformat()
+            try:
+                finished = _scan_author(user)
+            except InterruptedError:
+                raise
+            except Exception:
+                _record_author_outcome(author_key, scanned_at, finished=False)
+                raise
+            if finished is None:
+                return
+            _record_author_outcome(author_key, scanned_at, finished=bool(finished))
 
         if users_limit > 0:
             # 限量模式：先取回完整关注列表，再按"最久未同步优先"挑本轮要跑的作者。

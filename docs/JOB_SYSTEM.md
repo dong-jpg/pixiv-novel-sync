@@ -141,7 +141,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 - `sync.max_items_per_run` 在收藏同步里只计**真正发了详情请求、能归档**的条目:已归档跳过的不计,`content_unavailable`(作品已删或不可见,永远归档不了)也不计,但照常按 `delay_seconds_between_items` 间隔。预算只在碰到下一本**未归档**的收藏时才判定触顶,此时置 `truncated` / `incomplete` / `budget_exhausted`(日志黄色);剩下的全是已归档时不算截断。以前失效收藏占预算,攒够上限后排在后面的未归档收藏永远轮不到,而且触顶静默、日志一直绿色(审查 S8)。
 - `sync.following_max_novels_per_author`:**单个关注作者**每轮的同步上限,留空 = 不限。`max_items_per_run` 只在切换作者**之前**检查,单个作者内部没有任何上限,于是第一个高产作者就把整轮预算吃光——生产实测 256 个关注作者每轮只覆盖 1 个,轮完一圈要 95 天。撞到配额是跳到下一个作者,不是结束整轮。解析在 `sync_engine._resolve_following_author_quota`;整轮硬顶(`_resolve_following_run_cap`,取 配额×users_limit×1.5)只兜异常。
 - `sync.series_max_pages_per_run`:**系列章节专用**翻页上限,留空则回落到 `max_pages_per_run`。系列章节数远超单个作者的单轮作品体量,共用那个上限会把长系列永久截断,而且每轮都从 watchlist 头部重来、永远在同一页触顶:生产实测每轮 `truncated_series=2`,8 个订阅系列长期缺 76 章,高频重跑也补不齐。解析在 `sync_engine._resolve_series_max_pages`。
-- 关注作者同步按「最久未同步」优先轮转,watermark 兼容旧格式。
+- 关注作者同步按「最久未同步」优先轮转,watermark 兼容旧格式。`user_last_synced` 只在作者扫描**自然结束**时写(含配额、翻页上限、连续已存在早停);作品列表拉取失败记进同一水位的 `user_fail_streak`,连续 `FOLLOWING_AUTHOR_MAX_FAIL_STREAK = 3` 次照常写入(防止坏作者霸占队首),成功一次清零;被让位或取消的作者不写也不计数。以前扫描一开始就写,出错或被打断的作者也推后整圈。
 - 调度器从 `task_logs` 恢复上次完成时间,重启不再把所有任务推迟一整个周期;逾期任务错峰补偿。cron 任务同样补偿:`settings.cron_to_prev_run` 求最近一个已过去的槽,上次跑完(`succeeded` / `partial`)早于它就补跑一次(只补一次,不追补每个错过的槽),否则照常等下一个槽;没有历史(首次部署)不补。以前 cron 任务完全不恢复,被重启或 `./update.sh` 打断的那一轮直接丢掉,要等下一个槽。
 
 ## 3.6 任务优先级与让位(`web/managers.py`)
