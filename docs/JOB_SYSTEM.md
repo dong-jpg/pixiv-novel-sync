@@ -173,6 +173,8 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 让位标记是一次性的(`_consume_preemption_flag`),且只在 `submitted=True` 时消费——否则"反复提交失败"会悄悄把连续让位计数清零绕过护栏。任务完整跑完一轮时同一个方法负责清零计数。
 
+**两道护栏的关系(审查 2026-10-28)**:让位后的续跑排在 600 s 后(`SCHEDULER_PREEMPT_RETRY_SECONDS`),必然落在 6 小时冷却期(`SCHEDULER_PREEMPT_COOLDOWN_SECONDS`)之内,所以续跑那一轮 `_may_preempt` 一定返回 False、一定能跑完,跑完即把连续让位计数清零。日常起作用的是冷却期;`SCHEDULER_MAX_CONSECUTIVE_PREEMPTIONS = 2` 只在续跑开始时冷却期已经过去才可能被用到:续跑那一轮本身跑了接近 6 小时以上,或者槽一直被占、续跑拖到 6 小时后才开始。两者都保留,行为不变;改这三个常量时要一起看,`tests/test_preemption_guardrails.py` 钉住了「续跑落在冷却期内」这个前提。
+
 ## 4. 新增 task_type 的步骤
 
 以字符串 `"my_task"` 为例:
