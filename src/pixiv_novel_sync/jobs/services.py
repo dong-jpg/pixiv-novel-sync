@@ -8,10 +8,11 @@ from time import perf_counter
 from typing import Any
 
 from pixiv_novel_sync.auth import PixivAuthManager
+from pixiv_novel_sync.models import SourceRecord
 from pixiv_novel_sync.storage_db import Database, prepare_schema
 from pixiv_novel_sync.storage_files import FileStorage
 from pixiv_novel_sync.sync.utils import apply_pixiv_retry_patch, response_is_pixiv_error_page
-from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
+from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService, _iso_age_days
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,14 @@ MISSING_STATUSES = frozenset({"deleted", "suspended"})
 USER_BACKUP_FAILURE_MIN_SAMPLE = 10
 USER_BACKUP_MAX_FAILED_NOVELS = 10
 USER_BACKUP_MAX_FAILURE_RATIO = 0.2
+
+# 全量备份平时只补没归档完整的作品，每位作者每 7 天全部重抓一次（审查性能 P19）。
+# 全部重抓保留为唯一会重抓已归档正文的路径：作者改了正文、或 S2 那种被错误页覆写成
+# 占位数据（title=novel_<id>、user_id=0，正文仍在所以 archive_complete 为真）的作品，
+# 只能靠它修回。上次全部重抓的时间按作者记在这个水位里，只有该作者那一轮完整跑完
+# （没停、没失败、没触顶）才更新。
+USER_BACKUP_FULL_REFRESH_DAYS = 7
+USER_BACKUP_FULL_REFRESH_WATERMARK = "user_backup_full_refresh"
 
 # 小说状态检查每轮的批大小。全量 6971 篇（每篇间隔 2 秒）单轮要跑满 4 小时，
 # 既占死任务槽又是限流诱因；分批后单轮耗时可控，多轮按 last_checked_at 轮转覆盖全库。
@@ -160,10 +169,15 @@ def run_user_backup_task(
         )
         service.stop_requested = stop_requested
         user_name = _lookup_user_name(db, user_id)
-        _report_log(reporter, "info", f"开始用户全量备份: {user_name} ({user_id})")
+        full_refresh = _needs_full_refresh(_load_full_refresh_marks(db), user_id)
+        mode_label = "全部重抓" if full_refresh else "增量：已归档的跳过"
+        _report_log(reporter, "info", f"开始用户全量备份: {user_name} ({user_id})（{mode_label}）")
+        item_delay = float(getattr(settings.sync, "delay_seconds_between_items", 0) or 0)
 
         total_novels = 0
         total_skipped = 0
+        total_skipped_archived = 0
+        visited = 0
         total_assets = 0
         total_failed = 0
         processed = 0
@@ -213,6 +227,28 @@ def run_user_backup_task(
                 if stop_requested is not None and stop_requested():
                     stopped = True
                     break
+                visited += 1
+                novel_id = int(novel.id)
+
+                if not full_refresh and service._archive_complete_on_disk(
+                    novel_id, settings.sync.download_assets
+                ):
+                    # 纯本地判定，不发请求、不间隔；来源照常登记（与以前重访时一致）
+                    with db.transaction():
+                        db.upsert_source(
+                            SourceRecord(novel_id=novel_id, source_type="user_backup", source_key=str(user_id))
+                        )
+                        db.touch_novel(novel_id)
+                    total_skipped_archived += 1
+                    _report_progress(
+                        reporter,
+                        phase="user_backup",
+                        current=visited,
+                        total=total_seen,
+                        current_novel=str(getattr(novel, "title", novel_id)),
+                        author=user_name,
+                    )
+                    continue
 
                 counters = service._sync_novel(
                     novel,
@@ -243,11 +279,15 @@ def run_user_backup_task(
                 _report_progress(
                     reporter,
                     phase="user_backup",
-                    current=processed,
+                    current=visited,
                     total=total_seen,
                     current_novel=str(getattr(novel, "title", getattr(novel, "id", ""))),
                     author=user_name,
                 )
+                # 以前逐本没有间隔，是仓库里唯一不遵守请求间隔的批量路径（P19）
+                if item_delay > 0 and _sleep_with_cancel(item_delay, stop_requested):
+                    stopped = True
+                    break
 
             if stopped:
                 break
@@ -258,16 +298,24 @@ def run_user_backup_task(
                     stopped = True
                     break
 
+        completed = not stopped and not total_failed and not total_failed_page and not truncated_by_page_cap
+        if full_refresh and completed:
+            _mark_full_refresh(db, user_id)
+        if not full_refresh:
+            mode_label = f"增量：跳过已归档 {total_skipped_archived} 本"
         if stopped:
             _report_log(reporter, "info", f"用户全量备份已停止: {user_name} ({user_id})")
         elif total_failed or total_failed_page:
-            _report_log(reporter, "warning", f"用户全量备份部分完成: {user_name} ({user_id}), 同步 {total_novels} 本, 失败 {total_failed} 本")
+            _report_log(reporter, "warning", f"用户全量备份部分完成: {user_name} ({user_id}), 同步 {total_novels} 本, 失败 {total_failed} 本（{mode_label}）")
         else:
-            _report_log(reporter, "success", f"用户全量备份完成: {user_name} ({user_id}), 同步 {total_novels} 本")
+            _report_log(reporter, "success", f"用户全量备份完成: {user_name} ({user_id}), 同步 {total_novels} 本（{mode_label}）")
         stats = {
             "user_id": user_id,
             "novels": total_novels,
             "skipped": total_skipped,
+            # 已归档、本轮没发请求就跳过的；全部重抓的轮次恒为 0
+            "skipped_archived": total_skipped_archived,
+            "full_refresh": full_refresh,
             "assets_downloaded": total_assets,
             "stopped": stopped,
         }
@@ -290,6 +338,33 @@ def run_user_backup_task(
         return stats
     finally:
         db.close()
+
+
+def _load_full_refresh_marks(db: Any) -> dict[str, str]:
+    """读各作者上次全部重抓的时间；读不到一律当没有（于是全部重抓，宁多勿漏）。"""
+    try:
+        raw = db.get_watermark(USER_BACKUP_FULL_REFRESH_WATERMARK)
+    except Exception as exc:
+        logger.warning("读取全量备份刷新水位失败，本轮全部重抓: %s", exc)
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    marks = raw.get("full_refresh_at")
+    return {str(k): str(v) for k, v in marks.items()} if isinstance(marks, dict) else {}
+
+
+def _needs_full_refresh(marks: dict[str, str], user_id: int) -> bool:
+    return _iso_age_days(marks.get(str(int(user_id)))) >= USER_BACKUP_FULL_REFRESH_DAYS
+
+
+def _mark_full_refresh(db: Any, user_id: int) -> None:
+    marks = _load_full_refresh_marks(db)
+    marks[str(int(user_id))] = datetime.now(timezone.utc).isoformat()
+    try:
+        db.update_watermark(USER_BACKUP_FULL_REFRESH_WATERMARK, {"full_refresh_at": marks})
+    except Exception as exc:
+        # 写不进去只会让下一轮再全部重抓一次，不影响本轮结果
+        logger.warning("记录全量备份刷新时间失败: %s", exc)
 
 
 def run_user_status_task(

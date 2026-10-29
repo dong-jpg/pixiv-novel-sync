@@ -674,6 +674,9 @@ def test_run_user_backup_task_syncs_target_user_novels_with_expected_options(set
         "user_id": 202,
         "novels": 2,
         "skipped": 0,
+        # 没有上次全部重抓的记录 => 本轮全部重抓（P19）
+        "skipped_archived": 0,
+        "full_refresh": True,
         "assets_downloaded": 4,
         "stopped": False,
         "rescue_catalog_items": 7,
@@ -1038,6 +1041,9 @@ def test_run_user_backup_task_stops_before_syncing_next_page_and_closes_db(setti
         "user_id": 101,
         "novels": 2,
         "skipped": 0,
+        # 没有上次全部重抓的记录 => 本轮全部重抓（P19）
+        "skipped_archived": 0,
+        "full_refresh": True,
         "assets_downloaded": 4,
         "stopped": True,
     }
@@ -1057,6 +1063,9 @@ def test_run_user_backup_task_stops_before_syncing_next_novel_and_closes_db(sett
         "user_id": 101,
         "novels": 1,
         "skipped": 0,
+        # 没有上次全部重抓的记录 => 本轮全部重抓（P19）
+        "skipped_archived": 0,
+        "full_refresh": True,
         "assets_downloaded": 2,
         "stopped": True,
     }
