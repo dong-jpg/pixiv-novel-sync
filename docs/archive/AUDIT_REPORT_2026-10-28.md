@@ -142,7 +142,7 @@ AI 子系统（均用临时库加假 HTTP 层或离线纯函数复现，没发�
 
 可直接删除（整仓 grep 无生产调用、无测试锁定）：
 
-- `jobs/services.py:_list_all_users`；`storage/rescue.py:has_rescue_series_cover`（只在注释里被提到）；`webapp.py` 的 `_AutoSyncSchedulerOwner.sync_job_manager`、`app.config["run_shared_job"]`、认证门里的 `/static/` 豁免（包内没有 static 目录）；`/api/save-token` 里永不成立的 `user_id <= 0` 分支。
+- `jobs/services.py:_list_all_users`；`storage/rescue.py:has_rescue_series_cover`（只在注释里被提到）；`webapp.py` 的 `_AutoSyncSchedulerOwner.sync_job_manager`、`app.config["run_shared_job"]`；~~认证门里的 `/static/` 豁免~~（**更正 2026-10-29：不要删**。审查时包内没有 static 目录；合并静态 CSS 后 `static/css/tailwind.css` 要在登录前加载，`token_login.html` 也继承 `base.html`）；`/api/save-token` 里永不成立的 `user_id <= 0` 分支。
 - `web/utils.py:_external_base_url` → `OAuthTask.callback_url` → `_build_login_url(callback_url=…)` 整条链与 `oauth_helper.py:pixiv_callback_url` 字段：拼出的 `/oauth/callback` 指向已删除的路由，前端不读；`.env.example` 的 `PIXIV_EXTERNAL_BASE_URL` 已改注为「历史遗留」，删代码时一并删除。
 - `token_login.html` 的 `?oauth_task=` / `?error=` 分支及其唯一使用的 `GET /oauth/task/<id>`（与 `/api/token-jobs/<id>` 逐字相同）。
 - `dashboard_follows.html` 的「已清空 / cleared」tab（没有任何代码写入该状态）；`dashboard_novels.html:formatCatalogDate` 里写成 `\\d` 的偏移量正则永不匹配；`window.aiApi.preferenceProfiles`；`base.html` 里没有模板使用的 `library-hero/subtitle/panel/title/input/table`（删前核对 style guide 与 `test_frontend_library_os.py`）。
