@@ -35,6 +35,22 @@ def test_sync_bookmarks_complete_keeps_success_exit(monkeypatch, stats):
     assert cli.main() is None
 
 
+@pytest.mark.parametrize("stats", [
+    {"incomplete": True, "aborted_reason": "fetch_failed"},
+    {"incomplete": True},
+    {"aborted_reason": "network_error"},
+])
+def test_sync_bookmarks_incomplete_exits_nonzero(monkeypatch, stats):
+    """S13：incomplete / aborted_reason 也要退出 1，供遗留定时器识别失败。"""
+    monkeypatch.setattr(sys, "argv", ["pixiv-novel-sync", "sync-bookmarks"])
+    monkeypatch.setattr(cli, "load_settings", lambda **kwargs: SimpleNamespace(log_level="INFO"))
+    monkeypatch.setattr(cli, "configure_logging", lambda level: None)
+    monkeypatch.setattr(quick_sync, "run_bookmark_sync", lambda settings: stats)
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+
+
 @pytest.mark.parametrize("args", [[], ["unknown-command"]])
 def test_cli_parser_rejects_missing_or_unknown_command_before_loading_settings(monkeypatch, args):
     monkeypatch.setattr(sys, "argv", ["pixiv-novel-sync", *args])
