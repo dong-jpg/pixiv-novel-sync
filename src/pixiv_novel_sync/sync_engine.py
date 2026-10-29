@@ -312,7 +312,8 @@ class BookmarkNovelSyncService:
         self.rate_limiter = RateLimiter(default_delay=self.settings.sync.delay_seconds_between_pages)
 
         # 动态包装API核心方法,自动处理429和网络错误重试。
-        # 补丁幂等：service 与状态检查任务共用同一 api 实例时不会叠加包装。
+        # 补丁幂等：service 与状态检查任务共用同一 api 实例时不会叠加包装；
+        # 取消回调每次都重绑，所以 _login 先打过补丁也不影响这里接上任务的取消。
         apply_pixiv_retry_patch(
             self.api,
             stop_requested=lambda: bool(self.stop_requested and self.stop_requested()),

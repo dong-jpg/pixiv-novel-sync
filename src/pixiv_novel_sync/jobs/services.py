@@ -500,6 +500,9 @@ def _run_user_status_like_task(
     total_key: str,
 ) -> dict[str, Any]:
     api = _login(settings)
+    # 状态检查不经过 BookmarkNovelSyncService，取消回调只能在这里绑到重试补丁上，
+    # 否则 user_detail 的 429/网络退避是一整段不可取消的 sleep（S7）。
+    apply_pixiv_retry_patch(api, stop_requested=stop_requested)
     _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
@@ -540,6 +543,8 @@ def _run_status_task(
     build_already_missing: Callable[[Database], Callable[[Any], bool]] | None = None,
 ) -> dict[str, Any]:
     api = _login(settings)
+    # 同 _run_user_status_like_task：把任务的取消回调绑到重试补丁上
+    apply_pixiv_retry_patch(api, stop_requested=stop_requested)
     _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
@@ -612,7 +617,8 @@ def _login(settings: Any) -> Any:
     # 统一给 api 打重试补丁：状态检查（user_detail）等不经过
     # BookmarkNovelSyncService 的调用点以前完全没有重试/退避保护，
     # 瞬时网络错误直接进 unknown 计数或空页路径。补丁幂等，service
-    # 构造时会再打一次但不会叠加。
+    # 构造时会再打一次但不会叠加；这里不带取消回调，调用方随后重绑
+    # （service 构造或 apply_pixiv_retry_patch(api, stop_requested=...)）。
     apply_pixiv_retry_patch(api)
     return api
 
