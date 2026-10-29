@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from typing import Any
 
 from ..model_router import RouteResult
@@ -30,6 +30,7 @@ class AIKeywordCleanMixin:
         top_p: float | None = None,
         max_tokens: int | None = None,
         forward_delta: bool = True,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> Generator[AIStreamChunk, None, RouteResult]:
         stream = self._stream_route(
             context,
@@ -38,6 +39,7 @@ class AIKeywordCleanMixin:
             temperature=temperature,
             top_p=top_p,
             max_tokens=max_tokens,
+            is_cancelled=is_cancelled,
         )
         try:
             while True:
@@ -72,12 +74,18 @@ class AIKeywordCleanMixin:
         raw_keywords: list[str],
         tags: list[str] | None = None,
         agent_id: int | None = None,
+        *,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> dict[str, Any] | None:
         """#10：用 AI 把机械分词得到的噪声高频词清洗成可搜索关键词（同步调用）。
 
         优雅降级：未配置可用 Provider/Agent、调用失败或解析失败时返回 None，
         调用方应保留原始 top_keywords 不受影响。返回
         {"keywords": [...], "dropped_sample": [...]}。
+
+        ``is_cancelled`` 传进路由：取消或调度让位时在流式下一帧、重试退避分片或
+        候选之间停下，AI 任务记 cancelled，这里返回 None；调用方自己再查一次取消
+        信号决定任务终态（偏好分析在发布画像前会查）。
         """
         import json
         import re
@@ -127,6 +135,7 @@ class AIKeywordCleanMixin:
                 top_p=0.9,
                 max_tokens=min(1500, route_context.prompt_budget.output_reserve),
                 forward_delta=False,
+                is_cancelled=is_cancelled,
             )
             while True:
                 try:

@@ -291,3 +291,52 @@ def test_except_branch_swallows_a_failing_terminal_write(
 
     assert [item["status"] for item in finished] == ["failed"]
     assert finished[0]["output_text"] == "半截"
+
+
+# ── A5：取消回调传进路由 ─────────────────────────────────────────
+
+
+class CancelledMidStream(FakeHTTPResponse):
+    """先发一段正文，再「等」外部取消；取消传不进路由时会一路读完并成功。"""
+
+    def __init__(self, on_first_chunk) -> None:
+        super().__init__(lines=[])
+        self._on_first_chunk = on_first_chunk
+
+    def iter_content(self, chunk_size: int | None = None):
+        del chunk_size
+        yield (sse({"choices": [{"delta": {"content": '{"keywords":'}}]}) + "\n").encode("utf-8")
+        self._on_first_chunk()
+        yield (
+            sse({"choices": [{"delta": {"content": '["纯爱"]}'}, "finish_reason": "stop"}]})
+            + "\n"
+        ).encode("utf-8")
+        yield b"data: [DONE]\n"
+
+
+def test_cancel_callback_reaches_the_route(tmp_path: Path, http: dict[str, Any]) -> None:
+    """A5：偏好分析的取消与调度让位要传进路由。旧代码 _stream_route 构造 RouteRequest
+    不传 is_cancelled，只能等 AI 调用结束（默认 120 s × 3 次，叠加非流式回退最坏
+    约 12 分钟），期间占着全局唯一的任务槽。"""
+    db_path = tmp_path / "keyword-clean.db"
+    seed(db_path)
+    state = {"cancelled": False}
+    http["responses"].append(
+        CancelledMidStream(lambda: state.__setitem__("cancelled", True))
+    )
+
+    service = AIWritingService(db_path)
+    try:
+        result = service.clean_keywords(
+            ["她的", "纯爱"],
+            is_cancelled=lambda: state["cancelled"],
+        )
+    finally:
+        service.close()
+
+    assert result is None
+    [job] = jobs(db_path)
+    assert job["status"] == "cancelled"
+    assert [attempt["status"] for attempt in job["attempts"]] == ["cancelled"]
+    # 取消后没有重试，也没有退回非流式再发一次
+    assert len(http["calls"]) == 1
