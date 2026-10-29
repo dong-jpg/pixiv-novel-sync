@@ -140,4 +140,4 @@ python -m pytest -q
 
 本项目采用 [MIT License](LICENSE)。
 
-问题与功能建议请提交 [GitHub Issues](https://github.com/dong-jpg/pixiv-novel-sync/issues)，交流使用经验可前往 [GitHub Discussions](https://github.com/dong-jpg/pixiv-novel-sync/discussions)。
+问题、功能建议与使用交流请提交 [GitHub Issues](https://github.com/dong-jpg/pixiv-novel-sync/issues)。

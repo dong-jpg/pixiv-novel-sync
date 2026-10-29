@@ -6,7 +6,7 @@
 
 - 开发分支：`codex/mobile-first-main`，从 `481f8a9` 的 main 功能基线开始；交付分支为 `main`，已快进到完整验收点 `689cdfe`，没有丢弃或压缩原11个提交。
 - 原 `ai-writing` 工作区与既有服务器部署/TLS文档保持独立，不恢复 main 已移除的写作或成人模块。
-- [设计](superpowers/specs/2026-10-08-mobile-first-web-design.md) / [执行计划](superpowers/plans/2026-10-08-mobile-first-web.md)。
+- [设计](../superpowers/specs/2026-10-08-mobile-first-web-design.md) / [执行计划](../superpowers/plans/2026-10-08-mobile-first-web.md)。
 
 ## 实现结果
 

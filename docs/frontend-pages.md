@@ -6,12 +6,12 @@
 
 ## 本轮交互更新（2026-10-08，main）
 
-移动优先改造于2026-10-09从 `codex/mobile-first-main` 集成到 `main`；登录、推荐、阅读与管理的实际验收和未部署边界见 [移动改造报告](MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。下文契约描述 `main` 代码，不等同于生产站点已经更新。
+移动优先改造于2026-10-09从 `codex/mobile-first-main` 集成到 `main`；登录、推荐、阅读与管理的实际验收和未部署边界见 [移动改造报告](archive/MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。下文契约描述 `main` 代码，不等同于生产站点已经更新。
 
 - 偏好页增量分析不再发送固定 `name`；未提供的名称/描述由服务端保留。
 - Agent 设置表单可编辑 `context_window` 和 `top_p`；编辑时保留合法的零值，不用默认值覆盖 `temperature=0` / `top_p=0`。
 - 定时备份的不完整状态进入“部分完成”，取消不计失败用户；旧待删除计数与推荐历史轮次路由已移除。
-- main 不引入写作章节 revision、Pipeline 或成人交互；这些仅在 ai-writing。最新自动化验证与浏览器/移动端实际验收分别见 [整改状态](REMEDIATION_STATUS_2026-09-30.md)。
+- main 不引入写作章节 revision、Pipeline 或成人交互；这些仅在 ai-writing。最新自动化验证与浏览器/移动端实际验收分别见 [项目现状](STATUS.md)。
 
 ## 页面总览
 
@@ -93,7 +93,7 @@ Template: `login.html`（独立模板，不继承 base）。访问密码输入16
 
 Template: `dashboard.html`
 
-用途：统计卡片、运行状态条（定时同步开关 + 当前活动任务 + 停止当前）、最近推书结果。手动同步与预检查的入口在设置页（`/dashboard/settings/sync` 的手动触发区），本页不再承载。
+用途：统计卡片、运行状态条（定时同步开关 + 当前活动任务 + 停止当前）、最近推书结果。手动同步的入口在设置页（`/dashboard/settings/sync` 的手动触发区），本页不再承载。
 
 布局：标题 + 四项核心统计（小说总数 / 关注作者 / 追更系列 / 待确认）是页内第一张 `library-card`，与下方区块同一套表面（22px 圆角 + library 阴影）；不再是通栏 sticky 直角横条。卡片底部是一条**运行状态条**：左侧是定时同步全局开关（「启用/停用定时同步」，这是全局启停的唯一 UI 入口——设置页只有逐任务的 cron / 开关），右侧是有定时任务在跑时才出现的「停止当前」，中间在任务运行时显示「任务执行中 + 当前任务名（`currentTaskName`，按 `task_type` 映射成中文）+ 进度百分比」，点击进入任务日志页。
 
@@ -113,22 +113,24 @@ APIs:
 - `GET /api/dashboard/recommendations/items?page=&page_size=`
 - `POST /api/dashboard/auto-sync/toggle`
 - `POST /api/dashboard/auto-sync/stop-task`
+- `POST /api/dashboard/sync/cancel?job_id=`（「停止当前」对手动任务走这里，定时任务走 `stop-task`）
 
 关键交互：
 
 - 定时同步全局启停与停止当前任务（均在运行状态条）。
 - 推书列表翻页并定位结果标题；刷新按钮回到第一页但不强制移动当前视口。
-- 任务状态轮询（`fetchJobStatus` 每 3 秒、`fetchAutoSync` 每 10 秒）。
+- 任务状态轮询（`fetchJobStatus` 有任务排队/运行/取消中时每 3 秒、空闲时每 20 秒；`fetchAutoSync` 每 10 秒；标签页隐藏时跳过请求）。
 
 ### `/dashboard/novels`
 
 Template: `dashboard_novels.html`
 
-用途：展示收藏小说和追更系列。
+用途：展示收藏小说和追更系列；`category=rescue` 时展示拯救成功列表（见下文）。
 
 APIs:
 
 - `GET /api/dashboard/novels`
+- `GET /api/dashboard/rescues`（`category=rescue`）
 
 关键交互：
 
@@ -148,6 +150,11 @@ APIs:
 
 - `GET /api/dashboard/novels/{novel_id}`
 - `GET /api/dashboard/series/{series_id}`
+- `GET|POST|DELETE /api/dashboard/novels/{novel_id}/progress`
+- `POST /api/dashboard/novels/export-epub`
+- `DELETE /api/dashboard/bookmarks/{novel_id}`
+- `DELETE /api/dashboard/novels/{novel_id}`
+- `PUT|DELETE /api/dashboard/rescue-overrides/novel/{novel_id}`
 
 关键交互：
 
@@ -254,7 +261,7 @@ Agent批量改绑的确认快照固定所选ID和绑定；失败在活动确认�
 | `/dashboard/settings/agents` | `dashboard_settings_agents.html` | 普通 Agent 的绑定 / 提示词 / 采样参数（`#ai-agents`）、候选模型链预览 |
 | `/dashboard/settings/system` | `dashboard_settings_system.html` | 图片缓存、救援 API Token（`#rescue-api`）、统计导出、数据保留期（已确认删除记录 + 任务日志） |
 
-`system` 页的数据保留期只有两个字段：`pending_deletion_cleanup_confirmed_days`（已确认/已恢复记录留多久）与 `task_log_retention_days`（任务日志，两张表共用）。**待确认（pending）记录没有保留期**——它们必须由用户手动确认或恢复，不会到期自动消失。曾经存在的 `pending_deletion_grace_period_days` 从未被任何代码读取（`cleanup_old_pending_deletions` 第一行就丢弃该参数），却在页面上写着「等待人工确认的宽限天数」，已于 2026-09-03 移除；`save_sync_settings` 会在下次保存时把这个遗留键从 YAML 里擦掉。
+`system` 页的数据保留期只有两个字段：`pending_deletion_cleanup_confirmed_days`（已确认/已恢复记录留多久）与 `task_log_retention_days`（任务日志，两张表共用）。**待确认（pending）记录没有保留期**——它们必须由用户手动确认或恢复，不会到期自动消失。曾经存在的 `pending_deletion_grace_period_days` 从未被任何代码读取（当时 `cleanup_old_pending_deletions` 第一行就丢弃该参数，现在该函数已不再接收它），却在页面上写着「等待人工确认的宽限天数」，已于 2026-09-03 移除；`save_sync_settings` 会在下次保存时把这个遗留键从 YAML 里擦掉。
 
 保存按分区独立进行：同步页调 `PUT /api/dashboard/settings/sync`，系统页调 `PUT /api/dashboard/settings/system`。分区端点只采纳本区字段，其余字段沿用磁盘上的旧值——每页表单只含自己那一区，走全量端点会把没加载的字段写成默认值。AI 两页的配置存在数据库里，走 `ai_web.py` 的端点，不经过 `/api/dashboard/settings`。
 
@@ -332,29 +339,30 @@ API：`GET /api/dashboard/rescues`。
 
 ### Pixiv 救援油猴脚本
 
-文件：`userscripts/pixiv-rescue.user.js`（v0.1.0，380 行，无外部依赖）。
+文件：`userscripts/pixiv-rescue.user.js`（v0.12.0，无外部依赖）。安装、Token、故障排查与各版本行为见 [救援功能用户指南](RESCUE_USER_GUIDE.md)。
 
-用途：当 Pixiv 原小说或系列页面明确删除、受限或不存在时，通过只读救援 API 在原页面追加私人备份内容，并以“拯救数据”醒目标记来源。
+用途：当 Pixiv 原小说或系列页面删除、受限或不存在时，通过只读救援 API 在脚本自己的全屏阅读层里显示私人备份内容，并以“拯救数据”醒目标记来源；收藏 / 追更列表页把失效卡片重建为备份卡片；手机站新作页的「好P友新作」tab 改为「拯救系列」。
 
 生效范围与部署：
 
-- `@match` 限定 `https://www.pixiv.net/novel/show.php*` 与 `https://www.pixiv.net/novel/series/*`。
-- 脚本内 `API_ORIGIN` 常量硬编码为 `https://pixiv.dongboapp.com`。**换域名部署时必须同时改 `API_ORIGIN`、`@connect` 和 `@namespace`**，否则 Tampermonkey 会拦截跨域请求。
+- `@match` 覆盖小说页、系列页、收藏列表、追更列表与新作页（含 `/en/`、`/zh/` 等语言前缀），另有一条 `https://www.pixiv.net/*` 兜底；脚本内部 `routeRescue` 按路径严格判断，其余页面立即返回。
+- 默认服务地址是 `DEFAULT_API_ORIGIN`（`https://pixiv.dongboapp.com`），脚本存储键 `pixivRescueOrigin` 有值时覆盖它。**换域名部署时必须同时改 `DEFAULT_API_ORIGIN`（或设置 `pixivRescueOrigin`）和 `@connect`**，否则脚本管理器会拦截跨域请求；`@name` / `@namespace` 保持不变，否则升级会被当成另一份脚本。
 - 通过油猴菜单「设置或更新救援 Token」/「清除救援 Token」维护 Token，存在 `GM_setValue`（键 `pixivRescueToken`）。
 
 失效判定（保守策略，正常页面不介入）：
 
-- 页面文本命中 `UNAVAILABLE_MARKERS`（中/日/英三套文案，如「この作品は削除されています」「该作品已被删除」「Page not found」）。
-- 且在约 1.2 秒轮询窗口内始终没有渲染出正常正文（`.novel-text`、`article` 等选择器下 ≥12 字符）或章节链接。
+- 小说 / 系列页先请求 Pixiv 自己的 `/ajax/novel/<id>`、`/ajax/novel/series/<id>`：作品还在就不请求备份；只有 404/410 才算确认失效，403 等歧义状态按「状态不明」静默查备份，查到才打开阅读层。
+- 从救援卡片点进来的链接带 `pixiv_rescue=1`，直接打开阅读层。
+- 列表页只改 Pixiv 已经画成失效 / 空白的卡片（页面文案 `UNAVAILABLE_MARKERS` 与 `invisible-work-container` 等结构信号），健康卡片不动。
 
 安全边界：
 
-- 正常可阅读的 Pixiv 页面不请求救援 API，也不改写原 DOM。
+- 正常可阅读的小说 / 系列页不请求救援 API，也不改写原 DOM；列表页没有失效卡片时只发一次 Token 探测请求（`lookup?novel_ids=1`），用于提示 Token 缺失或失效。
 - 救援 Token 只通过 `Authorization: Bearer` 请求头发送，不写入页面或 Cookie。
-- API 域名固定，不接受页面、响应或用户输入提供的其他来源地址。
-- 正文只通过 `textContent` 和新建文本节点渲染，不解释备份正文中的 HTML。
+- API 地址只来自 `DEFAULT_API_ORIGIN` 或脚本存储 `pixivRescueOrigin`，不接受页面或响应提供的其他来源地址。
+- 正文只通过 `textContent` 和新建节点渲染，只解析 Pixiv 自身的标记（`[newpage]`、`[[rb:]]`、`[[jumpuri:]]` 等，链接只放行 http/https），不解释备份正文中的 HTML。
 - 系列先加载目录，超过 100 章时可继续加载后续目录页；只有点击某一章时才请求该章正文。
-- 请求超时 15 秒；接口失败时保留 Pixiv 原错误页面。
+- 正文接口超时 30 秒，其余请求 15 秒；接口失败时在阅读层显示错误与重试，Pixiv 原页面保持不变。
 
 ### `/token-login`
 

@@ -1,8 +1,8 @@
 # Frontend API Contract
 
-> **契约更新（2026-10-08，main）**：本页只更新共享 API。增量分析保留未提供的画像字段，推荐区分查询/候选错误；已删除的旧路由不再列为可调用端点。最新验证及环境边界见 [整改状态](REMEDIATION_STATUS_2026-09-30.md)。
+> **契约更新（2026-10-08，main）**：本页只更新共享 API。增量分析保留未提供的画像字段，推荐区分查询/候选错误；已删除的旧路由不再列为可调用端点。最新验证及环境边界见 [项目现状](STATUS.md)。
 
-> **移动优先补充（2026-10-09，main）**：登录新增可撤销的可选30天会话，首页/偏好统一使用已有分页接口。字段与失败响应见下文；合并代码不代表现网已经更新，见 [移动报告](MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。
+> **移动优先补充（2026-10-09，main）**：登录新增可撤销的可选30天会话，首页/偏好统一使用已有分页接口。字段与失败响应见下文；合并代码不代表现网已经更新，见 [移动报告](archive/MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。
 
 本文档记录 Library OS 前端当前依赖的后端接口。后端重构时应优先保持路径、方法和主要字段兼容；如需调整，请在对接时同步更新前端适配层。
 
@@ -120,12 +120,18 @@ Expected fields:
 {
   "running": true,
   "current_task_job_id": null,
+  "current_task_name": null,
   "task_intervals": {},
   "task_crons": {},
   "task_last_run": {},
-  "task_next_run": {}
+  "task_next_run": {},
+  "task_priorities": {},
+  "task_preemptible": {},
+  "task_preempted_at": {}
 }
 ```
+
+有正在执行的定时任务时额外带 `current_job`（该 job 的状态快照）。
 
 ## Dashboard sync APIs
 
@@ -177,10 +183,6 @@ Query：`days`（观测窗口，夹到 1–30，默认 3）。
 
 Start full manual sync. Body may be `{}`.
 
-### POST /api/dashboard/check-bookmarks
-
-Start bookmark pre-check job. Body may be `{}`.
-
 ### POST /api/dashboard/sync/subscribed-series
 
 Body:
@@ -201,7 +203,7 @@ Expected response:
 {
   "job": {
     "job_id": "...",
-    "status": "running|succeeded|failed",
+    "status": "queued|running|cancel_requested|succeeded|failed|cancelled",
     "message": "...",
     "elapsed": 12,
     "task_list": ["..."],
@@ -211,6 +213,8 @@ Expected response:
   }
 }
 ```
+
+`job` 另含 `stats`、`error`、`started_at`、`finished_at`、`is_auto_sync`、`source`、`job_type`。没有任何任务时返回 `{ "job": null }`。这里是内存中的 `JobStatus`；`partial` 只出现在 `task_logs`（任务日志接口）里。
 
 ### POST /api/dashboard/auto-sync/toggle
 
@@ -222,7 +226,11 @@ Body:
 
 ### POST /api/dashboard/auto-sync/stop-task
 
-Stops the active auto-sync task.
+Stops the active auto-sync task. 成功返回 `{ "ok": true, "message": "正在停止当前任务" }`；没有正在执行的定时任务时同样是 HTTP 200，返回 `{ "ok": false, "message": "当前没有正在执行的定时任务" }`（字段是 `message`，不是 `error`）。
+
+### POST /api/dashboard/sync/cancel
+
+Used by: 首页「停止」按钮（手动任务；定时任务走上面的 `stop-task`）。`job_id` 可放在 query 或 JSON body，缺省取最新任务。成功返回 `{ "ok": true, "job_id": "...", "message": "已请求取消" }`；没有可取消的任务 `404`；任务不存在、已结束或正在收尾 `409`。
 
 ## Archive APIs
 
@@ -240,15 +248,17 @@ Query params:
 
 ### GET /api/dashboard/novels
 
-Used by: novels list, AI search widgets。
+Used by: novels list。
 
 Common query params:
 
 - `page`
-- `page_size`
-- `category`
+- `page_size`（默认 10，上限 100）
+- `category=all|bookmark|following`（`following` 返回追更系列；救援列表走 `GET /api/dashboard/rescues`）
 - `search`
-- `sort`
+- `sort=updated_desc|bookmarks_desc|views_desc`，留空为默认排序
+
+`category` / `sort` 取值非法时静默回落到默认值，不返回 400。
 
 Response should include items and pagination metadata. Current frontend accepts shapes with `items`, `total`, `pages` / `total_pages`.
 
@@ -359,13 +369,13 @@ Expected fields include series metadata and novels/chapters list.
 - `search`
 - `sort=checked_desc|updated_desc`
 
-参数取值非法时返回 `400 { "ok": false, "error": "..." }`。
+参数取值非法时返回 `400 { "ok": false, "error": "..." }`；救援目录首次重建完成前返回 `503`。
 
 响应 `data` 除 `items` 与分页元数据外，还包含目录级 `stale` 布尔字段（依据 `refreshed_at` 与当前配置判定救援目录是否过期）。
 
 列表项字段：`item_type`、`item_id`、`title`、`author_name`、`cover_url`、`rescue_state`、`remote_status`、`eligibility_reason`、`expected_count`、`local_count`、`complete_count`、`last_checked_at`、`updated_at`、`content_kind`、`content_kind_label`、`series_id`、`sources`、`personal_relation`。
 
-`personal_relation` 是布尔值，表示该条目是否带有本人主动关联的来源（`bookmark` / `subscribed_series`）。`following_user_scan` 与 `user_backup` 属于批量扫描，本人未必在乎，该字段为 `false`。字段由已取出的 `sources` 派生，不额外查库。
+`personal_relation` 是布尔值，表示该条目是否带有本人主动关联的来源（`bookmark` / `subscribed_series`）。`following_user`（原始来源 `following_user_scan`）与 `user_backup` 属于批量扫描，本人未必在乎，该字段为 `false`。字段由已取出的 `sources` 派生，不额外查库。
 
 已进入「待确认删除」（`pending_deletions.status = 'pending'`）的条目不出现在本列表中：本人取消收藏 / 追更的作品以「等你决定」为准。`confirmed` 会真删本地备份，`restored` 表示用户明确保留，两者都不触发排除。人工 `include` 纠错优先于这条排除。
 
@@ -416,13 +426,17 @@ Token 不接受 URL 查询参数或 Cookie。只允许 `GET` / `HEAD`；每个�
 - `cover_url`、`tags`、`create_date`、`text_raw`
 - `rescue_state`、`remote_status`、`eligibility_reason`
 - `expected_count`、`local_count`、`complete_count`
-- `last_checked_at`、`updated_at`、`source_notice`
+- `last_checked_at`、`updated_at`、`personal_hold`、`source_notice`
 - `total_bookmarks`、`total_views`（同步时的快照）、`x_restrict`、`is_original`、`ai_type`
 - `series_nav`：所属系列可救援时为 `{series_id, series_title, chapter_number, chapter_total, prev, next}`（`prev`/`next` 为 `{novel_id, title, chapter_number}` 或 `null`），否则为 `null`。章节序号与目录接口同一口径。
 
+### GET /api/rescue/v1/novels/<novel_id>/cover 与 GET /api/rescue/v1/series/<series_id>/cover
+
+返回本地归档的封面图片，供用户脚本把失效卡片重建为带封面的卡片（系列本身不下载封面，取系列下第一篇有本地封面的小说）。没有本地封面时返回 `404`。
+
 ### GET /api/rescue/v1/series/<series_id>
 
-返回系列元数据、救援状态和覆盖率，不在响应中展开章节正文。
+返回系列元数据、救援状态和覆盖率（含 `personal_hold`），不在响应中展开章节正文。
 
 ### GET /api/rescue/v1/series/<series_id>/chapters
 
@@ -464,10 +478,12 @@ Token 不接受 URL 查询参数或 Cookie。只允许 `GET` / `HEAD`；每个�
 
 状态码：
 
+- `400`：查询参数非法（如 `lookup` 超过 40 个 ID 或两组 ID 都为空、`series` 列表的 `state` / `sort` 取值非法）。
 - `401`：缺少或使用无效救援 Token。
 - `404`：对象不存在、不符合救援条件或正文不完整。
 - `405`：对只读接口使用写方法。
 - `429`：超过限流阈值。
+- `503`：救援目录尚未生成（新部署在调度器首轮重建目录前）。
 - `500`：读取异常；响应只返回通用中文错误，不泄露数据库路径或内部异常。
 
 ### GET /api/dashboard/users
@@ -523,7 +539,7 @@ Query params:
 - `page`
 - `page_size`
 - `category=sync|ai`
-- `days=1|3`
+- `days`：整数，夹到 1–90，默认 3；任务日志页提供 1 / 3 / 7 / 14 天
 - `task_type`
 - `status`（AI 创作任务）
 - `is_auto=true|false`（同步任务）
@@ -556,7 +572,7 @@ Body 是该分区的部分设置对象；夹带别区字段会被忽略而不是
 { "ok": true, "message": "设置已保存", "sync": { "...": "保存后的完整 sync 配置" } }
 ```
 
-未知 `section` 返回 `400`。变更类请求需带 `X-CSRF-Token`。
+未知 `section`（包括 `models` / `agents`，这两页的配置在数据库里、走 AI 配置接口）以及字段校验失败都返回 `400 { "ok": false, "error": "保存设置失败", "detail": "具体原因" }`，界面应展示 `detail`。变更类请求需带 `X-CSRF-Token`。
 
 保存成功后，调度器只重算 cron、间隔或时区发生变化的任务的下次运行时间，其余任务保持原时刻。
 
@@ -581,10 +597,14 @@ Body：
     "falls_back_to_interval": false,
     "next_runs": ["2026-08-28T00:20:00+09:00"],
     "runs_per_day": 6,
-    "timezone": "Asia/Seoul"
+    "timezone": "Asia/Seoul",
+    "timezone_valid": true,
+    "effective_timezone": "Asia/Seoul"
   }
 }
 ```
+
+`timezone` 原样回显请求值；时区无效时 `timezone_valid: false`，预览按 `effective_timezone`（`UTC`）计算，而保存设置会因该时区被拒绝。
 
 非法或超长（>200 字符）表达式返回 `200` 且 `valid: false`、`falls_back_to_interval: true`——这是校验结果而不是请求错误。空表达式额外带 `empty: true`。两种情况调度器都会静默回落到按 `*_interval_hours` 跑，界面必须把这个差别显示出来。
 
@@ -620,8 +640,8 @@ Settings page task shortcuts。`task_type` 白名单与 `webapp.py` 的 `task_ma
 
 Query:
 
-- `page`
-- type/status filters where available。
+- `page`、`page_size`（默认 20）
+- `item_type=novel|series`（其他值视为不过滤）。只返回 `status = 'pending'` 的记录，没有 status 参数。
 
 侧栏待删除数量来自 `GET /api/dashboard/shell-data`。旧 `/api/dashboard/pending-deletions/count` 已从当前 main 工作区移除，不应新增调用。
 
@@ -810,7 +830,7 @@ Body:
 }
 ```
 
-`source` 是 `pool_name` 或固定绑定的 `"fixed"`；`fallback_depth` 为 0 表示主池成员，`N` 表示第 N 级后备池。固定绑定的链只有一个元素且 `pool_id` 为 `null`，界面不应显示模型池区块。`limits` 直接来自 `ai/model_pools.py` 的常量，前端必须显示响应值而不是自己抄一份数字。未知 agent 返回 `400`。
+`source` 是 `pool_name` 或固定绑定的 `"fixed"`；`fallback_depth` 为 0 表示主池成员，`N` 表示第 N 级后备池。固定绑定的链只有一个元素且 `pool_id` 为 `null`，界面不应显示模型池区块。`limits` 直接来自 `ai/model_router.py` 的常量，前端必须显示响应值而不是自己抄一份数字。未知 agent 返回 `400`。
 
 单池和完整后备链最多 64 个候选，链深度最多 8；每个 job 最多尝试 16 个候选、32 次网络请求和 30 分钟。模型池可能把同一 Prompt 发送给多个 Provider，前端必须展示完整 Provider 范围及跨 Provider 隐私提示。
 
@@ -828,7 +848,7 @@ main 分支只保留 AI job 的读取、清理与手动续接端点；写作端�
 
 ### POST /api/dashboard/ai/jobs/<job_id>/cancel
 
-把仍在 `running` 的任务标成 `cancel_requested`。路由心跳读到后停止，任务终态变为 `cancelled`。任务不存在返回 404，已经结束返回 409。重复请求同一次取消仍返回成功。
+给仍在 `running` 的任务置 `cancel_requested` 标记（独立布尔列，`status` 仍是 `running`），成功返回 `data: {job_id, cancel_requested: true}`。路由心跳读到后停止，任务终态变为 `cancelled`。任务不存在返回 404，已经结束返回 409。重复请求同一次取消仍返回成功。
 
 ### POST /api/dashboard/ai/jobs/<job_id>/continue
 

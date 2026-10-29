@@ -1,6 +1,6 @@
 # Job System 开发者文档
 
-> **行为更新（2026-10-08，main）**：定时用户备份传播 `truncated/incomplete/aborted_reason`，用户失败显示部分完成，取消不计失败用户。归档暂存在搬移前登记；恢复目标冲突或回滚失败时保留已有副本，带 `.recovery-required` 标记的目录不会被启动清扫删除。人工恢复应根据错误日志核对原路径与暂存路径，不要直接清空 `.trash`。这是现有事务/回滚的缺陷修复，不是完整 manifest 或启动自动重放系统。最新验证见 [整改状态](REMEDIATION_STATUS_2026-09-30.md)。
+> **行为更新（2026-10-08，main）**：定时用户备份传播 `truncated/incomplete/aborted_reason`，用户失败显示部分完成，取消不计失败用户。归档暂存在搬移前登记；恢复目标冲突或回滚失败时保留已有副本，带 `.recovery-required` 标记的目录不会被启动清扫删除。人工恢复应根据错误日志核对原路径与暂存路径，不要直接清空 `.trash`。这是现有事务/回滚的缺陷修复，不是完整 manifest 或启动自动重放系统。最新验证见 [项目现状](STATUS.md)。
 
 > 本文描述同步/后台任务(非 AI 生成)的统一 Job 管线。以源码为准:
 > `src/pixiv_novel_sync/jobs/{models,manager,runner,tasks}.py`、
@@ -27,7 +27,7 @@ task_stats dict → merge_stats() 累加进 JobState.stats
 关键类型(`jobs/models.py`,均为 `slots=True` dataclass 或 `str` Enum):
 
 - `JobSource`:`WEB` / `CLI` / `SCHEDULER` / `SYSTEMD` — 触发来源标记。
-- `JobType`:`SYNC` / `SYNC_CHECK` / `STATUS_CHECK` / `PENDING_DELETION_DETECTION` / `USER_BACKUP` / `PREFERENCE_ANALYZE` / `RECOMMENDATION_RUN`。
+- `JobType`:`SYNC` / `STATUS_CHECK` / `PENDING_DELETION_DETECTION` / `USER_BACKUP` / `PREFERENCE_ANALYZE` / `RECOMMENDATION_RUN`。
 - `JobSpec`:一次提交的静态描述;`task_types` 是**普通字符串列表**(如 `"bookmark"`、`"user_backup:12345"`),不是枚举。
 - `JobState`:运行时状态,内含 `logs`(`JobLogEntry` 列表,上限 `max_logs=500`)、`progress`、`stats`。
 
@@ -44,7 +44,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 - 终态集合 `_TERMINAL_STATUSES = {SUCCEEDED, FAILED, CANCELLED}`;终态后 `request_cancel` 返回 False。
 - `mark_running` 在状态已是 `CANCEL_REQUESTED` 时返回 False,runner 据此直接 `mark_cancelled`(取消先于启动的窗口)。
 - **Finalization 协议**:任务收尾通过 `try_begin_finalization(job_id)` 领取一次性 claim(token 校验,防重入),`claim.finish(task_stats, is_last_task=...)` 在锁内合并 stats 并在最后一个任务时置为 `SUCCEEDED`。一旦某个 job 进入 finalization,`request_cancel` 也会拒绝——保证"要么完整收尾,要么取消",不会两者交错。
-- `JobRunner.run` 的每轮循环:先查 `is_cancel_requested` → 执行 executor → 若任务内部没主动 claim 则由 runner 补 claim → claim 失败(说明已被取消)则合并已得 stats 并 `mark_cancelled`。`InterruptedError` 映射为 CANCELLED,其他异常映射为 FAILED(错误写入 job log)。
+- `JobRunner.run` 的每轮循环:先查 `is_cancel_requested` → 执行 executor → 若任务内部没主动 claim 则由 runner 补 claim → claim 失败则合并已得 stats,已请求取消时 `mark_cancelled`,否则 `mark_failed("finalization claim lost")`。`InterruptedError` 映射为 CANCELLED,其他异常映射为 FAILED(错误写入 job log)。
 
 ### 1.3 并发约束(JobManager)
 
@@ -65,7 +65,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 - app 级共享一个 `shared_job_manager`(`app.config["job_manager"]`)与 `shared_job_runner`(executor 为 `run_web_task`,每次执行前用 `SettingsManager` 重新加载 settings)。
 - 提交入口 `_submit_shared_job`(暴露为 `app.config["submit_shared_web_job"]`):
   1. **单活跃任务约束**:先调 `_has_any_running_web_job()`(实现为 `_has_active_shared_jobs`,检查共享管理器中是否存在 `QUEUED/RUNNING/CANCEL_REQUESTED` 的 job),有则抛 `RuntimeError("已有同步任务正在运行…")`。注意这是提交时的软约束,配合 JobManager 信号量做双保险。
-  2. 写入 **task_logs 镜像**:`db.create_task_log(task_type, task_name, job_id, is_auto_sync)`,并把返回的 `log_id` 存进 `job.progress["log_id"]`。
+  2. 写入 **task_logs 镜像**:先在锁外 `db.create_task_log(task_type, task_name, is_auto_sync=...)`(此时还没有 job_id),再次检查单活跃约束后 `submit`,把返回的 `log_id` 存进 `job.progress["log_id"]`,并把 `job_id` 回填到该行(回填失败会把已入队的 job 标成 failed)。
   3. `run_async=True` 时起 **daemon 线程**执行 `_run_shared_web_job(job_id)`。
 - `_run_shared_web_job`:调用 `shared_job_runner.run(job_id)`,结束后按最终 `JobStatus` 把 stats/logs/error 回写到 `task_logs` 表(`db.update_task_log`)——这就是「任务日志」页的数据来源。内存 JobState 是实时视图,task_logs 是持久化镜像。
 
@@ -94,7 +94,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 `JobStatus` 只有 `SUCCEEDED/FAILED/CANCELLED` 三个终态,但**持久化到 `task_logs` 的状态多一个 `partial`**。两者不是一一对应:
 
-- `webapp.py:_task_log_status_for_stats(stats)` 在 job 成功收尾时判定写入 `task_logs` 的状态。stats 里带 `aborted_reason`(熔断中止)或 `incomplete`(订阅系列中止、关注作者只覆盖部分、分页触顶)的,一律记 `partial`,前端「任务日志」页显示黄色「部分完成」并展示中止原因。
+- `webapp.py:_task_log_status_for_stats(stats)` 在 job 成功收尾时判定写入 `task_logs` 的状态。stats 里带 `aborted_reason`(熔断中止)或 `truncated`(分页触顶)的,一律记 `partial`;单独出现的 `incomplete`(如订阅系列中止)也记 `partial`,唯一例外是同时带 `rotation_pending`(关注作者按轮转只覆盖部分、撞到单作者配额——跑不完是设计如此),这种轮次记 `succeeded`。前端「任务日志」页把 `partial` 显示为黄色「部分完成」并展示中止原因。
 - **`remaining` / `users_remaining` 不作为判定依据**——分批轮转任务每轮本来就有剩余,否则每轮都会变成 partial。
 
 这个设计来自一次生产事故:状态检查被限流熔断,只检查了 30/800 篇就中止,任务日志却仍是绿色「成功」,看不出这轮几乎什么都没查。
@@ -208,7 +208,7 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 | user_status | 3 | ✓ | True | 6 | "" | 已知受限用户按 `users.restricted_streak` 降频(≥3 轮判不出状态 → 每 7 天才巡检一次) |
 | novel_status | 3 | ✓ | True | 6 | "" | 批大小是代码常量 `NOVEL_STATUS_BATCH_SIZE`（800），不是设置页字段 |
 | series_status | 3 | ✓ | True | 6 | "" | |
-| user_backup | 3 | ✓ | False | 24 | "" | 复用 `auto_sync_following_novels_users_limit` |
+| user_backup | 3 | ✓ | False | 24 | "" | 复用 `auto_sync_following_novels_users_limit`;`user_backup_max_pages_per_run`(留空跟随 `max_pages_per_run`,再缺省 200;只能写 YAML,设置页没有该字段) |
 | pending_deletion_detection(设置字段名为 `auto_sync_pending_detection_*`) | 3 | ✗ | True | 12 | "" | |
 | preference_analyze | 3 | ✓ | False | 12 | `"15 7,19 * * *"` | `preference_analyze_batch_size`(默认 200);scheduler 提交时强制 `max_batches=1` |
 | recommendation_run | 3 | ✗ | False | 24 | `"50 8 * * *"` | 依赖已存在的默认偏好画像;没有画像时任务抛 `RuntimeError("需要先生成默认偏好画像")` |

@@ -169,12 +169,12 @@ Recommended log color mapping:
 
 Visual hierarchy:
 
-1. Running job hero。
-2. Stats cards。
-3. Recent activity。
-4. Auto-sync schedule。
+1. Stats card：标题 + 四项核心统计，底部是运行状态条（定时同步开关、当前任务与进度、「停止当前」）。
+2. 最近推书结果（单列卡片 + 分页）。
 
-Primary action: `开始同步`。
+「最近活动」时间线与「定时任务」列表已移除：任务历史归任务日志页，逐项调度归设置页调度表。手动同步入口在 `/dashboard/settings/sync`，首页没有 `开始同步` 按钮。
+
+Primary action: 运行状态条里的「启用/停用定时同步」。
 
 ### Novels
 
@@ -207,20 +207,17 @@ Use a table or split table/detail layout.
 
 ### Settings
 
-Use two-column layout on desktop:
-
-- left tab navigation。
-- right setting panels。
+设置是四个独立路由（sync / models / agents / system），页顶共用横向导航条 `dashboard_settings_nav.html`（`library-card` 内一排可换行的链接），不再是左侧 tab + 右侧面板的单页双栏。
 
 Each setting group should be a card/panel with explicit save action.
 
 ### Preferences
 
-Use profile list + selected profile detail + recommendation queue.
+推荐结果在前（与首页相同的单列卡片、过滤与分页），画像、增量分析与搜索计划折叠在其后的 `<details>`「画像与搜索设置」里；页面围绕默认画像，不做多画像列表。
 
 ### AI
 
-AI page has the highest interaction risk. Apply Library OS gradually:
+AI 创作页（仅在 `ai-writing` 分支）交互风险最高；main 只有模型 / Agent 两个设置页，同样适用下面的「Do not change」。Apply Library OS gradually:
 
 - outer shell and tabs first。
 - cards/panels second。

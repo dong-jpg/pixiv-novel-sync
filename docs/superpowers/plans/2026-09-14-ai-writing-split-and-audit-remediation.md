@@ -2,7 +2,7 @@
 
 ## 2026-10-14 复核追加事项（尚未修复）
 
-原123个编号任务的勾选保留为10-08历史验收，不能推出目前没有遗漏。38份全分支计划按首次提交时间重新核对，见 [10-14时间线](../../PLAN_AUDIT_2026-10-14.md)；以下新发现以 [审查证据](../../AUDIT_REPORT_2026-10-14.md) 为准：
+原123个编号任务的勾选保留为10-08历史验收，不能推出目前没有遗漏。38份全分支计划按首次提交时间重新核对，见 [10-14时间线](../../archive/PLAN_AUDIT_2026-10-14.md)；以下新发现以 [审查证据](../../archive/AUDIT_REPORT_2026-10-14.md) 为准：
 
 - [x] **A14-01（两分支）**：校验用户备份的Pixiv错误JSON，区分失败与合法空页，传播父任务失败/部分完成；保留失败后继续轮转的正常设计。（2026-10-20 两分支修复：upstream_error_page + 共享错误页判定接入各分页站点）
 - [x] **A14-02（两分支）**：把共享任务取消传入关键词清洗，画像发布前通过FinalizationClaim与取消互斥；已完成统计批次可保留。（2026-10-20 两分支修复：清洗前取消轮询 + 发布前 claim）
@@ -11,15 +11,15 @@
 - [x] **A14-05（两分支）**：等待/请求/渲染全程绑定路由代次，丢弃或取消切页后的旧响应。（2026-10-20 两分支修复：main 脚本 0.3.1 / ai-writing 脚本 0.1.1）
 - [x] **A14-C1（main）**：清理已无调用的`_replay_resume_child`与`_conclude_route`；ai-writing对应方法有调用，保留。（2026-10-20 main 已删除）
 
-main全量1458 passed/6 skipped、ai-writing全量1785 passed/6 skipped并未覆盖以上缺陷；本轮最小复现仍能触发。完整运行记录、分支归属及Linux/真实服务/真机/生产验收在 [当前整改状态](../../REMEDIATION_STATUS_2026-09-30.md)。本轮仅更新文档，不将上述空框改为完成。
+main全量1458 passed/6 skipped、ai-writing全量1785 passed/6 skipped并未覆盖以上缺陷；本轮最小复现仍能触发。完整运行记录、分支归属及Linux/真实服务/真机/生产验收在 [当前整改状态](../../archive/REMEDIATION_STATUS_2026-09-30.md)。本轮仅更新文档，不将上述空框改为完成。
 
 
 
-> **2026-10-08 收口说明**：本计划为跨分支任务总台账，T4/T5-11 的实现证据来自 ai-writing，不表示 main 恢复了写作功能。编号任务按代码与自动回归核实；勾选不是 commit/push/部署或真机验收。最终结果见 [当前整改报告](../../REMEDIATION_STATUS_2026-09-30.md)；正文保留的 09-30 与本日首轮核对为历史快照，最后一节记录后续关闭情况。
+> **2026-10-08 收口说明**：本计划为跨分支任务总台账，T4/T5-11 的实现证据来自 ai-writing，不表示 main 恢复了写作功能。编号任务按代码与自动回归核实；勾选不是 commit/push/部署或真机验收。最终结果见 [当前整改报告](../../archive/REMEDIATION_STATUS_2026-09-30.md)；正文保留的 09-30 与本日首轮核对为历史快照，最后一节记录后续关闭情况。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把尚不成熟的 AI 写作模块（项目 / 章节 / 向导 / 蒸馏 / 成人润色 / 检索）从 `main` 剥离到 `ai-writing` 分支，`main` 只保留偏好关键词清洗所需的 AI 基础设施；随后按优先级修掉 [AUDIT_REPORT_2026-09-14.md](../../AUDIT_REPORT_2026-09-14.md) 的全部发现。
+**Goal:** 把尚不成熟的 AI 写作模块（项目 / 章节 / 向导 / 蒸馏 / 成人润色 / 检索）从 `main` 剥离到 `ai-writing` 分支，`main` 只保留偏好关键词清洗所需的 AI 基础设施；随后按优先级修掉 [AUDIT_REPORT_2026-09-14.md](../../archive/AUDIT_REPORT_2026-09-14.md) 的全部发现。
 
 **Architecture:** 六个阶段，阶段 0 必须先做并单独提交，之后 `main` 上的修复经 `git merge main` 流入 `ai-writing`；写作 / 成人专属修复只在 `ai-writing` 做。每个任务标注落地分支。任务编号 `T<阶段>-<序号>`，验收时按编号逐条核对。
 
@@ -27,7 +27,7 @@ main全量1458 passed/6 skipped、ai-writing全量1785 passed/6 skipped并未覆
 
 **Source:** `docs/AUDIT_REPORT_2026-09-14.md`（每条任务的证据行号都在报告里，本计划只写「改什么、怎么验」）。
 
-> **2026-09-30 审计修订：** 项目尚未全部完成。除 T3、T4、T5-11 外，撤回 T1-09（候选/查询错误混计）、T1-13（定时备份丢失截断状态）、T2-15（恢复失败仍删除暂存副本）、T2-47（Web 入口仍覆盖画像字段）的完成勾选。T2-20 的失败用户继续轮转已经实现，但终态传播仍有缺口，随 T1-13 收口。详见 [最新报告](../../AUDIT_REPORT_2026-09-30.md) 与 [全分支时间线](../../PLAN_AUDIT_2026-09-30.md)。
+> **2026-09-30 审计修订：** 项目尚未全部完成。除 T3、T4、T5-11 外，撤回 T1-09（候选/查询错误混计）、T1-13（定时备份丢失截断状态）、T2-15（恢复失败仍删除暂存副本）、T2-47（Web 入口仍覆盖画像字段）的完成勾选。T2-20 的失败用户继续轮转已经实现，但终态传播仍有缺口，随 T1-13 收口。详见 [最新报告](../../archive/AUDIT_REPORT_2026-09-30.md) 与 [全分支时间线](../../archive/PLAN_AUDIT_2026-09-30.md)。
 
 ## Global Constraints
 

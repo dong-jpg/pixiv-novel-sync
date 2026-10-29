@@ -1,6 +1,6 @@
 # Pixiv Novel Sync 统一项目需求规格
 
-> 本轮 main 工作区整改与最新验证统一记录在 [整改状态](REMEDIATION_STATUS_2026-09-30.md)；历史审计保留修复前证据，不是当前失败列表。
+> 本轮 main 工作区整改与最新验证统一记录在 [项目现状](STATUS.md)；历史审计保留修复前证据，不是当前失败列表。
 
 > 版本：v1.1（文档整合与状态校准版）
 > 整合日期：2026-07-28
@@ -127,7 +127,7 @@
 ### 5.3 状态、待删除与恢复
 
 - `MUST` 支持用户、小说、系列的状态检查，并把 `normal`、`suspended`/`deleted`、`cleared`、`unknown` 等状态映射为中文 UI 标识。
-- `MUST` 检测取消收藏、取消追更、删除或受限作品，进入待删除表后提供确认删除和恢复入口；宽限期由配置控制。
+- `MUST` 检测取消收藏、取消追更、删除或受限作品，进入待删除表后提供确认删除和恢复入口；待确认（pending）记录没有宽限期、不会到期自动确认，只有已确认/已恢复记录按 `pending_deletion_cleanup_confirmed_days` 清理。
 - `MUST` 删除操作遵守外键和业务顺序，失败时保留可恢复数据，不留下孤儿关系；删除系列不得误删仍被其他关系引用的章节正文。
 
 ### 5.4 导出与阅读
@@ -150,8 +150,8 @@
 ### 7.1 任务模型
 
 - `CURRENT` CLI、Web、自动调度、偏好和推荐任务使用共享 `JobSpec`、`JobManager`、`JobRunner` 和 `execute_task`。
-- `MUST` 新增任务类型同时登记执行分派和 `_TASK_LABELS`，任务报告 source、job type、task types、统计、进度、错误和终态。
-- `MUST` 终态至少包括 queued、running、succeeded、failed、cancelled；取消是合作式的，不能伪装成失败。
+- `MUST` 新增任务类型同时登记执行分派、两个标签字典（`jobs/tasks.py:_TASK_LABELS` 与 `web/managers.py:TASK_LABELS`）和 `web/utils.py:_job_spec` 分支，定时任务另补 `SCHEDULER_TASK_CONFIGS` 与设置三件套（清单见 `docs/JOB_SYSTEM.md` §4）；任务报告 source、job type、task types、统计、进度、错误和终态。
+- `MUST` 状态至少包括 queued、running、cancel_requested 与终态 succeeded、failed、cancelled（`task_logs` 另有 `partial`）；取消是合作式的，不能伪装成失败。
 - `MUST` 同时限制同一 Web 入口的 active job，避免重复运行、重复刷新目录或并发写同一状态。
 
 ### 7.2 自动同步
@@ -188,7 +188,7 @@
 
 ### 8.2 API 约定
 
-- `MUST` 以 `docs/frontend-api-contract.md` 为当前端点和响应契约；旧 `API_COMPLETE.md` 中的 `/api/ai/*`、旧同步路径和旧响应字段标记为 `SUPERSEDED`。注意：`/api/auth/login` **不属于** `SUPERSEDED`——它仍是 Dashboard 登录的必经路径（`webapp.py:484` 的登录页重定向依赖它），已收录进当前契约。
+- `MUST` 以 `docs/frontend-api-contract.md` 为当前端点和响应契约；旧 `API_COMPLETE.md` 中的 `/api/ai/*`、旧同步路径和旧响应字段标记为 `SUPERSEDED`。注意：`/api/auth/login` **不属于** `SUPERSEDED`——它仍是 Dashboard 登录的必经路径（`webapp.py:_check_auth` 的登录页重定向依赖它），已收录进当前契约。
 - `MUST` API 使用统一的 JSON 成功/错误结构、分页、排序、状态码和 CSRF 约定；异步操作返回 job/operation 标识，不能假装同步完成。
 - `CURRENT` API 分为 shell/status、sync、archive、rescue、users、logs、settings/cache、pending deletions、preferences/recommendations、AI configuration/jobs、OAuth/token 等族群。
 - `MUST` 前端只依赖契约中公开字段；未认证、参数错误、资源不存在、冲突、过期目录和取消分别返回可区分结果。
@@ -212,7 +212,7 @@
 
 ### 9.2 预计算目录
 
-- `DONE` 已有 `novel_texts.has_content`、`rescue_catalog`、`rescue_catalog_sources`、`rescue_catalog_meta` 和事务化重建/局部刷新基础；Task 6-8 的接线已核对完成（2026-08-14），触发点包括：同步任务成功后刷新（`jobs/services.py:204,451`）、快速同步（`jobs/quick_sync.py:69,154`）、任务执行器（`jobs/tasks.py:209`）、web 管理器（`web/managers.py:329`）、应用启动首次初始化（`webapp.py:107`）、正文写入（`storage/novels.py:385`）与救援上传（`rescue_web.py:111-122`）。
+- `DONE` 已有 `novel_texts.has_content`、`rescue_catalog`、`rescue_catalog_sources`、`rescue_catalog_meta` 和事务化重建/局部刷新基础；Task 6-8 的接线已核对完成（2026-08-14），触发点包括：同步/状态检查任务成功后刷新（`jobs/services.py` 的 `_run_status_task`、`run_user_backup_task`、`run_pending_deletion_detection_task`）、快速同步（`jobs/quick_sync.py` 的 `run_bookmark_sync`、`run_scheduled_user_backup`）、任务执行器（`jobs/tasks.py:_run_direct_sync_task`）、调度器首轮初始化（`web/managers.py:AutoSyncScheduler._initialize_rescue_catalog`）、实体删除与待删除恢复（`storage/novels.py:delete_novel`、`storage/users.py:delete_user`、`storage/pending_and_watermarks.py:restore_pending_deletion_atomic`、`webapp.py:_refresh_rescue_chapters`）与人工纠错（`rescue_web.py:_refresh_rescue_item_after_override`）。
 - `MUST` 完整刷新和受影响对象增量刷新在事务内完成；失败时继续提供上一份目录和 meta。
 - `MUST` 列表使用 SQL 常数查询、分页、排序和筛选，不读取 `novel_texts.text_raw`，不先全量加载到 Python。
 - `MUST` 支持小说/系列、success/partial、类型、来源、搜索、stale 组合筛选；多来源筛选按包含关系，不用单一主来源覆盖其余来源。
@@ -379,7 +379,7 @@ main 分支保留的 AI 范围：
 
 ### 18.2 当前主线（main）
 
-1. 本轮共享整改覆盖归档搬移登记与回滚副本保护、定时备份不完整状态传播、推荐分层错误计数、增量画像字段保留，以及共享模型路由预算与内部输出隔离。最新实现/验证统一见 [整改状态](REMEDIATION_STATUS_2026-09-30.md) 与 09-30 执行台账；09-14 计划保留逐项验收及分支归属。
+1. 本轮共享整改覆盖归档搬移登记与回滚副本保护、定时备份不完整状态传播、推荐分层错误计数、增量画像字段保留，以及共享模型路由预算与内部输出隔离。最新实现/验证统一见 [项目现状](STATUS.md) 与 09-30 执行台账；09-14 计划保留逐项验收及分支归属。
 2. 当前 main 工作区已移除旧待删除计数、推荐历史轮次、三个遗留 OAuth 路由及简单 cron 解析回退。工作区修改不表示提交、远端或现网已经更新。
 3. §1.3 的搜索计划表/跨次 CRUD、RECOMMENDATION_SYNC、explanation_source、偏好 SSE、AI 结构化总结、完整多画像、task_logs owner lease、seen-cursor、完整 trash manifest/启动重放等仍为 **OUT**，不得在本节重新列为开发任务。保留恢复副本不等于新增完整 manifest 系统。
 4. 写作/成人整改仅在 ai-writing；main 不恢复相关模块、页面、路由、测试或已迁出的文档。生产迁移、真实 Provider/Pixiv、证书与灰度观察不由离线回归或合成数据库初始化证明，也不重新纳入 §1.3 已排除的代码任务。
@@ -410,9 +410,9 @@ main 分支保留的 AI 范围：
 | 来源组 | 文件 |
 |--------|------|
 | 根目录与开发指导 | `README.md`、`CLAUDE.md`、`assets/logo-design.md` |
-| 当前参考 | `docs/INDEX.md`、`docs/REMEDIATION_STATUS_2026-09-30.md`、`docs/frontend-api-contract.md`、`docs/frontend-pages.md`、`docs/library-os-style-guide.md`、`docs/JOB_SYSTEM.md`、`docs/MODEL_ROUTING_GUIDE.md`、`docs/RESCUE_USER_GUIDE.md`、`docs/PREFERENCE_RECOMMENDER_REQUIREMENTS.md` |
-| 历史审计与汇编 | `docs/AUDIT_REPORT_2026-07-02.md`、`docs/AUDIT_REPORT_2026-07-03.md`、`docs/AUDIT_REPORT_2026-08-13.md`、`docs/AUDIT_REPORT_2026-09-14.md`、`docs/AUDIT_REPORT_2026-09-30.md`、`docs/PLAN_AUDIT_2026-09-30.md`、`docs/archive/HISTORY_REPORTS.md`、`docs/archive/HISTORY_PLANS.md` |
-| 历史顶层快照 | `docs/API_COMPLETE.md`、`KNOWLEDGE_GRAPH.md` |
+| 当前参考 | `docs/INDEX.md`、`docs/STATUS.md`、`docs/frontend-api-contract.md`、`docs/frontend-pages.md`、`docs/library-os-style-guide.md`、`docs/JOB_SYSTEM.md`、`docs/MODEL_ROUTING_GUIDE.md`、`docs/RESCUE_USER_GUIDE.md`、`docs/PREFERENCE_RECOMMENDER_REQUIREMENTS.md` |
+| 历史审计与汇编 | `docs/archive/` 下各期 `AUDIT_REPORT_*`、`PLAN_AUDIT_*`、`REMEDIATION_STATUS_*`、`SERVER_DEPLOYMENT_REPORT_*`，以及 `docs/archive/HISTORY_REPORTS.md`、`docs/archive/HISTORY_PLANS.md` |
+| 历史顶层快照 | `docs/archive/API_COMPLETE.md`、`docs/archive/KNOWLEDGE_GRAPH.md` |
 | 活跃规格与计划 | `docs/superpowers/specs/` 与 `docs/superpowers/plans/`；AI 模型第一阶段以 `2026-07-27-ai-model-catalog-pools-unified-requirements.md` 和已完成实施计划为追溯基线 |
 | 归档顶层 | `docs/archive/` 下审计、完成报告、优化路线图和模块拆分文档 |
 | 归档 superpowers | `docs/archive/superpowers/plans/` 与 `docs/archive/superpowers/specs/` 下 Qwen embedding、CLI/Web Job、统一任务队列文档 |
@@ -420,7 +420,7 @@ main 分支保留的 AI 范围：
 ### 20.2 补充资料来源
 
 - `.superpowers/sdd/`：模型 Task 1-4 brief/report、救援 Task 1-5 brief/report、进度账本及 review diff；只接受能与提交、最终报告或最新统一需求相互印证的内容。
-- `.monkeycode/specs/novel-tabs-and-user-detail/requirements.md` 与 `design.md`：小说标签、系列详情、关注用户状态、用户详情和全量备份需求。
+- `docs/archive/monkeycode/novel-tabs-and-user-detail/requirements.md` 与 `design.md`：小说标签、系列详情、关注用户状态、用户详情和全量备份需求。
 - `memory/`：2026-07-06 审计和八项优化进度；仅用于发现未回写的缺口，不作为正式契约。
 
 ### 20.3 已知文档质量问题
@@ -428,10 +428,10 @@ main 分支保留的 AI 范围：
 1. `.superpowers/sdd/progress.md` 的 AI Task 3 状态落后于 Task 3 report、提交记录和 2026-07-27 统一需求，应以后者为准。
 2. `.superpowers/sdd/task-1-brief.md` 与 `model-task-1-brief.md` 内容相同，无法与同名救援 report 可靠配对；必须用模型前缀和最终报告消歧。
 3. 救援 Task 3 report 含多轮复审，后文修正了前文的 meta、删除和历史 membership 语义，应采用文件最后的复审结论。
-4. 多份历史计划复选框未维护，空勾不等于未做，已勾也不等于完整验收。09-30 审查与 10-08 后续验证分开记录，最新状态查整改状态和当前执行台账，不回写历史快照。
+4. 多份历史计划复选框未维护，空勾不等于未做，已勾也不等于完整验收。09-30 审查与 10-08 后续验证分开记录，最新状态查[项目现状](STATUS.md)和当前执行台账，不回写历史快照。
 5. Cloudflare 的仓库配置与现网证书/Full (strict) 验收是两件事；后者必须通过服务器检查，不能仅凭仓库文档、离线回归或合成数据库初始化宣称完成。
 6. 当前 API 同时存在 raw JSON 与 `{ok,data}`/`{ok,error}` envelope；统一响应形状是后续重构目标，不能假设现有所有端点已经一致。
-7. README 写“10 个定时任务”，历史知识图谱出现过 8/9 个版本；准确数量必须从当前 task registry 生成，不采用历史硬编码数字。
+7. 旧 README 写过“10 个定时任务”，历史知识图谱出现过 8/9 个版本；当前 `web/managers.py:SCHEDULER_TASK_CONFIGS` 为 11 个（`tests/test_scheduler_priority.py` 锁定），准确数量必须从当前 task registry 生成，不采用历史硬编码数字。
 8. Embedding 索引文件名在文档间存在差异；实际名称必须以当前代码和迁移测试为准。
 
 ## 21. 维护规则

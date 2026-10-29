@@ -1,10 +1,10 @@
 # 项目审计问题完整修复 Implementation Plan
 
-> **2026-09-30 审计口径：** 历史整改主体存在；后续审计已取代总括结论。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md)。
+> **2026-09-30 审计口径：** 历史整改主体存在；后续审计已取代总括结论。本文件的历史勾选不作当前完整验收证明；分支归属、首次提交时间与验证边界见 [全分支计划台账](../../archive/PLAN_AUDIT_2026-09-30.md)。
 
 > **2026-09-30 复核：** 代码抽查已落地。勾选框没有回写，不代表没做。当前行为以代码和 docs/INDEX.md 为准。
 
-> 导航：[历史计划整合](../../archive/HISTORY_PLANS.md)；当前状态见 [整改状态](../../REMEDIATION_STATUS_2026-09-30.md)。本文保留历史正文与勾选，写作/成人部分不适用于 main。
+> 导航：[历史计划整合](../../archive/HISTORY_PLANS.md)；当前状态见 [项目现状](../../STATUS.md)。本文保留历史正文与勾选，写作/成人部分不适用于 main。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. 本轮未获授权使用子代理，必须在当前任务内顺序执行。
 

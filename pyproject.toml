@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pixiv-novel-sync"
 version = "0.1.0"
-description = "Sync and archive Pixiv novels with metadata, text, and assets"
+description = "Self-hosted Pixiv novel library: incremental sync, local archive and search, mobile reading, EPUB export, rule-based recommendations and rescue reading"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-  { name = "ToCodex AI" }
+  { name = "dong-jpg" }
 ]
 dependencies = [
   "pixivpy3>=3.7.5",
@@ -24,6 +24,11 @@ dependencies = [
   "croniter>=2.0.0",
   "ebooklib>=0.18",
 ]
+
+[project.urls]
+Homepage = "https://github.com/dong-jpg/pixiv-novel-sync"
+Issues = "https://github.com/dong-jpg/pixiv-novel-sync/issues"
+Documentation = "https://github.com/dong-jpg/pixiv-novel-sync/blob/main/docs/INDEX.md"
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]

@@ -1,6 +1,6 @@
 # 小说标签调整与用户详情页
 
-> **历史需求说明（2026-09-30）**：本轮补查的早期设计/需求，界面标签和接口已演进，不再直接作为当前执行清单。参见 [全分支计划台账](../../../docs/PLAN_AUDIT_2026-09-30.md) 与当前前端契约。
+> **历史需求说明（2026-09-30）**：本轮补查的早期设计/需求，界面标签和接口已演进，不再直接作为当前执行清单。参见 [全分支计划台账](../../PLAN_AUDIT_2026-09-30.md) 与当前前端契约。
 
 Feature Name: novel-tabs-and-user-detail
 Updated: 2026-04-29
@@ -266,6 +266,6 @@ class SeriesInfo:
 
 ## References
 
-- [storage_db.py](../../../src/pixiv_novel_sync/storage_db.py) - 数据库访问层
-- [webapp.py](../../../src/pixiv_novel_sync/webapp.py) - Flask 应用
-- [sync_engine.py](../../../src/pixiv_novel_sync/sync_engine.py) - 同步引擎
+- [storage_db.py](../../../../src/pixiv_novel_sync/storage_db.py) - 数据库访问层
+- [webapp.py](../../../../src/pixiv_novel_sync/webapp.py) - Flask 应用
+- [sync_engine.py](../../../../src/pixiv_novel_sync/sync_engine.py) - 同步引擎

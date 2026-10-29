@@ -23,11 +23,12 @@
 | 08-28总计划 | 被phase1/2/3替代 | 吞吐/调度/设置三个阶段 |
 | 09-03设置可操作性 | 主体已实现，真实Provider/交互仍需对应验收 | 模型路由与设置指南 |
 
-## 当前执行入口（不归档）
+## 最近一轮执行入口
+
+09-14 计划与 09-30 台账的仓库任务已于 10-08 ～ 10-20 收口，作为逐项验收要求保留；当前待办只看 [项目现状](../STATUS.md)。
 
 - [09-14原任务与验收要求](../superpowers/plans/2026-09-14-ai-writing-split-and-audit-remediation.md)
 - [09-30执行台账](../superpowers/plans/2026-09-30-prioritized-completion.md)
-- [当前整改状态](../REMEDIATION_STATUS_2026-09-30.md)
 
 ## 原计划索引
 
@@ -68,6 +69,6 @@ main 有意剥离的写作材料只保留跨分支文本位置，不建立指向
 - [2026-08-28-sync-throughput-and-budget.md](../superpowers/plans/2026-08-28-sync-throughput-and-budget.md)
 - [2026-09-03-ai-settings-operability.md](../superpowers/plans/2026-09-03-ai-settings-operability.md)
 
-- [首次提交与全分支审计台账](../PLAN_AUDIT_2026-09-30.md)
-- [早期小说页需求](../../.monkeycode/specs/novel-tabs-and-user-detail/requirements.md)
-- [早期小说页设计](../../.monkeycode/specs/novel-tabs-and-user-detail/design.md)
+- [首次提交与全分支审计台账](PLAN_AUDIT_2026-09-30.md)
+- [早期小说页需求](monkeycode/novel-tabs-and-user-detail/requirements.md)
+- [早期小说页设计](monkeycode/novel-tabs-and-user-detail/design.md)

@@ -1,5 +1,0 @@
-rescue_web.py:324 /api/rescue/v1/novels/<int:novel_id> callers={'templates': 0, 'userscripts': 1, 'cli': 0} frags=['/api/rescue/v1/novels']
-rescue_web.py:362 /api/rescue/v1/series/<int:series_id> callers={'templates': 0, 'userscripts': 1, 'cli': 0} frags=['/api/rescue/v1/series']
-rescue_web.py:396 /api/rescue/v1/series/<int:series_id>/chapters callers={'templates': 0, 'userscripts': 2, 'cli': 0} frags=['/api/rescue/v1/series', '/chapters']
-webapp.py:860 /api/auth/login callers={'templates': 0, 'userscripts': 0, 'cli': 0} frags=['/api/auth/login']
-webapp.py:898 /api/auth/logout callers={'templates': 0, 'userscripts': 0, 'cli': 0} frags=['/api/auth/logout']

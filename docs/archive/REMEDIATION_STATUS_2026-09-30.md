@@ -1,6 +1,8 @@
 # 整改与完成情况报告（2026-10-14 复核）
 
-本文件沿用09-30路径，作为**当前状态入口**。最新依据为 [10-14审查](AUDIT_REPORT_2026-10-14.md) 和 [全分支计划时间线](PLAN_AUDIT_2026-10-14.md)；09-30审查及下面的10-08整改记录保留为历史快照。
+> **已归档（2026-10-28）**：本文是 2026-10-08 ～ 10-20 三轮整改的台账，不再是当前状态入口。当前版本、测试基线与待办见 [项目现状](../STATUS.md)；下文中的「本轮」「当前」「最新」均指当时。
+
+本文件曾沿用09-30路径作为当前状态入口。当时的依据为 [10-14审查](AUDIT_REPORT_2026-10-14.md) 和 [全分支计划时间线](PLAN_AUDIT_2026-10-14.md)；09-30审查及下面的10-08整改记录保留为历史快照。
 
 ## 10-14 当前结论
 
@@ -145,9 +147,9 @@ ai-writing 首轮完整结果为 **9 failed、1733 passed、4 skipped**：失败
 
 ## 文档整合
 
-- [历史报告整合](archive/HISTORY_REPORTS.md)：旧审计、完成报告、架构快照及重复优化结论。
-- [历史执行计划整合](archive/HISTORY_PLANS.md)：按阶段归并历史计划、替代关系、OUT 与环境验收，保留原路径索引。
-- [09-14 任务规格](superpowers/plans/2026-09-14-ai-writing-split-and-audit-remediation.md)和[09-30 执行台账](superpowers/plans/2026-09-30-prioritized-completion.md)记录本轮仓库事项；历史空勾不会被无差别改为完成。
+- [历史报告整合](HISTORY_REPORTS.md)：旧审计、完成报告、架构快照及重复优化结论。
+- [历史执行计划整合](HISTORY_PLANS.md)：按阶段归并历史计划、替代关系、OUT 与环境验收，保留原路径索引。
+- [09-14 任务规格](../superpowers/plans/2026-09-14-ai-writing-split-and-audit-remediation.md)和[09-30 执行台账](../superpowers/plans/2026-09-30-prioritized-completion.md)记录本轮仓库事项；历史空勾不会被无差别改为完成。
 - 活跃 README、开发指导、需求、任务系统、前端页面/契约、模型路由、偏好及 ai-writing 成人/Embedding 指南按当前行为更新。main 文档不恢复已拆除的写作功能。
 
 ## 10-08 当时的发布/外部验收清单

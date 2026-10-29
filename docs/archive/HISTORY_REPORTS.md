@@ -7,7 +7,7 @@
 1. 早期并发、外键、任务取消、CLI/Web共用任务、存储拆分已成为现有架构的一部分，后续修改应维持这些约束，不再照旧报告重复实施。
 2. “已归档”“全部完成”等标题仅代表当时阶段，不代表当前无缺陷；后续审计多次发现跨层状态、文件恢复和AI任务边界问题。
 3. API_COMPLETE、KNOWLEDGE_GRAPH 与旧写作设计不描述当前接口。查询行为应使用活跃契约与代码。
-4. 2026-09-30审查发现与后续修复分开记录：审查原文保留触发条件，修复状态集中于 [本轮整改状态](../REMEDIATION_STATUS_2026-09-30.md)。旧故障复现脚本可能在修复后按预期断言失败。
+4. 2026-09-30审查发现与后续修复分开记录：审查原文保留触发条件，修复状态集中于 [本轮整改状态](REMEDIATION_STATUS_2026-09-30.md)。旧故障复现脚本可能在修复后按预期断言失败。
 
 ## 历史主题
 
@@ -22,13 +22,13 @@
 
 ## 原始文档索引
 
-原文保留，不移动、不覆盖历史证据；所有当前结论以最新状态文档为准。
+原文不改写、不覆盖历史证据（2026-10-28 起统一移入 `docs/archive/`，只更新了指向）；所有当前结论以 [项目现状](../STATUS.md) 为准。
 
-- [API_COMPLETE.md](../API_COMPLETE.md)
-- [AUDIT_REPORT_2026-07-02.md](../AUDIT_REPORT_2026-07-02.md)
-- [AUDIT_REPORT_2026-07-03.md](../AUDIT_REPORT_2026-07-03.md)
-- [AUDIT_REPORT_2026-08-13.md](../AUDIT_REPORT_2026-08-13.md)
-- [AUDIT_REPORT_2026-09-14.md](../AUDIT_REPORT_2026-09-14.md)
+- [API_COMPLETE.md](API_COMPLETE.md)
+- [AUDIT_REPORT_2026-07-02.md](AUDIT_REPORT_2026-07-02.md)
+- [AUDIT_REPORT_2026-07-03.md](AUDIT_REPORT_2026-07-03.md)
+- [AUDIT_REPORT_2026-08-13.md](AUDIT_REPORT_2026-08-13.md)
+- [AUDIT_REPORT_2026-09-14.md](AUDIT_REPORT_2026-09-14.md)
 - [ALL_TASKS_COMPLETED.md](ALL_TASKS_COMPLETED.md)
 - [AUDIT_REPORT.md](AUDIT_REPORT.md)
 - [BUGS_FIXED_REPORT.md](BUGS_FIXED_REPORT.md)
@@ -40,5 +40,5 @@
 - [OPTIMIZATION_REVIEW_2026-06-26.md](OPTIMIZATION_REVIEW_2026-06-26.md)
 - [OPTIMIZATION_ROADMAP.md](OPTIMIZATION_ROADMAP.md)
 
-- [09-30修复前审查](../AUDIT_REPORT_2026-09-30.md)
-- [旧知识图谱](../../KNOWLEDGE_GRAPH.md)
+- [09-30修复前审查](AUDIT_REPORT_2026-09-30.md)
+- [旧知识图谱](KNOWLEDGE_GRAPH.md)
