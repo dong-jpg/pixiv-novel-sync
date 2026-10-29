@@ -565,6 +565,92 @@ def test_saved_snapshot_rejects_pool_or_agent_version_change(
         router.resolve_candidates(pool_agent, snapshot=fresh_snapshot)
 
 
+def test_resolve_upgrades_legacy_ciphers_before_hashing_the_snapshot(
+    db: Database,
+    pool_setup: dict[str, Any],
+    fake_providers: "FakeProviderRegistry",
+) -> None:
+    """A3：遗留 v1 密文在第一次解密时被透明升级成 v2 并回写，api_key_encrypted
+    属于 provider_config_hash 的输入。resolve_candidates 若先用 v1 密文算 hash，
+    随后 build_prompt_budget 解密时升级，执行前的快照校验就会报「Provider 配置
+    已变更」。照 model_sync.start 的做法：先升级，再算 hash。"""
+    from pixiv_novel_sync.ai.model_sync import provider_model_sync_config_hash
+
+    upgraded: list[int] = []
+
+    def upgrading_loader(database: Database, provider_id: int) -> AIProviderConfig:
+        row = database.get_ai_provider(provider_id, include_secret=True)
+        assert row is not None
+        cipher = row.get("api_key_encrypted") or ""
+        if cipher and not cipher.startswith("v2$"):
+            database.update_ai_provider(provider_id, {"api_key_encrypted": f"v2${cipher}"})
+            upgraded.append(provider_id)
+        return AIProviderConfig(
+            id=int(row["id"]),
+            name=row["name"],
+            provider_type=row["provider_type"],
+            base_url=row.get("base_url"),
+            api_key="decrypted-test-key",
+            default_model=row.get("default_model"),
+            context_window=int(row.get("context_window") or 128_000),
+        )
+
+    router = ModelRouter(
+        lambda: Database(db.path),
+        upgrading_loader,
+        fake_providers.get_provider,
+    )
+    agent = pool_setup["agent"]
+    # 与 _start_route_job 相同的顺序：解析候选 → 建预算（会解密）→ 执行
+    snapshot = router.resolve_candidates(agent)
+    router.build_prompt_budget(agent, snapshot, MESSAGES, 1_000)
+
+    assert sorted(upgraded) == sorted(pool_setup["providers"])
+    for candidate in snapshot.candidates:
+        current = db.get_ai_provider(candidate.provider_id, include_secret=True)
+        assert candidate.provider_config_hash == provider_model_sync_config_hash(current)
+
+    db.create_ai_job(
+        "legacy-cipher-job",
+        "continue",
+        agent.id,
+        {"source": "router-test"},
+        owner_token="route-owner",
+        stage="main",
+        route_deadline_at="2099-01-01 00:00:00",
+    )
+    assert db.set_ai_job_candidate_snapshot(
+        "legacy-cipher-job",
+        "route-owner",
+        {
+            "agent_config_hash": snapshot.agent_config_hash,
+            "binding_version": snapshot.binding_version,
+            "candidates": [asdict(candidate) for candidate in snapshot.candidates],
+        },
+        snapshot.snapshot_hash,
+    )
+    fake_providers.succeed(
+        "p1",
+        [AIStreamChunk(type="delta", text="正文"), AIStreamChunk(type="done", data={"finish_reason": "stop"})],
+    )
+    result = router.execute(
+        RouteRequest(
+            job_id="legacy-cipher-job",
+            stage="main",
+            messages=MESSAGES,
+            candidate_snapshot=snapshot,
+            max_tokens=1_000,
+            owner_token="route-owner",
+            on_delta=lambda _text: None,
+            on_progress=lambda _data: None,
+        )
+    )
+    router.close()
+
+    assert result.finish_state == "succeeded"
+    assert result.output_text == "正文"
+
+
 def test_heuristic_estimate_counts_chinese_tighter_than_utf8_bytes() -> None:
     from pixiv_novel_sync.ai.model_router import estimate_token_count
 

@@ -17,6 +17,7 @@ from ..storage.ai.core import (
     AIJobConflictError,
     AIRouteBudgetExhausted,
 )
+from .crypto import AISecretManager
 from .model_catalog import ModelCatalogValidationError, normalize_model_key
 from .model_sync import provider_model_sync_config_hash
 from .models import AIAgentConfig, AIProviderConfig, AIStreamChunk
@@ -693,11 +694,54 @@ class ModelRouter:
         if not agent.enabled:
             raise ModelRouteError("Agent 已禁用")
 
+        if snapshot is not None:
+            db = self._db_factory()
+            try:
+                with db.read_transaction():
+                    return self._validate_saved_snapshot(db, agent, snapshot)
+            finally:
+                db.close()
+
+        resolved = self._resolve_new_snapshot(agent)
+        # 遗留 v1 密文在第一次解密时被透明升级成 v2 并回写，而 api_key_encrypted 是
+        # provider_config_hash 的输入：用 v1 密文算出的快照会在随后的预算构建或首个
+        # 候选解密之后对不上，执行前报「Provider 配置已变更」（首次必败、第二次才成功）。
+        # 照 model_sync.start 的做法先完成升级再算 hash；升级过就重新解析一次。
+        if self._upgrade_legacy_provider_secrets(resolved):
+            resolved = self._resolve_new_snapshot(agent)
+        return resolved
+
+    def _upgrade_legacy_provider_secrets(self, snapshot: CandidateSnapshot) -> bool:
+        """对候选里仍是遗留密文的 Provider 先解密一次（解密即升级回写）。
+
+        只碰遗留密文；解密失败不在这里报错，交给之后的预算构建或候选尝试按原路径
+        处理。返回是否真的有 Provider 的密文被改写。
+        """
+        provider_ids = list(dict.fromkeys(c.provider_id for c in snapshot.candidates))
+        changed = False
+        db = self._db_factory()
+        try:
+            for provider_id in provider_ids:
+                row = db.get_ai_provider(provider_id, include_secret=True)
+                before = (row or {}).get("api_key_encrypted")
+                if not AISecretManager.is_legacy_ciphertext(before):
+                    continue
+                try:
+                    self._load_provider_config(db, provider_id)
+                except Exception:
+                    continue
+                after = (db.get_ai_provider(provider_id, include_secret=True) or {}).get(
+                    "api_key_encrypted"
+                )
+                changed = changed or after != before
+        finally:
+            db.close()
+        return changed
+
+    def _resolve_new_snapshot(self, agent: AIAgentConfig) -> CandidateSnapshot:
         db = self._db_factory()
         try:
             with db.read_transaction():
-                if snapshot is not None:
-                    return self._validate_saved_snapshot(db, agent, snapshot)
                 if agent.binding_type == "fixed":
                     candidates = self._resolve_fixed(db, agent)
                 elif agent.binding_type == "pool":

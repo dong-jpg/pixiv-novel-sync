@@ -340,3 +340,41 @@ def test_cancel_callback_reaches_the_route(tmp_path: Path, http: dict[str, Any])
     assert [attempt["status"] for attempt in job["attempts"]] == ["cancelled"]
     # 取消后没有重试，也没有退回非流式再发一次
     assert len(http["calls"]) == 1
+
+
+# ── A3：遗留 v1 密文 ─────────────────────────────────────────────
+
+
+def legacy_v1_cipher(plaintext: str) -> str:
+    """旧版（无盐 SHA-256 KDF、无 v2$ 前缀）密文，用来模拟升级前保存的 Key。"""
+    token = AISecretManager()._fernet_v1().encrypt(plaintext.encode("utf-8"))
+    return token.decode("utf-8")
+
+
+def test_first_clean_with_legacy_v1_cipher_succeeds(
+    tmp_path: Path,
+    http: dict[str, Any],
+) -> None:
+    """A3：resolve_candidates 用 v1 密文算 provider_config_hash，随后
+    _load_provider_config 透明升级成 v2 并回写，执行前的快照校验重算 hash 对不上，
+    报「Provider 配置已变更」：首次清洗必败、第二次才成功。"""
+    db_path = tmp_path / "keyword-clean.db"
+    ids = seed(db_path, api_key_cipher=legacy_v1_cipher("sk-legacy"))
+    http["responses"].append(cleaned_stream())
+
+    service = AIWritingService(db_path)
+    try:
+        result = service.clean_keywords(["她的", "纯爱"])
+    finally:
+        service.close()
+
+    assert result == CLEANED
+    assert [job["status"] for job in jobs(db_path)] == ["succeeded"]
+    assert len(http["calls"]) == 1
+    assert http["calls"][0]["headers"]["Authorization"] == "Bearer sk-legacy"
+    db = Database(db_path)
+    try:
+        stored = db.get_ai_provider(ids["provider_id"], include_secret=True)
+    finally:
+        db.close()
+    assert stored["api_key_encrypted"].startswith("v2$")
