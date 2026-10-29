@@ -1397,9 +1397,14 @@ def create_app(
             else:
                 # 多本小说打包为ZIP
                 zip_buffer = io.BytesIO()
+                exported: set[int] = set()
                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                     for novel_id in novel_ids[:50]:  # 限制最多50本
                         novel_id = int(novel_id)
+                        # 同一 ID 重复出现只导一次，否则 zip 里会有两个同名条目
+                        if novel_id in exported:
+                            continue
+                        exported.add(novel_id)
                         novel_data = db.get_novel_detail(novel_id)
                         if not novel_data or not novel_data.get("text_raw"):
                             continue
@@ -1409,8 +1414,10 @@ def create_app(
                             cover_path = storage.get_novel_cover_path(novel_data)
 
                         epub_bytes = create_epub_from_novel(novel_data, novel_data["text_raw"], cover_path)
-                        filename = f"{safe_name(str(novel_data.get('title') or novel_id), str(novel_id))}.epub"
-                        zf.writestr(filename, epub_bytes)
+                        # 文件名带 _{novel_id}：同名作品（同一系列的「番外」、不同作者的同题作）不再互相覆盖
+                        title = str(novel_data.get("title") or "").strip()
+                        stem = f"{safe_name(title, str(novel_id))}_{novel_id}" if title else str(novel_id)
+                        zf.writestr(f"{stem}.epub", epub_bytes)
 
                 zip_buffer.seek(0)
                 return send_file(

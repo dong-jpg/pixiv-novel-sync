@@ -1,0 +1,164 @@
+[
+  {
+    "name": "plain lines keep indentation and blank lines",
+    "text": "　一行目\n二行目\n\n三行目\n",
+    "pages": [[
+      {"type": "paragraph", "indent": "　", "content": ["一行目"]},
+      {"type": "paragraph", "indent": "", "content": ["二行目"]},
+      {"type": "blank"},
+      {"type": "paragraph", "indent": "", "content": ["三行目"]}
+    ]]
+  },
+  {
+    "name": "blank runs are capped at three",
+    "text": "上\n\n\n\n\n\n\n下",
+    "pages": [[
+      {"type": "paragraph", "indent": "", "content": ["上"]},
+      {"type": "blank"}, {"type": "blank"}, {"type": "blank"},
+      {"type": "paragraph", "indent": "", "content": ["下"]}
+    ]]
+  },
+  {
+    "name": "whitespace-only lines count as blank, CRLF and CR are normalized",
+    "text": "a\r\n　　\r\nb\rc",
+    "pages": [[
+      {"type": "paragraph", "indent": "", "content": ["a"]},
+      {"type": "blank"},
+      {"type": "paragraph", "indent": "", "content": ["b"]},
+      {"type": "paragraph", "indent": "", "content": ["c"]}
+    ]]
+  },
+  {
+    "name": "newpage splits pages, keeps empty middle pages, drops trailing empty pages",
+    "text": "一页[newpage][newpage]\n三页\n[newpage]\n\n",
+    "pages": [
+      [{"type": "paragraph", "indent": "", "content": ["一页"]}],
+      [],
+      [{"type": "paragraph", "indent": "", "content": ["三页"]}]
+    ]
+  },
+  {
+    "name": "empty text is one empty page",
+    "text": "",
+    "pages": [[]]
+  },
+  {
+    "name": "chapter is a block and may contain ruby",
+    "text": "[chapter:第一章 [[rb:始 > はじ]]まり]\n本文",
+    "pages": [[
+      {"type": "chapter", "content": ["第一章 ", {"type": "ruby", "base": "始", "rt": "はじ"}, "まり"]},
+      {"type": "paragraph", "indent": "", "content": ["本文"]}
+    ]]
+  },
+  {
+    "name": "block markers split the line they sit on",
+    "text": "　前[chapter:章]後[pixivimage:12345-2]尾",
+    "pages": [[
+      {"type": "paragraph", "indent": "　", "content": ["前"]},
+      {"type": "chapter", "content": ["章"]},
+      {"type": "paragraph", "indent": "", "content": ["後"]},
+      {"type": "image", "kind": "pixivimage", "id": "12345-2"},
+      {"type": "paragraph", "indent": "", "content": ["尾"]}
+    ]]
+  },
+  {
+    "name": "uploadedimage is a block",
+    "text": "[uploadedimage:998877]",
+    "pages": [[{"type": "image", "kind": "uploadedimage", "id": "998877"}]]
+  },
+  {
+    "name": "image ids may not contain brackets",
+    "text": "[pixivimage:1[2]]",
+    "pages": [[{"type": "paragraph", "indent": "", "content": ["[pixivimage:1[2]]"]}]]
+  },
+  {
+    "name": "unclosed block markers stay literal",
+    "text": "[chapter:未闭合\n[pixivimage:1",
+    "pages": [[
+      {"type": "paragraph", "indent": "", "content": ["[chapter:未闭合"]},
+      {"type": "paragraph", "indent": "", "content": ["[pixivimage:1"]}
+    ]]
+  },
+  {
+    "name": "ruby",
+    "text": "[[rb:漢字 > かんじ]]を読む",
+    "pages": [[{"type": "paragraph", "indent": "", "content": [{"type": "ruby", "base": "漢字", "rt": "かんじ"}, "を読む"]}]]
+  },
+  {
+    "name": "ruby without separator has empty reading",
+    "text": "[[rb:漢字]]",
+    "pages": [[{"type": "paragraph", "indent": "", "content": [{"type": "ruby", "base": "漢字", "rt": ""}]}]]
+  },
+  {
+    "name": "unclosed ruby stays literal",
+    "text": "[[rb:漢字 > かんじ]",
+    "pages": [[{"type": "paragraph", "indent": "", "content": ["[[rb:漢字 > かんじ]"]}]]
+  },
+  {
+    "name": "jumpuri with https keeps the URL, query string untouched",
+    "text": "[[jumpuri:公式 > https://www.pixiv.net/?a=1&b=2]]",
+    "pages": [[{"type": "paragraph", "indent": "", "content": [{"type": "link", "href": "https://www.pixiv.net/?a=1&b=2", "content": ["公式"]}]}]]
+  },
+  {
+    "name": "jumpuri drops javascript: and other non-http schemes",
+    "text": "[[jumpuri:点我 > javascript:alert(document.cookie)]][[jumpuri:x > JavaScript:alert(1)]][[jumpuri:y > //evil.example]]",
+    "pages": [[{"type": "paragraph", "indent": "", "content": [
+      {"type": "link", "href": null, "content": ["点我"]},
+      {"type": "link", "href": null, "content": ["x"]},
+      {"type": "link", "href": null, "content": ["y"]}
+    ]}]]
+  },
+  {
+    "name": "jumpuri drops URLs with quotes, spaces or angle brackets",
+    "text": "[[jumpuri:a > https://e.com/\"onmouseover=\"alert(1)]][[jumpuri:b > https://e.com/a b]][[jumpuri:c > https://e.com/x<y]]",
+    "pages": [[{"type": "paragraph", "indent": "", "content": [
+      {"type": "link", "href": null, "content": ["a"]},
+      {"type": "link", "href": null, "content": ["b"]},
+      {"type": "link", "href": null, "content": ["c"]}
+    ]}]]
+  },
+  {
+    "name": "jumpuri label may nest ruby; only an unnested > splits",
+    "text": "[[jumpuri:[[rb:本 > ほん]]へ > https://e.com/]]",
+    "pages": [[{"type": "paragraph", "indent": "", "content": [{"type": "link", "href": "https://e.com/", "content": [{"type": "ruby", "base": "本", "rt": "ほん"}, "へ"]}]}]]
+  },
+  {
+    "name": "jump",
+    "text": "[jump:2]と[jump:x]",
+    "pages": [[{"type": "paragraph", "indent": "", "content": [{"type": "jump", "page": 2}, "と[jump:x]"]}]]
+  },
+  {
+    "name": "bold and italic nest",
+    "text": "[b:太[i:斜]]",
+    "pages": [[{"type": "paragraph", "indent": "", "content": [{"type": "bold", "content": ["太", {"type": "italic", "content": ["斜"]}]}]}]]
+  },
+  {
+    "name": "emphasis marks: sesame vs dot",
+    "text": "[[emphasismark:強調 > ﹅]][[emphasismark:点 > •]]",
+    "pages": [[{"type": "paragraph", "indent": "", "content": [
+      {"type": "emphasis", "style": "sesame", "content": ["強調"]},
+      {"type": "emphasis", "style": "dot", "content": ["点"]}
+    ]}]]
+  },
+  {
+    "name": "html in the body is plain text",
+    "text": "<script>alert(1)</script><img src=x onerror=alert(1)>",
+    "pages": [[{"type": "paragraph", "indent": "", "content": ["<script>alert(1)</script><img src=x onerror=alert(1)>"]}]]
+  },
+  {
+    "name": "unknown tags and stray brackets stay literal",
+    "text": "[unknown:x] a]b[ [[ ]]",
+    "pages": [[{"type": "paragraph", "indent": "", "content": ["[unknown:x] a]b[ [[ ]]"]}]]
+  },
+  {
+    "name": "nesting deeper than eight levels is literal",
+    "text": "[b:[b:[b:[b:[b:[b:[b:[b:[b:x]]]]]]]]]",
+    "pages": [[{"type": "paragraph", "indent": "", "content": [
+      {"type": "bold", "content": [{"type": "bold", "content": [{"type": "bold", "content": [{"type": "bold", "content": [
+        {"type": "bold", "content": [{"type": "bold", "content": [{"type": "bold", "content": [{"type": "bold", "content": [
+          "[b:x]"
+        ]}]}]}]}
+      ]}]}]}]}
+    ]}]]
+  }
+]

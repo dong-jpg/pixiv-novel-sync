@@ -308,7 +308,8 @@ Used by: 小说阅读页阅读进度恢复。本机无记录时按服务端百�
 
 - `novel_ids` 缺失或不是数组时返回 `400 { "error": "novel_ids required" }`。
 - 单本：直接返回 `application/epub+zip` 附件；小说不存在返回 `404`，正文缺失返回 `400`。
-- 多本：最多处理前 50 本，跳过无正文条目，返回 `application/zip` 附件 `novels.zip`。
+- 多本：最多处理前 50 个 ID（重复 ID 只导一次），跳过无正文条目，返回 `application/zip` 附件 `novels.zip`；条目名为 `{标题}_{novel_id}.epub`（无标题时为 `{novel_id}.epub`），同名作品不再互相覆盖。
+- EPUB 内容：正文按 Pixiv 标记解析（`pixiv_markup.py`）。`[newpage]` 与 `[chapter:]` 各起一个 XHTML 文件并进目录（超过 500 个文件后，其余分页并入最后一个文件，页内锚点仍可跳转）；`[[rb:]]` 转 `<ruby><rt>`；`[[jumpuri:]]` 只保留 http(s) 链接，其余只留文字；`[jump:N]` 链到第 N 页所在文件；插图标记降级为文字说明（备份未收录插图与正文的对应关系）。语言按正文判断（ja / zh / ko / en）；封面按文件头识别 JPEG / PNG / GIF / WebP，认不出就不放封面。
 
 ### GET /api/dashboard/export/stats
 

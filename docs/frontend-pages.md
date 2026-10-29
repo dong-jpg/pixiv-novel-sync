@@ -158,6 +158,8 @@ APIs:
 
 手机使用独立“保存进度 / 字号 / 章节 / 更多”工具栏，隐藏全站底栏。保存采样当前位置，不跳回页首；重置、移除和删除仍须确认。章节与管理使用共享弹窗，管理结果在弹窗内部持续可见；失败不关闭正文、不清除进度。
 
+正文由 `pixiv_markup.html`（`window.pixivMarkup.renderHtml`）渲染 Pixiv 标记：`[newpage]` 显示为「k / N 页」分隔条（整篇仍连续滚动，进度照旧按滚动位置计），`[chapter:]` 显示为章节标题，`[[rb:]]` 用 `<ruby><rt>`，`[[jumpuri:]]` 只放行 http(s)，`[jump:N]` 在页内滚到第 N 页且不改 URL hash（带 hash 打开会跳过进度恢复），插图标记显示为占位说明。所有文字与属性都经转义，只产出白名单标签；解析规则与 EPUB 导出的 `pixiv_markup.py` 共用夹具与模糊比对测试。
+
 五个阅读/列表页面使用 `navigation_helpers.html`：`safeDashboardReturn` / `withDashboardReturn` 校验站内 dashboard 路径，`createDashboardScrollState` 仅在 sessionStorage 保存路径+查询对应的像素位置。显式返回和浏览器返回保留筛选/页码，延迟恢复遇到用户手动操作就取消；不依赖 referrer，不缓存密码或正文。存储被禁用时仍保留 URL 上下文，但不能保证像素位置持久化。
 
 ### `/dashboard/follows`
