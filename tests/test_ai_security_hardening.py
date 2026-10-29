@@ -97,6 +97,55 @@ def test_validate_base_url_opt_in_allows_ipv6_loopback(monkeypatch):
     assert validate_base_url("http://[::1]:11434/v1", resolve=True).startswith("http://[::1]")
 
 
+# 6to4（2002::/16，RFC 3056）把一个 IPv4 编进第 2～5 字节。Python 的 ipaddress
+# 把整段当成 is_global，旧代码因此放行 2002:a9fe:a9fe:: 这种「内嵌云元数据地址」
+# 的目标。修复后按内嵌 IPv4 套 IPv4 的规则判断。
+@pytest.mark.parametrize(
+    "address",
+    [
+        "2002:a9fe:a9fe::1",  # 169.254.169.254 云元数据
+        "2002:7f00:1::1",  # 127.0.0.1
+        "2002:c0a8:101::1",  # 192.168.1.1
+        "2002:a00:1::1",  # 10.0.0.1
+        "2002:6440:1::1",  # 100.64.0.1 共享地址
+    ],
+)
+def test_validate_base_url_blocks_6to4_wrapping_restricted_ipv4(address):
+    with pytest.raises(ProviderConfigError, match="受限地址"):
+        validate_base_url(f"https://[{address}]/v1", resolve=True)
+
+
+def test_dns_answer_in_6to4_wrapping_metadata_is_blocked(monkeypatch):
+    """DNS 钉 IP 那一步同样要拦：域名解析出 6to4 地址时按内嵌 IPv4 判断。"""
+
+    def six_to_four_metadata(_host, port, *_args, **_kwargs):
+        return [
+            (
+                socket.AF_INET6,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("2002:a9fe:a9fe::1", port, 0, 0),
+            )
+        ]
+
+    monkeypatch.setattr(provider_module.socket, "getaddrinfo", six_to_four_metadata)
+    with pytest.raises(ProviderConfigError, match="受限地址"):
+        validate_base_url("https://rebind-6to4.test/v1", resolve=True)
+    # opt-in 只放行私有/回环，链路本地（云元数据）照样拒绝
+    monkeypatch.setenv("PIXIV_AI_ALLOW_PRIVATE_HOSTS", "1")
+    with pytest.raises(ProviderConfigError, match="受限地址"):
+        validate_base_url("https://rebind-6to4.test/v1", resolve=True)
+
+
+def test_validate_base_url_allows_6to4_wrapping_public_ipv4():
+    """内嵌公网 IPv4 的 6to4 不是 SSRF：照公网地址放行，避免误伤。"""
+    assert (
+        validate_base_url("https://[2002:808:808::1]/v1", resolve=True)
+        == "https://[2002:808:808::1]/v1"
+    )
+
+
 def test_resolve_target_rejects_explicit_zero_port(monkeypatch):
     def must_not_resolve(_host, port, *_args, **_kwargs):
         pytest.fail(f"显式端口 0 被错误改写为 {port} 并进入 DNS 解析")

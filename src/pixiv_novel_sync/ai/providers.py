@@ -105,6 +105,12 @@ def _is_blocked_ip(ip: ipaddress._BaseAddress, *, allow_private: bool) -> bool:
     mapped = getattr(ip, "ipv4_mapped", None)
     if mapped is not None:
         ip = mapped
+    # 6to4（2002::/16）把一个 IPv4 编进地址里，ipaddress 却把整段算成 is_global：
+    # 不展开的话 2002:a9fe:a9fe:: 这种内嵌云元数据地址的目标会被当成公网放行。
+    # 只用于判断，不改写连接目标（6to4 经中继走的仍是这个 IPv6 地址）。
+    six_to_four = getattr(ip, "sixtofour", None)
+    if six_to_four is not None:
+        ip = six_to_four
     # 回环地址独立判断：opt-in 时优先放行，避免被 reserved 兜底规则误杀。
     if ip.is_loopback:
         return not allow_private
