@@ -393,10 +393,7 @@ class BookmarkNovelSyncService:
                 for novel in novels:
                     novel_id = int(novel.id)
                     # 已在本地完成归档的直接跳过，不再为它们打详情接口
-                    should_skip = self.db.novel_archive_complete(
-                        novel_id,
-                        require_assets=download_assets,
-                    )
+                    should_skip = self._archive_complete_on_disk(novel_id, download_assets)
                     # 预算只拦「要发详情请求」的条目，而且在真碰到这样一条时才判定触顶：
                     # 预算用完时后面若全是已归档的，本轮其实已经取完，不能误报截断。
                     if not should_skip and max_items is not None and synced_items >= max_items:
@@ -463,10 +460,10 @@ class BookmarkNovelSyncService:
                             "skipped": counters.get("skipped", 0),
                         })
 
-                    # 只有非跳过时才使用 item_delay。不可获取的条目同样发过详情请求，
-                    # 而它们已不受预算约束，必须照常间隔，否则一串失效收藏会连发请求。
-                    requested = counters.get("novels", 0) > 0 or counters.get("content_unavailable", 0) > 0
-                    if requested and item_delay > 0:
+                    # 只有非跳过时才使用 item_delay：凡是走了 _sync_novel 的都发过详情请求。
+                    # 不可获取的条目不受预算约束，内容未变、只补资源的（磁盘缺封面，S9）
+                    # 也不计预算，都必须照常间隔，否则一串这样的条目会连发请求。
+                    if not should_skip and item_delay > 0:
                         if progress_callback:
                             progress_callback("rate_limit", {"seconds": item_delay})
                         _sleep_with_progress_cancel(item_delay, progress_callback)
@@ -807,10 +804,7 @@ class BookmarkNovelSyncService:
 
                     # 已在本地完成归档的直接跳过；existing_streak 的早停判定
                     # 同样以归档完整度为准（原来是预检查表，但其结果从未被消费）。
-                    should_skip = self.db.novel_archive_complete(
-                        novel_id,
-                        require_assets=download_assets,
-                    )
+                    should_skip = self._archive_complete_on_disk(novel_id, download_assets)
 
                     if should_skip:
                         # 已存在，跳过
@@ -876,7 +870,9 @@ class BookmarkNovelSyncService:
                             "skipped": counters.get("skipped", 0),
                         })
 
-                    if counters.get("novels", 0) > 0 and item_delay > 0:
+                    # 凡是走了 _sync_novel 的都间隔：内容未变、只补资源（磁盘缺封面，S9）
+                    # 的访问不计配额，不间隔的话同一作者的一整页会连发请求。
+                    if not should_skip and item_delay > 0:
                         if progress_callback:
                             progress_callback("rate_limit", {"seconds": item_delay})
                         _sleep_with_progress_cancel(item_delay, progress_callback)
@@ -1437,7 +1433,7 @@ class BookmarkNovelSyncService:
                                         continue
 
                                     # 只有正文和必要资源都完整时才跳过；否则补同步。
-                                    if self.db.novel_archive_complete(novel_id, require_assets=download_assets):
+                                    if self._archive_complete_on_disk(novel_id, download_assets):
                                         skipped_count += 1
                                         if progress_callback:
                                             progress_callback("phase", {"phase": f"  [{idx+1}/{len(all_novel_items)}] 跳过已存在: {novel_id}"})
@@ -2041,6 +2037,47 @@ class BookmarkNovelSyncService:
             return None
         return remote_ids
 
+    def _asset_file_present(self, novel_dir: Path, asset_type: str, asset_url: str) -> bool:
+        """资源文件是否真的在磁盘上且非空；storage 不提供检查时按「在」处理（测试替身）。"""
+        checker = getattr(self.storage, "asset_file_present", None)
+        if not callable(checker):
+            return True
+        target = self.storage.asset_path(novel_dir, asset_type, _filename_from_url(asset_url))
+        return bool(checker(target))
+
+    def _archive_complete_on_disk(self, novel_id: int, require_assets: bool) -> bool:
+        """跳过判定：库里归档完整，且（需要资源时）封面文件确实在磁盘上。
+
+        ``novel_archive_complete`` 只看 assets 表：封面文件被删或截断成空文件时它仍为真，
+        作品被永远跳过（S9）。封面路径按写入时同一套规则重建（restrict_value +
+        archive_dir），不用 ``assets.local_path``：后者是下载时相对当时工作目录的路径，
+        换个目录启动就解析不到，会让每轮都误判缺失。
+        """
+        if not self.db.novel_archive_complete(novel_id, require_assets=require_assets):
+            return False
+        if not require_assets:
+            return True
+        checker = getattr(self.storage, "asset_file_present", None)
+        locate = getattr(self.storage, "get_novel_cover_path", None)
+        if not callable(checker) or not callable(locate):
+            return True
+        row = self.db.conn.execute(
+            """
+            SELECT n.novel_id, n.user_id, n.title, n.restrict_value, n.cover_url, n.archive_dir,
+                   u.name AS author_name
+            FROM novels n
+            LEFT JOIN users u ON u.user_id = n.user_id
+            WHERE n.novel_id = ?
+            """,
+            (novel_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        cover_path = locate(dict(row))
+        if cover_path is None:
+            return True  # 没有封面：正文完整度已由 novel_archive_complete 判定
+        return bool(checker(cover_path))
+
     def _sync_novel(
         self,
         novel: Any,
@@ -2143,7 +2180,13 @@ class BookmarkNovelSyncService:
         missing_assets = expected_assets
         if expected_assets:
             recorded_urls = self.db.get_recorded_asset_urls(novel_id)
-            missing_assets = [(asset_type, asset_url) for asset_type, asset_url in expected_assets if asset_url not in recorded_urls]
+            # assets 表只说明「下载成功过」：磁盘上被删或截断成空文件的也要重下（S9）
+            missing_assets = [
+                (asset_type, asset_url)
+                for asset_type, asset_url in expected_assets
+                if asset_url not in recorded_urls
+                or not self._asset_file_present(novel_dir, asset_type, asset_url)
+            ]
 
         if meta_unchanged and text_unchanged:
             with self.db.transaction():
