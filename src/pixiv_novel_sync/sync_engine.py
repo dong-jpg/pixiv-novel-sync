@@ -273,6 +273,20 @@ def _parse_pixiv_error_json(exc: BaseException) -> dict[str, Any] | None:
     return None
 
 
+def _resolve_archive_restrict(requested: str | None, stored: Any) -> str:
+    """决定作品落在 public 还是 private 归档树。
+
+    只有收藏同步知道作品属于哪个收藏列表，它显式传 public / private。全量备份、
+    追更章节、关注作者扫描不知道，传 None：已归档的沿用库里的 ``restrict_value``，
+    新作品落 public。以前这几条路径写死 "public"（关注扫描传的是作品自身的可见性
+    0/1/2），私密收藏的作品被它们重访且正文有变时，整套文件写进 public 树、
+    ``restrict_value`` 翻成 public，private 树里的封面成孤儿（审查 S10）。
+    """
+    if requested is not None:
+        return "private" if requested == "private" else "public"
+    return "private" if str(stored or "") == "private" else "public"
+
+
 def _pixiv_content_unavailable_reason(exc: BaseException) -> str | None:
     """判断异常是否代表"正文确实不可获取"，是则返回可读的中文原因。
 
@@ -819,7 +833,9 @@ class BookmarkNovelSyncService:
                         existing_streak = 0
                         counters = self._sync_novel(
                             novel,
-                            getattr(novel, "restrict", "public") or "public",
+                            # 作品自身的 restrict 是作者设的可见性（0/1/2），不是收藏列表；
+                            # 传 None 沿用已归档的 restrict，新作品落 public（S10）
+                            None,
                             download_assets,
                             write_markdown,
                             write_raw_text,
@@ -1434,7 +1450,7 @@ class BookmarkNovelSyncService:
 
                                     novel_obj = types.SimpleNamespace(id=novel_id)
                                     counters = self._sync_novel(
-                                        novel_obj, "public",
+                                        novel_obj, None,  # 沿用已归档的 restrict，新作品落 public（S10）
                                         download_assets, write_markdown, write_raw_text,
                                         source_type="subscribed_series",
                                         source_key=str(sid),
@@ -2028,7 +2044,7 @@ class BookmarkNovelSyncService:
     def _sync_novel(
         self,
         novel: Any,
-        restrict: str,
+        restrict: str | None,
         download_assets: bool,
         write_markdown: bool,
         write_raw_text: bool,
@@ -2065,7 +2081,7 @@ class BookmarkNovelSyncService:
         self,
         novel_id: int,
         novel: Any,
-        restrict: str,
+        restrict: str | None,
         download_assets: bool,
         write_markdown: bool,
         write_raw_text: bool,
@@ -2105,8 +2121,9 @@ class BookmarkNovelSyncService:
 
         # 3.5 hash增量:读旧hash比对,未变更跳过写盘写库
         existing_row = self.db.conn.execute(
-            "SELECT meta_hash, archive_dir FROM novels WHERE novel_id = ?", (novel_id,)
+            "SELECT meta_hash, archive_dir, restrict_value FROM novels WHERE novel_id = ?", (novel_id,)
         ).fetchone()
+        restrict = _resolve_archive_restrict(restrict, existing_row[2] if existing_row else None)
         existing_text_row = self.db.conn.execute(
             "SELECT text_hash FROM novel_texts WHERE novel_id = ?", (novel_id,)
         ).fetchone()

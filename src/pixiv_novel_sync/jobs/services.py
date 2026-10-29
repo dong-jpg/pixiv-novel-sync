@@ -209,7 +209,9 @@ def run_user_backup_task(
 
                 counters = service._sync_novel(
                     novel,
-                    "public",
+                    # 全量备份不知道作品在哪个收藏列表：沿用已归档的 restrict，
+                    # 新作品落 public。写死 "public" 会把私密收藏搬进公开树（S10）
+                    None,
                     settings.sync.download_assets,
                     settings.sync.write_markdown,
                     settings.sync.write_raw_text,

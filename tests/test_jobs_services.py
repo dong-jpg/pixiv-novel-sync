@@ -651,7 +651,8 @@ def test_run_user_backup_task_syncs_target_user_novels_with_expected_options(set
     assert sync_service.calls == [
         {
             "novel_id": 2021,
-            "restrict": "public",
+            # 全量备份不知道作品属于哪个收藏列表，传 None 沿用已归档的 restrict（S10）
+            "restrict": None,
             "download_assets": True,
             "write_markdown": True,
             "write_raw_text": False,
@@ -660,7 +661,7 @@ def test_run_user_backup_task_syncs_target_user_novels_with_expected_options(set
         },
         {
             "novel_id": 2022,
-            "restrict": "public",
+            "restrict": None,
             "download_assets": True,
             "write_markdown": True,
             "write_raw_text": False,
