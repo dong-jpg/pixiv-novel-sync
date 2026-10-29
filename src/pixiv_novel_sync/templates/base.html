@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <title>{% block title %}Pixiv 小说同步器{% endblock %}</title>
 
-  <script src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js" integrity="sha384-Z9a2xA0EIaURxthVmeQmPrgSC05eG8Lch8X4Y2+lXpTg9wcxPj2m3QNurDl5hLiS" crossorigin="anonymous"></script>
+  <script nonce="{[ csp_nonce() ]}" src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js" integrity="sha384-Z9a2xA0EIaURxthVmeQmPrgSC05eG8Lch8X4Y2+lXpTg9wcxPj2m3QNurDl5hLiS" crossorigin="anonymous"></script>
 
   <style>
     :root {
@@ -257,7 +257,7 @@
 
   {% include 'vue_components.html' ignore missing %}
 
-  <script>
+  <script nonce="{[ csp_nonce() ]}">
     // 全站共用的 CSRF 助手。
     //
     // 鉴权网关（webapp.py:_check_auth）对 POST/PUT/PATCH/DELETE 强制校验

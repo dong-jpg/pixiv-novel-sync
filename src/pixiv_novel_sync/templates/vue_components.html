@@ -2,7 +2,7 @@
   Library OS global Vue 3 component definitions.
   Included at bottom of base.html via Jinja include.
 -->
-<script>
+<script nonce="{[ csp_nonce() ]}">
 function registerGlobalComponents(app) {
   const { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } = Vue;
 

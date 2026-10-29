@@ -87,7 +87,7 @@ function environment(url = '/dashboard/novels', options = {}) {
   const base = read('base.html');
   vm.runInContext(base.slice(base.indexOf('window.readListQuery ='), base.indexOf('window.streamSSE =')), context);
   function execute(html, filename) {
-    for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
+    for (const match of html.matchAll(/<script(?: nonce=\"[^\"]*\")?>([\s\S]*?)<\/script>/g)) {
       vm.runInContext(match[1], context, {filename});
     }
   }

@@ -99,7 +99,7 @@ function mount(name, search = '') {
   const aiApi = base.match(/window\.aiApi = \{[\s\S]*?\n    };/);
   assert.ok(aiApi);
   vm.runInContext(aiApi[0], context, {filename: 'base.html:aiApi'});
-  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  const scripts = [...html.matchAll(/<script(?: nonce=\"[^\"]*\")?>([\s\S]*?)<\/script>/g)];
   assert.equal(scripts.length, 1, 'Execute the actual page script without rewriting its logic');
   vm.runInContext(scripts[0][1], context, {filename: name});
   return {
@@ -1016,7 +1016,7 @@ async function batchDialog(m) {
   };
   const context = vm.createContext({Vue, document, window: {...m.window, innerWidth: 390,
     getComputedStyle: () => ({visibility: 'visible', paddingRight: '0px'})}});
-  vm.runInContext(source('vue_components.html').match(/<script>([\s\S]*?)<\/script>/)[1], context);
+  vm.runInContext(source('vue_components.html').match(/<script(?: nonce=\"[^\"]*\")?>([\s\S]*?)<\/script>/)[1], context);
   context.registerGlobalComponents({component: (name, definition) => components.set(name, definition)});
   const isOpen = () => Boolean(evaluate(markup.match(/:is-open="([^"]+)"/)[1]));
   const props = {title: '确认批量改绑', isOpen: isOpen(), closeOnBackdrop: true};

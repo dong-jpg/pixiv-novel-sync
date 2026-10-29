@@ -148,7 +148,7 @@
 
 {% block extra_scripts %}
 {% include "recommendation_components.html" %}
-<script>
+<script nonce="{[ csp_nonce() ]}">
   initVueApp({
     setup() {
       const { ref, computed, onMounted, onUnmounted } = Vue;
