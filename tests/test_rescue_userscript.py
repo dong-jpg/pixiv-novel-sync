@@ -268,7 +268,11 @@ def test_userscript_bounds_cover_cache_and_list_scan() -> None:
     const_version = re.search(r"const SCRIPT_VERSION = '([^']+)';", script)
     assert header_version and const_version
     assert header_version.group(1) == const_version.group(1)
-    assert tuple(map(int, const_version.group(1).split("."))) >= (0, 9, 1)
+    # 管理器只在 @version 变大时自动更新：不能低于已发布的 0.12.2（合并时误回退会被拦下）
+    assert tuple(map(int, const_version.group(1).split("."))) >= (0, 12, 2)
+    # 救援指南的版本说明要写到当前版本（手机上看到角标的版本号，指南里查得到改了什么）
+    guide = (SCRIPT_PATH.parents[1] / "docs" / "RESCUE_USER_GUIDE.md").read_text(encoding="utf-8")
+    assert re.search(r"^" + re.escape(const_version.group(1)) + r" ", guide, re.MULTILINE), const_version.group(1)
 
     # interval 只注册一次，但每次 tick 先确认还在列表页；一轮扫描 = 失效卡重建 + 追更列表填空
     tick = script.split("__pixivRescueListInterval = window.setInterval(", 1)[1].split("}, 3000);", 1)[0]
@@ -1824,7 +1828,7 @@ def test_userscript_fixture_healthy_novel_page_records_no_dom_changes(rescue_bro
     context.close()
 
 
-# ── 0.12.2：2026-10-28 审查的 U6 / U7 与第 2、4 节 ──────────────────────
+# ── 0.12.2：2026-10-28 审查的 U6 / U7 与第 2、4 节（指南「0.12.2 修同一份审查…」一段）────
 
 RESCUE_NOVEL_101 = {
     "novel_id": 101, "title": "前缀页的备份", "text_raw": "前缀页读到的正文",
