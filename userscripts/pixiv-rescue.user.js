@@ -1476,7 +1476,7 @@
   // 旧版只能整页刷新。
   function renderError(error, retry) {
     const body = openReader();
-    body.append(element('div', 'pixiv-rescue-error', rescueErrorText(error, true)));
+    body.append(element('div', 'pixiv-rescue-error', rescueErrorText(error)));
     // 错误代码直接画出来：手机沙箱里看不到控制台，这是唯一的排查线索
     const code = error && error.message ? String(error.message) : '';
     if (code) body.append(element('p', 'pixiv-rescue-meta', '错误代码：' + code));
@@ -1499,7 +1499,7 @@
       panel.append(note);
     }
     clearNode(note);
-    note.append(element('div', '', '目录没有读到：' + rescueErrorText(error, true)));
+    note.append(element('div', '', '目录没有读到：' + rescueErrorText(error)));
     if (typeof retry === 'function') {
       const again = element('button', 'pixiv-rescue-button', '重试');
       again.type = 'button';
@@ -1525,11 +1525,13 @@
       });
   }
 
-  function rescueErrorText(error, pageLevel) {
+  // 阅读层整页错误与目录错误共用。0.12.1 及以前还有一套「章节级」文案（pageLevel=false），
+  // 调用方全都传 true，那一套从没用上过，已删
+  function rescueErrorText(error) {
     const messages = {
       missing_token: '未设置救援 Token，请通过油猴菜单完成设置。',
       unauthorized: '救援 Token 无效，请在网站设置页轮换后重新填写。',
-      not_found: pageLevel ? '未找到可用的救援数据，Pixiv 原页面已保留。' : '备份里没有这一章，目录还在。',
+      not_found: '未找到可用的救援数据，Pixiv 原页面已保留。',
       rate_limited: '请求太频繁，请稍后再试。',
       server_error: '救援服务暂时出错，请稍后再试。',
       network_timeout: '救援服务响应超时，Pixiv 原页面已保留。',
@@ -1537,9 +1539,7 @@
       // 整本正文 JSON 约 216 KB：部分手机管理器可能截断大应答，解析失败落到这里
       invalid_response: '备份数据没有完整读到，请重试。'
     };
-    return messages[error && error.message] || (pageLevel
-      ? '未找到可用的救援数据，Pixiv 原页面已保留。'
-      : '这一章没有读到，目录还在。');
+    return messages[error && error.message] || '未找到可用的救援数据，Pixiv 原页面已保留。';
   }
 
   // ── 收藏页 / 追更页列表匹配 ──────────────────────────────────
@@ -1683,7 +1683,6 @@
       const card = link.closest('div.works-item, li') || link;
       if (handledCards.has(card)) return;
       if (alreadyHandled(card)) { handledCards.add(card); return; }
-      if (card.querySelector('[' + ROOT_ATTRIBUTE + '="badge"]')) { handledCards.add(card); return; }
       if (!cardIsBroken(link)) return;
       const work = linkWork(link);
       if (!work) return;
@@ -1701,7 +1700,6 @@
       if (!card || card === document.body) return;
       if (alreadyHandled(card)) return;
       if (card.querySelector('a[href*="/novel/show.php?id="], a[href*="/novel/series/"]')) return;
-      if (card.querySelector('[' + ROOT_ATTRIBUTE + '="badge"]')) return;
       // 卡片本身（或其附近文本）必须就是失效提示，避免把健康卡片的 gtm 值也抓进来
       if (!cardIsBroken(card) && !elementMatchesUnavailable(card)) return;
       register(card, value, 'unknown', node);
@@ -2085,9 +2083,10 @@
       });
       container.append(list);
     } else {
+      // 服务端在同一个读事务里计数、取页，页码钳到末页：total > 0 时所在页必有条目，
+      // 所以空列表只有「一个都没有」这一种。0.12.1 及以前另有「这一页没有拯救系列」，到不了
       const empty = element('div', 'pixiv-rescue-feed-empty');
-      empty.append(element('p', '', Number(data.total || 0) > 0
-        ? '这一页没有拯救系列' : '抱歉，目前没有拯救系列'));
+      empty.append(element('p', '', '抱歉，目前没有拯救系列'));
       container.append(empty);
     }
     // 翻页条按服务端实际给的页画：过期的 ?p=N 超出页数时服务端钳到末页，0.12.0 及以前

@@ -2113,3 +2113,21 @@ def test_userscript_fixture_missing_optional_gm_apis_degrade_locally(rescue_brow
         assert page.evaluate("() => [typeof window.GM_registerMenuCommand, typeof window.GM_setValue]") == [
             "undefined", "undefined"]
     page.close()
+
+
+def test_userscript_dead_branches_from_the_audit_are_gone() -> None:
+    """审查第 4 节的三个死分支已删，删前逐个核实没有写入方 / 调用方：
+
+    - `data-pixiv-rescue="badge"`：脚本全部 33 个历史版本里没有一个写过这个属性值（a486f1b 引入
+      这两处检查时徽标只有 class，0.5.0 连徽标都删了），检查永远不成立。
+    - rescueErrorText 的「章节级」文案：调用点全都传 pageLevel=true。
+    - 「这一页没有拯救系列」：/api/rescue/v1/series 在同一个读事务里计数、取页，页码钳到末页，
+      total > 0 时所在页必有条目（已部署的 0c7578e 也是如此）。
+    文案可见的那几条（阅读层错误、目录错误、空状态）由各自的页面用例照常核对。
+    """
+    script = _script()
+    assert '="badge"' not in script
+    for removed in ("rescueErrorText(error, true)", "rescueErrorText(error, pageLevel)", "pageLevel ?",
+                    "'备份里没有这一章，目录还在。'", "'这一章没有读到，目录还在。'", "'这一页没有拯救系列'"):
+        assert removed not in script, removed
+    assert "function rescueErrorText(error) {" in script
