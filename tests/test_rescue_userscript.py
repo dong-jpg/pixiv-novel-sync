@@ -2060,3 +2060,56 @@ def test_userscript_fixture_list_fast_scan_ends_15s_after_entering_while_dom_kee
     assert first > 25, f"前 15 秒只扫了 {first} 次：快速轮询没跑起来，这个计数说明不了什么"
     assert later < 40, f"20–45 秒还扫了 {later} 次：快速轮询没在进入列表页 15 秒后停下"
     page.close()
+
+
+# 管理器只给了 GM_getValue / GM_xmlhttpRequest（手机端 X浏览器、Via 等内置管理器的情形）
+PARTIAL_GM = """
+(() => {
+  window.__menus = [];
+  window.GM_getValue = (key, fallback) => key === 'pixivRescueToken' ? 'rsq_test' : fallback;
+  window.GM_xmlhttpRequest = (options) => setTimeout(() => options.onload(
+    options.url === 'https://pixiv.dongboapp.com/api/rescue/v1/novels/101'
+      ? { status: 200, responseText: JSON.stringify({ ok: true, data: { title: '备份', text_raw: '缺 API 时读到的正文' } }) }
+      : { status: 404, responseText: '{"ok":false}' }), 0);
+  if (window.__withMenu) window.GM_registerMenuCommand = (name, callback) => { window.__menus.push([name, callback]); };
+})();
+"""
+
+
+@pytest.mark.parametrize("variant", ["absent", "local-undefined", "menu-without-setvalue"])
+def test_userscript_fixture_missing_optional_gm_apis_degrade_locally(rescue_browser, variant) -> None:
+    """审查第 2 节：GM_registerMenuCommand / GM_setValue 缺失时就地降级，不再写 window.GM_xxx = 空函数。
+
+    absent：两个 API 都不存在。0.12.1 把空函数写到页面的 window 上（别的脚本会以为真有这个 API）。
+    local-undefined：管理器把没实现的 API 作为值为 undefined 的局部变量传进脚本。0.12.1 写 window
+    兜不住，registerTokenMenus 照样抛错，整个脚本停在那里，备份不出来。
+    menu-without-setvalue：有菜单、没 GM_setValue。0.12.1 存了个空、照样弹「已保存」；现在如实说存不了。
+    """
+    page = rescue_browser.new_page()
+    page.add_init_script("window.__withMenu = " + ("true" if variant == "menu-without-setvalue" else "false") + ";")
+    page.add_init_script(PARTIAL_GM)
+    page.route("http://pixiv.test/**", lambda route: route.fulfill(
+        status=200, headers={"Content-Type": "text/html; charset=utf-8"}, body="<!DOCTYPE html>" + PIXIV_404_SHELL))
+    page.goto("http://pixiv.test/novel/show.php?id=101&pixiv_rescue=1")
+    script = _script()
+    if variant == "local-undefined":
+        script = "(function (GM_registerMenuCommand, GM_setValue) {\n" + script + "\n})();"
+    page.add_script_tag(content=script)
+
+    page.get_by_text("缺 API 时读到的正文").wait_for(state="visible", timeout=5000)
+    assert page.locator("[data-pixiv-rescue-fatal]").count() == 0
+    if variant == "menu-without-setvalue":
+        alerts = page.evaluate("""() => {
+          const said = [];
+          window.alert = (text) => said.push(String(text));
+          window.prompt = () => 'rsq_new_token';
+          const menu = window.__menus.find((entry) => entry[0] === '设置或更新救援 Token');
+          menu[1]();
+          return said;
+        }""")
+        assert alerts == ["当前脚本管理器不支持保存（缺 GM_setValue）。请在管理器里直接编辑本脚本的存储。"]
+        assert page.evaluate("() => typeof window.GM_setValue") == "undefined"
+    else:
+        assert page.evaluate("() => [typeof window.GM_registerMenuCommand, typeof window.GM_setValue]") == [
+            "undefined", "undefined"]
+    page.close()

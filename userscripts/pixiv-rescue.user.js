@@ -321,21 +321,30 @@
   function checkRuntimeSupport() {
     if (missingRuntimeApis().length) return false;
     clearRuntimeUnsupported();
-    // GM_registerMenuCommand 缺失不致命（只是没有菜单入口，Token 还能通过
-    // 管理器自带的方式设置），但不做兜底会在 registerTokenMenus 里抛错、
-    // 让后面所有初始化（包括页面处理）全部不执行——这同样是「页面零反应」
-    // 的一种来源。降级为无菜单模式继续运行。
-    if (typeof GM_registerMenuCommand !== 'function') {
-      window.GM_registerMenuCommand = function () {};
-    }
-    if (typeof GM_setValue !== 'function') {
-      window.GM_setValue = function () {};
-    }
+    // GM_registerMenuCommand、GM_setValue 缺失不致命，由 registerTokenMenus 就地降级（见那里）
     return true;
   }
 
+  // GM_registerMenuCommand 缺失不致命（只是没有菜单入口，Token 还能通过管理器自带的方式设置），
+  // 但直接调用会抛错、让后面所有初始化（包括页面处理）全部不执行——这同样是「页面零反应」的一种
+  // 来源。降级为无菜单模式继续运行。GM_setValue 的其余调用点都在 try 里，存不下只影响缓存。
+  // 兜底用局部变量：0.12.1 及以前写 window.GM_xxx = 空函数，一来污染页面（别的脚本会以为真有
+  // 这个 API），二来管理器若把没实现的 API 作为值为 undefined 的局部变量传进脚本，这里调用的是
+  // 那个局部变量，写 window 根本兜不住，照样抛错
   function registerTokenMenus() {
-    GM_registerMenuCommand('设置或更新救援 Token', function () {
+    const register = typeof GM_registerMenuCommand === 'function' ? GM_registerMenuCommand : null;
+    const save = typeof GM_setValue === 'function' ? GM_setValue : null;
+    if (!register) return;
+    // 存不了就如实说，不再弹「已保存」（0.12.1 及以前兜底成空函数后照样提示已保存）
+    const store = function (value, done) {
+      if (!save) {
+        window.alert('当前脚本管理器不支持保存（缺 GM_setValue）。请在管理器里直接编辑本脚本的存储。');
+        return;
+      }
+      save(TOKEN_KEY, value);
+      window.alert(done);
+    };
+    register('设置或更新救援 Token', function () {
       const value = window.prompt('请输入救援 API Token。Token 只会保存在油猴脚本存储中。', '');
       if (value === null) return;
       const token = String(value).trim();
@@ -343,12 +352,10 @@
         window.alert('Token 不能为空。');
         return;
       }
-      GM_setValue(TOKEN_KEY, token);
-      window.alert('救援 Token 已保存。');
+      store(token, '救援 Token 已保存。');
     });
-    GM_registerMenuCommand('清除救援 Token', function () {
-      GM_setValue(TOKEN_KEY, '');
-      window.alert('救援 Token 已清除。');
+    register('清除救援 Token', function () {
+      store('', '救援 Token 已清除。');
     });
   }
 
