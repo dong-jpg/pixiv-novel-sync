@@ -610,6 +610,8 @@
       '.pixiv-rescue-pending{padding:48px 16px;color:#858585;font-size:14px;line-height:22px;text-align:center}',
       '.pixiv-rescue-meta{margin:4px 16px 0;color:#858585;font-size:12px;line-height:18px}',
       '.pixiv-rescue-error{margin:16px;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px;line-height:1.6}',
+      // 目录错误里的「重试」：照提示条里「知道了」的白底胶囊
+      '.pixiv-rescue-directory-error .pixiv-rescue-button{margin:8px 0 0;background:#fff}',
       '.pixiv-rescue-reader-body > .pixiv-rescue-button{margin:0 16px}',
       // PC 站（非手机 UA）：照 PC 阅读器——灰底上居中 704px 白卡，正文列 620px、
       // 行高 32px、两端对齐、段距 32px（实测 PC 版 p 上下外边距 31/32px 折叠）
@@ -1481,13 +1483,39 @@
 
   // 目录/加载更多失败：只在面板里提示，不清掉已加载的目录。
   // 旧版这里走 renderError，一次「加载更多」失败就把整个系列面板换成错误条。
-  function renderDirectoryError(panel, error) {
+  // retry：第一次就没读到目录时给，提示下面一颗「重试」，点了把按钮交给 retry（禁用、重画都由它管）。
+  // 「加载更多」失败不给：那颗按钮还在，再点一次就是重试
+  function renderDirectoryError(panel, error, retry) {
     let note = panel.querySelector('.pixiv-rescue-directory-error');
     if (!note) {
       note = element('div', 'pixiv-rescue-error pixiv-rescue-directory-error', '');
       panel.append(note);
     }
-    note.textContent = '目录没有读到：' + rescueErrorText(error, true);
+    clearNode(note);
+    note.append(element('div', '', '目录没有读到：' + rescueErrorText(error, true)));
+    if (typeof retry === 'function') {
+      const again = element('button', 'pixiv-rescue-button', '重试');
+      again.type = 'button';
+      again.addEventListener('click', function () { retry(again); });
+      note.append(again);
+    }
+  }
+
+  // 系列目录第一次就没读到：只重取目录，读到后整页重画（系列头里的话数、更新日、「从最初开始阅读」
+  // 都要用目录）。0.12.1 及以前这里只有一行错误提示，只能整页刷新。
+  // 阅读层已经不是画这一页的那个了（切页、重画）就放弃
+  function retrySeriesChapters(panel, data, seriesId, button) {
+    button.disabled = true;
+    const stale = function () { return !readerRoot || !readerRoot.contains(panel); };
+    apiGet('/api/rescue/v1/series/' + encodeURIComponent(String(seriesId)) + '/chapters')
+      .then(function (chapters) {
+        if (stale()) return;
+        renderSeries({ series: data.series, chapters: chapters, chaptersError: null }, seriesId);
+      })
+      .catch(function (error) {
+        if (stale()) return;
+        renderDirectoryError(panel, error, function (again) { retrySeriesChapters(panel, data, seriesId, again); });
+      });
   }
 
   function rescueErrorText(error, pageLevel) {
@@ -2764,7 +2792,7 @@
     tab.append(element('span', 'pixiv-rescue-series-tab-label', '作品'));
     panel.append(tab);
     if (chapters) renderChapterDirectory(panel, chapters, seriesId);
-    else renderDirectoryError(panel, data.chaptersError);
+    else renderDirectoryError(panel, data.chaptersError, function (button) { retrySeriesChapters(panel, data, seriesId, button); });
     body.append(panel);
   }
 

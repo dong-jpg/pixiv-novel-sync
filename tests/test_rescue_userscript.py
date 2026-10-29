@@ -1969,3 +1969,56 @@ def test_userscript_fixture_lookup_reply_skips_card_that_changed(rescue_browser,
         page.locator(".pixiv-rescue-rescued-title", has_text="旧作品备份").wait_for(state="visible", timeout=5000)
         assert page.evaluate(lookups, LOOKUP_URL + "101") == 1
     page.close()
+
+
+def test_userscript_fixture_series_directory_first_load_failure_offers_retry(rescue_browser) -> None:
+    """审查第 2 节：系列目录第一次就没读到时给「重试」（0.12.1 只有一行提示，只能整页刷新）。
+
+    重试只重取目录，不重取系列信息；再失败就换上新的提示和一颗新的「重试」，不叠加；
+    读到后整页照首次成功那样画（话数、更新日、字数、「从最初开始阅读」、章节卡片）。
+    """
+    context = rescue_browser.new_context(user_agent=MOBILE_UA, viewport={"width": 412, "height": 915},
+                                         timezone_id="Asia/Shanghai")
+    page = context.new_page()
+    series_url = f"https://pixiv.dongboapp.com/api/rescue/v1/series/{SERIES_ID}"
+    chapters_url = series_url + "/chapters"
+    responses = {series_url: SERIES_RESPONSES[series_url],
+                 chapters_url: {"__raw": {"status": 502, "body": NGINX_502_PAGE}}}
+    _install_script(page, "<!DOCTYPE html>" + PIXIV_404_SHELL, responses,
+                    path=f"/novel/series/{SERIES_ID}?pixiv_rescue=1")
+    calls = "(url) => window.__rescueRequests.filter((item) => item.url === url).length"
+
+    note = page.locator(".pixiv-rescue-directory-error")
+    note.wait_for(state="visible")
+    assert note.get_by_text("目录没有读到：救援服务暂时出错，请稍后再试。").is_visible()
+    # 系列头照常画，但没有目录就没有「从最初开始阅读」
+    assert page.locator(".pixiv-rescue-series-head .pixiv-rescue-title").inner_text() == "测试系列"
+    assert page.locator("a.pixiv-rescue-read-link").count() == 0
+    retry = note.get_by_role("button", name="重试")
+    assert retry.count() == 1
+    assert _computed(page, ".pixiv-rescue-directory-error .pixiv-rescue-button", ["backgroundColor"]) == {
+        "backgroundColor": "rgb(255, 255, 255)"}
+
+    # 再失败一次：提示换成这次的原因，仍然只有一颗「重试」
+    page.evaluate("(url) => { window.__rescueResponses[url] = { __raw: { status: 429, body: '' } }; }", chapters_url)
+    retry.click()
+    page.wait_for_function(calls + " === 2", arg=chapters_url)
+    note.get_by_text("目录没有读到：请求太频繁，请稍后再试。").wait_for(state="visible")
+    assert page.locator(".pixiv-rescue-directory-error").count() == 1
+    assert note.get_by_role("button", name="重试").count() == 1
+
+    # 这次读到了：整页重画，和首次就成功一样
+    page.evaluate("([url, data]) => { window.__rescueResponses[url] = data; }",
+                  [chapters_url, SERIES_RESPONSES[chapters_url]])
+    note.get_by_role("button", name="重试").click()
+    page.locator("a.pixiv-rescue-chapter-card").first.wait_for(state="visible")
+    assert page.locator("a.pixiv-rescue-chapter-card").count() == 3
+    assert page.locator(".pixiv-rescue-directory-error").count() == 0
+    assert page.locator(".pixiv-rescue-series-info-item").all_inner_texts() == [
+        "共4话（备份3话）", "2026年1月27日更新", "75,387字", "3小时8分钟"]
+    assert page.locator("a.pixiv-rescue-read-link").all_inner_texts() == ["从最初开始阅读"]
+    assert page.locator("[data-pixiv-rescue='content']").count() == 1
+    assert page.locator(".pixiv-rescue-panel").count() == 1
+    assert page.evaluate(calls, chapters_url) == 3
+    assert page.evaluate(calls, series_url) == 1
+    context.close()
