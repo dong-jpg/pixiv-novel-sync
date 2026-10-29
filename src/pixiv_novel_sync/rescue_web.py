@@ -162,8 +162,13 @@ def register_rescue_routes(
     settings: Callable[[], Settings],
     client_addr: Callable[[], str],
 ) -> None:
-    limiter = RescueRateLimiter()
-    app.extensions["rescue_rate_limiter"] = limiter
+    # 三个独立限流桶：无 Token / Token 错误、Token 正确、封面
+    limiter_no_token = RescueRateLimiter(limit=120, window_seconds=60)
+    limiter_authed = RescueRateLimiter(limit=120, window_seconds=60)
+    limiter_cover = RescueRateLimiter(limit=240, window_seconds=60)
+    app.extensions["rescue_rate_limiter_no_token"] = limiter_no_token
+    app.extensions["rescue_rate_limiter_authed"] = limiter_authed
+    app.extensions["rescue_rate_limiter_cover"] = limiter_cover
 
     def current_settings() -> Settings:
         return settings()
@@ -208,16 +213,28 @@ def register_rescue_routes(
         def wrapped(*args, **kwargs):
             try:
                 address = client_addr() or request.remote_addr or "unknown"
-                if not limiter.allow(address):
-                    return _public_error("救援 API 请求过于频繁", 429)
                 candidate = _bearer_token()
+
+                # 先验证 Token，再根据验证结果选择限流桶
                 if candidate is None:
+                    # 没带 Token：用「无 Token」桶
+                    if not limiter_no_token.allow(address):
+                        return _public_error("救援 API 请求过于频繁", 429)
                     return _public_error("需要救援 Token", 401)
+
                 cached = _load_token_cache()
                 if not cached or not secrets.compare_digest(
                     cached[0], _token_digest(candidate)
                 ):
+                    # Token 错误：用「无 Token」桶
+                    if not limiter_no_token.allow(address):
+                        return _public_error("救援 API 请求过于频繁", 429)
                     return _public_error("救援 Token 无效", 401)
+
+                # Token 正确：用「已认证」桶
+                if not limiter_authed.allow(address):
+                    return _public_error("救援 API 请求过于频繁", 429)
+
                 return view(*args, **kwargs)
             except CatalogNotReadyError:
                 # 与 dashboard 端点同一契约：目录首建完成前公开端点也回 503 而非 500，
@@ -479,7 +496,12 @@ def register_rescue_routes(
         """返回本地归档的封面图，供油猴脚本把失效卡片重建为正常卡片样式。
 
         Pixiv 原封面 URL 对已删除作品通常已失效，只有本地备份可用。
+        封面请求使用独立的限流桶，额度更高。
         """
+        address = client_addr() or request.remote_addr or "unknown"
+        if not limiter_cover.allow(address):
+            return _public_error("封面请求过于频繁", 429)
+
         db = open_db()
         try:
             asset = db.get_rescue_cover_asset(novel_id)
@@ -494,7 +516,13 @@ def register_rescue_routes(
     )
     @public_auth
     def rescue_series_cover(series_id: int):
-        """系列封面：系列本身不下载封面，用系列下第一篇有本地封面的小说替代。"""
+        """系列封面：系列本身不下载封面，用系列下第一篇有本地封面的小说替代。
+        封面请求使用独立的限流桶，额度更高。
+        """
+        address = client_addr() or request.remote_addr or "unknown"
+        if not limiter_cover.allow(address):
+            return _public_error("封面请求过于频繁", 429)
+
         db = open_db()
         try:
             asset = db.get_rescue_series_cover_asset(series_id)

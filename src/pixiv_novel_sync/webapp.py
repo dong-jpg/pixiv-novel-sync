@@ -939,6 +939,23 @@ def create_app(
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+
+        # CSP（内容安全策略）
+        # Vue 3 全局版需要 'unsafe-eval'；unpkg 脚本带 SRI 验证
+        # 'self' 允许同源资源；data: 用于内联 SVG 图标
+        csp_directives = [
+            "default-src 'self'",
+            "script-src 'self' 'unsafe-eval' https://unpkg.com",
+            "style-src 'self' 'unsafe-inline'",  # 内联样式用于 Vue 动态绑定
+            "img-src 'self' data: https:",  # data: 用于内联图标，https: 允许 Pixiv 封面代理
+            "font-src 'self'",
+            "connect-src 'self'",
+            "frame-ancestors 'none'",  # 等同于 X-Frame-Options: DENY
+            "base-uri 'self'",
+            "form-action 'self'",
+        ]
+        response.headers.setdefault("Content-Security-Policy", "; ".join(csp_directives))
+
         if response.mimetype == "text/html":
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
