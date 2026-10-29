@@ -377,13 +377,23 @@ class BookmarkNovelSyncService:
                     break
                 novels = getattr(result, "novels", []) or []
                 for novel in novels:
-                    # 检查是否达到实际同步数量限制
-                    if max_items is not None and synced_items >= max_items:
+                    novel_id = int(novel.id)
+                    # 已在本地完成归档的直接跳过，不再为它们打详情接口
+                    should_skip = self.db.novel_archive_complete(
+                        novel_id,
+                        require_assets=download_assets,
+                    )
+                    # 预算只拦「要发详情请求」的条目，而且在真碰到这样一条时才判定触顶：
+                    # 预算用完时后面若全是已归档的，本轮其实已经取完，不能误报截断。
+                    if not should_skip and max_items is not None and synced_items >= max_items:
                         logger.info("Reached max_items_per_run=%s (synced), stopping sync", max_items)
+                        # 后面还有未归档的收藏没轮到：以前这里静默 break，日志一直是绿色（S8）
+                        stats["truncated"] = True
+                        stats["incomplete"] = True
+                        stats["budget_exhausted"] = True
                         reached_max_items = True
                         break
                     processed_items += 1
-                    novel_id = int(novel.id)
                     title = getattr(novel, "title", f"novel_{novel_id}")
                     user = getattr(novel, "user", None)
                     author_name = getattr(user, "name", "未知") if user else "未知"
@@ -397,12 +407,6 @@ class BookmarkNovelSyncService:
                             "author": author_name,
                             "phase": phase_name,
                         })
-
-                    # 已在本地完成归档的直接跳过，不再为它们打详情接口
-                    should_skip = self.db.novel_archive_complete(
-                        novel_id,
-                        require_assets=download_assets,
-                    )
 
                     if should_skip:
                         # 已存在，跳过
@@ -428,8 +432,10 @@ class BookmarkNovelSyncService:
 
                     _merge_stats(stats, counters)
 
-                    # 只有实际同步（非跳过）才计入 synced_items
-                    if not counters.get("skipped"):
+                    # 只有实际同步（非跳过）才计入 synced_items。正文确实不可获取的
+                    # （content_unavailable）也不计：它们永远归档不了，每轮都会重来一遍，
+                    # 计入预算的话攒够 max_items_per_run 个就把后面的未归档收藏永远挡住（S8）。
+                    if not counters.get("skipped") and not counters.get("content_unavailable"):
                         synced_items += 1
 
                     if progress_callback:
@@ -443,8 +449,10 @@ class BookmarkNovelSyncService:
                             "skipped": counters.get("skipped", 0),
                         })
 
-                    # 只有非跳过时才使用 item_delay
-                    if counters.get("novels", 0) > 0 and item_delay > 0:
+                    # 只有非跳过时才使用 item_delay。不可获取的条目同样发过详情请求，
+                    # 而它们已不受预算约束，必须照常间隔，否则一串失效收藏会连发请求。
+                    requested = counters.get("novels", 0) > 0 or counters.get("content_unavailable", 0) > 0
+                    if requested and item_delay > 0:
                         if progress_callback:
                             progress_callback("rate_limit", {"seconds": item_delay})
                         _sleep_with_progress_cancel(item_delay, progress_callback)
