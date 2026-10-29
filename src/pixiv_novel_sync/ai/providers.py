@@ -224,6 +224,36 @@ def _origin_prefix(url: str) -> str:
     return f"{parsed.scheme.lower()}://{parsed.netloc}/"
 
 
+def _pinned_request_proxies(
+    original_url: str,
+    pinned_url: str,
+    proxies: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    """让钉 IP 后的请求按**原主机名**判断 NO_PROXY。
+
+    requests 只看到钉好的 IP：``NO_PROXY=localhost,.lan`` 时原 URL 本该直连，钉成
+    127.0.0.1 / 192.168.x 后却不再匹配，改走环境代理，本机/局域网 http 模型的
+    Authorization 就明文发给了代理。原主机名或钉好的 IP 任一命中 NO_PROXY 都直连
+    （只会比原来多绕过、不会少绕过）。显式传入的 proxies（Provider 配置的代理）
+    照旧优先，requests 本来也不拿 NO_PROXY 管它们。
+    """
+    env_proxies = requests.utils.getproxies()
+    if not env_proxies:
+        return proxies
+    explicit = dict(proxies or {})
+    no_proxy = explicit.get("no_proxy")
+    if not (
+        requests.utils.should_bypass_proxies(original_url, no_proxy=no_proxy)
+        or requests.utils.should_bypass_proxies(pinned_url, no_proxy=no_proxy)
+    ):
+        return proxies
+    # 显式置 None：Session.merge_environment_settings 只 setdefault 环境代理，
+    # 合并后 None 键被丢弃，这一请求就不会再拿到环境代理。
+    for key in env_proxies:
+        explicit.setdefault(key, None)
+    return explicit
+
+
 class _PinnedHostAdapter(HTTPAdapter):
     def __init__(self, *, hostname: str, ip: str, **kwargs: Any) -> None:
         self._hostname = hostname
@@ -550,6 +580,15 @@ class AIProvider:
         pinned_url = _pinned_url(target)
         prefix = _origin_prefix(pinned_url)
         requested_stream = bool(kwargs.get("stream", False))
+        if self.session.trust_env:
+            supplied_proxies = kwargs.get("proxies")
+            pinned_proxies = _pinned_request_proxies(
+                target.url,
+                pinned_url,
+                supplied_proxies,
+            )
+            if pinned_proxies is not supplied_proxies:
+                kwargs["proxies"] = pinned_proxies
 
         supplied_headers = kwargs.pop("headers", None) or {}
         headers = {key: value for key, value in supplied_headers.items() if key.lower() != "host"}
