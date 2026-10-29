@@ -1450,6 +1450,100 @@ def test_heartbeat_runs_on_its_own_database_and_stops_after_route(
     )
 
 
+def test_heartbeat_survives_a_transient_database_error(
+    monkeypatch: pytest.MonkeyPatch,
+    route_router: ModelRouter,
+    route_request: RouteRequest,
+    fake_providers: FakeProviderRegistry,
+) -> None:
+    """A4：一次 database is locked 不能让心跳线程静默退出、租约停止续期，
+    否则仍在输出的任务会被 fail_stale_ai_jobs 误判为崩溃。"""
+    import sqlite3
+
+    monkeypatch.setattr(
+        "pixiv_novel_sync.ai.model_router._HEARTBEAT_INTERVAL_SECONDS",
+        0.01,
+    )
+    original = Database.heartbeat_ai_job
+    calls = {"count": 0}
+    renewed_after_failure = threading.Event()
+
+    def flaky_heartbeat(
+        database: Database,
+        job_id: str,
+        owner_token: str,
+        lease_until: str,
+    ) -> bool:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        renewed = original(database, job_id, owner_token, lease_until)
+        if renewed:
+            renewed_after_failure.set()
+        return renewed
+
+    monkeypatch.setattr(Database, "heartbeat_ai_job", flaky_heartbeat)
+
+    def wait_for_renewal() -> AIStreamChunk:
+        assert renewed_after_failure.wait(timeout=2), (
+            "心跳线程在一次 database is locked 之后退出了，租约不再续期"
+        )
+        return AIStreamChunk(type="progress", data={"phase": "waiting"})
+
+    fake_providers.responses[("p1", None)] = [
+        wait_for_renewal,
+        AIStreamChunk(type="delta", text="正文"),
+        normal_done(),
+    ]
+
+    result = route_router.execute(route_request)
+
+    assert result.finish_state == "succeeded"
+    assert calls["count"] >= 2
+
+
+def test_heartbeat_keeps_polling_cancel_after_a_failed_stop_check(
+    monkeypatch: pytest.MonkeyPatch,
+    route_router: ModelRouter,
+    route_request: RouteRequest,
+    fake_providers: FakeProviderRegistry,
+    db: Database,
+) -> None:
+    """A4：ai_job_should_stop 失败一次后，取消标记仍要能经心跳传进路由。"""
+    import sqlite3
+
+    monkeypatch.setattr(
+        "pixiv_novel_sync.ai.model_router._HEARTBEAT_INTERVAL_SECONDS",
+        0.01,
+    )
+    original = Database.ai_job_should_stop
+    calls = {"count": 0}
+
+    def flaky_should_stop(database: Database, job_id: str) -> bool:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return original(database, job_id)
+
+    monkeypatch.setattr(Database, "ai_job_should_stop", flaky_should_stop)
+
+    def mark_cancel() -> AIStreamChunk:
+        assert db.request_ai_job_cancel(route_request.job_id) is True
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            if route_request.is_cancelled is not None and route_request.is_cancelled():
+                return AIStreamChunk(type="delta", text="晚了")
+            time.sleep(0.01)
+        raise AssertionError("一次停止检查失败后，取消标记再也传不进路由")
+
+    fake_providers.succeed("p1", [mark_cancel, normal_done()])
+
+    result = route_router.execute(route_request)
+
+    assert result.finish_state == "cancelled"
+    assert db.get_ai_job(route_request.job_id)["status"] == "cancelled"
+
+
 def test_terminal_race_discards_late_delta_and_result(
     route_router: ModelRouter,
     route_request: RouteRequest,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import threading
 import time
@@ -21,6 +22,7 @@ from .model_sync import provider_model_sync_config_hash
 from .models import AIAgentConfig, AIProviderConfig, AIStreamChunk
 from .providers import AIProvider, AIProviderError
 
+logger = logging.getLogger(__name__)
 
 _ROUTE_STAGES = {"internal", "main", "validation"}
 _CONTEXT_WINDOW_MIN = 256
@@ -915,9 +917,15 @@ class ModelRouter:
         cancel_event = threading.Event()
 
         def heartbeat() -> None:
+            # 与 model_sync 的心跳一样包住异常，但一次失败不退出：租约 45 s、
+            # 心跳 15 s，偶发的 database is locked 下一轮重试就能续上。线程一退出，
+            # 租约停止续期，仍在输出的任务会被 fail_stale_ai_jobs 当成崩溃收口。
+            # 真正失去所有权由 heartbeat_ai_job 返回 False 判定（任务已终结或换了 owner）。
+            consecutive_failures = 0
             while not stopped.is_set():
-                db = self._db_factory()
+                db = None
                 try:
+                    db = self._db_factory()
                     if not db.heartbeat_ai_job(
                         request.job_id,
                         request.owner_token,
@@ -927,8 +935,18 @@ class ModelRouter:
                         return
                     if db.ai_job_should_stop(request.job_id):
                         cancel_event.set()
+                    consecutive_failures = 0
+                except Exception:
+                    consecutive_failures += 1
+                    logger.warning(
+                        "AI 路由心跳失败，下一轮重试（job_id=%s，连续 %d 次）",
+                        request.job_id,
+                        consecutive_failures,
+                        exc_info=True,
+                    )
                 finally:
-                    db.close()
+                    if db is not None:
+                        db.close()
                 stopped.wait(_HEARTBEAT_INTERVAL_SECONDS)
 
         thread = threading.Thread(
