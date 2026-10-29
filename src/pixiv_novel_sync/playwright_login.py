@@ -292,7 +292,10 @@ class PlaywrightLoginHelper:
         original_timeout = self.timeout
         self.timeout = max(self.timeout, 60000)  # 至少 60 秒
 
+        import os
+
         xvfb_proc = None
+        display_before = os.environ.get("DISPLAY")
         try:
             # 在无 DISPLAY 的 Linux 服务器上自动启动 Xvfb 虚拟显示器
             xvfb_proc = self._ensure_display()
@@ -304,6 +307,12 @@ class PlaywrightLoginHelper:
             if xvfb_proc:
                 xvfb_proc.terminate()
                 xvfb_proc.wait()
+                # 还原调用前的 DISPLAY：留着指向已关闭的 Xvfb，同一进程下一次登录会
+                # 以为已有显示器、不再拉起 Xvfb，headed Firefox 连不上显示器而必败
+                if display_before is None:
+                    os.environ.pop("DISPLAY", None)
+                else:
+                    os.environ["DISPLAY"] = display_before
 
     def _ensure_display(self) -> Any:
         """确保有可用的 DISPLAY 环境变量（Linux 服务器需要 Xvfb）。

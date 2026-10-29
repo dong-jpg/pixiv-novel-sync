@@ -575,13 +575,15 @@ def register_rescue_routes(
         raw_series_ids = str(request.args.get("series_ids", "") or "")
         novel_ids: list[int] = []
         series_ids: list[int] = []
+        # 去重要按 int 比较：拿字符串 chunk 去比 list[int] 永远不命中，重复 ID 会
+        # 挤占 40 个的配额，返回里也会出现重复条目
         for chunk in raw_ids.split(","):
             chunk = chunk.strip()
-            if chunk.isdigit() and len(chunk) < 12 and chunk not in novel_ids:
+            if chunk.isdigit() and len(chunk) < 12 and int(chunk) not in novel_ids:
                 novel_ids.append(int(chunk))
         for chunk in raw_series_ids.split(","):
             chunk = chunk.strip()
-            if chunk.isdigit() and len(chunk) < 12 and chunk not in series_ids:
+            if chunk.isdigit() and len(chunk) < 12 and int(chunk) not in series_ids:
                 series_ids.append(int(chunk))
         if len(novel_ids) + len(series_ids) > 40:
             return _public_error("一次最多查询 40 个 ID", 400)

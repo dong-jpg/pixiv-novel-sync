@@ -417,6 +417,24 @@ class RescueMixin:
                           AND pd.status = 'pending'
                     )
               )
+              -- 父系列进了「待确认删除」（本人取消追更）时，它的章节同样不进目录：系列条目
+              -- 已被上面的系列查询排除，章节若照常放行，会以「系列单章」带着「我的追更」
+              -- 来源挂进拯救页。章节自己还有收藏来源（本人单独收藏过）时保留。
+              AND (
+                    ro.action = 'include'
+                    OR n.series_id IS NULL
+                    OR NOT EXISTS (
+                        SELECT 1 FROM pending_deletions pd
+                        WHERE pd.item_type = 'series'
+                          AND pd.item_id = n.series_id
+                          AND pd.status = 'pending'
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM sources s
+                        WHERE s.novel_id = n.novel_id
+                          AND s.source_type LIKE 'bookmark_%'
+                    )
+              )
               {filter_sql}
             ORDER BY n.novel_id
             """,
@@ -1027,12 +1045,11 @@ class RescueMixin:
                 ) AS cover_url,
                 COALESCE(se.total_novels, 0) AS expected_count,
                 COUNT(n.novel_id) AS local_count,
-                COALESCE(SUM(
-                    CASE
-                        WHEN TRIM(COALESCE(nt.text_raw, '')) != '' THEN 1
-                        ELSE 0
-                    END
-                ), 0) AS complete_count,
+                -- 用写入时算好的 has_content，与目录同一判据：TRIM(text_raw) 既要把每章
+                -- 正文整段读出来（lookup 40 个 ID 读盘上百 MB），又只剥空格、不剥换行与
+                -- 全角空格，同一个系列在目录里是 partial、在读接口里却是 success
+                COALESCE(SUM(CASE WHEN COALESCE(nt.has_content, 0) = 1 THEN 1 ELSE 0 END), 0)
+                    AS complete_count,
                 se.status AS remote_status,
                 se.last_checked_at,
                 se.last_seen_at AS updated_at,
@@ -1210,9 +1227,12 @@ class RescueMixin:
             return []
         return parsed if isinstance(parsed, list) else []
 
-    def _novel_rescue_row(self, novel_id: int) -> dict[str, Any] | None:
+    def _novel_rescue_row(self, novel_id: int, include_text: bool = True) -> dict[str, Any] | None:
+        # 只有按 ID 取正文（get_rescue_novel）需要 text_raw；评估与 lookup 只看 has_content，
+        # 不要为了判断「有没有正文」把整本正文读出来再丢掉
+        text_column = "nt.text_raw" if include_text else "'' AS text_raw"
         row = self.conn.execute(
-            """
+            f"""
             SELECT
                 n.novel_id,
                 n.title,
@@ -1226,7 +1246,7 @@ class RescueMixin:
                 n.status AS remote_status,
                 n.last_checked_at,
                 n.last_seen_at AS updated_at,
-                nt.text_raw,
+                {text_column},
                 COALESCE(nt.has_content, 0) AS has_content,
                 ro.action AS override_action,
                 ro.note AS override_note
@@ -1307,7 +1327,7 @@ class RescueMixin:
         }
 
     def evaluate_rescue_novel(self, novel_id: int) -> dict[str, Any] | None:
-        data = self._novel_rescue_row(int(novel_id))
+        data = self._novel_rescue_row(int(novel_id), include_text=False)
         if data is None:
             return None
         payload = self._novel_evaluation_payload(data)
@@ -1463,7 +1483,7 @@ class RescueMixin:
         series = {}
         with self.read_transaction():
             for novel_id in novel_ids:
-                data = self._novel_rescue_row(int(novel_id))
+                data = self._novel_rescue_row(int(novel_id), include_text=False)
                 if data is None:
                     continue
                 novels[int(novel_id)] = data

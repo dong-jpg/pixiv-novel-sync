@@ -440,6 +440,23 @@ def run_pending_deletion_detection_task(
         stats = dict(result)
         stats.setdefault("stopped", False)
         _report_log(reporter, "success", f"检测完成: 发现 {stats.get('new_pending', 0)} 条新的待确认记录")
+        # 子检测的中止标记嵌在 bookmark / series 子字典里，而任务日志的 partial 判定
+        # （webapp.py:_task_log_status_for_stats）只看顶层：不提上来，收藏翻页失败或
+        # 追更清单拉不到时这一轮会记成绿色的「成功」。
+        sub_reasons = [
+            (name, sub.get("aborted_reason"), sub.get("truncated"))
+            for name, sub in (("bookmark", stats.get("bookmark")), ("series", stats.get("series")))
+            if isinstance(sub, dict)
+        ]
+        failed_parts = [name for name, reason, truncated in sub_reasons if reason or truncated]
+        if failed_parts:
+            stats["aborted_reason"] = next(
+                (reason for _name, reason, _truncated in sub_reasons if reason), "fetch_failed"
+            )
+            if any(truncated for _name, _reason, truncated in sub_reasons):
+                stats["truncated"] = True
+            stats["incomplete"] = True
+            _report_log(reporter, "warning", f"检测未完整: {'、'.join(failed_parts)}（{stats['aborted_reason']}）")
 
         # Phase 3.2: 清理已确认/已恢复的历史记录。pending 记录不在此列——它们必须由
         # 用户手动确认或恢复，没有"宽限期到了就自动确认"这回事（否则待确认列表会静默消失）。

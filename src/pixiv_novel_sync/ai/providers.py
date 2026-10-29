@@ -3,6 +3,7 @@ from __future__ import annotations
 import codecs
 import ipaddress
 import json
+import logging
 import math
 import os
 import re
@@ -25,6 +26,8 @@ from .model_catalog import (
     normalize_model_record,
 )
 from .models import AIProviderConfig, AIStreamChunk, ModelListResult
+
+logger = logging.getLogger(__name__)
 
 
 class AIProviderError(RuntimeError):

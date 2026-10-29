@@ -54,6 +54,19 @@ def _stable_meta_for_hash(plain: Any) -> Any:
 class RemoteListTruncated(RuntimeError):
     """远端列表翻页触顶，结果不能拿来做差集。"""
 
+
+class PixivErrorPage(RuntimeError):
+    """接口回了 ``{"error": {...}}`` 而不是数据。
+
+    pixivpy 遇到限流/鉴权失败/作品不可见时不抛异常，而是把错误 JSON 当正常结果返回。
+    ``body`` 保留原始 dict，``_parse_pixiv_error_json`` 据此区分「作品确实不可获取」
+    （有 user_message）与临时故障。
+    """
+
+    def __init__(self, endpoint: str, body: Any) -> None:
+        super().__init__(f"{endpoint} 返回错误页: {body}")
+        self.body = dict(body) if isinstance(body, dict) else body
+
 # 关注列表枚举（user_following）专用的翻页上限，每页 30 人 ⇒ 50 页 = 1500 人。
 # 它只是自引用 next_url 死循环的兜底，绝不能复用 max_pages_per_run：后者的语义是
 # 「单轮同步的作品分页上限」，生产配成 2 会把关注候选集砍到 60 人，关注数一超过 60，
@@ -742,6 +755,14 @@ class BookmarkNovelSyncService:
                     stats["aborted_reason"] = "fetch_failed"
                     break
                 author_page_count += 1
+                if response_is_pixiv_error_page(novels_result):
+                    # 与上面的异常分支同一处理：错误页不能当成「这位作者没有更多作品」，
+                    # 否则作者照常记为已扫、推后一整圈，任务日志还是绿色（A14-01 漏网点）
+                    logger.error("user_novels for user %s 返回错误页，按失败处理: %s", author_id, novels_result)
+                    stats["failed"] = int(stats.get("failed") or 0) + 1
+                    stats["incomplete"] = True
+                    stats["aborted_reason"] = "fetch_failed"
+                    break
                 novels = getattr(novels_result, "novels", []) or []
 
                 for novel in novels:
@@ -1013,10 +1034,15 @@ class BookmarkNovelSyncService:
             progress_callback("phase", {"phase": "获取订阅系列"})
         
         series_list = []
-        
+        # 配了 Cookie 却没能完整读到追更清单（Cookie 失效且刷新失败、非 200、翻页失败）。
+        # 这时会静默回落到数据库里的旧订阅、或只同步读到的那几页，新追更这一轮进不来，
+        # 必须体现在 stats 里，不能记成绿色的「成功」。
+        watchlist_unavailable = False
+
         # 方式1: 使用 Pixiv Web Cookie 调用 Web API
         web_cookie = self.settings.pixiv.web_cookie
         if web_cookie:
+            watchlist_confirmed = False
             try:
                 import requests as http_requests
                 
@@ -1066,6 +1092,7 @@ class BookmarkNovelSyncService:
                             if data.get("error"):
                                 logger.warning("Web API returned error: %s", data.get("message", "unknown"))
                                 continue
+                            watchlist_confirmed = True
                             body = data.get("body", {})
                             # 记录关键字段结构
                             page_info = body.get("page", {})
@@ -1111,10 +1138,14 @@ class BookmarkNovelSyncService:
                                                 all_watched_ids.extend(paged_ids)
                                                 if isinstance(novel_series_thumbs, dict) and isinstance(paged_thumbs, dict):
                                                     novel_series_thumbs.update(paged_thumbs)
+                                            else:
+                                                logger.warning("Watchlist page %d returned %s", page_num, paged_resp.status_code)
+                                                watchlist_confirmed = False
                                         except InterruptedError:
                                             raise
                                         except Exception as e:
                                             logger.warning("Failed to fetch page %d: %s", page_num, e)
+                                            watchlist_confirmed = False
                                 
                                 for sid in all_watched_ids:
                                     cover = ""
@@ -1157,6 +1188,9 @@ class BookmarkNovelSyncService:
                 raise
             except Exception as e:
                 logger.warning("Web API failed: %s", str(e))
+            watchlist_unavailable = not watchlist_confirmed
+            if watchlist_unavailable:
+                logger.warning("追更清单没能完整读取（Cookie 失效或请求失败），本轮按不完整处理")
         else:
             logger.info("No PIXIV_WEB_COOKIE configured, skipping Web API")
         
@@ -1343,6 +1377,12 @@ class BookmarkNovelSyncService:
                                         next_query = self.api.parse_qs(next_url) or {}
                                         last_order = next_query.get("last_order")
                                         next_data = self.api.novel_series(int(sid), last_order=last_order) if last_order else None
+                                        if response_is_pixiv_error_page(next_data):
+                                            # 翻页拿到错误页 = 本轮没取全章节，与触顶同样计入
+                                            # truncated_series；静默 break 会让缺章的系列显示成功
+                                            logger.warning("Series %s next page 返回错误页，本轮未取完: %s", sid, next_data)
+                                            truncated_series += 1
+                                            break
                                         if isinstance(next_data, dict):
                                             all_novel_items.extend(next_data.get("novels", []))
                                             next_url = next_data.get("next_url")
@@ -1354,6 +1394,7 @@ class BookmarkNovelSyncService:
                                         raise
                                     except Exception as e:
                                         logger.warning("Failed to fetch next page for series %s: %s", sid, e)
+                                        truncated_series += 1
                                         break
                                 
                                 chapter_count = 0
@@ -1482,6 +1523,10 @@ class BookmarkNovelSyncService:
                 stats["truncated"] = True
                 stats["truncated_series"] = truncated_series
                 stats["incomplete"] = True
+            if watchlist_unavailable:
+                stats["watchlist_unavailable"] = True
+                # 熔断（rate_limited）更严重，保留它作为主原因
+                aborted_reason = aborted_reason or "watchlist_unavailable"
             if aborted_reason:
                 stats["aborted_reason"] = aborted_reason
                 stats["incomplete"] = True
@@ -1536,7 +1581,11 @@ class BookmarkNovelSyncService:
                 raise
             except Exception as e:
                 logger.warning("Failed to extract series from DB: %s", str(e))
-        
+
+        if watchlist_unavailable:
+            stats["watchlist_unavailable"] = True
+            stats["aborted_reason"] = "watchlist_unavailable"
+            stats["incomplete"] = True
         logger.info("Subscribed series sync completed: %d series", stats["series_synced"])
         return stats
 
@@ -1596,6 +1645,10 @@ class BookmarkNovelSyncService:
         if not cookie_string:
             logger.warning("Web Cookie 为空或只含换行，已跳过写入")
             return
+        # load_dotenv 默认不覆盖已存在的环境变量：只写 .env 的话，同一进程里下一轮任务的
+        # load_settings 仍读到旧 Cookie，每轮都重新 401 再跑一遍 Playwright 登录。
+        # 与 oauth_helper.save_to_env 同步 os.environ 的做法一致。
+        os.environ["PIXIV_WEB_COOKIE"] = cookie_string
         # 查找 .env 文件路径
         env_path = Path(os.getenv("ENV_PATH", ".env"))
         if not env_path.exists():
@@ -1759,6 +1812,10 @@ class BookmarkNovelSyncService:
         if remote_ids is None:
             logger.warning("Remote subscribed series fetch incomplete; skipping detection to avoid false-positive deletions")
             stats["skipped_no_remote"] = 1
+            if self.settings.pixiv.web_cookie:
+                # 配了 Cookie 却拉不到清单（多半是 Cookie 失效）：本轮追更检测实际没做，
+                # 要让任务日志变黄；没配 Cookie 是预期内的跳过，不算
+                stats["aborted_reason"] = "watchlist_unavailable"
             if progress_callback:
                 progress_callback("phase", {"phase": "追更检测跳过: 远端列表不完整"})
             return stats
@@ -1770,6 +1827,8 @@ class BookmarkNovelSyncService:
         if len(remote_ids) == 0 and local_subscribed_count > 0:
             logger.warning("Remote returned 0 subscribed series but local has %d; refusing to proceed", local_subscribed_count)
             stats["skipped_no_remote"] = 1
+            # 远端说「一个都没有」而本地还有订阅：检测为防误删拒绝执行，需要人看一眼
+            stats["aborted_reason"] = "remote_watchlist_empty"
             return stats
 
         # 2. 清除已重新追更的 pending 记录
@@ -1997,7 +2056,13 @@ class BookmarkNovelSyncService:
         source_key: str | None = None,
     ) -> dict[str, int]:
         detail = self.api.novel_detail(novel_id)
-        detail_novel = getattr(detail, "novel", novel)
+        if response_is_pixiv_error_page(detail):
+            # 必须在写库前中止：错误页没有 novel 字段，继续往下会把已归档作品覆写成
+            # title=novel_<id>、user_id=0 的占位数据，而 archive_complete 仍为真、此后不再修复。
+            raise PixivErrorPage("novel_detail", detail)
+        # pixivpy 的 JsonDict 对缺键返回 None 而不是抛 AttributeError，
+        # getattr 的默认值永远不会生效，所以显式回落到列表条目
+        detail_novel = getattr(detail, "novel", None) or novel
         user = getattr(detail_novel, "user", None)
         if user is None:
             user_id = getattr(novel, "user_id", 0) or 0

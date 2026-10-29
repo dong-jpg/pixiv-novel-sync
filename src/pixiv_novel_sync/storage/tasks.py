@@ -18,6 +18,19 @@ def _clamp_log_page(page: int, page_size: int) -> tuple[int, int]:
     return max(page_value, 1), max(min(size_value, 200), 1)
 
 
+def _decode_task_log_row(row: Any) -> dict[str, Any]:
+    """把 stats_json / logs_json 解析成 stats / logs，并去掉原串（同一份数据不发两遍）。"""
+    item = dict(row)
+    for raw_key, key in (("stats_json", "stats"), ("logs_json", "logs")):
+        raw = item.pop(raw_key, None)
+        if raw:
+            try:
+                item[key] = json.loads(raw)
+            except (TypeError, ValueError):
+                item[key] = None
+    return item
+
+
 class TasksMixin:
     """任务日志管理 mixin。
 
@@ -79,10 +92,14 @@ class TasksMixin:
             f"SELECT COUNT(*) FROM task_logs WHERE {where_clause}", params
         ).fetchone()[0]
 
-        # 获取数据
+        # 获取数据。列表不取 logs_json：每行最多 500 条日志，列表页根本不显示，
+        # 详情另走 get_task_log_by_id；原先每行原串 + 解析结果各发一遍，一页 4–5 MB，
+        # 日志页开「自动刷新」后每 10 秒拉一次（审查 2026-10-28 性能 P4）
         rows = self.conn.execute(
             f"""
-            SELECT * FROM task_logs
+            SELECT id, task_type, task_name, job_id, status, started_at, finished_at,
+                   duration_seconds, stats_json, error_message, is_auto_sync, created_at
+            FROM task_logs
             WHERE {where_clause}
             ORDER BY started_at DESC, id DESC
             LIMIT ? OFFSET ?
@@ -94,17 +111,7 @@ class TasksMixin:
 
         result = []
         for row in rows:
-            item = dict(row)
-            if item.get("stats_json"):
-                try:
-                    item["stats"] = json.loads(item["stats_json"])
-                except (TypeError, ValueError):
-                    item["stats"] = None
-            if item.get("logs_json"):
-                try:
-                    item["logs"] = json.loads(item["logs_json"])
-                except (TypeError, ValueError):
-                    item["logs"] = None
+            item = _decode_task_log_row(row)
             item["is_auto_sync"] = bool(item["is_auto_sync"])
             result.append(item)
 
@@ -132,17 +139,7 @@ class TasksMixin:
         ).fetchone()
         if row is None:
             return None
-        item = dict(row)
-        if item.get("stats_json"):
-            try:
-                item["stats"] = json.loads(item["stats_json"])
-            except (TypeError, ValueError):
-                item["stats"] = None
-        if item.get("logs_json"):
-            try:
-                item["logs"] = json.loads(item["logs_json"])
-            except (TypeError, ValueError):
-                item["logs"] = None
+        item = _decode_task_log_row(row)
         item["is_auto_sync"] = bool(item.get("is_auto_sync"))
         return item
 

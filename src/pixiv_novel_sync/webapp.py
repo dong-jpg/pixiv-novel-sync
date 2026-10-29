@@ -1303,6 +1303,17 @@ def create_app(
             db.close()
         return jsonify(payload)
 
+    def _utf8_json(payload: Any) -> Response:
+        """不把汉字转成 \\uXXXX 的 JSON 响应，给正文/日志这类以中文为主的大响应用。
+
+        Flask 默认 ensure_ascii：20 万字正文 0.61 MB 会变成 1.22 MB，手机端
+        JSON.parse 也慢一个数量级。其余字段与 jsonify 一致（同一个 provider）。
+        """
+        return Response(
+            app.json.dumps(payload, ensure_ascii=False),
+            mimetype="application/json",
+        )
+
     @app.get("/api/dashboard/novels/<int:novel_id>")
     def dashboard_novel_detail(novel_id: int):
         current_settings = settings_manager.load(env_path=env_path)
@@ -1315,7 +1326,11 @@ def create_app(
             db.close()
         if payload is None:
             return jsonify({"error": "novel not found"}), 404
-        return jsonify(payload)
+        # text_markdown = 标题/作者/简介 + 同一份正文；阅读页只在 text_raw 为空时才用它，
+        # 两份都发等于把整本书传两遍（审查 2026-10-28 性能 P3）
+        if payload.get("text_raw"):
+            payload["text_markdown"] = None
+        return _utf8_json(payload)
 
     @app.get("/api/dashboard/novels/<int:novel_id>/progress")
     def get_novel_progress(novel_id: int):
@@ -1914,7 +1929,7 @@ def create_app(
                         item.setdefault("category", "sync")
             finally:
                 db.close()
-            return jsonify(result)
+            return _utf8_json(result)
         except Exception as e:
             logger.error("获取日志失败：%s", e)
             return jsonify({"error": str(e)}), 500
@@ -1931,7 +1946,7 @@ def create_app(
                 db.close()
             if not item:
                 return jsonify({"error": "log not found"}), 404
-            return jsonify(item)
+            return _utf8_json(item)
         except Exception as e:
             logger.error("获取日志详情失败：%s", e)
             return jsonify({"error": str(e)}), 500

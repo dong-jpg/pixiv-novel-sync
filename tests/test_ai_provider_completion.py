@@ -182,6 +182,28 @@ def test_sse_line_over_one_mebibyte_is_rejected() -> None:
         list(_iter_sse_lines(_Huge()))
 
 
+def test_sse_stream_with_replacement_chars_and_no_done_still_yields_lines(caplog) -> None:
+    """回归（审查 2026-10-28 A1）：流没收到 [DONE] 就结束、且解码出 U+FFFD 时，
+    告警分支引用了未定义的 logger，NameError 让一次已收全 JSON 的关键词清洗记为失败。
+    """
+    from pixiv_novel_sync.ai.providers import _iter_sse_lines
+
+    class _Truncated:
+        def iter_content(self, chunk_size=None):
+            del chunk_size
+            yield 'data: {"choices": [{"delta": {"content": "关键'.encode("utf-8")
+            # 半个汉字后流就断了：没有换行，也没有 [DONE]
+            yield "词".encode("utf-8")[:2]
+
+    with caplog.at_level("WARNING", logger="pixiv_novel_sync.ai.providers"):
+        lines = list(_iter_sse_lines(_Truncated()))
+
+    assert len(lines) == 1
+    assert lines[0].startswith('data: {"choices"')
+    assert lines[0].endswith("�")
+    assert "U+FFFD" in caplog.text
+
+
 def test_error_body_over_one_mebibyte_is_rejected() -> None:
     from pixiv_novel_sync.ai.providers import _response_error_details
 

@@ -621,6 +621,99 @@ def test_rebuild_catalog_excludes_items_pending_user_removal(db: Database) -> No
     assert ("novel", 820) in ids
 
 
+def _catalog_ids(db: Database) -> set[tuple[str, int]]:
+    return {
+        (row[0], row[1])
+        for row in db.conn.execute("SELECT item_type, item_id FROM rescue_catalog").fetchall()
+    }
+
+
+def test_chapters_of_a_series_pending_removal_stay_out_of_the_catalog(db: Database) -> None:
+    """回归（审查 2026-10-28 D1）：本人取消追更后系列进了 pending，系列条目被排除，
+    但它被 Pixiv 删掉的章节仍以「系列单章」带着「我的追更」来源进拯救目录。
+    章节自己有收藏来源（本人单独收藏过）时保留；人工 include 覆盖优先。"""
+    _seed_series(db, 830, status="deleted", total_novels=3)
+    for novel_id in (831, 832, 833):
+        _seed_novel(db, novel_id, series_id=830, status="deleted", text="章节")
+        db.upsert_source(SourceRecord(novel_id, "subscribed_series", "830"))
+    db.upsert_source(SourceRecord(833, "bookmark_public", "1"))
+    db.conn.execute("UPDATE series SET is_subscribed = 1 WHERE series_id = 830")
+    db.add_pending_deletion("series", 830, "unfollowed_series", "系列", "作者", "")
+
+    db.rebuild_rescue_catalog()
+    rebuilt = _catalog_ids(db)
+    assert ("series", 830) not in rebuilt
+    assert ("novel", 831) not in rebuilt
+    assert ("novel", 832) not in rebuilt
+    assert ("novel", 833) in rebuilt  # 单独收藏过的那一章照旧
+
+    # 增量刷新走同一条查询
+    db.refresh_rescue_item("novel", 831)
+    db.refresh_rescue_item("series", 830)
+    assert _catalog_ids(db) == rebuilt
+
+    db.set_rescue_override("novel", 832, "include")
+    db.refresh_rescue_item("novel", 832)
+    assert ("novel", 832) in _catalog_ids(db)
+
+
+def test_series_read_api_counts_whitespace_only_chapters_like_the_catalog(db: Database) -> None:
+    """回归（审查 2026-10-28 D3）：读接口用 SQL TRIM（只剥空格）、目录用 has_content
+    （Python strip），只含换行或全角空格的章节在目录里是 partial、在读接口里却是 success。"""
+    _seed_series(db, 840, status="deleted", total_novels=2)
+    _seed_novel(db, 841, series_id=840, status="normal", text="正文")
+    _seed_novel(db, 842, series_id=840, status="normal", text="\n\n　\n")
+    db.rebuild_rescue_catalog()
+
+    catalog_item = get_rescue_catalog_item(db, "series", 840)
+    read_item = db.get_rescue_series(840)
+
+    assert catalog_item is not None and read_item is not None
+    assert read_item["complete_count"] == catalog_item["complete_count"] == 1
+    assert read_item["rescue_state"] == catalog_item["rescue_state"] == "partial"
+
+
+def test_rescue_lookup_and_evaluation_never_read_novel_bodies(db: Database) -> None:
+    """回归（审查 2026-10-28 D2）：lookup 与评估只需要「有没有正文」，却逐篇把 text_raw
+    读出来再丢掉，系列评估还用 TRIM(text_raw) 读整个系列的正文；合成库上 40 个 ID
+    3.9 s、读盘 187 MB。按 ID 取正文的 get_rescue_novel 仍要读。"""
+    import sqlite3
+
+    _seed_series(db, 850, status="deleted", total_novels=2)
+    _seed_novel(db, 851, series_id=850, status="deleted", text="章节一")
+    _seed_novel(db, 852, series_id=850, status="deleted", text="章节二")
+    _seed_novel(db, 853, status="deleted", text="独立篇")
+
+    reads: set[tuple[str, str]] = set()
+
+    def authorize(action, table, column, _database, _trigger):
+        if action == sqlite3.SQLITE_READ and table:
+            reads.add((table, column or ""))
+        return sqlite3.SQLITE_OK
+
+    db.conn.set_authorizer(authorize)
+    try:
+        batch = db.get_rescue_items_batch([851, 853], [850])
+        evaluated = db.evaluate_rescue_novel(851)
+        series = db.get_rescue_series(850)
+    finally:
+        db.conn.set_authorizer(None)
+
+    assert set(batch) == {"novel:851", "novel:853", "series:850"}
+    assert evaluated is not None and evaluated["rescue_state"] == "success"
+    assert series is not None and series["complete_count"] == 2
+    assert ("novel_texts", "text_raw") not in reads
+
+    reads.clear()
+    db.conn.set_authorizer(authorize)
+    try:
+        full = db.get_rescue_novel(853)
+    finally:
+        db.conn.set_authorizer(None)
+    assert full is not None and full["text_raw"] == "独立篇"
+    assert ("novel_texts", "text_raw") in reads
+
+
 def test_source_url_is_derived_from_the_primary_key_and_survives_upsert(db: Database) -> None:
     """source_url 由 novel_id / series_id 唯一确定，所以它不该能被写歪。
 
@@ -684,6 +777,30 @@ def test_list_rescues_marks_whether_the_user_still_holds_the_item(db: Database) 
     assert items[("series", 860)]["personal_relation"] is True
     assert items[("novel", 840)]["personal_relation"] is False
     assert items[("novel", 850)]["personal_relation"] is False
+
+
+def test_deleting_a_bookmark_refreshes_its_rescue_catalog_entry(db: Database) -> None:
+    """回归（审查 2026-10-28 W4）：删收藏只删 sources，不刷新目录，拯救页继续显示
+    「我的收藏」（personal_relation=True），而实时的 personal_hold 已是 False。"""
+    _seed_novel(db, 875, status="deleted", text="删收藏的那本")
+    db.upsert_source(SourceRecord(875, "bookmark_public", "1"))
+    db.upsert_source(SourceRecord(875, "following_user_scan", "2"))
+    db.rebuild_rescue_catalog()
+
+    def listed():
+        return {
+            (item["item_type"], item["item_id"]): item
+            for item in db.list_rescues(page=1, page_size=50)["items"]
+        }[("novel", 875)]
+
+    assert listed()["personal_relation"] is True
+
+    db.delete_bookmark(875)
+
+    item = listed()
+    assert item["personal_relation"] is False
+    assert item["personal_hold"] is False
+    assert {row["source_type"] for row in list_rescue_catalog_sources(db, "novel", 875)} == {"following_user_scan"}
 
 
 def test_personal_hold_distinguishes_cancelled_from_still_held(db: Database) -> None:

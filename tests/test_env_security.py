@@ -13,6 +13,12 @@ import pytest
 from pixiv_novel_sync import oauth_helper, sync_engine, webapp
 
 
+@pytest.fixture(autouse=True)
+def _restore_web_cookie_env(monkeypatch):
+    # _save_web_cookie_to_env 会直接写 os.environ；先登记原值，测试结束由 monkeypatch 还原
+    monkeypatch.setenv("PIXIV_WEB_COOKIE", "test-placeholder")
+
+
 SecureWriter = Callable[[Path, bytes, int], None]
 
 
@@ -304,6 +310,24 @@ def test_web_cookie_strips_newlines_before_env_write(tmp_path, monkeypatch):
     text = calls[0][1].decode("utf-8")
     assert text == "OTHER=value\nPIXIV_WEB_COOKIE=session=abcEVIL=injected\n"
     assert "\nEVIL=" not in text
+
+
+def test_refreshed_web_cookie_reaches_the_next_load_settings(tmp_path, monkeypatch):
+    """回归（审查 2026-10-28 S3）：自动刷新的 Cookie 只写进 .env，没进 os.environ；
+    load_dotenv 默认不覆盖已有变量，同一进程下一轮任务仍读到旧 Cookie。"""
+    from pixiv_novel_sync.settings import load_settings
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("PIXIV_WEB_COOKIE=old-cookie\n", encoding="utf-8")
+    monkeypatch.setenv("ENV_PATH", str(env_path))
+    monkeypatch.setenv("PIXIV_WEB_COOKIE", "old-cookie")  # 进程启动时已从 .env 读入
+
+    sync_engine.BookmarkNovelSyncService._save_web_cookie_to_env(object(), "new-cookie")
+
+    assert "PIXIV_WEB_COOKIE=new-cookie" in env_path.read_text(encoding="utf-8")
+    assert os.environ["PIXIV_WEB_COOKIE"] == "new-cookie"
+    settings = load_settings(config_path=tmp_path / "missing.yaml", env_path=env_path)
+    assert settings.pixiv.web_cookie == "new-cookie"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows 无法可靠验证 POSIX 文件 mode")

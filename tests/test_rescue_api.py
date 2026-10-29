@@ -1122,6 +1122,49 @@ def test_dashboard_novel_detail_includes_rescue_evaluation(client) -> None:
     assert normal["rescue"]["remote_status"] == "normal"
 
 
+def test_dashboard_novel_detail_sends_the_body_once_as_utf8(app, client) -> None:
+    """回归（审查 2026-10-28 性能 P3）：详情接口同时返回 text_raw 与 text_markdown（后者是
+    标题/简介 + 同一份正文），汉字还被转成 \\uXXXX，20 万字小说 2.4 MB；只发一份 UTF-8
+    是 0.61 MB。阅读页只在 text_raw 为空时才用 markdown，那种情况照旧回 markdown。"""
+    db = Database(Path(app.config["PIXIV_DB_PATH"]))
+    try:
+        body = "第一章\n" + "长篇正文。" * 2000
+        db.conn.execute(
+            "UPDATE novel_texts SET text_raw = ?, text_markdown = ? WHERE novel_id = 10",
+            (body, "# 救援小说\n\n" + body),
+        )
+        db.conn.execute(
+            "UPDATE novel_texts SET text_raw = '', text_markdown = '# 只有 markdown' WHERE novel_id = 11"
+        )
+        db.conn.commit()
+    finally:
+        db.close()
+
+    response = client.get("/api/dashboard/novels/10")
+    payload = response.get_json()
+    assert payload["text_raw"] == body
+    assert payload["text_markdown"] is None
+    assert "长篇正文。".encode("utf-8") in response.data
+    assert b"\\u957f" not in response.data
+    assert len(response.data) < len(body.encode("utf-8")) + 4_000
+
+    fallback = client.get("/api/dashboard/novels/11").get_json()
+    assert fallback["text_markdown"] == "# 只有 markdown"
+
+
+def test_rescue_lookup_deduplicates_ids_before_the_40_id_limit(client) -> None:
+    """回归（审查 2026-10-28 W6）：去重拿字符串 chunk 去比 list[int]，永远不生效，
+    重复 ID 会挤占 40 个的配额，返回里也会出现重复条目。"""
+    token = _rotate_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = client.get("/api/rescue/v1/lookup?novel_ids=" + ",".join(["10"] * 41), headers=headers)
+
+    assert response.status_code == 200
+    novels = response.get_json()["data"]["novels"]
+    assert [item["novel_id"] for item in novels] == [10]
+
+
 def test_dashboard_series_detail_includes_rescue_coverage(client) -> None:
     detail = client.get("/api/dashboard/series/20").get_json()
 

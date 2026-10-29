@@ -812,6 +812,42 @@ def test_run_pending_deletion_detection_task_preserves_existing_stopped_flag(set
 
 
 
+def test_pending_detection_lifts_nested_abort_markers_to_the_top_level(settings, service_env, monkeypatch):
+    """回归（审查 2026-10-28 S4）：收藏翻页失败、追更清单拉不到时，中止标记嵌在
+    bookmark / series 子字典里，任务日志的 partial 判定只看顶层，这一轮记成绿色。"""
+    from pixiv_novel_sync.webapp import _task_log_status_for_stats
+
+    original_factory = services.BookmarkNovelSyncService
+
+    def make_sync_service(api, db, storage, settings):
+        sync_service = original_factory(api, db, storage, settings)
+        sync_service.detection_result = {
+            "bookmark": {"new_pending": 0, "truncated": True, "incomplete": True, "aborted_reason": "fetch_failed"},
+            "series": {"new_pending": 0, "skipped_no_remote": 1, "aborted_reason": "watchlist_unavailable"},
+            "new_pending": 0,
+        }
+        return sync_service
+
+    monkeypatch.setattr(services, "BookmarkNovelSyncService", make_sync_service)
+
+    result = services.run_pending_deletion_detection_task(settings)
+
+    assert result["aborted_reason"] == "fetch_failed"
+    assert result["truncated"] is True
+    assert result["incomplete"] is True
+    assert _task_log_status_for_stats(result) == "partial"
+
+
+def test_pending_detection_without_sub_aborts_stays_green(settings, service_env):
+    from pixiv_novel_sync.webapp import _task_log_status_for_stats
+
+    result = services.run_pending_deletion_detection_task(settings)
+
+    assert "aborted_reason" not in result
+    assert "incomplete" not in result
+    assert _task_log_status_for_stats(result) == "succeeded"
+
+
 def test_run_pending_deletion_detection_task_returns_stopped_when_cancelled_during_detection(
     settings, service_env
 ):

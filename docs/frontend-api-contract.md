@@ -271,7 +271,8 @@ Expected detail fields include:
 - `novel_id`
 - `title`
 - `caption`
-- `text`
+- `text_raw`：正文。以 UTF-8 输出中文，不转成 `\uXXXX`
+- `text_markdown`：只在 `text_raw` 为空时回（标题/作者/简介 + 同一份正文）；有 `text_raw` 时为 `null`，避免整本书传两遍
 - `text_length`
 - `user_id`
 - `user_name`
@@ -544,11 +545,11 @@ Query params:
 - `status`（AI 创作任务）
 - `is_auto=true|false`（同步任务）
 
-返回统一的 `items`、`page`、`page_size`、`total` 和 `total_pages`。每项包含任务标识、类型、名称、状态、开始/结束时间和 `category`；`category=ai` 时数据来自 `ai_jobs` 的只读投影，其他值按同步任务查询。
+返回统一的 `items`、`page`、`page_size`、`total` 和 `total_pages`。每项包含任务标识、类型、名称、状态、开始/结束时间、`stats` 和 `category`；`category=ai` 时数据来自 `ai_jobs` 的只读投影，其他值按同步任务查询。同步任务列表**不含日志行**（`logs`），日志行只在详情接口返回；`stats_json` / `logs_json` 原串一律不外发。
 
 ### GET /api/dashboard/logs/{log_id}
 
-Returns detailed log payload.
+返回单条任务日志，含解析后的 `stats` 与 `logs`（最多 500 行）。与列表接口一样以 UTF-8 输出中文，不转成 `\uXXXX`。
 
 ## Settings and cache APIs
 

@@ -633,7 +633,9 @@
       const manualJobLink = ref('');
       const dirty = ref(false);
       let settingsReady = false;
-      watch(settings, () => { if (settingsReady) dirty.value = true; }, { deep: true });
+      // flush:'sync'：默认的 'pre' 会把回调推迟到下一个 tick，那时 loadSettings / 保存成功
+      // 已经把 settingsReady 置回 true，于是一打开页面、一保存完就被判成「有未保存的修改」
+      watch(settings, () => { if (settingsReady) dirty.value = true; }, { deep: true, flush: 'sync' });
       const manualLogs = ref([]);
 
       const addLog = (msg, error = false) => {
