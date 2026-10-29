@@ -138,6 +138,11 @@ class Settings:
 DEFAULT_CONFIG_PATH = Path("config/config.yaml")
 ALLOWED_BOOKMARK_RESTRICTS = {"public", "private"}
 
+# 缺键时的请求间隔（秒）。读取与设置页保存（web/managers.py:save_sync_settings）
+# 必须同一个值：以前读取回落 0.0（不限速）、保存回落 1.0 并写回 YAML，手改配置删掉
+# 这两个键时，没点过保存的进程会零间隔连发请求。
+DEFAULT_REQUEST_DELAY_SECONDS = 1.0
+
 
 def load_settings(config_path: str | Path | None = None, env_path: str | Path | None = None) -> Settings:
     if env_path is not None:
@@ -207,8 +212,8 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             bookmark_restricts=_coerce_bookmark_restricts(sync_raw.get("bookmark_restricts")),
             max_items_per_run=_coerce_optional_int(sync_raw.get("max_items_per_run")),
             max_pages_per_run=_coerce_optional_int(sync_raw.get("max_pages_per_run")),
-            delay_seconds_between_items=_coerce_float(sync_raw.get("delay_seconds_between_items"), 0.0),
-            delay_seconds_between_pages=_coerce_float(sync_raw.get("delay_seconds_between_pages"), 0.0),
+            delay_seconds_between_items=_coerce_float(sync_raw.get("delay_seconds_between_items"), DEFAULT_REQUEST_DELAY_SECONDS),
+            delay_seconds_between_pages=_coerce_float(sync_raw.get("delay_seconds_between_pages"), DEFAULT_REQUEST_DELAY_SECONDS),
             sync_bookmarks=_coerce_bool(sync_raw.get("sync_bookmarks"), True),
             sync_following_users=_coerce_bool(sync_raw.get("sync_following_users"), True),
             sync_following_novels=_coerce_bool(sync_raw.get("sync_following_novels"), True),

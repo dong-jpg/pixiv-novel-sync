@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..settings import Settings, load_settings
+from ..settings import DEFAULT_REQUEST_DELAY_SECONDS, Settings, load_settings
 from ..storage_db import Database, prepare_schema
 from .utils import (
     _atomic_write_yaml,
@@ -1075,12 +1075,16 @@ class SettingsManager:
         sync_data["series_max_pages_per_run"] = _normalize_optional_int(
             payload.get("series_max_pages_per_run", sync_data.get("series_max_pages_per_run"))
         )
-        sync_data["delay_seconds_between_items"] = _normalize_float(
-            payload.get("delay_seconds_between_items", sync_data.get("delay_seconds_between_items", 1.0))
-        )
-        sync_data["delay_seconds_between_pages"] = _normalize_float(
-            payload.get("delay_seconds_between_pages", sync_data.get("delay_seconds_between_pages", 1.0))
-        )
+        def _save_request_delay(field_name: str) -> float:
+            # 缺键、YAML 留空、表单清空都回落同一个默认值，与 settings.load_settings 一致；
+            # 显式填 0 才是不限速。_normalize_float(None) 会给 0.0，所以先在这里换掉空值。
+            value = payload.get(field_name, sync_data.get(field_name, DEFAULT_REQUEST_DELAY_SECONDS))
+            if value is None or (isinstance(value, str) and not value.strip()):
+                value = DEFAULT_REQUEST_DELAY_SECONDS
+            return _normalize_float(value)
+
+        sync_data["delay_seconds_between_items"] = _save_request_delay("delay_seconds_between_items")
+        sync_data["delay_seconds_between_pages"] = _save_request_delay("delay_seconds_between_pages")
 
         sync_data["sync_bookmarks"] = bool(payload.get("sync_bookmarks", sync_data.get("sync_bookmarks", True)))
         sync_data["sync_following_users"] = bool(payload.get("sync_following_users", sync_data.get("sync_following_users", True)))
