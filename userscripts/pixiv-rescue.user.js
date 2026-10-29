@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.12.0
+// @version      0.12.1
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；「好P友新作」tab 改为「拯救系列」，追更列表空白框原位替换为备份卡片。
 // @author       dong-jpg
 // @license      MIT
@@ -40,7 +40,7 @@
     const custom = String(GM_getValue('pixivRescueOrigin', '') || '').trim();
     return (custom || DEFAULT_API_ORIGIN).replace(/\/$/, '');
   }
-  const SCRIPT_VERSION = '0.12.0';
+  const SCRIPT_VERSION = '0.12.1';
   // Pixiv 手机站正文容器的 gothic 字体栈（2026-10-23 实测 #novel-text-container
   // 的内联 font-family，Aa 设置默认值）。阅读层正文用同一套，排版才能逐字对齐。
   const PIXIV_GOTHIC_FONT = '"Avenir Next",Avenir,"Source Sans","Noto Sans",Roboto,Verdana,"Pingfang SC","Hiragino Sans GB","Lantinghei SC","Source Han Sans CN","Noto Sans CJK SC","Microsoft Yahei",DengXian,YuGothic,"Hiragino Kaku Gothic Pro",Meiryo,"Source Han Sans","Source Han Sans JP","Noto Sans CJK JP","Pingfang TC","Pingfang HK","Hiragino Sans CNS","Lantinghei TC","Source Han Sans TW","Source Han Sans HK","Noto Sans CJK TC","Microsoft JhengHei","Apple SD Gothic Neo","Source Han Sans K","Source Han Sans KR","Noto Sans CJK KR","Malgun Gothic",sans-serif';
@@ -117,8 +117,9 @@
     writeLookupCache(entries);
   }
 
-  function readCachedLookup(id, type) {
-    const entries = readLookupCache();
+  // entries 是调用方取好的 readLookupCache()：一轮扫描只读、只解析一次整份缓存。
+  // 0.12.0 及以前每张卡都重新读一遍（400 条约 114 KB）
+  function readCachedLookup(entries, id, type) {
     const entry = entries[(type === 'series' ? 's:' : 'n:') + id];
     if (!entry) return null;
     if (Date.now() - entry.at >= LOOKUP_CACHE_TTL_MS) return null;
@@ -289,22 +290,37 @@
     return missing;
   }
 
+  // 只在 start() 重试用尽后调用一次。0.12.0 及以前每次重试失败都 prepend 一条：GM 晚注入时
+  // 页头叠着好几条关不掉的红条，功能恢复后仍盖住页面（含阅读层顶栏）。
   function showRuntimeUnsupported(missing) {
     try {
+      if (document.querySelector('[data-pixiv-rescue-runtime]')) return;
       const bar = document.createElement('div');
+      bar.setAttribute('data-pixiv-rescue-runtime', '');
       bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;padding:10px 14px;background:#fef2f2;color:#991b1b;font:13px/1.6 -apple-system,sans-serif;border-bottom:1px solid #fca5a5';
       bar.textContent = '救援脚本需要脚本管理器支持 ' + missing.join('、') +
         '。当前浏览器/管理器未提供，救援功能不可用。请换用支持完整 GM API 的管理器（如 Tampermonkey）。';
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.textContent = '知道了';
+      close.style.cssText = 'margin-left:8px;padding:0 10px;border:1px solid #fca5a5;border-radius:4px;background:#fff;color:#991b1b;font:inherit;cursor:pointer';
+      close.addEventListener('click', function () { bar.remove(); });
+      bar.append(close);
       (document.body || document.documentElement).prepend(bar);
     } catch (_error) { /* ignore */ }
   }
 
+  // GM API 就绪：撤掉页面上残留的提示条。本实例只在放弃后才提示、放弃后不再重试，
+  // 残留只可能来自同一页面上另一份已经放弃的脚本实例
+  function clearRuntimeUnsupported() {
+    try {
+      document.querySelectorAll('[data-pixiv-rescue-runtime]').forEach(function (node) { node.remove(); });
+    } catch (_error) { /* ignore */ }
+  }
+
   function checkRuntimeSupport() {
-    const missing = missingRuntimeApis();
-    if (missing.length) {
-      showRuntimeUnsupported(missing);
-      return false;
-    }
+    if (missingRuntimeApis().length) return false;
+    clearRuntimeUnsupported();
     // GM_registerMenuCommand 缺失不致命（只是没有菜单入口，Token 还能通过
     // 管理器自带的方式设置），但不做兜底会在 registerTokenMenus 里抛错、
     // 让后面所有初始化（包括页面处理）全部不执行——这同样是「页面零反应」
@@ -339,6 +355,17 @@
   // timeoutMs：整本正文可达 20 万字（JSON 约 216 KB），手机网络 15 秒不够稳，
   // 正文接口由调用方放宽；列表 lookup 等小请求保持 15 秒。
   const FULL_TEXT_TIMEOUT_MS = 30000;
+  // 先按状态码分类，2xx 才解析 JSON。0.12.0 及以前先 JSON.parse：部署重启时 Nginx 502、
+  // Cloudflare 52x 回的是 HTML 错误页，解析失败被判成 invalid_response——阅读层显示
+  // 「备份数据没有完整读到」，列表页的提示白名单里没有这一项，干脆什么都不显示。
+  function apiErrorKind(status) {
+    if (status === 401) return 'unauthorized';
+    if (status === 404) return 'not_found';
+    if (status === 429) return 'rate_limited';
+    if (status >= 500) return 'server_error';
+    return 'request_failed';
+  }
+
   function apiGet(path, timeoutMs) {
     const token = String(GM_getValue(TOKEN_KEY, '') || '').trim();
     if (!token) return Promise.reject(new Error('missing_token'));
@@ -352,20 +379,20 @@
         },
         timeout: timeoutMs || 15000,
         onload: function (response) {
+          if (response.status < 200 || response.status >= 300) {
+            reject(new Error(apiErrorKind(Number(response.status || 0))));
+            return;
+          }
           let envelope;
           try {
             envelope = JSON.parse(response.responseText || '{}');
           } catch (_error) {
+            // 2xx 却不是完整 JSON：部分手机管理器会截断大应答（整本正文约 216 KB）
             reject(new Error('invalid_response'));
             return;
           }
-          if (response.status < 200 || response.status >= 300 || envelope.ok === false) {
-            const status = Number(response.status || 0);
-            if (status === 401) reject(new Error('unauthorized'));
-            else if (status === 404) reject(new Error('not_found'));
-            else if (status === 429) reject(new Error('rate_limited'));
-            else if (status >= 500) reject(new Error('server_error'));
-            else reject(new Error('request_failed'));
+          if (envelope.ok === false) {
+            reject(new Error('request_failed'));
             return;
           }
           resolve(envelope.data || {});
@@ -394,7 +421,8 @@
         timeout: 15000,
         onload: function (response) {
           if (response.status < 200 || response.status >= 300) {
-            reject(new Error(response.status === 404 ? 'not_found' : 'request_failed'));
+            // 与 apiGet 同一套分类：429 要认出来，封面被限流时等卡片下次进入视口再取
+            reject(new Error(apiErrorKind(Number(response.status || 0))));
             return;
           }
           try {
@@ -987,6 +1015,20 @@
       : '/api/rescue/v1/novels/' + encodeURIComponent(String(coverId)) + '/cover';
     apiGetBlobUrl(coverPath)
       .then(function (url) {
+        // object URL 有两个读者：<img> 显示、下面回写缓存的 fetch，两边都用完再回收。
+        // 0.12.0 及以前只建不回收，每张没缓存的封面都在页面里留一份
+        let readers = 2;
+        const release = function () {
+          readers -= 1;
+          if (readers === 0) URL.revokeObjectURL(url);
+        };
+        const settled = function () {
+          img.removeEventListener('load', settled);
+          img.removeEventListener('error', settled);
+          release();
+        };
+        img.addEventListener('load', settled);
+        img.addEventListener('error', settled);
         img.src = url;
         // blob URL 不能跨页面持久化：取回真实字节转 dataURL 存缓存
         fetch(url).then(function (resp) { return resp.blob(); })
@@ -997,10 +1039,52 @@
             };
             fr.readAsDataURL(blob);
           })
-          .catch(function () { /* 缓存写失败不影响显示 */ });
+          .catch(function () { /* 缓存写失败不影响显示 */ })
+          .finally(release);
       })
-      .catch(function () { if (onFail) onFail(); });
+      .catch(function (error) {
+        // 被限流（429）不等于没有封面：先空着，卡片下次进入视口时再取
+        const retry = function () { loadRescueCover(img, coverId, coverType, onFail); };
+        if (error && error.message === 'rate_limited' && retryCoverOnNextView(img, retry)) return;
+        if (onFail) onFail();
+      });
   }
+
+  // 封面 429 后的重试：等它离开视口、再次进入时取一次。不在原地马上重试——同一个限流窗口里
+  // 只会接着 429。0.12.0 及以前 429 也走 onFail，一路滑到底超过限额的封面永久换成占位图。
+  // 没有 IntersectionObserver 时返回 false，调用方照旧走 onFail。
+  let coverRetryObserver = null;
+  function retryCoverOnNextView(img, retry) {
+    if (typeof IntersectionObserver !== 'function') return false;
+    if (!coverRetryObserver) {
+      coverRetryObserver = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          const target = entry.target;
+          // 开始观察时的第一次回调也会进来：已在视口里的要先离开一次，才算「下次进入」
+          if (!entry.isIntersecting) {
+            target.__pixivRescueRetryArmed = true;
+            return;
+          }
+          if (!target.__pixivRescueRetryArmed) return;
+          coverRetryObserver.unobserve(target);
+          const again = target.__pixivRescueRetry;
+          target.__pixivRescueRetry = null;
+          target.__pixivRescueRetryArmed = false;
+          if (typeof again === 'function') again();
+        });
+      });
+    }
+    img.__pixivRescueRetry = retry;
+    img.__pixivRescueRetryArmed = false;
+    coverRetryObserver.observe(img);
+    return true;
+  }
+
+  // 切页时调用：旧页面的封面节点已经没用了，不让观察器一直拿着它们（连带整棵旧阅读层）
+  function resetCoverRetries() {
+    if (coverRetryObserver) coverRetryObserver.disconnect();
+  }
+
   function renderWorkHeader(container, data, options) {
     const lengthText = pixivTextLength(data.text_raw).toLocaleString('en-US') + '字';
     if (data.author_name) {
@@ -1448,13 +1532,17 @@
     return current;
   }
 
-  function elementMatchesUnavailable(node) {
-    if (!node) return false;
-    const text = String(node.textContent || '').trim();
+  // text 是已 trim 的 textContent
+  function textMatchesUnavailable(text) {
     if (!text || text.length > BROKEN_CARD_TEXT_LIMIT) return false;
     return UNAVAILABLE_MARKERS.some(function (marker) {
       return text.includes(marker);
     });
+  }
+
+  function elementMatchesUnavailable(node) {
+    if (!node) return false;
+    return textMatchesUnavailable(String(node.textContent || '').trim());
   }
 
   function cardIsBroken(card) {
@@ -1469,8 +1557,16 @@
       node = node.parentElement;
       targets.push(node);
     }
+    // 由内向外查：祖先的文本必然包含子孙的文本，某一层超过阈值后外层只会更长，文案判定
+    // 必然不成立，只剩类名要查。0.12.0 及以前每层都取 textContent，外层容器（可能已是
+    // 整个列表）的文本每个链接都要拼一遍
+    let tooLong = false;
     for (const target of targets) {
-      if (elementMatchesUnavailable(target)) return true;
+      if (!tooLong) {
+        const text = String(target.textContent || '').trim();
+        if (text.length > BROKEN_CARD_TEXT_LIMIT) tooLong = true;
+        else if (textMatchesUnavailable(text)) return true;
+      }
       // Pixiv 官方的「不可见作品」容器类名：比文案匹配更稳定的结构信号
       if (typeof target.className === 'string' && target.className.includes('invisible-work-container')) return true;
     }
@@ -1651,9 +1747,10 @@
       return;
     }
     // 缓存命中：直接渲染，不发任何请求（每次进收藏页的等待主要来自这里）
+    const cachedEntries = readLookupCache();
     const pendingEntries = [];
     found.broken.forEach(function (entry) {
-      const cached = readCachedLookup(entry.id, entry.type === 'series' ? 'series' : 'novel');
+      const cached = readCachedLookup(cachedEntries, entry.id, entry.type === 'series' ? 'series' : 'novel');
       if (cached) {
         renderRescuedCard(entry.card, cached, entry.type === 'series');
         entry.card.setAttribute(ROOT_ATTRIBUTE, 'card');
@@ -1919,7 +2016,11 @@
         ? '这一页没有拯救系列' : '抱歉，目前没有拯救系列'));
       container.append(empty);
     }
-    container.append(renderRescueFeedPager(page, Math.max(1, Number(data.total_pages || 1))));
+    // 翻页条按服务端实际给的页画：过期的 ?p=N 超出页数时服务端钳到末页，0.12.0 及以前
+    // 按请求页画，没有一个页码是当前页、「上一页」也指错。旧后端没有 page 字段时退回请求页
+    const served = Number(data.page);
+    const shown = Number.isInteger(served) && served >= 1 ? served : page;
+    container.append(renderRescueFeedPager(shown, Math.max(1, Number(data.total_pages || 1))));
   }
 
   function renderRescueFeedError(container, error, retry) {
@@ -2259,8 +2360,9 @@
         wanted.push(slot);
       });
       const unresolved = [];
+      const cachedEntries = wanted.length ? readLookupCache() : {};
       wanted.forEach(function (slot) {
-        const item = watchSeriesItem(slot.id);
+        const item = watchSeriesItem(slot.id, cachedEntries);
         const missing = watchMissing.has(slot.id) && Date.now() - watchMissing.get(slot.id) < WATCH_MISS_TTL_MS;
         if (item && item.chapter_count !== undefined) insertWatchCard(slot, item);
         else if (item || missing) watchSettledRoots.add(slot.root);
@@ -2278,10 +2380,10 @@
   }
 
   // 刚查回来的结果优先用（服务端还没升级、缺卡片字段时也不会每轮重查），其次读 10 分钟缓存
-  function watchSeriesItem(id) {
+  function watchSeriesItem(id, cachedEntries) {
     const fresh = watchFreshItems.get(id);
     if (fresh && Date.now() - fresh.at < LOOKUP_CACHE_TTL_MS) return fresh.item;
-    return readCachedLookup(id, 'series');
+    return readCachedLookup(cachedEntries, id, 'series');
   }
 
   function lookupWatchSeries(ids) {
@@ -2499,6 +2601,14 @@
       tagLine: renderTagLine('pixiv-rescue-sheet-tags', chapter, false),
       linkText: '阅读作品',
       href: rescueNovelUrl(chapter.novel_id)
+    });
+  }
+
+  // 切页时调用：挂在 body 上的面板（遮罩层叠 2147483500）不随 Pixiv 的 SPA 切页消失，
+  // 0.12.0 及以前会一直盖在新页面上。阅读层里的面板随阅读层一起销毁，这里不碰
+  function removePageSheets() {
+    document.querySelectorAll('[' + ROOT_ATTRIBUTE + '="sheet"]').forEach(function (node) {
+      if (!readerRoot || !readerRoot.contains(node)) node.remove();
     });
   }
 
@@ -2822,10 +2932,12 @@
   function start(attempt) {
     showBootBadge();
     if (!checkRuntimeSupport()) {
-      // 手机脚本管理器可能稍后才注入 GM 对象：在 5 秒内重试，超时才放弃
+      // 手机脚本管理器可能稍后才注入 GM 对象：在 5 秒内重试，超时才放弃并提示（只提示这一次）
       const tries = Number(attempt || 0);
-      if (tries < 10 && missingRuntimeApis().length) {
+      if (tries < 10) {
         window.setTimeout(function () { start(tries + 1); }, 500);
+      } else {
+        showRuntimeUnsupported(missingRuntimeApis());
       }
       return;
     }
@@ -2862,7 +2974,9 @@
       }
       if (window.location.href === lastHref) return;
       lastHref = window.location.href;
+      removePageSheets();
       destroyReader();
+      resetCoverRetries();
       // 固定定位的提示条不随页面流消失，切页时一并清掉，并允许新页面重新提示
       const notice = document.querySelector('[data-pixiv-rescue-notice]');
       if (notice) notice.remove();
