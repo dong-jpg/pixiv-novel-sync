@@ -98,6 +98,7 @@ Guideline:
 - Primary sync/save/generate actions use `library-btn library-btn-primary`。
 - Secondary filter/refresh/export actions use `library-btn`。
 - Destructive actions should still use red Tailwind classes or future `library-btn-danger`。
+- Tailwind 是提交进仓库的静态 CSS（`static/css/tailwind.css`），不再运行时生成：模板里新增或改动 Tailwind 类后，运行 `python scripts/build_tailwind_css.py` 重生成并一起提交（`tests/test_tailwind_static_css.py` 会拦下遗漏）。
 - 手机主要按钮、分页与弹窗操作触控范围至少44px；登录主控件至少48px。图标可小，命中区域不能随图标缩小。
 
 ### Forms

@@ -185,7 +185,6 @@ function harness() {
   return {document, window, components, mount, modal, media, observations, element, opener, appRoot,
     context, app, order, loadBase() {
       for (const [, script] of baseSource.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
-        context.tailwind = {};
         vm.runInContext(script.replace(/\{\[ task_labels \| tojson \]\}/g, '{}'), context);
       }
     },

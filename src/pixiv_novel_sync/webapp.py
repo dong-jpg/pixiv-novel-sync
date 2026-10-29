@@ -945,6 +945,14 @@ def create_app(
             response.headers["Expires"] = "0"
         return response
 
+    @app.after_request
+    def _cache_versioned_static(response):
+        # base.html 引用 /static/css/tailwind.css?v=<内容哈希>，CSS 一变 URL 就变，可以长缓存。
+        # Flask 默认给静态文件 no-cache，每次翻页都要为这个阻塞渲染的样式表多等一个往返。
+        if request.endpoint == "static" and request.args.get("v") and response.status_code == 200:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
     # 启动期安全提示：未配置 dashboard_token 时给出明确告警。
     if not (settings_manager.load(env_path=env_path).dashboard_token):
         logger.warning(

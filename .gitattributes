@@ -2,3 +2,5 @@
 *.service text eol=lf
 *.timer text eol=lf
 *.conf text eol=lf
+# 生成的 CSS 按内容哈希做缓存版本，检出时不能改换行
+src/pixiv_novel_sync/static/css/tailwind.css text eol=lf
