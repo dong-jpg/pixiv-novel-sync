@@ -1768,11 +1768,13 @@ def test_userscript_card_scan_stops_reading_ancestor_text_past_limit() -> None:
     assert "elementMatchesUnavailable(target)" not in body
 
 
-def test_userscript_fixture_healthy_novel_page_records_no_dom_changes(rescue_browser) -> None:
+@pytest.mark.parametrize("path", ["/novel/show.php?id=101", "/zh-tw/novel/show.php?id=101"], ids=["ja", "zh-tw"])
+def test_userscript_fixture_healthy_novel_page_records_no_dom_changes(rescue_browser, path) -> None:
     """健康正文页：先滚到页中再晚注入，记下注入后的全部 DOM 变动。
 
     唯一的变动是 0.7.0 起所有 Pixiv 页都有的「救援 <版本>」启动角标（data-pixiv-rescue-boot，
     6 秒后自删）；其余零节点、零属性、零文本改动，不请求备份，scrollY 不变。
+    0.12.2（U6）：/zh-tw/ 前缀页也认得出是正文页（照样只问一次 Pixiv ajax），同样零改动。
     """
     context = rescue_browser.new_context(user_agent=MOBILE_UA, viewport={"width": 412, "height": 915})
     page = context.new_page()
@@ -1792,7 +1794,7 @@ def test_userscript_fixture_healthy_novel_page_records_no_dom_changes(rescue_bro
               })).observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); }"""
         )
 
-    ajax_hits = _install_script(page, html, {}, ajax_state="available", before_inject=watch)
+    ajax_hits = _install_script(page, html, {}, path=path, ajax_state="available", before_inject=watch)
     page.wait_for_timeout(2000)
     assert ajax_hits == ["http://pixiv.test/ajax/novel/101"]
     assert page.evaluate("window.__rescueRequests") == []
@@ -1800,3 +1802,41 @@ def test_userscript_fixture_healthy_novel_page_records_no_dom_changes(rescue_bro
     assert page.evaluate("window.scrollY") == 600
     assert page.locator("[data-pixiv-rescue-boot]").count() == 1
     context.close()
+
+
+# ── 0.12.2：2026-10-28 审查的 U6 / U7 与第 2、4 节 ──────────────────────
+
+RESCUE_NOVEL_101 = {
+    "novel_id": 101, "title": "前缀页的备份", "text_raw": "前缀页读到的正文",
+    "source_notice": "内容来自私人备份，并非 Pixiv 官方恢复", "rescue_state": "success",
+}
+
+
+@pytest.mark.parametrize("prefix, kind", [
+    ("/zh-tw", "novel"), ("/zh-tw", "series"), ("/zh-tw", "bookmarks"),
+    # 对照：两个字母的前缀 0.12.1 就认
+    ("/en", "novel"),
+], ids=["zh-tw-novel", "zh-tw-series", "zh-tw-bookmarks", "en-novel"])
+def test_userscript_fixture_lang_prefixed_pages_are_rescued(rescue_browser, prefix, kind) -> None:
+    """回归 U6：语言前缀只认两个字母。/zh-tw/（繁体中文界面）剥不掉，正文、系列、收藏列表
+    都被判成非目标页：0.12.1 注入后什么都不做，已删作品的备份不出来。"""
+    page = rescue_browser.new_page()
+    if kind == "novel":
+        _install_script(page, "<!DOCTYPE html>" + PIXIV_404_SHELL,
+                        {"https://pixiv.dongboapp.com/api/rescue/v1/novels/101": RESCUE_NOVEL_101},
+                        path=prefix + "/novel/show.php?id=101", ajax_state="unavailable")
+        page.get_by_text("前缀页读到的正文").wait_for(state="visible", timeout=5000)
+        assert _reader_state(page)["hit"] is True
+    elif kind == "series":
+        _install_script(page, "<!DOCTYPE html>" + PIXIV_404_SHELL, SERIES_RESPONSES,
+                        path=prefix + f"/novel/series/{SERIES_ID}", ajax_state="unavailable")
+        page.locator("a.pixiv-rescue-chapter-card").first.wait_for(state="visible", timeout=5000)
+        assert page.locator("a.pixiv-rescue-chapter-card").count() == 3
+    else:
+        responses = {LOOKUP_URL + "101": {"novels": [{"novel_id": 101, "title": "前缀页的收藏备份",
+                                                      "author_name": "作者", "has_cover": False,
+                                                      "personal_hold": True}], "series": []}}
+        _install_list_script(page, "<!DOCTYPE html><ul id='list'>" + _broken_card_html(101) + "</ul>", responses,
+                             {"pixivRescueToken": LIST_TOKEN}, path=prefix + LIST_PATH)
+        page.locator(".pixiv-rescue-rescued-title", has_text="前缀页的收藏备份").wait_for(state="visible", timeout=5000)
+    page.close()

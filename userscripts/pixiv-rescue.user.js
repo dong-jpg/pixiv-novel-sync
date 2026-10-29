@@ -1500,12 +1500,15 @@
 
   // ── 收藏页 / 追更页列表匹配 ──────────────────────────────────
 
-  // Pixiv 非日语界面会给路径加语言前缀（/en/、/zh/ 等）。统一在这里剥掉，
+  // Pixiv 非日语界面会给路径加语言前缀（/en/、/zh/、/zh-tw/ 等，全小写）。统一在这里剥掉，
   // 各页判定只写无前缀形态，避免每处正则都要枚举语言。
+  // 认「两个字母」或「两个字母-两个字母」：0.12.1 及以前只认两个字母的固定列表，
+  // /zh-tw/ 页（繁体中文界面）剥不掉前缀，正文、系列、列表页全都判成非目标页，注入后静默。
+  // Pixiv 自己的一级路径没有两个字母的（novel、users、artworks…），不会误剥。
   function pathWithoutLangPrefix() {
     const path = window.location.pathname;
-    // 命中语言前缀时保留开头的「/」：剥的是 /en/ 段而不是整个前缀串
-    const m = path.match(/^\/(en|zh|ja|ko|fr|de|it|es|pt|ru|th|vi|id|ms|pl|hu|nl|sv|da|fi|no|tr|ar|he|fa|hi|bn|ta|tl|uk|el|ro|bg|sr|hr|sk|sl|lt|lv|et|ka|az|kk|uz|mn|my|km|lo|si|ne)(\/|$)/);
+    // 命中语言前缀时保留开头的「/」：剥的是 /zh-tw/ 段而不是整个前缀串
+    const m = path.match(/^\/([a-z]{2}(?:-[a-z]{2})?)(\/|$)/);
     if (!m) return path;
     const rest = path.slice(m[1].length + 1); // 去掉「/语言」
     return rest.startsWith('/') ? rest : '/' + rest;
