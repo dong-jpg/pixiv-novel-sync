@@ -1882,16 +1882,15 @@
           scheduled = false;
           if (!isBookmarksListPage() && !isWatchlistPage()) return;
           scanListPage();
-          // 快速通道：首次看到失效卡但还没渲染完时，短时间内多扫几次。
-          // 用户反馈「有时等很久没反应、刷新一下几秒就出来」——SPA 分批
-          // 渲染时，单靠 150ms 去抖可能刚好错过卡片插入的那一批。
-          fastScanUntil = Date.now() + 15000;
+          // 这里不延长下面的快速轮询：每批插入都会走到这一轮扫描，漏不掉。0.12.1 及以前在这里把
+          // fastScanUntil 再推后 15 秒：页面一直有变动（广告、懒加载）时 500ms 全页扫描永不停止；
+          // 安静满 15 秒、快速轮询结束后，这一行又什么都不做
         }, 150);
       });
       observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
       window.__pixivRescueObserver = observer;
     }
-    // 快速轮询窗口：进入列表页后 15 秒内每 500ms 扫一次（SPA 分批渲染），
+    // 快速轮询窗口：进入列表页（含 SPA 切页、翻页）后 15 秒内每 500ms 扫一次（SPA 分批渲染），
     // 之后交给 3 秒 interval。定时器用链式 setTimeout，避免两个 interval 叠加。
     fastScanUntil = Date.now() + 15000;
     if (!window.__pixivRescueFastScan) {

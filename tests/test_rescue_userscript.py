@@ -2022,3 +2022,41 @@ def test_userscript_fixture_series_directory_first_load_failure_offers_retry(res
     assert page.evaluate(calls, chapters_url) == 3
     assert page.evaluate(calls, series_url) == 1
     context.close()
+
+
+# 一轮列表扫描 = collectBrokenCards 里那一次全页 querySelectorAll(链接选择器)：包一层记下时间
+LIST_SCAN_COUNTER = """
+(() => {
+  const original = Document.prototype.querySelectorAll;
+  window.__listScans = [];
+  Document.prototype.querySelectorAll = function (selector) {
+    if (selector === 'a[href*="/novel/show.php?id="], a[href*="/novel/series/"]') window.__listScans.push(Date.now());
+    return original.apply(this, arguments);
+  };
+})();
+"""
+
+
+def test_userscript_fixture_list_fast_scan_ends_15s_after_entering_while_dom_keeps_changing(rescue_browser) -> None:
+    """审查第 2 节：删掉观察器里延长 fastScanUntil 的那一行，500ms 快速轮询只在进入列表页后 15 秒内。
+
+    核实（假时钟跑 60 秒数全页扫描）：页面静止时那一行确实不起作用（快速轮询 15 秒后已结束，
+    推后的截止时间没人读）；但页面一直有 DOM 变动（广告、懒加载）时它让 500ms 全页扫描永不停止，
+    0.12.1 在 30–60 秒里扫 85 次，删掉后 25 次（3 秒定时 + 每批变动后一次）。插入的卡片由每批
+    变动后的那一轮扫描接住，不靠快速轮询。
+    """
+    page = rescue_browser.new_page()
+    page.clock.install(time=1_800_000_000_000)
+    page.add_init_script(LIST_SCAN_COUNTER)
+    _install_list_script(page, "<!DOCTYPE html><ul id='list'></ul>", {}, {"pixivRescueToken": LIST_TOKEN})
+    started = page.evaluate("() => Date.now()")
+    # 每 2 秒往列表里插一个节点（childList 变动）
+    page.evaluate("() => setInterval(() => document.getElementById('list').append(document.createElement('li')), 2000)")
+    for _ in range(45):
+        page.clock.run_for(1000)
+    scans = page.evaluate("(started) => window.__listScans.map((at) => at - started)", started)
+    first = sum(1 for at in scans if at < 15000)
+    later = sum(1 for at in scans if 20000 <= at < 45000)
+    assert first > 25, f"前 15 秒只扫了 {first} 次：快速轮询没跑起来，这个计数说明不了什么"
+    assert later < 40, f"20–45 秒还扫了 {later} 次：快速轮询没在进入列表页 15 秒后停下"
+    page.close()
