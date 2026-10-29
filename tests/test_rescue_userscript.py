@@ -693,12 +693,15 @@ def _install_list_script(
     path: str = LIST_PATH,
     pixiv_json: dict[str, dict] | None = None,
     cover_status: dict[str, list[int]] | None = None,
+    hold: list[str] | None = None,
 ) -> list[str]:
     """列表页装载：document-start 注入，GM 存储是可读写的真实 Map，封面走 blob。
 
     pixiv_json：Pixiv 自己的同源 ajax（URL 片段 → JSON 应答），例如追更列表的
     /touch/ajax/watch_list/novel；返回这些请求的记录。作者头像（i.pximg.net）回一张小图。
     cover_status：封面 URL → 依次回的状态码（用完后回 200），例如先 429 再恢复。
+    hold：URL 里含这些片段的救援请求先压着不回，等页面里调 window.__rescueRelease(片段)
+    才应答（同步交给脚本）；应答过的 URL 记在 window.__rescueDelivered。
     GM_getValue 按键计数读取次数（window.__rescueReads）。
     """
     pixiv_hits: list[str] = []
@@ -707,11 +710,18 @@ def _install_list_script(
         "window.__rescueStore = new Map(Object.entries(" + json.dumps(store) + "));"
         "window.__rescuePng = " + json.dumps(TINY_PNG_BASE64) + ";"
         "window.__rescueCoverStatus = " + json.dumps(cover_status or {}) + ";"
+        "window.__rescueHold = " + json.dumps(hold or []) + ";"
     )
     page.add_init_script(
         """
         window.__rescueRequests = [];
         window.__rescueReads = {};
+        window.__rescueHeld = [];
+        window.__rescueDelivered = [];
+        window.__rescueRelease = (fragment) => {
+          window.__rescueHeld.filter((item) => item.url.includes(fragment)).forEach((item) => item.respond());
+          window.__rescueHeld = window.__rescueHeld.filter((item) => !item.url.includes(fragment));
+        };
         window.GM_getValue = (key, fallback) => {
           window.__rescueReads[key] = (window.__rescueReads[key] || 0) + 1;
           return window.__rescueStore.has(key) ? window.__rescueStore.get(key) : fallback;
@@ -720,7 +730,17 @@ def _install_list_script(
         window.GM_registerMenuCommand = () => {};
         window.GM_xmlhttpRequest = (options) => {
           window.__rescueRequests.push({url: options.url, method: options.method});
-          setTimeout(() => {
+          const later = (respond) => {
+            if (window.__rescueHold.some((fragment) => options.url.includes(fragment))) {
+              window.__rescueHeld.push({ url: options.url, respond: () => {
+                respond();
+                window.__rescueDelivered.push(options.url);
+              } });
+              return;
+            }
+            setTimeout(respond, 0);
+          };
+          later(() => {
             if (options.responseType === 'blob') {
               const queue = window.__rescueCoverStatus[options.url];
               const status = queue && queue.length ? queue.shift() : 200;
@@ -742,7 +762,7 @@ def _install_list_script(
               return;
             }
             options.onload({status: 200, responseText: JSON.stringify({ok: true, data: payload})});
-          }, 0);
+          });
         };
         """
     )
@@ -1889,4 +1909,63 @@ def test_userscript_fixture_ten_thousand_blank_lines_render_in_linear_time(rescu
     page.locator(".pixiv-rescue-pager").first.get_by_role("button", name="下一页").click()
     assert labels.all_inner_texts() == ["2 / 3 页", "2 / 3 页"]
     assert page.locator(".pixiv-rescue-novel-text .pixiv-rescue-para").all_inner_texts() == ["备份正文为空"]
+    page.close()
+
+
+def _held_lookup_novel(novel_id: int, title: str) -> dict:
+    return {"novels": [{"novel_id": novel_id, "title": title, "author_name": "作者", "has_cover": False,
+                        "personal_hold": True}], "series": []}
+
+
+# 应答回来之前卡片变成了什么样（模拟 Vue 翻页复用同一个节点、或整块换掉）
+REUSE_MUTATIONS = {
+    # 同一个节点改画另一部失效作品：只改链接
+    "relinked": "() => { document.querySelector('#list a').setAttribute('href', '/novel/show.php?id=102'); }",
+    # 同一个节点改画一部健康作品：链接与文字都换掉
+    "healed": """() => { const link = document.querySelector('#list a');
+        link.setAttribute('href', '/novel/show.php?id=103');
+        link.querySelector('div div div').textContent = '健康作品的标题，简介与标签都在：' + '一段足够长的简介文字'.repeat(6); }""",
+    # 整块从页面上摘掉（保留引用，之后再放回去）
+    "detached": "() => { window.__detached = document.querySelector('#list li'); window.__detached.remove(); }",
+}
+
+
+@pytest.mark.parametrize("mutation", list(REUSE_MUTATIONS), ids=list(REUSE_MUTATIONS))
+def test_userscript_fixture_lookup_reply_skips_card_that_changed(rescue_browser, mutation) -> None:
+    """审查第 2 节：lookup 回调写卡片前核对卡片仍在页面上、仍是 card-pending、链接里的作品 ID 没变。
+
+    0.12.1 不核对：应答迟到时把上一部作品（101）的备份画到已经改画别的作品的节点上，并标成终态
+    不再查询（relinked 时 102 永远查不到；healed 时健康卡被换成 101 的备份卡；detached 时写进
+    已摘掉的节点，放回页面后显示的是没核对过的卡）。
+    """
+    page = rescue_browser.new_page()
+    responses = {LOOKUP_URL + "101": _held_lookup_novel(101, "旧作品备份"),
+                 LOOKUP_URL + "102": _held_lookup_novel(102, "新作品备份")}
+    _install_list_script(page, "<!DOCTYPE html><ul id='list'>" + _broken_card_html(101) + "</ul>", responses,
+                         {"pixivRescueToken": LIST_TOKEN}, hold=["novel_ids=101"])
+    lookups = "(url) => window.__rescueRequests.filter((item) => item.url === url).length"
+    page.wait_for_function(lookups + " === 1", arg=LOOKUP_URL + "101")
+    assert page.locator("#list [data-pixiv-rescue='card-pending']").count() == 1
+    page.evaluate(REUSE_MUTATIONS[mutation])
+    page.evaluate("() => new Promise((resolve) => { window.__rescueRelease('novel_ids=101'); setTimeout(resolve, 0); })")
+    assert page.evaluate("() => window.__rescueDelivered") == [LOOKUP_URL + "101"]
+    assert page.locator(".pixiv-rescue-rescued-title", has_text="旧作品备份").count() == 0
+
+    if mutation == "relinked":
+        # 下一轮扫描按现在的链接重新登记，查到的是 102
+        page.locator(".pixiv-rescue-rescued-title", has_text="新作品备份").wait_for(state="visible", timeout=5000)
+        assert page.evaluate(lookups, LOOKUP_URL + "102") == 1
+    elif mutation == "healed":
+        page.wait_for_timeout(1200)
+        assert page.locator(".pixiv-rescue-rescued-card").count() == 0
+        assert page.locator("#list [data-pixiv-rescue]").count() == 0
+        assert "健康作品的标题" in page.locator("#list a").inner_text()
+    else:
+        # 摘下来的节点原样不动、也不挂着 pending；放回页面后照常从缓存画出来，不再多查一次
+        detached = page.evaluate("""() => ({ text: window.__detached.textContent,
+            state: window.__detached.querySelector('.works-item').getAttribute('data-pixiv-rescue') })""")
+        assert detached == {"text": "该作品无法显示", "state": None}
+        page.evaluate("() => document.getElementById('list').append(window.__detached)")
+        page.locator(".pixiv-rescue-rescued-title", has_text="旧作品备份").wait_for(state="visible", timeout=5000)
+        assert page.evaluate(lookups, LOOKUP_URL + "101") == 1
     page.close()

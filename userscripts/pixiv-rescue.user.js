@@ -1585,16 +1585,39 @@
     return false;
   }
 
+  // 链接指向的作品：{type, id}；不是正文/系列链接返回 null。登记失效卡与回调复核共用这一个判定
+  function linkWork(link) {
+    const href = link.getAttribute('href') || '';
+    const seriesMatch = href.match(/\/novel\/series\/(\d+)/);
+    if (seriesMatch) return { type: 'series', id: seriesMatch[1] };
+    const novelMatch = href.match(/[?&]id=(\d+)/);
+    return novelMatch ? { type: 'novel', id: novelMatch[1] } : null;
+  }
+
+  // lookup 应答回来时，卡片还是不是登记时那部作品：仍在页面上、仍是 card-pending、登记时取 ID 的
+  // 那个节点（链接 / data-gtm-value）还在卡片里且 ID 没变。Pixiv 列表是 Vue 渲染的，翻页时可能
+  // 复用同一个节点改画另一部作品；0.12.1 及以前不核对，迟到的应答会把上一部的备份画到这张卡上
+  function entryStillMatches(entry) {
+    const card = entry.card;
+    if (!card.isConnected || card.getAttribute(ROOT_ATTRIBUTE) !== 'card-pending') return false;
+    const source = entry.source;
+    if (!source || !source.isConnected || !card.contains(source)) return false;
+    if (entry.type === 'unknown') return String(source.getAttribute('data-gtm-value') || '').trim() === entry.id;
+    const work = linkWork(source);
+    return Boolean(work) && work.type === entry.type && work.id === entry.id;
+  }
+
   function collectBrokenCards() {
     const novelIds = new Set();
     const seriesIds = new Set();
     const broken = [];
 
-    function register(card, id, type) {
+    // source：从哪个节点读到的 ID（失效卡的链接，或无链接白块上带 data-gtm-value 的节点），回调复核用
+    function register(card, id, type, source) {
       // 标记为 pending 而非终态：查询失败时会撤销（见 markBrokenCards 的 catch），
       // 下一轮扫描允许重试。A14-03 的根因就是这里先写了永久标记。
       card.setAttribute(ROOT_ATTRIBUTE, 'card-pending');
-      broken.push({ type: type, id: id, card: card });
+      broken.push({ type: type, id: id, card: card, source: source });
       if (type === 'novel') novelIds.add(id);
       else if (type === 'series') seriesIds.add(id);
       else {
@@ -1627,11 +1650,10 @@
       if (alreadyHandled(card)) { handledCards.add(card); return; }
       if (card.querySelector('[' + ROOT_ATTRIBUTE + '="badge"]')) { handledCards.add(card); return; }
       if (!cardIsBroken(link)) return;
-      const href = link.getAttribute('href') || '';
-      const seriesMatch = href.match(/\/novel\/series\/(\d+)/);
-      const novelMatch = href.match(/[?&]id=(\d+)/);
-      if (seriesMatch) { handledCards.add(card); register(card, seriesMatch[1], 'series'); }
-      else if (novelMatch) { handledCards.add(card); register(card, novelMatch[1], 'novel'); }
+      const work = linkWork(link);
+      if (!work) return;
+      handledCards.add(card);
+      register(card, work.id, work.type, link);
     });
 
     // 2) 无链接的白块：系列被删/隐藏时 Pixiv 不再渲染链接，但卡片上通常还留着
@@ -1647,7 +1669,7 @@
       if (card.querySelector('[' + ROOT_ATTRIBUTE + '="badge"]')) return;
       // 卡片本身（或其附近文本）必须就是失效提示，避免把健康卡片的 gtm 值也抓进来
       if (!cardIsBroken(card) && !elementMatchesUnavailable(card)) return;
-      register(card, value, 'unknown');
+      register(card, value, 'unknown', node);
     });
 
     return { broken: broken, novelIds: novelIds, seriesIds: seriesIds };
@@ -1780,6 +1802,12 @@
         (data.series || []).forEach(function (item) { series[item.series_id] = item; });
         cacheLookupResults(data.novels, data.series);
         batch.entries.forEach(function (entry) {
+          // 卡片已经不是登记时那部作品：不写，撤掉 pending 让下一轮扫描按它现在的样子重新判断
+          // （查到的结果已进缓存，同一部作品再出现时直接命中）
+          if (!entryStillMatches(entry)) {
+            if (entry.card.getAttribute(ROOT_ATTRIBUTE) === 'card-pending') entry.card.removeAttribute(ROOT_ATTRIBUTE);
+            return;
+          }
           const novelMatch = novels[entry.id];
           const seriesMatch = series[entry.id];
           const match = entry.type === 'series' ? seriesMatch
