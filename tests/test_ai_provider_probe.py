@@ -125,3 +125,108 @@ def test_probe_writes_nothing_to_the_catalog(tmp_path, monkeypatch) -> None:
     assert db.list_ai_provider_models(provider_id)["total"] == before
     assert db.get_ai_provider(provider_id)["models_synced_at"] is None
     db.close()
+
+
+# A7：借用已保存的 Key 时，除 base_url 外 provider_type 与 proxy 也决定 Key 发去
+# 哪里、以什么头发出去。旧代码只比对 base_url，两边 base_url 都为空时改
+# provider_type，会把 Anthropic Key 当 Bearer 发到 OpenAI 默认地址。
+_BORROW_SECRET_ENV = "PIXIV_NOVEL_SYNC_AI_SECRET_KEY"
+
+
+def _seed_saved_key_provider(tmp_path, monkeypatch, **overrides) -> int:
+    from pixiv_novel_sync.ai.crypto import AISecretManager
+
+    monkeypatch.setenv(_BORROW_SECRET_ENV, "probe-borrow-secret")
+    db = Database(tmp_path / "probe-borrow.db")
+    db.init_schema()
+    data = {
+        "name": "saved", "provider_type": "anthropic", "base_url": None,
+        "api_key_encrypted": AISecretManager().encrypt("sk-saved"),
+        "default_model": None, "enabled": 1,
+    }
+    data.update(overrides)
+    provider_id = db.create_ai_provider(data)
+    db.close()
+    return provider_id
+
+
+def _capture_created_providers(monkeypatch) -> list:
+    seen: list = []
+
+    def capture(config):
+        seen.append(config)
+        return _FakeProvider()
+
+    monkeypatch.setattr("pixiv_novel_sync.ai.services.admin.create_provider", capture)
+    return seen
+
+
+def test_probe_refuses_to_borrow_stored_key_for_a_different_provider_type(tmp_path, monkeypatch) -> None:
+    provider_id = _seed_saved_key_provider(tmp_path, monkeypatch)
+    seen = _capture_created_providers(monkeypatch)
+    service = AIWritingService(db_path=tmp_path / "probe-borrow.db")
+    try:
+        with pytest.raises(AIServiceError, match="重新填入 Key"):
+            service.probe_provider_models({
+                "provider_id": provider_id,
+                "provider_type": "openai_compatible",
+            })
+    finally:
+        service.close()
+
+    assert seen == []
+
+
+def test_probe_refuses_to_borrow_stored_key_through_a_different_proxy(tmp_path, monkeypatch) -> None:
+    provider_id = _seed_saved_key_provider(
+        tmp_path, monkeypatch,
+        provider_type="openai_compatible",
+        base_url="https://api.example.com/v1",
+        proxy="http://corp-proxy.example:3128",
+    )
+    seen = _capture_created_providers(monkeypatch)
+    service = AIWritingService(db_path=tmp_path / "probe-borrow.db")
+    try:
+        # 换成别的代理，或显式不走代理，都不借用已保存的 Key
+        for proxy in ("http://attacker.example:8080", ""):
+            with pytest.raises(AIServiceError, match="重新填入 Key"):
+                service.probe_provider_models({
+                    "provider_id": provider_id,
+                    "provider_type": "openai_compatible",
+                    "base_url": "https://api.example.com/v1",
+                    "proxy": proxy,
+                })
+    finally:
+        service.close()
+
+    assert seen == []
+
+
+def test_probe_borrowing_stored_key_inherits_saved_type_and_proxy(tmp_path, monkeypatch) -> None:
+    """前端探测只发 provider_type / base_url：没传的字段按已保存配置补齐，Key 走它平时走的路径。"""
+    provider_id = _seed_saved_key_provider(
+        tmp_path, monkeypatch,
+        provider_type="openai_compatible",
+        base_url="https://api.example.com/v1",
+        proxy="http://corp-proxy.example:3128",
+    )
+    seen = _capture_created_providers(monkeypatch)
+    service = AIWritingService(db_path=tmp_path / "probe-borrow.db")
+    try:
+        service.probe_provider_models({
+            "provider_id": provider_id,
+            "provider_type": "openai_compatible",
+            "base_url": "https://api.example.com/v1",
+        })
+        service.probe_provider_models({
+            "provider_id": provider_id,
+            "base_url": "https://api.example.com/v1",
+            "proxy": "http://corp-proxy.example:3128",
+        })
+    finally:
+        service.close()
+
+    assert [(config.provider_type, config.proxy, config.api_key) for config in seen] == [
+        ("openai_compatible", "http://corp-proxy.example:3128", "sk-saved"),
+        ("openai_compatible", "http://corp-proxy.example:3128", "sk-saved"),
+    ]

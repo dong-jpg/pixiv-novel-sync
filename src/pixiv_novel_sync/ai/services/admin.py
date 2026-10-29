@@ -778,6 +778,7 @@ class AIAdminMixin:
         """
         base_url = (str(payload.get("base_url") or "")).strip() or None
         provider_type = str(payload.get("provider_type") or "openai_compatible")
+        proxy = (str(payload.get("proxy")).strip() or None) if payload.get("proxy") else None
         api_key = payload.get("api_key") or None
         provider_id = payload.get("provider_id")
 
@@ -796,6 +797,23 @@ class AIAdminMixin:
                 raise AIServiceError(
                     "借用已保存的 API Key 时不能同时改地址：请在表单里重新填入 Key"
                 )
+            # provider_type 与 proxy 同样决定 Key 发去哪里、以什么头发出：两边 base_url
+            # 都为空时改 provider_type，Anthropic 的 Key 会被当 Bearer 发到 OpenAI 默认
+            # 地址；改 proxy 则是把 Key 交给另一台代理。表单没传的字段按已保存的配置
+            # 补齐（前端探测本来就不发 proxy），显式传了且不同就不借用。
+            saved_type = str(row.get("provider_type") or "openai_compatible")
+            if payload.get("provider_type") and provider_type != saved_type:
+                raise AIServiceError(
+                    "借用已保存的 API Key 时不能同时改 Provider 类型：请在表单里重新填入 Key"
+                )
+            provider_type = saved_type
+            saved_proxy = (str(row.get("proxy") or "").strip()) or None
+            # 空串表示「不走代理」，算显式修改；null 与没传一样按已保存的补齐。
+            if payload.get("proxy") is not None and proxy != saved_proxy:
+                raise AIServiceError(
+                    "借用已保存的 API Key 时不能同时改代理：请在表单里重新填入 Key"
+                )
+            proxy = saved_proxy
             api_key = self.secret_manager.decrypt(row.get("api_key_encrypted"))
         if not api_key:
             raise AIServiceError("请填入 API Key")
@@ -809,7 +827,7 @@ class AIAdminMixin:
             default_model=None,
             timeout_seconds=int(payload.get("timeout_seconds") or 120),
             context_window=int(payload.get("context_window") or 128000),
-            proxy=(str(payload.get("proxy")).strip() or None) if payload.get("proxy") else None,
+            proxy=proxy,
         )
         provider = create_provider(config)
         started = time.time()
