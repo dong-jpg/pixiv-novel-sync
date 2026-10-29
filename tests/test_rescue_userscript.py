@@ -1840,3 +1840,53 @@ def test_userscript_fixture_lang_prefixed_pages_are_rescued(rescue_browser, pref
                              {"pixivRescueToken": LIST_TOKEN}, path=prefix + LIST_PATH)
         page.locator(".pixiv-rescue-rescued-title", has_text="前缀页的收藏备份").wait_for(state="visible", timeout=5000)
     page.close()
+
+
+def _script_functions(script: str, *names: str) -> str:
+    """按函数名摘出脚本里的顶层函数源码（到同缩进的「  }」为止）；脚本里没有的名字跳过。"""
+    parts = []
+    for name in names:
+        marker = "\n  function " + name + "("
+        if marker in script:
+            parts.append("function " + name + "(" + script.split(marker, 1)[1].split("\n  }\n", 1)[0] + "\n}\n")
+    return "".join(parts)
+
+
+def test_userscript_fixture_ten_thousand_blank_lines_render_in_linear_time(rescue_browser) -> None:
+    """回归 U7：0.12.1 用 replace(/^\\n+|\\n+$/g, '') 剥每页首尾换行，页中间连续 k 个换行时 O(k²)：
+    1 万个空行约 1.7 秒、2 万个约 5.4 秒（node 22 / V8 实测，与 Chromium 同一引擎）。
+
+    计时只量分页函数本身：阅读层整体渲染有约 150–200 ms 与正文无关的固定开销（两版相同），
+    拿整页渲染卡阈值量的是那部分。再整页渲染一遍核对剥换行的语义不变：首尾空行去掉、
+    页中的空行不出空段落、中间的空页保留（[jump:N] 页码不错位）。
+    """
+    page = rescue_browser.new_page()
+    url = "https://pixiv.dongboapp.com/api/rescue/v1/novels/101"
+    blank = "\n" * 10001  # 两段之间 1 万个空行
+    text = (blank + "第一段正文" + blank + "最后一段正文" + blank
+            + "[newpage]" + blank + "[newpage]第三页" + blank)
+    source = _script_functions(_script(), "trimPageNewlines", "splitPixivPages")
+    split = page.evaluate(
+        """([source, text]) => {
+          const splitPixivPages = new Function(source + 'return splitPixivPages;')();
+          const started = performance.now();
+          const pages = splitPixivPages(text);
+          return { ms: performance.now() - started, pages: pages };
+        }""",
+        [source, text],
+    )
+    assert split["ms"] < 50, f"1 万个空行分页用了 {split['ms']:.0f} ms"
+    assert split["pages"] == ["第一段正文" + blank + "最后一段正文", "", "第三页"]
+
+    novel = dict(RESCUE_NOVEL_101, title="很多空行", text_raw=text)
+    _install_script(page, "<!DOCTYPE html>" + PIXIV_404_SHELL, {url: novel},
+                    path="/novel/show.php?id=101&pixiv_rescue=1")
+    page.locator(".pixiv-rescue-para", has_text="最后一段正文").wait_for(state="visible", timeout=20000)
+    paras = page.locator(".pixiv-rescue-novel-text .pixiv-rescue-para").all_inner_texts()
+    assert [para.strip() for para in paras] == ["第一段正文", "最后一段正文"]
+    labels = page.locator(".pixiv-rescue-pager-label")
+    assert labels.all_inner_texts() == ["1 / 3 页", "1 / 3 页"]
+    page.locator(".pixiv-rescue-pager").first.get_by_role("button", name="下一页").click()
+    assert labels.all_inner_texts() == ["2 / 3 页", "2 / 3 页"]
+    assert page.locator(".pixiv-rescue-novel-text .pixiv-rescue-para").all_inner_texts() == ["备份正文为空"]
+    page.close()

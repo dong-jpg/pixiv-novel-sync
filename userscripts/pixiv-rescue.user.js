@@ -1213,10 +1213,19 @@
     };
   }
 
+  // 剥掉一页首尾的换行，中间的原样保留。0.12.1 及以前用 replace(/^\n+|\n+$/g, '')：页中间
+  // 连续 k 个换行时，\n+$ 在其中每个位置都吞到这段换行末尾再失败，O(k²)，1 万个空行约 1.7 秒。
+  // 从两头各扫一遍，线性
+  function trimPageNewlines(page) {
+    let start = 0;
+    let end = page.length;
+    while (start < end && page.charCodeAt(start) === 10) start += 1;
+    while (end > start && page.charCodeAt(end - 1) === 10) end -= 1;
+    return page.slice(start, end);
+  }
+
   function splitPixivPages(rawText) {
-    const pages = String(rawText || '').replace(/\r\n?/g, '\n').split('[newpage]').map(function (page) {
-      return page.replace(/^\n+|\n+$/g, '');
-    });
+    const pages = String(rawText || '').replace(/\r\n?/g, '\n').split('[newpage]').map(trimPageNewlines);
     // 只丢末尾的空页：中间的空页要保留，否则 [jump:N] 的页码会错位
     while (pages.length > 1 && !pages[pages.length - 1].trim()) pages.pop();
     return pages;
