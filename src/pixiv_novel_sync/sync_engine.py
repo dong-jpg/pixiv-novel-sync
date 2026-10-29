@@ -1543,44 +1543,52 @@ class BookmarkNovelSyncService:
             return stats
         
         # 方式2: 从已同步的小说中提取系列元数据（兼容旧数据）
+        # S6: 只在已有订阅行时才用此回落（新装且没有 Cookie 时不误标）
         if not series_list:
-            logger.info("Extracting series from synced novels")
-            try:
-                rows = self.db.conn.execute(
-                    """
-                    SELECT DISTINCT n.series_id, 
-                           COALESCE(se.title, MIN(n.title)) as title,
-                           se.description,
-                           n.user_id,
-                           u.name as author_name,
-                           se.cover_url,
-                           COUNT(*) as total_novels
-                    FROM novels n
-                    LEFT JOIN series se ON se.series_id = n.series_id
-                    LEFT JOIN users u ON u.user_id = n.user_id
-                    WHERE n.series_id IS NOT NULL
-                    GROUP BY n.series_id
-                    ORDER BY MAX(n.last_seen_at) DESC
-                    """
-                ).fetchall()
-                
-                for row in rows:
-                    series_id = row[0]
-                    self.db.upsert_subscribed_series(
-                        series_id=series_id,
-                        title=row[1] or "",
-                        description=row[2] or "",
-                        user_id=row[3] or 0,
-                        cover_url=row[5],
-                        total_novels=row[6] or 0,
-                    )
-                    stats["series_synced"] += 1
-                    logger.info("Synced series from DB: %s (ID: %s)", row[1], series_id)
-                
-            except InterruptedError:
-                raise
-            except Exception as e:
-                logger.warning("Failed to extract series from DB: %s", str(e))
+            has_any_subscription = self.db.conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM series WHERE is_subscribed = 1)"
+            ).fetchone()[0]
+
+            if has_any_subscription:
+                logger.info("Extracting series from synced novels (fallback for existing subscriptions)")
+                try:
+                    rows = self.db.conn.execute(
+                        """
+                        SELECT DISTINCT n.series_id,
+                               COALESCE(se.title, MIN(n.title)) as title,
+                               se.description,
+                               n.user_id,
+                               u.name as author_name,
+                               se.cover_url,
+                               COUNT(*) as total_novels
+                        FROM novels n
+                        LEFT JOIN series se ON se.series_id = n.series_id
+                        LEFT JOIN users u ON u.user_id = n.user_id
+                        WHERE n.series_id IS NOT NULL
+                        GROUP BY n.series_id
+                        ORDER BY MAX(n.last_seen_at) DESC
+                        """
+                    ).fetchall()
+
+                    for row in rows:
+                        series_id = row[0]
+                        self.db.upsert_subscribed_series(
+                            series_id=series_id,
+                            title=row[1] or "",
+                            description=row[2] or "",
+                            user_id=row[3] or 0,
+                            cover_url=row[5],
+                            total_novels=row[6] or 0,
+                        )
+                        stats["series_synced"] += 1
+                        logger.info("Synced series from DB: %s (ID: %s)", row[1], series_id)
+
+                except InterruptedError:
+                    raise
+                except Exception as e:
+                    logger.warning("Failed to extract series from DB: %s", str(e))
+            else:
+                logger.info("Skipping series extraction: no existing subscriptions (new installation without Cookie)")
 
         if watchlist_unavailable:
             stats["watchlist_unavailable"] = True

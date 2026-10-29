@@ -58,6 +58,17 @@ class PixivAuthManager:
         kwargs: dict[str, Any] = {
             "timeout": self._settings.timeout,
         }
+        # S5: proxies 和 verify_ssl 必须传给 AppPixivAPI 构造函数，
+        # 设置 api.proxies 属性不起作用（pixivpy3 3.7.5 不读）
+        if self._settings.proxy:
+            kwargs["proxies"] = {
+                "http": self._settings.proxy,
+                "https": self._settings.proxy,
+            }
+        # verify_ssl 也要传入，否则配了代理时 SSL 验证行为不可控
+        if self._settings.verify_ssl is not None:
+            kwargs["verify"] = self._settings.verify_ssl
+
         api = AppPixivAPI(**kwargs)
         api.set_accept_language("zh-cn")
         return api
@@ -67,8 +78,6 @@ class PixivAuthManager:
             raise PixivAuthError("Missing PIXIV_REFRESH_TOKEN or PIXIV_ACCESS_TOKEN")
 
         api = self.create_api()
-        if self._settings.proxy:
-            api.proxies = {"http": self._settings.proxy, "https": self._settings.proxy}
 
         try:
             if self._settings.refresh_token:
