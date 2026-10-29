@@ -36,6 +36,13 @@ MAX_CONSECUTIVE_MISSING = 30
 # 三者共用同一套熔断逻辑。
 MISSING_STATUSES = frozenset({"deleted", "suspended"})
 
+# 全量备份按失败比例中止单个用户之前，至少要处理过这么多本。以前没有最小样本：
+# 第 1 本失败就是 1/1 > 20%，整个用户中止，在轮转里被跳过一整圈。失败累计到
+# USER_BACKUP_MAX_FAILED_NOVELS 本仍然立即中止（那是确定的坏信号，与样本量无关）。
+USER_BACKUP_FAILURE_MIN_SAMPLE = 10
+USER_BACKUP_MAX_FAILED_NOVELS = 10
+USER_BACKUP_MAX_FAILURE_RATIO = 0.2
+
 # 小说状态检查每轮的批大小。全量 6971 篇（每篇间隔 2 秒）单轮要跑满 4 小时，
 # 既占死任务槽又是限流诱因；分批后单轮耗时可控，多轮按 last_checked_at 轮转覆盖全库。
 NOVEL_STATUS_BATCH_SIZE = 800
@@ -223,7 +230,12 @@ def run_user_backup_task(
                 if failed:
                     total_failed += failed
                     # 单本失败先计入本轮已处理，再看失败率，避免第一本失败时分母还是 0。
-                    if total_failed >= 10 or total_failed / processed > 0.2:
+                    # 比例只在样本够大时才判：前几本里碰巧失败一本不该让整个用户出局。
+                    ratio_exceeded = (
+                        processed >= USER_BACKUP_FAILURE_MIN_SAMPLE
+                        and total_failed / processed > USER_BACKUP_MAX_FAILURE_RATIO
+                    )
+                    if total_failed >= USER_BACKUP_MAX_FAILED_NOVELS or ratio_exceeded:
                         raise RuntimeError(f"User backup aborted for user {user_id}: {total_failed}/{processed} novels failed (threshold exceeded)")
                 total_novels += counters.get("novels", 0)
                 total_skipped += counters.get("skipped", 0)

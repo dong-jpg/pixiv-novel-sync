@@ -964,6 +964,11 @@ def test_run_user_backup_task_raises_on_failed_sync_counter_and_closes_db(settin
         return sync_service
 
     monkeypatch.setattr(services, "BookmarkNovelSyncService", make_sync_service)
+    # 失败比例要处理满 USER_BACKUP_FAILURE_MIN_SAMPLE 本才判，所以给够 10 本、全部失败
+    auth = FakeAuthManager(settings.pixiv)
+    auth.api.user_novels_pages = {1: [SimpleNamespace(id=1010 + i) for i in range(10)]}
+    service_env["auth"] = auth
+    monkeypatch.setattr(services, "PixivAuthManager", lambda pixiv_settings: auth)
 
     with pytest.raises(RuntimeError, match="backup aborted.*threshold exceeded"):
         services.run_user_backup_task(settings, user_id=101)

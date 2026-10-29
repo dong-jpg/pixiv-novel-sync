@@ -195,7 +195,8 @@ def test_cancelled_backup_keeps_prior_nonfatal_failure_count(backup_case, entry)
 @pytest.mark.parametrize("entry", ["direct", "scheduled"])
 @pytest.mark.parametrize(
     ("novel_count", "failed_ids", "expected_failure"),
-    [(5, {1}, "1/1"), (50, set(range(41, 51)), "10/50")],
+    # 比例阈值只在处理满 USER_BACKUP_FAILURE_MIN_SAMPLE 本后才判：第 11 本失败时 3/11 > 20%
+    [(15, {1, 2, 11}, "3/11"), (50, set(range(41, 51)), "10/50")],
     ids=["ratio-threshold", "absolute-threshold"],
 )
 def test_existing_failure_thresholds_still_abort_user(
@@ -262,3 +263,21 @@ def test_upstream_error_page_marks_backup_partial_not_success(backup_case, entry
         assert result["incomplete"] is True
         assert result["aborted_reason"] == "upstream_error_page"
         assert _task_log_status_for_stats(result) == "partial"
+
+
+@pytest.mark.parametrize("entry", ["direct", "scheduled"])
+def test_early_single_failure_does_not_abort_the_whole_user(backup_case, entry):
+    """审查「user_backup 失败比例阈值没有最小样本」：以前第 1 本失败就是 1/1 > 20%，
+    整个用户中止，在轮转里被跳过一整圈。现在样本不足时只记失败，其余照常备份。"""
+    backup_case.novel_count = 5
+    backup_case.failed_ids = {1}
+
+    result = run_backup(backup_case, entry)
+
+    assert backup_case.visited == [(1, n) for n in range(1, 6)]
+    assert result["novels"] == 4
+    assert result.get("failed", 0) == 1
+    assert result.get("failed_users", 0) == 0
+    assert result["incomplete"] is True
+    assert result["aborted_reason"] == "novel_backup_errors"
+    assert _task_log_status_for_stats(result) == "partial"
