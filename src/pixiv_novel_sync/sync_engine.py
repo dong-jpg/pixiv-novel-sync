@@ -430,12 +430,9 @@ class BookmarkNovelSyncService:
                         self.db.upsert_source(SourceRecord(novel_id=novel_id, source_type=f"bookmark_{restrict}", source_key=str(user_id)))
                         self.db.touch_novel(novel_id)
                         counters = {"skipped": 1, "bookmarks": 0, "views": 0, "assets_downloaded": 0}
-                        # 跳过时使用跳过间隔
-                        skip_delay = self.settings.sync.delay_seconds_between_skips
-                        if skip_delay > 0:
-                            if progress_callback:
-                                progress_callback("rate_limit", {"seconds": skip_delay})
-                            _sleep_with_progress_cancel(skip_delay, progress_callback)
+                        # 已归档判定是纯本地点查，没有发请求，不等 delay_seconds_between_skips
+                        # （性能 P20：每轮约 20 页 × 30 条 × 0.1 s ≈ 60 s 白等）。真实请求之间的
+                        # 间隔不变；取消仍由每条开头的 novel_start 进度回调轮询。
                     else:
                         # 不存在，执行完整同步
                         counters = self._sync_novel(
@@ -842,12 +839,7 @@ class BookmarkNovelSyncService:
                                 existing_streak,
                             )
                             stop_author_scan = True
-                        skip_delay = self.settings.sync.delay_seconds_between_skips
-                        # 已决定停止扫描时不再空等跳过间隔，直接收尾退出。
-                        if skip_delay > 0 and not stop_author_scan:
-                            if progress_callback:
-                                progress_callback("rate_limit", {"seconds": skip_delay})
-                            _sleep_with_progress_cancel(skip_delay, progress_callback)
+                        # 同收藏同步：本地跳过不发请求，不等 delay_seconds_between_skips（P20）
                     else:
                         existing_streak = 0
                         counters = self._sync_novel(
