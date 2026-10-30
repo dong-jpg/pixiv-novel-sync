@@ -1036,7 +1036,7 @@ def test_preference_analyze_passes_job_cancel_callback_to_keyword_cleaning(
     from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobStatus, JobType
     from pixiv_novel_sync.jobs.runner import JobRunner
 
-    captured = {"before": None, "after": None, "closed": False}
+    captured = {"before": None, "after": None, "closed": False, "published": 0}
 
     class FakeReporter:
         def add_log(self, level, message):
@@ -1054,6 +1054,7 @@ def test_preference_analyze_passes_job_cancel_callback_to_keyword_cleaning(
             }
 
         def update_preference_profile(self, profile_id, data):
+            captured["published"] += 1
             return True
 
         def close(self):
@@ -1119,3 +1120,4 @@ def test_preference_analyze_passes_job_cancel_callback_to_keyword_cleaning(
     assert captured["before"] is False
     assert captured["after"] is True
     assert captured["closed"] is True
+    assert captured["published"] == 0
