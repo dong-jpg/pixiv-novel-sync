@@ -254,9 +254,26 @@ class RescueMixin:
     def _catalog_timestamp() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
+    # P13：全量重建时先用索引筛出可能入目录的 ID，再进聚合查询。远端没删、也没有人工
+    # include 的条目在后面的 Python 判定里必然被丢掉，提前排除结果逐条不变。
+    _CATALOG_SERIES_CANDIDATES_SQL = """se.series_id IN (
+                SELECT series_id FROM series WHERE status = 'deleted'
+                UNION
+                SELECT item_id FROM rescue_overrides
+                WHERE item_type = 'series' AND action = 'include'
+            )"""
+    _CATALOG_NOVEL_CANDIDATES_SQL = """AND n.novel_id IN (
+                SELECT novel_id FROM novels WHERE status IN ('deleted', 'restricted')
+                UNION
+                SELECT item_id FROM rescue_overrides
+                WHERE item_type = 'novel' AND action = 'include'
+            )"""
+
     def _catalog_series_rows(
         self,
         series_ids: set[int] | None = None,
+        *,
+        candidates_only: bool = False,
     ) -> list[dict[str, Any]]:
         """Return eligible series snapshots using only body completeness flags."""
         normalized_ids = sorted({int(value) for value in series_ids or set()})
@@ -280,6 +297,8 @@ class RescueMixin:
             placeholders = ", ".join("?" for _ in normalized_ids)
             where_clauses.append(f"se.series_id IN ({placeholders})")
             params = tuple(normalized_ids)
+        if candidates_only:
+            where_clauses.append(self._CATALOG_SERIES_CANDIDATES_SQL)
         where_sql = "WHERE " + " AND ".join(where_clauses)
         rows = self.conn.execute(
             f"""
@@ -369,6 +388,8 @@ class RescueMixin:
         self,
         rescue_series_ids: set[int],
         novel_ids: set[int] | None = None,
+        *,
+        candidates_only: bool = False,
     ) -> list[dict[str, Any]]:
         """Return eligible standalone/chapter snapshots in one set query."""
         normalized_ids = sorted({int(value) for value in novel_ids or set()})
@@ -380,6 +401,8 @@ class RescueMixin:
             placeholders = ", ".join("?" for _ in normalized_ids)
             filter_sql = f"AND n.novel_id IN ({placeholders})"
             params = tuple(normalized_ids)
+        if candidates_only:
+            filter_sql = f"{filter_sql} {self._CATALOG_NOVEL_CANDIDATES_SQL}"
         rows = self.conn.execute(
             f"""
             SELECT
@@ -816,9 +839,13 @@ class RescueMixin:
         started = time.perf_counter()
         refreshed_at = self._catalog_timestamp()
         with self.transaction():
-            series_rows = self._catalog_series_rows()
+            # P13：先在同一事务里筛出可能入目录的 ID，再交给原来的查询，结果逐条不变。
+            # 只有远端标了 deleted / restricted 或有人工 include 的条目才可能入目录；
+            # 以前两条查询扫全部 novels（status 在 raw_json 之后，要读溢出页）、聚合全部
+            # 系列章节，再在 Python 里丢掉九成。这仍是同一事务内的全量重建，不是增量化。
+            series_rows = self._catalog_series_rows(candidates_only=True)
             rescue_series_ids = {int(row["series_id"]) for row in series_rows}
-            novel_rows = self._catalog_novel_rows(rescue_series_ids)
+            novel_rows = self._catalog_novel_rows(rescue_series_ids, candidates_only=True)
 
             # Sources have a foreign key to the catalog; clear both explicitly so
             # this remains correct even for databases created before the FK pragma.

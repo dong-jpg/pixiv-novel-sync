@@ -585,3 +585,181 @@ def test_remove_manual_serializes_with_concurrent_discovery(db):
     assert row["model_key"] == "m"
     assert row["manual"] is False
     assert row["discovered"] is True
+
+
+# P22：点查 / 批量 / 计数三个读法与整表 list 的派生结果逐字段一致。
+def test_point_batch_and_count_lookups_match_the_full_listing(db):
+    provider_id = seed_provider(db)
+    db.upsert_discovered_models(
+        provider_id,
+        [
+            normalize_model_record(
+                {"id": "chat", "name": "Chat", "capabilities": ["streaming", "json"],
+                 "context_window": 32_000}
+            ),
+            normalize_model_record({"id": "Chat", "name": "大小写不同"}),
+            normalize_model_record({"id": "parked"}),
+        ],
+        generation=1,
+    )
+    manual_id = db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "manual", "manual_capabilities": ["vision"]}
+    )
+    listing = db.list_ai_provider_models(provider_id)
+    by_key = {item["model_key"]: item for item in listing["items"]}
+    db.update_ai_provider_model(by_key["parked"]["id"], {"enabled": 0})
+    listing = db.list_ai_provider_models(provider_id)
+    by_key = {item["model_key"]: item for item in listing["items"]}
+
+    for key, item in by_key.items():
+        assert db.get_ai_provider_model_by_key(provider_id, key) == item
+    # model_key 不透明：大小写不同是两条，不折叠
+    assert db.get_ai_provider_model_by_key(provider_id, "CHAT") is None
+    assert db.get_ai_provider_model_by_key(provider_id, "missing") is None
+    assert db.get_ai_provider_model_by_key(provider_id + 99, "chat") is None
+
+    ids = [item["id"] for item in listing["items"]]
+    assert db.get_ai_provider_models_by_ids(ids + [ids[0], 10_000]) == {
+        item["id"]: item for item in listing["items"]
+    }
+    assert db.get_ai_provider_models_by_ids([]) == {}
+    assert manual_id in db.get_ai_provider_models_by_ids([manual_id])
+
+    counts = db.count_ai_provider_models(provider_id)
+    assert counts == {key: listing[key] for key in ("total", "discovered_available", "routable")}
+    assert counts == {"total": 4, "discovered_available": 3, "routable": 3}
+
+    # Provider 停用：点查与批量同样把 routable 派生为 False，计数归零
+    db.update_ai_provider(provider_id, {"enabled": False})
+    assert db.get_ai_provider_model_by_key(provider_id, "chat")["routable"] is False
+    assert all(
+        not item["routable"] for item in db.get_ai_provider_models_by_ids(ids).values()
+    )
+    assert db.count_ai_provider_models(provider_id)["routable"] == 0
+
+
+def test_batch_lookup_splits_large_id_lists(db):
+    """IN 列表按 900 一批：不依赖 SQLite 3.32 起才放宽的 999 个绑定参数上限。"""
+    provider_id = seed_provider(db)
+    db.upsert_discovered_models(
+        provider_id,
+        [{"model_key": f"m{index:04d}"} for index in range(1_950)],
+        generation=1,
+    )
+    ids = [item["id"] for item in db.list_ai_provider_models(provider_id)["items"]]
+    statements: list[str] = []
+    db.conn.set_trace_callback(statements.append)
+    try:
+        found = db.get_ai_provider_models_by_ids(ids)
+    finally:
+        db.conn.set_trace_callback(None)
+
+    assert sorted(found) == sorted(ids)
+    in_queries = [s for s in statements if "WHERE id IN (" in s]
+    assert len(in_queries) == 3
+
+
+# P23：没变化的行不重写；不靠 NOT IN 拼几千个占位符。
+def _stamp_catalog_rows(db, value: str = "2000-01-01 00:00:00") -> None:
+    db.conn.execute(
+        "UPDATE ai_provider_models SET updated_at = ?, last_seen_at = ?", (value, value)
+    )
+    db.conn.commit()
+
+
+def _rewritten_keys(db, value: str = "2000-01-01 00:00:00") -> set[str]:
+    return {
+        row[0]
+        for row in db.conn.execute(
+            "SELECT model_key FROM ai_provider_models WHERE updated_at != ?", (value,)
+        ).fetchall()
+    }
+
+
+def test_identical_resync_rewrites_nothing(db):
+    provider_id = seed_provider(db)
+    records = [
+        normalize_model_record(
+            {"id": f"m{index}", "name": f"模型 {index}", "capabilities": ["streaming"],
+             "context_window": 8_192, "owned_by": "o"}
+        )
+        for index in range(50)
+    ]
+    db.upsert_discovered_models(provider_id, records, generation=1)
+    db.upsert_discovered_models(provider_id, records[:45], generation=2)  # 5 个消失
+    _stamp_catalog_rows(db)
+    statements: list[str] = []
+    db.conn.set_trace_callback(statements.append)
+    try:
+        stats = db.upsert_discovered_models(provider_id, records[:45], generation=3)
+    finally:
+        db.conn.set_trace_callback(None)
+
+    assert stats == {"inserted": 0, "updated": 0}
+    assert _rewritten_keys(db) == set()
+    assert not [s for s in statements if s.lstrip().upper().startswith(("INSERT", "UPDATE"))]
+
+
+def test_resync_writes_only_changed_rows_and_keeps_manual_fields(db):
+    provider_id = seed_provider(db)
+    manual_id = db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "kept", "manual_display_name": "手工名",
+         "enabled": 0}
+    )
+    first = [
+        normalize_model_record({"id": "same", "name": "不变"}),
+        normalize_model_record({"id": "renamed", "name": "旧名"}),
+        normalize_model_record({"id": "gone", "name": "要消失"}),
+        normalize_model_record({"id": "kept", "name": "上游名"}),
+    ]
+    db.upsert_discovered_models(provider_id, first, generation=1)
+    db.upsert_discovered_models(provider_id, first[:2] + first[3:], generation=2)
+    _stamp_catalog_rows(db)
+
+    stats = db.upsert_discovered_models(
+        provider_id,
+        [
+            normalize_model_record({"id": "same", "name": "不变"}),
+            normalize_model_record({"id": "renamed", "name": "新名"}),
+            normalize_model_record({"id": "gone", "name": "要消失"}),  # 重新出现
+            normalize_model_record({"id": "new", "name": "新模型"}),
+        ],
+        generation=3,
+    )
+
+    # kept 这次没返回：发现记录置不可用，这也是一次改写，但不计入 updated
+    assert stats == {"inserted": 1, "updated": 2}
+    assert _rewritten_keys(db) == {"renamed", "gone", "new", "kept"}
+    rows = {item["model_key"]: item for item in db.list_ai_provider_models(provider_id)["items"]}
+    assert rows["renamed"]["discovered_display_name"] == "新名"
+    assert rows["gone"]["discovered_available"] is True
+    assert rows["new"]["discovered_available"] is True
+    assert rows["kept"]["discovered_available"] is False
+    kept = db.get_ai_provider_model(manual_id)
+    assert kept["manual_display_name"] == "手工名"
+    assert kept["enabled"] is False
+    assert kept["manual"] is True
+
+
+@pytest.mark.skipif(
+    not hasattr(__import__("sqlite3").Connection, "setlimit"),
+    reason="Connection.setlimit 需要 Python 3.11",
+)
+def test_full_sync_fits_the_pre_3_32_bound_parameter_limit(db):
+    """SQLite 3.32 之前一条语句最多 999 个绑定参数。旧实现的 NOT IN 每个模型一个
+    占位符，Provider 超过约 1000 个模型时整次同步失败。这里把上限压回 999 模拟旧版。"""
+    import sqlite3
+
+    provider_id = seed_provider(db)
+    records = [{"model_key": f"m{index:04d}"} for index in range(1_200)]
+    db.conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+    try:
+        db.upsert_discovered_models(provider_id, records, generation=1)
+        stats = db.upsert_discovered_models(provider_id, records[100:], generation=2)
+    finally:
+        db.conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 32_766)
+
+    assert stats == {"inserted": 0, "updated": 0}
+    counts = db.list_ai_provider_models(provider_id)
+    assert counts["total"] == 1_200
+    assert counts["discovered_available"] == 1_100

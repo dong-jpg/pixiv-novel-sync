@@ -412,6 +412,25 @@ def test_stream_route_forwards_progress_delta_and_result(
     assert request.top_p == route_context.agent.top_p
 
 
+def test_stream_route_passes_cancel_callback_to_route_request(
+    service: AIWritingService,
+    route_context: Any,
+    fake_router: FakeModelRouter,
+) -> None:
+    """A5：取消回调要进 RouteRequest，路由才能在流式中途和重试退避里响应取消。"""
+
+    def stop_requested() -> bool:
+        return False
+
+    collect_generator_return(
+        service._stream_route(route_context, MESSAGES, is_cancelled=stop_requested)
+    )
+    assert fake_router.requests[-1].is_cancelled is stop_requested
+
+    collect_generator_return(service._stream_route(route_context, MESSAGES))
+    assert fake_router.requests[-1].is_cancelled is None
+
+
 def test_stream_route_rejects_output_reserve_larger_than_saved_budget(
     service: AIWritingService,
     route_context: Any,

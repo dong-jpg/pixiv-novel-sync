@@ -651,7 +651,8 @@ def test_run_user_backup_task_syncs_target_user_novels_with_expected_options(set
     assert sync_service.calls == [
         {
             "novel_id": 2021,
-            "restrict": "public",
+            # 全量备份不知道作品属于哪个收藏列表，传 None 沿用已归档的 restrict（S10）
+            "restrict": None,
             "download_assets": True,
             "write_markdown": True,
             "write_raw_text": False,
@@ -660,7 +661,7 @@ def test_run_user_backup_task_syncs_target_user_novels_with_expected_options(set
         },
         {
             "novel_id": 2022,
-            "restrict": "public",
+            "restrict": None,
             "download_assets": True,
             "write_markdown": True,
             "write_raw_text": False,
@@ -673,6 +674,9 @@ def test_run_user_backup_task_syncs_target_user_novels_with_expected_options(set
         "user_id": 202,
         "novels": 2,
         "skipped": 0,
+        # 没有上次全部重抓的记录 => 本轮全部重抓（P19）
+        "skipped_archived": 0,
+        "full_refresh": True,
         "assets_downloaded": 4,
         "stopped": False,
         "rescue_catalog_items": 7,
@@ -963,6 +967,11 @@ def test_run_user_backup_task_raises_on_failed_sync_counter_and_closes_db(settin
         return sync_service
 
     monkeypatch.setattr(services, "BookmarkNovelSyncService", make_sync_service)
+    # 失败比例要处理满 USER_BACKUP_FAILURE_MIN_SAMPLE 本才判，所以给够 10 本、全部失败
+    auth = FakeAuthManager(settings.pixiv)
+    auth.api.user_novels_pages = {1: [SimpleNamespace(id=1010 + i) for i in range(10)]}
+    service_env["auth"] = auth
+    monkeypatch.setattr(services, "PixivAuthManager", lambda pixiv_settings: auth)
 
     with pytest.raises(RuntimeError, match="backup aborted.*threshold exceeded"):
         services.run_user_backup_task(settings, user_id=101)
@@ -1032,6 +1041,9 @@ def test_run_user_backup_task_stops_before_syncing_next_page_and_closes_db(setti
         "user_id": 101,
         "novels": 2,
         "skipped": 0,
+        # 没有上次全部重抓的记录 => 本轮全部重抓（P19）
+        "skipped_archived": 0,
+        "full_refresh": True,
         "assets_downloaded": 4,
         "stopped": True,
     }
@@ -1051,6 +1063,9 @@ def test_run_user_backup_task_stops_before_syncing_next_novel_and_closes_db(sett
         "user_id": 101,
         "novels": 1,
         "skipped": 0,
+        # 没有上次全部重抓的记录 => 本轮全部重抓（P19）
+        "skipped_archived": 0,
+        "full_refresh": True,
         "assets_downloaded": 2,
         "stopped": True,
     }

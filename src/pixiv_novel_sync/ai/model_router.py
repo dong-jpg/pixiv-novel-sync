@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import threading
 import time
@@ -16,11 +17,28 @@ from ..storage.ai.core import (
     AIJobConflictError,
     AIRouteBudgetExhausted,
 )
+from .crypto import AISecretManager
 from .model_catalog import ModelCatalogValidationError, normalize_model_key
 from .model_sync import provider_model_sync_config_hash
 from .models import AIAgentConfig, AIProviderConfig, AIStreamChunk
 from .providers import AIProvider, AIProviderError
 
+logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> datetime:
+    """路由截止判定用的当前时间（单列出来，测试可以换成可控时钟）。"""
+    return datetime.now(timezone.utc)
+
+
+_ROUTE_DEADLINE_MESSAGE = "AI job 已超过路由截止时间"
+# 每个终态 cancelled 都写明原因：截止超时走 route_budget_exhausted（failed /
+# partial），只有真正的取消才是 cancelled，ai_jobs 里两者才能区分。
+_CANCEL_MESSAGES = {
+    "closed": "cancelled: AI 服务已关闭，任务中止",
+    "cancelled": "cancelled: 任务已取消",
+    "aborted": "cancelled: 调用方中止了路由（流被关闭）",
+}
 
 _ROUTE_STAGES = {"internal", "main", "validation"}
 _CONTEXT_WINDOW_MIN = 256
@@ -442,11 +460,11 @@ class ModelRouter:
         provider_id: int,
         model_key: str,
     ) -> dict[str, Any] | None:
-        result = db.list_ai_provider_models(provider_id, routable_only=True)
-        return next(
-            (item for item in result["items"] if item["model_key"] == model_key),
-            None,
-        )
+        # 按 (provider_id, model_key) 点查。旧实现把整个 Provider 目录物化成 dict
+        # （每行两次 JSON 解析）再线性找：5000 个模型时单次约 1 s，ai_health 还按
+        # 每个固定 Agent 再来一遍。(provider_id, model_key) 唯一，结果与旧实现一致。
+        item = db.get_ai_provider_model_by_key(provider_id, model_key)
+        return item if item is not None and item["routable"] else None
 
     @classmethod
     def _resolve_fixed(
@@ -676,11 +694,54 @@ class ModelRouter:
         if not agent.enabled:
             raise ModelRouteError("Agent 已禁用")
 
+        if snapshot is not None:
+            db = self._db_factory()
+            try:
+                with db.read_transaction():
+                    return self._validate_saved_snapshot(db, agent, snapshot)
+            finally:
+                db.close()
+
+        resolved = self._resolve_new_snapshot(agent)
+        # 遗留 v1 密文在第一次解密时被透明升级成 v2 并回写，而 api_key_encrypted 是
+        # provider_config_hash 的输入：用 v1 密文算出的快照会在随后的预算构建或首个
+        # 候选解密之后对不上，执行前报「Provider 配置已变更」（首次必败、第二次才成功）。
+        # 照 model_sync.start 的做法先完成升级再算 hash；升级过就重新解析一次。
+        if self._upgrade_legacy_provider_secrets(resolved):
+            resolved = self._resolve_new_snapshot(agent)
+        return resolved
+
+    def _upgrade_legacy_provider_secrets(self, snapshot: CandidateSnapshot) -> bool:
+        """对候选里仍是遗留密文的 Provider 先解密一次（解密即升级回写）。
+
+        只碰遗留密文；解密失败不在这里报错，交给之后的预算构建或候选尝试按原路径
+        处理。返回是否真的有 Provider 的密文被改写。
+        """
+        provider_ids = list(dict.fromkeys(c.provider_id for c in snapshot.candidates))
+        changed = False
+        db = self._db_factory()
+        try:
+            for provider_id in provider_ids:
+                row = db.get_ai_provider(provider_id, include_secret=True)
+                before = (row or {}).get("api_key_encrypted")
+                if not AISecretManager.is_legacy_ciphertext(before):
+                    continue
+                try:
+                    self._load_provider_config(db, provider_id)
+                except Exception:
+                    continue
+                after = (db.get_ai_provider(provider_id, include_secret=True) or {}).get(
+                    "api_key_encrypted"
+                )
+                changed = changed or after != before
+        finally:
+            db.close()
+        return changed
+
+    def _resolve_new_snapshot(self, agent: AIAgentConfig) -> CandidateSnapshot:
         db = self._db_factory()
         try:
             with db.read_transaction():
-                if snapshot is not None:
-                    return self._validate_saved_snapshot(db, agent, snapshot)
                 if agent.binding_type == "fixed":
                     candidates = self._resolve_fixed(db, agent)
                 elif agent.binding_type == "pool":
@@ -835,7 +896,68 @@ class ModelRouter:
             deadline = deadline.replace(tzinfo=timezone.utc)
         else:
             deadline = deadline.astimezone(timezone.utc)
-        return datetime.now(timezone.utc) >= deadline
+        return _utc_now() >= deadline
+
+    def _stop_reason(
+        self,
+        request: RouteRequest,
+    ) -> Literal["closed", "deadline", "cancelled"]:
+        """``_request_cancelled`` 为真时，判断是哪一种停止。
+
+        路由关闭优先；其次是截止时间（心跳在截止后也会置取消标记，所以先看截止，
+        超时才不会被记成取消）；剩下的是调用方取消或 ai_jobs.cancel_requested。
+        """
+        if self._closed.is_set():
+            return "closed"
+        try:
+            if self._deadline_expired(request.route_deadline_at):
+                return "deadline"
+        except ModelRouteError:
+            pass
+        return "cancelled"
+
+    def _finish_route_deadline(
+        self,
+        db: Any,
+        request: RouteRequest,
+        *,
+        attempt_index: int | None,
+        output_started: bool,
+        output_parts: list[str],
+        started_at: float,
+    ) -> RouteResult:
+        """运行中到达截止时间：按 MODEL_ROUTING_GUIDE 4.3 以 route_budget_exhausted
+        失败；主阶段已有输出时为 partial，保留已生成正文。"""
+        latency_ms = max(0, int((time.monotonic() - started_at) * 1000))
+        partial = request.stage == "main" and output_started
+        if attempt_index is not None:
+            db.finish_ai_model_attempt(
+                request.job_id,
+                attempt_index,
+                request.owner_token,
+                "partial" if partial else "failed",
+                error_scope="provider",
+                error_message=_ROUTE_DEADLINE_MESSAGE,
+                error_category="route_budget_exhausted",
+                finish_reason="error",
+                output_started=output_started,
+                latency_ms=latency_ms,
+            )
+        if partial:
+            db.finish_ai_job_cas(
+                request.job_id,
+                request.owner_token,
+                "partial",
+                output_text="".join(output_parts),
+                error_message=f"route_budget_exhausted: {_ROUTE_DEADLINE_MESSAGE}",
+            )
+            return self._terminal_race_result(db, request)
+        return self._finish_job_failure(
+            db,
+            request,
+            message=_ROUTE_DEADLINE_MESSAGE,
+            category="route_budget_exhausted",
+        )
 
     def _active_route_state(self, db: Any, request: RouteRequest) -> dict[str, Any]:
         state = db.get_ai_job_route_state(request.job_id, request.owner_token)
@@ -845,7 +967,7 @@ class ModelRouter:
         if stored_hash != request.candidate_snapshot.snapshot_hash:
             raise ModelRouteConflictError("AI job 候选快照不匹配")
         if self._deadline_expired(state.get("route_deadline_at")):
-            raise AIRouteBudgetExhausted("AI job 已超过路由截止时间")
+            raise AIRouteBudgetExhausted(_ROUTE_DEADLINE_MESSAGE)
         return state
 
     @staticmethod
@@ -915,9 +1037,15 @@ class ModelRouter:
         cancel_event = threading.Event()
 
         def heartbeat() -> None:
+            # 与 model_sync 的心跳一样包住异常，但一次失败不退出：租约 45 s、
+            # 心跳 15 s，偶发的 database is locked 下一轮重试就能续上。线程一退出，
+            # 租约停止续期，仍在输出的任务会被 fail_stale_ai_jobs 当成崩溃收口。
+            # 真正失去所有权由 heartbeat_ai_job 返回 False 判定（任务已终结或换了 owner）。
+            consecutive_failures = 0
             while not stopped.is_set():
-                db = self._db_factory()
+                db = None
                 try:
+                    db = self._db_factory()
                     if not db.heartbeat_ai_job(
                         request.job_id,
                         request.owner_token,
@@ -927,8 +1055,18 @@ class ModelRouter:
                         return
                     if db.ai_job_should_stop(request.job_id):
                         cancel_event.set()
+                    consecutive_failures = 0
+                except Exception:
+                    consecutive_failures += 1
+                    logger.warning(
+                        "AI 路由心跳失败，下一轮重试（job_id=%s，连续 %d 次）",
+                        request.job_id,
+                        consecutive_failures,
+                        exc_info=True,
+                    )
                 finally:
-                    db.close()
+                    if db is not None:
+                        db.close()
                 stopped.wait(_HEARTBEAT_INTERVAL_SECONDS)
 
         thread = threading.Thread(
@@ -1184,10 +1322,19 @@ class ModelRouter:
                     )
                     continue
                 if self._request_cancelled(request):
+                    reason = self._stop_reason(request)
+                    if reason == "deadline":
+                        return self._finish_job_failure(
+                            db,
+                            request,
+                            message=_ROUTE_DEADLINE_MESSAGE,
+                            category="route_budget_exhausted",
+                        )
                     db.finish_ai_job_cas(
                         request.job_id,
                         request.owner_token,
                         "cancelled",
+                        error_message=_CANCEL_MESSAGES[reason],
                     )
                     return self._terminal_race_result(db, request)
 
@@ -1355,6 +1502,20 @@ class ModelRouter:
                         error.category == "cancelled"
                         or error.finish_reason == "cancelled"
                     )
+                    stop_reason = self._stop_reason(request)
+                    if stop_reason == "deadline":
+                        # A blocking read may expire as a network error rather than
+                        # observe cancellation; the route deadline still applies.
+                        attempt_index = current_attempt
+                        current_attempt = None
+                        return self._finish_route_deadline(
+                            db,
+                            request,
+                            attempt_index=attempt_index,
+                            output_started=current_output_started,
+                            output_parts=output_parts,
+                            started_at=started_at,
+                        )
                     if cancelled:
                         db.finish_ai_model_attempt(
                             request.job_id,
@@ -1373,6 +1534,7 @@ class ModelRouter:
                             request.job_id,
                             request.owner_token,
                             "cancelled",
+                            error_message=_CANCEL_MESSAGES[stop_reason or "cancelled"],
                         )
                         return self._terminal_race_result(db, request)
 
@@ -1525,6 +1687,7 @@ class ModelRouter:
                 request.job_id,
                 request.owner_token,
                 "cancelled",
+                error_message=_CANCEL_MESSAGES["aborted"],
             )
             raise
         finally:

@@ -4,7 +4,7 @@ import hashlib
 import json
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from collections.abc import Iterator
 from collections.abc import Generator, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -415,6 +415,33 @@ def test_fixed_required_capability_needs_matching_catalog_model(
     assert snapshot.candidates[0].context_window == 4_000
 
 
+def test_matching_catalog_model_is_a_point_lookup(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P22：固定 Agent 查目录不再把整个 Provider 目录物化成 dict 再线性找。"""
+    provider_id = seed_provider(db, name="catalog-provider")
+    db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "m-routable", "manual_capabilities": ["json"]}
+    )
+    disabled = db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "m-disabled"}
+    )
+    db.update_ai_provider_model(disabled, {"enabled": 0})
+
+    def no_full_listing(*_args, **_kwargs):
+        raise AssertionError("匹配一个 model_key 不应物化整个目录")
+
+    monkeypatch.setattr(Database, "list_ai_provider_models", no_full_listing)
+
+    hit = ModelRouter._matching_catalog_model(db, provider_id, "m-routable")
+    assert hit is not None and hit["capabilities"] == ["json"]
+    # 与旧实现一致：只返回可路由条目，model_key 按字节精确比较
+    assert ModelRouter._matching_catalog_model(db, provider_id, "m-disabled") is None
+    assert ModelRouter._matching_catalog_model(db, provider_id, "M-ROUTABLE") is None
+    assert ModelRouter._matching_catalog_model(db, provider_id, "missing") is None
+
+
 def test_pool_resolution_preserves_member_then_fallback_order_and_deduplicates(
     router: ModelRouter,
     pool_agent: AIAgentConfig,
@@ -563,6 +590,92 @@ def test_saved_snapshot_rejects_pool_or_agent_version_change(
     db.update_ai_agent(pool_agent.id, {"temperature": 0.5})
     with pytest.raises(ModelRouteConflictError, match="Agent"):
         router.resolve_candidates(pool_agent, snapshot=fresh_snapshot)
+
+
+def test_resolve_upgrades_legacy_ciphers_before_hashing_the_snapshot(
+    db: Database,
+    pool_setup: dict[str, Any],
+    fake_providers: "FakeProviderRegistry",
+) -> None:
+    """A3：遗留 v1 密文在第一次解密时被透明升级成 v2 并回写，api_key_encrypted
+    属于 provider_config_hash 的输入。resolve_candidates 若先用 v1 密文算 hash，
+    随后 build_prompt_budget 解密时升级，执行前的快照校验就会报「Provider 配置
+    已变更」。照 model_sync.start 的做法：先升级，再算 hash。"""
+    from pixiv_novel_sync.ai.model_sync import provider_model_sync_config_hash
+
+    upgraded: list[int] = []
+
+    def upgrading_loader(database: Database, provider_id: int) -> AIProviderConfig:
+        row = database.get_ai_provider(provider_id, include_secret=True)
+        assert row is not None
+        cipher = row.get("api_key_encrypted") or ""
+        if cipher and not cipher.startswith("v2$"):
+            database.update_ai_provider(provider_id, {"api_key_encrypted": f"v2${cipher}"})
+            upgraded.append(provider_id)
+        return AIProviderConfig(
+            id=int(row["id"]),
+            name=row["name"],
+            provider_type=row["provider_type"],
+            base_url=row.get("base_url"),
+            api_key="decrypted-test-key",
+            default_model=row.get("default_model"),
+            context_window=int(row.get("context_window") or 128_000),
+        )
+
+    router = ModelRouter(
+        lambda: Database(db.path),
+        upgrading_loader,
+        fake_providers.get_provider,
+    )
+    agent = pool_setup["agent"]
+    # 与 _start_route_job 相同的顺序：解析候选 → 建预算（会解密）→ 执行
+    snapshot = router.resolve_candidates(agent)
+    router.build_prompt_budget(agent, snapshot, MESSAGES, 1_000)
+
+    assert sorted(upgraded) == sorted(pool_setup["providers"])
+    for candidate in snapshot.candidates:
+        current = db.get_ai_provider(candidate.provider_id, include_secret=True)
+        assert candidate.provider_config_hash == provider_model_sync_config_hash(current)
+
+    db.create_ai_job(
+        "legacy-cipher-job",
+        "continue",
+        agent.id,
+        {"source": "router-test"},
+        owner_token="route-owner",
+        stage="main",
+        route_deadline_at="2099-01-01 00:00:00",
+    )
+    assert db.set_ai_job_candidate_snapshot(
+        "legacy-cipher-job",
+        "route-owner",
+        {
+            "agent_config_hash": snapshot.agent_config_hash,
+            "binding_version": snapshot.binding_version,
+            "candidates": [asdict(candidate) for candidate in snapshot.candidates],
+        },
+        snapshot.snapshot_hash,
+    )
+    fake_providers.succeed(
+        "p1",
+        [AIStreamChunk(type="delta", text="正文"), AIStreamChunk(type="done", data={"finish_reason": "stop"})],
+    )
+    result = router.execute(
+        RouteRequest(
+            job_id="legacy-cipher-job",
+            stage="main",
+            messages=MESSAGES,
+            candidate_snapshot=snapshot,
+            max_tokens=1_000,
+            owner_token="route-owner",
+            on_delta=lambda _text: None,
+            on_progress=lambda _data: None,
+        )
+    )
+    router.close()
+
+    assert result.finish_state == "succeeded"
+    assert result.output_text == "正文"
 
 
 def test_heuristic_estimate_counts_chinese_tighter_than_utf8_bytes() -> None:
@@ -1281,33 +1394,172 @@ def test_cancel_flag_reaches_the_route_through_heartbeat(
     assert result.finish_state == "cancelled"
     assert result.output_text == ""
     assert db.get_ai_job(route_request.job_id)["status"] == "cancelled"
+    # A8：cancelled 也要写明原因，ai_jobs 里才能和超时区分
+    assert db.get_ai_job(route_request.job_id)["error_message"].startswith("cancelled:")
 
 
-def test_deadline_expiring_during_stream_cancels_before_the_delta(
+@pytest.fixture
+def route_clock(monkeypatch: pytest.MonkeyPatch) -> dict[str, datetime]:
+    """路由截止判定用的可控时钟，只替换 ModelRouter 自己的截止判定。
+
+    心跳线程里的 ai_job_should_stop 仍按真实时间判断：2030 年的截止时间对它来说
+    还没到，截止只会在测试推进时钟的那一刻被路由发现，结果不受机器负载影响。
+    """
+    clock = {"now": datetime(2030, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr(
+        "pixiv_novel_sync.ai.model_router._utc_now",
+        lambda: clock["now"],
+    )
+    return clock
+
+
+ROUTE_DEADLINE = "2030-01-01 00:10:00"
+AFTER_ROUTE_DEADLINE = datetime(2030, 1, 1, 0, 10, tzinfo=timezone.utc)
+
+
+def set_route_deadline(db: Database, job_id: str, value: str) -> None:
+    db.conn.execute(
+        "UPDATE ai_jobs SET route_deadline_at = ? WHERE job_id = ?",
+        (value, job_id),
+    )
+    db.conn.commit()
+
+
+def test_deadline_expiring_during_stream_fails_before_the_delta(
     route_router: ModelRouter,
     route_request: RouteRequest,
     fake_providers: FakeProviderRegistry,
     db: Database,
+    route_clock: dict[str, datetime],
 ) -> None:
-    soon = (datetime.now(timezone.utc) + timedelta(seconds=1)).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-    db.conn.execute(
-        "UPDATE ai_jobs SET route_deadline_at = ? WHERE job_id = ?",
-        (soon, route_request.job_id),
-    )
-    db.conn.commit()
+    """A8：运行中到达截止时间按 route_budget_exhausted 失败（MODEL_ROUTING_GUIDE 4.3），
+    不再是没有原因的 cancelled，也不切换到下一个候选。
 
-    def slow_chunk() -> AIStreamChunk:
-        time.sleep(1.4)
+    旧版断言 cancelled，且用真实时钟把截止时间设成「现在 + 1 秒」：截到整秒后余量
+    只剩 0～1 秒，机器忙时路由开始前就已过期，偶发失败。改用可控时钟。"""
+    set_route_deadline(db, route_request.job_id, ROUTE_DEADLINE)
+
+    def late_chunk() -> AIStreamChunk:
+        route_clock["now"] = AFTER_ROUTE_DEADLINE
         return AIStreamChunk(type="delta", text="晚了")
 
-    fake_providers.succeed("p1", [slow_chunk, normal_done()])
+    fake_providers.succeed("p1", [late_chunk, normal_done()])
+    fake_providers.succeed(
+        "p2",
+        [AIStreamChunk(type="delta", text="不应调用"), normal_done()],
+    )
 
     result = route_router.execute(route_request)
 
-    assert result.finish_state == "cancelled"
+    assert result.finish_state == "failed_before_output"
     assert result.output_text == ""
+    assert fake_providers.calls == [("p1", "m1")]
+    job = db.get_ai_job(route_request.job_id)
+    assert job["status"] == "failed"
+    assert job["error_message"].startswith("route_budget_exhausted")
+    assert [
+        (attempt["status"], attempt["error_category"]) for attempt in job["attempts"]
+    ] == [("failed", "route_budget_exhausted")]
+
+
+def test_deadline_expiring_after_main_delta_is_partial(
+    route_router: ModelRouter,
+    route_request: RouteRequest,
+    fake_providers: FakeProviderRegistry,
+    db: Database,
+    route_clock: dict[str, datetime],
+) -> None:
+    """主阶段已有输出时到达截止时间：partial，保留已生成正文。"""
+    set_route_deadline(db, route_request.job_id, ROUTE_DEADLINE)
+
+    def late_chunk() -> AIStreamChunk:
+        route_clock["now"] = AFTER_ROUTE_DEADLINE
+        return AIStreamChunk(type="delta", text="晚了")
+
+    fake_providers.succeed(
+        "p1",
+        [AIStreamChunk(type="delta", text="半截"), late_chunk, normal_done()],
+    )
+
+    result = route_router.execute(route_request)
+
+    assert result.finish_state == "partial"
+    assert result.output_text == "半截"
+    job = db.get_ai_job(route_request.job_id)
+    assert job["status"] == "partial"
+    assert job["output_text"] == "半截"
+    assert [
+        (attempt["status"], attempt["error_category"]) for attempt in job["attempts"]
+    ] == [("partial", "route_budget_exhausted")]
+
+
+def test_deadline_reached_between_candidates_fails_without_switching(
+    route_router: ModelRouter,
+    route_request: RouteRequest,
+    fake_providers: FakeProviderRegistry,
+    db: Database,
+    route_clock: dict[str, datetime],
+) -> None:
+    """候选之间到达截止时间：不再尝试下一个候选，任务以 route_budget_exhausted 失败。"""
+    set_route_deadline(db, route_request.job_id, ROUTE_DEADLINE)
+
+    def slow_failure() -> AIProviderError:
+        route_clock["now"] = AFTER_ROUTE_DEADLINE
+        return AIProviderError("down", category="gateway", scope="provider")
+
+    fake_providers.succeed("p1", [slow_failure])
+    fake_providers.succeed(
+        "p2",
+        [AIStreamChunk(type="delta", text="不应调用"), normal_done()],
+    )
+
+    result = route_router.execute(route_request)
+
+    assert result.finish_state == "failed_before_output"
+    assert fake_providers.calls == [("p1", "m1")]
+    job = db.get_ai_job(route_request.job_id)
+    assert job["status"] == "failed"
+    assert job["error_message"].startswith("route_budget_exhausted")
+    assert [
+        (attempt["status"], attempt["error_category"]) for attempt in job["attempts"]
+    ] == [("failed", "route_budget_exhausted")]
+
+
+@pytest.mark.parametrize("prior_output", ["", "partial body"])
+def test_final_candidate_network_error_after_deadline_uses_route_budget(
+    route_router: ModelRouter,
+    route_request: RouteRequest,
+    fake_providers: FakeProviderRegistry,
+    db: Database,
+    route_clock: dict[str, datetime],
+    prior_output: str,
+) -> None:
+    set_route_deadline(db, route_request.job_id, ROUTE_DEADLINE)
+    candidate = route_request.candidate_snapshot.candidates[-1]
+    route_request.resume_candidate_index = candidate.candidate_index
+    published = []
+    route_request.on_delta = published.append
+
+    def late_network_error() -> AIProviderError:
+        route_clock["now"] = AFTER_ROUTE_DEADLINE
+        return AIProviderError("read timed out", category="network", scope="provider")
+
+    events = [AIStreamChunk(type="delta", text=prior_output)] if prior_output else []
+    fake_providers.succeed(candidate.provider_name, [*events, late_network_error])
+
+    result = route_router.execute(route_request)
+
+    assert result.finish_state == ("partial" if prior_output else "failed_before_output")
+    assert result.output_text == prior_output
+    assert published == ([prior_output] if prior_output else [])
+    assert fake_providers.calls == [(candidate.provider_name, candidate.model_key)]
+    assert fake_providers.closed_calls == fake_providers.calls
+    job = db.get_ai_job(route_request.job_id)
+    assert job["status"] == ("partial" if prior_output else "failed")
+    assert job["error_message"].startswith("route_budget_exhausted:")
+    assert [(attempt["status"], attempt["error_category"]) for attempt in job["attempts"]] == [
+        ("partial" if prior_output else "failed", "route_budget_exhausted"),
+    ]
 
 
 def test_cancellation_after_delta_closes_iterator_and_never_switches(
@@ -1341,6 +1593,7 @@ def test_cancellation_after_delta_closes_iterator_and_never_switches(
     job = db.get_ai_job(route_request.job_id)
     assert job["status"] == "cancelled"
     assert job["attempts"][0]["status"] == "cancelled"
+    assert job["error_message"].startswith("cancelled:")
 
 
 def test_generator_exit_cancels_running_attempt_and_job(
@@ -1365,6 +1618,7 @@ def test_generator_exit_cancels_running_attempt_and_job(
     job = db.get_ai_job(route_request.job_id)
     assert job["status"] == "cancelled"
     assert job["attempts"][0]["status"] == "cancelled"
+    assert job["error_message"].startswith("cancelled:")
 
 
 def test_validation_exhaustion_fails_job_without_partial_or_pin(
@@ -1448,6 +1702,100 @@ def test_heartbeat_runs_on_its_own_database_and_stops_after_route(
         and thread.is_alive()
         for thread in threading.enumerate()
     )
+
+
+def test_heartbeat_survives_a_transient_database_error(
+    monkeypatch: pytest.MonkeyPatch,
+    route_router: ModelRouter,
+    route_request: RouteRequest,
+    fake_providers: FakeProviderRegistry,
+) -> None:
+    """A4：一次 database is locked 不能让心跳线程静默退出、租约停止续期，
+    否则仍在输出的任务会被 fail_stale_ai_jobs 误判为崩溃。"""
+    import sqlite3
+
+    monkeypatch.setattr(
+        "pixiv_novel_sync.ai.model_router._HEARTBEAT_INTERVAL_SECONDS",
+        0.01,
+    )
+    original = Database.heartbeat_ai_job
+    calls = {"count": 0}
+    renewed_after_failure = threading.Event()
+
+    def flaky_heartbeat(
+        database: Database,
+        job_id: str,
+        owner_token: str,
+        lease_until: str,
+    ) -> bool:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        renewed = original(database, job_id, owner_token, lease_until)
+        if renewed:
+            renewed_after_failure.set()
+        return renewed
+
+    monkeypatch.setattr(Database, "heartbeat_ai_job", flaky_heartbeat)
+
+    def wait_for_renewal() -> AIStreamChunk:
+        assert renewed_after_failure.wait(timeout=2), (
+            "心跳线程在一次 database is locked 之后退出了，租约不再续期"
+        )
+        return AIStreamChunk(type="progress", data={"phase": "waiting"})
+
+    fake_providers.responses[("p1", None)] = [
+        wait_for_renewal,
+        AIStreamChunk(type="delta", text="正文"),
+        normal_done(),
+    ]
+
+    result = route_router.execute(route_request)
+
+    assert result.finish_state == "succeeded"
+    assert calls["count"] >= 2
+
+
+def test_heartbeat_keeps_polling_cancel_after_a_failed_stop_check(
+    monkeypatch: pytest.MonkeyPatch,
+    route_router: ModelRouter,
+    route_request: RouteRequest,
+    fake_providers: FakeProviderRegistry,
+    db: Database,
+) -> None:
+    """A4：ai_job_should_stop 失败一次后，取消标记仍要能经心跳传进路由。"""
+    import sqlite3
+
+    monkeypatch.setattr(
+        "pixiv_novel_sync.ai.model_router._HEARTBEAT_INTERVAL_SECONDS",
+        0.01,
+    )
+    original = Database.ai_job_should_stop
+    calls = {"count": 0}
+
+    def flaky_should_stop(database: Database, job_id: str) -> bool:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return original(database, job_id)
+
+    monkeypatch.setattr(Database, "ai_job_should_stop", flaky_should_stop)
+
+    def mark_cancel() -> AIStreamChunk:
+        assert db.request_ai_job_cancel(route_request.job_id) is True
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            if route_request.is_cancelled is not None and route_request.is_cancelled():
+                return AIStreamChunk(type="delta", text="晚了")
+            time.sleep(0.01)
+        raise AssertionError("一次停止检查失败后，取消标记再也传不进路由")
+
+    fake_providers.succeed("p1", [mark_cancel, normal_done()])
+
+    result = route_router.execute(route_request)
+
+    assert result.finish_state == "cancelled"
+    assert db.get_ai_job(route_request.job_id)["status"] == "cancelled"
 
 
 def test_terminal_race_discards_late_delta_and_result(
@@ -1683,6 +2031,8 @@ def test_router_close_cancels_active_route_and_stops_heartbeat(
     job = db.get_ai_job(route_request.job_id)
     assert job["status"] == "cancelled"
     assert job["attempts"][0]["status"] == "cancelled"
+    assert job["error_message"].startswith("cancelled:")
+    assert "已关闭" in job["error_message"]
 
 
 def test_route_resume_spec_is_an_immutable_internal_contract() -> None:

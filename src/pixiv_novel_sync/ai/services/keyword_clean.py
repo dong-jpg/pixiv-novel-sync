@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Generator
+import logging
+from collections.abc import Callable, Generator
 from typing import Any
 
 from ..model_router import RouteResult
 from ..models import AIStreamChunk
 from ..prompts import build_keyword_clean_messages
 from .core import RouteJobContext
+
+logger = logging.getLogger(__name__)
 
 
 class AIKeywordCleanMixin:
@@ -27,6 +30,7 @@ class AIKeywordCleanMixin:
         top_p: float | None = None,
         max_tokens: int | None = None,
         forward_delta: bool = True,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> Generator[AIStreamChunk, None, RouteResult]:
         stream = self._stream_route(
             context,
@@ -35,6 +39,7 @@ class AIKeywordCleanMixin:
             temperature=temperature,
             top_p=top_p,
             max_tokens=max_tokens,
+            is_cancelled=is_cancelled,
         )
         try:
             while True:
@@ -69,12 +74,18 @@ class AIKeywordCleanMixin:
         raw_keywords: list[str],
         tags: list[str] | None = None,
         agent_id: int | None = None,
+        *,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> dict[str, Any] | None:
         """#10：用 AI 把机械分词得到的噪声高频词清洗成可搜索关键词（同步调用）。
 
         优雅降级：未配置可用 Provider/Agent、调用失败或解析失败时返回 None，
         调用方应保留原始 top_keywords 不受影响。返回
         {"keywords": [...], "dropped_sample": [...]}。
+
+        ``is_cancelled`` 传进路由：取消或调度让位时在流式下一帧、重试退避分片或
+        候选之间停下，AI 任务记 cancelled，这里返回 None；调用方自己再查一次取消
+        信号决定任务终态（偏好分析在发布画像前会查）。
         """
         import json
         import re
@@ -124,6 +135,7 @@ class AIKeywordCleanMixin:
                 top_p=0.9,
                 max_tokens=min(1500, route_context.prompt_budget.output_reserve),
                 forward_delta=False,
+                is_cancelled=is_cancelled,
             )
             while True:
                 try:
@@ -208,14 +220,25 @@ class AIKeywordCleanMixin:
             )
             return cleaned
         except Exception as exc:
+            # 任何异常都降级，不影响偏好分析主流程。这个分支自己不能再抛：
+            # 触发它的往往正是坏分段（非字符串正文）或写库失败，收口时再拼一次、
+            # 再写一次库都可能原样失败。
             if route_context is not None:
-                self._finish_route_job(
-                    db,
-                    route_context,
-                    "failed",
-                    "".join(output_parts),
-                    error_message=str(exc),
-                )
-            return None  # 任何异常都降级，不影响偏好分析主流程
+                try:
+                    self._finish_route_job(
+                        db,
+                        route_context,
+                        "failed",
+                        "".join(part for part in output_parts if isinstance(part, str)),
+                        error_message=str(exc),
+                    )
+                except Exception:
+                    logger.warning(
+                        "关键词清洗失败后收口 AI 任务也失败（job_id=%s，原始错误：%s）",
+                        route_context.job_id,
+                        exc,
+                        exc_info=True,
+                    )
+            return None
         finally:
             db.close()

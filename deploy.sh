@@ -77,11 +77,25 @@ if [ -f ".env.bak" ]; then
     echo "  已恢复 .env 配置"
 elif [ -f ".env.example" ]; then
     cp .env.example .env
+    # Fresh Nginx installs override example placeholders, not restored user choices.
+    sed -i -e 's/^PIXIV_COOKIE_SECURE=.*/PIXIV_COOKIE_SECURE=1/' \
+        -e 's/^DASHBOARD_TRUST_PROXY=.*/DASHBOARD_TRUST_PROXY=1/' .env
     echo -e "  ${YELLOW}请编辑 $INSTALL_DIR/.env 填入你的 Pixiv token${NC}"
 else
     : > .env
     echo -e "  ${YELLOW}.env.example 不存在，已创建空 .env，请手动填写${NC}"
 fi
+
+# 新装时设置安全默认值（已有值的不覆盖）
+if ! grep -q "^PIXIV_COOKIE_SECURE=" .env 2>/dev/null; then
+    printf '\n%s\n' "PIXIV_COOKIE_SECURE=1" >> .env
+    echo "  已设置 PIXIV_COOKIE_SECURE=1"
+fi
+if ! grep -q "^DASHBOARD_TRUST_PROXY=" .env 2>/dev/null; then
+    printf '\n%s\n' "DASHBOARD_TRUST_PROXY=1" >> .env
+    echo "  已设置 DASHBOARD_TRUST_PROXY=1（Nginx 已配置 Cloudflare 真实 IP）"
+fi
+
 chmod 0600 .env
 
 if [ -f "config/config.yaml.bak" ]; then

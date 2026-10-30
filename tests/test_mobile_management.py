@@ -40,7 +40,7 @@ def test_management_templates_render_without_loading_server_configuration(name):
     app.jinja_env.variable_start_string = "{["
     app.jinja_env.variable_end_string = "]}"
     with app.test_request_context("/dashboard/settings/system"):
-        html = render_template(name, task_labels={})
+        html = render_template(name, task_labels={}, csp_nonce=lambda: "test-nonce")
     assert '<div id="app"' in html
     assert "initVueApp({" in html
     assert "{%" not in html

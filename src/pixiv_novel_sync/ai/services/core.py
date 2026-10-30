@@ -4,7 +4,7 @@ import json
 import secrets
 import threading
 import uuid
-from collections.abc import Generator, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -372,7 +372,10 @@ class AIServiceCore:
         temperature: float | None = None,
         top_p: float | None = None,
         max_tokens: int | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> Generator[AIStreamChunk, None, RouteResult]:
+        """``is_cancelled`` 是调用方的取消回调（偏好分析传 stop_requested，覆盖用户
+        取消与调度让位）。路由在候选之间、流式每一帧和重试退避的分片里都会查它。"""
         if self._closed:
             raise AIServiceError("AI 服务已关闭")
         output_reserve = (
@@ -404,6 +407,7 @@ class AIServiceCore:
             ),
             top_p=context.agent.top_p if top_p is None else top_p,
             resume_candidate_index=context.resume_candidate_index,
+            is_cancelled=is_cancelled,
         )
         return (yield from self.model_router.execute_stream(request))
 

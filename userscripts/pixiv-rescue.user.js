@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说私人备份救援阅读
 // @namespace    https://pixiv.dongboapp.com/
-// @version      0.12.1
+// @version      0.12.2
 // @description  在 Pixiv 小说/系列明细页及收藏/追更列表页识别失效内容，从私人备份读取并标记救援内容；「好P友新作」tab 改为「拯救系列」，追更列表空白框原位替换为备份卡片。
 // @author       dong-jpg
 // @license      MIT
@@ -40,7 +40,7 @@
     const custom = String(GM_getValue('pixivRescueOrigin', '') || '').trim();
     return (custom || DEFAULT_API_ORIGIN).replace(/\/$/, '');
   }
-  const SCRIPT_VERSION = '0.12.1';
+  const SCRIPT_VERSION = '0.12.2';
   // Pixiv 手机站正文容器的 gothic 字体栈（2026-10-23 实测 #novel-text-container
   // 的内联 font-family，Aa 设置默认值）。阅读层正文用同一套，排版才能逐字对齐。
   const PIXIV_GOTHIC_FONT = '"Avenir Next",Avenir,"Source Sans","Noto Sans",Roboto,Verdana,"Pingfang SC","Hiragino Sans GB","Lantinghei SC","Source Han Sans CN","Noto Sans CJK SC","Microsoft Yahei",DengXian,YuGothic,"Hiragino Kaku Gothic Pro",Meiryo,"Source Han Sans","Source Han Sans JP","Noto Sans CJK JP","Pingfang TC","Pingfang HK","Hiragino Sans CNS","Lantinghei TC","Source Han Sans TW","Source Han Sans HK","Noto Sans CJK TC","Microsoft JhengHei","Apple SD Gothic Neo","Source Han Sans K","Source Han Sans KR","Noto Sans CJK KR","Malgun Gothic",sans-serif';
@@ -321,21 +321,30 @@
   function checkRuntimeSupport() {
     if (missingRuntimeApis().length) return false;
     clearRuntimeUnsupported();
-    // GM_registerMenuCommand 缺失不致命（只是没有菜单入口，Token 还能通过
-    // 管理器自带的方式设置），但不做兜底会在 registerTokenMenus 里抛错、
-    // 让后面所有初始化（包括页面处理）全部不执行——这同样是「页面零反应」
-    // 的一种来源。降级为无菜单模式继续运行。
-    if (typeof GM_registerMenuCommand !== 'function') {
-      window.GM_registerMenuCommand = function () {};
-    }
-    if (typeof GM_setValue !== 'function') {
-      window.GM_setValue = function () {};
-    }
+    // GM_registerMenuCommand、GM_setValue 缺失不致命，由 registerTokenMenus 就地降级（见那里）
     return true;
   }
 
+  // GM_registerMenuCommand 缺失不致命（只是没有菜单入口，Token 还能通过管理器自带的方式设置），
+  // 但直接调用会抛错、让后面所有初始化（包括页面处理）全部不执行——这同样是「页面零反应」的一种
+  // 来源。降级为无菜单模式继续运行。GM_setValue 的其余调用点都在 try 里，存不下只影响缓存。
+  // 兜底用局部变量：0.12.1 及以前写 window.GM_xxx = 空函数，一来污染页面（别的脚本会以为真有
+  // 这个 API），二来管理器若把没实现的 API 作为值为 undefined 的局部变量传进脚本，这里调用的是
+  // 那个局部变量，写 window 根本兜不住，照样抛错
   function registerTokenMenus() {
-    GM_registerMenuCommand('设置或更新救援 Token', function () {
+    const register = typeof GM_registerMenuCommand === 'function' ? GM_registerMenuCommand : null;
+    const save = typeof GM_setValue === 'function' ? GM_setValue : null;
+    if (!register) return;
+    // 存不了就如实说，不再弹「已保存」（0.12.1 及以前兜底成空函数后照样提示已保存）
+    const store = function (value, done) {
+      if (!save) {
+        window.alert('当前脚本管理器不支持保存（缺 GM_setValue）。请在管理器里直接编辑本脚本的存储。');
+        return;
+      }
+      save(TOKEN_KEY, value);
+      window.alert(done);
+    };
+    register('设置或更新救援 Token', function () {
       const value = window.prompt('请输入救援 API Token。Token 只会保存在油猴脚本存储中。', '');
       if (value === null) return;
       const token = String(value).trim();
@@ -343,12 +352,10 @@
         window.alert('Token 不能为空。');
         return;
       }
-      GM_setValue(TOKEN_KEY, token);
-      window.alert('救援 Token 已保存。');
+      store(token, '救援 Token 已保存。');
     });
-    GM_registerMenuCommand('清除救援 Token', function () {
-      GM_setValue(TOKEN_KEY, '');
-      window.alert('救援 Token 已清除。');
+    register('清除救援 Token', function () {
+      store('', '救援 Token 已清除。');
     });
   }
 
@@ -610,6 +617,8 @@
       '.pixiv-rescue-pending{padding:48px 16px;color:#858585;font-size:14px;line-height:22px;text-align:center}',
       '.pixiv-rescue-meta{margin:4px 16px 0;color:#858585;font-size:12px;line-height:18px}',
       '.pixiv-rescue-error{margin:16px;padding:10px 14px;border:1px solid #fca5a5;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:13px;line-height:1.6}',
+      // 目录错误里的「重试」：照提示条里「知道了」的白底胶囊
+      '.pixiv-rescue-directory-error .pixiv-rescue-button{margin:8px 0 0;background:#fff}',
       '.pixiv-rescue-reader-body > .pixiv-rescue-button{margin:0 16px}',
       // PC 站（非手机 UA）：照 PC 阅读器——灰底上居中 704px 白卡，正文列 620px、
       // 行高 32px、两端对齐、段距 32px（实测 PC 版 p 上下外边距 31/32px 折叠）
@@ -1213,10 +1222,19 @@
     };
   }
 
+  // 剥掉一页首尾的换行，中间的原样保留。0.12.1 及以前用 replace(/^\n+|\n+$/g, '')：页中间
+  // 连续 k 个换行时，\n+$ 在其中每个位置都吞到这段换行末尾再失败，O(k²)，1 万个空行约 1.7 秒。
+  // 从两头各扫一遍，线性
+  function trimPageNewlines(page) {
+    let start = 0;
+    let end = page.length;
+    while (start < end && page.charCodeAt(start) === 10) start += 1;
+    while (end > start && page.charCodeAt(end - 1) === 10) end -= 1;
+    return page.slice(start, end);
+  }
+
   function splitPixivPages(rawText) {
-    const pages = String(rawText || '').replace(/\r\n?/g, '\n').split('[newpage]').map(function (page) {
-      return page.replace(/^\n+|\n+$/g, '');
-    });
+    const pages = String(rawText || '').replace(/\r\n?/g, '\n').split('[newpage]').map(trimPageNewlines);
     // 只丢末尾的空页：中间的空页要保留，否则 [jump:N] 的页码会错位
     while (pages.length > 1 && !pages[pages.length - 1].trim()) pages.pop();
     return pages;
@@ -1458,7 +1476,7 @@
   // 旧版只能整页刷新。
   function renderError(error, retry) {
     const body = openReader();
-    body.append(element('div', 'pixiv-rescue-error', rescueErrorText(error, true)));
+    body.append(element('div', 'pixiv-rescue-error', rescueErrorText(error)));
     // 错误代码直接画出来：手机沙箱里看不到控制台，这是唯一的排查线索
     const code = error && error.message ? String(error.message) : '';
     if (code) body.append(element('p', 'pixiv-rescue-meta', '错误代码：' + code));
@@ -1472,20 +1490,48 @@
 
   // 目录/加载更多失败：只在面板里提示，不清掉已加载的目录。
   // 旧版这里走 renderError，一次「加载更多」失败就把整个系列面板换成错误条。
-  function renderDirectoryError(panel, error) {
+  // retry：第一次就没读到目录时给，提示下面一颗「重试」，点了把按钮交给 retry（禁用、重画都由它管）。
+  // 「加载更多」失败不给：那颗按钮还在，再点一次就是重试
+  function renderDirectoryError(panel, error, retry) {
     let note = panel.querySelector('.pixiv-rescue-directory-error');
     if (!note) {
       note = element('div', 'pixiv-rescue-error pixiv-rescue-directory-error', '');
       panel.append(note);
     }
-    note.textContent = '目录没有读到：' + rescueErrorText(error, true);
+    clearNode(note);
+    note.append(element('div', '', '目录没有读到：' + rescueErrorText(error)));
+    if (typeof retry === 'function') {
+      const again = element('button', 'pixiv-rescue-button', '重试');
+      again.type = 'button';
+      again.addEventListener('click', function () { retry(again); });
+      note.append(again);
+    }
   }
 
-  function rescueErrorText(error, pageLevel) {
+  // 系列目录第一次就没读到：只重取目录，读到后整页重画（系列头里的话数、更新日、「从最初开始阅读」
+  // 都要用目录）。0.12.1 及以前这里只有一行错误提示，只能整页刷新。
+  // 阅读层已经不是画这一页的那个了（切页、重画）就放弃
+  function retrySeriesChapters(panel, data, seriesId, button) {
+    button.disabled = true;
+    const stale = function () { return !readerRoot || !readerRoot.contains(panel); };
+    apiGet('/api/rescue/v1/series/' + encodeURIComponent(String(seriesId)) + '/chapters')
+      .then(function (chapters) {
+        if (stale()) return;
+        renderSeries({ series: data.series, chapters: chapters, chaptersError: null }, seriesId);
+      })
+      .catch(function (error) {
+        if (stale()) return;
+        renderDirectoryError(panel, error, function (again) { retrySeriesChapters(panel, data, seriesId, again); });
+      });
+  }
+
+  // 阅读层整页错误与目录错误共用。0.12.1 及以前还有一套「章节级」文案（pageLevel=false），
+  // 调用方全都传 true，那一套从没用上过，已删
+  function rescueErrorText(error) {
     const messages = {
       missing_token: '未设置救援 Token，请通过油猴菜单完成设置。',
       unauthorized: '救援 Token 无效，请在网站设置页轮换后重新填写。',
-      not_found: pageLevel ? '未找到可用的救援数据，Pixiv 原页面已保留。' : '备份里没有这一章，目录还在。',
+      not_found: '未找到可用的救援数据，Pixiv 原页面已保留。',
       rate_limited: '请求太频繁，请稍后再试。',
       server_error: '救援服务暂时出错，请稍后再试。',
       network_timeout: '救援服务响应超时，Pixiv 原页面已保留。',
@@ -1493,19 +1539,20 @@
       // 整本正文 JSON 约 216 KB：部分手机管理器可能截断大应答，解析失败落到这里
       invalid_response: '备份数据没有完整读到，请重试。'
     };
-    return messages[error && error.message] || (pageLevel
-      ? '未找到可用的救援数据，Pixiv 原页面已保留。'
-      : '这一章没有读到，目录还在。');
+    return messages[error && error.message] || '未找到可用的救援数据，Pixiv 原页面已保留。';
   }
 
   // ── 收藏页 / 追更页列表匹配 ──────────────────────────────────
 
-  // Pixiv 非日语界面会给路径加语言前缀（/en/、/zh/ 等）。统一在这里剥掉，
+  // Pixiv 非日语界面会给路径加语言前缀（/en/、/zh/、/zh-tw/ 等，全小写）。统一在这里剥掉，
   // 各页判定只写无前缀形态，避免每处正则都要枚举语言。
+  // 认「两个字母」或「两个字母-两个字母」：0.12.1 及以前只认两个字母的固定列表，
+  // /zh-tw/ 页（繁体中文界面）剥不掉前缀，正文、系列、列表页全都判成非目标页，注入后静默。
+  // Pixiv 自己的一级路径没有两个字母的（novel、users、artworks…），不会误剥。
   function pathWithoutLangPrefix() {
     const path = window.location.pathname;
-    // 命中语言前缀时保留开头的「/」：剥的是 /en/ 段而不是整个前缀串
-    const m = path.match(/^\/(en|zh|ja|ko|fr|de|it|es|pt|ru|th|vi|id|ms|pl|hu|nl|sv|da|fi|no|tr|ar|he|fa|hi|bn|ta|tl|uk|el|ro|bg|sr|hr|sk|sl|lt|lv|et|ka|az|kk|uz|mn|my|km|lo|si|ne)(\/|$)/);
+    // 命中语言前缀时保留开头的「/」：剥的是 /zh-tw/ 段而不是整个前缀串
+    const m = path.match(/^\/([a-z]{2}(?:-[a-z]{2})?)(\/|$)/);
     if (!m) return path;
     const rest = path.slice(m[1].length + 1); // 去掉「/语言」
     return rest.startsWith('/') ? rest : '/' + rest;
@@ -1573,16 +1620,39 @@
     return false;
   }
 
+  // 链接指向的作品：{type, id}；不是正文/系列链接返回 null。登记失效卡与回调复核共用这一个判定
+  function linkWork(link) {
+    const href = link.getAttribute('href') || '';
+    const seriesMatch = href.match(/\/novel\/series\/(\d+)/);
+    if (seriesMatch) return { type: 'series', id: seriesMatch[1] };
+    const novelMatch = href.match(/[?&]id=(\d+)/);
+    return novelMatch ? { type: 'novel', id: novelMatch[1] } : null;
+  }
+
+  // lookup 应答回来时，卡片还是不是登记时那部作品：仍在页面上、仍是 card-pending、登记时取 ID 的
+  // 那个节点（链接 / data-gtm-value）还在卡片里且 ID 没变。Pixiv 列表是 Vue 渲染的，翻页时可能
+  // 复用同一个节点改画另一部作品；0.12.1 及以前不核对，迟到的应答会把上一部的备份画到这张卡上
+  function entryStillMatches(entry) {
+    const card = entry.card;
+    if (!card.isConnected || card.getAttribute(ROOT_ATTRIBUTE) !== 'card-pending') return false;
+    const source = entry.source;
+    if (!source || !source.isConnected || !card.contains(source)) return false;
+    if (entry.type === 'unknown') return String(source.getAttribute('data-gtm-value') || '').trim() === entry.id;
+    const work = linkWork(source);
+    return Boolean(work) && work.type === entry.type && work.id === entry.id;
+  }
+
   function collectBrokenCards() {
     const novelIds = new Set();
     const seriesIds = new Set();
     const broken = [];
 
-    function register(card, id, type) {
+    // source：从哪个节点读到的 ID（失效卡的链接，或无链接白块上带 data-gtm-value 的节点），回调复核用
+    function register(card, id, type, source) {
       // 标记为 pending 而非终态：查询失败时会撤销（见 markBrokenCards 的 catch），
       // 下一轮扫描允许重试。A14-03 的根因就是这里先写了永久标记。
       card.setAttribute(ROOT_ATTRIBUTE, 'card-pending');
-      broken.push({ type: type, id: id, card: card });
+      broken.push({ type: type, id: id, card: card, source: source });
       if (type === 'novel') novelIds.add(id);
       else if (type === 'series') seriesIds.add(id);
       else {
@@ -1613,13 +1683,11 @@
       const card = link.closest('div.works-item, li') || link;
       if (handledCards.has(card)) return;
       if (alreadyHandled(card)) { handledCards.add(card); return; }
-      if (card.querySelector('[' + ROOT_ATTRIBUTE + '="badge"]')) { handledCards.add(card); return; }
       if (!cardIsBroken(link)) return;
-      const href = link.getAttribute('href') || '';
-      const seriesMatch = href.match(/\/novel\/series\/(\d+)/);
-      const novelMatch = href.match(/[?&]id=(\d+)/);
-      if (seriesMatch) { handledCards.add(card); register(card, seriesMatch[1], 'series'); }
-      else if (novelMatch) { handledCards.add(card); register(card, novelMatch[1], 'novel'); }
+      const work = linkWork(link);
+      if (!work) return;
+      handledCards.add(card);
+      register(card, work.id, work.type, link);
     });
 
     // 2) 无链接的白块：系列被删/隐藏时 Pixiv 不再渲染链接，但卡片上通常还留着
@@ -1632,10 +1700,9 @@
       if (!card || card === document.body) return;
       if (alreadyHandled(card)) return;
       if (card.querySelector('a[href*="/novel/show.php?id="], a[href*="/novel/series/"]')) return;
-      if (card.querySelector('[' + ROOT_ATTRIBUTE + '="badge"]')) return;
       // 卡片本身（或其附近文本）必须就是失效提示，避免把健康卡片的 gtm 值也抓进来
       if (!cardIsBroken(card) && !elementMatchesUnavailable(card)) return;
-      register(card, value, 'unknown');
+      register(card, value, 'unknown', node);
     });
 
     return { broken: broken, novelIds: novelIds, seriesIds: seriesIds };
@@ -1768,6 +1835,12 @@
         (data.series || []).forEach(function (item) { series[item.series_id] = item; });
         cacheLookupResults(data.novels, data.series);
         batch.entries.forEach(function (entry) {
+          // 卡片已经不是登记时那部作品：不写，撤掉 pending 让下一轮扫描按它现在的样子重新判断
+          // （查到的结果已进缓存，同一部作品再出现时直接命中）
+          if (!entryStillMatches(entry)) {
+            if (entry.card.getAttribute(ROOT_ATTRIBUTE) === 'card-pending') entry.card.removeAttribute(ROOT_ATTRIBUTE);
+            return;
+          }
           const novelMatch = novels[entry.id];
           const seriesMatch = series[entry.id];
           const match = entry.type === 'series' ? seriesMatch
@@ -1814,16 +1887,15 @@
           scheduled = false;
           if (!isBookmarksListPage() && !isWatchlistPage()) return;
           scanListPage();
-          // 快速通道：首次看到失效卡但还没渲染完时，短时间内多扫几次。
-          // 用户反馈「有时等很久没反应、刷新一下几秒就出来」——SPA 分批
-          // 渲染时，单靠 150ms 去抖可能刚好错过卡片插入的那一批。
-          fastScanUntil = Date.now() + 15000;
+          // 这里不延长下面的快速轮询：每批插入都会走到这一轮扫描，漏不掉。0.12.1 及以前在这里把
+          // fastScanUntil 再推后 15 秒：页面一直有变动（广告、懒加载）时 500ms 全页扫描永不停止；
+          // 安静满 15 秒、快速轮询结束后，这一行又什么都不做
         }, 150);
       });
       observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
       window.__pixivRescueObserver = observer;
     }
-    // 快速轮询窗口：进入列表页后 15 秒内每 500ms 扫一次（SPA 分批渲染），
+    // 快速轮询窗口：进入列表页（含 SPA 切页、翻页）后 15 秒内每 500ms 扫一次（SPA 分批渲染），
     // 之后交给 3 秒 interval。定时器用链式 setTimeout，避免两个 interval 叠加。
     fastScanUntil = Date.now() + 15000;
     if (!window.__pixivRescueFastScan) {
@@ -2011,9 +2083,10 @@
       });
       container.append(list);
     } else {
+      // 服务端在同一个读事务里计数、取页，页码钳到末页：total > 0 时所在页必有条目，
+      // 所以空列表只有「一个都没有」这一种。0.12.1 及以前另有「这一页没有拯救系列」，到不了
       const empty = element('div', 'pixiv-rescue-feed-empty');
-      empty.append(element('p', '', Number(data.total || 0) > 0
-        ? '这一页没有拯救系列' : '抱歉，目前没有拯救系列'));
+      empty.append(element('p', '', '抱歉，目前没有拯救系列'));
       container.append(empty);
     }
     // 翻页条按服务端实际给的页画：过期的 ?p=N 超出页数时服务端钳到末页，0.12.0 及以前
@@ -2724,7 +2797,7 @@
     tab.append(element('span', 'pixiv-rescue-series-tab-label', '作品'));
     panel.append(tab);
     if (chapters) renderChapterDirectory(panel, chapters, seriesId);
-    else renderDirectoryError(panel, data.chaptersError);
+    else renderDirectoryError(panel, data.chaptersError, function (button) { retrySeriesChapters(panel, data, seriesId, button); });
     body.append(panel);
   }
 

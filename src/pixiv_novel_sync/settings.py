@@ -138,6 +138,11 @@ class Settings:
 DEFAULT_CONFIG_PATH = Path("config/config.yaml")
 ALLOWED_BOOKMARK_RESTRICTS = {"public", "private"}
 
+# 缺键时的请求间隔（秒）。读取与设置页保存（web/managers.py:save_sync_settings）
+# 必须同一个值：以前读取回落 0.0（不限速）、保存回落 1.0 并写回 YAML，手改配置删掉
+# 这两个键时，没点过保存的进程会零间隔连发请求。
+DEFAULT_REQUEST_DELAY_SECONDS = 1.0
+
 
 def load_settings(config_path: str | Path | None = None, env_path: str | Path | None = None) -> Settings:
     if env_path is not None:
@@ -169,7 +174,13 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
         timeout = int(_timeout_raw)
     except (ValueError, TypeError):
         timeout = 30
-    verify_ssl = _parse_bool(os.getenv("PIXIV_VERIFY_SSL"), default=pixiv_raw.get("verify_ssl", True))
+    # 拼错的值（如 flase）必须 fail-closed 回落默认（开启校验），不能解析成 False；
+    # YAML 侧同理，字符串 "false" 不能被 bool() 当成 True。
+    verify_ssl = _parse_bool(
+        os.getenv("PIXIV_VERIFY_SSL"),
+        default=_coerce_bool(pixiv_raw.get("verify_ssl"), True),
+        name="PIXIV_VERIFY_SSL",
+    )
     user_id = _parse_optional_int(os.getenv("PIXIV_USER_ID"))
     web_cookie = os.getenv("PIXIV_WEB_COOKIE") or pixiv_raw.get("web_cookie")
     username = os.getenv("PIXIV_USERNAME") or pixiv_raw.get("username")
@@ -201,8 +212,8 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             bookmark_restricts=_coerce_bookmark_restricts(sync_raw.get("bookmark_restricts")),
             max_items_per_run=_coerce_optional_int(sync_raw.get("max_items_per_run")),
             max_pages_per_run=_coerce_optional_int(sync_raw.get("max_pages_per_run")),
-            delay_seconds_between_items=_coerce_float(sync_raw.get("delay_seconds_between_items"), 0.0),
-            delay_seconds_between_pages=_coerce_float(sync_raw.get("delay_seconds_between_pages"), 0.0),
+            delay_seconds_between_items=_coerce_float(sync_raw.get("delay_seconds_between_items"), DEFAULT_REQUEST_DELAY_SECONDS),
+            delay_seconds_between_pages=_coerce_float(sync_raw.get("delay_seconds_between_pages"), DEFAULT_REQUEST_DELAY_SECONDS),
             sync_bookmarks=_coerce_bool(sync_raw.get("sync_bookmarks"), True),
             sync_following_users=_coerce_bool(sync_raw.get("sync_following_users"), True),
             sync_following_novels=_coerce_bool(sync_raw.get("sync_following_novels"), True),
@@ -217,42 +228,42 @@ def load_settings(config_path: str | Path | None = None, env_path: str | Path | 
             delay_seconds_between_skips=_coerce_float(sync_raw.get("delay_seconds_between_skips"), 0.1),
             # 定时任务配置
             auto_sync_enabled=_coerce_bool(sync_raw.get("auto_sync_enabled"), False),
-            auto_sync_timezone=str(sync_raw.get("auto_sync_timezone", "UTC")),
+            auto_sync_timezone=_coerce_str(sync_raw.get("auto_sync_timezone", "UTC"), "UTC"),
             auto_sync_bookmarks_enabled=_coerce_bool(sync_raw.get("auto_sync_bookmarks_enabled"), True),
             auto_sync_bookmarks_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_bookmarks_interval_hours"), 6),
-            auto_sync_bookmarks_cron=str(sync_raw.get("auto_sync_bookmarks_cron", "")),
+            auto_sync_bookmarks_cron=_coerce_str(sync_raw.get("auto_sync_bookmarks_cron", ""), ""),
             auto_sync_following_list_enabled=_coerce_bool(sync_raw.get("auto_sync_following_list_enabled"), True),
             auto_sync_following_list_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_following_list_interval_hours"), 24),
-            auto_sync_following_list_cron=str(sync_raw.get("auto_sync_following_list_cron", "")),
+            auto_sync_following_list_cron=_coerce_str(sync_raw.get("auto_sync_following_list_cron", ""), ""),
             auto_sync_following_novels_enabled=_coerce_bool(sync_raw.get("auto_sync_following_novels_enabled"), True),
             auto_sync_following_novels_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_following_novels_interval_hours"), 6),
-            auto_sync_following_novels_cron=str(sync_raw.get("auto_sync_following_novels_cron", "")),
+            auto_sync_following_novels_cron=_coerce_str(sync_raw.get("auto_sync_following_novels_cron", ""), ""),
             auto_sync_following_novels_users_limit=max(_coerce_int(sync_raw.get("auto_sync_following_novels_users_limit"), 0), 0),
             auto_sync_user_status_enabled=_coerce_bool(sync_raw.get("auto_sync_user_status_enabled"), True),
             auto_sync_user_status_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_user_status_interval_hours"), 6),
-            auto_sync_user_status_cron=str(sync_raw.get("auto_sync_user_status_cron", "")),
+            auto_sync_user_status_cron=_coerce_str(sync_raw.get("auto_sync_user_status_cron", ""), ""),
             auto_sync_novel_status_enabled=_coerce_bool(sync_raw.get("auto_sync_novel_status_enabled"), True),
             auto_sync_novel_status_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_novel_status_interval_hours"), 6),
-            auto_sync_novel_status_cron=str(sync_raw.get("auto_sync_novel_status_cron", "")),
+            auto_sync_novel_status_cron=_coerce_str(sync_raw.get("auto_sync_novel_status_cron", ""), ""),
             auto_sync_series_status_enabled=_coerce_bool(sync_raw.get("auto_sync_series_status_enabled"), True),
             auto_sync_series_status_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_series_status_interval_hours"), 6),
-            auto_sync_series_status_cron=str(sync_raw.get("auto_sync_series_status_cron", "")),
+            auto_sync_series_status_cron=_coerce_str(sync_raw.get("auto_sync_series_status_cron", ""), ""),
             auto_sync_subscribed_series_enabled=_coerce_bool(sync_raw.get("auto_sync_subscribed_series_enabled"), True),
             auto_sync_subscribed_series_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_subscribed_series_interval_hours"), 6),
-            auto_sync_subscribed_series_cron=str(sync_raw.get("auto_sync_subscribed_series_cron", "")),
+            auto_sync_subscribed_series_cron=_coerce_str(sync_raw.get("auto_sync_subscribed_series_cron", ""), ""),
             auto_sync_user_backup_enabled=_coerce_bool(sync_raw.get("auto_sync_user_backup_enabled"), False),
             auto_sync_user_backup_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_user_backup_interval_hours"), 24),
-            auto_sync_user_backup_cron=str(sync_raw.get("auto_sync_user_backup_cron", "")),
+            auto_sync_user_backup_cron=_coerce_str(sync_raw.get("auto_sync_user_backup_cron", ""), ""),
             auto_sync_pending_detection_enabled=_coerce_bool(sync_raw.get("auto_sync_pending_detection_enabled"), True),
             auto_sync_pending_detection_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_pending_detection_interval_hours"), 12),
-            auto_sync_pending_detection_cron=str(sync_raw.get("auto_sync_pending_detection_cron", "")),
+            auto_sync_pending_detection_cron=_coerce_str(sync_raw.get("auto_sync_pending_detection_cron", ""), ""),
             auto_sync_preference_analyze_enabled=_coerce_bool(sync_raw.get("auto_sync_preference_analyze_enabled"), False),
             auto_sync_preference_analyze_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_preference_analyze_interval_hours"), 12),
-            auto_sync_preference_analyze_cron=str(sync_raw.get("auto_sync_preference_analyze_cron", "15 7,19 * * *")),
+            auto_sync_preference_analyze_cron=_coerce_str(sync_raw.get("auto_sync_preference_analyze_cron", "15 7,19 * * *"), ""),
             preference_analyze_batch_size=_coerce_positive_int(sync_raw.get("preference_analyze_batch_size"), 200),
             auto_sync_recommendation_run_enabled=_coerce_bool(sync_raw.get("auto_sync_recommendation_run_enabled"), False),
             auto_sync_recommendation_run_interval_hours=_coerce_positive_int(sync_raw.get("auto_sync_recommendation_run_interval_hours"), 24),
-            auto_sync_recommendation_run_cron=str(sync_raw.get("auto_sync_recommendation_run_cron", "50 8 * * *")),
+            auto_sync_recommendation_run_cron=_coerce_str(sync_raw.get("auto_sync_recommendation_run_cron", "50 8 * * *"), ""),
             pending_deletion_cleanup_confirmed_days=_coerce_positive_int(sync_raw.get("pending_deletion_cleanup_confirmed_days"), 7),
             task_log_retention_days=_coerce_positive_int(sync_raw.get("task_log_retention_days"), 14),
         ),
@@ -280,12 +291,38 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return data
 
 
-def _parse_bool(value: str | None, default: bool) -> bool:
+_TRUE_TOKENS = frozenset({"1", "true", "yes", "on"})
+_FALSE_TOKENS = frozenset({"0", "false", "no", "off"})
+
+
+def _parse_bool(value: str | None, default: bool, name: str | None = None) -> bool:
     # 空串视为未设置：``.env`` 里常见 ``PIXIV_X=`` 的留空写法，
     # 语义是「不覆盖」，而不是「显式关掉」。
     if value is None or not value.strip():
         return bool(default)
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = value.strip().lower()
+    if normalized in _TRUE_TOKENS:
+        return True
+    if normalized in _FALSE_TOKENS:
+        return False
+    # 认不出的取值（拼错的 flase 等）回落默认值：以前一律当 False，
+    # PIXIV_VERIFY_SSL 拼错就静默关掉了证书校验（S12）。
+    logger.warning("无法识别的布尔取值 %s=%r，按默认值 %s 处理", name or "环境变量", value, bool(default))
+    return bool(default)
+
+
+def _coerce_str(value: Any, blank_default: str) -> str:
+    """YAML 字符串字段：None（键在但留空）与空白串都按 blank_default 处理。
+
+    ``str(None)`` 会得到字符串 "None"：留空的 ``auto_sync_timezone:`` 因此变成
+    非法时区（每轮告警并回落 UTC），留空的 ``*_cron:`` 变成非法 cron（回落 interval，
+    设置页保存时还会被校验拒绝）。与 ``web/managers.py:save_sync_settings`` 的
+    写回规则一致：时区空值写 UTC，cron 空值写空串。
+    """
+    if value is None:
+        return blank_default
+    text = str(value).strip()
+    return text or blank_default
 
 
 def _parse_optional_int(value: str | None) -> int | None:
@@ -419,7 +456,9 @@ def parse_cron_expression(cron_expr: str) -> dict[str, Any] | None:
         return None
 
 
-def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: str = "UTC") -> float | None:
+def _cron_neighbor_run(
+    cron_expr: str, base_time: float | None = None, timezone: str = "UTC", *, previous: bool = False
+) -> float | None:
     """计算cron表达式的下次运行时间
     
     Args:
@@ -460,8 +499,8 @@ def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: s
             cron = croniter(cron_expr, base_dt, second_at_beginning=True)
         else:
             cron = croniter(cron_expr, base_dt)
-        next_dt = cron.get_next(datetime)
-        return next_dt.timestamp()
+        neighbor_dt = cron.get_prev(datetime) if previous else cron.get_next(datetime)
+        return neighbor_dt.timestamp()
     except Exception as exc:
         # croniter 对畸形表达式抛 CroniterNotAlphaError / CroniterBadCronError（构造时），
         # 对语法合法但永不出现的日期（如 "0 0 30 2 *" 2月30日）抛 CroniterBadDateError
@@ -469,3 +508,16 @@ def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: s
         # 的契约：保存设置时用户会收到 500 而非友好校验提示，调度循环也会整轮中断。
         logger.warning("无法解析 cron 表达式 %r: %s", cron_expr, exc)
         return None
+
+
+def cron_to_next_run(cron_expr: str, base_time: float | None = None, timezone: str = "UTC") -> float | None:
+    """cron 在 base_time 之后的下一个触发时刻（时间戳）；解析失败返回 None。"""
+    return _cron_neighbor_run(cron_expr, base_time, timezone)
+
+
+def cron_to_prev_run(cron_expr: str, base_time: float | None = None, timezone: str = "UTC") -> float | None:
+    """cron 在 base_time 之前最近一个触发时刻（时间戳）；解析失败返回 None。
+
+    调度器重启补偿用：上次跑完早于这个时刻，说明这个槽被重启或崩溃错过了。
+    """
+    return _cron_neighbor_run(cron_expr, base_time, timezone, previous=True)

@@ -4,6 +4,8 @@
 
 > **移动优先补充（2026-10-09，main）**：登录新增可撤销的可选30天会话，首页/偏好统一使用已有分页接口。字段与失败响应见下文；合并代码不代表现网已经更新，见 [移动报告](archive/MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。
 
+> **审计分支补充（2026-10-30）**：只读救援 API 的三桶限流按本分支代码校准；待合并 / 部署，不代表当前线上配置已验证。版本与验收边界见 [项目现状](STATUS.md)。
+
 本文档记录 Library OS 前端当前依赖的后端接口。后端重构时应优先保持路径、方法和主要字段兼容；如需调整，请在对接时同步更新前端适配层。
 
 > AI 写作相关端点（创作项目 / 章节 / 草稿 / 文档 / 蒸馏档案 / Prompt 模板 / chat / 写作类 SSE stream / 成人润色）随 AI 写作模块移到 `ai-writing` 分支维护，main 分支契约不再记载；main 只保留 Provider / 模型目录 / 模型同步 / 模型池 / Agent 绑定 / AI job 读取与续接等基础设施端点。
@@ -418,7 +420,7 @@ Token 状态与轮换响应均包含 `Cache-Control: no-store`，禁止浏览器
 Authorization: Bearer <救援 Token>
 ```
 
-Token 不接受 URL 查询参数或 Cookie。只允许 `GET` / `HEAD`；每个来源地址与 Token 组合每分钟最多 120 次请求。
+Token 不接受 URL 查询参数或 Cookie。只允许 `GET` / `HEAD`。限流使用三个互相独立、按客户端 IP 计数的 60 秒滑动窗口桶：未认证或 Token 无效为 120 次；认证成功的正文、目录和 lookup 共用 120 次；认证成功的封面为 600 次。不按 Token 前缀分桶；先校验 Token 再选桶，认证错误只消耗未认证桶，超额返回 `429`（否则返回 `401`）。实际客户端 IP 是否正确取到，取决于可信代理与 Nginx real_ip 配置，部署状态见 [项目现状](STATUS.md)。
 
 ### GET /api/rescue/v1/novels/<novel_id>
 

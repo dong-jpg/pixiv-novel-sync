@@ -512,3 +512,65 @@ def test_sleep_before_retry_checks_cancellation_between_slices(monkeypatch):
     # 只经历了一个分片（<= 0.5s），未整段休眠 30 秒
     assert len(slept) == 1
     assert slept[0] <= 0.5
+
+
+# A2：网关把 delta.content / delta.text 返回成数组分段（[{"type":"text",...}]）时，
+# 旧代码把数组当正文 yield 出去，下游 "".join(...) 抛 TypeError。非流式分支早有
+# isinstance(str) 检查，流式两处补上同样的检查：非字符串的分段不当正文。
+def test_openai_stream_ignores_non_string_delta_content(monkeypatch):
+    def fake_post(*_args, **_kwargs):
+        return FakeResponse(
+            200,
+            lines=[
+                'data: {"choices":[{"delta":{"content":[{"type":"text","text":"x"}]}}]}',
+                'data: {"choices":[{"delta":{"content":{"text":"y"}}}]}',
+                'data: {"choices":[{"delta":{"content":"正文"},"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ],
+        )
+
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
+
+    provider = OpenAICompatibleProvider(make_config("openai_compatible"))
+    chunks = list(provider.stream_generate(
+        [{"role": "user", "content": "hello"}],
+        model="model-a",
+        temperature=0.7,
+        top_p=0.9,
+        max_tokens=100,
+    ))
+
+    deltas = [chunk.text for chunk in chunks if chunk.type == "delta"]
+    assert deltas == ["正文"]
+    assert all(isinstance(chunk.text, str) for chunk in chunks)
+    assert chunks[-1].type == "done"
+
+
+def test_anthropic_stream_ignores_non_string_delta_text(monkeypatch):
+    def fake_post(*_args, **_kwargs):
+        return FakeResponse(
+            200,
+            lines=[
+                'data: {"type":"message_start","message":{}}',
+                'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":["x"]}}',
+                'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"正文"}}',
+                'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}',
+                'data: {"type":"message_stop"}',
+            ],
+        )
+
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
+
+    provider = AnthropicProvider(make_config("anthropic"))
+    chunks = list(provider.stream_generate(
+        [{"role": "user", "content": "hello"}],
+        model="model-a",
+        temperature=0.7,
+        top_p=0.9,
+        max_tokens=100,
+    ))
+
+    deltas = [chunk.text for chunk in chunks if chunk.type == "delta"]
+    assert deltas == ["正文"]
+    assert all(isinstance(chunk.text, str) for chunk in chunks)
+    assert chunks[-1].type == "done"

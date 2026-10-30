@@ -6,7 +6,7 @@
 
 ## 本轮交互更新（2026-10-08，main）
 
-移动优先改造于2026-10-09从 `codex/mobile-first-main` 集成到 `main`；登录、推荐、阅读与管理的实际验收和未部署边界见 [移动改造报告](archive/MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。下文契约描述 `main` 代码，不等同于生产站点已经更新。
+移动优先改造于2026-10-09从 `codex/mobile-first-main` 集成到 `main`；登录、推荐、阅读与管理的实际验收和未部署边界见 [移动改造报告](archive/MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。下文记录 `main` 功能范围及明确标注的审计分支后续修复，不等同于已合并或生产站点已经更新，当前版本以 [项目现状](STATUS.md) 为准。
 
 - 偏好页增量分析不再发送固定 `name`；未提供的名称/描述由服务端保留。
 - Agent 设置表单可编辑 `context_window` 和 `top_p`；编辑时保留合法的零值，不用默认值覆盖 `temperature=0` / `top_p=0`。
@@ -341,17 +341,17 @@ API：`GET /api/dashboard/rescues`。
 
 ### Pixiv 救援油猴脚本
 
-文件：`userscripts/pixiv-rescue.user.js`（v0.12.0，无外部依赖）。安装、Token、故障排查与各版本行为见 [救援功能用户指南](RESCUE_USER_GUIDE.md)。
+文件：`userscripts/pixiv-rescue.user.js`（v0.12.2，无外部依赖）。安装、Token、故障排查与各版本行为见 [救援功能用户指南](RESCUE_USER_GUIDE.md)，当前发布、部署与验收状态统一见 [项目现状](STATUS.md)。
 
 用途：当 Pixiv 原小说或系列页面删除、受限或不存在时，通过只读救援 API 在脚本自己的全屏阅读层里显示私人备份内容，并以“拯救数据”醒目标记来源；收藏 / 追更列表页把失效卡片重建为备份卡片；手机站新作页的「好P友新作」tab 改为「拯救系列」。
 
 生效范围与部署：
 
-- `@match` 覆盖小说页、系列页、收藏列表、追更列表与新作页（含 `/en/`、`/zh/` 等语言前缀），另有一条 `https://www.pixiv.net/*` 兜底；脚本内部 `routeRescue` 按路径严格判断，其余页面立即返回。
+- `@match` 覆盖小说页、系列页、收藏列表、追更列表与新作页，另有一条 `https://www.pixiv.net/*` 兜底；脚本内部 `routeRescue` 按路径严格判断，0.12.2 除 `/en/`、`/zh/` 外也识别 `/zh-tw/` 等带地区的语言前缀，其余页面立即返回。
 - 默认服务地址是 `DEFAULT_API_ORIGIN`（`https://pixiv.dongboapp.com`），脚本存储键 `pixivRescueOrigin` 有值时覆盖它。**换域名部署时必须同时改 `DEFAULT_API_ORIGIN`（或设置 `pixivRescueOrigin`）和 `@connect`**，否则脚本管理器会拦截跨域请求；`@name` / `@namespace` 保持不变，否则升级会被当成另一份脚本。
 - 通过油猴菜单「设置或更新救援 Token」/「清除救援 Token」维护 Token，存在 `GM_setValue`（键 `pixivRescueToken`）。
 
-失效判定（保守策略，正常页面不介入）：
+失效判定（保守策略，正常原内容保持不变）：
 
 - 小说 / 系列页先请求 Pixiv 自己的 `/ajax/novel/<id>`、`/ajax/novel/series/<id>`：作品还在就不请求备份；只有 404/410 才算确认失效，403 等歧义状态按「状态不明」静默查备份，查到才打开阅读层。
 - 从救援卡片点进来的链接带 `pixiv_rescue=1`，直接打开阅读层。
@@ -359,12 +359,14 @@ API：`GET /api/dashboard/rescues`。
 
 安全边界：
 
-- 正常可阅读的小说 / 系列页不请求救援 API，也不改写原 DOM；列表页没有失效卡片时只发一次 Token 探测请求（`lookup?novel_ids=1`），用于提示 Token 缺失或失效。
-- 救援 Token 只通过 `Authorization: Bearer` 请求头发送，不写入页面或 Cookie。
+- 正常可阅读的小说 / 系列页不请求备份内容，也不替换原内容；列表页可做一次 Token 探测请求（`lookup?novel_ids=1`），用于提示 Token 缺失或失效，只重建失效卡片。手机新作页的「拯救系列」tab 是专门展示救援系列的例外，不将它描述为零请求页面。
+- 救援 Token 只保存在脚本特权存储、通过 `Authorization: Bearer` 请求头发送，不写入 Pixiv 页面 DOM、Cookie 或查询参数；`pixiv_rescue=1` 只是打开阅读层的标记，不携带 Token。
 - API 地址只来自 `DEFAULT_API_ORIGIN` 或脚本存储 `pixivRescueOrigin`，不接受页面或响应提供的其他来源地址。
 - 正文只通过 `textContent` 和新建节点渲染，只解析 Pixiv 自身的标记（`[newpage]`、`[[rb:]]`、`[[jumpuri:]]` 等，链接只放行 http/https），不解释备份正文中的 HTML。
 - 系列先加载目录，超过 100 章时可继续加载后续目录页；只有点击某一章时才请求该章正文。
 - 正文接口超时 30 秒，其余请求 15 秒；接口失败时在阅读层显示错误与重试，Pixiv 原页面保持不变。
+
+0.12.2 交互与性能修复（不改版式，尚未完成本版设备验收）：正文分页首尾空行用线性扫描裁剪，避免大量空行卡顿；lookup 应答落到卡片前重新核对作品 ID，丢弃已被 SPA 复用卡片的旧应答；系列目录第一次加载失败也提供「重试」；列表页每 500ms 快速扫描仅限进入该页后的初始 15 秒。缺少可选 `GM_registerMenuCommand` / `GM_setValue` 时只在脚本内部降级，不往页面挂空函数；缺少后者时明确提示无法保存 Token。
 
 ### `/token-login`
 
