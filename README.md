@@ -29,7 +29,7 @@
 
 救援仅读取已经存在的私人本地备份，不能恢复从未归档的作品，也不能绕过访问限制。
 
-通过 [直装链接安装用户脚本](https://raw.githubusercontent.com/dong-jpg/pixiv-novel-sync/main/userscripts/pixiv-rescue.user.js)（[源码](userscripts/pixiv-rescue.user.js)），再在脚本菜单填写已有的独立救援 Token。尚未配置 Token 时，到 `/dashboard/settings/system` 生成并妥善保存（明文只显示一次；轮换会使所有设备的旧 Token 失效）。此后即可在 Pixiv 原站明确失效的小说或系列页读取备份，正常页面不会请求救援 API。
+通过 [直装链接安装用户脚本](https://raw.githubusercontent.com/dong-jpg/pixiv-novel-sync/main/userscripts/pixiv-rescue.user.js)（[源码](userscripts/pixiv-rescue.user.js)），再在脚本菜单填写已有的独立救援 Token。尚未配置 Token 时，到 `/dashboard/settings/system` 生成并妥善保存（明文只显示一次；轮换会使所有设备的旧 Token 失效）。正常可读的小说 / 系列页不请求备份内容、不替换原内容；失效或状态不明时可查询备份，显式救援链接可直接打开备份阅读层。列表页可做一次 Token 探测，只重建失效卡片；手机新作页的「拯救系列」tab 则专门展示救援系列。Token 只保存在脚本的特权存储中、通过 `Authorization` 请求头发送，不写入 Pixiv 页面 DOM、Cookie 或查询参数。
 
 脚本预设当前自用服务器，支持的管理器可通过同一 GitHub 来源检查更新，无需上架油叉；若浏览器只显示源码，按救援指南从链接或源码导入。
 

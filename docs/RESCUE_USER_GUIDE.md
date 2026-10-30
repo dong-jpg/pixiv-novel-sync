@@ -66,9 +66,9 @@
 - `https://www.pixiv.net/users/*/bookmarks/novels*`（收藏列表）、`https://www.pixiv.net/following/watchlist/novels*`（追更列表）
 - 手机站「新作」页的三个 tab：`/novel/bookmark_new.php`、`/following/watchlist/novels`、`/novel/mypixiv_new.php`（第三个 tab 改为「拯救系列」，见第 5 节）
 
-默认服务由 `DEFAULT_API_ORIGIN` 指定，当前为 `https://pixiv.dongboapp.com`；自用安装无需改地址或代码。保留原有 `@name` 和 `@namespace`，避免升级时被识别成另一份脚本。浏览器至少需要支持 `GM_xmlhttpRequest`、`GM_getValue`、`GM_setValue` 和 `GM_registerMenuCommand`；能安装油叉脚本并不保证支持每一种 GM API。
+默认服务由 `DEFAULT_API_ORIGIN` 指定，当前为 `https://pixiv.dongboapp.com`；自用安装无需改地址或代码。保留原有 `@name` 和 `@namespace`，避免升级时被识别成另一份脚本。完整配置体验需要 `GM_xmlhttpRequest`、`GM_getValue`、`GM_setValue` 和 `GM_registerMenuCommand`；能安装油叉脚本并不保证支持每一种 GM API。0.12.2 对后两项缺失提供脚本内部降级，不往页面挂空函数；缺少 `GM_setValue` 时不能保存新 Token，会如实提示，不能把降级理解为完整兼容。
 
-脚本的触发逻辑是**保守的**：正文 / 系列页先问 Pixiv 自己的接口，作品还在就不请求备份、不改页面（详见第 5 节「正文 / 系列页没有出现备份阅读层」）；列表页只改 Pixiv 已经画成失效 / 空白的卡片，健康卡片不动。
+脚本的触发逻辑是**保守的**：正文 / 系列页先问 Pixiv 自己的接口，作品还在就不请求备份、不替换原内容；失效或状态不明时可查询备份，显式救援链接可直接打开阅读层（详见第 5 节「正文 / 系列页没有出现备份阅读层」）。列表页可做一次 Token 探测，只改 Pixiv 已经画成失效 / 空白的卡片，健康卡片不动；手机新作页的「拯救系列」tab 是专门展示救援系列的例外。Token 只存于脚本特权存储、通过 `Authorization` 请求头发送，不写入 Pixiv 页面 DOM、Cookie 或查询参数。
 
 ### 2.2 生成救援 Token（写入 / 轮换）
 
@@ -105,6 +105,8 @@ Token 由服务端管理路由生成，全局只有一个（单例存储）：
 ### 2.4 后续更新与保留配置
 
 脚本通过 `@updateURL` 和 `@downloadURL` 指向同一个 GitHub main 原始文件。支持这些元信息的管理器可按自身设置检查自动更新；更新频率、是否需要确认以及保存数据的方式取决于你的浏览器/管理器，脚本本身不增加更新轮询。
+
+仅推送功能分支或打开 PR 不会更新上述 main 直装链接。当前版本、发布、后端部署与设备验收统一记录在 [项目现状](STATUS.md)，不能由脚本版本推断服务器已经更新。
 
 - 支持更新检查的管理器：在脚本管理里启用更新，或使用“检查更新”。新版本通过递增 `@version` 识别。
 - 不支持自动更新的内置管理器：重新打开第 2.1 节的同一条安装链接，按提示覆盖更新；若使用手动源码导入，也需要手动更新源码。
@@ -195,7 +197,7 @@ Token 由服务端管理路由生成，全局只有一个（单例存储）：
 - 每个成功响应的 `data` 都带 `source_notice`：「内容来自私人备份，并非 Pixiv 官方恢复」；
 - 只返回**符合救援条件**的内容——远端仍正常在线的小说 / 系列即使有备份也会返回 404「救援内容不存在」；
 - 响应头强制 `Cache-Control: no-store`、`X-Robots-Tag: noindex, nofollow, noarchive`，防止缓存与搜索引擎收录；
-- 限流：按「客户端 IP + Token 前缀」滑动窗口限流，每 60 秒最多 120 次请求，超出返回 429「救援 API 请求过于频繁」。
+- 限流：三个互相独立的 60 秒滑动窗口桶均按客户端 IP 计数，不按 Token 前缀：未认证 / Token 无效 120 次，认证成功的正文 / 目录 / lookup 合计 120 次，认证成功的封面 600 次。认证错误只消耗未认证桶，超出返回 429「救援 API 请求过于频繁」。
 
 ### 4.2 救援 Token 与 DASHBOARD_TOKEN 的区别
 
@@ -237,7 +239,7 @@ Token 由服务端管理路由生成，全局只有一个（单例存储）：
 
 ### 429 请求过于频繁
 
-单个「IP + Token」组合 60 秒内超过 120 次请求会被限流。正常阅读不会触发；如果触发，稍等一分钟再试。
+同一客户端 IP 在 60 秒内超过所属桶的额度就会被限流：未认证 / 无效 Token 120 次，认证正文 / 目录 / lookup 120 次，认证封面 600 次，三桶互不占用。多设备共用出口 IP 时会共享各桶额度；若触发，停止密集请求、稍等一分钟再试。若所有访问者被当成同一个 IP，还需核查可信代理与 Nginx real_ip 配置，不能靠换 Token 解决。
 
 ### 404「救援内容不存在」
 
