@@ -1026,3 +1026,96 @@ def test_preference_analyze_cancel_accepted_never_publishes_profile(tmp_path, mo
     # 任务按取消收口，且默认画像没有任何写入
     assert manager.get_job(state.job_id).status == JobStatus.CANCELLED
     assert published == {"create": 0, "update": 0}
+
+
+def test_preference_analyze_passes_job_cancel_callback_to_keyword_cleaning(
+    tmp_path, monkeypatch
+):
+    """A5：取消信号必须穿进 AI 路由，调度让位也走同一条 request_cancel 路径。"""
+    from pixiv_novel_sync.jobs.manager import JobManager
+    from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobStatus, JobType
+    from pixiv_novel_sync.jobs.runner import JobRunner
+
+    captured = {"before": None, "after": None, "closed": False}
+
+    class FakeReporter:
+        def add_log(self, level, message):
+            pass
+
+    class FakeDb:
+        def init_schema(self):
+            pass
+
+        def get_default_preference_profile(self):
+            return {
+                "id": 7,
+                "stats": {"refined_keywords": ["old_keyword"]},
+                "profile": {},
+            }
+
+        def update_preference_profile(self, profile_id, data):
+            return True
+
+        def close(self):
+            pass
+
+    class FakeAnalyzer:
+        def __init__(self, db):
+            pass
+
+        def analyze_incremental(self, batch_size, max_batches, min_text_length=1000, progress=None):
+            return {"processed_this_run": 3, "analyzed_total": 3, "remaining": 0, "done": True}
+
+        def rebuild_profile_from_accumulator(self):
+            return {
+                "source_scope": {"incremental": True},
+                "stats": {"top_keywords": [{"name": "new_keyword"}], "top_tags": []},
+                "profile": {"positive_preferences": {"tags": ["新tag"]}},
+            }
+
+        def build_profile(self, stats):
+            return {"positive_preferences": {"tags": ["新tag"]}}
+
+    class FakeAI:
+        def __init__(self, path):
+            pass
+
+        def clean_keywords(self, *args, **kwargs):
+            is_cancelled = kwargs.get("is_cancelled")
+            captured["before"] = callable(is_cancelled) and is_cancelled()
+            if captured["before"] is False:
+                manager.request_cancel(state.job_id)
+            captured["after"] = callable(is_cancelled) and is_cancelled()
+            return {"keywords": ["cleaned_keyword"], "dropped_sample": []}
+
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr("pixiv_novel_sync.jobs.tasks._job_reporter_from_context", lambda context: FakeReporter())
+    monkeypatch.setattr("pixiv_novel_sync.storage_db.Database", lambda path: FakeDb())
+    monkeypatch.setattr("pixiv_novel_sync.preferences.PreferenceAnalyzer", FakeAnalyzer)
+    monkeypatch.setattr("pixiv_novel_sync.ai.service.AIWritingService", FakeAI)
+
+    settings = SimpleNamespace(
+        storage=SimpleNamespace(db_path=tmp_path / "pref.db"),
+        sync=SimpleNamespace(preference_analyze_batch_size=200),
+    )
+    manager = JobManager()
+    spec = JobSpec(
+        source=JobSource.WEB,
+        task_types=["preference_analyze"],
+        job_type=JobType.PREFERENCE_ANALYZE,
+        params={},
+    )
+    state = manager.submit(spec)
+
+    def executor(task_type, context):
+        return execute_task(task_type, settings, context)
+
+    runner = JobRunner(manager, executor)
+    runner.run(state.job_id)
+
+    assert manager.get_job(state.job_id).status == JobStatus.CANCELLED
+    assert captured["before"] is False
+    assert captured["after"] is True
+    assert captured["closed"] is True
