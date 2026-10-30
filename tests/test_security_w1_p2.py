@@ -69,7 +69,7 @@ def test_deploy_writes_secure_defaults_without_overwriting():
     deploy = (ROOT / "deploy.sh").read_text(encoding="utf-8")
     for key in ("PIXIV_COOKIE_SECURE", "DASHBOARD_TRUST_PROXY"):
         assert f'grep -q "^{key}=' in deploy
-        assert f'echo "{key}=1" >> .env' in deploy
+        assert f'printf \'\\n%s\\n\' "{key}=1" >> .env' in deploy
 
 
 # ---------------------------------------------------------------- 救援 API 分桶

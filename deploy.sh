@@ -88,11 +88,11 @@ fi
 
 # 新装时设置安全默认值（已有值的不覆盖）
 if ! grep -q "^PIXIV_COOKIE_SECURE=" .env 2>/dev/null; then
-    echo "PIXIV_COOKIE_SECURE=1" >> .env
+    printf '\n%s\n' "PIXIV_COOKIE_SECURE=1" >> .env
     echo "  已设置 PIXIV_COOKIE_SECURE=1"
 fi
 if ! grep -q "^DASHBOARD_TRUST_PROXY=" .env 2>/dev/null; then
-    echo "DASHBOARD_TRUST_PROXY=1" >> .env
+    printf '\n%s\n' "DASHBOARD_TRUST_PROXY=1" >> .env
     echo "  已设置 DASHBOARD_TRUST_PROXY=1（Nginx 已配置 Cloudflare 真实 IP）"
 fi
 

@@ -33,14 +33,19 @@ def test_update_script_reports_public_https_url() -> None:
     assert 'echo "访问地址: ${PUBLIC_URL}"' in script
 
 
-@pytest.mark.parametrize("initial_env", ["example", "empty", "restored", "restored-missing"])
+@pytest.mark.parametrize("initial_env", [
+    "example", "empty", "restored", "restored-missing",
+    "restored-missing-no-final-newline",
+])
 def test_deploy_environment_secure_defaults_execute_in_isolation(tmp_path, initial_env):
     if initial_env != "empty":
         shutil.copyfile(ROOT / ".env.example", tmp_path / ".env.example")
     restored = "PIXIV_REFRESH_TOKEN=keep-me\nPIXIV_COOKIE_SECURE=\nDASHBOARD_TRUST_PROXY=false\n"
     if initial_env.startswith("restored"):
-        if initial_env == "restored-missing":
+        if initial_env.startswith("restored-missing"):
             restored = "PIXIV_REFRESH_TOKEN=keep-me\n"
+        if initial_env == "restored-missing-no-final-newline":
+            restored = restored.rstrip("\n")
         (tmp_path / ".env.bak").write_text(restored, encoding="utf-8")
 
     # Execute only the real environment setup block, never deployment operations.
@@ -65,10 +70,10 @@ def test_deploy_environment_secure_defaults_execute_in_isolation(tmp_path, initi
         line.split("=", 1)
         for line in actual.splitlines() if "=" in line and not line.startswith("#")
     )
+    if initial_env.startswith("restored"):
+        assert values["PIXIV_REFRESH_TOKEN"] == "keep-me"
     if initial_env == "restored":
         assert actual == restored
     else:
         assert values["PIXIV_COOKIE_SECURE"] == "1"
         assert values["DASHBOARD_TRUST_PROXY"] == "1"
-    if initial_env.startswith("restored"):
-        assert values["PIXIV_REFRESH_TOKEN"] == "keep-me"
