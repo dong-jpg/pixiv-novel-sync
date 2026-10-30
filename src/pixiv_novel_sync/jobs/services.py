@@ -269,14 +269,13 @@ def run_user_backup_task(
                 failed = counters.get("failed", 0)
                 if failed:
                     total_failed += failed
-                    # 单本失败先计入本轮已处理，再看失败率，避免第一本失败时分母还是 0。
-                    # 比例只在样本够大时才判：前几本里碰巧失败一本不该让整个用户出局。
-                    ratio_exceeded = (
-                        processed >= USER_BACKUP_FAILURE_MIN_SAMPLE
-                        and total_failed / processed > USER_BACKUP_MAX_FAILURE_RATIO
-                    )
-                    if total_failed >= USER_BACKUP_MAX_FAILED_NOVELS or ratio_exceeded:
-                        raise RuntimeError(f"User backup aborted for user {user_id}: {total_failed}/{processed} novels failed (threshold exceeded)")
+                # A success can reach the minimum sample after earlier failures.
+                ratio_exceeded = (
+                    processed >= USER_BACKUP_FAILURE_MIN_SAMPLE
+                    and total_failed / processed > USER_BACKUP_MAX_FAILURE_RATIO
+                )
+                if total_failed >= USER_BACKUP_MAX_FAILED_NOVELS or ratio_exceeded:
+                    raise RuntimeError(f"User backup aborted for user {user_id}: {total_failed}/{processed} novels failed (threshold exceeded)")
                 total_novels += counters.get("novels", 0)
                 total_skipped += counters.get("skipped", 0)
                 total_assets += counters.get("assets_downloaded", 0)
@@ -302,6 +301,8 @@ def run_user_backup_task(
                     stopped = True
                     break
 
+        if not stopped and stop_requested is not None and stop_requested():
+            stopped = True
         completed = not stopped and not total_failed and not total_failed_page and not truncated_by_page_cap
         if full_refresh and completed:
             _mark_full_refresh(db, user_id)

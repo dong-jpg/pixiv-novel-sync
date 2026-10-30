@@ -1502,10 +1502,10 @@ class ModelRouter:
                         error.category == "cancelled"
                         or error.finish_reason == "cancelled"
                     )
-                    stop_reason = self._stop_reason(request) if cancelled else None
+                    stop_reason = self._stop_reason(request)
                     if stop_reason == "deadline":
-                        # 截止时间到达时 Provider 与路由都按「已取消」停下；这里改记
-                        # route_budget_exhausted，否则超时与用户取消在 ai_jobs 里无法区分。
+                        # A blocking read may expire as a network error rather than
+                        # observe cancellation; the route deadline still applies.
                         attempt_index = current_attempt
                         current_attempt = None
                         return self._finish_route_deadline(

@@ -77,6 +77,9 @@ if [ -f ".env.bak" ]; then
     echo "  已恢复 .env 配置"
 elif [ -f ".env.example" ]; then
     cp .env.example .env
+    # Fresh Nginx installs override example placeholders, not restored user choices.
+    sed -i -e 's/^PIXIV_COOKIE_SECURE=.*/PIXIV_COOKIE_SECURE=1/' \
+        -e 's/^DASHBOARD_TRUST_PROXY=.*/DASHBOARD_TRUST_PROXY=1/' .env
     echo -e "  ${YELLOW}请编辑 $INSTALL_DIR/.env 填入你的 Pixiv token${NC}"
 else
     : > .env

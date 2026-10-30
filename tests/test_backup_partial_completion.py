@@ -196,8 +196,12 @@ def test_cancelled_backup_keeps_prior_nonfatal_failure_count(backup_case, entry)
 @pytest.mark.parametrize(
     ("novel_count", "failed_ids", "expected_failure"),
     # 比例阈值只在处理满 USER_BACKUP_FAILURE_MIN_SAMPLE 本后才判：第 11 本失败时 3/11 > 20%
-    [(15, {1, 2, 11}, "3/11"), (50, set(range(41, 51)), "10/50")],
-    ids=["ratio-threshold", "absolute-threshold"],
+    [
+        (15, {1, 2, 11}, "3/11"),
+        (50, set(range(41, 51)), "10/50"),
+        (20, {1, 2, 3}, "3/10"),
+    ],
+    ids=["ratio-threshold", "absolute-threshold", "ratio-crossed-on-success"],
 )
 def test_existing_failure_thresholds_still_abort_user(
     backup_case, entry, novel_count, failed_ids, expected_failure,
@@ -216,6 +220,64 @@ def test_existing_failure_thresholds_still_abort_user(
         assert _task_log_status_for_stats(result) == "partial"
     assert len(backup_case.visited) == int(expected_failure.split("/")[1])
     assert backup_case.rebuilds == []
+
+
+@pytest.mark.parametrize("entry", ["direct", "scheduled"])
+def test_failure_ratio_at_exactly_twenty_percent_does_not_abort(backup_case, entry):
+    backup_case.novel_count = 10
+    backup_case.failed_ids = {1, 2}
+
+    result = run_backup(backup_case, entry)
+
+    assert len(backup_case.visited) == 10
+    assert result["novels"] == 8
+    assert result["failed"] == 2
+    assert result.get("failed_users", 0) == 0
+    assert result["aborted_reason"] == "novel_backup_errors"
+
+
+def test_archived_skips_do_not_pad_failure_ratio_sample(backup_case, monkeypatch):
+    backup_case.novel_count = 25
+    backup_case.failed_ids = {6, 7, 8}
+    db = Database(backup_case.settings.storage.db_path)
+    try:
+        db.conn.executemany(
+            """INSERT INTO novels(
+                novel_id, user_id, title, visible, restrict_value, x_restrict,
+                text_length, total_bookmarks, total_views, tags_json, raw_json, meta_hash
+            ) VALUES (?, 1, 'archived', 1, 'public', 0, 0, 0, 0, '[]', '{}', 'hash')""",
+            [(novel_id,) for novel_id in range(1, 6)],
+        )
+        services._mark_full_refresh(db, 1)
+    finally:
+        db.close()
+    monkeypatch.setattr(
+        BookmarkNovelSyncService, "_archive_complete_on_disk",
+        lambda self, novel_id, download_assets: novel_id <= 5,
+    )
+
+    with pytest.raises(RuntimeError, match="3/10 novels failed"):
+        run_backup(backup_case, "direct")
+
+    assert backup_case.visited == [(1, n) for n in range(6, 16)]
+    assert backup_case.rebuilds == []
+
+
+@pytest.mark.parametrize("entry", ["direct", "scheduled"])
+def test_cancel_during_last_item_does_not_mark_full_refresh(backup_case, entry):
+    backup_case.cancel_id = backup_case.novel_count
+    assert backup_case.settings.sync.delay_seconds_between_items == 0
+
+    result = run_backup(backup_case, entry)
+
+    assert result["stopped"] is True
+    assert backup_case.visited == [(1, n) for n in range(1, 6)]
+    assert backup_case.rebuilds == []
+    db = Database(backup_case.settings.storage.db_path)
+    try:
+        assert not services._load_full_refresh_marks(db)
+    finally:
+        db.close()
 
 
 class _ErrorPageApi:

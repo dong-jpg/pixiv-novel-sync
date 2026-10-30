@@ -4,7 +4,7 @@ import hashlib
 import json
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from collections.abc import Iterator
 from collections.abc import Generator, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -1522,7 +1522,44 @@ def test_deadline_reached_between_candidates_fails_without_switching(
     assert job["error_message"].startswith("route_budget_exhausted")
     assert [
         (attempt["status"], attempt["error_category"]) for attempt in job["attempts"]
-    ] == [("failed", "gateway")]
+    ] == [("failed", "route_budget_exhausted")]
+
+
+@pytest.mark.parametrize("prior_output", ["", "partial body"])
+def test_final_candidate_network_error_after_deadline_uses_route_budget(
+    route_router: ModelRouter,
+    route_request: RouteRequest,
+    fake_providers: FakeProviderRegistry,
+    db: Database,
+    route_clock: dict[str, datetime],
+    prior_output: str,
+) -> None:
+    set_route_deadline(db, route_request.job_id, ROUTE_DEADLINE)
+    candidate = route_request.candidate_snapshot.candidates[-1]
+    route_request.resume_candidate_index = candidate.candidate_index
+    published = []
+    route_request.on_delta = published.append
+
+    def late_network_error() -> AIProviderError:
+        route_clock["now"] = AFTER_ROUTE_DEADLINE
+        return AIProviderError("read timed out", category="network", scope="provider")
+
+    events = [AIStreamChunk(type="delta", text=prior_output)] if prior_output else []
+    fake_providers.succeed(candidate.provider_name, [*events, late_network_error])
+
+    result = route_router.execute(route_request)
+
+    assert result.finish_state == ("partial" if prior_output else "failed_before_output")
+    assert result.output_text == prior_output
+    assert published == ([prior_output] if prior_output else [])
+    assert fake_providers.calls == [(candidate.provider_name, candidate.model_key)]
+    assert fake_providers.closed_calls == fake_providers.calls
+    job = db.get_ai_job(route_request.job_id)
+    assert job["status"] == ("partial" if prior_output else "failed")
+    assert job["error_message"].startswith("route_budget_exhausted:")
+    assert [(attempt["status"], attempt["error_category"]) for attempt in job["attempts"]] == [
+        ("partial" if prior_output else "failed", "route_budget_exhausted"),
+    ]
 
 
 def test_cancellation_after_delta_closes_iterator_and_never_switches(

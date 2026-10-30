@@ -506,6 +506,8 @@ class _ChatTargetHandler(BaseHTTPRequestHandler):
     seen: list[dict[str, str | None]] = []
 
     def do_POST(self) -> None:
+        # Drain the request before HTTP/1.0 closes the connection after replying.
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
         type(self).seen.append(
             {
                 "path": self.path,
@@ -525,6 +527,28 @@ class _ChatTargetHandler(BaseHTTPRequestHandler):
 
 class _EnvProxyHandler(_ChatTargetHandler):
     seen: list[dict[str, str | None]] = []
+
+
+@pytest.mark.parametrize("handler_type", [_ChatTargetHandler, _EnvProxyHandler])
+def test_chat_handler_consumes_declared_body_before_response(handler_type, monkeypatch):
+    body = b'{"messages":[{"role":"user","content":"hi"}]}'
+    trailing = b"next request sentinel"
+    consumed_at_response = []
+    handler = object.__new__(handler_type)
+    handler.path = "/v1/chat/completions"
+    handler.headers = {"Content-Length": str(len(body))}
+    handler.rfile = io.BytesIO(body + trailing)
+    handler.wfile = io.BytesIO()
+    monkeypatch.setattr(handler_type, "seen", [])
+    handler.send_response = lambda status: consumed_at_response.append(handler.rfile.tell())
+    handler.send_header = lambda name, value: None
+    handler.end_headers = lambda: None
+
+    handler.do_POST()
+
+    assert consumed_at_response == [len(body)]
+    assert handler.rfile.read() == trailing
+    assert handler.wfile.getvalue() == _CHAT_COMPLETION
 
 
 def _isolate_env_proxy(monkeypatch, proxy_url: str, no_proxy: str) -> None:
