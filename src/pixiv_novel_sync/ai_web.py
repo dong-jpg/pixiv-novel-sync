@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
 import threading
 from collections.abc import Callable, Iterator
 from typing import Any
@@ -21,9 +22,16 @@ from .ai.service import (
     AIServiceError,
     AIWritingService,
 )
+from .ai.invocation import InvocationValidationError
+from .ai.job_diagnostics import project_main_job_diagnostics
+from .ai.model_router import ModelRouteError
 from .settings import Settings
+from .web.request_limits import JSONBodyError, read_bounded_json_object
 
 logger = logging.getLogger(__name__)
+
+_AI_PREFLIGHT_BODY_LIMIT = 16 * 1024 * 1024
+_AI_PREFLIGHT_MESSAGES_LIMIT = 256
 
 
 def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) -> None:
@@ -331,6 +339,18 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
         except Exception as exc:
             return fail(exc)
 
+    @app.put("/api/dashboard/ai/providers/<int:provider_id>/models/enabled")
+    def update_ai_provider_models_enabled(provider_id: int):
+        try:
+            return ok(
+                service.update_provider_models_enabled(
+                    provider_id,
+                    require_json_object(),
+                )
+            )
+        except Exception as exc:
+            return fail(exc)
+
     @app.post("/api/dashboard/ai/providers/<int:provider_id>/models")
     def create_ai_provider_model(provider_id: int):
         try:
@@ -439,6 +459,39 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
         except Exception as exc:
             return fail(exc)
 
+    @app.post("/api/dashboard/ai/agents/<int:agent_id>/preflight")
+    def preflight_ai_agent(agent_id: int):
+        try:
+            payload = read_bounded_json_object(
+                request,
+                limit_bytes=_AI_PREFLIGHT_BODY_LIMIT,
+            )
+            messages = payload.get("messages")
+            if (
+                not isinstance(messages, list)
+                or not 1 <= len(messages) <= _AI_PREFLIGHT_MESSAGES_LIMIT
+            ):
+                raise JSONBodyError(
+                    "invalid_messages",
+                    "messages 必须包含 1 到 256 条文本消息",
+                )
+            return ok(service.preflight_agent(agent_id, payload))
+        except JSONBodyError as exc:
+            return (
+                jsonify({"ok": False, "error": str(exc), "code": exc.code}),
+                exc.status_code,
+            )
+        except InvocationValidationError as exc:
+            return (
+                jsonify({"ok": False, "error": str(exc), "code": exc.code}),
+                400,
+            )
+        except (AIServiceError, ModelRouteError) as exc:
+            return fail(exc)
+        except Exception:
+            logger.warning("AI preflight failed (%s)", type(sys.exc_info()[1]).__name__)
+            return fail(AIServiceError("输入预检暂时不可用"), 500)
+
     @app.post("/api/dashboard/ai/agents")
     def create_ai_agent():
         try:
@@ -488,6 +541,9 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
                 )
             finally:
                 db.close()
+            result["items"] = [
+                project_main_job_diagnostics(job) for job in result["items"]
+            ]
             return ok(result)
         except Exception as exc:
             return fail(exc)
@@ -502,7 +558,7 @@ def register_ai_routes(app: Flask, settings: Settings | Callable[[], Settings]) 
                 db.close()
             if job is None:
                 raise AINotFoundError("任务不存在")
-            return ok(job)
+            return ok(project_main_job_diagnostics(job))
         except Exception as exc:
             return fail(exc)
 

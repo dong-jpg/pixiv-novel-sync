@@ -25,6 +25,7 @@ from ..model_pools import (
     expand_pool_ids,
 )
 from ..crypto import AISecretError
+from ..invocation import InvocationValidationError, normalize_text_invocation
 from ..model_router import (
     MAX_CANDIDATE_ATTEMPTS,
     MAX_NETWORK_REQUESTS,
@@ -1170,6 +1171,23 @@ class AIAdminMixin:
                 "max_pool_nodes": MAX_POOL_NODES,
             },
         }
+
+    def preflight_agent(
+        self,
+        agent_id: int,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Plan the exact supplied text without Provider or secret access."""
+
+        db = self._db()
+        try:
+            if db.get_ai_agent(agent_id) is None:
+                raise AINotFoundError("Agent 不存在")
+            agent = self._load_agent_config(db, agent_id)
+        finally:
+            db.close()
+        invocation = normalize_text_invocation(payload, agent=agent)
+        return self.model_router.plan_invocation(agent, invocation).to_public_dict()
 
     def list_agents(self) -> list[dict[str, Any]]:
         db = self._db()

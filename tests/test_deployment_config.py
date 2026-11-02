@@ -26,3 +26,21 @@ def test_update_script_reports_public_https_url() -> None:
 
     assert 'PUBLIC_URL="https://pixiv.dongboapp.com"' in script
     assert 'echo "访问地址: ${PUBLIC_URL}"' in script
+
+
+def test_preflight_body_limit_is_route_specific() -> None:
+    import re
+
+    text = (ROOT / "config/nginx/pixiv-novel-sync.conf").read_text(
+        encoding="utf-8"
+    )
+    pattern = (
+        r"location ~ \^/api/dashboard/ai/agents/\[0-9\]\+/preflight\$"
+        r"\s*\{([^}]+)\}"
+    )
+    match = re.search(pattern, text)
+    assert match is not None
+    assert "client_max_body_size 16m;" in match.group(1)
+    assert "proxy_request_buffering off;" in match.group(1)
+    without_preflight = text[: match.start()] + text[match.end() :]
+    assert "client_max_body_size" not in without_preflight
