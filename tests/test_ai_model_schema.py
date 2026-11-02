@@ -602,10 +602,24 @@ def test_model_output_columns_roll_back_together_on_preexisting_table(
         )
         """
     )
+    preexisting_model_id = database.conn.execute(
+        """
+        INSERT INTO ai_provider_models (provider_id, model_key)
+        VALUES (1, 'preexisting-model')
+        """
+    ).lastrowid
     database.conn.commit()
     schema = _model_schema()
+    original_helper = schema._ensure_model_output_columns
 
     def fail_after_output_columns(conn) -> None:
+        original_helper(conn)
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(ai_provider_models)")
+        }
+        assert "discovered_max_output_tokens" in columns
+        assert "manual_max_output_tokens" in columns
         raise RuntimeError("injected failure after output columns")
 
     monkeypatch.setattr(schema, "_ensure_model_output_columns", fail_after_output_columns)
@@ -620,6 +634,10 @@ def test_model_output_columns_roll_back_together_on_preexisting_table(
         }
         assert "discovered_max_output_tokens" not in columns
         assert "manual_max_output_tokens" not in columns
+        assert database.conn.execute(
+            "SELECT model_key FROM ai_provider_models WHERE id = ?",
+            (preexisting_model_id,),
+        ).fetchone()["model_key"] == "preexisting-model"
     finally:
         database.close()
 

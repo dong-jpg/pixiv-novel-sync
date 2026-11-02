@@ -35,6 +35,13 @@ class _FakeSecretManager(AISecretManager):
         return "decrypted-key"
 
 
+class _GuardedSecretManager(AISecretManager):
+    """Fail if probe borrows a key when the network tuple is not intact."""
+
+    def decrypt(self, ciphertext):
+        raise AssertionError("saved key was decrypted after an unsafe tuple change")
+
+
 def test_probe_forwards_proxy_to_the_provider(tmp_path, monkeypatch) -> None:
     seen = {}
 
@@ -137,6 +144,41 @@ def test_probe_borrowed_key_requires_the_saved_network_tuple(tmp_path) -> None:
         with pytest.raises(AIServiceError) as excinfo:
             service.probe_provider_models(payload)
         assert "地址、协议或代理" in str(excinfo.value)
+
+
+def test_probe_null_urls_reject_provider_type_change_before_key_use(
+    tmp_path, monkeypatch,
+) -> None:
+    db = Database(tmp_path / "probe-null-url.db")
+    db.init_schema()
+    provider_id = db.create_ai_provider({
+        "name": "p",
+        "provider_type": "anthropic",
+        "base_url": None,
+        "api_key_encrypted": "cipher",
+        "default_model": None,
+        "enabled": 1,
+    })
+    db.close()
+    service = AIWritingService(
+        db_path=tmp_path / "probe-null-url.db",
+        secret_manager=_GuardedSecretManager(),
+    )
+
+    def fail_provider_creation(config):
+        raise AssertionError("Provider was constructed after an unsafe tuple change")
+
+    monkeypatch.setattr(
+        "pixiv_novel_sync.ai.services.admin.create_provider", fail_provider_creation
+    )
+    with pytest.raises(AIServiceError) as excinfo:
+        service.probe_provider_models({
+            "provider_id": provider_id,
+            "provider_type": "openai_compatible",
+            "base_url": None,
+        })
+
+    assert "地址、协议或代理" in str(excinfo.value)
 
 
 def test_probe_borrowed_key_accepts_the_unchanged_network_tuple(

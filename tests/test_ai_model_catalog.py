@@ -756,6 +756,11 @@ def test_bulk_enabled_conflicting_threads_allow_exactly_one_write(db):
         )
         for index in range(2)
     ]
+    db.update_ai_provider_models_enabled(
+        provider_id,
+        db.get_ai_provider_catalog_revision(provider_id),
+        [{"id": model_ids[0], "enabled": False}],
+    )
     revision = db.get_ai_provider_catalog_revision(provider_id)
     barrier = Barrier(2)
     results: list[dict[str, object] | BaseException] = []
@@ -787,18 +792,45 @@ def test_bulk_enabled_conflicting_threads_allow_exactly_one_write(db):
         worker.join(timeout=10)
 
     assert not any(worker.is_alive() for worker in workers)
+    conflicts = [
+        result for result in results if isinstance(result, ModelCatalogConflictError)
+    ]
     successful = [result for result in results if isinstance(result, dict)]
-    # A no-op against the same snapshot is valid and must not consume the CAS.
-    successful = [result for result in successful if result["updated"] > 0]
-    state_changes = [result["updated"] for result in successful]
+    other_exceptions = [
+        result
+        for result in results
+        if not isinstance(result, (dict, ModelCatalogConflictError))
+    ]
+    assert len(results) == 2
     assert len(successful) == 1
-    assert state_changes == [2]
+    expected_final_enabled = successful[0] is results[0]
+    assert successful[0]["updated"] == 1
+    assert len(conflicts) == 1
+    assert other_exceptions == []
     final_enabled = {
         model_id: db.get_ai_provider_model(model_id)["enabled"]
         for model_id in model_ids
     }
     # A successful bulk change must own the resulting state atomically.
-    assert len(set(final_enabled.values())) == 1
+    assert set(final_enabled.values()) == {expected_final_enabled}
+
+
+def test_bulk_enabled_same_revision_noop_is_valid(db):
+    provider_id = seed_provider(db)
+    model_id = db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "unchanged"}
+    )
+    revision = db.get_ai_provider_catalog_revision(provider_id)
+
+    result = db.update_ai_provider_models_enabled(
+        provider_id,
+        revision,
+        [{"id": model_id, "enabled": True}],
+    )
+
+    assert result["updated"] == 0
+    assert result["catalog_revision"] == revision
+    assert db.get_ai_provider_model(model_id)["enabled"] is True
 
 
 def test_bulk_enabled_rolls_back_when_second_update_fails(db):
