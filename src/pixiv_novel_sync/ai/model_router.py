@@ -1273,6 +1273,46 @@ class ModelRouter:
         )
         return self._terminal_race_result(db, request)
 
+    def _finish_unexpected_invocation_error(
+        self,
+        db: Any,
+        request: RouteRequest,
+        *,
+        attempt_index: int | None,
+        output_started: bool,
+        output_text: str,
+        latency_ms: int,
+    ) -> RouteResult:
+        # Unexpected provider/callback failures are not safe retry signals.
+        partial = request.stage == "main" and output_started
+        message = "Unexpected invocation execution error"
+        if attempt_index is not None and not db.finish_ai_model_attempt(
+            request.job_id,
+            attempt_index,
+            request.owner_token,
+            "partial" if partial else "failed",
+            error_scope="model",
+            error_message=message,
+            error_category="unexpected_error",
+            finish_reason="error",
+            output_started=partial,
+            latency_ms=latency_ms,
+        ):
+            return self._terminal_race_result(db, request)
+        if partial:
+            cas_won = db.finish_ai_job_cas(
+                request.job_id, request.owner_token, "partial",
+                output_text=output_text, error_message=message,
+            )
+            return self._owned_terminal_result(
+                db, request, cas_won=cas_won, memory_output=output_text,
+            )
+        if request.stage == "internal":
+            return self._result(db, request, "", "failed_before_output")
+        return self._finish_job_failure(
+            db, request, message=message, category="unexpected_error",
+        )
+
     def execute(self, request: RouteRequest) -> RouteResult:
         stream = self.execute_stream(request)
         while True:
@@ -1332,6 +1372,7 @@ class ModelRouter:
         current_attempt: int | None = None
         current_iterator: Any = None
         current_output_started = False
+        started_at: float | None = None
         try:
             state = self._active_route_state(db, request)
             request.route_deadline_at = state.get("route_deadline_at")
@@ -1722,6 +1763,19 @@ class ModelRouter:
                 "cancelled",
             )
             raise
+        except Exception as error:
+            if not isinstance(request.candidate_snapshot, PlannedCandidateSnapshot) or isinstance(
+                error, (ModelRouteError, AIJobConflictError, AIProviderError),
+            ):
+                raise
+            return self._finish_unexpected_invocation_error(
+                db, request,
+                attempt_index=current_attempt,
+                output_started=current_output_started,
+                output_text="".join(output_parts),
+                latency_ms=max(0, int((time.monotonic() - started_at) * 1000))
+                if started_at is not None else 0,
+            )
         finally:
             heartbeat_stop.set()
             heartbeat_thread.join(timeout=1.0)

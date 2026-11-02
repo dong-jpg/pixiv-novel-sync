@@ -555,7 +555,8 @@ def test_v1_resume_still_uses_legacy_hash_and_budget(db, router, fixed_agent):
     assert router.validate_resume_snapshot(fixed_agent, restored, 0) == snapshot
 
 
-def test_v2_metadata_only_partial_returns_owned_memory_without_fallback(db, route_router, registry, monkeypatch):
+@pytest.mark.parametrize("failure", ["provider", "unexpected", "callback"])
+def test_v2_metadata_only_partial_returns_owned_memory_without_fallback(db, route_router, registry, monkeypatch, failure):
     agent, providers, _, _ = pool_setup(db)
     request = make_route_request(db, route_router, agent, retention_policy="metadata_only")
     original = Database.finish_ai_job_cas
@@ -568,29 +569,139 @@ def test_v2_metadata_only_partial_returns_owned_memory_without_fallback(db, rout
         return won
 
     monkeypatch.setattr(Database, "finish_ai_job_cas", retain_metadata_only)
-    registry.responses[(providers[0], "model-0")] = [AIStreamChunk(type="delta", text="PRIVATE-PARTIAL"), AIProviderError("synthetic failure", category="gateway", scope="provider")]
-    result = route_router.execute(request)
+    error = (AIProviderError("synthetic failure", category="gateway", scope="provider")
+             if failure == "provider" else RuntimeError("PRIVATE-ERROR"))
+
+    def progress(data):
+        if data.get("phase") == "provider":
+            raise error
+
+    request.on_progress = progress
+    event = AIStreamChunk(type="progress", data={"phase": "provider"}) if failure == "callback" else error
+    registry.responses[(providers[0], "model-0")] = [AIStreamChunk(type="delta", text="PRIVATE-PARTIAL"), event]
+    chunks, result = collect_result(route_router.execute_stream(request))
     assert result.output_text == "PRIVATE-PARTIAL" and result.finish_state == "partial"
-    assert db.get_ai_job(request.job_id)["output_text"] in (None, "")
+    job = db.get_ai_job(request.job_id)
+    assert job["status"] == "partial" and job["output_text"] in (None, "")
+    assert [chunk.text for chunk in chunks if chunk.type == "delta"] == ["PRIVATE-PARTIAL"]
+    assert [attempt["status"] for attempt in result.attempts] == ["partial"]
+    assert result.attempts[0]["output_started"] is True
+    assert result.attempts[0]["finish_reason"] == "error"
     assert registry.calls == [(providers[0], "model-0")]
+    assert registry.closed_calls == registry.calls
+    assert route_counts(db, request.job_id) == (1, 1)
     assert (result.actual_provider_id, result.actual_model_key) == (providers[0], "model-0")
-    assert db.get_ai_job(request.job_id)["pinned_candidate_index"] == 0
+    assert job["pinned_candidate_index"] == 0
+    if failure != "provider":
+        assert result.attempts[0]["error_category"] == "unexpected_error"
+        assert result.attempts[0]["error_message"] == "Unexpected invocation execution error"
+        assert "PRIVATE-ERROR" not in json.dumps(job)
 
 
-def test_v2_lost_terminal_cas_never_returns_discarded_memory(db, route_router, registry, monkeypatch):
+@pytest.mark.parametrize("failure", ["provider", "unexpected"])
+@pytest.mark.parametrize("race", ["finished", "deleted", "owner_changed"])
+def test_v2_lost_terminal_cas_never_returns_discarded_memory(db, route_router, registry, monkeypatch, failure, race):
     agent, providers, _, _ = pool_setup(db)
     request = make_route_request(db, route_router, agent, retention_policy="metadata_only")
     original = Database.finish_ai_job_cas
 
     def competing_finish(database, job_id, owner_token, status, **fields):
-        assert original(database, job_id, owner_token, "cancelled", output_text="WINNER")
+        if race == "finished":
+            assert original(database, job_id, owner_token, "cancelled", output_text="WINNER")
+        elif race == "deleted":
+            database.delete_ai_job(job_id)
+        else:
+            with database.transaction() as conn:
+                conn.execute("UPDATE ai_jobs SET owner_token = 'new-owner', output_text = NULL WHERE job_id = ?", (job_id,))
         return original(database, job_id, owner_token, status, **fields)
 
     monkeypatch.setattr(Database, "finish_ai_job_cas", competing_finish)
-    registry.responses[(providers[0], "model-0")] = [AIStreamChunk(type="delta", text="DISCARDED"), AIProviderError("synthetic failure", category="gateway", scope="model")]
+    error = (AIProviderError("synthetic failure", category="gateway", scope="model")
+             if failure == "provider" else RuntimeError("PRIVATE-ERROR"))
+    registry.responses[(providers[0], "model-0")] = [AIStreamChunk(type="delta", text="DISCARDED"), error]
     result = route_router.execute(request)
-    assert result.output_text == "WINNER" and result.finish_state == "cancelled"
+    assert result.output_text == ("WINNER" if race == "finished" else "")
+    assert result.finish_state == ("cancelled" if race == "finished" else "failed_before_output")
     assert registry.calls == [(providers[0], "model-0")]
+    assert registry.closed_calls == registry.calls
+
+
+@pytest.mark.parametrize("failure", ["provider", "provider_progress_callback", "route_progress_callback", "cancellation_callback"])
+def test_v2_unexpected_error_before_body_fails_closed(db, route_router, registry, failure):
+    agent, providers, _, _ = pool_setup(db)
+    request = make_route_request(db, route_router, agent, retention_policy="metadata_only")
+    error = RuntimeError("PRIVATE-ERROR")
+    deltas = []
+    request.on_delta = deltas.append
+
+    def progress(data):
+        if (failure == "route_progress_callback"
+                or failure == "provider_progress_callback" and data.get("phase") == "provider"):
+            raise error
+
+    def cancelled():
+        if registry.network_calls:
+            raise error
+        return False
+
+    request.on_progress = progress
+    if failure == "cancellation_callback":
+        request.is_cancelled = cancelled
+    registry.responses[(providers[0], "model-0")] = (
+        [error] if failure == "provider" else
+        [AIStreamChunk(type="progress", data={"phase": "provider"}), AIStreamChunk(type="delta", text="UNPUBLISHED")]
+    )
+    chunks, result = collect_result(route_router.execute_stream(request))
+    assert result.finish_state == "failed_before_output" and result.output_text == ""
+    assert deltas == [] and not any(chunk.type == "delta" for chunk in chunks)
+    job = db.get_ai_job(request.job_id)
+    assert job["status"] == "failed" and job["output_text"] in (None, "")
+    assert job["pinned_candidate_index"] is None
+    assert job["error_message"] == "unexpected_error: Unexpected invocation execution error"
+    count = 0 if failure == "route_progress_callback" else 1
+    assert registry.calls == [(providers[0], "model-0")] * count
+    assert registry.closed_calls == registry.calls
+    assert route_counts(db, request.job_id) == (count, count)
+    assert [attempt["status"] for attempt in result.attempts] == ["failed"] * count
+    for attempt in result.attempts:
+        assert attempt["error_category"] == "unexpected_error"
+        assert attempt["error_message"] == "Unexpected invocation execution error"
+        assert attempt["finish_reason"] == "error" and attempt["output_started"] is False
+
+
+@pytest.mark.parametrize("stage", ["internal", "validation"])
+def test_v2_unexpected_stage_error_discards_buffered_fragments(db, route_router, registry, stage):
+    agent, providers, _, _ = pool_setup(db)
+    request = make_route_request(db, route_router, agent, stage=stage, retention_policy="metadata_only")
+    deltas = []
+    request.on_delta = deltas.append
+    registry.responses[(providers[0], "model-0")] = [AIStreamChunk(type="delta", text="DISCARDED"), RuntimeError("PRIVATE-ERROR")]
+    chunks, result = collect_result(route_router.execute_stream(request))
+    assert result.finish_state == "failed_before_output" and result.output_text == ""
+    assert deltas == [] and not any(chunk.type == "delta" for chunk in chunks)
+    assert [attempt["status"] for attempt in result.attempts] == ["failed"]
+    assert result.attempts[0]["output_started"] is False
+    assert result.attempts[0]["error_category"] == "unexpected_error"
+    assert result.attempts[0]["error_message"] == "Unexpected invocation execution error"
+    assert result.actual_provider_id is None and result.actual_model_key is None
+    job = db.get_ai_job(request.job_id)
+    assert job["status"] == ("running" if stage == "internal" else "failed")
+    assert job["pinned_candidate_index"] is None and job["output_text"] in (None, "")
+    assert registry.calls == [(providers[0], "model-0")]
+    assert registry.closed_calls == registry.calls
+    assert route_counts(db, request.job_id) == (1, 1)
+
+
+def test_v2_late_request_validation_conflict_stays_typed(db, route_router, registry, fixed_agent):
+    request = make_route_request(db, route_router, fixed_agent)
+    stream = route_router.execute_stream(request)
+    assert next(stream).type == "progress"
+    request.messages[-1]["content"] += "changed"
+    with pytest.raises(ModelRouteConflictError):
+        next(stream)
+    assert registry.calls == [] and route_counts(db, request.job_id) == (1, 0)
+    job = db.get_ai_job(request.job_id)
+    assert job["status"] == "running" and job["attempts"][0]["status"] == "running"
 
 
 @pytest.mark.parametrize("failure", ["cancelled", "budget"])

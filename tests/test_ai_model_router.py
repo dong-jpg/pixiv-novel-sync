@@ -946,6 +946,30 @@ def internal_request(
     )
 
 
+@pytest.mark.parametrize("after_body", [False, True])
+def test_v1_unexpected_iteration_error_preserves_legacy_propagation(
+    route_router: ModelRouter,
+    route_request: RouteRequest,
+    fake_providers: FakeProviderRegistry,
+    db: Database,
+    after_body: bool,
+) -> None:
+    error = RuntimeError("synthetic unexpected failure")
+    fake_providers.responses[("p1", None)] = (
+        [AIStreamChunk(type="delta", text="BODY")] if after_body else []
+    ) + [error]
+    with pytest.raises(RuntimeError) as caught:
+        route_router.execute(route_request)
+    assert caught.value is error
+    assert len(fake_providers.calls) == 1 and fake_providers.calls[0][0] == "p1"
+    assert fake_providers.closed_calls == fake_providers.calls
+    job = db.get_ai_job(route_request.job_id)
+    assert job["status"] == "running"
+    assert job["pinned_candidate_index"] == (0 if after_body else None)
+    assert [attempt["status"] for attempt in job["attempts"]] == ["running"]
+    assert job["attempts"][0]["output_started"] is after_body
+
+
 def test_failure_before_first_delta_switches_across_providers(
     route_router: ModelRouter,
     route_request: RouteRequest,
