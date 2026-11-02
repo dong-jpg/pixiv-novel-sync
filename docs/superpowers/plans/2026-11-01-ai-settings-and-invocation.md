@@ -352,7 +352,7 @@ def _sampling(value: Any, field: str, maximum: float) -> float:
         raise InvocationValidationError("invalid_parameter", field + " is out of range")
     return result
 
-修正（2026-11-02）：整数采样值必须先按原值检查范围再转 `float`，避免 `10**400` 触发 `OverflowError`；错误仍固定为不包含输入值的 `invalid_parameter`。
+# 修正（2026-11-02）：整数采样值先检查范围再转 float，保持固定的 invalid_parameter 错误。
 
 
 def normalize_text_invocation(payload: Mapping[str, Any], *, agent: AIAgentConfig) -> TextInvocation:
@@ -918,7 +918,7 @@ def validate_plan(plan):
                     and row.reason in REASON_MESSAGES
                 )
 
-修正（2026-11-02）：枚举字段必须先证明是 `str` 再做集合成员判断；JSON 数组/对象一律得到固定的 `invalid_snapshot`，不能触发 `TypeError`。
+            # 修正（2026-11-02）：先检查 str 类型，数组/对象返回 invalid_snapshot 而非 TypeError。
 
             if row.input_tokens is None:
                 _require(not eligible and all(value is None for value in (
