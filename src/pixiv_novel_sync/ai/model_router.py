@@ -16,6 +16,16 @@ from ..storage.ai.core import (
     AIJobConflictError,
     AIRouteBudgetExhausted,
 )
+from .invocation import InvocationValidationError, TextInvocation, invocation_fingerprint, invocation_messages
+from .invocation_candidates import collect_candidate_profiles, model_execution_config_hash
+from .invocation_planner import (
+    ESTIMATOR_VERSION, PLANNER_VERSION, InvocationPlan, TokenEstimator,
+    estimate_text_invocation, plan_invocation,
+)
+from .invocation_snapshot import (
+    PlannedCandidateSnapshot, freeze_plan, planned_snapshot_from_payload,
+    planned_snapshot_payload,
+)
 from .model_catalog import ModelCatalogValidationError, normalize_model_key
 from .model_sync import provider_model_sync_config_hash
 from .models import AIAgentConfig, AIProviderConfig, AIStreamChunk
@@ -117,7 +127,7 @@ class RouteRequest:
     job_id: str
     stage: Literal["internal", "main", "validation"]
     messages: list[dict[str, str]]
-    candidate_snapshot: CandidateSnapshot
+    candidate_snapshot: CandidateSnapshot | PlannedCandidateSnapshot
     max_tokens: int
     owner_token: str
     on_delta: Callable[[str], None]
@@ -127,6 +137,8 @@ class RouteRequest:
     resume_candidate_index: int = 0
     is_cancelled: Callable[[], bool] | None = None
     route_deadline_at: str | None = None
+    invocation: TextInvocation | None = None
+    retention_policy: Literal["metadata_only", "keyword_compat"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +153,13 @@ class RouteResult:
         "partial",
         "cancelled",
     ]
+    snapshot_version: int = 1
+    actual_provider_id: int | None = None
+    actual_model_key: str | None = None
+    finish_reason: str | None = None
+    validation_status: Literal["not_requested", "passed", "failed"] | None = None
+    usage_summary: dict[str, Any] | None = None
+    job_status: Literal["succeeded", "failed", "partial", "cancelled"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,10 +178,19 @@ class ModelRouter:
         db_factory: Callable[[], Any],
         load_provider_config: Callable[[Any, int], AIProviderConfig],
         get_provider: Callable[[AIProviderConfig], AIProvider],
+        *,
+        token_estimator: TokenEstimator = estimate_text_invocation,
+        estimator_version: str = ESTIMATOR_VERSION,
+        load_invocation_provider_config: Callable[[Any, int], AIProviderConfig] | None = None,
+        prepare_invocation_providers: Callable[[tuple[int, ...]], None] | None = None,
     ) -> None:
         self._db_factory = db_factory
         self._load_provider_config = load_provider_config
         self._get_provider = get_provider
+        self._token_estimator = token_estimator
+        self._estimator_version = estimator_version
+        self._load_invocation_provider_config = load_invocation_provider_config
+        self._prepare_invocation_providers = prepare_invocation_providers
         self._lifecycle_lock = threading.Lock()
         self._closed = threading.Event()
         self._heartbeat_workers: dict[
@@ -253,8 +281,14 @@ class ModelRouter:
         cls,
         payload: Mapping[str, Any],
         snapshot_hash: str,
-    ) -> CandidateSnapshot:
+    ) -> CandidateSnapshot | PlannedCandidateSnapshot:
         """从持久化且不含密钥的 JSON 重建强类型候选快照。"""
+
+        if isinstance(payload, Mapping) and "version" in payload:
+            try:
+                return planned_snapshot_from_payload(payload, snapshot_hash)
+            except InvocationValidationError as exc:
+                raise ModelRouteConflictError(str(exc)) from exc
 
         try:
             if not isinstance(payload, Mapping):
@@ -609,6 +643,17 @@ class ModelRouter:
         ):
             raise ModelRouteConflictError("继续候选索引超出候选快照范围")
 
+        cls._validate_snapshot_configuration(db, agent, snapshot, resume_candidate_index)
+        return snapshot
+
+    @classmethod
+    def _validate_snapshot_configuration(
+        cls,
+        db: Any,
+        agent: AIAgentConfig,
+        snapshot: CandidateSnapshot | PlannedCandidateSnapshot,
+        resume_candidate_index: int,
+    ) -> None:
         current_agent = db.get_ai_agent(agent.id)
         if current_agent is None or not bool(current_agent.get("enabled")):
             raise ModelRouteConflictError("Agent 已不存在或已禁用")
@@ -645,17 +690,82 @@ class ModelRouter:
                 pool_versions[candidate.pool_id] = pool_version
             if pool_version != candidate.pool_version:
                 raise ModelRouteConflictError("模型池配置已变更，请重新开始任务")
+
+    def _validate_invocation_identity(
+        self, snapshot: PlannedCandidateSnapshot, invocation: TextInvocation | None,
+    ) -> None:
+        if invocation is None:
+            raise ModelRouteConflictError("Version-two route requires its immutable text request")
+        if (snapshot.plan.planner_version != PLANNER_VERSION
+                or snapshot.plan.estimator_version != self._estimator_version):
+            raise ModelRouteConflictError("Invocation planning rules changed")
+        effective = snapshot.plan.allowed_provider_ids
+        if invocation.allowed_provider_ids is not None and not set(effective).issubset(invocation.allowed_provider_ids):
+            raise ModelRouteConflictError("Route Provider scope changed")
+        if (invocation.max_tokens != snapshot.plan.output_reserve
+                or invocation_fingerprint(invocation, provider_ids=effective) != snapshot.plan.request_fingerprint):
+            raise ModelRouteConflictError("Route input fingerprint changed")
+
+    def _validate_invocation_request(self, request: RouteRequest) -> None:
+        snapshot = request.candidate_snapshot
+        if not isinstance(snapshot, PlannedCandidateSnapshot):
+            return
+        invocation = request.invocation
+        self._validate_invocation_identity(snapshot, invocation)
+        if (type(request.max_tokens) is not int
+                or type(request.temperature) not in (int, float)
+                or type(request.top_p) not in (int, float)
+                or request.messages != invocation_messages(invocation)
+                or request.temperature != invocation.temperature
+                or request.top_p != invocation.top_p
+                or request.max_tokens != invocation.max_tokens):
+            raise ModelRouteConflictError("Route request changed after planning")
+
+    def _validate_planned_snapshot(
+        self,
+        db: Any,
+        agent: AIAgentConfig,
+        snapshot: PlannedCandidateSnapshot,
+        resume_candidate_index: int,
+        invocation: TextInvocation | None,
+    ) -> PlannedCandidateSnapshot:
+        try:
+            if type(snapshot.version) is not int or snapshot.version != 2:
+                raise InvocationValidationError("invalid_snapshot", "Version-two snapshot fields are invalid")
+            planned_snapshot_from_payload(planned_snapshot_payload(snapshot), snapshot.snapshot_hash)
+        except InvocationValidationError as exc:
+            raise ModelRouteConflictError(str(exc)) from exc
+        if (type(resume_candidate_index) is not int
+                or not 0 <= resume_candidate_index < len(snapshot.candidates)):
+            raise ModelRouteConflictError("Resume index is outside the saved candidate snapshot")
+        self._validate_snapshot_configuration(db, agent, snapshot, resume_candidate_index)
+        self._validate_invocation_identity(snapshot, invocation)
+        catalogs: dict[int, dict[str, Any]] = {}
+        for row in snapshot.plan.eligible[resume_candidate_index:]:
+            profile = row.profile
+            if profile.provider_id not in catalogs:
+                catalogs[profile.provider_id] = {
+                    item["model_key"]: item
+                    for item in db.list_ai_provider_models(profile.provider_id, routable_only=False)["items"]
+                }
+            model = catalogs[profile.provider_id].get(profile.model_key)
+            if model_execution_config_hash(profile.model_key, model) != profile.model_config_hash:
+                raise ModelRouteConflictError("Catalog model configuration changed")
         return snapshot
 
     def validate_resume_snapshot(
         self,
         agent: AIAgentConfig,
-        snapshot: CandidateSnapshot,
+        snapshot: CandidateSnapshot | PlannedCandidateSnapshot,
         resume_candidate_index: int,
-    ) -> CandidateSnapshot:
+        *,
+        invocation: TextInvocation | None = None,
+    ) -> CandidateSnapshot | PlannedCandidateSnapshot:
         db = self._db_factory()
         try:
             with db.read_transaction():
+                if isinstance(snapshot, PlannedCandidateSnapshot):
+                    return self._validate_planned_snapshot(db, agent, snapshot, resume_candidate_index, invocation)
                 return self._validate_saved_snapshot(
                     db,
                     agent,
@@ -701,6 +811,35 @@ class ModelRouter:
                     agent_config_hash=agent_config_hash,
                     binding_version=binding_version,
                 )
+        finally:
+            db.close()
+
+    def _plan_invocation(self, db: Any, agent: AIAgentConfig, request: TextInvocation) -> InvocationPlan:
+        profiles = collect_candidate_profiles(db, agent)
+        return plan_invocation(
+            request, profiles, agent_context_window=agent.context_window,
+            required_capabilities=agent.required_capabilities,
+            estimate=self._token_estimator, estimator_version=self._estimator_version,
+        )
+
+    def plan_invocation(self, agent: AIAgentConfig, request: TextInvocation) -> InvocationPlan:
+        db = self._db_factory()
+        try:
+            with db.read_transaction():
+                return self._plan_invocation(db, agent, request)
+        finally:
+            db.close()
+
+    def resolve_invocation(self, agent: AIAgentConfig, request: TextInvocation) -> PlannedCandidateSnapshot:
+        initial = self.plan_invocation(agent, request)
+        if initial.eligible and self._prepare_invocation_providers is not None:
+            provider_ids = tuple(dict.fromkeys(row.profile.provider_id for row in initial.eligible))
+            self._prepare_invocation_providers(provider_ids)
+        db = self._db_factory()
+        try:
+            with db.read_transaction():
+                plan = self._plan_invocation(db, agent, request)
+                return freeze_plan(self._agent_config_hash(agent), int(agent.binding_version), plan)
         finally:
             db.close()
 
@@ -1015,6 +1154,13 @@ class ModelRouter:
         candidate: ModelCandidate,
         provider: AIProvider | None = None,
     ) -> bool:
+        if isinstance(request.candidate_snapshot, PlannedCandidateSnapshot):
+            self._validate_invocation_request(request)
+            row = request.candidate_snapshot.plan.eligible[candidate.candidate_index]
+            return (row.profile.provider_id == candidate.provider_id
+                    and row.profile.model_key == candidate.model_key
+                    and row.reason is None and row.input_tokens is not None
+                    and row.input_budget is not None and row.input_tokens <= row.input_budget)
         if candidate.context_window is None:
             return True
         overhead = 4 * len(request.messages) + 2
@@ -1059,18 +1205,28 @@ class ModelRouter:
             "cancelled",
         ],
     ) -> RouteResult:
+        attempts = self._attempts(db, request.job_id)
+        actual = next((item for item in reversed(attempts)
+                       if item.get("stage") == request.stage
+                       and (item.get("status") == "succeeded" or item.get("output_started"))), None)
         return RouteResult(
             job_id=request.job_id,
             output_text=output_text,
             candidate_snapshot_hash=request.candidate_snapshot.snapshot_hash,
-            attempts=self._attempts(db, request.job_id),
+            attempts=attempts,
             finish_state=finish_state,
+            snapshot_version=2 if isinstance(request.candidate_snapshot, PlannedCandidateSnapshot) else 1,
+            actual_provider_id=actual.get("provider_id") if actual else None,
+            actual_model_key=actual.get("model_key") if actual else None,
+            finish_reason=actual.get("finish_reason") if actual else None,
         )
 
     def _terminal_race_result(
         self,
         db: Any,
         request: RouteRequest,
+        *,
+        memory_output: str | None = None,
     ) -> RouteResult:
         job = db.get_ai_job(request.job_id)
         if job is None:
@@ -1090,9 +1246,16 @@ class ModelRouter:
         return self._result(
             db,
             request,
-            str(job.get("output_text") or ""),
+            memory_output if memory_output is not None else str(job.get("output_text") or ""),
             finish_state,
         )
+
+    def _owned_terminal_result(
+        self, db: Any, request: RouteRequest, *, cas_won: bool, memory_output: str,
+    ) -> RouteResult:
+        if cas_won and request.retention_policy == "metadata_only":
+            return self._terminal_race_result(db, request, memory_output=memory_output)
+        return self._terminal_race_result(db, request)
 
     def _finish_job_failure(
         self,
@@ -1133,7 +1296,22 @@ class ModelRouter:
         ):
             raise ModelRouteError("resume_candidate_index 必须是非负整数")
 
+        self._validate_invocation_request(request)
         db = self._db_factory()
+        if isinstance(request.candidate_snapshot, PlannedCandidateSnapshot) and not request.candidate_snapshot.candidates:
+            try:
+                state = self._active_route_state(db, request)
+                self._validate_execution_snapshot(db, request, (), state)
+                return self._finish_job_failure(
+                    db, request, category="no_eligible_candidate",
+                    message="No model satisfies the complete request",
+                )
+            except AIRouteBudgetExhausted as error:
+                return self._finish_job_failure(
+                    db, request, category="route_budget_exhausted", message=str(error),
+                )
+            finally:
+                db.close()
         try:
             heartbeat_stop, heartbeat_thread, cancel_event = self._start_heartbeat(
                 request
@@ -1225,7 +1403,15 @@ class ModelRouter:
 
                 try:
                     try:
-                        config = self._load_provider_config(
+                        loader = self._load_provider_config
+                        if isinstance(request.candidate_snapshot, PlannedCandidateSnapshot):
+                            loader = self._load_invocation_provider_config
+                            if loader is None:
+                                raise AIProviderError(
+                                    "Read-only invocation credential loader is unavailable",
+                                    category="configuration", scope="provider",
+                                )
+                        config = loader(
                             db,
                             candidate.provider_id,
                         )
@@ -1243,9 +1429,12 @@ class ModelRouter:
                             "Prompt exceeds candidate context window",
                             category="context_overflow", scope="model",
                         )
+                    self._validate_invocation_request(request)
                     current_iterator = iter(
                         provider.stream_generate(
-                            request.messages,
+                            invocation_messages(request.invocation)
+                            if isinstance(request.candidate_snapshot, PlannedCandidateSnapshot)
+                            else request.messages,
                             candidate.model_key,
                             request.temperature,
                             request.top_p,
@@ -1369,12 +1558,14 @@ class ModelRouter:
                             latency_ms=latency_ms,
                         )
                         current_attempt = None
-                        db.finish_ai_job_cas(
+                        cas_won = db.finish_ai_job_cas(
                             request.job_id,
                             request.owner_token,
                             "cancelled",
                         )
-                        return self._terminal_race_result(db, request)
+                        return self._owned_terminal_result(
+                            db, request, cas_won=cas_won, memory_output="".join(output_parts),
+                        )
 
                     if request.stage == "main" and current_output_started:
                         db.finish_ai_model_attempt(
@@ -1390,14 +1581,16 @@ class ModelRouter:
                             latency_ms=latency_ms,
                         )
                         current_attempt = None
-                        db.finish_ai_job_cas(
+                        cas_won = db.finish_ai_job_cas(
                             request.job_id,
                             request.owner_token,
                             "partial",
                             output_text="".join(output_parts),
                             error_message=str(error),
                         )
-                        return self._terminal_race_result(db, request)
+                        return self._owned_terminal_result(
+                            db, request, cas_won=cas_won, memory_output="".join(output_parts),
+                        )
 
                     if not db.finish_ai_model_attempt(
                         request.job_id,
@@ -1442,14 +1635,16 @@ class ModelRouter:
                             ),
                         )
                         current_attempt = None
-                        db.finish_ai_job_cas(
+                        cas_won = db.finish_ai_job_cas(
                             request.job_id,
                             request.owner_token,
                             "partial",
                             output_text="".join(output_parts),
                             error_message=str(error),
                         )
-                        return self._terminal_race_result(db, request)
+                        return self._owned_terminal_result(
+                            db, request, cas_won=cas_won, memory_output="".join(output_parts),
+                        )
                     db.finish_ai_model_attempt(
                         request.job_id,
                         current_attempt,

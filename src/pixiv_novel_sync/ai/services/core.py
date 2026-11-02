@@ -12,7 +12,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ...storage_db import Database, prepare_schema
-from ..crypto import AISecretManager
+from ..crypto import AISecretError, AISecretManager
+from ..invocation import TextInvocation, invocation_messages
+from ..invocation_planner import InvocationPlan
+from ..invocation_snapshot import PlannedCandidateSnapshot, planned_snapshot_payload
 from ..model_router import (
     CandidateSnapshot,
     ModelRouter,
@@ -23,7 +26,7 @@ from ..model_router import (
 )
 from ..model_sync import ModelSyncCoordinator
 from ..models import AIAgentConfig, AIProviderConfig, AIStreamChunk
-from ..providers import AIProvider
+from ..providers import AIProvider, AIProviderError
 
 
 class AIServiceError(RuntimeError):
@@ -51,9 +54,11 @@ class RouteJobContext:
     job_id: str
     owner_token: str
     agent: AIAgentConfig
-    candidate_snapshot: CandidateSnapshot
-    prompt_budget: PromptBudget
+    candidate_snapshot: CandidateSnapshot | PlannedCandidateSnapshot
+    prompt_budget: PromptBudget | InvocationPlan
     resume_candidate_index: int = 0
+    invocation: TextInvocation | None = None
+    retention_policy: Literal["metadata_only", "keyword_compat"] | None = None
 
 
 class AIServiceCore:
@@ -70,6 +75,8 @@ class AIServiceCore:
             self._db,
             self._load_provider_config,
             self._get_provider,
+            load_invocation_provider_config=self._load_invocation_provider_config,
+            prepare_invocation_providers=self._prepare_invocation_providers,
         )
 
     def _db(self) -> Database:
@@ -121,8 +128,31 @@ class AIServiceCore:
         config = self._load_provider_config(db, provider_id)
         return self._get_provider(config)
 
+    def _prepare_invocation_providers(self, provider_ids: tuple[int, ...]) -> None:
+        db = self._db()
+        try:
+            for provider_id in provider_ids:
+                row = db.get_ai_provider(provider_id, include_secret=True)
+                if row is None or not self.secret_manager.is_legacy_ciphertext(row.get("api_key_encrypted")):
+                    continue
+                try:
+                    self._load_provider_config(db, provider_id)
+                except (AISecretError, AIServiceError):
+                    # Execution records the provider-scoped configuration failure.
+                    continue
+        finally:
+            db.close()
+
+    def _load_invocation_provider_config(self, db: Database, provider_id: int) -> AIProviderConfig:
+        try:
+            return self._load_provider_config(db, provider_id, upgrade_legacy=False)
+        except (AISecretError, AIServiceError):
+            raise AIProviderError("Provider credentials are unavailable", category="configuration", scope="provider") from None
+
     @staticmethod
-    def _snapshot_payload(snapshot: CandidateSnapshot) -> dict[str, Any]:
+    def _snapshot_payload(snapshot: CandidateSnapshot | PlannedCandidateSnapshot) -> dict[str, Any]:
+        if isinstance(snapshot, PlannedCandidateSnapshot):
+            return planned_snapshot_payload(snapshot)
         return {
             "agent_config_hash": snapshot.agent_config_hash,
             "binding_version": snapshot.binding_version,
@@ -134,7 +164,7 @@ class AIServiceCore:
         db: Database,
         job_id: str,
         owner_token: str,
-        budget: PromptBudget,
+        budget: PromptBudget | InvocationPlan,
     ) -> bool:
         serialized = json.dumps(
             asdict(budget),
@@ -166,8 +196,10 @@ class AIServiceCore:
         max_tokens: int,
         parent_job_id: str | None = None,
         idempotency_key: str | None = None,
-        snapshot: CandidateSnapshot | None = None,
+        snapshot: CandidateSnapshot | PlannedCandidateSnapshot | None = None,
         resume_candidate_index: int = 0,
+        invocation: TextInvocation | None = None,
+        retention_policy: Literal["metadata_only", "keyword_compat"] | None = None,
     ) -> RouteJobContext:
         if self._closed:
             raise AIServiceError("AI 服务已关闭")
@@ -244,11 +276,24 @@ class AIServiceCore:
                 raise AIConflictError("继续任务 owner 无效")
 
         try:
+            if invocation is not None and (
+                type(max_tokens) is not int
+                or messages != invocation_messages(invocation)
+                or max_tokens != invocation.max_tokens
+            ):
+                raise AIServiceError("Text invocation and legacy request arguments disagree")
             if prepared_resume is None:
-                candidate_snapshot = self.model_router.resolve_candidates(
-                    agent,
-                    stage="main",
-                    snapshot=snapshot,
+                if invocation is not None:
+                    candidate_snapshot = self.model_router.resolve_invocation(agent, invocation)
+                else:
+                    candidate_snapshot = self.model_router.resolve_candidates(
+                        agent,
+                        stage="main",
+                        snapshot=snapshot,
+                    )
+            elif isinstance(snapshot, PlannedCandidateSnapshot):
+                candidate_snapshot = self.model_router.validate_resume_snapshot(
+                    agent, snapshot, resume_candidate_index, invocation=invocation,
                 )
             else:
                 candidate_snapshot = self.model_router.validate_resume_snapshot(
@@ -256,27 +301,30 @@ class AIServiceCore:
                     snapshot,
                     resume_candidate_index,
                 )
-            budget_snapshot = candidate_snapshot
-            if resume_candidate_index:
-                remaining_candidates = tuple(
-                    candidate
-                    for candidate in candidate_snapshot.candidates
-                    if candidate.candidate_index >= resume_candidate_index
+            if isinstance(candidate_snapshot, PlannedCandidateSnapshot):
+                prompt_budget = candidate_snapshot.plan
+            else:
+                budget_snapshot = candidate_snapshot
+                if resume_candidate_index:
+                    remaining_candidates = tuple(
+                        candidate
+                        for candidate in candidate_snapshot.candidates
+                        if candidate.candidate_index >= resume_candidate_index
+                    )
+                    if not remaining_candidates:
+                        raise AIConflictError("继续任务没有剩余候选模型")
+                    budget_snapshot = CandidateSnapshot(
+                        candidates=remaining_candidates,
+                        snapshot_hash=candidate_snapshot.snapshot_hash,
+                        agent_config_hash=candidate_snapshot.agent_config_hash,
+                        binding_version=candidate_snapshot.binding_version,
+                    )
+                prompt_budget = self.model_router.build_prompt_budget(
+                    agent,
+                    budget_snapshot,
+                    budget_messages,
+                    max_tokens,
                 )
-                if not remaining_candidates:
-                    raise AIConflictError("继续任务没有剩余候选模型")
-                budget_snapshot = CandidateSnapshot(
-                    candidates=remaining_candidates,
-                    snapshot_hash=candidate_snapshot.snapshot_hash,
-                    agent_config_hash=candidate_snapshot.agent_config_hash,
-                    binding_version=candidate_snapshot.binding_version,
-                )
-            prompt_budget = self.model_router.build_prompt_budget(
-                agent,
-                budget_snapshot,
-                budget_messages,
-                max_tokens,
-            )
             if prepared_resume is None:
                 if not db.set_ai_job_candidate_snapshot(
                     job_id,
@@ -308,6 +356,8 @@ class AIServiceCore:
             candidate_snapshot=candidate_snapshot,
             prompt_budget=prompt_budget,
             resume_candidate_index=resume_candidate_index,
+            invocation=invocation,
+            retention_policy=retention_policy,
         )
 
     @staticmethod
@@ -380,6 +430,22 @@ class AIServiceCore:
             if max_tokens is None
             else max_tokens
         )
+        invocation = context.invocation
+        if invocation is not None:
+            if (any(type(value) not in (int, float) for value in (temperature, top_p) if value is not None)
+                    or (max_tokens is not None and type(max_tokens) is not int)
+                    or messages != invocation_messages(invocation)
+                    or (temperature is not None and temperature != invocation.temperature)
+                    or (top_p is not None and top_p != invocation.top_p)
+                    or (max_tokens is not None and max_tokens != invocation.max_tokens)):
+                raise AIConflictError("Text request changed after planning")
+            route_messages = invocation_messages(invocation)
+            output_reserve = invocation.max_tokens
+            route_temperature, route_top_p = invocation.temperature, invocation.top_p
+        else:
+            route_messages = [dict(message) for message in messages]
+            route_temperature = context.agent.temperature if temperature is None else temperature
+            route_top_p = context.agent.top_p if top_p is None else top_p
         if (
             isinstance(output_reserve, bool)
             or not isinstance(output_reserve, int)
@@ -389,7 +455,6 @@ class AIServiceCore:
             raise AIServiceError(
                 "max_tokens 必须为正整数且不能超过已保存的输出预算"
             )
-        route_messages = [dict(message) for message in messages]
         request = RouteRequest(
             job_id=context.job_id,
             stage=stage,
@@ -399,11 +464,11 @@ class AIServiceCore:
             owner_token=context.owner_token,
             on_delta=lambda _text: None,
             on_progress=lambda _data: None,
-            temperature=(
-                context.agent.temperature if temperature is None else temperature
-            ),
-            top_p=context.agent.top_p if top_p is None else top_p,
+            temperature=route_temperature,
+            top_p=route_top_p,
             resume_candidate_index=context.resume_candidate_index,
+            invocation=invocation,
+            retention_policy=context.retention_policy,
         )
         return (yield from self.model_router.execute_stream(request))
 

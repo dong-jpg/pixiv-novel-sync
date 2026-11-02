@@ -240,6 +240,15 @@ class AiCoreMixin:
         self.conn.execute(f"UPDATE ai_providers SET {', '.join(fields)} WHERE id = ?", params)
         self._commit_if_needed()
 
+    def upgrade_ai_provider_ciphertext(self, provider_id: int, expected: str, replacement: str) -> bool:
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE ai_providers SET api_key_encrypted = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND api_key_encrypted = ?",
+                (replacement, provider_id, expected),
+            )
+            return cursor.rowcount == 1
+
     def delete_ai_provider(self, provider_id: int) -> None:
         with self.transaction() as conn:
             fixed_agent = conn.execute(

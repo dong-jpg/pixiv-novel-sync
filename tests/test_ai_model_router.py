@@ -327,6 +327,8 @@ def test_route_contract_field_order_and_immutability() -> None:
         "resume_candidate_index",
         "is_cancelled",
         "route_deadline_at",
+        "invocation",
+        "retention_policy",
     ]
     assert [field.name for field in fields(RouteResult)] == [
         "job_id",
@@ -334,6 +336,13 @@ def test_route_contract_field_order_and_immutability() -> None:
         "candidate_snapshot_hash",
         "attempts",
         "finish_state",
+        "snapshot_version",
+        "actual_provider_id",
+        "actual_model_key",
+        "finish_reason",
+        "validation_status",
+        "usage_summary",
+        "job_status",
     ]
     assert [field.name for field in fields(PromptBudget)] == [
         "effective_context_window",

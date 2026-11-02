@@ -1451,7 +1451,9 @@ class AIAdminMixin:
         if missing:
             raise AIServiceError(f"固定模型缺少必需能力：{', '.join(missing)}")
 
-    def _load_provider_config(self, db: Database, provider_id: int) -> AIProviderConfig:
+    def _load_provider_config(
+        self, db: Database, provider_id: int, *, upgrade_legacy: bool = True,
+    ) -> AIProviderConfig:
         row = db.get_ai_provider(provider_id, include_secret=True)
         if not row:
             raise AIServiceError("Provider 不存在")
@@ -1460,9 +1462,9 @@ class AIAdminMixin:
         stored_cipher = row.get("api_key_encrypted")
         api_key = self.secret_manager.decrypt(stored_cipher)
         # L4: 若命中已废弃的 v1（无盐 SHA-256）KDF，解密成功后透明升级到 v2 回写。
-        if api_key and self.secret_manager.is_legacy_ciphertext(stored_cipher):
+        if upgrade_legacy and api_key and self.secret_manager.is_legacy_ciphertext(stored_cipher):
             try:
-                db.update_ai_provider(provider_id, {"api_key_encrypted": self.secret_manager.encrypt(api_key)})
+                db.upgrade_ai_provider_ciphertext(provider_id, stored_cipher, self.secret_manager.encrypt(api_key))
             except Exception:
                 pass  # 升级失败不影响本次使用；下次再试
         return AIProviderConfig(
