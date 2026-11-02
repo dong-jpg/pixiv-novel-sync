@@ -341,9 +341,11 @@ def canonical_snapshot() -> tuple[str, str]:
     return serialized, hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def resume_parent(db, policy):
+def resume_parent(db, policy, *, audit=None):
     if policy == "metadata_only":
         create_metadata_job(db, "parent")
+        if audit is not None:
+            assert db.replace_ai_job_audit("parent", "owner", audit)
         task_type = "general"
     elif policy == "keyword_compat":
         task_type = "keyword_clean"
@@ -392,6 +394,100 @@ def test_metadata_resume_child_inherits_only_trusted_audit_and_preserves_index(d
     assert "SENTINEL" not in json.dumps(row)
 
 
+def test_metadata_resume_retry_survives_audit_enrichment(db):
+    options = resume_parent(db, "metadata_only", audit={"audit_version": 1})
+    data = {"resume_candidate_index": 0, "retention_policy": "keyword_compat",
+            "messages": [{"role": "user", "content": "INPUT_SENTINEL"}]}
+    child, created = db.create_or_get_ai_resume_job("child", input_data=data, **options)
+    assert created and child["input"] == {
+        "audit_version": 1, "retention_policy": "metadata_only", "resume_candidate_index": 0,
+    }
+    assert db.replace_ai_job_audit("child", "child-owner", {
+        "audit_version": 1, "business_type": "general", "input_chars": 3, "message_count": 1,
+        "input_fingerprint": "a" * 64, "allowed_provider_ids": [2, 1, 2],
+        "retention_policy": "keyword_compat", "resume_candidate_index": 12,
+        "messages": data["messages"], "output_text": "OUTPUT_SENTINEL",
+    })
+    before = dict(db.conn.execute("SELECT * FROM ai_jobs WHERE job_id='child'").fetchone())
+    repeated, created = db.create_or_get_ai_resume_job(
+        "ignored", input_data=data, **{**options, "owner_token": "retry-owner"},
+    )
+    assert not created and repeated["job_id"] == child["job_id"]
+    assert repeated["owner_token"] == "child-owner"
+    assert repeated["input"]["resume_candidate_index"] == 0
+    assert repeated["input"]["allowed_provider_ids"] == [1, 2]
+    assert repeated["input"]["input_fingerprint"] == "a" * 64
+    assert dict(db.conn.execute("SELECT * FROM ai_jobs WHERE job_id='child'").fetchone()) == before
+    rows = [dict(row) for row in db.conn.execute("SELECT * FROM ai_jobs")]
+    assert len(rows) == 2 and all(row["output_text"] is None for row in rows)
+    serialized = json.dumps(rows)
+    assert "SENTINEL" not in serialized and "keyword_compat" not in serialized
+    assert db.conn.execute("SELECT COUNT(*) FROM ai_job_model_attempts").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("change", ["resume_candidate_index", "agent_id", "task_type", "snapshot"])
+def test_metadata_resume_retry_rejects_changed_request_identity(db, change):
+    options = resume_parent(db, "metadata_only")
+    db.create_or_get_ai_resume_job("child", input_data={"resume_candidate_index": 0}, **options)
+    assert db.replace_ai_job_audit("child", "child-owner", {"allowed_provider_ids": [1]})
+    before = dict(db.conn.execute("SELECT * FROM ai_jobs WHERE job_id='child'").fetchone())
+    if change == "snapshot":
+        options["candidate_snapshot"]["candidates"][0]["model_key"] = "different-model"
+        serialized = json.dumps(options["candidate_snapshot"], sort_keys=True, separators=(",", ":"))
+        options["candidate_snapshot_hash"] = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    else:
+        options[change] = {"resume_candidate_index": 1, "agent_id": 2, "task_type": "keyword_clean"}[change]
+    with pytest.raises(AIJobConflictError):
+        db.create_or_get_ai_resume_job(
+            "conflict", input_data={"resume_candidate_index": options["resume_candidate_index"]}, **options,
+        )
+    assert dict(db.conn.execute("SELECT * FROM ai_jobs WHERE job_id='child'").fetchone()) == before
+    assert db.conn.execute("SELECT COUNT(*) FROM ai_jobs").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize("index", [None, False, 0.0, "0", 1])
+def test_metadata_resume_retry_rejects_changed_or_noninteger_stored_index(db, index):
+    options = resume_parent(db, "metadata_only")
+    child, _ = db.create_or_get_ai_resume_job("child", input_data={"resume_candidate_index": 0}, **options)
+    child["input"]["resume_candidate_index"] = index
+    db.conn.execute("UPDATE ai_jobs SET input_json=? WHERE job_id='child'", (json.dumps(child["input"]),))
+    db.conn.commit()
+    with pytest.raises(AIJobConflictError):
+        db.create_or_get_ai_resume_job("conflict", input_data={"resume_candidate_index": 0}, **options)
+    assert db.conn.execute("SELECT COUNT(*) FROM ai_jobs").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize("policy", [None, "keyword_compat"])
+def test_metadata_resume_retry_rejects_stored_policy_mismatch(db, policy):
+    options = resume_parent(db, "metadata_only")
+    child, _ = db.create_or_get_ai_resume_job("child", input_data={"resume_candidate_index": 0}, **options)
+    if policy is None:
+        child["input"].pop("retention_policy")
+    else:
+        child["input"]["retention_policy"] = policy
+    db.conn.execute("UPDATE ai_jobs SET input_json=? WHERE job_id='child'", (json.dumps(child["input"]),))
+    db.conn.commit()
+    with pytest.raises(AIJobConflictError):
+        db.create_or_get_ai_resume_job("conflict", input_data={"resume_candidate_index": 0}, **options)
+    assert db.conn.execute("SELECT COUNT(*) FROM ai_jobs").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize("change", ["stored_snapshot", "request_hash"])
+def test_metadata_resume_retry_rejects_snapshot_fingerprint_mismatch(db, change):
+    options = resume_parent(db, "metadata_only")
+    db.create_or_get_ai_resume_job("child", input_data={"resume_candidate_index": 0}, **options)
+    if change == "stored_snapshot":
+        db.conn.execute("UPDATE ai_jobs SET candidate_snapshot_json='{}' WHERE job_id='child'")
+        db.conn.commit()
+        error = AIJobConflictError
+    else:
+        options["candidate_snapshot_hash"] = "b" * 64
+        error = ValueError
+    with pytest.raises(error):
+        db.create_or_get_ai_resume_job("conflict", input_data={"resume_candidate_index": 0}, **options)
+    assert db.conn.execute("SELECT COUNT(*) FROM ai_jobs").fetchone()[0] == 2
+
+
 @pytest.mark.parametrize("value", [True, 0.0, "0"])
 def test_metadata_resume_input_index_must_be_strict_integer(db, value):
     options = resume_parent(db, "metadata_only")
@@ -409,6 +505,10 @@ def test_usage_legacy_resume_keeps_unmarked_input_and_rejects_forged_policy(db):
     assert created and first["input"] == data and first["validation_status"] == "unknown"
     second, created = db.create_or_get_ai_resume_job("ignored", input_data=data, **options)
     assert not created and second["job_id"] == first["job_id"]
+    for changed in ({**data, "legacy": "different"}, dict(reversed(list(data.items())))):
+        with pytest.raises(AIJobConflictError):
+            db.create_or_get_ai_resume_job("conflict", input_data=changed, **options)
+    assert db.conn.execute("SELECT COUNT(*) FROM ai_jobs").fetchone()[0] == 2
     with pytest.raises(ValueError):
         db.create_or_get_ai_resume_job("forged", input_data={**data, "retention_policy": "metadata_only"},
                                       **{**options, "idempotency_key": "forged"})

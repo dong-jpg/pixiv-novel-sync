@@ -961,11 +961,24 @@ class AiCoreMixin:
                 (parent_job_id, idempotency_key),
             ).fetchone()
             if existing is not None:
+                if policy == "metadata_only":
+                    # Audit enrichment must not change the frozen resume request identity.
+                    stored_policy = _retention_policy(existing["input_json"])
+                    stored_input = json.loads(existing["input_json"]) if stored_policy == policy else {}
+                    stored_index = stored_input.get("resume_candidate_index")
+                    input_matches = (
+                        stored_policy == policy
+                        and type(stored_index) is int
+                        and stored_index == resume_candidate_index
+                        and existing["candidate_snapshot_json"] == serialized_snapshot
+                    )
+                else:
+                    input_matches = existing["input_json"] == serialized_input
                 if (
                     existing["task_type"] != task_type
                     or existing["agent_id"] != agent_id
                     or existing["candidate_snapshot_hash"] != expected_hash
-                    or existing["input_json"] != serialized_input
+                    or not input_matches
                 ):
                     raise AIJobConflictError("幂等键已用于不同的继续请求")
                 return self._private_ai_job_from_row(existing), False
