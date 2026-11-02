@@ -13,6 +13,7 @@ from pixiv_novel_sync.ai.providers import (
     AIProviderError,
     AnthropicProvider,
     OpenAICompatibleProvider,
+    ProviderConfigError,
     create_provider,
 )
 
@@ -685,3 +686,421 @@ def test_cancelled_after_delta_closes_active_response(
     assert first.text == "正文"
     assert caught.value.category == "cancelled"
     assert response.closed is True
+
+
+def test_chat_usage_only_frame_after_finish_reason_keeps_original_request_ordinal(monkeypatch):
+    provider = OpenAICompatibleProvider(make_config("openai_compatible"))
+    response = FakeResponse(lines=[
+        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}',
+        'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}',
+        'data: [DONE]',
+    ])
+    attach_responses(monkeypatch, provider, [response])
+    seen = []
+    chunks = list(provider.stream_generate(
+        MESSAGES, "m", 0.0, 0.9, 50,
+        request_guard=lambda: 7,
+        on_usage=lambda ordinal, usage: seen.append((ordinal, dict(usage))),
+    ))
+    assert "".join(chunk.text for chunk in chunks if chunk.type == "delta") == "ok"
+    assert chunks[-1].data == {"finish_reason": "stop"}
+    assert seen[-1][0] == 7
+    assert seen[-1][1]["input_tokens"] == 10
+    assert seen[-1][1]["complete"] is True
+    assert response.closed
+
+
+def test_empty_stream_fallback_has_two_independent_usage_records(monkeypatch):
+    provider = OpenAICompatibleProvider(make_config("openai_compatible"))
+    attach_responses(monkeypatch, provider, [
+        FakeResponse(lines=[
+            'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":0,"total_tokens":10}}',
+            'data: [DONE]',
+        ]),
+        FakeResponse(payload={
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+        }),
+    ])
+    latest = {}
+    allocated = []
+
+    def guard():
+        if allocated:
+            assert latest[allocated[-1]]["complete"] is True
+        allocated.append(len(allocated) + 1)
+        return allocated[-1]
+
+    list(provider.stream_generate(
+        MESSAGES, "m", 0.0, 0.9, 50, request_guard=guard,
+        on_usage=lambda ordinal, usage: latest.__setitem__(ordinal, dict(usage)),
+    ))
+    assert set(latest) == {1, 2}
+    assert latest[1]["output_tokens"] == 0
+    assert latest[2]["output_tokens"] == 2
+    assert sum(item["input_tokens"] for item in latest.values()) == 20
+
+
+def usage_response(provider_type, *, stream=True, text="ok", reason=None, terminal=True):
+    if provider_type == "anthropic":
+        usage = {"input_tokens": 12, "cache_creation_input_tokens": 8,
+                 "cache_read_input_tokens": 80, "output_tokens": 7}
+        reason = reason or "end_turn"
+        if not stream:
+            return FakeResponse(payload={"content": [{"type": "text", "text": text}],
+                                         "stop_reason": reason, "usage": usage})
+        events = [
+            {"type": "message_start", "message": {"usage": {**usage, "output_tokens": 1}}},
+            {"type": "content_block_delta", "delta": {"type": "text_delta", "text": text}},
+            {"type": "message_delta", "usage": {"output_tokens": 5}},
+            {"type": "message_delta", "delta": {"stop_reason": reason}, "usage": {"output_tokens": 7}},
+            {"type": "message_delta", "usage": {"output_tokens": 7}},
+        ]
+        if terminal:
+            events.append({"type": "message_stop"})
+        return FakeResponse(lines=["data: " + json.dumps(event) for event in events])
+    usage = {"prompt_tokens": 100, "completion_tokens": 7, "total_tokens": 107,
+             "prompt_tokens_details": {"cached_tokens": 80},
+             "completion_tokens_details": {"reasoning_tokens": 2}}
+    reason = reason or "stop"
+    if not stream:
+        return FakeResponse(payload={"choices": [{"message": {"content": text}, "finish_reason": reason}],
+                                     "usage": usage})
+    lines = ["data: " + json.dumps({"usage": usage, "choices": [
+        {"delta": {"content": text}, "finish_reason": reason},
+    ]})]
+    if terminal:
+        lines.append("data: [DONE]")
+    return FakeResponse(lines=lines)
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic", "xai"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_adapters_report_usage_including_anthropic_cumulative_and_inherited_xai(monkeypatch, provider_type, stream):
+    provider = create_provider(make_config(provider_type, stream_enabled=stream))
+    response = usage_response(provider_type, stream=stream)
+    calls = attach_responses(monkeypatch, provider, [response])
+    seen = []
+    original_messages = [dict(message) for message in MESSAGES]
+    chunks = list(provider.stream_generate(
+        MESSAGES, "m", 0.0, 0.9, 50, request_guard=lambda: 3,
+        on_usage=lambda ordinal, usage: seen.append((ordinal, dict(usage))),
+    ))
+    assert len(calls) == 1
+    assert MESSAGES == original_messages
+    assert [chunk.type for chunk in chunks] == ["delta", "done"]
+    assert all(ordinal == 3 for ordinal, _ in seen)
+    assert all(not usage["complete"] for _, usage in seen[:-1])
+    final = seen[-1][1]
+    assert (final["input_tokens"], final["output_tokens"], final["total_tokens"]) == (100, 7, 107)
+    assert final["cached_input_tokens"] == 80
+    assert final["complete"] is True
+    assert final["missing_reason"] is None
+    assert response.closed
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("reason", ["length", "content_filter"])
+def test_unsuccessful_generation_can_still_have_complete_usage(monkeypatch, provider_type, stream, reason):
+    provider = create_provider(make_config(provider_type, stream_enabled=stream))
+    response = usage_response(provider_type, stream=stream, reason=reason)
+    calls = attach_responses(monkeypatch, provider, [response])
+    seen = []
+    error = collect_error(provider, request_guard=lambda: 1,
+                          on_usage=lambda ordinal, usage: seen.append((ordinal, dict(usage))))
+    assert error.category == "incomplete_response"
+    assert error.finish_reason == reason
+    assert len(calls) == 1
+    assert seen[-1][1]["complete"] is True
+    assert response.closed
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic"])
+def test_stream_usage_without_terminal_marker_stays_incomplete_without_changing_completion(monkeypatch, provider_type):
+    provider = create_provider(make_config(provider_type))
+    response = usage_response(provider_type, terminal=False)
+    calls = attach_responses(monkeypatch, provider, [response])
+    seen = []
+    chunks = list(provider.stream_generate(
+        MESSAGES, "m", 0.0, 0.9, 50, request_guard=lambda: 1,
+        on_usage=lambda ordinal, usage: seen.append((ordinal, dict(usage))),
+    ))
+    assert chunks[-1].type == "done"
+    assert len(calls) == 1
+    assert seen[-1][1]["complete"] is False
+    assert seen[-1][1]["missing_reason"] == "interrupted"
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic"])
+@pytest.mark.parametrize("action", ["cancel", "close"])
+def test_partial_stream_cancellation_or_close_finishes_usage_without_retry(monkeypatch, provider_type, action):
+    provider = create_provider(make_config(provider_type, max_retries=2))
+    response = usage_response(provider_type)
+    calls = attach_responses(monkeypatch, provider, [response])
+    seen = []
+    cancelled = False
+    iterator = provider.stream_generate(
+        MESSAGES, "m", 0.0, 0.9, 50, request_guard=lambda: 1,
+        is_cancelled=lambda: cancelled,
+        on_usage=lambda ordinal, usage: seen.append((ordinal, dict(usage))),
+    )
+    assert next(iterator).type == "delta"
+    if action == "cancel":
+        cancelled = True
+        with pytest.raises(AIProviderError) as caught:
+            next(iterator)
+        assert caught.value.category == "cancelled"
+    else:
+        iterator.close()
+    assert len(calls) == 1
+    assert seen[-1][1]["complete"] is False
+    assert seen[-1][1]["missing_reason"] == "interrupted"
+    assert response.closed
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_cancelled_before_send_allocates_no_usage_ordinal(monkeypatch, provider_type, stream):
+    provider = create_provider(make_config(provider_type, stream_enabled=stream))
+    calls = attach_responses(monkeypatch, provider, [])
+    allocations, seen = [], []
+    error = collect_error(provider, is_cancelled=lambda: True,
+                          request_guard=lambda: allocations.append(1),
+                          on_usage=lambda ordinal, usage: seen.append((ordinal, usage)))
+    assert error.category == "cancelled"
+    assert allocations == seen == calls == []
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("error_type", [ValueError, ProviderConfigError, requests.ConnectionError])
+def test_usage_callback_failure_escapes_transport_handlers_without_retry(monkeypatch, provider_type, stream, error_type):
+    provider = create_provider(make_config(provider_type, stream_enabled=stream, max_retries=2))
+    response = usage_response(provider_type, stream=stream)
+    calls = attach_responses(monkeypatch, provider, [response])
+    error = error_type("local persistence unavailable")
+    seen = []
+    allocations = []
+
+    def guard():
+        allocations.append(len(allocations) + 1)
+        return allocations[-1]
+
+    def fail(ordinal, usage):
+        seen.append((ordinal, usage))
+        raise error
+
+    with pytest.raises(error_type) as caught:
+        list(provider.stream_generate(MESSAGES, "m", 0.0, 0.9, 50, request_guard=guard, on_usage=fail))
+    assert caught.value is error
+    assert len(seen) == len(calls) == len(allocations) == 1
+    assert response.closed
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("error_type", [ProviderConfigError, requests.ConnectionError])
+def test_guard_failure_never_allocates_another_usage_ordinal(monkeypatch, provider_type, stream, error_type):
+    provider = create_provider(make_config(provider_type, stream_enabled=stream, max_retries=2))
+    calls = attach_responses(monkeypatch, provider, [])
+    error = error_type("local reservation unavailable")
+    allocations = []
+
+    def guard():
+        allocations.append(1)
+        raise error
+
+    with pytest.raises(error_type) as caught:
+        list(provider.stream_generate(MESSAGES, "m", 0.0, 0.9, 50, request_guard=guard, on_usage=lambda *_: None))
+    assert caught.value is error
+    assert calls == []
+    assert allocations == [1]
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic"])
+@pytest.mark.parametrize("failure_at", ["guard", "observer", "terminal"])
+@pytest.mark.parametrize("error_type", [ProviderConfigError, requests.ConnectionError])
+def test_fallback_usage_callback_or_guard_error_cannot_trigger_parent_stream_retry(monkeypatch, provider_type, failure_at, error_type):
+    provider = create_provider(make_config(provider_type, max_retries=2))
+    empty = usage_response(provider_type, text="")
+    fallback = usage_response(provider_type, stream=False)
+    calls = attach_responses(monkeypatch, provider, [empty, fallback])
+    error = error_type("local accounting unavailable")
+    seen, allocations = [], []
+
+    def guard():
+        allocations.append(len(allocations) + 1)
+        if failure_at == "guard" and len(allocations) == 2:
+            raise error
+        return allocations[-1]
+
+    def observe(ordinal, usage):
+        seen.append((ordinal, usage))
+        if (failure_at == "observer" and ordinal == 2) or (failure_at == "terminal" and usage["complete"]):
+            raise error
+
+    with pytest.raises(error_type) as caught:
+        list(provider.stream_generate(MESSAGES, "m", 0.0, 0.9, 50, request_guard=guard, on_usage=observe))
+    assert caught.value is error
+    assert len(calls) == (2 if failure_at == "observer" else 1)
+    assert len(allocations) == (1 if failure_at == "terminal" else 2)
+    assert empty.closed
+    if failure_at == "observer":
+        assert fallback.closed
+        assert len([ordinal for ordinal, _ in seen if ordinal == 2]) == 1
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic"])
+def test_legacy_none_guard_emits_no_usage_callback(monkeypatch, provider_type):
+    provider = create_provider(make_config(provider_type))
+    attach_responses(monkeypatch, provider, [usage_response(provider_type)])
+    seen = []
+    chunks = list(provider.stream_generate(
+        MESSAGES, "m", 0.0, 0.9, 50, request_guard=lambda: None,
+        on_usage=lambda ordinal, usage: seen.append((ordinal, usage)),
+    ))
+    assert chunks[-1].type == "done"
+    assert seen == []
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_interrupted_usage_callback_failure_stops_http_retry_before_next_ordinal(monkeypatch, provider_type, stream):
+    provider = create_provider(make_config(provider_type, stream_enabled=stream, max_retries=2))
+    response = FakeResponse(503, text="unavailable")
+    calls = attach_responses(monkeypatch, provider, [response])
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers._sleep_before_retry", lambda *_: None)
+    error = requests.ConnectionError("local persistence unavailable")
+    allocations, seen = [], []
+
+    def guard():
+        allocations.append(len(allocations) + 1)
+        return allocations[-1]
+
+    def fail(ordinal, usage):
+        seen.append((ordinal, usage))
+        raise error
+
+    with pytest.raises(requests.ConnectionError) as caught:
+        list(provider.stream_generate(MESSAGES, "m", 0.0, 0.9, 50, request_guard=guard, on_usage=fail))
+    assert caught.value is error
+    assert len(calls) == len(allocations) == len(seen) == 1
+    assert seen[0][1]["missing_reason"] == "interrupted"
+    assert response.closed
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic"])
+def test_non_stream_final_usage_callback_finishes_before_body_is_yielded(monkeypatch, provider_type):
+    provider = create_provider(make_config(provider_type, stream_enabled=False, max_retries=2))
+    response = usage_response(provider_type, stream=False)
+    calls = attach_responses(monkeypatch, provider, [response])
+    error = requests.ConnectionError("local final persistence unavailable")
+    chunks, seen = [], []
+
+    def observe(ordinal, usage):
+        seen.append((ordinal, usage))
+        if usage["complete"]:
+            raise error
+
+    with pytest.raises(requests.ConnectionError) as caught:
+        for chunk in provider.stream_generate(MESSAGES, "m", 0.0, 0.9, 50, request_guard=lambda: 1, on_usage=observe):
+            chunks.append(chunk)
+    assert caught.value is error
+    assert len(calls) == 1
+    assert chunks == []
+    assert len(seen) == 2
+    assert response.closed
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_invalid_provider_usage_does_not_leak_text_or_retry_successful_body(monkeypatch, caplog, provider_type, stream):
+    provider = create_provider(make_config(provider_type, stream_enabled=stream, max_retries=2))
+    response = usage_response(provider_type, stream=stream)
+    private = "private upstream usage content"
+    if stream:
+        event = json.loads(response.lines[0][6:])
+        target = event["message"] if provider_type == "anthropic" else event
+        target["usage"] = private
+        response.lines[0] = "data: " + json.dumps(event)
+    else:
+        response._payload["usage"] = private
+    calls = attach_responses(monkeypatch, provider, [response])
+    seen = []
+    chunks = list(provider.stream_generate(
+        MESSAGES, "m", 0.0, 0.9, 50, request_guard=lambda: 1,
+        on_usage=lambda ordinal, usage: seen.append((ordinal, usage)),
+    ))
+    assert len(calls) == 1
+    assert chunks[-1].type == "done"
+    assert seen[-1][1]["complete"] is False
+    assert seen[-1][1]["missing_reason"] == "invalid_usage"
+    assert private not in repr(seen)
+    assert private not in caplog.text
+    assert response.closed
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic"])
+def test_empty_stream_eof_finishes_usage_before_fallback_ordinal(monkeypatch, provider_type):
+    provider = create_provider(make_config(provider_type))
+    calls = attach_responses(monkeypatch, provider, [
+        usage_response(provider_type, text="", terminal=False),
+        usage_response(provider_type, stream=False),
+    ])
+    latest, allocations = {}, []
+
+    def guard():
+        if allocations:
+            assert latest[1]["complete"] is False
+            assert latest[1]["missing_reason"] == "interrupted"
+        allocations.append(len(allocations) + 1)
+        return allocations[-1]
+
+    chunks = list(provider.stream_generate(
+        MESSAGES, "m", 0.0, 0.9, 50, request_guard=guard,
+        on_usage=lambda ordinal, usage: latest.__setitem__(ordinal, dict(usage)),
+    ))
+    assert len(calls) == 2
+    assert allocations == [1, 2]
+    assert latest[2]["complete"] is True
+    assert chunks[-1].type == "done"
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic"])
+def test_non_stream_empty_body_still_records_reported_usage(monkeypatch, provider_type):
+    provider = create_provider(make_config(provider_type, stream_enabled=False))
+    response = usage_response(provider_type, stream=False)
+    response._payload["content" if provider_type == "anthropic" else "choices"] = []
+    attach_responses(monkeypatch, provider, [response])
+    seen = []
+    error = collect_error(provider, request_guard=lambda: 1,
+                          on_usage=lambda ordinal, usage: seen.append((ordinal, usage)))
+    assert error.category == "empty_response"
+    assert seen[-1][1]["complete"] is True
+    assert seen[-1][1]["total_tokens"] == 107
+    assert response.closed
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_unreported_usage_stays_unknown_without_an_extra_send(monkeypatch, provider_type, stream):
+    provider = create_provider(make_config(provider_type, stream_enabled=stream, max_retries=2))
+    if stream:
+        response = (anthropic_stream_response("ok", "end_turn") if provider_type == "anthropic"
+                    else openai_stream_response("ok", "stop"))
+    else:
+        response = usage_response(provider_type, stream=False)
+        response._payload.pop("usage")
+    calls = attach_responses(monkeypatch, provider, [response])
+    seen = []
+    chunks = list(provider.stream_generate(
+        MESSAGES, "m", 0.0, 0.9, 50, request_guard=lambda: 1,
+        on_usage=lambda ordinal, usage: seen.append((ordinal, usage)),
+    ))
+    assert len(calls) == len(seen) == 1
+    assert chunks[-1].type == "done"
+    assert seen[0][1]["missing_reason"] == "not_reported"
+    assert seen[0][1]["input_tokens"] is None
+    assert seen[0][1]["output_tokens"] is None
+    assert seen[0][1]["total_tokens"] is None

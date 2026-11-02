@@ -26,6 +26,7 @@ from .model_catalog import (
     normalize_model_record,
 )
 from .models import AIProviderConfig, AIStreamChunk, ModelListResult
+from .provider_usage import RequestUsageObserver
 
 logger = logging.getLogger(__name__)
 
@@ -400,12 +401,11 @@ def _check_cancelled(is_cancelled: Callable[[], bool] | None) -> None:
 
 
 def _before_network_request(
-    request_guard: Callable[[], None] | None,
+    request_guard: Callable[[], int | None] | None,
     is_cancelled: Callable[[], bool] | None,
-) -> None:
+) -> int | None:
     _check_cancelled(is_cancelled)
-    if request_guard is not None:
-        request_guard()
+    return request_guard() if request_guard is not None else None
 
 
 _MAX_SSE_LINE_BYTES = 1024 * 1024
@@ -507,8 +507,9 @@ class AIProvider:
         top_p: float,
         max_tokens: int,
         *,
-        request_guard: Callable[[], None] | None = None,
+        request_guard: Callable[[], int | None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
+        on_usage: Callable[[int, Mapping[str, Any]], None] | None = None,
     ) -> Iterator[AIStreamChunk]:
         raise NotImplementedError
 
@@ -839,8 +840,9 @@ class OpenAICompatibleProvider(AIProvider):
         top_p: float,
         max_tokens: int,
         *,
-        request_guard: Callable[[], None] | None = None,
+        request_guard: Callable[[], int | None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
+        on_usage: Callable[[int, Mapping[str, Any]], None] | None = None,
     ) -> Iterator[AIStreamChunk]:
         _require_enabled(self.config)
         if not self.config.api_key:
@@ -870,6 +872,7 @@ class OpenAICompatibleProvider(AIProvider):
                 payload,
                 request_guard=request_guard,
                 is_cancelled=is_cancelled,
+                on_usage=on_usage,
             )
         else:
             yield from self._non_stream_generate(
@@ -878,6 +881,7 @@ class OpenAICompatibleProvider(AIProvider):
                 payload,
                 request_guard=request_guard,
                 is_cancelled=is_cancelled,
+                on_usage=on_usage,
             )
 
     def _stream_chat_completions(
@@ -886,15 +890,18 @@ class OpenAICompatibleProvider(AIProvider):
         headers: dict[str, str],
         payload: dict[str, Any],
         *,
-        request_guard: Callable[[], None] | None = None,
+        request_guard: Callable[[], int | None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
+        on_usage: Callable[[int, Mapping[str, Any]], None] | None = None,
     ) -> Iterator[AIStreamChunk]:
         # 7.7: 尊重max_retries配置,不强制最小值3
         max_retries = max(0, self.config.max_retries)
         produced_output = False
         for attempt in range(max_retries + 1):
+            request_ordinal = _before_network_request(request_guard, is_cancelled)
+            usage = RequestUsageObserver("openai_compatible", request_ordinal, on_usage)
+            delegating_fallback = False
             try:
-                _before_network_request(request_guard, is_cancelled)
                 with self._post(
                     url,
                     headers=headers,
@@ -939,6 +946,7 @@ class OpenAICompatibleProvider(AIProvider):
                             continue
                         data = line[5:].strip()
                         if data == "[DONE]":
+                            usage.finish(terminal=True)
                             if not emitted_delta:
                                 _check_cancelled(is_cancelled)
                                 yield _progress(
@@ -946,6 +954,7 @@ class OpenAICompatibleProvider(AIProvider):
                                     "流式请求没有返回正文，切换为非流式请求",
                                     provider="openai_compatible",
                                 )
+                                delegating_fallback = True
                                 yield from self._non_stream_generate(
                                     url,
                                     headers,
@@ -953,6 +962,7 @@ class OpenAICompatibleProvider(AIProvider):
                                     max_retries_override=max(0, self.config.max_retries),
                                     request_guard=request_guard,
                                     is_cancelled=is_cancelled,
+                                    on_usage=on_usage,
                                 )
                             else:
                                 _check_cancelled(is_cancelled)
@@ -972,6 +982,7 @@ class OpenAICompatibleProvider(AIProvider):
                                 category="invalid_response",
                                 scope="provider",
                             )
+                        usage.observe(event.get("usage"), final=True)
                         choices = event.get("choices") or []
                         if not choices:
                             continue
@@ -989,6 +1000,7 @@ class OpenAICompatibleProvider(AIProvider):
                             produced_output = True
                             _check_cancelled(is_cancelled)
                             yield AIStreamChunk(type="delta", text=text)
+                    usage.finish(terminal=False, missing_reason="interrupted")
                     if not emitted_delta:
                         _check_cancelled(is_cancelled)
                         yield _progress(
@@ -996,6 +1008,7 @@ class OpenAICompatibleProvider(AIProvider):
                             "流式请求结束但没有返回正文，切换为非流式请求",
                             provider="openai_compatible",
                         )
+                        delegating_fallback = True
                         yield from self._non_stream_generate(
                             url,
                             headers,
@@ -1003,6 +1016,7 @@ class OpenAICompatibleProvider(AIProvider):
                             max_retries_override=max(0, self.config.max_retries),
                             request_guard=request_guard,
                             is_cancelled=is_cancelled,
+                            on_usage=on_usage,
                         )
                     else:
                         _check_cancelled(is_cancelled)
@@ -1013,8 +1027,12 @@ class OpenAICompatibleProvider(AIProvider):
                         )
                     return
             except ProviderConfigError as exc:
+                if usage.callback_failed or delegating_fallback:
+                    raise
                 raise _runtime_config_error(exc) from exc
             except requests.RequestException as exc:
+                if usage.callback_failed or delegating_fallback:
+                    raise
                 error = _request_provider_error(
                     exc,
                     provider_label="OpenAI-compatible API",
@@ -1036,6 +1054,8 @@ class OpenAICompatibleProvider(AIProvider):
                     _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
                     continue
                 raise error from exc
+            finally:
+                usage.finish(terminal=False, missing_reason="interrupted")
 
     def _non_stream_generate(
         self,
@@ -1044,16 +1064,18 @@ class OpenAICompatibleProvider(AIProvider):
         payload: dict[str, Any],
         max_retries_override: int | None = None,
         *,
-        request_guard: Callable[[], None] | None = None,
+        request_guard: Callable[[], int | None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
+        on_usage: Callable[[int, Mapping[str, Any]], None] | None = None,
     ) -> Iterator[AIStreamChunk]:
         """非流式调用：一次性获取完整响应。"""
         payload_copy = {**payload, "stream": False}
         # 7.7: 尊重max_retries配置,不强制最小值3
         max_retries = max(0, max_retries_override) if max_retries_override is not None else max(0, self.config.max_retries)
         for attempt in range(max_retries + 1):
+            request_ordinal = _before_network_request(request_guard, is_cancelled)
+            usage = RequestUsageObserver("openai_compatible", request_ordinal, on_usage)
             try:
-                _before_network_request(request_guard, is_cancelled)
                 response = self._post(
                     url,
                     headers=headers,
@@ -1086,6 +1108,9 @@ class OpenAICompatibleProvider(AIProvider):
                             category="invalid_response",
                             scope="provider",
                         ) from exc
+                    if isinstance(data, Mapping):
+                        usage.observe(data.get("usage"), final=True)
+                        usage.finish(terminal=True)
                     choices = (data.get("choices") or []) if isinstance(data, Mapping) else []
                     if not choices or not isinstance(choices[0], Mapping):
                         raise AIProviderError(
@@ -1110,8 +1135,12 @@ class OpenAICompatibleProvider(AIProvider):
                     )
                     return
             except ProviderConfigError as exc:
+                if usage.callback_failed:
+                    raise
                 raise _runtime_config_error(exc) from exc
             except requests.RequestException as exc:
+                if usage.callback_failed:
+                    raise
                 if attempt < max_retries:
                     _sleep_before_retry(_retry_delay(attempt), is_cancelled)
                     continue
@@ -1120,6 +1149,8 @@ class OpenAICompatibleProvider(AIProvider):
                     provider_label="OpenAI-compatible API",
                     api_key=self.config.api_key,
                 ) from exc
+            finally:
+                usage.finish(terminal=False, missing_reason="interrupted")
 
 
 class XAIProvider(OpenAICompatibleProvider):
@@ -1164,8 +1195,9 @@ class AnthropicProvider(AIProvider):
         top_p: float,
         max_tokens: int,
         *,
-        request_guard: Callable[[], None] | None = None,
+        request_guard: Callable[[], int | None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
+        on_usage: Callable[[int, Mapping[str, Any]], None] | None = None,
     ) -> Iterator[AIStreamChunk]:
         _require_enabled(self.config)
         if not self.config.api_key:
@@ -1208,14 +1240,17 @@ class AnthropicProvider(AIProvider):
                 payload,
                 request_guard=request_guard,
                 is_cancelled=is_cancelled,
+                on_usage=on_usage,
             )
             return
         # 7.7: 尊重max_retries配置,不强制最小值3
         max_retries = max(0, self.config.max_retries)
         produced_output = False
         for attempt in range(max_retries + 1):
+            request_ordinal = _before_network_request(request_guard, is_cancelled)
+            usage = RequestUsageObserver("anthropic", request_ordinal, on_usage)
+            delegating_fallback = False
             try:
-                _before_network_request(request_guard, is_cancelled)
                 with self._post(
                     url,
                     headers=headers,
@@ -1264,6 +1299,8 @@ class AnthropicProvider(AIProvider):
                         event_type = event.get("type")
                         if event_type == "message_start":
                             message = event.get("message") or {}
+                            if isinstance(message, Mapping):
+                                usage.observe(message.get("usage"), final=False)
                             if isinstance(message, Mapping) and message.get("stop_reason") is not None:
                                 stop_reason = message.get("stop_reason")
                         elif event_type == "content_block_delta":
@@ -1275,10 +1312,12 @@ class AnthropicProvider(AIProvider):
                                 _check_cancelled(is_cancelled)
                                 yield AIStreamChunk(type="delta", text=text)
                         elif event_type == "message_delta":
+                            usage.observe(event.get("usage"), final=True)
                             delta = event.get("delta") or {}
                             if isinstance(delta, Mapping) and delta.get("stop_reason") is not None:
                                 stop_reason = delta.get("stop_reason")
                         elif event_type == "message_stop":
+                            usage.finish(terminal=True)
                             if not emitted_delta:
                                 _check_cancelled(is_cancelled)
                                 yield _progress(
@@ -1286,6 +1325,7 @@ class AnthropicProvider(AIProvider):
                                     "Anthropic 流式请求没有返回正文，切换为非流式请求",
                                     provider="anthropic",
                                 )
+                                delegating_fallback = True
                                 yield from self._non_stream_generate(
                                     url,
                                     headers,
@@ -1293,6 +1333,7 @@ class AnthropicProvider(AIProvider):
                                     max_retries_override=max(0, self.config.max_retries),
                                     request_guard=request_guard,
                                     is_cancelled=is_cancelled,
+                                    on_usage=on_usage,
                                 )
                             else:
                                 _check_cancelled(is_cancelled)
@@ -1309,6 +1350,7 @@ class AnthropicProvider(AIProvider):
                                 provider_label="Anthropic API",
                                 api_key=self.config.api_key,
                             )
+                    usage.finish(terminal=False, missing_reason="interrupted")
                     if not emitted_delta:
                         _check_cancelled(is_cancelled)
                         yield _progress(
@@ -1316,6 +1358,7 @@ class AnthropicProvider(AIProvider):
                             "Anthropic 流式请求结束但没有返回正文，切换为非流式请求",
                             provider="anthropic",
                         )
+                        delegating_fallback = True
                         yield from self._non_stream_generate(
                             url,
                             headers,
@@ -1323,6 +1366,7 @@ class AnthropicProvider(AIProvider):
                             max_retries_override=max(0, self.config.max_retries),
                             request_guard=request_guard,
                             is_cancelled=is_cancelled,
+                            on_usage=on_usage,
                         )
                     else:
                         _check_cancelled(is_cancelled)
@@ -1333,8 +1377,12 @@ class AnthropicProvider(AIProvider):
                         )
                     return
             except ProviderConfigError as exc:
+                if usage.callback_failed or delegating_fallback:
+                    raise
                 raise _runtime_config_error(exc) from exc
             except requests.RequestException as exc:
+                if usage.callback_failed or delegating_fallback:
+                    raise
                 error = _request_provider_error(
                     exc,
                     provider_label="Anthropic API",
@@ -1355,6 +1403,8 @@ class AnthropicProvider(AIProvider):
                     _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
                     continue
                 raise error from exc
+            finally:
+                usage.finish(terminal=False, missing_reason="interrupted")
 
     def _non_stream_generate(
         self,
@@ -1363,15 +1413,17 @@ class AnthropicProvider(AIProvider):
         payload: dict[str, Any],
         max_retries_override: int | None = None,
         *,
-        request_guard: Callable[[], None] | None = None,
+        request_guard: Callable[[], int | None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
+        on_usage: Callable[[int, Mapping[str, Any]], None] | None = None,
     ) -> Iterator[AIStreamChunk]:
         """非流式 fallback：关闭 stream 一次性获取完整响应。"""
         payload_copy = {**payload, "stream": False}
         max_retries = max(0, max_retries_override) if max_retries_override is not None else max(0, self.config.max_retries)
         for attempt in range(max_retries + 1):
+            request_ordinal = _before_network_request(request_guard, is_cancelled)
+            usage = RequestUsageObserver("anthropic", request_ordinal, on_usage)
             try:
-                _before_network_request(request_guard, is_cancelled)
                 response = self._post(
                     url,
                     headers=headers,
@@ -1404,6 +1456,9 @@ class AnthropicProvider(AIProvider):
                             category="invalid_response",
                             scope="provider",
                         ) from exc
+                    if isinstance(data, Mapping):
+                        usage.observe(data.get("usage"), final=True)
+                        usage.finish(terminal=True)
                     content_blocks = (data.get("content") or []) if isinstance(data, Mapping) else []
                     text_parts: list[str] = []
                     for block in content_blocks:
@@ -1425,8 +1480,12 @@ class AnthropicProvider(AIProvider):
                     )
                     return
             except ProviderConfigError as exc:
+                if usage.callback_failed:
+                    raise
                 raise _runtime_config_error(exc) from exc
             except requests.RequestException as exc:
+                if usage.callback_failed:
+                    raise
                 if attempt < max_retries:
                     _sleep_before_retry(_retry_delay(attempt), is_cancelled)
                     continue
@@ -1435,6 +1494,8 @@ class AnthropicProvider(AIProvider):
                     provider_label="Anthropic API",
                     api_key=self.config.api_key,
                 ) from exc
+            finally:
+                usage.finish(terminal=False, missing_reason="interrupted")
 
 
 def create_provider(config: AIProviderConfig) -> AIProvider:

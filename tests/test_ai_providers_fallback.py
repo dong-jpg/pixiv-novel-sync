@@ -512,3 +512,71 @@ def test_sleep_before_retry_checks_cancellation_between_slices(monkeypatch):
     # 只经历了一个分片（<= 0.5s），未整段休眠 30 秒
     assert len(slept) == 1
     assert slept[0] <= 0.5
+
+
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "anthropic"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_usage_ordinals_follow_every_retry_and_empty_stream_fallback_send(monkeypatch, provider_type, stream):
+    calls, responses, allocations = [], [], []
+    latest = {}
+
+    def fake_post(*_args, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            response = FakeResponse(503, text="unavailable")
+        elif kwargs["json"].get("stream"):
+            lines = [
+                'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":0}}',
+                'data: [DONE]',
+            ] if provider_type == "openai_compatible" else [
+                'data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}',
+                'data: {"type":"message_delta","usage":{"output_tokens":0}}',
+                'data: {"type":"message_stop"}',
+            ]
+            response = FakeResponse(200, lines=lines)
+        else:
+            payload = {
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+            } if provider_type == "openai_compatible" else {
+                "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 2},
+            }
+            response = FakeResponse(200, payload)
+        responses.append(response)
+        return response
+
+    def guard():
+        if allocations:
+            previous = latest[allocations[-1]]
+            assert previous["missing_reason"] != "pending"
+        allocations.append(len(allocations) + 1)
+        return allocations[-1]
+
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers.requests.sessions.Session.post", fake_post)
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers._sleep_before_retry", lambda *_: None)
+    config = dataclasses.replace(make_config(provider_type, max_retries=1), stream_enabled=stream)
+    provider = AnthropicProvider(config) if provider_type == "anthropic" else OpenAICompatibleProvider(config)
+    try:
+        chunks = list(provider.stream_generate(
+            [{"role": "user", "content": "synthetic request"}],
+            model="model-a", temperature=0.7, top_p=0.9, max_tokens=100,
+            request_guard=guard,
+            on_usage=lambda ordinal, usage: latest.__setitem__(ordinal, dict(usage)),
+        ))
+    finally:
+        provider.close()
+
+    expected_count = 3 if stream else 2
+    assert allocations == list(range(1, expected_count + 1))
+    assert len(calls) == len(latest) == expected_count
+    assert latest[1]["input_tokens"] is None
+    assert latest[1]["missing_reason"] == "interrupted"
+    assert latest[expected_count]["complete"] is True
+    assert latest[expected_count]["output_tokens"] == 2
+    if stream:
+        assert latest[2]["complete"] is True
+        assert latest[2]["output_tokens"] == 0
+    assert chunks[-1].type == "done"
+    assert all(response.closed for response in responses)
+    assert all(call["allow_redirects"] is False for call in calls)
