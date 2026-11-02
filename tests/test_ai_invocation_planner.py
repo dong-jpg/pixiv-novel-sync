@@ -284,6 +284,26 @@ def test_invalid_private_snapshot_is_rejected(mutator):
         plan_from_payload(payload)
 
 
+@pytest.mark.parametrize("value", [[], {}])
+def test_non_string_enum_fields_are_rejected_as_invalid_snapshots(value):
+    for field in ("provider_type", "unavailable_reason"):
+        payload = valid_payload()
+        payload["eligible"][0]["profile"][field] = value
+        with pytest.raises(InvocationValidationError) as caught:
+            plan_from_payload(payload)
+        assert caught.value.code == "invalid_snapshot"
+
+    payload = valid_payload()
+    row = payload["eligible"].pop()
+    row["candidate_index"] = None
+    row["reason"] = value
+    payload["excluded"].append(row)
+    payload["excluded_count"] = 1
+    with pytest.raises(InvocationValidationError) as caught:
+        plan_from_payload(payload)
+    assert caught.value.code == "invalid_snapshot"
+
+
 def test_scope_must_contain_every_eligible_provider():
     payload = valid_payload()
     payload["allowed_provider_ids"] = []

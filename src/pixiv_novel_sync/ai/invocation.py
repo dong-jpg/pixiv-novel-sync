@@ -34,7 +34,13 @@ class TextInvocation:
 def _sampling(value: Any, field: str, maximum: float) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise InvocationValidationError("invalid_parameter", field + " must be numeric")
-    result = float(value)
+    # Integer comparison avoids OverflowError before float conversion.
+    if isinstance(value, int):
+        if not 0 <= value <= maximum:
+            raise InvocationValidationError("invalid_parameter", field + " is out of range")
+        result = float(value)
+    else:
+        result = value
     if not math.isfinite(result) or not 0 <= result <= maximum:
         raise InvocationValidationError("invalid_parameter", field + " is out of range")
     return result

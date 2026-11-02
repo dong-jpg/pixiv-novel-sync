@@ -348,7 +348,10 @@ def validate_profile(profile: CandidateProfile) -> None:
     _integer(profile.provider_id, 1, 2**63 - 1)
     for name in ("provider_model_id", "pool_id", "pool_version", "pool_position"):
         _integer(getattr(profile, name), 1, 2**63 - 1, optional=True)
-    _require(profile.provider_type in {"openai_compatible", "xai", "anthropic"})
+    _require(
+        isinstance(profile.provider_type, str)
+        and profile.provider_type in {"openai_compatible", "xai", "anthropic"}
+    )
     _window(profile.provider_context_window)
     if profile.model_context_window is not None:
         _window(profile.model_context_window)
@@ -380,7 +383,13 @@ def validate_profile(profile: CandidateProfile) -> None:
     except Exception:
         raise InvocationValidationError("invalid_snapshot", "Planning value is invalid") from None
     _require(tuple(normalized_capabilities) == profile.capabilities)
-    _require(profile.unavailable_reason is None or profile.unavailable_reason in REASON_MESSAGES)
+    _require(
+        profile.unavailable_reason is None
+        or (
+            isinstance(profile.unavailable_reason, str)
+            and profile.unavailable_reason in REASON_MESSAGES
+        )
+    )
     if profile.pool_id is None:
         _require(
             profile.pool_name is None
@@ -430,7 +439,11 @@ def validate_plan(plan: InvocationPlan) -> None:
                 _require(row.profile.unavailable_reason is None)
                 _require(row.profile.provider_id in plan.allowed_provider_ids)
             else:
-                _require(row.candidate_index is None and row.reason in REASON_MESSAGES)
+                _require(
+                    row.candidate_index is None
+                    and isinstance(row.reason, str)
+                    and row.reason in REASON_MESSAGES
+                )
             if row.input_tokens is None:
                 _require(
                     not eligible

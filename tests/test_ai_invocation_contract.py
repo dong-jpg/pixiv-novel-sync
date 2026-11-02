@@ -78,6 +78,27 @@ def test_invalid_request_has_local_safe_error(patch):
     assert "must-not-be-injected" not in str(caught.value)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("temperature", 10**400),
+        ("temperature", -(10**400)),
+        ("top_p", 10**400),
+        ("top_p", -(10**400)),
+    ],
+)
+def test_huge_out_of_range_sampling_values_are_rejected_safely(field, value):
+    payload = {
+        "messages": [{"role": "user", "content": "DO-NOT-ECHO"}],
+        field: value,
+    }
+    with pytest.raises(InvocationValidationError) as caught:
+        normalize_text_invocation(payload, agent=agent())
+    assert caught.value.code == "invalid_parameter"
+    assert "DO-NOT-ECHO" not in str(caught.value)
+    assert str(value) not in str(caught.value)
+
+
 def test_fingerprint_covers_order_content_parameters_and_effective_scope():
     base = {"messages": [{"role": "user", "content": "abc"}], "max_tokens": 100}
     first = normalize_text_invocation(base, agent=agent())
