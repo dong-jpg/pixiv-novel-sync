@@ -165,12 +165,17 @@ def test_old_ai_database_migrates_fixed_agents_and_imports_available_models(
 
         model = database.conn.execute(
             """
-            SELECT model_key, manual, discovered, discovered_available
+            SELECT model_key, manual, discovered, discovered_available,
+                   discovered_max_output_tokens, manual_max_output_tokens
             FROM ai_provider_models
             WHERE provider_id = 3
             """
         ).fetchone()
-        assert tuple(model) == ("legacy-model", 1, 0, 0)
+        assert tuple(model) == ("legacy-model", 1, 0, 0, None, None)
+        provider = database.conn.execute(
+            "SELECT api_key_encrypted FROM ai_providers WHERE id = 3"
+        ).fetchone()
+        assert provider[0] == "ciphertext"
 
         job = database.conn.execute(
             "SELECT * FROM ai_jobs WHERE id = 11"
@@ -577,6 +582,44 @@ def test_failed_model_schema_migration_rolls_back(tmp_path: Path):
             "SELECT provider_id FROM ai_agents WHERE id = 99"
         ).fetchone()[0] == 999
         assert database.conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        database.close()
+
+
+def test_model_output_columns_roll_back_together_on_preexisting_table(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = make_old_ai_database(tmp_path / "output-columns-rollback.db")
+    # Create a catalogue before the routing migration so the additive ALTER path runs.
+    database.conn.execute(
+        """
+        CREATE TABLE ai_provider_models (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider_id INTEGER NOT NULL,
+            model_key TEXT NOT NULL,
+            UNIQUE(provider_id, model_key)
+        )
+        """
+    )
+    database.conn.commit()
+    schema = _model_schema()
+
+    def fail_after_output_columns(conn) -> None:
+        raise RuntimeError("injected failure after output columns")
+
+    monkeypatch.setattr(schema, "_ensure_model_output_columns", fail_after_output_columns)
+
+    try:
+        with pytest.raises(RuntimeError, match="injected failure"):
+            schema.migrate_model_routing_schema(database.conn)
+
+        columns = {
+            row[1]
+            for row in database.conn.execute("PRAGMA table_info(ai_provider_models)")
+        }
+        assert "discovered_max_output_tokens" not in columns
+        assert "manual_max_output_tokens" not in columns
     finally:
         database.close()
 

@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 import sqlite3
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -25,6 +27,7 @@ from ...ai.model_catalog import (
     normalize_capabilities,
     normalize_model_key,
     normalize_model_record,
+    normalize_max_output_tokens,
     validate_text_field,
 )
 
@@ -33,6 +36,22 @@ _DISPLAY_NAME_MAX_BYTES = 800
 _CONTEXT_WINDOW_MIN = 256
 _CONTEXT_WINDOW_MAX = 10_000_000
 _METADATA_MAX_BYTES = 8192
+_CATALOG_REVISION_FIELDS = (
+    "id",
+    "model_key",
+    "discovered",
+    "manual",
+    "discovered_available",
+    "enabled",
+    "discovered_display_name",
+    "manual_display_name",
+    "discovered_capabilities_json",
+    "manual_capabilities_json",
+    "discovered_context_window",
+    "manual_context_window",
+    "discovered_max_output_tokens",
+    "manual_max_output_tokens",
+)
 
 
 class CatalogMixin:
@@ -72,6 +91,9 @@ class CatalogMixin:
         effective_context = item.get("manual_context_window")
         if effective_context is None:
             effective_context = item.get("discovered_context_window")
+        effective_output = item.get("manual_max_output_tokens")
+        if effective_output is None:
+            effective_output = item.get("discovered_max_output_tokens")
 
         routable = bool(enabled and (manual or discovered_available) and provider_enabled)
 
@@ -93,6 +115,9 @@ class CatalogMixin:
             "context_window": effective_context,
             "discovered_context_window": item.get("discovered_context_window"),
             "manual_context_window": item.get("manual_context_window"),
+            "max_output_tokens": effective_output,
+            "discovered_max_output_tokens": item.get("discovered_max_output_tokens"),
+            "manual_max_output_tokens": item.get("manual_max_output_tokens"),
             "last_seen_at": item.get("last_seen_at"),
             "routable": routable,
             "created_at": item.get("created_at"),
@@ -104,6 +129,45 @@ class CatalogMixin:
             "SELECT enabled FROM ai_providers WHERE id = ?", (provider_id,)
         ).fetchone()
         return bool(row[0]) if row is not None else False
+
+    def _catalog_revision(self, conn: sqlite3.Connection, provider_id: int) -> str:
+        provider = conn.execute(
+            "SELECT enabled FROM ai_providers WHERE id = ?", (provider_id,)
+        ).fetchone()
+        if provider is None:
+            raise ModelCatalogValidationError("Provider does not exist")
+
+        digest = hashlib.sha256()
+        header = {
+            "version": 1,
+            "provider_id": provider_id,
+            "provider_enabled": bool(provider[0]),
+        }
+        digest.update(
+            json.dumps(header, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+        columns = ", ".join(_CATALOG_REVISION_FIELDS)
+        for row in conn.execute(
+            f"SELECT {columns} FROM ai_provider_models WHERE provider_id = ? ORDER BY id",
+            (provider_id,),
+        ):
+            item = dict(row)
+            for key in ("discovered_capabilities_json", "manual_capabilities_json"):
+                item[key] = json.loads(item[key]) if item[key] is not None else None
+            digest.update(b"\n")
+            digest.update(
+                json.dumps(
+                    item,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+        return digest.hexdigest()
+
+    def get_ai_provider_catalog_revision(self, provider_id: int) -> str:
+        with self.read_transaction():
+            return self._catalog_revision(self.conn, provider_id)
 
     # --- 读取 ---
 
@@ -148,8 +212,10 @@ class CatalogMixin:
                 """,
                 (provider_id,),
             ).fetchone()
+            catalog_revision = self._catalog_revision(self.conn, provider_id)
         return {
             "items": items,
+            "catalog_revision": catalog_revision,
             "total": int(counts["total"]),
             "discovered_available": int(counts["discovered_available"]),
             "routable": int(counts["routable"]) if provider_enabled else 0,
@@ -198,6 +264,9 @@ class CatalogMixin:
             )
         manual_caps = self._dump_capabilities(data.get("manual_capabilities"))
         manual_context = self._validate_context_window(data.get("manual_context_window"))
+        manual_max_output = normalize_max_output_tokens(
+            data.get("manual_max_output_tokens")
+        )
         # 人工补录默认 manual=1；enabled 缺省为 1
         enabled = 1 if data.get("enabled", 1) else 0
         cursor = self.conn.execute(
@@ -205,8 +274,8 @@ class CatalogMixin:
             INSERT INTO ai_provider_models (
                 provider_id, model_key, manual, discovered, discovered_available,
                 enabled, manual_display_name, manual_capabilities_json,
-                manual_context_window
-            ) VALUES (?, ?, 1, 0, 0, ?, ?, ?, ?)
+                manual_context_window, manual_max_output_tokens
+            ) VALUES (?, ?, 1, 0, 0, ?, ?, ?, ?, ?)
             """,
             (
                 int(data["provider_id"]),
@@ -215,6 +284,7 @@ class CatalogMixin:
                 manual_display,
                 manual_caps,
                 manual_context,
+                manual_max_output,
             ),
         )
         self._commit_if_needed()
@@ -251,6 +321,11 @@ class CatalogMixin:
             fields.append("manual_context_window = ?")
             params.append(self._validate_context_window(patch["manual_context_window"]))
             fields.append("manual = 1")
+        if "manual_max_output_tokens" in patch:
+            fields.extend(["manual_max_output_tokens = ?", "manual = 1"])
+            params.append(
+                normalize_max_output_tokens(patch["manual_max_output_tokens"])
+            )
         if not fields:
             return
         fields.append("updated_at = CURRENT_TIMESTAMP")
@@ -295,6 +370,7 @@ class CatalogMixin:
                         manual_display_name = NULL,
                         manual_capabilities_json = NULL,
                         manual_context_window = NULL,
+                        manual_max_output_tokens = NULL,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
@@ -339,6 +415,9 @@ class CatalogMixin:
             "display_name": display_name,
             "capabilities": list(normalize_capabilities(model.get("capabilities"))),
             "context_window": cls._validate_context_window(model.get("context_window")),
+            "max_output_tokens": normalize_max_output_tokens(
+                model.get("max_output_tokens")
+            ),
             "metadata_json": metadata_json,
         }
         rebuild_input = dict(metadata)
@@ -348,6 +427,8 @@ class CatalogMixin:
             rebuild_input["capabilities"] = normalized["capabilities"]
         if "context_window" in metadata:
             rebuild_input["context_window"] = normalized["context_window"]
+        if "max_output_tokens" in metadata:
+            rebuild_input["max_output_tokens"] = normalized["max_output_tokens"]
         rebuilt = normalize_model_record(rebuild_input)
         if rebuilt != normalized:
             raise ModelCatalogValidationError(
@@ -388,6 +469,7 @@ class CatalogMixin:
                     record["capabilities"], ensure_ascii=False, separators=(",", ":")
                 )
                 context_window = record["context_window"]
+                max_output_tokens = record["max_output_tokens"]
                 metadata_json = record["metadata_json"]
                 existing = conn.execute(
                     "SELECT id FROM ai_provider_models WHERE provider_id = ? AND model_key = ?",
@@ -400,8 +482,9 @@ class CatalogMixin:
                             provider_id, model_key, discovered, manual,
                             discovered_available, discovered_display_name,
                             discovered_capabilities_json, discovered_context_window,
-                            discovered_metadata_json, last_seen_at
-                        ) VALUES (?, ?, 1, 0, 1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                            discovered_max_output_tokens, discovered_metadata_json,
+                            last_seen_at
+                        ) VALUES (?, ?, 1, 0, 1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                         """,
                         (
                             provider_id,
@@ -409,6 +492,7 @@ class CatalogMixin:
                             display_name,
                             caps_json,
                             context_window,
+                            max_output_tokens,
                             metadata_json,
                         ),
                     )
@@ -422,6 +506,7 @@ class CatalogMixin:
                             discovered_display_name = ?,
                             discovered_capabilities_json = ?,
                             discovered_context_window = ?,
+                            discovered_max_output_tokens = ?,
                             discovered_metadata_json = ?,
                             last_seen_at = CURRENT_TIMESTAMP,
                             updated_at = CURRENT_TIMESTAMP
@@ -431,6 +516,7 @@ class CatalogMixin:
                             display_name,
                             caps_json,
                             context_window,
+                            max_output_tokens,
                             metadata_json,
                             int(existing[0]),
                         ),
@@ -459,3 +545,78 @@ class CatalogMixin:
                     (provider_id,),
                 )
         return {"inserted": inserted, "updated": updated}
+
+    def update_ai_provider_models_enabled(
+        self,
+        provider_id: int,
+        expected_catalog_revision: str,
+        changes: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        if (
+            not isinstance(expected_catalog_revision, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected_catalog_revision) is None
+        ):
+            raise ModelCatalogValidationError("catalog_revision must be SHA-256")
+        if (
+            isinstance(changes, (str, bytes))
+            or not isinstance(changes, Sequence)
+            or len(changes) > 5000
+        ):
+            raise ModelCatalogValidationError("changes must contain at most 5000 items")
+
+        normalized_changes: dict[int, bool] = {}
+        for change in changes:
+            if not isinstance(change, Mapping) or set(change) != {"id", "enabled"}:
+                raise ModelCatalogValidationError("each change requires only id and enabled")
+            model_id, enabled = change["id"], change["enabled"]
+            if (
+                isinstance(model_id, bool)
+                or not isinstance(model_id, int)
+                or model_id <= 0
+                or model_id > 2**63 - 1
+            ):
+                raise ModelCatalogValidationError("model id must be a positive integer")
+            if type(enabled) is not bool or model_id in normalized_changes:
+                raise ModelCatalogValidationError(
+                    "enabled must be boolean and model ids unique"
+                )
+            normalized_changes[model_id] = enabled
+
+        with self.transaction() as conn:
+            # BEGIN IMMEDIATE serializes the revision check with all writes.
+            if self._catalog_revision(conn, provider_id) != expected_catalog_revision:
+                raise ModelCatalogConflictError(
+                    "Model catalogue changed; reload and confirm selection"
+                )
+
+            current: dict[int, bool] = {}
+            ids = list(normalized_changes)
+            for offset in range(0, len(ids), 900):
+                batch = ids[offset : offset + 900]
+                placeholders = ",".join("?" for _ in batch)
+                for row in conn.execute(
+                    f"SELECT id, enabled FROM ai_provider_models "
+                    f"WHERE provider_id = ? AND id IN ({placeholders})",
+                    [provider_id, *batch],
+                ):
+                    current[int(row["id"])] = bool(row["enabled"])
+            if set(current) != set(ids):
+                raise ModelCatalogValidationError(
+                    "Every model must belong to this Provider"
+                )
+
+            updates = [
+                (int(value), model_id, provider_id)
+                for model_id, value in normalized_changes.items()
+                if current[model_id] != value
+            ]
+            conn.executemany(
+                "UPDATE ai_provider_models SET enabled = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ? AND provider_id = ?",
+                updates,
+            )
+            return {
+                "provider_id": provider_id,
+                "updated": len(updates),
+                "catalog_revision": self._catalog_revision(conn, provider_id),
+            }

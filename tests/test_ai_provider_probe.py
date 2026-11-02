@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from pixiv_novel_sync.ai.service import AIWritingService, AIServiceError
+from pixiv_novel_sync.ai.crypto import AISecretManager
 from pixiv_novel_sync.storage_db import Database
 
 
@@ -26,6 +27,12 @@ class _FakeProvider:
 
     def close(self):
         type(self).closed = True
+
+
+class _FakeSecretManager(AISecretManager):
+    def decrypt(self, ciphertext):
+        del ciphertext
+        return "decrypted-key"
 
 
 def test_probe_forwards_proxy_to_the_provider(tmp_path, monkeypatch) -> None:
@@ -98,6 +105,112 @@ def test_probe_refuses_to_borrow_stored_key_for_a_different_address(tmp_path) ->
         })
 
     assert "不能同时改地址" in str(excinfo.value)
+
+
+def test_probe_borrowed_key_requires_the_saved_network_tuple(tmp_path) -> None:
+    db = Database(tmp_path / "probe-tuple.db")
+    db.init_schema()
+    provider_id = db.create_ai_provider({
+        "name": "p",
+        "provider_type": "anthropic",
+        "base_url": "https://api.example.com",
+        "proxy": "http://127.0.0.1:7890",
+        "api_key_encrypted": "cipher",
+        "default_model": None,
+        "enabled": 1,
+    })
+    db.close()
+    service = AIWritingService(db_path=tmp_path / "probe-tuple.db")
+
+    for changed in (
+        {"provider_type": "openai_compatible"},
+        {"base_url": None},
+        {"proxy": "http://127.0.0.1:9999"},
+    ):
+        payload = {
+            "provider_id": provider_id,
+            "provider_type": "anthropic",
+            "base_url": "https://api.example.com",
+            "proxy": "http://127.0.0.1:7890",
+        }
+        payload.update(changed)
+        with pytest.raises(AIServiceError) as excinfo:
+            service.probe_provider_models(payload)
+        assert "地址、协议或代理" in str(excinfo.value)
+
+
+def test_probe_borrowed_key_accepts_the_unchanged_network_tuple(
+    tmp_path, monkeypatch,
+) -> None:
+    db = Database(tmp_path / "probe-same.db")
+    db.init_schema()
+    provider_id = db.create_ai_provider({
+        "name": "p",
+        "provider_type": "anthropic",
+        "base_url": "https://api.example.com",
+        "proxy": "http://127.0.0.1:7890",
+        "api_key_encrypted": "cipher",
+        "default_model": None,
+        "enabled": 1,
+    })
+    db.close()
+    service = AIWritingService(
+        db_path=tmp_path / "probe-same.db",
+        secret_manager=_FakeSecretManager(),
+    )
+    created = {}
+
+    def capture(config):
+        created["config"] = config
+        return _FakeProvider()
+
+    monkeypatch.setattr(
+        "pixiv_novel_sync.ai.services.admin.create_provider", capture
+    )
+    result = service.probe_provider_models({
+        "provider_id": provider_id,
+        "provider_type": "anthropic",
+        "base_url": "https://api.example.com",
+        "proxy": "http://127.0.0.1:7890",
+    })
+
+    assert result["complete"] is True
+    assert created["config"].api_key == "decrypted-key"
+    assert created["config"].proxy == "http://127.0.0.1:7890"
+
+
+def test_probe_new_key_can_use_a_new_network_tuple(tmp_path, monkeypatch) -> None:
+    db = Database(tmp_path / "probe-new-key.db")
+    db.init_schema()
+    provider_id = db.create_ai_provider({
+        "name": "p",
+        "provider_type": "openai_compatible",
+        "base_url": "https://old.example.com/v1",
+        "api_key_encrypted": "cipher",
+        "default_model": None,
+        "enabled": 1,
+    })
+    db.close()
+    service = AIWritingService(db_path=tmp_path / "probe-new-key.db")
+    created = {}
+
+    def capture(config):
+        created["config"] = config
+        return _FakeProvider()
+
+    monkeypatch.setattr(
+        "pixiv_novel_sync.ai.services.admin.create_provider", capture
+    )
+    service.probe_provider_models({
+        "provider_id": provider_id,
+        "provider_type": "anthropic",
+        "base_url": "https://new.example.com",
+        "proxy": "http://127.0.0.1:9999",
+        "api_key": "sk-new",
+    })
+
+    assert created["config"].api_key == "sk-new"
+    assert created["config"].provider_type == "anthropic"
 
 
 def test_probe_writes_nothing_to_the_catalog(tmp_path, monkeypatch) -> None:

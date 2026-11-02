@@ -5,7 +5,7 @@ import re
 import sqlite3
 import time
 import unicodedata
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 from ...storage.ai.core import (
@@ -52,12 +52,14 @@ _MANUAL_MODEL_CREATE_FIELDS = {
     "manual_display_name",
     "manual_capabilities",
     "manual_context_window",
+    "manual_max_output_tokens",
 }
 _MANUAL_MODEL_UPDATE_FIELDS = {
     "enabled",
     "manual_display_name",
     "manual_capabilities",
     "manual_context_window",
+    "manual_max_output_tokens",
 }
 _MODEL_POOL_FIELDS = {
     "name",
@@ -789,12 +791,17 @@ class AIAdminMixin:
                 db.close()
             if row is None:
                 raise AINotFoundError("Provider 不存在")
-            # 借库里那把 Key 时地址必须逐字相同：否则这个端点等于「把加密存好的 Key
-            # 发到我指定的任意地址」，而 validate_base_url 拦不住它（目标可以是完全
-            # 合法的 https 公网主机）。
-            if (row.get("base_url") or None) != base_url:
+            # Borrowing the saved key must preserve the full network tuple:
+            # a different protocol, adapter or proxy turns this endpoint into
+            # "send the encrypted key to my chosen destination".
+            supplied_proxy = (str(payload.get("proxy")).strip() or None) if payload.get("proxy") else None
+            if (
+                (row.get("base_url") or None) != base_url
+                or (row.get("provider_type") or None) != provider_type
+                or (row.get("proxy") or None) != supplied_proxy
+            ):
                 raise AIServiceError(
-                    "借用已保存的 API Key 时不能同时改地址：请在表单里重新填入 Key"
+                    "借用已保存的 API Key 时不能同时改地址、协议或代理：请在表单里重新填入 Key"
                 )
             api_key = self.secret_manager.decrypt(row.get("api_key_encrypted"))
         if not api_key:
@@ -828,6 +835,7 @@ class AIAdminMixin:
                 "display_name": model.get("display_name"),
                 "capabilities": capabilities,
                 "context_window": model.get("context_window"),
+                "max_output_tokens": model.get("max_output_tokens"),
                 "suggested": suggested,
             })
         return {
@@ -896,6 +904,33 @@ class AIAdminMixin:
             self._require_provider_model_row(db, model_id)
             try:
                 db.update_ai_provider_model(model_id, payload)
+            except ModelCatalogValidationError as exc:
+                raise AIServiceError(str(exc)) from exc
+        finally:
+            db.close()
+
+    def update_provider_models_enabled(
+        self,
+        provider_id: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        self._reject_unknown_fields(payload, {"catalog_revision", "changes"})
+        catalog_revision = payload.get("catalog_revision")
+        changes = payload.get("changes")
+        if not isinstance(catalog_revision, str):
+            raise AIServiceError("catalog_revision 必须是 SHA-256")
+        if isinstance(changes, (str, bytes)) or not isinstance(changes, Sequence):
+            raise AIServiceError("changes 必须是数组")
+
+        db = self._db()
+        try:
+            self._require_provider_row(db, provider_id)
+            try:
+                return db.update_ai_provider_models_enabled(
+                    provider_id, catalog_revision, changes
+                )
+            except ModelCatalogConflictError as exc:
+                raise AIConflictError(str(exc)) from exc
             except ModelCatalogValidationError as exc:
                 raise AIServiceError(str(exc)) from exc
         finally:

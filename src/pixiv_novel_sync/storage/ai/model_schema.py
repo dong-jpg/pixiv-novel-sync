@@ -89,6 +89,22 @@ def _create_model_routing_tables(conn: sqlite3.Connection) -> None:
                     manual_context_window IS NULL
                     OR manual_context_window BETWEEN 256 AND 10000000
                 ),
+            discovered_max_output_tokens INTEGER
+                CHECK(
+                    discovered_max_output_tokens IS NULL
+                    OR (
+                        typeof(discovered_max_output_tokens) = 'integer'
+                        AND discovered_max_output_tokens BETWEEN 1 AND 1000000
+                    )
+                ),
+            manual_max_output_tokens INTEGER
+                CHECK(
+                    manual_max_output_tokens IS NULL
+                    OR (
+                        typeof(manual_max_output_tokens) = 'integer'
+                        AND manual_max_output_tokens BETWEEN 1 AND 1000000
+                    )
+                ),
             discovered_metadata_json TEXT NOT NULL DEFAULT '{}'
                 CHECK(
                     json_valid(discovered_metadata_json)
@@ -437,6 +453,17 @@ def _add_provider_sync_columns(conn: sqlite3.Connection) -> None:
             )
 
 
+def _ensure_model_output_columns(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "ai_provider_models")
+    for name in ("discovered_max_output_tokens", "manual_max_output_tokens"):
+        if name not in columns:
+            conn.execute(
+                f"ALTER TABLE ai_provider_models ADD COLUMN {name} INTEGER "
+                f"CHECK ({name} IS NULL OR "
+                f"(typeof({name}) = 'integer' AND {name} BETWEEN 1 AND 1000000))"
+            )
+
+
 def _create_model_routing_indexes(conn: sqlite3.Connection) -> None:
     statements = (
         "CREATE INDEX IF NOT EXISTS idx_ai_agents_task_type "
@@ -557,6 +584,7 @@ def _migrate_model_routing_schema_in_transaction(
 ) -> None:
     created = not _table_exists(conn, "ai_provider_models")
     _create_model_routing_tables(conn)
+    _ensure_model_output_columns(conn)
     agents_rebuilt = _rebuild_ai_agents(conn)
     jobs_rebuilt = _rebuild_ai_jobs(conn)
     rebuilt = agents_rebuilt or jobs_rebuilt

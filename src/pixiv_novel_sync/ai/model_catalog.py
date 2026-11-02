@@ -41,6 +41,7 @@ _METADATA_WHITELIST: tuple[str, ...] = (
     "owned_by",
     "capabilities",
     "context_window",
+    "max_output_tokens",
     "created",
 )
 
@@ -54,6 +55,7 @@ _REQUIRED_CAPABILITY_MAX_ITEMS = 32
 _METADATA_MAX_BYTES = 8192
 _CONTEXT_WINDOW_MIN = 256
 _CONTEXT_WINDOW_MAX = 10_000_000
+_MAX_OUTPUT_TOKENS_MAX = 1_000_000
 
 
 def _has_control_character(value: str) -> bool:
@@ -170,6 +172,7 @@ def _build_metadata(
     *,
     capabilities: list[str],
     context_window: int | None,
+    max_output_tokens: int | None,
 ) -> str:
     """从白名单规范值构造紧凑排序 JSON 元数据并校验上限。"""
     metadata: dict[str, Any] = {}
@@ -183,6 +186,9 @@ def _build_metadata(
 
     if raw.get("context_window") is not None:
         metadata["context_window"] = context_window
+
+    if raw.get("max_output_tokens") is not None:
+        metadata["max_output_tokens"] = max_output_tokens
 
     created = raw.get("created")
     if created is not None:
@@ -224,6 +230,7 @@ def normalize_model_record(raw: Mapping[str, Any]) -> dict[str, Any]:
         "display_name": None,
         "capabilities": [],
         "context_window": None,
+        "max_output_tokens": None,
         "metadata_json": "{}",
     }
 
@@ -248,12 +255,29 @@ def normalize_model_record(raw: Mapping[str, Any]) -> dict[str, Any]:
             )
         item["context_window"] = context_window
 
+    max_output_tokens = normalize_max_output_tokens(raw.get("max_output_tokens"))
+    item["max_output_tokens"] = max_output_tokens
+
     item["metadata_json"] = _build_metadata(
         raw,
         capabilities=item["capabilities"],
         context_window=item["context_window"],
+        max_output_tokens=max_output_tokens,
     )
     return item
+
+
+def normalize_max_output_tokens(value: Any) -> int | None:
+    """Validate the explicitly reported model output limit; null means unknown."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ModelCatalogValidationError("max_output_tokens must be an integer or null")
+    if not 1 <= value <= _MAX_OUTPUT_TOKENS_MAX:
+        raise ModelCatalogValidationError(
+            "max_output_tokens must be between 1 and 1000000"
+        )
+    return value
 
 
 def canonical_model_digest(models: Sequence[Mapping[str, Any]]) -> str:
@@ -271,6 +295,7 @@ def canonical_model_digest(models: Sequence[Mapping[str, Any]]) -> str:
             "display_name": model.get("display_name"),
             "capabilities": model.get("capabilities", []),
             "context_window": model.get("context_window"),
+            "max_output_tokens": model.get("max_output_tokens"),
             "metadata_json": model.get("metadata_json", "{}"),
         }
     ordered = [unique[key] for key in sorted(unique)]
@@ -285,6 +310,7 @@ __all__ = [
     "ModelCatalogConflictError",
     "normalize_model_key",
     "normalize_model_record",
+    "normalize_max_output_tokens",
     "normalize_capabilities",
     "canonical_model_digest",
     "validate_text_field",

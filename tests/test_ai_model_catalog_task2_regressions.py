@@ -20,6 +20,7 @@ def _catalog_item(**overrides):
         "display_name": "Model A",
         "capabilities": ["streaming"],
         "context_window": 4096,
+        "max_output_tokens": None,
         "metadata_json": '{"owned_by":"vendor"}',
     }
     item.update(overrides)
@@ -52,6 +53,7 @@ def test_digest_hashes_only_sorted_normalized_catalog_fields():
         ("display_name", "Renamed"),
         ("capabilities", ["streaming", "vision"]),
         ("context_window", 8192),
+        ("max_output_tokens", 4096),
         ("metadata_json", '{"owned_by":"other"}'),
     ],
 )
