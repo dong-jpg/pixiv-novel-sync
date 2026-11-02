@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -75,7 +76,65 @@ def preflight_api(tmp_path: Path):
         db.close()
 
 
-def test_preflight_filters_short_fallback_without_external_work(preflight_api, monkeypatch):
+@pytest.fixture
+def preflight_sql_guard(preflight_api, monkeypatch):
+    guard = SimpleNamespace(databases={}, reads={}, denied_operations=[])
+    original_conn = Database.conn.fget
+    read_actions = {
+        sqlite3.SQLITE_SELECT,
+        sqlite3.SQLITE_READ,
+        sqlite3.SQLITE_FUNCTION,
+        sqlite3.SQLITE_TRANSACTION,
+        sqlite3.SQLITE_SAVEPOINT,
+        sqlite3.SQLITE_RECURSIVE,
+    }
+
+    def guarded_conn(database):
+        conn = original_conn(database)
+        if conn not in guard.databases:
+            guard.databases[conn] = database
+            guard.reads[conn] = set()
+
+            def authorize(action, first, second, _database, _trigger):
+                if action == sqlite3.SQLITE_READ:
+                    guard.reads[conn].add(first)
+                if action not in read_actions:
+                    guard.denied_operations.append((action, first, second))
+                    return sqlite3.SQLITE_DENY
+                return sqlite3.SQLITE_OK
+
+            conn.set_authorizer(authorize)
+        return conn
+
+    # Setup/connection PRAGMAs finish first; the descriptor also covers the
+    # Router's already-bound factory and every fresh service Database instance.
+    monkeypatch.setattr(Database, "conn", property(guarded_conn))
+    return guard
+
+
+@pytest.mark.parametrize("factory_name", ["service", "router"])
+def test_preflight_sql_guard_rejects_writes_on_actual_connections(
+    preflight_api, preflight_sql_guard, factory_name,
+):
+    app, _, db, agent_id, _ = preflight_api
+    service = app.extensions["pixiv_novel_sync.ai_service"]._current()
+    factory = service._db if factory_name == "service" else service.model_router._db_factory
+    actual_db = factory()
+    try:
+        assert actual_db is not db
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+            actual_db.conn.execute("UPDATE ai_agents SET name = name WHERE id = ?", (agent_id,))
+        assert preflight_sql_guard.databases[actual_db.conn] is actual_db
+        assert preflight_sql_guard.denied_operations == [
+            (sqlite3.SQLITE_UPDATE, "ai_agents", "name"),
+        ]
+    finally:
+        actual_db.close()
+
+
+def test_preflight_filters_short_fallback_without_external_work(
+    preflight_api, preflight_sql_guard, monkeypatch,
+):
     app, client, db, agent_id, _ = preflight_api
     service = app.extensions["pixiv_novel_sync.ai_service"]._current()
 
@@ -83,9 +142,9 @@ def test_preflight_filters_short_fallback_without_external_work(preflight_api, m
         raise AssertionError("preflight attempted external/secret work")
 
     monkeypatch.setattr(AIWritingService, "_get_provider", forbidden)
+    monkeypatch.setattr(service.model_router, "_get_provider", forbidden)
     monkeypatch.setattr(type(service.secret_manager), "decrypt", forbidden)
     monkeypatch.setattr("socket.getaddrinfo", forbidden)
-    before = db.conn.total_changes
     body = "x" * 800_000 + "PRIVATE_INPUT_TAIL_SENTINEL"
     response = client.post(
         f"/api/dashboard/ai/agents/{agent_id}/preflight",
@@ -100,7 +159,11 @@ def test_preflight_filters_short_fallback_without_external_work(preflight_api, m
     for secret in ("PRIVATE_INPUT_TAIL_SENTINEL", "not-a-decryptable-key",
                    "private-provider.example.test", "request_fingerprint"):
         assert secret not in public
-    assert db.conn.total_changes == before
+    assert preflight_sql_guard.databases
+    assert all(actual_db is not db for actual_db in preflight_sql_guard.databases.values())
+    observed_tables = set().union(*preflight_sql_guard.reads.values())
+    assert {"ai_agents", "ai_provider_models"} <= observed_tables
+    assert preflight_sql_guard.denied_operations == []
     assert db.conn.execute("SELECT COUNT(*) FROM ai_jobs").fetchone()[0] == 0
 
 
@@ -332,17 +395,23 @@ def test_job_list_projects_diagnostics_without_extra_queries(preflight_api, monk
         "provider_config_hash": candidates[0].provider_config_hash,
         "candidate_list_hash": candidates[0].provider_config_hash,
     })
-    monkeypatch.setattr(
-        db,
-        "get_ai_job",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("job list projection must not issue detail queries")
-        ),
-    )
+    detail_queries = []
+
+    def forbidden_detail_query(database, *args, **kwargs):
+        detail_queries.append(database)
+        raise AssertionError("job list projection must not issue detail queries")
+
+    monkeypatch.setattr(Database, "get_ai_job", forbidden_detail_query)
+    with pytest.raises(AssertionError, match="must not issue detail queries"):
+        service.get_job(job_id)
+    assert len(detail_queries) == 1
+    assert detail_queries[0] is not db
+    detail_queries.clear()
 
     response = client.get("/api/dashboard/ai/jobs")
 
     assert response.status_code == 200
+    assert detail_queries == []
     item = response.get_json()["data"]["items"][0]
     assert item["can_continue"] is False
     assert item["snapshot_version"] is None
