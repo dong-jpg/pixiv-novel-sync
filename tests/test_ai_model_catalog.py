@@ -748,7 +748,8 @@ def test_bulk_enabled_ignores_foreign_provider_model_atomically(db):
     assert db.get_ai_provider_model(foreign_model)["enabled"] is True
 
 
-def test_bulk_enabled_conflicting_threads_allow_exactly_one_write(db):
+@pytest.mark.parametrize("enabled_requests", [(False, True), (True, False)])
+def test_bulk_enabled_conflicting_threads_allow_exactly_one_write(db, enabled_requests):
     provider_id = seed_provider(db)
     model_ids = [
         db.create_ai_provider_model(
@@ -763,28 +764,27 @@ def test_bulk_enabled_conflicting_threads_allow_exactly_one_write(db):
     )
     revision = db.get_ai_provider_catalog_revision(provider_id)
     barrier = Barrier(2)
-    results: list[dict[str, object] | BaseException] = []
+    results: list[tuple[bool, dict[str, object] | BaseException]] = []
 
     def submit(database: Database, enabled: bool) -> None:
         try:
             barrier.wait(timeout=5)
-            results.append(
-                database.update_ai_provider_models_enabled(
-                    provider_id,
-                    revision,
-                    [{"id": model_id, "enabled": enabled} for model_id in model_ids],
-                )
+            result = database.update_ai_provider_models_enabled(
+                provider_id,
+                revision,
+                [{"id": model_id, "enabled": enabled} for model_id in model_ids],
             )
+            results.append((enabled, result))
         except BaseException as exc:
-            results.append(exc)
+            results.append((enabled, exc))
         finally:
             database.close()
 
     first = Database(db.path)
     second = Database(db.path)
     workers = [
-        threading.Thread(target=submit, args=(first, False)),
-        threading.Thread(target=submit, args=(second, True)),
+        threading.Thread(target=submit, args=(first, enabled_requests[0])),
+        threading.Thread(target=submit, args=(second, enabled_requests[1])),
     ]
     for worker in workers:
         worker.start()
@@ -793,18 +793,20 @@ def test_bulk_enabled_conflicting_threads_allow_exactly_one_write(db):
 
     assert not any(worker.is_alive() for worker in workers)
     conflicts = [
-        result for result in results if isinstance(result, ModelCatalogConflictError)
+        result for _, result in results if isinstance(result, ModelCatalogConflictError)
     ]
-    successful = [result for result in results if isinstance(result, dict)]
+    successful = [
+        (enabled, result) for enabled, result in results if isinstance(result, dict)
+    ]
     other_exceptions = [
         result
-        for result in results
+        for _, result in results
         if not isinstance(result, (dict, ModelCatalogConflictError))
     ]
     assert len(results) == 2
     assert len(successful) == 1
-    expected_final_enabled = successful[0] is results[0]
-    assert successful[0]["updated"] == 1
+    expected_final_enabled, successful_result = successful[0]
+    assert successful_result["updated"] == 1
     assert len(conflicts) == 1
     assert other_exceptions == []
     final_enabled = {
