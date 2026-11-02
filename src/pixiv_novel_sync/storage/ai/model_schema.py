@@ -257,6 +257,10 @@ def _create_ai_jobs_table(conn: sqlite3.Connection) -> None:
             output_text TEXT,
             output_json TEXT,
             error_message TEXT,
+            validation_status TEXT CHECK(
+                validation_status IS NULL
+                OR validation_status IN ('not_requested', 'passed', 'failed')
+            ),
             started_at TEXT,
             finished_at TEXT,
             candidate_snapshot_json TEXT
@@ -383,6 +387,10 @@ def _create_attempt_and_sync_tables(conn: sqlite3.Connection) -> None:
                 CHECK(error_scope IS NULL OR error_scope IN ('model', 'provider')),
             error_message TEXT,
             error_category TEXT,
+            usage_json TEXT CHECK(
+                usage_json IS NULL
+                OR (json_valid(usage_json) AND length(CAST(usage_json AS BLOB)) <= 16384)
+            ),
             finish_reason TEXT
                 CHECK(
                     finish_reason IS NULL
@@ -579,6 +587,20 @@ def assert_model_routing_foreign_keys(conn: sqlite3.Connection) -> None:
         raise RuntimeError(f"foreign_key_check failed: {details!r}")
 
 
+def _ensure_ai_job_usage_columns(conn: sqlite3.Connection) -> None:
+    if "validation_status" not in _table_columns(conn, "ai_jobs"):
+        conn.execute(
+            "ALTER TABLE ai_jobs ADD COLUMN validation_status TEXT CHECK("
+            "validation_status IS NULL OR validation_status IN ('not_requested', 'passed', 'failed'))"
+        )
+    if "usage_json" not in _table_columns(conn, "ai_job_model_attempts"):
+        conn.execute(
+            "ALTER TABLE ai_job_model_attempts ADD COLUMN usage_json TEXT CHECK("
+            "usage_json IS NULL OR (json_valid(usage_json) "
+            "AND length(CAST(usage_json AS BLOB)) <= 16384))"
+        )
+
+
 def _migrate_model_routing_schema_in_transaction(
     conn: sqlite3.Connection,
 ) -> None:
@@ -593,6 +615,7 @@ def _migrate_model_routing_schema_in_transaction(
     _create_model_routing_indexes(conn)
     _import_available_models(conn)
     _ensure_ai_job_cancel_column(conn)
+    _ensure_ai_job_usage_columns(conn)
     if created or rebuilt:
         assert_model_routing_foreign_keys(conn)
 

@@ -4,17 +4,18 @@ import json
 import secrets
 import threading
 import uuid
-from collections.abc import Generator, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 from ...storage_db import Database, prepare_schema
+from ...storage.ai.core import _validate_timestamp
 from ..crypto import AISecretError, AISecretManager
-from ..invocation import TextInvocation, invocation_messages
-from ..invocation_planner import InvocationPlan
+from ..invocation import TextInvocation, invocation_fingerprint, invocation_messages, normalize_text_invocation
+from ..invocation_planner import ESTIMATOR_VERSION, PLANNER_VERSION, InvocationPlan
 from ..invocation_snapshot import PlannedCandidateSnapshot, planned_snapshot_payload
 from ..model_router import (
     CandidateSnapshot,
@@ -200,6 +201,7 @@ class AIServiceCore:
         resume_candidate_index: int = 0,
         invocation: TextInvocation | None = None,
         retention_policy: Literal["metadata_only", "keyword_compat"] | None = None,
+        deadline_at: str | None = None,
     ) -> RouteJobContext:
         if self._closed:
             raise AIServiceError("AI 服务已关闭")
@@ -209,6 +211,8 @@ class AIServiceCore:
             or resume_candidate_index < 0
         ):
             raise AIServiceError("resume_candidate_index 必须是非负整数")
+        if deadline_at is not None:
+            deadline_at = _validate_timestamp(deadline_at, "deadline_at")
 
         job_input_data = dict(input_data)
         budget_messages = [dict(message) for message in messages]
@@ -220,6 +224,8 @@ class AIServiceCore:
             deadline = (
                 datetime.now(timezone.utc) + timedelta(minutes=30)
             ).strftime("%Y-%m-%d %H:%M:%S")
+            if deadline_at is not None:
+                deadline = min(deadline, deadline_at)
             db.create_ai_job(
                 job_id,
                 task_type,
@@ -230,6 +236,8 @@ class AIServiceCore:
                 route_deadline_at=deadline,
                 parent_job_id=parent_job_id,
                 idempotency_key=idempotency_key,
+                retention_policy=retention_policy,
+                validation_status="not_requested" if invocation is not None else None,
             )
         else:
             if (
@@ -340,13 +348,20 @@ class AIServiceCore:
                 prompt_budget,
             ):
                 raise AIConflictError("AI job PromptBudget 保存冲突")
+            if retention_policy == "metadata_only" and invocation is not None:
+                if not db.replace_ai_job_audit(
+                    job_id, owner_token, self._build_metadata_audit(task_type, invocation, prompt_budget),
+                ):
+                    raise AIConflictError("AI job audit could not be frozen")
         except Exception as error:
             db.finish_ai_job_cas(
                 job_id,
                 owner_token,
                 "failed",
-                error_message=str(error),
+                error_message="AI invocation failed" if retention_policy == "metadata_only" else str(error),
             )
+            if retention_policy == "metadata_only":
+                raise AIServiceError("AI invocation failed") from None
             raise
 
         return RouteJobContext(
@@ -422,6 +437,8 @@ class AIServiceCore:
         temperature: float | None = None,
         top_p: float | None = None,
         max_tokens: int | None = None,
+        stop_requested: Callable[[], bool] | None = None,
+        deadline_at: str | None = None,
     ) -> Generator[AIStreamChunk, None, RouteResult]:
         if self._closed:
             raise AIServiceError("AI 服务已关闭")
@@ -469,6 +486,8 @@ class AIServiceCore:
             resume_candidate_index=context.resume_candidate_index,
             invocation=invocation,
             retention_policy=context.retention_policy,
+            is_cancelled=stop_requested,
+            route_deadline_at=deadline_at,
         )
         return (yield from self.model_router.execute_stream(request))
 
@@ -480,18 +499,187 @@ class AIServiceCore:
         output_text: str,
         output_json: dict[str, Any] | None = None,
         error_message: str | None = None,
+        validation_status: Literal["not_requested", "passed", "failed"] | None = None,
     ) -> bool:
         fields: dict[str, Any] = {"output_text": output_text}
         if output_json is not None:
             fields["output_json"] = output_json
         if error_message is not None:
             fields["error_message"] = error_message
+        if validation_status is not None:
+            fields["validation_status"] = validation_status
         return db.finish_ai_job_cas(
             context.job_id,
             context.owner_token,
             status,
             **fields,
         )
+
+    @staticmethod
+    def _build_metadata_audit(
+        task_type: str, invocation: TextInvocation, plan: InvocationPlan | None = None,
+    ) -> dict[str, Any]:
+        provider_ids = invocation.allowed_provider_ids or ()
+        payload: dict[str, Any] = {
+            "audit_version": 1,
+            "business_type": task_type,
+            "input_chars": sum(len(message.content) for message in invocation.messages),
+            "message_count": len(invocation.messages),
+            "input_fingerprint": invocation_fingerprint(invocation, provider_ids=provider_ids),
+            "planner_version": PLANNER_VERSION,
+            "estimator_version": ESTIMATOR_VERSION,
+            "snapshot_version": 2,
+            "request_schema_version": 1,
+            "allowed_provider_ids": list(provider_ids),
+        }
+        if plan is not None:
+            public = plan.to_public_dict()
+            payload.update(
+                input_fingerprint=plan.request_fingerprint,
+                allowed_provider_ids=public["allowed_provider_ids"],
+                planner_version=public["planner_version"],
+                estimator_version=public["estimator_version"],
+                snapshot_version=public["version"],
+            )
+        return payload
+
+    def invoke_text(
+        self, agent_id: int, payload: Mapping[str, Any], *,
+        stop_requested: Callable[[], bool] | None = None,
+        deadline_at: str | None = None,
+        on_delta: Callable[[str], None] | None = None,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+    ) -> RouteResult:
+        db = self._db()
+        try:
+            agent = self._load_agent_config(db, agent_id)
+            if not agent.enabled:
+                raise AIServiceError("Agent is disabled")
+            invocation = normalize_text_invocation(payload, agent=agent)
+        finally:
+            db.close()
+        result, _parsed = self._invoke_text(
+            agent, invocation, retention_policy="metadata_only", validator=None,
+            input_data=self._build_metadata_audit(agent.task_type, invocation),
+            stop_requested=stop_requested, deadline_at=deadline_at,
+            on_delta=on_delta, on_progress=on_progress,
+        )
+        return result
+
+    def _invoke_text(
+        self, agent: AIAgentConfig, invocation: TextInvocation, *,
+        retention_policy: Literal["metadata_only", "keyword_compat"],
+        input_data: dict[str, Any],
+        validator: Callable[[str], dict[str, Any]] | None = None,
+        stop_requested: Callable[[], bool] | None = None,
+        deadline_at: str | None = None,
+        on_delta: Callable[[str], None] | None = None,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+    ) -> tuple[RouteResult, dict[str, Any] | None]:
+        if deadline_at is not None:
+            deadline_at = _validate_timestamp(deadline_at, "deadline_at")
+        db = self._db()
+        context: RouteJobContext | None = None
+        stream: Generator[AIStreamChunk, None, RouteResult] | None = None
+        try:
+            task_type = "keyword_clean" if retention_policy == "keyword_compat" else agent.task_type
+            context = self._start_route_job(
+                db, task_type, agent, input_data,
+                messages=invocation_messages(invocation), max_tokens=invocation.max_tokens,
+                invocation=invocation, retention_policy=retention_policy, deadline_at=deadline_at,
+            )
+            stream = self._stream_route(
+                context, invocation_messages(invocation),
+                temperature=invocation.temperature, top_p=invocation.top_p,
+                max_tokens=invocation.max_tokens, stop_requested=stop_requested, deadline_at=deadline_at,
+            )
+            while True:
+                try:
+                    chunk = next(stream)
+                except StopIteration as stopped:
+                    result = stopped.value
+                    break
+                if chunk.type == "delta" and on_delta is not None:
+                    on_delta(chunk.text)
+                elif chunk.type == "progress" and on_progress is not None:
+                    on_progress(chunk.data or {})
+            stream.close()
+            stream = None
+
+            parsed = None
+            validation = "not_requested"
+            job_status = {
+                "succeeded": "succeeded", "partial": "partial",
+                "cancelled": "cancelled", "failed_before_output": "failed",
+            }[result.finish_state]
+            safe_error = None
+            if result.finish_state == "succeeded" and validator is not None:
+                try:
+                    parsed = validator(result.output_text)
+                    validation = "passed"
+                except (TypeError, ValueError):
+                    validation, job_status, safe_error = "failed", "failed", "validation_failed"
+            pending = db.get_ai_job(context.job_id)
+            if pending is not None and pending["status"] == "running" and any(
+                attempt["status"] == "running" for attempt in pending["attempts"]
+            ):
+                raise AIConflictError("AI invocation ended before its attempt")
+            finished_here = self._finish_route_job(
+                db, context, job_status, result.output_text,
+                output_json=parsed, error_message=safe_error, validation_status=validation,
+            )
+            saved = db.get_ai_job(context.job_id)
+            if saved is None or saved["status"] == "running":
+                raise AIConflictError("AI job no longer exists or ownership changed")
+            if not finished_here and result.finish_state == "succeeded":
+                transport = {"succeeded": "succeeded", "partial": "partial",
+                             "cancelled": "cancelled", "failed": "failed_before_output"}[saved["status"]]
+                result = replace(result, output_text=str(saved.get("output_text") or ""), finish_state=transport)
+                parsed = None
+            final_validation = saved["validation_status"]
+            result = replace(
+                result, job_status=saved["status"],
+                validation_status=None if final_validation == "unknown" else final_validation,
+                attempts=tuple(saved["attempts"]),
+                usage_summary=db.get_ai_job_usage_summary(context.job_id),
+            )
+            return result, parsed if result.job_status == "succeeded" else None
+        except Exception:
+            # Close first: GeneratorExit owns cancellation and heartbeat cleanup.
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+                stream = None
+            if context is not None:
+                try:
+                    attempts = db.list_ai_job_model_attempts(context.job_id)
+                    partial = any(item["stage"] == "main" and item["output_started"] for item in attempts)
+                    for attempt in attempts:
+                        if attempt["status"] == "running":
+                            db.finish_ai_model_attempt(
+                                context.job_id, attempt["attempt_index"], context.owner_token,
+                                "partial" if attempt["stage"] == "main" and attempt["output_started"] else "failed",
+                                error_category="unexpected_error", error_message="AI invocation failed",
+                                finish_reason="error",
+                            )
+                    self._finish_route_job(
+                        db, context, "partial" if partial else "failed", "",
+                        error_message="AI invocation failed", validation_status="not_requested",
+                    )
+                except Exception:
+                    # A failed DB write must not expose callback/provider payloads.
+                    pass
+            if retention_policy == "metadata_only":
+                raise AIServiceError("AI invocation failed") from None
+            raise
+        finally:
+            try:
+                if stream is not None:
+                    stream.close()
+            finally:
+                db.close()
 
     @staticmethod
     def _cancel_route_job(

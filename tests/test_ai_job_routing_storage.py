@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -61,6 +62,248 @@ def create_owned_job(
     )
 
 
+def create_metadata_job(db, job_id="metadata", *, stage="main"):
+    db.create_ai_job(
+        job_id, "general", 1,
+        {"audit_version": 1, "business_type": "general", "input_chars": 3,
+         "message_count": 1, "input_fingerprint": "a" * 64, "messages": "INPUT_SENTINEL"},
+        owner_token="owner", stage=stage, route_deadline_at="2099-01-01 00:00:00",
+        retention_policy="metadata_only", validation_status="not_requested",
+    )
+
+
+@pytest.mark.parametrize("method", ["cas", "update"])
+@pytest.mark.parametrize("status", ["succeeded", "failed", "partial", "cancelled"])
+def test_metadata_terminal_writes_enforce_sql_null_and_safe_errors(db, method, status):
+    create_metadata_job(db)
+    attempt = db.allocate_ai_model_attempt("metadata", "owner", valid_attempt_data())
+    assert db.mark_ai_job_output_started("metadata", attempt, "owner", 0)
+    # Existing contamination must not survive COALESCE or omitted output fields.
+    db.conn.execute("UPDATE ai_jobs SET output_text='OUTPUT_SENTINEL', output_json='{}'")
+    db.conn.commit()
+    kwargs = {"output_json": {"raw": "OUTPUT_SENTINEL"},
+              "error_message": "INPUT_SENTINEL upstream body"}
+    if method == "cas":
+        assert db.finish_ai_job_cas("metadata", "owner", status, **kwargs)
+    else:
+        db.update_ai_job("metadata", status, **kwargs)
+    row = dict(db.conn.execute("SELECT * FROM ai_jobs WHERE job_id='metadata'").fetchone())
+    assert row["output_text"] is None and row["output_json"] is None
+    assert row["error_message"] == "AI invocation failed"
+    assert "SENTINEL" not in json.dumps(row)
+    assert db.get_ai_job("metadata")["validation_status"] == "not_requested"
+
+
+def test_metadata_partial_requires_persisted_main_output_started(db):
+    create_metadata_job(db)
+    attempt = db.allocate_ai_model_attempt("metadata", "owner", valid_attempt_data())
+    with pytest.raises(ValueError):
+        db.finish_ai_job_cas("metadata", "owner", "partial", output_text="unpublished")
+    assert db.mark_ai_job_output_started("metadata", attempt, "owner", 0)
+    assert db.finish_ai_job_cas("metadata", "owner", "partial")
+    assert db.get_ai_job("metadata")["output_text"] is None
+
+
+def test_metadata_attempt_error_categories_and_validation_are_safe(db):
+    create_metadata_job(db)
+    attempt = db.allocate_ai_model_attempt("metadata", "owner", valid_attempt_data())
+    with pytest.raises(ValueError):
+        db.finish_ai_model_attempt("metadata", attempt, "owner", "failed",
+                                   error_category="INPUT_SENTINEL")
+    assert db.finish_ai_model_attempt(
+        "metadata", attempt, "owner", "succeeded", error_message=None,
+    )
+    assert db.finish_ai_job_cas(
+        "metadata", "owner", "failed", validation_status="failed",
+        error_category="validation_failed", error_message="OUTPUT_SENTINEL",
+        output_json=object(),
+    )
+    saved = db.get_ai_job("metadata")
+    assert saved["validation_status"] == "failed"
+    assert saved["error_message"] == "validation_failed"
+    assert saved["attempts"][0]["status"] == "succeeded"
+    assert saved["attempts"][0]["error_message"] is None
+    assert saved["can_continue"] is False
+
+
+@pytest.mark.parametrize("http_status, expected", [(503, "network (HTTP 503)"),
+                                                 (True, "network"), (999, "network")])
+def test_metadata_attempt_error_uses_only_safe_category_and_http_status(db, http_status, expected):
+    create_metadata_job(db)
+    attempt = db.allocate_ai_model_attempt("metadata", "owner", valid_attempt_data())
+    assert db.finish_ai_model_attempt(
+        "metadata", attempt, "owner", "partial", output_started=True,
+        error_category="network", error_message="OUTPUT_SENTINEL", http_status=http_status,
+    )
+    row = db.list_ai_job_model_attempts("metadata")[0]
+    assert row["error_message"] == expected and row["output_started"] is True
+
+
+def test_metadata_audit_is_server_selected_bounded_and_owner_scoped(db):
+    with pytest.raises(ValueError):
+        db.create_ai_job("untrusted", "general", None, {"retention_policy": "metadata_only"})
+    with pytest.raises(ValueError):
+        db.create_ai_job("escape", "general", None, {}, retention_policy="keyword_compat")
+    for data in ({"input_chars": True}, {"business_type": {"text": "INPUT_SENTINEL"}},
+                 {"planner_version": "INPUT_SENTINEL"}, {"input_fingerprint": "bad"}):
+        with pytest.raises(ValueError):
+            db.create_ai_job("invalid", "general", None, data, retention_policy="metadata_only")
+    create_metadata_job(db)
+    assert not db.replace_ai_job_audit("metadata", "wrong", {"input_chars": 99})
+    assert db.replace_ai_job_audit("metadata", "owner", {
+        "input_chars": 4, "input_fingerprint": "b" * 64,
+        "retention_policy": "keyword_compat", "raw": "INPUT_SENTINEL",
+    })
+    saved = db.get_ai_job("metadata")["input"]
+    assert saved["retention_policy"] == "metadata_only"
+    assert saved["input_fingerprint"] == "b" * 64 and "raw" not in saved
+    assert db.finish_ai_job_cas("metadata", "owner", "succeeded")
+    assert not db.replace_ai_job_audit("metadata", "owner", {"input_chars": 99})
+
+
+def test_metadata_stale_recovery_discards_preexisting_body_and_keeps_unknown_usage(db):
+    create_metadata_job(db)
+    attempt = db.allocate_ai_model_attempt("metadata", "owner", valid_attempt_data())
+    assert db.claim_ai_job_network_request("metadata", "owner", attempt) == 1
+    assert db.mark_ai_job_output_started("metadata", attempt, "owner", 0)
+    db.conn.execute("UPDATE ai_jobs SET lease_until='2000-01-01', heartbeat_at='2000-01-01', "
+                    "output_text='OUTPUT_SENTINEL', output_json='{}', error_message='INPUT_SENTINEL'")
+    db.conn.commit()
+    assert db.fail_stale_ai_jobs() == 1
+    row = dict(db.conn.execute("SELECT * FROM ai_jobs WHERE job_id='metadata'").fetchone())
+    assert row["status"] == "partial" and row["output_text"] is None and row["output_json"] is None
+    assert row["error_message"] == "process_interrupted"
+    assert "SENTINEL" not in json.dumps(row)
+    assert db.list_ai_job_model_attempts("metadata")[0]["error_message"] == "process_interrupted"
+    assert db.get_ai_job_usage_summary("metadata")["unreported_requests"] == 1
+
+
+def test_usage_reservation_is_durable_owner_scoped_and_idempotent(db):
+    create_owned_job(db, "usage")
+    attempt = db.allocate_ai_model_attempt("usage", "owner", valid_attempt_data())
+    assert db.claim_ai_job_network_request("usage", "owner", attempt) == 1
+    assert db.claim_ai_job_network_request("usage", "owner", attempt) == 2
+    other = sqlite3.connect(db.path)
+    try:
+        count = other.execute("SELECT network_request_count FROM ai_jobs WHERE job_id='usage'").fetchone()[0]
+        pending = json.loads(other.execute("SELECT usage_json FROM ai_job_model_attempts").fetchone()[0])
+    finally:
+        other.close()
+    assert count == 2 and len(pending["requests"]) == 2
+    assert pending["requests"][0]["missing_reason"] == "pending"
+    assert pending["requests"][0]["input_tokens"] is None
+    complete = {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12,
+                "complete": True, "missing_reason": None}
+    for _ in range(2):
+        assert db.record_ai_job_request_usage("usage", "owner", attempt, 1, complete)
+    assert db.record_ai_job_request_usage("usage", "owner", attempt, 1, {
+        "input_tokens": 1, "output_tokens": 1, "total_tokens": 2,
+        "complete": False, "missing_reason": "partial_report",
+    })
+    assert not db.record_ai_job_request_usage("usage", "wrong", attempt, 1, complete)
+    assert not db.record_ai_job_request_usage("usage", "owner", attempt, 3, complete)
+    assert not db.record_ai_job_request_usage("usage", "owner", attempt + 1, 1, complete)
+    summary = db.get_ai_job_usage_summary("usage")
+    assert summary == {"known_input_tokens": 10, "known_output_tokens": 2,
+                       "known_total_tokens": 12, "reported_requests": 1,
+                       "unreported_requests": 1, "complete": False}
+    projection = db.list_ai_job_model_attempts("usage")[0]
+    assert "usage_json" not in projection
+    assert len(projection["usage"]["requests"][0]) == 9
+
+
+def test_usage_late_observation_updates_only_reserved_same_owner_terminal_rows(db):
+    create_owned_job(db, "usage")
+    attempt = db.allocate_ai_model_attempt("usage", "owner", valid_attempt_data())
+    db.claim_ai_job_network_request("usage", "owner", attempt)
+    assert db.finish_ai_model_attempt("usage", attempt, "owner", "succeeded")
+    assert db.finish_ai_job_cas("usage", "owner", "cancelled")
+    complete = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+                "complete": True, "missing_reason": None}
+    assert db.record_ai_job_request_usage("usage", "owner", attempt, 1, complete)
+    row = db.get_ai_job("usage")
+    assert row["status"] == "cancelled" and row["attempts"][0]["status"] == "succeeded"
+    assert row["usage_summary"]["known_total_tokens"] == 0
+    assert row["usage_summary"]["complete"] is True
+    with pytest.raises(AIJobConflictError):
+        db.claim_ai_job_network_request("usage", "owner", attempt)
+    db.delete_ai_job("usage")
+    assert not db.record_ai_job_request_usage("usage", "owner", attempt, 1, complete)
+
+
+def test_usage_reservation_rejects_nested_transaction_and_rolls_back_counter(db):
+    create_owned_job(db, "usage")
+    attempt = db.allocate_ai_model_attempt("usage", "owner", valid_attempt_data())
+    with db.transaction():
+        with pytest.raises(AIJobConflictError):
+            db.claim_ai_job_network_request("usage", "owner", attempt)
+    with pytest.raises(AIJobConflictError):
+        db.claim_ai_job_network_request("usage", "owner", attempt + 1)
+    db.conn.execute(
+        "CREATE TRIGGER reject_usage BEFORE UPDATE OF usage_json ON ai_job_model_attempts "
+        "BEGIN SELECT RAISE(ABORT, 'usage write rejected'); END"
+    )
+    db.conn.commit()
+    with pytest.raises(sqlite3.IntegrityError, match="usage write rejected"):
+        db.claim_ai_job_network_request("usage", "owner", attempt)
+    saved = db.get_ai_job("usage")
+    assert saved["network_request_count"] == 0 and saved["attempts"][0]["usage"] is None
+
+
+@pytest.mark.parametrize("stop", ["cancel", "deadline"])
+def test_usage_reservation_checks_durable_stop_in_its_transaction(db, stop):
+    create_owned_job(db, "usage")
+    attempt = db.allocate_ai_model_attempt("usage", "owner", valid_attempt_data())
+    if stop == "cancel":
+        assert db.request_ai_job_cancel("usage")
+    else:
+        db.conn.execute("UPDATE ai_jobs SET route_deadline_at='2000-01-01 00:00:00'")
+        db.conn.commit()
+    with pytest.raises(AIJobConflictError):
+        db.claim_ai_job_network_request("usage", "owner", attempt)
+    saved = db.get_ai_job("usage")
+    assert saved["network_request_count"] == 0 and saved["attempts"][0]["usage"] is None
+
+
+def test_usage_payload_rejects_unknown_keys_invalid_counters_and_byte_overflow(db):
+    create_owned_job(db, "usage")
+    attempt = db.allocate_ai_model_attempt("usage", "owner", valid_attempt_data())
+    for ordinal in range(1, 33):
+        assert db.claim_ai_job_network_request("usage", "owner", attempt) == ordinal
+    with pytest.raises(AIRouteBudgetExhausted):
+        db.claim_ai_job_network_request("usage", "owner", attempt)
+    before = db.conn.execute("SELECT usage_json FROM ai_job_model_attempts").fetchone()[0]
+    huge = 10 ** 4000
+    invalid = [{"input_tokens": value} for value in (-1, True, 1.5, "10")]
+    invalid += [{"missing_reason": "x" * 16385}, {"raw": "x" * 16385},
+                {"input_tokens": huge, "output_tokens": huge, "total_tokens": huge * 2,
+                 "cached_input_tokens": huge, "cache_creation_input_tokens": huge,
+                 "reasoning_output_tokens": huge, "complete": True, "missing_reason": None}]
+    for payload in invalid:
+        with pytest.raises(ValueError):
+            db.record_ai_job_request_usage("usage", "owner", attempt, 1, payload)
+        assert db.conn.execute("SELECT usage_json FROM ai_job_model_attempts").fetchone()[0] == before
+    assert len(before.encode("utf-8")) <= 16384
+    assert db.get_ai_job_usage_summary("usage")["unreported_requests"] == 32
+
+
+def test_usage_corrupt_envelope_projection_is_unknown_not_raw(db):
+    create_owned_job(db, "usage")
+    attempt = db.allocate_ai_model_attempt("usage", "owner", valid_attempt_data())
+    db.claim_ai_job_network_request("usage", "owner", attempt)
+    db.conn.execute("UPDATE ai_job_model_attempts SET usage_json=?", (
+        json.dumps({"requests": [{"request_ordinal": 1, "raw": "INPUT_SENTINEL"}]}),
+    ))
+    db.conn.commit()
+    saved = db.get_ai_job("usage")
+    assert saved["attempts"][0]["usage"] is None
+    assert "SENTINEL" not in json.dumps(saved)
+    assert saved["usage_summary"]["unreported_requests"] == 1
+    with pytest.raises(ValueError):
+        db.claim_ai_job_network_request("usage", "owner", attempt)
+    assert db.get_ai_job("usage")["network_request_count"] == 1
+
+
 def test_request_ai_job_cancel_marks_running_job_once(db: Database) -> None:
     create_owned_job(db, "cancel-me")
     assert db.request_ai_job_cancel("cancel-me") is True
@@ -96,6 +339,94 @@ def canonical_snapshot() -> tuple[str, str]:
         separators=(",", ":"),
     )
     return serialized, hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def resume_parent(db, policy):
+    if policy == "metadata_only":
+        create_metadata_job(db, "parent")
+        task_type = "general"
+    elif policy == "keyword_compat":
+        task_type = "keyword_clean"
+        db.create_ai_job("parent", task_type, 1, {"raw_keywords": ["input"], "tags": ["tag"]},
+                         owner_token="owner", retention_policy=policy)
+    else:
+        task_type = "continue"
+        create_owned_job(db, "parent")
+    snapshot, fingerprint = canonical_snapshot()
+    assert db.set_ai_job_candidate_snapshot("parent", "owner", snapshot, fingerprint)
+    assert db.finish_ai_job_cas("parent", "owner", "failed")
+    return {"task_type": task_type, "agent_id": 1, "owner_token": "child-owner",
+            "route_deadline_at": "2099-01-01 00:00:00", "parent_job_id": "parent",
+            "idempotency_key": "resume", "candidate_snapshot": json.loads(snapshot),
+            "candidate_snapshot_hash": fingerprint, "resume_candidate_index": 0}
+
+
+def test_metadata_resume_child_inherits_only_trusted_audit_and_preserves_index(db):
+    options = resume_parent(db, "metadata_only")
+    child, created = db.create_or_get_ai_resume_job("child", input_data={
+        "resume_candidate_index": 0, "retention_policy": "keyword_compat", "raw": "INPUT_SENTINEL",
+    }, **options)
+    assert created and child["input"]["retention_policy"] == "metadata_only"
+    assert child["input"]["resume_candidate_index"] == 0
+    assert child["input"]["input_fingerprint"] == "a" * 64
+    assert child["validation_status"] == "not_requested"
+    assert "INPUT_SENTINEL" not in child["input_json"]
+    audit = dict(db.get_ai_job("parent")["input"], resume_candidate_index=12)
+    assert db.replace_ai_job_audit("child", "child-owner", audit)
+    assert db.get_ai_job("child")["input"]["resume_candidate_index"] == 0
+    repeated, created = db.create_or_get_ai_resume_job("ignored", input_data={
+        "resume_candidate_index": 0, "raw": "different ignored text",
+    }, **options)
+    assert not created and repeated["job_id"] == "child"
+    with pytest.raises(AIJobConflictError):
+        db.create_or_get_ai_resume_job("conflict", input_data={"resume_candidate_index": 1},
+                                      **{**options, "resume_candidate_index": 1})
+    with pytest.raises(AIJobConflictError):
+        db.create_or_get_ai_resume_job("conflict", input_data={"resume_candidate_index": 0},
+                                      **{**options, "task_type": "keyword_clean"})
+    assert db.finish_ai_job_cas("child", "child-owner", "failed", output_text="OUTPUT_SENTINEL",
+                                output_json={"raw": "OUTPUT_SENTINEL"}, error_message="INPUT_SENTINEL")
+    row = dict(db.conn.execute("SELECT * FROM ai_jobs WHERE job_id='child'").fetchone())
+    assert row["output_text"] is None and row["output_json"] is None
+    assert row["error_message"] == "AI invocation failed"
+    assert "SENTINEL" not in json.dumps(row)
+
+
+@pytest.mark.parametrize("value", [True, 0.0, "0"])
+def test_metadata_resume_input_index_must_be_strict_integer(db, value):
+    options = resume_parent(db, "metadata_only")
+    index = 1 if value is True else 0
+    with pytest.raises(ValueError):
+        db.create_or_get_ai_resume_job("child", input_data={"resume_candidate_index": value},
+                                      **{**options, "resume_candidate_index": index})
+    assert db.get_ai_job("child") is None
+
+
+def test_usage_legacy_resume_keeps_unmarked_input_and_rejects_forged_policy(db):
+    options = resume_parent(db, None)
+    data = {"resume_candidate_index": 0, "legacy": "retained"}
+    first, created = db.create_or_get_ai_resume_job("legacy-child", input_data=data, **options)
+    assert created and first["input"] == data and first["validation_status"] == "unknown"
+    second, created = db.create_or_get_ai_resume_job("ignored", input_data=data, **options)
+    assert not created and second["job_id"] == first["job_id"]
+    with pytest.raises(ValueError):
+        db.create_or_get_ai_resume_job("forged", input_data={**data, "retention_policy": "metadata_only"},
+                                      **{**options, "idempotency_key": "forged"})
+    assert db.get_ai_job("forged") is None
+
+
+def test_metadata_resume_cannot_borrow_keyword_policy_for_another_task(db):
+    options = resume_parent(db, "keyword_compat")
+    with pytest.raises((ValueError, AIJobConflictError)):
+        db.create_or_get_ai_resume_job("escape", input_data={"resume_candidate_index": 0},
+                                      **{**options, "task_type": "general"})
+    child, created = db.create_or_get_ai_resume_job("keyword-child", input_data={
+        "resume_candidate_index": 0, "raw_keywords": ["untrusted child replacement"], "raw": "IGNORED",
+    }, **options)
+    assert created and child["input"] == {
+        "retention_policy": "keyword_compat", "raw_keywords": ["input"], "tags": ["tag"],
+        "resume_candidate_index": 0,
+    }
 
 
 def test_create_job_is_backward_compatible_and_owned_fields_are_private(

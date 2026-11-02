@@ -1174,7 +1174,7 @@ class ModelRouter:
             <= candidate.context_window
         )
 
-    def _claim_network_request(self, request: RouteRequest) -> None:
+    def _claim_network_request(self, request: RouteRequest, attempt_index: int) -> int:
         if self._request_cancelled(request):
             raise AIProviderError(
                 "AI 请求已取消",
@@ -1185,7 +1185,15 @@ class ModelRouter:
         db = self._db_factory()
         try:
             self._active_route_state(db, request)
-            db.claim_ai_job_network_request(request.job_id, request.owner_token)
+            try:
+                return db.claim_ai_job_network_request(request.job_id, request.owner_token, attempt_index)
+            except AIJobConflictError:
+                state = db.get_ai_job_route_state(request.job_id, request.owner_token)
+                if state is not None and state.get("status") == "running" and state.get("cancel_requested"):
+                    raise AIProviderError(
+                        "AI request cancelled", category="cancelled", scope="model", finish_reason="cancelled",
+                    ) from None
+                raise
         finally:
             db.close()
 
@@ -1270,6 +1278,7 @@ class ModelRouter:
             request.owner_token,
             "failed",
             error_message=f"{category}: {message}",
+            error_category=category,
         )
         return self._terminal_race_result(db, request)
 
@@ -1303,6 +1312,7 @@ class ModelRouter:
             cas_won = db.finish_ai_job_cas(
                 request.job_id, request.owner_token, "partial",
                 output_text=output_text, error_message=message,
+                error_category="unexpected_error",
             )
             return self._owned_terminal_result(
                 db, request, cas_won=cas_won, memory_output=output_text,
@@ -1471,6 +1481,23 @@ class ModelRouter:
                             category="context_overflow", scope="model",
                         )
                     self._validate_invocation_request(request)
+                    attempt_index = current_attempt
+
+                    def request_guard(_attempt_index: int = attempt_index) -> int:
+                        return self._claim_network_request(request, _attempt_index)
+
+                    def on_usage(
+                        ordinal: int, usage: Mapping[str, Any], *, _attempt_index: int = attempt_index,
+                    ) -> None:
+                        usage_db = self._db_factory()
+                        try:
+                            if not usage_db.record_ai_job_request_usage(
+                                request.job_id, request.owner_token, _attempt_index, ordinal, usage,
+                            ):
+                                raise AIJobConflictError("AI usage owner or request reservation no longer exists")
+                        finally:
+                            usage_db.close()
+
                     current_iterator = iter(
                         provider.stream_generate(
                             invocation_messages(request.invocation)
@@ -1480,8 +1507,9 @@ class ModelRouter:
                             request.temperature,
                             request.top_p,
                             request.max_tokens,
-                            request_guard=lambda: self._claim_network_request(request),
+                            request_guard=request_guard,
                             is_cancelled=lambda: self._request_cancelled(request),
+                            on_usage=on_usage,
                         )
                     )
                     attempt_parts: list[str] = []
@@ -1628,6 +1656,7 @@ class ModelRouter:
                             "partial",
                             output_text="".join(output_parts),
                             error_message=str(error),
+                            error_category=error.category,
                         )
                         return self._owned_terminal_result(
                             db, request, cas_won=cas_won, memory_output="".join(output_parts),
@@ -1682,6 +1711,7 @@ class ModelRouter:
                             "partial",
                             output_text="".join(output_parts),
                             error_message=str(error),
+                            error_category="route_budget_exhausted",
                         )
                         return self._owned_terminal_result(
                             db, request, cas_won=cas_won, memory_output="".join(output_parts),

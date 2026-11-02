@@ -12,6 +12,8 @@ from typing import Any
 import pytest
 
 from pixiv_novel_sync.ai import service as service_facade
+from pixiv_novel_sync.ai.invocation_planner import CandidateProfile, plan_invocation
+from pixiv_novel_sync.ai.invocation_snapshot import freeze_plan
 from pixiv_novel_sync.ai.model_router import (
     CandidateSnapshot,
     ModelCandidate,
@@ -135,6 +137,16 @@ class FakeModelRouter:
     ) -> PromptBudget:
         self.budget_calls.append((agent.id, snapshot, messages, max_tokens))
         return self.budget
+
+    def resolve_invocation(self, agent, invocation):
+        profiles = [CandidateProfile(
+            source_index=index, provider_id=item.provider_id, provider_name=item.provider_name,
+            provider_type="openai_compatible", model_key=item.model_key,
+            provider_context_window=item.context_window,
+            provider_config_hash=item.provider_config_hash, model_config_hash="b" * 64,
+        ) for index, item in enumerate(self.snapshot.candidates)]
+        plan = plan_invocation(invocation, profiles, agent_context_window=agent.context_window)
+        return freeze_plan(self.snapshot.agent_config_hash, self.snapshot.binding_version, plan)
 
     def execute(self, request: RouteRequest) -> RouteResult:
         generator = self.execute_stream(request)

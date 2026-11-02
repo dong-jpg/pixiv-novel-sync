@@ -1,12 +1,40 @@
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Generator
 from typing import Any
 
+from ..invocation import normalize_text_invocation
 from ..model_router import RouteResult
-from ..models import AIStreamChunk
+from ..models import AIAgentConfig, AIStreamChunk
 from ..prompts import build_keyword_clean_messages
 from .core import RouteJobContext
+
+
+def _validate_keyword_output(text: str) -> dict[str, list[str]]:
+    output = text.strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", output, re.DOTALL)
+    candidate = fenced.group(1) if fenced else output
+    if not fenced:
+        brace = re.search(r"\{.*\}", candidate, re.DOTALL)
+        if brace:
+            candidate = brace.group(0)
+    try:
+        data = json.loads(candidate)
+    except (TypeError, ValueError, RecursionError):
+        raise ValueError("validation_failed") from None
+    if not isinstance(data, dict):
+        raise ValueError("validation_failed")
+    result = {}
+    for key, limit in (("keywords", 30), ("dropped_sample", 10)):
+        values = data.get(key, [] if key == "dropped_sample" else None)
+        if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+            raise ValueError("validation_failed")
+        result[key] = [value.strip() for value in values if value.strip()][:limit]
+    if not result["keywords"]:
+        raise ValueError("validation_failed")
+    return result
 
 
 class AIKeywordCleanMixin:
@@ -76,24 +104,21 @@ class AIKeywordCleanMixin:
         调用方应保留原始 top_keywords 不受影响。返回
         {"keywords": [...], "dropped_sample": [...]}。
         """
-        import json
-        import re
-
         raw_keywords = [str(k).strip() for k in (raw_keywords or []) if str(k).strip()]
         if not raw_keywords:
             return None
 
         db = self._db()
-        output_parts: list[str] = []
-        route_context: RouteJobContext | None = None
         try:
             # 选 Agent：优先 keyword_clean，其次 general，最后任意已启用 Agent。
             agent_row = None
             agents = db.list_ai_agents()
             enabled = [a for a in agents if a.get("enabled")]
-            if agent_id:
+            if agent_id is not None:
                 agent_row = next((a for a in enabled if int(a["id"]) == int(agent_id)), None)
-            if agent_row is None:
+                if agent_row is None:
+                    return None
+            else:
                 for pref in ("keyword_clean", "general"):
                     agent_row = next((a for a in enabled if a.get("task_type") == pref), None)
                     if agent_row:
@@ -104,118 +129,25 @@ class AIKeywordCleanMixin:
                 return None  # 无可用 agent，降级
 
             agent = self._load_agent_config(db, int(agent_row["id"]))
-            messages = build_keyword_clean_messages(raw_keywords=raw_keywords[:80], tags=(tags or [])[:40])
-            route_context = self._start_route_job(
-                db,
-                "keyword_clean",
-                agent,
-                {
-                    "raw_keywords": raw_keywords[:80],
-                    "tags": (tags or [])[:40],
-                },
-                messages=messages,
-                max_tokens=1500,
-            )
-            stream = self._forward_route(
-                route_context,
-                messages,
-                output_parts,
-                temperature=0.2,
-                top_p=0.9,
-                max_tokens=min(1500, route_context.prompt_budget.output_reserve),
-                forward_delta=False,
-            )
-            while True:
-                try:
-                    next(stream)
-                except StopIteration as stopped:
-                    result = stopped.value
-                    break
-
-            output = (result.output_text or "".join(output_parts)).strip()
-            if result.finish_state != "succeeded":
-                status = (
-                    "partial"
-                    if result.finish_state == "partial" and output
-                    else "cancelled"
-                    if result.finish_state == "cancelled"
-                    else "failed"
-                )
-                self._finish_route_job(
-                    db,
-                    route_context,
-                    status,
-                    output,
-                    error_message=self._route_result_message(result),
-                )
-                return None
-            if not output:
-                self._finish_route_job(
-                    db,
-                    route_context,
-                    "failed",
-                    "",
-                    error_message="关键词清洗返回空结果",
-                )
-                return None
-
-            # 解析 JSON：容忍 ```json 包裹或前后杂字
-            fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", output, re.DOTALL)
-            candidate = fenced.group(1) if fenced else output
-            if not fenced:
-                brace = re.search(r"\{.*\}", candidate, re.DOTALL)
-                if brace:
-                    candidate = brace.group(0)
-            try:
-                data = json.loads(candidate)
-            except (TypeError, ValueError):
-                self._finish_route_job(
-                    db,
-                    route_context,
-                    "failed",
-                    output,
-                    error_message="关键词清洗结果不是有效 JSON",
-                )
-                return None
-            if not isinstance(data, dict):
-                self._finish_route_job(
-                    db,
-                    route_context,
-                    "failed",
-                    output,
-                    error_message="关键词清洗结果必须是 JSON 对象",
-                )
-                return None
-
-            keywords = [str(k).strip() for k in (data.get("keywords") or []) if str(k).strip()]
-            dropped = [str(k).strip() for k in (data.get("dropped_sample") or []) if str(k).strip()]
-            if not keywords:
-                self._finish_route_job(
-                    db,
-                    route_context,
-                    "failed",
-                    output,
-                    error_message="关键词清洗结果未包含有效关键词",
-                )
-                return None
-            cleaned = {"keywords": keywords[:30], "dropped_sample": dropped[:10]}
-            self._finish_route_job(
-                db,
-                route_context,
-                "succeeded",
-                output,
-                output_json=cleaned,
-            )
-            return cleaned
-        except Exception as exc:
-            if route_context is not None:
-                self._finish_route_job(
-                    db,
-                    route_context,
-                    "failed",
-                    "".join(output_parts),
-                    error_message=str(exc),
-                )
+        except Exception:
             return None  # 任何异常都降级，不影响偏好分析主流程
         finally:
             db.close()
+        try:
+            return self._invoke_keyword_clean(agent, raw_keywords[:80], (tags or [])[:40])
+        except Exception:
+            return None
+
+    def _invoke_keyword_clean(
+        self, agent: AIAgentConfig, raw_keywords: list[str], tags: list[str],
+    ) -> dict[str, Any] | None:
+        raw_keywords, tags = raw_keywords[:80], tags[:40]
+        invocation = normalize_text_invocation({
+            "messages": build_keyword_clean_messages(raw_keywords=raw_keywords, tags=tags),
+            "temperature": 0.2, "top_p": 0.9, "max_tokens": 1500,
+        }, agent=agent)
+        result, parsed = self._invoke_text(
+            agent, invocation, retention_policy="keyword_compat", validator=_validate_keyword_output,
+            input_data={"raw_keywords": raw_keywords, "tags": tags},
+        )
+        return parsed if result.job_status == "succeeded" else None

@@ -8,9 +8,10 @@ import sqlite3
 import unicodedata
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 from ...ai.providers import _redact_secrets
+from ...ai.usage import ProviderUsage, merge_usage_snapshot, summarize_usage
 
 
 class AIJobConflictError(RuntimeError):
@@ -47,6 +48,7 @@ _ATTEMPT_FINISH_FIELDS = {
     "finish_reason",
     "output_started",
     "latency_ms",
+    "http_status",
 }
 _FORBIDDEN_SNAPSHOT_KEYS = {
     "api_key",
@@ -58,6 +60,25 @@ _FORBIDDEN_SNAPSHOT_KEYS = {
     "response_headers",
 }
 _HASH_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+_RETENTION_POLICIES = {"metadata_only", "keyword_compat"}
+_VALIDATION_STATUSES = {"not_requested", "passed", "failed"}
+_USAGE_LIMIT = 16 * 1024
+_MAX_USAGE_REQUESTS = 32
+_USAGE_FIELDS = frozenset(ProviderUsage().to_dict())
+_SAFE_AUDIT_KEYS = {
+    "audit_version", "retention_policy", "business_type", "input_chars",
+    "message_count", "input_fingerprint", "planner_version", "estimator_version",
+    "snapshot_version", "allowed_provider_ids", "request_schema_version",
+    "resume_candidate_index",
+}
+_SAFE_ERROR_CATEGORIES = {
+    "authentication", "cancelled", "configuration", "content_filter", "context_overflow",
+    "empty_response", "gateway", "incomplete_response", "invalid_response", "model_not_found",
+    "model_rejected", "network", "no_eligible_candidate", "process_interrupted",
+    "provider_configuration", "quota_exhausted", "rate_limited", "request_rejected",
+    "route_budget_exhausted", "route_exhausted", "timeout", "tls", "unexpected_error", "upstream_error",
+    "validation_failed", "unknown",
+}
 
 
 def _utc_now() -> datetime:
@@ -107,6 +128,128 @@ def _safe_error_text(value: Any) -> str:
         for character in text
     )
     return _redact_secrets(text)[:2000]
+
+
+def _retention_policy(input_json: str | None) -> str | None:
+    try:
+        payload = json.loads(input_json or "{}")
+    except (TypeError, ValueError):
+        return None
+    policy = payload.get("retention_policy") if isinstance(payload, dict) else None
+    return policy if isinstance(policy, str) and policy in _RETENTION_POLICIES else None
+
+
+def _safe_audit_payload(data: Mapping[str, Any]) -> dict[str, Any]:
+    from ...ai.invocation_planner import ESTIMATOR_VERSION, PLANNER_VERSION
+
+    if data.get("retention_policy") != "metadata_only":
+        raise ValueError("invalid server retention policy")
+    safe = {key: data[key] for key in _SAFE_AUDIT_KEYS if key in data}
+    for key in ("input_chars", "message_count", "audit_version", "snapshot_version", "request_schema_version"):
+        if key in safe and (type(safe[key]) is not int or not 0 <= safe[key] <= 2**63 - 1):
+            raise ValueError("invalid audit counter or version")
+    if "business_type" in safe and (
+        not isinstance(safe["business_type"], str)
+        or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", safe["business_type"]) is None
+    ):
+        raise ValueError("invalid audit business type")
+    if "resume_candidate_index" in safe and (
+        type(safe["resume_candidate_index"]) is not int or not 0 <= safe["resume_candidate_index"] < 64
+    ):
+        raise ValueError("invalid audit resume index")
+    for key, expected in (("planner_version", PLANNER_VERSION), ("estimator_version", ESTIMATOR_VERSION)):
+        if key in safe and safe[key] != expected:
+            raise ValueError("invalid audit version")
+    if "input_fingerprint" in safe:
+        _validate_hash(safe["input_fingerprint"], "input_fingerprint")
+    if "allowed_provider_ids" in safe:
+        ids = safe["allowed_provider_ids"]
+        if not isinstance(ids, list) or any(type(value) is not int or not 0 < value <= 2**63 - 1 for value in ids):
+            raise ValueError("invalid audit provider IDs")
+        safe["allowed_provider_ids"] = sorted(set(ids))
+    try:
+        encoded = json.dumps(safe, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError):
+        raise ValueError("invalid audit payload") from None
+    if len(encoded) > 256 * 1024:
+        raise ValueError("audit payload too large")
+    return safe
+
+
+def _keyword_input_payload(data: Mapping[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {"retention_policy": "keyword_compat"}
+    for key, limit in (("raw_keywords", 80), ("tags", 40)):
+        values = data.get(key, [])
+        if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+            raise ValueError("invalid keyword compatibility input")
+        safe[key] = values[:limit]
+    return safe
+
+
+def _validation_status(value: Any) -> str | None:
+    if value is not None and (not isinstance(value, str) or value not in _VALIDATION_STATUSES):
+        raise ValueError("invalid validation status")
+    return value
+
+
+def _safe_error_category(value: Any) -> str | None:
+    if value is not None and (not isinstance(value, str) or value not in _SAFE_ERROR_CATEGORIES):
+        raise ValueError("invalid error category")
+    return value
+
+
+def _metadata_error(message: Any, category: str | None = None, http_status: Any = None) -> str | None:
+    category = _safe_error_category(category)
+    if category == "validation_failed":
+        return "validation_failed"
+    if message is None and category is None:
+        return None
+    result = category or "AI invocation failed"
+    if type(http_status) is int and 100 <= http_status <= 599:
+        result += f" (HTTP {http_status})"
+    return result
+
+
+def _normalize_usage_payload(usage: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(usage, Mapping) or set(usage) - _USAGE_FIELDS:
+        raise ValueError("invalid usage payload")
+    return ProviderUsage(**dict(usage)).to_dict()
+
+
+def _encode_usage(envelope: Mapping[str, Any]) -> str:
+    try:
+        text = json.dumps(envelope, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError, UnicodeError):
+        raise ValueError("invalid usage envelope") from None
+    if len(text.encode("utf-8")) > _USAGE_LIMIT:
+        raise ValueError("usage envelope too large")
+    return text
+
+
+def _decode_usage(raw: str | None) -> dict[str, Any]:
+    if raw is None:
+        return {"requests": []}
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > _USAGE_LIMIT:
+        raise ValueError("invalid usage envelope")
+    try:
+        envelope = json.loads(raw)
+    except (TypeError, ValueError):
+        raise ValueError("invalid usage envelope") from None
+    if not isinstance(envelope, dict) or set(envelope) != {"requests"}:
+        raise ValueError("invalid usage envelope")
+    records = envelope["requests"]
+    if not isinstance(records, list) or len(records) > _MAX_USAGE_REQUESTS:
+        raise ValueError("invalid usage records")
+    seen: set[int] = set()
+    for record in records:
+        if not isinstance(record, dict) or set(record) != _USAGE_FIELDS | {"request_ordinal"}:
+            raise ValueError("invalid usage record")
+        ordinal = record["request_ordinal"]
+        if type(ordinal) is not int or not 1 <= ordinal <= _MAX_USAGE_REQUESTS or ordinal in seen:
+            raise ValueError("invalid usage ordinal")
+        seen.add(ordinal)
+        _normalize_usage_payload({key: value for key, value in record.items() if key != "request_ordinal"})
+    return envelope
 
 
 def _validate_hash(value: Any, field: str) -> str:
@@ -456,6 +599,11 @@ class AiCoreMixin:
         item = dict(row)
         item["attempt_index"] = int(item["attempt_index"])
         item["output_started"] = bool(item.get("output_started"))
+        raw_usage = item.pop("usage_json", None)
+        try:
+            item["usage"] = None if raw_usage is None else _decode_usage(raw_usage)
+        except (TypeError, ValueError, UnicodeError):
+            item["usage"] = None
         item.pop("owner_token", None)
         item.pop("lease_until", None)
         item.pop("heartbeat_at", None)
@@ -603,11 +751,26 @@ class AiCoreMixin:
             "candidate_attempt_count",
         ):
             item[key] = int(item.get(key) or 0)
+        item["validation_status"] = item.get("validation_status") or "unknown"
+        if item.get("stage") == "main":
+            item["can_continue"] = False
+            item["continue_unavailable_reason"] = "业务重放处理器尚未实现"
         if include_attempts:
             attempts = self.list_ai_job_model_attempts(str(item["job_id"]))
             item["attempts"] = attempts
             item["route_summary"] = self._route_summary(attempts)
+            item["usage_summary"] = summarize_usage(
+                attempts, network_request_count=item["network_request_count"],
+            )
         return item
+
+    def get_ai_job_usage_summary(self, job_id: str) -> dict[str, Any]:
+        with self.read_transaction() as conn:
+            row = conn.execute(
+                "SELECT network_request_count FROM ai_jobs WHERE job_id = ?", (job_id,),
+            ).fetchone()
+            attempts = self.list_ai_job_model_attempts(job_id) if row is not None else []
+        return summarize_usage(attempts, network_request_count=int(row[0]) if row is not None else 0)
 
     def create_ai_job(
         self,
@@ -621,6 +784,8 @@ class AiCoreMixin:
         route_deadline_at: str | None = None,
         parent_job_id: str | None = None,
         idempotency_key: str | None = None,
+        retention_policy: Literal["metadata_only", "keyword_compat"] | None = None,
+        validation_status: Literal["not_requested", "passed", "failed"] | None = None,
     ) -> None:
         if stage not in _JOB_STAGES:
             raise ValueError("AI job stage 无效")
@@ -637,6 +802,16 @@ class AiCoreMixin:
             parent_job_id = _bounded_text(parent_job_id, "parent_job_id", 128)
         if idempotency_key is not None:
             idempotency_key = _bounded_text(idempotency_key, "idempotency_key", 128)
+        _validation_status(validation_status)
+        if retention_policy is None:
+            if "retention_policy" in input_data:
+                raise ValueError("retention policy must be selected by the service")
+        elif retention_policy == "metadata_only":
+            input_data = _safe_audit_payload({**input_data, "retention_policy": retention_policy})
+        elif retention_policy == "keyword_compat" and task_type == "keyword_clean":
+            input_data = _keyword_input_payload(input_data)
+        else:
+            raise ValueError("invalid server retention policy")
         try:
             serialized_input = json.dumps(input_data, ensure_ascii=False)
         except (TypeError, ValueError, UnicodeError) as exc:
@@ -655,8 +830,8 @@ class AiCoreMixin:
                     job_id, task_type, agent_id, status, input_json,
                     owner_token, lease_until, heartbeat_at, stage,
                     route_deadline_at, parent_job_id, idempotency_key,
-                    started_at
-                ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    started_at, validation_status
+                ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -671,8 +846,31 @@ class AiCoreMixin:
                     parent_job_id,
                     idempotency_key,
                     _sql_timestamp(now),
+                    validation_status,
                 ),
             )
+
+    def replace_ai_job_audit(
+        self, job_id: str, owner_token: str, audit_payload: Mapping[str, Any],
+    ) -> bool:
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT input_json FROM ai_jobs WHERE job_id=? AND status='running' AND owner_token=?",
+                (job_id, owner_token),
+            ).fetchone()
+            if row is None or _retention_policy(row["input_json"]) != "metadata_only":
+                return False
+            stored = json.loads(row["input_json"])
+            replacement = {key: value for key, value in audit_payload.items() if key != "resume_candidate_index"}
+            if "resume_candidate_index" in stored:
+                replacement["resume_candidate_index"] = stored["resume_candidate_index"]
+            payload = _safe_audit_payload({**replacement, "retention_policy": "metadata_only"})
+            conn.execute(
+                "UPDATE ai_jobs SET input_json=? WHERE job_id=? AND status='running' AND owner_token=?",
+                (json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                 job_id, owner_token),
+            )
+            return True
 
     def create_or_get_ai_resume_job(
         self,
@@ -712,17 +910,9 @@ class AiCoreMixin:
             or resume_candidate_index < 0
         ):
             raise ValueError("resume_candidate_index 必须是非负整数")
-        if input_data.get("resume_candidate_index") != resume_candidate_index:
+        if (type(input_data.get("resume_candidate_index")) is not int
+                or input_data["resume_candidate_index"] != resume_candidate_index):
             raise ValueError("继续任务输入中的候选索引不匹配")
-        try:
-            serialized_input = json.dumps(
-                input_data,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                allow_nan=False,
-            )
-        except (TypeError, ValueError, UnicodeError) as exc:
-            raise ValueError("AI job input_data 无法序列化") from exc
         serialized_snapshot, computed_hash = _canonical_snapshot(candidate_snapshot)
         expected_hash = _validate_hash(
             candidate_snapshot_hash,
@@ -735,6 +925,34 @@ class AiCoreMixin:
         heartbeat_at = _sql_timestamp(now)
         lease_until = _sql_timestamp(now + timedelta(seconds=45))
         with self.transaction() as conn:
+            parent = conn.execute(
+                "SELECT status, agent_id, task_type, input_json, candidate_snapshot_json, "
+                "candidate_snapshot_hash FROM ai_jobs WHERE job_id = ?",
+                (parent_job_id,),
+            ).fetchone()
+            policy = _retention_policy(parent["input_json"]) if parent is not None else None
+            if policy is not None:
+                if parent["task_type"] != task_type:
+                    raise AIJobConflictError("continued job must preserve its parent's business type")
+                if not 0 <= resume_candidate_index < 64:
+                    raise ValueError("invalid resume candidate index")
+                parent_input = json.loads(parent["input_json"])
+                if policy == "metadata_only":
+                    safe_input = _safe_audit_payload(parent_input)
+                elif task_type == "keyword_clean":
+                    safe_input = _keyword_input_payload(parent_input)
+                else:
+                    raise ValueError("keyword retention is restricted to keyword cleaning")
+                input_data = {**safe_input, "resume_candidate_index": resume_candidate_index}
+            elif "retention_policy" in input_data:
+                raise ValueError("retention policy must be inherited from the stored parent")
+            try:
+                serialized_input = json.dumps(
+                    input_data, ensure_ascii=False, sort_keys=policy is not None,
+                    separators=(",", ":"), allow_nan=False,
+                )
+            except (TypeError, ValueError, UnicodeError) as exc:
+                raise ValueError("AI job input_data 无法序列化") from exc
             existing = conn.execute(
                 """
                 SELECT * FROM ai_jobs
@@ -752,14 +970,6 @@ class AiCoreMixin:
                     raise AIJobConflictError("幂等键已用于不同的继续请求")
                 return self._private_ai_job_from_row(existing), False
 
-            parent = conn.execute(
-                """
-                SELECT status, agent_id, candidate_snapshot_json,
-                       candidate_snapshot_hash
-                FROM ai_jobs WHERE job_id = ?
-                """,
-                (parent_job_id,),
-            ).fetchone()
             if parent is None:
                 raise AIJobConflictError("父 AI job 不存在")
             if parent["status"] not in _JOB_TERMINAL_STATUSES:
@@ -779,9 +989,9 @@ class AiCoreMixin:
                     candidate_snapshot_json, candidate_snapshot_hash,
                     owner_token, lease_until, heartbeat_at, stage,
                     route_deadline_at, parent_job_id, idempotency_key,
-                    started_at
+                    started_at, validation_status
                 ) VALUES (
-                    ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, 'main', ?, ?, ?, ?
+                    ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, 'main', ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -798,6 +1008,7 @@ class AiCoreMixin:
                     parent_job_id,
                     idempotency_key,
                     heartbeat_at,
+                    "not_requested" if policy is not None else None,
                 ),
             )
             created = conn.execute(
@@ -815,19 +1026,41 @@ class AiCoreMixin:
         output_text: str | None = None,
         output_json: dict[str, Any] | None = None,
         error_message: str | None = None,
+        *,
+        validation_status: Literal["not_requested", "passed", "failed"] | None = None,
+        error_category: str | None = None,
+        http_status: int | None = None,
     ) -> None:
-        serialized_output = (
-            json.dumps(output_json, ensure_ascii=False)
-            if output_json is not None
-            else None
-        )
-        safe_error = _safe_error_text(error_message) if error_message is not None else None
+        _validation_status(validation_status)
+        _safe_error_category(error_category)
         with self.transaction() as conn:
+            job = conn.execute(
+                "SELECT input_json, stage FROM ai_jobs WHERE job_id=? AND status='running'", (job_id,),
+            ).fetchone()
+            if job is None:
+                return
+            metadata_only = _retention_policy(job["input_json"]) == "metadata_only"
+            if metadata_only:
+                if status == "partial":
+                    self._require_started_main_output(conn, job_id, job["stage"])
+                output_text, serialized_output = None, None
+                safe_error = _metadata_error(
+                    error_message, "validation_failed" if validation_status == "failed" else error_category,
+                    http_status,
+                )
+            else:
+                serialized_output = json.dumps(output_json, ensure_ascii=False) if output_json is not None else None
+                safe_error = _safe_error_text(error_message) if error_message is not None else None
+            output_assignments = (
+                "output_text = NULL, output_json = NULL" if metadata_only
+                else "output_text = COALESCE(?, output_text), output_json = COALESCE(?, output_json)"
+            )
+            output_params = [] if metadata_only else [output_text, serialized_output]
             conn.execute(
-                """
+                f"""
                 UPDATE ai_jobs
-                SET status = ?, output_text = COALESCE(?, output_text),
-                    output_json = COALESCE(?, output_json), error_message = ?,
+                SET status = ?, {output_assignments}, error_message = ?,
+                    validation_status = COALESCE(?, validation_status),
                     finished_at = CASE
                         WHEN ? IN ('succeeded', 'failed', 'partial', 'cancelled')
                         THEN CURRENT_TIMESTAMP ELSE finished_at END,
@@ -836,16 +1069,27 @@ class AiCoreMixin:
                         THEN NULL ELSE lease_until END
                 WHERE job_id = ? AND status = 'running'
                 """,
-                (
+                [
                     status,
-                    output_text,
-                    serialized_output,
+                    *output_params,
                     safe_error,
+                    validation_status,
                     status,
                     status,
                     job_id,
-                ),
+                ],
             )
+
+    @staticmethod
+    def _require_started_main_output(conn: sqlite3.Connection, job_id: str, stage: str) -> None:
+        if stage != "main":
+            raise ValueError("only main jobs can finish partial")
+        started = conn.execute(
+            "SELECT 1 FROM ai_job_model_attempts WHERE job_id=? AND stage='main' AND output_started=1 LIMIT 1",
+            (job_id,),
+        ).fetchone()
+        if started is None:
+            raise ValueError("output has not started")
 
     def get_ai_job(
         self,
@@ -892,7 +1136,7 @@ class AiCoreMixin:
             """
             SELECT status, stage, agent_id, pinned_candidate_index,
                    network_request_count, candidate_attempt_count,
-                   route_deadline_at, candidate_snapshot_hash
+                   route_deadline_at, candidate_snapshot_hash, cancel_requested
             FROM ai_jobs
             WHERE job_id = ? AND owner_token = ?
             """,
@@ -1117,11 +1361,17 @@ class AiCoreMixin:
         self,
         job_id: str,
         owner_token: str,
+        attempt_index: int | None = None,
     ) -> int:
+        if attempt_index is not None:
+            if type(attempt_index) is not int or attempt_index < 0:
+                raise ValueError("invalid attempt index")
+            if self.conn.in_transaction:
+                raise AIJobConflictError("request reservation requires its own durable transaction")
         with self.transaction() as conn:
             job = conn.execute(
                 """
-                SELECT status, owner_token, network_request_count
+                SELECT status, owner_token, network_request_count, cancel_requested, route_deadline_at
                 FROM ai_jobs WHERE job_id = ?
                 """,
                 (job_id,),
@@ -1136,6 +1386,23 @@ class AiCoreMixin:
             if current >= 32:
                 raise AIRouteBudgetExhausted("网络请求次数已达到 32 次上限")
             next_count = current + 1
+            if attempt_index is not None:
+                if job["cancel_requested"]:
+                    raise AIJobConflictError("AI job cancellation was requested")
+                if job["route_deadline_at"] and job["route_deadline_at"] <= _sql_timestamp(_utc_now()):
+                    raise AIRouteBudgetExhausted("AI job route deadline has expired")
+                attempt = conn.execute(
+                    "SELECT usage_json FROM ai_job_model_attempts "
+                    "WHERE job_id=? AND attempt_index=? AND status='running' AND owner_token=?",
+                    (job_id, attempt_index, owner_token),
+                ).fetchone()
+                if attempt is None:
+                    raise AIJobConflictError("AI attempt is missing, ended or owned by another worker")
+                usage = _decode_usage(attempt["usage_json"])
+                if any(record["request_ordinal"] >= next_count for record in usage["requests"]):
+                    raise ValueError("usage reservation disagrees with job counter")
+                usage["requests"].append({"request_ordinal": next_count, **ProviderUsage().to_dict()})
+                serialized_usage = _encode_usage(usage)
             conn.execute(
                 """
                 UPDATE ai_jobs SET network_request_count = ?
@@ -1143,7 +1410,49 @@ class AiCoreMixin:
                 """,
                 (next_count, job_id, owner_token),
             )
-            return next_count
+            if attempt_index is not None:
+                conn.execute(
+                    "UPDATE ai_job_model_attempts SET usage_json=? "
+                    "WHERE job_id=? AND attempt_index=? AND owner_token=?",
+                    (serialized_usage, job_id, attempt_index, owner_token),
+                )
+        return next_count
+
+    def record_ai_job_request_usage(
+        self, job_id: str, owner_token: str, attempt_index: int,
+        request_ordinal: int, usage: Mapping[str, Any],
+    ) -> bool:
+        incoming = _normalize_usage_payload(usage)
+        if type(attempt_index) is not int or attempt_index < 0:
+            raise ValueError("invalid attempt index")
+        if type(request_ordinal) is not int or not 1 <= request_ordinal <= _MAX_USAGE_REQUESTS:
+            raise ValueError("invalid request ordinal")
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT attempt.usage_json, job.network_request_count "
+                "FROM ai_job_model_attempts AS attempt JOIN ai_jobs AS job ON job.job_id=attempt.job_id "
+                "WHERE attempt.job_id=? AND attempt.attempt_index=? "
+                "AND attempt.owner_token=? AND job.owner_token=?",
+                (job_id, attempt_index, owner_token, owner_token),
+            ).fetchone()
+            if row is None or request_ordinal > row["network_request_count"]:
+                return False
+            envelope = _decode_usage(row["usage_json"])
+            for index, record in enumerate(envelope["requests"]):
+                if record["request_ordinal"] != request_ordinal:
+                    continue
+                previous = {key: value for key, value in record.items() if key != "request_ordinal"}
+                merged = merge_usage_snapshot(previous, incoming)
+                envelope["requests"][index] = {"request_ordinal": request_ordinal, **merged}
+                serialized = _encode_usage(envelope)
+                if serialized != row["usage_json"]:
+                    conn.execute(
+                        "UPDATE ai_job_model_attempts SET usage_json=? "
+                        "WHERE job_id=? AND attempt_index=? AND owner_token=?",
+                        (serialized, job_id, attempt_index, owner_token),
+                    )
+                return True
+            return False
 
     def heartbeat_ai_job(
         self,
@@ -1303,15 +1612,6 @@ class AiCoreMixin:
                 raise ValueError("error_scope 无效")
             assignments.append("error_scope = ?")
             params.append(scope)
-        if "error_message" in fields:
-            assignments.append("error_message = ?")
-            params.append(_safe_error_text(fields["error_message"]))
-        if "error_category" in fields:
-            category = fields["error_category"]
-            if category is not None:
-                category = _bounded_text(category, "error_category", 100)
-            assignments.append("error_category = ?")
-            params.append(category)
         if "finish_reason" in fields:
             reason = fields["finish_reason"]
             if reason not in {
@@ -1347,6 +1647,25 @@ class AiCoreMixin:
             ]
         )
         with self.transaction() as conn:
+            job = conn.execute(
+                "SELECT input_json FROM ai_jobs WHERE job_id=? AND status='running' AND owner_token=?",
+                (job_id, owner_token),
+            ).fetchone()
+            if job is None:
+                return False
+            metadata_only = _retention_policy(job["input_json"]) == "metadata_only"
+            category = fields.get("error_category")
+            if metadata_only:
+                category = _safe_error_category(category)
+                assignments.extend(["error_message = ?", "error_category = ?"])
+                params.extend([_metadata_error(fields.get("error_message"), category, fields.get("http_status")), category])
+            else:
+                if "error_message" in fields:
+                    assignments.append("error_message = ?")
+                    params.append(_safe_error_text(fields["error_message"]) if fields["error_message"] is not None else None)
+                if "error_category" in fields:
+                    assignments.append("error_category = ?")
+                    params.append(_bounded_text(category, "error_category", 100) if category is not None else None)
             if status == "partial":
                 attempt = conn.execute(
                     """
@@ -1387,6 +1706,10 @@ class AiCoreMixin:
         job_id: str,
         owner_token: str,
         status: str,
+        *,
+        validation_status: Literal["not_requested", "passed", "failed"] | None = None,
+        error_category: str | None = None,
+        http_status: int | None = None,
         **fields: Any,
     ) -> bool:
         if status not in _JOB_TERMINAL_STATUSES:
@@ -1400,21 +1723,10 @@ class AiCoreMixin:
         unknown = sorted(set(fields) - allowed)
         if unknown:
             raise ValueError(f"不允许提交 AI job 终态字段：{', '.join(unknown)}")
-        assignments = ["status = ?"]
-        params: list[Any] = [status]
-        if "output_text" in fields:
-            assignments.append("output_text = ?")
-            params.append(fields["output_text"])
-        if "output_json" in fields:
-            try:
-                output_json = json.dumps(fields["output_json"], ensure_ascii=False)
-            except (TypeError, ValueError, UnicodeError) as exc:
-                raise ValueError("output_json 无法序列化") from exc
-            assignments.append("output_json = ?")
-            params.append(output_json)
-        if "error_message" in fields:
-            assignments.append("error_message = ?")
-            params.append(_safe_error_text(fields["error_message"]))
+        _validation_status(validation_status)
+        _safe_error_category(error_category)
+        assignments = ["status = ?", "validation_status = COALESCE(?, validation_status)"]
+        params: list[Any] = [status, validation_status]
         if "pinned_candidate_index" in fields:
             pinned = fields["pinned_candidate_index"]
             if isinstance(pinned, bool) or not isinstance(pinned, int) or pinned < 0:
@@ -1423,19 +1735,46 @@ class AiCoreMixin:
             params.append(pinned)
         assignments.extend(["finished_at = CURRENT_TIMESTAMP", "lease_until = NULL"])
         with self.transaction() as conn:
+            job = conn.execute(
+                "SELECT input_json, stage, output_text FROM ai_jobs "
+                "WHERE job_id=? AND status='running' AND owner_token=?",
+                (job_id, owner_token),
+            ).fetchone()
+            if job is None:
+                return False
+            policy = _retention_policy(job["input_json"])
+            metadata_only = policy == "metadata_only"
+            if metadata_only:
+                assignments.extend(["output_text = NULL", "output_json = NULL", "error_message = ?"])
+                params.append(_metadata_error(
+                    fields.get("error_message"),
+                    "validation_failed" if validation_status == "failed" else error_category,
+                    http_status,
+                ))
+            else:
+                if "output_text" in fields:
+                    assignments.append("output_text = ?")
+                    params.append(fields["output_text"])
+                if "output_json" in fields:
+                    try:
+                        output_json = json.dumps(fields["output_json"], ensure_ascii=False)
+                    except (TypeError, ValueError, UnicodeError) as exc:
+                        raise ValueError("output_json 无法序列化") from exc
+                    assignments.append("output_json = ?")
+                    params.append(output_json)
+                if "error_message" in fields:
+                    assignments.append("error_message = ?")
+                    params.append(_safe_error_text(fields["error_message"]) if fields["error_message"] is not None else None)
             if status == "partial":
-                job = conn.execute(
-                    """
-                    SELECT stage, output_text FROM ai_jobs
-                    WHERE job_id = ? AND status = 'running' AND owner_token = ?
-                    """,
-                    (job_id, owner_token),
-                ).fetchone()
-                if job is not None and job["stage"] != "main":
+                if job["stage"] != "main":
                     raise ValueError("只有 main job 可以收口为 partial")
-                if job is not None:
+                if metadata_only:
+                    self._require_started_main_output(conn, job_id, job["stage"])
+                else:
                     effective_output = fields.get("output_text", job["output_text"])
-                    if not isinstance(effective_output, str) or not effective_output:
+                    if policy == "keyword_compat" and not effective_output:
+                        self._require_started_main_output(conn, job_id, job["stage"])
+                    elif not isinstance(effective_output, str) or not effective_output:
                         raise ValueError("正文尚未开始，不能收口为 partial")
             cursor = conn.execute(
                 f"""
@@ -1526,6 +1865,8 @@ class AiCoreMixin:
                 (now_sql, heartbeat_cutoff, legacy_cutoff),
             ).fetchall()
             for job in jobs:
+                metadata_only = _retention_policy(job["input_json"]) == "metadata_only"
+                safe_interrupted_message = "process_interrupted" if metadata_only else interrupted_message
                 owner = job["owner_token"]
                 if owner is None:
                     owner_clause = "owner_token IS NULL"
@@ -1567,7 +1908,7 @@ class AiCoreMixin:
                         """,
                         [
                             attempt_status,
-                            interrupted_message,
+                            safe_interrupted_message,
                             now_sql,
                             now_sql,
                             job["job_id"],
@@ -1580,13 +1921,15 @@ class AiCoreMixin:
                     if job["stage"] == "main" and output_started
                     else "failed"
                 )
+                error_assignment = (
+                    "error_message = ?, output_text = NULL, output_json = NULL" if metadata_only
+                    else "error_message = COALESCE(NULLIF(error_message, ''), ?)"
+                )
                 cursor = conn.execute(
                     f"""
                     UPDATE ai_jobs
                     SET status = ?,
-                        error_message = COALESCE(
-                            NULLIF(error_message, ''), ?
-                        ),
+                        {error_assignment},
                         finished_at = ?, lease_until = NULL,
                         heartbeat_at = ?
                     WHERE job_id = ? AND status = 'running'
@@ -1594,7 +1937,7 @@ class AiCoreMixin:
                     """,
                     [
                         job_status,
-                        interrupted_message,
+                        safe_interrupted_message,
                         now_sql,
                         now_sql,
                         job["job_id"],

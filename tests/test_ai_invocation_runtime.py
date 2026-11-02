@@ -238,7 +238,7 @@ class FakeProvider(AIProvider):
         super().__init__(config)
         self.registry = registry
 
-    def stream_generate(self, messages, model, temperature, top_p, max_tokens, *, request_guard=None, is_cancelled=None):
+    def stream_generate(self, messages, model, temperature, top_p, max_tokens, *, request_guard=None, is_cancelled=None, on_usage=None):
         registry = self.registry
         key = (self.config.id, model)
         registry.calls.append(key)
@@ -852,7 +852,7 @@ def test_v2_credential_failure_allows_scoped_fallback(db, service, registry, leg
     assert registry.network_calls == [(providers[1], "model-1")]
     assert result.attempts[0]["error_category"] == "configuration"
     assert result.attempts[0]["error_scope"] == "provider"
-    assert result.attempts[0]["error_message"] == "Provider credentials are unavailable"
+    assert result.attempts[0]["error_message"] == "configuration"
     assert [item["status"] for item in result.attempts] == ["failed", "succeeded"]
     assert excluded not in decrypts
     assert db.get_ai_provider(providers[2], include_secret=True)["api_key_encrypted"] == excluded

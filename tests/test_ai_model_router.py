@@ -722,6 +722,7 @@ class FakeStreamingProvider(AIProvider):
         *,
         request_guard=None,
         is_cancelled=None,
+        on_usage=None,
     ) -> Iterator[AIStreamChunk]:
         del messages, temperature, top_p, max_tokens
         self.registry.calls.append((self.config.name, model))
@@ -883,6 +884,7 @@ def make_route_request(
     job_id: str,
     stage: str = "main",
     snapshot: CandidateSnapshot | None = None,
+    retention_policy=None,
 ) -> RouteRequest:
     resolved = snapshot or router.resolve_candidates(agent)
     db.create_ai_job(
@@ -893,6 +895,7 @@ def make_route_request(
         owner_token="route-owner",
         stage="main",
         route_deadline_at="2099-01-01 00:00:00",
+        retention_policy=retention_policy,
     )
     snapshot_payload = {
         "agent_config_hash": resolved.agent_config_hash,
@@ -914,6 +917,7 @@ def make_route_request(
         owner_token="route-owner",
         on_delta=lambda _text: None,
         on_progress=lambda _data: None,
+        retention_policy=retention_policy,
     )
 
 
@@ -1016,6 +1020,102 @@ def test_failure_after_first_main_delta_is_partial_and_never_switches(
     assert result.output_text == "半截"
     assert fake_providers.calls == [("p1", "m1")]
     assert db.get_ai_job(route_request.job_id)["status"] == "partial"
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_usage_guard_commits_pending_before_post_and_captures_late_attempt(
+    db, route_router, pool_agent, monkeypatch, partial,
+):
+    request = make_route_request(
+        db, route_router, pool_agent, job_id="usage-guard", retention_policy="metadata_only",
+    )
+    closed = []
+
+    class UsageProvider:
+        def estimate_message_tokens(self, _messages):
+            return 10
+
+        def _post(self):
+            observer = Database(db.path)
+            try:
+                row = observer.get_ai_job(request.job_id)
+                assert row["network_request_count"] == 1
+                usage = row["attempts"][0]["usage"]["requests"]
+                assert len(usage) == 1 and usage[0]["request_ordinal"] == 1
+                assert usage[0]["input_tokens"] is None and usage[0]["missing_reason"] == "pending"
+            finally:
+                observer.close()
+
+        def stream_generate(self, messages, model, temperature, top_p, max_tokens, *,
+                            request_guard=None, is_cancelled=None, on_usage=None):
+            ordinal = request_guard()
+            self._post()
+            try:
+                yield AIStreamChunk(type="delta", text="OUTPUT_SENTINEL")
+                if partial:
+                    raise AIProviderError("OUTPUT_SENTINEL", category="network")
+                yield normal_done()
+            finally:
+                on_usage(ordinal, {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12,
+                                   "complete": True, "missing_reason": None})
+                closed.append(True)
+
+    monkeypatch.setattr(route_router, "_get_provider", lambda _config: UsageProvider())
+    result = route_router.execute(request)
+    assert result.finish_state == ("partial" if partial else "succeeded")
+    assert result.output_text == "OUTPUT_SENTINEL" and closed == [True]
+    saved = db.get_ai_job(request.job_id)
+    assert saved["output_text"] is None
+    assert saved["usage_summary"]["reported_requests"] == 1
+    assert saved["usage_summary"]["known_total_tokens"] == 12
+
+
+@pytest.mark.parametrize("mode", ["partial", "cancelled", "failed", "race"])
+def test_metadata_router_terminal_paths_keep_no_body_and_discard_losing_text(
+    db, route_router, pool_agent, fake_providers, mode,
+):
+    request = make_route_request(
+        db, route_router, pool_agent, job_id="metadata-router", retention_policy="metadata_only",
+    )
+    if mode == "failed":
+        for name in ("p1", "p2", "p3"):
+            fake_providers.fail(name, AIProviderError("INPUT_SENTINEL", category="network", scope="provider"))
+    else:
+        fake_providers.partial_then_fail(
+            "p1", "OUTPUT_SENTINEL", AIProviderError("INPUT_SENTINEL", category="network"),
+        )
+    if mode == "cancelled":
+        fake_providers.succeed("p1", [AIStreamChunk(type="delta", text="OUTPUT_SENTINEL"), normal_done()])
+        stopped = False
+
+        def cancel(_text):
+            nonlocal stopped
+            stopped = True
+
+        request.on_delta, request.is_cancelled = cancel, lambda: stopped
+    elif mode == "race":
+        request.on_delta = lambda _text: db.finish_ai_job_cas(request.job_id, "route-owner", "cancelled")
+    result = route_router.execute(request)
+    assert result.finish_state == {"failed": "failed_before_output", "race": "cancelled"}.get(mode, mode)
+    assert result.output_text == ("OUTPUT_SENTINEL" if mode in {"partial", "cancelled"} else "")
+    rows = [dict(row) for row in db.conn.execute("SELECT * FROM ai_jobs")]
+    rows += [dict(row) for row in db.conn.execute("SELECT * FROM ai_job_model_attempts")]
+    assert "SENTINEL" not in json.dumps(rows)
+
+
+def test_metadata_default_provider_error_preserves_successful_fallback(
+    db, route_router, pool_agent, fake_providers,
+):
+    request = make_route_request(db, route_router, pool_agent, job_id="default-error",
+                                 retention_policy="metadata_only")
+    fake_providers.fail("p1", AIProviderError("INPUT_SENTINEL redirect rejected"))
+    fake_providers.succeed("p2", [AIStreamChunk(type="delta", text="OUTPUT_SENTINEL"), normal_done()])
+    result = route_router.execute(request)
+    assert result.finish_state == "succeeded" and result.output_text == "OUTPUT_SENTINEL"
+    assert [item["status"] for item in result.attempts] == ["failed", "succeeded"]
+    assert result.attempts[0]["error_category"] == "unknown"
+    assert result.attempts[0]["error_message"] == "unknown"
+    assert fake_providers.calls == [("p1", "m1"), ("p2", "m2")]
 
 
 def test_provider_scope_failure_skips_remaining_models_for_same_provider(
