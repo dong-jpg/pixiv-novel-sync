@@ -48,4 +48,4 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 
 [tool.setuptools.package-data]
-pixiv_novel_sync = ["templates/*.html", "static/css/*.css"]
+pixiv_novel_sync = ["templates/*.html", "static/css/*.css", "static/js/*.js"]

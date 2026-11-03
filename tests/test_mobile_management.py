@@ -73,6 +73,23 @@ def test_model_editor_focus_targets_and_feedback_are_in_the_action_panels():
     assert 'id="pool-editor-title"' in html and 'tabindex="-1"' in html
     assert "aiMessages['provider-' + provider.id]" in html
     assert "aiMessages['pool-list']" in html
+    assert "workspace.view === 'providers'" in html
+    assert "workspace.view === 'groups'" in html
+    assert 'id="workspace-providers"' in html
+
+
+def test_draft_navigation_uses_shared_modal_and_only_transient_operation_storage():
+    html = source(PAGES[1])
+    modal = re.search(r'<app-modal\b[^>]*title="保留未保存的修改？"[\s\S]*?</app-modal>', html)
+    assert modal
+    for action in ("save", "discard", "cancel"):
+        assert f'resolveDraft(\'{action}\')' in modal[0]
+    assert "createDraftGuard" in html
+    assert "removeEventListener('beforeunload', beforeUnload)" in html
+    writes = re.findall(r"localStorage\.setItem\(([^;]+)\)", html)
+    assert writes
+    assert all("modelSyncStorageKey(providerId), operationId" in call for call in writes)
+    assert "sessionStorage" not in html
 
 
 def test_failed_pool_selection_shows_its_error_and_get_retry_before_disabled_fields():

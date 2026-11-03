@@ -410,7 +410,10 @@
         const response = await window.csrfFetch(url, options);
         const data = await response.json().catch(() => ({}));
         if (!response.ok || data.ok === false) {
-          throw new Error(window.errorText(data, response));
+          const error = new Error(window.errorText(data, response));
+          error.status = response.status;
+          error.data = data.data;
+          throw error;
         }
         return data.data;
       },

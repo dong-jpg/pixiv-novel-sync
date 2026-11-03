@@ -13,7 +13,7 @@
 {% endblock %}
 
 {% block content %}
-{# 设置页第二分页：Provider 凭据、模型目录同步、模型池候选顺序。
+{# 设置页第二分页：Provider 凭据、模型目录同步、路由组候选顺序。
    这三块的配置存在数据库里，走 ai_web.py 自己的端点，完全不经过
    /api/dashboard/settings，所以本页没有「保存分区」按钮。
    变更类请求一律走 base.html 的 window.csrfFetch，失败原因用 window.errorText 读。 #}
@@ -22,74 +22,115 @@
     <div>
       <p class="library-kicker">Settings</p>
       <h1 class="text-2xl font-bold text-gray-900 mb-1">模型与 Provider</h1>
-      <p class="text-sm text-pixiv-gray">Provider 凭据、模型目录同步与模型池候选顺序</p>
+      <p class="text-sm text-pixiv-gray">Provider 凭据、模型目录同步与路由组候选顺序</p>
     </div>
   </div>
 
   {% include 'dashboard_settings_nav.html' %}
 
   {% include 'dashboard_ai_health_band.html' %}
+  <p v-if="providersLoading" role="status" class="text-sm text-pixiv-gray">正在读取 Provider 与模型目录…</p>
+  <div v-if="providerLoadError" role="alert" class="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+    <p>Provider 列表读取失败，保留上次结果：{{ providerLoadError }}</p>
+    <button @click="loadProviders" :disabled="providersLoading" class="library-btn mt-2">重试读取 Provider</button>
+  </div>
+
+  <nav aria-label="模型设置工作区" class="flex flex-wrap gap-2">
+    <a id="workspace-providers" :href="workspaceHref({view: 'providers'})" @click.prevent="navigateWorkspace({view: 'providers'})" :aria-current="workspace.view === 'providers' ? 'page' : null" class="library-btn">Provider</a>
+    <a id="workspace-models" :href="workspaceHref({view: 'models'})" @click.prevent="navigateWorkspace({view: 'models'})" :aria-current="workspace.view === 'models' ? 'page' : null" class="library-btn">模型目录</a>
+    <a id="workspace-groups" :href="workspaceHref({view: 'groups'})" @click.prevent="navigateWorkspace({view: 'groups'})" :aria-current="workspace.view === 'groups' ? 'page' : null" class="library-btn">路由组</a>
+  </nav>
+  <div v-if="providerNotFound" role="status" class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+    <p>请求的 Provider 不存在或筛选值无效。没有自动选择其他 Provider，也没有更改任何绑定。</p>
+    <a :href="workspaceHref({providerId: null})" @click.prevent="navigateWorkspace({providerId: null})" class="library-btn mt-2">清除 Provider 筛选</a>
+  </div>
 
   <!-- 1. Provider 与模型目录 -->
-  <section id="ai-api" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+  <section v-if="workspace.view === 'providers'" id="ai-api" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
     <div id="provider-editor" class="management-editor bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-3">
       <div>
         <h2 class="text-xl font-bold text-gray-900">Provider 设置</h2>
         <p class="text-sm text-pixiv-gray mt-1">配置模型服务商。API key 只写入不回显，加密存储。</p>
       </div>
+      <fieldset :disabled="providerSaving || onboardingState.pending" class="space-y-3">
       <label for="provider-name" class="block text-sm font-medium text-gray-700">Provider 名称</label>
-      <input id="provider-name" v-model="providerForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="名称">
-      <select v-model="providerForm.provider_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+      <input id="provider-name" v-model="providerForm.name" @input="touchProvider('name')" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="名称">
+      <label for="provider-protocol" class="block text-sm font-medium text-gray-700">协议</label>
+      <select id="provider-protocol" v-model="providerForm.provider_type" @input="touchProvider('provider_type')" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
         <option value="openai_compatible">OpenAI 兼容 —— 填到 /v1 为止，或网关根地址</option>
         <option value="anthropic">Anthropic —— 官方 /v1/messages 或同协议网关</option>
         <option value="xai">xAI —— 官方 https://api.x.ai/v1</option>
       </select>
-      <input v-model="providerForm.base_url" @blur="lintBaseUrl"
+      <label for="provider-address" class="block text-sm font-medium text-gray-700">服务地址</label>
+      <input id="provider-address" v-model="providerForm.base_url" @input="touchProvider('base_url')" @blur="lintBaseUrl"
              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
              placeholder="base_url，可留空使用默认值">
       <p v-if="baseUrlHint" class="text-xs text-red-600">{{ baseUrlHint }}</p>
       <div class="flex gap-2 flex-wrap">
-        <button @click="probeModels" :disabled="probeStatus === '探测中…'" class="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm">探测模型</button>
+        <button type="button" @click="checkProviderForm" class="library-btn">本地格式检查（不联网）</button>
+        <button @click="probeModels" :disabled="probeStatus === '探测中…'" class="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm">探测模型（仅预览）</button>
       </div>
       <p v-if="probeStatus" class="text-xs" :class="probeRetryWithV1 ? 'text-amber-700' : 'text-gray-700'">{{ probeStatus }}</p>
       <button v-if="probeRetryWithV1" @click="applyV1Suggestion" class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-800">试试 {{ probeRetryWithV1 }}/v1</button>
       <div v-if="probedModels.length" class="space-y-1 max-h-48 overflow-y-auto border border-gray-100 rounded p-2">
-        <div v-for="model in probedModels" :key="model.model_key" class="flex items-center gap-2 text-xs">
+        <label v-for="model in probedModels" :key="model.model_key" class="flex items-center gap-2 text-xs">
+          <input type="checkbox" v-model="model.checked" :aria-label="'保存后初始启用 ' + model.model_key">
           <span class="px-1.5 py-0.5 rounded" :class="model.suggested ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'">{{ model.suggested ? '建议' : '其他' }}</span>
           <span class="font-medium text-gray-900 truncate">{{ model.display_name || model.model_key }}</span>
           <span class="text-gray-500 truncate">{{ model.model_key }}</span>
-        </div>
-        <p class="text-[11px] text-gray-500 pt-1">这是探测预览。保存 Provider 后，用「同步模型」写入目录。</p>
+        </label>
+        <p class="text-[11px] text-gray-500 pt-1">这是未保存的探测预览，建议标签不会自动勾选。保存后先同步已保存目录，再一次性应用勾选；未勾选的发现模型将禁用，人工模型不变。</p>
       </div>
       <details :open="advancedOpen" @toggle="advancedOpen = $event.target.open">
         <summary class="text-xs text-pixiv-gray cursor-pointer">高级（默认模型 / 超时 / 重试 / 上下文窗口 / 流式）</summary>
         <div class="pt-3 space-y-3">
-          <input v-model="providerForm.default_model" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="默认模型">
+          <input v-model="providerForm.default_model" @input="touchProvider('default_model')" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="默认模型">
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <label class="block text-xs text-pixiv-gray">上下文窗口 (tokens)
-              <input type="number" min="1" v-model.number="providerForm.context_window" class="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="128000">
+              <input type="number" min="1" v-model.number="providerForm.context_window" @input="touchProvider('context_window')" class="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="128000">
             </label>
             <label class="block text-xs text-pixiv-gray">超时 (秒)
-              <input type="number" min="1" v-model.number="providerForm.timeout_seconds" class="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="120">
+              <input type="number" min="1" v-model.number="providerForm.timeout_seconds" @input="touchProvider('timeout_seconds')" class="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="120">
             </label>
             <label class="block text-xs text-pixiv-gray">重试次数
-              <input type="number" min="0" v-model.number="providerForm.max_retries" class="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="2">
+              <input type="number" min="0" v-model.number="providerForm.max_retries" @input="touchProvider('max_retries')" class="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="2">
             </label>
           </div>
           <label class="flex items-center gap-2 text-sm text-gray-700">
-            <input type="checkbox" v-model="providerForm.stream_enabled" class="rounded border-gray-300">
+            <input type="checkbox" v-model="providerForm.stream_enabled" @input="touchProvider('stream_enabled')" class="rounded border-gray-300">
             启用流式输出
           </label>
+          <label class="block text-xs text-pixiv-gray">代理（留空不使用）
+            <input :value="providerForm.proxy" @input="providerForm.proxy = $event.target.value || null; touchProvider('proxy')" class="library-input" placeholder="代理地址">
+          </label>
+          <p class="text-xs text-pixiv-gray">实际输入容量取决于模型目录、Provider 上限与 AI 任务的设置；不会自动提高已有上限。</p>
         </div>
       </details>
       <label class="flex items-center gap-2 text-sm text-gray-700">
-        <input type="checkbox" v-model="providerForm.enabled" class="rounded border-gray-300">
+        <input type="checkbox" v-model="providerForm.enabled" @input="touchProvider('enabled')" class="rounded border-gray-300">
         启用该 Provider
       </label>
-      <input v-model="providerForm.api_key" type="password" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="API key（只保存，不回显）">
+      <label for="provider-key" class="block text-sm font-medium text-gray-700">API key（只保存，不回显）</label>
+      <input id="provider-key" v-model="providerForm.api_key" @input="touchProvider('api_key')" type="password" autocomplete="new-password" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="已有 Provider 留空保留已存 Key">
       <div class="flex gap-2 flex-wrap">
-        <button @click="saveProvider" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">{{ providerForm.id ? '更新 Provider' : '保存 Provider' }}</button>
+        <button @click="saveProvider" :disabled="onboardingState.phase === 'create_unconfirmed'" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm">{{ providerForm.id ? '更新 Provider' : '保存 Provider' }}</button>
         <button v-if="providerForm.id" @click="resetProviderForm" class="px-4 py-2 bg-gray-100 rounded-lg text-sm">取消编辑</button>
+      </div>
+      </fieldset>
+      <div v-if="onboardingState.phase !== 'idle'" class="space-y-2 text-sm">
+        <p role="status">{{ onboardingMessage }}</p>
+        <p v-if="onboardingState.error" role="alert" class="text-red-600">{{ onboardingState.error }}</p>
+        <p v-if="onboardingState.missing.length" class="text-amber-700">未找到的已选模型：{{ onboardingState.missing.join('、') }}</p>
+        <button v-if="['sync_failed', 'apply_failed', 'conflict', 'selection_unavailable'].includes(onboardingState.phase)" @click="retryOnboarding" :disabled="providerSaving" class="library-btn">{{ onboardingState.phase === 'sync_failed' ? '重试目录同步' : '刷新完整目录并审阅' }}</button>
+        <button v-if="onboardingState.phase === 'confirm_revision'" @click="confirmOnboardingRevision" :disabled="providerSaving" class="library-btn">确认使用最新版本应用选择</button>
+        <button v-if="onboardingState.phase === 'create_unconfirmed'" @click="loadProviders" class="library-btn">刷新 Provider 列表并检查是否已创建</button>
+        <div v-if="onboardingState.phase === 'awaiting_empty_confirmation'" class="flex flex-wrap gap-2">
+          <button @click="confirmEmptyCatalog(providerForm.id)" :disabled="modelSyncActions[providerForm.id]" class="library-btn">确认空目录</button>
+          <button @click="cancelModelSync(providerForm.id)" :disabled="modelSyncActions[providerForm.id]" class="library-btn">请求取消同步</button>
+          <button @click="resetProviderForm" :disabled="modelSyncActions[providerForm.id]" class="library-btn">丢弃本地初始化（不取消服务器操作）</button>
+          <button v-if="modelSyncOperations[providerForm.id]?.status === 'succeeded'" @click="retryOnboarding" class="library-btn">确认继续应用模型选择</button>
+        </div>
+        <p v-if="aiMessages['provider-' + providerForm.id]" role="status" class="text-amber-700">{{ aiMessages['provider-' + providerForm.id].text }}</p>
       </div>
       <p v-if="aiMessages['provider-form']" :role="aiMessages['provider-form'].type === 'error' ? 'alert' : 'status'" class="text-sm"
          :class="aiMessages['provider-form'].type === 'error' ? 'text-red-600' : (aiMessages['provider-form'].type === 'warning' ? 'text-amber-700' : 'text-green-700')">{{ aiMessages['provider-form'].text }}</p>
@@ -102,7 +143,7 @@
       <p v-if="aiMessages['provider-list']" :role="aiMessages['provider-list'].type === 'error' ? 'alert' : 'status'" class="mb-3 text-sm"
          :class="aiMessages['provider-list'].type === 'error' ? 'text-red-600' : 'text-green-700'">{{ aiMessages['provider-list'].text }}</p>
       <div class="space-y-2">
-        <div v-for="provider in providers" :key="provider.id" class="border border-gray-100 rounded-lg p-3 text-sm">
+        <div v-for="provider in visibleProviders" :key="provider.id" class="border border-gray-100 rounded-lg p-3 text-sm">
           <div class="flex items-center gap-2">
             <span v-if="providerHealth(provider.id)"
                   :class="providerHealth(provider.id).status === 'will_fail' ? 'text-red-600'
@@ -125,101 +166,59 @@
             {{ providerHealth(provider.id).attempts.last_error_message }}
           </div>
           <div class="text-xs text-pixiv-gray mt-1">{{ provider.provider_type }} · {{ provider.default_model || '未设置模型' }} · Key: {{ provider.has_api_key ? '已保存' : '未保存' }}</div>
-          <div class="mt-3 border-t border-gray-100 pt-3 space-y-3">
-            <div class="flex items-center justify-between gap-2 flex-wrap">
-              <div class="text-xs font-semibold text-gray-700">模型目录</div>
-              <div class="flex flex-wrap items-center gap-2">
-                <button @click="modelCatalogExpanded[provider.id] = !modelCatalogExpanded[provider.id]" class="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">{{ modelCatalogExpanded[provider.id] ? '收起' : '展开' }}</button>
-                <button @click="loadProviderModels(provider.id)" class="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">刷新目录</button>
-                <button @click="syncProviderModels(provider.id)" :disabled="modelSyncBusy(provider.id)" class="text-xs px-2 py-1 rounded bg-brand-50 text-brand-600 hover:bg-brand-100 disabled:opacity-50">
-                  {{ modelSyncBusy(provider.id) ? '同步中...' : '同步模型' }}
-                </button>
-                <button v-if="modelSyncBusy(provider.id)" @click="cancelModelSync(provider.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">取消同步</button>
-              </div>
-            </div>
-            <div class="grid grid-cols-3 gap-2 text-center text-xs">
-              <div class="rounded border border-gray-100 bg-gray-50 px-2 py-1.5"><div class="text-gray-500">总数</div><div class="font-semibold text-gray-900">{{ modelCatalog(provider).total }}</div></div>
-              <div class="rounded border border-gray-100 bg-gray-50 px-2 py-1.5"><div class="text-gray-500">已发现可用</div><div class="font-semibold text-gray-900">{{ modelCatalog(provider).discovered_available }}</div></div>
-              <div class="rounded border border-gray-100 bg-gray-50 px-2 py-1.5"><div class="text-gray-500">可路由</div><div class="font-semibold text-gray-900">{{ modelCatalog(provider).routable }}</div></div>
-            </div>
-            <div v-if="provider.models_synced_at" class="text-xs text-gray-500">最近成功：{{ formatDbTime(provider.models_synced_at) }}</div>
-            <div v-if="provider.models_sync_error" class="text-xs text-amber-700">最近同步错误：{{ provider.models_sync_error }}</div>
-            <div v-if="modelSyncOperations[provider.id] && ['failed', 'cancelled', 'timeout', 'timed_out'].includes(modelSyncOperations[provider.id].status)" class="text-xs text-amber-700">旧目录仍可使用</div>
-            <div class="text-xs text-amber-700">模型池发生故障转移时，Prompt 可能发送到链中的其他 Provider，请确认隐私边界。</div>
-            <div v-if="modelCatalogExpanded[provider.id]" class="space-y-3">
-              <div class="flex items-center gap-2">
-                <input v-model="modelSearch[provider.id]" @keyup.enter="loadProviderModels(provider.id)" class="min-w-0 flex-1 px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="搜索模型">
-                <button @click="loadProviderModels(provider.id)" class="text-xs px-2 py-1.5 rounded bg-gray-100 hover:bg-gray-200">查找</button>
-              </div>
-              <div v-if="modelCatalog(provider).items.length" class="space-y-1 max-h-48 overflow-y-auto">
-                <div v-for="model in modelCatalog(provider).items" :key="model.id" class="flex items-start justify-between gap-2 rounded border border-gray-100 px-2 py-1.5 text-xs">
-                  <div class="min-w-0">
-                    <div class="font-medium text-gray-900 truncate">{{ model.display_name || model.model_key }}</div>
-                    <div class="text-gray-500 truncate">{{ model.model_key }} · {{ model.context_window || '未知窗口' }}</div>
-                    <div class="text-gray-500 truncate">{{ (model.capabilities || []).join(', ') || '无能力标签' }}</div>
-                  </div>
-                  <div class="flex-shrink-0 text-right space-y-1">
-                    <div class="text-gray-500">{{ model.source || 'catalog' }}</div>
-                    <label class="flex items-center gap-1 justify-end">
-                      <input type="checkbox" :checked="model.enabled"
-                             @change="toggleModelEnabled(provider.id, model)">启用
-                    </label>
-                    <button v-if="model.manual" @click="deleteManualModel(provider.id, model.id)" class="text-red-600 hover:text-red-700">删除人工记录</button>
-                  </div>
-                </div>
-              </div>
-              <div v-else class="text-xs text-gray-500">暂无模型目录记录</div>
-              <div class="border-t border-gray-100 pt-3 space-y-2">
-                <div class="text-xs font-semibold text-gray-700">人工补录模型</div>
-                <input v-model="manualModelForm(provider.id).model_key" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="model_key">
-                <input v-model="manualModelForm(provider.id).manual_display_name" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="显示名称（可选）">
-                <input v-model="manualModelForm(provider.id).manual_capabilities" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="能力标签，逗号分隔">
-                <input type="number" v-model.number="manualModelForm(provider.id).manual_context_window" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="上下文窗口（可选）">
-                <button @click="createManualModel(provider.id)" class="text-xs px-2 py-1.5 rounded bg-gray-900 text-white">添加模型</button>
-              </div>
-            </div>
-            <div v-if="emptyConfirmations[provider.id]" role="dialog" class="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 space-y-2">
-              <div>本次同步返回空目录，是否确认覆盖发现状态？</div>
-              <div class="flex gap-2">
-                <button @click="confirmEmptyCatalog(provider.id)" class="px-2 py-1 rounded bg-amber-600 text-white">确认空目录</button>
-                <button @click="emptyConfirmations[provider.id] = null" class="px-2 py-1 rounded bg-white border border-amber-200">暂不确认</button>
-              </div>
-            </div>
-          </div>
+          <a :href="workspaceHref({view: 'models', providerId: provider.id})" @click.prevent="navigateWorkspace({view: 'models', providerId: provider.id})" class="library-btn mt-3">打开模型目录</a>
           <div v-if="providerTestStatus[provider.id]" class="mt-2 text-xs px-2 py-1 rounded" :class="providerTestStatus[provider.id].type === 'error' ? 'bg-red-50 text-red-700' : (providerTestStatus[provider.id].type === 'warning' ? 'bg-amber-50 text-amber-700' : 'bg-green-50 text-green-700')">{{ providerTestStatus[provider.id].text }}</div>
           <div class="flex gap-2 mt-2 flex-wrap">
             <button @click="editProvider(provider)" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">编辑</button>
             <button @click="copyFromProvider(provider)" class="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">从已有 Provider 复制</button>
-            <button @click="testProvider(provider.id)" :disabled="testingProviderId === provider.id" class="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-50">{{ testingProviderId === provider.id ? '测试中…' : '测试' }}</button>
+            <button @click="testProvider(provider.id)" :disabled="testingProviderId === provider.id" class="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-50">{{ testingProviderId === provider.id ? '测试中…' : '短生成测试（已保存配置）' }}</button>
             <button @click="deleteProvider(provider.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
           </div>
           <p v-if="aiMessages['provider-' + provider.id]" :role="aiMessages['provider-' + provider.id].type === 'error' ? 'alert' : 'status'" class="mt-3 text-sm"
              :class="aiMessages['provider-' + provider.id].type === 'error' ? 'text-red-600' : (aiMessages['provider-' + provider.id].type === 'warning' ? 'text-amber-700' : 'text-green-700')">{{ aiMessages['provider-' + provider.id].text }}</p>
         </div>
-        <p v-if="!providers.length" class="text-sm text-pixiv-gray text-center py-8">暂无 Provider</p>
+        <p v-if="!providers.length && providersLoaded && !providersLoading && !providerLoadError" class="text-sm text-pixiv-gray text-center py-8">暂无 Provider</p>
       </div>
     </div>
   </section>
-  <!-- 2. 模型池（id 保留旧的 ai-model-pools，老链接的 #hash 仍能定位） -->
-  <section id="ai-model-pools" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+  <section v-if="workspace.view === 'models'" class="space-y-4" aria-label="模型目录工作区">
+    <article v-for="provider in visibleProviders" :key="provider.id" class="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+      <h2 class="text-xl font-bold text-gray-900">{{ provider.name }} · 模型目录</h2>
+      {% include 'dashboard_ai_model_catalog.html' %}
+      <p v-if="aiMessages['provider-' + provider.id]" :role="aiMessages['provider-' + provider.id].type === 'error' ? 'alert' : 'status'" class="text-sm text-pixiv-gray">{{ aiMessages['provider-' + provider.id].text }}</p>
+    </article>
+    <p v-if="!visibleProviders.length && !providerNotFound && providersLoaded && !providersLoading && !providerLoadError" class="text-sm text-pixiv-gray">暂无 Provider，请先配置提供方。</p>
+  </section>
+  <!-- 2. 路由组（id 保留旧的 ai-model-pools，老链接的 #hash 仍能定位） -->
+  <section v-if="workspace.view === 'groups'" id="ai-model-pools" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
     <div id="pool-editor" :aria-busy="poolLoading" class="management-editor bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-4">
       <div>
-        <h2 id="pool-editor-title" tabindex="-1" :aria-describedby="poolLoadError ? 'pool-load-error' : null" class="text-xl font-bold text-gray-900">模型池编辑</h2>
-        <p class="text-sm text-pixiv-gray mt-1">按顺序配置候选模型与后备模型池，Agent 绑定池后按这个顺序失败转移。</p>
+        <h2 id="pool-editor-title" tabindex="-1" :aria-describedby="poolLoadError ? 'pool-load-error' : null" class="text-xl font-bold text-gray-900">路由组编辑</h2>
+        <p class="text-sm text-pixiv-gray mt-1">路由组是原模型池的显示名称。组内成员与后备组严格按顺序尝试，不是加权分配。</p>
       </div>
-      <p v-if="poolWriting" role="status" class="text-sm text-pixiv-gray">模型池变更处理中，完成前暂不可修改、切换或重置编辑器。</p>
-      <p v-else-if="poolLoading" role="status" class="text-sm text-pixiv-gray">正在读取所选模型池，读取完成后可编辑…</p>
+      <p v-if="poolWriting" role="status" class="text-sm text-pixiv-gray">路由组变更处理中，完成前暂不可修改、切换或重置编辑器。</p>
+      <p v-else-if="poolLoading" role="status" class="text-sm text-pixiv-gray">正在读取所选路由组，读取完成后可编辑…</p>
       <div v-if="poolLoadError" id="pool-load-error" role="alert" class="space-y-3 text-sm">
-        <p class="text-red-600">无法读取模型池 #{{ selectedPoolId }}：{{ poolLoadError }}</p>
-        <p class="text-pixiv-gray">保留的表单暂不可编辑或保存。请重试读取所选模型池，或取消选择并新建。</p>
+        <p class="text-red-600">无法读取路由组 #{{ selectedPoolId }}：{{ poolLoadError }}</p>
+        <p class="text-pixiv-gray">保留的表单暂不可编辑或保存。请重试读取所选路由组，或取消选择并新建。</p>
         <div class="flex flex-wrap gap-2">
           <button type="button" @click="retryModelPool" :disabled="poolWriting" class="library-btn disabled:opacity-50">重试读取</button>
         </div>
       </div>
-      <button v-if="poolLoading || poolLoadError" type="button" @click="resetPoolForm(true)" :disabled="poolWriting" class="library-btn disabled:opacity-50">取消选择并新建</button>
+      <button v-if="poolLoading || poolLoadError || poolConflict" type="button" @click="resetPoolForm(true)" :disabled="poolWriting" class="library-btn disabled:opacity-50">取消选择并新建</button>
+      <div v-if="Object.values(poolCatalogErrors).some(Boolean)" role="alert" class="text-sm text-red-600 space-y-2">
+        <p v-for="(message, providerId) in poolCatalogErrors" :key="providerId">{{ message ? providerName(Number(providerId)) + '：' + message : '' }}</p>
+        <button @click="loadPoolProviderModels" class="library-btn">重试读取可选模型目录</button>
+      </div>
+      <div v-if="poolConflict" role="alert" class="rounded border border-amber-200 bg-amber-50 p-3 space-y-2 text-sm">
+        <p>版本冲突，草稿未覆盖。服务端版本 {{ poolConflict.version }}：{{ poolConflict.name }}</p>
+        <p>服务端成员顺序：{{ poolConflict.members.map(member => member.model_key || member.provider_model_id).join(' → ') }}</p>
+        <button @click="reloadPoolConflict" :disabled="poolWriting" class="library-btn">加载服务端版本（丢弃草稿）</button>
+        <button @click="reviewPoolChanges" :disabled="poolWriting" class="library-btn">审阅后保留我的修改</button>
+      </div>
       <fieldset :disabled="!poolEditorReady" class="space-y-4">
-      <label for="pool-name" class="block text-sm font-medium text-gray-700">模型池名称</label>
-      <input id="pool-name" v-model="poolForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="模型池名称">
+      <label for="pool-name" class="block text-sm font-medium text-gray-700">路由组名称</label>
+      <input id="pool-name" v-model="poolForm.name" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="路由组名称">
       <textarea v-model="poolForm.description" rows="2" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="说明（可选）"></textarea>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <select v-model="poolForm.pool_kind" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
@@ -229,13 +228,13 @@
           <option value="custom">custom</option>
         </select>
         <select v-model.number="poolForm.fallback_pool_id" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-          <option :value="null">无后备模型池</option>
+          <option :value="null">无后备路由组</option>
           <option v-for="pool in modelPools.filter(item => item.id !== poolForm.id)" :key="pool.id" :value="pool.id">{{ pool.name }}</option>
         </select>
       </div>
       <label class="flex items-center gap-2 text-sm text-gray-700">
         <input type="checkbox" v-model="poolForm.enabled" class="rounded border-gray-300">
-        启用模型池
+        启用路由组
       </label>
       <div class="rounded border border-amber-100 bg-amber-50 p-3 text-xs text-amber-800 space-y-1">
         <div>每个任务最多尝试 16 个候选；单池最多 64 个成员。</div>
@@ -246,12 +245,12 @@
         <div v-for="(member, index) in poolForm.members" :key="member.provider_model_id" class="flex flex-wrap items-center gap-2 border border-gray-100 rounded-lg px-2 py-2 text-xs">
           <div class="min-w-0 flex flex-1 basis-full sm:basis-auto items-center gap-2">
             <span class="w-5 shrink-0 text-center text-gray-500">{{ index + 1 }}</span>
-            <div class="min-w-0 flex-1"><div class="font-medium text-gray-900 truncate">{{ member.model_key }}</div><div class="text-gray-500 truncate">{{ providerName(member.provider_id) }}</div></div>
+            <div class="min-w-0 flex-1"><div class="font-medium text-gray-900 truncate">{{ member.model_key }}</div><div class="text-gray-500 truncate">{{ providerName(member.provider_id) }}</div><div class="text-gray-500">{{ memberAvailability(member) }}</div></div>
           </div>
           <div class="flex flex-wrap items-center gap-2">
           <label class="flex items-center gap-1"><input type="checkbox" v-model="member.enabled">启用</label>
-          <button @click="movePoolMember(index, -1)" :disabled="index === 0" title="上移" class="w-7 h-7 rounded bg-gray-100 disabled:opacity-30">↑</button>
-          <button @click="movePoolMember(index, 1)" :disabled="index === poolForm.members.length - 1" title="下移" class="w-7 h-7 rounded bg-gray-100 disabled:opacity-30">↓</button>
+          <button :id="'pool-member-' + member.provider_model_id + '-up'" @click="movePoolMember(index, -1)" @keydown.up.prevent="movePoolMember(index, -1)" @keydown.down.prevent="movePoolMember(index, 1)" :disabled="index === 0" title="上移" class="w-7 h-7 rounded bg-gray-100 disabled:opacity-30">↑</button>
+          <button :id="'pool-member-' + member.provider_model_id + '-down'" @click="movePoolMember(index, 1)" @keydown.up.prevent="movePoolMember(index, -1)" @keydown.down.prevent="movePoolMember(index, 1)" :disabled="index === poolForm.members.length - 1" title="下移" class="w-7 h-7 rounded bg-gray-100 disabled:opacity-30">↓</button>
           <button @click="removePoolMember(index)" title="移除" class="w-7 h-7 rounded bg-red-50 text-red-600">×</button>
           </div>
         </div>
@@ -265,17 +264,12 @@
           </select>
           <input v-model="poolModelSearch" class="px-2 py-1.5 border border-gray-200 rounded text-xs" placeholder="搜索 Provider / model_key">
         </div>
-        <div class="max-h-40 overflow-y-auto space-y-1">
-          <button v-for="model in availablePoolModels" :key="model.id" @click="addPoolMember(model)" class="w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded bg-gray-50 hover:bg-gray-100 text-xs text-left">
-            <span class="truncate">{{ model.provider_name }} / {{ model.model_key }}</span><span class="text-brand-600">添加</span>
-          </button>
-          <div v-if="!availablePoolModels.length" class="text-xs text-gray-500 py-2 text-center">没有可添加的目录模型</div>
-        </div>
+        <ai-model-picker id="pool-model-picker" label="添加路由组成员" :options="poolPickerOptions" :disabled="!poolEditorReady" @select="choosePoolModel"></ai-model-picker>
       </div>
       <div v-if="poolForm.referenced_by_agents.length" class="text-xs text-gray-600">Agent 引用：{{ poolForm.referenced_by_agents.map(item => item.name).join('、') }}</div>
       <p v-if="poolError" role="alert" class="text-sm text-red-600">{{ poolError }}</p>
       <div class="flex gap-2 flex-wrap">
-        <button @click="saveModelPool" :disabled="poolSaving || !poolForm.name || (poolForm.enabled && !poolForm.members.length)" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ poolSaving ? '保存中…' : (poolForm.id ? '保存模型池' : '创建模型池') }}</button>
+        <button @click="saveModelPool" :disabled="poolSaving || !poolForm.name || (poolForm.enabled && !poolForm.members.length)" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ poolSaving ? '保存中…' : (poolForm.id ? '保存路由组' : '创建路由组') }}</button>
         <button v-if="poolForm.id" @click="resetPoolForm" class="px-4 py-2 bg-gray-100 rounded-lg text-sm">新建</button>
       </div>
       <p v-if="aiMessages['pool-form']" :role="aiMessages['pool-form'].type === 'error' ? 'alert' : 'status'" class="text-sm"
@@ -314,48 +308,73 @@
       </div>
     </div>
     <div id="pool-list" class="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-      <div class="flex items-center justify-between mb-3"><h2 class="text-xl font-bold text-gray-900">模型池列表</h2><button @click="loadModelPools" class="text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">刷新</button></div>
+      <div class="flex items-center justify-between mb-3"><h2 class="text-xl font-bold text-gray-900">路由组列表</h2><button @click="loadModelPools" class="text-xs px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200">刷新</button></div>
       <p v-if="aiMessages['pool-list']" :role="aiMessages['pool-list'].type === 'error' ? 'alert' : 'status'" class="mb-3 text-sm"
          :class="aiMessages['pool-list'].type === 'error' ? 'text-red-600' : 'text-green-700'">{{ aiMessages['pool-list'].text }}</p>
       <div class="space-y-2">
-        <div v-for="pool in modelPools" :key="pool.id" class="border border-gray-100 rounded-lg p-3 text-sm">
+        <div v-for="pool in visibleModelPools" :key="pool.id" class="border border-gray-100 rounded-lg p-3 text-sm">
           <div class="flex items-start justify-between gap-2"><div><div class="font-semibold text-gray-900">{{ pool.name }}</div><div class="text-xs text-gray-500 mt-1">{{ pool.pool_kind }} · version {{ pool.version }} · {{ pool.members.length }} 个成员</div></div><span class="text-xs px-2 py-1 rounded" :class="pool.enabled ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-600'">{{ pool.enabled ? '已启用' : '未启用' }}</span></div>
           <div class="text-xs text-gray-500 mt-2">后备：{{ pool.fallback_pool_name || '无' }}</div>
           <div class="text-xs text-gray-500">Agent 引用：{{ pool.referenced_by_agents.length }}</div>
           <div class="flex gap-2 mt-2"><button @click="editModelPool(pool)" :disabled="poolWriting" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 disabled:opacity-50">编辑</button><button @click="deleteModelPool(pool)" :disabled="poolWriting || poolLoading" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 disabled:opacity-50">删除</button></div>
         </div>
-        <div v-if="!modelPools.length" class="text-sm text-gray-500 text-center py-8">暂无模型池</div>
+        <div v-if="!visibleModelPools.length" class="text-sm text-gray-500 text-center py-8">暂无路由组</div>
       </div>
     </div>
   </section>
+  <app-modal :is-open="!!draftConfirmation" title="保留未保存的修改？" @close="resolveDraft('cancel')">
+    <div class="space-y-4">
+      <p>离开前可以保存修改、明确丢弃草稿，或继续编辑。尚未确认的模型选择不会自动应用。</p>
+      <div class="flex flex-wrap gap-2">
+        <button @click="resolveDraft('save')" class="library-btn library-btn-primary">保存并离开</button>
+        <button @click="resolveDraft('discard')" class="library-btn">丢弃草稿并离开</button>
+        <button @click="resolveDraft('cancel')" class="library-btn">继续编辑</button>
+      </div>
+    </div>
+  </app-modal>
 </div>
 {% endblock %}
 
 {% block extra_scripts %}
+{% include 'dashboard_ai_controls.html' %}
+<script src="/static/js/ai_provider_onboarding.js"></script>
 <script>
   initVueApp({
     setup() {
-      const { ref, reactive, computed, onMounted, nextTick } = Vue;
+      const { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } = Vue;
+      const settings = window.AISettings;
+      const clone = value => JSON.parse(JSON.stringify(value));
+      const workspace = settings.readWorkspace(window.location.search);
+      let disposed = false;
 
       const providers = ref([]);
+      const providersLoaded = ref(false);
+      const providersLoading = ref(false);
+      const providerLoadError = ref('');
+      let providersRequestId = 0, poolCatalogRequestId = 0;
       const testingProviderId = ref(0);
       const providerTestStatus = reactive({});
       const aiHealth = ref(null);
       const aiHealthLoading = ref(false);
       async function loadAiHealth() {
+        if (disposed) return;
         aiHealthLoading.value = true;
-        try { aiHealth.value = await window.aiApi.request('/api/dashboard/ai/health'); }
-        catch (e) { aiHealth.value = null; }
-        finally { aiHealthLoading.value = false; }
+        try { const data = await window.aiApi.request('/api/dashboard/ai/health'); if (!disposed) aiHealth.value = data; }
+        catch (e) { if (!disposed) aiHealth.value = null; }
+        finally { if (!disposed) aiHealthLoading.value = false; }
       }
       const providerModels = reactive({});
+      const modelCatalogLoading = reactive({});
+      const modelCatalogErrors = reactive({});
       const modelSearch = reactive({});
       const modelCatalogExpanded = reactive({});
       const manualModelForms = reactive({});
+      const manualModelSaving = reactive({});
       const modelSyncOperations = reactive({});
       const emptyConfirmations = reactive({});
       const modelPools = ref([]);
       const poolProviderModels = reactive({});
+      const poolCatalogErrors = reactive({});
       const poolProviderFilter = ref(0);
       const poolModelSearch = ref('');
       // 单一写操作持有编辑器，直到其变更、读回和错误处理全部结束。
@@ -367,12 +386,15 @@
       const selectedPoolId = ref(0);
       const poolLoadError = ref('');
       const poolError = ref('');
+      const poolConflict = ref(null);
+      const poolConflictReadPending = ref(false);
+      const poolVersionUnknown = ref(false);
       let poolEditRequestId = 0;
       let poolAttemptsRequestId = 0;
       let editorFocusId = 0;
       const poolForm = reactive({ id: 0, name: '', description: '', pool_kind: 'custom', fallback_pool_id: null, enabled: false, original_enabled: false, version: 1, members: [], referenced_by_agents: [], referenced_by_pools: [] });
       // 请求目标与旧快照分开：读取失败不能把上一个池重新变成可写表单。
-      const poolEditorReady = computed(() => !poolWriting.value && !poolLoading.value && !poolLoadError.value
+      const poolEditorReady = computed(() => !disposed && !poolWriting.value && !poolLoading.value && !poolLoadError.value && !poolConflict.value && !poolVersionUnknown.value
         && (!selectedPoolId.value || selectedPoolId.value === Number(poolForm.id)));
       const poolAttempts = ref([]);
       const poolAttemptsError = ref('');
@@ -381,7 +403,19 @@
       // 再转移到下一个候选（否则正文会重复），所以它说明的是这一轮产出了半篇，
       // 而不是这个候选不可用。
       const ATTEMPT_STATUS_LABELS = { running: '进行中', succeeded: '成功', failed: '失败', partial: '已输出后失败', cancelled: '已取消' };
-      const providerForm = reactive({ id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
+      const providerFields = ['name', 'provider_type', 'base_url', 'default_model', 'api_key', 'timeout_seconds', 'max_retries', 'context_window', 'stream_enabled', 'enabled', 'proxy'];
+      const providerForm = reactive(providerInitial());
+      let providerOriginal = providerInitial(), providerEditorGeneration = 0, providerSavePromise = null;
+      const providerTouched = new Set();
+      const providerSaving = ref(false);
+      const providerSave = reactive({warnings: []});
+      const onboardingState = ref({phase: 'idle', pending: false, providerId: null, operationId: null, selectedKeys: [], revision: null, missing: [], error: ''});
+      let onboarding = null;
+      const draftConfirmation = ref('');
+      let draftResolve = null;
+      const catalogRequests = new Map();
+      const modelOutputForms = reactive({});
+      const modelOutputWriting = reactive({});
       const advancedOpen = ref(false);
       const baseUrlHint = ref('');
       const probedModels = ref([]);
@@ -392,12 +426,13 @@
 
       // 每个操作区保留自己的反馈，不被四秒定时器或其他区域的成功消息抹掉。
       const showAiMessage = (msg, type = 'success', area = 'provider-form') => {
+        if (disposed) return;
         aiMessages[area] = { text: msg, type };
       };
       const focusEditor = (editorId, fieldId) => {
         const focusId = ++editorFocusId;
         nextTick(() => {
-          if (focusId !== editorFocusId) return;
+          if (disposed || focusId !== editorFocusId) return;
           const editor = document.getElementById(editorId);
           const field = document.getElementById(fieldId);
           if (editor) editor.scrollIntoView({ behavior: 'auto', block: 'start' });
@@ -405,79 +440,123 @@
         });
       };
 
-      // 变更类请求走 base.html 的 window.csrfFetch（它负责带上 X-CSRF-Token）：
-      // 模板自建一份 CSRF 逻辑就等于把 fb91da3 修好的漏洞再挖一遍。
-      // 这里没有直接用 window.aiApi.request，因为模型池保存要靠 error.status === 409
-      // 判乐观锁冲突，而共享版本抛出的 Error 不带 status。
-      const aiApi = async (url, options = {}) => {
-        const response = await window.csrfFetch(url, options);
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok || data.ok === false) {
-          const error = new Error(window.errorText(data, response));
-          error.status = response.status;
-          error.data = data.data;
-          throw error;
-        }
-        return data.data;
-      };
+      // Shared API retains CSRF, the unwrapped data, and conflict status/data.
+      const aiApi = (url, options) => window.aiApi.request(url, options);
       const modelCatalog = (provider) => providerModels[provider.id] || { items: [], total: 0, discovered_available: 0, routable: 0 };
       const providerHealth = (providerId) =>
         (aiHealth.value?.providers || []).find(item => item.id === providerId) || null;
       const modelSyncBusy = (providerId) => {
         const status = modelSyncOperations[providerId] && modelSyncOperations[providerId].status;
-        return status === 'queued' || status === 'running';
+        return !!modelSyncActions[providerId] || ['queued', 'running', 'needs_empty_confirmation'].includes(status);
       };
       const modelSyncStorageKey = (providerId) => `pixiv-ai-model-sync:${providerId}`;
       const updateModelSyncState = (providerId, patch) => {
+        if (disposed) return;
         modelSyncOperations[providerId] = { ...(modelSyncOperations[providerId] || {}), ...patch };
       };
       const loadProviderModels = async (providerId) => {
+        if (disposed) return false;
         const search = String(modelSearch[providerId] || '').trim();
         const query = search ? `?search=${encodeURIComponent(search)}` : '';
         const previous = providerModels[providerId];
+        const requestId = (catalogRequests.get(providerId) || 0) + 1;
+        catalogRequests.set(providerId, requestId);
+        const editorGeneration = providerEditorGeneration;
+        const current = () => !disposed && requestId === catalogRequests.get(providerId)
+          && editorGeneration === providerEditorGeneration && search === String(modelSearch[providerId] || '').trim();
         delete aiMessages['provider-' + providerId];
+        modelCatalogLoading[providerId] = true;
+        modelCatalogErrors[providerId] = '';
         try {
           const data = await aiApi(`/api/dashboard/ai/providers/${providerId}/models${query}`);
+          if (!current()) return false;
+          if (!data || !Array.isArray(data.items)) throw new Error('模型目录响应不完整');
           providerModels[providerId] = data || { items: [], total: 0, discovered_available: 0, routable: 0 };
+          return true;
         } catch (e) {
+          if (!current()) return false;
           if (!previous) providerModels[providerId] = { items: [], total: 0, discovered_available: 0, routable: 0 };
+          modelCatalogErrors[providerId] = e.message || '读取模型目录失败';
           showAiMessage(e.message || '读取模型目录失败', 'error', 'provider-' + providerId);
+          return false;
+        } finally {
+          if (current()) modelCatalogLoading[providerId] = false;
         }
       };
+      const readCatalog = async (providerId) => {
+        const data = await aiApi(`/api/dashboard/ai/providers/${providerId}/models`);
+        if (!data || !Array.isArray(data.items) || !Number.isInteger(data.total) ||
+            data.items.length !== data.total || typeof data.catalog_revision !== 'string' ||
+            !/^[0-9a-f]{64}$/.test(data.catalog_revision)) throw new Error('需要完整已保存目录才能应用选择 (complete catalogue required)');
+        return data;
+      };
+      const emptyManualForm = () => ({ model_key: '', manual_display_name: '', manual_capabilities: '',
+        manual_context_window: null, manual_max_output_tokens: '', output_touched: false });
       const manualModelForm = (providerId) => {
         if (!manualModelForms[providerId]) {
-          manualModelForms[providerId] = { model_key: '', manual_display_name: '', manual_capabilities: '', manual_context_window: null };
+          manualModelForms[providerId] = emptyManualForm();
         }
         return manualModelForms[providerId];
       };
       const createManualModel = async (providerId) => {
+        if (disposed || manualModelSaving[providerId]) return false;
         const form = manualModelForm(providerId);
+        const snapshot = JSON.stringify(form);
         const modelKey = String(form.model_key || '').trim();
         if (!modelKey) {
           showAiMessage('model_key 不能为空', 'error', 'provider-' + providerId);
-          return;
+          return false;
         }
         const capabilities = String(form.manual_capabilities || '').split(',').map(item => item.trim()).filter(Boolean);
         const contextWindow = Number(form.manual_context_window || 0);
+        manualModelSaving[providerId] = true;
         try {
+          const payload = {
+            model_key: modelKey, enabled: true,
+            manual_display_name: String(form.manual_display_name || '').trim() || null,
+            manual_capabilities: capabilities, manual_context_window: contextWindow > 0 ? contextWindow : null,
+          };
+          if (form.output_touched) payload.manual_max_output_tokens = settings.parseNullableOutput(form.manual_max_output_tokens);
           await aiApi(`/api/dashboard/ai/providers/${providerId}/models`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              model_key: modelKey,
-              enabled: true,
-              manual_display_name: String(form.manual_display_name || '').trim() || null,
-              manual_capabilities: capabilities,
-              manual_context_window: contextWindow > 0 ? contextWindow : null
-            })
+            body: JSON.stringify(payload)
           });
-          manualModelForms[providerId] = { model_key: '', manual_display_name: '', manual_capabilities: '', manual_context_window: null };
-          await loadProviderModels(providerId);
-          showAiMessage('人工模型已添加', 'success', 'provider-' + providerId);
+          if (disposed) return;
+          if (manualModelForms[providerId] === form && JSON.stringify(form) === snapshot) manualModelForms[providerId] = emptyManualForm();
+          const refreshed = await loadProviderModels(providerId);
+          showAiMessage(refreshed ? '人工模型已添加' : '人工模型已添加；目录刷新失败，请只刷新目录', refreshed ? 'success' : 'warning', 'provider-' + providerId);
+          return true;
         } catch (e) {
           showAiMessage(e.message || '人工模型添加失败', 'error', 'provider-' + providerId);
-        }
+          return false;
+        } finally { if (!disposed) manualModelSaving[providerId] = false; }
       };
+      const modelOutputForm = (model) => {
+        if (!modelOutputForms[model.id]) modelOutputForms[model.id] = {value: model.manual_max_output_tokens ?? '', touched: false};
+        return modelOutputForms[model.id];
+      };
+      const writeModelOutput = async (providerId, model, value) => {
+        if (disposed || modelOutputWriting[model.id]) return false;
+        const draft = modelOutputForm(model), snapshot = JSON.stringify(draft);
+        modelOutputWriting[model.id] = true;
+        try {
+          const output = settings.parseNullableOutput(value);
+          await aiApi(`/api/dashboard/ai/provider-models/${model.id}`, {method: 'PUT',
+            headers: {'Content-Type': 'application/json'}, body: JSON.stringify({manual_max_output_tokens: output})});
+          if (disposed) return false;
+          if (modelOutputForms[model.id] === draft && JSON.stringify(draft) === snapshot) modelOutputForms[model.id] = {value: output ?? '', touched: false};
+          const refreshed = await loadProviderModels(providerId);
+          showAiMessage(refreshed ? '输出上限已保存' : '输出上限已保存；目录刷新失败，请只刷新目录', refreshed ? 'success' : 'warning', 'provider-' + providerId);
+          return true;
+        } catch (e) { showAiMessage(e.message, 'error', 'provider-' + providerId); return false; }
+        finally { if (!disposed) modelOutputWriting[model.id] = false; }
+      };
+      const saveModelOutput = (providerId, model) => {
+        const draft = modelOutputForm(model);
+        return draft.touched ? writeModelOutput(providerId, model, draft.value) : Promise.resolve(true);
+      };
+      const resetModelOutput = (providerId, model) => writeModelOutput(providerId, model, null);
       const deleteManualModel = async (providerId, modelId) => {
         if (!confirm('确认删除该人工模型记录？')) return;
         try {
@@ -488,118 +567,196 @@
           showAiMessage(e.message || '人工模型删除失败', 'error', 'provider-' + providerId);
         }
       };
-      const loadModelSyncOperation = async (providerId, operationId) => {
-        try {
-          const operation = await aiApi(`/api/dashboard/ai/model-sync-operations/${operationId}`);
-          updateModelSyncState(providerId, operation || {});
-          if (operation && operation.status === 'needs_empty_confirmation') {
-            emptyConfirmations[providerId] = operation;
-          } else if (operation && (operation.status === 'queued' || operation.status === 'running')) {
-            await consumeModelSyncEvents(providerId, operationId);
-          } else if (operation && ['succeeded', 'failed', 'cancelled'].includes(operation.status)) {
-            try { localStorage.removeItem(modelSyncStorageKey(providerId)); } catch (e) { /* storage unavailable */ }
-          }
-        } catch (e) {
-          updateModelSyncState(providerId, { status: 'failed', error_message: e.message || '读取同步状态失败' });
+      const syncEpochs = new Map(), syncReaders = new Map();
+      const modelSyncActions = reactive({});
+      const terminalSync = status => ['succeeded', 'failed', 'cancelled'].includes(status);
+      const stoppedSync = status => terminalSync(status) || status === 'needs_empty_confirmation';
+      const ownsSync = (providerId, operationId, epoch) => !disposed &&
+        (syncEpochs.get(providerId) || 0) === epoch && modelSyncOperations[providerId]?.operation_id === operationId;
+      const adoptSync = (providerId, operationId, status = 'queued') => {
+        if (modelSyncOperations[providerId]?.operation_id !== operationId) {
+          syncEpochs.set(providerId, (syncEpochs.get(providerId) || 0) + 1);
+          syncReaders.get(providerId)?.controller.abort();
+          modelSyncOperations[providerId] = {operation_id: operationId, status};
+          emptyConfirmations[providerId] = null;
         }
+        return syncEpochs.get(providerId) || 0;
       };
-      const parseModelSyncEvent = (providerId, block) => {
+      const clearSyncRecovery = (providerId, operationId) => {
+        try {
+          if (localStorage.getItem(modelSyncStorageKey(providerId)) === operationId) localStorage.removeItem(modelSyncStorageKey(providerId));
+        } catch (e) { /* storage unavailable */ }
+      };
+      const publishSync = (providerId, operation) => {
+        updateModelSyncState(providerId, operation);
+        if (operation.status === 'needs_empty_confirmation') emptyConfirmations[providerId] = operation;
+        else if (terminalSync(operation.status)) emptyConfirmations[providerId] = null;
+        if (['failed', 'cancelled'].includes(operation.status)) showAiMessage('同步未完成，旧目录仍可使用', 'warning', 'provider-' + providerId);
+      };
+      const parseModelSyncEvent = (operationId, block, previous) => {
         const lines = block.split(/\r?\n/);
         const eventLine = lines.find(line => line.startsWith('event:'));
         const dataLine = lines.find(line => line.startsWith('data:'));
-        if (!eventLine || !dataLine) return;
+        if (!eventLine || !dataLine) return null;
         const eventName = eventLine.slice(6).trim();
-        if (!MODEL_SYNC_EVENTS.has(eventName)) return;
+        if (!MODEL_SYNC_EVENTS.has(eventName)) return null;
         let data;
-        try { data = JSON.parse(dataLine.slice(5).trim()); } catch (e) { return; }
-        updateModelSyncState(providerId, data || {});
-        if (eventName === 'started') updateModelSyncState(providerId, { status: 'running' });
-        if (eventName === 'page') updateModelSyncState(providerId, { status: 'running', pages: data.pages, discovered_count: data.discovered_count });
-        if (eventName === 'empty_confirmation_required') {
-          updateModelSyncState(providerId, { status: 'needs_empty_confirmation' });
-          emptyConfirmations[providerId] = data;
-        }
-        if (eventName === 'completed') {
-          updateModelSyncState(providerId, { status: 'succeeded' });
-          emptyConfirmations[providerId] = null;
-          loadProviderModels(providerId);
-        }
-        if (eventName === 'failed' || eventName === 'cancelled') {
-          updateModelSyncState(providerId, { status: eventName, error_message: data.error_message || data.message || '' });
-          emptyConfirmations[providerId] = null;
-          showAiMessage('同步失败，旧目录仍可使用', 'warning', 'provider-' + providerId);
-        }
+        try { data = JSON.parse(dataLine.slice(5).trim()); } catch (e) { return null; }
+        if (!data || typeof data !== 'object' || (data.operation_id && data.operation_id !== operationId)) return null;
+        const status = {started: 'running', page: 'running', empty_confirmation_required: 'needs_empty_confirmation',
+          completed: 'succeeded', failed: 'failed', cancelled: 'cancelled'}[eventName];
+        return {...previous, ...data, operation_id: operationId, status};
       };
-      // 目录同步的 SSE 刻意保留手写读取（没有改用 window.streamSSE）：它要按
-      // MODEL_SYNC_EVENTS 白名单过滤未知事件、容忍 \r\n 分帧、并在流结束后处理残留
-      // 缓冲；这三点是「刷新页面后仍能接回同步进度」的前提。
-      const consumeModelSyncEvents = async (providerId, operationId) => {
-        const response = await fetch(`/api/dashboard/ai/model-sync-operations/${operationId}/events`);
-        if (!response.ok || !response.body) throw new Error('无法读取模型同步事件');
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-          const blocks = buffer.split(/\r?\n\r?\n/);
-          buffer = blocks.pop() || '';
-          blocks.forEach(block => parseModelSyncEvent(providerId, block));
-          if (done) break;
-        }
-        if (buffer.trim()) parseModelSyncEvent(providerId, buffer);
-        const finalStatus = modelSyncOperations[providerId] && modelSyncOperations[providerId].status;
-        if (['succeeded', 'failed', 'cancelled'].includes(finalStatus)) {
-          try { localStorage.removeItem(modelSyncStorageKey(providerId)); } catch (e) { /* storage unavailable */ }
+      // Keep the event whitelist, CRLF framing and residual frame. Terminality is
+      // local to this reader, never inferred from another operation's UI cache.
+      const consumeModelSyncEvents = (providerId, operationId, owner = () => !disposed) => {
+        if (!owner() || disposed) return Promise.resolve();
+        const epoch = adoptSync(providerId, operationId);
+        const current = () => owner() && ownsSync(providerId, operationId, epoch);
+        const active = syncReaders.get(providerId);
+        if (active?.operationId === operationId && active.epoch === epoch) return active.promise;
+        const entry = {operationId, epoch, controller: new AbortController(), promise: null};
+        entry.promise = Promise.resolve().then(async () => {
+          let operation = {operation_id: operationId, status: 'running'};
+          while (current()) {
+            const response = await fetch(`/api/dashboard/ai/model-sync-operations/${operationId}/events`, {signal: entry.controller.signal});
+            if (!current()) return;
+            if (!response.ok || !response.body) throw new Error('无法读取模型同步事件');
+            const reader = response.body.getReader(), decoder = new TextDecoder();
+            let buffer = '';
+            const accept = block => {
+              if (stoppedSync(operation.status)) return;
+              const next = parseModelSyncEvent(operationId, block, operation);
+              if (next && current()) { operation = next; publishSync(providerId, operation); }
+            };
+            while (current()) {
+              const {done, value} = await reader.read();
+              if (!current()) { if (reader.cancel) await reader.cancel(); return; }
+              buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
+              const blocks = buffer.split(/\r?\n\r?\n/);
+              buffer = blocks.pop() || '';
+              blocks.forEach(accept);
+              if (done) { if (buffer.trim()) accept(buffer); break; }
+              if (stoppedSync(operation.status)) { if (reader.cancel) await reader.cancel(); break; }
+            }
+            if (!current()) return;
+            if (!stoppedSync(operation.status)) {
+              const actual = await aiApi(`/api/dashboard/ai/model-sync-operations/${operationId}`);
+              if (!current()) return;
+              if (!actual || (actual.operation_id && actual.operation_id !== operationId)) throw new Error('同步状态响应不匹配');
+              operation = {...actual, operation_id: operationId};
+              publishSync(providerId, operation);
+            }
+            if (stoppedSync(operation.status)) {
+              if (terminalSync(operation.status)) clearSyncRecovery(providerId, operationId);
+              return clone(operation);
+            }
+            if (!['queued', 'running'].includes(operation.status)) throw new Error('同步状态未确认，请重试读取');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        }).catch(error => { if (current()) throw error; }).finally(() => {
+          if (syncReaders.get(providerId) === entry) syncReaders.delete(providerId);
+        });
+        syncReaders.set(providerId, entry);
+        return entry.promise;
+      };
+      const loadModelSyncOperation = async (providerId, operationId) => {
+        if (disposed) return;
+        const prior = modelSyncOperations[providerId];
+        if (prior?.operation_id && prior.operation_id !== operationId) return prior;
+        const epoch = adoptSync(providerId, operationId);
+        const current = () => ownsSync(providerId, operationId, epoch);
+        try {
+          const actual = await aiApi(`/api/dashboard/ai/model-sync-operations/${operationId}`);
+          if (!current()) return;
+          if (!actual || (actual.operation_id && actual.operation_id !== operationId)) throw new Error('同步状态响应不匹配');
+          const operation = {...actual, operation_id: operationId};
+          publishSync(providerId, operation);
+          if (['queued', 'running'].includes(operation.status)) return await consumeModelSyncEvents(providerId, operationId, current);
+          if (terminalSync(operation.status)) clearSyncRecovery(providerId, operationId);
+          return operation;
+        } catch (e) {
+          if (!current()) return;
+          updateModelSyncState(providerId, {error_message: e.message || '读取同步状态失败'});
+          showAiMessage('同步状态读取失败；未认定为同步成功或已取消，可刷新重连', 'warning', 'provider-' + providerId);
+          return {status: 'unknown', error_message: e.message};
         }
       };
       const syncProviderModels = async (providerId) => {
-        if (modelSyncBusy(providerId)) return;
+        if (disposed || modelSyncBusy(providerId)) return modelSyncOperations[providerId];
+        let operationId = null, epoch = adoptSync(providerId, null);
+        const current = () => ownsSync(providerId, operationId, epoch);
+        updateModelSyncState(providerId, {status: 'queued', error_message: ''});
         try {
-          updateModelSyncState(providerId, { status: 'queued', error_message: '' });
-          const operation = await aiApi(`/api/dashboard/ai/providers/${providerId}/models/sync`, { method: 'POST' });
-          const operationId = operation && operation.operation_id;
-          if (!operationId) throw new Error('同步响应缺少 operation_id');
-          updateModelSyncState(providerId, { ...operation, status: 'queued' });
+          const operation = await aiApi(`/api/dashboard/ai/providers/${providerId}/models/sync`, {method: 'POST'});
+          if (!current()) return;
+          if (!operation?.operation_id) throw new Error('同步响应缺少 operation_id');
+          operationId = operation.operation_id;
+          epoch = adoptSync(providerId, operationId);
           try { localStorage.setItem(modelSyncStorageKey(providerId), operationId); } catch (e) { /* storage unavailable */ }
-          await consumeModelSyncEvents(providerId, operationId);
+          const final = await consumeModelSyncEvents(providerId, operationId, current);
+          if (!current()) return;
+          if (final?.status === 'succeeded') await loadProviderModels(providerId);
+          return final;
         } catch (e) {
-          updateModelSyncState(providerId, { status: 'failed', error_message: e.message || '模型同步失败' });
-          showAiMessage('同步失败，旧目录仍可使用', 'warning', 'provider-' + providerId);
+          if (!current()) return;
+          updateModelSyncState(providerId, {error_message: e.message || '模型同步状态未确认'});
+          showAiMessage('同步状态未确认，旧目录仍可使用；请刷新重连', 'warning', 'provider-' + providerId);
+          return {status: 'unknown', error_message: e.message};
         }
       };
       const cancelModelSync = async (providerId) => {
-        const operation = modelSyncOperations[providerId];
-        const operationId = operation && operation.operation_id;
-        if (!operationId) return;
+        const operationId = modelSyncOperations[providerId]?.operation_id;
+        if (disposed || !operationId || modelSyncActions[providerId]) return false;
+        const epoch = syncEpochs.get(providerId) || 0;
+        const current = () => ownsSync(providerId, operationId, epoch);
+        modelSyncActions[providerId] = true;
         try {
-          await aiApi(`/api/dashboard/ai/model-sync-operations/${operationId}`, { method: 'DELETE' });
-          updateModelSyncState(providerId, { status: 'cancelled' });
-          showAiMessage('已请求取消同步', 'warning', 'provider-' + providerId);
+          const requested = await aiApi(`/api/dashboard/ai/model-sync-operations/${operationId}`, {method: 'DELETE'});
+          if (!current()) return false;
+          const actual = await aiApi(`/api/dashboard/ai/model-sync-operations/${operationId}`);
+          if (!current()) return false;
+          if (actual && (!actual.operation_id || actual.operation_id === operationId)) {
+            const latest = modelSyncOperations[providerId];
+            const projection = terminalSync(latest.status) && !terminalSync(actual.status) ? latest : {...actual, operation_id: operationId};
+            publishSync(providerId, projection);
+            if (terminalSync(projection.status)) clearSyncRecovery(providerId, operationId);
+            if (['cancelled', 'failed'].includes(projection.status) && onboardingState.value.providerId === providerId && onboardingState.value.phase === 'awaiting_empty_confirmation') await retryOnboarding();
+          }
+          if (!current()) return false;
+          showAiMessage(requested?.cancel_requested ? '已请求取消；以同步操作的实际终态为准'
+            : '服务器未接受取消请求；同步未取消。可确认空目录，或明确丢弃本地初始化（不取消服务器操作）', 'warning', 'provider-' + providerId);
+          return requested?.cancel_requested === true;
         } catch (e) {
-          showAiMessage(e.message || '取消同步失败', 'error', 'provider-' + providerId);
-        }
+          if (current()) showAiMessage('取消或状态读取未确认：' + e.message, 'warning', 'provider-' + providerId);
+          return false;
+        } finally { if (current()) modelSyncActions[providerId] = false; }
       };
       const confirmEmptyCatalog = async (providerId) => {
         const confirmation = emptyConfirmations[providerId];
-        if (!confirmation) return;
+        const operationId = confirmation?.operation_id;
+        if (disposed || !operationId || modelSyncActions[providerId]) return false;
+        const epoch = syncEpochs.get(providerId) || 0;
+        const current = () => ownsSync(providerId, operationId, epoch);
+        if (!current()) return false;
+        modelSyncActions[providerId] = true;
         try {
-          await aiApi(`/api/dashboard/ai/model-sync-operations/${confirmation.operation_id}/confirm-empty`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ generation: confirmation.generation, result_digest: confirmation.result_digest })
-          });
-          emptyConfirmations[providerId] = null;
-          updateModelSyncState(providerId, { status: 'succeeded' });
-          await loadProviderModels(providerId);
-          showAiMessage('空目录已确认', 'success', 'provider-' + providerId);
-        } catch (e) {
-          showAiMessage(e.message || '空目录确认失败', 'error', 'provider-' + providerId);
-        }
+          await aiApi(`/api/dashboard/ai/model-sync-operations/${operationId}/confirm-empty`, {method: 'POST',
+            headers: {'Content-Type': 'application/json'}, body: JSON.stringify({generation: confirmation.generation, result_digest: confirmation.result_digest})});
+          if (!current()) return false;
+          publishSync(providerId, {...confirmation, status: 'succeeded'});
+          clearSyncRecovery(providerId, operationId);
+          if (onboardingState.value.providerId === providerId && onboardingState.value.phase === 'awaiting_empty_confirmation') await retryOnboarding();
+          else await loadProviderModels(providerId);
+          if (current()) showAiMessage('空目录已确认（不代表初始选择已应用）', 'success', 'provider-' + providerId);
+          return true;
+        } catch (e) { if (current()) showAiMessage(e.message || '空目录确认失败', 'error', 'provider-' + providerId); return false; }
+        finally { if (current()) modelSyncActions[providerId] = false; }
       };
       // 刷新页面后接回未完成的同步：operation_id 存在 localStorage 里
       const recoverModelSyncOperations = async () => {
         for (const provider of providers.value) {
+          if (disposed) return;
           let operationId = '';
           try { operationId = localStorage.getItem(modelSyncStorageKey(provider.id)) || ''; } catch (e) { operationId = ''; }
           if (operationId) await loadModelSyncOperation(provider.id, operationId);
@@ -610,13 +767,24 @@
         return provider ? provider.name : `Provider #${providerId}`;
       };
       const loadPoolProviderModels = async () => {
-        await Promise.all(providers.value.map(async provider => {
+        const generation = providerEditorGeneration;
+        const requestId = ++poolCatalogRequestId;
+        const current = () => !disposed && generation === providerEditorGeneration && requestId === poolCatalogRequestId;
+        const results = await Promise.all(providers.value.map(async provider => {
+          poolCatalogErrors[provider.id] = '';
           try {
-            poolProviderModels[provider.id] = await aiApi(`/api/dashboard/ai/providers/${provider.id}/models`);
+            const data = await readCatalog(provider.id);
+            if (!current()) return false;
+            poolProviderModels[provider.id] = data;
+            return true;
           } catch (e) {
+            if (!current()) return false;
+            poolCatalogErrors[provider.id] = e.message || '完整目录读取失败';
             if (!poolProviderModels[provider.id]) poolProviderModels[provider.id] = { items: [] };
+            return false;
           }
         }));
+        return results.every(Boolean);
       };
       const poolProviderSummary = (rootPool) => {
         if (!rootPool) return '';
@@ -655,6 +823,7 @@
         const search = poolModelSearch.value.trim().toLowerCase();
         const items = [];
         providers.value.forEach(provider => {
+          if (poolCatalogErrors[provider.id]) return;
           if (poolProviderFilter.value && provider.id !== poolProviderFilter.value) return;
           const catalog = poolProviderModels[provider.id];
           (catalog && catalog.items ? catalog.items : []).forEach(model => {
@@ -665,6 +834,21 @@
         });
         return items;
       });
+      const poolPickerOptions = computed(() => availablePoolModels.value.map(model => ({
+        kind: 'model', provider_id: model.provider_id, provider_model_id: model.id, model_key: model.model_key,
+        label: model.display_name || model.model_key, provider_name: model.provider_name, availability: 'ready', reason: '',
+      })));
+      const choosePoolModel = option => {
+        if (!poolEditorReady.value || option.kind !== 'model') return;
+        const model = availablePoolModels.value.find(row => row.id === option.provider_model_id && row.provider_id === option.provider_id);
+        if (model) addPoolMember(model);
+      };
+      const memberAvailability = member => {
+        const model = poolProviderModels[member.provider_id]?.items.find(row => row.id === member.provider_model_id);
+        if (!model) return '目录中不可用（保留成员）';
+        if (!model.routable || member.enabled === false) return '已禁用或当前不可路由（保留成员）';
+        return '可路由';
+      };
       // 内部复位只供拥有编辑器的写操作使用；页面事件必须经过下面的入口守卫。
       const resetPoolEditor = (locate = false) => {
         poolEditRequestId += 1;
@@ -674,15 +858,20 @@
         poolLoadError.value = '';
         poolAttemptsLoading.value = false;
         poolError.value = '';
+        poolConflict.value = null;
+        poolConflictReadPending.value = false;
+        poolVersionUnknown.value = false;
         delete aiMessages['pool-form'];
         Object.assign(poolForm, { id: 0, name: '', description: '', pool_kind: 'custom', fallback_pool_id: null, enabled: false, original_enabled: false, version: 1, members: [], referenced_by_agents: [], referenced_by_pools: [] });
         poolAttempts.value = [];
         poolAttemptsError.value = '';
+        markPoolSaved();
         if (locate === true) focusEditor('pool-editor', 'pool-name');
       };
       const resetPoolForm = (locate = false) => {
-        if (poolWriting.value) return;
-        resetPoolEditor(locate);
+        if (disposed || poolWriting.value) return;
+        if (!poolDraftGuard.isDirty()) return resetPoolEditor(locate);
+        return poolDraftGuard.leave().then(leave => { if (leave && !disposed) resetPoolEditor(locate); });
       };
       const attemptStatusLabel = (attempt) => ATTEMPT_STATUS_LABELS[attempt.status] || attempt.status || '未知';
       const attemptStatusClass = (attempt) => {
@@ -707,6 +896,7 @@
       // 这个端点是只读的，但仍走 aiApi：失败原因要经 window.errorText 取，
       // 直接读 data.message 会把鉴权网关的 detail 形状显示成空白。
       const loadPoolAttempts = async (poolId) => {
+        if (disposed) return false;
         const id = Number(poolId || 0);
         const requestId = ++poolAttemptsRequestId;
         poolAttemptsError.value = '';
@@ -718,27 +908,35 @@
         poolAttemptsLoading.value = true;
         try {
           const attempts = await aiApi(`/api/dashboard/ai/model-pools/${id}/attempts?limit=20`);
-          if (requestId !== poolAttemptsRequestId) return;
+          if (disposed || requestId !== poolAttemptsRequestId) return false;
           poolAttempts.value = attempts || [];
+          return true;
         } catch (e) {
-          if (requestId !== poolAttemptsRequestId) return;
+          if (disposed || requestId !== poolAttemptsRequestId) return false;
           poolAttempts.value = [];
           poolAttemptsError.value = e.message || '读取尝试记录失败';
+          return false;
         } finally {
-          if (requestId === poolAttemptsRequestId) poolAttemptsLoading.value = false;
+          if (!disposed && requestId === poolAttemptsRequestId) poolAttemptsLoading.value = false;
         }
       };
 
       const loadModelPools = async () => {
+        if (disposed) return false;
         delete aiMessages['pool-list'];
         try {
-          modelPools.value = await aiApi('/api/dashboard/ai/model-pools');
+          const data = await aiApi('/api/dashboard/ai/model-pools');
+          if (disposed) return false;
+          modelPools.value = data;
+          return true;
         } catch (e) {
-          showAiMessage(e.message || '读取模型池失败', 'error', 'pool-list');
+          showAiMessage(e.message || '读取路由组失败', 'error', 'pool-list');
+          return false;
         }
       };
       // 私有读回保持原有 GET/代次逻辑；写操作传 false，不移动独立 Provider 表单的焦点。
       const readPoolEditor = async (pool, locate = true) => {
+        if (disposed) return false;
         const requestId = ++poolEditRequestId;
         selectedPoolId.value = Number(pool.id);
         poolLoadError.value = '';
@@ -755,7 +953,7 @@
         }
         try {
           const detail = await aiApi(`/api/dashboard/ai/model-pools/${pool.id}`);
-          if (requestId !== poolEditRequestId) return;
+          if (disposed || requestId !== poolEditRequestId) return false;
           Object.assign(poolForm, {
             id: detail.id,
             name: detail.name || '',
@@ -769,34 +967,69 @@
             referenced_by_agents: detail.referenced_by_agents || [],
             referenced_by_pools: detail.referenced_by_pools || []
           });
+          poolConflict.value = null;
+          poolConflictReadPending.value = false;
+          poolVersionUnknown.value = false;
+          markPoolSaved();
           poolLoading.value = false;
           if (locate) nextTick(() => {
             // 用户已离开标题（例如转去编辑 Provider）时，不抢回焦点。
-            if (requestId !== poolEditRequestId || document.activeElement?.id !== 'pool-editor-title') return;
+            if (disposed || requestId !== poolEditRequestId || document.activeElement?.id !== 'pool-editor-title') return;
             const field = document.getElementById('pool-name');
             if (field) field.focus({ preventScroll: true });
           });
           // 打开池就顺带拉最近尝试：改成员顺序前先看清上一轮谁成功、谁失败
-          await loadPoolAttempts(detail.id);
+          return await loadPoolAttempts(detail.id);
         } catch (e) {
-          if (requestId !== poolEditRequestId) return;
-          poolLoadError.value = e.message || '读取模型池失败';
+          if (disposed || requestId !== poolEditRequestId) return false;
+          poolLoadError.value = e.message || '读取路由组失败';
+          return false;
         } finally {
-          if (requestId === poolEditRequestId) poolLoading.value = false;
+          if (!disposed && requestId === poolEditRequestId) poolLoading.value = false;
         }
       };
       const editModelPool = (pool, locate = true) => {
-        if (poolWriting.value) return;
+        if (disposed || poolWriting.value) return;
+        if (poolDraftGuard.isDirty()) return poolDraftGuard.leave().then(leave => { if (leave && !disposed) return readPoolEditor(pool, locate); });
         return readPoolEditor(pool, locate);
       };
-      const retryModelPool = () => {
-        if (poolWriting.value || poolLoading.value || !selectedPoolId.value) return;
+      const readPoolConflict = async (poolId) => {
+        const requestId = ++poolEditRequestId;
+        poolLoading.value = true;
+        try {
+          const latest = await aiApi(`/api/dashboard/ai/model-pools/${poolId}`);
+          if (disposed || requestId !== poolEditRequestId) return;
+          poolConflict.value = clone(latest);
+          poolConflictReadPending.value = false;
+          poolLoadError.value = '';
+        } catch (e) {
+          if (!disposed && requestId === poolEditRequestId) poolLoadError.value = e.message;
+        } finally { if (!disposed && requestId === poolEditRequestId) poolLoading.value = false; }
+      };
+      const retryModelPool = async () => {
+        if (disposed || poolWriting.value || poolLoading.value || !selectedPoolId.value) return;
+        if (poolConflictReadPending.value) return readPoolConflict(selectedPoolId.value);
+        if (poolVersionUnknown.value) {
+          const requestId = ++poolEditRequestId;
+          poolLoading.value = true;
+          try {
+            const detail = await aiApi(`/api/dashboard/ai/model-pools/${selectedPoolId.value}`);
+            if (disposed || requestId !== poolEditRequestId) return;
+            poolForm.version = detail.version;
+            poolForm.original_enabled = detail.enabled === true;
+            poolVersionUnknown.value = false;
+            poolLoadError.value = '';
+          } catch (e) { if (!disposed && requestId === poolEditRequestId) poolLoadError.value = e.message; }
+          finally { if (!disposed && requestId === poolEditRequestId) poolLoading.value = false; }
+          return;
+        }
         return editModelPool({ id: selectedPoolId.value });
       };
       const addPoolMember = (model) => {
         if (!poolEditorReady.value) return;
+        if (poolForm.members.some(member => member.provider_model_id === model.id)) return;
         if (poolForm.members.length >= 64) {
-          poolError.value = '单个模型池最多包含 64 个成员';
+          poolError.value = '单个路由组最多包含 64 个成员';
           return;
         }
         poolForm.members.push({ provider_model_id: model.id, provider_id: model.provider_id, model_key: model.model_key, enabled: true });
@@ -809,38 +1042,51 @@
         if (!poolEditorReady.value) return;
         const target = index + direction;
         if (target < 0 || target >= poolForm.members.length) return;
-        const [member] = poolForm.members.splice(index, 1);
-        poolForm.members.splice(target, 0, member);
+        const member = poolForm.members[index];
+        poolForm.members = settings.moveItem(poolForm.members, index, target);
+        nextTick(() => {
+          if (!poolEditorReady.value) return;
+          const suffix = target === poolForm.members.length - 1 ? 'up' : 'down';
+          document.getElementById('pool-member-' + member.provider_model_id + '-' + suffix)?.focus({preventScroll: true});
+        });
       };
       // 成员顺序整份替换（不是增量位移）：候选顺序就是失败转移顺序，半份提交会错位
-      const replacePoolMembers = async (poolId, expectedVersion) => {
+      const replacePoolMembers = async (poolId, expectedVersion, members) => {
         const result = await aiApi(`/api/dashboard/ai/model-pools/${poolId}/members`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             expected_version: expectedVersion,
-            members: poolForm.members.map(member => ({ provider_model_id: member.provider_model_id, enabled: member.enabled !== false }))
+            members: members.map(member => ({ provider_model_id: member.provider_model_id, enabled: member.enabled !== false }))
           })
         });
         return result.version;
       };
       const saveModelPool = async () => {
-        if (poolWriting.value || !poolEditorReady.value || !poolForm.name || (poolForm.enabled && !poolForm.members.length)) return;
+        if (disposed || poolWriting.value || !poolEditorReady.value || !poolForm.name || (poolForm.enabled && !poolForm.members.length)) return false;
         poolWriteOperation.value = 'save';
         // 反馈代表本次保存，而不是历史记录；失败或冲突不能留着上次的成功。
         delete aiMessages['pool-form'];
         poolError.value = '';
         let poolId = poolForm.id;
+        const draft = clone(poolForm);
+        let writeConfirmed = false;
         try {
           if (!poolId) {
             const created = await aiApi('/api/dashboard/ai/model-pools', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: poolForm.name, description: poolForm.description, pool_kind: poolForm.pool_kind, fallback_pool_id: poolForm.fallback_pool_id, enabled: false })
+              body: JSON.stringify({ name: draft.name, description: draft.description, pool_kind: draft.pool_kind, fallback_pool_id: draft.fallback_pool_id, enabled: false })
             });
+            if (disposed) return false;
             poolId = created.id;
+            poolForm.id = poolId;
+            selectedPoolId.value = poolId;
+            poolVersionUnknown.value = true;
             const createdPool = await aiApi(`/api/dashboard/ai/model-pools/${poolId}`);
+            if (disposed) return false;
             poolForm.version = createdPool.version;
+            poolVersionUnknown.value = false;
           } else {
             const metadataPatch = { expected_version: poolForm.version, name: poolForm.name, description: poolForm.description, pool_kind: poolForm.pool_kind, fallback_pool_id: poolForm.fallback_pool_id };
             if (poolForm.original_enabled && !poolForm.enabled) metadataPatch.enabled = false;
@@ -849,100 +1095,197 @@
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(metadataPatch)
             });
+            if (disposed) return false;
             poolForm.version = updated.version;
           }
-          poolForm.version = await replacePoolMembers(poolId, poolForm.version);
+          const version = await replacePoolMembers(poolId, poolForm.version, draft.members);
+          if (disposed) return false;
+          poolForm.version = version;
           if (poolForm.enabled && !poolForm.original_enabled) {
             const enabled = await aiApi(`/api/dashboard/ai/model-pools/${poolId}`, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ expected_version: poolForm.version, enabled: poolForm.enabled })
             });
+            if (disposed) return false;
             poolForm.version = enabled.version;
           }
-          await loadModelPools();
-          await readPoolEditor({ id: poolId }, false);
-          showAiMessage('模型池已保存', 'success', 'pool-form');
+          writeConfirmed = true;
+          poolForm.original_enabled = poolForm.enabled;
+          markPoolSaved();
+          const listed = await loadModelPools();
+          if (disposed) return true;
+          const loaded = await readPoolEditor({ id: poolId }, false);
+          if (disposed) return true;
+          showAiMessage(listed && loaded ? '路由组已保存' : '路由组已保存；读回失败，请只刷新，不要重放写入', listed && loaded ? 'success' : 'warning', 'pool-form');
+          return true;
         } catch (e) {
+          if (disposed) return writeConfirmed;
           if (e.status === 409 && poolId) {
+            selectedPoolId.value = poolId;
+            poolConflictReadPending.value = true;
             await loadModelPools();
-            await readPoolEditor({ id: poolId }, false);
-            poolError.value = '模型池版本冲突，已重新加载服务端数据';
+            if (disposed) return false;
+            await readPoolConflict(poolId);
+            if (disposed) return false;
+            poolError.value = '路由组版本冲突；保留了你的草稿，请明确加载服务端版本或审阅后重新应用';
           } else {
-            poolError.value = e.message || '模型池保存失败';
+            poolError.value = e.message || '路由组保存失败';
+            if (poolVersionUnknown.value) poolLoadError.value = '路由组已创建，版本读取失败；请重试读取，不要重复创建';
           }
+          return false;
         } finally {
-          poolWriteOperation.value = '';
+          if (!disposed) poolWriteOperation.value = '';
         }
+      };
+      const reviewPoolChanges = () => {
+        if (disposed || poolWriting.value || !poolConflict.value) return;
+        poolForm.version = poolConflict.value.version;
+        poolForm.original_enabled = poolConflict.value.enabled === true;
+        poolConflict.value = null;
+        poolLoadError.value = '';
+        poolError.value = '已审阅服务端版本；你的草稿仍保留，点击保存才会重新应用';
+      };
+      const reloadPoolConflict = () => {
+        if (disposed || poolWriting.value || !poolConflict.value) return;
+        return readPoolEditor({id: poolConflict.value.id}, false);
       };
       const deleteModelPool = async (pool) => {
         // 不与已有写操作或尚未确定编辑对象的 GET 争用同一份快照。
-        if (poolWriting.value || poolLoading.value) return;
-        if (!confirm(`确认删除模型池“${pool.name}”？`)) return;
+        if (disposed || poolWriting.value || poolLoading.value) return;
+        if (!confirm(`确认删除路由组“${pool.name}”？`)) return;
         poolWriteOperation.value = 'delete';
         try {
           await aiApi(`/api/dashboard/ai/model-pools/${pool.id}`, { method: 'DELETE' });
+          if (disposed) return;
           if (poolForm.id === pool.id) resetPoolEditor();
           await loadModelPools();
-          showAiMessage('模型池已删除', 'success', 'pool-list');
+          showAiMessage('路由组已删除', 'success', 'pool-list');
         } catch (e) {
-          showAiMessage(e.message || '模型池删除失败', 'error', 'pool-list');
+          showAiMessage(e.message || '路由组删除失败', 'error', 'pool-list');
         } finally {
-          poolWriteOperation.value = '';
+          if (!disposed) poolWriteOperation.value = '';
         }
       };
       const loadProviders = async () => {
+        if (disposed) return false;
+        const requestId = ++providersRequestId;
+        const current = () => !disposed && requestId === providersRequestId;
+        providersLoading.value = true;
+        providerLoadError.value = '';
         delete aiMessages['provider-list'];
         try {
-          providers.value = await aiApi('/api/dashboard/ai/providers');
+          const data = await aiApi('/api/dashboard/ai/providers');
+          if (!current()) return false;
+          if (!Array.isArray(data)) throw new Error('Provider 列表响应不完整');
+          providers.value = data;
+          providersLoaded.value = true;
+          const refreshed = await Promise.all([
+            ...providers.value.map(provider => loadProviderModels(provider.id)),
+            loadPoolProviderModels()
+          ]);
+          if (!current()) return false;
+          recoverModelSyncOperations();
+          return current() && refreshed.every(Boolean);
         } catch (e) {
+          if (!current()) return false;
+          providerLoadError.value = e.message || '读取 Provider 失败';
           showAiMessage(e.message || '读取 Provider 失败', 'error', 'provider-list');
-          return;
+          return false;
+        } finally {
+          if (current()) providersLoading.value = false;
         }
-        // 目录与池候选各要一份 provider 模型列表；老页面在 onMounted 里重复拉了两遍，
-        // 这里保留两个用途但只在本页加载（其它设置分页不再无条件触发）。
-        await Promise.all([
-          ...providers.value.map(provider => loadProviderModels(provider.id)),
-          loadPoolProviderModels()
-        ]);
-        await recoverModelSyncOperations();
       };
-      const resetProviderForm = () => {
+      const connectionIdentity = () => JSON.stringify([providerForm.id, providerForm.provider_type, providerForm.base_url, providerForm.proxy]);
+      let probeConnectionIdentity = connectionIdentity();
+      const invalidateProbe = () => {
+        probeRequestId++;
+        probeConnectionIdentity = connectionIdentity();
+        probedModels.value = [];
+        probeStatus.value = '';
+        probeRetryWithV1.value = '';
+      };
+      let probeRequestId = 0;
+      const touchProvider = key => {
+        if (providerFields.includes(key)) providerTouched.add(key);
+        if (['provider_type', 'base_url', 'proxy', 'api_key'].includes(key)) invalidateProbe();
+      };
+      watch(connectionIdentity, identity => { if (identity !== probeConnectionIdentity) invalidateProbe(); });
+      const initializeProvider = (provider = {}, copy = false) => {
+        providerEditorGeneration++;
+        onboarding?.dispose(); onboarding = null;
+        onboardingState.value = {phase: 'idle', pending: false, providerId: null, operationId: null, selectedKeys: [], revision: null, missing: [], error: ''};
+        Object.keys(providerForm).forEach(key => { if (key !== 'id' && !providerFields.includes(key)) delete providerForm[key]; });
+        Object.assign(providerForm, providerInitial(provider, copy));
+        providerOriginal = clone(providerForm);
+        providerTouched.clear();
+        providerSave.warnings = [];
+        invalidateProbe();
+        baseUrlHint.value = '';
         delete aiMessages['provider-form'];
-        Object.assign(providerForm, { id: 0, name: '', provider_type: 'openai_compatible', base_url: '', default_model: '', api_key: '', timeout_seconds: 120, max_retries: 2, context_window: 128000, stream_enabled: true, enabled: true });
+        if (copy) {
+          const copied = clone(providerForm);
+          Object.assign(providerForm, providerInitial());
+          providerDraftGuard.markSaved();
+          Object.assign(providerForm, copied);
+          providerOriginal = providerInitial();
+        } else providerDraftGuard.markSaved();
+      };
+      const resetProviderForm = async () => {
+        if (disposed || providerSaving.value || onboardingState.value.pending) return false;
+        if (!await providerDraftGuard.leave()) return false;
+        if (disposed) return false;
+        initializeProvider();
+        return true;
       };
       const lintBaseUrl = () => {
         const url = (providerForm.base_url || '').trim();
         baseUrlHint.value = '';
-        if (!url) return;
+        if (!url) return true;
         // 与运行时同一条规则：非回环主机必须 https（ai/providers.py:validate_base_url）
         const loopback = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(url);
         if (url.startsWith('http://') && !loopback) {
           baseUrlHint.value = 'base_url 必须使用 https（本机回环地址除外）——保存后所有调用都会失败';
         }
-        if (!providerForm.name) {
-          try { providerForm.name = new URL(url).host; } catch (e) {}
+        try {
+          const parsed = new URL(url);
+          if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) baseUrlHint.value = '请填写无内嵌凭据的 HTTP(S) 地址';
+        } catch (e) { baseUrlHint.value = 'base_url 不是有效的 URL'; }
+        return !baseUrlHint.value;
+      };
+      const checkProviderForm = (report = true) => {
+        let error = '';
+        if (!lintBaseUrl()) error = baseUrlHint.value;
+        if (!String(providerForm.name).trim()) error = '请填写 Provider 名称';
+        if (!['openai_compatible', 'anthropic', 'xai'].includes(providerForm.provider_type)) error = '不支持的协议';
+        for (const [key, min] of [['timeout_seconds', 1], ['max_retries', 0], ['context_window', 1]]) {
+          if (!Number.isSafeInteger(providerForm[key]) || providerForm[key] < min) error = key + ' 必须是有效整数';
         }
+        if (typeof providerForm.enabled !== 'boolean' || typeof providerForm.stream_enabled !== 'boolean') error = '启用与流式开关必须为布尔值';
+        if (providerForm.proxy !== null && typeof providerForm.proxy !== 'string') error = '代理必须为地址或空值';
+        if (report || error) showAiMessage(error || '本地格式检查通过；未发出网络请求，不代表连接或容量验证成功', error ? 'error' : 'success');
+        return !error;
       };
-      const copyFromProvider = (provider) => {
-        Object.assign(providerForm, {
-          id: 0,
-          name: provider.name || '',
-          provider_type: provider.provider_type || 'openai_compatible',
-          base_url: provider.base_url || '',
-          default_model: provider.default_model || '',
-          api_key: '',
-          timeout_seconds: provider.timeout_seconds || 120,
-          max_retries: provider.max_retries || 2,
-          context_window: provider.context_window || 128000,
-          stream_enabled: provider.stream_enabled !== false,
-          enabled: provider.enabled !== false,
-        });
-        baseUrlHint.value = '';
-        delete aiMessages['provider-form'];
+      const copyFromProvider = async (provider) => {
+        if (disposed || providerSaving.value || !await providerDraftGuard.leave()) return false;
+        if (disposed) return false;
+        initializeProvider(provider, true);
+        // A copied provider is still an unsaved create, unlike an existing editor.
+        providerOriginal = providerInitial();
         focusEditor('provider-editor', 'provider-name');
+        return true;
       };
+      function providerInitial(provider = {}, copy = false) { return {
+        id: copy ? 0 : (provider.id ?? 0), name: provider.name ?? '',
+        provider_type: provider.provider_type ?? 'openai_compatible', base_url: provider.base_url ?? '',
+        default_model: provider.default_model ?? '', api_key: '', timeout_seconds: provider.timeout_seconds ?? 120,
+        max_retries: provider.max_retries ?? 2, context_window: provider.context_window ?? 128000,
+        stream_enabled: provider.stream_enabled ?? true, enabled: provider.enabled ?? true, proxy: provider.proxy ?? null,
+      }; }
       async function probeModels() {
+        if (disposed || providerSaving.value) return;
+        const requestId = ++probeRequestId, generation = providerEditorGeneration, identity = connectionIdentity();
+        const current = () => !disposed && requestId === probeRequestId && generation === providerEditorGeneration && identity === connectionIdentity();
         probeStatus.value = '探测中…';
         probedModels.value = [];
         probeRetryWithV1.value = '';
@@ -955,11 +1298,14 @@
               provider_type: providerForm.provider_type,
               base_url: providerForm.base_url,
               api_key: providerForm.api_key || undefined,
+              proxy: providerForm.proxy,
             }),
           });
-          probedModels.value = data.items.map(item => ({ ...item, checked: item.suggested }));
+          if (!current()) return;
+          probedModels.value = data.items.map(item => ({ ...item, checked: false }));
           probeStatus.value = `通，${data.latency_ms}ms，找到 ${data.items.length} 个`;
         } catch (e) {
+          if (!current()) return;
           probeStatus.value = window.errorText ? e.message : String(e);
           const url = (providerForm.base_url || '').replace(/\/+$/, '');
           if (url && !/\/v1$/.test(url) && /404|not found|路径/i.test(e.message || '')) {
@@ -969,7 +1315,7 @@
       }
       function applyV1Suggestion() {
         providerForm.base_url = probeRetryWithV1.value + '/v1';
-        probeRetryWithV1.value = '';
+        touchProvider('base_url');
         probeModels();
       }
       async function toggleModelEnabled(providerId, model) {
@@ -979,30 +1325,112 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ enabled: !model.enabled }),
           });
-          await loadProviderModels(providerId);
+          if (disposed) return;
+          const refreshed = await loadProviderModels(providerId);
+          if (!refreshed) showAiMessage('启用状态已保存；目录刷新失败，请只刷新目录', 'warning', 'provider-' + providerId);
+          if (disposed) return;
           await loadAiHealth();
         } catch (e) { showAiMessage(e.message, 'error', 'provider-' + providerId); }
       }
-      const editProvider = (provider) => {
-        Object.assign(providerForm, { id: provider.id, name: provider.name || '', provider_type: provider.provider_type || 'openai_compatible', base_url: provider.base_url || '', default_model: provider.default_model || '', api_key: '', timeout_seconds: provider.timeout_seconds || 120, max_retries: provider.max_retries || 2, context_window: provider.context_window || 128000, stream_enabled: provider.stream_enabled !== false, enabled: provider.enabled !== false });
-        delete aiMessages['provider-form'];
+      const editProvider = async (provider) => {
+        if (disposed || providerSaving.value || !await providerDraftGuard.leave()) return false;
+        if (disposed) return false;
+        initializeProvider(provider);
         focusEditor('provider-editor', 'provider-name');
+        return true;
       };
-      const saveProvider = async () => {
-        try {
-          const payload = { ...providerForm };
-          const id = payload.id;
-          delete payload.id;
-          const saved = await aiApi(id ? '/api/dashboard/ai/providers/' + id : '/api/dashboard/ai/providers', { method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-          await loadProviders(); resetProviderForm();
-          const warnings = (saved && saved.warnings) || [];
-          if (warnings.length) {
-            showAiMessage(warnings.map((item) => item.message).join('；'), 'warning');
-          } else {
-            showAiMessage('Provider 已保存');
+      const onboardingMessage = computed(() => ({
+        saving: '正在保存 Provider', saved: 'Provider 已保存', saved_only: 'Provider 已保存；未选择模型，未同步或批量启用',
+        syncing: 'Provider 已保存，正在同步已保存目录', awaiting_empty_confirmation: 'Provider 已保存；等待明确确认或取消空目录',
+        selection_unavailable: 'Provider 已保存；目录没有可应用的发现记录，选择尚未应用',
+        applied: 'Provider 与初始模型选择已保存', sync_failed: 'Provider 已保存；同步失败，选择尚未应用',
+        apply_failed: 'Provider 已保存；选择写入未确认，重试前必须刷新并确认', conflict: '目录版本冲突；选择尚未确认，需刷新并重新确认',
+        confirm_revision: '已读取最新完整目录；请确认使用该版本重新应用选择',
+        create_unconfirmed: '创建未确认。请刷新 Provider 列表，检查是否已创建；不要重复保存', save_failed: 'Provider 保存失败',
+      }[onboardingState.value.phase] || ''));
+      const newOnboarding = (generation, savedForm) => window.AIProviderOnboarding.createOnboarding({
+        request: async (url, options) => {
+          const data = await aiApi(url, options);
+          if (!disposed && generation === providerEditorGeneration && /^\/api\/dashboard\/ai\/providers(?:\/\d+)?$/.test(url)) {
+            providerSave.warnings = Array.isArray(data?.warnings) ? data.warnings.map(item => String(item.message || 'Provider 配置警告')) : [];
           }
-        } catch (e) { showAiMessage(e.message, 'error'); }
+          return data;
+        }, readCatalog,
+        waitForSync: async (providerId, operationId) => {
+          if (disposed || generation !== providerEditorGeneration) return;
+          const prior = modelSyncOperations[providerId];
+          if (prior?.operation_id === operationId && ['succeeded', 'cancelled', 'failed', 'needs_empty_confirmation'].includes(prior.status)) return prior;
+          const epoch = adoptSync(providerId, operationId);
+          const current = () => generation === providerEditorGeneration && ownsSync(providerId, operationId, epoch);
+          try { localStorage.setItem(modelSyncStorageKey(providerId), operationId); } catch (e) { /* storage unavailable */ }
+          return consumeModelSyncEvents(providerId, operationId, current);
+        },
+        onChange: state => {
+          if (disposed || generation !== providerEditorGeneration) return;
+          onboardingState.value = state;
+          if (state.providerId && state.phase === 'saved') {
+            providerForm.id = state.providerId; providerForm.api_key = '';
+            probeConnectionIdentity = connectionIdentity();
+            providerOriginal = {...savedForm, id: state.providerId, api_key: ''};
+          }
+          if (state.error) showAiMessage(state.error, 'error');
+        },
+      });
+      const finishProviderSave = async (generation) => {
+        if (disposed || generation !== providerEditorGeneration) return false;
+        if (!['saved_only', 'applied'].includes(onboardingState.value.phase)) return false;
+        const unchanged = JSON.stringify(providerForm) === JSON.stringify(providerOriginal)
+          && JSON.stringify(probedModels.value.filter(item => item.checked).map(item => item.model_key)) === JSON.stringify(onboardingState.value.selectedKeys);
+        if (unchanged) {
+          providerTouched.clear();
+          providerDraftGuard.markSaved();
+        }
+        const refreshed = await loadProviders();
+        if (disposed || generation !== providerEditorGeneration) return false;
+        const message = onboardingMessage.value + (!unchanged ? '；还有之后修改的草稿尚未保存' : '')
+          + (!refreshed ? '；保存已确认，但列表刷新失败，请只刷新列表' : '')
+          + (providerSave.warnings.length ? '；' + providerSave.warnings.join('；') : '');
+        showAiMessage(message, refreshed && unchanged && !providerSave.warnings.length ? 'success' : 'warning');
+        return unchanged;
       };
+      const saveProvider = () => {
+        if (providerSavePromise) return providerSavePromise;
+        if (disposed || !checkProviderForm(false)) return Promise.resolve(false);
+        if (onboarding && !['idle', 'save_failed', 'saved_only', 'applied'].includes(onboardingState.value.phase)) return Promise.resolve(false);
+        providerSave.warnings = [];
+        const generation = providerEditorGeneration;
+        const selectedKeys = probedModels.value.filter(item => item.checked).map(item => item.model_key);
+        const fields = providerForm.id ? [...providerTouched] : providerFields;
+        const payload = providerForm.id ? settings.touchedPatch(providerOriginal, providerForm, fields)
+          : Object.fromEntries(providerFields.map(key => [key, providerForm[key]]));
+        if (providerForm.id && !payload.api_key) delete payload.api_key;
+        if (providerForm.id && !Object.keys(payload).length && ['saved_only', 'applied'].includes(onboardingState.value.phase)
+            && JSON.stringify(selectedKeys) === JSON.stringify(onboardingState.value.selectedKeys)) return Promise.resolve(true);
+        if (!onboarding || ['idle', 'save_failed', 'saved_only', 'applied'].includes(onboardingState.value.phase)) {
+          onboarding?.dispose(); onboarding = newOnboarding(generation, {...providerForm, api_key: ''});
+        }
+        providerSaving.value = true;
+        delete aiMessages['provider-form'];
+        providerSavePromise = (async () => {
+          await onboarding.save({id: providerForm.id, ...payload}, selectedKeys);
+          return await finishProviderSave(generation);
+        })().catch(e => { showAiMessage(e.message, 'error'); return false; }).finally(() => {
+          providerSavePromise = null;
+          if (!disposed && generation === providerEditorGeneration) providerSaving.value = false;
+        });
+        return providerSavePromise;
+      };
+      const continueOnboarding = (method) => {
+        if (providerSavePromise) return providerSavePromise;
+        if (disposed || !onboarding) return Promise.resolve(false);
+        const generation = providerEditorGeneration;
+        providerSaving.value = true;
+        providerSavePromise = (async () => { await onboarding[method](); return finishProviderSave(generation); })()
+          .finally(() => { providerSavePromise = null; if (!disposed && generation === providerEditorGeneration) providerSaving.value = false; });
+        return providerSavePromise;
+      };
+      const retryOnboarding = () => continueOnboarding('retry');
+      const confirmOnboardingRevision = () => continueOnboarding('confirmRevision');
       const deleteProvider = async (id) => {
         const bound = providerHealth(id)?.bound_agent_count || 0;
         const hint = bound ? `有 ${bound} 个 Agent 绑在这里，删除后它们会失去模型。` : '没有 Agent 绑在这里。';
@@ -1011,15 +1439,88 @@
         catch (e) { showAiMessage(e.message, 'error', 'provider-' + id); }
       };
       const testProvider = async (id) => {
+        if (disposed) return;
         testingProviderId.value = id;
         providerTestStatus[id] = { type: 'warning', text: '测试中，请稍候…' };
         try {
           const data = await aiApi('/api/dashboard/ai/providers/' + id + '/test', { method: 'POST' });
-          providerTestStatus[id] = { type: 'success', text: '测试成功：' + (data.text || 'OK') };
+          if (disposed) return;
+          providerTestStatus[id] = { type: 'success', text: `短生成成功：${data.model || '未报告模型'} · ${data.latency_ms ?? '未知'} ms · ${data.text || 'OK'}（不是上下文窗口验证）` };
         } catch (e) {
           providerTestStatus[id] = { type: 'error', text: '测试失败：' + e.message };
-        } finally { testingProviderId.value = 0; }
+        } finally { if (!disposed) testingProviderId.value = 0; }
       };
+
+      const providerNotFound = computed(() => workspace.invalidProvider !== null ||
+        (providersLoaded.value && workspace.providerId !== null && !providers.value.some(provider => provider.id === workspace.providerId)));
+      const visibleProviders = computed(() => providerNotFound.value ? [] : providers.value.filter(provider => workspace.providerId === null || provider.id === workspace.providerId));
+      const groupContainsProvider = (root) => {
+        const seen = new Set();
+        let group = root;
+        while (group && !seen.has(group.id) && seen.size < 8) {
+          seen.add(group.id);
+          if ((group.members || []).some(member => member.provider_id === workspace.providerId)) return true;
+          group = modelPools.value.find(item => item.id === group.fallback_pool_id);
+        }
+        return false;
+      };
+      const visibleModelPools = computed(() => providerNotFound.value ? [] : modelPools.value.filter(group => workspace.providerId === null || groupContainsProvider(group)));
+      const workspaceHref = patch => '/dashboard/settings/models' + settings.workspaceSearch(window.location.search, patch);
+      const confirmDraft = area => new Promise(resolve => { draftConfirmation.value = area; draftResolve = resolve; });
+      const resolveDraft = action => {
+        const resolve = draftResolve;
+        draftResolve = null; draftConfirmation.value = '';
+        if (resolve) resolve(action);
+      };
+      const unappliedSelection = () => onboardingState.value.selectedKeys.length > 0 &&
+        !['idle', 'saved_only', 'applied'].includes(onboardingState.value.phase);
+      const providerDraftGuard = settings.createDraftGuard({
+        read: () => ({form: clone(providerForm), selection: probedModels.value.filter(item => item.checked).map(item => item.model_key), unapplied: unappliedSelection()}),
+        save: () => saveProvider(), discard: () => initializeProvider(providerOriginal), confirm: () => confirmDraft('provider'),
+      });
+      const poolDraft = () => ({id: poolForm.id, name: poolForm.name, description: poolForm.description, pool_kind: poolForm.pool_kind,
+        fallback_pool_id: poolForm.fallback_pool_id, enabled: poolForm.enabled,
+        members: poolForm.members.map(member => ({provider_model_id: member.provider_model_id, provider_id: member.provider_id, model_key: member.model_key, enabled: member.enabled}))});
+      let poolSavedDraft = clone(poolForm);
+      const poolDraftGuard = settings.createDraftGuard({
+        read: poolDraft, save: () => saveModelPool(),
+        discard: () => { Object.assign(poolForm, clone(poolSavedDraft)); poolConflict.value = null; poolError.value = ''; },
+        confirm: () => confirmDraft('pool'),
+      });
+      function markPoolSaved() { poolSavedDraft = clone(poolForm); poolDraftGuard.markSaved(); }
+      const navigateWorkspace = async patch => {
+        if (disposed) return false;
+        if (poolWriting.value || providerSaving.value || onboardingState.value.pending) {
+          showAiMessage('写入尚未完成，请等待确认后再切换工作区', 'warning', poolWriting.value ? 'pool-form' : 'provider-form');
+          return false;
+        }
+        try {
+          if (!await providerDraftGuard.leave() || !await poolDraftGuard.leave() || disposed) return false;
+          window.location.assign(workspaceHref(patch));
+          return true;
+        } catch (error) { showAiMessage(error.message || '保存失败，编辑仍保留', 'error'); return false; }
+      };
+      const beforeUnload = event => {
+        if (!providerDraftGuard.isDirty() && !poolDraftGuard.isDirty() && !unappliedSelection()) return;
+        event.preventDefault(); event.returnValue = '';
+      };
+      let unloadAttached = false;
+      const syncUnloadGuard = () => {
+        const dirty = !disposed && (providerDraftGuard.isDirty() || poolDraftGuard.isDirty() || unappliedSelection());
+        if (dirty === unloadAttached) return;
+        unloadAttached = dirty;
+        window[dirty ? 'addEventListener' : 'removeEventListener']('beforeunload', beforeUnload);
+      };
+      watch(() => [JSON.stringify(providerForm), JSON.stringify(probedModels.value), JSON.stringify(poolDraft()),
+        onboardingState.value.phase, providerSaving.value, poolWriting.value], syncUnloadGuard);
+      onUnmounted(() => {
+        disposed = true; providerEditorGeneration++; probeRequestId++; poolEditRequestId++; poolAttemptsRequestId++; editorFocusId++;
+        onboarding?.dispose();
+        syncReaders.forEach(entry => entry.controller.abort());
+        providerForm.api_key = '';
+        resolveDraft('cancel');
+        window.removeEventListener('beforeunload', beforeUnload);
+      });
 
       onMounted(() => {
         loadProviders();
@@ -1028,13 +1529,20 @@
       });
 
       return {
+        providersLoaded, providersLoading, providerLoadError, modelCatalogLoading, modelCatalogErrors,
+        poolCatalogErrors, loadPoolProviderModels, modelOutputWriting,
+        workspace, workspaceHref, navigateWorkspace, providerNotFound, visibleProviders, visibleModelPools,
+        draftConfirmation, resolveDraft, providerSaving, onboardingState, onboardingMessage, retryOnboarding, confirmOnboardingRevision,
+        touchProvider, checkProviderForm, readCatalog, modelOutputForm, saveModelOutput, resetModelOutput,
         providers, testingProviderId, providerTestStatus, providerModels, modelSearch,
-        modelCatalogExpanded, manualModelForms, modelSyncOperations, emptyConfirmations,
+        modelCatalogExpanded, manualModelForms, manualModelSaving, modelSyncOperations, emptyConfirmations,
+        modelSyncActions,
         modelCatalog, modelSyncBusy, loadProviderModels, loadModelSyncOperation,
         manualModelForm, createManualModel, deleteManualModel,
         syncProviderModels, cancelModelSync, confirmEmptyCatalog, recoverModelSyncOperations,
         modelPools, poolProviderFilter, poolModelSearch, poolSaving, poolWriting, poolLoading, poolError, poolForm,
         selectedPoolId, poolLoadError, poolEditorReady, retryModelPool,
+        poolConflict, reviewPoolChanges, reloadPoolConflict, poolPickerOptions, choosePoolModel, memberAvailability,
         poolAttempts, poolAttemptsError, poolAttemptsLoading,
         attemptStatusLabel, attemptStatusClass, attemptLatency, formatAttemptTime, loadPoolAttempts,
         availablePoolModels, providerName, poolProviderSummary, poolCandidateCount,

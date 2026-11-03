@@ -5,9 +5,13 @@ from pathlib import Path
 
 # 设置页已拆成四个一级页面：Provider / 模型目录 / 模型池在 models 页，
 # Agent 绑定（binding_type、required_capabilities）在 agents 页。
-TEMPLATE = Path(
+PAGE_TEMPLATE = Path(
     "src/pixiv_novel_sync/templates/dashboard_settings_models.html"
 ).read_text(encoding="utf-8")
+CATALOG_TEMPLATE = Path(
+    "src/pixiv_novel_sync/templates/dashboard_ai_model_catalog.html"
+).read_text(encoding="utf-8")
+TEMPLATE = PAGE_TEMPLATE + CATALOG_TEMPLATE
 AGENTS_TEMPLATE = Path(
     "src/pixiv_novel_sync/templates/dashboard_settings_agents.html"
 ).read_text(encoding="utf-8")
@@ -221,8 +225,43 @@ def test_provider_form_collapses_advanced_fields_and_probes_before_save():
         assert text in TEMPLATE
     # /v1 建议是一键按钮，不是静默改写
     assert "试试" in TEMPLATE and "/v1" in TEMPLATE
-    # 探测结果是只读预览（T2-60）：勾选写目录的交互已删，防止误导成已保存
-    assert "toggleProbedModel" not in TEMPLATE
+    # Preview choices are explicit; only the separate persisted sync/CAS flow applies them.
+    assert 'v-model="model.checked"' in TEMPLATE
+    assert "checked: false" in TEMPLATE
+    assert "checked: item.suggested" not in TEMPLATE
+    assert "AIProviderOnboarding.createOnboarding" in TEMPLATE
+    assert "未保存的探测预览" in TEMPLATE
+
+
+def test_models_workspace_moves_one_catalogue_and_preserves_old_paths():
+    assert PAGE_TEMPLATE.count("include 'dashboard_ai_model_catalog.html'") == 1
+    assert 'v-for="model in modelCatalog(provider).items"' not in PAGE_TEMPLATE
+    for view in ("providers", "models", "groups"):
+        assert f'v-if="workspace.view === \'{view}\'"' in PAGE_TEMPLATE
+    assert "'/dashboard/settings/models'" in PAGE_TEMPLATE
+    assert "window.location.assign(workspaceHref(patch))" in PAGE_TEMPLATE
+    assert "providerNotFound" in PAGE_TEMPLATE
+    assert "route-group" not in PAGE_TEMPLATE, "Do not rename integer model-pool API identities"
+
+
+def test_shared_picker_scripts_are_unversioned_and_precede_the_real_setup():
+    controls = Path("src/pixiv_novel_sync/templates/dashboard_ai_controls.html").read_text(encoding="utf-8")
+    assert controls.index("ai_settings.js") < controls.index("ai_picker.js")
+    assert "?v=" not in controls
+    assert PAGE_TEMPLATE.index("include 'dashboard_ai_controls.html'") < PAGE_TEMPLATE.index("ai_provider_onboarding.js") < PAGE_TEMPLATE.index("initVueApp({")
+    picker = Path("src/pixiv_novel_sync/static/js/ai_picker.js").read_text(encoding="utf-8")
+    assert "v-html" not in picker and "autofocus" not in picker
+    assert "app-modal" in picker and "previous(app)" in picker
+    assert "model_key" in picker and "provider_name" in picker
+
+
+def test_output_overrides_and_catalogue_declarations_are_explicit():
+    for field in ("manual_max_output_tokens", "discovered_max_output_tokens", "model.max_output_tokens"):
+        assert field in CATALOG_TEMPLATE
+    assert "parseNullableOutput" in PAGE_TEMPLATE
+    assert "writeModelOutput(providerId, model, null)" in PAGE_TEMPLATE
+    assert "目录声明" in CATALOG_TEMPLATE
+    assert "不是上下文窗口验证" in PAGE_TEMPLATE
 
 
 def test_model_catalog_rows_can_toggle_enabled():

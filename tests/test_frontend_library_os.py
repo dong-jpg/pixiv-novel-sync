@@ -454,7 +454,12 @@ def test_shared_time_and_toast_helpers_exist():
         "dashboard_follows.html",
         "dashboard_settings_models.html",
     ):
-        assert "formatDbTime(" in read(TEMPLATES / name)
+        page = read(TEMPLATES / name)
+        if name == "dashboard_settings_models.html":
+            include = "{% include 'dashboard_ai_model_catalog.html' %}"
+            assert include in page
+            page = page.replace(include, read(TEMPLATES / "dashboard_ai_model_catalog.html"))
+        assert "formatDbTime(" in page
 
 
 def test_dashboard_header_is_a_rounded_library_card_not_a_square_sticky_bar():

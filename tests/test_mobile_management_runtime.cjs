@@ -3,119 +3,10 @@
  * There is no browser, server, provider, credential or real mutation here.
  */
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const templates = path.resolve(__dirname, '../src/pixiv_novel_sync/templates');
-const source = name => fs.readFileSync(path.join(templates, name), 'utf8');
-const base = source('base.html');
-const FAKE_TOKEN = 'FAKE-TASK5-TOKEN-NOT-A-CREDENTIAL';
-const response = (data, status = 200) => ({
-  ok: status >= 200 && status < 300, status, json: async () => data,
-});
-const envelope = data => response({ok: true, data});
-const pendingPage = (page, id = page) => response({
-  items: [{id, item_id: id, item_type: 'novel', title: `Fixture ${id}`}],
-  page, total_pages: 8, total: 141,
-});
-const deferred = () => {
-  let resolve, reject;
-  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
-  return {promise, resolve, reject};
-};
-const plain = value => JSON.parse(JSON.stringify(value));
-const flush = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
-
-function mount(name, search = '') {
-  const html = source(name);
-  const calls = [], historyWrites = [], domCalls = [], clipboardWrites = [];
-  const mounted = [], unmounted = [], timers = new Map(), storageWrites = [];
-  const stored = new Map();
-  let state, clock = 0, timerId = 0;
-  let handleRequest = (url, options) => {
-    throw new Error(`Unexpected fake request: ${options.method || 'GET'} ${url}`);
-  };
-  const location = {pathname: '/dashboard/pending-deletions', search};
-  const history = {replaceState(_state, _title, next) {
-    const url = new URL(next, 'https://management.test.invalid');
-    historyWrites.push(next);
-    location.pathname = url.pathname;
-    location.search = url.search;
-  }};
-  const dispatch = (via, url, options = {}) => {
-    assert.match(url, /^\/api\//, 'VM transport accepts only fixture API paths');
-    const request = {via, url, method: (options.method || 'GET').toUpperCase(), options};
-    calls.push(request);
-    return handleRequest(url, options, request);
-  };
-  const document = {activeElement: null, getElementById: id => elements.get(id) || null};
-  const elements = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => [id, {
-    id,
-    focus(options) { document.activeElement = this; domCalls.push({id, method: 'focus', options}); },
-    scrollIntoView(options) { domCalls.push({id, method: 'scrollIntoView', options}); },
-    select() { domCalls.push({id, method: 'select'}); },
-    setSelectionRange(start, end) { domCalls.push({id, method: 'setSelectionRange', start, end}); },
-  }]));
-  const navigator = {clipboard: {writeText: async value => { clipboardWrites.push(value); }}};
-  const window = {
-    location, history, navigator, confirm: () => false,
-    csrfFetch: (url, options) => dispatch('csrfFetch', url, options),
-    toast() { throw new Error('Management feedback must not depend on a toast'); },
-  };
-  const localStorage = {
-    getItem: key => stored.get(key) || null,
-    setItem(key, value) { storageWrites.push([key, value]); stored.set(key, value); },
-    removeItem: key => stored.delete(key),
-  };
-  const context = vm.createContext({
-    window, document, navigator, location, history, localStorage, URL, URLSearchParams,
-    TextDecoder, Uint8Array, AbortController,
-    console: {log() {}, warn() {}, error() {}},
-    confirm: text => window.confirm(text),
-    fetch: (url, options) => dispatch('fetch', url, options),
-    csrfFetch: (url, options) => window.csrfFetch(url, options),
-    errorText: (...args) => window.errorText(...args),
-    setTimeout(fn, delay) { const id = ++timerId; timers.set(id, {fn, at: clock + delay}); return id; },
-    clearTimeout: id => timers.delete(id),
-    setInterval() { throw new Error('These read/copy tests must not start detection polling'); },
-    clearInterval() {},
-    Vue: {
-      ref: value => ({value}), reactive: value => value,
-      computed: getter => ({get value() { return getter(); }}),
-      nextTick: callback => Promise.resolve().then(() => callback && callback()),
-      onMounted: callback => mounted.push(callback),
-      onUnmounted: callback => unmounted.push(callback),
-    },
-    initVueApp: options => { state = options.setup(); },
-  });
-  // Reuse the real error/query/API helpers; only the transport is replaced.
-  for (const helper of ['errorText', 'readListQuery', 'writeListQuery']) {
-    const match = base.match(new RegExp(`window\\.${helper} = function[\\s\\S]*?\\n    };`));
-    assert.ok(match, `Shared helper ${helper} exists`);
-    vm.runInContext(match[0], context, {filename: `base.html:${helper}`});
-  }
-  const aiApi = base.match(/window\.aiApi = \{[\s\S]*?\n    };/);
-  assert.ok(aiApi);
-  vm.runInContext(aiApi[0], context, {filename: 'base.html:aiApi'});
-  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
-  assert.equal(scripts.length, 1, 'Execute the actual page script without rewriting its logic');
-  vm.runInContext(scripts[0][1], context, {filename: name});
-  return {
-    state, html, calls, historyWrites, location, document, domCalls,
-    navigator, window, clipboardWrites, storageWrites,
-    replyWith(fn) { handleRequest = fn; },
-    async start() { for (const fn of mounted) await fn(); await flush(); },
-    unmount() { for (const fn of unmounted) fn(); },
-    advance(ms) {
-      clock += ms;
-      for (const [id, timer] of timers) {
-        if (timer.at <= clock) { timers.delete(id); timer.fn(); }
-      }
-    },
-  };
-}
+const {source, FAKE_TOKEN, response, envelope, pendingPage, deferred, plain, flush, mount} = require('./helpers/management_vm.cjs');
 
 test('pending: HTTP 500 JSON is an error, preserves rows and selected page/filter', async () => {
   const m = mount('dashboard_pending_deletions.html');
@@ -260,9 +151,13 @@ test('pending: unmount invalidates a late response', async () => {
 
 for (const action of ['editProvider', 'copyFromProvider']) {
   test(`models: ${action} locates and focuses its populated form without fetching`, async () => {
-    const m = mount('dashboard_settings_models.html');
+    const m = mount('dashboard_settings_models.html', '?view=providers');
     m.state.providerForm.api_key = 'FAKE-UNSAVED-KEY';
-    m.state[action]({id: 17, name: 'Synthetic Provider', provider_type: 'openai_compatible'});
+    const switching = m.state[action]({id: 17, name: 'Synthetic Provider', provider_type: 'openai_compatible'});
+    await flush();
+    assert.equal(m.state.draftConfirmation.value, 'provider', 'Unsaved Key must not be discarded implicitly');
+    clickAvailableTemplateAction(m, "resolveDraft('discard')");
+    await switching;
     await flush();
     assert.equal(m.state.providerForm.name, 'Synthetic Provider');
     assert.equal(m.state.providerForm.id, action === 'editProvider' ? 17 : 0);
@@ -281,7 +176,7 @@ const poolDetail = (id = 23, name = 'Synthetic pool') => ({
 function poolEditorDisabled(m) {
   // Evaluate the shipped fieldset binding against unwrapped setup state. This
   // checks the actual gate, but is not a browser/rendered-disabled-state test.
-  const binding = m.html.match(/<fieldset\b[^>]*:disabled="([^"]+)"/);
+  const binding = m.html.split('id="pool-editor"', 2)[1].match(/<fieldset\b[^>]*:disabled="([^"]+)"/);
   assert.ok(binding, 'Pool controls have a fieldset-level edit gate');
   const bindings = Object.fromEntries(Object.entries(m.state).map(([key, value]) => [
     key, value && typeof value === 'object' && 'value' in value ? value.value : value,
@@ -312,7 +207,7 @@ function templateControlStates(m, matches, locals = {}) {
     const attrs = Object.fromEntries([...raw.matchAll(/\s([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g)]
       .map(([, key, double, single, bare]) => [key, double ?? single ?? bare ?? '']));
     const node = {tag, attrs};
-    if (['button', 'input', 'select', 'textarea'].includes(tag) && matches(attrs, tag)) {
+    if (['a', 'button', 'input', 'select', 'textarea', 'ai-model-picker'].includes(tag) && matches(attrs, tag)) {
       controls.push({attrs, chain: [...stack, node]});
     }
     if (!voidTags.has(tag) && !raw.endsWith('/>')) stack.push(node);
@@ -320,22 +215,23 @@ function templateControlStates(m, matches, locals = {}) {
   const bindings = templateBindings(m, locals);
   const evaluate = expression => Boolean(vm.runInNewContext(expression, bindings));
   return controls.map(control => ({
-    expression: control.attrs['@click'],
+    expression: control.attrs['@click'] || control.attrs['@click.prevent'] || control.attrs['@select'],
     id: control.attrs.id,
     model: control.attrs['v-model'] || control.attrs['v-model.number'],
-    visible: control.chain.every(({attrs}) => {
+    visible: control.chain.every(({tag, attrs}) => {
       assert.ok(!('v-else' in attrs) && !('v-else-if' in attrs), 'Sibling branches need explicit evaluator support');
       return !('hidden' in attrs)
+        && (tag !== 'app-modal' || !attrs[':is-open'] || evaluate(attrs[':is-open']))
         && (!('v-if' in attrs) || evaluate(attrs['v-if']))
         && (!('v-show' in attrs) || evaluate(attrs['v-show']));
     }),
-    disabled: control.chain.some(({tag, attrs}) => ['button', 'input', 'select', 'textarea', 'fieldset'].includes(tag)
+    disabled: control.chain.some(({tag, attrs}) => ['button', 'input', 'select', 'textarea', 'fieldset', 'ai-model-picker'].includes(tag)
       && ('disabled' in attrs || (':disabled' in attrs && evaluate(attrs[':disabled'])))),
   }));
 }
 
 function clickAvailableTemplateAction(m, expression, locals = {}) {
-  const states = templateControlStates(m, attrs => attrs['@click'] === expression, locals);
+  const states = templateControlStates(m, attrs => (attrs['@click'] || attrs['@click.prevent']) === expression, locals);
   const control = states.find(item => item.visible && !item.disabled);
   assert.ok(control, 'Action must be reachable before dispatch: ' + JSON.stringify(states));
   const result = vm.runInNewContext(control.expression, templateBindings(m, locals));
@@ -364,7 +260,7 @@ async function loadPoolAThenFailB(m) {
 }
 
 test('models R1: failed B selection never makes the retained A form writable', async () => {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=groups');
   await loadPoolAThenFailB(m);
   assert.equal(m.state.poolForm.id, 23, 'Retain the old snapshot without pretending it is B');
   assert.equal(m.state.poolLoading.value, false, 'Failure is not indefinite loading');
@@ -376,7 +272,7 @@ test('models R1: failed B selection never makes the retained A form writable', a
 });
 
 test('models R1: the save entry point rejects the stale A snapshot after B fails', async () => {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=groups');
   await loadPoolAThenFailB(m);
   const before = m.calls.length;
   await m.state.saveModelPool();
@@ -386,7 +282,7 @@ test('models R1: the save entry point rejects the stale A snapshot after B fails
 });
 
 test('models R1: retry reads selected B only and unlocks B after a successful detail GET', async () => {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=groups');
   await loadPoolAThenFailB(m);
   assert.equal(typeof m.state.retryModelPool, 'function', 'Expose a selected-pool GET retry');
   const before = m.calls.length, detail = deferred();
@@ -411,7 +307,7 @@ test('models R1: retry reads selected B only and unlocks B after a successful de
 });
 
 test('models R1: explicit new-form reset cancels a retry without restoring stale A or B', async () => {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=groups');
   await loadPoolAThenFailB(m);
   assert.equal(typeof m.state.retryModelPool, 'function');
   const detail = deferred();
@@ -436,7 +332,7 @@ test('models R1: explicit new-form reset cancels a retry without restoring stale
 });
 
 test('models R3: a normal pending pool selection has a reachable cancel/new control', async () => {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=groups');
   m.replyWith(url => url.includes('/attempts?') ? envelope([]) : envelope(poolDetail(23)));
   await m.state.editModelPool({id: 23});
   const detail = deferred();
@@ -461,7 +357,7 @@ test('models R3: a normal pending pool selection has a reachable cancel/new cont
 });
 
 test('models: pool edit locates immediately, then focuses the loaded name before slow attempts', async () => {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=groups');
   const detail = deferred(), attempts = deferred();
   m.replyWith(url => url.includes('/attempts?') ? attempts.promise : detail.promise);
   const edit = m.state.editModelPool({id: 23});
@@ -483,7 +379,7 @@ test('models: pool edit locates immediately, then focuses the loaded name before
 });
 
 test('models: a late pool detail cannot replace a more recently selected editor', async () => {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=groups');
   const old = deferred();
   m.replyWith(url => {
     if (url.includes('/attempts?')) return envelope([]);
@@ -498,7 +394,7 @@ test('models: a late pool detail cannot replace a more recently selected editor'
 });
 
 test('models: late attempts from the previous pool cannot replace the new pool history', async () => {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=groups');
   const oldAttempts = deferred();
   m.replyWith(url => {
     if (url.includes('/23/attempts?')) return oldAttempts.promise;
@@ -513,20 +409,22 @@ test('models: late attempts from the previous pool cannot replace the new pool h
   assert.equal(m.state.poolAttempts.value[0].job_id, 'new-fixture-job');
 });
 
-test('models: a delayed pool load does not steal focus after the user chooses another form', async () => {
-  const m = mount('dashboard_settings_models.html');
+test('models: a delayed pool load does not steal focus from a visible workspace control', async () => {
+  const m = mount('dashboard_settings_models.html', '?view=groups');
   const detail = deferred();
   m.replyWith(url => url.includes('/attempts?') ? envelope([]) : detail.promise);
   const pool = m.state.editModelPool({id: 23});
   await flush();
-  m.state.editProvider({id: 17, name: 'Chosen Provider'});
+  const controls = templateControlStates(m, attrs => attrs.id === 'workspace-providers');
+  assert.ok(controls.some(control => control.visible && !control.disabled));
+  m.document.getElementById('workspace-providers').focus();
   await flush();
   detail.resolve(envelope(poolDetail())); await pool; await flush();
-  assert.equal(m.document.activeElement?.id, 'provider-name');
+  assert.equal(m.document.activeElement?.id, 'workspace-providers');
 });
 
 test('models: save failure is attached to the provider form and survives four seconds', async () => {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=providers');
   m.state.providerForm.name = 'Fixture only';
   m.replyWith(() => response({detail: 'Fixture validation error'}, 400));
   await m.state.saveProvider();
@@ -539,9 +437,13 @@ test('models: save failure is attached to the provider form and survives four se
 });
 
 test('models: an earlier success timer cannot erase a later save error', async () => {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=providers');
+  m.state.providerForm.name = 'Fixture saved';
   m.replyWith((_url, options) => envelope(options.method ? {id: 17, warnings: []} : []));
   await m.state.saveProvider();
+  assert.equal(m.state.aiMessages['provider-form'].type, 'success');
+  m.state.providerForm.name = 'Fixture later edit';
+  m.state.touchProvider('name');
   m.replyWith(() => response({detail: 'Later fixture error'}, 400));
   await m.state.saveProvider();
   m.advance(5000);
@@ -549,7 +451,7 @@ test('models: an earlier success timer cannot erase a later save error', async (
 });
 
 test('models: catalog read errors remain near the affected Provider, not only the header', async () => {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=models');
   m.replyWith(() => response({detail: 'Fixture catalog unavailable'}, 500));
   await m.state.loadProviderModels(17);
   assert.match(m.state.aiMessages?.['provider-17']?.text || '', /Fixture catalog unavailable/);
@@ -558,7 +460,7 @@ test('models: catalog read errors remain near the affected Provider, not only th
 });
 
 test('models: successful pool save preserves version/member protocol and reports at the form', async () => {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=groups');
   Object.assign(m.state.poolForm, poolDetail(), {original_enabled: false, members: [
     {provider_model_id: 32, enabled: true}, {provider_model_id: 31, enabled: false},
   ]});
@@ -577,11 +479,11 @@ test('models: successful pool save preserves version/member protocol and reports
   assert.deepEqual(JSON.parse(writes[1].options.body), {expected_version: 3, members: [
     {provider_model_id: 32, enabled: true}, {provider_model_id: 31, enabled: false},
   ]});
-  assert.match(m.state.aiMessages?.['pool-form']?.text || '', /模型池已保存/);
+  assert.match(m.state.aiMessages?.['pool-form']?.text || '', /路由组.*已保存/);
 });
 
 test('models: pool conflict remains an explicit form error, not a false success', async () => {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=groups');
   Object.assign(m.state.poolForm, poolDetail(), {original_enabled: false});
   m.replyWith((url, options) => {
     if (options.method) return response({detail: 'Fixture conflict'}, 409);
@@ -611,7 +513,7 @@ async function saveFixturePool(m) {
 
 for (const status of [400, 409]) {
   test(`models R2: a prior successful save cannot survive the next HTTP ${status} save failure`, async () => {
-    const m = mount('dashboard_settings_models.html');
+    const m = mount('dashboard_settings_models.html', '?view=groups');
     await saveFixturePool(m);
     m.advance(5000);
     m.state.poolForm.name = 'Changed but not saved';
@@ -633,7 +535,7 @@ for (const status of [400, 409]) {
 }
 
 test('models R2: starting a new save clears success before waiting for its response', async () => {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=groups');
   await saveFixturePool(m);
   const pending = deferred();
   m.replyWith(() => pending.promise);
@@ -647,7 +549,7 @@ test('models R2: starting a new save clears success before waiting for its respo
 });
 
 async function loadedPoolWriteFixture() {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=groups');
   const provider = {id: 17, name: 'Independent fixture Provider', provider_type: 'openai_compatible'};
   const poolA = {...poolDetail(23, 'Fixture writing pool A'), members: [
     {provider_model_id: 31, provider_id: 17, model_key: 'fixture-first', enabled: true},
@@ -667,7 +569,7 @@ async function heldPoolSave(heldPhase) {
   const creating = heldPhase.startsWith('create');
   const savedName = creating ? 'Fixture created pool' : poolA.name;
   if (creating) {
-    m.state.resetPoolForm();
+    await m.state.resetPoolForm();
     Object.assign(m.state.poolForm, {name: savedName, members: plain(poolA.members)});
   }
   m.state.poolForm.enabled = true; // Exercise the existing final enable PUT too.
@@ -721,6 +623,8 @@ async function heldPoolSave(heldPhase) {
 const poolMutationControl = attrs =>
   /^(resetPoolForm|editModelPool|retryModelPool|deleteModelPool|saveModelPool|addPoolMember|removePoolMember|movePoolMember)(?:\(|$)/
     .test(attrs['@click'] || '')
+  || attrs['@select'] === 'choosePoolModel'
+  || Object.entries(attrs).some(([key, value]) => key.startsWith('@keydown') && value.startsWith('movePoolMember('))
   || Object.entries(attrs).some(([key, value]) => key.startsWith('v-model') && /^(poolForm|member)\./.test(value));
 
 function assertPoolWriteControlsLocked(fixture) {
@@ -732,37 +636,69 @@ function assertPoolWriteControlsLocked(fixture) {
   assert.ok(states.some(control => control.id === 'pool-name' && control.visible));
   assert.ok(states.some(control => control.expression === 'editModelPool(pool)' && control.visible));
   assert.ok(states.some(control => control.expression === 'deleteModelPool(pool)' && control.visible));
+  assert.ok(states.some(control => control.id === 'pool-model-picker' && control.visible && control.disabled));
+  assert.match(m.html, /<ai-model-picker[^>]*:disabled="!poolEditorReady"/,
+    'Teleported picker options need their own disabled prop, not only a fieldset ancestor');
   assert.deepEqual(states.filter(control => control.visible && !control.disabled)
     .map(control => control.id || control.expression || control.model), [],
     'No pool field, member action, selection, new/reset, retry, save or delete may escape write ownership');
 }
 
+async function openProviderWorkspace(m, provider) {
+  assert.equal(await clickAvailableTemplateAction(m, "navigateWorkspace({view: 'providers'})"), true);
+  assert.equal(m.navigation.at(-1), '/dashboard/settings/models?view=providers');
+  m.unmount();
+  const next = mount('dashboard_settings_models.html', '?view=providers');
+  next.state.providers.value = [provider];
+  await clickAvailableTemplateAction(next, 'editProvider(provider)', {provider});
+  await flush();
+  assert.equal(next.state.providerForm.id, 17);
+  assert.equal(next.document.activeElement?.id, 'provider-name');
+  assert.equal(next.calls.length, 0, 'Editing after real workspace navigation is still local');
+}
+
 for (const phase of ['metadata', 'members', 'enable', 'list', 'detail', 'history', 'create', 'create-detail']) {
-  test('models R4: write owns actual controls through ' + phase + ' without blocking Provider edit', async () => {
+  test('models R4: write owns actual controls through ' + phase + ' and blocks workspace navigation until settled', async () => {
     const h = await heldPoolSave(phase);
     try {
       await h.entered;
       assert.equal(h.m.state.poolSaving.value, true);
       assertPoolWriteControlsLocked(h);
-      clickAvailableTemplateAction(h.m, 'editProvider(provider)', {provider: h.provider});
+      const count = h.m.calls.length;
+      assert.equal(await clickAvailableTemplateAction(h.m, "navigateWorkspace({view: 'providers'})"), false);
+      assert.equal(h.m.navigation.length, 0);
+      assert.equal(h.m.calls.length, count);
+      h.m.document.getElementById('workspace-providers').focus();
       await flush();
-      assert.equal(h.m.state.providerForm.id, 17);
-      assert.equal(h.m.document.activeElement?.id, 'provider-name');
+      assert.equal(h.m.document.activeElement?.id, 'workspace-providers');
     } finally { h.release(); await h.saving; }
     await flush();
     assert.equal(h.m.state.poolSaving.value, false);
     assert.equal(poolEditorDisabled(h.m), false);
     assert.equal(h.m.state.poolForm.id, 23);
     assert.equal(h.m.state.poolForm.name, h.savedName);
-    assert.equal(h.m.document.activeElement?.id, 'provider-name', 'Internal read-back must not steal focus');
+    assert.equal(h.m.document.activeElement?.id, 'workspace-providers', 'Internal read-back must not steal focus');
     assert.equal(h.m.state.aiMessages['pool-form'].type, 'success');
     assert.deepEqual(h.m.calls.slice(h.writeStart).filter(call => call.method !== 'GET').map(call => call.method),
       h.creating ? ['POST', 'PUT', 'PUT'] : ['PUT', 'PUT', 'PUT']);
-    clickAvailableTemplateAction(h.m, 'resetPoolForm');
+    await clickAvailableTemplateAction(h.m, 'resetPoolForm');
     h.m.state.poolForm.name = 'Synthetic UNSAVED new draft';
     await flush();
     assert.equal(h.m.state.poolForm.id, 0);
     assert.equal(h.m.state.aiMessages['pool-form'], undefined, 'A new draft never inherits the completed write result');
+    const switching = clickAvailableTemplateAction(h.m, "navigateWorkspace({view: 'providers'})");
+    await flush();
+    assert.equal(h.m.state.draftConfirmation.value, 'pool');
+    clickAvailableTemplateAction(h.m, "resolveDraft('discard')");
+    assert.equal(await switching, true);
+    assert.equal(h.m.navigation.at(-1), '/dashboard/settings/models?view=providers');
+    h.m.unmount();
+    const next = mount('dashboard_settings_models.html', '?view=providers');
+    next.state.providers.value = [h.provider];
+    await clickAvailableTemplateAction(next, 'editProvider(provider)', {provider: h.provider});
+    assert.equal(next.state.providerForm.id, 17);
+    assert.equal(next.document.activeElement?.id, 'provider-name');
+    assert.equal(next.calls.length, 0);
   });
 }
 
@@ -775,6 +711,7 @@ const guardedPoolEntries = [
   ['add member', 'metadata', m => m.state.addPoolMember({id: 33, provider_id: 17, model_key: 'fixture-third'})],
   ['remove member', 'members', m => m.state.removePoolMember(0)],
   ['move member', 'enable', m => m.state.movePoolMember(0, 1)],
+  ['picker selection', 'metadata', m => m.state.choosePoolModel({kind: 'model', provider_id: 17, provider_model_id: 33, model_key: 'fixture-third'})],
   ['duplicate save', 'metadata', m => m.state.saveModelPool()],
   ['delete current pool', 'detail', m => m.state.deleteModelPool({id: 23, name: 'Fixture writing pool A'})],
 ];
@@ -799,7 +736,7 @@ for (const [entry, phase, invoke] of guardedPoolEntries) {
 }
 
 test('models R4: internal write helpers and ownership state are not exposed as page actions', () => {
-  const m = mount('dashboard_settings_models.html');
+  const m = mount('dashboard_settings_models.html', '?view=groups');
   for (const name of ['replacePoolMembers', 'readPoolEditor', 'resetPoolEditor', 'poolWriteOperation']) {
     assert.equal(m.state[name], undefined, name + ' is private to the owning operation');
   }
@@ -815,7 +752,12 @@ for (const status of [400, 409, 500]) {
     assert.equal(h.m.state.poolSaving.value, false);
     assert.ok(h.m.state.poolError.value);
     assert.notEqual(h.m.state.aiMessages['pool-form']?.type, 'success');
-    clickAvailableTemplateAction(h.m, 'resetPoolForm');
+    const resetting = h.m.state.poolConflict.value ? clickAvailableTemplateAction(h.m, 'resetPoolForm(true)')
+      : clickAvailableTemplateAction(h.m, 'resetPoolForm');
+    await flush();
+    assert.equal(h.m.state.draftConfirmation.value, 'pool');
+    clickAvailableTemplateAction(h.m, "resolveDraft('discard')");
+    await resetting;
     assert.equal(h.m.state.poolForm.id, 0);
   });
 }
@@ -867,12 +809,14 @@ async function heldPoolDelete(heldPhase) {
 }
 
 for (const phase of ['delete', 'delete-list']) {
-  test('models R4: ' + phase + ' also owns pool editing and preserves Provider focus', async () => {
+  test('models R4: ' + phase + ' also owns pool editing and preserves visible workspace focus', async () => {
     const h = await heldPoolDelete(phase);
     try {
       await h.entered;
       assertPoolWriteControlsLocked(h);
-      clickAvailableTemplateAction(h.m, 'editProvider(provider)', {provider: h.provider});
+      assert.equal(await clickAvailableTemplateAction(h.m, "navigateWorkspace({view: 'providers'})"), false);
+      assert.equal(h.m.navigation.length, 0);
+      h.m.document.getElementById('workspace-providers').focus();
       await flush();
       const before = plain(h.m.state.poolForm), calls = h.m.calls.length;
       h.m.state.resetPoolForm(true);
@@ -883,10 +827,11 @@ for (const phase of ['delete', 'delete-list']) {
     } finally { h.release(); await h.deleting; }
     assert.equal(h.m.state.poolForm.id, 0, 'Owning delete can perform its private editor reset');
     assert.equal(poolEditorDisabled(h.m), false);
-    assert.equal(h.m.document.activeElement?.id, 'provider-name');
+    assert.equal(h.m.document.activeElement?.id, 'workspace-providers');
     assert.equal(h.m.state.aiMessages['pool-list'].type, 'success');
     await clickAvailableTemplateAction(h.m, 'editModelPool(pool)', {pool: h.poolB});
     assert.equal(h.m.state.poolForm.id, 24, 'User selection becomes available after write settlement');
+    await openProviderWorkspace(h.m, h.provider);
   });
 }
 
