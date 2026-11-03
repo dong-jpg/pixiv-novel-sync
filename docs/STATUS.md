@@ -8,7 +8,7 @@
 
 - 工作分支 `codex/ai-settings-resume`，Task7 审查提交 `09702b2`，整合已审计 main 的提交 `2167c585`，Task8 起点 `85a8acc94bf9f6eed4ec056e9f311fc5371b55d4`。当前 Task8 包含共享任务绑定、显式输入预检、服务端用量/版本诊断与离线浏览器回归；未声称已推送、合并或部署。
 - 第一阶段独立 AI 配置/单次文本调用基础设施已进入实现与验收。业务仍仅关键词清洗接入；整书/系列读取、跨章证据、XP 分析 Agent 和推荐闭环是未实现的第二阶段。main Continue 保留409，不创建 job或请求，UI没有可执行继续。
-- Task8 最终 Windows 全量：`2330 passed, 39 skipped`（227.37s）；39跳过为33个离线浏览器显式opt-in用例和6个Windows符号链接/POSIX mode限制，不将跳过计为通过。三个Node套件合并155通过，文档/Library OS54通过、静态CSS10通过；compileall、pyflakes、CSS重建校验与离线wheel13项JS/模板/CSS逐字节验证通过。整阶段独立审查及最终Linux全量仍待根代理验收。
+- Task8 提交`1bd32a5`基线 Windows 全量：`2330 passed, 39 skipped`（227.37s）；39跳过为33个离线浏览器显式opt-in用例和6个Windows符号链接/POSIX mode限制，不将跳过计为通过。该基线三个Node套件155通过、文档/Library OS54通过、静态CSS10通过，compileall/pyflakes/CSS及离线wheel验证通过。随后审查发现两处任务选择器的候选链读取所有权不一致；修复后Node163通过、UI/源码/文档focused100通过，候选链/预检实际浏览器三宽度3通过（7.49s，hash不变），未由子任务重跑全量。当前代码的整阶段复审与最终Windows/Linux门槛由根代理继续验收，不把基线全量冒充后续修复全量。
 - Task8 使用离线、本地 SRI 校验 Vue3.4.38、既存 Chromium、合成 API/文本和临时环境；不访问真实 Provider/Pixiv/小说或用户数据库。实际浏览器375/768/1440冻结基线33通过（473.70s，17文件hash不变）；随后只收紧损坏计划的v1预算显示门槛，新增375失败回归后针对日志三宽度3通过（96.49s，addendum hash不变）。这是33基线加定点3复验，不是声称完整33重跑于后续补丁；最终 Windows/Linux 全量另行记录。Node VM不是浏览器渲染，默认33 opt-in跳过不当作成功。
 - 外部验收仍包括真机软键盘、真实服务商1M输入准入和实际usage；不会自动调用付费服务或使用私人小说。2026-11-03根代理只读确认服务active、checkout HEAD为16b5b4a及当前 `nginx -t` 通过，没有部署/重启；新配置部署后仍须重验。下方2026-10-30部署记录是历史部署事实，不代表此重构已上线。
 

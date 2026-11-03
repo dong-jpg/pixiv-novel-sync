@@ -408,8 +408,27 @@ class OfflineUI:
                 agent.update(body)
                 return self._json(route, agent)
             if path == prefix + "/candidates" and method == "GET":
-                return self._json(route, {"agent_name": agent["name"], "pool_name": None, "candidates": [],
-                                          "limits": public_plan()["limits"]})
+                pool = self.pools.get(agent["model_pool_id"]) if agent["binding_type"] == "pool" else None
+                members = pool["members"] if pool else [{"provider_id": agent["provider_id"],
+                                                        "model_key": agent["model"], "enabled": True}]
+                candidates = []
+                for position, member in enumerate(members, 1):
+                    provider = next(p for p in self.providers if p["id"] == member["provider_id"])
+                    catalogued = next((m for m in self.models[provider["id"]]
+                                       if m["model_key"] == member["model_key"]), None)
+                    if not member["enabled"] or catalogued and not catalogued["routable"]:
+                        continue
+                    candidates.append({"order": len(candidates) + 1,
+                        "provider_id": provider["id"], "provider_name": provider["name"],
+                        "model_key": member["model_key"], "provider_model_id": catalogued["id"] if catalogued else None,
+                        "pool_id": pool["id"] if pool else None, "pool_name": pool["name"] if pool else None,
+                        "pool_position": position if pool else None, "fallback_depth": 0,
+                        "source": pool["name"] if pool else "fixed", "capabilities": ["text", "stream"],
+                        "context_window": catalogued["context_window"] if catalogued else provider["context_window"]})
+                return self._json(route, {"agent_id": agent["id"], "agent_name": agent["name"],
+                    "task_type": agent["task_type"], "binding_type": agent["binding_type"],
+                    "pool_id": pool["id"] if pool else None, "pool_name": pool["name"] if pool else None,
+                    "candidates": candidates, "limits": public_plan()["limits"]})
             if path == prefix + "/preflight" and method == "POST":
                 return self._json(route, public_plan())
         for job_id, job in self.jobs.items():
@@ -774,7 +793,24 @@ def assert_public_rows(ui, eligible_id, excluded_id):
 def test_preflight_complete_displayed_input_explicit_zero_and_server_plan_no_job(ui):
     page = ui.page
     ui.goto("/dashboard/settings/agents")
+    chain = page.locator('[data-hook="agent-candidate-chain"]')
+    explanation = chain.locator("div.text-sm.font-bold")
+    chain.locator("select").select_option("4")
+    ui.expect(explanation).to_contain_text("Fixture Legacy Task")
+    ui.expect(chain.locator("ol")).to_contain_text("legacy/missing")
+    assert len(ui.calls("GET", "/api/dashboard/ai/agents/4/candidates")) == 1
+    page.locator("#preflight-agent").select_option("5")
+    ui.expect(explanation).to_contain_text("Fixture Group Task")
+    ui.expect(chain.locator("ol")).to_contain_text("Fixture South / same/model")
+    ui.expect(chain.locator("ol")).not_to_contain_text("legacy/missing")
+    assert len(ui.calls("GET", "/api/dashboard/ai/agents/5/candidates")) == 1
+    page.locator("#preflight-agent").select_option("0")
+    ui.expect(explanation).to_have_count(0)
+    ui.expect(chain.locator("ol")).to_have_count(0)
+    assert not ui.calls("GET", "/api/dashboard/ai/agents/0/candidates")
+    assert ui.writes() == []
     page.locator("#preflight-agent").select_option("4")
+    ui.expect(explanation).to_contain_text("Fixture Legacy Task")
     ui.expect(page.locator("#preflight-system-prompt")).to_have_text(SYSTEM_TEXT)
     page.locator("#preflight-text").fill(INPUT_TEXT)
     for field, value in (("temperature", "0"), ("top_p", "0"), ("max_tokens", "123")):

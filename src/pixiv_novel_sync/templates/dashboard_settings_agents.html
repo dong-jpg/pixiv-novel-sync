@@ -169,7 +169,7 @@
         <p class="text-xs text-pixiv-gray">按真实路由顺序解析，不会发起任何生成请求</p>
       </div>
       <div class="agent-candidate-controls">
-        <select v-model.number="candidateAgentId" @change="loadCandidateChain(candidateAgentId)"
+        <select v-model.number="candidateAgentId"
                 aria-label="选择 Agent 查看候选链"
                 class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
           <option :value="0">选择 Agent 查看候选链</option>
@@ -323,6 +323,7 @@
       const candidateChain = ref(null);
       const candidateChainError = ref('');
       const candidateChainLoading = ref(false);
+      let candidateRequestGeneration = 0, candidateDisposed = false;
       const planFields = ['provider_name', 'model_key', 'display_name', 'source_index', 'candidate_index', 'pool_name', 'pool_position', 'fallback_depth', 'context_window', 'agent_context_window', 'provider_context_window', 'model_context_window', 'max_output_tokens', 'limiting_factors', 'input_tokens', 'input_budget', 'message_overhead', 'output_reserve', 'safety_margin', 'estimator_source', 'exact', 'reason', 'reason_message'];
       const displayPlanValue = value => value === null || value === undefined ? '未知' : Array.isArray(value) ? value.join(', ') : typeof value === 'boolean' ? (value ? '是' : '否') : value;
       const preflight = reactive({busy: false, result: null, error: ''});
@@ -521,23 +522,28 @@
       // 只调 /candidates 一个端点：它已经过滤掉 Provider 的连接地址、密钥与配置哈希，
       // 界面不许再去别处补齐这些字段。
       const loadCandidateChain = async (agentId) => {
+        if (candidateDisposed) return;
         const id = Number(agentId || 0);
+        const generation = ++candidateRequestGeneration;
+        const current = () => !candidateDisposed && generation === candidateRequestGeneration && candidateAgentId.value === id;
+        candidateChain.value = null;
         candidateChainError.value = '';
-        if (!id) {
-          candidateChain.value = null;
-          return;
-        }
+        candidateChainLoading.value = false;
+        if (!Number.isSafeInteger(id) || id < 1) return;
         candidateChainLoading.value = true;
         try {
-          candidateChain.value = await window.aiApi.agentCandidates(id);
+          const chain = await window.aiApi.agentCandidates(id);
+          if (current()) candidateChain.value = chain;
         } catch (e) {
+          if (!current()) return;
           candidateChain.value = null;
           // window.aiApi.request 内部已经用 window.errorText 取过失败原因
           candidateChainError.value = e.message || '读取候选链失败';
         } finally {
-          candidateChainLoading.value = false;
+          if (current()) candidateChainLoading.value = false;
         }
       };
+      watch(candidateAgentId, id => loadCandidateChain(id), {flush: 'sync'});
       // 读写都走 base.html 的公共层：window.aiApi.request 内部用 window.csrfFetch
       // （变更类请求自动带 X-CSRF-Token）并用 window.errorText 取失败原因。
       const aiApi = (url, options) => window.aiApi.request(url, options);
@@ -571,8 +577,8 @@
         agentOriginal = Object.fromEntries(agentFields.filter(key => Object.hasOwn(agent, key)).map(key => [key, JSON.parse(JSON.stringify(agent[key]))]));
         agentTouched.clear();
         // 编辑时顺带解析候选链：改绑定前先看清它现在会调哪些模型
-        candidateAgentId.value = agent.id;
-        loadCandidateChain(agent.id);
+        if (candidateAgentId.value === agent.id) loadCandidateChain(agent.id);
+        else candidateAgentId.value = agent.id;
         const form = document.getElementById('agent-form');
         if (form) form.scrollIntoView({ behavior: 'smooth', block: 'start' });
       };
@@ -631,6 +637,8 @@
         loadAiHealth();
       });
       onUnmounted(() => {
+        candidateDisposed = true; ++candidateRequestGeneration;
+        candidateChain.value = null; candidateChainError.value = ''; candidateChainLoading.value = false;
         preflightControl.dispose(); preflightText.value = '';
         batchRebindDisposed = true;
         closeBatchRebind();

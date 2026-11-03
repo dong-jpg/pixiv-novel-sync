@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const P = require('../src/pixiv_novel_sync/static/js/ai_preflight.js');
 const D = require('../src/pixiv_novel_sync/static/js/ai_job_diagnostics.js');
-const {mount, envelope, response, deferred, plain, source} = require('./helpers/management_vm.cjs');
+const {mount, envelope, response, deferred, plain, source, flush} = require('./helpers/management_vm.cjs');
 
 const row = (name, patch = {}) => ({source_index: 0, candidate_index: 0, provider_id: 17,
   provider_name: name, provider_model_id: 41, model_key: 'org/model/v1', display_name: name,
@@ -122,11 +122,15 @@ test('actual Agent preflight submits only the displayed saved messages and expli
   m.state.preflightText.value = '\u4e2d\ud83d\ude00TAIL';
   m.state.preflightOverrideDraft.temperature = 0; m.state.setPreflightOverride('temperature', true);
   m.replyWith((url, options) => {
+    if (url === '/api/dashboard/ai/agents/4/candidates') return envelope({candidates: [], limits: {max_candidate_attempts: 16}});
     assert.equal(url, '/api/dashboard/ai/agents/4/preflight'); assert.equal(options.method, 'POST');
     assert.deepEqual(JSON.parse(options.body), {messages: [{role: 'system', content: 'Visible system'}, {role: 'user', content: '\u4e2d\ud83d\ude00TAIL'}], temperature: 0});
     return envelope(mixed);
   });
-  await m.state.runPreflight(); assert.equal(m.calls.length, 1);
+  m.triggerWatches(); await flush();
+  const before = m.calls.length;
+  await m.state.runPreflight(); assert.equal(m.calls.length - before, 1);
+  assert.equal(m.calls.filter(call => call.method === 'POST').length, 1);
   assert.equal(m.state.preflight.result.eligible[0].context_window, 1000000);
   assert.equal(m.state.preflight.result.excluded[0].candidate_index, null);
   m.state.preflightText.value = 'changed'; m.triggerWatches(); assert.equal(m.state.preflight.result, null);
@@ -198,4 +202,64 @@ test('late cancellation acknowledgement cannot overwrite a newly selected job', 
   const cancelling = m.state.cancelAiJob(); await m.state.showDetail({category: 'ai', job_id: 'new'});
   pending.resolve(envelope({cancel_requested: true})); await cancelling;
   assert.equal(m.state.selectedLog.value.job_id, 'new'); assert.equal(m.state.cancelNotice.value, '');
+});
+
+const chain = id => ({agent_id: id, agent_name: 'Fixture task ' + id,
+  candidates: [{order: 1, provider_name: 'Fixture provider ' + id, model_key: 'model-' + id}],
+  limits: {max_candidate_attempts: 16, max_network_requests: 32, max_resolved_candidates: 64, max_pool_nodes: 8}});
+const selectCandidate = (m, id) => { m.state.candidateAgentId.value = id; m.triggerWatches(); };
+test('shared candidate selection owns one GET and immediately clears old chain/error at B and zero', async () => {
+  const m = mount('dashboard_settings_agents.html'), b = deferred();
+  m.replyWith(url => {
+    if (url === '/api/dashboard/ai/agents/4/candidates') return envelope(chain(4));
+    assert.equal(url, '/api/dashboard/ai/agents/5/candidates'); return b.promise;
+  });
+  selectCandidate(m, 4); await flush();
+  assert.equal(m.state.candidateChain.value.agent_id, 4);
+  m.state.candidateChainError.value = 'Previous error';
+  selectCandidate(m, 5);
+  assert.equal(m.state.candidateChain.value, null); assert.equal(m.state.candidateChainError.value, '');
+  assert.equal(m.state.candidateChainLoading.value, true);
+  b.resolve(envelope(chain(5))); await flush(); assert.equal(m.state.candidateChain.value.agent_id, 5);
+  selectCandidate(m, 0);
+  assert.equal(m.state.candidateChain.value, null); assert.equal(m.state.candidateChainLoading.value, false);
+  assert.deepEqual(m.calls.map(call => call.url), ['/api/dashboard/ai/agents/4/candidates', '/api/dashboard/ai/agents/5/candidates']);
+});
+test('old candidate success/finally cannot replace a newer pending selection', async () => {
+  const m = mount('dashboard_settings_agents.html'), a = deferred(), b = deferred();
+  m.replyWith(url => url.endsWith('/4/candidates') ? a.promise : b.promise);
+  selectCandidate(m, 4); selectCandidate(m, 5);
+  a.resolve(envelope(chain(4))); await flush();
+  assert.equal(m.state.candidateChain.value, null); assert.equal(m.state.candidateChainLoading.value, true);
+  b.resolve(envelope(chain(5))); await flush(); assert.equal(m.state.candidateChain.value.agent_id, 5);
+});
+test('old candidate error cannot replace a newer successful selection', async () => {
+  const m = mount('dashboard_settings_agents.html'), a = deferred();
+  m.replyWith(url => url.endsWith('/4/candidates') ? a.promise : envelope(chain(5)));
+  selectCandidate(m, 4); selectCandidate(m, 5); await flush();
+  a.resolve(response({ok: false, error: 'Obsolete error'}, 503)); await flush();
+  assert.equal(m.state.candidateChain.value.agent_id, 5); assert.equal(m.state.candidateChainError.value, '');
+  assert.equal(m.state.candidateChainLoading.value, false);
+});
+for (const close of ['zero', 'unmount']) for (const outcome of ['success', 'error']) {
+  test(`candidate ${close} invalidates a pending ${outcome} and releases loading`, async () => {
+    const m = mount('dashboard_settings_agents.html'), pending = deferred(); m.replyWith(() => pending.promise);
+    selectCandidate(m, 4); assert.equal(m.state.candidateChainLoading.value, true);
+    if (close === 'zero') selectCandidate(m, 0); else m.unmount();
+    assert.equal(m.state.candidateChainLoading.value, false);
+    if (outcome === 'success') pending.resolve(envelope(chain(4))); else pending.reject(new Error('Obsolete error'));
+    await flush(); assert.equal(m.state.candidateChain.value, null); assert.equal(m.state.candidateChainError.value, '');
+  });
+}
+test('changed-ID edit, same-ID edit, explicit refresh and post-save keep one intended candidate GET each', async () => {
+  const {m, writes} = editingFixture();
+  await m.state.editAgent(agent); m.triggerWatches(); await flush();
+  assert.equal(m.calls.filter(call => call.url.endsWith('/candidates')).length, 1);
+  await m.state.editAgent(agent); m.triggerWatches(); await flush();
+  assert.equal(m.calls.filter(call => call.url.endsWith('/candidates')).length, 2);
+  await m.state.loadCandidateChain(4);
+  assert.equal(m.calls.filter(call => call.url.endsWith('/candidates')).length, 3);
+  m.state.agentForm.name = 'Saved'; m.state.markAgentTouched('name'); await m.state.saveAgent(); m.triggerWatches(); await flush();
+  assert.equal(m.calls.filter(call => call.url.endsWith('/candidates')).length, 4);
+  assert.deepEqual(writes, [{name: 'Saved'}]);
 });
