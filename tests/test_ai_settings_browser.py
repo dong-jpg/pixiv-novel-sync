@@ -376,7 +376,7 @@ class OfflineUI:
                 assert not record["query"], "Atomic selection must not target a filtered catalogue"
                 if self.apply_conflicts:
                     self.apply_conflicts -= 1
-                    self.revisions[pid] = "e" * 64
+                    self.revisions[pid] = ("f" if self.revisions[pid] == "e" * 64 else "e") * 64
                     return self._error(route, "Fixture catalogue revision conflict", 409)
                 assert body["catalog_revision"] == self.revisions[pid]
                 for change in body["changes"]:
@@ -777,7 +777,7 @@ def test_onboarding_pending_sync_failure_cas_review_and_success_trace(ui):
     prepare_provider(ui)
     page = ui.page
     ui.sync_results = ["failed", "succeeded"]
-    ui.apply_conflicts = 1
+    ui.apply_conflicts = 2
     events = "/api/dashboard/ai/model-sync-operations/fixture-operation-1/events"
     ui.hold("GET", events)
     page.get_by_role("button", name=SAVE_PROVIDER, exact=True).click()
@@ -793,6 +793,22 @@ def test_onboarding_pending_sync_failure_cas_review_and_success_trace(ui):
     ui.expect(page.locator("#provider-editor")).to_contain_text("\u540c\u6b65\u5931\u8d25\uff0c\u9009\u62e9\u5c1a\u672a\u5e94\u7528")
     choice_a = page.get_by_role("checkbox", name="\u4fdd\u5b58\u540e\u521d\u59cb\u542f\u7528 new/selected", exact=True)
     choice_b = page.get_by_role("checkbox", name="\u4fdd\u5b58\u540e\u521d\u59cb\u542f\u7528 new/unselected", exact=True)
+    notice = page.locator("#provider-editor").get_by_role("status").filter(
+        has_text="\u6a21\u578b\u9009\u62e9\u9884\u89c8\u4e0d\u53ef\u7528")
+    page.locator("#provider-key").fill(KEY + "-replacement")
+    ui.expect(choice_a).to_have_count(0)
+    ui.expect(choice_b).to_have_count(0)
+    before_invalid_retry = list(ui.writes())
+    retry.click()
+    ui.expect(retry).to_be_enabled()
+    ui.expect(notice).to_be_visible()
+    assert ui.writes() == before_invalid_retry
+    assert len(ui.calls("POST", "/api/dashboard/ai/providers/19/models/sync")) == 1
+    assert not ui.calls("PUT", "/api/dashboard/ai/providers/19/models/enabled")
+    page.locator("#provider-key").fill("")
+    page.get_by_role("button", name=PROBE, exact=True).click()
+    ui.expect(choice_a).to_be_visible()
+    ui.expect(choice_b).to_be_visible()
     choice_a.uncheck()
     choice_b.check()
     retry.click()
@@ -806,15 +822,38 @@ def test_onboarding_pending_sync_failure_cas_review_and_success_trace(ui):
     confirm = page.get_by_role("button", name="\u786e\u8ba4\u4f7f\u7528\u6700\u65b0\u7248\u672c\u5e94\u7528\u9009\u62e9", exact=True)
     ui.expect(confirm).to_be_visible()
     assert len(ui.calls("PUT", "/api/dashboard/ai/providers/19/models/enabled")) == 1
+    page.locator("#provider-key").fill(KEY + "-replacement-confirm")
+    ui.expect(choice_a).to_have_count(0)
+    ui.expect(choice_b).to_have_count(0)
+    before_invalid_confirm = list(ui.writes())
+    confirm.click()
+    ui.expect(confirm).to_be_enabled()
+    ui.expect(notice).to_be_visible()
+    assert ui.writes() == before_invalid_confirm
+    assert len(ui.calls("PUT", "/api/dashboard/ai/providers/19/models/enabled")) == 1
+    page.locator("#provider-key").fill("")
+    page.get_by_role("button", name=PROBE, exact=True).click()
+    ui.expect(choice_a).to_be_visible()
+    ui.expect(choice_b).to_be_visible()
     choice_a.check()
     choice_b.uncheck()
     confirm.click()
+    ui.expect(review).to_be_visible()
+    assert ui.calls("PUT", "/api/dashboard/ai/providers/19/models/enabled")[1]["body"]["changes"] == [
+        {"id": 61, "enabled": True}, {"id": 62, "enabled": False}]
+    choice_a.uncheck()
+    ui.expect(choice_a).not_to_be_checked()
+    ui.expect(choice_b).not_to_be_checked()
+    review.click()
+    ui.expect(confirm).to_be_visible()
+    confirm.click()
     ui.expect(page.locator("#provider-editor")).to_contain_text("Provider \u4e0e\u521d\u59cb\u6a21\u578b\u9009\u62e9\u5df2\u4fdd\u5b58")
     applied = ui.calls("PUT", "/api/dashboard/ai/providers/19/models/enabled")
-    assert [r["body"]["catalog_revision"] for r in applied] == ["c" * 64, "e" * 64]
+    assert [r["body"]["catalog_revision"] for r in applied] == ["c" * 64, "e" * 64, "f" * 64]
     assert [r["body"]["changes"] for r in applied] == [
         [{"id": 61, "enabled": False}, {"id": 62, "enabled": True}],
-        [{"id": 61, "enabled": True}, {"id": 62, "enabled": False}]]
+        [{"id": 61, "enabled": True}, {"id": 62, "enabled": False}],
+        [{"id": 61, "enabled": False}, {"id": 62, "enabled": False}]]
     assert next(model for model in ui.models[19] if model["id"] == 63)["enabled"] is True
     assert len(ui.calls("POST", "/api/dashboard/ai/providers")) == 1
     assert len(ui.calls("POST", "/api/dashboard/ai/providers/19/models/sync")) == 2

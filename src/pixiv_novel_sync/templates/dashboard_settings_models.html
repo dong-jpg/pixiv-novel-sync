@@ -1226,7 +1226,7 @@
           if (current()) providersLoading.value = false;
         }
       };
-      const connectionIdentity = () => JSON.stringify([providerForm.id, providerForm.provider_type, providerForm.base_url, providerForm.proxy]);
+      const connectionIdentity = (provider = providerForm) => JSON.stringify([provider.id, provider.provider_type, provider.base_url, provider.proxy]);
       let probeConnectionIdentity = connectionIdentity();
       const invalidateProbe = () => {
         probeRequestId++;
@@ -1332,6 +1332,7 @@
             }),
           });
           if (!current()) return;
+          probeConnectionIdentity = identity;
           probedModels.value = data.items.map(item => ({ ...item, checked: false }));
           probeStatus.value = `通，${data.latency_ms}ms，找到 ${data.items.length} 个`;
         } catch (e) {
@@ -1453,6 +1454,13 @@
       const continueOnboarding = (method) => {
         if (providerSavePromise) return providerSavePromise;
         if (disposed || !onboarding) return Promise.resolve(false);
+        // Empty preview also means invalidated, pending or failed, not deselect-all.
+        const previewCurrent = probedModels.value.length > 0 && probeConnectionIdentity === connectionIdentity();
+        const transportSaved = providerForm.api_key === '' && connectionIdentity() === connectionIdentity(providerOriginal);
+        if (!previewCurrent || !transportSaved) {
+          showAiMessage('模型选择预览不可用，请重新探测并确认勾选后再继续；Provider 连接或密钥草稿可能尚未保存。', 'warning');
+          return Promise.resolve(false);
+        }
         const generation = providerEditorGeneration;
         const selectedKeys = probedModels.value.filter(item => item.checked).map(item => item.model_key);
         providerSaving.value = true;

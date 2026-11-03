@@ -374,6 +374,106 @@ test('actual Provider retry and revision confirmation submit visible checkboxes,
   assert.deepEqual(writes()[1].changes, [{id: 41, enabled: true}, {id: 42, enabled: false}]);
   assert.equal(m.calls.filter(call => call.url === '/api/dashboard/ai/providers' && call.method === 'POST').length, 1);
 });
+
+async function pendingSelectionPage(phase) {
+  const m = mount('dashboard_settings_models.html');
+  Object.assign(m.state.providerForm, pageProvider({id: 0, api_key: 'FAKE-PROBE-KEY'}));
+  m.state.touchProvider('api_key');
+  const env = {m, probe: 'success', held: null};
+  let operation = 0, applies = 0;
+  m.replyWith((url, init) => {
+    if (url.endsWith('/probe-models')) {
+      if (env.probe === 'pending') return env.held.promise;
+      if (env.probe === 'failed') return response({error: 'fixture probe failed'}, 503);
+      return envelope({items: env.probe === 'empty' ? [] : [{model_key: 'chosen'}, {model_key: 'not-chosen'}], latency_ms: 1});
+    }
+    if (url === '/api/dashboard/ai/providers' && init.method === 'POST') return envelope({id: 17});
+    if (url.endsWith('/models/sync')) return envelope({operation_id: 'fixture-' + (++operation)});
+    if (url.endsWith('/fixture-1/events') && phase === 'sync_failed') return sse('event: failed\ndata: {}\n\n');
+    if (url.endsWith('/fixture-1/events') && phase === 'awaiting_empty_confirmation') return sse('event: empty_confirmation_required\ndata: {}\n\n');
+    if (url.endsWith('/events')) return sse('event: completed\ndata: {}\n\n');
+    if (url.endsWith('/models/enabled')) return ++applies === 1 && phase === 'confirm_revision' ? response({error: 'conflict'}, 409) : envelope({});
+    if (url.endsWith('/17/models')) return envelope(catalogue());
+    if (url === '/api/dashboard/ai/providers') return envelope([pageProvider()]);
+    throw new Error('Unexpected ' + url);
+  });
+  await m.state.probeModels();
+  m.state.probedModels.value[0].checked = true;
+  await m.state.saveProvider();
+  if (phase === 'confirm_revision') await m.state.retryOnboarding();
+  assert.equal(m.state.onboardingState.value.phase, phase);
+  env.saved = plain(m.state.providerForm);
+  env.continue = () => phase === 'confirm_revision' ? m.state.confirmOnboardingRevision() : m.state.retryOnboarding();
+  return env;
+}
+
+for (const phase of ['sync_failed', 'confirm_revision', 'awaiting_empty_confirmation']) {
+  for (const invalidation of ['api_key', 'base_url', 'proxy', 'provider_type', 'pending', 'failed', 'empty', 'missing', 'stale_context']) {
+    test(`unavailable preview blocks ${phase} handoff after ${invalidation} without clearing pending choices`, async () => {
+      const env = await pendingSelectionPage(phase), {m} = env;
+      let probing;
+      if (['api_key', 'base_url', 'proxy', 'provider_type'].includes(invalidation)) {
+        m.state.providerForm[invalidation] = {api_key: 'FAKE-REPLACEMENT', base_url: 'https://changed.invalid/v1',
+          proxy: 'http://proxy.invalid', provider_type: 'anthropic'}[invalidation];
+        m.state.touchProvider(invalidation);
+      } else if (invalidation === 'missing') m.state.probedModels.value = [];
+      else if (invalidation === 'stale_context') m.state.providerForm.base_url = 'https://unflushed.invalid/v1';
+      else {
+        env.probe = invalidation;
+        if (invalidation === 'pending') { env.held = later(); probing = m.state.probeModels(); }
+        else await m.state.probeModels();
+      }
+      const count = m.calls.length, before = plain(m.state.onboardingState.value);
+      try {
+        assert.equal(await env.continue(), false);
+        assert.equal(m.calls.length, count, 'unavailable choices cannot trigger HTTP');
+        assert.deepEqual(plain(m.state.onboardingState.value), before, 'controller keeps original choices and revision');
+        assert.equal(m.state.providerForm.id, 17);
+        assert.equal(m.state.aiMessages['provider-form']?.type, 'warning');
+        assert.match(m.state.aiMessages['provider-form'].text, /\u91cd\u65b0\u63a2\u6d4b/);
+      } finally {
+        if (probing) { env.held.resolve(envelope({items: [], latency_ms: 1})); await probing; }
+      }
+    });
+  }
+}
+for (const field of ['api_key', 'base_url', 'proxy', 'provider_type']) {
+  test(`fresh preview with unsaved ${field} cannot silently retry the saved transport`, async () => {
+    const env = await pendingSelectionPage('sync_failed'), {m} = env;
+    m.state.providerForm[field] = {api_key: 'FAKE-REPLACEMENT', base_url: 'https://changed.invalid/v1',
+      proxy: 'http://proxy.invalid', provider_type: 'anthropic'}[field];
+    m.state.touchProvider(field);
+    await m.state.probeModels();
+    m.state.probedModels.value[1].checked = true;
+    const count = m.calls.length, before = plain(m.state.onboardingState.value);
+    assert.equal(await env.continue(), false);
+    assert.equal(m.calls.length, count);
+    assert.deepEqual(plain(m.state.onboardingState.value), before);
+  });
+}
+for (const phase of ['sync_failed', 'confirm_revision']) {
+  test(`explicit deselection over valid visible options still applies for ${phase}`, async () => {
+    const env = await pendingSelectionPage(phase), {m} = env;
+    assert.equal(m.state.probedModels.value.length, 2);
+    m.state.probedModels.value.forEach(row => { row.checked = false; });
+    await env.continue();
+    const write = m.calls.filter(call => call.url.endsWith('/models/enabled')).at(-1);
+    assert.deepEqual(JSON.parse(write.options.body).changes, [{id: 41, enabled: false}, {id: 42, enabled: false}]);
+    assert.equal(m.state.onboardingState.value.phase, 'applied');
+  });
+  test(`restoring saved transport and explicitly reprobing recovers ${phase} without another create`, async () => {
+    const env = await pendingSelectionPage(phase), {m} = env;
+    m.state.providerForm.api_key = 'FAKE-REPLACEMENT'; m.state.touchProvider('api_key');
+    await env.continue();
+    Object.assign(m.state.providerForm, env.saved); m.state.touchProvider('api_key');
+    await m.state.probeModels();
+    m.state.probedModels.value[1].checked = true;
+    await env.continue();
+    const write = m.calls.filter(call => call.url.endsWith('/models/enabled')).at(-1);
+    assert.deepEqual(JSON.parse(write.options.body).changes, [{id: 41, enabled: false}, {id: 42, enabled: true}]);
+    assert.equal(m.calls.filter(call => call.url === '/api/dashboard/ai/providers' && call.method === 'POST').length, 1);
+  });
+}
 test('actual Provider touched patch preserves zero/false/proxy and omits server metadata or blank Key', async () => {
   const m = mount('dashboard_settings_models.html');
   await m.state.editProvider(pageProvider({unknown_metadata: 'never-submit'}));
