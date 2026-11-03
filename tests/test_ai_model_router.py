@@ -836,6 +836,7 @@ class FakeStreamingProvider(AIProvider):
         request_guard=None,
         is_cancelled=None,
         on_usage=None,
+        deadline=None,
     ) -> Iterator[AIStreamChunk]:
         del messages, temperature, top_p, max_tokens
         self.registry.calls.append((self.config.name, model))
@@ -1160,7 +1161,7 @@ def test_usage_guard_commits_pending_before_post_and_captures_late_attempt(
                 observer.close()
 
         def stream_generate(self, messages, model, temperature, top_p, max_tokens, *,
-                            request_guard=None, is_cancelled=None, on_usage=None):
+                            request_guard=None, is_cancelled=None, on_usage=None, deadline=None):
             ordinal = request_guard()
             self._post()
             try:

@@ -84,7 +84,7 @@ def invocation_env(tmp_path, monkeypatch):
                 observer.close()
 
         def stream_generate(self, messages, model, temperature, top_p, max_tokens, *,
-                            request_guard=None, is_cancelled=None, on_usage=None):
+                            request_guard=None, is_cancelled=None, on_usage=None, deadline=None):
             self.messages = messages
             if self.before_guard is not None:
                 self.before_guard()

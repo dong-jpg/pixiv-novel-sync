@@ -147,6 +147,57 @@ function onboardingFixture(overrides = {}) {
     setApplyError: value => { applyError = value; }};
 }
 const fakeForm = {id: 0, name: 'Fixture', api_key: 'FAKE-KEY-NOT-A-CREDENTIAL'};
+test('explicit retry captures latest visible choices once before async sync', async () => {
+  const held = later(); let retrying = false;
+  const f = onboardingFixture({waitForSync: () => retrying ? held.promise : {status: 'failed'}});
+  await f.flow.save(fakeForm, ['chosen']);
+  retrying = true;
+  const keys = ['not-chosen'];
+  const retry = f.flow.retry(keys);
+  keys[0] = 'chosen';
+  const duplicate = f.flow.retry(['chosen']);
+  assert.equal(retry, duplicate);
+  held.resolve({status: 'succeeded'}); await retry;
+  assert.deepEqual(f.flow.getState().selectedKeys, ['not-chosen']);
+  assert.deepEqual(f.calls.at(-1).body.changes, [{id: 41, enabled: false}, {id: 42, enabled: true}]);
+  assert.equal(f.calls.filter(call => call.url === '/api/dashboard/ai/providers').length, 1);
+});
+test('explicit revision confirmation uses its latest choices and reviewed catalogue revision', async () => {
+  const f = onboardingFixture();
+  f.setApplyError(Object.assign(new Error('conflict'), {status: 409}));
+  await f.flow.save(fakeForm, ['chosen']);
+  f.setApplyError(null); f.setCatalog(catalogue(undefined, 'c'));
+  await f.flow.retry(['not-chosen']);
+  assert.equal(f.flow.getState().phase, 'confirm_revision');
+  assert.equal(f.calls.filter(call => call.method === 'PUT').length, 1);
+  const keys = ['chosen'];
+  const confirming = f.flow.confirmRevision(keys); keys[0] = 'not-chosen';
+  await confirming;
+  assert.deepEqual(f.calls.at(-1).body, {catalog_revision: 'c'.repeat(64),
+    changes: [{id: 41, enabled: true}, {id: 42, enabled: false}]});
+  assert.deepEqual(f.flow.getState().selectedKeys, ['chosen']);
+});
+test('a vanished nonempty selection cannot silently disable every discovered row', async () => {
+  const f = onboardingFixture();
+  await f.flow.save(fakeForm, ['gone']);
+  assert.equal(f.flow.getState().phase, 'selection_unavailable');
+  assert.deepEqual(f.flow.getState().missing, ['gone']);
+  assert.equal(f.calls.filter(call => call.method === 'PUT').length, 0);
+  await f.flow.retry(['not-chosen']);
+  assert.equal(f.flow.getState().phase, 'confirm_revision');
+  await f.flow.confirmRevision(['gone-again']);
+  assert.equal(f.flow.getState().phase, 'selection_unavailable');
+  assert.equal(f.calls.filter(call => call.method === 'PUT').length, 0);
+});
+test('explicitly clearing every visible choice at confirmation disables discovered rows only', async () => {
+  const f = onboardingFixture();
+  f.setApplyError(Object.assign(new Error('conflict'), {status: 409}));
+  await f.flow.save(fakeForm, ['chosen']);
+  f.setApplyError(null); await f.flow.retry(['chosen']);
+  await f.flow.confirmRevision([]);
+  assert.deepEqual(f.calls.at(-1).body.changes, [{id: 41, enabled: false}, {id: 42, enabled: false}]);
+  assert.deepEqual(f.flow.getState().selectedKeys, []);
+});
 test('sync failure retains created ID and selections; retry never recreates Provider', async () => {
   const f = onboardingFixture();
   f.setSync({status: 'failed', error_message: 'fixture failure'});
@@ -294,6 +345,34 @@ test('actual Provider save retains created ID, clears Key and applies full persi
   assert.equal(enabled.length, 1);
   assert.deepEqual(JSON.parse(enabled[0].options.body).changes, [{id: 41, enabled: true}, {id: 42, enabled: false}]);
   assert.ok(m.storageWrites.every(([key, value]) => key.startsWith('pixiv-ai-model-sync:') && value === 'fixture-operation'));
+});
+test('actual Provider retry and revision confirmation submit visible checkboxes, not original choices', async () => {
+  const m = mount('dashboard_settings_models.html');
+  Object.assign(m.state.providerForm, pageProvider({id: 0}));
+  m.state.probedModels.value = [{model_key: 'chosen', checked: true}, {model_key: 'not-chosen', checked: false}];
+  let operation = 0, applies = 0;
+  m.replyWith((url, init) => {
+    if (url === '/api/dashboard/ai/providers' && init.method === 'POST') return envelope({id: 17});
+    if (url.endsWith('/models/sync')) return envelope({operation_id: 'fixture-' + (++operation)});
+    if (url.endsWith('/fixture-1/events')) return sse('event: failed\ndata: {}\n\n');
+    if (url.endsWith('/fixture-2/events')) return sse('event: completed\ndata: {}\n\n');
+    if (url.endsWith('/models/enabled')) return ++applies === 1 ? response({error: 'conflict'}, 409) : envelope({});
+    if (url.endsWith('/17/models')) return envelope(catalogue());
+    if (url === '/api/dashboard/ai/providers') return envelope([pageProvider()]);
+    throw new Error('Unexpected ' + url);
+  });
+  await m.state.saveProvider();
+  m.state.probedModels.value[0].checked = false; m.state.probedModels.value[1].checked = true;
+  await m.state.retryOnboarding();
+  const writes = () => m.calls.filter(call => call.url.endsWith('/models/enabled')).map(call => JSON.parse(call.options.body));
+  assert.deepEqual(writes()[0].changes, [{id: 41, enabled: false}, {id: 42, enabled: true}]);
+  await m.state.retryOnboarding();
+  assert.equal(m.state.onboardingState.value.phase, 'confirm_revision');
+  assert.equal(writes().length, 1);
+  m.state.probedModels.value[0].checked = true; m.state.probedModels.value[1].checked = false;
+  await m.state.confirmOnboardingRevision();
+  assert.deepEqual(writes()[1].changes, [{id: 41, enabled: true}, {id: 42, enabled: false}]);
+  assert.equal(m.calls.filter(call => call.url === '/api/dashboard/ai/providers' && call.method === 'POST').length, 1);
 });
 test('actual Provider touched patch preserves zero/false/proxy and omits server metadata or blank Key', async () => {
   const m = mount('dashboard_settings_models.html');

@@ -1372,7 +1372,7 @@
       const onboardingMessage = computed(() => ({
         saving: '正在保存 Provider', saved: 'Provider 已保存', saved_only: 'Provider 已保存；未选择模型，未同步或批量启用',
         syncing: 'Provider 已保存，正在同步已保存目录', awaiting_empty_confirmation: 'Provider 已保存；等待明确确认或取消空目录',
-        selection_unavailable: 'Provider 已保存；目录没有可应用的发现记录，选择尚未应用',
+        selection_unavailable: 'Provider 已保存；目录没有匹配的可应用发现记录，选择尚未应用',
         applied: 'Provider 与初始模型选择已保存', sync_failed: 'Provider 已保存；同步失败，选择尚未应用',
         apply_failed: 'Provider 已保存；选择写入未确认，重试前必须刷新并确认', conflict: '目录版本冲突；选择尚未确认，需刷新并重新确认',
         confirm_revision: '已读取最新完整目录；请确认使用该版本重新应用选择',
@@ -1454,8 +1454,9 @@
         if (providerSavePromise) return providerSavePromise;
         if (disposed || !onboarding) return Promise.resolve(false);
         const generation = providerEditorGeneration;
+        const selectedKeys = probedModels.value.filter(item => item.checked).map(item => item.model_key);
         providerSaving.value = true;
-        providerSavePromise = (async () => { await onboarding[method](); return finishProviderSave(generation); })()
+        providerSavePromise = (async () => { await onboarding[method](selectedKeys); return finishProviderSave(generation); })()
           .finally(() => { providerSavePromise = null; if (!disposed && generation === providerEditorGeneration) providerSaving.value = false; });
         return providerSavePromise;
       };

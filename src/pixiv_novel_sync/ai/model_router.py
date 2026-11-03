@@ -1023,9 +1023,9 @@ class ModelRouter:
         ).strftime("%Y-%m-%d %H:%M:%S")
 
     @staticmethod
-    def _deadline_expired(value: Any) -> bool:
+    def _deadline_remaining(value: Any) -> float | None:
         if not value:
-            return False
+            return None
         try:
             deadline = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         except ValueError as exc:
@@ -1034,7 +1034,12 @@ class ModelRouter:
             deadline = deadline.replace(tzinfo=timezone.utc)
         else:
             deadline = deadline.astimezone(timezone.utc)
-        return _utc_now() >= deadline
+        return (deadline - _utc_now()).total_seconds()
+
+    @classmethod
+    def _deadline_expired(cls, value: Any) -> bool:
+        remaining = cls._deadline_remaining(value)
+        return remaining is not None and remaining <= 0
 
     def _stop_reason(
         self,
@@ -1510,6 +1515,10 @@ class ModelRouter:
         try:
             state = self._active_route_state(db, request)
             request.route_deadline_at = state.get("route_deadline_at")
+            # Freeze the UTC-to-monotonic mapping once, not once per retry/target.
+            deadline_anchor = time.monotonic()
+            remaining = self._deadline_remaining(request.route_deadline_at)
+            deadline = None if remaining is None else deadline_anchor + remaining
             candidates = [
                 candidate
                 for candidate in request.candidate_snapshot.candidates
@@ -1644,6 +1653,7 @@ class ModelRouter:
                             request_guard=request_guard,
                             is_cancelled=lambda: self._request_cancelled(request),
                             on_usage=on_usage,
+                            deadline=deadline,
                         )
                     )
                     attempt_parts: list[str] = []
@@ -1748,7 +1758,7 @@ class ModelRouter:
                         or error.finish_reason == "cancelled"
                     )
                     stop_reason = self._stop_reason(request)
-                    if stop_reason == "deadline":
+                    if stop_reason == "deadline" or error.category == "route_budget_exhausted":
                         # A blocking read may expire as a network error rather than
                         # observe cancellation; the route deadline still applies.
                         partial = request.stage == "main" and current_output_started

@@ -53,6 +53,7 @@
         <button @click="seedAgents" :disabled="!seedProviderId" class="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-sm disabled:opacity-50">一键初始化</button>
         <span class="text-xs text-pixiv-gray self-center">只补还没有的内置 Agent，不会覆盖你改过的绑定</span>
       </div>
+      <fieldset id="agent-editor-fields" :disabled="agentSaving" :aria-busy="agentSaving" class="min-w-0 space-y-3">
       <div id="agent-form"></div>
       <label for="agent-name" class="text-sm">任务名称</label>
       <input id="agent-name" v-model="agentForm.name" @input="markAgentTouched('name')" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="任务名称">
@@ -65,7 +66,7 @@
         <label><input type="radio" v-model="agentForm.binding_type" value="fixed" @change="markAgentTouched('binding_type')"> 固定模型（可手工输入）</label>
         <label><input type="radio" v-model="agentForm.binding_type" value="pool" @change="markAgentTouched('binding_type')"> 路由组</label>
       </div>
-      <ai-model-picker id="agent-binding-picker" label="选择任务模型和路由组" :options="agentPickerOptions" :current="agentPickerCurrent" @select="chooseAgentBinding"></ai-model-picker>
+      <ai-model-picker id="agent-binding-picker" label="选择任务模型和路由组" :options="agentPickerOptions" :current="agentPickerCurrent" :disabled="agentSaving" @select="chooseAgentBinding"></ai-model-picker>
       <div v-if="agentForm.binding_type === 'fixed'" class="space-y-2">
         <label for="agent-legacy-provider" class="text-xs">手工固定绑定的 Provider</label>
         <select id="agent-legacy-provider" v-model.number="agentForm.provider_id" @change="markAgentTouched('provider_id')" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
@@ -104,6 +105,7 @@
         <button id="agent-save" @click="saveAgent" :disabled="!agentBindingValid || agentSaving" class="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm disabled:opacity-50">{{ agentForm.id ? '更新任务' : '保存任务' }}</button>
         <button v-if="agentForm.id" @click="resetAgentForm" class="px-4 py-2 bg-gray-100 rounded-lg text-sm">取消编辑</button>
       </div>
+      </fieldset>
     </div>
     <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
       <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
@@ -148,7 +150,7 @@
           </div>
           <div v-if="agent.required_capabilities && agent.required_capabilities.length" class="text-xs text-pixiv-gray mt-1">能力：{{ agent.required_capabilities.join(', ') }}</div>
           <div class="flex gap-2 mt-2">
-            <button @click="editAgent(agent)" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">编辑</button>
+            <button @click="editAgent(agent)" :disabled="agentSaving" class="text-xs px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100 disabled:opacity-50">编辑</button>
             <button @click="deleteAgent(agent.id)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
           </div>
         </div>
@@ -313,7 +315,7 @@
             availability: !provider || provider.enabled === false ? 'unavailable' : 'unverified', reason: '手工固定绑定，未经目录验证'};
       });
       const chooseAgentBinding = option => {
-        if (!['ready', 'unverified'].includes(option.availability)) return;
+        if (agentSaving.value || !['ready', 'unverified'].includes(option.availability)) return;
         agentForm.binding_type = option.kind === 'pool' ? 'pool' : 'fixed';
         if (option.kind === 'pool') agentForm.model_pool_id = option.pool_id;
         else { agentForm.provider_id = option.provider_id; agentForm.model = option.model_key; }
@@ -568,11 +570,13 @@
       };
       const loadAgents = async () => { agents.value = await window.aiApi.agents(); };
 
-      const resetAgentForm = () => {
+      const clearAgentForm = () => {
         Object.assign(agentForm, { id: 0, name: '', task_type: 'keyword_clean', binding_type: 'fixed', provider_id: 0, model: '', model_pool_id: 0, required_capabilities: [], system_prompt: '', temperature: 0.8, top_p: 0.9, max_tokens: 4000, context_window: 16000, enabled: true });
         agentTouched.clear(); agentOriginal = {};
       };
+      const resetAgentForm = () => { if (!agentSaving.value) clearAgentForm(); };
       const editAgent = (agent) => {
+        if (agentSaving.value) return;
         Object.assign(agentForm, { id: agent.id, name: agent.name ?? '', task_type: agent.task_type ?? 'keyword_clean', binding_type: agent.binding_type ?? 'fixed', provider_id: agent.provider_id ?? 0, model: agent.model ?? '', model_pool_id: agent.model_pool_id ?? 0, required_capabilities: [...(agent.required_capabilities ?? [])], system_prompt: agent.system_prompt ?? '', temperature: agent.temperature ?? 0.8, top_p: agent.top_p ?? 0.9, max_tokens: agent.max_tokens ?? 4000, context_window: agent.context_window ?? 16000, enabled: agent.enabled ?? true });
         agentOriginal = Object.fromEntries(agentFields.filter(key => Object.hasOwn(agent, key)).map(key => [key, JSON.parse(JSON.stringify(agent[key]))]));
         agentTouched.clear();
@@ -594,11 +598,14 @@
             bindingFields.forEach(key => delete payload[key]);
             payload.binding_type = agentForm.binding_type;
             if (agentForm.binding_type === 'pool') payload.model_pool_id = agentForm.model_pool_id;
-            else { payload.provider_id = agentForm.provider_id; payload.model = agentForm.model.trim() || null; }
+            else { payload.provider_id = agentForm.provider_id; payload.model = agentForm.model === '' ? null : agentForm.model; }
           }
           if (id && !Object.keys(payload).length) return true;
           await aiApi(id ? '/api/dashboard/ai/agents/' + id : '/api/dashboard/ai/agents', { method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-          await loadAgents(); resetAgentForm(); showAiMessage('Agent 已保存');
+          let refreshed = true;
+          try { await loadAgents(); } catch (e) { refreshed = false; }
+          clearAgentForm();
+          showAiMessage(refreshed ? 'Agent 已保存' : 'Agent 已保存；列表刷新失败，请刷新列表', refreshed ? 'success' : 'warning');
           preflightControl.reset();
           // 改完绑定立刻重解析：候选顺序变了要马上看得到
           if (candidateAgentId.value) await loadCandidateChain(candidateAgentId.value);

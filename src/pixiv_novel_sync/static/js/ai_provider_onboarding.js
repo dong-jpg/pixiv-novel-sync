@@ -7,7 +7,7 @@
   function createOnboarding({request, waitForSync, readCatalog, onChange = () => {}}) {
     let state = {phase: 'idle', pending: false, providerId: null, operationId: null,
       selectedKeys: [], revision: null, missing: [], error: ''};
-    let generation = 0, disposed = false, pendingPromise = null, reviewedPlan = null;
+    let generation = 0, disposed = false, pendingPromise = null, reviewedCatalogue = null;
     const isCurrent = activeGeneration => !disposed && generation === activeGeneration;
     const publish = patch => {
       if (disposed) return;
@@ -27,7 +27,7 @@
       pending: false, error: error.message || 'Model selection was not confirmed; refresh and review before retrying.'});
     async function applySelection(plan, activeGeneration) {
       if (!isCurrent(activeGeneration)) return;
-      if (!plan.changes.length) {
+      if (!plan.changes.length || (state.selectedKeys.length && !plan.changes.some(change => change.enabled))) {
         publish({phase: 'selection_unavailable', missing: plan.missing, pending: false, error: ''});
         return;
       }
@@ -47,7 +47,7 @@
         if (!isCurrent(activeGeneration)) return;
         const plan = AISettings.initialModelSelection(catalogue, state.selectedKeys);
         if (review) {
-          reviewedPlan = plan;
+          reviewedCatalogue = clone(catalogue);
           publish({phase: 'confirm_revision', pending: false, revision: plan.revision, missing: plan.missing});
         } else await applySelection(plan, activeGeneration);
       } catch (error) { if (isCurrent(activeGeneration)) applyFailure(error); }
@@ -113,23 +113,30 @@
         await syncSelection(activeGeneration);
       });
     }
-    function retry() {
+    function retry(selectedKeys = state.selectedKeys) {
+      const keys = [...new Set(selectedKeys)];
       return run(async activeGeneration => {
-        if (['sync_failed', 'awaiting_empty_confirmation'].includes(state.phase)) await syncSelection(activeGeneration);
-        else if (['apply_failed', 'conflict', 'selection_unavailable'].includes(state.phase)) await loadSelection(activeGeneration, true);
+        if (['sync_failed', 'awaiting_empty_confirmation'].includes(state.phase)) {
+          publish({selectedKeys: keys});
+          await syncSelection(activeGeneration);
+        } else if (['apply_failed', 'conflict', 'selection_unavailable'].includes(state.phase)) {
+          publish({selectedKeys: keys});
+          await loadSelection(activeGeneration, true);
+        }
       });
     }
-    function confirmRevision() {
+    function confirmRevision(selectedKeys = state.selectedKeys) {
+      const keys = [...new Set(selectedKeys)];
       return run(async activeGeneration => {
-        if (state.phase !== 'confirm_revision' || !reviewedPlan) return;
-        const plan = reviewedPlan;
-        reviewedPlan = null;
-        publish({pending: true});
+        if (state.phase !== 'confirm_revision' || !reviewedCatalogue) return;
+        const plan = AISettings.initialModelSelection(reviewedCatalogue, keys);
+        reviewedCatalogue = null;
+        publish({pending: true, selectedKeys: keys});
         try { await applySelection(plan, activeGeneration); }
         catch (error) { if (isCurrent(activeGeneration)) applyFailure(error); }
       });
     }
-    return {save, retry, confirmRevision, getState: () => clone(state), dispose() { disposed = true; generation++; reviewedPlan = null; }};
+    return {save, retry, confirmRevision, getState: () => clone(state), dispose() { disposed = true; generation++; reviewedCatalogue = null; }};
   }
   return {createOnboarding};
 });

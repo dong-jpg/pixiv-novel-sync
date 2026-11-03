@@ -187,8 +187,12 @@ class CatalogMixin:
             conditions = ["provider_id = ?"]
             params: list[Any] = [provider_id]
             if search:
-                conditions.append("model_key LIKE ?")
-                params.append(f"%{search}%")
+                pattern = "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+                conditions.append(
+                    "(model_key LIKE ? ESCAPE '\\' OR "
+                    "COALESCE(NULLIF(manual_display_name, ''), discovered_display_name, '') LIKE ? ESCAPE '\\')"
+                )
+                params.extend((pattern, pattern))
             if enabled_only:
                 conditions.append("enabled = 1")
             where = " AND ".join(conditions)

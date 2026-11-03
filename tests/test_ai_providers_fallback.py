@@ -465,7 +465,8 @@ def test_anthropic_non_stream_default_respects_config_max_retries(monkeypatch):
 def test_retry_backoff_is_clamped_to_60_seconds(monkeypatch):
     sleeps: list[float] = []
 
-    def record_sleep(seconds, _is_cancelled=None):
+    def record_sleep(seconds, _is_cancelled=None, deadline=None):
+        assert deadline is None
         sleeps.append(seconds)
 
     monkeypatch.setattr("pixiv_novel_sync.ai.providers._sleep_before_retry", record_sleep)

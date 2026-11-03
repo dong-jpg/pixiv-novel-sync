@@ -146,7 +146,10 @@ class OfflineUI:
         self.models = {
             17: [model(41, 17, "same/model", "Shared Model"),
                  model(43, 17, "literal/model", MALICIOUS_LABEL),
-                 model(44, 17, "disabled/model", "Disabled current", enabled=False, routable=False)]
+                 model(44, 17, "disabled/model", "Disabled current", enabled=False, routable=False),
+                 model(45, 17, "model", "Fixture identity plain"),
+                 model(46, 17, "model ", "Fixture identity spaced"),
+                 model(47, 17, "org/space model/v1 ", "Fixture identity slash")]
                 + [model(100 + i, 17, "fixture/scroll-" + str(i), "Scrollable fixture " + str(i))
                    for i in range(24)],
             18: [model(42, 18, "same/model", "Shared Model", context_window=128000)],
@@ -409,8 +412,12 @@ class OfflineUI:
                 return self._json(route, agent)
             if path == prefix + "/candidates" and method == "GET":
                 pool = self.pools.get(agent["model_pool_id"]) if agent["binding_type"] == "pool" else None
-                members = pool["members"] if pool else [{"provider_id": agent["provider_id"],
-                                                        "model_key": agent["model"], "enabled": True}]
+                if pool:
+                    members = pool["members"]
+                else:
+                    provider = next(p for p in self.providers if p["id"] == agent["provider_id"])
+                    key = agent["model"] if agent["model"] not in (None, "") else provider["default_model"]
+                    members = [{"provider_id": agent["provider_id"], "model_key": key, "enabled": True}]
                 candidates = []
                 for position, member in enumerate(members, 1):
                     provider = next(p for p in self.providers if p["id"] == member["provider_id"])
@@ -480,6 +487,10 @@ class OfflineUI:
         card = self.page.locator("#ai-agents .border.rounded-lg").filter(has=self.page.get_by_text(name, exact=True))
         card.get_by_role("button", name=EDIT, exact=True).click()
         self.expect(self.page.locator("#agent-name")).to_have_value(name)
+
+    def wait_agent_save_complete(self):
+        self.expect(self.page.locator("#agent-name")).to_have_value("")
+        self.expect(self.page.locator("#agent-name")).to_be_enabled()
 
     def edit_pool(self):
         self.page.locator("#pool-list").get_by_role("button", name=EDIT, exact=True).click()
@@ -592,6 +603,7 @@ def test_picker_real_modal_keyboard_literal_labels_and_exact_explicit_identity(u
     ui.allow("PUT", "/api/dashboard/ai/agents/4")
     with page.expect_response(lambda response: response.url.endswith("/agents/4") and response.request.method == "PUT"):
         page.locator("#agent-save").click()
+    ui.wait_agent_save_complete()
     writes = ui.calls("PUT", "/api/dashboard/ai/agents/4")
     assert [r["body"] for r in writes] == [{"binding_type": "fixed", "provider_id": 18, "model": "same/model"}]
     ui.edit_agent("Fixture Legacy Task")
@@ -601,8 +613,65 @@ def test_picker_real_modal_keyboard_literal_labels_and_exact_explicit_identity(u
     assert len(ui.writes()) == 1
     with page.expect_response(lambda response: response.url.endswith("/agents/4") and response.request.method == "PUT"):
         page.locator("#agent-save").click()
+    ui.wait_agent_save_complete()
     assert ui.calls("PUT", "/api/dashboard/ai/agents/4")[1]["body"] == {
         "binding_type": "fixed", "provider_id": 17, "model": "same/model"}
+    ui.edit_agent("Fixture Legacy Task")
+    trigger.tap()
+    search.fill("Fixture identity")
+    ui.expect(page.get_by_role("option").filter(has_text="Fixture identity plain")).to_have_count(1)
+    ui.expect(page.get_by_role("option").filter(has_text="Fixture identity spaced")).to_have_count(1)
+    page.get_by_role("option").filter(has_text="Fixture identity spaced").tap()
+    ui.expect(page.locator("#agent-legacy-model")).to_have_value("model ")
+    assert len(ui.writes()) == 2
+    with page.expect_response(lambda response: response.url.endswith("/agents/4") and response.request.method == "PUT"):
+        page.locator("#agent-save").click()
+    ui.wait_agent_save_complete()
+    assert ui.calls("PUT", "/api/dashboard/ai/agents/4")[2]["body"] == {
+        "binding_type": "fixed", "provider_id": 17, "model": "model "}
+    for value in ("org/space model/v1 ", ""):
+        ui.edit_agent("Fixture Legacy Task")
+        page.locator("#agent-legacy-model").fill(value)
+        with page.expect_response(lambda response: response.url.endswith("/agents/4") and response.request.method == "PUT"):
+            page.locator("#agent-save").click()
+        ui.wait_agent_save_complete()
+        expected = value if value != "" else None
+        assert ui.calls("PUT", "/api/dashboard/ai/agents/4")[-1]["body"] == {
+            "binding_type": "fixed", "provider_id": 17, "model": expected}
+        assert next(agent for agent in ui.agents if agent["id"] == 4)["model"] == expected
+    ui.assert_viewport()
+
+
+def test_agent_save_locks_rapid_edit_until_followup_list_read_completes(ui):
+    page = ui.page
+    ui.goto("/dashboard/settings/agents")
+    ui.edit_agent("Fixture Legacy Task")
+    page.locator("#agent-name").fill("Fixture Save Locked")
+    ui.allow("PUT", "/api/dashboard/ai/agents/4")
+    endpoint = "/api/dashboard/ai/agents"
+    ui.hold("GET", endpoint)
+    with page.expect_request(lambda request: request.url == ORIGIN + endpoint and request.method == "GET"):
+        page.locator("#agent-save").click()
+    other = page.locator("#ai-agents .border.rounded-lg").filter(
+        has=page.get_by_text("Fixture Group Task", exact=True)).get_by_role("button", name=EDIT, exact=True)
+    try:
+        ui.expect(page.locator("#agent-name")).to_be_disabled()
+        # Check the container's native lock as well as its actual controls.
+        ui.expect(page.locator("#agent-editor-fields")).to_have_js_property("disabled", True)
+        ui.expect(page.locator("#agent-editor-fields")).to_have_attribute("aria-busy", "true")
+        ui.expect(page.locator("#agent-binding-picker")).to_be_disabled()
+        ui.expect(other).to_be_disabled()
+        ui.expect(page.locator("#agent-name")).to_have_value("Fixture Save Locked")
+        assert len(ui.pending[("GET", endpoint)]) == 1
+        assert [r["body"] for r in ui.writes()] == [{"name": "Fixture Save Locked"}]
+    finally:
+        if ui.pending[("GET", endpoint)]:
+            ui.release("GET", endpoint)
+    ui.wait_agent_save_complete()
+    ui.expect(other).to_be_enabled()
+    other.click()
+    ui.expect(page.locator("#agent-name")).to_have_value("Fixture Group Task")
+    assert [r["body"] for r in ui.writes()] == [{"name": "Fixture Save Locked"}]
     ui.assert_viewport()
 
 
@@ -722,20 +791,31 @@ def test_onboarding_pending_sync_failure_cas_review_and_success_trace(ui):
     retry = page.get_by_role("button", name="\u91cd\u8bd5\u76ee\u5f55\u540c\u6b65", exact=True)
     ui.expect(retry).to_be_visible()
     ui.expect(page.locator("#provider-editor")).to_contain_text("\u540c\u6b65\u5931\u8d25\uff0c\u9009\u62e9\u5c1a\u672a\u5e94\u7528")
+    choice_a = page.get_by_role("checkbox", name="\u4fdd\u5b58\u540e\u521d\u59cb\u542f\u7528 new/selected", exact=True)
+    choice_b = page.get_by_role("checkbox", name="\u4fdd\u5b58\u540e\u521d\u59cb\u542f\u7528 new/unselected", exact=True)
+    choice_a.uncheck()
+    choice_b.check()
     retry.click()
     review = page.get_by_role("button", name="\u5237\u65b0\u5b8c\u6574\u76ee\u5f55\u5e76\u5ba1\u9605", exact=True)
     ui.expect(review).to_be_visible()
     ui.expect(page.locator("#provider-editor")).to_contain_text("\u76ee\u5f55\u7248\u672c\u51b2\u7a81")
     assert len(ui.calls("PUT", "/api/dashboard/ai/providers/19/models/enabled")) == 1
+    assert ui.calls("PUT", "/api/dashboard/ai/providers/19/models/enabled")[0]["body"]["changes"] == [
+        {"id": 61, "enabled": False}, {"id": 62, "enabled": True}]
     review.click()
     confirm = page.get_by_role("button", name="\u786e\u8ba4\u4f7f\u7528\u6700\u65b0\u7248\u672c\u5e94\u7528\u9009\u62e9", exact=True)
     ui.expect(confirm).to_be_visible()
     assert len(ui.calls("PUT", "/api/dashboard/ai/providers/19/models/enabled")) == 1
+    choice_a.check()
+    choice_b.uncheck()
     confirm.click()
     ui.expect(page.locator("#provider-editor")).to_contain_text("Provider \u4e0e\u521d\u59cb\u6a21\u578b\u9009\u62e9\u5df2\u4fdd\u5b58")
     applied = ui.calls("PUT", "/api/dashboard/ai/providers/19/models/enabled")
     assert [r["body"]["catalog_revision"] for r in applied] == ["c" * 64, "e" * 64]
-    assert all(r["body"]["changes"] == [{"id": 61, "enabled": True}, {"id": 62, "enabled": False}] for r in applied)
+    assert [r["body"]["changes"] for r in applied] == [
+        [{"id": 61, "enabled": False}, {"id": 62, "enabled": True}],
+        [{"id": 61, "enabled": True}, {"id": 62, "enabled": False}]]
+    assert next(model for model in ui.models[19] if model["id"] == 63)["enabled"] is True
     assert len(ui.calls("POST", "/api/dashboard/ai/providers")) == 1
     assert len(ui.calls("POST", "/api/dashboard/ai/providers/19/models/sync")) == 2
     assert all(not r["query"] for r in ui.calls("GET", "/api/dashboard/ai/providers/19/models"))

@@ -196,6 +196,47 @@ def test_catalog_three_counts_are_independent(db):
         assert item["routable"] == 2
 
 
+def test_catalog_search_uses_effective_names_and_keeps_full_revision_and_filters(db):
+    provider_id = seed_provider(db)
+    other_provider = seed_provider(db)
+    overridden = db.create_ai_provider_model({"provider_id": provider_id,
+        "model_key": "vendor/opaque-001", "manual_display_name": "Friendly Writer"})
+    db.upsert_discovered_models(provider_id, [
+        {"model_key": "vendor/opaque-001", "display_name": "Hidden Upstream"},
+        {"model_key": "vendor/opaque-002", "display_name": "Friendly Discovered"},
+        {"model_key": "vendor/opaque-003", "display_name": "Friendly Disabled"},
+    ], generation=1)
+    db.create_ai_provider_model({"provider_id": other_provider, "model_key": "other", "manual_display_name": "Friendly Other"})
+    before = db.list_ai_provider_models(provider_id)
+    disabled = before["items"][2]["id"]
+    db.update_ai_provider_model(disabled, {"enabled": False})
+    before = db.list_ai_provider_models(provider_id)
+    result = db.list_ai_provider_models(provider_id, search="Friendly")
+    assert [row["id"] for row in result["items"]] == [row["id"] for row in before["items"]]
+    assert db.list_ai_provider_models(provider_id, search="Hidden Upstream")["items"] == []
+    assert db.list_ai_provider_models(provider_id, search="opaque-001")["items"][0]["id"] == overridden
+    for filters in ({"enabled_only": True}, {"routable_only": True}):
+        filtered = db.list_ai_provider_models(provider_id, search="Friendly", **filters)
+        assert [row["id"] for row in filtered["items"]] == [row["id"] for row in before["items"][:2]]
+        assert filtered["catalog_revision"] == before["catalog_revision"]
+    assert result["catalog_revision"] == before["catalog_revision"]
+    assert result["total"] == before["total"] == 3
+    db.update_ai_provider_model(overridden, {"manual_display_name": None})
+    assert db.list_ai_provider_models(provider_id, search="Hidden Upstream")["items"][0]["id"] == overridden
+
+
+@pytest.mark.parametrize("text", ["100% Writer", "under_score", "back\\slash", "O'Reilly", "' OR 1=1 --"])
+def test_catalog_search_treats_display_and_key_search_as_literal_text(db, text):
+    provider_id = seed_provider(db)
+    model_id = db.create_ai_provider_model({"provider_id": provider_id,
+        "model_key": "opaque-id", "manual_display_name": text})
+    db.create_ai_provider_model({"provider_id": provider_id, "model_key": "100X Writer underXscore backslash other"})
+    before = db.list_ai_provider_models(provider_id)
+    result = db.list_ai_provider_models(provider_id, search=text)
+    assert [row["id"] for row in result["items"]] == [model_id]
+    assert result["catalog_revision"] == before["catalog_revision"]
+
+
 def test_delete_provider_cascades_catalog_rows(db):
     """目录行交给外键 CASCADE。固定 Agent 和池成员仍然拦住删除。"""
     provider_id = seed_provider(db)

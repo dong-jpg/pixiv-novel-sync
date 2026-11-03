@@ -62,6 +62,8 @@ class BlockingDiscoveryProvider:
         *,
         request_guard=None,
         is_cancelled=None,
+        on_usage=None,
+        deadline=None,
     ) -> Iterator[AIStreamChunk]:
         del messages, temperature, top_p, max_tokens
         if is_cancelled is not None and is_cancelled():

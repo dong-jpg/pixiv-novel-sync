@@ -345,7 +345,12 @@ def _redact_secrets(text: str, *, api_key: str | None = None) -> str:
     return text
 
 
-def _iter_sse_lines(response: requests.Response) -> Iterator[str]:
+def _iter_sse_lines(
+    response: requests.Response,
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+    deadline: float | None = None,
+) -> Iterator[str]:
     """Yield text lines from a streaming response with correct UTF-8 decoding.
 
     ``requests.iter_lines(decode_unicode=True)`` decodes each network chunk
@@ -356,7 +361,9 @@ def _iter_sse_lines(response: requests.Response) -> Iterator[str]:
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     replaced_chars = 0
     buffer = ""
+    _check_cancelled(is_cancelled, deadline)
     for chunk in response.iter_content(chunk_size=None):
+        _check_cancelled(is_cancelled, deadline)
         if not chunk:
             continue
         text = decoder.decode(chunk)
@@ -383,7 +390,9 @@ def _iter_sse_lines(response: requests.Response) -> Iterator[str]:
                     scope="provider",
                 )
             yield line
+            _check_cancelled(is_cancelled, deadline)
             buffer = buffer[idx + 1:]
+    _check_cancelled(is_cancelled, deadline)
     tail = decoder.decode(b"", final=True)
     if tail:
         replaced_chars += tail.count("�")
@@ -431,7 +440,16 @@ def _runtime_config_error(error: ProviderConfigError) -> AIProviderError:
     return AIProviderError(message, category=category, scope="provider")
 
 
-def _check_cancelled(is_cancelled: Callable[[], bool] | None) -> None:
+def _check_cancelled(
+    is_cancelled: Callable[[], bool] | None,
+    deadline: float | None = None,
+) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise AIProviderError(
+            "AI route deadline exhausted",
+            category="route_budget_exhausted",
+            scope="provider",
+        )
     if is_cancelled is not None and is_cancelled():
         raise _cancelled_error()
 
@@ -439,8 +457,9 @@ def _check_cancelled(is_cancelled: Callable[[], bool] | None) -> None:
 def _before_network_request(
     request_guard: Callable[[], int | None] | None,
     is_cancelled: Callable[[], bool] | None,
+    deadline: float | None = None,
 ) -> int | None:
-    _check_cancelled(is_cancelled)
+    _check_cancelled(is_cancelled, deadline)
     return request_guard() if request_guard is not None else None
 
 
@@ -459,16 +478,19 @@ def _retry_delay(attempt: int, retry_after: float | None = None) -> float:
 def _sleep_before_retry(
     seconds: float,
     is_cancelled: Callable[[], bool] | None,
+    deadline: float | None = None,
 ) -> None:
     """分片休眠退避：每片检查一次取消回调，保证取消能及时中断退避等待。"""
-    _check_cancelled(is_cancelled)
-    deadline = time.monotonic() + max(0.0, float(seconds))
+    _check_cancelled(is_cancelled, deadline)
+    retry_until = time.monotonic() + max(0.0, float(seconds))
     while True:
-        remaining = deadline - time.monotonic()
+        remaining = retry_until - time.monotonic()
         if remaining <= 0:
             return
-        time.sleep(min(0.5, remaining))
-        _check_cancelled(is_cancelled)
+        if deadline is not None:
+            remaining = min(remaining, deadline - time.monotonic())
+        time.sleep(max(0.0, min(0.5, remaining)))
+        _check_cancelled(is_cancelled, deadline)
 
 
 def _normalize_finish_reason(reason: Any) -> tuple[str, bool]:
@@ -546,6 +568,7 @@ class AIProvider:
         request_guard: Callable[[], int | None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
         on_usage: Callable[[int, Mapping[str, Any]], None] | None = None,
+        deadline: float | None = None,
     ) -> Iterator[AIStreamChunk]:
         raise NotImplementedError
 
@@ -562,6 +585,8 @@ class AIProvider:
         max_body_bytes: int | None = None,
         byte_budget: ResponseByteBudget | None = None,
         deadline: float | None = None,
+        route_deadline: float | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
         **kwargs: Any,
     ) -> requests.Response:
         normalized_method = str(method or "").strip().upper()
@@ -574,6 +599,7 @@ class AIProvider:
         ):
             raise ValueError("max_body_bytes 必须是正整数")
 
+        _check_cancelled(is_cancelled, route_deadline)
         if deadline is not None and time.monotonic() >= deadline:
             raise AIProviderError("模型目录同步超过截止时间")
 
@@ -596,15 +622,6 @@ class AIProvider:
         headers["Host"] = target.host_header
         kwargs["allow_redirects"] = False
         kwargs["stream"] = True
-        if deadline is not None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise AIProviderError("模型目录同步超过截止时间")
-            configured_timeout = kwargs.get("timeout")
-            if isinstance(configured_timeout, (int, float)):
-                kwargs["timeout"] = min(float(configured_timeout), remaining)
-            elif configured_timeout is None:
-                kwargs["timeout"] = remaining
         with self._adapter_lock:
             adapter = self._pinned_adapters.get(prefix)
             if adapter is None:
@@ -612,6 +629,21 @@ class AIProvider:
                 self.session.mount(prefix, adapter)
                 self._pinned_adapters[prefix] = adapter
         request_method = getattr(self.session, normalized_method.lower(), None)
+        # DNS, proxy resolution and adapter/guard work consume the same budget.
+        _check_cancelled(is_cancelled, route_deadline)
+        for limit in (deadline, route_deadline):
+            if limit is None:
+                continue
+            remaining = limit - time.monotonic()
+            if remaining <= 0:
+                if limit == route_deadline:
+                    _check_cancelled(is_cancelled, route_deadline)
+                raise AIProviderError("模型目录同步超过截止时间")
+            configured_timeout = kwargs.get("timeout")
+            if isinstance(configured_timeout, (int, float)):
+                kwargs["timeout"] = min(float(configured_timeout), remaining)
+            elif configured_timeout is None:
+                kwargs["timeout"] = remaining
         if callable(request_method):
             response = request_method(pinned_url, headers=headers, **kwargs)
         else:
@@ -621,6 +653,11 @@ class AIProvider:
                 headers=headers,
                 **kwargs,
             )
+        try:
+            _check_cancelled(is_cancelled, route_deadline)
+        except BaseException:
+            response.close()
+            raise
         if 300 <= response.status_code < 400:
             response.close()
             raise AIProviderError(f"AI API 拒绝重定向响应 {response.status_code}")
@@ -629,6 +666,7 @@ class AIProvider:
             body = bytearray()
             try:
                 for chunk in response.iter_content(chunk_size=64 * 1024):
+                    _check_cancelled(is_cancelled, route_deadline)
                     if deadline is not None and time.monotonic() >= deadline:
                         raise AIProviderError("模型目录同步超过截止时间")
                     if not chunk:
@@ -657,6 +695,7 @@ class AIProvider:
             body = bytearray()
             try:
                 for chunk in response.iter_content(chunk_size=64 * 1024):
+                    _check_cancelled(is_cancelled, route_deadline)
                     if not chunk:
                         continue
                     if isinstance(chunk, str):
@@ -667,6 +706,7 @@ class AIProvider:
                             f"{_byte_limit_label(_MAX_ERROR_BODY_BYTES)} 上限"
                         )
                     body.extend(chunk)
+                _check_cancelled(is_cancelled, route_deadline)
             except BaseException:
                 response.close()
                 raise
@@ -888,6 +928,7 @@ class OpenAICompatibleProvider(AIProvider):
         request_guard: Callable[[], int | None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
         on_usage: Callable[[int, Mapping[str, Any]], None] | None = None,
+        deadline: float | None = None,
     ) -> Iterator[AIStreamChunk]:
         _require_enabled(self.config)
         if not self.config.api_key:
@@ -918,6 +959,7 @@ class OpenAICompatibleProvider(AIProvider):
                 request_guard=request_guard,
                 is_cancelled=is_cancelled,
                 on_usage=on_usage,
+                deadline=deadline,
             )
         else:
             yield from self._non_stream_generate(
@@ -927,6 +969,7 @@ class OpenAICompatibleProvider(AIProvider):
                 request_guard=request_guard,
                 is_cancelled=is_cancelled,
                 on_usage=on_usage,
+                deadline=deadline,
             )
 
     def _stream_chat_completions(
@@ -938,12 +981,13 @@ class OpenAICompatibleProvider(AIProvider):
         request_guard: Callable[[], int | None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
         on_usage: Callable[[int, Mapping[str, Any]], None] | None = None,
+        deadline: float | None = None,
     ) -> Iterator[AIStreamChunk]:
         # 7.7: 尊重max_retries配置,不强制最小值3
         max_retries = max(0, self.config.max_retries)
         produced_output = False
         for attempt in range(max_retries + 1):
-            request_ordinal = _before_network_request(request_guard, is_cancelled)
+            request_ordinal = _before_network_request(request_guard, is_cancelled, deadline)
             usage = RequestUsageObserver("openai_compatible", request_ordinal, on_usage)
             delegating_fallback = False
             try:
@@ -953,6 +997,8 @@ class OpenAICompatibleProvider(AIProvider):
                     json=payload,
                     stream=True,
                     timeout=self.config.timeout_seconds,
+                    route_deadline=deadline,
+                    is_cancelled=is_cancelled,
                     proxies=self._proxies(),
                 ) as response:
                     if response.status_code in (500, 502, 503, 504, 408, 429):
@@ -960,9 +1006,10 @@ class OpenAICompatibleProvider(AIProvider):
                             response,
                             model=str(payload.get("model") or ""),
                             api_key=self.config.api_key,
+                            is_cancelled=is_cancelled, deadline=deadline,
                         )
                         if attempt < max_retries:
-                            _check_cancelled(is_cancelled)
+                            _check_cancelled(is_cancelled, deadline)
                             yield _progress(
                                 "retry",
                                 f"流式请求返回 HTTP {response.status_code}，准备第 {attempt + 1} 次重试",
@@ -971,7 +1018,7 @@ class OpenAICompatibleProvider(AIProvider):
                                 attempt=attempt + 1,
                                 max_retries=max_retries,
                             )
-                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
+                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled, deadline)
                             continue
                         raise error
                     if response.status_code >= 400:
@@ -979,11 +1026,12 @@ class OpenAICompatibleProvider(AIProvider):
                             response,
                             model=str(payload.get("model") or ""),
                             api_key=self.config.api_key,
+                            is_cancelled=is_cancelled, deadline=deadline,
                         )
                     emitted_delta = False
                     finish_reason: Any = None
-                    for raw_line in _iter_sse_lines(response):
-                        _check_cancelled(is_cancelled)
+                    for raw_line in _iter_sse_lines(response, is_cancelled=is_cancelled, deadline=deadline):
+                        _check_cancelled(is_cancelled, deadline)
                         if not raw_line:
                             continue
                         line = raw_line.strip()
@@ -993,7 +1041,7 @@ class OpenAICompatibleProvider(AIProvider):
                         if data == "[DONE]":
                             usage.finish(terminal=True)
                             if not emitted_delta:
-                                _check_cancelled(is_cancelled)
+                                _check_cancelled(is_cancelled, deadline)
                                 yield _progress(
                                     "fallback",
                                     "流式请求没有返回正文，切换为非流式请求",
@@ -1008,9 +1056,10 @@ class OpenAICompatibleProvider(AIProvider):
                                     request_guard=request_guard,
                                     is_cancelled=is_cancelled,
                                     on_usage=on_usage,
+                                    deadline=deadline,
                                 )
                             else:
-                                _check_cancelled(is_cancelled)
+                                _check_cancelled(is_cancelled, deadline)
                                 yield _completion_chunk(
                                     finish_reason,
                                     output_present=True,
@@ -1047,11 +1096,11 @@ class OpenAICompatibleProvider(AIProvider):
                         if text:
                             emitted_delta = True
                             produced_output = True
-                            _check_cancelled(is_cancelled)
+                            _check_cancelled(is_cancelled, deadline)
                             yield AIStreamChunk(type="delta", text=text)
                     usage.finish(terminal=False, missing_reason="interrupted")
                     if not emitted_delta:
-                        _check_cancelled(is_cancelled)
+                        _check_cancelled(is_cancelled, deadline)
                         yield _progress(
                             "fallback",
                             "流式请求结束但没有返回正文，切换为非流式请求",
@@ -1066,9 +1115,10 @@ class OpenAICompatibleProvider(AIProvider):
                             request_guard=request_guard,
                             is_cancelled=is_cancelled,
                             on_usage=on_usage,
+                            deadline=deadline,
                         )
                     else:
-                        _check_cancelled(is_cancelled)
+                        _check_cancelled(is_cancelled, deadline)
                         yield _completion_chunk(
                             finish_reason,
                             output_present=True,
@@ -1082,6 +1132,7 @@ class OpenAICompatibleProvider(AIProvider):
             except requests.RequestException as exc:
                 if usage.callback_failed or delegating_fallback:
                     raise
+                _check_cancelled(is_cancelled, deadline)
                 error = _request_provider_error(
                     exc,
                     provider_label="OpenAI-compatible API",
@@ -1092,7 +1143,7 @@ class OpenAICompatibleProvider(AIProvider):
                     # re-sends the whole prompt and duplicates output in the saved job.
                     raise error from exc
                 if attempt < max_retries:
-                    _check_cancelled(is_cancelled)
+                    _check_cancelled(is_cancelled, deadline)
                     yield _progress(
                         "retry",
                         f"流式请求失败，准备第 {attempt + 1} 次重试",
@@ -1100,7 +1151,7 @@ class OpenAICompatibleProvider(AIProvider):
                         attempt=attempt + 1,
                         max_retries=max_retries,
                     )
-                    _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
+                    _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled, deadline)
                     continue
                 raise error from exc
             finally:
@@ -1116,13 +1167,14 @@ class OpenAICompatibleProvider(AIProvider):
         request_guard: Callable[[], int | None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
         on_usage: Callable[[int, Mapping[str, Any]], None] | None = None,
+        deadline: float | None = None,
     ) -> Iterator[AIStreamChunk]:
         """非流式调用：一次性获取完整响应。"""
         payload_copy = {**payload, "stream": False}
         # 7.7: 尊重max_retries配置,不强制最小值3
         max_retries = max(0, max_retries_override) if max_retries_override is not None else max(0, self.config.max_retries)
         for attempt in range(max_retries + 1):
-            request_ordinal = _before_network_request(request_guard, is_cancelled)
+            request_ordinal = _before_network_request(request_guard, is_cancelled, deadline)
             usage = RequestUsageObserver("openai_compatible", request_ordinal, on_usage)
             try:
                 response = self._post(
@@ -1130,6 +1182,8 @@ class OpenAICompatibleProvider(AIProvider):
                     headers=headers,
                     json=payload_copy,
                     timeout=self.config.timeout_seconds,
+                    route_deadline=deadline,
+                    is_cancelled=is_cancelled,
                     proxies=self._proxies(),
                 )
                 with response:
@@ -1138,9 +1192,10 @@ class OpenAICompatibleProvider(AIProvider):
                             response,
                             model=str(payload.get("model") or ""),
                             api_key=self.config.api_key,
+                            is_cancelled=is_cancelled, deadline=deadline,
                         )
                         if attempt < max_retries:
-                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
+                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled, deadline)
                             continue
                         raise error
                     if response.status_code >= 400:
@@ -1148,6 +1203,7 @@ class OpenAICompatibleProvider(AIProvider):
                             response,
                             model=str(payload.get("model") or ""),
                             api_key=self.config.api_key,
+                            is_cancelled=is_cancelled, deadline=deadline,
                         )
                     try:
                         data = response.json()
@@ -1174,9 +1230,9 @@ class OpenAICompatibleProvider(AIProvider):
                     if not isinstance(text, str):
                         text = ""
                     if text:
-                        _check_cancelled(is_cancelled)
+                        _check_cancelled(is_cancelled, deadline)
                         yield AIStreamChunk(type="delta", text=text)
-                    _check_cancelled(is_cancelled)
+                    _check_cancelled(is_cancelled, deadline)
                     yield _completion_chunk(
                         choice.get("finish_reason"),
                         output_present=bool(text),
@@ -1190,8 +1246,9 @@ class OpenAICompatibleProvider(AIProvider):
             except requests.RequestException as exc:
                 if usage.callback_failed:
                     raise
+                _check_cancelled(is_cancelled, deadline)
                 if attempt < max_retries:
-                    _sleep_before_retry(_retry_delay(attempt), is_cancelled)
+                    _sleep_before_retry(_retry_delay(attempt), is_cancelled, deadline)
                     continue
                 raise _request_provider_error(
                     exc,
@@ -1247,6 +1304,7 @@ class AnthropicProvider(AIProvider):
         request_guard: Callable[[], int | None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
         on_usage: Callable[[int, Mapping[str, Any]], None] | None = None,
+        deadline: float | None = None,
     ) -> Iterator[AIStreamChunk]:
         _require_enabled(self.config)
         if not self.config.api_key:
@@ -1290,13 +1348,14 @@ class AnthropicProvider(AIProvider):
                 request_guard=request_guard,
                 is_cancelled=is_cancelled,
                 on_usage=on_usage,
+                deadline=deadline,
             )
             return
         # 7.7: 尊重max_retries配置,不强制最小值3
         max_retries = max(0, self.config.max_retries)
         produced_output = False
         for attempt in range(max_retries + 1):
-            request_ordinal = _before_network_request(request_guard, is_cancelled)
+            request_ordinal = _before_network_request(request_guard, is_cancelled, deadline)
             usage = RequestUsageObserver("anthropic", request_ordinal, on_usage)
             delegating_fallback = False
             try:
@@ -1306,12 +1365,15 @@ class AnthropicProvider(AIProvider):
                     json=payload,
                     stream=True,
                     timeout=self.config.timeout_seconds,
+                    route_deadline=deadline,
+                    is_cancelled=is_cancelled,
                     proxies=self._proxies(),
                 ) as response:
                     if response.status_code in (500, 502, 503, 504, 408, 429):
-                        error = _http_provider_error(response, model=model, api_key=self.config.api_key)
+                        error = _http_provider_error(response, model=model, api_key=self.config.api_key,
+                                                     is_cancelled=is_cancelled, deadline=deadline)
                         if attempt < max_retries:
-                            _check_cancelled(is_cancelled)
+                            _check_cancelled(is_cancelled, deadline)
                             yield _progress(
                                 "retry",
                                 f"Anthropic 流式请求返回 HTTP {response.status_code}，准备第 {attempt + 1} 次重试",
@@ -1320,15 +1382,16 @@ class AnthropicProvider(AIProvider):
                                 attempt=attempt + 1,
                                 max_retries=max_retries,
                             )
-                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
+                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled, deadline)
                             continue
                         raise error
                     if response.status_code >= 400:
-                        raise _http_provider_error(response, model=model, api_key=self.config.api_key)
+                        raise _http_provider_error(response, model=model, api_key=self.config.api_key,
+                                                     is_cancelled=is_cancelled, deadline=deadline)
                     emitted_delta = False
                     stop_reason: Any = None
-                    for raw_line in _iter_sse_lines(response):
-                        _check_cancelled(is_cancelled)
+                    for raw_line in _iter_sse_lines(response, is_cancelled=is_cancelled, deadline=deadline):
+                        _check_cancelled(is_cancelled, deadline)
                         if not raw_line:
                             continue
                         line = raw_line.strip()
@@ -1360,7 +1423,7 @@ class AnthropicProvider(AIProvider):
                             if text:
                                 emitted_delta = True
                                 produced_output = True
-                                _check_cancelled(is_cancelled)
+                                _check_cancelled(is_cancelled, deadline)
                                 yield AIStreamChunk(type="delta", text=text)
                         elif event_type == "message_delta":
                             usage.observe(event.get("usage"), final=True)
@@ -1370,7 +1433,7 @@ class AnthropicProvider(AIProvider):
                         elif event_type == "message_stop":
                             usage.finish(terminal=True)
                             if not emitted_delta:
-                                _check_cancelled(is_cancelled)
+                                _check_cancelled(is_cancelled, deadline)
                                 yield _progress(
                                     "fallback",
                                     "Anthropic 流式请求没有返回正文，切换为非流式请求",
@@ -1385,9 +1448,10 @@ class AnthropicProvider(AIProvider):
                                     request_guard=request_guard,
                                     is_cancelled=is_cancelled,
                                     on_usage=on_usage,
+                                    deadline=deadline,
                                 )
                             else:
-                                _check_cancelled(is_cancelled)
+                                _check_cancelled(is_cancelled, deadline)
                                 yield _completion_chunk(
                                     stop_reason,
                                     output_present=True,
@@ -1403,7 +1467,7 @@ class AnthropicProvider(AIProvider):
                             )
                     usage.finish(terminal=False, missing_reason="interrupted")
                     if not emitted_delta:
-                        _check_cancelled(is_cancelled)
+                        _check_cancelled(is_cancelled, deadline)
                         yield _progress(
                             "fallback",
                             "Anthropic 流式请求结束但没有返回正文，切换为非流式请求",
@@ -1418,9 +1482,10 @@ class AnthropicProvider(AIProvider):
                             request_guard=request_guard,
                             is_cancelled=is_cancelled,
                             on_usage=on_usage,
+                            deadline=deadline,
                         )
                     else:
-                        _check_cancelled(is_cancelled)
+                        _check_cancelled(is_cancelled, deadline)
                         yield _completion_chunk(
                             stop_reason,
                             output_present=True,
@@ -1434,6 +1499,7 @@ class AnthropicProvider(AIProvider):
             except requests.RequestException as exc:
                 if usage.callback_failed or delegating_fallback:
                     raise
+                _check_cancelled(is_cancelled, deadline)
                 error = _request_provider_error(
                     exc,
                     provider_label="Anthropic API",
@@ -1443,7 +1509,7 @@ class AnthropicProvider(AIProvider):
                     # Partial text already streamed to the caller; retrying would duplicate it.
                     raise error from exc
                 if attempt < max_retries:
-                    _check_cancelled(is_cancelled)
+                    _check_cancelled(is_cancelled, deadline)
                     yield _progress(
                         "retry",
                         f"Anthropic 流式请求失败，准备第 {attempt + 1} 次重试",
@@ -1451,7 +1517,7 @@ class AnthropicProvider(AIProvider):
                         attempt=attempt + 1,
                         max_retries=max_retries,
                     )
-                    _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
+                    _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled, deadline)
                     continue
                 raise error from exc
             finally:
@@ -1467,12 +1533,13 @@ class AnthropicProvider(AIProvider):
         request_guard: Callable[[], int | None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
         on_usage: Callable[[int, Mapping[str, Any]], None] | None = None,
+        deadline: float | None = None,
     ) -> Iterator[AIStreamChunk]:
         """非流式 fallback：关闭 stream 一次性获取完整响应。"""
         payload_copy = {**payload, "stream": False}
         max_retries = max(0, max_retries_override) if max_retries_override is not None else max(0, self.config.max_retries)
         for attempt in range(max_retries + 1):
-            request_ordinal = _before_network_request(request_guard, is_cancelled)
+            request_ordinal = _before_network_request(request_guard, is_cancelled, deadline)
             usage = RequestUsageObserver("anthropic", request_ordinal, on_usage)
             try:
                 response = self._post(
@@ -1480,6 +1547,8 @@ class AnthropicProvider(AIProvider):
                     headers=headers,
                     json=payload_copy,
                     timeout=self.config.timeout_seconds,
+                    route_deadline=deadline,
+                    is_cancelled=is_cancelled,
                     proxies=self._proxies(),
                 )
                 with response:
@@ -1488,9 +1557,10 @@ class AnthropicProvider(AIProvider):
                             response,
                             model=str(payload.get("model") or ""),
                             api_key=self.config.api_key,
+                            is_cancelled=is_cancelled, deadline=deadline,
                         )
                         if attempt < max_retries:
-                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled)
+                            _sleep_before_retry(_retry_delay(attempt, getattr(error, "retry_after", None)), is_cancelled, deadline)
                             continue
                         raise error
                     if response.status_code >= 400:
@@ -1498,6 +1568,7 @@ class AnthropicProvider(AIProvider):
                             response,
                             model=str(payload.get("model") or ""),
                             api_key=self.config.api_key,
+                            is_cancelled=is_cancelled, deadline=deadline,
                         )
                     try:
                         data = response.json()
@@ -1521,9 +1592,9 @@ class AnthropicProvider(AIProvider):
                                 text_parts.append(text)
                     text = "".join(text_parts)
                     if text:
-                        _check_cancelled(is_cancelled)
+                        _check_cancelled(is_cancelled, deadline)
                         yield AIStreamChunk(type="delta", text=text)
-                    _check_cancelled(is_cancelled)
+                    _check_cancelled(is_cancelled, deadline)
                     yield _completion_chunk(
                         data.get("stop_reason") if isinstance(data, Mapping) else None,
                         output_present=bool(text),
@@ -1537,8 +1608,9 @@ class AnthropicProvider(AIProvider):
             except requests.RequestException as exc:
                 if usage.callback_failed:
                     raise
+                _check_cancelled(is_cancelled, deadline)
                 if attempt < max_retries:
-                    _sleep_before_retry(_retry_delay(attempt), is_cancelled)
+                    _sleep_before_retry(_retry_delay(attempt), is_cancelled, deadline)
                     continue
                 raise _request_provider_error(
                     exc,
@@ -1568,7 +1640,10 @@ def _response_error_details(
     response: requests.Response,
     *,
     api_key: str | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
+    deadline: float | None = None,
 ) -> tuple[str, str]:
+    _check_cancelled(is_cancelled, deadline)
     # 强制按 UTF-8 解码（很多上游网关 Content-Type 不带 charset，requests 会按 latin-1 解析导致中文乱码）
     if not response.encoding or response.encoding.lower() in ("iso-8859-1", "latin-1"):
         response.encoding = "utf-8"
@@ -1592,6 +1667,7 @@ def _response_error_details(
     raw_body = bytearray()
     try:
         for chunk in response.iter_content(chunk_size=64 * 1024):
+            _check_cancelled(is_cancelled, deadline)
             if not chunk:
                 continue
             if isinstance(chunk, str):
@@ -1604,10 +1680,12 @@ def _response_error_details(
                     scope="provider",
                 )
             raw_body.extend(chunk)
+        _check_cancelled(is_cancelled, deadline)
     except AIProviderError:
         raise
     except Exception:
         raw_body = bytearray()
+    _check_cancelled(is_cancelled, deadline)
     # 填回 _content，让后面的 response.json()/response.text 复用已限读的内容，
     # 不再触发第二次网络读取
     response._content = bytes(raw_body)
@@ -1755,8 +1833,12 @@ def _http_provider_error(
     *,
     model: str = "",
     api_key: str | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
+    deadline: float | None = None,
 ) -> AIProviderError:
-    message, details = _response_error_details(response, api_key=api_key)
+    message, details = _response_error_details(
+        response, api_key=api_key, is_cancelled=is_cancelled, deadline=deadline,
+    )
     category, scope = _classify_provider_failure(
         int(response.status_code),
         details,

@@ -106,6 +106,70 @@ test('actual Agent name edit does not rewrite hidden values or legacy binding', 
   m.state.agentForm.name = 'After'; m.state.markAgentTouched('name'); m.state.markAgentTouched('private_config');
   await m.state.saveAgent(); assert.deepEqual(writes, [{name: 'After'}]);
 });
+for (const action of ['edit', 'reset', 'picker']) {
+  test(`Agent save owns its editor through deferred list read and blocks ${action}`, async () => {
+    const {m, writes} = editingFixture(); await m.state.editAgent(agent);
+    m.state.agentForm.name = 'Saved'; m.state.markAgentTouched('name');
+    const held = deferred();
+    m.replyWith((url, options) => {
+      if (options.method === 'PUT') { writes.push(JSON.parse(options.body)); return envelope({}); }
+      if (url === '/api/dashboard/ai/agents') return held.promise;
+      return envelope({candidates: [], limits: {}});
+    });
+    const saving = m.state.saveAgent(); await flush();
+    try {
+      assert.equal(writes.length, 1);
+      assert.equal(m.state.agentSaving.value, true);
+      const draft = plain(m.state.agentForm);
+      if (action === 'edit') m.state.editAgent({...agent, id: 5, name: 'Newer editor'});
+      else if (action === 'reset') m.state.resetAgentForm();
+      else m.state.chooseAgentBinding({kind: 'model', provider_id: 18, model_key: 'other', availability: 'ready'});
+      assert.deepEqual(plain(m.state.agentForm), draft);
+    } finally { held.resolve(envelope([{...agent, name: 'Saved'}])); await saving; }
+    assert.equal(m.state.agentSaving.value, false);
+    assert.equal(m.state.agentForm.id, 0);
+    m.state.editAgent({...agent, id: 5, name: 'Newer editor'});
+    assert.equal(m.state.agentForm.name, 'Newer editor');
+  });
+}
+test('confirmed Agent create remains saved when its following list read fails', async () => {
+  const m = mount('dashboard_settings_agents.html'); let writes = 0;
+  Object.assign(m.state.agentForm, {name: 'Saved', provider_id: 17, model: 'model '});
+  m.replyWith((url, options) => {
+    if (options.method === 'POST') { writes++; return envelope({id: 4}); }
+    return response({error: 'read-back unavailable'}, 503);
+  });
+  assert.equal(await m.state.saveAgent(), true);
+  assert.equal(m.state.agentSaving.value, false);
+  assert.equal(m.state.agentForm.name, '');
+  assert.equal(m.state.aiMessageType.value, 'warning');
+  await m.state.saveAgent();
+  assert.equal(writes, 1);
+});
+for (const key of ['model', 'model ', ' vendor/model/v1 ', ' ']) {
+  for (const mode of ['picker', 'legacy']) for (const existing of [false, true]) {
+    test(`Agent ${existing ? 'update' : 'create'} preserves opaque ${mode} key ${JSON.stringify(key)}`, async () => {
+      const m = mount('dashboard_settings_agents.html'), writes = [];
+      m.replyWith((url, init) => {
+        if (init.method === 'POST' || init.method === 'PUT') { writes.push(JSON.parse(init.body)); return envelope({id: 4}); }
+        if (url.endsWith('/candidates')) return envelope({candidates: [], limits: {}});
+        if (url.endsWith('/health')) return envelope({agents: []});
+        return envelope([]);
+      });
+      if (existing) await m.state.editAgent(agent);
+      else Object.assign(m.state.agentForm, {name: 'Synthetic agent', provider_id: 17});
+      m.state.providers.value = [{id: 17, name: 'Fixture', enabled: true}];
+      m.state.providerModels[17] = {items: ['model', 'model ', ' vendor/model/v1 ', ' '].map((model_key, i) =>
+        ({id: 41 + i, model_key, enabled: true, routable: true}))};
+      if (mode === 'picker') m.state.chooseAgentBinding({kind: 'model', provider_id: 17,
+        provider_model_id: m.state.providerModels[17].items.find(item => item.model_key === key).id,
+        model_key: key, availability: 'ready'});
+      else { m.state.agentForm.model = key; m.state.markAgentTouched('model'); }
+      assert.equal(await m.state.saveAgent(), true);
+      assert.equal(writes[0].model, key);
+    });
+  }
+}
 test('explicit picker selection sends a complete tuple; refresh does not select or replace current', async () => {
   const {m, writes} = editingFixture(); await m.state.editAgent(agent);
   m.state.providers.value = [{id: 17, name: 'Fixture A', enabled: true}];

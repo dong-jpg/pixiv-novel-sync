@@ -311,7 +311,7 @@ class FakeProvider(AIProvider):
         super().__init__(config)
         self.registry = registry
 
-    def stream_generate(self, messages, model, temperature, top_p, max_tokens, *, request_guard=None, is_cancelled=None, on_usage=None):
+    def stream_generate(self, messages, model, temperature, top_p, max_tokens, *, request_guard=None, is_cancelled=None, on_usage=None, deadline=None):
         registry = self.registry
         key = (self.config.id, model)
         registry.calls.append(key)
