@@ -25,7 +25,7 @@ from ..model_pools import (
     expand_pool_ids,
 )
 from ..crypto import AISecretError
-from ..invocation import InvocationValidationError, normalize_text_invocation
+from ..invocation import normalize_text_invocation
 from ..model_router import (
     MAX_CANDIDATE_ATTEMPTS,
     MAX_NETWORK_REQUESTS,

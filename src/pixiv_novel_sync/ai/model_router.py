@@ -1059,29 +1059,12 @@ class ModelRouter:
         db: Any,
         request: RouteRequest,
         *,
-        attempt_index: int | None,
         output_started: bool,
         output_parts: list[str],
-        started_at: float,
     ) -> RouteResult:
         """运行中到达截止时间：按 MODEL_ROUTING_GUIDE 4.3 以 route_budget_exhausted
         失败；主阶段已有输出时为 partial，保留已生成正文。"""
-        latency_ms = max(0, int((time.monotonic() - started_at) * 1000))
         partial = request.stage == "main" and output_started
-        if attempt_index is not None:
-            if not db.finish_ai_model_attempt(
-                request.job_id,
-                attempt_index,
-                request.owner_token,
-                "partial" if partial else "failed",
-                error_scope="provider",
-                error_message=_ROUTE_DEADLINE_MESSAGE,
-                error_category="route_budget_exhausted",
-                finish_reason="error",
-                output_started=output_started,
-                latency_ms=latency_ms,
-            ):
-                return self._terminal_race_result(db, request)
         if partial:
             output_text = "".join(output_parts)
             cas_won = db.finish_ai_job_cas(
@@ -1567,6 +1550,7 @@ class ModelRouter:
                         request.owner_token,
                         "cancelled",
                         error_message=_CANCEL_MESSAGES[reason],
+                        error_category="cancelled",
                     )
                     return self._terminal_race_result(db, request)
 
@@ -1767,15 +1751,28 @@ class ModelRouter:
                     if stop_reason == "deadline":
                         # A blocking read may expire as a network error rather than
                         # observe cancellation; the route deadline still applies.
-                        attempt_index = current_attempt
+                        partial = request.stage == "main" and current_output_started
+                        if current_attempt is not None and not db.finish_ai_model_attempt(
+                            request.job_id,
+                            current_attempt,
+                            request.owner_token,
+                            "partial" if partial else "failed",
+                            error_scope="provider",
+                            error_message=_ROUTE_DEADLINE_MESSAGE,
+                            error_category="route_budget_exhausted",
+                            finish_reason="error",
+                            output_started=current_output_started,
+                            latency_ms=latency_ms,
+                        ):
+                            return self._terminal_race_result(db, request)
+                        # Keep the index for exception cleanup until this write
+                        # succeeds, but do not re-finalize it if the job write fails.
                         current_attempt = None
                         return self._finish_route_deadline(
                             db,
                             request,
-                            attempt_index=attempt_index,
                             output_started=current_output_started,
                             output_parts=output_parts,
-                            started_at=started_at,
                         )
                     if cancelled:
                         db.finish_ai_model_attempt(
@@ -1796,6 +1793,7 @@ class ModelRouter:
                             request.owner_token,
                             "cancelled",
                             error_message=_CANCEL_MESSAGES[stop_reason or "cancelled"],
+                            error_category="cancelled",
                         )
                         return self._owned_terminal_result(
                             db, request, cas_won=cas_won, memory_output="".join(output_parts),
@@ -1957,6 +1955,7 @@ class ModelRouter:
                 request.owner_token,
                 "cancelled",
                 error_message=_CANCEL_MESSAGES["aborted"],
+                error_category="cancelled",
             )
             raise
         except Exception as error:

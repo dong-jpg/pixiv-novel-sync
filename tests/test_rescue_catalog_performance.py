@@ -84,7 +84,9 @@ def _trace_catalog_page(
         payload = db.list_rescues(page=page, page_size=25)
     finally:
         db.conn.set_trace_callback(None)
-        db.conn.set_authorizer(None)
+        # Python 3.10 cannot disable authorizers with None; it leaves later SQL
+        # denied on SQLite 3.37. Restore a neutral callback instead.
+        db.conn.set_authorizer(lambda *_args: sqlite3.SQLITE_OK)
     selects = [
         statement
         for statement in statements
@@ -101,6 +103,18 @@ def _freeze_payload(value):
     if isinstance(value, list):
         return tuple(_freeze_payload(item) for item in value)
     return value
+
+
+def test_catalog_trace_cleanup_allows_subsequent_write(tmp_path: Path) -> None:
+    db = Database(tmp_path / "trace-cleanup.db")
+    try:
+        db.init_schema()
+        db.rebuild_rescue_catalog()
+        _trace_catalog_page(db)
+        _insert_rescue_novels(db, 1, 2)
+        assert db.conn.execute("SELECT COUNT(*) FROM novels").fetchone()[0] == 1
+    finally:
+        db.close()
 
 
 def _catalog_signature(payload: dict) -> tuple:

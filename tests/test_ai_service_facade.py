@@ -7,7 +7,7 @@ import pytest
 import requests
 
 from pixiv_novel_sync.ai import service as service_facade
-from pixiv_novel_sync.ai.invocation import InvocationValidationError
+from pixiv_novel_sync.ai.invocation import InvocationValidationError, invocation_messages, normalize_text_invocation
 from pixiv_novel_sync.ai.model_router import ModelRouteConflictError
 from pixiv_novel_sync.ai.models import AIStreamChunk
 from pixiv_novel_sync.ai.providers import AIProviderError
@@ -218,6 +218,135 @@ def test_invoke_text_pre_cancelled_stops_before_any_request(invocation_env):
     result = env.service.invoke_text(env.agent_id, PAYLOAD, stop_requested=lambda: True)
     assert result.job_status == "cancelled" and result.output_text == ""
     assert env.provider.calls == 0 and result.usage_summary["unreported_requests"] == 0
+
+
+@pytest.mark.parametrize("published", [False, True])
+@pytest.mark.parametrize("terminal_winner", [False, True])
+def test_deadline_attempt_write_failure_closes_attempt_before_job(
+    invocation_env, monkeypatch, caplog, published, terminal_winner,
+):
+    import sqlite3
+
+    env = invocation_env
+    clock = {"now": datetime(2020, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr("pixiv_novel_sync.ai.model_router._utc_now", lambda: clock["now"])
+    original_attempt = Database.finish_ai_model_attempt
+    original_job = Database.finish_ai_job_cas
+    faults, cleanup_writes, winner_rows = [], [], []
+
+    def finish(database, *args, **fields):
+        if fields.get("error_category") == "route_budget_exhausted" and not faults:
+            faults.append(1)
+            if terminal_winner:
+                job_id, attempt_index, owner_token = args[:3]
+                assert original_attempt(database, job_id, attempt_index, owner_token, "cancelled",
+                                        error_category="cancelled", finish_reason="cancelled")
+                assert original_job(database, job_id, owner_token, "cancelled", error_category="cancelled")
+                winner_rows.append(database.get_ai_job(job_id))
+            raise sqlite3.OperationalError("database is locked: INPUT_SENTINEL")
+        result = original_attempt(database, *args, **fields)
+        if fields.get("error_category") == "unexpected_error":
+            cleanup_writes.append(result)
+        return result
+
+    def expire():
+        clock["now"] = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        return AIStreamChunk(type="delta", text="UNPUBLISHED")
+
+    monkeypatch.setattr(Database, "finish_ai_model_attempt", finish)
+    env.provider.events = ([AIStreamChunk(type="delta", text="OUTPUT_SENTINEL")] if published else []) + [expire]
+    result = env.service.invoke_text(env.agent_id, PAYLOAD)
+    job = env.db.get_ai_job(result.job_id)
+    assert faults == [1]
+    expected_status = "cancelled" if terminal_winner else "partial" if published else "failed"
+    assert job["status"] == result.job_status == expected_status
+    assert [attempt["status"] for attempt in job["attempts"]] == [expected_status]
+    assert job["error_message"] == ("cancelled" if terminal_winner else "unexpected_error")
+    assert cleanup_writes == [not terminal_winner]
+    assert result.output_text == ("OUTPUT_SENTINEL" if published and not terminal_winner else "")
+    if terminal_winner:
+        # Iterator close may still report this request's usage, but cleanup must
+        # not overwrite any winning job or attempt terminal fields.
+        winner = winner_rows[0]
+        assert {key: value for key, value in job.items() if key not in {"attempts", "usage_summary"}} == {
+            key: value for key, value in winner.items() if key not in {"attempts", "usage_summary"}
+        }
+        assert [{key: value for key, value in attempt.items() if key != "usage"} for attempt in job["attempts"]] == [
+            {key: value for key, value in attempt.items() if key != "usage"} for attempt in winner["attempts"]
+        ]
+    assert result.usage_summary["known_total_tokens"] == 12
+    assert env.provider.calls == env.provider.closed == 1
+    assert not env.service.model_router._heartbeat_workers
+    assert_no_raw_text(env, caplog)
+
+
+@pytest.mark.parametrize("phase", ["pre_attempt", "midstream", "generator_close"])
+def test_metadata_only_cancellation_reason_covers_actual_terminal_paths(invocation_env, caplog, phase):
+    env = invocation_env
+    if phase == "generator_close":
+        agent = env.service._load_agent_config(env.db, env.agent_id)
+        invocation = normalize_text_invocation(PAYLOAD, agent=agent)
+        messages = invocation_messages(invocation)
+        context = env.service._start_route_job(
+            env.db, "general", agent, env.service._build_metadata_audit("general", invocation),
+            messages=messages, max_tokens=invocation.max_tokens,
+            invocation=invocation, retention_policy="metadata_only",
+        )
+        stream = env.service._stream_route(context, messages)
+        while next(stream).type != "delta":
+            pass
+        stream.close()
+        job_id = context.job_id
+    else:
+        state = {"cancel": phase == "pre_attempt"}
+        result = env.service.invoke_text(
+            env.agent_id, PAYLOAD, stop_requested=lambda: state["cancel"],
+            on_delta=lambda _text: state.update(cancel=True),
+        )
+        job_id = result.job_id
+        assert result.job_status == result.finish_state == "cancelled"
+    job = env.db.get_ai_job(job_id)
+    assert job["status"] == "cancelled" and job["error_message"] == "cancelled"
+    expected_attempts = [] if phase == "pre_attempt" else ["cancelled"]
+    assert [attempt["status"] for attempt in job["attempts"]] == expected_attempts
+    assert [attempt["error_category"] for attempt in job["attempts"]] == expected_attempts
+    assert env.provider.calls == env.provider.closed == (0 if phase == "pre_attempt" else 1)
+    assert not env.service.model_router._heartbeat_workers
+    assert_no_raw_text(env, caplog)
+
+
+@pytest.mark.parametrize("published", [False, True])
+def test_deadline_job_write_failure_keeps_already_finished_attempt(invocation_env, monkeypatch, caplog, published):
+    import sqlite3
+
+    env = invocation_env
+    clock = {"now": datetime(2020, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr("pixiv_novel_sync.ai.model_router._utc_now", lambda: clock["now"])
+    original = Database.finish_ai_job_cas
+    faults = []
+
+    def finish(database, *args, **fields):
+        if fields.get("error_category") == "route_budget_exhausted" and not faults:
+            faults.append(1)
+            assert all(attempt["status"] != "running" for attempt in database.get_ai_job(args[0])["attempts"])
+            raise sqlite3.OperationalError("database is locked: INPUT_SENTINEL")
+        return original(database, *args, **fields)
+
+    def expire():
+        clock["now"] = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        return AIStreamChunk(type="delta", text="UNPUBLISHED")
+
+    monkeypatch.setattr(Database, "finish_ai_job_cas", finish)
+    env.provider.events = ([AIStreamChunk(type="delta", text="OUTPUT_SENTINEL")] if published else []) + [expire]
+    result = env.service.invoke_text(env.agent_id, PAYLOAD)
+    job = env.db.get_ai_job(result.job_id)
+    assert faults == [1]
+    assert job["status"] == result.job_status == ("partial" if published else "failed")
+    assert [attempt["status"] for attempt in job["attempts"]] == [job["status"]]
+    assert job["attempts"][0]["error_category"] == "route_budget_exhausted"
+    assert result.output_text == ("OUTPUT_SENTINEL" if published else "")
+    assert env.provider.calls == env.provider.closed == 1
+    assert_no_raw_text(env, caplog)
 
 
 def test_invoke_text_committed_cancel_cannot_race_the_request_reservation(invocation_env, monkeypatch):
