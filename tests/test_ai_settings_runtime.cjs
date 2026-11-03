@@ -704,3 +704,123 @@ test('a lost sync transport retains its known operation for reconnection instead
   assert.equal(f.flow.getState().phase, 'applied');
   assert.equal(f.calls.filter(call => call.url.endsWith('/models/sync')).length, 1);
 });
+
+test('rejected sync starts release their false queued state and allow an explicit retry', async () => {
+  const m = mount('dashboard_settings_models.html', '?view=models');
+  m.replyWith((url, init) => {
+    assert.equal(url, '/api/dashboard/ai/providers/17/models/sync');
+    assert.equal(init.method, 'POST');
+    return response({error: 'fixture start rejected'}, 400);
+  });
+  const result = await m.state.syncProviderModels(17);
+  assert.equal(result.status, 'start_rejected');
+  assert.equal(m.state.modelSyncOperations[17].operation_id, null);
+  assert.equal(m.state.modelSyncBusy(17), false);
+  assert.match(m.state.aiMessages['provider-17'].text, /拒绝/);
+  await m.state.cancelModelSync(17);
+  assert.equal(m.calls.length, 1, 'There is no operation to cancel');
+  await m.state.syncProviderModels(17);
+  assert.equal(m.calls.length, 2);
+});
+
+test('ambiguous sync starts are not queued or replayed without explicit confirmation', async () => {
+  for (const status of [0, 408, 503]) {
+    const m = mount('dashboard_settings_models.html', '?view=models');
+    m.replyWith((url, init) => {
+      assert.equal(url, '/api/dashboard/ai/providers/17/models/sync');
+      assert.equal(init.method, 'POST');
+      if (!status) throw new Error('fixture disconnected');
+      return response({error: 'fixture unconfirmed'}, status);
+    });
+    const result = await m.state.syncProviderModels(17);
+    assert.equal(result.status, 'start_unconfirmed');
+    assert.equal(m.state.modelSyncBusy(17), false);
+    assert.match(m.state.aiMessages['provider-17'].text, /未确认/);
+    assert.match(m.state.aiMessages['provider-17'].text, /operation_id/);
+    let confirmations = 0;
+    m.window.confirm = text => { confirmations++; assert.match(text, /可能已启动/); return false; };
+    await m.state.syncProviderModels(17);
+    assert.equal(confirmations, 1);
+    assert.equal(m.calls.length, 1, 'Cancelling recovery confirmation cannot repeat POST');
+    m.window.confirm = () => true;
+    await m.state.syncProviderModels(17);
+    assert.equal(m.calls.length, 2, 'Only explicit confirmation permits a new start request');
+    assert.equal(m.storageWrites.length, 0, 'No invented operation recovery key');
+  }
+});
+
+test('sync start conflict reconnects its supplied existing operation without another POST', async () => {
+  const m = mount('dashboard_settings_models.html', '?view=models');
+  m.replyWith((url, init) => {
+    if (url.endsWith('/models/sync')) return response({error: 'fixture active operation', data: {operation_id: 'fixture-existing'}}, 409);
+    assert.equal(url, '/api/dashboard/ai/model-sync-operations/fixture-existing');
+    assert.equal(init.method, undefined);
+    return envelope({operation_id: 'fixture-existing', status: 'needs_empty_confirmation'});
+  });
+  const result = await m.state.syncProviderModels(17);
+  assert.equal(result.status, 'needs_empty_confirmation');
+  assert.equal(m.state.modelSyncOperations[17].operation_id, 'fixture-existing');
+  assert.equal(m.state.emptyConfirmations[17].operation_id, 'fixture-existing');
+  assert.equal(m.calls.filter(call => call.method === 'POST').length, 1);
+});
+
+test('recovered successful sync refreshes the displayed catalogue without replaying any write', async () => {
+  for (const streamed of [false, true]) {
+    const m = mount('dashboard_settings_models.html', '?view=models');
+    m.state.providers.value = [pageProvider()];
+    m.state.providerModels[17] = catalogue([{id: 1, model_key: 'old'}]);
+    m.state.modelSearch[17] = 'chosen';
+    m.stored.set('pixiv-ai-model-sync:17', 'fixture-recovered');
+    m.replyWith((url, init) => {
+      assert.equal(init.method, undefined);
+      if (url === '/api/dashboard/ai/model-sync-operations/fixture-recovered') return envelope({operation_id: 'fixture-recovered', status: streamed ? 'running' : 'succeeded'});
+      if (url === '/api/dashboard/ai/model-sync-operations/fixture-recovered/events') return sse('event: completed\ndata: {"operation_id":"fixture-recovered"}\n\n');
+      assert.equal(url, '/api/dashboard/ai/providers/17/models?search=chosen');
+      return envelope(catalogue([{id: 41, model_key: 'chosen'}]));
+    });
+    await m.state.recoverModelSyncOperations();
+    assert.equal(m.state.providerModels[17].items[0].model_key, 'chosen');
+    assert.equal(m.state.modelSyncOperations[17].status, 'succeeded');
+    assert.equal(m.stored.has('pixiv-ai-model-sync:17'), false);
+    assert.equal(m.calls.filter(call => call.url.includes('/17/models?')).length, 1);
+    assert.ok(m.calls.every(call => call.method === 'GET'));
+    assert.equal(m.state.onboardingState.value.phase, 'idle');
+  }
+});
+
+test('recovered success stays successful when its catalogue read-back fails', async () => {
+  const m = mount('dashboard_settings_models.html', '?view=models');
+  m.state.providerModels[17] = catalogue([{id: 1, model_key: 'retained'}]);
+  m.replyWith(url => {
+    if (url === '/api/dashboard/ai/model-sync-operations/fixture-recovered') return envelope({operation_id: 'fixture-recovered', status: 'succeeded'});
+    assert.equal(url, '/api/dashboard/ai/providers/17/models');
+    return response({error: 'fixture catalogue read failed'}, 503);
+  });
+  const result = await m.state.loadModelSyncOperation(17, 'fixture-recovered');
+  assert.equal(result.status, 'succeeded');
+  assert.equal(m.state.modelSyncOperations[17].status, 'succeeded');
+  assert.equal(m.state.providerModels[17].items[0].model_key, 'retained');
+  assert.equal(m.state.aiMessages['provider-17']?.type, 'warning');
+  assert.match(m.state.aiMessages['provider-17'].text, /同步已完成.*目录刷新失败/);
+  assert.ok(m.calls.every(call => call.method === 'GET'));
+});
+
+test('recovered catalogue replies cannot overwrite a newly owned operation', async () => {
+  const m = mount('dashboard_settings_models.html', '?view=models');
+  m.state.providerModels[17] = catalogue([{id: 1, model_key: 'retained'}]);
+  const held = later();
+  m.replyWith(url => {
+    if (url === '/api/dashboard/ai/model-sync-operations/fixture-recovered') return envelope({operation_id: 'fixture-recovered', status: 'succeeded'});
+    assert.equal(url, '/api/dashboard/ai/providers/17/models');
+    return held.promise;
+  });
+  const recovering = m.state.loadModelSyncOperation(17, 'fixture-recovered');
+  await flush();
+  assert.equal(m.calls.length, 2, 'Recovery must start a presentation refresh');
+  m.state.modelSyncOperations[17] = {operation_id: 'fixture-new', status: 'running'};
+  held.resolve(envelope(catalogue([{id: 2, model_key: 'stale'}])));
+  await recovering;
+  assert.equal(m.state.providerModels[17].items[0].model_key, 'retained');
+  assert.equal(m.state.modelSyncOperations[17].operation_id, 'fixture-new');
+  assert.equal(m.state.aiMessages['provider-17'], undefined);
+});

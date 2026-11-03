@@ -238,6 +238,49 @@ function clickAvailableTemplateAction(m, expression, locals = {}) {
   return typeof result === 'function' ? result() : result;
 }
 
+test('models: running onboarding exposes an owned cancel outside its disabled fieldset', async () => {
+  const m = mount('dashboard_settings_models.html', '?view=providers');
+  m.state.providerForm.name = 'Fixture onboarding';
+  m.state.probedModels.value = [{model_key: 'fixture-selected', checked: true}];
+  const stream = deferred();
+  m.replyWith((url, options) => {
+    if (url === '/api/dashboard/ai/providers' && options.method === 'POST') return envelope({id: 17});
+    if (url === '/api/dashboard/ai/providers/17/models/sync') return envelope({operation_id: 'fixture-running'});
+    if (url === '/api/dashboard/ai/model-sync-operations/fixture-running/events') {
+      return {ok: true, body: {getReader: () => ({read: () => stream.promise, cancel: async () => {}})}};
+    }
+    if (url === '/api/dashboard/ai/model-sync-operations/fixture-running') {
+      return envelope(options.method === 'DELETE' ? {cancel_requested: true}
+        : {operation_id: 'fixture-running', status: 'running'});
+    }
+    throw new Error('Unexpected request ' + url);
+  });
+  const saving = m.state.saveProvider();
+  try {
+    await flush();
+    assert.equal(m.state.onboardingState.value.phase, 'syncing');
+    assert.equal(m.state.onboardingState.value.pending, true);
+    assert.equal(m.state.providerSaving.value, true);
+    assert.equal(await m.state.navigateWorkspace({view: 'models'}), false);
+    const cancelControls = () => templateControlStates(m, attrs => attrs['@click'] === 'cancelModelSync(providerForm.id)');
+    assert.ok(cancelControls().some(control => control.visible && !control.disabled), 'Active Provider sync needs a reachable cancel');
+    m.state.modelSyncOperations[17].operation_id = 'fixture-other';
+    assert.equal(cancelControls().some(control => control.visible && !control.disabled), false, 'Never offer to cancel a different operation');
+    m.state.modelSyncOperations[17].operation_id = 'fixture-running';
+    assert.equal(await clickAvailableTemplateAction(m, 'cancelModelSync(providerForm.id)'), true);
+    assert.equal(m.calls.filter(call => call.method === 'DELETE').length, 1);
+    assert.equal(m.state.onboardingState.value.phase, 'syncing', 'Acknowledgement plus running GET is not cancellation');
+    assert.equal(m.state.modelSyncOperations[17].status, 'running');
+  } finally {
+    stream.resolve({done: false, value: new TextEncoder().encode('event: cancelled\ndata: {"operation_id":"fixture-running"}\n\n')});
+    await saving;
+  }
+  assert.equal(m.state.onboardingState.value.phase, 'sync_failed');
+  assert.equal(m.state.providerSaving.value, false);
+  assert.equal(m.state.modelSyncOperations[17].status, 'cancelled');
+  assert.equal(m.calls.filter(call => call.url.endsWith('/models/enabled')).length, 0);
+});
+
 function clickReachablePoolReset(m) {
   const states = templateControlStates(m, attrs => /^resetPoolForm(?:\(|$)/.test(attrs['@click'] || ''));
   const cancel = states.find(control => control.expression === 'resetPoolForm(true)' && control.visible && !control.disabled);

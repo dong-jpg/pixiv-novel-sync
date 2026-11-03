@@ -124,6 +124,8 @@
         <button v-if="['sync_failed', 'apply_failed', 'conflict', 'selection_unavailable'].includes(onboardingState.phase)" @click="retryOnboarding" :disabled="providerSaving" class="library-btn">{{ onboardingState.phase === 'sync_failed' ? '重试目录同步' : '刷新完整目录并审阅' }}</button>
         <button v-if="onboardingState.phase === 'confirm_revision'" @click="confirmOnboardingRevision" :disabled="providerSaving" class="library-btn">确认使用最新版本应用选择</button>
         <button v-if="onboardingState.phase === 'create_unconfirmed'" @click="loadProviders" class="library-btn">刷新 Provider 列表并检查是否已创建</button>
+        <button v-if="onboardingState.phase === 'syncing' && onboardingState.operationId && modelSyncOperations[providerForm.id]?.operation_id === onboardingState.operationId"
+                @click="cancelModelSync(providerForm.id)" :disabled="modelSyncActions[providerForm.id]" class="library-btn">请求取消当前同步</button>
         <div v-if="onboardingState.phase === 'awaiting_empty_confirmation'" class="flex flex-wrap gap-2">
           <button @click="confirmEmptyCatalog(providerForm.id)" :disabled="modelSyncActions[providerForm.id]" class="library-btn">确认空目录</button>
           <button @click="cancelModelSync(providerForm.id)" :disabled="modelSyncActions[providerForm.id]" class="library-btn">请求取消同步</button>
@@ -454,15 +456,15 @@
         if (disposed) return;
         modelSyncOperations[providerId] = { ...(modelSyncOperations[providerId] || {}), ...patch };
       };
-      const loadProviderModels = async (providerId) => {
-        if (disposed) return false;
+      const loadProviderModels = async (providerId, owner = () => true) => {
+        if (disposed || !owner()) return false;
         const search = String(modelSearch[providerId] || '').trim();
         const query = search ? `?search=${encodeURIComponent(search)}` : '';
         const previous = providerModels[providerId];
         const requestId = (catalogRequests.get(providerId) || 0) + 1;
         catalogRequests.set(providerId, requestId);
         const editorGeneration = providerEditorGeneration;
-        const current = () => !disposed && requestId === catalogRequests.get(providerId)
+        const current = () => !disposed && owner() && requestId === catalogRequests.get(providerId)
           && editorGeneration === providerEditorGeneration && search === String(modelSearch[providerId] || '').trim();
         delete aiMessages['provider-' + providerId];
         modelCatalogLoading[providerId] = true;
@@ -480,7 +482,7 @@
           showAiMessage(e.message || '读取模型目录失败', 'error', 'provider-' + providerId);
           return false;
         } finally {
-          if (current()) modelCatalogLoading[providerId] = false;
+          if (!disposed && requestId === catalogRequests.get(providerId)) modelCatalogLoading[providerId] = false;
         }
       };
       const readCatalog = async (providerId) => {
@@ -672,9 +674,16 @@
           if (!actual || (actual.operation_id && actual.operation_id !== operationId)) throw new Error('同步状态响应不匹配');
           const operation = {...actual, operation_id: operationId};
           publishSync(providerId, operation);
-          if (['queued', 'running'].includes(operation.status)) return await consumeModelSyncEvents(providerId, operationId, current);
-          if (terminalSync(operation.status)) clearSyncRecovery(providerId, operationId);
-          return operation;
+          const final = ['queued', 'running'].includes(operation.status)
+            ? await consumeModelSyncEvents(providerId, operationId, current) : operation;
+          if (!current()) return;
+          if (terminalSync(final?.status)) clearSyncRecovery(providerId, operationId);
+          if (final?.status === 'succeeded') {
+            const refreshed = await loadProviderModels(providerId, current);
+            if (!current()) return;
+            if (!refreshed) showAiMessage('同步已完成；目录刷新失败，请只刷新目录，不要重放同步或模型选择', 'warning', 'provider-' + providerId);
+          }
+          return final;
         } catch (e) {
           if (!current()) return;
           updateModelSyncState(providerId, {error_message: e.message || '读取同步状态失败'});
@@ -684,6 +693,8 @@
       };
       const syncProviderModels = async (providerId) => {
         if (disposed || modelSyncBusy(providerId)) return modelSyncOperations[providerId];
+        if (modelSyncOperations[providerId]?.status === 'start_unconfirmed' &&
+            !confirm('上次同步可能已启动，但未收到 operation_id，无法重连或取消。请先刷新目录检查；确认仍要重新请求同步？')) return modelSyncOperations[providerId];
         let operationId = null, epoch = adoptSync(providerId, null);
         const current = () => ownsSync(providerId, operationId, epoch);
         updateModelSyncState(providerId, {status: 'queued', error_message: ''});
@@ -700,6 +711,22 @@
           return final;
         } catch (e) {
           if (!current()) return;
+          if (!operationId) {
+            const existingId = e.status === 409 && e.data?.operation_id;
+            if (typeof existingId === 'string' && existingId) {
+              operationId = existingId;
+              epoch = adoptSync(providerId, operationId);
+              try { localStorage.setItem(modelSyncStorageKey(providerId), operationId); } catch (error) { /* storage unavailable */ }
+              return await loadModelSyncOperation(providerId, operationId);
+            }
+            const rejected = e.status >= 400 && e.status < 500 && e.status !== 408;
+            const status = rejected ? 'start_rejected' : 'start_unconfirmed';
+            updateModelSyncState(providerId, {status, error_message: e.message || '同步启动未确认'});
+            showAiMessage(rejected ? '同步请求被拒绝，未启动新操作；修正问题后可重试：' + e.message
+              : '同步启动未确认，可能已启动；未收到 operation_id，无法重连或取消。请先刷新目录检查，重新同步需要明确确认。',
+              rejected ? 'error' : 'warning', 'provider-' + providerId);
+            return clone(modelSyncOperations[providerId]);
+          }
           updateModelSyncState(providerId, {error_message: e.message || '模型同步状态未确认'});
           showAiMessage('同步状态未确认，旧目录仍可使用；请刷新重连', 'warning', 'provider-' + providerId);
           return {status: 'unknown', error_message: e.message};
