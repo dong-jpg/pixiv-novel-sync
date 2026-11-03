@@ -272,6 +272,8 @@ main 分支保留的 AI 范围：
 
 ### 12.1 目标和兼容性
 
+2026-11-03 局部替代：AI 设置/统一文本调用第一阶段以 [批准规格](superpowers/specs/2026-10-31-ai-settings-and-invocation-design.md) 为准；保留 Python3.10+、requests/Flask/SQLite、无独立前端构建器。原 Provider/Agent 数值和默认值不自动升为1M。第二阶段整书/系列 XP 分析 Agent、证据和推荐闭环仍未实现，不标为 DONE。
+
 - `MUST` Provider 可安全发现并同步结构化模型目录，用户可建立有序 primary/secondary/grok/custom 模型池、后备池和 Agent 绑定。
 - `MUST` 既有固定 Agent 自动迁移为 `binding_type=fixed`；ID、Provider、模型、Prompt、参数、启用状态和既有固定调用语义不变。
 - `MUST` Agent 支持 fixed 与 pool 两种绑定；固定 Agent 不自动跨 Provider 切换，模型为空时使用 Provider default model，两者为空时在网络请求前返回中文配置错误。
@@ -292,15 +294,17 @@ main 分支保留的 AI 范围：
 - `MUST` 首个正文 `delta` 之前允许按候选顺序跨模型/Provider 故障转移；正文已输出后不得自动切换，后续失败统一收口为 `partial`。
 - `MUST` 用户取消、断连或 `GeneratorExit` 不触发切换；Provider 自己的重试和流式降级仍可保留。
 - `MUST` 每个 job 最多 16 个候选、32 次网络请求、总 deadline 30 分钟。
+- `MUST` v2 对完整文本消息逐候选估算和准入，禁止跨候选 max(input)/min(window) 交叉比较；未知窗口/用量不补零。预检256消息/16MiB，不发网络请求或创建 job；模型/Provider/Agent 瓶颈和输出限制可解释。
 
 ### 12.4 审计、续接和同步
 
 - `MUST` 每个 job 保存候选快照 hash、候选索引、池版本、Agent 版本、Provider 配置 hash 和实际 attempt；attempt 保存状态、阶段、模型、脱敏错误和时间。
-- `MUST` `partial` 是正式终态，不等同 running；提供基于原 snapshot 的手动“下一个模型继续”，不得按新配置重新解析候选。
+- `MUST` `partial` 是正式终态；main 第一阶段不新增业务重放处理器，continue 保留409“任务类型暂不支持”，不创建 job/网络请求。保留v1快照/hash/预算与底层续接校验，不按新配置重建旧候选；UI 无可执行继续按钮。
+- `MUST` 新统一调用使用 metadata_only 留存，正文仅经内存返回；唯一兼容例外为关键词清洗内部有限词/标签和结果。发送前同事务记录网络 ordinal 与 pending/未知用量；attempt usage_json 可空，最多16KiB/32请求，累计用量事件去重，业务校验与传输终态分开。
 - `MUST` job owner、lease、heartbeat、generation 和终态使用 CAS；stale job 只回收过期租约，不能误杀其他进程的有效任务。
 - `MUST` Provider 同步支持 queued/running/needs_empty_confirmation/succeeded/failed/cancelled，空目录必须二次确认；同步 operation 保存最小状态，调度器按 `sync.task_log_retention_days` 清理，默认 14 天；直接调用清理函数而不传天数时，参数默认仍是 3 天。
 - `MUST` 单页同步响应最多 4 MiB、单次最多 20 MiB、最多 100 页和 5,000 个模型；同步总超时 10 分钟；复用现有 SSRF/DNS/Host-SNI/禁重定向/脱敏。
-- `DONE` AI 模型目录、模型池与统一路由第一阶段 Task 1-22 已完成，包括 Schema、目录同步、池图与 CAS、`ModelRouter`、全调用链迁移、审计、手工续接、设置页和日志页；验收以对应提交及全量测试为准。
+- `CURRENT` 历史模型路由 Task1-22 提供 Schema、目录同步、池图/CAS、Router和审计基础；2026-11 AI设置/调用重构的实际提交、全量回归与浏览器/外部验收见 [项目现状](STATUS.md)，不以历史“手工续接”完成描述 main 业务可用性。
 - `OUT` 第一阶段不实现跨任务健康计数、冷却、权重轮询、成本排序和后台定时目录刷新。
 
 ## 13. 成人描写局部润色 Agent（已移至 `ai-writing` 分支）

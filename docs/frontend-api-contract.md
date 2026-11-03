@@ -840,6 +840,16 @@ Body:
 
 ## AI job APIs
 
+### POST /api/dashboard/ai/agents/<agent_id>/preflight
+
+2026-11-03 第一阶段：认证与 CSRF 规则不变，JSON body 为完整 `messages`（1..256 条、role 仅 system/user/assistant、content 仅文本），可显式提供 `temperature`、`top_p`、`max_tokens`、`allowed_provider_ids`。服务端不注入 Agent system prompt；UI 可将显示的已保存提示词包含一次。请求体上限 16 MiB（UTF-8 JSON 字节），不截断文本。未知字段/类型或数值错误为 400，过大为 413，任务不存在为 404；有效但无合格候选为 200 / `can_run=false`。预检不触发 Provider/Key 解密、同步或 job 写入。
+
+成功 `data` 含 `version:2`、`planner_version`、`estimator_version`、`can_run`、`allowed_provider_ids`、`output_reserve`、`eligible`、`excluded`、`limits`，可附 `excluded_count/excluded_truncated`。逐候选行含原始 `source_index`、可空冻结 `candidate_index`、Provider/模型/池身份、有效窗口及 Agent/Provider/模型窗口、可空 `max_output_tokens`、`limiting_factors`、输入估计/预算、输出预留、消息开销、安全余量、估算器来源/exact、安全 reason/reason_message。未知为 null，前端不得重算预算、汇总最小窗口或把排除行当成 attempt。
+
+### PUT /api/dashboard/ai/providers/<provider_id>/models/enabled
+
+原子启停 body 为 `{"catalog_revision":"64位小写SHA-256", "changes":[{"id":41,"enabled":true}]}`，最多 5,000 行；不写入目录发现事实。revision 对完整配置投影计算，与搜索/分页无关，不是数据库自增列。陈旧 revision 返回 409，保持草稿，需重读完整目录并显式确认；校验失败 400，缺失资源 404。probe 结果不能直接当成已保存目录；保存 Provider 后需确认同步终态，再用完整目录 revision 应用初始选择。
+
 main 分支只保留 AI job 的读取、清理与手动续接端点；写作端点（documents / drafts / detect-ai-tells / prompt-templates / series/search / 蒸馏档案 style-profiles & novel-profiles）随 AI 写作模块移到 `ai-writing` 分支。
 
 - `GET /api/dashboard/ai/jobs`
@@ -848,7 +858,9 @@ main 分支只保留 AI job 的读取、清理与手动续接端点；写作端�
 
 ### GET /api/dashboard/ai/jobs/<job_id>
 
-返回 AI 任务完整详情，包括 `job_id`、`task_type`、`status`、`input`、`output_text`、`output`、`error_message`、`candidate_snapshot_hash`、`candidate_snapshot`、`prompt_budget`、`attempts`、`route_summary` 和时间字段。attempt 包含实际 Provider/模型、池快照、stage、状态、错误分类及耗时；快照和 attempt 不含 API Key、Prompt、正文或完整请求/响应。任务不存在时返回 404。
+返回 AI 任务详情与原有身份/时间/attempt/route_summary 字段，增加 `validation_status`（历史为 unknown）、`can_continue:false`、`continue_unavailable_reason`、`usage_summary`。usage 包含可空 `known_input_tokens/known_output_tokens/known_total_tokens`、`reported_requests/unreported_requests`、`complete`；服务器汇总是事实，前端不累加 attempt。零报告 token 与未知不同；零请求数显示未发出请求。
+
+`snapshot_version` 为 1/2 或 null；v1 沿用 `prompt_budget`，v2 用服务端安全解码的 `invocation_plan`（与预检同一逐候选投影），不可用时提供 `plan_unavailable_reason`。UI 不解码私有 candidate_snapshot、不显示 hash/指纹或 metadata_only 审计输入。仅旧关键词清洗保留有限输入/输出视图。任务不存在为 404。
 
 ### POST /api/dashboard/ai/jobs/<job_id>/cancel
 
@@ -856,7 +868,7 @@ main 分支只保留 AI job 的读取、清理与手动续接端点；写作端�
 
 ### POST /api/dashboard/ai/jobs/<job_id>/continue
 
-从终态父 job 的不可变候选快照创建 child job，并从第一个未尝试候选继续。接口返回常规 AI SSE；重复 `idempotency_key` 复用同一 child job，不重复调用 Provider。
+main 第一阶段没有支持的业务重放处理器；此端点保留历史请求校验，但当前任务类型返回 409“任务类型暂不支持”，不创建 child job、不调用 Provider。详情 `can_continue=false`，UI 允许列表为空，按钮与动作入口均禁止继续。以下是兼容请求形状，不表示已提供业务续写：
 
 ```json
 {
@@ -867,11 +879,11 @@ main 分支只保留 AI job 的读取、清理与手动续接端点；写作端�
 }
 ```
 
-索引不是首个未尝试候选，或 Agent/池版本、剩余 Provider 配置已变化时返回 `409`。`partial` 表示正文已保留但任务不完整；不会自动切换模型，必须由用户显式执行“下一个模型继续”。
+底层仍保留原快照/hash/配置版本校验；无 version 历史快照按 v1，不用当前配置重建。`partial` 表示任务不完整；metadata_only 正文仅通过内存结果返回，不自动换模型，main 也没有可执行的手工续写入口。
 
 ## AI SSE stream contract
 
-main 分支上唯一返回 `text/event-stream` 的 AI 端点是 `POST /api/dashboard/ai/jobs/<job_id>/continue`（手动「下一个模型继续」）。写作类 stream 端点（continue / rewrite / distill / audit / plan / longform / chapters / pipeline / chat）随 AI 写作模块移到 `ai-writing` 分支。
+以下为共享生成层保留的 SSE 事件契约，不表示 main 的 continue API 可执行：main continue 当前返回上述 409。模型目录同步另有既存 operation events SSE。写作类 stream 端点随 AI 写作模块移到 `ai-writing` 分支。
 
 Required event names:
 

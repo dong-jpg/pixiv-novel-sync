@@ -108,8 +108,12 @@ def test_task_logs_template_has_complete_ai_filters_and_details():
     assert "'cancelled': { label: '已取消'" in html
     assert 'v-html="formatResult(log)"' not in html
     assert "selectedLog.output_text" in html
-    assert "formatJson(selectedLog.input)" in html
-    assert "formatJson(selectedLog.output)" in html
+    assert "formatJson(detailInput)" in html
+    assert "formatJson(detailOutput)" in html
+    assert 'v-if="showLegacyAiContent && selectedLog.input"' in html
+    assert 'v-if="showLegacyAiContent && selectedLog.output"' in html
+    assert "formatJson(selectedLog.input)" not in html
+    assert "formatJson(selectedLog.output)" not in html
 
 
 def test_task_logs_template_surfaces_abort_and_incomplete_markers():
@@ -532,7 +536,7 @@ def test_sidebar_expands_settings_into_subpages():
     for label, path in (
         ("同步与调度", "/dashboard/settings/sync"),
         ("模型与 Provider", "/dashboard/settings/models"),
-        ("Agent 绑定", "/dashboard/settings/agents"),
+        ("AI 任务", "/dashboard/settings/agents"),
         ("系统维护", "/dashboard/settings/system"),
     ):
         assert path in html, path

@@ -117,7 +117,9 @@ Linux Web 部署入口是 [deploy.sh](deploy.sh)，使用 APT、Nginx 与 system
 
 无需配置 AI Provider，也能同步、阅读和使用规则推荐。main 的 AI 生成仅用于偏好关键词清洗（`clean_keywords`），失败时降级为原始统计词；未接入 AI 偏好总结或 AI 推荐解释。
 
-- 在 `/dashboard/settings/models` 管理 Provider、模型目录和有序模型池；在 `/dashboard/settings/agents` 选择固定模型或模型池，并预览候选链。
+- AI 配置与单次文本调用基础设施独立运行，不依赖 Magpie 或额外 Agent 框架。业务仍仅接入关键词清洗；整书/系列阅读、跨章证据与 XP 分析 Agent 属于未实现的第二阶段。
+- 在 `/dashboard/settings/models?view=providers|models|groups` 管理 Provider、模型目录和路由组（原模型池）；旧 URL 不变。在 `/dashboard/settings/agents` 的“AI 任务”页选固定模型或路由组，查看配置候选链，并显式输入测试文本做零网络容量预检。
+- 预检展示已保存的 system prompt 和完整 user 文本，按候选分别估算，不读取小说或创建 AI job；1M 候选可与被排除的 128k 候选并列，估算通过不代表服务商已接受真实 1M 请求。日志只展示服务端安全计划、业务校验与已报告用量；未知不按零处理，本阶段 Continue 不可用。
 - 模型目录可通过 `/api/dashboard/ai/providers/<provider_id>/models/sync` 同步，也可保留手工模型。模型池按成员顺序和后备池展开；单个 job 最多尝试 16 个候选、发起 32 次网络请求、运行 30 分钟。
 - 保存 Provider API key 前须设置并保持 `PIXIV_NOVEL_SYNC_AI_SECRET_KEY` 稳定，用于加密保存凭据。跨 Provider fallback 可能将同一 Prompt 发给多个 Provider；启用前确认完整 Provider 范围，只提交你愿意交给这些服务的数据。
 

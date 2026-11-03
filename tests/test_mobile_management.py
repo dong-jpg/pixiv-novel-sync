@@ -46,6 +46,28 @@ def test_management_templates_render_without_loading_server_configuration(name):
     assert "{%" not in html
 
 
+@pytest.mark.parametrize("url,name", [
+    ("/dashboard/settings/models", "dashboard_settings_models.html"),
+    ("/dashboard/settings/agents", "dashboard_settings_agents.html"),
+    ("/dashboard/logs", "dashboard_logs.html"),
+])
+def test_ai_task_old_urls_render_with_real_shared_scripts_and_csp(url, name):
+    app = Flask(__name__, template_folder=str(TEMPLATES))
+    app.jinja_env.variable_start_string = "{["
+    app.jinja_env.variable_end_string = "]}"
+    with app.test_request_context(url):
+        html = render_template(name, task_labels={}, csp_nonce=lambda: "test-nonce")
+    assert '<div id="app"' in html
+    for script in re.findall(r"<script\b([^>]*)>", html):
+        assert 'nonce="test-nonce"' in script
+
+
+def test_group_reorder_targets_remain_touch_sized_at_desktop_width():
+    html = source("dashboard_settings_models.html")
+    rule = css_rule(html, '.management-models button[id^="pool-member-"]')
+    assert "min-width: 44px" in rule and "min-height: 44px" in rule
+
+
 def test_pending_retry_belongs_to_the_error_state_and_is_read_only():
     html = source(PAGES[0])
     error_panel = html.split('v-else-if="loadError"', 1)[1].split("<!-- Empty State -->", 1)[0]

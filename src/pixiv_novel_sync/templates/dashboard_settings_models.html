@@ -9,6 +9,7 @@
   .management-models .management-editor { min-width: 0; scroll-margin-top: 1rem; }
   .management-models fieldset { min-width: 0; }
   .management-models select { min-width: 0; max-width: 100%; width: 100%; }
+  .management-models button[id^="pool-member-"] { min-width: 44px; min-height: 44px; }
 </style>
 {% endblock %}
 
@@ -679,8 +680,10 @@
           if (!current()) return;
           if (terminalSync(final?.status)) clearSyncRecovery(providerId, operationId);
           if (final?.status === 'succeeded') {
+            const refreshRequest = (catalogRequests.get(providerId) || 0) + 1;
             const refreshed = await loadProviderModels(providerId, current);
             if (!current()) return;
+            if (refreshRequest !== catalogRequests.get(providerId)) return final;
             if (!refreshed) showAiMessage('同步已完成；目录刷新失败，请只刷新目录，不要重放同步或模型选择', 'warning', 'provider-' + providerId);
           }
           return final;

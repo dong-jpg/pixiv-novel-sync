@@ -1,6 +1,6 @@
 # AI 模型路由使用指南
 
-> **适用范围（2026-10-08）**：本文描述 main 的 Provider、模型目录/池、Agent、ModelRouter 和关键词清洗基础设施；写作/成人模块仅在 ai-writing。最新回归结果见 [项目现状](STATUS.md)，不以旧审计中的写作失败描述 main。
+> **适用范围（2026-11-03，AI 设置重构分支）**：本文描述 Provider、模型目录/路由组（原模型池）、AI 任务（Agent）、统一文本调用与关键词清洗。分支代码不等于已部署；最新回归和外部验收见 [项目现状](STATUS.md)。整书 XP 分析为未实现的第二阶段，写作/成人模块仍仅在 ai-writing。
 
 本指南面向在 Web 界面（AI 设置页）配置 AI 模型的用户，解释模型目录（catalog）、模型池（pool）、Agent 绑定与失败转移（failover）的实际行为。所有描述以当前代码实现为准。
 
@@ -107,22 +107,19 @@ Agent 可声明 `required_capabilities`（只能来自 1.1 的五个固定枚举
 
 2026-10-08：共享路由统一按 token 估算输入预算，不把 `input_budget` 当 UTF-8 字节上限；候选窗口检测使用同一 Provider/heuristic 估算契约。Router 的 internal/validation 阶段仅在候选完整成功后发布输出，失败候选残片不混入重试结果。这是基础设施语义，不表示 main 恢复写作历史裁剪、摘要业务或成人审查功能。
 
-任务启动前，路由器对整个候选快照计算统一预算：
+新调用使用 version 2 计划：每个候选分别取 Agent、Provider、模型的有效窗口，分别估算完整消息，扣除该候选的输出预留、消息开销和安全边际。不得用所有输入估计的最大值与所有窗口的最小值交叉比较。大窗口候选合格，不会因为另一条 128k 后备候选放不下而整体拒绝；被排除的候选保留安全原因，不伪造一次请求或尝试。
 
-```
-有效上下文窗口 = min(Agent 的 context_window, 所有候选的 min(Provider 窗口, 模型窗口))
-输入预算 = 有效窗口 - max_tokens(输出预留) - 消息开销(4×消息数+2) - 安全边际(256)
-```
+`/dashboard/settings/agents` 的显式预检仅 POST `/agents/<id>/preflight`，不调用 Provider、不解密 Key、不读取小说、不创建 job。请求的 `messages` 已完整，服务端不会再加 system prompt；页面显示并只包含一次已保存的 system prompt 和完整测试文本。改变任务或输入立即使旧结果失效。
 
-- 输入预算必须 > 0，否则直接报错"Prompt 输入预算必须大于 0"（通常是 `max_tokens` 相对窗口设得太大）；
-- 输入 token 估算优先用 Provider 自带的估算器，全部候选都能估算时取最大值；否则退化为 `heuristic`：中日韩字符大约 1.5 字一个 token，其余大约 4 个字符一个 token。不再按 UTF-8 字节数估算，那会把中文高估大约 4.5 倍；
-- 估算超过预算时报错"Prompt 内容超过可用输入预算"，任务不会发起任何网络请求。
+预检和 v2 日志都显示 `input_tokens/input_budget/output_reserve/message_overhead/safety_margin`、窗口来源和 `limiting_factors`、估算器来源及 `exact`。未知为 null，不是零。现有 128k/16k 默认值不自动升到 1M；用户需在任务、Provider 或目录模型的实际瓶颈处显式修改。模型输出上限 null 表示未知/未声明，不等于零。估算通过不是服务商真实 1M 准入测试。
 
-此外每个候选在轮到它之前还会做**单模型窗口检查**：如果该候选自己的 `context_window` 装不下当前 Prompt，该候选记一次 `context_overflow` 失败并直接切换到下一个候选。
+无 version 的历史快照仍按 version 1 解码，保留原 hash、单值 PromptBudget、预算及底层续接校验语义，不重新解析当前配置升级旧 job。日志 v1 保留单值预算面板，v2 仅使用服务器解码的 `invocation_plan`；损坏计划显示原因，不制造零预算。
 
 ### 4.2 候选快照与运行中一致性
 
 任务开始时会把展开的候选列表固化成**候选快照**（含 Agent 配置摘要、池版本、Provider 配置摘要）。运行中和续跑（resume）时都会重新校验：Agent 被改过（`binding_version` 或配置哈希变化）、池版本变了、Provider 配置变了、任何一方被禁用或删除——都会以冲突终止，提示"…已变更，请重新开始任务"。这保证一次任务全程用的是同一份配置。
+
+上述兼容校验不代表 main 存在业务重放处理器：本阶段 continue API 仍返回“任务类型暂不支持”的 409，不创建 job、不发网络请求，详情 `can_continue=false`，UI 不提供可执行继续按钮。
 
 ### 4.3 什么错误会转移、什么不会
 
@@ -137,13 +134,17 @@ Agent 可声明 `required_capabilities`（只能来自 1.1 的五个固定枚举
 
 **不会转移、直接终结任务：**
 
-- **主阶段（main）已经开始输出**后发生的任何错误：任务以 `partial`（部分输出）终结，保留已生成文本。原因是切换模型续写会造成文风/内容断裂；
+- **主阶段（main）已经发布首个正文 delta** 后发生错误：锁定目标并以 `partial` 终结，不拼接其他模型输出；usage/progress 不是正文。统一调用正文只经内存结果返回，metadata_only job 不落库原始文本；
 - **取消**：用户取消（含调用方传入的取消回调）、调用方关闭流或系统关闭，任务以 `cancelled` 终结，`error_message` 以 `cancelled:` 开头写明原因；
 - **路由预算耗尽**：单个任务最多 **16 次候选尝试**、**32 次网络请求**，且有 **30 分钟**路由截止时间（建任务时写入 `route_deadline_at`）；超限以 `route_budget_exhausted` 失败（若已有输出则为 partial），`error_message` 以 `route_budget_exhausted:` 开头。截止时间在运行中（流式输出途中、重试退避中或两个候选之间）到达也一样，不记成 cancelled，所以健康横幅和 AI 任务日志能把超时和取消分开；
 - 候选快照/配置冲突（见 4.2）；
 - 所有候选都失败：以 `route_exhausted`（主阶段）或 `validation_failed`（校验阶段）失败。
 
 ## 5. 在任务日志中查看路由尝试（route attempts）
+
+统一调用使用 `metadata_only`，输入/输出/错误/普通日志不保存正文，仅关键词清洗内部兼容策略保留前 80 个词/40 个标签和有限清洗结果。实际发送前，在领取网络序号的同一事务写入 pending/未知用量。`usage_summary` 由服务器汇总已知输入/输出/总 token、已报告/未报告请求数及 complete；UI 不累加 attempts，也不把失败、partial 或缺 usage 当免费。零请求显示“未发出请求”，历史 null 显示未知。业务 `validation_status` 与传输成功分别显示。
+
+当前文本客户端沿用 OpenAI-compatible Chat Completions 与 Anthropic Messages；仅支持完整 system/user/assistant 文本消息和受控采样参数。目录能力标签不等于本阶段支持多模态、工具循环、Gemini/Responses 原生协议；不会增加必装 tokenizer 或新框架。
 
 每一次候选尝试都会被持久化为一条 attempt 审计记录，包含：候选所属池的名称/版本/位置快照、Provider 与模型标识、Agent/Provider 配置哈希、结果状态（succeeded / failed / partial / cancelled）、错误分类（`error_category`）、finish_reason、是否已开始输出、耗时（latency_ms）。
 

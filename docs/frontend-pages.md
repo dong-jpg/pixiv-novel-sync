@@ -6,6 +6,17 @@
 
 ## 本轮交互更新（2026-10-08，main）
 
+### AI 设置第一阶段（2026-11-03，重构分支）
+
+- `/dashboard/settings/models` 保留 URL，`view=providers|models|groups` 三视图与 `provider=<id>` 筛选随普通导航/刷新/历史往返保存；缺失 Provider 显示明确错误，不伪造空目录。路由组仍使用原模型池整数 ID/API，仅支持顺序尝试。
+- 共享模型选择器保留不可用当前值，名称相同也按 Provider/模型身份区分；打开、过滤、目录刷新、关闭都不写配置。组内上/下移动使用真实有序 members 和 `expected_version` CAS；保存/丢弃/取消草稿确认、冲突保留与读回失败分开处理。
+- Provider onboarding 区分保存成功、同步 pending、同步失败、启停应用冲突和成功。初始启停只对完整已保存目录 revision 应用；空目录须确认，运行时可取消。Key、表单和选择不写浏览器持久存储；只有既存 operation recovery key 保存 operation ID。
+- `/dashboard/settings/agents` 标题为“AI 任务”，编辑仅 PUT 用户触碰且改变的允许字段；绑定作为完整互斥 tuple 提交，未触碰不重写。手工固定模型明确显示未经验证，保留零/false 和旧设置。
+- 配置候选链 GET 与输入预检 POST 分开。预检显示已保存 system prompt 和完整测试文本，只显式覆盖勾选参数；输入改变、任务切换、清除或离开使迟到结果失效。不读取小说、不调用 Provider、不创建 job；大窗口/短窗口逐候选分别显示。
+- `/dashboard/logs` 显示服务器 v1/v2 安全预算、validation_status、已报告/未知/不完整用量；不显示私有快照 hash/输入指纹、不自行累计 token。main 无可执行 Continue；旧 job 详情响应不能覆盖新选项或重开关闭的弹窗。
+
+真实离线 Vue/浏览器375/768/1440验证与真机软键盘、真实 Provider1M准入验收分别记录在 [项目现状](STATUS.md)，本页不把 Node VM 当作浏览器测量。
+
 移动优先改造于2026-10-09从 `codex/mobile-first-main` 集成到 `main`；登录、推荐、阅读与管理的实际验收和未部署边界见 [移动改造报告](archive/MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。下文记录 `main` 功能范围及明确标注的审计分支后续修复，不等同于已合并或生产站点已经更新，当前版本以 [项目现状](STATUS.md) 为准。
 
 - 偏好页增量分析不再发送固定 `name`；未提供的名称/描述由服务端保留。
@@ -27,7 +38,7 @@
 | `/dashboard/series/<id>` | `src/pixiv_novel_sync/templates/dashboard_series_detail.html` | 系列详情 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/users/<id>` | `src/pixiv_novel_sync/templates/dashboard_user_detail.html` | 作者详情和作者小说 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/pending-deletions` | `src/pixiv_novel_sync/templates/dashboard_pending_deletions.html` | 待确认删除队列 | 已接入 `library-page` / `library-page-header` |
-| `/dashboard/logs` | `src/pixiv_novel_sync/templates/dashboard_logs.html` | 同步任务与 AI 创作任务日志 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/logs` | `src/pixiv_novel_sync/templates/dashboard_logs.html` | 同步任务与 AI 任务日志 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings/sync` | `src/pixiv_novel_sync/templates/dashboard_settings_sync.html` | 同步开关、限速分组、调度表与手动触发 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings/models` | `src/pixiv_novel_sync/templates/dashboard_settings_models.html` | Provider、模型目录、模型池 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings/agents` | `src/pixiv_novel_sync/templates/dashboard_settings_agents.html` | 普通 Agent 绑定与候选模型链 | 已接入 `library-page` / `library-page-header` |
@@ -233,7 +244,7 @@ APIs:
 
 Template: `dashboard_logs.html`
 
-用途：任务日志列表和详情弹窗。任务类型分为“同步任务”和“AI 创作任务”，默认保留最近 14 天（`sync.task_log_retention_days`，两张表共用），天数下拉提供 1 / 3 / 7 / 14 天；AI 任务支持类型、状态和时间筛选。AI 详情展示候选快照 hash、PromptBudget、实际 Provider/模型、模型池、attempt 错误与耗时；`partial` 单独标记为“部分完成”。存在未尝试候选时，用户可显式选择“使用下一个模型继续”，页面不会自动重试。
+用途：任务日志列表和详情弹窗。任务类型分为“同步任务”和“AI 任务”，默认保留最近 14 天（`sync.task_log_retention_days`，两张表共用），天数下拉提供 1 / 3 / 7 / 14 天；AI 任务支持类型、状态和时间筛选。AI 详情展示服务器安全 v1/v2 计划、Provider/模型、路由组、attempt 错误/耗时、业务校验和用量摘要；`partial` 单独标记为“部分完成”。不显示快照 hash 或输入指纹；main continue 不可用，不提供可执行继续按钮。
 
 同步任务的黄色“部分完成”只留给**真出了问题**的轮次：`aborted_reason`（熔断中止）或 `truncated`（分页触顶）。关注作者按 `user_last_synced` 轮转，每轮只覆盖 `users_limit` 个作者、必然带 `incomplete`，这种轮次由 `rotation_pending` 标记为绿色“成功”——否则耗时最大的任务永远是黄色，真正的中止就被淹没了。判定在 `webapp.py:_task_log_status_for_stats`，只置 `incomplete` 而不说明原因的站点仍然算 partial。
 

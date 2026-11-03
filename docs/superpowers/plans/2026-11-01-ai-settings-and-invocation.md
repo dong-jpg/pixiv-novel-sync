@@ -10,7 +10,7 @@
 
 **Approved Spec:** `docs/superpowers/specs/2026-10-31-ai-settings-and-invocation-design.md`；用户于 2026-11-01 确认。
 
-**Status:** 本文件是实施计划，不是实现报告。所有步骤初始未执行；真正的测试结果、提交和审查结论记入执行 worktree 的 `.superpowers/sdd/progress.md`。
+**Status:** 2026-11-03，Tasks1-7已实施并审查，Task8在 `codex/ai-settings-resume`（起点85a8acc）实施/验收。下方保留原计划检查项作为验收要求，不据局部通过批量勾选整阶段完成；最终测试/审查尚未全部关闭。真实结果见执行 worktree `.superpowers/sdd/task-8-report.md`、进度账本和 [项目现状](../../STATUS.md)。尚未推送/部署，第二阶段整书 XP Agent未实施。
 
 ## Global Constraints
 

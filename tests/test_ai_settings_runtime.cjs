@@ -798,6 +798,23 @@ test('recovered successful sync refreshes the displayed catalogue without replay
   }
 });
 
+test('superseded same-operation recovery cannot warn after a newer catalogue refresh succeeds', async () => {
+  const m = mount('dashboard_settings_models.html'), old = later(), latest = later();
+  let reads = 0;
+  m.replyWith(url => {
+    if (url === '/api/dashboard/ai/model-sync-operations/fixture-recovered') return envelope({operation_id: 'fixture-recovered', status: 'succeeded'});
+    assert.equal(url, '/api/dashboard/ai/providers/17/models');
+    return ++reads === 1 ? old.promise : latest.promise;
+  });
+  const first = m.state.loadModelSyncOperation(17, 'fixture-recovered'); await flush();
+  const second = m.state.loadModelSyncOperation(17, 'fixture-recovered'); await flush();
+  latest.resolve(envelope(catalogue([{id: 41, model_key: 'latest'}]))); await second;
+  old.resolve(envelope(catalogue([{id: 1, model_key: 'old'}]))); await first;
+  assert.equal(m.state.providerModels[17].items[0].model_key, 'latest');
+  assert.equal(m.state.aiMessages['provider-17'], undefined);
+  assert.ok(m.calls.every(call => call.method === 'GET'));
+});
+
 test('recovered success stays successful when its catalogue read-back fails', async () => {
   const m = mount('dashboard_settings_models.html', '?view=models');
   m.state.providerModels[17] = catalogue([{id: 1, model_key: 'retained'}]);
