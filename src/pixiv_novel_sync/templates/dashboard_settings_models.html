@@ -339,8 +339,8 @@
 
 {% block extra_scripts %}
 {% include 'dashboard_ai_controls.html' %}
-<script src="/static/js/ai_provider_onboarding.js"></script>
-<script>
+<script nonce="{[ csp_nonce() ]}" src="/static/js/ai_provider_onboarding.js"></script>
+<script nonce="{[ csp_nonce() ]}">
   initVueApp({
     setup() {
       const { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } = Vue;
@@ -1325,7 +1325,7 @@
               provider_type: providerForm.provider_type,
               base_url: providerForm.base_url,
               api_key: providerForm.api_key || undefined,
-              proxy: providerForm.proxy,
+              proxy: providerForm.proxy ?? '',
             }),
           });
           if (!current()) return;

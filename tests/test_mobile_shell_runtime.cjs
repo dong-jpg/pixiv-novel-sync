@@ -131,7 +131,7 @@ function harness() {
     setTimeout, clearTimeout, console,
     fetch: async () => {throw new Error('Network forbidden in shell unit tests');},
   });
-  vm.runInContext(componentsSource.match(/<script>([\s\S]*?)<\/script>/)[1], context);
+  vm.runInContext(componentsSource.match(/<script(?: nonce=\"[^\"]*\")?>([\s\S]*?)<\/script>/)[1], context);
   context.registerGlobalComponents(app);
 
   function mount(name, input = {}, refs = {}) {
@@ -184,7 +184,7 @@ function harness() {
   }
   return {document, window, components, mount, modal, media, observations, element, opener, appRoot,
     context, app, order, loadBase() {
-      for (const [, script] of baseSource.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
+      for (const [, script] of baseSource.matchAll(/<script(?: nonce=\"[^\"]*\")?>([\s\S]*?)<\/script>/g)) {
         vm.runInContext(script.replace(/\{\[ task_labels \| tojson \]\}/g, '{}'), context);
       }
     },

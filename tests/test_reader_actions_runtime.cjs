@@ -33,8 +33,8 @@ function mount(name, saved) {
   };
   const html = fs.readFileSync(path.join(templateRoot, name), 'utf8');
   const navigation = fs.readFileSync(path.join(templateRoot, 'navigation_helpers.html'), 'utf8');
-  vm.runInNewContext(navigation.match(/<script>([\s\S]*?)<\/script>/)[1], context);
-  vm.runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], context);
+  vm.runInNewContext(navigation.match(/<script(?: nonce=\"[^\"]*\")?>([\s\S]*?)<\/script>/)[1], context);
+  vm.runInNewContext(html.match(/<script(?: nonce=\"[^\"]*\")?>([\s\S]*?)<\/script>/)[1], context);
   return {state, window, calls, notices, local, context, html, events, async start() {
     mounted.forEach(fn => fn());
     for (let i = 0; i < 12; i++) await Promise.resolve();

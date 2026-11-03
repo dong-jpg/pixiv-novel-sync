@@ -365,10 +365,57 @@ def test_restore_runs_only_once_per_start(
 # 4. cron 驱动的任务不受影响
 # ---------------------------------------------------------------------------
 
-def test_cron_tasks_are_not_restored_from_history(db_path: Path) -> None:
+def _hours_since_previous_slot(cron_expr: str) -> float:
+    """离 cron 最近一个已过去的槽有多少小时（测试按它摆历史，结果不随运行时刻变）。"""
+    from pixiv_novel_sync.settings import cron_to_prev_run
+
+    now = datetime.now(timezone.utc).timestamp()
+    previous_slot = cron_to_prev_run(cron_expr, now, "UTC")
+    assert previous_slot is not None
+    return (now - previous_slot) / 3600
+
+
+def test_cron_task_that_missed_its_latest_slot_is_compensated(db_path: Path) -> None:
+    """审查「cron 重启补偿」：上次跑完早于最近一个槽 ⇒ 这个槽被重启/崩溃错过，补跑一次。
+
+    以前 cron 任务完全不从 task_logs 恢复，错过的槽直接跳到下一槽，被 ./update.sh
+    杀掉的那一轮也丢：每天一次的任务最长要等一整天，user_backup 要等 3 天。
+    """
+    since_slot = _hours_since_previous_slot("0 3 * * *")
     db = Database(db_path)
     db.init_schema()
-    _insert_task_log(db, "bookmark", "succeeded", started_hours_ago=48.5, finished_hours_ago=48)
+    # 上一次成功在最近那个槽之前一天多：最近的槽没跑
+    _insert_task_log(
+        db, "bookmark", "succeeded",
+        started_hours_ago=since_slot + 24.5, finished_hours_ago=since_slot + 24,
+    )
+    db.close()
+
+    settings = _make_settings(
+        db_path,
+        auto_sync_bookmarks_enabled=True,
+        auto_sync_bookmarks_interval_hours=12,
+        auto_sync_bookmarks_cron="0 3 * * *",
+    )
+    scheduler = AutoSyncScheduler(config_path=None, env_path=None)
+    before = datetime.now(timezone.utc).timestamp()
+    scheduler._restore_schedule_from_task_logs(settings)
+
+    status = scheduler.get_status()
+    # 按现有错峰规则补跑：启动宽限之后，而不是等到下一个 03:00
+    assert abs(status["task_next_run"]["bookmarks"] - (before + SCHEDULER_STARTUP_GRACE_SECONDS)) < 5
+    assert "bookmarks" in status["task_last_run"]
+
+
+def test_cron_task_that_covered_its_latest_slot_is_left_to_the_cron(db_path: Path) -> None:
+    since_slot = _hours_since_previous_slot("0 3 * * *")
+    db = Database(db_path)
+    db.init_schema()
+    # 最近一个槽之后才跑完（开始于槽之前也算覆盖了这个槽）
+    _insert_task_log(
+        db, "bookmark", "succeeded",
+        started_hours_ago=since_slot + 1, finished_hours_ago=since_slot / 2,
+    )
     db.close()
 
     settings = _make_settings(
@@ -385,6 +432,42 @@ def test_cron_tasks_are_not_restored_from_history(db_path: Path) -> None:
     assert status["task_last_run"] == {}
 
 
+def test_cron_task_without_history_is_not_compensated(db_path: Path) -> None:
+    """首次部署没有任何历史：不能把所有 cron 任务都当成「错过了」一起补跑。"""
+    settings = _make_settings(
+        db_path,
+        auto_sync_bookmarks_enabled=True,
+        auto_sync_bookmarks_cron="0 3 * * *",
+    )
+    scheduler = AutoSyncScheduler(config_path=None, env_path=None)
+    scheduler._restore_schedule_from_task_logs(settings)
+
+    assert scheduler.get_status()["task_next_run"] == {}
+
+
+def test_killed_cron_run_is_compensated_after_restart(db_path: Path) -> None:
+    """被重启杀掉的那一轮由 fail_stale_task_logs 记成 failed：只认已跑完的记录，照样补。"""
+    since_slot = _hours_since_previous_slot("0 3 * * *")
+    db = Database(db_path)
+    db.init_schema()
+    _insert_task_log(
+        db, "bookmark", "succeeded",
+        started_hours_ago=since_slot + 24.5, finished_hours_ago=since_slot + 24,
+    )
+    _insert_task_log(db, "bookmark", "failed", started_hours_ago=since_slot / 2, finished_hours_ago=None)
+    db.close()
+
+    settings = _make_settings(
+        db_path,
+        auto_sync_bookmarks_enabled=True,
+        auto_sync_bookmarks_cron="0 3 * * *",
+    )
+    scheduler = AutoSyncScheduler(config_path=None, env_path=None)
+    scheduler._restore_schedule_from_task_logs(settings)
+
+    assert "bookmarks" in scheduler.get_status()["task_next_run"]
+
+
 def test_cron_task_next_run_still_follows_cron_expression(
     db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -392,7 +475,12 @@ def test_cron_task_next_run_still_follows_cron_expression(
 
     db = Database(db_path)
     db.init_schema()
-    _insert_task_log(db, "bookmark", "succeeded", started_hours_ago=48.5, finished_hours_ago=48)
+    # 最近一个槽已经跑过（不触发补跑），下次运行仍按 cron 表达式排
+    since_slot = _hours_since_previous_slot("0 3 * * *")
+    _insert_task_log(
+        db, "bookmark", "succeeded",
+        started_hours_ago=since_slot, finished_hours_ago=since_slot / 2,
+    )
     db.close()
 
     settings = _make_settings(

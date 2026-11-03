@@ -137,11 +137,14 @@ class PreferenceAnalyzer:
                 remaining = self.db.count_unanalyzed_preference_rows(min_text_length)
                 progress(total_processed, remaining)
 
-            # 词项表过大时清理低频噪声
-            self.db.prune_preference_term_noise(self.HIGH_CARDINALITY_TYPES, self.TERM_COUNTS_MAX_ROWS)
-
             if len(rows) < batch_size:
                 break  # 已无更多
+
+        # D5：词项表过大时清理低频噪声，每次运行只在所有批次之后清一次。以前每批都清，
+        # 词项表过了阈值以后每批都把本批刚加的 count=1 词删掉，每批各出现一次的词
+        # 永远攒不起来，画像结果取决于分批顺序。
+        if total_processed:
+            self.db.prune_preference_term_noise(self.HIGH_CARDINALITY_TYPES, self.TERM_COUNTS_MAX_ROWS)
 
         analyzed = self.db.count_analyzed_preference_rows()
         remaining = self.db.count_unanalyzed_preference_rows(min_text_length)

@@ -121,6 +121,79 @@ def test_planning_never_loads_credentials_or_provider(router, fixed_agent, monke
     assert "not injected" not in serialized
 
 
+def test_v2_fixed_planning_and_validation_do_not_materialize_catalog(db, router, fixed_agent, monkeypatch):
+    monkeypatch.setattr(Database, "list_ai_provider_models", forbidden)
+    invocation = request_for(fixed_agent)
+    snapshot = router.resolve_invocation(fixed_agent, invocation)
+    assert router.validate_resume_snapshot(fixed_agent, snapshot, 0, invocation=invocation) == snapshot
+    db.create_ai_provider_model({"provider_id": fixed_agent.provider_id, "model_key": fixed_agent.model, "enabled": False})
+    assert router.plan_invocation(fixed_agent, invocation).excluded[0].reason == "model_disabled"
+
+
+@pytest.mark.parametrize("published", [False, True])
+@pytest.mark.parametrize("network_error", [False, True])
+def test_v2_deadline_keeps_owned_body_in_memory_and_safe_usage(db, route_router, registry, monkeypatch, published, network_error):
+    from datetime import datetime, timezone
+
+    agent, providers, _, _ = pool_setup(db)
+    request = make_route_request(db, route_router, agent, retention_policy="metadata_only")
+    # Exercise the real final-write retention gate, not an output-redacting mock.
+    db.conn.execute("UPDATE ai_jobs SET input_json = ?, route_deadline_at = ? WHERE job_id = ?",
+                    (json.dumps({"retention_policy": "metadata_only"}), "2030-01-01 00:10:00", request.job_id))
+    db.conn.commit()
+    clock = {"now": datetime(2030, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr("pixiv_novel_sync.ai.model_router._utc_now", lambda: clock["now"])
+
+    def expire(_messages):
+        clock["now"] = datetime(2030, 1, 1, 0, 10, tzinfo=timezone.utc)
+        if network_error:
+            return AIProviderError("PRIVATE-NETWORK-ERROR", category="network", scope="provider")
+        return AIStreamChunk(type="delta", text="UNPUBLISHED")
+
+    events = [AIStreamChunk(type="delta", text="PRIVATE-PARTIAL")] if published else []
+    registry.responses[(providers[0], "model-0")] = [*events, expire]
+    chunks, result = collect_result(route_router.execute_stream(request))
+    assert result.finish_state == ("partial" if published else "failed_before_output")
+    assert result.output_text == ("PRIVATE-PARTIAL" if published else "")
+    assert [c.text for c in chunks if c.type == "delta"] == (["PRIVATE-PARTIAL"] if published else [])
+    job = db.get_ai_job(request.job_id)
+    assert job["error_message"] == "route_budget_exhausted"
+    assert job["output_text"] in (None, "") and job["output_json"] is None
+    assert "PRIVATE-" not in json.dumps(job)
+    assert job["attempts"][0]["error_category"] == "route_budget_exhausted"
+    assert db.get_ai_job_usage_summary(request.job_id)["unreported_requests"] == 1
+    assert registry.calls == [(providers[0], "model-0")] == registry.closed_calls
+
+
+def test_v2_heartbeat_retry_does_not_log_exception_payload(db, route_router, registry, fixed_agent, monkeypatch, caplog):
+    import threading
+
+    request = make_route_request(db, route_router, fixed_agent, retention_policy="metadata_only")
+    original = Database.heartbeat_ai_job
+    recovered = threading.Event()
+    calls = []
+
+    def heartbeat(database, *args):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("PRIVATE-HEARTBEAT-PAYLOAD")
+        result = original(database, *args)
+        recovered.set()
+        return result
+
+    def wait(_messages):
+        assert recovered.wait(2)
+        return AIStreamChunk(type="delta", text="OK")
+
+    monkeypatch.setattr(Database, "heartbeat_ai_job", heartbeat)
+    monkeypatch.setattr("pixiv_novel_sync.ai.model_router._HEARTBEAT_INTERVAL_SECONDS", 0.01)
+    registry.responses[(fixed_agent.provider_id, fixed_agent.model)] = [wait, AIStreamChunk(type="done", data={"finish_reason": "stop"})]
+    assert route_router.execute(request).finish_state == "succeeded"
+    assert len(calls) >= 2
+    assert "PRIVATE-HEARTBEAT-PAYLOAD" not in caplog.text
+    assert any(record.name == "pixiv_novel_sync.ai.model_router" for record in caplog.records)
+
+
 def test_known_disabled_fixed_is_rejected_but_never_registered_key_survives(db, router, fixed_agent):
     req = request_for(fixed_agent)
     before = router.plan_invocation(fixed_agent, req)

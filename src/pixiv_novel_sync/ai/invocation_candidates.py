@@ -95,8 +95,7 @@ def collect_candidate_profiles(db: Database, agent: AIAgentConfig) -> tuple[Cand
     if agent.binding_type == "fixed":
         provider = provider_row(agent.provider_id)
         key = _model_key(agent.model if agent.model is not None else provider.get("default_model"))
-        models = db.list_ai_provider_models(provider["id"], routable_only=False)["items"]
-        model = next((item for item in models if item["model_key"] == key), None)
+        model = db.get_ai_provider_model_by_key(provider["id"], key)
         return (_make_profile(0, provider, key, model),)
 
     pool_id = agent.model_pool_id

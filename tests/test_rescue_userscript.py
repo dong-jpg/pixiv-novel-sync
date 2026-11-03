@@ -268,7 +268,11 @@ def test_userscript_bounds_cover_cache_and_list_scan() -> None:
     const_version = re.search(r"const SCRIPT_VERSION = '([^']+)';", script)
     assert header_version and const_version
     assert header_version.group(1) == const_version.group(1)
-    assert tuple(map(int, const_version.group(1).split("."))) >= (0, 9, 1)
+    # 管理器只在 @version 变大时自动更新：不能低于已发布的 0.12.2（合并时误回退会被拦下）
+    assert tuple(map(int, const_version.group(1).split("."))) >= (0, 12, 2)
+    # 救援指南的版本说明要写到当前版本（手机上看到角标的版本号，指南里查得到改了什么）
+    guide = (SCRIPT_PATH.parents[1] / "docs" / "RESCUE_USER_GUIDE.md").read_text(encoding="utf-8")
+    assert re.search(r"^" + re.escape(const_version.group(1)) + r" ", guide, re.MULTILINE), const_version.group(1)
 
     # interval 只注册一次，但每次 tick 先确认还在列表页；一轮扫描 = 失效卡重建 + 追更列表填空
     tick = script.split("__pixivRescueListInterval = window.setInterval(", 1)[1].split("}, 3000);", 1)[0]
@@ -693,12 +697,15 @@ def _install_list_script(
     path: str = LIST_PATH,
     pixiv_json: dict[str, dict] | None = None,
     cover_status: dict[str, list[int]] | None = None,
+    hold: list[str] | None = None,
 ) -> list[str]:
     """列表页装载：document-start 注入，GM 存储是可读写的真实 Map，封面走 blob。
 
     pixiv_json：Pixiv 自己的同源 ajax（URL 片段 → JSON 应答），例如追更列表的
     /touch/ajax/watch_list/novel；返回这些请求的记录。作者头像（i.pximg.net）回一张小图。
     cover_status：封面 URL → 依次回的状态码（用完后回 200），例如先 429 再恢复。
+    hold：URL 里含这些片段的救援请求先压着不回，等页面里调 window.__rescueRelease(片段)
+    才应答（同步交给脚本）；应答过的 URL 记在 window.__rescueDelivered。
     GM_getValue 按键计数读取次数（window.__rescueReads）。
     """
     pixiv_hits: list[str] = []
@@ -707,11 +714,18 @@ def _install_list_script(
         "window.__rescueStore = new Map(Object.entries(" + json.dumps(store) + "));"
         "window.__rescuePng = " + json.dumps(TINY_PNG_BASE64) + ";"
         "window.__rescueCoverStatus = " + json.dumps(cover_status or {}) + ";"
+        "window.__rescueHold = " + json.dumps(hold or []) + ";"
     )
     page.add_init_script(
         """
         window.__rescueRequests = [];
         window.__rescueReads = {};
+        window.__rescueHeld = [];
+        window.__rescueDelivered = [];
+        window.__rescueRelease = (fragment) => {
+          window.__rescueHeld.filter((item) => item.url.includes(fragment)).forEach((item) => item.respond());
+          window.__rescueHeld = window.__rescueHeld.filter((item) => !item.url.includes(fragment));
+        };
         window.GM_getValue = (key, fallback) => {
           window.__rescueReads[key] = (window.__rescueReads[key] || 0) + 1;
           return window.__rescueStore.has(key) ? window.__rescueStore.get(key) : fallback;
@@ -720,7 +734,17 @@ def _install_list_script(
         window.GM_registerMenuCommand = () => {};
         window.GM_xmlhttpRequest = (options) => {
           window.__rescueRequests.push({url: options.url, method: options.method});
-          setTimeout(() => {
+          const later = (respond) => {
+            if (window.__rescueHold.some((fragment) => options.url.includes(fragment))) {
+              window.__rescueHeld.push({ url: options.url, respond: () => {
+                respond();
+                window.__rescueDelivered.push(options.url);
+              } });
+              return;
+            }
+            setTimeout(respond, 0);
+          };
+          later(() => {
             if (options.responseType === 'blob') {
               const queue = window.__rescueCoverStatus[options.url];
               const status = queue && queue.length ? queue.shift() : 200;
@@ -742,7 +766,7 @@ def _install_list_script(
               return;
             }
             options.onload({status: 200, responseText: JSON.stringify({ok: true, data: payload})});
-          }, 0);
+          });
         };
         """
     )
@@ -1768,11 +1792,13 @@ def test_userscript_card_scan_stops_reading_ancestor_text_past_limit() -> None:
     assert "elementMatchesUnavailable(target)" not in body
 
 
-def test_userscript_fixture_healthy_novel_page_records_no_dom_changes(rescue_browser) -> None:
+@pytest.mark.parametrize("path", ["/novel/show.php?id=101", "/zh-tw/novel/show.php?id=101"], ids=["ja", "zh-tw"])
+def test_userscript_fixture_healthy_novel_page_records_no_dom_changes(rescue_browser, path) -> None:
     """健康正文页：先滚到页中再晚注入，记下注入后的全部 DOM 变动。
 
     唯一的变动是 0.7.0 起所有 Pixiv 页都有的「救援 <版本>」启动角标（data-pixiv-rescue-boot，
     6 秒后自删）；其余零节点、零属性、零文本改动，不请求备份，scrollY 不变。
+    0.12.2（U6）：/zh-tw/ 前缀页也认得出是正文页（照样只问一次 Pixiv ajax），同样零改动。
     """
     context = rescue_browser.new_context(user_agent=MOBILE_UA, viewport={"width": 412, "height": 915})
     page = context.new_page()
@@ -1792,7 +1818,7 @@ def test_userscript_fixture_healthy_novel_page_records_no_dom_changes(rescue_bro
               })).observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); }"""
         )
 
-    ajax_hits = _install_script(page, html, {}, ajax_state="available", before_inject=watch)
+    ajax_hits = _install_script(page, html, {}, path=path, ajax_state="available", before_inject=watch)
     page.wait_for_timeout(2000)
     assert ajax_hits == ["http://pixiv.test/ajax/novel/101"]
     assert page.evaluate("window.__rescueRequests") == []
@@ -1800,3 +1826,312 @@ def test_userscript_fixture_healthy_novel_page_records_no_dom_changes(rescue_bro
     assert page.evaluate("window.scrollY") == 600
     assert page.locator("[data-pixiv-rescue-boot]").count() == 1
     context.close()
+
+
+# ── 0.12.2：2026-10-28 审查的 U6 / U7 与第 2、4 节（指南「0.12.2 修同一份审查…」一段）────
+
+RESCUE_NOVEL_101 = {
+    "novel_id": 101, "title": "前缀页的备份", "text_raw": "前缀页读到的正文",
+    "source_notice": "内容来自私人备份，并非 Pixiv 官方恢复", "rescue_state": "success",
+}
+
+
+@pytest.mark.parametrize("prefix, kind", [
+    ("/zh-tw", "novel"), ("/zh-tw", "series"), ("/zh-tw", "bookmarks"),
+    # 对照：两个字母的前缀 0.12.1 就认
+    ("/en", "novel"),
+], ids=["zh-tw-novel", "zh-tw-series", "zh-tw-bookmarks", "en-novel"])
+def test_userscript_fixture_lang_prefixed_pages_are_rescued(rescue_browser, prefix, kind) -> None:
+    """回归 U6：语言前缀只认两个字母。/zh-tw/（繁体中文界面）剥不掉，正文、系列、收藏列表
+    都被判成非目标页：0.12.1 注入后什么都不做，已删作品的备份不出来。"""
+    page = rescue_browser.new_page()
+    if kind == "novel":
+        _install_script(page, "<!DOCTYPE html>" + PIXIV_404_SHELL,
+                        {"https://pixiv.dongboapp.com/api/rescue/v1/novels/101": RESCUE_NOVEL_101},
+                        path=prefix + "/novel/show.php?id=101", ajax_state="unavailable")
+        page.get_by_text("前缀页读到的正文").wait_for(state="visible", timeout=5000)
+        assert _reader_state(page)["hit"] is True
+    elif kind == "series":
+        _install_script(page, "<!DOCTYPE html>" + PIXIV_404_SHELL, SERIES_RESPONSES,
+                        path=prefix + f"/novel/series/{SERIES_ID}", ajax_state="unavailable")
+        page.locator("a.pixiv-rescue-chapter-card").first.wait_for(state="visible", timeout=5000)
+        assert page.locator("a.pixiv-rescue-chapter-card").count() == 3
+    else:
+        responses = {LOOKUP_URL + "101": {"novels": [{"novel_id": 101, "title": "前缀页的收藏备份",
+                                                      "author_name": "作者", "has_cover": False,
+                                                      "personal_hold": True}], "series": []}}
+        _install_list_script(page, "<!DOCTYPE html><ul id='list'>" + _broken_card_html(101) + "</ul>", responses,
+                             {"pixivRescueToken": LIST_TOKEN}, path=prefix + LIST_PATH)
+        page.locator(".pixiv-rescue-rescued-title", has_text="前缀页的收藏备份").wait_for(state="visible", timeout=5000)
+    page.close()
+
+
+def _script_functions(script: str, *names: str) -> str:
+    """按函数名摘出脚本里的顶层函数源码（到同缩进的「  }」为止）；脚本里没有的名字跳过。"""
+    parts = []
+    for name in names:
+        marker = "\n  function " + name + "("
+        if marker in script:
+            parts.append("function " + name + "(" + script.split(marker, 1)[1].split("\n  }\n", 1)[0] + "\n}\n")
+    return "".join(parts)
+
+
+def test_userscript_fixture_ten_thousand_blank_lines_render_in_linear_time(rescue_browser) -> None:
+    """回归 U7：0.12.1 用 replace(/^\\n+|\\n+$/g, '') 剥每页首尾换行，页中间连续 k 个换行时 O(k²)：
+    1 万个空行约 1.7 秒、2 万个约 5.4 秒（node 22 / V8 实测，与 Chromium 同一引擎）。
+
+    计时只量分页函数本身：阅读层整体渲染有约 150–200 ms 与正文无关的固定开销（两版相同），
+    拿整页渲染卡阈值量的是那部分。再整页渲染一遍核对剥换行的语义不变：首尾空行去掉、
+    页中的空行不出空段落、中间的空页保留（[jump:N] 页码不错位）。
+    """
+    page = rescue_browser.new_page()
+    url = "https://pixiv.dongboapp.com/api/rescue/v1/novels/101"
+    blank = "\n" * 10001  # 两段之间 1 万个空行
+    text = (blank + "第一段正文" + blank + "最后一段正文" + blank
+            + "[newpage]" + blank + "[newpage]第三页" + blank)
+    source = _script_functions(_script(), "trimPageNewlines", "splitPixivPages")
+    split = page.evaluate(
+        """([source, text]) => {
+          const splitPixivPages = new Function(source + 'return splitPixivPages;')();
+          const started = performance.now();
+          const pages = splitPixivPages(text);
+          return { ms: performance.now() - started, pages: pages };
+        }""",
+        [source, text],
+    )
+    assert split["ms"] < 50, f"1 万个空行分页用了 {split['ms']:.0f} ms"
+    assert split["pages"] == ["第一段正文" + blank + "最后一段正文", "", "第三页"]
+
+    novel = dict(RESCUE_NOVEL_101, title="很多空行", text_raw=text)
+    _install_script(page, "<!DOCTYPE html>" + PIXIV_404_SHELL, {url: novel},
+                    path="/novel/show.php?id=101&pixiv_rescue=1")
+    page.locator(".pixiv-rescue-para", has_text="最后一段正文").wait_for(state="visible", timeout=20000)
+    paras = page.locator(".pixiv-rescue-novel-text .pixiv-rescue-para").all_inner_texts()
+    assert [para.strip() for para in paras] == ["第一段正文", "最后一段正文"]
+    labels = page.locator(".pixiv-rescue-pager-label")
+    assert labels.all_inner_texts() == ["1 / 3 页", "1 / 3 页"]
+    page.locator(".pixiv-rescue-pager").first.get_by_role("button", name="下一页").click()
+    assert labels.all_inner_texts() == ["2 / 3 页", "2 / 3 页"]
+    assert page.locator(".pixiv-rescue-novel-text .pixiv-rescue-para").all_inner_texts() == ["备份正文为空"]
+    page.close()
+
+
+def _held_lookup_novel(novel_id: int, title: str) -> dict:
+    return {"novels": [{"novel_id": novel_id, "title": title, "author_name": "作者", "has_cover": False,
+                        "personal_hold": True}], "series": []}
+
+
+# 应答回来之前卡片变成了什么样（模拟 Vue 翻页复用同一个节点、或整块换掉）
+REUSE_MUTATIONS = {
+    # 同一个节点改画另一部失效作品：只改链接
+    "relinked": "() => { document.querySelector('#list a').setAttribute('href', '/novel/show.php?id=102'); }",
+    # 同一个节点改画一部健康作品：链接与文字都换掉
+    "healed": """() => { const link = document.querySelector('#list a');
+        link.setAttribute('href', '/novel/show.php?id=103');
+        link.querySelector('div div div').textContent = '健康作品的标题，简介与标签都在：' + '一段足够长的简介文字'.repeat(6); }""",
+    # 整块从页面上摘掉（保留引用，之后再放回去）
+    "detached": "() => { window.__detached = document.querySelector('#list li'); window.__detached.remove(); }",
+}
+
+
+@pytest.mark.parametrize("mutation", list(REUSE_MUTATIONS), ids=list(REUSE_MUTATIONS))
+def test_userscript_fixture_lookup_reply_skips_card_that_changed(rescue_browser, mutation) -> None:
+    """审查第 2 节：lookup 回调写卡片前核对卡片仍在页面上、仍是 card-pending、链接里的作品 ID 没变。
+
+    0.12.1 不核对：应答迟到时把上一部作品（101）的备份画到已经改画别的作品的节点上，并标成终态
+    不再查询（relinked 时 102 永远查不到；healed 时健康卡被换成 101 的备份卡；detached 时写进
+    已摘掉的节点，放回页面后显示的是没核对过的卡）。
+    """
+    page = rescue_browser.new_page()
+    responses = {LOOKUP_URL + "101": _held_lookup_novel(101, "旧作品备份"),
+                 LOOKUP_URL + "102": _held_lookup_novel(102, "新作品备份")}
+    _install_list_script(page, "<!DOCTYPE html><ul id='list'>" + _broken_card_html(101) + "</ul>", responses,
+                         {"pixivRescueToken": LIST_TOKEN}, hold=["novel_ids=101"])
+    lookups = "(url) => window.__rescueRequests.filter((item) => item.url === url).length"
+    page.wait_for_function(lookups + " === 1", arg=LOOKUP_URL + "101")
+    assert page.locator("#list [data-pixiv-rescue='card-pending']").count() == 1
+    page.evaluate(REUSE_MUTATIONS[mutation])
+    page.evaluate("() => new Promise((resolve) => { window.__rescueRelease('novel_ids=101'); setTimeout(resolve, 0); })")
+    assert page.evaluate("() => window.__rescueDelivered") == [LOOKUP_URL + "101"]
+    assert page.locator(".pixiv-rescue-rescued-title", has_text="旧作品备份").count() == 0
+
+    if mutation == "relinked":
+        # 下一轮扫描按现在的链接重新登记，查到的是 102
+        page.locator(".pixiv-rescue-rescued-title", has_text="新作品备份").wait_for(state="visible", timeout=5000)
+        assert page.evaluate(lookups, LOOKUP_URL + "102") == 1
+    elif mutation == "healed":
+        page.wait_for_timeout(1200)
+        assert page.locator(".pixiv-rescue-rescued-card").count() == 0
+        assert page.locator("#list [data-pixiv-rescue]").count() == 0
+        assert "健康作品的标题" in page.locator("#list a").inner_text()
+    else:
+        # 摘下来的节点原样不动、也不挂着 pending；放回页面后照常从缓存画出来，不再多查一次
+        detached = page.evaluate("""() => ({ text: window.__detached.textContent,
+            state: window.__detached.querySelector('.works-item').getAttribute('data-pixiv-rescue') })""")
+        assert detached == {"text": "该作品无法显示", "state": None}
+        page.evaluate("() => document.getElementById('list').append(window.__detached)")
+        page.locator(".pixiv-rescue-rescued-title", has_text="旧作品备份").wait_for(state="visible", timeout=5000)
+        assert page.evaluate(lookups, LOOKUP_URL + "101") == 1
+    page.close()
+
+
+def test_userscript_fixture_series_directory_first_load_failure_offers_retry(rescue_browser) -> None:
+    """审查第 2 节：系列目录第一次就没读到时给「重试」（0.12.1 只有一行提示，只能整页刷新）。
+
+    重试只重取目录，不重取系列信息；再失败就换上新的提示和一颗新的「重试」，不叠加；
+    读到后整页照首次成功那样画（话数、更新日、字数、「从最初开始阅读」、章节卡片）。
+    """
+    context = rescue_browser.new_context(user_agent=MOBILE_UA, viewport={"width": 412, "height": 915},
+                                         timezone_id="Asia/Shanghai")
+    page = context.new_page()
+    series_url = f"https://pixiv.dongboapp.com/api/rescue/v1/series/{SERIES_ID}"
+    chapters_url = series_url + "/chapters"
+    responses = {series_url: SERIES_RESPONSES[series_url],
+                 chapters_url: {"__raw": {"status": 502, "body": NGINX_502_PAGE}}}
+    _install_script(page, "<!DOCTYPE html>" + PIXIV_404_SHELL, responses,
+                    path=f"/novel/series/{SERIES_ID}?pixiv_rescue=1")
+    calls = "(url) => window.__rescueRequests.filter((item) => item.url === url).length"
+
+    note = page.locator(".pixiv-rescue-directory-error")
+    note.wait_for(state="visible")
+    assert note.get_by_text("目录没有读到：救援服务暂时出错，请稍后再试。").is_visible()
+    # 系列头照常画，但没有目录就没有「从最初开始阅读」
+    assert page.locator(".pixiv-rescue-series-head .pixiv-rescue-title").inner_text() == "测试系列"
+    assert page.locator("a.pixiv-rescue-read-link").count() == 0
+    retry = note.get_by_role("button", name="重试")
+    assert retry.count() == 1
+    assert _computed(page, ".pixiv-rescue-directory-error .pixiv-rescue-button", ["backgroundColor"]) == {
+        "backgroundColor": "rgb(255, 255, 255)"}
+
+    # 再失败一次：提示换成这次的原因，仍然只有一颗「重试」
+    page.evaluate("(url) => { window.__rescueResponses[url] = { __raw: { status: 429, body: '' } }; }", chapters_url)
+    retry.click()
+    page.wait_for_function(calls + " === 2", arg=chapters_url)
+    note.get_by_text("目录没有读到：请求太频繁，请稍后再试。").wait_for(state="visible")
+    assert page.locator(".pixiv-rescue-directory-error").count() == 1
+    assert note.get_by_role("button", name="重试").count() == 1
+
+    # 这次读到了：整页重画，和首次就成功一样
+    page.evaluate("([url, data]) => { window.__rescueResponses[url] = data; }",
+                  [chapters_url, SERIES_RESPONSES[chapters_url]])
+    note.get_by_role("button", name="重试").click()
+    page.locator("a.pixiv-rescue-chapter-card").first.wait_for(state="visible")
+    assert page.locator("a.pixiv-rescue-chapter-card").count() == 3
+    assert page.locator(".pixiv-rescue-directory-error").count() == 0
+    assert page.locator(".pixiv-rescue-series-info-item").all_inner_texts() == [
+        "共4话（备份3话）", "2026年1月27日更新", "75,387字", "3小时8分钟"]
+    assert page.locator("a.pixiv-rescue-read-link").all_inner_texts() == ["从最初开始阅读"]
+    assert page.locator("[data-pixiv-rescue='content']").count() == 1
+    assert page.locator(".pixiv-rescue-panel").count() == 1
+    assert page.evaluate(calls, chapters_url) == 3
+    assert page.evaluate(calls, series_url) == 1
+    context.close()
+
+
+# 一轮列表扫描 = collectBrokenCards 里那一次全页 querySelectorAll(链接选择器)：包一层记下时间
+LIST_SCAN_COUNTER = """
+(() => {
+  const original = Document.prototype.querySelectorAll;
+  window.__listScans = [];
+  Document.prototype.querySelectorAll = function (selector) {
+    if (selector === 'a[href*="/novel/show.php?id="], a[href*="/novel/series/"]') window.__listScans.push(Date.now());
+    return original.apply(this, arguments);
+  };
+})();
+"""
+
+
+def test_userscript_fixture_list_fast_scan_ends_15s_after_entering_while_dom_keeps_changing(rescue_browser) -> None:
+    """审查第 2 节：删掉观察器里延长 fastScanUntil 的那一行，500ms 快速轮询只在进入列表页后 15 秒内。
+
+    核实（假时钟跑 60 秒数全页扫描）：页面静止时那一行确实不起作用（快速轮询 15 秒后已结束，
+    推后的截止时间没人读）；但页面一直有 DOM 变动（广告、懒加载）时它让 500ms 全页扫描永不停止，
+    0.12.1 在 30–60 秒里扫 85 次，删掉后 25 次（3 秒定时 + 每批变动后一次）。插入的卡片由每批
+    变动后的那一轮扫描接住，不靠快速轮询。
+    """
+    page = rescue_browser.new_page()
+    page.clock.install(time=1_800_000_000_000)
+    page.add_init_script(LIST_SCAN_COUNTER)
+    _install_list_script(page, "<!DOCTYPE html><ul id='list'></ul>", {}, {"pixivRescueToken": LIST_TOKEN})
+    started = page.evaluate("() => Date.now()")
+    # 每 2 秒往列表里插一个节点（childList 变动）
+    page.evaluate("() => setInterval(() => document.getElementById('list').append(document.createElement('li')), 2000)")
+    for _ in range(45):
+        page.clock.run_for(1000)
+    scans = page.evaluate("(started) => window.__listScans.map((at) => at - started)", started)
+    first = sum(1 for at in scans if at < 15000)
+    later = sum(1 for at in scans if 20000 <= at < 45000)
+    assert first > 25, f"前 15 秒只扫了 {first} 次：快速轮询没跑起来，这个计数说明不了什么"
+    assert later < 40, f"20–45 秒还扫了 {later} 次：快速轮询没在进入列表页 15 秒后停下"
+    page.close()
+
+
+# 管理器只给了 GM_getValue / GM_xmlhttpRequest（手机端 X浏览器、Via 等内置管理器的情形）
+PARTIAL_GM = """
+(() => {
+  window.__menus = [];
+  window.GM_getValue = (key, fallback) => key === 'pixivRescueToken' ? 'rsq_test' : fallback;
+  window.GM_xmlhttpRequest = (options) => setTimeout(() => options.onload(
+    options.url === 'https://pixiv.dongboapp.com/api/rescue/v1/novels/101'
+      ? { status: 200, responseText: JSON.stringify({ ok: true, data: { title: '备份', text_raw: '缺 API 时读到的正文' } }) }
+      : { status: 404, responseText: '{"ok":false}' }), 0);
+  if (window.__withMenu) window.GM_registerMenuCommand = (name, callback) => { window.__menus.push([name, callback]); };
+})();
+"""
+
+
+@pytest.mark.parametrize("variant", ["absent", "local-undefined", "menu-without-setvalue"])
+def test_userscript_fixture_missing_optional_gm_apis_degrade_locally(rescue_browser, variant) -> None:
+    """审查第 2 节：GM_registerMenuCommand / GM_setValue 缺失时就地降级，不再写 window.GM_xxx = 空函数。
+
+    absent：两个 API 都不存在。0.12.1 把空函数写到页面的 window 上（别的脚本会以为真有这个 API）。
+    local-undefined：管理器把没实现的 API 作为值为 undefined 的局部变量传进脚本。0.12.1 写 window
+    兜不住，registerTokenMenus 照样抛错，整个脚本停在那里，备份不出来。
+    menu-without-setvalue：有菜单、没 GM_setValue。0.12.1 存了个空、照样弹「已保存」；现在如实说存不了。
+    """
+    page = rescue_browser.new_page()
+    page.add_init_script("window.__withMenu = " + ("true" if variant == "menu-without-setvalue" else "false") + ";")
+    page.add_init_script(PARTIAL_GM)
+    page.route("http://pixiv.test/**", lambda route: route.fulfill(
+        status=200, headers={"Content-Type": "text/html; charset=utf-8"}, body="<!DOCTYPE html>" + PIXIV_404_SHELL))
+    page.goto("http://pixiv.test/novel/show.php?id=101&pixiv_rescue=1")
+    script = _script()
+    if variant == "local-undefined":
+        script = "(function (GM_registerMenuCommand, GM_setValue) {\n" + script + "\n})();"
+    page.add_script_tag(content=script)
+
+    page.get_by_text("缺 API 时读到的正文").wait_for(state="visible", timeout=5000)
+    assert page.locator("[data-pixiv-rescue-fatal]").count() == 0
+    if variant == "menu-without-setvalue":
+        alerts = page.evaluate("""() => {
+          const said = [];
+          window.alert = (text) => said.push(String(text));
+          window.prompt = () => 'rsq_new_token';
+          const menu = window.__menus.find((entry) => entry[0] === '设置或更新救援 Token');
+          menu[1]();
+          return said;
+        }""")
+        assert alerts == ["当前脚本管理器不支持保存（缺 GM_setValue）。请在管理器里直接编辑本脚本的存储。"]
+        assert page.evaluate("() => typeof window.GM_setValue") == "undefined"
+    else:
+        assert page.evaluate("() => [typeof window.GM_registerMenuCommand, typeof window.GM_setValue]") == [
+            "undefined", "undefined"]
+    page.close()
+
+
+def test_userscript_dead_branches_from_the_audit_are_gone() -> None:
+    """审查第 4 节的三个死分支已删，删前逐个核实没有写入方 / 调用方：
+
+    - `data-pixiv-rescue="badge"`：脚本全部 33 个历史版本里没有一个写过这个属性值（a486f1b 引入
+      这两处检查时徽标只有 class，0.5.0 连徽标都删了），检查永远不成立。
+    - rescueErrorText 的「章节级」文案：调用点全都传 pageLevel=true。
+    - 「这一页没有拯救系列」：/api/rescue/v1/series 在同一个读事务里计数、取页，页码钳到末页，
+      total > 0 时所在页必有条目（已部署的 0c7578e 也是如此）。
+    文案可见的那几条（阅读层错误、目录错误、空状态）由各自的页面用例照常核对。
+    """
+    script = _script()
+    assert '="badge"' not in script
+    for removed in ("rescueErrorText(error, true)", "rescueErrorText(error, pageLevel)", "pageLevel ?",
+                    "'备份里没有这一章，目录还在。'", "'这一章没有读到，目录还在。'", "'这一页没有拯救系列'"):
+        assert removed not in script, removed
+    assert "function rescueErrorText(error) {" in script

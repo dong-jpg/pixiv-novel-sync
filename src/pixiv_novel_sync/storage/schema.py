@@ -197,6 +197,22 @@ class SchemaMixin:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_novels_status ON novels(status)"
         )
+        # P10：书库「按收藏排序」、追更页、首页推荐分页、删除小说时清推荐，
+        # 以前都是全表扫描或临时 B 树排序（合成 6000 本库 520 / 97 / 236 / 72 ms）。
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_novels_bookmarks ON novels(total_bookmarks DESC, novel_id DESC)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_series_subscribed_seen "
+            "ON series(is_subscribed, last_seen_at DESC, series_id DESC)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recommendation_items_run_score "
+            "ON recommendation_items(run_id DESC, score DESC, id DESC)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recommendation_items_novel_id ON recommendation_items(novel_id)"
+        )
 
     def _has_foreign_key(self, table_name: str, column_name: str, target_table: str) -> bool:
         return any(
@@ -385,6 +401,20 @@ class SchemaMixin:
         # 负责维护。它给「Pixiv 原站还在不在」提供一个不依赖 status 推断的判定入口。
         if "source_url" not in columns:
             self.conn.execute("ALTER TABLE novels ADD COLUMN source_url TEXT")
+        if "archive_dir" not in columns:
+            self.conn.execute("ALTER TABLE novels ADD COLUMN archive_dir TEXT")
+        # P12：下面两个回填探针以前各全表扫描一次（novels 的 raw_json 在这两列前面，
+        # 要读溢出页；合成 6000 本库每次 init_schema 约 700 ms，CLI 每次调用都付）。
+        # 部分索引只收录还没回填的行，平时是空的，探针变成一次空索引查找；
+        # upsert_novel 总会写这两列，所以索引不会在日常写入时变大。
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_novels_missing_source_url ON novels(novel_id) "
+            "WHERE source_url IS NULL OR source_url = ''"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_novels_missing_archive_dir ON novels(novel_id) "
+            "WHERE archive_dir IS NULL OR archive_dir = ''"
+        )
         missing_url = self.conn.execute(
             "SELECT 1 FROM novels WHERE source_url IS NULL OR source_url = '' LIMIT 1"
         ).fetchone()
@@ -394,8 +424,6 @@ class SchemaMixin:
                 "WHERE source_url IS NULL OR source_url = ''",
                 (PIXIV_NOVEL_URL_PREFIX,),
             )
-        if "archive_dir" not in columns:
-            self.conn.execute("ALTER TABLE novels ADD COLUMN archive_dir TEXT")
         self._backfill_novel_archive_dirs()
 
     def _backfill_novel_archive_dirs(self) -> None:
@@ -722,6 +750,13 @@ class SchemaMixin:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(mute_type, mute_value)
             );
+
+            -- 清理出 recommendation_items 的旧条目只留 ID：「不重复推荐」的去重靠它继续生效
+            CREATE TABLE IF NOT EXISTS recommendation_seen (
+                item_type TEXT NOT NULL,
+                item_id INTEGER NOT NULL,
+                PRIMARY KEY (item_type, item_id)
+            ) WITHOUT ROWID;
 
             CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_author_id ON recommendation_feedback(author_id);
             CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_series_id ON recommendation_feedback(series_id);

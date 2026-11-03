@@ -382,10 +382,7 @@ class UsersMixin:
                     "DELETE FROM reading_progress WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)",
                     (user_id,),
                 )
-                self.conn.execute(
-                    "DELETE FROM preference_analyzed_novels WHERE novel_id IN (SELECT novel_id FROM novels WHERE user_id = ?)",
-                    (user_id,),
-                )
+                # D4：保留 preference_analyzed_novels 标记，理由见 delete_novel。
 
                 # 2. 删除小说相关的从属数据（按依赖顺序）
                 # 2.1 删除 FTS 索引。走 rowid（== novel_id）：按 novel_id 会全表扫描

@@ -858,3 +858,63 @@ def test_test_provider_falls_back_to_first_routable_model(tmp_path, monkeypatch)
     # 目录为空 ⇒ 不再是「未配置默认模型」，而是指向下一步动作
     assert res.status_code == 400
     assert "获取模型列表" in res.get_json()["error"]
+
+
+def test_health_does_not_materialize_whole_catalogs(tmp_path, monkeypatch) -> None:
+    """P22：横幅对目录只需要每个 Provider 的可路由数和池成员那几行，
+    不必把几千个模型连同两次 JSON 解析全读出来（5000 模型 / 10 个 Agent 约 10 s）。
+    结论与整表读取时一致。"""
+    app, db_path = _app(tmp_path, monkeypatch)
+    db = Database(db_path)
+    db.init_schema()
+    provider_id = db.create_ai_provider({
+        "name": "大目录网关", "provider_type": "openai_compatible",
+        "base_url": "https://api.example.com/v1", "api_key_encrypted": "cipher", "enabled": 1,
+    })
+    json_model = db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "json-model", "manual_capabilities": ["json"]}
+    )
+    db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "chat-only", "manual_capabilities": ["streaming"]}
+    )
+    parked = db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "parked", "manual_capabilities": ["vision"]}
+    )
+    db.update_ai_provider_model(parked, {"enabled": False})
+    pool_id = _enabled_pool(db, "混合池", [json_model, parked])
+    pool_json = db.create_ai_agent({
+        "name": "池要 json", "task_type": "continue", "binding_type": "pool",
+        "model_pool_id": pool_id, "system_prompt": "x", "required_capabilities": ["json"],
+    })
+    pool_vision = db.create_ai_agent({
+        "name": "池要 vision", "task_type": "continue", "binding_type": "pool",
+        "model_pool_id": pool_id, "system_prompt": "x", "required_capabilities": ["vision"],
+    })
+    fixed_ok = db.create_ai_agent({
+        "name": "固定健康", "task_type": "keyword_clean", "binding_type": "fixed",
+        "provider_id": provider_id, "model": "json-model", "system_prompt": "x",
+        "required_capabilities": ["json"],
+    })
+    fixed_missing = db.create_ai_agent({
+        "name": "固定缺能力", "task_type": "keyword_clean", "binding_type": "fixed",
+        "provider_id": provider_id, "model": "chat-only", "system_prompt": "x",
+        "required_capabilities": ["json"],
+    })
+    db.close()
+
+    def no_full_listing(*_args, **_kwargs):
+        raise AssertionError("健康横幅不应物化整个目录")
+
+    monkeypatch.setattr(Database, "list_ai_provider_models", no_full_listing)
+    data = _get_health(app)
+
+    provider = next(p for p in data["providers"] if p["id"] == provider_id)
+    agents = {item["id"]: item for item in data["agents"]}
+    assert provider["routable_models"] == 2
+    assert data["totals"]["routable_models"] == 2
+    assert agents[pool_json]["status"] == "healthy"
+    assert agents[pool_vision]["status"] == "will_fail"
+    assert "能力" in agents[pool_vision]["reason"]
+    assert agents[fixed_ok]["status"] == "healthy"
+    assert agents[fixed_missing]["status"] == "will_fail"
+    assert "能力" in agents[fixed_missing]["reason"]

@@ -10,7 +10,7 @@ const test = require('node:test');
 const root = path.resolve(__dirname, '..');
 const templates = path.join(root, 'src/pixiv_novel_sync/templates');
 const read = name => fs.readFileSync(path.join(templates, name), 'utf8');
-const scripts = html => [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+const scripts = html => [...html.matchAll(/<script(?: nonce=\"[^\"]*\")?>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 // vm 里建的对象原型不同，先过一遍 JSON 再和夹具比
 const plain = value => JSON.parse(JSON.stringify(value));
 

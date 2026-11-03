@@ -24,6 +24,7 @@
 | MOBILE_AUDIT_2026-10-08.md / MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md | 安卓移动优先改造的巡检与实施 |
 | RESCUE_DEBUG_HANDOFF_2026-10-22.md | 救援脚本手机端排查交接；根因已在 0.9.0 解决，方法沉淀进救援指南 |
 | AUDIT_REPORT_2026-10-28.md | 10-28 全项目审查（七个切片），未修复项的待办在 [项目现状](../STATUS.md) |
+| [SERVER_DEPLOYMENT_REPORT_2026-10-30.md](SERVER_DEPLOYMENT_REPORT_2026-10-30.md) | 审计后续批次部署、Linux 验证、私有副本迁移 / 恢复及生产安全配置验收 |
 
 ## 旧版快照
 

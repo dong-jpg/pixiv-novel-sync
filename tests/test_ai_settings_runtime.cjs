@@ -354,6 +354,16 @@ test('probe selection starts unchecked and old success/error cannot replace a ne
     assert.equal(m.state.probedModels.value.length, 0);
   }
 });
+test('probe preserves explicit clearing of a saved proxy instead of null inheritance', async () => {
+  const m = mount('dashboard_settings_models.html');
+  await m.state.editProvider(pageProvider({proxy: 'http://saved-proxy.invalid'}));
+  m.state.providerForm.proxy = null;
+  m.state.touchProvider('proxy');
+  m.replyWith(() => envelope({items: [], latency_ms: 1}));
+  await m.state.probeModels();
+  const probe = m.calls.find(call => call.url.endsWith('/probe-models'));
+  assert.equal(JSON.parse(probe.options.body).proxy, '');
+});
 test('catalog presentation ignores stale search replies and authoritative reads reject incomplete snapshots', async () => {
   const m = mount('dashboard_settings_models.html', '?view=models&provider=17');
   const old = later();

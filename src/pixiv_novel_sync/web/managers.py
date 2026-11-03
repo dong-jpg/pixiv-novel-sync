@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..settings import Settings, load_settings
+from ..settings import DEFAULT_REQUEST_DELAY_SECONDS, Settings, load_settings
 from ..storage_db import Database, prepare_schema
 from .utils import (
     _atomic_write_yaml,
@@ -736,25 +736,31 @@ class AutoSyncScheduler:
         之后才写 _task_last_run / _task_next_run。
 
         规则：
-        - 只处理「已启用 + 未配置 cron」的任务；cron 是绝对时间点，本来就不会被顺延。
-        - 没有历史记录（首次部署）时不写入，沿用原来的「现在 + 间隔」。
+        - interval 任务：按「上次完成时间 + 间隔」恢复。
+        - cron 任务：cron 是绝对时间点，不会被顺延，但重启或崩溃会让错过的槽直接跳到
+          下一槽，被杀掉的那一轮也丢（user_backup 单轮约 2.3 小时，被 ./update.sh 打断
+          要等 3 天）。所以用 ``cron_to_prev_run`` 求最近应跑的槽：上次跑完早于它，就补跑
+          一次（只补一次，不追补每个错过的槽）；不早于它则不写入，主循环照常按 cron 排。
+        - 没有历史记录（首次部署）时不写入，沿用原来的「现在 + 间隔」或下一个 cron 槽。
         - 已经错过窗口的任务不立刻触发，而是按任务清单顺序依次错开
           （启动宽限 + 序号 × 错峰间隔），避免重启瞬间所有逾期任务连着跑。
         - 任何异常都只记警告并放弃恢复，退回原有行为，绝不影响调度启动。
         """
-        pending: list[tuple[str, str, float]] = []
+        from ..settings import cron_to_prev_run
+
+        tz_name = str(getattr(settings.sync, "auto_sync_timezone", "UTC") or "UTC")
+        pending: list[tuple[str, str, float, str]] = []
         for task_config in SCHEDULER_TASK_CONFIGS:
             task_name = task_config["name"]
             if not getattr(settings.sync, task_config["setting_check"], False):
                 continue
-            if getattr(settings.sync, task_config["cron_setting"], ""):
-                continue
             with self._lock:
                 if task_name in self._task_next_run:
                     continue
+            cron_expr = str(getattr(settings.sync, task_config["cron_setting"], "") or "").strip()
             interval_hours = getattr(settings.sync, task_config["interval_setting"], 6)
             pending.append(
-                (task_name, scheduler_task_log_type(task_name), float(interval_hours) * 3600)
+                (task_name, scheduler_task_log_type(task_name), float(interval_hours) * 3600, cron_expr)
             )
 
         if not pending:
@@ -767,11 +773,17 @@ class AutoSyncScheduler:
             prepare_schema(db)
             now = time.time()
             overdue_index = 0
-            for task_name, task_log_type, interval_seconds in pending:
+            for task_name, task_log_type, interval_seconds, cron_expr in pending:
                 last_success = self._last_success_finish_time(db, task_log_type)
                 if last_success is None:
                     continue
-                next_run = last_success + interval_seconds
+                if cron_expr:
+                    previous_slot = cron_to_prev_run(cron_expr, now, tz_name)
+                    if previous_slot is None or last_success >= previous_slot:
+                        continue  # 最近一个槽已经跑过（或 cron 解析失败）：交给主循环按 cron 排
+                    next_run = now  # 错过了最近一个槽：按下面的错峰规则补跑一次
+                else:
+                    next_run = last_success + interval_seconds
                 if next_run <= now:
                     next_run = (
                         now
@@ -1063,12 +1075,16 @@ class SettingsManager:
         sync_data["series_max_pages_per_run"] = _normalize_optional_int(
             payload.get("series_max_pages_per_run", sync_data.get("series_max_pages_per_run"))
         )
-        sync_data["delay_seconds_between_items"] = _normalize_float(
-            payload.get("delay_seconds_between_items", sync_data.get("delay_seconds_between_items", 1.0))
-        )
-        sync_data["delay_seconds_between_pages"] = _normalize_float(
-            payload.get("delay_seconds_between_pages", sync_data.get("delay_seconds_between_pages", 1.0))
-        )
+        def _save_request_delay(field_name: str) -> float:
+            # 缺键、YAML 留空、表单清空都回落同一个默认值，与 settings.load_settings 一致；
+            # 显式填 0 才是不限速。_normalize_float(None) 会给 0.0，所以先在这里换掉空值。
+            value = payload.get(field_name, sync_data.get(field_name, DEFAULT_REQUEST_DELAY_SECONDS))
+            if value is None or (isinstance(value, str) and not value.strip()):
+                value = DEFAULT_REQUEST_DELAY_SECONDS
+            return _normalize_float(value)
+
+        sync_data["delay_seconds_between_items"] = _save_request_delay("delay_seconds_between_items")
+        sync_data["delay_seconds_between_pages"] = _save_request_delay("delay_seconds_between_pages")
 
         sync_data["sync_bookmarks"] = bool(payload.get("sync_bookmarks", sync_data.get("sync_bookmarks", True)))
         sync_data["sync_following_users"] = bool(payload.get("sync_following_users", sync_data.get("sync_following_users", True)))

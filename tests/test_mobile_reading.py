@@ -54,6 +54,7 @@ def test_task4_pages_render_real_jinja_and_load_navigation_before_setup(name):
     )
     html = env.get_template(name).render(
         request=SimpleNamespace(path="/dashboard/novels/1"), task_labels={},
+        csp_nonce=lambda: "test-nonce",
     )
     assert "window.safeDashboardReturn" in html
     assert html.index("window.safeDashboardReturn") < html.rindex("initVueApp({")

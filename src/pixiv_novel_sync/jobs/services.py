@@ -8,10 +8,15 @@ from time import perf_counter
 from typing import Any
 
 from pixiv_novel_sync.auth import PixivAuthManager
+from pixiv_novel_sync.models import SourceRecord
 from pixiv_novel_sync.storage_db import Database, prepare_schema
 from pixiv_novel_sync.storage_files import FileStorage
 from pixiv_novel_sync.sync.utils import apply_pixiv_retry_patch, response_is_pixiv_error_page
-from pixiv_novel_sync.sync_engine import BookmarkNovelSyncService
+from pixiv_novel_sync.sync_engine import (
+    BookmarkNovelSyncService,
+    _iso_age_days,
+    _recently_confirmed_deleted_novel_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +40,21 @@ MAX_CONSECUTIVE_MISSING = 30
 # 判定为「不存在/已删除」的状态取值：小说/系列是 deleted，用户是 suspended，
 # 三者共用同一套熔断逻辑。
 MISSING_STATUSES = frozenset({"deleted", "suspended"})
+
+# 全量备份按失败比例中止单个用户之前，至少要处理过这么多本。以前没有最小样本：
+# 第 1 本失败就是 1/1 > 20%，整个用户中止，在轮转里被跳过一整圈。失败累计到
+# USER_BACKUP_MAX_FAILED_NOVELS 本仍然立即中止（那是确定的坏信号，与样本量无关）。
+USER_BACKUP_FAILURE_MIN_SAMPLE = 10
+USER_BACKUP_MAX_FAILED_NOVELS = 10
+USER_BACKUP_MAX_FAILURE_RATIO = 0.2
+
+# 全量备份平时只补没归档完整的作品，每位作者每 7 天全部重抓一次（审查性能 P19）。
+# 全部重抓保留为唯一会重抓已归档正文的路径：作者改了正文、或 S2 那种被错误页覆写成
+# 占位数据（title=novel_<id>、user_id=0，正文仍在所以 archive_complete 为真）的作品，
+# 只能靠它修回。上次全部重抓的时间按作者记在这个水位里，只有该作者那一轮完整跑完
+# （没停、没失败、没触顶）才更新。
+USER_BACKUP_FULL_REFRESH_DAYS = 7
+USER_BACKUP_FULL_REFRESH_WATERMARK = "user_backup_full_refresh"
 
 # 小说状态检查每轮的批大小。全量 6971 篇（每篇间隔 2 秒）单轮要跑满 4 小时，
 # 既占死任务槽又是限流诱因；分批后单轮耗时可控，多轮按 last_checked_at 轮转覆盖全库。
@@ -153,10 +173,15 @@ def run_user_backup_task(
         )
         service.stop_requested = stop_requested
         user_name = _lookup_user_name(db, user_id)
-        _report_log(reporter, "info", f"开始用户全量备份: {user_name} ({user_id})")
+        full_refresh = _needs_full_refresh(_load_full_refresh_marks(db), user_id)
+        mode_label = "全部重抓" if full_refresh else "增量：已归档的跳过"
+        _report_log(reporter, "info", f"开始用户全量备份: {user_name} ({user_id})（{mode_label}）")
+        item_delay = float(getattr(settings.sync, "delay_seconds_between_items", 0) or 0)
 
         total_novels = 0
         total_skipped = 0
+        total_skipped_archived = 0
+        visited = 0
         total_assets = 0
         total_failed = 0
         processed = 0
@@ -206,10 +231,34 @@ def run_user_backup_task(
                 if stop_requested is not None and stop_requested():
                     stopped = True
                     break
+                visited += 1
+                novel_id = int(novel.id)
+
+                if not full_refresh and service._archive_complete_on_disk(
+                    novel_id, settings.sync.download_assets
+                ):
+                    # 纯本地判定，不发请求、不间隔；来源照常登记（与以前重访时一致）
+                    with db.transaction():
+                        db.upsert_source(
+                            SourceRecord(novel_id=novel_id, source_type="user_backup", source_key=str(user_id))
+                        )
+                        db.touch_novel(novel_id)
+                    total_skipped_archived += 1
+                    _report_progress(
+                        reporter,
+                        phase="user_backup",
+                        current=visited,
+                        total=total_seen,
+                        current_novel=str(getattr(novel, "title", novel_id)),
+                        author=user_name,
+                    )
+                    continue
 
                 counters = service._sync_novel(
                     novel,
-                    "public",
+                    # 全量备份不知道作品在哪个收藏列表：沿用已归档的 restrict，
+                    # 新作品落 public。写死 "public" 会把私密收藏搬进公开树（S10）
+                    None,
                     settings.sync.download_assets,
                     settings.sync.write_markdown,
                     settings.sync.write_raw_text,
@@ -220,20 +269,28 @@ def run_user_backup_task(
                 failed = counters.get("failed", 0)
                 if failed:
                     total_failed += failed
-                    # 单本失败先计入本轮已处理，再看失败率，避免第一本失败时分母还是 0。
-                    if total_failed >= 10 or total_failed / processed > 0.2:
-                        raise RuntimeError(f"User backup aborted for user {user_id}: {total_failed}/{processed} novels failed (threshold exceeded)")
+                # A success can reach the minimum sample after earlier failures.
+                ratio_exceeded = (
+                    processed >= USER_BACKUP_FAILURE_MIN_SAMPLE
+                    and total_failed / processed > USER_BACKUP_MAX_FAILURE_RATIO
+                )
+                if total_failed >= USER_BACKUP_MAX_FAILED_NOVELS or ratio_exceeded:
+                    raise RuntimeError(f"User backup aborted for user {user_id}: {total_failed}/{processed} novels failed (threshold exceeded)")
                 total_novels += counters.get("novels", 0)
                 total_skipped += counters.get("skipped", 0)
                 total_assets += counters.get("assets_downloaded", 0)
                 _report_progress(
                     reporter,
                     phase="user_backup",
-                    current=processed,
+                    current=visited,
                     total=total_seen,
                     current_novel=str(getattr(novel, "title", getattr(novel, "id", ""))),
                     author=user_name,
                 )
+                # 以前逐本没有间隔，是仓库里唯一不遵守请求间隔的批量路径（P19）
+                if item_delay > 0 and _sleep_with_cancel(item_delay, stop_requested):
+                    stopped = True
+                    break
 
             if stopped:
                 break
@@ -244,16 +301,26 @@ def run_user_backup_task(
                     stopped = True
                     break
 
+        if not stopped and stop_requested is not None and stop_requested():
+            stopped = True
+        completed = not stopped and not total_failed and not total_failed_page and not truncated_by_page_cap
+        if full_refresh and completed:
+            _mark_full_refresh(db, user_id)
+        if not full_refresh:
+            mode_label = f"增量：跳过已归档 {total_skipped_archived} 本"
         if stopped:
             _report_log(reporter, "info", f"用户全量备份已停止: {user_name} ({user_id})")
         elif total_failed or total_failed_page:
-            _report_log(reporter, "warning", f"用户全量备份部分完成: {user_name} ({user_id}), 同步 {total_novels} 本, 失败 {total_failed} 本")
+            _report_log(reporter, "warning", f"用户全量备份部分完成: {user_name} ({user_id}), 同步 {total_novels} 本, 失败 {total_failed} 本（{mode_label}）")
         else:
-            _report_log(reporter, "success", f"用户全量备份完成: {user_name} ({user_id}), 同步 {total_novels} 本")
+            _report_log(reporter, "success", f"用户全量备份完成: {user_name} ({user_id}), 同步 {total_novels} 本（{mode_label}）")
         stats = {
             "user_id": user_id,
             "novels": total_novels,
             "skipped": total_skipped,
+            # 已归档、本轮没发请求就跳过的；全部重抓的轮次恒为 0
+            "skipped_archived": total_skipped_archived,
+            "full_refresh": full_refresh,
             "assets_downloaded": total_assets,
             "stopped": stopped,
         }
@@ -276,6 +343,33 @@ def run_user_backup_task(
         return stats
     finally:
         db.close()
+
+
+def _load_full_refresh_marks(db: Any) -> dict[str, str]:
+    """读各作者上次全部重抓的时间；读不到一律当没有（于是全部重抓，宁多勿漏）。"""
+    try:
+        raw = db.get_watermark(USER_BACKUP_FULL_REFRESH_WATERMARK)
+    except Exception as exc:
+        logger.warning("读取全量备份刷新水位失败，本轮全部重抓: %s", exc)
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    marks = raw.get("full_refresh_at")
+    return {str(k): str(v) for k, v in marks.items()} if isinstance(marks, dict) else {}
+
+
+def _needs_full_refresh(marks: dict[str, str], user_id: int) -> bool:
+    return _iso_age_days(marks.get(str(int(user_id)))) >= USER_BACKUP_FULL_REFRESH_DAYS
+
+
+def _mark_full_refresh(db: Any, user_id: int) -> None:
+    marks = _load_full_refresh_marks(db)
+    marks[str(int(user_id))] = datetime.now(timezone.utc).isoformat()
+    try:
+        db.update_watermark(USER_BACKUP_FULL_REFRESH_WATERMARK, {"full_refresh_at": marks})
+    except Exception as exc:
+        # 写不进去只会让下一轮再全部重抓一次，不影响本轮结果
+        logger.warning("记录全量备份刷新时间失败: %s", exc)
 
 
 def run_user_status_task(
@@ -308,9 +402,21 @@ def run_novel_status_task(
     batch_size = _resolve_novel_status_batch_size(settings)
     # 本轮起始时间用于统计「还剩多少篇没轮到」，与 SQLite CURRENT_TIMESTAMP 同格式
     started_at = _db_utc_now()
+    deferred: set[int] = set()
+
+    def list_ids(db: Database) -> list[int]:
+        # 已确认 deleted、近期复查过的不进本批（P21）。在取批时排除而不是取完再丢：
+        # 丢掉的条目 last_checked_at 不会刷新，会每轮都占着队首的批次名额。
+        # 多取 len(deferred) 条，保证排除后仍能凑满一批。
+        deferred.update(_recently_confirmed_deleted_novel_ids(db))
+        ids = db.get_novel_ids_for_status_check(limit=batch_size + len(deferred))
+        return [novel_id for novel_id in ids if int(novel_id) not in deferred][:batch_size]
 
     def finalize_stats(db: Database, stats: dict[str, Any]) -> None:
-        remaining = int(db.count_novels_pending_status_check(started_at))
+        # 降频中的已删除作品本轮本来就不查，不算「待轮转」
+        remaining = max(int(db.count_novels_pending_status_check(started_at)) - len(deferred), 0)
+        if deferred:
+            stats["deleted_recheck_deferred"] = len(deferred)
         stats["batch_size"] = batch_size
         stats["remaining"] = remaining
         _report_log(
@@ -329,7 +435,7 @@ def run_novel_status_task(
         stop_requested=stop_requested,
         task_label="小说状态检查",
         total_label="小说",
-        list_ids=lambda db: db.get_novel_ids_for_status_check(limit=batch_size),
+        list_ids=list_ids,
         check_status=_check_novel_status,
         upsert_status=lambda db, item_id, status: db.upsert_novel_status(item_id, status),
         total_key="total_novels",
@@ -500,6 +606,9 @@ def _run_user_status_like_task(
     total_key: str,
 ) -> dict[str, Any]:
     api = _login(settings)
+    # 状态检查不经过 BookmarkNovelSyncService，取消回调只能在这里绑到重试补丁上，
+    # 否则 user_detail 的 429/网络退避是一整段不可取消的 sleep（S7）。
+    apply_pixiv_retry_patch(api, stop_requested=stop_requested)
     _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
@@ -540,6 +649,8 @@ def _run_status_task(
     build_already_missing: Callable[[Database], Callable[[Any], bool]] | None = None,
 ) -> dict[str, Any]:
     api = _login(settings)
+    # 同 _run_user_status_like_task：把任务的取消回调绑到重试补丁上
+    apply_pixiv_retry_patch(api, stop_requested=stop_requested)
     _ensure_storage_dirs(settings)
 
     db = Database(settings.storage.db_path)
@@ -612,7 +723,8 @@ def _login(settings: Any) -> Any:
     # 统一给 api 打重试补丁：状态检查（user_detail）等不经过
     # BookmarkNovelSyncService 的调用点以前完全没有重试/退避保护，
     # 瞬时网络错误直接进 unknown 计数或空页路径。补丁幂等，service
-    # 构造时会再打一次但不会叠加。
+    # 构造时会再打一次但不会叠加；这里不带取消回调，调用方随后重绑
+    # （service 构造或 apply_pixiv_retry_patch(api, stop_requested=...)）。
     apply_pixiv_retry_patch(api)
     return api
 

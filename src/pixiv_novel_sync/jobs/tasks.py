@@ -380,7 +380,11 @@ def _run_preference_analyze_task(settings: Any, context: dict[str, Any]) -> dict
                     ai_service = AIWritingService(settings.storage.db_path)
                     try:
                         top_tags = [item["name"] for item in stats.get("top_tags", [])[:40] if item.get("name")]
-                        cleaned = ai_service.clean_keywords(raw_keywords, tags=top_tags)
+                        cleaned = ai_service.clean_keywords(
+                            raw_keywords,
+                            tags=top_tags,
+                            is_cancelled=stop_requested,
+                        )
                     finally:
                         # 服务持有 Provider 连接池，用完必须显式关闭（P3 资源卫生）
                         close_service = getattr(ai_service, "close", None)

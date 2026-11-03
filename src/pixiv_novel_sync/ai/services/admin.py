@@ -406,7 +406,7 @@ class AIAdminMixin:
         try:
             # 整块读包进一个 read_transaction：并发的模型同步在两次读之间提交，
             # 就会产出 models_synced_at 与 routable_models 互不匹配的一行。
-            # （read_transaction 可嵌套，list_ai_provider_models 内部那层照旧。）
+            # （read_transaction 可嵌套，目录读取方法内部那层照旧。）
             with db.read_transaction():
                 providers = db.list_ai_providers()
                 agents = db.list_ai_agents()
@@ -414,19 +414,29 @@ class AIAdminMixin:
                 attempt_health = db.get_provider_attempt_health(days=days)
                 job_failures = db.get_ai_job_failure_summary(days=days)
                 routable: dict[int, int] = {}
-                # provider_model_id -> routable，供池成员过滤复用运行时判据。
-                # 不额外查库：这里本来就要为每个 Provider 调一次，只是把 items 也留下。
-                routable_by_model: dict[int, bool] = {}
-                capabilities_by_model: dict[int, set[str]] = {}
+                # provider_model_id -> routable / 能力，供池成员过滤复用运行时判据。
+                # 只读池成员引用到的那几行：横幅对目录只需要每个 Provider 的可路由数，
+                # 不必把几千个模型连同两次 JSON 解析全物化出来（P22）。
+                member_models = db.get_ai_provider_models_by_ids(
+                    int(member["provider_model_id"])
+                    for pool in pools.values()
+                    for member in pool.get("members", [])
+                    if member.get("provider_model_id")
+                )
+                routable_by_model: dict[int, bool] = {
+                    model_id: bool(item["routable"])
+                    for model_id, item in member_models.items()
+                }
+                capabilities_by_model: dict[int, set[str]] = {
+                    model_id: set(item.get("capabilities") or [])
+                    for model_id, item in member_models.items()
+                }
                 undecryptable: set[int] = set()
                 for provider_row in providers:
                     provider_id = int(provider_row["id"])
-                    catalog = db.list_ai_provider_models(provider_id)
-                    routable[provider_id] = int(catalog["routable"])
-                    for item in catalog["items"]:
-                        model_id = int(item["id"])
-                        routable_by_model[model_id] = bool(item["routable"])
-                        capabilities_by_model[model_id] = set(item.get("capabilities") or [])
+                    routable[provider_id] = int(
+                        db.count_ai_provider_models(provider_id)["routable"]
+                    )
                     if provider_row.get("has_api_key"):
                         secret_row = db.get_ai_provider(provider_id, include_secret=True)
                         ciphertext = (secret_row or {}).get("api_key_encrypted")
@@ -781,6 +791,7 @@ class AIAdminMixin:
         """
         base_url = (str(payload.get("base_url") or "")).strip() or None
         provider_type = str(payload.get("provider_type") or "openai_compatible")
+        proxy = (str(payload.get("proxy")).strip() or None) if payload.get("proxy") else None
         api_key = payload.get("api_key") or None
         provider_id = payload.get("provider_id")
 
@@ -795,15 +806,20 @@ class AIAdminMixin:
             # Borrowing the saved key must preserve the full network tuple:
             # a different protocol, adapter or proxy turns this endpoint into
             # "send the encrypted key to my chosen destination".
-            supplied_proxy = (str(payload.get("proxy")).strip() or None) if payload.get("proxy") else None
+            saved_type = str(row.get("provider_type") or "openai_compatible")
+            saved_proxy = (str(row.get("proxy") or "").strip()) or None
+            # Omitted/null transport fields inherit saved values; an explicit
+            # empty proxy means direct transport and must still be compared.
             if (
                 (row.get("base_url") or None) != base_url
-                or (row.get("provider_type") or None) != provider_type
-                or (row.get("proxy") or None) != supplied_proxy
+                or (payload.get("provider_type") and provider_type != saved_type)
+                or (payload.get("proxy") is not None and proxy != saved_proxy)
             ):
                 raise AIServiceError(
                     "借用已保存的 API Key 时不能同时改地址、协议或代理：请在表单里重新填入 Key"
                 )
+            provider_type = saved_type
+            proxy = saved_proxy
             api_key = self.secret_manager.decrypt(row.get("api_key_encrypted"))
         if not api_key:
             raise AIServiceError("请填入 API Key")
@@ -817,7 +833,7 @@ class AIAdminMixin:
             default_model=None,
             timeout_seconds=int(payload.get("timeout_seconds") or 120),
             context_window=int(payload.get("context_window") or 128000),
-            proxy=(str(payload.get("proxy")).strip() or None) if payload.get("proxy") else None,
+            proxy=proxy,
         )
         provider = create_provider(config)
         started = time.time()

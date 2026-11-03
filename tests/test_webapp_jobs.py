@@ -829,7 +829,7 @@ def test_create_app_shares_scheduler_owner_by_normalized_db_path_and_releases_on
     tmp_path,
     monkeypatch,
 ):
-    relative_db_path = ".\\scheduler.db"
+    relative_db_path = "./scheduler.db"
     absolute_db_path = str((tmp_path / "scheduler.db").resolve())
     monkeypatch.chdir(tmp_path)
     assert str((tmp_path / relative_db_path).resolve()) == absolute_db_path

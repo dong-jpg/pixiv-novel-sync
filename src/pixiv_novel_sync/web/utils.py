@@ -534,6 +534,9 @@ def _check_pixiv_user_status(api: Any, user_id: int) -> str:
             if total_novels == 0:
                 return "no_novels"
         return "normal"
+    except InterruptedError:
+        # 任务取消：重试补丁在退避中抛出，必须交给 JobRunner 转 CANCELLED，不能吞成 unknown
+        raise
     except Exception as e:
         logger.warning("检查用户 %s 状态失败: %s", user_id, e)
         return "unknown"
@@ -558,6 +561,8 @@ def _check_novel_status(api: Any, novel_id: int) -> str:
         if not visible:
             return "restricted"
         return "normal"
+    except InterruptedError:
+        raise
     except Exception as e:
         logger.warning("检查小说 %s 状态失败: %s", novel_id, e)
         return "unknown"
@@ -577,6 +582,8 @@ def _check_series_status(api: Any, series_id: int) -> str:
             _log_unknown_status("系列", series_id, result)
             return "unknown"
         return "normal"
+    except InterruptedError:
+        raise
     except Exception as e:
         logger.warning("检查系列 %s 状态失败: %s", series_id, e)
         return "unknown"

@@ -439,9 +439,15 @@ class AIServiceCore:
         max_tokens: int | None = None,
         stop_requested: Callable[[], bool] | None = None,
         deadline_at: str | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> Generator[AIStreamChunk, None, RouteResult]:
+        """``is_cancelled`` 是调用方的取消回调（偏好分析传 stop_requested，覆盖用户
+        取消与调度让位）。路由在候选之间、流式每一帧和重试退避的分片里都会查它。"""
         if self._closed:
             raise AIServiceError("AI 服务已关闭")
+        if stop_requested is not None and is_cancelled is not None and stop_requested is not is_cancelled:
+            raise AIServiceError("Conflicting cancellation callbacks")
+        stop_requested = stop_requested if stop_requested is not None else is_cancelled
         output_reserve = (
             context.prompt_budget.output_reserve
             if max_tokens is None

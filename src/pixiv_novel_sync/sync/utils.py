@@ -23,7 +23,7 @@ _RATE_LIMIT_TOKENS = ("rate limit", "rate-limit", "ratelimit", "too many request
 
 # 重试补丁覆盖的 pixivpy 方法名单。sync_engine 的六方法之外，状态检查还用到
 # user_detail——名单收在这里供各调用点共享，新增 API 调用时记得登记
-# （tests/test_retry_coverage.py 断言名单与方法调用点一致）。
+# （tests/test_retry_coverage.py 断言 src 里的 api.xxx( 调用点都在名单或豁免表里）。
 RETRY_PATCHED_METHODS = (
     "user_bookmarks_novel",
     "user_following",
@@ -58,6 +58,41 @@ def response_is_pixiv_error_page(result: Any) -> bool:
     return not (isinstance(error, str) and not error.strip())
 
 
+class _RetryCancelBinding:
+    """挂在 api 实例上的取消回调槽：包装函数每次退避时现取 ``stop_requested``。
+
+    补丁是幂等的（方法只包一次），取消回调却会随调用方变化：``jobs/services._login``
+    先以无回调的状态打补丁，随后 ``BookmarkNovelSyncService`` 带着任务的取消回调
+    再打一次。以前第二次因幂等判定被整体跳过，回调永远停在 None，退避退化成
+    不可取消的整段 sleep（S7）。现在幂等只管「不重复包装」，回调每次都重绑到槽上。
+    """
+
+    __slots__ = ("stop_requested",)
+
+    def __init__(self) -> None:
+        self.stop_requested: Callable[[], bool] | None = None
+
+
+_RETRY_BINDING_ATTR = "_pixiv_retry_cancel_binding"
+
+
+def _retry_cancel_binding(api: Any) -> _RetryCancelBinding | None:
+    # 用 vars() 而不是 getattr：MagicMock 之类的替身对任意属性名都会造出子对象，
+    # getattr 会把它误当成已有的槽。
+    try:
+        binding = vars(api).get(_RETRY_BINDING_ATTR)
+    except TypeError:
+        binding = getattr(api, _RETRY_BINDING_ATTR, None)
+    if isinstance(binding, _RetryCancelBinding):
+        return binding
+    binding = _RetryCancelBinding()
+    try:
+        setattr(api, _RETRY_BINDING_ATTR, binding)
+    except (AttributeError, TypeError):
+        return None
+    return binding
+
+
 def apply_pixiv_retry_patch(
     api: Any,
     stop_requested: Callable[[], bool] | None = None,
@@ -71,19 +106,33 @@ def apply_pixiv_retry_patch(
     AppPixivAPI 实例，但重试补丁以前只在 service 构造时打一次，名单外的调用点
     （状态检查的 user_detail 等）裸奔。统一从这里打：已包装的方法（检测
     ``_pixiv_retry_original`` 标记）不重复包装。
+
+    ``stop_requested`` 每次调用都会重绑（最后一次调用为准），已包装的方法在退避时
+    读取当前绑定的回调，而不是第一次打补丁时的那个。
     """
+    binding = _retry_cancel_binding(api)
+    if binding is not None:
+        binding.stop_requested = stop_requested
     for method_name in method_names:
         if not hasattr(api, method_name):
             continue
         current = getattr(api, method_name)
         if getattr(current, "_pixiv_retry_original", None) is not None:
-            continue  # 已包装过，避免叠加退避
+            continue  # 已包装过，避免叠加退避；取消回调已在上面重绑
         original = current
-        wrapped = retry_on_pixiv_error(
-            max_retries=max_retries,
-            base_delay=base_delay,
-            stop_requested=stop_requested,
-        )(original)
+        if binding is not None:
+            wrapped = retry_on_pixiv_error(
+                max_retries=max_retries,
+                base_delay=base_delay,
+                resolve_stop_requested=lambda b=binding: b.stop_requested,
+            )(original)
+        else:
+            # api 不接受新属性（极少见）：退回旧行为，回调固定在本次调用的值
+            wrapped = retry_on_pixiv_error(
+                max_retries=max_retries,
+                base_delay=base_delay,
+                stop_requested=stop_requested,
+            )(original)
         wrapped._pixiv_retry_original = original  # type: ignore[attr-defined]
         setattr(api, method_name, wrapped)
 
@@ -110,12 +159,16 @@ def retry_on_pixiv_error(
     max_retries: int = 3,
     base_delay: float = 5.0,
     stop_requested: Callable[[], bool] | None = None,
+    resolve_stop_requested: Callable[[], Callable[[], bool] | None] | None = None,
 ) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """Pixiv API重试装饰器:捕获429/网络错误,指数退避重试。
 
     Args:
         max_retries: 最大重试次数(不含首次调用)
         base_delay: 基础延迟(秒),429时翻倍退避,最长60s
+        stop_requested: 固定的取消回调
+        resolve_stop_requested: 每次退避前调用，返回当时的取消回调（优先于
+            stop_requested）；apply_pixiv_retry_patch 用它实现回调重绑
     """
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         @wraps(func)
@@ -148,7 +201,10 @@ def retry_on_pixiv_error(
                             f"{func.__name__} {'rate limited (429)' if is_rate_limit else 'network error'}, "
                             f"retry {attempt+1}/{max_retries} after {delay:.1f}s: {e}"
                         )
-                        cancellable_sleep(delay, stop_requested)
+                        current_stop = (
+                            resolve_stop_requested() if resolve_stop_requested is not None else stop_requested
+                        )
+                        cancellable_sleep(delay, current_stop)
                     else:
                         logger.error(f"{func.__name__} failed after {max_retries} retries: {e}")
 

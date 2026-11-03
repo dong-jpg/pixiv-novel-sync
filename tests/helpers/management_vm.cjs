@@ -122,13 +122,16 @@ function mount(name, search = '') {
   const aiApi = base.match(/window\.aiApi = \{[\s\S]*?\n    };/);
   assert.ok(aiApi);
   vm.runInContext(aiApi[0], context, {filename: 'base.html:aiApi'});
-  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
-  assert.equal(scripts.length, 1, 'Execute the actual page script without rewriting its logic');
-  for (const script of html.matchAll(/<script(?:\s+src="([^"]+)")?>([\s\S]*?)<\/script>/g)) {
-    if (script[1]) {
-      assert.match(script[1], /^\/static\/js\/ai_[a-z_]+\.js$/, 'Only local unversioned AI scripts');
-      const file = path.join(templates, '..', script[1].slice(1));
-      vm.runInContext(fs.readFileSync(file, 'utf8'), context, {filename: script[1]});
+  const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
+  assert.equal(scripts.filter(script => !/\bsrc=/.test(script[1])).length, 1,
+    'Execute the actual page script without rewriting its logic');
+  for (const script of scripts) {
+    assert.ok(script[1].includes('nonce="{[ csp_nonce() ]}"'), 'Shipped scripts require the CSP nonce');
+    const src = script[1].match(/\bsrc="([^"]+)"/)?.[1];
+    if (src) {
+      assert.match(src, /^\/static\/js\/ai_[a-z_]+\.js$/, 'Only local unversioned AI scripts');
+      const file = path.join(templates, '..', src.slice(1));
+      vm.runInContext(fs.readFileSync(file, 'utf8'), context, {filename: src});
     } else vm.runInContext(script[2], context, {filename: name});
   }
   return {

@@ -17,7 +17,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 import requests as http_requests
-from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, send_file, url_for
+from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, send_file, url_for
 
 from . import __version__
 from .jobs.manager import JobManager
@@ -933,6 +933,18 @@ def create_app(
         next_path = request.full_path if request.query_string else request.path
         return redirect(url_for("auth_login", next=safe_next_path(next_path)))
 
+    def _csp_nonce() -> str:
+        """本次请求的 CSP nonce；模板里每个内联 <script> 都带 nonce="{[ csp_nonce() ]}"。"""
+        nonce = getattr(g, "csp_nonce", None)
+        if nonce is None:
+            nonce = secrets.token_urlsafe(18)
+            g.csp_nonce = nonce
+        return nonce
+
+    @app.context_processor
+    def _inject_csp_nonce():
+        return {"csp_nonce": _csp_nonce}
+
     @app.after_request
     def _add_security_headers(response):
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -940,6 +952,27 @@ def create_app(
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         if response.mimetype == "text/html":
+            # 内联脚本靠每次请求的 nonce 放行，不开 'unsafe-inline'，注入进页面的 <script> 不会执行。
+            # Vue 全局版在浏览器里编译模板（new Function），必须 'unsafe-eval'。
+            # 样式：模板里有 style="" 与 Vue 的 :style 绑定，只能放开 'unsafe-inline'。
+            # 图片：封面走同源 /proxy/image，阅读器导出 EPUB 用 blob:，SVG 图标用 data:。
+            response.headers.setdefault(
+                "Content-Security-Policy",
+                "; ".join(
+                    (
+                        "default-src 'self'",
+                        f"script-src 'self' 'nonce-{_csp_nonce()}' 'unsafe-eval' https://unpkg.com",
+                        "style-src 'self' 'unsafe-inline'",
+                        "img-src 'self' data: blob:",
+                        "font-src 'self' data:",
+                        "connect-src 'self'",
+                        "object-src 'none'",
+                        "frame-ancestors 'none'",
+                        "base-uri 'self'",
+                        "form-action 'self'",
+                    )
+                ),
+            )
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
