@@ -1,39 +1,43 @@
 # 项目现状
 
-**最近更新：2026-11-03**
+**最近更新：2026-11-04**
 
 这是项目当前状态的唯一入口：版本、测试基线、部署和待办都只在这里更新。每轮审查、部署、整改的详细经过另存带日期的记录，放在 [archive/](archive/README.md)，不在多份旧文档里反复回写。
 
-## AI 设置与统一调用重构（本地验收完成，待发布）
+## AI 设置与统一调用重构（第一阶段已部署）
 
-- 第一阶段 Tasks1-8 已实施并逐项审查，应用代码基线为 `3c51a6c6107a61b95cdbf58a00044506f405bccc`。独立整阶段代码/规格复审 Approved，最后的传输 deadline、当前选模意图、精确模型键、目录搜索及保存/读回所有权问题均已修复并复审。工作分支 `codex/ai-settings-resume` 保留与已审计 main 的合并历史；此记录尚不表示已推送或部署。
+- 第一阶段 Tasks1-8 已实施并逐项审查，应用代码基线为 `3c51a6c6107a61b95cdbf58a00044506f405bccc`。独立整阶段代码/规格复审 Approved，最后的传输 deadline、当前选模意图、精确模型键、目录搜索及保存/读回所有权问题均已修复并复审。候选 `793d340d` 已普通快进推送到 main，并于 2026-11-04 15:57（Asia/Shanghai）完成受保护部署；原主目录用户修改未动。
 - 业务仍仅关键词清洗接入。整书/系列读取、跨章证据、XP 分析 Agent 和推荐闭环是未实现的第二阶段。main Continue 保留 409，不创建 job 或请求，UI 没有可执行继续。
-- 同一应用提交的 Windows 全量 `2414 passed, 52 skipped`（351.21s）；Linux/Python3.10 全量 `2363 passed, 103 skipped`（218.80s），均 exit0。Windows 的 6 个符号链接/POSIX 限制用例在 Linux 补齐；完整跳过分类见 [阶段验收记录](archive/AI_SETTINGS_ACCEPTANCE_2026-11-03.md)，不将 skip 算成通过。
+- Windows 全量 `2414 passed, 52 skipped`（351.21s）；实际部署的 canonical LF 归档经 Linux/Python3.10 全量 `2363 passed, 103 skipped`（176.99s），均 exit0。Windows 的 6 个符号链接/POSIX 限制用例在 Linux 补齐；完整跳过分类见 [阶段验收记录](archive/AI_SETTINGS_ACCEPTANCE_2026-11-03.md)，不将 skip 算成通过。
 - 8 个 Node 套件 `429 passed`、零失败/跳过；旧 reader direct 模式另行通过。compileall（77 个字节一致的隔离 Python 源文件）、实际源码 pyflakes、静态 CSS 原始字节一致性及离线 wheel 均通过；wheel 内 107 个源码/资产与应用基线一致。Windows 校验临时路径过长的环境失败及隔离短路径复跑已保留记录，没有修改全局环境或产品代码来规避。
-- 真实 Chromium 使用本地 SRI 校验 Vue3.4.38、合成 API/文本，在 375/768/1440 完成冻结基线 33 用例；随后相关修复分别经过三宽度定点复验和资产 hash 核对，最终浏览器文件为 36 用例。没有把“33 基线加定点复验”写成最终提交一次性完整 36 通过，也不把 Node VM 或默认 opt-in skip 当作浏览器验收。
-- 真机软键盘、真实服务商 1M 输入准入/计费/网络取消仍是外部验收，不自动调用付费服务或私人小说。生产仍为 `16b5b4a`，只读预检确认 active、无活跃任务、正确依赖/源码、`nginx -t` 通过；私有迁移演练、停服新鲜备份和受控切换尚未执行。下方 10-30 记录是历史部署事实。
+- 真实 Chromium 使用本地 SRI 校验 Vue3.4.38 和合成 API/文本；最后在精确 Git LF 归档上完整运行全部 36 用例（375/768/1440），`36 passed`、零跳过（97.13s）。17 个资产和 368 个源文件运行前后字节一致；此前 33 基线及定点修复记录仍按历史事实保留，Node VM 和默认 opt-in skip 不代替浏览器验收。
+- 服务器私有副本两次迁移、完整 integrity/FK、计数与恢复演练通过，停服后的新鲜 SQLite 备份仍保留。现场迁移、正常调度、本机/公网健康、HTTPS 登录、认证数据、CSP/Cookie、5 个 JS/CSS 与大于 1 MiB 合成预检均已核验。Cloudflare 将裸 JS 的 `no-cache` 改写为 4 小时缓存的问题已用仅匹配 5 个 AI JS 的 Nginx `private/no-store` 修复，稳定 URL 两轮证明正确字节及 BYPASS；没有放宽探针断言。
+- 真机软键盘、真实服务商 1M 输入准入/计费/网络取消仍是外部验收。验收未主动调用付费模型或处理私人小说；正常业务调度已恢复。首次维护围栏到解除约 68 分钟，包含新鲜备份检查和线上缓存问题修订，不写成无中断或短时发布。详见 [部署记录](archive/SERVER_DEPLOYMENT_REPORT_2026-11-04.md)。
 
 ## 版本
 
 | 分支 / 组件 | 当前 | 说明 |
 |---|---|---|
-| main（生产只读观察） | checkout HEAD `16b5b4a`（2026-11-03只读确认）；应用部署基线 `b6820e7`（2026-10-30） | 本轮 AI 重构应用 `3c51a6c6` 已完成本地验收，尚未推送/部署 |
+| main（生产应用） | 应用 `3c51a6c6`；切换候选 `793d340d`（2026-11-04） | 第一阶段 AI 重构已上线；随后同步 Nginx 缓存修订、测试和部署记录，不改 Python/JS/CSS 应用源码、不再次重启 |
 | ai-writing | `adb2d95`（2026-10-20） | 在 main 的基础上加写作/成人模块；只移植共享修复，不反向合入 main |
 | 审计整改 PR | [PR #2](https://github.com/dong-jpg/pixiv-novel-sync/pull/2) 已合并；候选 `8f76399` 与合并提交的树一致 | 应用代码验证基线 `122dbfe`；后续补文档及一处跨平台测试夹具，不改变应用逻辑 |
 | 救援用户脚本 | 0.12.2 已进入 GitHub main | 直装 / 自动更新来源现已包含新版；手机管理器仍须检查更新并确认角标，不能据发布推断设备已经更新 |
 
 ## 部署
 
-2026-10-30 **21:13（Asia/Shanghai）** 完成 `51f8611` → `b6820e7` 的受保护部署，详情见 [部署记录](archive/SERVER_DEPLOYMENT_REPORT_2026-10-30.md)。提供正确 SSH 身份后，预检确认更新前实际运行的是 `51f8611`，不是旧书面记录中的 `0c7578e`。
+2026-11-04 **15:57（Asia/Shanghai）** 完成 `16b5b4a` → `793d340d` 的受保护部署，应用源码基线为 `3c51a6c6`，详情见 [部署记录](archive/SERVER_DEPLOYMENT_REPORT_2026-11-04.md)。代码仅 fast-forward，没有运行带强制重置的旧部署脚本。普通服务 active/running、自动重启计数 0、正常调度运行；临时禁调度覆盖和维护围栏均已移除。
 
-服务 active；本机 / 公网健康、HTTPS 登录、认证后的数据库状态接口、静态 CSS 和正常调度均已核验。Nginx real_ip 与覆盖式转发头已启用，`DASHBOARD_TRUST_PROXY=1`、可信跳数 1、`PIXIV_COOKIE_SECURE=1` 已生效；`.env` / YAML 为 `0600`，原有口令与加密密钥保持不变。临时写入限制及禁调度覆盖已移除，停服数据库快照与旧代码 / 配置备份仍保留在服务器私有目录。
+本机 / 公网健康、HTTPS 登录、认证数据、旧设置 URL、5 个 JS/CSS 的真实字节与缓存策略均已核验。大于 1 MiB 的合成预检请求使用明确不存在的 Agent，返回 404，验证的是代理大小/路由而非真实模型容量。`.env` / YAML 内容保持原样且为 `0600`；原 systemd unit 字节不变，正常 Nginx 已恢复 root:root / `0644`。停服新鲜数据库快照、旧代码、配置及明确的缓存修订证据链留在服务器私有目录；正常调度启动后没有恢复旧数据库。
+
+上次部署历史见 [2026-10-30 记录](archive/SERVER_DEPLOYMENT_REPORT_2026-10-30.md)，不将旧批次的额外检查冒充本次结果。
 
 ## 测试基线
 
 | 分支 | 命令 | 结果 | 环境 |
 |---|---|---|---|
 | AI 重构应用 `3c51a6c6` | `python -m pytest -q -ra` | 2414 passed / 52 skipped，351.21 秒 | Windows / Python3.11.3，2026-11-03 |
-| AI 重构同提交归档 | `python -m pytest -q -ra` | 2363 passed / 103 skipped，218.80 秒 | WSL 原生 Linux 文件系统 / 隔离 Python3.10.12，2026-11-03 |
+| AI 重构 canonical 归档 `793d340d` | `python -m pytest -q -ra` | 2363 passed / 103 skipped，176.99 秒 | 精确 Git LF / WSL 原生文件系统 / 隔离 Python3.10.12，2026-11-04 |
+| AI 设置真实 Chromium | `pytest tests/test_ai_settings_browser.py` | 36 passed / 0 skipped，97.13 秒 | 同一 canonical 归档，本地 SRI Vue，375/768/1440 三宽度 |
 | AI 重构当前 Node 套件 | `node --test`（8 个 CJS 文件） | 429 passed / 0 failed / 0 skipped | Node22.22.1；旧 reader direct 模式另行通过 |
 | main（历史基线） | `python -m pytest -q` | 1618 passed / 6 skipped，252 秒 | Windows，2026-10-29，合并静态 CSS、阅读页标记与救援脚本 0.12.1 之后；`pyflakes src` 无告警 |
 | 审计整改应用代码 | `python -m pytest -q --tb=short -rs` | 1772 passed / 6 skipped，282.70 秒 | Windows，2026-10-30，应用代码 `122dbfe`；包含浏览器夹具回归，整分支及最终增量复审 Approved |
@@ -87,7 +91,7 @@ Windows 的 6 个 skip 属于符号链接权限与 POSIX mode；本次 Linux 的
 
 ### 仍待外部验收
 
-本轮已补齐 Linux 权限 / 符号链接用例，并在服务器私有一致性副本上完成两次迁移、完整 `integrity_check`、FK / FTS 检查、目录重建与字节一致的备份恢复演练；数据库没有外传。实际切换只对本次 DDL 涉及表及其索引做范围明确的完整性检查，另做全局 FK、FTS 对齐和权威记录数核验，不冒充现场全库扫描。
+2026-11-04 已补齐 Linux 权限 / 符号链接用例，服务器私有副本两次迁移、完整 `integrity_check`、全局 FK、枚举的权威表计数及字节一致恢复演练通过，数据库没有外传。停服新鲜副本另做 quick-check/FK；现场迁移检查 3 张 AI 表及索引、全局 FK、计数和 schema 与演练一致，不冒充现场全库扫描。本轮不声称新增 FTS 对齐或目录重建验收；这些属于 10-30 历史批次。
 
 仍未完成跨环境脱敏演练、真实外部服务专项验证、Cloudflare 账户侧设置确认及手机 0.12.2 验收。历史手机 / 真机探针方法见 [救援指南](RESCUE_USER_GUIDE.md)，不复用旧版结果当作本版验收。
 
@@ -103,7 +107,7 @@ Windows 的 6 个 skip 属于符号链接权限与 POSIX mode；本次 Linux 的
 |---|---|
 | AI 第一阶段验收 | [2026-11-03](archive/AI_SETTINGS_ACCEPTANCE_2026-11-03.md) |
 | 代码审查 | [2026-10-28](archive/AUDIT_REPORT_2026-10-28.md) |
-| 生产部署 | [2026-10-30](archive/SERVER_DEPLOYMENT_REPORT_2026-10-30.md) |
+| 生产部署 | [2026-11-04](archive/SERVER_DEPLOYMENT_REPORT_2026-11-04.md) |
 | 整改台账 | [2026-10-08 ～ 10-20](archive/REMEDIATION_STATUS_2026-09-30.md) |
 | 计划时间线 | [2026-10-14](archive/PLAN_AUDIT_2026-10-14.md) |
 

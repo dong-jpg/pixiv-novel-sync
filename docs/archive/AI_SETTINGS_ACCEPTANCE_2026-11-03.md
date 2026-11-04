@@ -107,3 +107,72 @@ real-device soft keyboards and broader historical project backlog remain
 external or separately scoped. No paid/private-content acceptance is implied.
 The primary checkout's six dirty documents, extra application document and
 `.probe012/` are preserved; implementation is isolated in the managed worktree.
+
+## Canonical Release Verification Addendum (2026-11-04)
+
+The preceding sections preserve the original acceptance checkpoint and its
+then-current release boundary. This addendum records later canonical-byte
+verification; it does not retroactively replace those valid test results or
+claim that deployment, scheduler resumption or public release is complete.
+Consult [STATUS](../STATUS.md) for actual release facts.
+
+### Archive And Wheel Identity
+
+Strict server-side staging checks caught Windows Git end-of-line conversion
+before any live release changes. In the original Windows-generated archive,
+360 of 368 files differed from their Git blobs only by CRLF versus LF. This
+was an artifact-byte identity issue, not a newly discovered application bug.
+The replacement archive was generated with per-command `core.autocrlf=false`
+and `core.eol=lf`; all 368 archived file payloads and Git modes match candidate
+commit `793d340d6d1fe0028c092ff3c9b8c063bb8586e8`.
+
+- Canonical archive: `release-793d340d-canonical.tar`.
+- Canonical archive SHA256: `4d05501bacf2cbf3ae5c0160676992ee79565122da3097c070771cc717bd9d16`.
+- The earlier wheel's 107 packaged source/asset comparisons remain valid against the tested Windows checkout. They do not establish raw-byte identity with this canonical LF release target. No canonical-target wheel identity is inferred from that earlier wheel result.
+
+### Canonical Linux And Full Browser Results
+
+| Check | Result | Boundary |
+| --- | --- | --- |
+| Canonical full Python suite | 2363 passed, 103 skipped; exit 0; 176.99s | Isolated native Linux run against canonical archive bytes; the same 103-skip classification documented above applies |
+| Final complete AI browser suite | 36 passed, 0 skipped/failed/errors; exit 0; 97.13s | One complete run of all 12 tests at 375, 768 and 1440px, using unchanged final fixtures and canonical shipped assets in existing Chromium 148.0.7778.96 |
+| Browser source and asset stability | All 368 extracted tracked files and all 17 relevant assets unchanged before/after | Every extracted tracked file matched its candidate Git blob ID; the source files were marked read-only |
+
+The all-36 run is new complete-final-fixture evidence, superseding the earlier
+coverage limitation without recharacterizing the historical frozen-33 and
+focused-cohort results. It ran from a short isolated copy, not the configured
+application or original checkout, with the existing local Vue 3.4.38 runtime
+verified against shipped SRI. The unchanged synthetic request whitelist,
+browser-error assertions and restricted operation-ID storage assertions all
+passed. No user database, private novel, real Provider/Pixiv request, paid
+generation or installed/downloaded browser was involved.
+
+The managed worktree retains the new ignored report
+`.superpowers/sdd/canonical-browser-release-report.md` and complete evidence
+under `.superpowers/verification/canonical-browser-20261104/`: exact command
+and environment, Chromium version, stdout/stderr, exit code, UTC timestamps,
+and before/after 17-asset and 368-file manifests. The run started at
+`2026-11-04T02:22:47.915889+00:00` and finished at
+`2026-11-04T02:24:25.781484+00:00`; measured subprocess wall time was 97.859s.
+The matching 17-asset manifest SHA256 is
+`e7e8fa28deca9d3d3e1ed73da85534bc9053ed4ab526250b975d5cb7a7684960`.
+The browser test file retains the SHA256 recorded above.
+
+### Separate Public Cache Release Gate
+
+An actual public Cloudflare check subsequently found that bare JavaScript
+responses had correct content hashes but origin `no-cache` was rewritten to
+`max-age=14400`. Correct bytes at one observation do not establish safe
+future release caching. A narrow Nginx correction for the five packaged
+JavaScript assets, using `private`/`no-store`, was approved and verified with
+59 focused tests plus the root's 45-test verification. This is deployment
+configuration and test evidence, with no JavaScript or Python application
+source changes; operational proof of the corrected live public headers is
+still pending at this addendum's checkpoint.
+
+Neither the canonical test passes nor the cache-policy regression checks
+claim a completed cutover or resumed scheduler. Real-device soft-keyboard
+behavior and genuine paid 1M-context admission/usage remain manual external
+acceptance. Release markers, migration/restore evidence, effective origin
+and public headers, and scheduler state belong to the separate release
+record and [STATUS](../STATUS.md), not an inferred success in this archive.

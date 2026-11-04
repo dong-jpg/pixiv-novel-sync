@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -51,6 +52,50 @@ def test_preflight_body_limit_is_route_specific() -> None:
     assert "$proxy_add_x_forwarded_for" not in text
     without_preflight = text[: match.start()] + text[match.end() :]
     assert "client_max_body_size" not in without_preflight
+
+
+def _ai_javascript_location() -> tuple[re.Pattern[str], str]:
+    text = (ROOT / "config/nginx/pixiv-novel-sync.conf").read_text(encoding="utf-8")
+    matches = re.findall(r"location ~ (\^/static/js/\S+)\s*\{([^}]+)\}", text)
+    assert len(matches) == 1, "AI JavaScript needs one exact-name cache policy"
+    expression, body = matches[0]
+    return re.compile(expression), body
+
+
+def test_ai_javascript_cache_policy_matches_only_five_shipped_assets() -> None:
+    expression, _ = _ai_javascript_location()
+    names = {
+        "ai_settings.js", "ai_picker.js", "ai_provider_onboarding.js",
+        "ai_preflight.js", "ai_job_diagnostics.js",
+    }
+    for name in names:
+        assert expression.fullmatch("/static/js/" + name)
+    for path in (ROOT / "src/pixiv_novel_sync/static/js").glob("*.js"):
+        assert bool(expression.fullmatch("/static/js/" + path.name)) == (path.name in names)
+    for path in (
+        "/static/css/tailwind.css", "/static/js/unrelated.js", "/static/js/ai_settingsXjs",
+        "/static/js/ai_settings.js.map", "/static/js/ai_settings.js/extra",
+        "/static/js/nested/ai_settings.js", "/other/static/js/ai_settings.js",
+        "/static/js/AI_SETTINGS.js", "/api/dashboard/ai/agents/1/preflight",
+    ):
+        assert expression.search(path) is None
+
+
+def test_ai_javascript_cache_policy_is_private_and_preserves_hsts_and_proxy_trust() -> None:
+    _, body = _ai_javascript_location()
+    assert 'proxy_hide_header Cache-Control;' in body
+    assert 'add_header Cache-Control "private, no-store, no-cache, max-age=0, must-revalidate" always;' in body
+    # A location's own add_header suppresses inherited headers on supported Nginx versions.
+    assert 'add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;' in body
+    for directive in (
+        "proxy_pass http://127.0.0.1:5011;", "proxy_set_header Host $host;",
+        "proxy_set_header X-Real-IP $remote_addr;", "proxy_set_header X-Forwarded-For $remote_addr;",
+        "proxy_set_header X-Forwarded-Proto $scheme;", "proxy_cache off;",
+    ):
+        assert directive in body
+    assert "client_max_body_size" not in body
+    assert "$proxy_add_x_forwarded_for" not in body
+
 
 @pytest.mark.parametrize("initial_env", [
     "example", "empty", "restored", "restored-missing",

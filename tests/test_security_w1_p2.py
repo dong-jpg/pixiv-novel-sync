@@ -56,7 +56,7 @@ def test_nginx_takes_client_ip_from_cloudflare_only():
     assert not re.search(r"set_real_ip_from\s+(0\.0\.0\.0/0|::/0)", conf)
     # XFF 只交出 Nginx 认定的真实地址，客户端伪造的 XFF 前缀不再透传给 Flask
     assert "$proxy_add_x_forwarded_for" not in conf
-    assert conf.count("proxy_set_header X-Forwarded-For $remote_addr;") == conf.count("proxy_pass ") == 4
+    assert conf.count("proxy_set_header X-Forwarded-For $remote_addr;") == conf.count("proxy_pass ") == 5
 
 
 def test_nginx_https_server_sends_hsts():

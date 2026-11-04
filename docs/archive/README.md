@@ -26,6 +26,7 @@
 | AUDIT_REPORT_2026-10-28.md | 10-28 全项目审查（七个切片），未修复项的待办在 [项目现状](../STATUS.md) |
 | [SERVER_DEPLOYMENT_REPORT_2026-10-30.md](SERVER_DEPLOYMENT_REPORT_2026-10-30.md) | 审计后续批次部署、Linux 验证、私有副本迁移 / 恢复及生产安全配置验收 |
 | [AI_SETTINGS_ACCEPTANCE_2026-11-03.md](AI_SETTINGS_ACCEPTANCE_2026-11-03.md) | AI 设置与统一调用第一阶段：最终代码审查、同提交跨平台回归、浏览器边界与发布产物 |
+| [SERVER_DEPLOYMENT_REPORT_2026-11-04.md](SERVER_DEPLOYMENT_REPORT_2026-11-04.md) | AI 第一阶段受保护部署、canonical 源码校验、私有迁移/恢复及 Cloudflare JS 缓存修订 |
 
 ## 旧版快照
 
