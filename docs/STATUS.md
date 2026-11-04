@@ -4,19 +4,20 @@
 
 这是项目当前状态的唯一入口：版本、测试基线、部署和待办都只在这里更新。每轮审查、部署、整改的详细经过另存带日期的记录，放在 [archive/](archive/README.md)，不在多份旧文档里反复回写。
 
-## AI 设置与统一调用重构（本地待交付）
+## AI 设置与统一调用重构（本地验收完成，待发布）
 
-- 工作分支 `codex/ai-settings-resume`，Task7 审查提交 `09702b2`，整合已审计 main 的提交 `2167c585`，Task8 起点 `85a8acc94bf9f6eed4ec056e9f311fc5371b55d4`。当前 Task8 包含共享任务绑定、显式输入预检、服务端用量/版本诊断与离线浏览器回归；未声称已推送、合并或部署。
-- 第一阶段独立 AI 配置/单次文本调用基础设施已进入实现与验收。业务仍仅关键词清洗接入；整书/系列读取、跨章证据、XP 分析 Agent 和推荐闭环是未实现的第二阶段。main Continue 保留409，不创建 job或请求，UI没有可执行继续。
-- Task8 提交`1bd32a5`基线 Windows 全量：`2330 passed, 39 skipped`（227.37s）；39跳过为33个离线浏览器显式opt-in用例和6个Windows符号链接/POSIX mode限制，不将跳过计为通过。该基线三个Node套件155通过、文档/Library OS54通过、静态CSS10通过，compileall/pyflakes/CSS及离线wheel验证通过。随后审查发现两处任务选择器的候选链读取所有权不一致；修复后Node163通过、UI/源码/文档focused100通过，候选链/预检实际浏览器三宽度3通过（7.49s，hash不变），未由子任务重跑全量。当前代码的整阶段复审与最终Windows/Linux门槛由根代理继续验收，不把基线全量冒充后续修复全量。
-- Task8 使用离线、本地 SRI 校验 Vue3.4.38、既存 Chromium、合成 API/文本和临时环境；不访问真实 Provider/Pixiv/小说或用户数据库。实际浏览器375/768/1440冻结基线33通过（473.70s，17文件hash不变）；随后只收紧损坏计划的v1预算显示门槛，新增375失败回归后针对日志三宽度3通过（96.49s，addendum hash不变）。这是33基线加定点3复验，不是声称完整33重跑于后续补丁；最终 Windows/Linux 全量另行记录。Node VM不是浏览器渲染，默认33 opt-in跳过不当作成功。
-- 外部验收仍包括真机软键盘、真实服务商1M输入准入和实际usage；不会自动调用付费服务或使用私人小说。2026-11-03根代理只读确认服务active、checkout HEAD为16b5b4a及当前 `nginx -t` 通过，没有部署/重启；新配置部署后仍须重验。下方2026-10-30部署记录是历史部署事实，不代表此重构已上线。
+- 第一阶段 Tasks1-8 已实施并逐项审查，应用代码基线为 `3c51a6c6107a61b95cdbf58a00044506f405bccc`。独立整阶段代码/规格复审 Approved，最后的传输 deadline、当前选模意图、精确模型键、目录搜索及保存/读回所有权问题均已修复并复审。工作分支 `codex/ai-settings-resume` 保留与已审计 main 的合并历史；此记录尚不表示已推送或部署。
+- 业务仍仅关键词清洗接入。整书/系列读取、跨章证据、XP 分析 Agent 和推荐闭环是未实现的第二阶段。main Continue 保留 409，不创建 job 或请求，UI 没有可执行继续。
+- 同一应用提交的 Windows 全量 `2414 passed, 52 skipped`（351.21s）；Linux/Python3.10 全量 `2363 passed, 103 skipped`（218.80s），均 exit0。Windows 的 6 个符号链接/POSIX 限制用例在 Linux 补齐；完整跳过分类见 [阶段验收记录](archive/AI_SETTINGS_ACCEPTANCE_2026-11-03.md)，不将 skip 算成通过。
+- 8 个 Node 套件 `429 passed`、零失败/跳过；旧 reader direct 模式另行通过。compileall（77 个字节一致的隔离 Python 源文件）、实际源码 pyflakes、静态 CSS 原始字节一致性及离线 wheel 均通过；wheel 内 107 个源码/资产与应用基线一致。Windows 校验临时路径过长的环境失败及隔离短路径复跑已保留记录，没有修改全局环境或产品代码来规避。
+- 真实 Chromium 使用本地 SRI 校验 Vue3.4.38、合成 API/文本，在 375/768/1440 完成冻结基线 33 用例；随后相关修复分别经过三宽度定点复验和资产 hash 核对，最终浏览器文件为 36 用例。没有把“33 基线加定点复验”写成最终提交一次性完整 36 通过，也不把 Node VM 或默认 opt-in skip 当作浏览器验收。
+- 真机软键盘、真实服务商 1M 输入准入/计费/网络取消仍是外部验收，不自动调用付费服务或私人小说。生产仍为 `16b5b4a`，只读预检确认 active、无活跃任务、正确依赖/源码、`nginx -t` 通过；私有迁移演练、停服新鲜备份和受控切换尚未执行。下方 10-30 记录是历史部署事实。
 
 ## 版本
 
 | 分支 / 组件 | 当前 | 说明 |
 |---|---|---|
-| main（生产只读观察） | checkout HEAD `16b5b4a`（2026-11-03只读确认）；应用部署基线 `b6820e7`（2026-10-30） | 后续docs-only提交不改变应用代码；本轮AI重构分支尚未推送/部署，最终审查未完成 |
+| main（生产只读观察） | checkout HEAD `16b5b4a`（2026-11-03只读确认）；应用部署基线 `b6820e7`（2026-10-30） | 本轮 AI 重构应用 `3c51a6c6` 已完成本地验收，尚未推送/部署 |
 | ai-writing | `adb2d95`（2026-10-20） | 在 main 的基础上加写作/成人模块；只移植共享修复，不反向合入 main |
 | 审计整改 PR | [PR #2](https://github.com/dong-jpg/pixiv-novel-sync/pull/2) 已合并；候选 `8f76399` 与合并提交的树一致 | 应用代码验证基线 `122dbfe`；后续补文档及一处跨平台测试夹具，不改变应用逻辑 |
 | 救援用户脚本 | 0.12.2 已进入 GitHub main | 直装 / 自动更新来源现已包含新版；手机管理器仍须检查更新并确认角标，不能据发布推断设备已经更新 |
@@ -31,11 +32,14 @@
 
 | 分支 | 命令 | 结果 | 环境 |
 |---|---|---|---|
+| AI 重构应用 `3c51a6c6` | `python -m pytest -q -ra` | 2414 passed / 52 skipped，351.21 秒 | Windows / Python3.11.3，2026-11-03 |
+| AI 重构同提交归档 | `python -m pytest -q -ra` | 2363 passed / 103 skipped，218.80 秒 | WSL 原生 Linux 文件系统 / 隔离 Python3.10.12，2026-11-03 |
+| AI 重构当前 Node 套件 | `node --test`（8 个 CJS 文件） | 429 passed / 0 failed / 0 skipped | Node22.22.1；旧 reader direct 模式另行通过 |
 | main（历史基线） | `python -m pytest -q` | 1618 passed / 6 skipped，252 秒 | Windows，2026-10-29，合并静态 CSS、阅读页标记与救援脚本 0.12.1 之后；`pyflakes src` 无告警 |
 | 审计整改应用代码 | `python -m pytest -q --tb=short -rs` | 1772 passed / 6 skipped，282.70 秒 | Windows，2026-10-30，应用代码 `122dbfe`；包含浏览器夹具回归，整分支及最终增量复审 Approved |
 | 部署候选 | 每个测试模块独立运行 pytest；修正后复跑整个受影响模块 | 累计 1722 passed / 56 skipped，覆盖 1778 个用例 | Linux / Python 3.12.3；56 个 Chromium 用例因 1 GB 主机资源限制显式跳过，不是 Linux 浏览器验收通过 |
 
-本轮 `compileall src tests`、`pyflakes src`、用户脚本 Node 语法、部署 / 更新脚本 Bash 语法、Tailwind CSS 一致性及整分支 `git diff --check` 均通过；六份修改文档的本地文件链接检查无缺失。后续记录测试与 PR 状态的提交只修改文档，应用代码仍以 `122dbfe` 为验证基线。
+2026-10-30 历史批次的 `compileall src tests`、`pyflakes src`、用户脚本 Node 语法、部署 / 更新脚本 Bash 语法、Tailwind CSS 一致性及整分支 `git diff --check` 均通过；六份修改文档的本地文件链接检查无缺失。当时后续记录测试与 PR 状态的提交只修改文档，应用代码以 `122dbfe` 为历史验证基线；本轮 AI 重构以 `3c51a6c6` 为准。
 
 Windows 的 6 个 skip 属于符号链接权限与 POSIX mode；本次 Linux 的 `test_env_security.py`（14 个）及 `test_t3_archive_paths.py`（5 个）均无跳过、全部通过，补齐这部分验收。Linux 首轮模块验证有一处测试把相对路径写成 Windows 专用形式；`8f76399` 只修正该夹具，整个 47 用例模块在 Windows / Linux 分别通过，其他模块源码未变，累计数包含该复跑。单进程 Linux / Chromium 受限运行未完成，不计通过。ai-writing 本轮未重跑。
 
@@ -97,6 +101,7 @@ Windows 的 6 个 skip 属于符号链接权限与 POSIX mode；本次 Linux 的
 
 | 类型 | 最新一份 |
 |---|---|
+| AI 第一阶段验收 | [2026-11-03](archive/AI_SETTINGS_ACCEPTANCE_2026-11-03.md) |
 | 代码审查 | [2026-10-28](archive/AUDIT_REPORT_2026-10-28.md) |
 | 生产部署 | [2026-10-30](archive/SERVER_DEPLOYMENT_REPORT_2026-10-30.md) |
 | 整改台账 | [2026-10-08 ～ 10-20](archive/REMEDIATION_STATUS_2026-09-30.md) |

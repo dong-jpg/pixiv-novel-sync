@@ -10,7 +10,9 @@
 
 **Approved Spec:** `docs/superpowers/specs/2026-10-31-ai-settings-and-invocation-design.md`；用户于 2026-11-01 确认。
 
-**Status:** 2026-11-03，Tasks1-7已实施并审查，Task8在 `codex/ai-settings-resume`（起点85a8acc）实施/验收。下方保留原计划检查项作为验收要求，不据局部通过批量勾选整阶段完成；最终测试/审查尚未全部关闭。真实结果见执行 worktree `.superpowers/sdd/task-8-report.md`、进度账本和 [项目现状](../../STATUS.md)。尚未推送/部署，第二阶段整书 XP Agent未实施。
+**Status:** 2026-11-03，Tasks1-8 均已实施并逐项审查；应用 `3c51a6c6107a61b95cdbf58a00044506f405bccc` 的独立整阶段代码/规格复审 Approved，同提交 Windows/Linux 全量、Node、静态 CSS 和 wheel 验收完成。下方原计划步骤保留为冻结的执行/验收说明，不作为重新派发已完成任务的清单；真实完成与测试边界见 [阶段验收记录](../../archive/AI_SETTINGS_ACCEPTANCE_2026-11-03.md) 和 [项目现状](../../STATUS.md)。工作分支 `codex/ai-settings-resume`；尚未推送/部署，第二阶段整书 XP Agent 未实施。
+
+**执行结果：** Tasks1-6 的契约/容量规划、加列迁移、v2 路由、用量/留存及有界 API 已完成；Task7 模型设置工作台及 Task8 任务预检/诊断已完成。最后的跨任务修复与复审覆盖实际 HTTP deadline、预览失效时保留选模意图、模型键字节身份、有效名称搜索和保存读回锁。真实服务商/真机外部验收仍未完成，发布状态只依据 STATUS 中实际记录，不由本计划推断。
 
 ## Global Constraints
 
