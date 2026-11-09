@@ -724,7 +724,10 @@ class SyntheticWorkProvider:
         yield AIStreamChunk(type="done", data={"finish_reason": "stop"})
 
 
-def make_runtime_environment(tmp_path, monkeypatch, *, texts=None, context_window=100000, request_limit=64):
+def make_runtime_environment(
+    tmp_path, monkeypatch, *, texts=None, context_window=100000, request_limit=64,
+    token_limit=1_000_000,
+):
     import requests
 
     def forbidden_network(*args, **kwargs):
@@ -763,7 +766,7 @@ def make_runtime_environment(tmp_path, monkeypatch, *, texts=None, context_windo
         "source_kind": "series", "source_id": 10,
         "ordered_novel_ids": list(range(1, len(bodies) + 1)), "publication_state": "completed",
     }
-    budget = {"request_limit": request_limit, "token_limit": 1_000_000, "active_seconds_limit": 600}
+    budget = {"request_limit": request_limit, "token_limit": token_limit, "active_seconds_limit": 600}
     confirmations = {
         "order_confirmed": True, "current_archive_only": True,
         "external_send_confirmed": True, "budget_confirmed": True,
@@ -934,7 +937,7 @@ def test_exhausted_failed_run_refuses_resume_without_a_second_send(tmp_path, mon
 def test_segmented_executor_budget_refusal_pauses_without_a_second_send(tmp_path, monkeypatch):
     env = make_runtime_environment(
         tmp_path, monkeypatch, texts=[("chapter A\n" * 350), ("chapter B\n" * 350)],
-        context_window=2500, request_limit=1,
+        context_window=2500, token_limit=2500,
     )
     try:
         assert env.plan["strategy"] == "segmented" and len(env.plan["original_units"]) >= 2
@@ -943,6 +946,7 @@ def test_segmented_executor_budget_refusal_pauses_without_a_second_send(tmp_path
         assert state["status"] == "paused" and state["reason"] == "budget_exhausted"
         assert job.status == JobStatus.CANCELLED
         assert len(env.provider.sent_units) == state["request_count"] == 1
+        assert 1250 < state["planned_tokens"] <= 2500
         assert sum(item["status"] == "succeeded" for item in state["units"]) == 1
         assert state["report"] is None
     finally:

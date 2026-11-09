@@ -29,6 +29,7 @@ class JobType(str, Enum):
     USER_BACKUP = "user_backup"
     PREFERENCE_ANALYZE = "preference_analyze"  # Phase 7.6
     RECOMMENDATION_RUN = "recommendation_run"  # Phase 7.6
+    WORK_ANALYSIS = "work_analysis"
 
 
 @dataclass(slots=True)
