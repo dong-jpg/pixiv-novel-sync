@@ -78,7 +78,94 @@ def test_missing_key_is_not_hidden_as_a_capacity_problem(configured_db):
     assert caught.value.code == "configuration_unavailable"
 
 
-def test_private_capacity_gate_survives_public_exclusion_truncation(configured_db, monkeypatch):
+def test_returned_scope_mutation_cannot_change_preflight_after_database_close(configured_db):
+    db, provider, agent = configured_db
+    configuration, prompt, preflight = snapshot_work_configuration(db.conn, agent, 100)
+    payload = {"messages": [{"role": "user", "content": "synthetic body"}], "max_tokens": 100}
+    original = preflight(payload)
+    assert original["can_run"] is True
+    original_fingerprint = configuration["configuration_fingerprint"]
+    assert configuration["allowed_provider_ids"] == [provider]
+    db.close()
+
+    configuration["allowed_provider_ids"].clear()
+    for _ in range(2):
+        assert preflight(payload) == original
+        assert preflight({**payload, "allowed_provider_ids": [provider]}) == original
+    assert configuration["configuration_fingerprint"] == original_fingerprint
+    for scope in ([], [provider + 1]):
+        with pytest.raises(WorkAnalysisError) as caught:
+            preflight({**payload, "allowed_provider_ids": scope})
+        assert caught.value.code == "configuration_changed"
+
+
+@pytest.mark.parametrize("output_tokens, content", [(1000, ""), (740, "x" * 1000)],
+                         ids=["output_fills_context", "framing_exceeds_context"])
+def test_fixed_capacity_failure_does_not_authorize_segmentation(configured_db, output_tokens, content):
+    db, provider, agent = configured_db
+    db.update_ai_provider(provider, {"context_window": 1000})
+    configuration, prompt, preflight = snapshot_work_configuration(db.conn, agent, output_tokens)
+    result = preflight({"messages": [{"role": "user", "content": content}], "max_tokens": output_tokens})
+    assert result["can_run"] is False
+    assert result["excluded"][0]["reason"] == "context_overflow"
+    assert result["excluded"][0]["input_budget"] < 0
+    assert result["work_can_segment"] is False
+
+
+@pytest.mark.parametrize("provider_type, output_tokens, can_segment", [
+    ("openai_compatible", 730, True),
+    ("openai_compatible", 731, False),
+    ("anthropic", 733, True),
+    ("anthropic", 734, False),
+])
+def test_segmentation_floor_uses_candidate_message_framing(
+    configured_db, monkeypatch, provider_type, output_tokens, can_segment,
+):
+    from dataclasses import replace
+    from pixiv_novel_sync.work_analysis import configuration as module
+
+    db, provider, agent = configured_db
+    original = module.collect_candidate_profiles
+    monkeypatch.setattr(module, "collect_candidate_profiles", lambda reader, current_agent: (
+        replace(original(reader, current_agent)[0], provider_type=provider_type, provider_context_window=1000),
+    ))
+    configuration, prompt, preflight = module.snapshot_work_configuration(db.conn, agent, output_tokens)
+    messages = [{"role": role, "content": "x" * 1000} for role in ("system", "system", "user")]
+    result = preflight({"messages": messages, "max_tokens": output_tokens})
+    assert result["can_run"] is False
+    assert result["excluded"][0]["reason"] == "context_overflow"
+    assert result["work_can_segment"] is can_segment
+    # Anthropic merges system messages, retaining the separator even for empty content.
+    minimum = preflight({"messages": [{**message, "content": ""} for message in messages],
+                         "max_tokens": output_tokens})
+    assert minimum["can_run"] is can_segment
+    assert minimum["work_can_segment"] is False
+
+
+def test_segmentation_does_not_combine_context_and_output_limits_across_candidates(configured_db, monkeypatch):
+    from dataclasses import replace
+    from pixiv_novel_sync.work_analysis import configuration as module
+
+    db, provider, agent = configured_db
+    original = module.collect_candidate_profiles
+
+    def profiles(reader, current_agent):
+        base = original(reader, current_agent)[0]
+        return (replace(base, provider_context_window=1000),
+                replace(base, source_index=1, model_key="output-limited", max_output_tokens=16))
+
+    monkeypatch.setattr(module, "collect_candidate_profiles", profiles)
+    configuration, prompt, preflight = module.snapshot_work_configuration(db.conn, agent, 1000)
+    result = preflight({"messages": [{"role": "user", "content": "x" * 1000}], "max_tokens": 1000})
+    assert result["can_run"] is False
+    assert [item["reason"] for item in result["excluded"]] == ["context_overflow", "output_limit"]
+    assert result["work_can_segment"] is False
+
+
+@pytest.mark.parametrize("output_tokens, can_segment", [(100, True), (512, False)])
+def test_private_capacity_gate_survives_public_exclusion_truncation(
+    configured_db, monkeypatch, output_tokens, can_segment,
+):
     from dataclasses import replace
     from pixiv_novel_sync.work_analysis import configuration as module
 
@@ -92,12 +179,12 @@ def test_private_capacity_gate_survives_public_exclusion_truncation(configured_d
         return tuple(excluded + [replace(base, source_index=64, provider_context_window=512)])
 
     monkeypatch.setattr(module, "collect_candidate_profiles", profiles)
-    configuration, prompt, preflight = module.snapshot_work_configuration(db.conn, agent, 100)
-    result = preflight({"messages": [{"role": "user", "content": "x" * 5000}], "max_tokens": 100})
+    configuration, prompt, preflight = module.snapshot_work_configuration(db.conn, agent, output_tokens)
+    result = preflight({"messages": [{"role": "user", "content": "x" * 5000}], "max_tokens": output_tokens})
     assert result["can_run"] is False
     assert len(result["excluded"]) == 64 and result["excluded_count"] == 65
     assert all(item["reason"] == "member_disabled" for item in result["excluded"])
-    assert result["work_can_segment"] is True
+    assert result["work_can_segment"] is can_segment
 
 
 def test_output_only_capacity_failure_does_not_authorize_segmentation(configured_db, monkeypatch):
@@ -176,7 +263,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from contextlib import nullcontext
-from dataclasses import asdict, fields
+from dataclasses import asdict, fields, replace
 from types import MappingProxyType
 from typing import Any
 
@@ -233,7 +320,7 @@ def snapshot_work_configuration(conn, agent_id: int, output_tokens: int):
         raise WorkAnalysisError("configuration_unavailable", 409) from None
     if not profiles:
         raise WorkAnalysisError("configuration_unavailable", 409)
-    provider_ids = sorted({profile.provider_id for profile in profiles})
+    provider_ids = tuple(sorted({profile.provider_id for profile in profiles}))
     legacy_provider_ids = []
     for provider_id in provider_ids:
         provider = reader.get_ai_provider(provider_id, include_secret=True)
@@ -280,7 +367,7 @@ def snapshot_work_configuration(conn, agent_id: int, output_tokens: int):
     configuration = {
         "schema_version": 1, "agent_id": agent_id, "output_tokens": output_tokens,
         "configuration_fingerprint": fingerprint(identity),
-        "allowed_provider_ids": provider_ids, "legacy_provider_ids": legacy_provider_ids,
+        "allowed_provider_ids": list(provider_ids), "legacy_provider_ids": legacy_provider_ids,
     }
     target_rows = []
     target_keys = set()
@@ -309,7 +396,7 @@ def snapshot_work_configuration(conn, agent_id: int, output_tokens: int):
         supplied = dict(payload)
         if supplied.get("max_tokens", output_tokens) != output_tokens:
             raise WorkAnalysisError("configuration_changed", 409)
-        if "allowed_provider_ids" in supplied and supplied["allowed_provider_ids"] != provider_ids:
+        if "allowed_provider_ids" in supplied and supplied["allowed_provider_ids"] != list(provider_ids):
             raise WorkAnalysisError("configuration_changed", 409)
         supplied["max_tokens"] = output_tokens
         supplied["allowed_provider_ids"] = list(provider_ids)
@@ -324,6 +411,9 @@ def snapshot_work_configuration(conn, agent_id: int, output_tokens: int):
             can_segment = False
             seen_candidates = set()
             if not planned.can_run:
+                minimum_request = replace(
+                    request, messages=tuple(replace(message, content="") for message in request.messages),
+                )
                 for profile in profiles:
                     if (profile.unavailable_reason is not None
                             or set(agent.required_capabilities).difference(profile.capabilities)):
@@ -336,11 +426,16 @@ def snapshot_work_configuration(conn, agent_id: int, output_tokens: int):
                         request, (profile,), agent_context_window=agent.context_window,
                         required_capabilities=agent.required_capabilities,
                     )
-                    # Whole-input safety margins shrink with smaller inputs;
-                    # a negative current input budget is not a configuration failure.
                     if any(item.reason == "context_overflow" for item in single.excluded):
-                        can_segment = True
-                        break
+                        # Reuse the same candidate's framing and shrinking safety
+                        # margin; fixed output/framing failure cannot be segmented.
+                        minimum = plan_invocation(
+                            minimum_request, (profile,), agent_context_window=agent.context_window,
+                            required_capabilities=agent.required_capabilities,
+                        )
+                        if minimum.can_run:
+                            can_segment = True
+                            break
             public["work_can_segment"] = can_segment
             public["work_targets"] = [dict(target) for target in work_targets]
             return public
@@ -356,6 +451,8 @@ def work_configuration_identity(conn, agent_id: int, output_tokens: int):
 ```
 
 The caller owns one short read or write transaction. The configuration reader's nested catalog read scope is intentionally a no-op, not a new transaction and never a nested write. The returned preflight closes over immutable projected values, not the connection; it remains pure after the caller closes the database. The Agent prompt is returned only in memory and must be explicitly included by Task 2's message materializer. `work_can_segment` is a private planner decision, derived from the full candidate projection even when the public v2 exclusion list is truncated; Task 2 consumes it, while Task 7 constructs an allowlisted response without exposing this internal addition or changing global v2 enums. `work_targets` is a private, immutable-captured inventory of up to 64 deduplicated Provider/exact-model identities with only the safe fields shown above; each preflight returns fresh copies. Task 7 uses this inventory for consent disclosure instead of only that payload's eligible targets: an input-capacity-excluded model may be eligible for a future smaller reducer. Configuration changes still invalidate the parent rather than expanding this captured inventory. No service instance, DNS request, decrypt, probe, health update, catalog materialization, or job creation occurs.
+
+The captured Provider scope is a tuple; the returned configuration exposes a separate normalized list. Explicit submitted scope must still equal that list, and caller mutations cannot change later preflight results, even after database closure. Segmentation requires a current context_overflow candidate whose empty-content request with the same message roles/count and output reserve is eligible under the existing planner. This preserves protocol-specific framing (including Anthropic system separators), recomputes the smaller-input safety margin, and never combines limits from different candidates. A negative whole-input budget alone is neither sufficient to authorize segmentation nor sufficient to reject a feasible smaller input.
 
 - [ ] **1C.4 Run GREEN and review the configuration/consent boundary.**
 
