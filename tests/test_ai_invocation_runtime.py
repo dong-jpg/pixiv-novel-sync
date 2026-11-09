@@ -1016,3 +1016,200 @@ def test_v2_core_low_level_resume_reuses_frozen_plan_without_resolution_or_share
     assert [item.candidate_index for item in context.candidate_snapshot.candidates] == [0, 1]
     _, result = collect_result(service._stream_route(context, invocation_messages(invocation)))
     assert result.output_text == "SUCCESS" and registry.calls == [(providers[1], "model-1")]
+
+
+def test_parent_admission_denial_is_terminal_without_candidate_fallback(db, route_router, registry, monkeypatch):
+    from pixiv_novel_sync.storage.ai.core import AIWorkAdmissionDenied
+    from pixiv_novel_sync.work_analysis.contracts import WorkCallBinding, WorkLease
+
+    agent, providers, models, pool = pool_setup(db)
+    request = make_route_request(db, route_router, agent, retention_policy="metadata_only")
+    binding = WorkCallBinding(WorkLease("a" * 32, 1, "parent-owner"), "b" * 64, 1, "c" * 64)
+    request = replace(request, work_binding=binding)
+    reservations = []
+
+    def reject(self, job_id, owner_token, attempt_index=None, *, work_binding=None, planned_tokens=None):
+        reservations.append((work_binding, planned_tokens))
+        raise AIWorkAdmissionDenied("budget_exhausted")
+
+    monkeypatch.setattr(Database, "claim_ai_job_network_request", reject)
+    monkeypatch.setattr(Database, "heartbeat_work_analysis", lambda self, lease, *, now: True)
+    chunks, result = collect_result(route_router.execute_stream(request))
+    assert len(reservations) == 1 and reservations[0][0] == binding
+    budget = request.candidate_snapshot.plan.eligible[0]
+    assert reservations[0][1] == (
+        budget.input_tokens + budget.message_overhead + budget.safety_margin + budget.output_reserve
+    )
+    assert registry.network_calls == []
+    assert len(registry.calls) == 1
+    assert result.work_error_code == "budget_exhausted"
+    assert result.finish_state == "failed_before_output"
+    assert db.get_ai_job(request.job_id)["status"] == "failed"
+    assert all(item["status"] != "running" for item in db.list_ai_job_model_attempts(request.job_id))
+    assert not any(chunk.type == "progress" and chunk.data.get("action") == "switch" for chunk in chunks)
+
+
+def test_unbound_invocation_preserves_default_binding_and_no_parent_callbacks(db, route_router, fixed_agent, monkeypatch):
+    from dataclasses import fields
+
+    binding_field = next(item for item in fields(RouteRequest) if item.name == "work_binding")
+    assert binding_field.default is None
+    request = make_route_request(db, route_router, fixed_agent)
+    monkeypatch.setattr(Database, "_reserve_work_analysis_request", forbidden)
+    monkeypatch.setattr(Database, "heartbeat_work_analysis", forbidden)
+    chunks, result = collect_result(route_router.execute_stream(request))
+    assert result.finish_state == "succeeded"
+    assert result.work_error_code is None
+
+
+def test_post_reservation_best_effort_cancel_keeps_authorized_debit():
+    from pixiv_novel_sync.ai.providers import _before_network_request
+
+    state = {"cancelled": False, "reservations": 0}
+
+    def reserve():
+        state["reservations"] += 1
+        state["cancelled"] = True
+        return 1
+
+    with pytest.raises(AIProviderError) as caught:
+        _before_network_request(reserve, lambda: state["cancelled"])
+    assert caught.value.category == "cancelled"
+    assert state["reservations"] == 1
+
+
+@pytest.mark.parametrize("protocol", ["openai_compatible", "anthropic", "xai"])
+@pytest.mark.parametrize("stream, boundary", [
+    (False, "initial"), (True, "initial"),
+    (False, "retry"), (True, "retry"), (True, "empty_fallback"),
+])
+def test_parent_denial_crosses_real_provider_without_another_send(
+    db, route_router, monkeypatch, protocol, stream, boundary,
+):
+    import socket
+
+    import requests
+
+    from pixiv_novel_sync.ai.providers import create_provider
+    from pixiv_novel_sync.storage.ai.core import AIWorkAdmissionDenied
+    from pixiv_novel_sync.work_analysis.contracts import WorkCallBinding, WorkLease
+
+    agent, provider_ids, _, _ = pool_setup(db)
+    for provider_id in provider_ids:
+        db.update_ai_provider(provider_id, {"provider_type": protocol})
+    request = make_route_request(db, route_router, agent, retention_policy="metadata_only")
+    binding = WorkCallBinding(WorkLease("a" * 32, 1, "owner"), "b" * 64, 1, "c" * 64)
+    request = replace(request, work_binding=binding)
+    guards, sends, providers = [], [], []
+    original_claim = Database.claim_ai_job_network_request
+
+    def reserve(database, job_id, owner, attempt_index=None, *, work_binding=None, planned_tokens=None):
+        guards.append((work_binding, planned_tokens))
+        if boundary == "initial" or len(guards) == 2:
+            raise AIWorkAdmissionDenied("budget_exhausted")
+        return original_claim(database, job_id, owner, attempt_index)
+
+    def provider_factory(config):
+        provider = create_provider(replace(config, stream_enabled=stream, max_retries=2))
+        providers.append(provider)
+        return provider
+
+    class EmptyResponse(requests.Response):
+        def __init__(self):
+            super().__init__()
+            self.status_code = 200
+            self.encoding = "utf-8"
+            self.closed = False
+
+        def iter_content(self, **_kwargs):
+            return iter(())
+
+        def close(self):
+            self.closed = True
+
+    response = EmptyResponse()
+
+    def post(_session, url, **kwargs):
+        sends.append(kwargs["json"])
+        assert "8.8.8.8" in url
+        assert db.get_ai_job(request.job_id)["network_request_count"] == 1
+        assert len(sends) == 1
+        if boundary == "retry":
+            raise requests.ConnectionError("synthetic retry")
+        assert boundary == "empty_fallback"
+        return response
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda _host, port, *_a, **_kw: [
+        (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", port)),
+    ])
+    monkeypatch.setattr(requests.Session, "request", forbidden)
+    monkeypatch.setattr(requests.Session, "post", post)
+    monkeypatch.setattr("pixiv_novel_sync.ai.providers._sleep_before_retry", lambda *_a, **_kw: None)
+    monkeypatch.setattr(Database, "claim_ai_job_network_request", reserve)
+    monkeypatch.setattr(Database, "heartbeat_work_analysis", lambda self, lease, *, now: True)
+    monkeypatch.setattr(route_router, "_get_provider", provider_factory)
+    try:
+        chunks, result = collect_result(route_router.execute_stream(request))
+    finally:
+        for provider in providers:
+            provider.close()
+    expected_sends = 0 if boundary == "initial" else 1
+    budget = request.candidate_snapshot.plan.eligible[0]
+    expected_tokens = budget.input_tokens + budget.message_overhead + budget.safety_margin + budget.output_reserve
+    assert guards == [(binding, expected_tokens)] * (expected_sends + 1)
+    assert len(sends) == expected_sends and len(providers) == 1
+    assert result.work_error_code == "budget_exhausted"
+    assert result.finish_state == "failed_before_output"
+    assert route_counts(db, request.job_id) == (1, expected_sends)
+    assert db.get_ai_job(request.job_id)["status"] == "failed"
+    assert all(item["status"] != "running" for item in db.list_ai_job_model_attempts(request.job_id))
+    assert not any(chunk.type == "progress" and chunk.data.get("action") == "switch" for chunk in chunks)
+    if boundary == "empty_fallback":
+        assert response.closed
+
+
+def test_parent_reservations_use_each_selected_candidates_full_estimate(db, route_router, registry, monkeypatch):
+    from pixiv_novel_sync.work_analysis.contracts import WorkCallBinding, WorkLease
+
+    agent, provider_ids, _, _ = pool_setup(db)
+    route_router._token_estimator = lambda _, profile: TokenEstimate(
+        71 if profile.model_key == "model-0" else 319, "per-model", True, True,
+    )
+    request = make_route_request(db, route_router, agent, retention_policy="metadata_only")
+    binding = WorkCallBinding(WorkLease("a" * 32, 1, "owner"), "b" * 64, 1, "c" * 64)
+    request = replace(request, work_binding=binding)
+    registry.responses[(provider_ids[0], "model-0")] = [
+        AIProviderError("synthetic rejection", category="model_rejected", scope="model"),
+    ]
+    reserved = []
+    monkeypatch.setattr(Database, "_reserve_work_analysis_request", lambda self, conn, received, child, ordinal, tokens, *, now:
+                        reserved.append((received, ordinal, tokens)))
+    monkeypatch.setattr(Database, "heartbeat_work_analysis", lambda self, lease, *, now: True)
+    assert route_router.execute(request).finish_state == "succeeded"
+    assert reserved == [(binding, index + 1,
+                         budget.input_tokens + budget.message_overhead + budget.safety_margin + budget.output_reserve)
+                        for index, budget in enumerate(request.candidate_snapshot.plan.eligible)]
+    assert reserved[0][2] != reserved[1][2]
+
+
+def test_bound_route_renews_parent_on_existing_heartbeat_worker(db, route_router, fixed_agent, monkeypatch):
+    from pixiv_novel_sync.work_analysis.contracts import WorkCallBinding, WorkLease
+
+    request = make_route_request(db, route_router, fixed_agent)
+    binding = WorkCallBinding(WorkLease("a" * 32, 1, "owner"), "b" * 64, 1, "c" * 64)
+    request = replace(request, work_binding=binding)
+    heartbeats = []
+
+    def heartbeat(self, lease, *, now):
+        heartbeats.append((lease, now))
+        return False
+
+    monkeypatch.setattr(Database, "heartbeat_work_analysis", heartbeat)
+    stopped, worker, cancelled = route_router._start_heartbeat(request)
+    try:
+        assert cancelled.wait(2)
+        assert len(heartbeats) == 1 and heartbeats[0][0] == binding.lease
+    finally:
+        stopped.set()
+        worker.join(timeout=2)
+    assert not worker.is_alive()

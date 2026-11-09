@@ -460,7 +460,9 @@ def _before_network_request(
     deadline: float | None = None,
 ) -> int | None:
     _check_cancelled(is_cancelled, deadline)
-    return request_guard() if request_guard is not None else None
+    ordinal = request_guard() if request_guard is not None else None
+    _check_cancelled(is_cancelled, deadline)
+    return ordinal
 
 
 _MAX_SSE_LINE_BYTES = 1024 * 1024

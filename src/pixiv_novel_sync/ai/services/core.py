@@ -13,6 +13,8 @@ from typing import Any, Literal
 
 from ...storage_db import Database, prepare_schema
 from ...storage.ai.core import _validate_timestamp
+from ...work_analysis.configuration import work_configuration_identity
+from ...work_analysis.contracts import WorkAnalysisError, WorkCallBinding
 from ..crypto import AISecretError, AISecretManager
 from ..invocation import TextInvocation, invocation_fingerprint, invocation_messages, normalize_text_invocation
 from ..invocation_planner import ESTIMATOR_VERSION, PLANNER_VERSION, InvocationPlan
@@ -60,6 +62,7 @@ class RouteJobContext:
     resume_candidate_index: int = 0
     invocation: TextInvocation | None = None
     retention_policy: Literal["metadata_only", "keyword_compat"] | None = None
+    work_binding: WorkCallBinding | None = None
 
 
 class AIServiceCore:
@@ -202,6 +205,7 @@ class AIServiceCore:
         invocation: TextInvocation | None = None,
         retention_policy: Literal["metadata_only", "keyword_compat"] | None = None,
         deadline_at: str | None = None,
+        work_binding: WorkCallBinding | None = None,
     ) -> RouteJobContext:
         if self._closed:
             raise AIServiceError("AI 服务已关闭")
@@ -218,6 +222,13 @@ class AIServiceCore:
         budget_messages = [dict(message) for message in messages]
 
         prepared_resume = _ROUTE_RESUME_CONTEXT.get()
+        if work_binding is not None:
+            if (not isinstance(work_binding, WorkCallBinding) or prepared_resume is not None
+                    or invocation is None or retention_policy != "metadata_only"):
+                raise WorkAnalysisError("configuration_changed", 409)
+            current_identity = work_configuration_identity(db.conn, agent.id, invocation.max_tokens)
+            if current_identity["configuration_fingerprint"] != work_binding.configuration_fingerprint:
+                raise WorkAnalysisError("configuration_changed", 409)
         if prepared_resume is None:
             job_id = uuid.uuid4().hex
             owner_token = secrets.token_urlsafe(32)
@@ -238,6 +249,7 @@ class AIServiceCore:
                 idempotency_key=idempotency_key,
                 retention_policy=retention_policy,
                 validation_status="not_requested" if invocation is not None else None,
+                **({"work_binding": work_binding} if work_binding is not None else {}),
             )
         else:
             if (
@@ -293,6 +305,10 @@ class AIServiceCore:
             if prepared_resume is None:
                 if invocation is not None:
                     candidate_snapshot = self.model_router.resolve_invocation(agent, invocation)
+                    if work_binding is not None:
+                        current_identity = work_configuration_identity(db.conn, agent.id, invocation.max_tokens)
+                        if current_identity["configuration_fingerprint"] != work_binding.configuration_fingerprint:
+                            raise WorkAnalysisError("configuration_changed", 409)
                 else:
                     candidate_snapshot = self.model_router.resolve_candidates(
                         agent,
@@ -360,6 +376,8 @@ class AIServiceCore:
                 "failed",
                 error_message="AI invocation failed" if retention_policy == "metadata_only" else str(error),
             )
+            if work_binding is not None and isinstance(error, WorkAnalysisError):
+                raise
             if retention_policy == "metadata_only":
                 raise AIServiceError("AI invocation failed") from None
             raise
@@ -373,6 +391,7 @@ class AIServiceCore:
             resume_candidate_index=resume_candidate_index,
             invocation=invocation,
             retention_policy=retention_policy,
+            work_binding=work_binding,
         )
 
     @staticmethod
@@ -492,6 +511,7 @@ class AIServiceCore:
             resume_candidate_index=context.resume_candidate_index,
             invocation=invocation,
             retention_policy=context.retention_policy,
+            work_binding=context.work_binding,
             is_cancelled=stop_requested,
             route_deadline_at=deadline_at,
         )
@@ -555,6 +575,7 @@ class AIServiceCore:
         deadline_at: str | None = None,
         on_delta: Callable[[str], None] | None = None,
         on_progress: Callable[[dict[str, Any]], None] | None = None,
+        work_binding: WorkCallBinding | None = None,
     ) -> RouteResult:
         db = self._db()
         try:
@@ -569,6 +590,7 @@ class AIServiceCore:
             input_data=self._build_metadata_audit(agent.task_type, invocation),
             stop_requested=stop_requested, deadline_at=deadline_at,
             on_delta=on_delta, on_progress=on_progress,
+            work_binding=work_binding,
         )
         return result
 
@@ -581,6 +603,7 @@ class AIServiceCore:
         deadline_at: str | None = None,
         on_delta: Callable[[str], None] | None = None,
         on_progress: Callable[[dict[str, Any]], None] | None = None,
+        work_binding: WorkCallBinding | None = None,
     ) -> tuple[RouteResult, dict[str, Any] | None]:
         if deadline_at is not None:
             deadline_at = _validate_timestamp(deadline_at, "deadline_at")
@@ -593,6 +616,7 @@ class AIServiceCore:
                 db, task_type, agent, input_data,
                 messages=invocation_messages(invocation), max_tokens=invocation.max_tokens,
                 invocation=invocation, retention_policy=retention_policy, deadline_at=deadline_at,
+                work_binding=work_binding,
             )
             stream = self._stream_route(
                 context, invocation_messages(invocation),
@@ -650,7 +674,7 @@ class AIServiceCore:
                 usage_summary=db.get_ai_job_usage_summary(context.job_id),
             )
             return result, parsed if result.job_status == "succeeded" else None
-        except Exception:
+        except Exception as error:
             # Close first: GeneratorExit owns cancellation and heartbeat cleanup.
             if stream is not None:
                 try:
@@ -677,6 +701,8 @@ class AIServiceCore:
                 except Exception:
                     # A failed DB write must not expose callback/provider payloads.
                     pass
+            if work_binding is not None and isinstance(error, WorkAnalysisError):
+                raise
             if retention_policy == "metadata_only":
                 raise AIServiceError("AI invocation failed") from None
             raise

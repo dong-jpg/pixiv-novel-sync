@@ -9,14 +9,16 @@ import re
 import threading
 import time
 from collections.abc import Callable, Generator, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from ..storage.ai.core import (
     AIJobConflictError,
     AIRouteBudgetExhausted,
+    AIWorkAdmissionDenied,
 )
+from ..work_analysis.contracts import WorkCallBinding
 from .invocation import InvocationValidationError, TextInvocation, invocation_fingerprint, invocation_messages
 from .invocation_candidates import collect_candidate_profiles, model_execution_config_hash
 from .invocation_planner import (
@@ -158,6 +160,7 @@ class RouteRequest:
     route_deadline_at: str | None = None
     invocation: TextInvocation | None = None
     retention_policy: Literal["metadata_only", "keyword_compat"] | None = None
+    work_binding: WorkCallBinding | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +182,7 @@ class RouteResult:
     validation_status: Literal["not_requested", "passed", "failed"] | None = None
     usage_summary: dict[str, Any] | None = None
     job_status: Literal["succeeded", "failed", "partial", "cancelled"] | None = None
+    work_error_code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1184,6 +1188,11 @@ class ModelRouter:
                     ):
                         cancel_event.set()
                         return
+                    if request.work_binding is not None and not db.heartbeat_work_analysis(
+                        request.work_binding.lease, now=_utc_now(),
+                    ):
+                        cancel_event.set()
+                        return
                     if db.ai_job_should_stop(request.job_id):
                         cancel_event.set()
                     consecutive_failures = 0
@@ -1303,19 +1312,33 @@ class ModelRouter:
             <= candidate.context_window
         )
 
-    def _claim_network_request(self, request: RouteRequest, attempt_index: int) -> int:
+    def _claim_network_request(
+        self, request: RouteRequest, attempt_index: int, candidate: ModelCandidate,
+    ) -> int:
         if self._request_cancelled(request):
             raise AIProviderError(
-                "AI 请求已取消",
-                category="cancelled",
-                scope="model",
-                finish_reason="cancelled",
+                "AI request cancelled", category="cancelled", scope="model", finish_reason="cancelled",
             )
         db = self._db_factory()
         try:
             self._active_route_state(db, request)
             try:
-                return db.claim_ai_job_network_request(request.job_id, request.owner_token, attempt_index)
+                if request.work_binding is None:
+                    return db.claim_ai_job_network_request(request.job_id, request.owner_token, attempt_index)
+                if not isinstance(request.candidate_snapshot, PlannedCandidateSnapshot):
+                    raise AIWorkAdmissionDenied("configuration_changed")
+                self._validate_invocation_request(request)
+                budget = request.candidate_snapshot.plan.eligible[candidate.candidate_index]
+                if (budget.reason is not None or type(budget.input_tokens) is not int
+                        or budget.profile.provider_id != candidate.provider_id
+                        or budget.profile.model_key != candidate.model_key):
+                    raise AIWorkAdmissionDenied("configuration_changed")
+                return db.claim_ai_job_network_request(
+                    request.job_id, request.owner_token, attempt_index,
+                    work_binding=request.work_binding,
+                    planned_tokens=(budget.input_tokens + budget.message_overhead
+                                    + budget.safety_margin + budget.output_reserve),
+                )
             except AIJobConflictError:
                 state = db.get_ai_job_route_state(request.job_id, request.owner_token)
                 if state is not None and state.get("status") == "running" and state.get("cancel_requested"):
@@ -1626,8 +1649,10 @@ class ModelRouter:
                     self._validate_invocation_request(request)
                     attempt_index = current_attempt
 
-                    def request_guard(_attempt_index: int = attempt_index) -> int:
-                        return self._claim_network_request(request, _attempt_index)
+                    def request_guard(
+                        _attempt_index: int = attempt_index, _candidate: ModelCandidate = candidate,
+                    ) -> int:
+                        return self._claim_network_request(request, _attempt_index, _candidate)
 
                     def on_usage(
                         ordinal: int, usage: Mapping[str, Any], *, _attempt_index: int = attempt_index,
@@ -1937,6 +1962,31 @@ class ModelRouter:
                 request,
                 message="所有候选模型均失败",
                 category=category,
+            )
+        except AIWorkAdmissionDenied as error:
+            if current_iterator is not None:
+                close = getattr(current_iterator, "close", None)
+                if callable(close):
+                    close()
+                current_iterator = None
+            partial = request.stage == "main" and current_output_started
+            if current_attempt is not None:
+                db.finish_ai_model_attempt(
+                    request.job_id, current_attempt, request.owner_token,
+                    "partial" if partial else "failed", error_scope="model",
+                    error_message="Work analysis admission denied", error_category="route_budget_exhausted",
+                    finish_reason="error", output_started=current_output_started,
+                    latency_ms=max(0, int((time.monotonic() - started_at) * 1000))
+                    if started_at is not None else 0,
+                )
+                current_attempt = None
+            db.finish_ai_job_cas(
+                request.job_id, request.owner_token, "partial" if partial else "failed",
+                error_message="Work analysis admission denied", error_category="route_budget_exhausted",
+            )
+            return replace(
+                self._terminal_race_result(db, request, memory_output=""),
+                work_error_code=error.code,
             )
         except AIRouteBudgetExhausted as error:
             return self._finish_job_failure(

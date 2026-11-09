@@ -159,11 +159,11 @@ def test_invoke_text_enforces_retention_in_sql_not_just_projection(invocation_en
     assert_no_raw_text(env, caplog)
 
 
-@pytest.mark.parametrize("field", ["retention_policy", "validator", "tools", "raw"])
+@pytest.mark.parametrize("field", ["retention_policy", "validator", "tools", "raw", "work_binding"])
 def test_invoke_text_has_no_retention_or_validator_escape(invocation_env, field):
     env = invocation_env
     assert set(inspect.signature(env.service.invoke_text).parameters) == {
-        "agent_id", "payload", "stop_requested", "deadline_at", "on_delta", "on_progress",
+        "agent_id", "payload", "stop_requested", "deadline_at", "on_delta", "on_progress", "work_binding",
     }
     with pytest.raises(InvocationValidationError) as caught:
         env.service.invoke_text(env.agent_id, {**PAYLOAD, field: "INPUT_SENTINEL"})
@@ -517,3 +517,61 @@ def test_keyword_typed_conflict_after_output_closes_parent_without_buffer_fallba
     assert saved["attempts"][0]["status"] == "partial"
     assert not saved.get("output_text") and saved.get("output") is None
     assert "discarded" not in json.dumps(saved)
+
+
+def test_work_binding_crosses_real_text_facade_without_body_retention(invocation_env, monkeypatch):
+    from pixiv_novel_sync.work_analysis.configuration import work_configuration_identity
+    from pixiv_novel_sync.work_analysis.contracts import WorkCallBinding, WorkLease
+
+    env = invocation_env
+    identity = work_configuration_identity(env.db.conn, env.agent_id, PAYLOAD["max_tokens"])
+    binding = WorkCallBinding(
+        WorkLease("a" * 32, 1, "parent-owner"), "b" * 64, 1, identity["configuration_fingerprint"],
+    )
+    attached, reservations = [], []
+
+    def attach(self, conn, received, child_job_id):
+        assert conn.in_transaction
+        attached.append((received, child_job_id))
+
+    def reserve(self, conn, received, child_job_id, ordinal, planned_tokens, *, now):
+        assert conn.in_transaction
+        reservations.append((received, child_job_id, ordinal, planned_tokens))
+
+    monkeypatch.setattr(Database, "_attach_work_analysis_child", attach)
+    monkeypatch.setattr(Database, "_reserve_work_analysis_request", reserve)
+    monkeypatch.setattr(Database, "heartbeat_work_analysis", lambda self, lease, *, now: True)
+    result = env.service.invoke_text(env.agent_id, PAYLOAD, work_binding=binding)
+    assert result.finish_state == "succeeded"
+    assert attached == [(binding, result.job_id)]
+    assert len(reservations) == 1 and reservations[0][:3] == (binding, result.job_id, 1)
+    assert reservations[0][3] > PAYLOAD["max_tokens"]
+    assert env.provider.calls == 1
+    row = dict(env.db.conn.execute("SELECT * FROM ai_jobs WHERE job_id=?", (result.job_id,)).fetchone())
+    assert row["output_text"] is None and row["output_json"] is None
+    assert "INPUT_SENTINEL" not in json.dumps(row)
+    assert "OUTPUT_SENTINEL" not in json.dumps(row)
+    assert inspect.signature(env.service.invoke_text).parameters["work_binding"].default is None
+
+
+def test_work_legacy_upgrade_requires_explicit_repreview_before_send(invocation_env, monkeypatch):
+    from pixiv_novel_sync.work_analysis.configuration import work_configuration_identity
+    from pixiv_novel_sync.work_analysis.contracts import WorkAnalysisError, WorkCallBinding, WorkLease
+
+    env = invocation_env
+    identity = work_configuration_identity(env.db.conn, env.agent_id, PAYLOAD["max_tokens"])
+    binding = WorkCallBinding(
+        WorkLease("a" * 32, 1, "parent-owner"), "b" * 64, 1, identity["configuration_fingerprint"],
+    )
+    monkeypatch.setattr(Database, "_attach_work_analysis_child", lambda self, conn, received, child: None)
+    monkeypatch.setattr(env.service.secret_manager, "is_legacy_ciphertext", lambda value: value == "synthetic-cipher")
+    monkeypatch.setattr(env.service.secret_manager, "decrypt", lambda value: "synthetic-key")
+    monkeypatch.setattr(env.service.secret_manager, "encrypt", lambda value: "v2$synthetic-upgrade", raising=False)
+    with pytest.raises(WorkAnalysisError) as caught:
+        env.service.invoke_text(env.agent_id, PAYLOAD, work_binding=binding)
+    assert caught.value.code == "configuration_changed"
+    assert env.provider.calls == 0
+    provider = env.db.get_ai_provider(env.provider_id, include_secret=True)
+    assert provider["api_key_encrypted"] == "v2$synthetic-upgrade"
+    assert env.db.conn.execute("SELECT SUM(network_request_count) FROM ai_jobs").fetchone()[0] == 0
+    assert all(row["status"] == "failed" for row in env.db.list_ai_jobs()["items"])

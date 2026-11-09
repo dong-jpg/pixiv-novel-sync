@@ -1098,3 +1098,138 @@ def test_partial_cleanup_cascades_model_attempts(db: Database) -> None:
         "SELECT COUNT(*) FROM ai_job_model_attempts WHERE job_id = 'job'"
     ).fetchone()[0]
     assert count == 0
+
+
+def test_work_child_attachment_rolls_back_with_child_insert(db, monkeypatch):
+    from pixiv_novel_sync.work_analysis.contracts import WorkAnalysisError, WorkCallBinding, WorkLease
+
+    binding = WorkCallBinding(WorkLease("a" * 32, 1, "work-owner"), "b" * 64, 1, "c" * 64)
+    db.conn.execute("CREATE TABLE bridge_probe (value TEXT PRIMARY KEY)")
+    db.conn.commit()
+
+    def deny_attach(conn, received, child_job_id):
+        assert conn.in_transaction and received == binding and child_job_id == "bound"
+        conn.execute("INSERT INTO bridge_probe VALUES ('attachment')")
+        raise WorkAnalysisError("owner_lost", 409)
+
+    monkeypatch.setattr(db, "_attach_work_analysis_child", deny_attach)
+    with pytest.raises(WorkAnalysisError, match="owner_lost"):
+        db.create_ai_job(
+            "bound", "general", None, {"business_type": "work_analysis"},
+            owner_token="child-owner", retention_policy="metadata_only", work_binding=binding,
+        )
+    assert db.conn.execute("SELECT COUNT(*) FROM ai_jobs WHERE job_id='bound'").fetchone()[0] == 0
+    assert db.conn.execute("SELECT COUNT(*) FROM bridge_probe").fetchone()[0] == 0
+
+
+def test_work_reservation_failure_rolls_back_parent_child_and_unknown_usage(db, monkeypatch):
+    from pixiv_novel_sync.storage.ai.core import AIWorkAdmissionDenied
+    from pixiv_novel_sync.work_analysis.contracts import WorkAnalysisError, WorkCallBinding, WorkLease
+
+    create_owned_job(db)
+    attempt = db.allocate_ai_model_attempt("job", "owner", valid_attempt_data())
+    binding = WorkCallBinding(WorkLease("a" * 32, 1, "work-owner"), "b" * 64, 1, "c" * 64)
+    db.conn.execute("CREATE TABLE bridge_probe (value TEXT PRIMARY KEY)")
+    db.conn.commit()
+
+    def deny_reservation(conn, received, child_job_id, ordinal, planned_tokens, *, now):
+        assert conn.in_transaction and received == binding
+        assert (child_job_id, ordinal, planned_tokens) == ("job", 1, 371)
+        conn.execute("INSERT INTO bridge_probe VALUES ('reservation')")
+        raise WorkAnalysisError("budget_exhausted", 409)
+
+    monkeypatch.setattr(db, "_reserve_work_analysis_request", deny_reservation)
+    with pytest.raises(AIWorkAdmissionDenied) as caught:
+        db.claim_ai_job_network_request(
+            "job", "owner", attempt, work_binding=binding, planned_tokens=371,
+        )
+    assert caught.value.code == "budget_exhausted"
+    assert db.get_ai_job("job")["network_request_count"] == 0
+    envelope = db.list_ai_job_model_attempts("job")[0]["usage"]
+    assert envelope is None or envelope["requests"] == []
+    assert db.conn.execute("SELECT COUNT(*) FROM bridge_probe").fetchone()[0] == 0
+
+
+def test_work_usage_projection_and_child_usage_share_one_transaction(db, monkeypatch):
+    create_owned_job(db)
+    attempt = db.allocate_ai_model_attempt("job", "owner", valid_attempt_data())
+    ordinal = db.claim_ai_job_network_request("job", "owner", attempt)
+    before = db.list_ai_job_model_attempts("job")[0]["usage"]
+
+    def reject_projection(conn, child_job_id, request_ordinal, usage):
+        assert conn.in_transaction and (child_job_id, request_ordinal) == ("job", ordinal)
+        assert usage["total_tokens"] == 12
+        raise sqlite3.OperationalError("synthetic projection failure")
+
+    monkeypatch.setattr(db, "_record_work_analysis_usage", reject_projection)
+    with pytest.raises(sqlite3.OperationalError, match="synthetic projection"):
+        db.record_ai_job_request_usage(
+            "job", "owner", attempt, ordinal,
+            {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12,
+             "complete": True, "missing_reason": None},
+        )
+    assert db.list_ai_job_model_attempts("job")[0]["usage"] == before
+
+
+def test_work_bridge_real_ledger_preserves_attachment_debits_and_usage_repair(db, monkeypatch):
+    from pixiv_novel_sync.ai.usage import ProviderUsage
+    from pixiv_novel_sync.storage.ai.core import AIWorkAdmissionDenied
+    from pixiv_novel_sync.storage.work_analysis import common as work_common
+    from test_work_analysis_storage import create_case
+
+    now = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(work_common, "utc_now", lambda: now)
+    monkeypatch.setattr("pixiv_novel_sync.storage.ai.core._utc_now", lambda: now)
+    case = create_case(db, request_limit=1)
+    lease = db.claim_work_analysis(case["run"]["run_id"], now=now, slice_seconds=30)
+    unit_id = case["arguments"]["plan"]["original_units"][0]["unit_id"]
+    binding = db.begin_work_analysis_unit(lease, unit_id)
+    db.create_ai_job(
+        "bound", "general", case["agent_id"], {"business_type": "work_analysis"},
+        owner_token="child-owner", retention_policy="metadata_only", work_binding=binding,
+        route_deadline_at="2099-01-01 00:00:00",
+    )
+    observer = Database(db.path)
+    try:
+        attached = observer.conn.execute(
+            "SELECT * FROM work_analysis_requests WHERE child_job_id='bound'",
+        ).fetchone()
+        assert attached["entry_kind"] == "attachment" and attached["request_ordinal"] == 0
+        assert attached["planned_tokens"] is None and attached["usage_json"] is None
+        initial = observer.get_work_analysis(lease.run_id)
+        assert initial["request_count"] == initial["planned_tokens"] == 0
+        assert initial["usage_summary"]["network_request_count"] == 0
+    finally:
+        observer.close()
+
+    attempt = db.allocate_ai_model_attempt("bound", "child-owner", valid_attempt_data())
+    with pytest.raises(AIWorkAdmissionDenied, match="owner_lost"):
+        db.claim_ai_job_network_request("bound", "child-owner", attempt)
+    ordinal = db.claim_ai_job_network_request(
+        "bound", "child-owner", attempt, work_binding=binding, planned_tokens=371,
+    )
+    pending = db.get_work_analysis(lease.run_id)
+    assert pending["request_count"] == 1 and pending["planned_tokens"] == 371
+    assert pending["usage_summary"]["unreported_requests"] == 1
+    assert pending["usage_summary"]["known_total_tokens"] is None
+    usage = {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12,
+             "complete": True, "missing_reason": None}
+    assert db.record_ai_job_request_usage("bound", "child-owner", attempt, ordinal, usage)
+    # An unchanged child snapshot still repairs its idempotent parent projection.
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE work_analysis_requests SET usage_json=? WHERE child_job_id='bound' AND request_ordinal=1",
+            (json.dumps(ProviderUsage().to_dict()),),
+        )
+    assert db.record_ai_job_request_usage("bound", "child-owner", attempt, ordinal, usage)
+    with pytest.raises(AIWorkAdmissionDenied, match="budget_exhausted"):
+        db.claim_ai_job_network_request(
+            "bound", "child-owner", attempt, work_binding=binding, planned_tokens=371,
+        )
+    saved = db.get_work_analysis(lease.run_id)
+    assert saved["request_count"] == 1 and saved["planned_tokens"] == 371
+    assert saved["usage_summary"]["network_request_count"] == 1
+    assert saved["usage_summary"]["reported_requests"] == 1
+    assert saved["usage_summary"]["known_total_tokens"] == 12
+    assert db.get_ai_job("bound")["network_request_count"] == 1
+    assert len(db.list_ai_job_model_attempts("bound")[0]["usage"]["requests"]) == 1

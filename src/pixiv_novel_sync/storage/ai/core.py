@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from ...ai.providers import _redact_secrets
 from ...ai.usage import ProviderUsage, merge_usage_snapshot, summarize_usage
+from ...work_analysis.contracts import WorkAnalysisError, WorkCallBinding
 
 
 class AIJobConflictError(RuntimeError):
@@ -22,6 +23,18 @@ class AIRouteBudgetExhausted(AIJobConflictError):
     """AI job 的候选或网络请求硬预算已耗尽。"""
 
     error_category = "route_budget_exhausted"
+
+
+class AIWorkAdmissionDenied(RuntimeError):
+    def __init__(self, code: str) -> None:
+        allowed = {
+            "budget_exhausted", "active_time_exhausted", "owner_lost", "lease_expired",
+            "source_changed", "source_deleted", "configuration_changed",
+            "legacy_repreview_required", "work_stopping", "work_deleted",
+            "state_conflict", "version_conflict", "invalidated",
+        }
+        self.code = code if code in allowed else "work_stopping"
+        super().__init__(self.code)
 
 
 _JOB_STAGES = {"internal", "main", "validation"}
@@ -786,6 +799,7 @@ class AiCoreMixin:
         idempotency_key: str | None = None,
         retention_policy: Literal["metadata_only", "keyword_compat"] | None = None,
         validation_status: Literal["not_requested", "passed", "failed"] | None = None,
+        work_binding: WorkCallBinding | None = None,
     ) -> None:
         if stage not in _JOB_STAGES:
             raise ValueError("AI job stage 无效")
@@ -812,6 +826,11 @@ class AiCoreMixin:
             input_data = _keyword_input_payload(input_data)
         else:
             raise ValueError("invalid server retention policy")
+        if work_binding is not None:
+            if not isinstance(work_binding, WorkCallBinding) or retention_policy != "metadata_only":
+                raise ValueError("work binding requires metadata-only retention")
+            if parent_job_id is not None or idempotency_key is not None:
+                raise ValueError("work binding cannot use legacy continuation")
         try:
             serialized_input = json.dumps(input_data, ensure_ascii=False)
         except (TypeError, ValueError, UnicodeError) as exc:
@@ -849,6 +868,8 @@ class AiCoreMixin:
                     validation_status,
                 ),
             )
+            if work_binding is not None:
+                self._attach_work_analysis_child(conn, work_binding, job_id)
 
     def replace_ai_job_audit(
         self, job_id: str, owner_token: str, audit_payload: Mapping[str, Any],
@@ -1375,61 +1396,76 @@ class AiCoreMixin:
         job_id: str,
         owner_token: str,
         attempt_index: int | None = None,
+        *,
+        work_binding: WorkCallBinding | None = None,
+        planned_tokens: int | None = None,
     ) -> int:
         if attempt_index is not None:
             if type(attempt_index) is not int or attempt_index < 0:
                 raise ValueError("invalid attempt index")
             if self.conn.in_transaction:
                 raise AIJobConflictError("request reservation requires its own durable transaction")
-        with self.transaction() as conn:
-            job = conn.execute(
-                """
-                SELECT status, owner_token, network_request_count, cancel_requested, route_deadline_at
-                FROM ai_jobs WHERE job_id = ?
-                """,
-                (job_id,),
-            ).fetchone()
-            if (
-                job is None
-                or job["status"] != "running"
-                or job["owner_token"] != owner_token
-            ):
-                raise AIJobConflictError("AI job 已终结或 owner 不匹配")
-            current = int(job["network_request_count"] or 0)
-            if current >= 32:
-                raise AIRouteBudgetExhausted("网络请求次数已达到 32 次上限")
-            next_count = current + 1
-            if attempt_index is not None:
-                if job["cancel_requested"]:
-                    raise AIJobConflictError("AI job cancellation was requested")
-                if job["route_deadline_at"] and job["route_deadline_at"] <= _sql_timestamp(_utc_now()):
-                    raise AIRouteBudgetExhausted("AI job route deadline has expired")
-                attempt = conn.execute(
-                    "SELECT usage_json FROM ai_job_model_attempts "
-                    "WHERE job_id=? AND attempt_index=? AND status='running' AND owner_token=?",
-                    (job_id, attempt_index, owner_token),
+        if work_binding is not None:
+            if not isinstance(work_binding, WorkCallBinding) or attempt_index is None:
+                raise ValueError("work binding requires a typed attempted invocation")
+            if type(planned_tokens) is not int or planned_tokens <= 0:
+                raise ValueError("invalid work planned tokens")
+        elif planned_tokens is not None:
+            raise ValueError("work planned tokens require a binding")
+        try:
+            with self.transaction() as conn:
+                job = conn.execute(
+                    "SELECT status, owner_token, network_request_count, cancel_requested, route_deadline_at "
+                    "FROM ai_jobs WHERE job_id = ?", (job_id,),
                 ).fetchone()
-                if attempt is None:
-                    raise AIJobConflictError("AI attempt is missing, ended or owned by another worker")
-                usage = _decode_usage(attempt["usage_json"])
-                if any(record["request_ordinal"] >= next_count for record in usage["requests"]):
-                    raise ValueError("usage reservation disagrees with job counter")
-                usage["requests"].append({"request_ordinal": next_count, **ProviderUsage().to_dict()})
-                serialized_usage = _encode_usage(usage)
-            conn.execute(
-                """
-                UPDATE ai_jobs SET network_request_count = ?
-                WHERE job_id = ? AND status = 'running' AND owner_token = ?
-                """,
-                (next_count, job_id, owner_token),
-            )
-            if attempt_index is not None:
+                if job is None or job["status"] != "running" or job["owner_token"] != owner_token:
+                    raise AIJobConflictError("AI job ended or ownership changed")
+                attached = conn.execute(
+                    "SELECT 1 FROM work_analysis_requests WHERE child_job_id=? AND request_ordinal=0",
+                    (job_id,),
+                ).fetchone()
+                if attached is not None and work_binding is None:
+                    raise AIWorkAdmissionDenied("owner_lost")
+                current = int(job["network_request_count"] or 0)
+                if current >= 32:
+                    raise AIRouteBudgetExhausted("network request limit reached")
+                next_count = current + 1
+                now = _utc_now()
+                if attempt_index is not None:
+                    if job["cancel_requested"]:
+                        raise AIJobConflictError("AI job cancellation was requested")
+                    if job["route_deadline_at"] and job["route_deadline_at"] <= _sql_timestamp(now):
+                        raise AIRouteBudgetExhausted("AI job route deadline has expired")
+                    attempt = conn.execute(
+                        "SELECT usage_json FROM ai_job_model_attempts "
+                        "WHERE job_id=? AND attempt_index=? AND status='running' AND owner_token=?",
+                        (job_id, attempt_index, owner_token),
+                    ).fetchone()
+                    if attempt is None:
+                        raise AIJobConflictError("AI attempt is missing, ended or owned by another worker")
+                    usage = _decode_usage(attempt["usage_json"])
+                    if any(record["request_ordinal"] >= next_count for record in usage["requests"]):
+                        raise ValueError("usage reservation disagrees with job counter")
+                    usage["requests"].append({"request_ordinal": next_count, **ProviderUsage().to_dict()})
+                    serialized_usage = _encode_usage(usage)
+                if work_binding is not None:
+                    self._reserve_work_analysis_request(
+                        conn, work_binding, job_id, next_count, planned_tokens, now=now,
+                    )
                 conn.execute(
-                    "UPDATE ai_job_model_attempts SET usage_json=? "
-                    "WHERE job_id=? AND attempt_index=? AND owner_token=?",
-                    (serialized_usage, job_id, attempt_index, owner_token),
+                    "UPDATE ai_jobs SET network_request_count=? "
+                    "WHERE job_id=? AND status='running' AND owner_token=?",
+                    (next_count, job_id, owner_token),
                 )
-        return next_count
+                if attempt_index is not None:
+                    conn.execute(
+                        "UPDATE ai_job_model_attempts SET usage_json=? "
+                        "WHERE job_id=? AND attempt_index=? AND owner_token=?",
+                        (serialized_usage, job_id, attempt_index, owner_token),
+                    )
+            return next_count
+        except WorkAnalysisError as error:
+            raise AIWorkAdmissionDenied(error.code) from None
 
     def record_ai_job_request_usage(
         self, job_id: str, owner_token: str, attempt_index: int,
@@ -1464,6 +1500,7 @@ class AiCoreMixin:
                         "WHERE job_id=? AND attempt_index=? AND owner_token=?",
                         (serialized, job_id, attempt_index, owner_token),
                     )
+                self._record_work_analysis_usage(conn, job_id, request_ordinal, merged)
                 return True
             return False
 
