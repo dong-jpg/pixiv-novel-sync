@@ -2021,6 +2021,16 @@ class WorkAnalysisMixin(WorkAnalysisControlMixin, WorkAnalysisRequestsMixin,
 
 #### 3.5 Commit Validated Checkpoints and the Server-Owned Final Report
 
+Checkpoint repair contract: `evidence.validate_unit_artifact` owns normalized
+artifact identity/finality/input-unit checks, selected-claim reachability and
+exact child evidence rows. Counterexamples may use the wider allowed child
+evidence union, but claims may not borrow counterexample-only evidence. Raw
+`validate_unit_output` retains its explicit `source_claim_ids` check before
+calling this shared validator; persisted schemas do not gain provenance fields.
+Original rows are re-resolved through the existing `_resolve_quote`, not a
+second storage quote algorithm. Storage maps admission failures to the safe
+`validation_failed`/409 error and preserves `artifact_too_large`/413.
+
 - [ ] **Append checkpoint/publication RED tests:**
 
 ```python
@@ -2330,7 +2340,7 @@ from __future__ import annotations
 from ...ai.model_catalog import normalize_model_key
 from ...work_analysis.artifacts import validate_artifact
 from ...work_analysis.contracts import WorkAnalysisError, fingerprint
-from ...work_analysis.evidence import allowed_child_evidence
+from ...work_analysis.evidence import validate_unit_artifact
 from ...work_analysis.manifest import read_source_texts
 from ...work_analysis.planning import materialize_unit, seal_unit, validate_derived_units
 from . import common as c
@@ -2341,27 +2351,12 @@ def _fields(unit):
 
 
 def _validate_checkpoint(unit, artifact, blocks, children):
-    artifact = validate_artifact(artifact, final=unit["is_final"])
-    if (artifact["unit_id"] != unit["unit_id"] or artifact["is_final"] != unit["is_final"]
-            or artifact["input_unit_ids"] != unit["child_unit_ids"]):
-        raise WorkAnalysisError("validation_failed", 409)
-    if unit["kind"] == "reduce":
-        allowed = allowed_child_evidence(unit, children)
-        for key, evidence in artifact["evidence"].items():
-            if key not in allowed or evidence != allowed[key]:
-                raise WorkAnalysisError("validation_failed", 409)
-    else:
-        for evidence in artifact["evidence"].values():
-            block = blocks.get(evidence["block_id"])
-            if (block is None or evidence["novel_id"] != block["novel_id"]
-                    or evidence["text_hash"] != block["text_hash"]):
-                raise WorkAnalysisError("validation_failed", 409)
-            offset = block["text"].find(evidence["quote"])
-            if (offset < 0 or block["text"].find(evidence["quote"], offset + 1) >= 0
-                    or evidence["start"] != block["start"] + offset
-                    or evidence["end"] != evidence["start"] + len(evidence["quote"])
-                    or evidence["end"] > block["end"]):
-                raise WorkAnalysisError("validation_failed", 409)
+    try:
+        artifact = validate_unit_artifact(artifact, unit, blocks, children)
+    except WorkAnalysisError as exc:
+        if exc.code == "artifact_too_large":
+            raise
+        raise WorkAnalysisError("validation_failed", 409) from None
     return c.load(c.dump(artifact, 131072))
 
 

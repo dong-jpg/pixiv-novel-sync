@@ -4,7 +4,9 @@ import json
 
 import pytest
 
-from pixiv_novel_sync.work_analysis.artifacts import parse_model_json, validate_artifact
+from pixiv_novel_sync.work_analysis.artifacts import (
+    claim_identity, evidence_identity, parse_model_json, validate_artifact,
+)
 from pixiv_novel_sync.work_analysis.contracts import WorkAnalysisError, fingerprint
 from pixiv_novel_sync.work_analysis.evidence import validate_unit_output
 
@@ -346,3 +348,150 @@ def test_quote_resolution_rejects_inconsistent_block_bounds():
             json.dumps(raw_result(unit["unit_id"], block_id, text)),
             unit, blocks, {},
         )
+
+
+def reducer_evidence_case():
+    child_unit = {
+        "unit_id": "a" * 64, "kind": "extract", "is_final": False,
+        "child_unit_ids": [], "claim_refs": [],
+    }
+    block_id = "b" * 64
+    text = "Selected support. Unselected support. Counterexample only."
+    raw = raw_result(child_unit["unit_id"], block_id, "Selected support.")
+    raw["claims"].append({
+        **raw["claims"][0], "label": "Unselected",
+        "quotes": [{"block_id": block_id, "quote": "Unselected support."}],
+    })
+    raw["counterexamples"] = [{
+        "statement": "A separate counterexample.",
+        "quotes": [{"block_id": block_id, "quote": "Counterexample only."}],
+    }]
+    child = validate_unit_output(json.dumps(raw), child_unit, blocks_for(text), {})
+    selected = child["claims"][0]
+    unit = {
+        "unit_id": "c" * 64, "kind": "reduce", "is_final": True,
+        "child_unit_ids": [child_unit["unit_id"]],
+        "claim_refs": [{"unit_id": child_unit["unit_id"], "claim_id": selected["claim_id"]}],
+    }
+    raw = {
+        "unit_id": unit["unit_id"], "summary": "A synthetic reduction.",
+        "no_findings_reason": None,
+        "claims": [{
+            "dimension": "theme", "certainty": "direct", "label": "Selected",
+            "statement": "Selected support is retained.",
+            "source_claim_ids": [selected["claim_id"]],
+            "evidence_ids": selected["evidence_ids"],
+        }],
+        "counterexamples": child["counterexamples"], "uncertainties": [],
+    }
+    children = {child_unit["unit_id"]: child}
+    artifact = validate_unit_output(json.dumps(raw), unit, {}, children)
+    return unit, children, raw, artifact
+
+
+@pytest.mark.parametrize("origin", ["counterexample", "unselected_claim"])
+def test_normalized_reducer_rejects_evidence_outside_selected_claims(origin):
+    from pixiv_novel_sync.work_analysis.evidence import validate_unit_artifact
+
+    unit, children, raw, artifact = reducer_evidence_case()
+    child = next(iter(children.values()))
+    source = child["counterexamples"][0] if origin == "counterexample" else child["claims"][1]
+    ids = source["evidence_ids"]
+    raw["claims"][0]["evidence_ids"] = ids
+    with pytest.raises(WorkAnalysisError, match="artifact_invalid"):
+        validate_unit_output(json.dumps(raw), unit, {}, children)
+    claim = artifact["claims"][0]
+    claim["evidence_ids"] = ids
+    claim["claim_id"] = claim_identity(unit["unit_id"], claim)
+    used = set(ids) | set(artifact["counterexamples"][0]["evidence_ids"])
+    artifact["evidence"] = {key: child["evidence"][key] for key in used}
+    assert validate_artifact(artifact, final=True) == artifact
+    with pytest.raises(WorkAnalysisError, match="artifact_invalid"):
+        validate_unit_artifact(artifact, unit, {}, children)
+
+
+@pytest.mark.parametrize("findings", [True, False])
+def test_normalized_reducer_accepts_selected_claim_and_counterexample_union(findings):
+    from pixiv_novel_sync.work_analysis.evidence import validate_unit_artifact
+
+    unit, children, raw, artifact = reducer_evidence_case()
+    assert "source_claim_ids" not in artifact["claims"][0]
+    if not findings:
+        raw["claims"] = []
+        raw["no_findings_reason"] = "Only a counterexample is supported."
+        artifact = validate_unit_output(json.dumps(raw), unit, {}, children)
+    assert validate_unit_artifact(artifact, unit, {}, children) == artifact
+    assert validate_unit_output(json.dumps(raw), unit, {}, children) == artifact
+
+
+def test_raw_reducer_keeps_exact_source_claim_constraint_after_normalization():
+    from pixiv_novel_sync.work_analysis.evidence import validate_unit_artifact
+
+    unit, children, raw, _artifact = reducer_evidence_case()
+    child = next(iter(children.values()))
+    second = child["claims"][1]
+    unit["claim_refs"].append({"unit_id": child["unit_id"], "claim_id": second["claim_id"]})
+    raw["claims"][0]["evidence_ids"] = second["evidence_ids"]
+    with pytest.raises(WorkAnalysisError, match="artifact_invalid"):
+        validate_unit_output(json.dumps(raw), unit, {}, children)
+    raw["claims"][0]["source_claim_ids"] = [second["claim_id"]]
+    artifact = validate_unit_output(json.dumps(raw), unit, {}, children)
+    assert validate_unit_artifact(artifact, unit, {}, children) == artifact
+
+
+def replace_evidence_row(artifact, old_id, row):
+    row["evidence_id"] = evidence_identity(row)
+    del artifact["evidence"][old_id]
+    artifact["evidence"][row["evidence_id"]] = row
+    for item in artifact["claims"] + artifact["counterexamples"]:
+        item["evidence_ids"] = [row["evidence_id"] if key == old_id else key for key in item["evidence_ids"]]
+    for claim in artifact["claims"]:
+        claim["claim_id"] = claim_identity(artifact["unit_id"], claim)
+
+
+@pytest.mark.parametrize("section", ["claims", "counterexamples"])
+def test_normalized_reducer_rejects_rehashed_altered_evidence_rows(section):
+    from pixiv_novel_sync.work_analysis.evidence import validate_unit_artifact
+
+    unit, children, _raw, artifact = reducer_evidence_case()
+    key = artifact[section][0]["evidence_ids"][0]
+    row = {**artifact["evidence"][key], "text_hash": "f" * 64}
+    replace_evidence_row(artifact, key, row)
+    assert validate_artifact(artifact, final=True) == artifact
+    with pytest.raises(WorkAnalysisError, match="artifact_invalid"):
+        validate_unit_artifact(artifact, unit, {}, children)
+
+
+@pytest.mark.parametrize("change", ["ambiguous", "missing", "offset", "hash", "novel", "bounds"])
+def test_normalized_original_revalidates_unique_quote_and_source_identity(change):
+    from pixiv_novel_sync.work_analysis.evidence import validate_unit_artifact
+
+    unit = {
+        "unit_id": "a" * 64, "kind": "whole", "is_final": True,
+        "child_unit_ids": [], "claim_refs": [],
+    }
+    block_id, text = "b" * 64, "Unique support. repeat repeat"
+    blocks = blocks_for(text, block_id, start=100)
+    artifact = validate_unit_output(
+        json.dumps(raw_result(unit["unit_id"], block_id, "Unique support.")), unit, blocks, {},
+    )
+    assert validate_unit_artifact(artifact, unit, blocks, {}) == artifact
+    key, row = next(iter(artifact["evidence"].items()))
+    row = dict(row)
+    if change in {"ambiguous", "missing"}:
+        row["quote"] = "repeat" if change == "ambiguous" else "absent"
+        row["start"] = 100 + text.index("repeat")
+        row["end"] = row["start"] + len(row["quote"])
+    elif change == "offset":
+        row["start"] += 1
+        row["end"] += 1
+    elif change == "hash":
+        row["text_hash"] = "f" * 64
+    elif change == "novel":
+        row["novel_id"] = 2
+    else:
+        blocks[block_id]["end"] += 1
+    replace_evidence_row(artifact, key, row)
+    assert validate_artifact(artifact, final=True) == artifact
+    with pytest.raises(WorkAnalysisError, match="artifact_invalid"):
+        validate_unit_artifact(artifact, unit, blocks, {})

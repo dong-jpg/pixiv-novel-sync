@@ -126,6 +126,36 @@ def _resolve_quote(value, blocks):
     return row
 
 
+def validate_unit_artifact(artifact, unit, block_map, child_artifacts):
+    """Revalidate normalized evidence without reconstructing discarded raw provenance."""
+    unit_id, kind, is_final, child_ids = _unit_shape(unit)
+    artifact = validate_artifact(artifact, final=is_final)
+    if artifact["unit_id"] != unit_id or artifact["input_unit_ids"] != child_ids:
+        raise WorkAnalysisError("artifact_invalid")
+    if kind == "reduce":
+        if block_map:
+            raise WorkAnalysisError("artifact_invalid")
+        selected = selected_child_claims(unit, child_artifacts)
+        permitted = _allowed_child_evidence(unit, selected, child_artifacts)
+        # Raw source_claim_ids are not persisted; claims must remain reachable
+        # from selected claims, never from counterexample-only evidence.
+        claim_evidence = {key for claim in selected.values() for key in claim["evidence_ids"]}
+        for claim in artifact["claims"]:
+            if not set(claim["evidence_ids"]) <= claim_evidence:
+                raise WorkAnalysisError("artifact_invalid")
+        for evidence_id, row in artifact["evidence"].items():
+            if evidence_id not in permitted or row != permitted[evidence_id]:
+                raise WorkAnalysisError("artifact_invalid")
+    else:
+        if child_artifacts:
+            raise WorkAnalysisError("artifact_invalid")
+        for row in artifact["evidence"].values():
+            resolved = _resolve_quote({"block_id": row["block_id"], "quote": row["quote"]}, block_map)
+            if row != resolved:
+                raise WorkAnalysisError("artifact_invalid")
+    return artifact
+
+
 def validate_unit_output(raw, unit, block_map, child_artifacts):
     unit_id, kind, is_final, child_ids = _unit_shape(unit)
     data = strict_object(parse_model_json(raw), {
@@ -208,10 +238,10 @@ def validate_unit_output(raw, unit, block_map, child_artifacts):
             "statement": raw_counter["statement"],
             "evidence_ids": references(raw_counter, claim=False),
         })
-    return validate_artifact({
+    return validate_unit_artifact({
         "schema_version": 1, "unit_id": unit_id, "is_final": is_final,
         "summary": data["summary"], "no_findings_reason": data["no_findings_reason"],
         "input_unit_ids": child_ids, "claims": claims,
         "evidence": evidence, "counterexamples": counters,
         "uncertainties": data["uncertainties"],
-    }, final=is_final)
+    }, unit, block_map, child_artifacts)
