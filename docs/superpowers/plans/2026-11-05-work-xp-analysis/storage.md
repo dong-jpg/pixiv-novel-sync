@@ -551,6 +551,7 @@ from ...ai.usage import summarize_usage
 from ...work_analysis.contracts import WorkAnalysisError, WorkLease, canonical_bytes, validate_budget
 from ...work_analysis.coverage import coverage
 from ...work_analysis.manifest import validate_selection
+from ...work_analysis.planning import seal_unit
 
 
 REASONS = frozenset({
@@ -801,8 +802,6 @@ def validate_plan(plan, manifest):
     units = plan["original_units"]
     if not isinstance(units, list) or not 1 <= len(units) <= 512:
         raise WorkAnalysisError("invalid_request")
-    if len({unit["unit_id"] for unit in units}) != len(units):
-        raise WorkAnalysisError("invalid_request")
     if plan["strategy"] not in {"whole", "segmented"}:
         raise WorkAnalysisError("invalid_request")
     expected_kind = "whole" if plan["strategy"] == "whole" else "extract"
@@ -812,6 +811,11 @@ def validate_plan(plan, manifest):
         validate_unit(unit, manifest)
         if unit["kind"] != expected_kind:
             raise WorkAnalysisError("invalid_request")
+        fields = {key: value for key, value in unit.items() if key not in {"unit_id", "input_fingerprint"}}
+        if unit != seal_unit(fields, manifest_fingerprint=manifest["manifest_fingerprint"]):
+            raise WorkAnalysisError("invalid_plan")
+    if len({unit["unit_id"] for unit in units}) != len(units):
+        raise WorkAnalysisError("invalid_request")
     for chapter in manifest["chapters"]:
         if not chapter["has_text"]:
             continue

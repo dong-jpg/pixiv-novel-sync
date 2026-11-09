@@ -170,6 +170,10 @@ class SchemaMixin:
         self._migrate_novel_fts_rowid()
         self._migrate_core_foreign_keys()
         self._migrate_query_indexes()
+        from .work_analysis.schema import migrate_work_analysis
+
+        with self.transaction() as conn:
+            migrate_work_analysis(conn)
         self._commit_if_needed()
 
     def _migrate_query_indexes(self) -> None:
