@@ -285,7 +285,7 @@ class WorkAnalysisCoordinator:
         if action not in {"cancel", "sync_yield"}:
             raise ValueError("invalid_shared_control")
         with self._gate:
-            if self._closed or not self._recovered:
+            if self._closed:
                 raise WorkAnalysisError("admission_unavailable", 503)
             job = self.manager.get_job(job_id)
             if job is None:
@@ -296,6 +296,8 @@ class WorkAnalysisCoordinator:
                     self._cancel_waiting(job)
                     self.wake("completion")
                 return accepted
+            if not self._recovered:
+                raise WorkAnalysisError("admission_unavailable", 503)
             if job.status in _TERMINAL:
                 return False
             try:

@@ -223,6 +223,73 @@ test('known write success survives failed GET readback without permitting POST r
   assert.equal(await f.controller.retryUnknown(), false);
   assert.equal(f.calls.filter(row => row.url === BASE && row.method === 'POST').length, 1);
 });
+for (const deleted of [false, true]) {
+  test(`delayed successful mutation preserves a newer ${deleted ? 'tombstone' : 'state'} after failed readback`, async () => {
+    const f = fixture(), held = later();
+    const initial = run({version: 4, status: 'running', title: 'SYNTHETIC_OLD_TITLE'});
+    const newer = run({version: 7, status: deleted ? 'cancelled' : 'paused', reason: 'user_pause',
+      deleted, title: deleted ? null : 'SYNTHETIC_NEW_TITLE',
+      budget: {...budget, request_limit: 32}, manifest: deleted ? null : {title: 'NEW_MANIFEST'}});
+    f.controller.wa.selectedId = RUN; f.controller.wa.run = initial;
+    let reads = 0;
+    f.handle((url, options) => {
+      if (url.endsWith('/pause')) return held.promise;
+      if (url === BASE + '/' + RUN && ++reads === 1) return newer;
+      throw Object.assign(new Error('FAILED_GET'), {status: 503});
+    });
+    const writing = f.controller.control('pause');
+    assert.equal(f.controller.wa.pending.phase, 'sending');
+    assert.equal(await f.controller.refreshRun(), true);
+    assert.deepEqual(clone(f.controller.wa.run), newer);
+    held.resolve({...initial, version: 5, status: 'pausing', reason: 'user_pause'});
+    assert.equal(await writing, true);
+    assert.equal(f.controller.wa.pending, null);
+    assert.equal(f.controller.wa.selectedId, RUN);
+    assert.deepEqual(clone(f.controller.wa.run), newer);
+    assert.equal(f.controller.wa.writeError, '');
+    assert.match(f.controller.wa.notice, /刷新失败/);
+    assert.equal(await f.controller.retryUnknown(), false);
+    assert.equal(f.writes().length, 1);
+    assert.equal(reads, 2);
+    if (deleted) {
+      assert.equal(f.controller.controlAllowed('resume'), false);
+      assert.equal(f.controller.wa.report, null);
+      assert.deepEqual(clone(f.controller.wa.units), []);
+      assert.deepEqual(clone(f.controller.wa.evidence), {});
+      assert.equal(f.timers.size, 0);
+    } else assert.deepEqual(clone(f.controller.wa.amend), newer.budget);
+  });
+}
+test('successful create selects its new run despite another selected run having a higher version', async () => {
+  const f = fixture();
+  await ready(f);
+  f.controller.wa.selectedId = 'd'.repeat(32);
+  f.controller.wa.run = run({run_id: f.controller.wa.selectedId, version: 99, deleted: true});
+  f.handle((url, options) => {
+    if (url === BASE && options.method === 'POST') return run();
+    throw Object.assign(new Error('FAILED_GET'), {status: 503});
+  });
+  assert.equal(await f.controller.createWork(), true);
+  assert.equal(f.controller.wa.pending, null);
+  assert.equal(f.controller.wa.selectedId, RUN);
+  assert.deepEqual(clone(f.controller.wa.run), run());
+  assert.equal(f.controller.wa.preview, null);
+  assert.equal(f.writes().filter(row => row.url === BASE).length, 1);
+});
+test('delayed successful mutation cannot retire or overwrite a replacement pending owner', async () => {
+  const f = fixture(), held = later();
+  f.controller.wa.selectedId = RUN; f.controller.wa.run = run({version: 4, status: 'running'});
+  f.handle(() => held.promise);
+  const writing = f.controller.control('pause');
+  const replacement = {...f.controller.wa.pending, phase: 'unknown', sending: false};
+  f.controller.wa.pending = replacement;
+  const current = f.controller.wa.run;
+  held.resolve(run({version: 5, status: 'pausing', reason: 'user_pause'}));
+  assert.equal(await writing, false);
+  assert.equal(f.controller.wa.pending, replacement);
+  assert.equal(f.controller.wa.run, current);
+  assert.equal(f.calls.length, 1);
+});
 test('unknown control requires readback before an explicit same-version CAS retry', async () => {
   const f = fixture();
   f.controller.wa.selectedId = RUN; f.controller.wa.run = run({status: 'running', version: 4});

@@ -329,6 +329,7 @@ def test_route_contract_field_order_and_immutability() -> None:
         "route_deadline_at",
         "invocation",
         "retention_policy",
+        "work_binding",
     ]
     assert [field.name for field in fields(RouteResult)] == [
         "job_id",
@@ -343,6 +344,7 @@ def test_route_contract_field_order_and_immutability() -> None:
         "validation_status",
         "usage_summary",
         "job_status",
+        "work_error_code",
     ]
     assert [field.name for field in fields(PromptBudget)] == [
         "effective_context_window",
@@ -353,7 +355,15 @@ def test_route_contract_field_order_and_immutability() -> None:
         "estimator",
     ]
 
-    candidate = snapshot_with_context_windows(8_000).candidates[0]
+    snapshot = snapshot_with_context_windows(8_000)
+    legacy_request = RouteRequest("legacy", "main", [], snapshot, 256, "owner", lambda _text: None, lambda _data: None)
+    legacy_result = RouteResult("legacy", "", snapshot.snapshot_hash, (), "succeeded")
+    assert legacy_request.work_binding is None
+    assert legacy_result.work_error_code is None
+    with pytest.raises(FrozenInstanceError):
+        legacy_result.work_error_code = None  # type: ignore[misc]
+
+    candidate = snapshot.candidates[0]
     with pytest.raises(FrozenInstanceError):
         candidate.model_key = "changed"  # type: ignore[misc]
 

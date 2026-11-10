@@ -43,6 +43,22 @@ def test_whole_is_a_single_final_root_and_input_has_every_character():
     assert len(payload["messages"]) <= 256
 
 
+def test_empty_available_source_is_rejected_before_preflight():
+    manifest, texts = source_fixture(["", " \t\n"])
+    preflight_calls = []
+
+    def preflight(payload):
+        preflight_calls.append(payload)
+        raise AssertionError("empty available input must not be admitted")
+
+    with pytest.raises(WorkAnalysisError, match="empty_source") as caught:
+        plan_original_units(
+            manifest, texts, preflight, agent_prompt="", output_tokens=128,
+        )
+    assert caught.value.status == 409
+    assert preflight_calls == []
+
+
 def test_segmentation_covers_unicode_tail_without_changing_failed_unit_granularity():
     manifest, texts = source_fixture([("line\U0001f600\n" * 1000) + "TAIL", "z"])
     plan = plan_original_units(

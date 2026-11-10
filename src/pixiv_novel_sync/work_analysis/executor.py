@@ -43,7 +43,9 @@ class _Pulse:
         self.next_check = time.monotonic() + 1.0
         return self.stopped
 
-    def require_running(self):
+    def require_running(self, *, refresh=False):
+        if refresh:
+            self.next_check = 0.0
         if self.check():
             raise WorkAnalysisError("work_stopping", 409)
 
@@ -115,7 +117,8 @@ class WorkAnalysisExecutor:
             )
             if result.work_error_code is not None:
                 raise WorkAnalysisError(result.work_error_code, 409)
-            pulse.require_running()
+            # Child cancellation can observe revocation before the throttled stream poll.
+            pulse.require_running(refresh=True)
             if result.finish_state != "succeeded" or result.job_status != "succeeded":
                 raise WorkAnalysisError("transport_failed", 409)
             try:

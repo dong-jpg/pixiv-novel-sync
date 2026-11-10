@@ -268,10 +268,14 @@
     }
     function acceptWrite(operation, data) {
       wa.pending = null; wa.writeError = ''; wa.notice = '写入已确认。';
-      cancelRunReads(); wa.selectedId = data.run_id; wa.run = data;
+      // The receipt acknowledges the command, not necessarily the newest run state.
+      const current = wa.run;
+      const accepted = current && current.run_id === data.run_id &&
+        (current.deleted || current.version > data.version) ? current : data;
+      cancelRunReads(); wa.selectedId = data.run_id; wa.run = accepted;
       wa.report = null; wa.evidence = {}; wa.units = [];
       if (operation.kind === 'create') invalidate();
-      if (data.budget && !data.deleted) wa.amend = copy(data.budget);
+      if (accepted.budget && !accepted.deleted) wa.amend = copy(accepted.budget);
       wa.amendConfirmed = false; wa.deleteConfirmed = false;
       poll();
     }

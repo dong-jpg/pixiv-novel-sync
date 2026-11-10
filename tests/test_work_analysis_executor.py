@@ -1,15 +1,22 @@
 import hashlib
+import json
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 
+from pixiv_novel_sync.ai.models import AIStreamChunk
 from pixiv_novel_sync.jobs.manager import JobManager
 from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobStatus, JobType
 from pixiv_novel_sync.jobs.runner import JobRunner
 from pixiv_novel_sync.storage_db import Database
+from pixiv_novel_sync.work_analysis import executor as executor_module
 from pixiv_novel_sync.work_analysis.artifacts import validate_artifact
-from pixiv_novel_sync.work_analysis.contracts import WorkAnalysisError
+from pixiv_novel_sync.work_analysis.configuration import snapshot_work_configuration
+from pixiv_novel_sync.work_analysis.contracts import WorkAnalysisError, canonical_bytes
+from pixiv_novel_sync.work_analysis.evidence import validate_unit_output
 from pixiv_novel_sync.work_analysis.executor import WorkAnalysisExecutor
+from pixiv_novel_sync.work_analysis.planning import materialize_unit, seal_unit
 from work_analysis_runtime_helpers import make_runtime_environment
 
 
@@ -37,6 +44,166 @@ def test_whole_path_publishes_one_validated_root_and_one_paid_call(tmp_path, mon
         assert report["usage_summary"]["network_request_count"] == 1
         row = env.db.conn.execute("SELECT output_text,output_json FROM ai_jobs").fetchone()
         assert tuple(row) == (None, None)
+    finally:
+        env.close()
+
+
+def test_real_16_mib_boundary_segments_before_sending_every_original_character(tmp_path, monkeypatch):
+    limit = 16 * 1024 * 1024
+    # Nested JSON escaping exceeds the byte cap although the raw source does not.
+    texts = {1: '"' * (4 * 1024 * 1024) + "\U0001f600TAIL", 2: "short final chapter"}
+    assert len(texts[1].encode("utf-8")) < limit
+    assert len(canonical_bytes(canonical_bytes(texts[1]).decode("utf-8"))) > limit
+    env = make_runtime_environment(
+        tmp_path, monkeypatch, texts=list(texts.values()),
+        context_window=10_000_000, token_limit=100_000_000,
+    )
+    try:
+        with env.db.read_transaction():
+            _, prompt, preflight = snapshot_work_configuration(env.db.conn, env.agent_id, 128)
+        whole = seal_unit({
+            "kind": "whole", "is_final": True, "level": 0,
+            "primary_ranges": [{
+                "novel_id": chapter["novel_id"], "text_hash": chapter["text_hash"],
+                "start": 0, "end": chapter["chars"],
+            } for chapter in env.manifest["chapters"]],
+            "context_ranges": [], "child_unit_ids": [], "claim_refs": [],
+        }, manifest_fingerprint=env.manifest["manifest_fingerprint"])
+        with pytest.raises(WorkAnalysisError, match="input_too_large") as caught:
+            materialize_unit(env.manifest, whole, texts, {}, agent_prompt=prompt, output_tokens=128)
+        assert caught.value.status == 413
+
+        assert env.plan["strategy"] == "segmented"
+        originals = env.plan["original_units"]
+        assert len(originals) > len(texts)
+        state = env.db.get_work_analysis(env.run_id, include_private=True)
+        assert [entry["unit"] for entry in state["units"]] == originals
+        for novel_id, text in texts.items():
+            cursor = 0
+            ranges = sorted(
+                (row["start"], row["end"]) for unit in originals
+                for row in unit["primary_ranges"] if row["novel_id"] == novel_id
+            )
+            for start, end in ranges:
+                assert start == cursor and start < end <= len(text)
+                cursor = end
+            assert cursor == len(text)
+
+        original_payload_hashes = {}
+        for unit in originals:
+            assert unit["kind"] == "extract" and not unit["is_final"]
+            payload, blocks = materialize_unit(
+                env.manifest, unit, texts, {}, agent_prompt=prompt, output_tokens=128,
+            )
+            serialized = canonical_bytes(payload)
+            assert len(payload["messages"]) <= 256 and len(serialized) <= limit
+            assert preflight(payload)["can_run"]
+            assert all(block["text"] == texts[block["novel_id"]][block["start"]:block["end"]]
+                       for block in blocks.values())
+            actual_blocks = json.loads(payload["messages"][-1]["content"])["blocks"]
+            assert actual_blocks == [
+                {"block_id": block_id, "novel_id": block["novel_id"], "text": block["text"]}
+                for block_id, block in blocks.items()
+            ]
+            for primary in unit["primary_ranges"]:
+                cursor = primary["start"]
+                primary_blocks = sorted(
+                    (block["start"], block["end"]) for block in blocks.values()
+                    if block["novel_id"] == primary["novel_id"]
+                    and primary["start"] <= block["start"] < block["end"] <= primary["end"]
+                )
+                for start, end in primary_blocks:
+                    assert start == cursor
+                    cursor = end
+                assert cursor == primary["end"]
+            original_payload_hashes[unit["unit_id"]] = hashlib.sha256(serialized).hexdigest()
+
+        # A single extra source character must cross the actual serialization guard.
+        first = originals[0]
+        fields = {key: value for key, value in first.items() if key not in {"unit_id", "input_fingerprint"}}
+        fields["primary_ranges"] = [{**first["primary_ranges"][0], "end": first["primary_ranges"][0]["end"] + 1}]
+        too_wide = seal_unit(fields, manifest_fingerprint=env.manifest["manifest_fingerprint"])
+        with pytest.raises(WorkAnalysisError, match="input_too_large"):
+            materialize_unit(env.manifest, too_wide, texts, {}, agent_prompt=prompt, output_tokens=128)
+
+        original_stream = env.provider.stream_generate
+        sent_payloads = []
+
+        def bounded_stream(messages, model, temperature, top_p, max_tokens, **kwargs):
+            serialized = canonical_bytes({"messages": messages, "max_tokens": max_tokens})
+            unit_id = json.loads(messages[-1]["content"])["unit_id"]
+            sent_payloads.append((unit_id, len(serialized)))
+            assert unit_id != whole["unit_id"]
+            assert len(messages) <= 256 and len(serialized) <= limit
+            if unit_id in original_payload_hashes:
+                assert hashlib.sha256(serialized).hexdigest() == original_payload_hashes[unit_id]
+            yield from original_stream(messages, model, temperature, top_p, max_tokens, **kwargs)
+
+        monkeypatch.setattr(env.provider, "stream_generate", bounded_stream)
+        _, job = run_environment(env)
+        assert job.status == JobStatus.SUCCEEDED
+        assert [unit_id for unit_id, _ in sent_payloads] == env.provider.sent_units
+        assert [unit_id for unit_id, _ in sent_payloads if unit_id in original_payload_hashes] == [
+            unit["unit_id"] for unit in originals
+        ]
+        report = env.db.get_work_analysis_report(env.run_id)
+        assert report["coverage"]["validated_chars"] == report["coverage"]["available_chars"] == sum(map(len, texts.values()))
+        assert report["coverage"]["complete"] and report["coverage"]["ratio"] == 1
+        assert report["synthesis_complete"]
+        assert report["usage_summary"]["network_request_count"] == len(sent_payloads)
+    finally:
+        env.close()
+
+
+def test_valid_json_partial_transport_cannot_checkpoint_or_automatically_retry(tmp_path, monkeypatch):
+    text = "synthetic complete source for a partial transport result"
+    env = make_runtime_environment(tmp_path, monkeypatch, texts=[text], request_limit=3)
+    try:
+        unit = env.plan["original_units"][0]
+        assert env.plan["strategy"] == "whole"
+        _, blocks = materialize_unit(env.manifest, unit, {1: text}, {}, agent_prompt="", output_tokens=128)
+        original_stream = env.provider.stream_generate
+        valid_outputs = []
+
+        def partial_stream(*args, **kwargs):
+            for chunk in original_stream(*args, **kwargs):
+                if chunk.type == "delta":
+                    valid_outputs.append(validate_unit_output(chunk.text, unit, blocks, {}))
+                if chunk.type == "done":
+                    chunk = AIStreamChunk(type="done", data={"finish_reason": "length"})
+                yield chunk
+
+        monkeypatch.setattr(env.provider, "stream_generate", partial_stream)
+        _, job = run_environment(env)
+        state = env.db.get_work_analysis(env.run_id, include_private=True)
+        assert len(valid_outputs) == 1 and valid_outputs[0]["is_final"]
+        assert job.status == JobStatus.FAILED and job.error == "transport_failed"
+        assert (state["status"], state["reason"]) == ("failed", "transport_failed")
+        assert state["report"] is None and not state["has_report"]
+        assert state["unit_counts"] == {"total": 1, "succeeded": 0}
+        entry = state["units"][0]
+        assert entry["artifact"] is None and entry["completed_at"] is None
+        assert entry["try_no"] == 1 and entry["last_error"] == "transport_failed"
+        assert state["coverage"]["validated_chars"] == 0 and state["coverage"]["ratio"] == 0
+        assert state["coverage"]["available_chars"] == len(text) and not state["coverage"]["complete"]
+        with pytest.raises(WorkAnalysisError, match="report_not_ready"):
+            env.db.get_work_analysis_report(env.run_id)
+
+        child = env.db.conn.execute("SELECT * FROM ai_jobs").fetchall()
+        assert len(child) == 1 and child[0]["status"] == "partial"
+        assert child[0]["output_text"] is None and child[0]["output_json"] is None
+        attempts = env.db.conn.execute("SELECT status,finish_reason FROM ai_job_model_attempts").fetchall()
+        assert [tuple(row) for row in attempts] == [("partial", "length")]
+        ledger = env.db.conn.execute(
+            "SELECT entry_kind,request_ordinal,planned_tokens FROM work_analysis_requests "
+            "ORDER BY child_job_id,request_ordinal"
+        ).fetchall()
+        assert [(row["entry_kind"], row["request_ordinal"]) for row in ledger] == [("attachment", 0), ("request", 1)]
+        assert ledger[0]["planned_tokens"] is None
+        assert ledger[1]["planned_tokens"] == state["planned_tokens"] > 0
+        assert env.provider.sent_units == [unit["unit_id"]]
+        assert state["request_count"] == child[0]["network_request_count"] == 1
+        assert state["request_count"] < state["budget"]["request_limit"]
     finally:
         env.close()
 
@@ -291,6 +458,59 @@ def test_deleted_during_transport_cannot_restore_artifacts_or_refund(tmp_path, m
         assert state["owner_token"] is None and state["slice_settled"]
         assert job.status == JobStatus.CANCELLED
         assert len(env.provider.sent_units) == 1
+    finally:
+        env.close()
+
+
+def test_cancelled_child_after_deletion_refreshes_the_cached_parent_stop(tmp_path, monkeypatch):
+    env = make_runtime_environment(tmp_path, monkeypatch, request_limit=3)
+    # Freeze only the executor clock, leaving the real Router/heartbeat clock intact.
+    monkeypatch.setattr(executor_module, "time", SimpleNamespace(monotonic=lambda: 1000.0))
+    original_stream = env.provider.stream_generate
+    original_invoke = env.service.invoke_text
+    results = []
+
+    def delete(_unit_id):
+        current = env.db.get_work_analysis(env.run_id)
+        env.db.request_work_analysis_stop(env.run_id, "delete", current["version"])
+
+    def cancelled_stream(*args, **kwargs):
+        for chunk in original_stream(*args, **kwargs):
+            if chunk.type == "done":
+                chunk = AIStreamChunk(type="done", data={"finish_reason": "cancelled"})
+            yield chunk
+
+    def invoke(*args, **kwargs):
+        result = original_invoke(*args, **kwargs)
+        pulse = kwargs["stop_requested"].__self__
+        assert pulse.next_check == 1001.0
+        assert pulse.check() is False
+        results.append((result.finish_state, result.job_status, result.work_error_code))
+        return result
+
+    env.provider.before_response = delete
+    monkeypatch.setattr(env.provider, "stream_generate", cancelled_stream)
+    monkeypatch.setattr(env.service, "invoke_text", invoke)
+    try:
+        _, job = run_environment(env)
+        assert results == [("cancelled", "cancelled", None)]
+        state = env.db.get_work_analysis(env.run_id, include_private=True)
+        assert state["deleted"] and state["status"] == "cancelled"
+        assert state["report"] is None and state["coverage"] is None
+        assert all(row["status"] == "discarded" and row["unit"] is None
+                   and row["artifact"] is None and row["child_job_id"] is None for row in state["units"])
+        assert state["active_seconds_debited"] == 600
+        assert state["owner_token"] is None and state["slice_settled"]
+        assert state["request_count"] == len(env.provider.sent_units) == 1
+        ledger = env.db.conn.execute(
+            "SELECT request_ordinal,planned_tokens FROM work_analysis_requests WHERE entry_kind='request'",
+        ).fetchall()
+        assert len(ledger) == 1 and ledger[0]["request_ordinal"] == 1
+        assert ledger[0]["planned_tokens"] == state["planned_tokens"] > 0
+        assert job.status == JobStatus.CANCELLED
+        assert job.progress["work_status"] == "cancelled"
+        assert job.progress["work_reason"] == "deleted"
+        assert job.error is None
     finally:
         env.close()
 

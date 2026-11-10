@@ -7,6 +7,7 @@ import pytest
 
 import pixiv_novel_sync.webapp as webapp_module
 from pixiv_novel_sync.jobs.models import JobStatus, JobType
+from pixiv_novel_sync.storage_db import Database
 from work_analysis_runtime_helpers import make_runtime_environment
 
 
@@ -19,7 +20,7 @@ def wait_for(predicate):
 
 
 @pytest.fixture
-def web_work(tmp_path, monkeypatch):
+def web_work(tmp_path, monkeypatch, request):
     env = make_runtime_environment(tmp_path, monkeypatch)
     config_path = tmp_path / "config.yaml"
     config_path.write_text("sync:\n  auto_sync_enabled: false\n", encoding="utf-8")
@@ -31,11 +32,27 @@ def web_work(tmp_path, monkeypatch):
     monkeypatch.delenv("FLASK_DEBUG", raising=False)
     monkeypatch.setattr("pixiv_novel_sync.web.managers.SCHEDULER_PREEMPT_POLL_SECONDS", 0.01)
     monkeypatch.setattr(webapp_module, "execute_task", lambda task, settings, context: {"synthetic_sync": 1})
+    fail_startup = getattr(request, "param", None) == "startup_failure"
+    recovery_attempts = []
+    if fail_startup:
+        original_recovery = Database.fail_stale_task_logs
+
+        def fail_once(self):
+            recovery_attempts.append(True)
+            if len(recovery_attempts) == 1:
+                raise OSError("synthetic startup recovery failure")
+            return original_recovery(self)
+
+        monkeypatch.setattr(Database, "fail_stale_task_logs", fail_once)
     app = webapp_module.create_app(str(config_path), str(env_path), start_scheduler=False)
     coordinator = app.extensions["work_analysis_coordinator"]
     app.extensions["pixiv_novel_sync.work_ai_factory"] = lambda: env.service
     interrupted = env.db.get_work_analysis(env.run_id)
-    env.db.resume_work_analysis(env.run_id, interrupted["version"])
+    if fail_startup:
+        assert recovery_attempts == [True] and coordinator._recovered is False
+        assert interrupted["status"] == "queued"
+    else:
+        env.db.resume_work_analysis(env.run_id, interrupted["version"])
     try:
         yield app, env
     finally:
@@ -79,6 +96,44 @@ def test_generic_http_cancel_cannot_report_success_before_parent_stop(web_work):
     finally:
         release.set()
     wait_for(lambda: env.db.get_work_analysis(env.run_id)["status"] == "cancelled")
+
+
+@pytest.mark.parametrize("web_work", ["startup_failure"], indirect=True)
+def test_generic_http_cancel_works_after_work_startup_recovery_failure(web_work, monkeypatch):
+    app, env = web_work
+    coordinator = app.extensions["work_analysis_coordinator"]
+    manager = app.config["job_manager"]
+    entered, release = threading.Event(), threading.Event()
+
+    def hold_sync(task, settings, context):
+        assert task == "bookmark"
+        entered.set()
+        assert release.wait(timeout=5)
+        return {"synthetic_sync": 1}
+
+    monkeypatch.setattr(webapp_module, "execute_task", hold_sync)
+    before = env.db.get_work_analysis(env.run_id)
+    client = app.test_client()
+    try:
+        response = client.post("/api/dashboard/sync/bookmark")
+        assert response.status_code == 200
+        assert entered.wait(timeout=5)
+        job = manager.latest_job()
+        response = client.post("/api/dashboard/sync/cancel", json={"job_id": job.job_id})
+        assert response.status_code == 200
+        assert manager.is_cancel_requested(job.job_id)
+        assert coordinator.wake("created") is False
+        response = client.post(f"/api/dashboard/work-analyses/{env.run_id}/pause",
+                               json={"expected_version": before["version"]})
+        assert response.status_code == 503
+        assert response.get_json()["code"] == "admission_unavailable"
+    finally:
+        release.set()
+        wait_for(manager.shared_admission_is_idle)
+    assert job.status == JobStatus.CANCELLED
+    assert coordinator._recovered is False
+    assert env.db.get_work_analysis(env.run_id) == before
+    assert env.provider.sent_units == []
 
 
 def test_manual_p1_enters_existing_manager_while_work_is_draining(web_work):

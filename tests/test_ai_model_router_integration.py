@@ -286,7 +286,9 @@ def test_route_job_context_contract_field_order(route_context: Any) -> None:
         "resume_candidate_index",
         "invocation",
         "retention_policy",
+        "work_binding",
     ]
+    assert route_context.work_binding is None
 
 
 class PlannedFakeModelRouter(FakeModelRouter):

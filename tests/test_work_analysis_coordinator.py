@@ -396,6 +396,97 @@ def test_startup_recovery_runs_once_and_never_activates_old_intent(tmp_path, mon
         env.close()
 
 
+@pytest.mark.parametrize("action", ["cancel", "sync_yield"])
+@pytest.mark.parametrize("finalizing", [False, True])
+def test_startup_recovery_failure_preserves_ordinary_cancellation_but_fences_work(
+    tmp_path, monkeypatch, action, finalizing,
+):
+    env = make_runtime_environment(tmp_path, monkeypatch)
+    manager = JobManager()
+    scheduler = AutoSyncScheduler(None, None, shared_job_manager=manager)
+    settings = SimpleNamespace()
+    submitted = []
+    recovery_attempts = []
+    original_recovery = Database.fail_stale_task_logs
+
+    def fail_once(self):
+        recovery_attempts.append(True)
+        if len(recovery_attempts) == 1:
+            raise OSError("synthetic startup recovery failure")
+        return original_recovery(self)
+
+    def submit(spec, current_settings, task_type, task_name, *, progress=None):
+        assert current_settings is settings
+        submitted.append(spec)
+        return manager.submit(spec)
+
+    def unexpected_launch(job_id):
+        pytest.fail("work must remain closed after failed recovery")
+
+    monkeypatch.setattr(Database, "fail_stale_task_logs", fail_once)
+    coordinator = WorkAnalysisCoordinator(manager, submit, unexpected_launch, lambda: settings,
+                                          db_factory=env.db_factory, scheduler=scheduler)
+    claim = None
+    try:
+        before = env.db.get_work_analysis(env.run_id)
+        with pytest.raises(OSError, match="synthetic startup recovery failure"):
+            coordinator.startup_recover()
+        job = coordinator.request_sync(JobSpec(JobSource.WEB, ["bookmark"]), settings,
+                                       "bookmark", "Synthetic bookmark sync")
+        assert manager.mark_running(job.job_id)
+        if finalizing:
+            claim = manager.try_begin_finalization(job.job_id)
+            assert claim is not None
+        assert coordinator.cancel_shared_job(job.job_id, action=action) is (not finalizing)
+        assert manager.is_cancel_requested(job.job_id) is (not finalizing)
+        assert job.status == (JobStatus.RUNNING if finalizing else JobStatus.CANCEL_REQUESTED)
+        if claim is not None:
+            assert claim.abort()
+            claim = None
+        manager.mark_cancelled(job.job_id)
+
+        work = manager.submit_work_waiting(
+            JobSpec(JobSource.WEB, ["work_analysis"], JobType.WORK_ANALYSIS, {"run_id": env.run_id}), 4,
+        )
+        with pytest.raises(WorkAnalysisError) as caught:
+            coordinator.cancel_shared_job(work.job_id, action=action)
+        assert caught.value.code == "admission_unavailable"
+        with pytest.raises(WorkAnalysisError) as caught:
+            coordinator.request_control(env.run_id, "cancel", before["version"])
+        assert caught.value.code == "admission_unavailable"
+        assert coordinator.wake("completion") is False
+        assert work.status == JobStatus.QUEUED and work.shared_waiting
+        assert env.db.get_work_analysis(env.run_id) == before
+        assert env.provider.sent_units == []
+        assert submitted == [job.spec]
+        assert recovery_attempts == [True] and coordinator._recovered is False
+    finally:
+        if claim is not None:
+            claim.abort()
+        for current in manager._jobs.values():
+            manager.mark_cancelled(current.job_id)
+        coordinator.close()
+        env.close()
+
+
+def test_closed_coordinator_still_refuses_ordinary_cancellation():
+    manager = JobManager()
+    scheduler = AutoSyncScheduler(None, None, shared_job_manager=manager)
+
+    def unexpected_database():
+        pytest.fail("closed cancellation must not open storage")
+
+    coordinator = WorkAnalysisCoordinator(manager, None, None, lambda: SimpleNamespace(),
+                                          db_factory=unexpected_database, scheduler=scheduler)
+    coordinator.close()
+    job = manager.submit(JobSpec(JobSource.WEB, ["bookmark"]))
+    assert manager.mark_running(job.job_id)
+    with pytest.raises(WorkAnalysisError) as caught:
+        coordinator.cancel_shared_job(job.job_id)
+    assert caught.value.code == "admission_unavailable"
+    assert manager.is_cancel_requested(job.job_id) is False
+
+
 def test_fresh_manager_restart_repairs_only_latest_published_log_without_resending(tmp_path, monkeypatch):
     class SyntheticProcessExit(BaseException):
         pass
