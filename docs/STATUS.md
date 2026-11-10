@@ -1,13 +1,21 @@
 # 项目现状
 
-**最近更新：2026-11-04**
+**最近更新：2026-11-10**
 
 这是项目当前状态的唯一入口：版本、测试基线、部署和待办都只在这里更新。每轮审查、部署、整改的详细经过另存带日期的记录，放在 [archive/](archive/README.md)，不在多份旧文档里反复回写。
+
+## 作品分析第二阶段（Task 9 / 整阶段验收待完成）
+
+- 实现、整阶段验收与实际部署分开记录。隔离分支 `codex/work-xp-analysis-design` 已完成并逐项审查 Tasks 1–8，Task 8 提交 `b81284a70ca143e4d0c2d2084820829878e7b203`；Task 9 跨模块留存/故障回归、准确文档及最终整阶段审查仍在进行，不标为 DONE。规格与任务边界见 [作品分析设计](superpowers/specs/2026-11-05-work-xp-analysis-design.md) 和 [实施计划](superpowers/plans/2026-11-05-work-xp-analysis.md)。
+- 代码提供手动已归档单篇/系列报告、全文覆盖与短证据、父级累计预算和检查点；不恢复个人画像 AI 总结、推荐闭环、写作或旧 main continue。不是自动全库/新同步/定时付费分析，也不代表完整原作已核实。
+- Task 8 当前字节局部验证：122 个 UI/样式回归、33 个作品 Node 用例通过；66 个离线 Chromium 用例通过、零跳过（158.73 秒），15 张截图及合成请求轨迹复核无阻塞项。pyflakes、CSS check、diff check 通过；离线 wheel 中 9 个 UI 资产与当时工作副本字节一致。这些不是 Task 9 全量或最终 canonical 源码验收，不复用修复前的浏览器/wheel 数字。
+- 最终门槛仍待执行/归档：冻结最终提交及 canonical Git LF/blob/mode 证明；同源 Windows 全量与原生 Linux 全量（逐类解释 skip）、全部 Node/旧 reader direct、compileall/pyflakes、明确启用的三宽度离线浏览器/视觉复核、CSS 与 wheel 完整包字节验证。后续记录须包含 SHA、环境版本、真实 exit 和日志，不将工作副本 CRLF 与 canonical LF 混为相同字节。
+- 本阶段未推送、未创建 PR、未部署，第一阶段发布授权不沿用。没有读取/外发用户小说或调用真实 Pixiv/Provider；真实 1M 准入、计费、网络取消及真机软键盘仍待另行授权验收。下面第一阶段部署、计数与外部验收保留为历史事实，不能代替本阶段门槛。
 
 ## AI 设置与统一调用重构（第一阶段已部署）
 
 - 第一阶段 Tasks1-8 已实施并逐项审查，应用代码基线为 `3c51a6c6107a61b95cdbf58a00044506f405bccc`。独立整阶段代码/规格复审 Approved，最后的传输 deadline、当前选模意图、精确模型键、目录搜索及保存/读回所有权问题均已修复并复审。候选 `793d340d` 已普通快进推送到 main，并于 2026-11-04 15:57（Asia/Shanghai）完成受保护部署；原主目录用户修改未动。
-- 业务仍仅关键词清洗接入。整书/系列读取、跨章证据、XP 分析 Agent 和推荐闭环是未实现的第二阶段。main Continue 保留 409，不创建 job 或请求，UI 没有可执行继续。
+- 该次第一阶段部署仅接入关键词清洗，未包含作品级报告/跨章证据；本地第二阶段进度另列于本页，推荐闭环仍不在范围。旧 main Continue 保留 409，不创建 job 或请求，UI 没有可执行旧继续。
 - Windows 全量 `2414 passed, 52 skipped`（351.21s）；实际部署的 canonical LF 归档经 Linux/Python3.10 全量 `2363 passed, 103 skipped`（176.99s），均 exit0。Windows 的 6 个符号链接/POSIX 限制用例在 Linux 补齐；完整跳过分类见 [阶段验收记录](archive/AI_SETTINGS_ACCEPTANCE_2026-11-03.md)，不将 skip 算成通过。
 - 8 个 Node 套件 `429 passed`、零失败/跳过；旧 reader direct 模式另行通过。compileall（77 个字节一致的隔离 Python 源文件）、实际源码 pyflakes、静态 CSS 原始字节一致性及离线 wheel 均通过；wheel 内 107 个源码/资产与应用基线一致。Windows 校验临时路径过长的环境失败及隔离短路径复跑已保留记录，没有修改全局环境或产品代码来规避。
 - 真实 Chromium 使用本地 SRI 校验 Vue3.4.38 和合成 API/文本；最后在精确 Git LF 归档上完整运行全部 36 用例（375/768/1440），`36 passed`、零跳过（97.13s）。17 个资产和 368 个源文件运行前后字节一致；此前 33 基线及定点修复记录仍按历史事实保留，Node VM 和默认 opt-in skip 不代替浏览器验收。
@@ -19,6 +27,7 @@
 | 分支 / 组件 | 当前 | 说明 |
 |---|---|---|
 | main（生产应用） | 应用 `3c51a6c6`；切换候选 `793d340d`（2026-11-04） | 第一阶段 AI 重构已上线；随后同步 Nginx 缓存修订、测试和部署记录，不改 Python/JS/CSS 应用源码、不再次重启 |
+| 作品分析隔离分支 | Task 8 `b81284a`（2026-11-10） | 已逐项审查；Task 9 / 最终验收待完成，未推送、未部署 |
 | ai-writing | `adb2d95`（2026-10-20） | 在 main 的基础上加写作/成人模块；只移植共享修复，不反向合入 main |
 | 审计整改 PR | [PR #2](https://github.com/dong-jpg/pixiv-novel-sync/pull/2) 已合并；候选 `8f76399` 与合并提交的树一致 | 应用代码验证基线 `122dbfe`；后续补文档及一处跨平台测试夹具，不改变应用逻辑 |
 | 救援用户脚本 | 0.12.2 已进入 GitHub main | 直装 / 自动更新来源现已包含新版；手机管理器仍须检查更新并确认角标，不能据发布推断设备已经更新 |
@@ -99,7 +108,7 @@ Windows 的 6 个 skip 属于符号链接权限与 POSIX mode；本次 Linux 的
 
 - `rebuild_rescue_catalog` 增量化：全量重建保证绝对一致，继续不做。本分支 P13 已实现同一事务内的候选 ID 预筛，未改变全量重建语义；历史合成库耗时不作为生产性能或本轮验收结果。
 - `webapp.py` / `sync_engine.py` 大文件拆分：可维护性债务，不是缺陷。
-- [统一需求](UNIFIED_PROJECT_REQUIREMENTS.md) §1.3 的 OUT 项不重新实施。
+- [统一需求](UNIFIED_PROJECT_REQUIREMENTS.md) §1.3 的 OUT 项不重新实施；§12.5 仅局部增加手动作品报告，不恢复个人画像/推荐/写作旧工作流。
 
 ## 记录
 

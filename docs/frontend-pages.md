@@ -2,7 +2,7 @@
 
 本文档记录 Library OS 前端页面、模板、主要接口与交互。前端重写保持 Flask/Jinja 页面路由不变。
 
-> AI 写作相关页面（`/dashboard/ai` 项目/章节/笔记、`/dashboard/wizard`、AI 阅读页、成人润色设置页）随 AI 写作模块移到 `ai-writing` 分支维护，main 分支不再包含；main 只保留模型目录 / 模型池 / Agent 绑定等 AI 基础设施页面。
+> AI 写作相关页面（`/dashboard/ai` 项目/章节/笔记、`/dashboard/wizard`、AI 阅读页、成人润色设置页）随 AI 写作模块移到 `ai-writing` 分支维护，main 分支不再包含。main 保留模型目录 / 模型池 / Agent 绑定等基础设施页面，另有原偏好页内的手动作品分析独立视图，不恢复写作或个人画像 AI 总结。
 
 ## 本轮交互更新（2026-10-08，main）
 
@@ -44,6 +44,7 @@
 | `/dashboard/settings/agents` | `src/pixiv_novel_sync/templates/dashboard_settings_agents.html` | 普通 Agent 绑定与候选模型链 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings/system` | `src/pixiv_novel_sync/templates/dashboard_settings_system.html` | 图片缓存、救援 Token、导出、数据保留期 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/preferences` | `src/pixiv_novel_sync/templates/dashboard_preferences.html` | 偏好画像与推荐 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/preferences?view=work-analysis` | `dashboard_preferences.html` 内 `dashboard_work_analysis.html` | 手动已归档单作品内容报告 | 复用 Library OS；不替换默认偏好页 |
 | `/dashboard/novels?category=rescue` | `src/pixiv_novel_sync/templates/dashboard_novels.html` | 拯救成功小说与系列 | 已接入 `library-page` / `library-page-header` |
 
 ## Shared layout
@@ -316,7 +317,7 @@ APIs:
 
 Template: `dashboard_preferences.html`
 
-用途：偏好画像、推荐搜索计划、推荐反馈、屏蔽管理。
+默认用途：偏好画像、推荐搜索计划、推荐反馈、屏蔽管理。无 `view`（或非 `work-analysis` 值）保持原页面与接口。
 
 默认先展示与首页相同的推荐卡片/过滤/分页；画像、增量分析和搜索管理折叠在结果之后。画像读取独立于推荐，不因画像失败挡住推荐；画像错误在折叠内容之外持续提示，并提供只读重试。推荐部分失败（例如作者屏蔽已成功但反馈失败）必须明确说明并重新读取实际列表。
 
@@ -324,6 +325,19 @@ APIs:
 
 - Preference profile APIs。
 - Recommendation APIs。
+
+#### 作品分析独立视图
+
+`/dashboard/preferences?view=work-analysis` 包含 `dashboard_work_analysis.html`、`dashboard_work_analysis_scripts.html`，由 `static/js/work_analysis.js` 驱动；使用 [Work Analysis APIs](frontend-api-contract.md#work-analysis-apis)。小说/系列详情链接用 `source_kind/source_id` 预选单篇或系列，`analysis_id` 可选择已有任务；默认偏好视图不加载作品报告或自动启动分析。
+
+- 显示 Agent 当前绑定及不可用原因，名称相同也不混淆身份，不静默替换当前选择。用户显式填请求数/计划 token/活跃秒预算（初始为空），核对正文范围、章序、缺章/空章、连载/unknown、全部可能外发的 Provider/模型，再确认外发和预算。预览不解密 Key、不联网或创建 job，不能当作真实服务可用证明。
+- 源、章序、Agent、输出上限或预算变化使旧预览及同意失效；主动刷新预览也需重新确认。不用收藏/追更推断已读或喜欢，不把输入覆盖当成原作完整、汇总完成或解释正确。
+- 任务/单元分页和轮询只展示安全身份、计数、状态/reason、已报告/未知用量与覆盖；不在进度里输出正文或报告。暂停、取消、同步让位分开，增额不重置已花预算。新恢复是作品业务检查点，不调用旧 AI job continue。
+- 写入结果未知时保留原请求；创建仅能显式重试同一 body/幂等 key，不能另起重复分析。控制写入先 GET 核对当前状态，GET 不是原命令的回执，也不能证明写入所有权；仅版本仍为 `expected_version` 时允许明确重试同一 CAS。较旧读取不得回退状态；写成功、读回失败只重试读取。未知状态下离页有提示，重载后须先核对已有任务，原请求不持久保存。
+- 报告/短证据默认折叠、主动读取、文本节点渲染；不使用 `v-html`，正文/报告/Key/同意不进 URL 或 localStorage。接受删除墓碑后清空报告/单元/证据并撤销在途读取，迟到响应不得复活敏感内容。
+- 证据链接为 `/dashboard/novels/<id>?analysis_id=<run>&evidence_id=<id>#work-analysis-evidence`，只携带 ID。阅读页经受保护接口校验同 hash 与服务器 code point 偏移，渲染有界前文/引文/后文；不以浏览器 UTF-16 下标推算。正文改变或删除返回 410，不高亮新版本；同 hash 元数据刷新仍可定位，系列新增章另标 `archive_outdated`。证据标题不能被阅读顶栏遮挡。
+
+实际三宽度浏览器、视觉与真机/软键盘验收边界见 [项目现状](STATUS.md)；Node VM 不代替真实浏览器或设备。
 
 ### `/dashboard/novels?category=rescue`
 

@@ -115,11 +115,13 @@ Linux Web 部署入口是 [deploy.sh](deploy.sh)，使用 APT、Nginx 与 system
 
 ## 可选进阶
 
-无需配置 AI Provider，也能同步、阅读和使用规则推荐。main 的 AI 生成仅用于偏好关键词清洗（`clean_keywords`），失败时降级为原始统计词；未接入 AI 偏好总结或 AI 推荐解释。
+无需配置 AI Provider，也能同步、阅读和使用规则推荐。偏好画像中的 AI 仅用于可选的关键词清洗（`clean_keywords`，失败时降级为原始统计词）；另提供手动选择的已归档单篇/系列作品分析，不提供个人画像 AI 总结或 AI 推荐解释。实现、验收与实际部署状态见 [项目现状](docs/STATUS.md)。
 
-- AI 配置与单次文本调用基础设施独立运行，不依赖 Magpie 或额外 Agent 框架。业务仍仅接入关键词清洗；整书/系列阅读、跨章证据与 XP 分析 Agent 属于未实现的第二阶段。
+- 在 `/dashboard/preferences?view=work-analysis` 选择一篇已归档小说或一个已归档系列，先核对当前正文范围、章序、可能使用的 Provider/模型及累计预算，再显式开始。整部优先，仅输入容量超限时分章/块；报告附源版本与短证据，输入覆盖、原作完整性和模型解释可靠性分开显示，不代表已核实完整原作或用户偏好。不自动扫描全库、补章或写回推荐。
+- 作品分析的暂停、取消与恢复使用业务检查点和累计预算，不开放旧 main AI job continue。正文不保存为完整输入重放副本，有界短证据可能与极短章节重合；正文/报告不进入普通调用历史、日志或浏览器持久缓存。分析可删除，但不承诺备份/WAL 的物理清除。
+- AI 配置与单次文本调用基础设施独立运行，不依赖 Magpie 或额外 Agent 框架。
 - 在 `/dashboard/settings/models?view=providers|models|groups` 管理 Provider、模型目录和路由组（原模型池）；旧 URL 不变。在 `/dashboard/settings/agents` 的“AI 任务”页选固定模型或路由组，查看配置候选链，并显式输入测试文本做零网络容量预检。
-- 预检展示已保存的 system prompt 和完整 user 文本，按候选分别估算，不读取小说或创建 AI job；1M 候选可与被排除的 128k 候选并列，估算通过不代表服务商已接受真实 1M 请求。日志只展示服务端安全计划、业务校验与已报告用量；未知不按零处理，本阶段 Continue 不可用。
+- 任务设置页的预检展示已保存的 system prompt 和完整 user 文本，按候选分别估算，不读取小说或创建 AI job；1M 候选可与被排除的 128k 候选并列，估算通过不代表服务商已接受真实 1M 请求。日志只展示服务端安全计划、业务校验与已报告用量；未知不按零处理，旧 AI job Continue 不可用。
 - 模型目录可通过 `/api/dashboard/ai/providers/<provider_id>/models/sync` 同步，也可保留手工模型。模型池按成员顺序和后备池展开；单个 job 最多尝试 16 个候选、发起 32 次网络请求、运行 30 分钟。
 - 保存 Provider API key 前须设置并保持 `PIXIV_NOVEL_SYNC_AI_SECRET_KEY` 稳定，用于加密保存凭据。跨 Provider fallback 可能将同一 Prompt 发给多个 Provider；启用前确认完整 Provider 范围，只提交你愿意交给这些服务的数据。
 

@@ -8,7 +8,7 @@
 
 本文档记录 Library OS 前端当前依赖的后端接口。后端重构时应优先保持路径、方法和主要字段兼容；如需调整，请在对接时同步更新前端适配层。
 
-> AI 写作相关端点（创作项目 / 章节 / 草稿 / 文档 / 蒸馏档案 / Prompt 模板 / chat / 写作类 SSE stream / 成人润色）随 AI 写作模块移到 `ai-writing` 分支维护，main 分支契约不再记载；main 只保留 Provider / 模型目录 / 模型同步 / 模型池 / Agent 绑定 / AI job 读取与续接等基础设施端点。
+> AI 写作相关端点（创作项目 / 章节 / 草稿 / 文档 / 蒸馏档案 / Prompt 模板 / chat / 写作类 SSE stream / 成人润色）随 AI 写作模块移到 `ai-writing` 分支维护，main 分支契约不再记载。main 保留 AI 基础设施端点，另有手动作品分析业务；旧 AI job continue 仍不支持，不等于新的作品级恢复。分支实现、整阶段验收与部署分别见 [项目现状](STATUS.md)。
 
 ## 通用约定
 
@@ -37,7 +37,7 @@
 | `/dashboard/settings/models` | `dashboard_settings_models.html` | 模型与 Provider |
 | `/dashboard/settings/agents` | `dashboard_settings_agents.html` | Agent 绑定 |
 | `/dashboard/settings/system` | `dashboard_settings_system.html` | 系统维护 |
-| `/dashboard/preferences` | `dashboard_preferences.html` | 偏好画像与推荐 |
+| `/dashboard/preferences` | `dashboard_preferences.html` | 默认偏好画像与推荐；`view=work-analysis` 为独立作品分析视图 |
 
 ## 认证与健康检查 APIs
 
@@ -738,6 +738,80 @@ Body:
 
 ### DELETE /api/dashboard/recommendations/mutes/{mute_id}
 
+## Work Analysis APIs
+
+用于 `/dashboard/preferences?view=work-analysis`，一次只分析用户明确选择的已归档单篇/系列，不更新个人画像或推荐。源码入口：`work_analysis_web.py`、`work_analysis/service.py`、`storage/work_analysis/`。默认偏好页不调用这些接口。
+
+### 路径与请求
+
+| Method / Path | 请求 | `data` |
+| --- | --- | --- |
+| `POST /api/dashboard/work-analyses/preview` | 下列预览对象 | 预览 |
+| `POST /api/dashboard/work-analyses` | 预览对象 + `preview_fingerprint`、`idempotency_key` | 任务详情 |
+| `GET /api/dashboard/work-analyses` | 可选 `offset/limit` | `items,total,offset,limit` |
+| `GET /api/dashboard/work-analyses/<run_id>` | 无 query | 任务详情，含删除墓碑 |
+| `POST /api/dashboard/work-analyses/<run_id>/pause` | `expected_version` | 任务详情 |
+| `POST /api/dashboard/work-analyses/<run_id>/cancel` | `expected_version` | 任务详情 |
+| `POST /api/dashboard/work-analyses/<run_id>/resume` | `expected_version` | 任务详情 |
+| `POST /api/dashboard/work-analyses/<run_id>/budget` | `expected_version,budget,budget_confirmed:true` | 任务详情 |
+| `DELETE /api/dashboard/work-analyses/<run_id>` | `expected_version` | 删除墓碑详情 |
+| `GET /api/dashboard/work-analyses/<run_id>/units` | 可选 `offset/limit` | `items,total,offset,limit` |
+| `GET /api/dashboard/work-analyses/<run_id>/report` | 无 query | 报告 envelope |
+| `GET /api/dashboard/work-analyses/<run_id>/evidence/<evidence_id>` | 无 query | `evidence,jump` |
+
+集合路径另接受末尾 `/`。成功一律 HTTP 200（含创建、删除），返回 `{ok:true,data:...}`；端点失败返回 `{ok:false,error:<安全错误码>,code:<安全错误码>}`。认证/CSRF 中间件沿用共享错误形状，不保证有 `code`。
+
+预览的五个字段必填且不接受额外字段；示例数字不是默认预算或支出授权：
+
+```json
+{
+  "selection": {"source_kind":"novel", "source_id":123, "publication_state":"unknown"},
+  "agent_id":1,
+  "output_tokens":4000,
+  "budget":{"request_limit":10,"token_limit":100000,"active_seconds_limit":600},
+  "confirmations":{"order_confirmed":false,"current_archive_only":false,"external_send_confirmed":false,"budget_confirmed":false}
+}
+```
+
+- `selection` 只接受必填 `source_kind=novel|series`、正整数 `source_id`，可选 `publication_state=unknown|ongoing|completed`（默认 unknown）和 `ordered_novel_ids`（1–2048 个不重复正整数）。单篇的显式列表必须只含自己的 ID。系列顺序须覆盖当前归档章清单，不能通过删 ID 隐藏缺章；chapter `position` 从 0 开始。
+- `agent_id` 为正整数；`output_tokens` 为 1–1000000。预算必须完整给出 `request_limit` 1–512、`token_limit` 1–100000000、`active_seconds_limit` 30–14400，均不接受 bool/字符串/浮点数。
+- 四个 confirmations 为严格 bool；预览返回 `confirmation_requirements`，创建须满足全部必需确认。当前归档不能证明远端清单完整，须确认 archived-only；系列/显式章序还需顺序确认。`can_create` 仅检查已知下限，不保证预算足以完成所有调用。
+- `run_id/idempotency_key` 是小写 hex32；`preview_fingerprint/unit_id/evidence_id` 是小写 hex64。`expected_version` 是 1–2^63-1 的整数，公开控制严格 CAS，不自动改成新版本重发。
+- 写请求 JSON 对象上限 256 KiB；拒绝重复键、非有限数、数组/null、未知/缺失字段和非 JSON Content-Type。写请求、详情、报告、证据不接受 query；仅列表/单元接受 `offset`（默认 0，0–1000000）、`limit`（默认 20，1–100），重复参数、前导零和额外参数拒绝。
+
+### 预览、幂等与恢复
+
+预览在本地读事务捕获清单和配置，正文仅在内存；不解密 Key、不调用 Provider、不创建 AI job。返回 `selection,manifest,plan,agent_id,agent_name,output_tokens,targets,budget,preview_fingerprint,can_create,confirmation_requirements,warnings`。每条 target 只含 `provider_id,provider_name,provider_model_id,model_key,display_name,pool_id,pool_name,pool_position,fallback_depth`，涵盖后续汇总可能使用的小模型；不返回 URL、prompt、密文或配置 fingerprint。`work_targets/work_can_segment` 仅为内部规划数据，不新增到全局预检 v2。
+
+`preview_fingerprint` 绑定选择、语义源清单、计划、配置和预算，不包含 consent flag 或观测时间；同 hash 时间戳刷新不改变它。创建在事务内复核，过期预览返回 409。legacy 密文在真实调用时升级导致配置改变，也会在发送前停止并要求重新预览。
+
+创建幂等 identity 是原始规范化请求（含 confirmations，不含幂等 key 本身），不会随之后预算增额改变。同 key/同请求在未删除时返回已有任务；已删除的原任务返回 410 `work_deleted`，不重新创建或复活。同 key/不同请求返回 `idempotency_conflict`。创建结果未知时只能显式重试同一原请求/key，不另建自动重试；原请求/key 只在当前页面内存保留，重载后先核对已有任务，不能据空表单自动新建。
+
+状态为 `queued/running/pausing/paused/cancelling/cancelled/failed/invalidated/succeeded`；暂停、取消、同步让位的 `reason` 分开。`resume` 只把仍有效且可恢复的任务排队，复用已验证业务检查点和累计预算，不重放旧 `/ai/jobs/<job_id>/continue`。预算只允许确认后的增额，不重置计数、不自动恢复。重启不自动重发付费调用；配置/源版本变化不得扩展到未经确认的新目标。删除清理业务产物；列表不再列出，详情仍可读墓碑，重复删除返回墓碑现状。
+
+### 安全投影与证据
+
+任务详情包含身份/时间、`version,status,reason,deleted`、源信息/标题/`manifest`、`manifest_fingerprint`、`report_stale/archive_outdated`、`budget`、`request_count/planned_tokens/active_seconds_debited`、`usage_summary,coverage,unit_counts,can_resume,has_report`；集合 items 省略 manifest。单元页返回类型/状态、范围和子单元数量、实际安全目标、用量等元数据，不返回 artifact 或原始 prompt。共享 job 参数仅 `run_id`，进度/日志仅安全 ID、计数与状态，不复制正文、引文、结论或报告；通用 AI 调用保持 `metadata_only`，不得用关键词清洗的 `keyword_compat` 保存本业务。
+
+报告 `schema_version=1` 包含 `run_id,manifest,coverage,artifact,units,usage_summary,created_at,published_at,report_stale,archive_outdated,synthesis_complete`；每个持久化单元 artifact 最多 128 KiB，完整报告 envelope 最多 1 MiB，超限拒绝而非截断。单条引文最多 240 Unicode code point、每结论最多 4 条、最终最多 128 个结论；不保存完整输入重放副本，有界短证据可能与极短章节重合。输入覆盖不等于原作完整或模型解释正确；未知用量不补零。
+
+证据返回存储的 `evidence` 和 `jump:{novel_id,text_hash,start,end,context_start,context_text}`。服务器以正文 hash 和精确唯一子串核对；`start/end` 为 Unicode code point 左闭右开偏移，context 最多前后各 128 code point，不由浏览器 UTF-16 下标推算。已发布报告可带 `report_stale` 返回；源改变/删除后证据定位拒绝 410，不能拿旧偏移高亮新正文。同 hash 元数据刷新不旧版化报告，新增系列章只标 `archive_outdated`，不混入冻结清单。
+
+报告和证据默认折叠、文本节点渲染，不进 URL、localStorage、公开救援/FTS 或普通调用历史。删除撤权后旧 worker 不得复活业务产物；应用删除不承诺备份/WAL 物理清除。所有路径复用 Dashboard 认证；包括预览在内的写请求须 `X-CSRF-Token`。成功和拒绝均带 `Cache-Control: private, no-store, no-cache, max-age=0, must-revalidate`、`Pragma: no-cache`、`Expires: 0`。
+
+### 状态码
+
+| HTTP | 典型错误 / 边界 |
+| --- | --- |
+| 400 | strict JSON/字段/ID/query 校验、`confirmation_required`；非 JSON 也是 400，不是 415 |
+| 401 / 403 | 认证 / CSRF 拒绝，沿用共享中间件 |
+| 404 | `not_found` |
+| 409 | `stale_preview/preview_conflict/idempotency_conflict/version_conflict/state_conflict/finalizing/configuration_changed/budget_exhausted/report_not_ready`；`synthesis_capacity_exceeded` 也为 409 |
+| 410 | `work_deleted`，或证据源 `source_deleted/source_changed` |
+| 413 | `payload_too_large/input_too_large/too_large` |
+| 503 | `admission_unavailable/control_unavailable` |
+| 500 | 非预期错误统一 `work_analysis_unavailable`，不返回异常正文 |
+
 ## AI configuration APIs
 
 所有 AI 配置接口返回 `{ ok, data }` 或 `{ ok, error }`。写接口沿用 Dashboard 会话认证，并必须携带 `X-CSRF-Token`。Provider 响应只返回 `has_api_key`，不得返回 API Key 或密文。
@@ -868,7 +942,7 @@ main 分支只保留 AI job 的读取、清理与手动续接端点；写作端�
 
 ### POST /api/dashboard/ai/jobs/<job_id>/continue
 
-main 第一阶段没有支持的业务重放处理器；此端点保留历史请求校验，但当前任务类型返回 409“任务类型暂不支持”，不创建 child job、不调用 Provider。详情 `can_continue=false`，UI 允许列表为空，按钮与动作入口均禁止继续。以下是兼容请求形状，不表示已提供业务续写：
+main 第一阶段没有支持的业务重放处理器；此端点保留历史请求校验，但当前任务类型返回 409“任务类型暂不支持”，不创建 child job、不调用 Provider。详情 `can_continue=false`，UI 允许列表为空，按钮与动作入口均禁止继续。新 [作品级恢复](#work-analysis-apis) 使用独立 `/work-analyses/<run_id>/resume`，不改变本端点。以下是兼容请求形状，不表示已提供业务续写：
 
 ```json
 {

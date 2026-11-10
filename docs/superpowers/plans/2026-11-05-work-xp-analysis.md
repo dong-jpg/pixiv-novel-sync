@@ -10,7 +10,7 @@
 
 **Approved Spec:** [2026-11-05 作品全文与 XP 分析设计](../specs/2026-11-05-work-xp-analysis-design.md)，用户已确认详细稿；设计提交 `c8956442ba42ca0114bdbd628c790ca1b5a45688`，应用基线 `e8801b09340de3a3630e05065aa80dbf8c1af698`。
 
-**Status:** 实施计划已于 2026-11-09 完成审阅修订；用户随后选择子代理逐任务实施，现进入实施阶段。文内代码、测试及命令仍是实施输入，不是整阶段验收通过声明。实际完成记录见 `.superpowers/sdd/work-analysis-progress.md`；不推送、不部署、不读取用户小说、不发起付费调用。
+**Status:** 实施计划已于 2026-11-09 完成审阅修订；截至 2026-11-10，Tasks 1–8 已实施并逐项审查，Task 8 提交 `b81284a`。Task 9 跨模块回归、文档与最终整阶段验收仍待完成；文内代码、测试及命令是实施输入，不是已执行结果，不按局部通过勾选最终门槛。可交付状态见 [项目现状](../../STATUS.md)，本地任务证据见 `.superpowers/sdd/work-analysis-progress.md`；不推送、不部署、不读取用户小说、不发起付费调用。
 
 ## Global Constraints
 

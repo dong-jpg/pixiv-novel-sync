@@ -1,6 +1,6 @@
 # AI 模型路由使用指南
 
-> **适用范围（2026-11-03，AI 设置重构分支）**：本文描述 Provider、模型目录/路由组（原模型池）、AI 任务（Agent）、统一文本调用与关键词清洗。分支代码不等于已部署；最新回归和外部验收见 [项目现状](STATUS.md)。整书 XP 分析为未实现的第二阶段，写作/成人模块仍仅在 ai-writing。
+> **适用范围（2026-11-10）**：本文描述 Provider、模型目录/路由组（原模型池）、AI 任务（Agent）、统一文本调用、关键词清洗及手动已归档单篇/系列作品报告。作品报告不写回个人画像或推荐，写作/成人模块仍仅在 ai-writing。分支代码不等于整阶段验收或已部署；实际状态见 [项目现状](STATUS.md)。
 
 本指南面向在 Web 界面（AI 设置页）配置 AI 模型的用户，解释模型目录（catalog）、模型池（pool）、Agent 绑定与失败转移（failover）的实际行为。所有描述以当前代码实现为准。
 
@@ -32,7 +32,7 @@
 
 ### 1.3 Agent 绑定：fixed vs pool
 
-每个 Agent（main 中用于偏好关键词清洗等 AI 基础任务）通过 `binding_type` 决定用哪个模型：
+每个 Agent（main 中用于关键词清洗、手动作品分析等调用）通过 `binding_type` 决定用哪个模型：
 
 - **fixed（固定绑定）**：只用一个模型——Agent 上配置的 `model`，未配置时退回 Provider 的 `default_model`。候选列表恒为 1 项，**没有失败转移**：这个模型失败，任务就失败。固定模型不要求一定存在于目录中；但一旦 Agent 声明了 `required_capabilities`，该模型就必须存在于可路由目录中且具备全部所需能力，否则直接报错。
 - **pool（池绑定）**：Agent 指向一个模型池，运行时把池链展开成一个有序候选列表（见第 3 节），失败时按顺序转移到下一个候选。
@@ -119,7 +119,7 @@ Agent 可声明 `required_capabilities`（只能来自 1.1 的五个固定枚举
 
 任务开始时会把展开的候选列表固化成**候选快照**（含 Agent 配置摘要、池版本、Provider 配置摘要）。运行中和续跑（resume）时都会重新校验：Agent 被改过（`binding_version` 或配置哈希变化）、池版本变了、Provider 配置变了、任何一方被禁用或删除——都会以冲突终止，提示"…已变更，请重新开始任务"。这保证一次任务全程用的是同一份配置。
 
-上述兼容校验不代表 main 存在业务重放处理器：本阶段 continue API 仍返回“任务类型暂不支持”的 409，不创建 job、不发网络请求，详情 `can_continue=false`，UI 不提供可执行继续按钮。
+上述兼容校验不代表旧 AI job 有业务重放处理器：main continue API 仍返回“任务类型暂不支持”的 409，不创建 job、不发网络请求，详情 `can_continue=false`，UI 不提供旧继续按钮。新的作品检查点恢复见 4.4，不改变这个端点。
 
 ### 4.3 什么错误会转移、什么不会
 
@@ -139,6 +139,17 @@ Agent 可声明 `required_capabilities`（只能来自 1.1 的五个固定枚举
 - **路由预算耗尽**：单个任务最多 **16 次候选尝试**、**32 次网络请求**，且有 **30 分钟**路由截止时间（建任务时写入 `route_deadline_at`）；超限以 `route_budget_exhausted` 失败（若已有输出则为 partial），`error_message` 以 `route_budget_exhausted:` 开头。截止时间在运行中（流式输出途中、重试退避中或两个候选之间）到达也一样，不记成 cancelled，所以健康横幅和 AI 任务日志能把超时和取消分开；
 - 候选快照/配置冲突（见 4.2）；
 - 所有候选都失败：以 `route_exhausted`（主阶段）或 `validation_failed`（校验阶段）失败。
+
+### 4.4 作品分析的父预算与检查点
+
+作品分析一次仅处理用户明确选择的已归档单篇/系列。开始前披露所有可能接收正文或汇总的安全 Provider/精确模型身份，包括可能只适合后续 reducer 的小模型；纯配置预览不解密 Key、不联网，`work_targets/work_can_segment` 为内部规划事实，不扩展全局预检 v2 API。整部优先，仅输入容量超限时分章/块；请求失败不偷偷改变粒度或加入未确认的 Provider。
+
+- `invoke_text`、`RouteRequest/RouteJobContext` 的可选父绑定默认 `work_binding=None`，旧调用者语义不变。作品执行器传入 `WorkCallBinding(lease, unit_id, try_no, configuration_fingerprint)`，复用同一 Router，不直调 Provider。
+- 每次真实发送按实际候选的 `input_tokens + message_overhead + safety_margin + output_reserve` 预留父预算，与子 job 的真实请求序号在同一事务成功后才允许发送，不能跨候选取 max/min。`attachment`、`ordinal=0` 仅持久关联子 job，不计网络请求；真实请求 ordinal 为 1–32，重试/fallback/恢复后的新发送继续扣账。
+- 父请求/计划 token/累计活跃秒须显式填写确认，上限分别为 1–512、1–100000000、30–14400；子 job 的 16 候选/32 请求/30 分钟限制不变。本地估算不是厂商账单，未知不补零；已预留而发送结果不确定也保守扣账，不保证金额或实际计费 token 的硬上限。
+- 正常暂停/取消/同步让位只结算一次时间片，崩溃/撤权保守扣完整未结算片；重启不清预算、不自动重发付费调用。发送预留是授权边界，取消可能与物理发送交错，尽力停止不等于零发送或退款保证。
+- `/work-analyses/<run_id>/resume` 使用版本 CAS，校验冻结源和配置，仅复用同 run 已验证业务检查点；变更须重新预览。已验证最终根可直接发布，不必再次生成。共享 Web 单 owner/单槽、同步优先，不增加独立执行器。输入覆盖、原作完整性和解释可靠性分别看待。
+- 通用调用仍 `metadata_only`，作品正文/报告不能使用 `keyword_compat` 留存。只持久保存有界业务产物和短证据（可能覆盖极短章），不保存完整输入重放副本；不进入普通任务日志/进度或公开救援/FTS。删除不承诺备份/WAL 的物理清除。
 
 ## 5. 在任务日志中查看路由尝试（route attempts）
 
