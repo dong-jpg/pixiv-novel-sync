@@ -1087,6 +1087,14 @@ def create_app(
 
     from .ai_web import register_ai_routes
     register_ai_routes(app, current_settings_for_routes)
+    from .work_analysis.service import WorkAnalysisService
+    from .work_analysis_web import register_work_analysis_routes
+
+    register_work_analysis_routes(app, WorkAnalysisService(
+        work_coordinator.db_factory,
+        lambda: app.extensions["pixiv_novel_sync.ai_service"],
+        app.extensions["work_analysis_coordinator"],
+    ))
     app.extensions["pixiv_novel_sync.work_ai_factory"] = lambda: app.extensions["pixiv_novel_sync.ai_service"]
     work_ai_factory = lambda: app.extensions["pixiv_novel_sync.work_ai_factory"]()
 

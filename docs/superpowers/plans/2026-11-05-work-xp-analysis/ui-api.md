@@ -750,7 +750,7 @@ def test_base_routes_never_redirect_and_write_returns_the_committed_parent(api, 
 @pytest.mark.parametrize("raw,status", [
     ("[]", 400), ("null", 400), ('{"agent_id":1,"agent_id":2}', 400),
     ('{"budget":{"token_limit":NaN}}', 400), ("{" + " " * (256 * 1024) + "}", 413),
-])
+], ids=["array", "null", "duplicate-key", "nonfinite", "too-large"])
 def test_work_body_parser_is_bounded_and_rejects_duplicate_or_nonfinite_json(api, raw, status):
     headers = login(api)
     response = api.client.post(BASE + "/preview", data=raw,
@@ -1015,27 +1015,21 @@ At the existing `webapp.py` route-registration anchor, insert this block after
 authentication/CSRF hooks or exempt the new prefix:
 
 ```python
-    from .work_analysis.contracts import WorkAnalysisError
     from .work_analysis.service import WorkAnalysisService
     from .work_analysis_web import register_work_analysis_routes
 
-    def work_analysis_db():
-        path = current_settings_for_routes().storage.db_path
-        if not path.is_file():
-            raise WorkAnalysisError("storage_unavailable", 503)
-        return Database(path)
-
     register_work_analysis_routes(app, WorkAnalysisService(
-        work_analysis_db,
+        work_coordinator.db_factory,
         lambda: app.extensions["pixiv_novel_sync.ai_service"],
         app.extensions["work_analysis_coordinator"],
     ))
 ```
 
 Schema preparation belongs to the existing startup/settings lifecycle from
-Tasks 3/6, not a preview call. If a newly configured path is not ready, return a
-safe unavailable error rather than silently creating/migrating a database
-during a supposedly read-only preview.
+Tasks 3/6, not a preview call. Reuse the coordinator's owner-bound database
+factory: if the configured path changes, return a safe unavailable error even
+when the new database is ready. Do not migrate owners or silently create/migrate
+a database during a supposedly read-only preview; restart binds the new owner.
 
 - [ ] **Step 8: Run GREEN and the focused API review gate.**
 

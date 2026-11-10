@@ -14,7 +14,20 @@ class JSONBodyError(ValueError):
         self.status_code = status_code
 
 
-def read_bounded_json_object(request: Request, *, limit_bytes: int) -> dict[str, Any]:
+def _unique_json_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_json_key")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value):
+    raise ValueError("nonfinite_json_number")
+
+
+def read_bounded_json_object(request: Request, *, limit_bytes: int, strict: bool = False) -> dict[str, Any]:
     if not request.is_json:
         raise JSONBodyError("invalid_json", "请求体必须是 JSON 对象")
     length = request.content_length
@@ -29,7 +42,9 @@ def read_bounded_json_object(request: Request, *, limit_bytes: int) -> dict[str,
     if len(raw) > limit_bytes:
         raise JSONBodyError("payload_too_large", "请求体超过允许大小", 413)
     try:
-        payload = json.loads(raw)
+        payload = (json.loads(raw, object_pairs_hook=_unique_json_pairs,
+                              parse_constant=_reject_json_constant)
+                   if strict else json.loads(raw))
     except (ValueError, UnicodeError, RecursionError):
         raise JSONBodyError("invalid_json", "请求体必须是有效的 JSON 对象") from None
     if not isinstance(payload, dict):
