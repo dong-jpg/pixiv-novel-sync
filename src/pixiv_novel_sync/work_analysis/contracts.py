@@ -37,6 +37,10 @@ class WorkCallBinding:
 
 
 def canonical_bytes(value: Any) -> bytes:
+    """Encode validated JSON identities, not arbitrary Python objects.
+
+    The domain is string-keyed objects, arrays, and JSON scalars with finite numbers.
+    """
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False, allow_nan=False).encode("utf-8")
 

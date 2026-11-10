@@ -1,11 +1,64 @@
+from collections import UserDict
 import json
 
 import pytest
 
 from pixiv_novel_sync.work_analysis.contracts import (
     WorkAnalysisError, WorkCallBinding, WorkLease, canonical_bytes,
-    fingerprint, strict_text, validate_budget,
+    fingerprint, hex_id, strict_int, strict_object, strict_text, validate_budget,
 )
+
+
+@pytest.mark.parametrize("data", [{"required": 1}, {"required": 1, "optional": 2}])
+def test_strict_object_accepts_mapping_and_returns_an_independent_outer_dict(data):
+    source = UserDict(data)
+    result = strict_object(source, {"required"}, optional={"optional"})
+    assert type(result) is dict
+    assert result == data
+    result["required"] = 3
+    assert source["required"] == 1
+
+
+@pytest.mark.parametrize("value", [
+    {}, {"optional": 2}, {"required": 1, "extra": 3},
+    None, [], [["required", 1]], "required", 1,
+])
+def test_strict_object_rejects_missing_extra_and_non_mapping_values(value):
+    with pytest.raises(WorkAnalysisError) as raised:
+        strict_object(value, {"required"}, optional={"optional"})
+    assert raised.value.code == "invalid_fields"
+    assert raised.value.status == 400
+
+
+@pytest.mark.parametrize("value", [-2, 0, 2])
+def test_strict_int_accepts_inclusive_bounds(value):
+    assert strict_int(value, -2, 2) == value
+
+
+@pytest.mark.parametrize("value", [True, False, "1", 1.0, -3, 3])
+def test_strict_int_rejects_non_integers_and_out_of_range_values(value):
+    with pytest.raises(WorkAnalysisError) as raised:
+        strict_int(value, -2, 2)
+    assert raised.value.code == "invalid_integer"
+    assert raised.value.status == 400
+
+
+@pytest.mark.parametrize("length", [32, 64])
+def test_hex_id_accepts_lowercase_at_explicit_length(length):
+    value = "0123456789abcdef" * (length // 16)
+    assert hex_id(value, length) == value
+
+
+@pytest.mark.parametrize("length", [32, 64])
+@pytest.mark.parametrize("kind", ["uppercase", "short", "long", "nonhex", "null", "number", "list"])
+def test_hex_id_rejects_wrong_case_length_alphabet_and_type(length, kind):
+    valid = "abcd" * (length // 4)
+    value = {"uppercase": valid.upper(), "short": valid[:-1], "long": valid + "0",
+             "nonhex": "g" * length, "null": None, "number": length, "list": [valid]}[kind]
+    with pytest.raises(WorkAnalysisError) as raised:
+        hex_id(value, length)
+    assert raised.value.code == "invalid_id"
+    assert raised.value.status == 400
 
 
 @pytest.mark.parametrize("field,value", [

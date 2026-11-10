@@ -7,6 +7,7 @@ from pixiv_novel_sync.jobs.manager import JobManager
 from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobStatus, JobType
 from pixiv_novel_sync.jobs.runner import JobRunner
 from pixiv_novel_sync.storage_db import Database
+from pixiv_novel_sync.work_analysis.artifacts import validate_artifact
 from pixiv_novel_sync.work_analysis.contracts import WorkAnalysisError
 from pixiv_novel_sync.work_analysis.executor import WorkAnalysisExecutor
 from work_analysis_runtime_helpers import make_runtime_environment
@@ -36,6 +37,67 @@ def test_whole_path_publishes_one_validated_root_and_one_paid_call(tmp_path, mon
         assert report["usage_summary"]["network_request_count"] == 1
         row = env.db.conn.execute("SELECT output_text,output_json FROM ai_jobs").fetchone()
         assert tuple(row) == (None, None)
+    finally:
+        env.close()
+
+
+def test_saved_final_root_resumes_publication_without_new_provider_calls(tmp_path, monkeypatch):
+    env = make_runtime_environment(tmp_path, monkeypatch)
+    publish_attempts = []
+    original_publish = Database.publish_work_analysis
+
+    def fail_once_before_publish(self, lease, artifact):
+        publish_attempts.append(artifact)
+        if len(publish_attempts) == 1:
+            raise RuntimeError("synthetic failure before publication")
+        return original_publish(self, lease, artifact)
+
+    try:
+        assert env.plan["strategy"] == "whole"
+        with monkeypatch.context() as failure:
+            failure.setattr(Database, "publish_work_analysis", fail_once_before_publish)
+            _, failed_job = run_environment(env)
+        failed = env.db.get_work_analysis(env.run_id, include_private=True)
+        assert failed_job.status == JobStatus.FAILED and failed["status"] == "failed"
+        assert failed["report"] is None
+        assert len(failed["units"]) == 1
+        root = failed["units"][0]
+        assert root["status"] == "succeeded" and root["unit"]["is_final"]
+        saved_artifact = root["artifact"]
+        assert validate_artifact(saved_artifact, final=True) == saved_artifact
+        assert publish_attempts == [saved_artifact]
+        child_count = env.db.conn.execute("SELECT COUNT(*) FROM ai_jobs").fetchone()[0]
+        ledger_sql = "SELECT * FROM work_analysis_requests ORDER BY child_job_id,request_ordinal"
+        ledger = [dict(row) for row in env.db.conn.execute(ledger_sql)]
+        assert [(row["entry_kind"], row["request_ordinal"]) for row in ledger] == [("attachment", 0), ("request", 1)]
+        assert child_count == len(env.provider.sent_units) == failed["request_count"] == 1
+        assert ledger[0]["planned_tokens"] is None
+        assert ledger[1]["planned_tokens"] == failed["planned_tokens"] > 0
+        assert failed["request_count"] < failed["budget"]["request_limit"]
+        assert failed["planned_tokens"] < failed["budget"]["token_limit"]
+        sent_units = list(env.provider.sent_units)
+        provider_entries = []
+
+        def forbidden_provider_entry(*args, **kwargs):
+            provider_entries.append(True)
+            raise AssertionError("saved final root must not re-enter the Provider")
+
+        monkeypatch.setattr(env.provider, "stream_generate", forbidden_provider_entry)
+        resumed = env.db.resume_work_analysis(env.run_id, failed["version"])
+        assert resumed["status"] == "queued"
+        _, completed_job = run_environment(env)
+        completed = env.db.get_work_analysis(env.run_id, include_private=True)
+        report = env.db.get_work_analysis_report(env.run_id)
+        assert completed_job.job_id != failed_job.job_id
+        assert completed_job.status == JobStatus.SUCCEEDED and completed["status"] == "succeeded"
+        assert report["artifact"] == saved_artifact
+        assert report["coverage"]["complete"] and report["synthesis_complete"]
+        assert completed["units"][0]["artifact"] == saved_artifact
+        assert provider_entries == [] and env.provider.sent_units == sent_units
+        assert env.db.conn.execute("SELECT COUNT(*) FROM ai_jobs").fetchone()[0] == child_count
+        assert [dict(row) for row in env.db.conn.execute(ledger_sql)] == ledger
+        assert completed["request_count"] == failed["request_count"]
+        assert completed["planned_tokens"] == failed["planned_tokens"]
     finally:
         env.close()
 

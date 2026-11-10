@@ -4,9 +4,10 @@ import hashlib
 import pytest
 
 from pixiv_novel_sync.storage_db import Database
-from pixiv_novel_sync.work_analysis.contracts import WorkAnalysisError
+from pixiv_novel_sync.work_analysis.contracts import WorkAnalysisError, fingerprint
 from pixiv_novel_sync.work_analysis.manifest import (
-    capture_manifest, public_preview_identity, read_source_texts, validate_manifest, validate_selection,
+    capture_manifest, preview_fingerprint, public_preview_identity,
+    read_source_texts, validate_manifest, validate_selection,
 )
 
 
@@ -47,6 +48,72 @@ def test_snapshot_includes_short_blank_and_missing_count_without_read_writes(sou
     assert set(texts) == {1, 2, 3}
     assert "text_raw" not in str(manifest) and "Opening" not in str(manifest)
     assert validate_manifest(manifest) == manifest
+
+
+def test_snapshot_retains_a_chapter_with_no_text_row_without_read_writes(source_db):
+    with source_db.transaction() as conn:
+        conn.execute("DELETE FROM novel_texts WHERE novel_id=2")
+    before = source_db.conn.total_changes
+    with source_db.read_transaction() as conn:
+        manifest, texts = capture_manifest(conn, {"source_kind": "series", "source_id": 10})
+        assert conn.execute("SELECT COUNT(*) FROM novels WHERE novel_id=2").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM novel_texts WHERE novel_id=2").fetchone()[0] == 0
+    assert source_db.conn.total_changes == before
+    assert [row["novel_id"] for row in manifest["chapters"]] == [1, 2, 3]
+    assert [row["position"] for row in manifest["chapters"]] == [0, 1, 2]
+    assert manifest["chapters"][1] == {
+        "novel_id": 2, "position": 1, "title": "Chapter 2", "text_hash": None,
+        "chars": 0, "utf8_bytes": 0, "fetched_at": None, "has_text": False,
+    }
+    assert manifest["chapters"][0]["has_text"] is True
+    assert manifest["chapters"][0]["text_hash"] is not None
+    assert manifest["chapters"][2]["text_hash"] is not None
+    assert manifest["chapters"][2]["has_text"] is False
+    assert set(texts) == {1, 3}
+    assert manifest["requires_partial_confirmation"] is True
+    assert validate_manifest(manifest) == manifest
+
+
+def test_preview_fingerprint_uses_semantics_not_key_order_or_observation_times(source_db):
+    selection = {"source_kind": "series", "source_id": 10}
+    with source_db.read_transaction() as conn:
+        manifest, _ = capture_manifest(conn, selection)
+    inputs = {"selection": selection, "manifest": manifest,
+              "plan": {"strategy": "whole", "minimum_requests": 1},
+              "configuration": {"agent_id": 7, "output_tokens": 128},
+              "budget": {"request_limit": 2, "token_limit": 10000, "active_seconds_limit": 60}}
+    original = copy.deepcopy(inputs)
+    identity = preview_fingerprint(**inputs)
+    reordered = {name: dict(reversed(list(value.items()))) for name, value in inputs.items()}
+    reordered["manifest"]["chapters"] = [dict(reversed(list(row.items()))) for row in manifest["chapters"]]
+    assert preview_fingerprint(**reordered) == identity
+
+    for observation in ["fetched_at", "expected_count_observed_at"]:
+        changed = copy.deepcopy(inputs)
+        target = changed["manifest"]["chapters"][0] if observation == "fetched_at" else changed["manifest"]
+        target[observation] = "2030-01-01"
+        assert validate_manifest(changed["manifest"]) == changed["manifest"]
+        assert preview_fingerprint(**changed) == identity
+    explicit_default = copy.deepcopy(inputs)
+    explicit_default["selection"]["publication_state"] = "unknown"
+    assert preview_fingerprint(**explicit_default) == identity
+
+    for part, field, value in [
+        ("selection", "publication_state", "completed"),
+        ("manifest", "text_hash", "f" * 64),
+        ("plan", "minimum_requests", 2),
+        ("configuration", "output_tokens", 256),
+        ("budget", "token_limit", 10001),
+    ]:
+        changed = copy.deepcopy(inputs)
+        if part == "manifest":
+            changed[part]["chapters"][0][field] = value
+            changed[part]["manifest_fingerprint"] = fingerprint(public_preview_identity(changed[part]))
+        else:
+            changed[part][field] = value
+        assert validate_manifest(changed["manifest"]) == changed["manifest"]
+        assert preview_fingerprint(**changed) != identity, part
+    assert inputs == original
 
 
 def test_exact_order_and_hash_checked_not_inferred_from_dates(source_db):

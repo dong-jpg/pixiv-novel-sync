@@ -188,3 +188,54 @@ def test_idle_teardown_keeps_owner_pinned_until_terminal_runner_releases_slot(we
     finally:
         release_slot.set()
         assert completed.wait(timeout=5)
+
+
+def test_real_web_task_log_excludes_source_claim_and_report_sentinels(web_work, monkeypatch):
+    import json
+
+    app, env = web_work
+    source_marker = "synthetic opening and ending"
+    report_marker = "PRIVATE_SYNTHETIC_WEB_REPORT_6721"
+    claim_marker = "PRIVATE_SYNTHETIC_WEB_CLAIM_8543"
+    original_stream = env.provider.stream_generate
+
+    def report_stream(messages, *args, **kwargs):
+        sent = json.loads(messages[-1]["content"])
+        block = next(item for item in sent["blocks"] if source_marker in item["text"])
+        for chunk in original_stream(messages, *args, **kwargs):
+            if chunk.type == "delta":
+                result = json.loads(chunk.text)
+                result.update(summary=report_marker, no_findings_reason=None, claims=[{
+                    "dimension": "theme", "certainty": "interpretation", "label": "synthetic",
+                    "statement": claim_marker,
+                    "quotes": [{"block_id": block["block_id"], "quote": source_marker}],
+                }])
+                chunk.text = json.dumps(result)
+            yield chunk
+
+    monkeypatch.setattr(env.provider, "stream_generate", report_stream)
+    app.extensions["work_analysis_coordinator"].wake("created")
+    wait_for(lambda: env.db.get_work_analysis(env.run_id)["status"] == "succeeded")
+    manager = app.config["job_manager"]
+    jobs = list(manager._jobs.values())
+    assert len(jobs) == 1
+    job = jobs[0]
+    wait_for(lambda: env.db.conn.execute(
+        "SELECT status FROM task_logs WHERE id=? AND job_id=?",
+        (job.progress["log_id"], job.job_id),
+    ).fetchone()["status"] == "succeeded")
+    assert job.status == JobStatus.SUCCEEDED
+    report = env.db.get_work_analysis_report(env.run_id)
+    artifact = report["artifact"]
+    assert artifact["summary"] == report_marker
+    assert artifact["claims"][0]["statement"] == claim_marker
+    assert next(iter(artifact["evidence"].values()))["quote"] == source_marker
+    task_logs = [dict(row) for row in env.db.conn.execute("SELECT * FROM task_logs")]
+    generic = [dict(row) for row in env.db.conn.execute("SELECT * FROM ai_jobs")]
+    attempts = [dict(row) for row in env.db.conn.execute("SELECT * FROM ai_job_model_attempts")]
+    assert task_logs and generic and attempts
+    stored = json.dumps(task_logs + generic + attempts, ensure_ascii=False)
+    shared = json.dumps({"params": job.spec.params, "progress": job.progress, "stats": job.stats,
+                         "logs": [entry.message for entry in job.logs]}, ensure_ascii=False)
+    for sentinel in (source_marker, report_marker, claim_marker):
+        assert sentinel not in stored and sentinel not in shared

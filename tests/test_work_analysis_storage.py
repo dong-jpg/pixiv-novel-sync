@@ -378,6 +378,35 @@ def test_create_rejects_malformed_original_units_with_domain_error(db, unit):
     assert db.conn.execute("SELECT COUNT(*) FROM work_analysis_runs").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize("field,value", [
+    pytest.param("kind", [], id="kind-list"),
+    pytest.param("kind", {}, id="kind-object"),
+    pytest.param("child_unit_ids", [[]], id="child-list"),
+    pytest.param("child_unit_ids", [{}], id="child-object"),
+])
+def test_create_rejects_unhashable_unit_fields_before_seal_validation(db, field, value):
+    case = prepare_case(db)
+    args = deepcopy(case["arguments"])
+    args["plan"]["original_units"][0][field] = value
+    with pytest.raises(WorkAnalysisError) as raised:
+        db.create_work_analysis(**args)
+    assert (raised.value.code, raised.value.status) == ("invalid_request", 400)
+    for table in ("runs", "sources", "units", "requests"):
+        assert db.conn.execute(f"SELECT COUNT(*) FROM work_analysis_{table}").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("strategy", [[], {}], ids=["list", "object"])
+def test_create_rejects_unhashable_plan_strategy_before_seal_validation(db, strategy):
+    case = prepare_case(db)
+    args = deepcopy(case["arguments"])
+    args["plan"]["strategy"] = strategy
+    with pytest.raises(WorkAnalysisError) as raised:
+        db.create_work_analysis(**args)
+    assert (raised.value.code, raised.value.status) == ("invalid_request", 400)
+    for table in ("runs", "sources", "units", "requests"):
+        assert db.conn.execute(f"SELECT COUNT(*) FROM work_analysis_{table}").fetchone()[0] == 0
+
+
 def test_attachment_is_not_usage_and_unknown_request_is_not_zero(db):
     case = create_case(db)
     run_id = case["run"]["run_id"]
@@ -677,6 +706,40 @@ def test_attach_and_reserve_roll_back_their_callers_changes(db, clock):
     assert db.conn.execute("SELECT COUNT(*) FROM work_analysis_requests WHERE entry_kind='request'").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize("field,value,code", [
+    pytest.param("owner_token", "replaced-synthetic-owner", "owner_lost", id="owner-replaced"),
+    pytest.param("cancel_requested", 1, "owner_lost", id="cancel-requested"),
+    pytest.param("lease_until", None, "owner_lost", id="lease-deadline"),
+    pytest.param("route_deadline_at", None, "active_time_exhausted", id="route-deadline"),
+    pytest.param("input_json", '{"retention_policy":"keyword_compat"}', "owner_lost", id="keyword-retention"),
+    pytest.param("input_json", "{}", "owner_lost", id="missing-retention"),
+])
+def test_child_reservation_guards_reject_without_changing_ledger_or_counters(db, clock, field, value, code):
+    case, lease = owned_case(db, clock)
+    binding, child_id = attached_child(db, case, lease, clock)
+    if field in {"lease_until", "route_deadline_at"}:
+        value = work_common.stamp(clock[0])
+    db.conn.execute(f"UPDATE ai_jobs SET {field}=? WHERE job_id=?", (value, child_id))
+    parent_sql = "SELECT * FROM work_analysis_runs WHERE run_id=?"
+    child_sql = "SELECT * FROM ai_jobs WHERE job_id=?"
+    attachment_sql = "SELECT * FROM work_analysis_requests WHERE child_job_id=? AND entry_kind='attachment'"
+    parent = dict(db.conn.execute(parent_sql, (lease.run_id,)).fetchone())
+    child = dict(db.conn.execute(child_sql, (child_id,)).fetchone())
+    attachment = dict(db.conn.execute(attachment_sql, (child_id,)).fetchone())
+    assert parent["lease_until"] > work_common.stamp(clock[0])
+    assert parent["slice_deadline_at"] > work_common.stamp(clock[0])
+    assert parent["request_count"] == parent["planned_tokens"] == child["network_request_count"] == 0
+
+    with pytest.raises(WorkAnalysisError) as raised:
+        reserve_synthetic_child(db, binding, child_id, clock)
+
+    assert (raised.value.code, raised.value.status) == (code, 409)
+    assert dict(db.conn.execute(parent_sql, (lease.run_id,)).fetchone()) == parent
+    assert dict(db.conn.execute(child_sql, (child_id,)).fetchone()) == child
+    assert dict(db.conn.execute(attachment_sql, (child_id,)).fetchone()) == attachment
+    assert db.conn.execute("SELECT COUNT(*) FROM work_analysis_requests WHERE entry_kind='request'").fetchone()[0] == 0
+
+
 def test_last_request_budget_is_serialized_across_two_connections(db, clock):
     case, lease = owned_case(db, clock, request_limit=1)
     binding, child_id = attached_child(db, case, lease, clock)
@@ -724,6 +787,34 @@ def test_usage_is_monotonic_idempotent_and_known_zero_is_not_unknown(db, clock):
     assert final["usage_summary"]["reported_requests"] == 2
     assert final["usage_summary"]["unreported_requests"] == 0
     assert final["request_count"] == 2 and final["planned_tokens"] == 200
+
+
+def test_replaced_child_owner_cannot_record_usage_or_change_ledger_counters(db, clock):
+    case, lease = owned_case(db, clock)
+    binding, child_id = attached_child(db, case, lease, clock)
+    ordinal = reserve_synthetic_child(db, binding, child_id, clock)
+    parent_sql = "SELECT * FROM work_analysis_runs WHERE run_id=?"
+    child_sql = "SELECT * FROM ai_jobs WHERE job_id=?"
+    ledger_sql = "SELECT * FROM work_analysis_requests WHERE child_job_id=? ORDER BY request_ordinal"
+    parent = dict(db.conn.execute(parent_sql, (lease.run_id,)).fetchone())
+    ledger = [dict(row) for row in db.conn.execute(ledger_sql, (child_id,))]
+    usage = db.get_work_analysis(lease.run_id)["usage_summary"]
+    assert ordinal == parent["request_count"] == 1
+    assert usage["known_total_tokens"] is None and usage["unreported_requests"] == 1
+    assert json.loads(ledger[1]["usage_json"]) == ProviderUsage().to_dict()
+    db.conn.execute("UPDATE ai_jobs SET owner_token=? WHERE job_id=?", ("replaced-synthetic-owner", child_id))
+    child = dict(db.conn.execute(child_sql, (child_id,)).fetchone())
+    reported = ProviderUsage(input_tokens=10, output_tokens=2, total_tokens=12, complete=True, missing_reason=None).to_dict()
+
+    with pytest.raises(WorkAnalysisError) as raised:
+        with db.transaction() as conn:
+            db._record_work_analysis_usage(conn, child_id, ordinal, reported)
+
+    assert (raised.value.code, raised.value.status) == ("owner_lost", 409)
+    assert dict(db.conn.execute(parent_sql, (lease.run_id,)).fetchone()) == parent
+    assert dict(db.conn.execute(child_sql, (child_id,)).fetchone()) == child
+    assert [dict(row) for row in db.conn.execute(ledger_sql, (child_id,))] == ledger
+    assert db.get_work_analysis(lease.run_id)["usage_summary"] == usage
 
 
 def test_stop_configuration_and_expired_owner_forbid_new_reservations(db, clock):

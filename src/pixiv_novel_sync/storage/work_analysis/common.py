@@ -203,7 +203,8 @@ def validate_unit(unit, manifest):
     exact(unit, UNIT_KEYS)
     hex_id(unit["unit_id"])
     hex_id(unit["input_fingerprint"])
-    if unit["kind"] not in {"whole", "extract", "reduce"} or type(unit["is_final"]) is not bool:
+    if (not isinstance(unit["kind"], str) or unit["kind"] not in {"whole", "extract", "reduce"}
+            or type(unit["is_final"]) is not bool):
         raise WorkAnalysisError("invalid_request")
     integer(unit["level"], 0, 8)
     if unit["kind"] == "whole" and (unit["level"] != 0 or not unit["is_final"]):
@@ -230,10 +231,12 @@ def validate_unit(unit, manifest):
                 if item["end"] - item["start"] > 512:
                     raise WorkAnalysisError("invalid_request")
     children = unit["child_unit_ids"]
-    if not isinstance(children, list) or len(children) > 16 or len(children) != len(set(children)):
+    if not isinstance(children, list) or len(children) > 16:
         raise WorkAnalysisError("invalid_request")
     for child in children:
         hex_id(child)
+    if len(children) != len(set(children)):
+        raise WorkAnalysisError("invalid_request")
     refs = unit["claim_refs"]
     if not isinstance(refs, list) or len(refs) > 2048:
         raise WorkAnalysisError("invalid_request")
@@ -261,7 +264,7 @@ def validate_plan(plan, manifest):
     units = plan["original_units"]
     if not isinstance(units, list) or not 1 <= len(units) <= 512:
         raise WorkAnalysisError("invalid_request")
-    if plan["strategy"] not in {"whole", "segmented"}:
+    if not isinstance(plan["strategy"], str) or plan["strategy"] not in {"whole", "segmented"}:
         raise WorkAnalysisError("invalid_request")
     expected_kind = "whole" if plan["strategy"] == "whole" else "extract"
     if expected_kind == "whole" and len(units) != 1:
