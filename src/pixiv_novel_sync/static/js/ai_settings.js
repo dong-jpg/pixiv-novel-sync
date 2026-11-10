@@ -8,6 +8,7 @@
   const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
   const views = new Set(['providers', 'models', 'groups']);
   function optionKey(o) {
+    if (o.kind === 'agent') return JSON.stringify(['agent', o.agent_id]);
     return JSON.stringify(o.kind === 'pool' ? ['pool', o.pool_id]
       : ['model', o.provider_id, o.model_key]);
   }
@@ -21,7 +22,7 @@
   function filterOptions(options, query) {
     const words = String(query || '').toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
     return options.filter(o => o.current || words.every(word =>
-      [o.label, o.model_key, o.provider_name, o.provider_id, o.pool_id, o.availability, o.reason]
+      [o.label, o.model_key, o.provider_name, o.provider_id, o.pool_id, o.agent_id, o.availability, o.reason]
         .map(x => String(x ?? '')).join(' ').toLocaleLowerCase().includes(word)));
   }
   function readWorkspace(search) {

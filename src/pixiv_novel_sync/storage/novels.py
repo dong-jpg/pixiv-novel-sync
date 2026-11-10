@@ -207,6 +207,7 @@ class NovelsMixin:
                 n.source_url,
                 n.archive_dir,
                 nt.text_raw,
+                nt.text_hash,
                 nt.text_markdown,
                 n.raw_json,
                 rp.status AS reading_status,
