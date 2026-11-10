@@ -10,7 +10,7 @@
 
 **Approved Spec:** [2026-11-05 作品全文与 XP 分析设计](../specs/2026-11-05-work-xp-analysis-design.md)，用户已确认详细稿；设计提交 `c8956442ba42ca0114bdbd628c790ca1b5a45688`，应用基线 `e8801b09340de3a3630e05065aa80dbf8c1af698`。
 
-**Status:** 实施计划已于 2026-11-09 完成审阅修订；截至 2026-11-10，Tasks 1–8 已实施并逐项审查，Task 8 提交 `b81284a`。Task 9 跨模块回归、文档与最终整阶段验收仍待完成；文内代码、测试及命令是实施输入，不是已执行结果，不按局部通过勾选最终门槛。可交付状态见 [项目现状](../../STATUS.md)，本地任务证据见 `.superpowers/sdd/work-analysis-progress.md`；不推送、不部署、不读取用户小说、不发起付费调用。
+**Status:** 实施计划已于 2026-11-09 完成审阅修订；截至 2026-11-10，Tasks 1–9 已完成本地实现、逐项与整阶段复审。最终应用/测试提交 `d5cfb762` 的 Windows/Linux、显式离线浏览器、Node/静态/CSS/wheel 验收通过，后续仅文档收尾。文内示例仍是实施输入，实际结果与跳过分类见 [整阶段验收记录](../../archive/WORK_ANALYSIS_ACCEPTANCE_2026-11-10.md) 和 [项目现状](../../STATUS.md)，本地完整任务证据见 `.superpowers/sdd/work-analysis-progress.md`；未推送、未部署、未读取用户小说、未发起付费调用。
 
 ## Global Constraints
 
@@ -161,7 +161,7 @@ Task 7 只把 allowlist 过的 safe target 字段输出给 UI，不能返回配�
 
 **Consumes:** Tasks 1–8 全部生产接口及 `tests/work_analysis_runtime_helpers.py` 的真实临时 DB/fake Provider fixture。**Produces:** 已运行的覆盖映射、跨平台与离线浏览器证据、准确状态文档，而不是新的一套实现。
 
-- [ ] **9.1 增加跨模块、原文/用量/报告留存隔离的实际回归。**
+- [x] **9.1 增加跨模块、原文/用量/报告留存隔离的实际回归。**
 
 ```python
 import json
@@ -281,7 +281,7 @@ def test_real_web_task_log_excludes_source_claim_and_report_sentinels(web_work, 
 
 这些是额外跨模块回归，不替代已有 main continue、真实 facade、race、budget 和 API 测试。禁止用源码断言冒充业务恢复验证；仅有原文 marker 也不证明生成报告/证据的留存隔离。
 
-- [ ] **9.2 运行全部新增与关键旧回归。**
+- [x] **9.2 运行全部新增与关键旧回归。**
 
 ```powershell
 python -m pytest tests/test_work_analysis_contracts.py tests/test_work_analysis_manifest.py tests/test_work_analysis_configuration.py tests/test_work_analysis_evidence.py tests/test_work_analysis_planning.py tests/test_work_analysis_coverage.py tests/test_work_analysis_storage.py tests/test_work_analysis_executor.py tests/test_work_analysis_coordinator.py tests/test_work_analysis_web_admission.py tests/test_work_analysis_service.py tests/test_work_analysis_api.py tests/test_work_analysis_ui.py tests/test_work_analysis_runtime.py tests/test_work_analysis_browser.py tests/test_work_analysis_acceptance.py -q -ra
@@ -292,7 +292,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Existing contract regression failed' }
 
 实际测试文件名以附录创建列表和当前仓库清单核对；不存在的旧文件不得通过空选择蒙混。下面的真正全量门槛包括全部新增 Task 4/6 原文件增量回归。
 
-- [ ] **9.3 运行同一最终应用提交的 Windows 全量/静态/Node。**
+- [x] **9.3 运行同一最终应用提交的 Windows 全量/静态/Node。**
 
 ```powershell
 $env:PYTHONUTF8 = '1'
@@ -314,7 +314,7 @@ git diff --check
 
 若 `pyflakes` 不可用，记录缺口，不能把 compileall 当作等同检查。只可在隔离验证环境安装明确需要的测试依赖；不能更改用户共享解释器绑定。所有日志记录具体 commit、Python/Node 版本、skip 分类和真实 exit。
 
-- [ ] **9.4 在原生 Linux 目录验证 canonical Git 字节。**
+- [x] **9.4 在原生 Linux 目录验证 canonical Git 字节。**
 
 必须先完成并提交代码；不要用工作区复制代替实际 Git 导出，也不要使用 Windows 默认 autocrlf 的 archive。创建新归档且先核对它的文件/模式/blob：
 
@@ -357,7 +357,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Archive provenance mismatch' }
 
 已有 `.superpowers/sdd/verify-linux.sh` 可作为隔离运行器使用，但先读它并核对每个固定路径仍属本验证目录；只允许执行测试 helper，**不运行任何 remote release helper**。Linux venv 缺失时建立独立新测试环境并记录依赖，不进入生产目录。在原生 Linux 目录解包、设置 `PYTHONPATH=src` 后执行 `python -m pytest -q -ra`，记录最终 SHA 和真实 exit。符号链接/POSIX mode、SQLite 版本专属和浏览器缺失的 skip 单独解释。
 
-- [ ] **9.5 用相同 canonical 源码完成离线真实浏览器、CSS/wheel 字节验收。**
+- [x] **9.5 用相同 canonical 源码完成离线真实浏览器、CSS/wheel 字节验收。**
 
 Task 8 已提供实际 browser fixture、375/768/1440 用例和离线构建代码，根验收对最终修复后的稳定提交重跑，不把早期通过数冒充最终代码。使用显式 `AI_UI_VUE_JS` 和既有 Chromium，确认不是 skip；比较源代码/模板/JS/CSS/test/Vue 的前后 hash。每个请求必须在合成 fixture allowlist 内，任何真实域名出网立即失败。
 
@@ -385,9 +385,9 @@ CSS 调用已有 `scripts/build_tailwind_css.py --check --cli <已校验缓存CL
 | W16 | 3A、3B | 四表重复 additive migration、事务 rollback、FK/CHECK、旧大库不重建写作表 |
 | W17 | 4、6、8、9 | 既有 Router/选模/留存、共享同步/抢占、旧偏好与推荐、默认 main continue 全量回归 |
 
-- [ ] 交付从本计划实施基线至最终 HEAD 的完整 diff、所有任务报告、真实平台/资产日志与未关闭问题列表给独立整阶段审查。
-- [ ] 优先复核父/子请求账本、终结/取消/源删除互斥、单 owner/单槽和未知状态下幂等重试；重要问题修复后重新运行受影响测试，并使最终平台/浏览器身份可追溯。
-- [ ] 不因为某子任务或覆盖表“有测试名称”就勾整阶段完成；根控制器记录真正结果后才关闭门槛。
+- [x] 交付从本计划实施基线至最终 HEAD 的完整 diff、所有任务报告、真实平台/资产日志与未关闭问题列表给独立整阶段审查。
+- [x] 优先复核父/子请求账本、终结/取消/源删除互斥、单 owner/单槽和未知状态下幂等重试；重要问题修复后重新运行受影响测试，并使最终平台/浏览器身份可追溯。
+- [x] 不因为某子任务或覆盖表“有测试名称”就勾整阶段完成；根控制器记录真正结果后才关闭门槛。
 
 ## 8. 文档、提交与明确不自动发布
 

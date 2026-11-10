@@ -4,12 +4,13 @@
 
 这是项目当前状态的唯一入口：版本、测试基线、部署和待办都只在这里更新。每轮审查、部署、整改的详细经过另存带日期的记录，放在 [archive/](archive/README.md)，不在多份旧文档里反复回写。
 
-## 作品分析第二阶段（Task 9 / 整阶段验收待完成）
+## 作品分析第二阶段（Task 9 本地验收完成，未部署）
 
-- 实现、整阶段验收与实际部署分开记录。隔离分支 `codex/work-xp-analysis-design` 已完成并逐项审查 Tasks 1–8，Task 8 提交 `b81284a70ca143e4d0c2d2084820829878e7b203`；Task 9 跨模块留存/故障回归、准确文档及最终整阶段审查仍在进行，不标为 DONE。规格与任务边界见 [作品分析设计](superpowers/specs/2026-11-05-work-xp-analysis-design.md) 和 [实施计划](superpowers/plans/2026-11-05-work-xp-analysis.md)。
+- 实现、整阶段验收与实际部署分开记录。隔离分支 `codex/work-xp-analysis-design` 的 Tasks 1–9 已完成本地实现、逐项审查和整阶段验收；最终应用/测试提交 `d5cfb7624d59c4fe06aa2b67008cc1dacc9269d5`。后续收尾提交仅更新文档，不改该验证版本的应用/测试/资产。规格与任务边界见 [作品分析设计](superpowers/specs/2026-11-05-work-xp-analysis-design.md) 和 [实施计划](superpowers/plans/2026-11-05-work-xp-analysis.md)，完整结果见 [第二阶段验收记录](archive/WORK_ANALYSIS_ACCEPTANCE_2026-11-10.md)。
 - 代码提供手动已归档单篇/系列报告、全文覆盖与短证据、父级累计预算和检查点；不恢复个人画像 AI 总结、推荐闭环、写作或旧 main continue。不是自动全库/新同步/定时付费分析，也不代表完整原作已核实。
-- Task 8 当前字节局部验证：122 个 UI/样式回归、33 个作品 Node 用例通过；66 个离线 Chromium 用例通过、零跳过（158.73 秒），15 张截图及合成请求轨迹复核无阻塞项。pyflakes、CSS check、diff check 通过；离线 wheel 中 9 个 UI 资产与当时工作副本字节一致。这些不是 Task 9 全量或最终 canonical 源码验收，不复用修复前的浏览器/wheel 数字。
-- 最终门槛仍待执行/归档：冻结最终提交及 canonical Git LF/blob/mode 证明；同源 Windows 全量与原生 Linux 全量（逐类解释 skip）、全部 Node/旧 reader direct、compileall/pyflakes、明确启用的三宽度离线浏览器/视觉复核、CSS 与 wheel 完整包字节验证。后续记录须包含 SHA、环境版本、真实 exit 和日志，不将工作副本 CRLF 与 canonical LF 混为相同字节。
+- 同一 canonical Git LF 源码全量：Windows `2807 passed, 82 skipped`（362.49 秒），原生 Linux `2756 passed, 133 skipped`（282.48 秒），均 exit 0。82/133 跳过分别属于显式浏览器 opt-in、非流式参数、Windows 权限/mode、Linux 缺浏览器及 Python 版本限制；逐类补充证据见验收记录，不把跳过计为通过。
+- 全部 9 个 Node 文件 `466 passed`、零失败/跳过，旧 reader direct、compileall、pyflakes、CSS check 均通过。明确启用的离线 Chromium 三宽度 `66 passed`、零跳过（173.08 秒）；15 张截图及配套请求轨迹通过最终复核。离线 wheel 的完整 130 个包文件与源码逐字节相等；421 个 Git 文件在所有门槛前后 hash 不变，Linux 可执行 mode 另核对。归档 SHA256 `7e3984ead610d53af5523787cfce8b3c29368ba74eea21278987f938d19862fc`；不把工作副本 CRLF 与 canonical LF 混为相同字节。
+- 整阶段审查已关闭迟到读取/写入回执复活旧状态、恢复失败阻断普通取消、返回边界缓存导致删除误分类等问题，并补齐真实 16 MiB 序列化与有效 JSON/partial 传输回归。初始候选的两项旧字段列表测试失败及修复前浏览器/超时记录保留在验收报告，不复用为最终成功。
 - 本阶段未推送、未创建 PR、未部署，第一阶段发布授权不沿用。没有读取/外发用户小说或调用真实 Pixiv/Provider；真实 1M 准入、计费、网络取消及真机软键盘仍待另行授权验收。下面第一阶段部署、计数与外部验收保留为历史事实，不能代替本阶段门槛。
 
 ## AI 设置与统一调用重构（第一阶段已部署）
@@ -27,7 +28,7 @@
 | 分支 / 组件 | 当前 | 说明 |
 |---|---|---|
 | main（生产应用） | 应用 `3c51a6c6`；切换候选 `793d340d`（2026-11-04） | 第一阶段 AI 重构已上线；随后同步 Nginx 缓存修订、测试和部署记录，不改 Python/JS/CSS 应用源码、不再次重启 |
-| 作品分析隔离分支 | Task 8 `b81284a`（2026-11-10） | 已逐项审查；Task 9 / 最终验收待完成，未推送、未部署 |
+| 作品分析隔离分支 | 已验证应用/测试 `d5cfb762`（2026-11-10） | Tasks 1–9 本地完成，整阶段复审/验收通过；未推送、未部署 |
 | ai-writing | `adb2d95`（2026-10-20） | 在 main 的基础上加写作/成人模块；只移植共享修复，不反向合入 main |
 | 审计整改 PR | [PR #2](https://github.com/dong-jpg/pixiv-novel-sync/pull/2) 已合并；候选 `8f76399` 与合并提交的树一致 | 应用代码验证基线 `122dbfe`；后续补文档及一处跨平台测试夹具，不改变应用逻辑 |
 | 救援用户脚本 | 0.12.2 已进入 GitHub main | 直装 / 自动更新来源现已包含新版；手机管理器仍须检查更新并确认角标，不能据发布推断设备已经更新 |
