@@ -60,6 +60,8 @@ class JobState:
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
+    shared_waiting: bool = False
+    shared_priority: int | None = None
 
     @property
     def task_types(self) -> list[str]:

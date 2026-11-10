@@ -1332,6 +1332,7 @@ def test_slot_release_callback_runs_without_the_manager_lock():
 
     manager = JobManager()
     observed = []
+    join_completed = []
 
     def callback():
         def reader():
@@ -1340,11 +1341,12 @@ def test_slot_release_callback_runs_without_the_manager_lock():
         reader_thread = threading.Thread(target=reader)
         reader_thread.start()
         reader_thread.join(timeout=2)
-        assert not reader_thread.is_alive()
+        join_completed.append(not reader_thread.is_alive())
 
     manager.set_slot_released_callback(callback)
     assert manager.acquire_run_slot()
     manager.release_run_slot()
+    assert join_completed == [True]
     assert observed == ["unlocked"]
 ```
 
@@ -1407,7 +1409,7 @@ Add these complete methods to `JobManager`:
             waiting = sorted(
                 (job for job in live if job.shared_waiting),
                 key=lambda job: (job.shared_priority if job.shared_priority is not None else 4,
-                                 job.created_at, job.job_id),
+                                 job.created_at),
             )
             return active, waiting
 
@@ -1472,6 +1474,17 @@ Add these complete methods to `JobManager`:
     def set_slot_released_callback(self, callback: Callable[[], None] | None) -> None:
         with self._lock:
             self._slot_released_callback = callback
+
+    def shared_admission_is_idle(self) -> bool:
+        with self._lock:
+            active, waiting = self.shared_admission_snapshot()
+            if active or waiting or self._reserved_slot_job_id is not None:
+                return False
+            # A terminal state precedes the runner's finally/slot release.
+            if not self._semaphore.acquire(blocking=False):
+                return False
+            self._semaphore.release()
+            return True
 ```
 
 Replace the existing semaphore accessor methods with:
@@ -2010,6 +2023,7 @@ def test_failed_slot_reservation_retries_same_shared_item_on_release(tmp_path, m
         bridge.release_provider.set()
         bridge.manager.release_run_slot()
         wait_for(lambda: bridge.env.db.get_work_analysis(bridge.env.run_id)["status"] == "succeeded")
+        wait_for(lambda: bridge.manager.get_job(original_id).status == JobStatus.SUCCEEDED)
         assert bridge.manager.get_job(original_id).status == JobStatus.SUCCEEDED
         assert len(bridge.manager._jobs) == 1
     finally:
@@ -2380,8 +2394,7 @@ class WorkAnalysisCoordinator:
 
     def close(self):
         with self._gate:
-            active, waiting = self.manager.shared_admission_snapshot()
-            if active or waiting:
+            if not self.manager.shared_admission_is_idle():
                 raise RuntimeError("shared_owner_still_active")
             self._closed = True
             self.manager.set_slot_released_callback(None)
@@ -2546,9 +2559,7 @@ import time
 import pytest
 
 import pixiv_novel_sync.webapp as webapp_module
-from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobStatus, JobType
-from pixiv_novel_sync.work_analysis.contracts import WorkAnalysisError
-from pixiv_novel_sync.work_analysis.executor import WorkAnalysisExecutor
+from pixiv_novel_sync.jobs.models import JobStatus, JobType
 from work_analysis_runtime_helpers import make_runtime_environment
 
 
@@ -2584,7 +2595,7 @@ def web_work(tmp_path, monkeypatch):
         active, waiting = app.config["job_manager"].shared_admission_snapshot()
         for job in active + waiting:
             coordinator.cancel_shared_job(job.job_id)
-        wait_for(lambda: not any(app.config["job_manager"].shared_admission_snapshot()))
+        wait_for(app.config["job_manager"].shared_admission_is_idle)
         app.extensions["close_work_analysis_owner"]()
         env.close()
 
@@ -2656,7 +2667,6 @@ def test_pending_work_placeholder_does_not_block_a_due_p1_scheduler_submission(w
     coordinator.wake("created")
     work = manager.shared_admission_snapshot()[1][0]
     submit = app.config["submit_shared_web_job"]
-    scheduler = app.config["auto_sync_scheduler"]
     settings = coordinator.settings_provider()
     sync = submit(webapp_module._scheduler_job_spec("bookmarks"), settings,
                   "bookmark", "Synthetic scheduled bookmark", is_auto_sync=True,
@@ -2688,6 +2698,49 @@ def test_non_web_work_execution_remains_unsupported(web_work):
     with pytest.raises(RuntimeError, match="Unsupported task type"):
         execute_task("work_analysis", app.extensions["work_analysis_coordinator"].settings_provider(), {})
     assert env.provider.sent_units == []
+
+
+def test_idle_teardown_keeps_owner_pinned_until_terminal_runner_releases_slot(web_work, monkeypatch):
+    app, env = web_work
+    manager = app.config["job_manager"]
+    coordinator = app.extensions["work_analysis_coordinator"]
+    terminal_slot_held = threading.Event()
+    release_slot = threading.Event()
+    completed = threading.Event()
+    original_release = manager.release_run_slot
+    original_finished = coordinator.on_job_finished
+
+    def blocked_release():
+        terminal_slot_held.set()
+        assert release_slot.wait(timeout=5)
+        original_release()
+
+    def observed_finished(job_id):
+        try:
+            original_finished(job_id)
+        finally:
+            completed.set()
+
+    monkeypatch.setattr(manager, "release_run_slot", blocked_release)
+    monkeypatch.setattr(coordinator, "on_job_finished", observed_finished)
+    try:
+        coordinator.wake("created")
+        assert terminal_slot_held.wait(timeout=5)
+        assert manager.latest_job().status == JobStatus.SUCCEEDED
+        assert manager.shared_admission_snapshot() == ([], [])
+        assert manager.acquire_run_slot() is False
+        with pytest.raises(RuntimeError, match="shared_owner_still_active"):
+            app.extensions["close_work_analysis_owner"]()
+        second = webapp_module.create_app(
+            app.config["work_config_path"], app.config["work_env_path"], start_scheduler=False,
+        )
+        assert second.config["job_manager"] is manager
+        assert second.extensions["work_analysis_coordinator"] is coordinator
+        assert coordinator._closed is False
+        assert len(manager._jobs) == 1
+    finally:
+        release_slot.set()
+        assert completed.wait(timeout=5)
 ```
 
 Fixture path note: `Database`'s actual path attribute is `path` at this baseline; this is a temporary fixture database. `work_config_path`/`work_env_path` below are test-readable local app configuration, not HTTP output or a shared-job parameter.

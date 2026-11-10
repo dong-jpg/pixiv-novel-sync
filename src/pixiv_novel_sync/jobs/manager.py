@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Callable
 
-from pixiv_novel_sync.jobs.models import JobLogEntry, JobSpec, JobState, JobStatus
+from pixiv_novel_sync.jobs.models import JobLogEntry, JobSpec, JobState, JobStatus, JobType
 
+
+logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED}
 
@@ -39,6 +43,8 @@ class JobManager:
         self._lock = threading.RLock()
         self._semaphore = threading.BoundedSemaphore(1)
         self._active_finalizations: dict[str, object] = {}
+        self._reserved_slot_job_id: str | None = None
+        self._slot_released_callback: Callable[[], None] | None = None
 
     def submit(self, spec: JobSpec) -> JobState:
         with self._lock:
@@ -143,11 +149,106 @@ class JobManager:
             state = self._jobs.get(job_id)
             return state is not None and state.status == JobStatus.CANCEL_REQUESTED
 
-    def acquire_run_slot(self) -> bool:
-        return self._semaphore.acquire(blocking=False)
+    def shared_admission_snapshot(self) -> tuple[list[JobState], list[JobState]]:
+        with self._lock:
+            live = [job for job in self._jobs.values() if job.status not in _TERMINAL_STATUSES]
+            active = [job for job in live if not job.shared_waiting]
+            waiting = sorted(
+                (job for job in live if job.shared_waiting),
+                key=lambda job: (job.shared_priority if job.shared_priority is not None else 4,
+                                 job.created_at),
+            )
+            return active, waiting
+
+    def check_work_waiting_admission(self, spec: JobSpec, priority: int) -> None:
+        if type(priority) is not int or not 1 <= priority <= 4 or spec.source.value != "web":
+            raise ValueError("invalid_shared_admission")
+        is_work = spec.job_type == JobType.WORK_ANALYSIS
+        if is_work != (priority == 4):
+            raise ValueError("invalid_shared_admission")
+        with self._lock:
+            active, waiting = self.shared_admission_snapshot()
+            if any(job.spec.job_type != JobType.WORK_ANALYSIS for job in active):
+                raise RuntimeError("shared_busy")
+            if is_work:
+                if active or waiting:
+                    raise RuntimeError("shared_busy")
+            elif len(waiting) >= 8:
+                raise RuntimeError("shared_pending_full")
+
+    def submit_work_waiting(self, spec: JobSpec, priority: int) -> JobState:
+        with self._lock:
+            self.check_work_waiting_admission(spec, priority)
+            job = self.submit(spec)
+            job.shared_waiting = True
+            job.shared_priority = priority
+            job.message = "waiting for shared slot"
+            return job
+
+    def reserve_shared_start(self, job_id: str) -> bool:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.status != JobStatus.QUEUED or not job.shared_waiting:
+                return False
+            active, waiting = self.shared_admission_snapshot()
+            if active or not waiting or waiting[0].job_id != job_id:
+                return False
+            if self._reserved_slot_job_id is not None or not self._semaphore.acquire(blocking=False):
+                return False
+            self._reserved_slot_job_id = job_id
+            job.shared_waiting = False
+            job.message = "admitted to shared slot"
+            return True
+
+    def abandon_reserved_start(self, job_id: str) -> bool:
+        with self._lock:
+            if self._reserved_slot_job_id != job_id:
+                return False
+            self._reserved_slot_job_id = None
+            self._semaphore.release()
+            return True
+
+    def defer_work_start(self, job_id: str) -> bool:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.status != JobStatus.QUEUED or job.spec.job_type != JobType.WORK_ANALYSIS:
+                return False
+            job.shared_waiting = True
+            job.shared_priority = 4
+            job.message = "waiting for shared slot"
+            return True
+
+    def set_slot_released_callback(self, callback: Callable[[], None] | None) -> None:
+        with self._lock:
+            self._slot_released_callback = callback
+
+    def shared_admission_is_idle(self) -> bool:
+        with self._lock:
+            active, waiting = self.shared_admission_snapshot()
+            if active or waiting or self._reserved_slot_job_id is not None:
+                return False
+            # A terminal state precedes the runner's finally/slot release.
+            if not self._semaphore.acquire(blocking=False):
+                return False
+            self._semaphore.release()
+            return True
+
+    def acquire_run_slot(self, job_id: str | None = None) -> bool:
+        with self._lock:
+            if job_id is not None and self._reserved_slot_job_id == job_id:
+                self._reserved_slot_job_id = None
+                return True
+            return self._semaphore.acquire(blocking=False)
 
     def release_run_slot(self) -> None:
         self._semaphore.release()
+        with self._lock:
+            callback = self._slot_released_callback
+        if callback is not None:
+            try:
+                callback()
+            except Exception:
+                logger.warning("Shared admission notification failed")
 
     def cleanup_old_jobs(self) -> None:
         with self._lock:

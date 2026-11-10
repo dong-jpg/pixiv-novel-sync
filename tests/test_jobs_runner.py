@@ -242,3 +242,21 @@ def test_runner_succeeds_for_empty_task_list():
 
     assert result.status == JobStatus.SUCCEEDED
     assert claim_calls == [state.job_id]
+
+
+def test_work_slot_race_defers_instead_of_blackholing_the_parent():
+    from pixiv_novel_sync.jobs.models import JobSource, JobSpec, JobStatus, JobType
+
+    manager = JobManager()
+    assert manager.acquire_run_slot()
+    job = manager.submit(JobSpec(JobSource.WEB, ["work_analysis"], JobType.WORK_ANALYSIS, {"run_id": "a" * 32}))
+    executed = []
+    runner = JobRunner(manager, lambda task, context: executed.append(context["params"]) or {})
+    runner.run(job.job_id)
+    assert job.status == JobStatus.QUEUED and job.shared_waiting
+    assert executed == []
+    manager.release_run_slot()
+    assert manager.reserve_shared_start(job.job_id)
+    runner.run(job.job_id)
+    assert job.status == JobStatus.SUCCEEDED
+    assert executed == [{"run_id": "a" * 32}]

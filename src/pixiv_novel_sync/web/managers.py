@@ -102,6 +102,8 @@ SCHEDULER_TASK_CONFIG_BY_NAME: dict[str, dict[str, Any]] = {
 
 
 def scheduler_task_priority(task_name: str) -> int:
+    if task_name == "work_analysis":
+        return 4
     config = SCHEDULER_TASK_CONFIG_BY_NAME.get(task_name)
     if config is None:
         return SCHEDULER_PRIORITY_DEFAULT
@@ -109,6 +111,8 @@ def scheduler_task_priority(task_name: str) -> int:
 
 
 def scheduler_task_is_preemptible(task_name: str) -> bool:
+    if task_name == "work_analysis":
+        return True
     config = SCHEDULER_TASK_CONFIG_BY_NAME.get(task_name)
     return bool(config is not None and config.get("preemptible", False))
 
@@ -289,6 +293,7 @@ class AutoSyncScheduler:
     _schedule_restored: bool = False  # 是否已从 task_logs 做过一次重启补偿
     _lifecycle_claim: Callable[[AutoSyncScheduler], bool] | None = field(default=None, repr=False)
     _lifecycle_release: Callable[[AutoSyncScheduler], None] | None = field(default=None, repr=False)
+    work_coordinator: Any = field(default=None, repr=False)
     
     def start(self) -> None:
         """启动定时调度器"""
@@ -469,6 +474,8 @@ class AutoSyncScheduler:
                         self._task_crons[task_name] = cron_expr
 
                 if not settings.sync.auto_sync_enabled:
+                    if self.work_coordinator is not None:
+                        self.work_coordinator.wake("scheduler_tick")
                     stop_event.wait(60)
                     continue
 
@@ -506,6 +513,10 @@ class AutoSyncScheduler:
                 # 旧行为是按 SCHEDULER_TASK_CONFIGS 的数组顺序扫描，谁排在前面谁先抢槽，
                 # 「收藏优先」只是数组顺序的巧合而不是设计；长任务一旦占住槽，收藏就得
                 # 干等一个退避周期。
+                if self.work_coordinator is not None and self.work_coordinator.wake("scheduler_tick"):
+                    stop_event.wait(SCHEDULER_PREEMPT_POLL_SECONDS)
+                    continue
+
                 due_tasks = self._collect_due_tasks(settings)
                 if not due_tasks:
                     stop_event.wait(30)
@@ -653,6 +664,8 @@ class AutoSyncScheduler:
 
     def _may_preempt(self, task_name: str, now: float) -> bool:
         """让位护栏：冷却期内、或连续被让位太多次的任务，本轮必须让它跑完。"""
+        if task_name == "work_analysis":
+            return True
         if not scheduler_task_is_preemptible(task_name):
             return False
         with self._lock:
@@ -898,60 +911,45 @@ class AutoSyncScheduler:
                     self._current_task_name = None
         return True
 
-    def _run_and_watch_for_preemption(
-        self,
-        settings: Settings,
-        job_id: str,
-        task_name: str,
-        run_task: Callable[[str], None],
-    ) -> None:
-        """在后台线程跑任务，主线程轮询「有没有更高优先级的任务到点了」。
-
-        必须放到独立线程：``run_task`` 是同步阻塞的，调度线程一旦进去就看不见新到点
-        的任务，收藏(P1) 只能干等 following_novels/user_backup 跑完（实测 25–140 分钟）。
-        不可让位的任务（见 SCHEDULER_TASK_CONFIGS.preemptible）走同一条路径，只是不发
-        取消信号——统一实现，避免两套执行流程走样。
-        """
+    def _run_and_watch_for_preemption(self, settings, job_id, task_name, run_task):
         if not scheduler_task_is_preemptible(task_name):
             run_task(job_id)
             return
+        errors = []
 
-        error: list[BaseException] = []
-
-        def worker() -> None:
+        def worker():
             try:
                 run_task(job_id)
-            except BaseException as exc:  # noqa: BLE001 - 原样转交给调用方处理
-                error.append(exc)
+            except BaseException as error:
+                errors.append(error)
 
-        thread = threading.Thread(
-            target=worker, name=f"auto-sync-{task_name}", daemon=True
-        )
+        thread = threading.Thread(target=worker, name=f"auto-sync-{task_name}", daemon=True)
         thread.start()
-
         running_priority = scheduler_task_priority(task_name)
         yielded = False
+        is_work = task_name == "work_analysis"
         while thread.is_alive():
             thread.join(timeout=SCHEDULER_PREEMPT_POLL_SECONDS)
-            if not thread.is_alive() or yielded or self._stop_event.is_set():
+            if not thread.is_alive() or yielded or (self._stop_event.is_set() and not is_work):
                 continue
             try:
-                challenger_priority = self._highest_due_priority(settings, task_name)
-            except Exception as exc:  # pragma: no cover - 挑选出错不该影响正在跑的任务
-                logger.warning("让位判定失败，本轮不打断 %s: %s", task_name, exc)
+                if is_work:
+                    challenger = self.work_coordinator.challenger_priority() if self.work_coordinator is not None else None
+                else:
+                    challenger = self._highest_due_priority(settings, task_name)
+            except Exception:
+                logger.warning("Shared preemption check failed")
                 continue
-            if challenger_priority is None or challenger_priority >= running_priority:
+            if challenger is None or challenger >= running_priority:
                 continue
             now = time.time()
-            if not self._may_preempt(task_name, now):
-                continue
-            if self._request_yield(job_id, task_name, challenger_priority):
-                self._note_preemption(task_name, now)
+            if self._may_preempt(task_name, now) and self._request_yield(job_id, task_name, challenger):
+                if not is_work:
+                    self._note_preemption(task_name, now)
                 yielded = True
-
         thread.join()
-        if error:
-            raise error[0]
+        if errors:
+            raise errors[0]
 
     def _request_yield(self, job_id: str, task_name: str, challenger_priority: int) -> bool:
         """给正在跑的任务发取消信号，并在它自己的日志里写清"为什么被中断"。
@@ -960,6 +958,14 @@ class AutoSyncScheduler:
         task_logs，所以这条说明会跟着任务日志一起落库，运维不会看到一条无缘无故的
         "已取消"。
         """
+        if task_name == "work_analysis":
+            if self.work_coordinator is None:
+                return False
+            try:
+                return self.work_coordinator.cancel_shared_job(job_id, action="sync_yield")
+            except Exception:
+                logger.warning("Work yield control failed")
+                return False
         message = (
             f"为 P{challenger_priority} 高优先级任务让位，本轮提前结束；"
             "已完成的部分已入库，下轮从水位继续"

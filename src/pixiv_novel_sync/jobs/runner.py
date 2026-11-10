@@ -4,7 +4,7 @@ from collections.abc import Callable
 from typing import Any
 
 from pixiv_novel_sync.jobs.manager import FinalizationClaim, JobManager
-from pixiv_novel_sync.jobs.models import JobState
+from pixiv_novel_sync.jobs.models import JobState, JobType
 
 JobTaskExecutor = Callable[[str, dict[str, Any]], dict[str, Any] | None]
 
@@ -19,9 +19,12 @@ class JobRunner:
         if state is None:
             raise KeyError(job_id)
 
-        acquired = self.manager.acquire_run_slot()
+        acquired = self.manager.acquire_run_slot(job_id)
         if not acquired:
-            self.manager.mark_failed(job_id, "已有任务正在运行")
+            if state.spec.job_type == JobType.WORK_ANALYSIS:
+                self.manager.defer_work_start(job_id)
+            else:
+                self.manager.mark_failed(job_id, "已有任务正在运行")
             return state
 
         active_claim: FinalizationClaim | None = None
