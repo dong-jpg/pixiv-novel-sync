@@ -135,13 +135,15 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 
 ### 分批轮转与分页上限
 
-- `NOVEL_STATUS_BATCH_SIZE = 800`:`novel_status` 每轮按 `last_checked_at` 最久优先取一批,不再单次占满整个周期把其他任务挤后。
+- `NOVEL_STATUS_BATCH_SIZE = 800`:`novel_status` 每轮按 `last_checked_at` 最久优先取一批,不再单次占满整个周期把其他任务挤后。已确认 `deleted`、最近 `KNOWN_DELETED_RECHECK_DAYS = 7` 天内复查过的作品取批时就排除(名额让给后面的作品,stats 记 `deleted_recheck_deferred`),超过 7 天照常复查;待删检测的收藏候选同样跳过这些作品、不再逐本 `novel_detail`(stats 记 `skipped_known_deleted`)。`confirmed_missing` 与「已知删除不清零 missing 连击」不变。
 - `FOLLOWING_LIST_MAX_PAGES = 50`(`sync_engine.py`):关注列表枚举与作品分页上限解耦,避免 `max_pages_per_run` 把候选集截断。
 - `sync.bookmark_max_pages_per_run`:**收藏列表专用**翻页上限,留空则回落到 `max_pages_per_run`。`max_pages_per_run` 的语义是"关注作者作品列表 / 系列章节的单轮翻页上限",生产配成 2 是为了压体量;收藏复用同一个值会让每轮只看最新约 60 条就标 `truncated/incomplete`,历史收藏永远补不齐——而收藏是优先级最高的数据。解析在 `sync_engine._resolve_bookmark_max_pages`。
+- `sync.max_items_per_run` 在收藏同步里只计**真正发了详情请求、能归档**的条目:已归档跳过的不计,`content_unavailable`(作品已删或不可见,永远归档不了)也不计,但照常按 `delay_seconds_between_items` 间隔。预算只在碰到下一本**未归档**的收藏时才判定触顶,此时置 `truncated` / `incomplete` / `budget_exhausted`(日志黄色);剩下的全是已归档时不算截断。以前失效收藏占预算,攒够上限后排在后面的未归档收藏永远轮不到,而且触顶静默、日志一直绿色(审查 S8)。
+- `user_backup`(`jobs/services.py:run_user_backup_task`)平时只补没归档完整的作品(`_archive_complete_on_disk` 为真的不发请求,只登记来源),每位作者每 `USER_BACKUP_FULL_REFRESH_DAYS = 7` 天全部重抓一次;全部重抓是唯一会重抓已归档正文的路径(作者改正文、错误页覆写成占位数据的修复途径)。上次全部重抓时间按作者记在水位 `user_backup_full_refresh.full_refresh_at`,只有该作者那一轮完整跑完(没停、没失败、没触顶)才更新。发了请求的作品之间按 `delay_seconds_between_items` 可取消地间隔。stats 带 `full_refresh` / `skipped_archived`,定时轮转汇总带 `full_refresh_users` / `skipped_archived`。注意:作者在轮转里两次被轮到的间隔若本来就超过 7 天,每次都是全部重抓,省不下请求。
 - `sync.following_max_novels_per_author`:**单个关注作者**每轮的同步上限,留空 = 不限。`max_items_per_run` 只在切换作者**之前**检查,单个作者内部没有任何上限,于是第一个高产作者就把整轮预算吃光——生产实测 256 个关注作者每轮只覆盖 1 个,轮完一圈要 95 天。撞到配额是跳到下一个作者,不是结束整轮。解析在 `sync_engine._resolve_following_author_quota`;整轮硬顶(`_resolve_following_run_cap`,取 配额×users_limit×1.5)只兜异常。
 - `sync.series_max_pages_per_run`:**系列章节专用**翻页上限,留空则回落到 `max_pages_per_run`。系列章节数远超单个作者的单轮作品体量,共用那个上限会把长系列永久截断,而且每轮都从 watchlist 头部重来、永远在同一页触顶:生产实测每轮 `truncated_series=2`,8 个订阅系列长期缺 76 章,高频重跑也补不齐。解析在 `sync_engine._resolve_series_max_pages`。
-- 关注作者同步按「最久未同步」优先轮转,watermark 兼容旧格式。
-- 调度器从 `task_logs` 恢复上次完成时间,重启不再把所有任务推迟一整个周期;逾期任务错峰补偿。
+- 关注作者同步按「最久未同步」优先轮转,watermark 兼容旧格式。`user_last_synced` 只在作者扫描**自然结束**时写(含配额、翻页上限、连续已存在早停);作品列表拉取失败记进同一水位的 `user_fail_streak`,连续 `FOLLOWING_AUTHOR_MAX_FAIL_STREAK = 3` 次照常写入(防止坏作者霸占队首),成功一次清零;被让位或取消的作者不写也不计数。以前扫描一开始就写,出错或被打断的作者也推后整圈。
+- 调度器从 `task_logs` 恢复上次完成时间,重启不再把所有任务推迟一整个周期;逾期任务错峰补偿。cron 任务同样补偿:`settings.cron_to_prev_run` 求最近一个已过去的槽,上次跑完(`succeeded` / `partial`)早于它就补跑一次(只补一次,不追补每个错过的槽),否则照常等下一个槽;没有历史(首次部署)不补。以前 cron 任务完全不恢复,被重启或 `./update.sh` 打断的那一轮直接丢掉,要等下一个槽。
 
 ## 3.6 任务优先级与让位(`web/managers.py`)
 
@@ -171,6 +173,8 @@ QUEUED ──mark_running──▶ RUNNING ──finalization──▶ SUCCEEDED
 | `SCHEDULER_PREEMPT_RETRY_SECONDS` | 600s | 让位后短退避续跑,而不是顺延整个周期(否则一让位等于跳过一轮) |
 
 让位标记是一次性的(`_consume_preemption_flag`),且只在 `submitted=True` 时消费——否则"反复提交失败"会悄悄把连续让位计数清零绕过护栏。任务完整跑完一轮时同一个方法负责清零计数。
+
+**两道护栏的关系(审查 2026-10-28)**:让位后的续跑排在 600 s 后(`SCHEDULER_PREEMPT_RETRY_SECONDS`),必然落在 6 小时冷却期(`SCHEDULER_PREEMPT_COOLDOWN_SECONDS`)之内,所以续跑那一轮 `_may_preempt` 一定返回 False、一定能跑完,跑完即把连续让位计数清零。日常起作用的是冷却期;`SCHEDULER_MAX_CONSECUTIVE_PREEMPTIONS = 2` 只在续跑开始时冷却期已经过去才可能被用到:续跑那一轮本身跑了接近 6 小时以上,或者槽一直被占、续跑拖到 6 小时后才开始。两者都保留,行为不变;改这三个常量时要一起看,`tests/test_preemption_guardrails.py` 钉住了「续跑落在冷却期内」这个前提。
 
 ## 4. 新增 task_type 的步骤
 

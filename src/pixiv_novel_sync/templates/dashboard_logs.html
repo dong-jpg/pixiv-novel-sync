@@ -142,7 +142,7 @@
   </div>
 
   <!-- Detail Modal -->
-  <app-modal :is-open="modalOpen" :title="modalTitle" @close="modalOpen = false">
+  <app-modal :is-open="modalOpen" :title="modalTitle" @close="closeDetail">
     <div v-if="detailLoading" class="py-10 text-center text-pixiv-gray">
       <svg class="animate-spin h-6 w-6 text-brand-500 mx-auto mb-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
       加载详情中...
@@ -154,7 +154,7 @@
           <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider mb-3 pb-2 border-b border-gray-100">基本信息</h3>
           <div class="space-y-2">
             <div class="flex justify-between gap-4"><span class="text-pixiv-gray">任务 ID:</span> <span class="font-mono text-gray-900 break-all text-right">{{ selectedLog.job_id || selectedLog.id }}</span></div>
-            <div class="flex justify-between"><span class="text-pixiv-gray">来源:</span> <span class="font-medium text-gray-900">{{ selectedLog.category === 'ai' ? 'AI 创作任务' : (selectedLog.is_auto_sync ? '定时任务' : '手工任务') }}</span></div>
+            <div class="flex justify-between"><span class="text-pixiv-gray">来源:</span> <span class="font-medium text-gray-900">{{ selectedLog.category === 'ai' ? 'AI 任务' : (selectedLog.is_auto_sync ? '定时任务' : '手工任务') }}</span></div>
             <div class="flex justify-between items-center"><span class="text-pixiv-gray">状态:</span> <app-badge :type="getStatusConfig(selectedLog.status).type">{{ getStatusConfig(selectedLog.status).label }}</app-badge></div>
           </div>
         </div>
@@ -179,16 +179,31 @@
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
           <div class="p-3 bg-gray-50 rounded-lg border border-gray-100 space-y-1">
-            <div class="text-gray-500">candidate_snapshot_hash</div>
-            <div class="font-mono text-gray-900 break-all">{{ selectedLog.candidate_snapshot_hash || '-' }}</div>
-          </div>
-          <div class="p-3 bg-gray-50 rounded-lg border border-gray-100 space-y-1">
             <div class="text-gray-500">route_summary</div>
             <div class="text-gray-900">{{ selectedLog.route_summary ? ((selectedLog.route_summary.provider_name || 'Provider') + ' / ' + (selectedLog.route_summary.model_key || 'model')) : '尚无模型尝试' }}</div>
             <div v-if="selectedLog.route_summary && selectedLog.route_summary.pool_name" class="text-gray-500">模型池：{{ selectedLog.route_summary.pool_name }}</div>
           </div>
         </div>
-        <div v-if="selectedLog.prompt_budget" class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+        <section id="ai-job-diagnostics" class="space-y-3 text-sm">
+          <p>业务校验：<span id="job-validation-status">{{ jobDiagnostics.validation_status }}</span></p>
+          <p id="job-usage-status">{{ usageStatusLabel }}</p>
+          <dl class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+            <div v-for="field in usageFields" :key="field"><dt>{{ field }}</dt><dd :data-usage-field="field">{{ displayPlanValue(jobDiagnostics.usage_summary?.[field]) }}</dd></div>
+          </dl>
+          <p class="text-xs text-pixiv-gray">仅展示服务器汇总；未报告或失败/部分输出不代表零用量。</p>
+          <p id="job-continue-unavailable">{{ jobDiagnostics.continue_unavailable_reason || '本阶段不支持继续任务' }}</p>
+          <p v-if="jobDiagnostics.plan_unavailable_reason" id="job-plan-unavailable" class="text-amber-700">{{ jobDiagnostics.plan_unavailable_reason }}</p>
+          <template v-if="jobDiagnostics.snapshot_version === 2 && jobDiagnostics.invocation_plan">
+            <section v-for="kind in ['eligible', 'excluded']" :key="kind" :id="'job-plan-' + kind" class="space-y-2">
+              <h4 class="font-semibold">{{ kind === 'eligible' ? '冻结计划：合格候选' : '冻结计划：排除候选' }}</h4>
+              <dl v-for="candidate in jobDiagnostics.invocation_plan[kind]" :key="candidate.source_index" :data-source-index="candidate.source_index" :data-candidate-index="candidate.candidate_index" class="grid grid-cols-1 sm:grid-cols-3 gap-2 border border-gray-100 rounded-lg p-3 text-xs">
+                <div v-for="field in planFields" :key="field"><dt class="text-pixiv-gray">{{ field }}</dt><dd :data-field="field" class="break-all">{{ displayPlanValue(candidate[field]) }}</dd></div>
+              </dl>
+            </section>
+            <p v-if="jobDiagnostics.invocation_plan.excluded_count !== undefined" class="text-xs">排除总数：{{ displayPlanValue(jobDiagnostics.invocation_plan.excluded_count) }}；详情截断：{{ displayPlanValue(jobDiagnostics.invocation_plan.excluded_truncated) }}</p>
+          </template>
+        </section>
+        <div id="job-legacy-budget" v-if="jobDiagnostics.snapshot_version === 1 && selectedLog.prompt_budget" class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
           <div class="p-2 bg-gray-50 rounded border border-gray-100"><div class="text-gray-500">input_budget</div><div class="font-semibold text-gray-900">{{ selectedLog.prompt_budget.input_budget }}</div></div>
           <div class="p-2 bg-gray-50 rounded border border-gray-100"><div class="text-gray-500">output_reserve</div><div class="font-semibold text-gray-900">{{ selectedLog.prompt_budget.output_reserve }}</div></div>
           <div class="p-2 bg-gray-50 rounded border border-gray-100"><div class="text-gray-500">context_window</div><div class="font-semibold text-gray-900">{{ selectedLog.prompt_budget.effective_context_window }}</div></div>
@@ -231,15 +246,15 @@
         </div>
       </div>
 
-      <div v-if="selectedLog.input" class="mb-6">
+      <div v-if="showLegacyAiContent && selectedLog.input" class="mb-6">
         <div class="flex items-center justify-between mb-3 pb-2 border-b border-gray-100">
           <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider">输入参数</h3>
-          <button @click="copyDetailText(selectedLog.input)" class="text-xs text-brand-600 hover:text-brand-700">复制</button>
+          <button @click="copyDetailText(detailInput)" class="text-xs text-brand-600 hover:text-brand-700">复制</button>
         </div>
-        <pre class="p-3 bg-gray-50 text-gray-700 rounded-lg border border-gray-100 font-mono text-xs whitespace-pre-wrap break-words max-h-64 overflow-y-auto">{{ formatJson(selectedLog.input) }}</pre>
+        <pre class="p-3 bg-gray-50 text-gray-700 rounded-lg border border-gray-100 font-mono text-xs whitespace-pre-wrap break-words max-h-64 overflow-y-auto">{{ formatJson(detailInput) }}</pre>
       </div>
 
-      <div v-if="selectedLog.output_text" class="mb-6">
+      <div v-if="showLegacyAiContent && selectedLog.output_text" class="mb-6">
         <div class="flex items-center justify-between mb-3 pb-2 border-b border-gray-100">
           <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider">文本输出</h3>
           <button @click="copyDetailText(selectedLog.output_text)" class="text-xs text-brand-600 hover:text-brand-700">复制</button>
@@ -247,12 +262,12 @@
         <pre class="p-3 bg-gray-50 text-gray-700 rounded-lg border border-gray-100 font-serif text-sm whitespace-pre-wrap break-words max-h-80 overflow-y-auto" v-text="selectedLog.output_text"></pre>
       </div>
 
-      <div v-if="selectedLog.output" class="mb-6">
+      <div v-if="showLegacyAiContent && selectedLog.output" class="mb-6">
         <div class="flex items-center justify-between mb-3 pb-2 border-b border-gray-100">
           <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider">结构化输出</h3>
-          <button @click="copyDetailText(selectedLog.output)" class="text-xs text-brand-600 hover:text-brand-700">复制</button>
+          <button @click="copyDetailText(detailOutput)" class="text-xs text-brand-600 hover:text-brand-700">复制</button>
         </div>
-        <pre class="p-3 bg-gray-50 text-gray-700 rounded-lg border border-gray-100 font-mono text-xs whitespace-pre-wrap break-words max-h-64 overflow-y-auto">{{ formatJson(selectedLog.output) }}</pre>
+        <pre class="p-3 bg-gray-50 text-gray-700 rounded-lg border border-gray-100 font-mono text-xs whitespace-pre-wrap break-words max-h-64 overflow-y-auto">{{ formatJson(detailOutput) }}</pre>
       </div>
 
       <!-- Stats -->
@@ -320,7 +335,7 @@
       </div>
 
       <!-- Execution Logs -->
-      <div v-if="selectedLog.logs && selectedLog.logs.length > 0">
+      <div v-if="selectedLog.category !== 'ai' && selectedLog.logs && selectedLog.logs.length > 0">
         <h3 class="text-xs font-medium text-pixiv-gray uppercase tracking-wider mb-3 pb-2 border-b border-gray-100">执行日志</h3>
         <div class="bg-gray-900 rounded-lg p-4 font-mono text-xs text-gray-300 max-h-64 overflow-y-auto space-y-1">
           <div v-for="(l, i) in selectedLog.logs" :key="i" :class="logLevelClass(l.level)">
@@ -345,7 +360,8 @@
     background-size: 1.5em 1.5em;
   }
 </style>
-<script>
+<script nonce="{[ csp_nonce() ]}" src="/static/js/ai_job_diagnostics.js"></script>
+<script nonce="{[ csp_nonce() ]}">
   initVueApp({
     setup() {
       const { ref, reactive, computed, watch, onMounted, onUnmounted } = Vue;
@@ -403,6 +419,21 @@
       const modalOpen = ref(false);
       const detailLoading = ref(false);
       const selectedLog = ref(null);
+      let detailGeneration = 0, detailDisposed = false;
+      const jobDiagnostics = computed(() => window.AIJobDiagnostics.projectJobDiagnostics(selectedLog.value));
+      const showLegacyAiContent = computed(() => selectedLog.value?.category !== 'ai' ||
+        (selectedLog.value?.task_type === 'keyword_clean' && Array.isArray(selectedLog.value?.input?.raw_keywords)));
+      const keywordStrings = (values, count) => Array.isArray(values) ? values.filter(value => typeof value === 'string').slice(0, count) : [];
+      const detailInput = computed(() => selectedLog.value?.category !== 'ai' ? selectedLog.value?.input : !showLegacyAiContent.value ? null : {
+        raw_keywords: keywordStrings(selectedLog.value.input.raw_keywords, 80), tags: keywordStrings(selectedLog.value.input.tags, 40),
+      });
+      const detailOutput = computed(() => selectedLog.value?.category !== 'ai' ? selectedLog.value?.output : !showLegacyAiContent.value ? null : {
+        keywords: keywordStrings(selectedLog.value.output?.keywords, 30), dropped_sample: keywordStrings(selectedLog.value.output?.dropped_sample, 10),
+      });
+      const usageFields = ['known_input_tokens', 'known_output_tokens', 'known_total_tokens', 'reported_requests', 'unreported_requests', 'complete'];
+      const usageStatusLabel = computed(() => ({unknown: '用量未知', not_sent: '未发出请求', reported: '完整报告', incomplete: '报告不完整（包含未报告或部分报告）'}[jobDiagnostics.value.usage_status]));
+      const planFields = ['provider_name', 'model_key', 'display_name', 'source_index', 'candidate_index', 'pool_name', 'pool_position', 'fallback_depth', 'context_window', 'agent_context_window', 'provider_context_window', 'model_context_window', 'max_output_tokens', 'limiting_factors', 'input_tokens', 'input_budget', 'message_overhead', 'output_reserve', 'safety_margin', 'estimator_source', 'exact', 'reason', 'reason_message'];
+      const displayPlanValue = value => value === null || value === undefined ? '未知' : Array.isArray(value) ? value.join(', ') : typeof value === 'boolean' ? (value ? '是' : '否') : value;
       const continueRunning = ref(false);
       const continueStatus = ref('');
       const continueOutput = ref('');
@@ -414,7 +445,7 @@
 
       const continueCandidate = computed(() => {
         const job = selectedLog.value;
-        if (!job || job.category !== 'ai' || !RESUMABLE_TASK_TYPES.has(job.task_type)) return null;
+        if (!job || job.can_continue !== true || job.category !== 'ai' || !RESUMABLE_TASK_TYPES.has(job.task_type)) return null;
         if (!['succeeded', 'failed', 'partial', 'cancelled'].includes(job.status)) return null;
         const snapshot = job.candidate_snapshot;
         const candidates = snapshot && Array.isArray(snapshot.candidates) ? snapshot.candidates : [];
@@ -494,7 +525,13 @@
         } catch(e) {}
       };
 
+      const closeDetail = () => {
+        ++detailGeneration; modalOpen.value = false; selectedLog.value = null; detailLoading.value = false;
+      };
       const showDetail = async (log) => {
+        if (detailDisposed) return;
+        const generation = ++detailGeneration;
+        const current = () => !detailDisposed && generation === detailGeneration && modalOpen.value;
         modalOpen.value = true;
         selectedLog.value = null;
         continueRunning.value = false;
@@ -512,12 +549,14 @@
           try {
             const res = await fetch('/api/dashboard/ai/jobs/' + encodeURIComponent(log.job_id));
             const payload = await res.json();
+            if (!current()) return;
             if (!res.ok || payload.ok === false) throw new Error(payload.error || '加载详情失败');
             selectedLog.value = { ...log, ...payload.data, category: 'ai' };
           } catch (e) {
+            if (!current()) return;
             selectedLog.value = { ...log, detail_error: e.message || '详情已清理或不存在' };
           } finally {
-            detailLoading.value = false;
+            if (current()) detailLoading.value = false;
           }
           return;
         }
@@ -530,24 +569,30 @@
         try {
           const res = await fetch(`/api/dashboard/logs/${log.id}`);
           if (!res.ok) throw new Error('加载详情失败');
-          selectedLog.value = await res.json();
+          const detail = await res.json();
+          if (current()) selectedLog.value = detail;
         } catch(e) {
+          if (!current()) return;
           window.toast('加载日志详情失败');
           modalOpen.value = false;
         } finally {
-          detailLoading.value = false;
+          if (current()) detailLoading.value = false;
         }
       };
 
       const refreshAiJobDetail = async (jobId) => {
+        const generation = detailGeneration;
+        if (detailDisposed || !modalOpen.value || selectedLog.value?.job_id !== jobId) return;
         const response = await fetch('/api/dashboard/ai/jobs/' + encodeURIComponent(jobId));
         const payload = await response.json();
+        if (detailDisposed || generation !== detailGeneration || !modalOpen.value || selectedLog.value?.job_id !== jobId) return;
         if (!response.ok || payload.ok === false) throw new Error(payload.error || '刷新任务详情失败');
         selectedLog.value = { ...selectedLog.value, ...payload.data, job_id: jobId, category: 'ai', attempt_count: (payload.data.attempts || []).length };
       };
 
       const continueWithNextModel = async () => {
         const parent = selectedLog.value;
+        if (parent?.can_continue !== true || !RESUMABLE_TASK_TYPES.has(parent.task_type)) return;
         const candidate = continueCandidate.value;
         if (!parent || !candidate || continueRunning.value) return;
         continueRunning.value = true;
@@ -721,18 +766,21 @@
       const cancelAiJob = async () => {
         const job = selectedLog.value;
         if (!job || !job.job_id || cancelRunning.value) return;
+        const generation = detailGeneration;
+        const current = () => !detailDisposed && generation === detailGeneration && modalOpen.value && selectedLog.value?.job_id === job.job_id;
         cancelRunning.value = true;
         cancelNotice.value = '';
         try {
           const res = await window.csrfFetch('/api/dashboard/ai/jobs/' + encodeURIComponent(job.job_id) + '/cancel', { method: 'POST' });
           const payload = await res.json().catch(() => ({}));
+          if (!current()) return;
           if (!res.ok || payload.ok === false) throw new Error(window.errorText(payload, res));
           cancelNotice.value = '已请求取消，任务会在下一次心跳后停止';
           selectedLog.value = { ...job, cancel_requested: true };
         } catch (e) {
-          cancelNotice.value = e.message || '取消失败';
+          if (current()) cancelNotice.value = e.message || '取消失败';
         } finally {
-          cancelRunning.value = false;
+          if (current()) cancelRunning.value = false;
         }
       };
 
@@ -754,6 +802,7 @@
       });
 
       onUnmounted(() => {
+        detailDisposed = true; closeDetail();
         clearInterval(refreshInterval);
       });
 
@@ -761,6 +810,8 @@
         items, loading, error, page, totalPages, totalItems, filters, autoRefresh,
         taskTypeOptions,
         modalOpen, detailLoading, selectedLog, modalTitle,
+        jobDiagnostics, showLegacyAiContent, detailInput, detailOutput, usageStatusLabel, usageFields, planFields, displayPlanValue,
+        closeDetail, refreshAiJobDetail,
         continueCandidate, continueRunning, continueStatus, continueOutput, continueError,
         cancelRunning, cancelNotice, cancelAiJob,
         applyFilter, handlePageChange, showDetail, continueWithNextModel,

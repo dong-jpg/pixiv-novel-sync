@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <title>{% block title %}Pixiv 小说同步器{% endblock %}</title>
 
-  <script src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js" integrity="sha384-Z9a2xA0EIaURxthVmeQmPrgSC05eG8Lch8X4Y2+lXpTg9wcxPj2m3QNurDl5hLiS" crossorigin="anonymous"></script>
+  <script nonce="{[ csp_nonce() ]}" src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js" integrity="sha384-Z9a2xA0EIaURxthVmeQmPrgSC05eG8Lch8X4Y2+lXpTg9wcxPj2m3QNurDl5hLiS" crossorigin="anonymous"></script>
 
   <style>
     :root {
@@ -217,7 +217,7 @@
   {# Tailwind 生成的静态 CSS，改模板类名后用 python scripts/build_tailwind_css.py 重生成（会顺带更新 ?v=）。
      必须是 <head> 的最后一个样式：原 Play CDN 把生成的 <style> 追加在 head 末尾，同权重时工具类
      压过上面的 library-* 与页面 extra_head 规则，挪到前面会改变层叠结果。 #}
-  <link rel="stylesheet" href="/static/css/tailwind.css?v=b402e990f1a2">
+  <link rel="stylesheet" href="/static/css/tailwind.css?v=1f9f6bc57a6c">
 </head>
 <body class="antialiased {% block body_class %}{% endblock %}">
 
@@ -257,7 +257,7 @@
 
   {% include 'vue_components.html' ignore missing %}
 
-  <script>
+  <script nonce="{[ csp_nonce() ]}">
     // 全站共用的 CSRF 助手。
     //
     // 鉴权网关（webapp.py:_check_auth）对 POST/PUT/PATCH/DELETE 强制校验
@@ -410,7 +410,10 @@
         const response = await window.csrfFetch(url, options);
         const data = await response.json().catch(() => ({}));
         if (!response.ok || data.ok === false) {
-          throw new Error(window.errorText(data, response));
+          const error = new Error(window.errorText(data, response));
+          error.status = response.status;
+          error.data = data.data;
+          throw error;
         }
         return data.data;
       },

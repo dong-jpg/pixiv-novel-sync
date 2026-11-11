@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..ai.usage import summarize_usage
+
 
 def _clamp_log_page(page: int, page_size: int) -> tuple[int, int]:
     """日志分页夹到合法范围，避免 page_size=0 时除零。"""
@@ -235,7 +237,7 @@ class TasksMixin:
         rows = self.conn.execute(
             f"""
             SELECT job_id, task_type, status, started_at, finished_at,
-                   error_message, created_at,
+                   error_message, created_at, validation_status, network_request_count,
                    (julianday(finished_at) - julianday(started_at)) * 86400 AS duration_seconds
             FROM ai_jobs
             WHERE {where_clause}
@@ -267,6 +269,11 @@ class TasksMixin:
                 "finished_at": r.get("finished_at"),
                 "duration_seconds": r.get("duration_seconds"),
                 "error_message": r.get("error_message"),
+                "validation_status": r.get("validation_status") or "unknown",
+                "network_request_count": int(r.get("network_request_count") or 0),
+                "usage_summary": summarize_usage(
+                    attempts, network_request_count=int(r.get("network_request_count") or 0),
+                ),
                 "attempt_count": len(attempts),
                 "route_summary": self._route_summary(attempts),
                 "is_auto_sync": False,

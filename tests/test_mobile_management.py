@@ -40,10 +40,32 @@ def test_management_templates_render_without_loading_server_configuration(name):
     app.jinja_env.variable_start_string = "{["
     app.jinja_env.variable_end_string = "]}"
     with app.test_request_context("/dashboard/settings/system"):
-        html = render_template(name, task_labels={})
+        html = render_template(name, task_labels={}, csp_nonce=lambda: "test-nonce")
     assert '<div id="app"' in html
     assert "initVueApp({" in html
     assert "{%" not in html
+
+
+@pytest.mark.parametrize("url,name", [
+    ("/dashboard/settings/models", "dashboard_settings_models.html"),
+    ("/dashboard/settings/agents", "dashboard_settings_agents.html"),
+    ("/dashboard/logs", "dashboard_logs.html"),
+])
+def test_ai_task_old_urls_render_with_real_shared_scripts_and_csp(url, name):
+    app = Flask(__name__, template_folder=str(TEMPLATES))
+    app.jinja_env.variable_start_string = "{["
+    app.jinja_env.variable_end_string = "]}"
+    with app.test_request_context(url):
+        html = render_template(name, task_labels={}, csp_nonce=lambda: "test-nonce")
+    assert '<div id="app"' in html
+    for script in re.findall(r"<script\b([^>]*)>", html):
+        assert 'nonce="test-nonce"' in script
+
+
+def test_group_reorder_targets_remain_touch_sized_at_desktop_width():
+    html = source("dashboard_settings_models.html")
+    rule = css_rule(html, '.management-models button[id^="pool-member-"]')
+    assert "min-width: 44px" in rule and "min-height: 44px" in rule
 
 
 def test_pending_retry_belongs_to_the_error_state_and_is_read_only():
@@ -73,6 +95,23 @@ def test_model_editor_focus_targets_and_feedback_are_in_the_action_panels():
     assert 'id="pool-editor-title"' in html and 'tabindex="-1"' in html
     assert "aiMessages['provider-' + provider.id]" in html
     assert "aiMessages['pool-list']" in html
+    assert "workspace.view === 'providers'" in html
+    assert "workspace.view === 'groups'" in html
+    assert 'id="workspace-providers"' in html
+
+
+def test_draft_navigation_uses_shared_modal_and_only_transient_operation_storage():
+    html = source(PAGES[1])
+    modal = re.search(r'<app-modal\b[^>]*title="保留未保存的修改？"[\s\S]*?</app-modal>', html)
+    assert modal
+    for action in ("save", "discard", "cancel"):
+        assert f'resolveDraft(\'{action}\')' in modal[0]
+    assert "createDraftGuard" in html
+    assert "removeEventListener('beforeunload', beforeUnload)" in html
+    writes = re.findall(r"localStorage\.setItem\(([^;]+)\)", html)
+    assert writes
+    assert all("modelSyncStorageKey(providerId), operationId" in call for call in writes)
+    assert "sessionStorage" not in html
 
 
 def test_failed_pool_selection_shows_its_error_and_get_retry_before_disabled_fields():

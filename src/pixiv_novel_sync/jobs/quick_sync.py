@@ -120,7 +120,8 @@ def run_scheduled_user_backup(
                 f"用户 {offset + 1}-{offset + len(batch)}/{total_users}, 本轮 {len(batch)} 人 ===",
             )
 
-        totals = {"novels": 0, "skipped": 0, "assets_downloaded": 0, "failed_users": 0}
+        totals = {"novels": 0, "skipped": 0, "skipped_archived": 0, "assets_downloaded": 0, "failed_users": 0}
+        full_refresh_users = 0
         stopped = False
         completed_users = 0
         failed_users = 0
@@ -162,6 +163,8 @@ def run_scheduled_user_backup(
                 incomplete = True
                 incomplete_reasons.add(str(stats.get("aborted_reason") or "user_backup_incomplete"))
             failed_novels += int(stats.get("failed", 0) or 0)
+            if stats.get("full_refresh"):
+                full_refresh_users += 1
             for key in totals:
                 if key == "failed_users":
                     continue
@@ -187,7 +190,8 @@ def run_scheduled_user_backup(
                 },
             )
 
-        result: dict[str, Any] = {**totals, "stopped": stopped}
+        # full_refresh_users：本轮里走「全部重抓」的作者数，其余作者只补没归档完整的
+        result: dict[str, Any] = {**totals, "full_refresh_users": full_refresh_users, "stopped": stopped}
         if failed_novels:
             result["failed"] = failed_novels
         if incomplete:

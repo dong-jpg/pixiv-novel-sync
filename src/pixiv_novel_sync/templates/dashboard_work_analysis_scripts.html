@@ -1,0 +1,24 @@
+{% include "dashboard_ai_controls.html" %}
+<script nonce="{[ csp_nonce() ]}" src="/static/js/work_analysis.js"></script>
+<script nonce="{[ csp_nonce() ]}">
+window.initVueApp({setup() {
+  const controller = window.WorkAnalysis.createController(Vue);
+  const hide = event => event.persisted ? controller.suspend() : controller.dispose();
+  const show = event => { if (event.persisted) controller.restore(); };
+  Vue.onMounted(() => {
+    controller.mount();
+    document.addEventListener('visibilitychange', controller.visibility);
+    window.addEventListener('pagehide', hide);
+    window.addEventListener('pageshow', show);
+    window.addEventListener('beforeunload', controller.beforeUnload);
+  });
+  Vue.onUnmounted(() => {
+    controller.dispose();
+    document.removeEventListener('visibilitychange', controller.visibility);
+    window.removeEventListener('pagehide', hide);
+    window.removeEventListener('pageshow', show);
+    window.removeEventListener('beforeunload', controller.beforeUnload);
+  });
+  return controller;
+}});
+</script>

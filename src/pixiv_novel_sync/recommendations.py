@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import logging
 import math
 from collections.abc import Callable
 from typing import Any
@@ -13,8 +14,12 @@ from .settings import Settings
 from .storage_db import Database
 from .sync.utils import retry_on_pixiv_error
 
+logger = logging.getLogger(__name__)
+
 # 单个系列拉取章节时的安全翻页上限，避免异常或循环的 next_url 造成无限翻页
 _SERIES_PAGE_SAFETY_LIMIT = 50
+# 推荐条目保留最近这么多轮（之前的、仍是 new 且没有任何反馈的才清，见 prune_recommendation_items）
+RECOMMENDATION_KEEP_RUNS = 30
 _GENERIC_OVERLAP_TAGS = {"原创", "R-18", "R-18G", "小说"}
 
 
@@ -176,6 +181,12 @@ class RecommendationService:
                 for item in pending_items:
                     self.db.upsert_recommendation_item(item)
                 self.db.update_recommendation_run(run_id, "succeeded", stats=stats)
+            try:
+                pruned = self.db.prune_recommendation_items(keep_runs=RECOMMENDATION_KEEP_RUNS)
+                if pruned:
+                    stats["pruned_items"] = pruned
+            except Exception as exc:  # 清理失败不影响本轮已发布的结果
+                logger.warning("清理旧推荐条目失败: %s", exc)
             return {"run_id": run_id, "stats": stats}
         except InterruptedError:
             # 用户取消：不写任何 item，仅把 run 标记为 cancelled

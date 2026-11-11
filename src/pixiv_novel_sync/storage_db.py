@@ -22,6 +22,7 @@ from .storage.ai.core import AiCoreMixin
 from .storage.ai.catalog import CatalogMixin
 from .storage.ai.model_sync import ModelSyncStorageMixin
 from .storage.ai.pools import PoolsMixin
+from .storage.work_analysis import WorkAnalysisMixin
 
 
 def prepare_schema(db: Any) -> Any:
@@ -53,6 +54,7 @@ class Database(
     CatalogMixin,
     ModelSyncStorageMixin,
     PoolsMixin,
+    WorkAnalysisMixin,
     SchemaMixin,
     DatabaseConnection,
 ):

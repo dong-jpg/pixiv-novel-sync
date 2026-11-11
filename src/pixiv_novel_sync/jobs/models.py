@@ -29,6 +29,7 @@ class JobType(str, Enum):
     USER_BACKUP = "user_backup"
     PREFERENCE_ANALYZE = "preference_analyze"  # Phase 7.6
     RECOMMENDATION_RUN = "recommendation_run"  # Phase 7.6
+    WORK_ANALYSIS = "work_analysis"
 
 
 @dataclass(slots=True)
@@ -59,6 +60,8 @@ class JobState:
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
+    shared_waiting: bool = False
+    shared_priority: int | None = None
 
     @property
     def task_types(self) -> list[str]:

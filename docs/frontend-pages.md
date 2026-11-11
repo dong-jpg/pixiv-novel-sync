@@ -2,11 +2,22 @@
 
 本文档记录 Library OS 前端页面、模板、主要接口与交互。前端重写保持 Flask/Jinja 页面路由不变。
 
-> AI 写作相关页面（`/dashboard/ai` 项目/章节/笔记、`/dashboard/wizard`、AI 阅读页、成人润色设置页）随 AI 写作模块移到 `ai-writing` 分支维护，main 分支不再包含；main 只保留模型目录 / 模型池 / Agent 绑定等 AI 基础设施页面。
+> AI 写作相关页面（`/dashboard/ai` 项目/章节/笔记、`/dashboard/wizard`、AI 阅读页、成人润色设置页）随 AI 写作模块移到 `ai-writing` 分支维护，main 分支不再包含。main 保留模型目录 / 模型池 / Agent 绑定等基础设施页面，另有原偏好页内的手动作品分析独立视图，不恢复写作或个人画像 AI 总结。
 
 ## 本轮交互更新（2026-10-08，main）
 
-移动优先改造于2026-10-09从 `codex/mobile-first-main` 集成到 `main`；登录、推荐、阅读与管理的实际验收和未部署边界见 [移动改造报告](archive/MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。下文契约描述 `main` 代码，不等同于生产站点已经更新。
+### AI 设置第一阶段（2026-11-03，重构分支）
+
+- `/dashboard/settings/models` 保留 URL，`view=providers|models|groups` 三视图与 `provider=<id>` 筛选随普通导航/刷新/历史往返保存；缺失 Provider 显示明确错误，不伪造空目录。路由组仍使用原模型池整数 ID/API，仅支持顺序尝试。
+- 共享模型选择器保留不可用当前值，名称相同也按 Provider/模型身份区分；打开、过滤、目录刷新、关闭都不写配置。组内上/下移动使用真实有序 members 和 `expected_version` CAS；保存/丢弃/取消草稿确认、冲突保留与读回失败分开处理。
+- Provider onboarding 区分保存成功、同步 pending、同步失败、启停应用冲突和成功。初始启停只对完整已保存目录 revision 应用；空目录须确认，运行时可取消。Key、表单和选择不写浏览器持久存储；只有既存 operation recovery key 保存 operation ID。
+- `/dashboard/settings/agents` 标题为“AI 任务”，编辑仅 PUT 用户触碰且改变的允许字段；绑定作为完整互斥 tuple 提交，未触碰不重写。手工固定模型明确显示未经验证，保留零/false 和旧设置。
+- 配置候选链 GET 与输入预检 POST 分开。两处已保存任务选择器共享候选链读取：切换立即清除旧链/错误，空选项和离开使在途读取失效，旧响应不能覆盖新任务；编辑、显式刷新和保存后的刷新保持单次预期读取。预检显示已保存 system prompt 和完整测试文本，只显式覆盖勾选参数；输入改变、任务切换、清除或离开使迟到结果失效。不读取小说、不调用 Provider、不创建 job；大窗口/短窗口逐候选分别显示。
+- `/dashboard/logs` 显示服务器 v1/v2 安全预算、validation_status、已报告/未知/不完整用量；不显示私有快照 hash/输入指纹、不自行累计 token。main 无可执行 Continue；旧 job 详情响应不能覆盖新选项或重开关闭的弹窗。
+
+真实离线 Vue/浏览器375/768/1440验证与真机软键盘、真实 Provider1M准入验收分别记录在 [项目现状](STATUS.md)，本页不把 Node VM 当作浏览器测量。
+
+移动优先改造于2026-10-09从 `codex/mobile-first-main` 集成到 `main`；登录、推荐、阅读与管理的实际验收和未部署边界见 [移动改造报告](archive/MOBILE_IMPLEMENTATION_REPORT_2026-10-08.md)。下文记录 `main` 功能范围及明确标注的审计分支后续修复，不等同于已合并或生产站点已经更新，当前版本以 [项目现状](STATUS.md) 为准。
 
 - 偏好页增量分析不再发送固定 `name`；未提供的名称/描述由服务端保留。
 - Agent 设置表单可编辑 `context_window` 和 `top_p`；编辑时保留合法的零值，不用默认值覆盖 `temperature=0` / `top_p=0`。
@@ -27,12 +38,13 @@
 | `/dashboard/series/<id>` | `src/pixiv_novel_sync/templates/dashboard_series_detail.html` | 系列详情 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/users/<id>` | `src/pixiv_novel_sync/templates/dashboard_user_detail.html` | 作者详情和作者小说 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/pending-deletions` | `src/pixiv_novel_sync/templates/dashboard_pending_deletions.html` | 待确认删除队列 | 已接入 `library-page` / `library-page-header` |
-| `/dashboard/logs` | `src/pixiv_novel_sync/templates/dashboard_logs.html` | 同步任务与 AI 创作任务日志 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/logs` | `src/pixiv_novel_sync/templates/dashboard_logs.html` | 同步任务与 AI 任务日志 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings/sync` | `src/pixiv_novel_sync/templates/dashboard_settings_sync.html` | 同步开关、限速分组、调度表与手动触发 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings/models` | `src/pixiv_novel_sync/templates/dashboard_settings_models.html` | Provider、模型目录、模型池 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings/agents` | `src/pixiv_novel_sync/templates/dashboard_settings_agents.html` | 普通 Agent 绑定与候选模型链 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/settings/system` | `src/pixiv_novel_sync/templates/dashboard_settings_system.html` | 图片缓存、救援 Token、导出、数据保留期 | 已接入 `library-page` / `library-page-header` |
 | `/dashboard/preferences` | `src/pixiv_novel_sync/templates/dashboard_preferences.html` | 偏好画像与推荐 | 已接入 `library-page` / `library-page-header` |
+| `/dashboard/preferences?view=work-analysis` | `dashboard_preferences.html` 内 `dashboard_work_analysis.html` | 手动已归档单作品内容报告 | 复用 Library OS；不替换默认偏好页 |
 | `/dashboard/novels?category=rescue` | `src/pixiv_novel_sync/templates/dashboard_novels.html` | 拯救成功小说与系列 | 已接入 `library-page` / `library-page-header` |
 
 ## Shared layout
@@ -233,7 +245,7 @@ APIs:
 
 Template: `dashboard_logs.html`
 
-用途：任务日志列表和详情弹窗。任务类型分为“同步任务”和“AI 创作任务”，默认保留最近 14 天（`sync.task_log_retention_days`，两张表共用），天数下拉提供 1 / 3 / 7 / 14 天；AI 任务支持类型、状态和时间筛选。AI 详情展示候选快照 hash、PromptBudget、实际 Provider/模型、模型池、attempt 错误与耗时；`partial` 单独标记为“部分完成”。存在未尝试候选时，用户可显式选择“使用下一个模型继续”，页面不会自动重试。
+用途：任务日志列表和详情弹窗。任务类型分为“同步任务”和“AI 任务”，默认保留最近 14 天（`sync.task_log_retention_days`，两张表共用），天数下拉提供 1 / 3 / 7 / 14 天；AI 任务支持类型、状态和时间筛选。AI 详情展示服务器安全 v1/v2 计划、Provider/模型、路由组、attempt 错误/耗时、业务校验和用量摘要；`partial` 单独标记为“部分完成”。不显示快照 hash 或输入指纹；main continue 不可用，不提供可执行继续按钮。
 
 同步任务的黄色“部分完成”只留给**真出了问题**的轮次：`aborted_reason`（熔断中止）或 `truncated`（分页触顶）。关注作者按 `user_last_synced` 轮转，每轮只覆盖 `users_limit` 个作者、必然带 `incomplete`，这种轮次由 `rotation_pending` 标记为绿色“成功”——否则耗时最大的任务永远是黄色，真正的中止就被淹没了。判定在 `webapp.py:_task_log_status_for_stats`，只置 `incomplete` 而不说明原因的站点仍然算 partial。
 
@@ -305,7 +317,7 @@ APIs:
 
 Template: `dashboard_preferences.html`
 
-用途：偏好画像、推荐搜索计划、推荐反馈、屏蔽管理。
+默认用途：偏好画像、推荐搜索计划、推荐反馈、屏蔽管理。无 `view`（或非 `work-analysis` 值）保持原页面与接口。
 
 默认先展示与首页相同的推荐卡片/过滤/分页；画像、增量分析和搜索管理折叠在结果之后。画像读取独立于推荐，不因画像失败挡住推荐；画像错误在折叠内容之外持续提示，并提供只读重试。推荐部分失败（例如作者屏蔽已成功但反馈失败）必须明确说明并重新读取实际列表。
 
@@ -313,6 +325,19 @@ APIs:
 
 - Preference profile APIs。
 - Recommendation APIs。
+
+#### 作品分析独立视图
+
+`/dashboard/preferences?view=work-analysis` 包含 `dashboard_work_analysis.html`、`dashboard_work_analysis_scripts.html`，由 `static/js/work_analysis.js` 驱动；使用 [Work Analysis APIs](frontend-api-contract.md#work-analysis-apis)。小说/系列详情链接用 `source_kind/source_id` 预选单篇或系列，`analysis_id` 可选择已有任务；默认偏好视图不加载作品报告或自动启动分析。
+
+- 显示 Agent 当前绑定及不可用原因，名称相同也不混淆身份，不静默替换当前选择。用户显式填请求数/计划 token/活跃秒预算（初始为空），核对正文范围、章序、缺章/空章、连载/unknown、全部可能外发的 Provider/模型，再确认外发和预算。预览不解密 Key、不联网或创建 job，不能当作真实服务可用证明。
+- 源、章序、Agent、输出上限或预算变化使旧预览及同意失效；主动刷新预览也需重新确认。不用收藏/追更推断已读或喜欢，不把输入覆盖当成原作完整、汇总完成或解释正确。
+- 任务/单元分页和轮询只展示安全身份、计数、状态/reason、已报告/未知用量与覆盖；不在进度里输出正文或报告。暂停、取消、同步让位分开，增额不重置已花预算。新恢复是作品业务检查点，不调用旧 AI job continue。
+- 写入结果未知时保留原请求；创建仅能显式重试同一 body/幂等 key，不能另起重复分析。控制写入先 GET 核对当前状态，GET 不是原命令的回执，也不能证明写入所有权；仅版本仍为 `expected_version` 时允许明确重试同一 CAS。较旧读取不得回退状态；写成功、读回失败只重试读取。未知状态下离页有提示，重载后须先核对已有任务，原请求不持久保存。
+- 报告/短证据默认折叠、主动读取、文本节点渲染；不使用 `v-html`，正文/报告/Key/同意不进 URL 或 localStorage。接受删除墓碑后清空报告/单元/证据并撤销在途读取，迟到响应不得复活敏感内容。
+- 证据链接为 `/dashboard/novels/<id>?analysis_id=<run>&evidence_id=<id>#work-analysis-evidence`，只携带 ID。阅读页经受保护接口校验同 hash 与服务器 code point 偏移，渲染有界前文/引文/后文；不以浏览器 UTF-16 下标推算。正文改变或删除返回 410，不高亮新版本；同 hash 元数据刷新仍可定位，系列新增章另标 `archive_outdated`。证据标题不能被阅读顶栏遮挡。
+
+实际三宽度浏览器、视觉与真机/软键盘验收边界见 [项目现状](STATUS.md)；Node VM 不代替真实浏览器或设备。
 
 ### `/dashboard/novels?category=rescue`
 
@@ -341,17 +366,17 @@ API：`GET /api/dashboard/rescues`。
 
 ### Pixiv 救援油猴脚本
 
-文件：`userscripts/pixiv-rescue.user.js`（v0.12.0，无外部依赖）。安装、Token、故障排查与各版本行为见 [救援功能用户指南](RESCUE_USER_GUIDE.md)。
+文件：`userscripts/pixiv-rescue.user.js`（v0.12.2，无外部依赖）。安装、Token、故障排查与各版本行为见 [救援功能用户指南](RESCUE_USER_GUIDE.md)，当前发布、部署与验收状态统一见 [项目现状](STATUS.md)。
 
 用途：当 Pixiv 原小说或系列页面删除、受限或不存在时，通过只读救援 API 在脚本自己的全屏阅读层里显示私人备份内容，并以“拯救数据”醒目标记来源；收藏 / 追更列表页把失效卡片重建为备份卡片；手机站新作页的「好P友新作」tab 改为「拯救系列」。
 
 生效范围与部署：
 
-- `@match` 覆盖小说页、系列页、收藏列表、追更列表与新作页（含 `/en/`、`/zh/` 等语言前缀），另有一条 `https://www.pixiv.net/*` 兜底；脚本内部 `routeRescue` 按路径严格判断，其余页面立即返回。
+- `@match` 覆盖小说页、系列页、收藏列表、追更列表与新作页，另有一条 `https://www.pixiv.net/*` 兜底；脚本内部 `routeRescue` 按路径严格判断，0.12.2 除 `/en/`、`/zh/` 外也识别 `/zh-tw/` 等带地区的语言前缀，其余页面立即返回。
 - 默认服务地址是 `DEFAULT_API_ORIGIN`（`https://pixiv.dongboapp.com`），脚本存储键 `pixivRescueOrigin` 有值时覆盖它。**换域名部署时必须同时改 `DEFAULT_API_ORIGIN`（或设置 `pixivRescueOrigin`）和 `@connect`**，否则脚本管理器会拦截跨域请求；`@name` / `@namespace` 保持不变，否则升级会被当成另一份脚本。
 - 通过油猴菜单「设置或更新救援 Token」/「清除救援 Token」维护 Token，存在 `GM_setValue`（键 `pixivRescueToken`）。
 
-失效判定（保守策略，正常页面不介入）：
+失效判定（保守策略，正常原内容保持不变）：
 
 - 小说 / 系列页先请求 Pixiv 自己的 `/ajax/novel/<id>`、`/ajax/novel/series/<id>`：作品还在就不请求备份；只有 404/410 才算确认失效，403 等歧义状态按「状态不明」静默查备份，查到才打开阅读层。
 - 从救援卡片点进来的链接带 `pixiv_rescue=1`，直接打开阅读层。
@@ -359,12 +384,14 @@ API：`GET /api/dashboard/rescues`。
 
 安全边界：
 
-- 正常可阅读的小说 / 系列页不请求救援 API，也不改写原 DOM；列表页没有失效卡片时只发一次 Token 探测请求（`lookup?novel_ids=1`），用于提示 Token 缺失或失效。
-- 救援 Token 只通过 `Authorization: Bearer` 请求头发送，不写入页面或 Cookie。
+- 正常可阅读的小说 / 系列页不请求备份内容，也不替换原内容；列表页可做一次 Token 探测请求（`lookup?novel_ids=1`），用于提示 Token 缺失或失效，只重建失效卡片。手机新作页的「拯救系列」tab 是专门展示救援系列的例外，不将它描述为零请求页面。
+- 救援 Token 只保存在脚本特权存储、通过 `Authorization: Bearer` 请求头发送，不写入 Pixiv 页面 DOM、Cookie 或查询参数；`pixiv_rescue=1` 只是打开阅读层的标记，不携带 Token。
 - API 地址只来自 `DEFAULT_API_ORIGIN` 或脚本存储 `pixivRescueOrigin`，不接受页面或响应提供的其他来源地址。
 - 正文只通过 `textContent` 和新建节点渲染，只解析 Pixiv 自身的标记（`[newpage]`、`[[rb:]]`、`[[jumpuri:]]` 等，链接只放行 http/https），不解释备份正文中的 HTML。
 - 系列先加载目录，超过 100 章时可继续加载后续目录页；只有点击某一章时才请求该章正文。
 - 正文接口超时 30 秒，其余请求 15 秒；接口失败时在阅读层显示错误与重试，Pixiv 原页面保持不变。
+
+0.12.2 交互与性能修复（不改版式，尚未完成本版设备验收）：正文分页首尾空行用线性扫描裁剪，避免大量空行卡顿；lookup 应答落到卡片前重新核对作品 ID，丢弃已被 SPA 复用卡片的旧应答；系列目录第一次加载失败也提供「重试」；列表页每 500ms 快速扫描仅限进入该页后的初始 15 秒。缺少可选 `GM_registerMenuCommand` / `GM_setValue` 时只在脚本内部降级，不往页面挂空函数；缺少后者时明确提示无法保存 Token。
 
 ### `/token-login`
 

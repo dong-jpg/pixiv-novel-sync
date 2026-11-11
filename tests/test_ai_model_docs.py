@@ -68,15 +68,20 @@ def test_frontend_docs_cover_model_routing_operations_and_privacy() -> None:
         "模型目录",
         "模型池",
         "partial",
-        "下一个模型",
+        "main continue 不可用",
+        "输入预检",
+        "服务器安全 v1/v2 计划",
     ):
         assert text in FRONTEND_PAGES
 
 
-def test_unified_requirements_record_completed_model_routing_line() -> None:
-    assert "AI 模型目录、模型池与统一路由第一阶段 Task 1-22 已完成" in (
-        UNIFIED_REQUIREMENTS
-    )
+def test_unified_requirements_distinguish_historical_foundation_and_current_phase() -> None:
+    assert "`CURRENT` 历史模型路由 Task1-22 提供" in UNIFIED_REQUIREMENTS
+    assert "第二阶段仅扩展手动单作品内容报告" in UNIFIED_REQUIREMENTS
+    assert "个人画像 AI 总结、完整多画像、偏好 SSE、推荐计划持久化和写作能力仍为 OUT" in UNIFIED_REQUIREMENTS
+    assert "第二阶段整书/系列 XP 分析 Agent、证据和推荐闭环仍未实现" not in UNIFIED_REQUIREMENTS
+    assert "continue 保留409“任务类型暂不支持”" in UNIFIED_REQUIREMENTS
+    assert "UI 无可执行继续按钮" in UNIFIED_REQUIREMENTS
     assert "当前状态：第一阶段 Task 1-22 已完成" in AI_UNIFIED_REQUIREMENTS
     assert "Task 4（有序池、后备图、版本 CAS）是当前开发入口" not in (
         UNIFIED_REQUIREMENTS

@@ -1,5 +1,19 @@
+import inspect
+import json
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import pytest
+import requests
+
 from pixiv_novel_sync.ai import service as service_facade
+from pixiv_novel_sync.ai.invocation import InvocationValidationError, invocation_messages, normalize_text_invocation
+from pixiv_novel_sync.ai.model_router import ModelRouteConflictError
+from pixiv_novel_sync.ai.models import AIStreamChunk
+from pixiv_novel_sync.ai.providers import AIProviderError
 from pixiv_novel_sync.ai.service import AIServiceError, AIWritingService
+from pixiv_novel_sync.storage.ai.core import AIJobConflictError
+from pixiv_novel_sync.storage_db import Database
 
 
 def test_ai_service_facade_exports_public_api() -> None:
@@ -10,3 +24,554 @@ def test_ai_service_facade_exports_public_api() -> None:
 def test_ai_service_facade_exports_conflict_error() -> None:
     assert issubclass(service_facade.AIConflictError, AIServiceError)
     assert "AIConflictError" in service_facade.__all__
+
+
+PAYLOAD = {"messages": [{"role": "user", "content": "INPUT_SENTINEL"}], "max_tokens": 50}
+COMPLETE_USAGE = {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12,
+                  "complete": True, "missing_reason": None}
+
+
+@pytest.fixture
+def invocation_env(tmp_path, monkeypatch):
+    class FakeSecrets:
+        def is_legacy_ciphertext(self, value):
+            assert value == "synthetic-cipher"
+            return False
+
+        def decrypt(self, value):
+            assert value == "synthetic-cipher"
+            return "synthetic-key"
+
+    def forbidden_network(*_args, **_kwargs):
+        raise AssertionError("real network forbidden")
+
+    monkeypatch.setattr(requests.Session, "request", forbidden_network)
+    service = AIWritingService(tmp_path / "facade.db", secret_manager=FakeSecrets())
+    db = service._db()
+    provider_id = db.create_ai_provider({
+        "name": "fake", "provider_type": "openai_compatible", "enabled": True,
+        "base_url": "https://provider.invalid/v1", "api_key_encrypted": "synthetic-cipher",
+        "context_window": 100000,
+    })
+    agent_id = db.create_ai_agent({
+        "name": "fake", "task_type": "general", "provider_id": provider_id,
+        "model": "fake-model", "system_prompt": "DO_NOT_INJECT", "context_window": 100000,
+    })
+
+    class FakeProvider:
+        events = [AIStreamChunk(type="delta", text="OUTPUT_SENTINEL"),
+                  AIStreamChunk(type="done", data={"finish_reason": "stop"})]
+        calls = 0
+        closed = 0
+        final_usage = COMPLETE_USAGE
+        before_guard = None
+        messages = None
+
+        def _post(self):
+            observer = Database(db.path)
+            try:
+                row = observer.conn.execute("SELECT * FROM ai_jobs ORDER BY id DESC LIMIT 1").fetchone()
+                saved = observer.get_ai_job(row["job_id"])
+                self.job_id = saved["job_id"]
+                self.owner_token = row["owner_token"]
+                assert saved["network_request_count"] == 1
+                assert saved["attempts"][0]["usage"]["requests"][0]["missing_reason"] == "pending"
+                if saved["input"]["retention_policy"] == "metadata_only":
+                    assert saved["input"]["input_fingerprint"] == saved["candidate_snapshot"]["plan"]["request_fingerprint"]
+                    assert saved["input"]["allowed_provider_ids"] == [provider_id]
+                    assert saved["input"]["snapshot_version"] == 2
+            finally:
+                observer.close()
+
+        def stream_generate(self, messages, model, temperature, top_p, max_tokens, *,
+                            request_guard=None, is_cancelled=None, on_usage=None, deadline=None):
+            self.messages = messages
+            if self.before_guard is not None:
+                self.before_guard()
+            ordinal = request_guard()
+            self.calls += 1
+            self._post()
+            try:
+                for event in self.events:
+                    if callable(event):
+                        event = event()
+                    if isinstance(event, BaseException):
+                        raise event
+                    if event is not None:
+                        yield event
+            finally:
+                self.closed += 1
+                if self.final_usage is not None:
+                    on_usage(ordinal, self.final_usage)
+
+    provider = FakeProvider()
+    monkeypatch.setattr(service.model_router, "_get_provider", lambda _config: provider)
+    try:
+        yield SimpleNamespace(service=service, db=db, provider=provider, agent_id=agent_id, provider_id=provider_id)
+    finally:
+        service.close()
+        db.close()
+
+
+def assert_no_raw_text(env, caplog):
+    rows = [dict(row) for row in env.db.conn.execute("SELECT * FROM ai_jobs")]
+    rows += [dict(row) for row in env.db.conn.execute("SELECT * FROM ai_job_model_attempts")]
+    assert "INPUT_SENTINEL" not in json.dumps(rows)
+    assert "OUTPUT_SENTINEL" not in json.dumps(rows)
+    assert "INPUT_SENTINEL" not in caplog.text and "OUTPUT_SENTINEL" not in caplog.text
+    for row in env.db.conn.execute("SELECT output_text, output_json FROM ai_jobs"):
+        assert row["output_text"] is None and row["output_json"] is None
+
+
+@pytest.mark.parametrize("mode", ["succeeded", "partial", "failed", "cancelled"])
+def test_invoke_text_enforces_retention_in_sql_not_just_projection(invocation_env, mode, caplog):
+    env = invocation_env
+    if mode == "failed":
+        env.provider.events = [AIProviderError("INPUT_SENTINEL", category="network")]
+    elif mode == "partial":
+        env.provider.events = [AIStreamChunk(type="delta", text="OUTPUT_SENTINEL"),
+                               AIProviderError("OUTPUT_SENTINEL", category="network")]
+    stopped = False
+    deltas, progress = [], []
+
+    def on_delta(text):
+        nonlocal stopped
+        deltas.append(text)
+        stopped = mode == "cancelled"
+
+    result = env.service.invoke_text(env.agent_id, PAYLOAD, on_delta=on_delta,
+                                    on_progress=progress.append, stop_requested=lambda: stopped)
+    assert result.job_status == mode
+    assert result.finish_state == ("failed_before_output" if mode == "failed" else mode)
+    assert result.output_text == ("" if mode == "failed" else "OUTPUT_SENTINEL")
+    assert deltas == ([] if mode == "failed" else ["OUTPUT_SENTINEL"])
+    assert len([item for item in progress if item.get("action") == "attempt"]) == 1
+    assert env.provider.messages == PAYLOAD["messages"]
+    assert env.provider.closed == 1 and not env.service.model_router._heartbeat_workers
+    assert result.validation_status == "not_requested"
+    assert result.usage_summary["known_total_tokens"] == 12
+    assert result.usage_summary["reported_requests"] == 1
+    assert result.attempts[0]["usage"]["requests"][0]["complete"] is True
+    saved = env.db.get_ai_job(result.job_id)
+    assert saved["input"]["input_chars"] == len("INPUT_SENTINEL")
+    assert saved["input"]["message_count"] == 1
+    assert saved["input"]["retention_policy"] == "metadata_only"
+    assert_no_raw_text(env, caplog)
+
+
+@pytest.mark.parametrize("field", ["retention_policy", "validator", "tools", "raw", "work_binding"])
+def test_invoke_text_has_no_retention_or_validator_escape(invocation_env, field):
+    env = invocation_env
+    assert set(inspect.signature(env.service.invoke_text).parameters) == {
+        "agent_id", "payload", "stop_requested", "deadline_at", "on_delta", "on_progress", "work_binding",
+    }
+    with pytest.raises(InvocationValidationError) as caught:
+        env.service.invoke_text(env.agent_id, {**PAYLOAD, field: "INPUT_SENTINEL"})
+    assert caught.value.code == "unsupported" and "INPUT_SENTINEL" not in str(caught.value)
+    assert env.db.conn.execute("SELECT count(*) FROM ai_jobs").fetchone()[0] == 0
+    assert env.provider.calls == 0
+
+
+@pytest.mark.parametrize("kind", ["missing", "disabled"])
+def test_invoke_text_never_falls_back_to_another_agent(invocation_env, kind):
+    env = invocation_env
+    requested_id = env.agent_id + 100 if kind == "missing" else env.agent_id
+    if kind == "disabled":
+        env.db.set_ai_agents_enabled([env.agent_id], False)
+    with pytest.raises(AIServiceError):
+        env.service.invoke_text(requested_id, PAYLOAD)
+    assert env.db.conn.execute("SELECT count(*) FROM ai_jobs").fetchone()[0] == 0
+    assert env.provider.calls == 0
+
+
+def test_invoke_text_empty_plan_is_auditable_without_network(invocation_env, caplog):
+    env = invocation_env
+    result = env.service.invoke_text(env.agent_id, {**PAYLOAD, "allowed_provider_ids": []})
+    assert result.job_status == "failed" and result.finish_state == "failed_before_output"
+    assert result.attempts == () and env.provider.calls == 0
+    saved = env.db.get_ai_job(result.job_id)
+    assert saved["network_request_count"] == 0
+    assert saved["input"]["allowed_provider_ids"] == []
+    assert saved["error_message"] == "no_eligible_candidate"
+    assert result.usage_summary["unreported_requests"] == 0
+    assert_no_raw_text(env, caplog)
+
+
+@pytest.mark.parametrize("later", [False, True])
+def test_invoke_text_deadline_is_validated_and_cannot_extend_server_limit(invocation_env, later):
+    env = invocation_env
+    now = datetime.now(timezone.utc)
+    caller_deadline = now + timedelta(minutes=60 if later else 2)
+    result = env.service.invoke_text(env.agent_id, PAYLOAD, deadline_at=caller_deadline.isoformat())
+    saved = env.db.get_ai_job(result.job_id)
+    deadline = datetime.fromisoformat(saved["route_deadline_at"]).replace(tzinfo=timezone.utc)
+    assert deadline <= now + timedelta(minutes=30, seconds=1)
+    if not later:
+        assert deadline == caller_deadline.replace(microsecond=0)
+    with pytest.raises(ValueError):
+        env.service.invoke_text(env.agent_id, PAYLOAD, deadline_at="INPUT_SENTINEL")
+    assert env.db.conn.execute("SELECT count(*) FROM ai_jobs").fetchone()[0] == 1
+
+
+def test_invoke_text_pre_cancelled_stops_before_any_request(invocation_env):
+    env = invocation_env
+    result = env.service.invoke_text(env.agent_id, PAYLOAD, stop_requested=lambda: True)
+    assert result.job_status == "cancelled" and result.output_text == ""
+    assert env.provider.calls == 0 and result.usage_summary["unreported_requests"] == 0
+
+
+@pytest.mark.parametrize("published", [False, True])
+@pytest.mark.parametrize("terminal_winner", [False, True])
+def test_deadline_attempt_write_failure_closes_attempt_before_job(
+    invocation_env, monkeypatch, caplog, published, terminal_winner,
+):
+    import sqlite3
+
+    env = invocation_env
+    clock = {"now": datetime(2020, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr("pixiv_novel_sync.ai.model_router._utc_now", lambda: clock["now"])
+    original_attempt = Database.finish_ai_model_attempt
+    original_job = Database.finish_ai_job_cas
+    faults, cleanup_writes, winner_rows = [], [], []
+
+    def finish(database, *args, **fields):
+        if fields.get("error_category") == "route_budget_exhausted" and not faults:
+            faults.append(1)
+            if terminal_winner:
+                job_id, attempt_index, owner_token = args[:3]
+                assert original_attempt(database, job_id, attempt_index, owner_token, "cancelled",
+                                        error_category="cancelled", finish_reason="cancelled")
+                assert original_job(database, job_id, owner_token, "cancelled", error_category="cancelled")
+                winner_rows.append(database.get_ai_job(job_id))
+            raise sqlite3.OperationalError("database is locked: INPUT_SENTINEL")
+        result = original_attempt(database, *args, **fields)
+        if fields.get("error_category") == "unexpected_error":
+            cleanup_writes.append(result)
+        return result
+
+    def expire():
+        clock["now"] = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        return AIStreamChunk(type="delta", text="UNPUBLISHED")
+
+    monkeypatch.setattr(Database, "finish_ai_model_attempt", finish)
+    env.provider.events = ([AIStreamChunk(type="delta", text="OUTPUT_SENTINEL")] if published else []) + [expire]
+    result = env.service.invoke_text(env.agent_id, PAYLOAD)
+    job = env.db.get_ai_job(result.job_id)
+    assert faults == [1]
+    expected_status = "cancelled" if terminal_winner else "partial" if published else "failed"
+    assert job["status"] == result.job_status == expected_status
+    assert [attempt["status"] for attempt in job["attempts"]] == [expected_status]
+    assert job["error_message"] == ("cancelled" if terminal_winner else "unexpected_error")
+    assert cleanup_writes == [not terminal_winner]
+    assert result.output_text == ("OUTPUT_SENTINEL" if published and not terminal_winner else "")
+    if terminal_winner:
+        # Iterator close may still report this request's usage, but cleanup must
+        # not overwrite any winning job or attempt terminal fields.
+        winner = winner_rows[0]
+        assert {key: value for key, value in job.items() if key not in {"attempts", "usage_summary"}} == {
+            key: value for key, value in winner.items() if key not in {"attempts", "usage_summary"}
+        }
+        assert [{key: value for key, value in attempt.items() if key != "usage"} for attempt in job["attempts"]] == [
+            {key: value for key, value in attempt.items() if key != "usage"} for attempt in winner["attempts"]
+        ]
+    assert result.usage_summary["known_total_tokens"] == 12
+    assert env.provider.calls == env.provider.closed == 1
+    assert not env.service.model_router._heartbeat_workers
+    assert_no_raw_text(env, caplog)
+
+
+@pytest.mark.parametrize("phase", ["pre_attempt", "midstream", "generator_close"])
+def test_metadata_only_cancellation_reason_covers_actual_terminal_paths(invocation_env, caplog, phase):
+    env = invocation_env
+    if phase == "generator_close":
+        agent = env.service._load_agent_config(env.db, env.agent_id)
+        invocation = normalize_text_invocation(PAYLOAD, agent=agent)
+        messages = invocation_messages(invocation)
+        context = env.service._start_route_job(
+            env.db, "general", agent, env.service._build_metadata_audit("general", invocation),
+            messages=messages, max_tokens=invocation.max_tokens,
+            invocation=invocation, retention_policy="metadata_only",
+        )
+        stream = env.service._stream_route(context, messages)
+        while next(stream).type != "delta":
+            pass
+        stream.close()
+        job_id = context.job_id
+    else:
+        state = {"cancel": phase == "pre_attempt"}
+        result = env.service.invoke_text(
+            env.agent_id, PAYLOAD, stop_requested=lambda: state["cancel"],
+            on_delta=lambda _text: state.update(cancel=True),
+        )
+        job_id = result.job_id
+        assert result.job_status == result.finish_state == "cancelled"
+    job = env.db.get_ai_job(job_id)
+    assert job["status"] == "cancelled" and job["error_message"] == "cancelled"
+    expected_attempts = [] if phase == "pre_attempt" else ["cancelled"]
+    assert [attempt["status"] for attempt in job["attempts"]] == expected_attempts
+    assert [attempt["error_category"] for attempt in job["attempts"]] == expected_attempts
+    assert env.provider.calls == env.provider.closed == (0 if phase == "pre_attempt" else 1)
+    assert not env.service.model_router._heartbeat_workers
+    assert_no_raw_text(env, caplog)
+
+
+@pytest.mark.parametrize("published", [False, True])
+def test_deadline_job_write_failure_keeps_already_finished_attempt(invocation_env, monkeypatch, caplog, published):
+    import sqlite3
+
+    env = invocation_env
+    clock = {"now": datetime(2020, 1, 1, tzinfo=timezone.utc)}
+    monkeypatch.setattr("pixiv_novel_sync.ai.model_router._utc_now", lambda: clock["now"])
+    original = Database.finish_ai_job_cas
+    faults = []
+
+    def finish(database, *args, **fields):
+        if fields.get("error_category") == "route_budget_exhausted" and not faults:
+            faults.append(1)
+            assert all(attempt["status"] != "running" for attempt in database.get_ai_job(args[0])["attempts"])
+            raise sqlite3.OperationalError("database is locked: INPUT_SENTINEL")
+        return original(database, *args, **fields)
+
+    def expire():
+        clock["now"] = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        return AIStreamChunk(type="delta", text="UNPUBLISHED")
+
+    monkeypatch.setattr(Database, "finish_ai_job_cas", finish)
+    env.provider.events = ([AIStreamChunk(type="delta", text="OUTPUT_SENTINEL")] if published else []) + [expire]
+    result = env.service.invoke_text(env.agent_id, PAYLOAD)
+    job = env.db.get_ai_job(result.job_id)
+    assert faults == [1]
+    assert job["status"] == result.job_status == ("partial" if published else "failed")
+    assert [attempt["status"] for attempt in job["attempts"]] == [job["status"]]
+    assert job["attempts"][0]["error_category"] == "route_budget_exhausted"
+    assert result.output_text == ("OUTPUT_SENTINEL" if published else "")
+    assert env.provider.calls == env.provider.closed == 1
+    assert_no_raw_text(env, caplog)
+
+
+def test_invoke_text_committed_cancel_cannot_race_the_request_reservation(invocation_env, monkeypatch):
+    env = invocation_env
+    # Ignore the heartbeat's cached event to exercise the durable guard itself.
+    monkeypatch.setattr(env.service.model_router, "_request_cancelled", lambda _request: False)
+
+    def cancel_before_guard():
+        job_id = env.db.conn.execute("SELECT job_id FROM ai_jobs").fetchone()[0]
+        assert env.db.request_ai_job_cancel(job_id)
+
+    env.provider.before_guard = cancel_before_guard
+    result = env.service.invoke_text(env.agent_id, PAYLOAD)
+    assert result.job_status == "cancelled" and env.provider.calls == 0
+    assert result.usage_summary["unreported_requests"] == 0
+
+
+@pytest.mark.parametrize("callback", ["on_delta", "on_progress"])
+def test_invoke_text_callback_failure_closes_router_and_keeps_safe_storage(invocation_env, callback, caplog):
+    env = invocation_env
+
+    def fail(_value):
+        raise RuntimeError("INPUT_SENTINEL OUTPUT_SENTINEL")
+
+    with pytest.raises(AIServiceError) as caught:
+        env.service.invoke_text(env.agent_id, PAYLOAD, **{callback: fail})
+    assert "SENTINEL" not in str(caught.value)
+    assert not env.service.model_router._heartbeat_workers
+    job = env.db.get_ai_job(env.db.conn.execute("SELECT job_id FROM ai_jobs").fetchone()[0])
+    assert job["status"] != "running"
+    assert all(item["status"] != "running" for item in job["attempts"])
+    assert_no_raw_text(env, caplog)
+
+
+@pytest.mark.parametrize("failure", ["typed_conflict", "close_usage_conflict", "close_usage_error"])
+def test_invoke_text_error_cleanup_finishes_owned_attempts_before_parent(invocation_env, monkeypatch, failure, caplog):
+    env = invocation_env
+    kwargs = {}
+    if failure == "typed_conflict":
+        env.provider.events = [AIStreamChunk(type="delta", text="OUTPUT_SENTINEL"),
+                               ModelRouteConflictError("INPUT_SENTINEL")]
+    else:
+        error = AIJobConflictError if failure == "close_usage_conflict" else RuntimeError
+
+        def usage_failure(*_args, **_kwargs):
+            raise error("INPUT_SENTINEL")
+
+        monkeypatch.setattr(Database, "record_ai_job_request_usage", usage_failure)
+
+        def consumer_failure(_value):
+            raise RuntimeError("OUTPUT_SENTINEL")
+
+        kwargs["on_delta"] = consumer_failure
+    with pytest.raises(AIServiceError) as caught:
+        env.service.invoke_text(env.agent_id, PAYLOAD, **kwargs)
+    assert "SENTINEL" not in str(caught.value)
+    saved = env.db.get_ai_job(env.provider.job_id)
+    assert saved["status"] != "running"
+    assert saved["attempts"][0]["status"] != "running"
+    assert env.provider.closed == 1 and not env.service.model_router._heartbeat_workers
+    assert_no_raw_text(env, caplog)
+
+
+def test_invoke_text_start_failure_after_row_has_only_safe_audit(invocation_env, monkeypatch, caplog):
+    env = invocation_env
+
+    def failed_audit(*_args):
+        raise RuntimeError("INPUT_SENTINEL")
+
+    monkeypatch.setattr(Database, "replace_ai_job_audit", failed_audit)
+    with pytest.raises(AIServiceError) as caught:
+        env.service.invoke_text(env.agent_id, PAYLOAD)
+    assert "INPUT_SENTINEL" not in str(caught.value)
+    rows = env.db.list_ai_jobs()["items"]
+    assert len(rows) == 1 and rows[0]["status"] == "failed"
+    assert env.provider.calls == 0
+    assert_no_raw_text(env, caplog)
+
+
+@pytest.mark.parametrize("winner", ["succeeded", "failed", "cancelled", "partial"])
+def test_invoke_text_terminal_cas_loser_discards_local_output(invocation_env, monkeypatch, winner, caplog):
+    env = invocation_env
+
+    def competing_finish(db, context, *_args, **_kwargs):
+        assert db.finish_ai_job_cas(context.job_id, context.owner_token, winner, output_text="WINNER")
+        return False
+
+    monkeypatch.setattr(env.service, "_finish_route_job", competing_finish)
+    result = env.service.invoke_text(env.agent_id, PAYLOAD)
+    assert result.job_status == winner and result.output_text == ""
+    assert result.finish_state == ("failed_before_output" if winner == "failed" else winner)
+    assert_no_raw_text(env, caplog)
+
+
+@pytest.mark.parametrize("body", ['not JSON', '{"keywords": []}', '{"keywords": "wrong"}',
+                                  '{"keywords": [1]}', '{"keywords": ["ok"], "dropped_sample": null}'])
+def test_keyword_validation_failure_keeps_succeeded_transport_attempt(invocation_env, monkeypatch, body):
+    env = invocation_env
+    env.provider.events = [AIStreamChunk(type="delta", text=body),
+                           AIStreamChunk(type="done", data={"finish_reason": "stop"})]
+    original = env.service._invoke_text
+    results = []
+
+    def capture(*args, **kwargs):
+        value = original(*args, **kwargs)
+        results.append(value)
+        return value
+
+    monkeypatch.setattr(env.service, "_invoke_text", capture)
+    assert env.service.clean_keywords(["synthetic"]) is None
+    result, parsed = results[0]
+    assert result.finish_state == "succeeded" and result.job_status == "failed"
+    assert result.validation_status == "failed" and parsed is None
+    saved = env.db.get_ai_job(result.job_id)
+    assert saved["task_type"] == "keyword_clean" and saved["agent_id"] == env.agent_id
+    assert saved["input"]["retention_policy"] == "keyword_compat"
+    assert saved["status"] == "failed" and saved["error_message"] == "validation_failed"
+    assert saved["attempts"][0]["status"] == "succeeded"
+
+
+def test_keyword_compat_input_and_parsed_output_remain_bounded(invocation_env):
+    env = invocation_env
+    env.provider.events = [AIStreamChunk(type="delta", text=json.dumps({
+        "keywords": [f"k{i}" for i in range(40)], "dropped_sample": [f"d{i}" for i in range(20)],
+    })), AIStreamChunk(type="done", data={"finish_reason": "stop"})]
+    result = env.service.clean_keywords([f"input{i}" for i in range(90)], [f"tag{i}" for i in range(50)])
+    assert len(result["keywords"]) == 30 and len(result["dropped_sample"]) == 10
+    saved = env.db.get_ai_job(env.provider.job_id)
+    assert saved["task_type"] == "keyword_clean" and saved["validation_status"] == "passed"
+    assert len(saved["input"]["raw_keywords"]) == 80 and len(saved["input"]["tags"]) == 40
+    assert saved["output"] == result
+
+
+def test_keyword_terminal_cas_loser_never_returns_its_parsed_result(invocation_env, monkeypatch):
+    env = invocation_env
+    env.provider.events = [AIStreamChunk(type="delta", text='{"keywords":["loser"]}'),
+                           AIStreamChunk(type="done", data={"finish_reason": "stop"})]
+
+    def competing_finish(db, context, *_args, **_kwargs):
+        assert db.finish_ai_job_cas(context.job_id, context.owner_token, "succeeded",
+                                    output_text='{"keywords":["winner"]}', validation_status="passed")
+        return False
+
+    monkeypatch.setattr(env.service, "_finish_route_job", competing_finish)
+    assert env.service.clean_keywords(["synthetic"]) is None
+    assert env.db.get_ai_job(env.provider.job_id)["output_text"] == '{"keywords":["winner"]}'
+
+
+def test_keyword_deep_json_is_validation_failure_not_a_running_job(invocation_env):
+    env = invocation_env
+    body = '{"keywords":' + '[' * 1500 + '"nested"' + ']' * 1500 + '}'
+    env.provider.events = [AIStreamChunk(type="delta", text=body),
+                           AIStreamChunk(type="done", data={"finish_reason": "stop"})]
+    assert env.service.clean_keywords(["input"]) is None
+    saved = env.db.get_ai_job(env.provider.job_id)
+    assert saved["status"] == "failed" and saved["validation_status"] == "failed"
+    assert saved["error_message"] == "validation_failed"
+    assert saved["attempts"][0]["status"] == "succeeded"
+
+
+def test_keyword_typed_conflict_after_output_closes_parent_without_buffer_fallback(invocation_env):
+    env = invocation_env
+    env.provider.events = [AIStreamChunk(type="delta", text='{"keywords":["discarded"]}'),
+                           ModelRouteConflictError("private failure")]
+    assert env.service.clean_keywords(["input"]) is None
+    saved = env.db.get_ai_job(env.provider.job_id)
+    assert saved["status"] == "partial"
+    assert saved["attempts"][0]["status"] == "partial"
+    assert not saved.get("output_text") and saved.get("output") is None
+    assert "discarded" not in json.dumps(saved)
+
+
+def test_work_binding_crosses_real_text_facade_without_body_retention(invocation_env, monkeypatch):
+    from pixiv_novel_sync.work_analysis.configuration import work_configuration_identity
+    from pixiv_novel_sync.work_analysis.contracts import WorkCallBinding, WorkLease
+
+    env = invocation_env
+    identity = work_configuration_identity(env.db.conn, env.agent_id, PAYLOAD["max_tokens"])
+    binding = WorkCallBinding(
+        WorkLease("a" * 32, 1, "parent-owner"), "b" * 64, 1, identity["configuration_fingerprint"],
+    )
+    attached, reservations = [], []
+
+    def attach(self, conn, received, child_job_id):
+        assert conn.in_transaction
+        attached.append((received, child_job_id))
+
+    def reserve(self, conn, received, child_job_id, ordinal, planned_tokens, *, now):
+        assert conn.in_transaction
+        reservations.append((received, child_job_id, ordinal, planned_tokens))
+
+    monkeypatch.setattr(Database, "_attach_work_analysis_child", attach)
+    monkeypatch.setattr(Database, "_reserve_work_analysis_request", reserve)
+    monkeypatch.setattr(Database, "heartbeat_work_analysis", lambda self, lease, *, now: True)
+    result = env.service.invoke_text(env.agent_id, PAYLOAD, work_binding=binding)
+    assert result.finish_state == "succeeded"
+    assert attached == [(binding, result.job_id)]
+    assert len(reservations) == 1 and reservations[0][:3] == (binding, result.job_id, 1)
+    assert reservations[0][3] > PAYLOAD["max_tokens"]
+    assert env.provider.calls == 1
+    row = dict(env.db.conn.execute("SELECT * FROM ai_jobs WHERE job_id=?", (result.job_id,)).fetchone())
+    assert row["output_text"] is None and row["output_json"] is None
+    assert "INPUT_SENTINEL" not in json.dumps(row)
+    assert "OUTPUT_SENTINEL" not in json.dumps(row)
+    assert inspect.signature(env.service.invoke_text).parameters["work_binding"].default is None
+
+
+def test_work_legacy_upgrade_requires_explicit_repreview_before_send(invocation_env, monkeypatch):
+    from pixiv_novel_sync.work_analysis.configuration import work_configuration_identity
+    from pixiv_novel_sync.work_analysis.contracts import WorkAnalysisError, WorkCallBinding, WorkLease
+
+    env = invocation_env
+    identity = work_configuration_identity(env.db.conn, env.agent_id, PAYLOAD["max_tokens"])
+    binding = WorkCallBinding(
+        WorkLease("a" * 32, 1, "parent-owner"), "b" * 64, 1, identity["configuration_fingerprint"],
+    )
+    monkeypatch.setattr(Database, "_attach_work_analysis_child", lambda self, conn, received, child: None)
+    monkeypatch.setattr(env.service.secret_manager, "is_legacy_ciphertext", lambda value: value == "synthetic-cipher")
+    monkeypatch.setattr(env.service.secret_manager, "decrypt", lambda value: "synthetic-key")
+    monkeypatch.setattr(env.service.secret_manager, "encrypt", lambda value: "v2$synthetic-upgrade", raising=False)
+    with pytest.raises(WorkAnalysisError) as caught:
+        env.service.invoke_text(env.agent_id, PAYLOAD, work_binding=binding)
+    assert caught.value.code == "configuration_changed"
+    assert env.provider.calls == 0
+    provider = env.db.get_ai_provider(env.provider_id, include_secret=True)
+    assert provider["api_key_encrypted"] == "v2$synthetic-upgrade"
+    assert env.db.conn.execute("SELECT SUM(network_request_count) FROM ai_jobs").fetchone()[0] == 0
+    assert all(row["status"] == "failed" for row in env.db.list_ai_jobs()["items"])

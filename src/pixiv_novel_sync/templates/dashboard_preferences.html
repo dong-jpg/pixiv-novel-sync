@@ -3,6 +3,9 @@
 {% block title %}偏好分析 - Pixiv 小说同步器{% endblock %}
 
 {% block content %}
+{% if work_analysis_view %}
+{% include "dashboard_work_analysis.html" %}
+{% else %}
 <div class="library-page pns-recommendations-page max-w-7xl mx-auto">
   <header class="library-page-header flex-col sm:flex-row">
     <div class="min-w-0">
@@ -167,11 +170,15 @@
     </details>
   </div>
 </div>
+{% endif %}
 {% endblock %}
 
 {% block extra_scripts %}
+{% if work_analysis_view %}
+{% include "dashboard_work_analysis_scripts.html" %}
+{% else %}
 {% include "recommendation_components.html" %}
-<script>
+<script nonce="{[ csp_nonce() ]}">
 window.initVueApp({
   setup() {
     const { ref, computed, onMounted } = Vue;
@@ -355,4 +362,5 @@ window.initVueApp({
   }
 });
 </script>
+{% endif %}
 {% endblock %}

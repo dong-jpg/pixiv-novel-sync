@@ -30,7 +30,10 @@ def register_preference_routes(app: Flask, settings: Settings | Callable[[], Set
 
     @app.get("/dashboard/preferences")
     def dashboard_preferences_page():
-        return render_template("dashboard_preferences.html")
+        return render_template(
+            "dashboard_preferences.html",
+            work_analysis_view=request.args.get("view") == "work-analysis",
+        )
 
     @app.get("/api/dashboard/preferences/profiles")
     def list_preference_profiles():

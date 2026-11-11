@@ -162,8 +162,16 @@ def register_rescue_routes(
     settings: Callable[[], Settings],
     client_addr: Callable[[], str],
 ) -> None:
-    limiter = RescueRateLimiter()
+    # 三个互不影响的限流桶（U5 的服务端部分）：
+    # - 没带 Token / Token 错误：陌生人刷满它只会挡住其他没 Token 的请求，持正确 Token 的油猴不受影响；
+    # - Token 正确的正文 / 目录 / lookup；
+    # - Token 正确的封面：120 话的系列滑到底几秒内就有上百张封面，单独给更高的额度。
+    limiter_unauthenticated = RescueRateLimiter(limit=120, window_seconds=60)
+    limiter = RescueRateLimiter(limit=120, window_seconds=60)
+    limiter_cover = RescueRateLimiter(limit=600, window_seconds=60)
+    app.extensions["rescue_rate_limiter_unauthenticated"] = limiter_unauthenticated
     app.extensions["rescue_rate_limiter"] = limiter
+    app.extensions["rescue_rate_limiter_cover"] = limiter_cover
 
     def current_settings() -> Settings:
         return settings()
@@ -203,20 +211,26 @@ def register_rescue_routes(
             str(record.get("token_prefix") or ""),
         )
 
-    def public_auth(view):
+    def _public_auth(view, authed_limiter: RescueRateLimiter):
         @wraps(view)
         def wrapped(*args, **kwargs):
             try:
                 address = client_addr() or request.remote_addr or "unknown"
-                if not limiter.allow(address):
-                    return _public_error("救援 API 请求过于频繁", 429)
                 candidate = _bearer_token()
+                cached = _load_token_cache() if candidate is not None else None
+                valid = bool(
+                    candidate is not None
+                    and cached
+                    and secrets.compare_digest(cached[0], _token_digest(candidate))
+                )
+                # 先判定 Token 再选桶：无效请求只消耗「未认证」桶。限流仍在返回 401 之前，
+                # 猜 Token 的请求超过额度后一律 429，拿不到「Token 无效」的确认。
+                bucket = authed_limiter if valid else limiter_unauthenticated
+                if not bucket.allow(address):
+                    return _public_error("救援 API 请求过于频繁", 429)
                 if candidate is None:
                     return _public_error("需要救援 Token", 401)
-                cached = _load_token_cache()
-                if not cached or not secrets.compare_digest(
-                    cached[0], _token_digest(candidate)
-                ):
+                if not valid:
                     return _public_error("救援 Token 无效", 401)
                 return view(*args, **kwargs)
             except CatalogNotReadyError:
@@ -228,6 +242,12 @@ def register_rescue_routes(
                 return _public_error("救援内容读取失败", 500)
 
         return wrapped
+
+    def public_auth(view):
+        return _public_auth(view, limiter)
+
+    def public_cover_auth(view):
+        return _public_auth(view, limiter_cover)
 
     def dashboard_safe(view):
         @wraps(view)
@@ -474,7 +494,7 @@ def register_rescue_routes(
         methods=["GET"],
         provide_automatic_options=False,
     )
-    @public_auth
+    @public_cover_auth
     def rescue_novel_cover(novel_id: int):
         """返回本地归档的封面图，供油猴脚本把失效卡片重建为正常卡片样式。
 
@@ -492,7 +512,7 @@ def register_rescue_routes(
         methods=["GET"],
         provide_automatic_options=False,
     )
-    @public_auth
+    @public_cover_auth
     def rescue_series_cover(series_id: int):
         """系列封面：系列本身不下载封面，用系列下第一篇有本地封面的小说替代。"""
         db = open_db()

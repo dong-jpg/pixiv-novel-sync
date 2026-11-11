@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..settings import Settings, load_settings
+from ..settings import DEFAULT_REQUEST_DELAY_SECONDS, Settings, load_settings
 from ..storage_db import Database, prepare_schema
 from .utils import (
     _atomic_write_yaml,
@@ -102,6 +102,8 @@ SCHEDULER_TASK_CONFIG_BY_NAME: dict[str, dict[str, Any]] = {
 
 
 def scheduler_task_priority(task_name: str) -> int:
+    if task_name == "work_analysis":
+        return 4
     config = SCHEDULER_TASK_CONFIG_BY_NAME.get(task_name)
     if config is None:
         return SCHEDULER_PRIORITY_DEFAULT
@@ -109,6 +111,8 @@ def scheduler_task_priority(task_name: str) -> int:
 
 
 def scheduler_task_is_preemptible(task_name: str) -> bool:
+    if task_name == "work_analysis":
+        return True
     config = SCHEDULER_TASK_CONFIG_BY_NAME.get(task_name)
     return bool(config is not None and config.get("preemptible", False))
 
@@ -289,6 +293,7 @@ class AutoSyncScheduler:
     _schedule_restored: bool = False  # 是否已从 task_logs 做过一次重启补偿
     _lifecycle_claim: Callable[[AutoSyncScheduler], bool] | None = field(default=None, repr=False)
     _lifecycle_release: Callable[[AutoSyncScheduler], None] | None = field(default=None, repr=False)
+    work_coordinator: Any = field(default=None, repr=False)
     
     def start(self) -> None:
         """启动定时调度器"""
@@ -469,6 +474,8 @@ class AutoSyncScheduler:
                         self._task_crons[task_name] = cron_expr
 
                 if not settings.sync.auto_sync_enabled:
+                    if self.work_coordinator is not None:
+                        self.work_coordinator.wake("scheduler_tick")
                     stop_event.wait(60)
                     continue
 
@@ -506,6 +513,10 @@ class AutoSyncScheduler:
                 # 旧行为是按 SCHEDULER_TASK_CONFIGS 的数组顺序扫描，谁排在前面谁先抢槽，
                 # 「收藏优先」只是数组顺序的巧合而不是设计；长任务一旦占住槽，收藏就得
                 # 干等一个退避周期。
+                if self.work_coordinator is not None and self.work_coordinator.wake("scheduler_tick"):
+                    stop_event.wait(SCHEDULER_PREEMPT_POLL_SECONDS)
+                    continue
+
                 due_tasks = self._collect_due_tasks(settings)
                 if not due_tasks:
                     stop_event.wait(30)
@@ -653,6 +664,8 @@ class AutoSyncScheduler:
 
     def _may_preempt(self, task_name: str, now: float) -> bool:
         """让位护栏：冷却期内、或连续被让位太多次的任务，本轮必须让它跑完。"""
+        if task_name == "work_analysis":
+            return True
         if not scheduler_task_is_preemptible(task_name):
             return False
         with self._lock:
@@ -736,25 +749,31 @@ class AutoSyncScheduler:
         之后才写 _task_last_run / _task_next_run。
 
         规则：
-        - 只处理「已启用 + 未配置 cron」的任务；cron 是绝对时间点，本来就不会被顺延。
-        - 没有历史记录（首次部署）时不写入，沿用原来的「现在 + 间隔」。
+        - interval 任务：按「上次完成时间 + 间隔」恢复。
+        - cron 任务：cron 是绝对时间点，不会被顺延，但重启或崩溃会让错过的槽直接跳到
+          下一槽，被杀掉的那一轮也丢（user_backup 单轮约 2.3 小时，被 ./update.sh 打断
+          要等 3 天）。所以用 ``cron_to_prev_run`` 求最近应跑的槽：上次跑完早于它，就补跑
+          一次（只补一次，不追补每个错过的槽）；不早于它则不写入，主循环照常按 cron 排。
+        - 没有历史记录（首次部署）时不写入，沿用原来的「现在 + 间隔」或下一个 cron 槽。
         - 已经错过窗口的任务不立刻触发，而是按任务清单顺序依次错开
           （启动宽限 + 序号 × 错峰间隔），避免重启瞬间所有逾期任务连着跑。
         - 任何异常都只记警告并放弃恢复，退回原有行为，绝不影响调度启动。
         """
-        pending: list[tuple[str, str, float]] = []
+        from ..settings import cron_to_prev_run
+
+        tz_name = str(getattr(settings.sync, "auto_sync_timezone", "UTC") or "UTC")
+        pending: list[tuple[str, str, float, str]] = []
         for task_config in SCHEDULER_TASK_CONFIGS:
             task_name = task_config["name"]
             if not getattr(settings.sync, task_config["setting_check"], False):
                 continue
-            if getattr(settings.sync, task_config["cron_setting"], ""):
-                continue
             with self._lock:
                 if task_name in self._task_next_run:
                     continue
+            cron_expr = str(getattr(settings.sync, task_config["cron_setting"], "") or "").strip()
             interval_hours = getattr(settings.sync, task_config["interval_setting"], 6)
             pending.append(
-                (task_name, scheduler_task_log_type(task_name), float(interval_hours) * 3600)
+                (task_name, scheduler_task_log_type(task_name), float(interval_hours) * 3600, cron_expr)
             )
 
         if not pending:
@@ -767,11 +786,17 @@ class AutoSyncScheduler:
             prepare_schema(db)
             now = time.time()
             overdue_index = 0
-            for task_name, task_log_type, interval_seconds in pending:
+            for task_name, task_log_type, interval_seconds, cron_expr in pending:
                 last_success = self._last_success_finish_time(db, task_log_type)
                 if last_success is None:
                     continue
-                next_run = last_success + interval_seconds
+                if cron_expr:
+                    previous_slot = cron_to_prev_run(cron_expr, now, tz_name)
+                    if previous_slot is None or last_success >= previous_slot:
+                        continue  # 最近一个槽已经跑过（或 cron 解析失败）：交给主循环按 cron 排
+                    next_run = now  # 错过了最近一个槽：按下面的错峰规则补跑一次
+                else:
+                    next_run = last_success + interval_seconds
                 if next_run <= now:
                     next_run = (
                         now
@@ -886,60 +911,45 @@ class AutoSyncScheduler:
                     self._current_task_name = None
         return True
 
-    def _run_and_watch_for_preemption(
-        self,
-        settings: Settings,
-        job_id: str,
-        task_name: str,
-        run_task: Callable[[str], None],
-    ) -> None:
-        """在后台线程跑任务，主线程轮询「有没有更高优先级的任务到点了」。
-
-        必须放到独立线程：``run_task`` 是同步阻塞的，调度线程一旦进去就看不见新到点
-        的任务，收藏(P1) 只能干等 following_novels/user_backup 跑完（实测 25–140 分钟）。
-        不可让位的任务（见 SCHEDULER_TASK_CONFIGS.preemptible）走同一条路径，只是不发
-        取消信号——统一实现，避免两套执行流程走样。
-        """
+    def _run_and_watch_for_preemption(self, settings, job_id, task_name, run_task):
         if not scheduler_task_is_preemptible(task_name):
             run_task(job_id)
             return
+        errors = []
 
-        error: list[BaseException] = []
-
-        def worker() -> None:
+        def worker():
             try:
                 run_task(job_id)
-            except BaseException as exc:  # noqa: BLE001 - 原样转交给调用方处理
-                error.append(exc)
+            except BaseException as error:
+                errors.append(error)
 
-        thread = threading.Thread(
-            target=worker, name=f"auto-sync-{task_name}", daemon=True
-        )
+        thread = threading.Thread(target=worker, name=f"auto-sync-{task_name}", daemon=True)
         thread.start()
-
         running_priority = scheduler_task_priority(task_name)
         yielded = False
+        is_work = task_name == "work_analysis"
         while thread.is_alive():
             thread.join(timeout=SCHEDULER_PREEMPT_POLL_SECONDS)
-            if not thread.is_alive() or yielded or self._stop_event.is_set():
+            if not thread.is_alive() or yielded or (self._stop_event.is_set() and not is_work):
                 continue
             try:
-                challenger_priority = self._highest_due_priority(settings, task_name)
-            except Exception as exc:  # pragma: no cover - 挑选出错不该影响正在跑的任务
-                logger.warning("让位判定失败，本轮不打断 %s: %s", task_name, exc)
+                if is_work:
+                    challenger = self.work_coordinator.challenger_priority() if self.work_coordinator is not None else None
+                else:
+                    challenger = self._highest_due_priority(settings, task_name)
+            except Exception:
+                logger.warning("Shared preemption check failed")
                 continue
-            if challenger_priority is None or challenger_priority >= running_priority:
+            if challenger is None or challenger >= running_priority:
                 continue
             now = time.time()
-            if not self._may_preempt(task_name, now):
-                continue
-            if self._request_yield(job_id, task_name, challenger_priority):
-                self._note_preemption(task_name, now)
+            if self._may_preempt(task_name, now) and self._request_yield(job_id, task_name, challenger):
+                if not is_work:
+                    self._note_preemption(task_name, now)
                 yielded = True
-
         thread.join()
-        if error:
-            raise error[0]
+        if errors:
+            raise errors[0]
 
     def _request_yield(self, job_id: str, task_name: str, challenger_priority: int) -> bool:
         """给正在跑的任务发取消信号，并在它自己的日志里写清"为什么被中断"。
@@ -948,6 +958,14 @@ class AutoSyncScheduler:
         task_logs，所以这条说明会跟着任务日志一起落库，运维不会看到一条无缘无故的
         "已取消"。
         """
+        if task_name == "work_analysis":
+            if self.work_coordinator is None:
+                return False
+            try:
+                return self.work_coordinator.cancel_shared_job(job_id, action="sync_yield")
+            except Exception:
+                logger.warning("Work yield control failed")
+                return False
         message = (
             f"为 P{challenger_priority} 高优先级任务让位，本轮提前结束；"
             "已完成的部分已入库，下轮从水位继续"
@@ -1063,12 +1081,16 @@ class SettingsManager:
         sync_data["series_max_pages_per_run"] = _normalize_optional_int(
             payload.get("series_max_pages_per_run", sync_data.get("series_max_pages_per_run"))
         )
-        sync_data["delay_seconds_between_items"] = _normalize_float(
-            payload.get("delay_seconds_between_items", sync_data.get("delay_seconds_between_items", 1.0))
-        )
-        sync_data["delay_seconds_between_pages"] = _normalize_float(
-            payload.get("delay_seconds_between_pages", sync_data.get("delay_seconds_between_pages", 1.0))
-        )
+        def _save_request_delay(field_name: str) -> float:
+            # 缺键、YAML 留空、表单清空都回落同一个默认值，与 settings.load_settings 一致；
+            # 显式填 0 才是不限速。_normalize_float(None) 会给 0.0，所以先在这里换掉空值。
+            value = payload.get(field_name, sync_data.get(field_name, DEFAULT_REQUEST_DELAY_SECONDS))
+            if value is None or (isinstance(value, str) and not value.strip()):
+                value = DEFAULT_REQUEST_DELAY_SECONDS
+            return _normalize_float(value)
+
+        sync_data["delay_seconds_between_items"] = _save_request_delay("delay_seconds_between_items")
+        sync_data["delay_seconds_between_pages"] = _save_request_delay("delay_seconds_between_pages")
 
         sync_data["sync_bookmarks"] = bool(payload.get("sync_bookmarks", sync_data.get("sync_bookmarks", True)))
         sync_data["sync_following_users"] = bool(payload.get("sync_following_users", sync_data.get("sync_following_users", True)))

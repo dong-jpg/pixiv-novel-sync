@@ -50,6 +50,9 @@
       </div>
       <div class="flex-1 min-w-0 flex flex-col justify-center py-2 text-center md:text-left w-full">
         <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 leading-tight mb-4 tracking-tight" :title="series.title">{{ series.title || '未命名系列' }}</h1>
+{% if series_id is defined %}
+        <a href="/dashboard/preferences?view=work-analysis&amp;source_kind=series&amp;source_id={[ series_id ]}" class="library-btn">分析作品</a>
+{% endif %}
 
         <div class="flex flex-wrap justify-center md:justify-start gap-2 mb-4">
           <app-badge type="blue">{{ series.total_novels }} 章</app-badge>
@@ -174,7 +177,7 @@
 
 {% block extra_scripts %}
 {% include "navigation_helpers.html" %}
-<script>
+<script nonce="{[ csp_nonce() ]}">
   initVueApp({
     setup() {
       const { ref, computed, onMounted, onUnmounted, nextTick } = Vue;

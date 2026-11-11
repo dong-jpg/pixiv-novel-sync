@@ -220,7 +220,7 @@ def test_catalog_refresh_failure_keeps_previous_snapshot(
     monkeypatch.setattr(
         db,
         "_catalog_novel_rows",
-        lambda _ids: (_ for _ in ()).throw(RuntimeError("boom")),
+        lambda _ids, *, candidates_only=False: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     with pytest.raises(RuntimeError, match="boom"):
         db.rebuild_rescue_catalog()

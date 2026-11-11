@@ -62,6 +62,8 @@ class BlockingDiscoveryProvider:
         *,
         request_guard=None,
         is_cancelled=None,
+        on_usage=None,
+        deadline=None,
     ) -> Iterator[AIStreamChunk]:
         del messages, temperature, top_p, max_tokens
         if is_cancelled is not None and is_cancelled():
@@ -208,7 +210,18 @@ def test_provider_model_api_exposes_three_counts_and_never_secret(
 
     assert response.status_code == 200
     payload = response.get_json()["data"]
-    assert {"total", "discovered_available", "routable", "items"} <= payload.keys()
+    assert {
+        "total",
+        "discovered_available",
+        "routable",
+        "catalog_revision",
+        "items",
+    } <= payload.keys()
+    assert {
+        "max_output_tokens",
+        "manual_max_output_tokens",
+        "discovered_max_output_tokens",
+    } <= payload["items"][0].keys()
     assert payload["total"] == len(seeded_models)
     assert "api_key" not in json.dumps(payload).lower()
     assert "sk-model-api-secret" not in json.dumps(payload)

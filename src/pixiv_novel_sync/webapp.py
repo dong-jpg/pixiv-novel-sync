@@ -17,11 +17,11 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 import requests as http_requests
-from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, send_file, url_for
+from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, send_file, url_for
 
 from . import __version__
 from .jobs.manager import JobManager
-from .jobs.models import JobSpec, JobState, JobStatus
+from .jobs.models import JobSource, JobSpec, JobState, JobStatus, JobType
 from .jobs.runner import JobRunner
 from .jobs.tasks import execute_task
 from .oauth_helper import OAuthManager
@@ -43,6 +43,10 @@ from .web.auth_sessions import (
 )
 from .web.managers import AutoSyncScheduler, SettingsManager, TASK_LABELS
 from .web.managers import SCHEDULER_TASK_CONFIGS, scheduler_task_log_type
+from .web.managers import scheduler_task_priority
+from .work_analysis.coordinator import WorkAnalysisCoordinator
+from .work_analysis.contracts import WorkAnalysisError
+from .work_analysis.executor import WorkAnalysisExecutor
 from .web.utils import (
     _oauth_task_public_payload,
     _settings_to_dict,
@@ -325,6 +329,8 @@ def _claim_scheduler_owner(key: str, scheduler: AutoSyncScheduler) -> bool:
 def _release_scheduler_owner(key: str, scheduler: AutoSyncScheduler) -> None:
     with _auto_sync_scheduler_registry_lock:
         current = _auto_sync_scheduler_registry.get(key)
+        if current is not None and current.scheduler is scheduler and scheduler.work_coordinator is not None:
+            return
         if current is not None and current.scheduler is scheduler:
             _auto_sync_scheduler_registry.pop(key, None)
 
@@ -519,18 +525,12 @@ def create_app(
     shared_job_manager = JobManager()
     app.config["job_manager"] = shared_job_manager
 
-    # 应用启动时一次性清理进程重启遗留的 running 任务日志。
-    # 注意：不能放在 init_schema 常规路径（并发 Web 请求会误杀运行中任务）。
+    # Schema only; the attached owner serializes recovery once below.
     try:
-        _startup_db = _open_database(settings_manager.load(env_path=env_path))
-        try:
-            stale_count = _startup_db.fail_stale_task_logs()
-            if stale_count:
-                logger.info("启动时将 %d 条遗留 running 任务日志标记为 failed", stale_count)
-        finally:
-            _startup_db.close()
-    except Exception as exc:
-        logger.warning("启动清理遗留任务日志失败：%s", exc)
+        startup_db = _open_database(settings_manager.load(env_path=env_path))
+        startup_db.close()
+    except Exception:
+        logger.warning("Shared startup schema preparation unavailable")
 
     try:
         startup_settings = settings_manager.load(env_path=env_path)
@@ -540,8 +540,18 @@ def create_app(
     except Exception as exc:
         logger.warning("启动清理回收站失败：%s", exc)
 
+    work_coordinator = None
+    work_ai_factory = None
+
     def run_web_task(task_type: str, context: dict[str, Any]) -> dict[str, Any] | None:
         current_settings = settings_manager.load(env_path=env_path)
+        if task_type == "work_analysis":
+            if work_coordinator is None or work_ai_factory is None:
+                raise RuntimeError("work_admission_unavailable")
+            context = {**context, "work_control_scope": work_coordinator.work_control_scope}
+            return WorkAnalysisExecutor(work_coordinator.db_factory, work_ai_factory).run(
+                context["params"]["run_id"], context,
+            )
         return execute_task(task_type, current_settings, context)
 
     shared_job_runner: JobRunner | None = None
@@ -568,12 +578,9 @@ def create_app(
     def _shared_job_logs_for_db(job: JobState) -> list[dict[str, Any]]:
         return [{"time": entry.time, "level": entry.level, "message": entry.message} for entry in job.logs]
 
-    def _run_shared_web_job(job_id: str) -> None:
-        if shared_job_runner is None:
-            raise RuntimeError("shared job runner is not initialized")
-        shared_job_runner.run(job_id)
+    def _persist_shared_job_result(job_id: str) -> None:
         job = shared_job_manager.get_job(job_id)
-        if job is None:
+        if job is None or job.status not in {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED}:
             return
         log_id = job.progress.get("log_id")
         if not log_id:
@@ -584,22 +591,72 @@ def create_app(
             prepare_schema(db)
             logs = _shared_job_logs_for_db(job)
             if job.status == JobStatus.SUCCEEDED:
-                # 熔断中止/本轮没跑完的任务不能记成 succeeded，否则风控事故在日志里
-                # 显示成绿色「成功」被彻底掩盖
-                db.update_task_log(
-                    log_id,
-                    _task_log_status_for_stats(job.stats),
-                    stats=_prune_stats_for_log(job.stats),
-                    logs=logs,
-                )
+                db.update_task_log(log_id, _task_log_status_for_stats(job.stats),
+                                   stats=_prune_stats_for_log(job.stats), logs=logs)
             elif job.status == JobStatus.FAILED:
                 db.update_task_log(log_id, JobStatus.FAILED.value, error_message=job.error, logs=logs)
-            elif job.status == JobStatus.CANCELLED:
+            else:
                 db.update_task_log(log_id, JobStatus.CANCELLED.value, logs=logs)
-        except Exception as exc:
-            logger.error("更新共享任务日志失败：%s", exc)
+        except Exception:
+            logger.error("Shared task log finalization failed")
         finally:
             db.close()
+
+    def _run_shared_web_job(job_id: str) -> None:
+        if shared_job_runner is None:
+            raise RuntimeError("shared job runner is not initialized")
+        try:
+            shared_job_runner.run(job_id)
+        finally:
+            try:
+                if work_coordinator is not None:
+                    work_coordinator.on_job_finished(job_id)
+            except Exception:
+                logger.warning("Shared work completion reconciliation failed")
+            _persist_shared_job_result(job_id)
+
+    def _launch_shared_web_job(job_id: str) -> None:
+        def run():
+            try:
+                job = shared_job_manager.get_job(job_id)
+                if job is not None and job.spec.job_type == JobType.WORK_ANALYSIS:
+                    auto_sync_scheduler._run_and_watch_for_preemption(
+                        settings_manager.load(env_path=env_path), job_id, "work_analysis", _run_shared_web_job,
+                    )
+                else:
+                    _run_shared_web_job(job_id)
+            except Exception:
+                if shared_job_manager.abandon_reserved_start(job_id):
+                    shared_job_manager.mark_failed(job_id, "shared_launch_failed")
+                    _persist_shared_job_result(job_id)
+                logger.warning("Shared work watcher failed")
+
+        thread = threading.Thread(target=run, daemon=True)
+        try:
+            thread.start()
+        except Exception:
+            shared_job_manager.abandon_reserved_start(job_id)
+            shared_job_manager.mark_failed(job_id, "shared_launch_failed")
+            _persist_shared_job_result(job_id)
+            raise RuntimeError("shared_launch_failed") from None
+
+    def _check_shared_admission(spec, work_admission_priority, scheduler_priority):
+        if work_admission_priority is not None:
+            try:
+                shared_job_manager.check_work_waiting_admission(spec, work_admission_priority)
+            except RuntimeError as error:
+                if str(error) == "shared_pending_full":
+                    raise RuntimeError("已有同步任务正在运行，等待队列已满") from None
+                raise RuntimeError("已有同步任务正在运行，请稍后再试") from None
+            return
+        active, waiting = shared_job_manager.shared_admission_snapshot()
+        if scheduler_priority is not None:
+            if spec.source != JobSource.SCHEDULER or type(scheduler_priority) is not int or not 1 <= scheduler_priority <= 3:
+                raise ValueError("invalid_scheduler_admission")
+            if not active and waiting and scheduler_priority < waiting[0].shared_priority:
+                return
+        if active or waiting:
+            raise RuntimeError("已有同步任务正在运行，请稍后再试")
 
     def _submit_shared_job(
         spec: JobSpec,
@@ -610,7 +667,11 @@ def create_app(
         is_auto_sync: bool = False,
         progress: dict[str, Any] | None = None,
         run_async: bool = True,
+        work_admission_priority: int | None = None,
+        scheduler_priority: int | None = None,
     ) -> JobState:
+        if work_admission_priority is not None and run_async:
+            raise ValueError("waiting work jobs require coordinator admission")
         def _mark_log_failed(log_id: int, message: str) -> None:
             db = _open_database(current_settings)
             try:
@@ -621,8 +682,7 @@ def create_app(
         # 已有任务时直接拒绝，不打开数据库。写日志仍放在锁外，
         # 避免迁移或磁盘 IO 挡住 get_job / is_cancel_requested。
         with shared_job_manager._lock:
-            if _has_any_running_web_job():
-                raise RuntimeError("已有同步任务正在运行，请稍后再试")
+            _check_shared_admission(spec, work_admission_priority, scheduler_priority)
 
         db = _open_database(current_settings)
         try:
@@ -637,9 +697,11 @@ def create_app(
         # 写日志的窗口里可能有别的请求入队，提交前再检查一次。
         try:
             with shared_job_manager._lock:
-                if _has_any_running_web_job():
-                    raise RuntimeError("已有同步任务正在运行，请稍后再试")
-                job = shared_job_manager.submit(spec)
+                _check_shared_admission(spec, work_admission_priority, scheduler_priority)
+                if work_admission_priority is None:
+                    job = shared_job_manager.submit(spec)
+                else:
+                    job = shared_job_manager.submit_work_waiting(spec, work_admission_priority)
         except Exception as exc:
             message = str(exc) if "已有同步任务正在运行" in str(exc) else "job submit failed"
             try:
@@ -674,8 +736,7 @@ def create_app(
         if progress:
             shared_job_manager.update_progress(job.job_id, **progress)
         if run_async:
-            thread = threading.Thread(target=_run_shared_web_job, args=(job.job_id,), daemon=True)
-            thread.start()
+            _launch_shared_web_job(job.job_id)
         return job
 
     def _submit_scheduler_task(task_settings: Settings, task_name: str) -> JobState | None:
@@ -702,6 +763,7 @@ def create_app(
             display_name,
             is_auto_sync=True,
             run_async=False,
+            scheduler_priority=scheduler_task_priority(task_name),
         )
 
     oauth_manager = OAuthManager(env_path=env_path)
@@ -715,36 +777,63 @@ def create_app(
     should_start_scheduler = (
         auto_start_scheduler if start_scheduler is None else bool(start_scheduler)
     )
-    start_auto_sync_scheduler = False
-    if should_start_scheduler:
-        registry_settings = settings_manager.load(env_path=env_path)
-        registry_key = _scheduler_registry_key(registry_settings.storage.db_path)
-        auto_sync_scheduler, scheduler_created = _get_or_create_scheduler_owner(
-            registry_key,
-            config_path=config_path,
-            env_path=env_path,
-            job_manager=shared_job_manager,
-            submit_task=_submit_scheduler_task,
-            run_task=_run_shared_web_job,
-            get_task=shared_job_manager.get_job,
-            cancel_task=shared_job_manager.request_cancel,
-        )
-        if auto_sync_scheduler.shared_job_manager is not None:
-            shared_job_manager = auto_sync_scheduler.shared_job_manager
-        if scheduler_created or not auto_sync_scheduler.is_running():
-            start_auto_sync_scheduler = True
-    else:
-        auto_sync_scheduler = AutoSyncScheduler(
-            config_path=config_path,
-            env_path=env_path,
-            shared_job_manager=shared_job_manager,
-            submit_task=_submit_scheduler_task,
-            run_task=_run_shared_web_job,
-            get_task=shared_job_manager.get_job,
-            cancel_task=shared_job_manager.request_cancel,
-        )
+    registry_settings = settings_manager.load(env_path=env_path)
+    registry_key = _scheduler_registry_key(registry_settings.storage.db_path)
+    auto_sync_scheduler, scheduler_created = _get_or_create_scheduler_owner(
+        registry_key, config_path=config_path, env_path=env_path,
+        job_manager=shared_job_manager, submit_task=_submit_scheduler_task,
+        run_task=_run_shared_web_job, get_task=shared_job_manager.get_job,
+        cancel_task=shared_job_manager.request_cancel,
+    )
+    shared_job_manager = auto_sync_scheduler.shared_job_manager
+    start_auto_sync_scheduler = should_start_scheduler and (
+        scheduler_created or not auto_sync_scheduler.is_running()
+    )
 
     shared_job_runner = JobRunner(shared_job_manager, run_web_task)
+    app.config["work_config_path"] = config_path
+    app.config["work_env_path"] = env_path
+
+    def work_database():
+        current = settings_manager.load(env_path=env_path)
+        if _scheduler_registry_key(current.storage.db_path) != registry_key or not current.storage.db_path.is_file():
+            raise WorkAnalysisError("storage_unavailable", 503)
+        return Database(current.storage.db_path)
+
+    with _auto_sync_scheduler_registry_lock:
+        work_coordinator = auto_sync_scheduler.work_coordinator
+        new_work_owner = work_coordinator is None
+        if new_work_owner:
+            work_coordinator = WorkAnalysisCoordinator(
+                shared_job_manager, _submit_shared_job, _launch_shared_web_job,
+                lambda: settings_manager.load(env_path=env_path),
+                db_factory=work_database, scheduler=auto_sync_scheduler,
+            )
+            auto_sync_scheduler.work_coordinator = work_coordinator
+            auto_sync_scheduler.cancel_task = work_coordinator.cancel_shared_job
+    app.extensions["work_analysis_coordinator"] = work_coordinator
+
+    try:
+        work_coordinator.startup_recover()
+    except Exception:
+        # The coordinator remains closed to admission until an explicit
+        # startup retry succeeds; other dashboard features stay available.
+        logger.warning("Work analysis startup recovery unavailable")
+
+    def close_work_analysis_owner():
+        # Application/process teardown only, never an HTTP auto-sync action.
+        # Call after request serving stops and existing workers have drained.
+        work_coordinator.close()
+        auto_sync_scheduler.stop()
+        thread = auto_sync_scheduler._thread
+        if thread is not None and thread.is_alive():
+            raise RuntimeError("shared_owner_still_active")
+        with _auto_sync_scheduler_registry_lock:
+            if auto_sync_scheduler.work_coordinator is work_coordinator:
+                auto_sync_scheduler.work_coordinator = None
+        _release_scheduler_owner(registry_key, auto_sync_scheduler)
+
+    app.extensions["close_work_analysis_owner"] = close_work_analysis_owner
     app.config["job_manager"] = shared_job_manager
     app.config["run_shared_job"] = _run_shared_web_job
     app.config["submit_shared_web_job"] = _submit_shared_job
@@ -933,6 +1022,18 @@ def create_app(
         next_path = request.full_path if request.query_string else request.path
         return redirect(url_for("auth_login", next=safe_next_path(next_path)))
 
+    def _csp_nonce() -> str:
+        """本次请求的 CSP nonce；模板里每个内联 <script> 都带 nonce="{[ csp_nonce() ]}"。"""
+        nonce = getattr(g, "csp_nonce", None)
+        if nonce is None:
+            nonce = secrets.token_urlsafe(18)
+            g.csp_nonce = nonce
+        return nonce
+
+    @app.context_processor
+    def _inject_csp_nonce():
+        return {"csp_nonce": _csp_nonce}
+
     @app.after_request
     def _add_security_headers(response):
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -940,6 +1041,27 @@ def create_app(
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         if response.mimetype == "text/html":
+            # 内联脚本靠每次请求的 nonce 放行，不开 'unsafe-inline'，注入进页面的 <script> 不会执行。
+            # Vue 全局版在浏览器里编译模板（new Function），必须 'unsafe-eval'。
+            # 样式：模板里有 style="" 与 Vue 的 :style 绑定，只能放开 'unsafe-inline'。
+            # 图片：封面走同源 /proxy/image，阅读器导出 EPUB 用 blob:，SVG 图标用 data:。
+            response.headers.setdefault(
+                "Content-Security-Policy",
+                "; ".join(
+                    (
+                        "default-src 'self'",
+                        f"script-src 'self' 'nonce-{_csp_nonce()}' 'unsafe-eval' https://unpkg.com",
+                        "style-src 'self' 'unsafe-inline'",
+                        "img-src 'self' data: blob:",
+                        "font-src 'self' data:",
+                        "connect-src 'self'",
+                        "object-src 'none'",
+                        "frame-ancestors 'none'",
+                        "base-uri 'self'",
+                        "form-action 'self'",
+                    )
+                ),
+            )
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
@@ -965,6 +1087,16 @@ def create_app(
 
     from .ai_web import register_ai_routes
     register_ai_routes(app, current_settings_for_routes)
+    from .work_analysis.service import WorkAnalysisService
+    from .work_analysis_web import register_work_analysis_routes
+
+    register_work_analysis_routes(app, WorkAnalysisService(
+        work_coordinator.db_factory,
+        lambda: app.extensions["pixiv_novel_sync.ai_service"],
+        app.extensions["work_analysis_coordinator"],
+    ))
+    app.extensions["pixiv_novel_sync.work_ai_factory"] = lambda: app.extensions["pixiv_novel_sync.ai_service"]
+    work_ai_factory = lambda: app.extensions["pixiv_novel_sync.work_ai_factory"]()
 
     from .preference_web import register_preference_routes
     register_preference_routes(app, current_settings_for_routes)
@@ -1539,12 +1671,10 @@ def create_app(
     @app.post("/api/dashboard/users/<int:user_id>/sync")
     def sync_user_novels(user_id: int):
         """触发某用户全部小说的后台备份任务，避免阻塞 HTTP 请求。"""
-        if _has_active_shared_jobs():
-            return _api_error("已有同步任务正在运行，请稍后再试", 409)
         current_settings = settings_manager.load(env_path=env_path)
         try:
             spec = _web_job_spec([f"user_backup:{user_id}"])
-            job = _submit_shared_job(spec, current_settings, "user_backup", f"用户 {user_id} 备份")
+            job = work_coordinator.request_sync(spec, current_settings, "user_backup", f"用户 {user_id} 备份")
         except Exception as exc:
             return _submit_failure(exc, 500)
         return jsonify({"ok": True, "job_id": job.job_id, "job": _shared_job_to_dict(job)})
@@ -1679,7 +1809,11 @@ def create_app(
             job_id = latest.job_id if latest is not None else ""
         if not job_id:
             return _api_error("没有可取消的任务", 404)
-        if not shared_job_manager.request_cancel(job_id):
+        try:
+            accepted = work_coordinator.cancel_shared_job(job_id)
+        except WorkAnalysisError as error:
+            return _api_error(error.code, error.status)
+        if not accepted:
             return _api_error("任务不存在、已结束，或正在收尾", 409)
         return jsonify({"ok": True, "job_id": job_id, "message": "已请求取消"})
 
@@ -1689,7 +1823,7 @@ def create_app(
         spec = _build_web_sync_job_spec(current_settings)
 
         try:
-            job = _submit_shared_job(spec, current_settings, "manual", "全量手动同步")
+            job = work_coordinator.request_sync(spec, current_settings, "manual", "全量手动同步")
         except Exception as exc:
             return _submit_failure(exc)
         return jsonify({"ok": True, "message": job.message, "job": _shared_job_to_dict(job)})
@@ -1736,10 +1870,11 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         try:
             spec = _web_job_spec([internal_type])
-            job = _submit_shared_job(spec, current_settings, internal_type, task_name)
+            job = work_coordinator.request_sync(spec, current_settings, internal_type, task_name)
         except Exception as exc:
             return _submit_failure(exc)
-        return jsonify({"ok": True, "message": "任务已启动", "job": _shared_job_to_dict(job)})
+        message = "任务已排队，等待共享执行槽" if job.shared_waiting else "任务已启动"
+        return jsonify({"ok": True, "message": message, "job": _shared_job_to_dict(job)})
 
     @app.post("/api/dashboard/sync/subscribed-series")
     def dashboard_sync_subscribed_series():
@@ -1751,16 +1886,14 @@ def create_app(
 
         try:
             spec = _web_job_spec(["subscribed_series"], params={"limit": limit})
-            job = _submit_shared_job(
-                spec,
-                current_settings,
-                "subscribed_series",
-                "同步追更系列",
+            job = work_coordinator.request_sync(
+                spec, current_settings, "subscribed_series", "同步追更系列",
                 progress={"series_limit": limit},
             )
         except Exception as exc:
             return _submit_failure(exc)
-        return jsonify({"ok": True, "message": "任务已启动", "job": _shared_job_to_dict(job)})
+        message = "任务已排队，等待共享执行槽" if job.shared_waiting else "任务已启动"
+        return jsonify({"ok": True, "message": message, "job": _shared_job_to_dict(job)})
 
     @app.get("/api/dashboard/auto-sync/status")
     def auto_sync_status():
@@ -2095,10 +2228,11 @@ def create_app(
         current_settings = settings_manager.load(env_path=env_path)
         try:
             spec = _web_job_spec(["pending_deletion_detection"])
-            job = _submit_shared_job(spec, current_settings, "pending_deletion_detection", "检测取消收藏/追更")
+            job = work_coordinator.request_sync(spec, current_settings, "pending_deletion_detection", "检测取消收藏/追更")
         except Exception as exc:
             return _submit_failure(exc)
-        return jsonify({"ok": True, "message": "检测任务已启动", "job": _shared_job_to_dict(job)})
+        message = "检测任务已排队，等待共享执行槽" if job.shared_waiting else "检测任务已启动"
+        return jsonify({"ok": True, "message": message, "job": _shared_job_to_dict(job)})
 
     @app.post("/api/dashboard/pending-deletions/<int:deletion_id>/confirm")
     def confirm_pending_deletion(deletion_id: int):

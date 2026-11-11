@@ -10,7 +10,9 @@
 
 **Approved Spec:** `docs/superpowers/specs/2026-10-31-ai-settings-and-invocation-design.md`；用户于 2026-11-01 确认。
 
-**Status:** 本文件是实施计划，不是实现报告。所有步骤初始未执行；真正的测试结果、提交和审查结论记入执行 worktree 的 `.superpowers/sdd/progress.md`。
+**Status:** 2026-11-04，Tasks1-8 均已实施并逐项审查；应用 `3c51a6c6107a61b95cdbf58a00044506f405bccc` 的独立整阶段代码/规格复审 Approved，Windows 全量、canonical LF Linux 全量/完整 36 用例 Chromium、Node、静态 CSS 和 wheel 验收完成。候选 `793d340d` 已普通推送并于 15:57（Asia/Shanghai）部署，线上 Cloudflare 裸 JS 缓存修订另有窄范围复审及稳定 URL 验证。下方原计划步骤保留为冻结的执行/验收说明，不作为重新派发已完成任务的清单；证据和边界见 [阶段验收记录](../../archive/AI_SETTINGS_ACCEPTANCE_2026-11-03.md)、[部署记录](../../archive/SERVER_DEPLOYMENT_REPORT_2026-11-04.md) 和 [项目现状](../../STATUS.md)。第二阶段整书 XP Agent 未实施。
+
+**执行结果：** Tasks1-6 的契约/容量规划、加列迁移、v2 路由、用量/留存及有界 API 已完成；Task7 模型设置工作台及 Task8 任务预检/诊断已完成。最后的跨任务修复与复审覆盖实际 HTTP deadline、预览失效时保留选模意图、模型键字节身份、有效名称搜索和保存读回锁。真实服务商/真机外部验收仍未完成，发布状态只依据 STATUS 中实际记录，不由本计划推断。
 
 ## Global Constraints
 
@@ -342,10 +344,17 @@ class TextInvocation:
 def _sampling(value: Any, field: str, maximum: float) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise InvocationValidationError("invalid_parameter", field + " must be numeric")
-    result = float(value)
+    if isinstance(value, int):
+        if not 0 <= value <= maximum:
+            raise InvocationValidationError("invalid_parameter", field + " is out of range")
+        result = float(value)
+    else:
+        result = value
     if not math.isfinite(result) or not 0 <= result <= maximum:
         raise InvocationValidationError("invalid_parameter", field + " is out of range")
     return result
+
+# 修正（2026-11-02）：整数采样值先检查范围再转 float，保持固定的 invalid_parameter 错误。
 
 
 def normalize_text_invocation(payload: Mapping[str, Any], *, agent: AIAgentConfig) -> TextInvocation:
@@ -841,7 +850,10 @@ def validate_profile(profile):
     _integer(profile.provider_id, 1, 2**63 - 1)
     for name in ("provider_model_id", "pool_id", "pool_version", "pool_position"):
         _integer(getattr(profile, name), 1, 2**63 - 1, optional=True)
-    _require(profile.provider_type in {"openai_compatible", "xai", "anthropic"})
+    _require(
+        isinstance(profile.provider_type, str)
+        and profile.provider_type in {"openai_compatible", "xai", "anthropic"}
+    )
     _window(profile.provider_context_window)
     if profile.model_context_window is not None:
         _window(profile.model_context_window)
@@ -858,7 +870,13 @@ def validate_profile(profile):
             validate_text_field(value, name, codepoints, byte_limit)
     _require(isinstance(profile.capabilities, tuple))
     _require(tuple(normalize_capabilities(profile.capabilities)) == profile.capabilities)
-    _require(profile.unavailable_reason is None or profile.unavailable_reason in REASON_MESSAGES)
+    _require(
+        profile.unavailable_reason is None
+        or (
+            isinstance(profile.unavailable_reason, str)
+            and profile.unavailable_reason in REASON_MESSAGES
+        )
+    )
     if profile.pool_id is None:
         _require(profile.pool_name is None and profile.pool_version is None and profile.pool_position is None)
     else:
@@ -896,7 +914,14 @@ def validate_plan(plan):
                 _require(type(row.candidate_index) is int and row.candidate_index == index and row.reason is None)
                 _require(row.profile.unavailable_reason is None and row.profile.provider_id in plan.allowed_provider_ids)
             else:
-                _require(row.candidate_index is None and row.reason in REASON_MESSAGES)
+                _require(
+                    row.candidate_index is None
+                    and isinstance(row.reason, str)
+                    and row.reason in REASON_MESSAGES
+                )
+
+            # 修正（2026-11-02）：先检查 str 类型，数组/对象返回 invalid_snapshot 而非 TypeError。
+
             if row.input_tokens is None:
                 _require(not eligible and all(value is None for value in (
                     row.input_budget, row.message_overhead, row.safety_margin, row.estimator_source, row.exact)))

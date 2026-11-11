@@ -165,12 +165,17 @@ def test_old_ai_database_migrates_fixed_agents_and_imports_available_models(
 
         model = database.conn.execute(
             """
-            SELECT model_key, manual, discovered, discovered_available
+            SELECT model_key, manual, discovered, discovered_available,
+                   discovered_max_output_tokens, manual_max_output_tokens
             FROM ai_provider_models
             WHERE provider_id = 3
             """
         ).fetchone()
-        assert tuple(model) == ("legacy-model", 1, 0, 0)
+        assert tuple(model) == ("legacy-model", 1, 0, 0, None, None)
+        provider = database.conn.execute(
+            "SELECT api_key_encrypted FROM ai_providers WHERE id = 3"
+        ).fetchone()
+        assert provider[0] == "ciphertext"
 
         job = database.conn.execute(
             "SELECT * FROM ai_jobs WHERE id = 11"
@@ -573,10 +578,154 @@ def test_failed_model_schema_migration_rolls_back(tmp_path: Path):
         assert "candidate_snapshot_json" not in {
             row[1] for row in database.conn.execute("PRAGMA table_info(ai_jobs)")
         }
+        assert "validation_status" not in {
+            row[1] for row in database.conn.execute("PRAGMA table_info(ai_jobs)")
+        }
         assert database.conn.execute(
             "SELECT provider_id FROM ai_agents WHERE id = 99"
         ).fetchone()[0] == 999
         assert database.conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        database.close()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_usage_schema_migrates_idempotently_with_unknown_history(tmp_path, legacy):
+    database = (
+        make_old_ai_database(tmp_path / "usage-migration.db")
+        if legacy else Database(tmp_path / "usage-migration.db")
+    )
+    try:
+        if not legacy:
+            database.init_schema()
+            database.create_ai_job("legacy-job", "general", None, {})
+        database.init_schema()
+        database.init_schema()
+        assert "validation_status" in {
+            row[1] for row in database.conn.execute("PRAGMA table_info(ai_jobs)")
+        }
+        assert "usage_json" in {
+            row[1] for row in database.conn.execute("PRAGMA table_info(ai_job_model_attempts)")
+        }
+        row = database.conn.execute(
+            "SELECT validation_status FROM ai_jobs WHERE job_id='legacy-job'"
+        ).fetchone()
+        assert row[0] is None
+        saved = database.get_ai_job("legacy-job")
+        assert saved["validation_status"] == "unknown"
+        assert saved["usage_summary"] == {
+            "known_input_tokens": None, "known_output_tokens": None,
+            "known_total_tokens": None, "reported_requests": 0,
+            "unreported_requests": 0, "complete": False,
+        }
+        if legacy:
+            assert saved["id"] == 11 and saved["output_text"] == "done"
+        assert database.conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert database.conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        database.close()
+
+
+def test_usage_schema_checks_are_enforced_in_sql(db):
+    db.create_ai_job("schema-usage", "general", None, {})
+    with pytest.raises(sqlite3.IntegrityError):
+        with db.transaction() as conn:
+            conn.execute("UPDATE ai_jobs SET validation_status='raw body'")
+    db.conn.execute(
+        "INSERT INTO ai_job_model_attempts "
+        "(job_id, attempt_index, agent_config_hash, provider_config_hash, candidate_list_hash) "
+        "VALUES ('schema-usage', 0, 'a', 'b', 'c')"
+    )
+    db.conn.commit()
+    assert db.list_ai_job_model_attempts("schema-usage")[0]["usage"] is None
+    for payload in ("not-json", json.dumps({"text": "x" * 16385}),
+                    json.dumps({"text": "\u4e2d" * 6000}, ensure_ascii=False)):
+        with pytest.raises(sqlite3.IntegrityError):
+            with db.transaction() as conn:
+                conn.execute("UPDATE ai_job_model_attempts SET usage_json=?", (payload,))
+    assert db.conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_usage_schema_additive_columns_roll_back_together(db, monkeypatch):
+    schema = _model_schema()
+    helper = schema._ensure_ai_job_usage_columns
+    db.conn.execute("ALTER TABLE ai_jobs DROP COLUMN validation_status")
+    db.conn.execute("ALTER TABLE ai_job_model_attempts DROP COLUMN usage_json")
+    db.conn.commit()
+    roots = db.conn.execute(
+        "SELECT name, rootpage FROM sqlite_master WHERE name IN ('ai_jobs', 'ai_job_model_attempts')"
+    ).fetchall()
+
+    def fail_after_additions(conn):
+        helper(conn)
+        assert "validation_status" in {row[1] for row in conn.execute("PRAGMA table_info(ai_jobs)")}
+        assert "usage_json" in {row[1] for row in conn.execute("PRAGMA table_info(ai_job_model_attempts)")}
+        raise RuntimeError("injected usage migration failure")
+
+    monkeypatch.setattr(schema, "_ensure_ai_job_usage_columns", fail_after_additions)
+    with pytest.raises(RuntimeError, match="injected usage migration failure"):
+        schema.migrate_model_routing_schema(db.conn)
+    assert "validation_status" not in {row[1] for row in db.conn.execute("PRAGMA table_info(ai_jobs)")}
+    assert "usage_json" not in {row[1] for row in db.conn.execute("PRAGMA table_info(ai_job_model_attempts)")}
+    assert db.conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert db.conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    assert db.conn.execute(
+        "SELECT name, rootpage FROM sqlite_master WHERE name IN ('ai_jobs', 'ai_job_model_attempts')"
+    ).fetchall() == roots
+
+
+def test_model_output_columns_roll_back_together_on_preexisting_table(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = make_old_ai_database(tmp_path / "output-columns-rollback.db")
+    # Create a catalogue before the routing migration so the additive ALTER path runs.
+    database.conn.execute(
+        """
+        CREATE TABLE ai_provider_models (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider_id INTEGER NOT NULL,
+            model_key TEXT NOT NULL,
+            UNIQUE(provider_id, model_key)
+        )
+        """
+    )
+    preexisting_model_id = database.conn.execute(
+        """
+        INSERT INTO ai_provider_models (provider_id, model_key)
+        VALUES (1, 'preexisting-model')
+        """
+    ).lastrowid
+    database.conn.commit()
+    schema = _model_schema()
+    original_helper = schema._ensure_model_output_columns
+
+    def fail_after_output_columns(conn) -> None:
+        original_helper(conn)
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(ai_provider_models)")
+        }
+        assert "discovered_max_output_tokens" in columns
+        assert "manual_max_output_tokens" in columns
+        raise RuntimeError("injected failure after output columns")
+
+    monkeypatch.setattr(schema, "_ensure_model_output_columns", fail_after_output_columns)
+
+    try:
+        with pytest.raises(RuntimeError, match="injected failure"):
+            schema.migrate_model_routing_schema(database.conn)
+
+        columns = {
+            row[1]
+            for row in database.conn.execute("PRAGMA table_info(ai_provider_models)")
+        }
+        assert "discovered_max_output_tokens" not in columns
+        assert "manual_max_output_tokens" not in columns
+        assert database.conn.execute(
+            "SELECT model_key FROM ai_provider_models WHERE id = ?",
+            (preexisting_model_id,),
+        ).fetchone()["model_key"] == "preexisting-model"
     finally:
         database.close()
 

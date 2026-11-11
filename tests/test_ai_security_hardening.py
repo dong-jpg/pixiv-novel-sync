@@ -97,6 +97,55 @@ def test_validate_base_url_opt_in_allows_ipv6_loopback(monkeypatch):
     assert validate_base_url("http://[::1]:11434/v1", resolve=True).startswith("http://[::1]")
 
 
+# 6to4（2002::/16，RFC 3056）把一个 IPv4 编进第 2～5 字节。Python 的 ipaddress
+# 把整段当成 is_global，旧代码因此放行 2002:a9fe:a9fe:: 这种「内嵌云元数据地址」
+# 的目标。修复后按内嵌 IPv4 套 IPv4 的规则判断。
+@pytest.mark.parametrize(
+    "address",
+    [
+        "2002:a9fe:a9fe::1",  # 169.254.169.254 云元数据
+        "2002:7f00:1::1",  # 127.0.0.1
+        "2002:c0a8:101::1",  # 192.168.1.1
+        "2002:a00:1::1",  # 10.0.0.1
+        "2002:6440:1::1",  # 100.64.0.1 共享地址
+    ],
+)
+def test_validate_base_url_blocks_6to4_wrapping_restricted_ipv4(address):
+    with pytest.raises(ProviderConfigError, match="受限地址"):
+        validate_base_url(f"https://[{address}]/v1", resolve=True)
+
+
+def test_dns_answer_in_6to4_wrapping_metadata_is_blocked(monkeypatch):
+    """DNS 钉 IP 那一步同样要拦：域名解析出 6to4 地址时按内嵌 IPv4 判断。"""
+
+    def six_to_four_metadata(_host, port, *_args, **_kwargs):
+        return [
+            (
+                socket.AF_INET6,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("2002:a9fe:a9fe::1", port, 0, 0),
+            )
+        ]
+
+    monkeypatch.setattr(provider_module.socket, "getaddrinfo", six_to_four_metadata)
+    with pytest.raises(ProviderConfigError, match="受限地址"):
+        validate_base_url("https://rebind-6to4.test/v1", resolve=True)
+    # opt-in 只放行私有/回环，链路本地（云元数据）照样拒绝
+    monkeypatch.setenv("PIXIV_AI_ALLOW_PRIVATE_HOSTS", "1")
+    with pytest.raises(ProviderConfigError, match="受限地址"):
+        validate_base_url("https://rebind-6to4.test/v1", resolve=True)
+
+
+def test_validate_base_url_allows_6to4_wrapping_public_ipv4():
+    """内嵌公网 IPv4 的 6to4 不是 SSRF：照公网地址放行，避免误伤。"""
+    assert (
+        validate_base_url("https://[2002:808:808::1]/v1", resolve=True)
+        == "https://[2002:808:808::1]/v1"
+    )
+
+
 def test_resolve_target_rejects_explicit_zero_port(monkeypatch):
     def must_not_resolve(_host, port, *_args, **_kwargs):
         pytest.fail(f"显式端口 0 被错误改写为 {port} 并进入 DNS 解析")
@@ -448,6 +497,160 @@ def test_forward_proxy_receives_pinned_ip_target_and_original_host(monkeypatch):
     assert target.port == 8123
     assert "rebind.test" not in (_ForwardProxyHandler.seen_target or "")
     assert _ForwardProxyHandler.seen_host == "rebind.test:8123"
+
+
+_CHAT_COMPLETION = b'{"choices":[{"message":{"content":"OK"},"finish_reason":"stop"}]}'
+
+
+class _ChatTargetHandler(BaseHTTPRequestHandler):
+    seen: list[dict[str, str | None]] = []
+
+    def do_POST(self) -> None:
+        # Drain the request before HTTP/1.0 closes the connection after replying.
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        type(self).seen.append(
+            {
+                "path": self.path,
+                "host": self.headers.get("Host"),
+                "authorization": self.headers.get("Authorization"),
+            }
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(_CHAT_COMPLETION)))
+        self.end_headers()
+        self.wfile.write(_CHAT_COMPLETION)
+
+    def log_message(self, _format: str, *_args) -> None:
+        return
+
+
+class _EnvProxyHandler(_ChatTargetHandler):
+    seen: list[dict[str, str | None]] = []
+
+
+@pytest.mark.parametrize("handler_type", [_ChatTargetHandler, _EnvProxyHandler])
+def test_chat_handler_consumes_declared_body_before_response(handler_type, monkeypatch):
+    body = b'{"messages":[{"role":"user","content":"hi"}]}'
+    trailing = b"next request sentinel"
+    consumed_at_response = []
+    handler = object.__new__(handler_type)
+    handler.path = "/v1/chat/completions"
+    handler.headers = {"Content-Length": str(len(body))}
+    handler.rfile = io.BytesIO(body + trailing)
+    handler.wfile = io.BytesIO()
+    monkeypatch.setattr(handler_type, "seen", [])
+    handler.send_response = lambda status: consumed_at_response.append(handler.rfile.tell())
+    handler.send_header = lambda name, value: None
+    handler.end_headers = lambda: None
+
+    handler.do_POST()
+
+    assert consumed_at_response == [len(body)]
+    assert handler.rfile.read() == trailing
+    assert handler.wfile.getvalue() == _CHAT_COMPLETION
+
+
+def _isolate_env_proxy(monkeypatch, proxy_url: str, no_proxy: str) -> None:
+    for name in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    for name in ("HTTP_PROXY", "http_proxy"):
+        monkeypatch.setenv(name, proxy_url)
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.setenv(name, no_proxy)
+
+
+@contextmanager
+def _lan_model_servers(monkeypatch, host: str):
+    """本机 http 模型服务 + 一个记录请求的转发代理；host 经假 DNS 钉到 127.0.0.1。"""
+    real_getaddrinfo = socket.getaddrinfo
+
+    def fixed_loopback(name, port, *args, **kwargs):
+        if name == host:
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", port))]
+        return real_getaddrinfo(name, port, *args, **kwargs)
+
+    monkeypatch.setenv("PIXIV_AI_ALLOW_PRIVATE_HOSTS", "1")
+    monkeypatch.setattr(provider_module.socket, "getaddrinfo", fixed_loopback)
+    _ChatTargetHandler.seen = []
+    _EnvProxyHandler.seen = []
+    with _serve(_ChatTargetHandler) as target_server, _serve(_EnvProxyHandler) as proxy_server:
+        yield target_server.server_address[1], f"http://127.0.0.1:{proxy_server.server_address[1]}"
+
+
+def _chat(host: str, port: int, *, proxy: str | None = None) -> list[str]:
+    """走真实 requests 发送（不改 trust_env），返回正文分段。"""
+    provider = OpenAICompatibleProvider(
+        AIProviderConfig(
+            id=1,
+            name="lan-model",
+            provider_type="openai_compatible",
+            base_url=f"http://{host}:{port}/v1",
+            api_key="sk-lan-secret",
+            default_model="local-model",
+            timeout_seconds=5,
+            max_retries=0,
+            stream_enabled=False,
+            proxy=proxy,
+        )
+    )
+    try:
+        chunks = list(
+            provider.stream_generate(
+                [{"role": "user", "content": "hi"}],
+                model="local-model",
+                temperature=0,
+                top_p=1,
+                max_tokens=8,
+            )
+        )
+    finally:
+        provider.close()
+    return [chunk.text for chunk in chunks if chunk.type == "delta"]
+
+
+@pytest.mark.parametrize("host", ["model.lan", "localhost"])
+def test_env_proxy_is_bypassed_when_original_host_matches_no_proxy(monkeypatch, host):
+    """A6：钉成 127.0.0.1 后 requests 按 IP 匹配 NO_PROXY，原本绕过代理的本机/局域网
+    http 模型会改走环境代理，Authorization 明文发给代理。原主机名命中就必须直连。"""
+    with _lan_model_servers(monkeypatch, host) as (port, env_proxy):
+        _isolate_env_proxy(monkeypatch, env_proxy, "localhost,.lan")
+        deltas = _chat(host, port)
+
+    assert deltas == ["OK"]
+    assert _EnvProxyHandler.seen == []
+    assert len(_ChatTargetHandler.seen) == 1
+    assert _ChatTargetHandler.seen[0]["host"] == f"{host}:{port}"
+    assert _ChatTargetHandler.seen[0]["authorization"] == "Bearer sk-lan-secret"
+
+
+def test_env_proxy_still_bypassed_when_no_proxy_lists_the_pinned_ip(monkeypatch):
+    """修复只能多绕过、不能少绕过：NO_PROXY 只写 IP 时照旧直连。"""
+    with _lan_model_servers(monkeypatch, "model.lan") as (port, env_proxy):
+        _isolate_env_proxy(monkeypatch, env_proxy, "127.0.0.1")
+        assert _chat("model.lan", port) == ["OK"]
+    assert _EnvProxyHandler.seen == []
+    assert len(_ChatTargetHandler.seen) == 1
+
+
+def test_env_proxy_still_used_when_host_does_not_match_no_proxy(monkeypatch):
+    with _lan_model_servers(monkeypatch, "model.lan") as (port, env_proxy):
+        _isolate_env_proxy(monkeypatch, env_proxy, "example.org")
+        assert _chat("model.lan", port) == ["OK"]
+    assert _ChatTargetHandler.seen == []
+    assert len(_EnvProxyHandler.seen) == 1
+    # 走代理时代理看到的仍是钉好的 IP，不是原主机名
+    assert urlparse(_EnvProxyHandler.seen[0]["path"] or "").hostname == "127.0.0.1"
+
+
+def test_configured_proxy_is_not_overridden_by_no_proxy(monkeypatch):
+    """Provider 里显式配置的 proxy 照旧生效（requests 本来也不拿 NO_PROXY 管显式代理）。"""
+    with _lan_model_servers(monkeypatch, "model.lan") as (port, proxy_url):
+        # 环境代理指向一个没人监听的端口：用到它就会连不上
+        _isolate_env_proxy(monkeypatch, "http://127.0.0.1:9", "localhost,.lan")
+        assert _chat("model.lan", port, proxy=proxy_url) == ["OK"]
+    assert _ChatTargetHandler.seen == []
+    assert len(_EnvProxyHandler.seen) == 1
 
 
 @pytest.mark.parametrize("hook_source", ["request", "session"])

@@ -89,6 +89,22 @@ def _create_model_routing_tables(conn: sqlite3.Connection) -> None:
                     manual_context_window IS NULL
                     OR manual_context_window BETWEEN 256 AND 10000000
                 ),
+            discovered_max_output_tokens INTEGER
+                CHECK(
+                    discovered_max_output_tokens IS NULL
+                    OR (
+                        typeof(discovered_max_output_tokens) = 'integer'
+                        AND discovered_max_output_tokens BETWEEN 1 AND 1000000
+                    )
+                ),
+            manual_max_output_tokens INTEGER
+                CHECK(
+                    manual_max_output_tokens IS NULL
+                    OR (
+                        typeof(manual_max_output_tokens) = 'integer'
+                        AND manual_max_output_tokens BETWEEN 1 AND 1000000
+                    )
+                ),
             discovered_metadata_json TEXT NOT NULL DEFAULT '{}'
                 CHECK(
                     json_valid(discovered_metadata_json)
@@ -241,6 +257,10 @@ def _create_ai_jobs_table(conn: sqlite3.Connection) -> None:
             output_text TEXT,
             output_json TEXT,
             error_message TEXT,
+            validation_status TEXT CHECK(
+                validation_status IS NULL
+                OR validation_status IN ('not_requested', 'passed', 'failed')
+            ),
             started_at TEXT,
             finished_at TEXT,
             candidate_snapshot_json TEXT
@@ -367,6 +387,10 @@ def _create_attempt_and_sync_tables(conn: sqlite3.Connection) -> None:
                 CHECK(error_scope IS NULL OR error_scope IN ('model', 'provider')),
             error_message TEXT,
             error_category TEXT,
+            usage_json TEXT CHECK(
+                usage_json IS NULL
+                OR (json_valid(usage_json) AND length(CAST(usage_json AS BLOB)) <= 16384)
+            ),
             finish_reason TEXT
                 CHECK(
                     finish_reason IS NULL
@@ -434,6 +458,17 @@ def _add_provider_sync_columns(conn: sqlite3.Connection) -> None:
         if column not in columns:
             conn.execute(
                 f"ALTER TABLE ai_providers ADD COLUMN {column} {definition}"
+            )
+
+
+def _ensure_model_output_columns(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "ai_provider_models")
+    for name in ("discovered_max_output_tokens", "manual_max_output_tokens"):
+        if name not in columns:
+            conn.execute(
+                f"ALTER TABLE ai_provider_models ADD COLUMN {name} INTEGER "
+                f"CHECK ({name} IS NULL OR "
+                f"(typeof({name}) = 'integer' AND {name} BETWEEN 1 AND 1000000))"
             )
 
 
@@ -552,11 +587,26 @@ def assert_model_routing_foreign_keys(conn: sqlite3.Connection) -> None:
         raise RuntimeError(f"foreign_key_check failed: {details!r}")
 
 
+def _ensure_ai_job_usage_columns(conn: sqlite3.Connection) -> None:
+    if "validation_status" not in _table_columns(conn, "ai_jobs"):
+        conn.execute(
+            "ALTER TABLE ai_jobs ADD COLUMN validation_status TEXT CHECK("
+            "validation_status IS NULL OR validation_status IN ('not_requested', 'passed', 'failed'))"
+        )
+    if "usage_json" not in _table_columns(conn, "ai_job_model_attempts"):
+        conn.execute(
+            "ALTER TABLE ai_job_model_attempts ADD COLUMN usage_json TEXT CHECK("
+            "usage_json IS NULL OR (json_valid(usage_json) "
+            "AND length(CAST(usage_json AS BLOB)) <= 16384))"
+        )
+
+
 def _migrate_model_routing_schema_in_transaction(
     conn: sqlite3.Connection,
 ) -> None:
     created = not _table_exists(conn, "ai_provider_models")
     _create_model_routing_tables(conn)
+    _ensure_model_output_columns(conn)
     agents_rebuilt = _rebuild_ai_agents(conn)
     jobs_rebuilt = _rebuild_ai_jobs(conn)
     rebuilt = agents_rebuilt or jobs_rebuilt
@@ -565,6 +615,7 @@ def _migrate_model_routing_schema_in_transaction(
     _create_model_routing_indexes(conn)
     _import_available_models(conn)
     _ensure_ai_job_cancel_column(conn)
+    _ensure_ai_job_usage_columns(conn)
     if created or rebuilt:
         assert_model_routing_foreign_keys(conn)
 

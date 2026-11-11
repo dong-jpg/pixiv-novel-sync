@@ -1,6 +1,6 @@
 # AI 模型路由使用指南
 
-> **适用范围（2026-10-08）**：本文描述 main 的 Provider、模型目录/池、Agent、ModelRouter 和关键词清洗基础设施；写作/成人模块仅在 ai-writing。最新回归结果见 [项目现状](STATUS.md)，不以旧审计中的写作失败描述 main。
+> **适用范围（2026-11-10）**：本文描述 Provider、模型目录/路由组（原模型池）、AI 任务（Agent）、统一文本调用、关键词清洗及手动已归档单篇/系列作品报告。作品报告不写回个人画像或推荐，写作/成人模块仍仅在 ai-writing。分支代码不等于整阶段验收或已部署；实际状态见 [项目现状](STATUS.md)。
 
 本指南面向在 Web 界面（AI 设置页）配置 AI 模型的用户，解释模型目录（catalog）、模型池（pool）、Agent 绑定与失败转移（failover）的实际行为。所有描述以当前代码实现为准。
 
@@ -32,7 +32,7 @@
 
 ### 1.3 Agent 绑定：fixed vs pool
 
-每个 Agent（main 中用于偏好关键词清洗等 AI 基础任务）通过 `binding_type` 决定用哪个模型：
+每个 Agent（main 中用于关键词清洗、手动作品分析等调用）通过 `binding_type` 决定用哪个模型：
 
 - **fixed（固定绑定）**：只用一个模型——Agent 上配置的 `model`，未配置时退回 Provider 的 `default_model`。候选列表恒为 1 项，**没有失败转移**：这个模型失败，任务就失败。固定模型不要求一定存在于目录中；但一旦 Agent 声明了 `required_capabilities`，该模型就必须存在于可路由目录中且具备全部所需能力，否则直接报错。
 - **pool（池绑定）**：Agent 指向一个模型池，运行时把池链展开成一个有序候选列表（见第 3 节），失败时按顺序转移到下一个候选。
@@ -107,22 +107,19 @@ Agent 可声明 `required_capabilities`（只能来自 1.1 的五个固定枚举
 
 2026-10-08：共享路由统一按 token 估算输入预算，不把 `input_budget` 当 UTF-8 字节上限；候选窗口检测使用同一 Provider/heuristic 估算契约。Router 的 internal/validation 阶段仅在候选完整成功后发布输出，失败候选残片不混入重试结果。这是基础设施语义，不表示 main 恢复写作历史裁剪、摘要业务或成人审查功能。
 
-任务启动前，路由器对整个候选快照计算统一预算：
+新调用使用 version 2 计划：每个候选分别取 Agent、Provider、模型的有效窗口，分别估算完整消息，扣除该候选的输出预留、消息开销和安全边际。不得用所有输入估计的最大值与所有窗口的最小值交叉比较。大窗口候选合格，不会因为另一条 128k 后备候选放不下而整体拒绝；被排除的候选保留安全原因，不伪造一次请求或尝试。
 
-```
-有效上下文窗口 = min(Agent 的 context_window, 所有候选的 min(Provider 窗口, 模型窗口))
-输入预算 = 有效窗口 - max_tokens(输出预留) - 消息开销(4×消息数+2) - 安全边际(256)
-```
+`/dashboard/settings/agents` 的显式预检仅 POST `/agents/<id>/preflight`，不调用 Provider、不解密 Key、不读取小说、不创建 job。请求的 `messages` 已完整，服务端不会再加 system prompt；页面显示并只包含一次已保存的 system prompt 和完整测试文本。改变任务或输入立即使旧结果失效。
 
-- 输入预算必须 > 0，否则直接报错"Prompt 输入预算必须大于 0"（通常是 `max_tokens` 相对窗口设得太大）；
-- 输入 token 估算优先用 Provider 自带的估算器，全部候选都能估算时取最大值；否则退化为 `heuristic`：中日韩字符大约 1.5 字一个 token，其余大约 4 个字符一个 token。不再按 UTF-8 字节数估算，那会把中文高估大约 4.5 倍；
-- 估算超过预算时报错"Prompt 内容超过可用输入预算"，任务不会发起任何网络请求。
+预检和 v2 日志都显示 `input_tokens/input_budget/output_reserve/message_overhead/safety_margin`、窗口来源和 `limiting_factors`、估算器来源及 `exact`。未知为 null，不是零。现有 128k/16k 默认值不自动升到 1M；用户需在任务、Provider 或目录模型的实际瓶颈处显式修改。模型输出上限 null 表示未知/未声明，不等于零。估算通过不是服务商真实 1M 准入测试。
 
-此外每个候选在轮到它之前还会做**单模型窗口检查**：如果该候选自己的 `context_window` 装不下当前 Prompt，该候选记一次 `context_overflow` 失败并直接切换到下一个候选。
+无 version 的历史快照仍按 version 1 解码，保留原 hash、单值 PromptBudget、预算及底层续接校验语义，不重新解析当前配置升级旧 job。日志 v1 保留单值预算面板，v2 仅使用服务器解码的 `invocation_plan`；损坏计划显示原因，不制造零预算。
 
 ### 4.2 候选快照与运行中一致性
 
 任务开始时会把展开的候选列表固化成**候选快照**（含 Agent 配置摘要、池版本、Provider 配置摘要）。运行中和续跑（resume）时都会重新校验：Agent 被改过（`binding_version` 或配置哈希变化）、池版本变了、Provider 配置变了、任何一方被禁用或删除——都会以冲突终止，提示"…已变更，请重新开始任务"。这保证一次任务全程用的是同一份配置。
+
+上述兼容校验不代表旧 AI job 有业务重放处理器：main continue API 仍返回“任务类型暂不支持”的 409，不创建 job、不发网络请求，详情 `can_continue=false`，UI 不提供旧继续按钮。新的作品检查点恢复见 4.4，不改变这个端点。
 
 ### 4.3 什么错误会转移、什么不会
 
@@ -137,13 +134,28 @@ Agent 可声明 `required_capabilities`（只能来自 1.1 的五个固定枚举
 
 **不会转移、直接终结任务：**
 
-- **主阶段（main）已经开始输出**后发生的任何错误：任务以 `partial`（部分输出）终结，保留已生成文本。原因是切换模型续写会造成文风/内容断裂；
-- **取消**：用户取消或系统关闭，任务以 `cancelled` 终结；
-- **路由预算耗尽**：单个任务最多 **16 次候选尝试**、**32 次网络请求**，且有路由截止时间；超限以 `route_budget_exhausted` 失败（若已有输出则为 partial）；
+- **主阶段（main）已经发布首个正文 delta** 后发生错误：锁定目标并以 `partial` 终结，不拼接其他模型输出；usage/progress 不是正文。统一调用正文只经内存结果返回，metadata_only job 不落库原始文本；
+- **取消**：用户取消（含调用方传入的取消回调）、调用方关闭流或系统关闭，任务以 `cancelled` 终结，`error_message` 以 `cancelled:` 开头写明原因；
+- **路由预算耗尽**：单个任务最多 **16 次候选尝试**、**32 次网络请求**，且有 **30 分钟**路由截止时间（建任务时写入 `route_deadline_at`）；超限以 `route_budget_exhausted` 失败（若已有输出则为 partial），`error_message` 以 `route_budget_exhausted:` 开头。截止时间在运行中（流式输出途中、重试退避中或两个候选之间）到达也一样，不记成 cancelled，所以健康横幅和 AI 任务日志能把超时和取消分开；
 - 候选快照/配置冲突（见 4.2）；
 - 所有候选都失败：以 `route_exhausted`（主阶段）或 `validation_failed`（校验阶段）失败。
 
+### 4.4 作品分析的父预算与检查点
+
+作品分析一次仅处理用户明确选择的已归档单篇/系列。开始前披露所有可能接收正文或汇总的安全 Provider/精确模型身份，包括可能只适合后续 reducer 的小模型；纯配置预览不解密 Key、不联网，`work_targets/work_can_segment` 为内部规划事实，不扩展全局预检 v2 API。整部优先，仅输入容量超限时分章/块；请求失败不偷偷改变粒度或加入未确认的 Provider。
+
+- `invoke_text`、`RouteRequest/RouteJobContext` 的可选父绑定默认 `work_binding=None`，旧调用者语义不变。作品执行器传入 `WorkCallBinding(lease, unit_id, try_no, configuration_fingerprint)`，复用同一 Router，不直调 Provider。
+- 每次真实发送按实际候选的 `input_tokens + message_overhead + safety_margin + output_reserve` 预留父预算，与子 job 的真实请求序号在同一事务成功后才允许发送，不能跨候选取 max/min。`attachment`、`ordinal=0` 仅持久关联子 job，不计网络请求；真实请求 ordinal 为 1–32，重试/fallback/恢复后的新发送继续扣账。
+- 父请求/计划 token/累计活跃秒须显式填写确认，上限分别为 1–512、1–100000000、30–14400；子 job 的 16 候选/32 请求/30 分钟限制不变。本地估算不是厂商账单，未知不补零；已预留而发送结果不确定也保守扣账，不保证金额或实际计费 token 的硬上限。
+- 正常暂停/取消/同步让位只结算一次时间片，崩溃/撤权保守扣完整未结算片；重启不清预算、不自动重发付费调用。发送预留是授权边界，取消可能与物理发送交错，尽力停止不等于零发送或退款保证。
+- `/work-analyses/<run_id>/resume` 使用版本 CAS，校验冻结源和配置，仅复用同 run 已验证业务检查点；变更须重新预览。已验证最终根可直接发布，不必再次生成。共享 Web 单 owner/单槽、同步优先，不增加独立执行器。输入覆盖、原作完整性和解释可靠性分别看待。
+- 通用调用仍 `metadata_only`，作品正文/报告不能使用 `keyword_compat` 留存。只持久保存有界业务产物和短证据（可能覆盖极短章），不保存完整输入重放副本；不进入普通任务日志/进度或公开救援/FTS。删除不承诺备份/WAL 的物理清除。
+
 ## 5. 在任务日志中查看路由尝试（route attempts）
+
+统一调用使用 `metadata_only`，输入/输出/错误/普通日志不保存正文，仅关键词清洗内部兼容策略保留前 80 个词/40 个标签和有限清洗结果。实际发送前，在领取网络序号的同一事务写入 pending/未知用量。`usage_summary` 由服务器汇总已知输入/输出/总 token、已报告/未报告请求数及 complete；UI 不累加 attempts，也不把失败、partial 或缺 usage 当免费。零请求显示“未发出请求”，历史 null 显示未知。业务 `validation_status` 与传输成功分别显示。
+
+当前文本客户端沿用 OpenAI-compatible Chat Completions 与 Anthropic Messages；仅支持完整 system/user/assistant 文本消息和受控采样参数。目录能力标签不等于本阶段支持多模态、工具循环、Gemini/Responses 原生协议；不会增加必装 tokenizer 或新框架。
 
 每一次候选尝试都会被持久化为一条 attempt 审计记录，包含：候选所属池的名称/版本/位置快照、Provider 与模型标识、Agent/Provider 配置哈希、结果状态（succeeded / failed / partial / cancelled）、错误分类（`error_category`）、finish_reason、是否已开始输出、耗时（latency_ms）。
 
@@ -179,5 +191,6 @@ Agent 可声明 `required_capabilities`（只能来自 1.1 的五个固定枚举
 | "模型池没有可用模型" | 能力过滤/禁用/不可路由把候选筛空了，检查成员状态与能力标签 |
 | "Prompt 输入预算必须大于 0" / "Prompt 内容超过可用输入预算" | `max_tokens` 相对上下文窗口过大，或输入太长；调小 `max_tokens`、增大窗口配置或缩短输入 |
 | "候选尝试次数已达到 16 次上限" / "网络请求次数已达到 32 次上限" | 路由预算耗尽，通常意味着池里大量模型持续失败，先看 attempts 找共性原因 |
+| "AI job 已超过路由截止时间" | 单个任务跑满 30 分钟：上游流式输出太慢或反复重试，检查 Provider 的网络、代理与 `timeout_seconds` |
 | `deadline_exceeded`（模型同步） | 同步超过 10 分钟，检查 Provider 网络/代理后重试 |
 | "model_key 不能包含控制字符" 等校验错误 | 手动录入的模型标识不合法，按 1.1 的规则修正 |

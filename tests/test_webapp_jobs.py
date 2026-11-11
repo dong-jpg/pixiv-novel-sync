@@ -825,15 +825,10 @@ def test_create_app_starts_scheduler_in_debug_reloader_child(
     assert len(isolated_create_app_scheduler) == 1
 
 
-def test_create_app_shares_scheduler_owner_by_normalized_db_path_and_releases_on_stop(
-    tmp_path,
-    monkeypatch,
-):
-    relative_db_path = ".\\scheduler.db"
+def test_create_app_shares_pinned_work_owner_across_auto_sync_stop(tmp_path, monkeypatch):
+    relative_db_path = "./scheduler.db"
     absolute_db_path = str((tmp_path / "scheduler.db").resolve())
     monkeypatch.chdir(tmp_path)
-    assert str((tmp_path / relative_db_path).resolve()) == absolute_db_path
-
     start_calls = []
     original_start = AutoSyncScheduler.start
 
@@ -851,50 +846,49 @@ def test_create_app_shares_scheduler_owner_by_normalized_db_path_and_releases_on
     monkeypatch.delenv("FLASK_DEBUG", raising=False)
     monkeypatch.delenv("WERKZEUG_SERVER_FD", raising=False)
     monkeypatch.delenv("WERKZEUG_RUN_MAIN", raising=False)
-
-    started_owners = []
+    first_app = None
     try:
         monkeypatch.setenv("PIXIV_DB_PATH", relative_db_path)
         first_app = create_app()
         monkeypatch.setenv("PIXIV_DB_PATH", absolute_db_path)
         second_app = create_app()
-        starts_while_owner_active = len(start_calls)
-
+        assert len(start_calls) == 1
         first_owner = start_calls[0]
-        owner_manager = first_app.config["job_manager"]
-        assert second_app.config["job_manager"] is owner_manager
-        owner_job = owner_manager.submit(webapp_module._scheduler_job_spec("bookmarks"))
-        assert owner_manager.mark_running(owner_job.job_id)
+        manager = first_app.config["job_manager"]
+        coordinator = first_app.extensions["work_analysis_coordinator"]
+        assert second_app.config["job_manager"] is manager
+        assert second_app.extensions["work_analysis_coordinator"] is coordinator
+        job = manager.submit(webapp_module._scheduler_job_spec("bookmarks"))
+        assert manager.mark_running(job.job_id)
 
         class ForbiddenDatabase:
             def __init__(self, db_path):
-                raise AssertionError("manual submission reached the database")
+                raise AssertionError("busy non-work submission reached the database")
 
-        monkeypatch.setattr("pixiv_novel_sync.webapp.Database", ForbiddenDatabase)
+        monkeypatch.setattr(webapp_module, "Database", ForbiddenDatabase)
         blocked = second_app.test_client().post("/api/dashboard/sync/user_status")
         assert blocked.status_code == 409
         assert "已有同步任务" in blocked.get_json()["error"]
-
-        status_response = second_app.test_client().get(
-            f"/api/dashboard/sync/status?job_id={owner_job.job_id}"
-        )
-        assert status_response.get_json()["job"]["job_id"] == owner_job.job_id
-        owner_manager.mark_succeeded(owner_job.job_id)
+        status = second_app.test_client().get(f"/api/dashboard/sync/status?job_id={job.job_id}")
+        assert status.get_json()["job"]["job_id"] == job.job_id
+        manager.mark_succeeded(job.job_id)
         first_owner.stop()
-
-        create_app()
-        started_owners = list(start_calls)
+        third_app = create_app()
+        assert len(start_calls) == 2 and start_calls[1] is first_owner
+        assert third_app.config["job_manager"] is manager
+        assert third_app.extensions["work_analysis_coordinator"] is coordinator
+        assert coordinator.startup_recover() == 0
     finally:
         for scheduler in start_calls:
             scheduler.stop()
             worker = scheduler._thread
             if worker is not None:
                 worker.join(timeout=3)
-
-    assert starts_while_owner_active == 1
-    assert len(start_calls) == 2
-    assert len(started_owners) == 2
-    assert started_owners[1] is not started_owners[0]
+        if first_app is not None:
+            first_app.extensions["close_work_analysis_owner"]()
+    key = webapp_module._scheduler_registry_key(tmp_path / "scheduler.db")
+    with webapp_module._auto_sync_scheduler_registry_lock:
+        assert key not in webapp_module._auto_sync_scheduler_registry
 
 
 def test_scheduler_registry_keeps_stopping_owner_until_worker_exits(tmp_path):

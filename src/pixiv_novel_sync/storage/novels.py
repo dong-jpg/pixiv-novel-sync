@@ -207,6 +207,7 @@ class NovelsMixin:
                 n.source_url,
                 n.archive_dir,
                 nt.text_raw,
+                nt.text_hash,
                 nt.text_markdown,
                 n.raw_json,
                 rp.status AS reading_status,
@@ -360,7 +361,8 @@ class NovelsMixin:
                 self.conn.execute("DELETE FROM recommendation_items WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM recommendation_feedback WHERE novel_id = ?", (novel_id,))
                 self.conn.execute("DELETE FROM reading_progress WHERE novel_id = ?", (novel_id,))
-                self.conn.execute("DELETE FROM preference_analyzed_novels WHERE novel_id = ?", (novel_id,))
+                # D4：保留 preference_analyzed_novels 标记。词频累加器不能按本扣减，
+                # 清掉标记的话作品被同步带回后会再分析一次，词频与 novel_count 翻倍。
                 self.conn.execute(
                     "DELETE FROM rescue_catalog_sources WHERE item_type = 'novel' AND item_id = ?",
                     (novel_id,),

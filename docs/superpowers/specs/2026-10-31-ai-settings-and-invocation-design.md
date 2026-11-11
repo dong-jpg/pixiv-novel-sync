@@ -1,7 +1,7 @@
 # AI 设置与统一调用重构设计（第一阶段）
 
 - 日期：2026-10-31
-- 状态：用户于 2026-11-01 确认本详细规格；[实现计划](../plans/2026-11-01-ai-settings-and-invocation.md)已完成，功能代码尚未实施。
+- 状态：用户于 2026-11-01 确认规格；Tasks1-8 完成，应用 `3c51a6c6` 的独立整阶段代码/规格复审 Approved，Windows/canonical Linux 全量、完整 36 用例 Chromium、Node 和静态/打包验收通过。候选 `793d340d` 已普通推送，于 2026-11-04 15:57（Asia/Shanghai）完成受保护部署及线上缓存修订验证。证据见 [阶段验收记录](../../archive/AI_SETTINGS_ACCEPTANCE_2026-11-03.md)、[部署记录](../../archive/SERVER_DEPLOYMENT_REPORT_2026-11-04.md) 与 [项目现状](../../STATUS.md)。真实 Provider/真机外部验收和第二阶段 XP Agent 未实施。
 - 用户决定：借鉴 Magpie 的设置和调用设计，项目独立运行，不要求安装或部署 Magpie；先改 AI 基础设施，再建设长篇小说 XP 分析 Agent。
 - 本地源码基线：`0259dfeb3e948b186d0b8a72ba7852ad92751a6d`；工作区已有的其他文档修改不属于本规格交付。
 - 参考源码：`yetone/magpie` 的 `c30d3b7b63e818d3b7d9c3eb6fcdada4c7d8c5e0`，不是图像缩放项目。

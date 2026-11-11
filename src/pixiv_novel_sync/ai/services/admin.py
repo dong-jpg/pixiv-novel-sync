@@ -5,7 +5,7 @@ import re
 import sqlite3
 import time
 import unicodedata
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 from ...storage.ai.core import (
@@ -25,6 +25,7 @@ from ..model_pools import (
     expand_pool_ids,
 )
 from ..crypto import AISecretError
+from ..invocation import normalize_text_invocation
 from ..model_router import (
     MAX_CANDIDATE_ATTEMPTS,
     MAX_NETWORK_REQUESTS,
@@ -52,12 +53,14 @@ _MANUAL_MODEL_CREATE_FIELDS = {
     "manual_display_name",
     "manual_capabilities",
     "manual_context_window",
+    "manual_max_output_tokens",
 }
 _MANUAL_MODEL_UPDATE_FIELDS = {
     "enabled",
     "manual_display_name",
     "manual_capabilities",
     "manual_context_window",
+    "manual_max_output_tokens",
 }
 _MODEL_POOL_FIELDS = {
     "name",
@@ -403,7 +406,7 @@ class AIAdminMixin:
         try:
             # 整块读包进一个 read_transaction：并发的模型同步在两次读之间提交，
             # 就会产出 models_synced_at 与 routable_models 互不匹配的一行。
-            # （read_transaction 可嵌套，list_ai_provider_models 内部那层照旧。）
+            # （read_transaction 可嵌套，目录读取方法内部那层照旧。）
             with db.read_transaction():
                 providers = db.list_ai_providers()
                 agents = db.list_ai_agents()
@@ -411,19 +414,29 @@ class AIAdminMixin:
                 attempt_health = db.get_provider_attempt_health(days=days)
                 job_failures = db.get_ai_job_failure_summary(days=days)
                 routable: dict[int, int] = {}
-                # provider_model_id -> routable，供池成员过滤复用运行时判据。
-                # 不额外查库：这里本来就要为每个 Provider 调一次，只是把 items 也留下。
-                routable_by_model: dict[int, bool] = {}
-                capabilities_by_model: dict[int, set[str]] = {}
+                # provider_model_id -> routable / 能力，供池成员过滤复用运行时判据。
+                # 只读池成员引用到的那几行：横幅对目录只需要每个 Provider 的可路由数，
+                # 不必把几千个模型连同两次 JSON 解析全物化出来（P22）。
+                member_models = db.get_ai_provider_models_by_ids(
+                    int(member["provider_model_id"])
+                    for pool in pools.values()
+                    for member in pool.get("members", [])
+                    if member.get("provider_model_id")
+                )
+                routable_by_model: dict[int, bool] = {
+                    model_id: bool(item["routable"])
+                    for model_id, item in member_models.items()
+                }
+                capabilities_by_model: dict[int, set[str]] = {
+                    model_id: set(item.get("capabilities") or [])
+                    for model_id, item in member_models.items()
+                }
                 undecryptable: set[int] = set()
                 for provider_row in providers:
                     provider_id = int(provider_row["id"])
-                    catalog = db.list_ai_provider_models(provider_id)
-                    routable[provider_id] = int(catalog["routable"])
-                    for item in catalog["items"]:
-                        model_id = int(item["id"])
-                        routable_by_model[model_id] = bool(item["routable"])
-                        capabilities_by_model[model_id] = set(item.get("capabilities") or [])
+                    routable[provider_id] = int(
+                        db.count_ai_provider_models(provider_id)["routable"]
+                    )
                     if provider_row.get("has_api_key"):
                         secret_row = db.get_ai_provider(provider_id, include_secret=True)
                         ciphertext = (secret_row or {}).get("api_key_encrypted")
@@ -778,6 +791,7 @@ class AIAdminMixin:
         """
         base_url = (str(payload.get("base_url") or "")).strip() or None
         provider_type = str(payload.get("provider_type") or "openai_compatible")
+        proxy = (str(payload.get("proxy")).strip() or None) if payload.get("proxy") else None
         api_key = payload.get("api_key") or None
         provider_id = payload.get("provider_id")
 
@@ -789,13 +803,23 @@ class AIAdminMixin:
                 db.close()
             if row is None:
                 raise AINotFoundError("Provider 不存在")
-            # 借库里那把 Key 时地址必须逐字相同：否则这个端点等于「把加密存好的 Key
-            # 发到我指定的任意地址」，而 validate_base_url 拦不住它（目标可以是完全
-            # 合法的 https 公网主机）。
-            if (row.get("base_url") or None) != base_url:
+            # Borrowing the saved key must preserve the full network tuple:
+            # a different protocol, adapter or proxy turns this endpoint into
+            # "send the encrypted key to my chosen destination".
+            saved_type = str(row.get("provider_type") or "openai_compatible")
+            saved_proxy = (str(row.get("proxy") or "").strip()) or None
+            # Omitted/null transport fields inherit saved values; an explicit
+            # empty proxy means direct transport and must still be compared.
+            if (
+                (row.get("base_url") or None) != base_url
+                or (payload.get("provider_type") and provider_type != saved_type)
+                or (payload.get("proxy") is not None and proxy != saved_proxy)
+            ):
                 raise AIServiceError(
-                    "借用已保存的 API Key 时不能同时改地址：请在表单里重新填入 Key"
+                    "借用已保存的 API Key 时不能同时改地址、协议或代理：请在表单里重新填入 Key"
                 )
+            provider_type = saved_type
+            proxy = saved_proxy
             api_key = self.secret_manager.decrypt(row.get("api_key_encrypted"))
         if not api_key:
             raise AIServiceError("请填入 API Key")
@@ -809,7 +833,7 @@ class AIAdminMixin:
             default_model=None,
             timeout_seconds=int(payload.get("timeout_seconds") or 120),
             context_window=int(payload.get("context_window") or 128000),
-            proxy=(str(payload.get("proxy")).strip() or None) if payload.get("proxy") else None,
+            proxy=proxy,
         )
         provider = create_provider(config)
         started = time.time()
@@ -828,6 +852,7 @@ class AIAdminMixin:
                 "display_name": model.get("display_name"),
                 "capabilities": capabilities,
                 "context_window": model.get("context_window"),
+                "max_output_tokens": model.get("max_output_tokens"),
                 "suggested": suggested,
             })
         return {
@@ -896,6 +921,33 @@ class AIAdminMixin:
             self._require_provider_model_row(db, model_id)
             try:
                 db.update_ai_provider_model(model_id, payload)
+            except ModelCatalogValidationError as exc:
+                raise AIServiceError(str(exc)) from exc
+        finally:
+            db.close()
+
+    def update_provider_models_enabled(
+        self,
+        provider_id: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        self._reject_unknown_fields(payload, {"catalog_revision", "changes"})
+        catalog_revision = payload.get("catalog_revision")
+        changes = payload.get("changes")
+        if not isinstance(catalog_revision, str):
+            raise AIServiceError("catalog_revision 必须是 SHA-256")
+        if isinstance(changes, (str, bytes)) or not isinstance(changes, Sequence):
+            raise AIServiceError("changes 必须是数组")
+
+        db = self._db()
+        try:
+            self._require_provider_row(db, provider_id)
+            try:
+                return db.update_ai_provider_models_enabled(
+                    provider_id, catalog_revision, changes
+                )
+            except ModelCatalogConflictError as exc:
+                raise AIConflictError(str(exc)) from exc
             except ModelCatalogValidationError as exc:
                 raise AIServiceError(str(exc)) from exc
         finally:
@@ -1135,6 +1187,23 @@ class AIAdminMixin:
                 "max_pool_nodes": MAX_POOL_NODES,
             },
         }
+
+    def preflight_agent(
+        self,
+        agent_id: int,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Plan the exact supplied text without Provider or secret access."""
+
+        db = self._db()
+        try:
+            if db.get_ai_agent(agent_id) is None:
+                raise AINotFoundError("Agent 不存在")
+            agent = self._load_agent_config(db, agent_id)
+        finally:
+            db.close()
+        invocation = normalize_text_invocation(payload, agent=agent)
+        return self.model_router.plan_invocation(agent, invocation).to_public_dict()
 
     def list_agents(self) -> list[dict[str, Any]]:
         db = self._db()
@@ -1416,7 +1485,9 @@ class AIAdminMixin:
         if missing:
             raise AIServiceError(f"固定模型缺少必需能力：{', '.join(missing)}")
 
-    def _load_provider_config(self, db: Database, provider_id: int) -> AIProviderConfig:
+    def _load_provider_config(
+        self, db: Database, provider_id: int, *, upgrade_legacy: bool = True,
+    ) -> AIProviderConfig:
         row = db.get_ai_provider(provider_id, include_secret=True)
         if not row:
             raise AIServiceError("Provider 不存在")
@@ -1425,9 +1496,9 @@ class AIAdminMixin:
         stored_cipher = row.get("api_key_encrypted")
         api_key = self.secret_manager.decrypt(stored_cipher)
         # L4: 若命中已废弃的 v1（无盐 SHA-256）KDF，解密成功后透明升级到 v2 回写。
-        if api_key and self.secret_manager.is_legacy_ciphertext(stored_cipher):
+        if upgrade_legacy and api_key and self.secret_manager.is_legacy_ciphertext(stored_cipher):
             try:
-                db.update_ai_provider(provider_id, {"api_key_encrypted": self.secret_manager.encrypt(api_key)})
+                db.upgrade_ai_provider_ciphertext(provider_id, stored_cipher, self.secret_manager.encrypt(api_key))
             except Exception:
                 pass  # 升级失败不影响本次使用；下次再试
         return AIProviderConfig(

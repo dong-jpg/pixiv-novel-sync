@@ -161,9 +161,9 @@ class RecommendationsMixin:
         row = self.conn.execute(
             """
             SELECT COUNT(*) FROM novels n
-            LEFT JOIN novel_texts nt ON nt.novel_id = n.novel_id
+            JOIN novel_texts nt ON nt.novel_id = n.novel_id
             WHERE n.text_length >= ?
-              AND nt.text_raw IS NOT NULL AND nt.text_raw != ''
+              AND nt.has_content = 1
               AND NOT EXISTS (SELECT 1 FROM preference_analyzed_novels a WHERE a.novel_id = n.novel_id)
             """,
             [int(min_text_length)],
@@ -234,13 +234,15 @@ class RecommendationsMixin:
             for term_type, counter in term_deltas.items():
                 if not counter:
                     continue
+                # P14：按主键 (term_type, term) 的顺序写入，B 树按页顺序推进，
+                # 不再随机跳页（合成库 28 万键并入 35 万行 157 s → 82 s）。
                 self.conn.executemany(
                     """
                     INSERT INTO preference_term_counts (term_type, term, count)
                     VALUES (?, ?, ?)
                     ON CONFLICT(term_type, term) DO UPDATE SET count = count + excluded.count
                     """,
-                    [(term_type, term, int(delta)) for term, delta in counter.items()],
+                    sorted((term_type, term, int(delta)) for term, delta in counter.items()),
                 )
 
             # 2. 累加标量(读-改-写;累加器单行)
@@ -301,19 +303,84 @@ class RecommendationsMixin:
             self.conn.execute("DELETE FROM preference_analyzed_novels")
             self.conn.execute("DELETE FROM preference_accumulator")
 
-    def prune_preference_term_noise(self, term_types: tuple[str, ...], max_rows: int, min_count: int = 2) -> int:
-        """高基数词项表超过阈值时,清理低频噪声(count < min_count)。返回删除行数。"""
-        total = self.conn.execute("SELECT COUNT(*) FROM preference_term_counts").fetchone()[0]
-        if int(total) <= int(max_rows):
+    def prune_preference_term_noise(
+        self,
+        term_types: tuple[str, ...],
+        max_rows: int,
+        min_count: int = 2,
+        target_ratio: float = 0.7,
+    ) -> int:
+        """词项表超过 max_rows 时清理高基数类型里的低频词，返回删除行数。
+
+        D5：以前超过阈值后只删 count < 2，若留下的词本身就超过阈值，之后每批都会触发，
+        把本批刚加的 count=1 词删掉——每批各出现一次的词永远攒不起来，画像取决于分批
+        顺序。现在一次清到 max_rows × target_ratio 以下（门槛从 min_count 起逐级提高），
+        留出余量让新词在之后几批里攒到 2 以上，清理变成隔一阵才发生一次。
+        """
+        total = int(self.conn.execute("SELECT COUNT(*) FROM preference_term_counts").fetchone()[0])
+        if total <= int(max_rows):
             return 0
+        target = int(int(max_rows) * float(target_ratio))
         placeholders = ",".join("?" for _ in term_types)
+        deleted = 0
+        threshold = max(2, int(min_count))
         with self.transaction():
+            # 门槛逐级提高；32 级之后还清不到目标说明高频词本身就太多，留给下次。
+            for _ in range(32):
+                cursor = self.conn.execute(
+                    f"DELETE FROM preference_term_counts WHERE term_type IN ({placeholders}) AND count < ?",
+                    (*term_types, threshold),
+                )
+                removed = int(cursor.rowcount or 0)
+                deleted += removed
+                total -= removed
+                if total <= target:
+                    break
+                threshold += 1
+        return deleted
+
+
+    def prune_recommendation_items(self, keep_runs: int = 30) -> int:
+        """清理旧推荐条目（P10：recommendation_items 以前随推荐轮次线性增长）。
+
+        保守：只清「最近 keep_runs 轮都没再推到」、仍是 new、而且没有任何反馈
+        （recommendation_feedback 里没有同一本 / 同一系列）的条目。用户看过、表过态的
+        一条都不动。清掉的 ID 写进 recommendation_seen，「不重复推荐」照常生效。
+        返回删除行数。
+        """
+        keep = max(1, int(keep_runs))
+        with self.transaction():
+            row = self.conn.execute(
+                "SELECT id FROM recommendation_runs ORDER BY id DESC LIMIT 1 OFFSET ?",
+                (keep - 1,),
+            ).fetchone()
+            if row is None:
+                return 0
+            cutoff_run_id = int(row[0])
+            stale = """
+                FROM recommendation_items ri
+                WHERE ri.run_id < ?
+                  AND ri.status = 'new'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM recommendation_feedback f
+                      WHERE (ri.novel_id IS NOT NULL AND f.novel_id = ri.novel_id)
+                         OR (ri.series_id IS NOT NULL AND f.series_id = ri.series_id)
+                  )
+            """
+            self.conn.execute(
+                f"""
+                INSERT OR IGNORE INTO recommendation_seen (item_type, item_id)
+                SELECT 'novel', ri.novel_id {stale} AND ri.novel_id IS NOT NULL
+                UNION
+                SELECT 'series', ri.series_id {stale} AND ri.series_id IS NOT NULL
+                """,
+                (cutoff_run_id, cutoff_run_id),
+            )
             cursor = self.conn.execute(
-                f"DELETE FROM preference_term_counts WHERE term_type IN ({placeholders}) AND count < ?",
-                (*term_types, int(min_count)),
+                f"DELETE FROM recommendation_items WHERE id IN (SELECT ri.id {stale})",
+                (cutoff_run_id,),
             )
             return int(cursor.rowcount or 0)
-
 
     def create_recommendation_run(self, profile_id: int, search_plan: dict[str, Any], status: str = "running") -> int:
         cursor = self.conn.execute(
@@ -547,6 +614,13 @@ class RecommendationsMixin:
             self.conn, "SELECT 1 FROM novels WHERE novel_id = ? LIMIT 1"
         )
         recommended_ids = {int(row[0]) for row in self.conn.execute("SELECT novel_id FROM recommendation_items WHERE novel_id IS NOT NULL").fetchall()}
+        # 被 prune_recommendation_items 清掉的旧条目：ID 留在 recommendation_seen，照样算「推荐过」
+        recommended_ids |= {
+            int(row[0])
+            for row in self.conn.execute(
+                "SELECT item_id FROM recommendation_seen WHERE item_type = 'novel'"
+            ).fetchall()
+        }
         dismissed_ids = {int(row[0]) for row in self.conn.execute("SELECT novel_id FROM recommendation_items WHERE novel_id IS NOT NULL AND status IN ('dismissed', 'muted')").fetchall()}
         # 独立的反馈记录(recommendation_feedback)同样计入排除:
         # item 可能被后续 run 覆盖回 new,但 dismissed 反馈是用户明确表态,必须持续生效
@@ -560,6 +634,7 @@ class RecommendationsMixin:
             int(row[0])
             for row in self.conn.execute(
                 "SELECT series_id FROM recommendation_items WHERE series_id IS NOT NULL"
+                " UNION SELECT item_id FROM recommendation_seen WHERE item_type = 'series'"
             ).fetchall()
         }
         dismissed_series_ids = {

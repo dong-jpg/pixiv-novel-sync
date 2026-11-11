@@ -378,9 +378,22 @@
 
 <!-- Reader -->
 <template v-else>
+  <section v-if="readerEvidence && readerEvidence.active" id="work-analysis-evidence" tabindex="-1" class="library-card max-w-4xl mx-auto space-y-3 scroll-mt-20" aria-label="同版本证据定位">
+    <h2 class="library-section-title">核对同版本正文证据</h2>
+    <p v-if="readerEvidence.loading" role="status">正在认证并重新核验正文 hash…</p>
+    <p v-if="readerEvidence.error" role="alert">{{ readerEvidence.error }}</p>
+    <template v-if="readerEvidence.parts">
+      <p class="text-sm">当前正文 hash 匹配；服务端 code point 区间 [{{ readerEvidence.jump.start }}, {{ readerEvidence.jump.end }})。</p>
+      <pre class="whitespace-pre-wrap break-words"><span>{{ readerEvidence.parts.before }}</span><mark>{{ readerEvidence.parts.quote }}</mark><span>{{ readerEvidence.parts.after }}</span></pre>
+      <p class="text-xs library-muted">这是同版本正文的有界定位片段；没有把原文偏移套到格式化 HTML，也没有用 UTF-16 下标重算全书位置。</p>
+    </template>
+  </section>
   <!-- Novel header -->
   <div class="novel-header">
     <h1 class="novel-title">{{ novel.title || '无标题' }}</h1>
+{% if novel_id is defined %}
+    <a href="/dashboard/preferences?view=work-analysis&amp;source_kind=novel&amp;source_id={[ novel_id ]}" class="library-btn">分析作品</a>
+{% endif %}
     <div class="novel-author">
       <a v-if="novel.user_id" :href="detailHref('/dashboard/users/' + novel.user_id)">{{ novel.author_name || '未知' }}</a>
       <span v-else style="color:#666; font-size:0.875rem;">{{ novel.author_name || '未知' }}</span>
@@ -505,7 +518,10 @@
 {% block extra_scripts %}
 {% include "navigation_helpers.html" %}
 {% include "pixiv_markup.html" %}
-<script>
+{% if request.args is defined and (request.args.get('analysis_id') or request.args.get('evidence_id')) %}
+<script nonce="{[ csp_nonce() ]}" src="/static/js/work_analysis.js"></script>
+{% endif %}
+<script nonce="{[ csp_nonce() ]}">
   initVueApp({
     setup() {
       const { ref, computed, onMounted, onUnmounted, nextTick, watch } = Vue;
@@ -516,6 +532,8 @@
 
       // State
       const novel = ref(null);
+      const readerEvidence = window.WorkAnalysis
+        ? window.WorkAnalysis.useReaderEvidence(Vue, novel, novelId) : null;
       const loading = ref(true);
       const error = ref(null);
       const progressPercent = ref(0);
@@ -882,6 +900,7 @@
       };
 
       return {
+        readerEvidence,
         novel, loading, error, progressPercent, isScrolled, backHref, fontSizeLabel,
         detailHref, chapterHref, showReaderActions, showChapters, deletingNovel,
         exportingEpub, readerActionMessage, readerActionMessageType,

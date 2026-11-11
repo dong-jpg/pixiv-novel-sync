@@ -1,4 +1,4 @@
-<script>
+<script nonce="{[ csp_nonce() ]}">
   // Pixiv 正文标记 → 阅读页 HTML。解析规则与 src/pixiv_novel_sync/pixiv_markup.py 逐条对应、
   // 产出同一棵树（tests/fixtures/pixiv_markup_cases.json 同时校验两边），改规则要两边一起改。
   // 渲染只产出白名单标签，每段文字、每个属性值都过 escapeHtml：正文里的 <script> 只会是字面文字；

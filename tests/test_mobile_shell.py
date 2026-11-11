@@ -48,8 +48,8 @@ def test_body_class_is_rendered_for_reader_without_changing_other_pages():
         app.jinja_env.loader,
     ])
     with app.test_request_context("/dashboard/novels/123"):
-        reader = render_template("reader-test.html", task_labels={})
-        default = render_template("base.html", task_labels={})
+        reader = render_template("reader-test.html", task_labels={}, csp_nonce=lambda: "test-nonce")
+        default = render_template("base.html", task_labels={}, csp_nonce=lambda: "test-nonce")
     assert '<body class="antialiased pns-reader-page">' in reader
     assert "pns-reader-page" not in re.search(r"<body[^>]*>", default)[0]
     assert "app-sidebar-nav" in default

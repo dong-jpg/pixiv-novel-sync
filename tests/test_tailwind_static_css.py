@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "src" / "pixiv_novel_sync"
 TEMPLATES = PACKAGE / "templates"
+SCRIPTS = PACKAGE / "static" / "js"
 CSS = PACKAGE / "static" / "css" / "tailwind.css"
 REBUILD = "python scripts/build_tailwind_css.py"
 
@@ -129,6 +130,14 @@ def template_class_tokens(text: str) -> set[str]:
     return set(tokens)
 
 
+def source_class_tokens(path: Path) -> set[str]:
+    text = path.read_text(encoding="utf-8")
+    tokens = template_class_tokens(text)
+    if path.suffix == ".js":
+        tokens |= set(_script_tokens(text))
+    return tokens
+
+
 def strip_variants(token: str) -> str:
     """去掉 sm: / hover: / group-hover: 等变体前缀；方括号里的冒号（[@media(...)]:）不算分隔符。"""
     depth, start = 0, 0
@@ -176,8 +185,8 @@ def test_tailwind_css_is_the_last_stylesheet_in_head():
 
 def test_every_template_tailwind_class_is_in_generated_css():
     missing: dict[str, list[str]] = {}
-    for path in sorted(TEMPLATES.glob("*.html")):
-        tokens = template_class_tokens(path.read_text(encoding="utf-8"))
+    for path in sorted([*TEMPLATES.glob("*.html"), *SCRIPTS.glob("*.js")]):
+        tokens = source_class_tokens(path)
         absent = sorted(token for token in tokens if looks_like_tailwind(token) and token not in generated_classes())
         if absent:
             missing[path.name] = absent
@@ -202,6 +211,20 @@ headers = { cache: 'no-store', Accept: 'text/event-stream' }; el.style.setProper
     assert {"sm:grid-cols-2", "!p-3", "z-[80]", "group-hover:text-brand-600", "text-amber-300"} <= real
 
 
+def test_external_javascript_scanner_sees_templates_and_class_sinks(tmp_path):
+    script = tmp_path / "ai_fixture.js"
+    script.write_text('const template = `<div class="mt-[1234px]"></div>`;\n'
+                      'el.classList.add("ring-[7px]");\n', encoding="utf-8")
+    assert {"mt-[1234px]", "ring-[7px]"} <= source_class_tokens(script)
+
+
+def test_shipped_ai_scripts_are_tailwind_inputs_and_package_data():
+    config = (ROOT / "scripts" / "tailwind.config.js").read_text(encoding="utf-8")
+    assert "../src/pixiv_novel_sync/static/js/*.js" in config
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"static/js/*.js"' in pyproject
+
+
 DYNAMIC_ROOT = "|".join(sorted(TAILWIND_ROOTS, key=len, reverse=True))
 DYNAMIC_CLASS = re.compile(
     rf"['\"](?:[a-z0-9-]+:)*(?:{DYNAMIC_ROOT})-[a-z0-9-]*['\"]\s*\+"  # 'bg-' + color
@@ -214,7 +237,7 @@ def test_templates_do_not_assemble_tailwind_class_names_at_runtime():
     """CLI 只扫源码文本：运行时拼出来的类名看不见，得写完整字面量，或登记到 scripts/tailwind.config.js 的 safelist。"""
     found = {
         path.name: sorted(set(DYNAMIC_CLASS.findall(path.read_text(encoding="utf-8"))))
-        for path in sorted(TEMPLATES.glob("*.html"))
+        for path in sorted([*TEMPLATES.glob("*.html"), *SCRIPTS.glob("*.js")])
     }
     found = {name: hits for name, hits in found.items() if hits}
     assert not found, found

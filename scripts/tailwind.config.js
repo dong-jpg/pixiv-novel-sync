@@ -7,7 +7,10 @@
 module.exports = {
   content: {
     relative: true,
-    files: ['../src/pixiv_novel_sync/templates/*.html'],
+    files: [
+      '../src/pixiv_novel_sync/templates/*.html',
+      '../src/pixiv_novel_sync/static/js/*.js',
+    ],
   },
   // Play CDN 会扫运行时 DOM，CLI 只扫源码文本：只在运行时拼出来的类名（如 'bg-' + color）
   // CLI 看不见，必须登记在这里。目前模板里没有这种写法，

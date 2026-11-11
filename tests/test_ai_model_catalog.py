@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sqlite3
 import threading
+from threading import Barrier
 from pathlib import Path
 
 import pytest
@@ -192,6 +194,47 @@ def test_catalog_three_counts_are_independent(db):
         assert item["total"] == 3
         assert item["discovered_available"] == 3
         assert item["routable"] == 2
+
+
+def test_catalog_search_uses_effective_names_and_keeps_full_revision_and_filters(db):
+    provider_id = seed_provider(db)
+    other_provider = seed_provider(db)
+    overridden = db.create_ai_provider_model({"provider_id": provider_id,
+        "model_key": "vendor/opaque-001", "manual_display_name": "Friendly Writer"})
+    db.upsert_discovered_models(provider_id, [
+        {"model_key": "vendor/opaque-001", "display_name": "Hidden Upstream"},
+        {"model_key": "vendor/opaque-002", "display_name": "Friendly Discovered"},
+        {"model_key": "vendor/opaque-003", "display_name": "Friendly Disabled"},
+    ], generation=1)
+    db.create_ai_provider_model({"provider_id": other_provider, "model_key": "other", "manual_display_name": "Friendly Other"})
+    before = db.list_ai_provider_models(provider_id)
+    disabled = before["items"][2]["id"]
+    db.update_ai_provider_model(disabled, {"enabled": False})
+    before = db.list_ai_provider_models(provider_id)
+    result = db.list_ai_provider_models(provider_id, search="Friendly")
+    assert [row["id"] for row in result["items"]] == [row["id"] for row in before["items"]]
+    assert db.list_ai_provider_models(provider_id, search="Hidden Upstream")["items"] == []
+    assert db.list_ai_provider_models(provider_id, search="opaque-001")["items"][0]["id"] == overridden
+    for filters in ({"enabled_only": True}, {"routable_only": True}):
+        filtered = db.list_ai_provider_models(provider_id, search="Friendly", **filters)
+        assert [row["id"] for row in filtered["items"]] == [row["id"] for row in before["items"][:2]]
+        assert filtered["catalog_revision"] == before["catalog_revision"]
+    assert result["catalog_revision"] == before["catalog_revision"]
+    assert result["total"] == before["total"] == 3
+    db.update_ai_provider_model(overridden, {"manual_display_name": None})
+    assert db.list_ai_provider_models(provider_id, search="Hidden Upstream")["items"][0]["id"] == overridden
+
+
+@pytest.mark.parametrize("text", ["100% Writer", "under_score", "back\\slash", "O'Reilly", "' OR 1=1 --"])
+def test_catalog_search_treats_display_and_key_search_as_literal_text(db, text):
+    provider_id = seed_provider(db)
+    model_id = db.create_ai_provider_model({"provider_id": provider_id,
+        "model_key": "opaque-id", "manual_display_name": text})
+    db.create_ai_provider_model({"provider_id": provider_id, "model_key": "100X Writer underXscore backslash other"})
+    before = db.list_ai_provider_models(provider_id)
+    result = db.list_ai_provider_models(provider_id, search=text)
+    assert [row["id"] for row in result["items"]] == [model_id]
+    assert result["catalog_revision"] == before["catalog_revision"]
 
 
 def test_delete_provider_cascades_catalog_rows(db):
@@ -585,3 +628,479 @@ def test_remove_manual_serializes_with_concurrent_discovery(db):
     assert row["model_key"] == "m"
     assert row["manual"] is False
     assert row["discovered"] is True
+
+
+@pytest.mark.parametrize("bad", [True, False, "", "8192", 0, -1, 1000001])
+def test_max_output_tokens_rejects_invalid_discovered_values(bad):
+    with pytest.raises(ModelCatalogValidationError):
+        normalize_model_record({"id": "m", "max_output_tokens": bad})
+
+
+def test_output_limit_normalization_digest_and_manual_override(db):
+    provider_id = seed_provider(db)
+    small = normalize_model_record({"id": "m", "max_output_tokens": 4096})
+    large = normalize_model_record({"id": "m", "max_output_tokens": 8192})
+    assert small["max_output_tokens"] == 4096
+    assert canonical_model_digest([small]) != canonical_model_digest([large])
+    db.upsert_discovered_models(provider_id, [small], generation=1)
+    model_id = db.list_ai_provider_models(provider_id)["items"][0]["id"]
+    db.update_ai_provider_model(model_id, {"manual_max_output_tokens": 20000})
+    db.upsert_discovered_models(provider_id, [large], generation=2)
+    assert db.get_ai_provider_model(model_id)["max_output_tokens"] == 20000
+    db.update_ai_provider_model(model_id, {"enabled": False})
+    assert db.get_ai_provider_model(model_id)["manual_max_output_tokens"] == 20000
+    db.update_ai_provider_model(model_id, {"manual_max_output_tokens": None})
+    assert db.get_ai_provider_model(model_id)["max_output_tokens"] == 8192
+    assert normalize_model_record({"id": "unknown"})["max_output_tokens"] is None
+
+
+@pytest.mark.parametrize("bad", [True, "", "4096", 0, -1, 1000001])
+def test_manual_output_limit_bad_patch_has_no_effect(db, bad):
+    provider_id = seed_provider(db)
+    model_id = db.create_ai_provider_model(
+        {
+            "provider_id": provider_id,
+            "model_key": "m",
+            "manual_max_output_tokens": 4096,
+        }
+    )
+    with pytest.raises(ModelCatalogValidationError):
+        db.update_ai_provider_model(model_id, {"manual_max_output_tokens": bad})
+    assert db.get_ai_provider_model(model_id)["manual_max_output_tokens"] == 4096
+
+
+def test_legacy_discovery_shape_stays_valid_and_limit_mismatch_is_rejected(db):
+    provider_id = seed_provider(db)
+    legacy = {
+        "model_key": "legacy",
+        "display_name": None,
+        "capabilities": [],
+        "context_window": None,
+        "metadata_json": "{}",
+    }
+
+    db.upsert_discovered_models(provider_id, [legacy], generation=1)
+
+    row = db.get_ai_provider_model(
+        db.list_ai_provider_models(provider_id)["items"][0]["id"]
+    )
+    assert row["max_output_tokens"] is None
+    assert row["discovered_max_output_tokens"] is None
+
+    forged = dict(legacy)
+    forged["max_output_tokens"] = 4096
+    with pytest.raises(ModelCatalogValidationError, match="metadata_json"):
+        db.upsert_discovered_models(provider_id, [forged], generation=2)
+
+
+def test_catalog_revision_is_full_and_bulk_enabled_is_atomic(db):
+    provider_id = seed_provider(db)
+    ids = [
+        db.create_ai_provider_model(
+            {
+                "provider_id": provider_id,
+                "model_key": key,
+            }
+        )
+        for key in ("alpha", "beta")
+    ]
+    initial = db.list_ai_provider_models(provider_id)
+    revision = initial["catalog_revision"]
+    assert len(revision) == 64
+    assert db.list_ai_provider_models(provider_id, search="alpha")["catalog_revision"] == revision
+    assert db.list_ai_provider_models(provider_id, enabled_only=True)["catalog_revision"] == revision
+    with pytest.raises(ModelCatalogValidationError):
+        db.update_ai_provider_models_enabled(provider_id, revision, [
+            {"id": ids[0], "enabled": False}, {"id": 999999, "enabled": False},
+        ])
+    assert all(db.get_ai_provider_model(i)["enabled"] for i in ids)
+    result = db.update_ai_provider_models_enabled(provider_id, revision, [
+        {"id": i, "enabled": False} for i in ids
+    ])
+    assert result["updated"] == 2
+    assert result["catalog_revision"] != revision
+    with pytest.raises(ModelCatalogConflictError):
+        db.update_ai_provider_models_enabled(provider_id, revision, [{"id": ids[0], "enabled": True}])
+    assert not any(db.get_ai_provider_model(i)["enabled"] for i in ids)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        [{"id": True, "enabled": False}],
+        [{"id": 1, "enabled": 0}],
+        [{"id": 1, "enabled": False}, {"id": 1, "enabled": True}],
+        [{"id": 10**400, "enabled": False}],
+        [{"id": n, "enabled": False} for n in range(1, 5002)],
+    ],
+)
+def test_bulk_enabled_rejects_invalid_changes_without_writes(db, changes):
+    provider_id = seed_provider(db)
+    revision = db.get_ai_provider_catalog_revision(provider_id)
+    with pytest.raises(ModelCatalogValidationError):
+        db.update_ai_provider_models_enabled(provider_id, revision, changes)
+    assert db.get_ai_provider_catalog_revision(provider_id) == revision
+
+
+def test_bulk_enabled_accepts_5000_unique_owned_models(db):
+    provider_id = seed_provider(db)
+    ids = [
+        db.create_ai_provider_model(
+            {"provider_id": provider_id, "model_key": f"m-{index}"}
+        )
+        for index in range(5000)
+    ]
+    revision = db.get_ai_provider_catalog_revision(provider_id)
+
+    result = db.update_ai_provider_models_enabled(
+        provider_id,
+        revision,
+        [{"id": model_id, "enabled": False} for model_id in ids],
+    )
+
+    assert result["updated"] == 5000
+    assert not any(
+        item["enabled"] for item in db.list_ai_provider_models(provider_id)["items"]
+    )
+
+
+def test_bulk_enabled_ignores_foreign_provider_model_atomically(db):
+    first_provider = seed_provider(db)
+    second_provider = seed_provider(db)
+    first_model = db.create_ai_provider_model(
+        {"provider_id": first_provider, "model_key": "first"}
+    )
+    foreign_model = db.create_ai_provider_model(
+        {"provider_id": second_provider, "model_key": "foreign"}
+    )
+    revision = db.get_ai_provider_catalog_revision(first_provider)
+
+    with pytest.raises(ModelCatalogValidationError):
+        db.update_ai_provider_models_enabled(
+            first_provider,
+            revision,
+            [
+                {"id": model_id, "enabled": False}
+                for model_id in (first_model, foreign_model)
+            ],
+        )
+
+    assert db.get_ai_provider_model(first_model)["enabled"] is True
+    assert db.get_ai_provider_model(foreign_model)["enabled"] is True
+
+
+@pytest.mark.parametrize("enabled_requests", [(False, True), (True, False)])
+def test_bulk_enabled_conflicting_threads_allow_exactly_one_write(db, enabled_requests):
+    provider_id = seed_provider(db)
+    model_ids = [
+        db.create_ai_provider_model(
+            {"provider_id": provider_id, "model_key": f"m-{index}"}
+        )
+        for index in range(2)
+    ]
+    db.update_ai_provider_models_enabled(
+        provider_id,
+        db.get_ai_provider_catalog_revision(provider_id),
+        [{"id": model_ids[0], "enabled": False}],
+    )
+    revision = db.get_ai_provider_catalog_revision(provider_id)
+    barrier = Barrier(2)
+    results: list[tuple[bool, dict[str, object] | BaseException]] = []
+
+    def submit(database: Database, enabled: bool) -> None:
+        try:
+            barrier.wait(timeout=5)
+            result = database.update_ai_provider_models_enabled(
+                provider_id,
+                revision,
+                [{"id": model_id, "enabled": enabled} for model_id in model_ids],
+            )
+            results.append((enabled, result))
+        except BaseException as exc:
+            results.append((enabled, exc))
+        finally:
+            database.close()
+
+    first = Database(db.path)
+    second = Database(db.path)
+    workers = [
+        threading.Thread(target=submit, args=(first, enabled_requests[0])),
+        threading.Thread(target=submit, args=(second, enabled_requests[1])),
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=10)
+
+    assert not any(worker.is_alive() for worker in workers)
+    conflicts = [
+        result for _, result in results if isinstance(result, ModelCatalogConflictError)
+    ]
+    successful = [
+        (enabled, result) for enabled, result in results if isinstance(result, dict)
+    ]
+    other_exceptions = [
+        result
+        for _, result in results
+        if not isinstance(result, (dict, ModelCatalogConflictError))
+    ]
+    assert len(results) == 2
+    assert len(successful) == 1
+    expected_final_enabled, successful_result = successful[0]
+    assert successful_result["updated"] == 1
+    assert len(conflicts) == 1
+    assert other_exceptions == []
+    final_enabled = {
+        model_id: db.get_ai_provider_model(model_id)["enabled"]
+        for model_id in model_ids
+    }
+    # A successful bulk change must own the resulting state atomically.
+    assert set(final_enabled.values()) == {expected_final_enabled}
+
+
+def test_bulk_enabled_same_revision_noop_is_valid(db):
+    provider_id = seed_provider(db)
+    model_id = db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "unchanged"}
+    )
+    revision = db.get_ai_provider_catalog_revision(provider_id)
+
+    result = db.update_ai_provider_models_enabled(
+        provider_id,
+        revision,
+        [{"id": model_id, "enabled": True}],
+    )
+
+    assert result["updated"] == 0
+    assert result["catalog_revision"] == revision
+    assert db.get_ai_provider_model(model_id)["enabled"] is True
+
+
+def test_bulk_enabled_rolls_back_when_second_update_fails(db):
+    provider_id = seed_provider(db)
+    model_ids = [
+        db.create_ai_provider_model(
+            {"provider_id": provider_id, "model_key": key}
+        )
+        for key in ("first", "second")
+    ]
+    revision = db.get_ai_provider_catalog_revision(provider_id)
+    db.conn.execute(
+        f"""
+        CREATE TRIGGER reject_second_model_update
+        BEFORE UPDATE ON ai_provider_models
+        WHEN OLD.id = {model_ids[1]}
+        BEGIN
+            SELECT RAISE(ABORT, 'forced second update failure');
+        END
+        """
+    )
+    db.conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="forced second update failure"):
+        db.update_ai_provider_models_enabled(
+            provider_id,
+            revision,
+            [{"id": model_id, "enabled": False} for model_id in model_ids],
+        )
+
+    assert db.get_ai_provider_model(model_ids[0])["enabled"] is True
+    assert db.get_ai_provider_model(model_ids[1])["enabled"] is True
+
+# P22：点查 / 批量 / 计数三个读法与整表 list 的派生结果逐字段一致。
+def test_point_batch_and_count_lookups_match_the_full_listing(db):
+    provider_id = seed_provider(db)
+    db.upsert_discovered_models(
+        provider_id,
+        [
+            normalize_model_record(
+                {"id": "chat", "name": "Chat", "capabilities": ["streaming", "json"],
+                 "context_window": 32_000}
+            ),
+            normalize_model_record({"id": "Chat", "name": "大小写不同"}),
+            normalize_model_record({"id": "parked"}),
+        ],
+        generation=1,
+    )
+    manual_id = db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "manual", "manual_capabilities": ["vision"]}
+    )
+    listing = db.list_ai_provider_models(provider_id)
+    by_key = {item["model_key"]: item for item in listing["items"]}
+    db.update_ai_provider_model(by_key["parked"]["id"], {"enabled": 0})
+    listing = db.list_ai_provider_models(provider_id)
+    by_key = {item["model_key"]: item for item in listing["items"]}
+
+    for key, item in by_key.items():
+        assert db.get_ai_provider_model_by_key(provider_id, key) == item
+    # model_key 不透明：大小写不同是两条，不折叠
+    assert db.get_ai_provider_model_by_key(provider_id, "CHAT") is None
+    assert db.get_ai_provider_model_by_key(provider_id, "missing") is None
+    assert db.get_ai_provider_model_by_key(provider_id + 99, "chat") is None
+
+    ids = [item["id"] for item in listing["items"]]
+    assert db.get_ai_provider_models_by_ids(ids + [ids[0], 10_000]) == {
+        item["id"]: item for item in listing["items"]
+    }
+    assert db.get_ai_provider_models_by_ids([]) == {}
+    assert manual_id in db.get_ai_provider_models_by_ids([manual_id])
+
+    counts = db.count_ai_provider_models(provider_id)
+    assert counts == {key: listing[key] for key in ("total", "discovered_available", "routable")}
+    assert counts == {"total": 4, "discovered_available": 3, "routable": 3}
+
+    # Provider 停用：点查与批量同样把 routable 派生为 False，计数归零
+    db.update_ai_provider(provider_id, {"enabled": False})
+    assert db.get_ai_provider_model_by_key(provider_id, "chat")["routable"] is False
+    assert all(
+        not item["routable"] for item in db.get_ai_provider_models_by_ids(ids).values()
+    )
+    assert db.count_ai_provider_models(provider_id)["routable"] == 0
+
+
+def test_batch_lookup_splits_large_id_lists(db):
+    """IN 列表按 900 一批：不依赖 SQLite 3.32 起才放宽的 999 个绑定参数上限。"""
+    provider_id = seed_provider(db)
+    db.upsert_discovered_models(
+        provider_id,
+        [{"model_key": f"m{index:04d}"} for index in range(1_950)],
+        generation=1,
+    )
+    ids = [item["id"] for item in db.list_ai_provider_models(provider_id)["items"]]
+    statements: list[str] = []
+    db.conn.set_trace_callback(statements.append)
+    try:
+        found = db.get_ai_provider_models_by_ids(ids)
+    finally:
+        db.conn.set_trace_callback(None)
+
+    assert sorted(found) == sorted(ids)
+    in_queries = [s for s in statements if "WHERE id IN (" in s]
+    assert len(in_queries) == 3
+
+
+# P23：没变化的行不重写；不靠 NOT IN 拼几千个占位符。
+def _stamp_catalog_rows(db, value: str = "2000-01-01 00:00:00") -> None:
+    db.conn.execute(
+        "UPDATE ai_provider_models SET updated_at = ?, last_seen_at = ?", (value, value)
+    )
+    db.conn.commit()
+
+
+def _rewritten_keys(db, value: str = "2000-01-01 00:00:00") -> set[str]:
+    return {
+        row[0]
+        for row in db.conn.execute(
+            "SELECT model_key FROM ai_provider_models WHERE updated_at != ?", (value,)
+        ).fetchall()
+    }
+
+
+def test_identical_resync_rewrites_nothing(db):
+    provider_id = seed_provider(db)
+    records = [
+        normalize_model_record(
+            {"id": f"m{index}", "name": f"模型 {index}", "capabilities": ["streaming"],
+             "context_window": 8_192, "owned_by": "o"}
+        )
+        for index in range(50)
+    ]
+    db.upsert_discovered_models(provider_id, records, generation=1)
+    db.upsert_discovered_models(provider_id, records[:45], generation=2)  # 5 个消失
+    _stamp_catalog_rows(db)
+    statements: list[str] = []
+    db.conn.set_trace_callback(statements.append)
+    try:
+        stats = db.upsert_discovered_models(provider_id, records[:45], generation=3)
+    finally:
+        db.conn.set_trace_callback(None)
+
+    assert stats == {"inserted": 0, "updated": 0}
+    assert _rewritten_keys(db) == set()
+    assert not [s for s in statements if s.lstrip().upper().startswith(("INSERT", "UPDATE"))]
+
+
+def test_output_cap_sync_keeps_change_only_writes_and_revision_cas(db):
+    provider_id = seed_provider(db)
+    record = normalize_model_record({"id": "cap", "max_output_tokens": 4096})
+    db.upsert_discovered_models(provider_id, [record], generation=1)
+    listing = db.list_ai_provider_models(provider_id)
+    model_id = listing["items"][0]["id"]
+    revision = listing["catalog_revision"]
+    assert listing["items"][0]["max_output_tokens"] == 4096
+    _stamp_catalog_rows(db)
+    assert db.upsert_discovered_models(provider_id, [record], generation=2) == {"inserted": 0, "updated": 0}
+    assert _rewritten_keys(db) == set()
+    assert db.get_ai_provider_catalog_revision(provider_id) == revision
+    changed = normalize_model_record({"id": "cap", "max_output_tokens": 8192})
+    assert db.upsert_discovered_models(provider_id, [changed], generation=3) == {"inserted": 0, "updated": 1}
+    assert db.get_ai_provider_model(model_id)["max_output_tokens"] == 8192
+    assert db.get_ai_provider_catalog_revision(provider_id) != revision
+    with pytest.raises(ModelCatalogConflictError):
+        db.update_ai_provider_models_enabled(provider_id, revision, [{"id": model_id, "enabled": False}])
+    assert db.get_ai_provider_model(model_id)["enabled"] is True
+
+
+def test_resync_writes_only_changed_rows_and_keeps_manual_fields(db):
+    provider_id = seed_provider(db)
+    manual_id = db.create_ai_provider_model(
+        {"provider_id": provider_id, "model_key": "kept", "manual_display_name": "手工名",
+         "enabled": 0}
+    )
+    first = [
+        normalize_model_record({"id": "same", "name": "不变"}),
+        normalize_model_record({"id": "renamed", "name": "旧名"}),
+        normalize_model_record({"id": "gone", "name": "要消失"}),
+        normalize_model_record({"id": "kept", "name": "上游名"}),
+    ]
+    db.upsert_discovered_models(provider_id, first, generation=1)
+    db.upsert_discovered_models(provider_id, first[:2] + first[3:], generation=2)
+    _stamp_catalog_rows(db)
+
+    stats = db.upsert_discovered_models(
+        provider_id,
+        [
+            normalize_model_record({"id": "same", "name": "不变"}),
+            normalize_model_record({"id": "renamed", "name": "新名"}),
+            normalize_model_record({"id": "gone", "name": "要消失"}),  # 重新出现
+            normalize_model_record({"id": "new", "name": "新模型"}),
+        ],
+        generation=3,
+    )
+
+    # kept 这次没返回：发现记录置不可用，这也是一次改写，但不计入 updated
+    assert stats == {"inserted": 1, "updated": 2}
+    assert _rewritten_keys(db) == {"renamed", "gone", "new", "kept"}
+    rows = {item["model_key"]: item for item in db.list_ai_provider_models(provider_id)["items"]}
+    assert rows["renamed"]["discovered_display_name"] == "新名"
+    assert rows["gone"]["discovered_available"] is True
+    assert rows["new"]["discovered_available"] is True
+    assert rows["kept"]["discovered_available"] is False
+    kept = db.get_ai_provider_model(manual_id)
+    assert kept["manual_display_name"] == "手工名"
+    assert kept["enabled"] is False
+    assert kept["manual"] is True
+
+
+@pytest.mark.skipif(
+    not hasattr(__import__("sqlite3").Connection, "setlimit"),
+    reason="Connection.setlimit 需要 Python 3.11",
+)
+def test_full_sync_fits_the_pre_3_32_bound_parameter_limit(db):
+    """SQLite 3.32 之前一条语句最多 999 个绑定参数。旧实现的 NOT IN 每个模型一个
+    占位符，Provider 超过约 1000 个模型时整次同步失败。这里把上限压回 999 模拟旧版。"""
+    import sqlite3
+
+    provider_id = seed_provider(db)
+    records = [{"model_key": f"m{index:04d}"} for index in range(1_200)]
+    db.conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+    try:
+        db.upsert_discovered_models(provider_id, records, generation=1)
+        stats = db.upsert_discovered_models(provider_id, records[100:], generation=2)
+    finally:
+        db.conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 32_766)
+
+    assert stats == {"inserted": 0, "updated": 0}
+    counts = db.list_ai_provider_models(provider_id)
+    assert counts["total"] == 1_200
+    assert counts["discovered_available"] == 1_100

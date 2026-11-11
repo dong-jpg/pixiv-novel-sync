@@ -12,6 +12,8 @@ from typing import Any
 import pytest
 
 from pixiv_novel_sync.ai import service as service_facade
+from pixiv_novel_sync.ai.invocation_planner import CandidateProfile, plan_invocation
+from pixiv_novel_sync.ai.invocation_snapshot import freeze_plan
 from pixiv_novel_sync.ai.model_router import (
     CandidateSnapshot,
     ModelCandidate,
@@ -135,6 +137,16 @@ class FakeModelRouter:
     ) -> PromptBudget:
         self.budget_calls.append((agent.id, snapshot, messages, max_tokens))
         return self.budget
+
+    def resolve_invocation(self, agent, invocation):
+        profiles = [CandidateProfile(
+            source_index=index, provider_id=item.provider_id, provider_name=item.provider_name,
+            provider_type="openai_compatible", model_key=item.model_key,
+            provider_context_window=item.context_window,
+            provider_config_hash=item.provider_config_hash, model_config_hash="b" * 64,
+        ) for index, item in enumerate(self.snapshot.candidates)]
+        plan = plan_invocation(invocation, profiles, agent_context_window=agent.context_window)
+        return freeze_plan(self.snapshot.agent_config_hash, self.snapshot.binding_version, plan)
 
     def execute(self, request: RouteRequest) -> RouteResult:
         generator = self.execute_stream(request)
@@ -272,7 +284,119 @@ def test_route_job_context_contract_field_order(route_context: Any) -> None:
         "candidate_snapshot",
         "prompt_budget",
         "resume_candidate_index",
+        "invocation",
+        "retention_policy",
+        "work_binding",
     ]
+    assert route_context.work_binding is None
+
+
+class PlannedFakeModelRouter(FakeModelRouter):
+    def resolve_invocation(self, agent, invocation):
+        from pixiv_novel_sync.ai.invocation_planner import CandidateProfile, plan_invocation
+        from pixiv_novel_sync.ai.invocation_snapshot import freeze_plan
+
+        profile = CandidateProfile(0, agent.provider_id, "provider", "openai_compatible", "model-a", 128_000, "a" * 64, "b" * 64)
+        plan = plan_invocation(invocation, (profile,), agent_context_window=agent.context_window)
+        return freeze_plan(ModelRouter._agent_config_hash(agent), agent.binding_version, plan)
+
+
+def test_v2_core_persists_frozen_plan_before_call_and_uses_canonical_sampling(service, db, fixed_agent):
+    from pixiv_novel_sync.ai.invocation import invocation_messages, normalize_text_invocation
+
+    router = PlannedFakeModelRouter()
+    service.model_router = router
+    invocation = normalize_text_invocation({"messages": MESSAGES, "temperature": 0.0, "top_p": 0.0, "max_tokens": 500}, agent=fixed_agent)
+    context = service._start_route_job(db, "general", fixed_agent, {"source": "synthetic"}, messages=invocation_messages(invocation), max_tokens=500, invocation=invocation, retention_policy="metadata_only")
+    job = db.get_ai_job(context.job_id)
+    assert job["candidate_snapshot"]["version"] == 2
+    assert job["prompt_budget"]["request_fingerprint"] == context.prompt_budget.request_fingerprint
+    assert job["prompt_budget"]["output_reserve"] == 500
+    assert context.prompt_budget is context.candidate_snapshot.plan
+    assert context.invocation is invocation and context.retention_policy == "metadata_only"
+    assert router.resolve_calls == [] and router.budget_calls == [] and router.provider_calls == []
+    collect_generator_return(service._stream_route(context, invocation_messages(invocation)))
+    request = router.requests[0]
+    assert (request.temperature, request.top_p, request.max_tokens) == (0.0, 0.0, 500)
+    assert request.invocation is invocation and request.retention_policy == "metadata_only"
+    assert request.messages == invocation_messages(invocation)
+
+
+@pytest.mark.parametrize("change", ["messages", "temperature", "top_p", "max_tokens"])
+def test_v2_core_rejects_changed_stream_arguments_before_router(service, db, fixed_agent, change):
+    from pixiv_novel_sync.ai.invocation import invocation_messages, normalize_text_invocation
+    from pixiv_novel_sync.ai.service import AIConflictError
+
+    router = PlannedFakeModelRouter()
+    service.model_router = router
+    invocation = normalize_text_invocation({"messages": MESSAGES}, agent=fixed_agent)
+    context = service._start_route_job(db, "general", fixed_agent, {"source": "synthetic"}, messages=invocation_messages(invocation), max_tokens=invocation.max_tokens, invocation=invocation)
+    messages = invocation_messages(invocation)
+    overrides = {}
+    if change == "messages":
+        messages[-1]["content"] += "CHANGED"
+    else:
+        overrides[change] = {"temperature": 0.0, "top_p": 0.0, "max_tokens": 500}[change]
+    with pytest.raises(AIConflictError):
+        collect_generator_return(service._stream_route(context, messages, **overrides))
+    assert router.requests == [] and router.provider_calls == []
+
+
+@pytest.mark.parametrize("field,value", [("temperature", False), ("top_p", False), ("max_tokens", True), ("max_tokens", 1.0)])
+def test_v2_core_rejects_equal_but_noncanonical_parameter_overrides(service, db, fixed_agent, field, value):
+    from pixiv_novel_sync.ai.invocation import invocation_messages, normalize_text_invocation
+    from pixiv_novel_sync.ai.service import AIConflictError
+
+    router = PlannedFakeModelRouter()
+    service.model_router = router
+    invocation = normalize_text_invocation({"messages": MESSAGES, "temperature": 0.0, "top_p": 0.0, "max_tokens": 1}, agent=fixed_agent)
+    context = service._start_route_job(db, "general", fixed_agent, {"source": "synthetic"}, messages=invocation_messages(invocation), max_tokens=1, invocation=invocation)
+    with pytest.raises(AIConflictError):
+        collect_generator_return(service._stream_route(context, invocation_messages(invocation), **{field: value}))
+    assert router.requests == [] and router.provider_calls == []
+
+
+@pytest.mark.parametrize("change", ["messages", "max_tokens", "max_type"])
+def test_v2_core_rejects_disagreeing_legacy_arguments_without_provider_call(service, db, fixed_agent, change):
+    from pixiv_novel_sync.ai.invocation import invocation_messages, normalize_text_invocation
+
+    router = PlannedFakeModelRouter()
+    service.model_router = router
+    invocation = normalize_text_invocation({"messages": MESSAGES, "max_tokens": 1}, agent=fixed_agent)
+    messages = invocation_messages(invocation)
+    maximum = invocation.max_tokens
+    if change == "messages":
+        messages[-1]["content"] += "CHANGED"
+    elif change == "max_type":
+        maximum = True
+    else:
+        maximum -= 1
+    with pytest.raises(AIServiceError, match="disagree"):
+        service._start_route_job(db, "general", fixed_agent, {"source": "synthetic"}, messages=messages, max_tokens=maximum, invocation=invocation)
+    assert router.provider_calls == [] and router.budget_calls == []
+
+
+def test_main_continue_api_stays_409_without_new_jobs_or_network(db, service, route_context, monkeypatch):
+    from types import SimpleNamespace
+    from flask import Flask
+    from pixiv_novel_sync import ai_web
+
+    assert db.finish_ai_job_cas(route_context.job_id, route_context.owner_token, "failed")
+    before = db.conn.execute("SELECT COUNT(*) FROM ai_jobs").fetchone()[0]
+    monkeypatch.setattr(ai_web, "AIWritingService", lambda _path: service)
+    app = Flask(__name__)
+    app.secret_key = "synthetic-session-key"
+    app.config["TESTING"] = True
+    ai_web.register_ai_routes(app, SimpleNamespace(storage=SimpleNamespace(db_path=db.path)))
+    response = app.test_client().post(f"/api/dashboard/ai/jobs/{route_context.job_id}/continue", json={
+        "parent_job_id": route_context.job_id, "idempotency_key": "continue-synthetic",
+        "candidate_snapshot_hash": route_context.candidate_snapshot.snapshot_hash,
+        "resume_candidate_index": 0,
+    })
+    assert response.status_code == 409
+    assert "手动候选继续" in response.get_json()["error"]
+    assert db.conn.execute("SELECT COUNT(*) FROM ai_jobs").fetchone()[0] == before
+    assert service.model_router.provider_calls == []
 
 
 def test_start_route_job_persists_snapshot_budget_and_private_owner_before_call(
@@ -410,6 +534,25 @@ def test_stream_route_forwards_progress_delta_and_result(
     assert request.max_tokens == route_context.prompt_budget.output_reserve
     assert request.temperature == route_context.agent.temperature
     assert request.top_p == route_context.agent.top_p
+
+
+def test_stream_route_passes_cancel_callback_to_route_request(
+    service: AIWritingService,
+    route_context: Any,
+    fake_router: FakeModelRouter,
+) -> None:
+    """A5：取消回调要进 RouteRequest，路由才能在流式中途和重试退避里响应取消。"""
+
+    def stop_requested() -> bool:
+        return False
+
+    collect_generator_return(
+        service._stream_route(route_context, MESSAGES, is_cancelled=stop_requested)
+    )
+    assert fake_router.requests[-1].is_cancelled is stop_requested
+
+    collect_generator_return(service._stream_route(route_context, MESSAGES))
+    assert fake_router.requests[-1].is_cancelled is None
 
 
 def test_stream_route_rejects_output_reserve_larger_than_saved_budget(

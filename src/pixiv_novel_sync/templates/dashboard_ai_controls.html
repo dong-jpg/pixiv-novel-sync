@@ -1,0 +1,12 @@
+<style>
+  .ai-model-picker { min-width: 0; }
+  .ai-model-picker-dialog { max-width: min(42rem, calc(100vw - 2rem)); }
+  .ai-model-picker-content { display: flex; flex-direction: column; gap: .75rem; min-width: 0; }
+  .ai-model-picker-results { max-height: min(22rem, 45dvh); overflow-y: auto; overscroll-behavior: contain; margin: 0; padding: 0; list-style: none; }
+  .ai-model-picker-option { display: block; width: 100%; padding: .75rem; border: 1px solid var(--library-line); border-radius: .5rem; text-align: left; white-space: normal; overflow-wrap: anywhere; color: var(--library-ink); background: var(--library-surface); }
+  .ai-model-picker-option[aria-selected="true"] { border-color: var(--library-accent); background: var(--library-surface-soft); }
+  .ai-model-picker-option:disabled { opacity: .6; cursor: not-allowed; }
+  .ai-model-picker-option:focus-visible { outline: 2px solid var(--library-accent); outline-offset: -2px; }
+</style>
+<script nonce="{[ csp_nonce() ]}" src="/static/js/ai_settings.js"></script>
+<script nonce="{[ csp_nonce() ]}" src="/static/js/ai_picker.js"></script>

@@ -108,6 +108,11 @@ class DatabaseConnection:
         BEGIN IMMEDIATE + busy_timeout，其他线程的读/连接创建不会被阻塞。
         """
         conn = self.conn
+        if self._transaction_depth == 0 and conn.in_transaction:
+            # D6：已在 read_transaction() 的 DEFERRED 读事务里（或有隐式事务没提交），
+            # 这时 BEGIN 会报「cannot start a transaction within a transaction」。
+            # 读事务不能中途升级成 IMMEDIATE，只能明确拒绝，让调用方把写挪到读事务外面。
+            raise RuntimeError("不能在 read_transaction() 里开启写事务：请把写操作移到读事务之外")
         self._transaction_depth += 1
         outermost = self._transaction_depth == 1
         try:
