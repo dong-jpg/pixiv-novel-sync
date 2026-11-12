@@ -6,6 +6,8 @@
 
 ## 状态与验证边界
 
+指定 VPS 与 `leshao1` 已于 2026-11-12 按启用指令部署，入口为[远程执行页面](https://pixiv.dongboapp.com/dashboard/remote)。诊断、合成 EPUB、暂停恢复与完整空闲宽限的真实结果，以及备份未完成的全库结构检查，见[本次验收记录](archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md)。
+
 代码默认关闭。仓库中的服务、环境文件和 Nginx 配置都是待安装示例，运行本地测试不会启动用户实例，也不会安装或启用服务。
 
 自动测试使用临时控制数据库、合成小说、fake provider 和本地测试 HTTP transport。实际验证结果以本次执行记录 `docs/superpowers/execution/2026-11-10-instabox-phase-one.md` 为准。InstaBox 真正的 202 操作、冷启动、暂停/恢复、平台提前中断、私有输入传输和生产备份恢复仍须在明确授权的窗口分别验证。

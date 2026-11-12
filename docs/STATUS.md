@@ -1,8 +1,16 @@
 # 项目现状
 
-**最近更新：2026-11-04**
+**最近更新：2026-11-12**
 
 这是项目当前状态的唯一入口：版本、测试基线、部署和待办都只在这里更新。每轮审查、部署、整改的详细经过另存带日期的记录，放在 [archive/](archive/README.md)，不在多份旧文档里反复回写。
+
+## VPS 与 InstaBox 协同（一期已部署）
+
+- VPS 已启用[远程执行页面](https://pixiv.dongboapp.com/dashboard/remote)、独立控制库与 controller；`leshao1` 已安装专用非 root worker。生产应用为 `2214b22`，从线上 `e8801b0` 单独接入 remote，未携入作品分析第二阶段。GitHub main 尚未合入此功能。
+- 诊断与合成单本 EPUB 已完成真实 HTTPS 领取、回传、摘要校验和授权下载，各一次执行、一次发布。正文及封面 XHTML 与 VPS 本地渲染一致；worker 的 EbookLib/lxml 与 VPS 对齐为 0.20/6.1.1。人工运行保护、worker 进程重启及暂停恢复已实测；完整记录见[本次部署验收](archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md)。
+- 真实联调修复了短任务跨过两次 controller tick 时未重置空闲计时的问题；入队、执行、首次终态及上传活动均在事务内记录，幂等重放不延长保活。最后代码通过远程组 **289 passed / 1 skipped**、VPS 增量 **79 passed**；初始发布候选全量为 **2697 passed / 53 skipped**，不将其称为最终补丁全量。
+- 在线一致 SQLite 备份的 quick/FK 检查通过；停服新鲜副本与归档本地硬链接回退副本已保留。新鲜副本完整外键和全文件摘要检查通过，全库 quick_check 的三次有界检查未完成；范围详见验收记录，不宣称已完成异地备份。
+- 签到、Pixiv 抓取迁移、生产业务 cron 及跨设备阅读进度尚未接入。已核对独立签到项目并整理[后续实施边界](superpowers/specs/2026-11-12-remote-next-phase-notes.md)；当前远程协议仍只有诊断和单本 EPUB。
 
 ## AI 设置与统一调用重构（第一阶段已部署）
 
@@ -18,12 +26,14 @@
 
 | 分支 / 组件 | 当前 | 说明 |
 |---|---|---|
-| main（生产应用） | 应用 `3c51a6c6`；切换候选 `793d340d`（2026-11-04） | 第一阶段 AI 重构已上线；随后同步 Nginx 缓存修订、测试和部署记录，不改 Python/JS/CSS 应用源码、不再次重启 |
+| 生产应用（VPS） | `2214b22`（2026-11-12） | 保留线上 AI 第一阶段，在 `e8801b0` 上独立接入远程执行；作品分析第二阶段未部署 |
 | ai-writing | `adb2d95`（2026-10-20） | 在 main 的基础上加写作/成人模块；只移植共享修复，不反向合入 main |
 | 审计整改 PR | [PR #2](https://github.com/dong-jpg/pixiv-novel-sync/pull/2) 已合并；候选 `8f76399` 与合并提交的树一致 | 应用代码验证基线 `122dbfe`；后续补文档及一处跨平台测试夹具，不改变应用逻辑 |
 | 救援用户脚本 | 0.12.2 已进入 GitHub main | 直装 / 自动更新来源现已包含新版；手机管理器仍须检查更新并确认角标，不能据发布推断设备已经更新 |
 
 ## 部署
+
+最新生产部署为 2026-11-12 的远程执行一期，见[部署验收记录](archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md)。以下保留 11-04 的 AI 第一阶段历史事实。
 
 2026-11-04 **15:57（Asia/Shanghai）** 完成 `16b5b4a` → `793d340d` 的受保护部署，应用源码基线为 `3c51a6c6`，详情见 [部署记录](archive/SERVER_DEPLOYMENT_REPORT_2026-11-04.md)。代码仅 fast-forward，没有运行带强制重置的旧部署脚本。普通服务 active/running、自动重启计数 0、正常调度运行；临时禁调度覆盖和维护围栏均已移除。
 
@@ -107,7 +117,7 @@ Windows 的 6 个 skip 属于符号链接权限与 POSIX mode；本次 Linux 的
 |---|---|
 | AI 第一阶段验收 | [2026-11-03](archive/AI_SETTINGS_ACCEPTANCE_2026-11-03.md) |
 | 代码审查 | [2026-10-28](archive/AUDIT_REPORT_2026-10-28.md) |
-| 生产部署 | [2026-11-04](archive/SERVER_DEPLOYMENT_REPORT_2026-11-04.md) |
+| 生产部署 | [2026-11-12](archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md) |
 | 整改台账 | [2026-10-08 ～ 10-20](archive/REMEDIATION_STATUS_2026-09-30.md) |
 | 计划时间线 | [2026-10-14](archive/PLAN_AUDIT_2026-10-14.md) |
 

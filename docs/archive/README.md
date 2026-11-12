@@ -13,6 +13,7 @@
 
 | 文档 | 主题 |
 |------|------|
+| [REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md](REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md) | VPS/InstaBox 一期部署、真实闭环、空闲计时修订和备份边界 |
 | AUDIT_REPORT_2026-07-02.md / 07-03.md | 07 月安全与发布审查 |
 | AUDIT_REPORT_2026-08-13.md | 08 月完整性审查 |
 | AUDIT_REPORT_2026-09-14.md | 写作模块拆分前的全量审计 |
