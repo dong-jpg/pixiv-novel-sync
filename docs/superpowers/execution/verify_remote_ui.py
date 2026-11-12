@@ -201,7 +201,7 @@ def main() -> int:
                 browser.close()
         finally:
             for application in applications:
-                application.extensions["close_work_analysis_owner"]()
+                application.extensions.get("close_work_analysis_owner", lambda: None)()
         report = {"offline": True, "real_flask_auth": True, "provider_calls": 0,
                   "browser_errors": errors, "unexpected_requests": blocked,
                   "submission_verified": True, "pages": pages}

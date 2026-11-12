@@ -40,3 +40,23 @@ def test_nginx_example_separates_bootstrap_rate_limit_and_large_upload():
     assert "client_max_body_size 33m;" in source
     assert "Retry-After 10 always;" in source
     assert "proxy_cache off;" in source
+
+
+def test_nginx_bootstrap_and_worker_routes_preserve_identity_streaming():
+    source = (ROOT / "config/nginx/remote-worker-location.conf").read_text(encoding="utf-8")
+    for location, limit in (("= /api/remote-worker/v1/sessions", "16k"),
+                            ("^~ /api/remote-worker/v1/", "33m")):
+        block = source.split(f"location {location} {{", 1)[1].split("\n}", 1)[0]
+        for directive in (
+            "gzip off;",
+            "proxy_http_version 1.1;",
+            "proxy_set_header Connection '';",
+            "proxy_set_header Accept-Encoding identity;",
+            "proxy_request_buffering off;",
+            "proxy_buffering off;",
+            "proxy_cache off;",
+            "proxy_set_header Host $host;",
+            "proxy_set_header X-Forwarded-Proto $scheme;",
+            f"client_max_body_size {limit};",
+        ):
+            assert directive in block, f"{location} is missing {directive}"

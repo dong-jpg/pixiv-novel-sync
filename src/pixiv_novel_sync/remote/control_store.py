@@ -102,7 +102,10 @@ class ControlStore:
         require_time(now)
         with self.store.transaction() as conn:
             row = self._row(conn)
-            self._change(conn, row, hold_until=now + seconds if seconds else None)
+            values = {"hold_until": now + seconds if seconds else None}
+            if seconds or (row["hold_until"] or 0) > now:
+                values["idle_since"] = None
+            self._change(conn, row, **values)
         return self.snapshot(now)
 
     def claim_leader(self, owner, now):
@@ -222,7 +225,8 @@ class ControlStore:
                 if (activity["has_activity"] or (row["hold_until"] or 0) > now or row["mode"] != "draining"
                         or row["provider_state"] != "running" or row["owned_run_started_at"] is None
                         or row["owned_run_started_at"] != row["provider_run_started_at"]
-                        or row["activation_id"] != activation_id):
+                        or row["activation_id"] != activation_id
+                        or row["idle_since"] is None or now - row["idle_since"] < 300):
                     raise RemoteError("suspend_inhibited")
             elif (not activity["has_demand"] or row["provider_state"] != {"start": "stopped", "resume": "suspended"}[action]):
                 raise RemoteError("start_inhibited")
@@ -256,7 +260,8 @@ class ControlStore:
                 inhibited = (not activity["has_demand"] if action["action"] != "suspend" else
                              activity["has_activity"] or (row["hold_until"] or 0) > now
                              or row["owned_run_started_at"] is None
-                             or row["owned_run_started_at"] != row["provider_run_started_at"])
+                             or row["owned_run_started_at"] != row["provider_run_started_at"]
+                             or row["idle_since"] is None or now - row["idle_since"] < 300)
                 if inhibited:
                     values = dict(action_json=None, mode="idle", gate_ready_until=None, idle_since=None)
                     if action["action"] != "suspend":
