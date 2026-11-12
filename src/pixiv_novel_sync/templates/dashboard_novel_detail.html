@@ -72,6 +72,43 @@
     color: #999;
     font-variant-numeric: tabular-nums;
   }
+  .reader-sync-summary { margin-left: 8px; font-size: 11px; color: #64748b; }
+  .reader-sync-notice {
+    position: fixed;
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+    left: max(12px, env(safe-area-inset-left));
+    right: max(12px, env(safe-area-inset-right));
+    z-index: 45;
+    width: auto;
+    max-width: 660px;
+    max-height: 35vh;
+    overflow-y: auto;
+    margin: 0 auto;
+    padding: 12px 14px;
+    border: 1px solid #e2c783;
+    border-radius: 12px;
+    background: #fffaf0;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.08);
+    color: #713f12;
+    font-size: 13px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+  .reader-sync-options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .reader-sync-options button {
+    flex: 1 1 140px;
+    min-height: 44px;
+    border: 1px solid #d5dce6;
+    border-radius: 8px;
+    background: #fff;
+    color: #1e40af;
+    padding: 8px 10px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .reader-sync-options button:focus-visible { outline: 2px solid #0096fa; outline-offset: 2px; }
+  .reader-sync-options button:disabled { opacity: 0.5; cursor: default; }
+  .reader-sync-dialog { width: 100%; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 
   /* ========== Novel Header ========== */
   .novel-header {
@@ -366,7 +403,7 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
       返回来源
     </a>
-    <span class="nav-progress" v-if="!loading && !error">{{ progressPercent }}%</span>
+    <span class="nav-progress" v-if="!loading && !error">{{ progressPercent }}%<span class="reader-sync-summary" role="status" aria-live="polite">{{ progressSyncLabel }}</span></span>
   </div>
 </div>
 
@@ -462,6 +499,18 @@
     </div>
   </nav>
 
+  <aside v-if="progressSyncNeedsAttention && !showReaderActions && !showChapters" class="reader-sync-notice" aria-label="阅读进度同步" role="status" aria-live="polite">
+    <p>{{ progressSyncMessage }}</p>
+    <template v-if="progressSyncState.conflict">
+      <p>服务器 {{ progressSyncState.record.progress }}%{{ progressSyncState.record.is_reset ? '（已重置）' : '' }} · 本机 {{ progressSyncLocal }}%{{ progressSyncState.local && progressSyncState.local.is_reset ? '（待重置）' : '' }}</p>
+      <div class="reader-sync-options">
+        <button type="button" @click="useServerProgress" :disabled="progressBusy">使用服务器进度</button>
+        <button type="button" @click="keepLocalProgress" :disabled="progressBusy">保留本机进度</button>
+      </div>
+    </template>
+    <div v-else class="reader-sync-options"><button type="button" @click="retryProgressSync" :disabled="progressBusy">重试同步</button></div>
+  </aside>
+
   <app-modal :is-open="showChapters" @close="showChapters = false" title="章节导航" class="reader-feedback-dialog">
     <template v-if="seriesInfo">
       <p class="text-sm text-gray-500 mb-3">{{ seriesInfo.title }} · 第 {{ chapterIndex + 1 }} / {{ seriesInfo.total_novels }} 章</p>
@@ -475,11 +524,18 @@
            :aria-current="chapter.novel_id === novel.novel_id ? 'page' : null" class="chapter-jump">{{ chapter.title || '未命名章节' }}</a>
       </nav>
     </template>
-    <template #footer v-if="readerActionMessage">
+    <template #footer v-if="readerActionMessage || progressSyncState.conflict">
       <div id="reader-chapter-action-feedback" class="reader-action-feedback" tabindex="0"
            :role="readerActionMessageType === 'error' ? 'alert' : 'status'"
            :aria-live="readerActionMessageType === 'error' ? 'assertive' : 'polite'" aria-atomic="true"
            :class="readerActionMessageType === 'error' ? 'text-red-700' : 'text-emerald-700'">{{ readerActionMessage }}</div>
+      <div v-if="progressSyncState.conflict" class="reader-sync-dialog">
+        <p>{{ progressSyncMessage }} 服务器 {{ progressSyncState.record.progress }}% · 本机 {{ progressSyncLocal }}%</p>
+        <div class="reader-sync-options">
+          <button type="button" @click="useServerProgress" :disabled="progressBusy">使用服务器进度</button>
+          <button type="button" @click="keepLocalProgress" :disabled="progressBusy">保留本机进度</button>
+        </div>
+      </div>
     </template>
   </app-modal>
 
@@ -496,6 +552,13 @@
            :role="readerActionMessageType === 'error' ? 'alert' : 'status'"
            :aria-live="readerActionMessageType === 'error' ? 'assertive' : 'polite'" aria-atomic="true"
            :class="!readerActionMessage ? 'text-gray-500' : (readerActionMessageType === 'error' ? 'text-red-700' : 'text-emerald-700')">{{ readerActionMessage || '操作结果会显示在这里。' }}</div>
+      <div v-if="progressSyncState.conflict" class="reader-sync-dialog">
+        <p>{{ progressSyncMessage }} 服务器 {{ progressSyncState.record.progress }}% · 本机 {{ progressSyncLocal }}%</p>
+        <div class="reader-sync-options">
+          <button type="button" @click="useServerProgress" :disabled="progressBusy">使用服务器进度</button>
+          <button type="button" @click="keepLocalProgress" :disabled="progressBusy">保留本机进度</button>
+        </div>
+      </div>
     </template>
   </app-modal>
 </template>
@@ -505,6 +568,7 @@
 {% block extra_scripts %}
 {% include "navigation_helpers.html" %}
 {% include "pixiv_markup.html" %}
+<script nonce="{[ csp_nonce() ]}" src="/static/js/reading_progress_sync.js?v=e39733fc2902"></script>
 <script nonce="{[ csp_nonce() ]}">
   initVueApp({
     setup() {
@@ -520,6 +584,22 @@
       const error = ref(null);
       const progressPercent = ref(0);
       const progressBusy = ref(false);
+      let manualProgressRequest = false;
+      const progressSyncState = ref({phase: 'checking', record: null, conflict: null, local: null});
+      const progressSyncLabel = computed(() => ({checking: '核对进度', syncing: '同步中', synced: '已同步',
+        pending: '待同步', offline: '离线保存', auth: '需要登录', unsupported: '暂不可同步',
+        error: '同步待重试', conflict: '进度待选择'})[progressSyncState.value.phase] || '待同步');
+      const progressSyncNeedsAttention = computed(() => !!progressSyncState.value.conflict
+        || progressSyncState.value.persistenceError || ['offline', 'auth', 'unsupported', 'error'].includes(progressSyncState.value.phase));
+      const progressSyncMessage = computed(() => {
+        const current = progressSyncState.value;
+        if (current.persistenceError) return '浏览器未允许保存离线进度，请保持页面打开并重试同步。';
+        if (current.conflict) return current.lastError;
+        if (current.phase === 'auth') return '登录已过期。重新登录后重试，待同步进度会保留在本机。';
+        if (current.phase === 'offline') return '暂时无法连接服务器。进度保留在本机，联网后按原版本重试。';
+        return current.lastError || '正在核对服务器进度。';
+      });
+      const progressSyncLocal = computed(() => progressSyncState.value.local?.progress ?? progressPercent.value);
       const removingBookmark = ref(false);
       const deletingNovel = ref(false);
       const showReaderActions = ref(false);
@@ -613,12 +693,27 @@
       // Keep the original parent when changing chapters, rather than chaining readers.
       const chapterHref = (id) => window.withDashboardReturn('/dashboard/novels/' + encodeURIComponent(id), backHref.value);
       const cycleFontSize = () => {
+        suppressProgrammaticScroll();
         fontSizeIdx.value = (fontSizeIdx.value + 1) % fontSizes.length;
         try { localStorage.setItem('pixivNovelSync:fontSize', fontSizes[fontSizeIdx.value]); } catch {}
       };
 
       let restorePending = true;
       let scrollThrottle = null;
+      let programmaticTimer = null;
+      let ignoreProgrammaticScroll = false;
+      let userMotion = false;
+      let userMotionUntil = 0;
+      let interactionSerial = 0;
+      let resetInteraction = null;
+      let latestUserSample = null;
+      const suppressProgrammaticScroll = (untilGesture = false) => {
+        ignoreProgrammaticScroll = true;
+        userMotion = false;
+        userMotionUntil = 0;
+        clearTimeout(programmaticTimer);
+        if (!untilGesture) programmaticTimer = setTimeout(() => { ignoreProgrammaticScroll = false; }, 250);
+      };
 
       // Formatters
       const formatNumber = (val) => Number(val || 0).toLocaleString('zh-CN');
@@ -655,7 +750,11 @@
         if (!link) return;
         event.preventDefault();
         const target = document.getElementById('pns-page-' + link.getAttribute('data-pns-page'));
-        if (target) target.scrollIntoView({ block: 'start', behavior: 'auto' });
+        if (target) {
+          restorePending = false;
+          suppressProgrammaticScroll();
+          target.scrollIntoView({ block: 'start', behavior: 'auto' });
+        }
       };
 
       // Series chapter navigation
@@ -675,10 +774,6 @@
       });
 
       // Progress tracking
-      const readSavedProgress = () => {
-        try { return JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch { return null; }
-      };
-
       const getReadingProgress = () => {
         const doc = document.documentElement;
         const maxScroll = Math.max(1, doc.scrollHeight - window.innerHeight);
@@ -688,9 +783,8 @@
         };
       };
 
-      const saveProgress = () => {
+      const writeLocalPosition = (current = getReadingProgress()) => {
         if (!novel.value) return;
-        const current = getReadingProgress();
         progressPercent.value = Math.round(current.progress * 100);
         try {
           localStorage.setItem(storageKey, JSON.stringify({
@@ -699,19 +793,80 @@
             title: novel.value.title || '',
             scrollY: current.scrollY,
             progress: current.progress,
-            updatedAt: Date.now()
+            updatedAt: Date.now(),
+            serverVersion: progressSyncState.value.record?.version ?? null
           }));
         } catch {}
+      };
+
+      const moveToProgress = (record) => {
+        restorePending = false;
+        latestUserSample = null;
+        clearTimeout(scrollThrottle);
+        scrollThrottle = null;
+        suppressProgrammaticScroll();
+        const top = Math.max(0, document.documentElement.scrollHeight - window.innerHeight) * record.progress / 100;
+        window.scrollTo({top, behavior: 'auto'});
+        progressPercent.value = record.progress;
+        if (record.is_reset) {
+          try { localStorage.removeItem(storageKey); } catch {}
+        } else writeLocalPosition();
+      };
+
+      const progressSync = window.ReadingProgressSync.create({
+        novelId, storage: localStorage,
+        legacyProgress: (() => {
+          try {
+            const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
+            if (saved && typeof saved.progress === 'number' && Number.isFinite(saved.progress)
+              && saved.progress >= 0 && saved.progress <= 1 && !Number.isSafeInteger(saved.serverVersion)) {
+              return Math.round(saved.progress * 100);
+            }
+          } catch {}
+          return undefined;
+        })(),
+        request: (url, options) => options.method === 'GET' ? fetch(url, options) : window.csrfFetch(url, options),
+        errorText: (data, response) => window.errorText(data, response),
+        onChange: state => { progressSyncState.value = state; progressBusy.value = state.busy || manualProgressRequest; },
+        onCommit: result => {
+          if (result.method === 'DELETE' && result.current && !result.hasPending && resetInteraction === interactionSerial) {
+            moveToProgress(result.record);
+          }
+          if (result.method === 'DELETE') resetInteraction = null;
+        },
+      });
+      const sampleUserProgress = () => {
+        if (!latestUserSample || !novel.value) return;
+        const sample = latestUserSample;
+        latestUserSample = null;
+        writeLocalPosition(sample);
+        progressSync.sample(Math.round(sample.progress * 100));
+      };
+      const handleReadingIntent = (event) => {
+        if (event?.type === 'keydown' && !['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(event.key)) return;
+        if (event?.type === 'pointermove' && !event.buttons) return;
+        restorePending = false;
+        interactionSerial++;
+        if (event?.target?.closest?.('button,a,input,textarea,select,[role="dialog"],.reader-sync-notice')) return;
+        ignoreProgrammaticScroll = false;
+        userMotion = true;
+        userMotionUntil = Date.now() + 2000;
       };
 
       const handleScroll = () => {
         // Any intervening scroll invalidates initial restoration, even a round trip to 0.
         restorePending = false;
         isScrolled.value = window.scrollY > 10;
+        progressPercent.value = Math.round(getReadingProgress().progress * 100);
+        if (!novel.value || ignoreProgrammaticScroll || !userMotion || Date.now() > userMotionUntil) return;
+        latestUserSample = getReadingProgress();
+        // 立即保留样本，以免初始 GET 在 300ms 显示节流前取得错误的新基线。
+        writeLocalPosition(latestUserSample);
+        progressSync.sample(Math.round(latestUserSample.progress * 100));
         if (scrollThrottle) return;
         scrollThrottle = setTimeout(() => {
           scrollThrottle = null;
-          saveProgress();
+          sampleUserProgress();
         }, 300);
       };
 
@@ -734,22 +889,20 @@
 
             // Restore scroll after render
             nextTick(async () => {
-              let saved = readSavedProgress();
               const initialScrollY = window.scrollY;
-              if (!saved) {
-                try {
-                  const progressRes = await fetch('/api/dashboard/novels/' + encodeURIComponent(novelId) + '/progress');
-                  if (progressRes.ok) {
-                    const stored = await progressRes.json();
-                    const percent = Math.max(0, Math.min(100, Number(stored?.progress) || 0));
-                    saved = { scrollY: Math.max(0, document.documentElement.scrollHeight - window.innerHeight) * percent / 100 };
-                  }
-                } catch (e) {}
+              const restored = await progressSync.refresh({initial: true});
+              const local = progressSync.state().local;
+              const target = restored.restore ? restored.record : (local && restored.offline ? {...local, is_reset: false} : null);
+              if (restorePending && target && !window.location.hash && initialScrollY === 0 && window.scrollY === initialScrollY) {
+                moveToProgress(target);
+              } else if (restorePending && restored.record && progressSync.state().conflict
+                && !window.location.hash && initialScrollY === 0 && window.scrollY === 0) {
+                // 旧本机缓存只作为待选择候选；显示服务器位置但不覆写旧缓存。
+                suppressProgrammaticScroll();
+                window.scrollTo({top: Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+                  * restored.record.progress / 100, behavior: 'auto'});
               }
-              if (restorePending && saved && saved.scrollY > 0 && !window.location.hash && window.scrollY === initialScrollY) {
-                window.scrollTo({ top: Math.min(saved.scrollY, document.documentElement.scrollHeight), behavior: 'auto' });
-              }
-              saveProgress();
+              progressPercent.value = Math.round(getReadingProgress().progress * 100);
               restorePending = false;
             });
           } else {
@@ -772,58 +925,124 @@
         } catch {}
       };
 
+      const pagehideProgress = () => {
+        sampleUserProgress();
+        if (progressSync.state().hasPending) void progressSync.flush({keepalive: true});
+      };
+      const retryProgressSync = async () => {
+        if (window.ensureCsrfToken) {
+          try { await window.ensureCsrfToken({refresh: true}); }
+          catch { return {queued: true}; }
+        }
+        await progressSync.refresh();
+        return progressSync.flush({explicit: true});
+      };
+      const storageProgressChanged = event => { void progressSync.storageChanged(event); };
+      const visibilityProgress = () => {
+        if (document.hidden) pagehideProgress();
+        else void retryProgressSync();
+      };
+      const pageShowProgress = event => {
+        if (event.persisted) { restorePending = false; suppressProgrammaticScroll(); void retryProgressSync(); }
+      };
+      const hashProgressChanged = () => { restorePending = false; suppressProgrammaticScroll(true); };
+
       onMounted(() => {
         fetchDetail();
+        // 页面仍在前台时准备 CSRF，pagehide 不依赖首次鉴权请求。
+        if (window.ensureCsrfToken) void window.ensureCsrfToken().catch(() => {});
         window.addEventListener('scroll', handleScroll, { passive: true });
-        window.addEventListener('beforeunload', saveProgress);
-        window.addEventListener('pagehide', saveProgress);
+        for (const name of ['wheel', 'touchmove', 'pointerdown', 'pointermove', 'keydown']) window.addEventListener(name, handleReadingIntent, {passive: true});
+        window.addEventListener('pagehide', pagehideProgress);
+        window.addEventListener('pageshow', pageShowProgress);
+        window.addEventListener('online', retryProgressSync);
+        window.addEventListener('storage', storageProgressChanged);
+        window.addEventListener('hashchange', hashProgressChanged);
+        document.addEventListener('visibilitychange', visibilityProgress);
       });
 
       onUnmounted(() => {
         window.removeEventListener('scroll', handleScroll);
-        window.removeEventListener('beforeunload', saveProgress);
-        window.removeEventListener('pagehide', saveProgress);
+        for (const name of ['wheel', 'touchmove', 'pointerdown', 'pointermove', 'keydown']) window.removeEventListener(name, handleReadingIntent);
+        window.removeEventListener('pagehide', pagehideProgress);
+        window.removeEventListener('pageshow', pageShowProgress);
+        window.removeEventListener('online', retryProgressSync);
+        window.removeEventListener('storage', storageProgressChanged);
+        window.removeEventListener('hashchange', hashProgressChanged);
+        document.removeEventListener('visibilitychange', visibilityProgress);
         clearTimeout(scrollThrottle);
+        clearTimeout(programmaticTimer);
+        progressSync.dispose();
       });
+
+      const reportProgressOutcome = (result, successMessage) => {
+        if (result.error || result.conflict) {
+          if (!showReaderActions.value && !showChapters.value
+            && (result.conflict || progressSyncState.value.phase === 'offline')) {
+            // 常驻同步提示已经包含恢复操作，不再用 toast 遮挡阅读工具栏。
+            readerActionMessage.value = progressSyncMessage.value;
+            readerActionMessageType.value = 'error';
+          } else reportReaderAction(result.error || progressSyncMessage.value, 'error');
+        }
+        else {
+          const message = result.queued ? '进度已保留在本机，等待同步。' : successMessage;
+          if (showReaderActions.value || showChapters.value) reportReaderAction(message);
+          else { readerActionMessage.value = message; readerActionMessageType.value = 'success'; }
+        }
+      };
+      const refreshProgressAuthentication = async () => {
+        if (progressSync.state().phase !== 'auth' || !window.ensureCsrfToken) return true;
+        try { await window.ensureCsrfToken({refresh: true}); return true; }
+        catch (error) { reportReaderAction(error.message || '请重新登录后重试同步。', 'error'); return false; }
+      };
 
       const saveServerProgress = async () => {
         if (progressBusy.value) return;
         restorePending = false;
-        progressBusy.value = true;
         readerActionMessage.value = '';
+        writeLocalPosition();
+        manualProgressRequest = true;
+        progressBusy.value = true;
         try {
-          saveProgress();
-          const progress = progressPercent.value;
-          const status = progress >= 100 ? 'completed' : (progress > 0 ? 'reading' : 'unread');
-          const res = await window.csrfFetch('/api/dashboard/novels/' + encodeURIComponent(novelId) + '/progress', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ progress, status }),
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
-          restorePending = false;
-          reportReaderAction('阅读进度已记到账号');
-        } catch (e) { reportReaderAction(e.message || '保存阅读进度失败', 'error'); }
-        finally { progressBusy.value = false; }
+          if (progressSync.state().phase === 'auth' && !await refreshProgressAuthentication()) return;
+          const result = await progressSync.save(progressPercent.value);
+          reportProgressOutcome(result, '阅读进度已记到账号');
+        } finally { manualProgressRequest = false; progressBusy.value = progressSync.state().busy; }
       };
       const resetServerProgress = async () => {
         if (progressBusy.value || !confirm('清除账号和本机的阅读进度并回到页首？')) return;
         restorePending = false;
-        progressBusy.value = true;
         readerActionMessage.value = '';
+        resetInteraction = interactionSerial;
+        suppressProgrammaticScroll(true);
+        latestUserSample = null;
+        clearTimeout(scrollThrottle);
+        scrollThrottle = null;
+        manualProgressRequest = true;
+        progressBusy.value = true;
         try {
-          const res = await window.csrfFetch('/api/dashboard/novels/' + encodeURIComponent(novelId) + '/progress', { method: 'DELETE' });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok || data.ok === false) throw new Error(window.errorText(data, res));
-          restorePending = false;
-          clearTimeout(scrollThrottle);
-          scrollThrottle = null;
-          try { localStorage.removeItem(storageKey); } catch {}
-          window.scrollTo({top: 0, behavior: 'auto'});
-          progressPercent.value = 0;
-          reportReaderAction('阅读进度已重置');
-        } catch (e) { reportReaderAction(e.message || '重置阅读进度失败', 'error'); }
-        finally { progressBusy.value = false; }
+          if (progressSync.state().phase === 'auth' && !await refreshProgressAuthentication()) return;
+          const result = await progressSync.reset();
+          reportProgressOutcome(result, '阅读进度已重置');
+        } finally { manualProgressRequest = false; progressBusy.value = progressSync.state().busy; }
+      };
+      const useServerProgress = () => {
+        const selected = progressSync.useServer();
+        if (selected) { moveToProgress(selected); reportReaderAction('已使用服务器进度'); }
+      };
+      const keepLocalProgress = async () => {
+        if (progressBusy.value) return;
+        restorePending = false;
+        const selectedAt = interactionSerial;
+        if (progressSync.state().local?.is_reset) resetInteraction = interactionSerial;
+        manualProgressRequest = true;
+        progressBusy.value = true;
+        try {
+          if (progressSync.state().phase === 'auth' && !await refreshProgressAuthentication()) return;
+          const result = await progressSync.keepLocal(progressPercent.value);
+          if (result.ok && !result.queued && selectedAt === interactionSerial && result.record) moveToProgress(result.record);
+          reportProgressOutcome(result, '已保留本机进度并同步到账号');
+        } finally { manualProgressRequest = false; progressBusy.value = progressSync.state().busy; }
       };
       const removeLocalBookmark = async () => {
         if (removingBookmark.value || !confirm('仅移除本地收藏记录？小说归档会保留，不会取消 Pixiv 收藏；下次同步可能重新加入。')) return;
@@ -886,6 +1105,8 @@
         detailHref, chapterHref, showReaderActions, showChapters, deletingNovel,
         exportingEpub, readerActionMessage, readerActionMessageType,
         exportEpub, saveServerProgress, resetServerProgress, progressBusy, removeLocalBookmark, removingBookmark, deleteThisNovel,
+        progressSyncState, progressSyncLabel, progressSyncNeedsAttention, progressSyncMessage, progressSyncLocal,
+        useServerProgress, keepLocalProgress, retryProgressSync,
         seriesInfo, chapterIndex, prevNovelId, nextNovelId,
         formattedContent, onBodyClick, formatNumber, formatTextLength, formatDate,
         fontSize, cycleFontSize, rescueOverride, rescueMessage, rescueMessageType,

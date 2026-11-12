@@ -135,16 +135,20 @@ def test_full_refresh_again_after_seven_days(tmp_path, monkeypatch) -> None:
 
 def test_interrupted_full_refresh_is_not_recorded(tmp_path, monkeypatch) -> None:
     settings, api = _env(tmp_path, monkeypatch)
-    calls = {"n": 0}
+    observed = Database(settings.storage.db_path)
 
     def stop_after_first_novel() -> bool:
-        calls["n"] += 1
-        return bool(api.detail_calls)
+        # 抓取内部也轮询取消；这里只在首本真正完成归档后发出停止请求。
+        return observed.novel_archive_complete(NOVEL_IDS[0], require_assets=True)
 
-    stopped = services.run_user_backup_task(settings, AUTHOR_ID, stop_requested=stop_after_first_novel)
-    after = services.run_user_backup_task(settings, AUTHOR_ID)
+    try:
+        stopped = services.run_user_backup_task(settings, AUTHOR_ID, stop_requested=stop_after_first_novel)
+        after = services.run_user_backup_task(settings, AUTHOR_ID)
+    finally:
+        observed.close()
 
     assert stopped["stopped"] is True
+    assert stopped["novels"] == 1
     # 没跑完不记：下一轮仍全部重抓
     assert after["full_refresh"] is True
 
