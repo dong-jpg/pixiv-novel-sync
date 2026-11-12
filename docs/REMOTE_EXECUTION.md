@@ -73,6 +73,14 @@ pixiv-remote worker
 
 正常生产入口保持循环，不使用 `--once`。worker 监督循环独立于传输线程；渲染在固定 spawn 子进程运行，子进程在调用渲染器前清除继承的敏感环境变量。SIGTERM 只停止自己的子进程与网络处理，不会把云实例直接暂停。
 
+一期渲染依赖使用[版本约束](../config/remote-renderer-constraints.txt)，与已验证的 VPS 对齐为 EbookLib 0.20、lxml 6.1.1。worker 的专用虚拟环境可安装最小依赖：
+
+```console
+python -m pip install -c config/remote-renderer-constraints.txt "requests>=2.32.3" "urllib3>=2,<3" EbookLib lxml
+```
+
+两端升级渲染依赖时，应同步更新约束并重新比较合成 EPUB 的正文、封面和格式。EbookLib 0.21 改变了默认封面样式，本次联调据此补齐版本约束。
+
 ## 服务与反向代理安装准备
 
 先核对部署目录、虚拟环境、用户及上游端口，再安装：
