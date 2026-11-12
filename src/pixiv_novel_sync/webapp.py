@@ -542,6 +542,9 @@ def create_app(
 
     work_coordinator = None
     work_ai_factory = None
+    preference_service = None
+    preference_admission = None
+    library_service = None
 
     def run_web_task(task_type: str, context: dict[str, Any]) -> dict[str, Any] | None:
         current_settings = settings_manager.load(env_path=env_path)
@@ -552,6 +555,11 @@ def create_app(
             return WorkAnalysisExecutor(work_coordinator.db_factory, work_ai_factory).run(
                 context["params"]["run_id"], context,
             )
+        if task_type == "preference_summarize":
+            if preference_service is None:
+                raise RuntimeError("preference_learning_unavailable")
+            context = {**context, "stop_requested": lambda: shared_job_manager.is_cancel_requested(context["job_id"])}
+            return preference_service.execute(context["params"]["run_id"], context)
         return execute_task(task_type, current_settings, context)
 
     shared_job_runner: JobRunner | None = None
@@ -609,6 +617,8 @@ def create_app(
             shared_job_runner.run(job_id)
         finally:
             try:
+                if preference_admission is not None:
+                    preference_admission.finished(job_id)
                 if work_coordinator is not None:
                     work_coordinator.on_job_finished(job_id)
             except Exception:
@@ -619,7 +629,7 @@ def create_app(
         def run():
             try:
                 job = shared_job_manager.get_job(job_id)
-                if job is not None and job.spec.job_type == JobType.WORK_ANALYSIS:
+                if job is not None and job.spec.job_type in {JobType.WORK_ANALYSIS, JobType.PREFERENCE_SUMMARIZE}:
                     auto_sync_scheduler._run_and_watch_for_preemption(
                         settings_manager.load(env_path=env_path), job_id, "work_analysis", _run_shared_web_job,
                     )
@@ -1097,6 +1107,53 @@ def create_app(
     ))
     app.extensions["pixiv_novel_sync.work_ai_factory"] = lambda: app.extensions["pixiv_novel_sync.ai_service"]
     work_ai_factory = lambda: app.extensions["pixiv_novel_sync.work_ai_factory"]()
+
+    from .preference_learning.admission import PreferenceLearningAdmission
+    from .preference_learning.library import LibraryAnalysisService
+    from .preference_learning.profiles import PreferenceLearningService
+    from .preference_learning_web import register_preference_learning_routes
+
+    with _auto_sync_scheduler_registry_lock:
+        preference_service = auto_sync_scheduler.preference_learning_service
+        library_service = auto_sync_scheduler.library_analysis_service
+        preference_admission = auto_sync_scheduler.preference_learning_admission
+        new_learning_owner = preference_service is None
+        if new_learning_owner:
+            preference_service = PreferenceLearningService(work_database, work_ai_factory)
+            library_service = LibraryAnalysisService(work_database, work_ai_factory, work_coordinator)
+            preference_admission = PreferenceLearningAdmission(
+                preference_service, work_coordinator, _submit_shared_job,
+                lambda: settings_manager.load(env_path=env_path),
+            )
+            auto_sync_scheduler.preference_learning_service = preference_service
+            auto_sync_scheduler.library_analysis_service = library_service
+            auto_sync_scheduler.preference_learning_admission = preference_admission
+
+    if new_learning_owner:
+        try:
+            preference_service.startup_recover()
+            library_service.startup_recover()
+            preference_admission.ready = True
+        except Exception:
+            logger.warning("Preference learning startup recovery unavailable")
+
+        def discover_learning(reason=None):
+            preference_admission.tick()
+            library_service.tick(reason)
+
+        if preference_admission.ready:
+            work_coordinator.set_discovery_hook(discover_learning)
+
+    def ensure_learning_scheduler():
+        auto_sync_scheduler.start()
+        work_coordinator.wake("created")
+
+    register_preference_learning_routes(
+        app, preference_service, library_service, ensure_scheduler=ensure_learning_scheduler,
+        profile_control=preference_admission.control,
+        admission_available=lambda: (preference_admission.ready and work_coordinator._recovered
+                                    and not work_coordinator._closed),
+    )
 
     from .preference_web import register_preference_routes
     register_preference_routes(app, current_settings_for_routes)
@@ -2019,6 +2076,10 @@ def create_app(
             settings_manager.invalidate()
 
         if enabled:
+            auto_sync_scheduler.start()
+        elif library_service is not None and library_service.enabled():
+            # The same scheduler also admits explicitly enabled library analysis.
+            # Its loop checks auto_sync_enabled before considering any sync task.
             auto_sync_scheduler.start()
         else:
             auto_sync_scheduler.stop()

@@ -1,0 +1,28 @@
+<section v-if="feedback" class="library-card space-y-3 text-left" aria-label="阅读喜好评价">
+  <div class="flex flex-wrap items-center gap-3">
+    <h2 class="library-section-title">这部作品合你的口味吗？</h2>
+    <button type="button" class="library-btn" @click="feedback.toggle" :disabled="!!feedback.f.pending" :aria-expanded="feedback.f.open">{{ feedback.f.open ? '收起评价' : '评价与修改' }}</button>
+    <a href="/dashboard/preferences?view=learning" class="library-btn">偏好学习</a>
+  </div>
+  <p class="text-sm library-muted">阅读后的喜欢与不喜欢会影响后续推荐；收藏、归档和作品中的情节不自动代表你的喜好。</p>
+  <div v-if="feedback.f.open" class="space-y-3">
+    <div v-if="!feedback.f.fixed" class="grid gap-3 md:grid-cols-2">
+      <label for="learning-feedback-kind">作品类型<select id="learning-feedback-kind" v-model="feedback.f.source_kind" :disabled="!!feedback.f.pending" class="library-input w-full"><option value="novel">单篇小说</option><option value="series">整个系列</option></select></label>
+      <label for="learning-feedback-source">本地作品 ID<input id="learning-feedback-source" v-model="feedback.f.source_id" inputmode="numeric" :disabled="!!feedback.f.pending" class="library-input w-full"></label>
+    </div>
+    <button type="button" class="library-btn" @click="feedback.load" :disabled="feedback.f.loading || !!feedback.f.pending">{{ feedback.f.loading ? '正在读取…' : '读取当前评价' }}</button>
+    <p v-if="feedback.f.record" class="text-sm">当前评价：{{ feedback.reactionText(feedback.f.record.reaction) }} · 版本 {{ feedback.f.record.version }}</p>
+    <fieldset :disabled="!feedback.f.record || !!feedback.f.pending || feedback.f.loading" class="space-y-3">
+      <label for="learning-feedback-reaction" class="block">我的评价<select id="learning-feedback-reaction" aria-label="我的评价" v-model="feedback.f.reaction" class="library-input w-full"><option value="liked">喜欢</option><option value="disliked">不喜欢</option><option value="neutral">中立</option></select></label>
+      <label for="learning-feedback-note" class="block">原因（可选，最多 500 字）<textarea id="learning-feedback-note" v-model="feedback.f.note" maxlength="500" rows="2" class="library-input w-full" placeholder="例如喜欢叙述方式，或不喜欢某种情节"></textarea></label>
+      <div class="flex flex-wrap gap-3"><button type="button" class="library-btn library-btn-primary" @click="feedback.save(false)" :disabled="!feedback.canSave()">保存评价</button><button type="button" class="library-btn" @click="feedback.save(true)" :disabled="!feedback.canSave() || feedback.f.record?.reaction === 'clear'">撤回评价</button></div>
+    </fieldset>
+    <div v-if="feedback.f.pending" class="space-y-2" role="status">
+      <p>{{ feedback.f.pending.phase === 'unknown' ? '上次保存结果未知。' : '正在保存评价…' }}</p>
+      <button v-if="feedback.f.pending.phase === 'unknown'" type="button" class="library-btn" @click="feedback.reconcile" :disabled="feedback.f.loading || feedback.f.pending.sending">先核对当前评价</button>
+      <button v-if="feedback.f.pending.phase === 'unknown' && feedback.f.pending.canRetry" type="button" class="library-btn" @click="feedback.retry" :disabled="feedback.f.loading || feedback.f.pending.sending">重试同一保存</button>
+    </div>
+    <p v-if="feedback.f.error" role="alert" class="text-sm text-red-700">{{ feedback.f.error }}</p>
+    <p v-if="feedback.f.notice" role="status" class="text-sm">{{ feedback.f.notice }}</p>
+  </div>
+</section>

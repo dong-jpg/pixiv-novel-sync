@@ -178,6 +178,9 @@ class WorkAnalysisControlMixin:
                 raise WorkAnalysisError("invalid_request")
             if budget == previous:
                 return self._work_detail(conn, row)
+            guard = getattr(self, "guard_library_analysis_budget", None)
+            if guard is not None:
+                guard(conn, run_id, budget, previous)
             history = c.load(row["budget_history_json"])
             history.append({"old": previous, "new": budget, "confirmed": True, "recorded_at": c.stamp(),
                             "request_count": row["request_count"], "planned_tokens": row["planned_tokens"],

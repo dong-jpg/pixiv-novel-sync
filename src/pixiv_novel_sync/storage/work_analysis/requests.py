@@ -55,6 +55,7 @@ class WorkAnalysisRequestsMixin:
     def begin_work_analysis_unit(self, lease, unit_id):
         with self.transaction() as conn:
             row = c.require_owner(conn, lease)
+            self.guard_library_analysis_send(conn, lease.run_id)
             unit = conn.execute(
                 "SELECT * FROM work_analysis_units WHERE run_id=? AND unit_id=?", (lease.run_id, c.hex_id(unit_id)),
             ).fetchone()
@@ -73,6 +74,7 @@ class WorkAnalysisRequestsMixin:
     def _attach_work_analysis_child(self, conn, binding, child_job_id):
         _transaction(conn)
         row, unit = _bound_unit(conn, binding)
+        self.guard_library_analysis_send(conn, binding.lease.run_id)
         child = _live_child(conn, child_job_id, row)
         if child["network_request_count"] != 0:
             raise WorkAnalysisError("owner_lost", 409)
@@ -105,6 +107,7 @@ class WorkAnalysisRequestsMixin:
         c.integer(ordinal, 1, 32)
         c.integer(planned_tokens, 1, 100000000)
         row, unit = _bound_unit(conn, binding, now=now)
+        self.guard_library_analysis_send(conn, binding.lease.run_id)
         child = _live_child(conn, child_job_id, row, now=now)
         attached = conn.execute(
             "SELECT * FROM work_analysis_requests WHERE child_job_id=? AND request_ordinal=0 AND entry_kind='attachment'",

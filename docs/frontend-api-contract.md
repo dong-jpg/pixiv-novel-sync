@@ -8,7 +8,7 @@
 
 本文档记录 Library OS 前端当前依赖的后端接口。后端重构时应优先保持路径、方法和主要字段兼容；如需调整，请在对接时同步更新前端适配层。
 
-> AI 写作相关端点（创作项目 / 章节 / 草稿 / 文档 / 蒸馏档案 / Prompt 模板 / chat / 写作类 SSE stream / 成人润色）随 AI 写作模块移到 `ai-writing` 分支维护，main 分支契约不再记载。main 保留 AI 基础设施端点，另有手动作品分析业务；旧 AI job continue 仍不支持，不等于新的作品级恢复。分支实现、整阶段验收与部署分别见 [项目现状](STATUS.md)。
+> AI 写作相关端点（创作项目 / 章节 / 草稿 / 文档 / 蒸馏档案 / Prompt 模板 / chat / 写作类 SSE stream / 成人润色）随 AI 写作模块移到 `ai-writing` 分支维护，main 分支契约不再记载。当前实现保留 AI 基础设施与手动作品分析，并增加基于明确阅读评价的 AI 偏好画像、全库 / 新同步分析和推荐反馈消费。旧 AI job continue 仍不支持，不等于新的作品级恢复。分支实现、验收与部署分别见 [项目现状](STATUS.md)。
 
 ## 通用约定
 
@@ -37,7 +37,7 @@
 | `/dashboard/settings/models` | `dashboard_settings_models.html` | 模型与 Provider |
 | `/dashboard/settings/agents` | `dashboard_settings_agents.html` | Agent 绑定 |
 | `/dashboard/settings/system` | `dashboard_settings_system.html` | 系统维护 |
-| `/dashboard/preferences` | `dashboard_preferences.html` | 默认偏好画像与推荐；`view=work-analysis` 为独立作品分析视图 |
+| `/dashboard/preferences` | `dashboard_preferences.html` | 默认偏好画像与推荐；`view=work-analysis` 为独立作品分析，`view=learning` 为偏好学习 |
 
 ## 认证与健康检查 APIs
 
@@ -688,7 +688,7 @@ Body:
 
 ### DELETE /api/dashboard/preferences/profiles/{profile_id}
 
-画像设默认和删除仅 API，保留既有脚本兼容接口；完整多画像页面工作流按 UNIFIED §1.3 为 OUT，不为消除旧计划空勾而新增该功能。
+上述为既有本地统计画像接口，设默认和删除保留脚本兼容，不提供任意多画像编辑页面。新增 AI 偏好画像的生成、启用和删除使用下文 [Preference Learning APIs](#preference-learning-apis)，不复用这些旧数值 ID。
 
 ### POST /api/dashboard/recommendations/search-plan
 
@@ -698,11 +698,13 @@ Body:
 { "profile_id": 1, "filters": {} }
 ```
 
+搜索词结合本地统计、明确阅读评价对应的有效作品特征以及当前启用且未过期的 AI 画像。默认页面每次推书重新生成搜索计划，不复用上次缓存；执行也检查学习依据是否变化。推荐匹配可增加 `matched.reading_feedback`（`label,weight,sources`）、`preference_summary_id` 和 `feedback_fingerprint`，供理由展示和追溯。负向评价参与扣分；收藏、感兴趣或保存推荐本身不等价于读后喜欢。
+
 ### POST /api/dashboard/recommendations/run
 
 推荐统计分别记录 `query_errors`（搜索请求错误）与 `candidate_errors`（单个候选异常），`errors` 保留总数；只有所有已尝试查询都失败才判定“全部搜索失败”，单个坏候选不会误判整轮失败。
 
-旧 `GET /api/dashboard/recommendations/runs` 已从当前 main 工作区移除。页面不展示历史轮次；多画像的设默认和删除也不做页面。
+旧 `GET /api/dashboard/recommendations/runs` 已从当前 main 工作区移除。默认页面不增加任意本地多画像编辑或推荐轮次历史；AI 画像版本在偏好学习视图管理。
 
 ### GET /api/dashboard/recommendations/items
 
@@ -740,7 +742,7 @@ Body:
 
 ## Work Analysis APIs
 
-用于 `/dashboard/preferences?view=work-analysis`，一次只分析用户明确选择的已归档单篇/系列，不更新个人画像或推荐。源码入口：`work_analysis_web.py`、`work_analysis/service.py`、`storage/work_analysis/`。默认偏好页不调用这些接口。
+用于 `/dashboard/preferences?view=work-analysis`，一次分析一部已归档单篇/系列。单作品报告本身不把作品特征当作用户喜好；偏好学习可在明确评价后引用其有效报告，全库批次也复用这一执行管道。源码入口：`work_analysis_web.py`、`work_analysis/service.py`、`storage/work_analysis/`。默认偏好页不调用这些接口。
 
 ### 路径与请求
 
@@ -811,6 +813,129 @@ Body:
 | 413 | `payload_too_large/input_too_large/too_large` |
 | 503 | `admission_unavailable/control_unavailable` |
 | 500 | 非预期错误统一 `work_analysis_unavailable`，不返回异常正文 |
+
+## Preference Learning APIs
+
+用于 `/dashboard/preferences?view=learning` 及小说 / 系列详情的按需评价。源码入口为 `preference_learning_web.py`、`preference_learning/profiles.py`、`preference_learning/library.py`，存储分别在 `storage/preference_learning.py` 和 `storage/library_analysis.py`。用户操作见 [偏好学习指南](PREFERENCE_LEARNING_GUIDE.md)。本节描述当前代码契约，不代表生产已部署或真实服务商已验收。
+
+### 共同边界与全部路径
+
+成功返回 HTTP 200 与 `{ok:true,data:...}`。业务失败为 `{ok:false,error:<安全码>,code:<安全码>}`，认证 / CSRF 仍使用现有 Dashboard 中间件。所有响应（含失败）为 `Cache-Control: private, no-store, no-cache, max-age=0, must-revalidate`，并带 `Pragma: no-cache`、`Expires: 0`。写请求包含预览在内都须 `X-CSRF-Token`。
+
+| Method / Path | 请求 | `data` |
+| --- | --- | --- |
+| `GET /api/dashboard/preference-learning/state` | 无 query | `profiles,library,admission_ready` |
+| `GET /api/dashboard/preference-learning/feedback/<kind>/<source_id>` | 无 query | 当前阅读评价 |
+| `PUT /api/dashboard/preference-learning/feedback/<kind>/<source_id>` | `reaction,expected_version`，可选 `note` | 更新后的评价 |
+| `POST /api/dashboard/preference-learning/profile-preview` | 画像预览对象 | 范围、目标、最低预算与指纹 |
+| `POST /api/dashboard/preference-learning/profiles` | 画像预览对象 + `preview_fingerprint,idempotency_key` | 画像运行摘要 |
+| `GET /api/dashboard/preference-learning/profiles/<run_id>` | 无 query | 画像运行详情，含结果 / 来源或删除墓碑 |
+| `POST /api/dashboard/preference-learning/profiles/<run_id>/activate` | `expected_version` | 启用后的画像摘要 |
+| `POST /api/dashboard/preference-learning/profiles/<run_id>/cancel` | `expected_version` | 取消后的画像摘要 |
+| `DELETE /api/dashboard/preference-learning/profiles/<run_id>` | `expected_version` | 删除墓碑摘要 |
+| `POST /api/dashboard/preference-learning/batch-preview` | 库分析配置，可选 `purpose:manual|policy` | 候选数量、样本、目标与指纹 |
+| `POST /api/dashboard/preference-learning/batches` | 库分析配置 + `preview_fingerprint,idempotency_key` | 批次摘要 |
+| `GET /api/dashboard/preference-learning/batches/<batch_id>` | 可选 `offset,limit` | `batch,items,total,offset,limit` |
+| `POST /api/dashboard/preference-learning/batches/<batch_id>/pause` | `expected_version` | 批次摘要 |
+| `POST /api/dashboard/preference-learning/batches/<batch_id>/resume` | `expected_version` | 批次摘要 |
+| `POST /api/dashboard/preference-learning/batches/<batch_id>/cancel` | `expected_version` | 批次摘要 |
+| `PUT /api/dashboard/preference-learning/automation` | 启用 / 停用策略对象 | 持续策略摘要 |
+
+JSON 对象最大 256 KiB；拒绝重复键、非有限数、数组 / null、未知字段、缺少必填项和非 JSON Content-Type。数字为严格整数，bool、浮点和数字字符串不作数字接受。除批次详情的分页外不接受 query；分页 `offset` 默认 0、范围 0–1000000，`limit` 默认 20、范围 1–100，额外参数、重复参数及带前导零的页码被拒绝。`run_id/batch_id` 为小写 hex32，指纹为 hex64；库批次 `idempotency_key` 为 hex32，画像幂等键是最多 128 字符的非空字符串，页面统一生成 hex32。`expected_version` 为正整数，唯一例外是尚未评价作品的反馈版本为 0。
+
+`admission_ready=false` 表示当前执行 owner 不可准入。预览与已有内容读取仍可用；新画像、新批次、自动策略启用及批次恢复返回 503 `admission_unavailable`，停止 / 取消 / 删除仍走其原有检查。已持久化的创建不会因为后续调度唤醒失败而当成未创建。
+
+### 明确阅读评价
+
+`kind` 仅 `novel|series`，`source_id` 为本地已归档作品的正整数 ID。PUT 示例：
+
+```json
+{"reaction":"liked","note":"偏好这部作品的叙事方式","expected_version":0}
+```
+
+`reaction` 为 `liked|disliked|neutral|clear`；note 最多 500 字符。返回 `{source_kind,source_id,reaction,note,version}`；从未评价的返回 `reaction:clear,version:0,note:""`。撤回使用 `reaction:clear`，页面同时清空 note。系列评价优先于其章节的单篇评价，画像不会把同一组内容重复统计。读取和保存评价不调用模型；反馈变化会使依赖它的旧画像失效，新的推荐使用当前可验证信号。
+
+推荐项的 `interested/saved/dismissed/muted` 仍通过原推荐反馈接口管理；用于已反馈过滤和屏蔽等原有行为，不冒充这里的明确读后喜恶。
+
+### AI 画像预览、生成与引用
+
+预览对象（示例数值不是支出授权或默认值）：
+
+```json
+{
+  "agent_id":1,
+  "output_tokens":4000,
+  "budget":{"request_limit":4,"token_limit":100000,"active_seconds_limit":300},
+  "confirmations":{"external_send_confirmed":false,"budget_confirmed":false}
+}
+```
+
+预算上限分别是请求 1–512、计划 token 1–100000000、活跃秒 30–14400；`output_tokens` 为 1–1000000。创建须两个确认均为 true，并附刚预览的指纹和幂等键。预览无网络、无执行 job、无 Key 解密：仅使用明确评价、同版本成功作品报告的有界 claims / 短证据 / 不确定性，不重新读取完整小说作为画像输入。最多 2000 条明确反馈；超界拒绝，不抽样冒充全量。
+
+预览返回 `preview_fingerprint,source_count,feedback_counts,missing_reports,targets,budget,minimum_budget,can_create,output_tokens,warnings`。`source_count` 是同时有明确评价与有效报告的作品数；输入覆盖不全、汇总未完成、报告已旧版化或删除的作品不作为有效来源。`minimum_budget` 表示当前已知的一次发送预留，不承诺该预算一定完成，也不要求把 Router 全部重试上限预先当成最少请求。每次真实发送、重试和 fallback 仍在同一画像的持久预算链上检查与扣记。
+
+`state.profiles` 返回 `feedback_counts:{liked,disliked,neutral}`、`eligible_works,missing_reports,active_run_id,runs`。runs 为最近 100 条非删除摘要，每条含 `run_id,version,status,active,stale,agent_id,created_at,budget,usage,source_count,error_code,shared_job_id`。状态为 `queued/running/succeeded/failed/cancelled/invalidated/deleted`。
+
+详情额外返回 `result,sources,actual_target`。`result` 为 `{version:1,summary,preferences,counterexamples,uncertainties}`；每条 preference 含 `label,dimension,polarity,certainty,source_ids,evidence_refs`。polarity 为 `positive|negative|mixed|neutral`，certainty 为 `tentative|supported`。来源引用必须与服务端已捕获的作品 claim 一致；正向引用喜欢、负向引用不喜欢，混合必须包含两类，不接受虚构标签或来源。
+
+`sources` 含 `source_key,source_kind,source_id,reaction,note,feedback_version,report_run_id,report_hash,claims,evidence,uncertainties`。阅读定位继续使用已存在的 `GET /api/dashboard/work-analyses/<report_run_id>/evidence/<evidence_id>`，只将 ID 放入 URL，源 hash 不匹配拒绝跳转。
+
+usage 中 `network_request_count,planned_tokens` 来自服务端；`reported_input_tokens/reported_output_tokens` 只有所有请求的对应值均已知时才返回完整总量，否则 null。`reported_known_input_tokens/reported_known_output_tokens` 为已报告部分，`unknown_requests` 为用量不完整的请求数。null 不补零，不以本地 token 估算替代真实账单。
+
+仅 `succeeded && !stale` 可 activate；启用在事务内撤销旧启用版本。没有旧默认统计画像时会创建最小基础画像，用户可直接回默认偏好页推书。queued/running 可 cancel；删除撤销运行权并清除结果、来源和实际目标，旧回调不可重新发布。画像没有 continue / resume / 自动重试接口；失败或进程中断后，查看原因，再重新预览并显式创建新生成。
+
+### 全库批次与持续自动授权
+
+库分析配置（`purpose` 仅预览使用，下面示例为手动预览）：
+
+```json
+{
+  "scope":"all",
+  "agent_id":1,
+  "output_tokens":4000,
+  "work_budget":{"request_limit":4,"token_limit":100000,"active_seconds_limit":300},
+  "batch_budget":{"request_limit":40,"token_limit":1000000,"active_seconds_limit":3000},
+  "work_limit":10,
+  "interval_minutes":60,
+  "confirmations":{"external_send_confirmed":false,"budget_confirmed":false,"current_archive_only":false,"order_confirmed":false},
+  "purpose":"manual"
+}
+```
+
+scope 仅 `all|new`。work_budget 与单作品预算范围相同；batch_budget 上限分别为请求 1–1000000、计划 token 1–1000000000000、活跃秒 30–31536000，每项至少容纳一个 work_budget。`work_limit` 为 1–100000，`interval_minutes` 为 1–10080。手动批次也传 interval，只有持续策略用它决定下一次发现间隔。创建 / 启用时四项确认全部为 true。
+
+- `all` 扫描当前已归档作品，并按系列归并；同源、同配置的有效报告复用，不重复付费。
+- 手动 `new` 从本功能开始跟踪后实际新增 / 正文 hash 更新算起；普通同 hash 元数据刷新不触发。
+- 自动 `new` 使用 `purpose:policy` 预览，首次启用时冻结起点，只处理之后新增 / 正文变化。关闭、恢复或增额不重置起点。`purpose` 不出现在 create / automation 的严格请求对象中；预览指纹同时绑定实际起点、当前源版本和配置，不能把手动预览用到范围不同的自动策略。
+
+预览返回 `preview_fingerprint,configuration,targets,candidate_count,samples,can_create,warnings,budget_mode,purpose`；`budget_mode` 为 `cumulative_reserved_limits`。samples 是有界作品元数据，不含正文。候选数量不是保证成功的付费数，真正准入时再校验源、配置和剩余授权。
+
+手动 create 使用配置 + `preview_fingerprint,idempotency_key`，不含 purpose。持续启用使用配置 + `preview_fingerprint,enabled:true,expected_version`，不含幂等键；停用只有 `{"enabled":false,"expected_version":N}`。
+
+`state.library` 返回 `{policy,batches}`。policy 含 `version,enabled,reason,configuration,allocated,work_count,next_run_at,new_baseline_revision`；未配置时 configuration 为 null。allocated 与预算使用相同三个 key，但表示已分配额度，不能当成实际账单。持续策略的 batch_budget 和 work_limit 是跨所有自动批次的累计授权；每个新付费作品先占用完整 work_budget，失败 / 中断不自动退款，tick、关闭 / 再开、重启都不清零。到达总额即停止；增加上限须再次预览确认，不能低于已分配。
+
+批次摘要含 `batch_id,version,status,reason,origin,scope,work_limit,work_count,scanned_count,skipped_count,budget,allocated,created_at,updated_at`；origin 为 `manual|policy`，status 为 `queued/scanning/waiting/completed/paused/cancelled/failed`。completed 表示批次发现已结束，**不代表每个作品报告都成功**。分页 items 含 `target_id,source_kind,source_id,title,run_id,status,reason,run_status`，其 status 为 `created|reused|skipped|error`；有 run_id 时可进入独立作品分析查看真实状态。
+
+pause / cancel 会暂停或取消批次并对该批次尚在执行的子任务发出相应控制；resume 仅接受 paused/cancelled，保留累计预算，并恢复由此批次停止的有效子任务。原来已失败或验证失败的作品不会因此自动重付费；按单作品页面检查原因并显式恢复。修改配置后不能静默恢复旧配置批次。
+
+停用自动策略不再创建新任务，并暂停在执行的自动批次；已取得最终保存许可的当前结果仍可完成，阻塞中的调用须等待真实退出。进程重启时，有未完成批次会被暂停、其持续策略停用，不能凭重启自动重发可能已付费的请求。单作品增预算也受其批次 / 自动策略总授权约束，超额返回 `library_budget_exhausted`，不会绕开累计 cap。
+
+### 幂等、错误与敏感内容
+
+创建结果未知时，前端只重试同一 body / 幂等键；控制或策略写入未知时先读取当前状态，只有版本仍等于原 expected_version 才允许重试同一请求。GET 不是原写入的回执；较旧响应不能回退当前版本，已确认写入后刷新失败只能重试读取。页面重载不保留敏感 body / 同意状态，必须先核对已有记录。
+
+| HTTP | 典型边界 |
+| --- | --- |
+| 400 | JSON / 字段 / ID / 分页 / 严格整数校验，`confirmation_required` |
+| 401 / 403 | Dashboard 认证或 CSRF |
+| 404 | 本地源 / 画像 / 批次不存在 |
+| 409 | `version_conflict,state_conflict,stale_preview,idempotency_conflict,source_changed,configuration_changed,configuration_unavailable,policy_disabled,budget_below_allocated,library_budget_exhausted` 等 |
+| 410 | 已删除产物或作品证据版本不可用（证据沿用作品 API） |
+| 413 | `payload_too_large,input_too_large` 等有界输入 / 产物限制 |
+| 503 | `admission_unavailable` |
+| 500 | 非预期失败统一为 `preference_learning_unavailable` |
+
+正文、画像、评价说明和短证据不进入普通 AI job 输入 / 响应重放存储、共享任务日志或浏览器持久存储。画像结果默认折叠、通过文本节点显示，不执行模型 HTML。来源删除或失效会撤销相关画像；详情可返回墓碑，删除后的迟到读取 / 写入不得使敏感内容复活。应用层删除不承诺备份 / WAL 立即物理擦除。这里的画像生成与批次恢复均不开放旧 `/api/dashboard/ai/jobs/<job_id>/continue`。
 
 ## AI configuration APIs
 

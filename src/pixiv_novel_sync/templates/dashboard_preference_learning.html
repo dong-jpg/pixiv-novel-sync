@@ -1,0 +1,174 @@
+<div id="preference-learning" class="library-page max-w-7xl mx-auto space-y-4">
+  <header class="library-page-header flex-col sm:flex-row">
+    <div class="min-w-0">
+      <h1 class="text-2xl font-bold text-gray-900">偏好学习</h1>
+      <p class="text-sm library-muted mt-1">用作品报告和你的明确评价生成 XP 画像，并把偏好带入下一轮推荐。</p>
+    </div>
+    <button type="button" class="library-btn" @click="refreshState" :disabled="pl.busy.state">刷新进度</button>
+  </header>
+  <p v-if="pl.errors.state" role="alert" class="library-card text-sm text-red-700">{{ pl.errors.state }}</p>
+  <p v-if="!pl.admissionReady" role="status" class="library-card text-sm">任务执行暂不可用。仍可预览、查看已有结果或停止任务，恢复执行后再创建或继续。</p>
+  <p v-if="pl.notice" role="status" class="library-card text-sm">{{ pl.notice }}</p>
+  <p v-if="pl.writeError" role="alert" class="library-card text-sm text-red-700">{{ pl.writeError }}</p>
+  <section v-if="pl.pending" class="library-card space-y-3" aria-label="待核对操作">
+    <p>{{ pl.pending.phase === 'unknown' ? '提交结果未知，原请求已保留。' : '正在提交，返回前请勿重复创建。' }}</p>
+    <button v-if="pl.pending.phase === 'unknown' && pl.pending.create" type="button" class="library-btn" @click="retryUnknown" :disabled="pl.pending.sending">重试同一创建</button>
+    <button v-if="pl.pending.phase === 'unknown' && !pl.pending.create" type="button" class="library-btn" @click="reconcile" :disabled="pl.pending.sending || pl.busy.reconcile">先核对当前状态</button>
+    <button v-if="pl.pending.phase === 'unknown' && !pl.pending.create && pl.pending.canRetry" type="button" class="library-btn" @click="retryUnknown" :disabled="pl.pending.sending || pl.busy.reconcile">重试同一操作</button>
+    <p v-if="pl.errors.reconcile" role="alert">{{ pl.errors.reconcile }}</p>
+  </section>
+  <section class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm" aria-label="学习依据概览">
+    <div class="library-card"><p class="library-muted">明确喜欢</p><p class="text-xl font-bold">{{ pl.profiles.feedback_counts?.liked || 0 }}</p></div>
+    <div class="library-card"><p class="library-muted">明确不喜欢</p><p class="text-xl font-bold">{{ pl.profiles.feedback_counts?.disliked || 0 }}</p></div>
+    <div class="library-card"><p class="library-muted">有报告和评价</p><p class="text-xl font-bold">{{ pl.profiles.eligible_works || 0 }}</p></div>
+    <div class="library-card"><p class="library-muted">已评价但缺有效报告</p><p class="text-xl font-bold">{{ pl.profiles.missing_reports || 0 }}</p></div>
+  </section>
+  {% include "preference_feedback.html" %}
+  <section id="learning-profile" class="library-card space-y-4" aria-label="AI 偏好画像">
+    <div class="flex flex-wrap items-center gap-3"><h2 class="library-section-title">AI 偏好 / XP 画像</h2><a href="/dashboard/preferences" class="library-btn">查看推荐</a></div>
+    <p class="text-sm library-muted">画像结合已验证的作品报告和明确阅读评价，区分作品内容与你的喜好。没有依据的维度保留不确定性；未评价的收藏不自动计为喜欢。</p>
+    <p v-if="pl.profiles.active_run_id" class="text-sm">已有启用的 AI 画像。新增评价或正文变化后，先核对是否过期，再生成并启用新版本。</p>
+    <fieldset :disabled="!!pl.pending" class="space-y-3">
+      <ai-model-picker id="learning-profile-agent" label="画像 Agent" :options="pl.agents" :current="currentAgent('profile')" :disabled="!!pl.pending" @select="chooseAgent('profile', $event)"></ai-model-picker>
+      <button type="button" class="library-btn" @click="reloadAgents" :disabled="pl.busy.agents || !!pl.pending">刷新 Agent</button>
+      <p v-if="pl.errors.agents" role="alert">{{ pl.errors.agents }}</p>
+      <label class="block">单次输出预留（1–1000000 token）<input id="learning-profile-output" v-model="pl.form.profile.output_tokens" inputmode="numeric" class="library-input w-full"></label>
+      <div class="grid gap-3 md:grid-cols-3">
+        <label>请求上限（1–512）<input id="learning-profile-requests" v-model="pl.form.profile.budget.request_limit" inputmode="numeric" class="library-input w-full"></label>
+        <label>计划 token 上限（1–100000000）<input id="learning-profile-tokens" v-model="pl.form.profile.budget.token_limit" inputmode="numeric" class="library-input w-full"></label>
+        <label>活跃秒上限（30–14400）<input id="learning-profile-seconds" v-model="pl.form.profile.budget.active_seconds_limit" inputmode="numeric" class="library-input w-full"></label>
+      </div>
+      <p class="text-sm library-muted">预算留空时不会授权支出。预览只读取本地依据与配置，不调用模型。</p>
+      <button id="learning-profile-preview" type="button" class="library-btn" @click="preview('profile')" :disabled="pl.busy['preview:profile'] || !!pl.pending">{{ pl.busy['preview:profile'] ? '正在预览…' : '预览画像依据与预算' }}</button>
+      <p v-if="pl.errors['preview:profile']" role="alert">{{ pl.errors['preview:profile'] }}</p>
+    </fieldset>
+    <section v-if="pl.previews.profile" class="border rounded-xl p-4 space-y-3" aria-label="画像生成确认">
+      <p>本次依据 {{ pl.previews.profile.source_count }} 部已评价且有报告的作品；缺少有效报告 {{ pl.previews.profile.missing_reports }} 部。</p>
+      <p v-if="pl.previews.profile.minimum_budget" class="text-sm">预检最低预留：{{ budgetText(pl.previews.profile.minimum_budget) }}。实际重试仍受本次累计上限约束。</p>
+      <p class="font-bold">报告摘要、短证据和评价可能发送至</p>
+      <ul class="space-y-1"><li v-for="target in pl.previews.profile.targets" :key="JSON.stringify([target.provider_id, target.model_key])" class="break-all">{{ target.provider_name }} · <code>{{ target.model_key }}</code></li></ul>
+      <ul class="text-sm"><li v-for="warning in pl.previews.profile.warnings" :key="warning">{{ warningText(warning) }}</li></ul>
+      <fieldset :disabled="!!pl.pending" class="space-y-2">
+        <label class="block"><input id="learning-profile-confirm-send" type="checkbox" v-model="pl.confirmations.profile.external_send_confirmed"> 我同意将本次画像依据与评价发送给以上服务</label>
+        <label class="block"><input id="learning-profile-confirm-budget" type="checkbox" v-model="pl.confirmations.profile.budget_confirmed"> 我确认本次累计上限：{{ budgetText(pl.previews.profile.budget) }}</label>
+      </fieldset>
+      <button id="learning-profile-create" type="button" class="library-btn library-btn-primary" @click="create('profile')" :disabled="!canCreate('profile')">生成 AI 画像</button>
+    </section>
+    <ul class="space-y-2" aria-label="画像记录"><li v-for="run in pl.profiles.runs" :key="run.run_id"><button type="button" class="library-btn w-full text-left" @click="selectProfile(run.run_id)" :disabled="!!pl.pending" :data-profile-id="run.run_id">{{ run.created_at }} · {{ statusText(run.status) }} · {{ run.source_count }} 部依据{{ run.active ? ' · 用于推荐' : '' }}{{ run.stale ? ' · 已过期' : '' }}</button></li></ul>
+    <p v-if="!pl.profiles.runs.length" class="text-sm library-muted">还没有 AI 画像。先评价作品并完成作品分析，再预览生成。</p>
+  </section>
+  <section v-if="pl.selectedProfileId" class="library-card space-y-4" aria-label="当前画像">
+    <h2 class="library-section-title">当前画像</h2>
+    <button type="button" class="library-btn" @click="loadProfile" :disabled="pl.busy.profile || pl.profile?.status === 'deleted'">读取画像结果</button>
+    <p v-if="pl.errors.profile" role="alert">{{ pl.errors.profile }}</p>
+    <template v-if="pl.profile">
+      <p id="learning-profile-status">{{ statusText(pl.profile.status) }} · 版本 {{ pl.profile.version }}{{ pl.profile.active ? ' · 正在用于推荐' : '' }}</p>
+      <p v-if="pl.profile.stale" role="status">依据已变化，此画像仅供历史核对，不能重新启用。请按最新评价与报告生成新版本。</p>
+      <p v-if="pl.profile.error_code" role="alert">停止原因：{{ pl.profile.error_code }}</p>
+      <p v-if="pl.profile.usage" class="text-sm">累计请求 {{ pl.profile.usage.network_request_count }}；计划 token {{ pl.profile.usage.planned_tokens }}；已报告输入 / 输出 token {{ pl.profile.usage.reported_input_tokens ?? '未报告' }} / {{ pl.profile.usage.reported_output_tokens ?? '未报告' }}。</p>
+      <p v-if="pl.profile.usage?.unknown_requests" class="text-sm">{{ pl.profile.usage.unknown_requests }} 次请求的实际用量不完整，不能按零计费。</p>
+      <button type="button" class="library-btn" @click="controlProfile('cancel')" :disabled="!profileAllowed('cancel')">取消生成</button>
+      <details v-if="pl.profile.result && pl.profile.status === 'succeeded'" id="learning-profile-result" class="space-y-3">
+        <summary class="font-bold cursor-pointer">展开画像内容与依据</summary>
+        <p class="whitespace-pre-wrap break-words">{{ pl.profile.result.summary }}</p>
+        <article v-for="(preference, index) in pl.profile.result.preferences" :key="index" class="border rounded-lg p-3 space-y-2">
+          <h3 class="font-bold break-words">{{ preference.label }}</h3>
+          <p class="text-sm">{{ preference.dimension }} · {{ {positive:'偏好',negative:'回避',mixed:'喜恶信号混合',neutral:'中立'}[preference.polarity] || preference.polarity }} · {{ {tentative:'暂时推测',supported:'有评价与文本依据'}[preference.certainty] || preference.certainty }}</p>
+          <p class="text-xs break-words">依据作品：{{ (preference.source_ids || []).join('、') }}</p>
+        </article>
+        <div><h3 class="font-bold">反例与矛盾</h3><ul><li v-for="(item, index) in pl.profile.result.counterexamples" :key="index" class="break-words">{{ item }}</li></ul></div>
+        <div><h3 class="font-bold">不确定性</h3><ul><li v-for="(item, index) in pl.profile.result.uncertainties" :key="index" class="break-words">{{ item }}</li></ul></div>
+        <details v-for="source in pl.profile.sources || []" :key="source.source_key" class="border rounded-lg p-3 space-y-2">
+          <summary>核对依据 {{ source.source_key }} · {{ feedback ? feedback.reactionText(source.reaction) : source.reaction }}</summary>
+          <a :href="profileSourceHref(source)" class="library-btn">查看原作品报告</a>
+          <details v-for="evidence in source.evidence || []" :key="evidence.evidence_id" class="space-y-2">
+            <summary>展开短证据 · 章节 {{ evidence.novel_id }}</summary>
+            <blockquote class="whitespace-pre-wrap break-words">{{ evidence.quote }}</blockquote>
+            <a :href="profileEvidenceHref(source, evidence)" class="library-btn">到阅读页核对版本</a>
+          </details>
+        </details>
+      </details>
+      <div v-if="pl.profile.status === 'succeeded' && !pl.profile.stale && !pl.profile.active" class="space-y-2">
+        <label class="block"><input id="learning-profile-confirm-activate" type="checkbox" v-model="pl.activateConfirmed" :disabled="!!pl.pending"> 将这版画像用于后续搜索词、排序和推荐理由</label>
+        <button type="button" class="library-btn library-btn-primary" @click="controlProfile('activate')" :disabled="!profileAllowed('activate')">启用到推荐</button>
+      </div>
+      <details v-if="pl.profile.status !== 'deleted'" class="space-y-2">
+        <summary class="font-bold">删除画像</summary>
+        <p class="text-sm">删除画像结果及可恢复依据，并停止使用这版画像。应用删除不保证备份或 WAL 立即清除。</p>
+        <label class="block"><input id="learning-profile-confirm-delete" type="checkbox" v-model="pl.deleteConfirmed" :disabled="!!pl.pending"> 确认删除这版画像</label>
+        <button type="button" class="library-btn" @click="controlProfile('delete')" :disabled="!profileAllowed('delete')">删除画像</button>
+      </details>
+    </template>
+  </section>
+  <section id="learning-library" class="library-card space-y-4" aria-label="全库与自动作品分析">
+    <h2 class="library-section-title">全库与新同步作品分析</h2>
+    <p class="text-sm library-muted">按系列归并作品，复用同源、同配置的有效分析；已有匹配报告不会重复付费。新同步模式只处理新增或正文更新，元数据刷新不触发重做。</p>
+    <section v-if="pl.library.policy" class="border rounded-lg p-3 space-y-2" aria-label="自动分析当前授权">
+      <p class="font-bold">自动分析：{{ pl.library.policy.enabled ? '已启用' : '已关闭' }} · 版本 {{ pl.library.policy.version }}</p>
+      <p v-if="pl.library.policy.reason">状态原因：{{ pl.library.policy.reason }}</p>
+      <p>累计纳入 {{ pl.library.policy.work_count }} 部作品；已分配 {{ budgetText(pl.library.policy.allocated) }}。</p>
+      <p v-if="pl.library.policy.configuration">持续授权总上限：{{ budgetText(pl.library.policy.configuration.batch_budget) }}；最多 {{ pl.library.policy.configuration.work_limit }} 部。</p>
+      <p v-if="pl.library.policy.next_run_at" class="text-sm">下次发现时间：{{ pl.library.policy.next_run_at }}</p>
+      <div class="flex flex-wrap gap-3"><button type="button" class="library-btn" @click="editAutomation" :disabled="!!pl.pending || !pl.library.policy.configuration">载入当前授权以调整</button><button type="button" class="library-btn" @click="disableAutomation" :disabled="!!pl.pending || !pl.library.policy.enabled">停止后续自动分析</button></div>
+      <p class="text-sm library-muted">停止后不再建新任务，并暂停尚在执行的自动批次。当前调用须等待退出，已进入最终保存的结果仍可完成。关闭再开启也保留累计分配，不会重置预算。</p>
+    </section>
+    <fieldset :disabled="!!pl.pending" class="space-y-3">
+      <div class="grid gap-3 md:grid-cols-2">
+        <label>运行方式<select id="learning-library-mode" v-model="pl.form.library.mode" class="library-input w-full"><option value="manual">手动启动一个批次</option><option value="policy">持续自动发现</option></select></label>
+        <label>归档范围<select id="learning-library-scope" v-model="pl.form.library.scope" class="library-input w-full"><option value="all">全部归档（跳过已有匹配报告）</option><option value="new">仅新增 / 正文更新</option></select></label>
+      </div>
+      <p v-if="pl.form.library.scope === 'new'" class="text-sm library-muted">{{ pl.form.library.mode === 'policy' ? '自动新增范围从首次开启时算起；关闭、恢复或增加预算都保留这个起点。此前归档可用手动全库批次处理。' : '手动新增范围包括本功能开始跟踪后新增或正文更新的作品。' }}</p>
+      <ai-model-picker id="learning-library-agent" label="作品分析 Agent" :options="pl.agents" :current="currentAgent('library')" :disabled="!!pl.pending" @select="chooseAgent('library', $event)"></ai-model-picker>
+      <label class="block">每次输出预留（1–1000000 token）<input id="learning-library-output" v-model="pl.form.library.output_tokens" inputmode="numeric" class="library-input w-full"></label>
+      <h3 class="font-bold">每部作品的预算</h3>
+      <div class="grid gap-3 md:grid-cols-3">
+        <label>请求上限（1–512）<input id="learning-work-requests" v-model="pl.form.library.work_budget.request_limit" inputmode="numeric" class="library-input w-full"></label>
+        <label>计划 token 上限（1–100000000）<input id="learning-work-tokens" v-model="pl.form.library.work_budget.token_limit" inputmode="numeric" class="library-input w-full"></label>
+        <label>活跃秒上限（30–14400）<input id="learning-work-seconds" v-model="pl.form.library.work_budget.active_seconds_limit" inputmode="numeric" class="library-input w-full"></label>
+      </div>
+      <h3 class="font-bold">{{ pl.form.library.mode === 'policy' ? '持续授权的累计总上限' : '本批次的累计总上限' }}</h3>
+      <div class="grid gap-3 md:grid-cols-3">
+        <label>请求上限（1–1000000）<input id="learning-batch-requests" v-model="pl.form.library.batch_budget.request_limit" inputmode="numeric" class="library-input w-full"></label>
+        <label>计划 token 上限（1–1000000000000）<input id="learning-batch-tokens" v-model="pl.form.library.batch_budget.token_limit" inputmode="numeric" class="library-input w-full"></label>
+        <label>活跃秒上限（30–31536000）<input id="learning-batch-seconds" v-model="pl.form.library.batch_budget.active_seconds_limit" inputmode="numeric" class="library-input w-full"></label>
+      </div>
+      <div class="grid gap-3 md:grid-cols-2">
+        <label>作品总上限（1–100000）<input id="learning-work-limit" v-model="pl.form.library.work_limit" inputmode="numeric" class="library-input w-full"></label>
+        <label v-if="pl.form.library.mode === 'policy'">发现间隔（1–10080 分钟）<input id="learning-interval" v-model="pl.form.library.interval_minutes" inputmode="numeric" class="library-input w-full"></label>
+      </div>
+      <p class="text-sm library-muted">各作品先占用它的完整预算额度。自动模式的总预算和作品数跨批次累计；余额不足即停止，增加授权须重新预览确认。计划 token 不是金额承诺。</p>
+      <button id="learning-library-preview" type="button" class="library-btn" @click="preview('library')" :disabled="pl.busy['preview:library'] || !!pl.pending">{{ pl.busy['preview:library'] ? '正在本地预览…' : '预览归档范围与授权' }}</button>
+      <p v-if="pl.errors['preview:library']" role="alert">{{ pl.errors['preview:library'] }}</p>
+    </fieldset>
+    <section v-if="pl.previews.library" class="border rounded-xl p-4 space-y-3" aria-label="批次与自动分析确认">
+      <p>当前候选 {{ pl.previews.library.candidate_count }} 部。{{ pl.form.library.mode === 'policy' ? '持续模式还会按已确认范围发现后续作品。' : '本次按已确认范围建立批次。' }}</p>
+      <details><summary>查看归档样本</summary><ul><li v-for="sample in pl.previews.library.samples" :key="sample.source_kind + ':' + sample.source_id" class="break-words">{{ sample.title }} · {{ sample.source_kind === 'series' ? '系列' : '单篇' }} {{ sample.source_id }}</li></ul></details>
+      <p class="font-bold">作品正文可能发送至</p>
+      <ul><li v-for="target in pl.previews.library.targets" :key="JSON.stringify([target.provider_id, target.model_key])" class="break-all">{{ target.provider_name }} · <code>{{ target.model_key }}</code></li></ul>
+      <ul class="text-sm"><li v-for="warning in pl.previews.library.warnings" :key="warning">{{ warningText(warning) }}</li></ul>
+      <fieldset :disabled="!!pl.pending" class="space-y-2">
+        <label class="block"><input id="learning-library-confirm-archive" type="checkbox" v-model="pl.confirmations.library.current_archive_only"> 仅使用可用归档；缺章、空白和连载保留在报告中</label>
+        <label class="block"><input id="learning-library-confirm-order" type="checkbox" v-model="pl.confirmations.library.order_confirmed"> 同意使用各系列现有归档章序；需要重排的作品先单独分析</label>
+        <label class="block"><input id="learning-library-confirm-send" type="checkbox" v-model="pl.confirmations.library.external_send_confirmed"> {{ pl.form.library.mode === 'policy' ? '我授权持续按本次范围，将符合条件的正文发送到以上服务，直到停止或用尽额度' : '我授权本批次范围内的作品正文发送到以上服务' }}</label>
+        <label class="block"><input id="learning-library-confirm-budget" type="checkbox" v-model="pl.confirmations.library.budget_confirmed"> 确认累计上限 {{ budgetText(pl.previews.library.configuration.batch_budget) }}，最多 {{ pl.previews.library.configuration.work_limit }} 部；恢复或新一轮发现不重置计数</label>
+      </fieldset>
+      <button id="learning-library-create" type="button" class="library-btn library-btn-primary" @click="create('library')" :disabled="!canCreate('library')">{{ pl.form.library.mode === 'policy' ? '保存持续自动分析授权' : '启动本次归档批次' }}</button>
+    </section>
+    <ul class="space-y-2" aria-label="作品分析批次"><li v-for="row in pl.library.batches" :key="row.batch_id"><button type="button" class="library-btn w-full text-left" @click="selectBatch(row.batch_id)" :disabled="!!pl.pending" :data-batch-id="row.batch_id">{{ row.created_at }} · {{ row.origin === 'policy' ? '自动' : '手动' }} · {{ statusText(row.status) }} · {{ row.work_count }} 部作品</button></li></ul>
+  </section>
+  <section v-if="pl.selectedBatchId" class="library-card space-y-4" aria-label="当前作品分析批次">
+    <h2 class="library-section-title">当前批次</h2>
+    <button type="button" class="library-btn" @click="loadBatch()" :disabled="pl.busy.batch">刷新批次</button>
+    <p v-if="pl.errors.batch" role="alert">{{ pl.errors.batch }}</p>
+    <template v-if="pl.batch">
+      <p id="learning-batch-status">{{ statusText(pl.batch.status) }} · {{ pl.batch.reason || '无停止原因' }} · 版本 {{ pl.batch.version }}</p>
+      <p v-if="pl.batch.status === 'completed'" class="text-sm">批次发现已结束不代表每部报告均成功；请按下方各作品状态核对。</p>
+      <p>已发现 {{ pl.batch.scanned_count }}；纳入 {{ pl.batch.work_count }}；跳过 {{ pl.batch.skipped_count }}；作品上限 {{ pl.batch.work_limit }}。</p>
+      <p>已分配 {{ budgetText(pl.batch.allocated) }}；本批上限 {{ budgetText(pl.batch.budget) }}。</p>
+      <div class="flex flex-wrap gap-3"><button type="button" class="library-btn" @click="controlBatch('pause')" :disabled="!batchAllowed('pause')">暂停批次</button><button type="button" class="library-btn" @click="controlBatch('resume')" :disabled="!batchAllowed('resume')">恢复批次</button><button type="button" class="library-btn" @click="controlBatch('cancel')" :disabled="!batchAllowed('cancel')">取消批次</button></div>
+      <p class="text-sm library-muted">恢复沿用原累计预算，并恢复由批次暂停或取消的子任务。原本失败的作品需打开单作品分析核对；进行中的调用仍须等待真实退出。</p>
+      <ul class="space-y-3"><li v-for="item in pl.items" :key="item.target_id" class="border rounded-lg p-3 space-y-2"><p class="break-words">{{ item.title || (item.source_kind + ':' + item.source_id) }} · {{ statusText(item.status) }}{{ item.run_status ? ' · ' + statusText(item.run_status) : '' }}</p><p v-if="item.reason" class="text-sm">{{ item.reason }}</p><a v-if="item.run_id" :href="workHref(item)" class="library-btn">查看作品分析</a></li></ul>
+      <div class="flex gap-3"><button type="button" class="library-btn" @click="loadBatch(Math.max(0, pl.offset - 20))" :disabled="pl.offset === 0 || pl.busy.batch">上一页</button><button type="button" class="library-btn" @click="loadBatch(pl.offset + 20)" :disabled="pl.offset + 20 >= pl.total || pl.busy.batch">下一页</button></div>
+    </template>
+  </section>
+</div>

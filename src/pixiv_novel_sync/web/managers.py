@@ -256,6 +256,8 @@ TASK_LABELS = {
     "user_backup": "全量备份关注用户小说",
     "pending_deletion_detection": "检测取消收藏/追更",
     "preference_analyze": "增量分析本地偏好",
+    "preference_summarize": "生成个人偏好画像",
+    "work_analysis": "分析作品",
     "recommendation_run": "生成推荐",
     "keyword_clean": "关键词清洗",
     "manual": "手工同步",
@@ -294,6 +296,9 @@ class AutoSyncScheduler:
     _lifecycle_claim: Callable[[AutoSyncScheduler], bool] | None = field(default=None, repr=False)
     _lifecycle_release: Callable[[AutoSyncScheduler], None] | None = field(default=None, repr=False)
     work_coordinator: Any = field(default=None, repr=False)
+    preference_learning_service: Any = field(default=None, repr=False)
+    library_analysis_service: Any = field(default=None, repr=False)
+    preference_learning_admission: Any = field(default=None, repr=False)
     
     def start(self) -> None:
         """启动定时调度器"""

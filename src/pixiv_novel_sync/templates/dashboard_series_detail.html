@@ -74,6 +74,7 @@
     </template>
   </section>
 
+  {% include "preference_feedback.html" %}
   <section v-if="series.rescue" class="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
     <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
       <div>
@@ -177,6 +178,7 @@
 
 {% block extra_scripts %}
 {% include "navigation_helpers.html" %}
+{% include "preference_feedback_scripts.html" %}
 <script nonce="{[ csp_nonce() ]}">
   initVueApp({
     setup() {
@@ -189,6 +191,7 @@
       const seriesId = Number(pathParts[pathParts.length - 1] || 0);
       const backHref = window.safeDashboardReturn(new URLSearchParams(location.search).get('from'), '/dashboard/novels?category=following');
       const itemType = 'series';
+      const feedback = window.PreferenceFeedback ? window.PreferenceFeedback.createController(Vue, itemType, seriesId) : null;
       const progressPrefix = 'pixivNovelSync:reading:';
 
       const series = ref({});
@@ -365,7 +368,7 @@
       onUnmounted(scrollState.dispose);
 
       return {
-        series, loading, error, deleting, continueNovelId, backHref,
+        series, loading, error, deleting, continueNovelId, backHref, feedback,
         detailHref, rememberScroll,
         formatTextLength, formatNumber, statusConfig, chapterStatusConfig,
         chaptersWithProgress, continueReading, deleteSeries,

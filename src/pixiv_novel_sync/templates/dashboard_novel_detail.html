@@ -422,6 +422,9 @@
       {{ seriesInfo.title || '系列' }} ({{ chapterIndex + 1 }}/{{ seriesInfo.total_novels }})
     </a>
   </div>
+  <div class="max-w-4xl mx-auto">
+    {% include "preference_feedback.html" %}
+  </div>
   <section v-if="novel.rescue" class="rescue-control-panel" aria-label="救援状态与人工纠错">
     <div class="rescue-control-inner">
       <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
@@ -518,6 +521,7 @@
 {% block extra_scripts %}
 {% include "navigation_helpers.html" %}
 {% include "pixiv_markup.html" %}
+{% include "preference_feedback_scripts.html" %}
 {% if request.args is defined and (request.args.get('analysis_id') or request.args.get('evidence_id')) %}
 <script nonce="{[ csp_nonce() ]}" src="/static/js/work_analysis.js"></script>
 {% endif %}
@@ -528,6 +532,7 @@
 
       const novelId = Number(location.pathname.split('/').pop() || 0);
       const itemType = 'novel';
+      const feedback = window.PreferenceFeedback ? window.PreferenceFeedback.createController(Vue, itemType, novelId) : null;
       const storageKey = `pixivNovelSync:reading:${novelId}`;
 
       // State
@@ -900,7 +905,7 @@
       };
 
       return {
-        readerEvidence,
+        readerEvidence, feedback,
         novel, loading, error, progressPercent, isScrolled, backHref, fontSizeLabel,
         detailHref, chapterHref, showReaderActions, showChapters, deletingNovel,
         exportingEpub, readerActionMessage, readerActionMessageType,

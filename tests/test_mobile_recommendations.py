@@ -87,10 +87,17 @@ def test_shared_card_separates_external_links_from_feedback_and_expansion():
     parser.feed(match[1])
     assert not parser.stack
     assert len(parser.articles) == 1
-    assert parser.links
-    for link in parser.links:
+    external_links = [link for link in parser.links if link.get(":href") == "itemUrl"]
+    learning_links = [link for link in parser.links if link.get(":href") == "learningHref"]
+    assert len(external_links) == 1
+    assert len(learning_links) == 1
+    assert len(parser.links) == len(external_links) + len(learning_links)
+    for link in external_links:
         assert link.get("target") == "_blank"
         assert set(link.get("rel", "").split()) >= {"noopener", "noreferrer"}
+    for link in learning_links:
+        assert link.get("target") in {None, "_self"}
+        assert link.get("v-if") == "learningSource"
     assert len(parser.buttons) >= 3
     assert any(":aria-expanded" in button and ":aria-controls" in button for button in parser.buttons)
     assert 'role="alert"' in match[1]
@@ -99,6 +106,41 @@ def test_shared_card_separates_external_links_from_feedback_and_expansion():
     assert "recommendation-tags" in match[1]
     # library-badge alone has no CSS; reuse the styled global component, not bare spans.
     assert match[1].count("<app-badge") == 3
+
+
+def test_shared_card_profile_reference_stays_internal_and_preserves_source_identity():
+    node = shutil.which("node")
+    assert node, "Node.js is required for recommendation source-link verification"
+    script = r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const html = fs.readFileSync('src/pixiv_novel_sync/templates/recommendation_components.html', 'utf8');
+const window = {};
+const Vue = {ref: value => ({value}), computed: read => ({get value() {return read();}})};
+vm.runInNewContext(html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1], {window, Vue, URL});
+let card;
+window.registerPageComponents({component(name, value) {assert.equal(name, 'recommendation-card'); card = value;}});
+for (const id of ['a'.repeat(32), null, 'https://external.invalid/', 'a&other=value']) {
+  const props = {item: {matched: {reading_feedback: [{label: 'Synthetic', weight: 1}], preference_summary_id: id}}};
+  const state = card.setup(props, {emit() {}});
+  const url = new URL(state.learningHref.value, 'https://dashboard.fixture.invalid');
+  assert.equal(url.origin, 'https://dashboard.fixture.invalid');
+  assert.equal(url.pathname, '/dashboard/preferences');
+  assert.equal(url.searchParams.get('view'), 'learning');
+  if (id === 'a'.repeat(32)) {
+    assert.equal(url.searchParams.get('profile_run_id'), id);
+    assert.deepEqual([...url.searchParams.keys()], ['view', 'profile_run_id']);
+  } else {
+    assert.deepEqual([...url.searchParams.keys()], ['view']);
+  }
+}
+"""
+    result = subprocess.run(
+        [node, "-e", script], cwd=ROOT, capture_output=True, text=True,
+        encoding="utf-8", timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_mobile_layout_stacks_the_header_and_removes_nested_homepage_gutters():
