@@ -1,0 +1,146 @@
+{
+  "offline": true,
+  "real_flask_auth": true,
+  "provider_calls": 0,
+  "browser_errors": [],
+  "unexpected_requests": [],
+  "submission_verified": true,
+  "pages": [
+    {
+      "viewport": 390,
+      "document": 390,
+      "controls": [
+        {
+          "label": "刷新状态",
+          "width": 86,
+          "height": 44
+        },
+        {
+          "label": "取消保留",
+          "width": 86,
+          "height": 44
+        },
+        {
+          "label": "保留 1 小时",
+          "width": 101.78125,
+          "height": 44
+        },
+        {
+          "label": "保留 4 小时",
+          "width": 101.78125,
+          "height": 44
+        },
+        {
+          "label": "提交诊断",
+          "width": 86,
+          "height": 44
+        },
+        {
+          "label": "remote-novel-id",
+          "width": 316,
+          "height": 48
+        },
+        {
+          "label": "提交导出",
+          "width": 316,
+          "height": 44
+        },
+        {
+          "label": "取消任务",
+          "width": 86,
+          "height": 44
+        },
+        {
+          "label": "下载结果",
+          "width": 86,
+          "height": 44
+        }
+      ],
+      "taskCount": 3,
+      "screenshot": "remote-ui-390.png",
+      "disabled": false
+    },
+    {
+      "viewport": 1280,
+      "document": 1280,
+      "controls": [
+        {
+          "label": "刷新状态",
+          "width": 86,
+          "height": 44
+        },
+        {
+          "label": "取消保留",
+          "width": 86,
+          "height": 44
+        },
+        {
+          "label": "保留 1 小时",
+          "width": 101.78125,
+          "height": 44
+        },
+        {
+          "label": "保留 4 小时",
+          "width": 101.78125,
+          "height": 44
+        },
+        {
+          "label": "提交诊断",
+          "width": 86,
+          "height": 44
+        },
+        {
+          "label": "remote-novel-id",
+          "width": 325,
+          "height": 48
+        },
+        {
+          "label": "提交导出",
+          "width": 86,
+          "height": 48
+        },
+        {
+          "label": "取消任务",
+          "width": 86,
+          "height": 44
+        },
+        {
+          "label": "下载结果",
+          "width": 86,
+          "height": 44
+        }
+      ],
+      "taskCount": 3,
+      "screenshot": "remote-ui-1280.png",
+      "disabled": false
+    },
+    {
+      "viewport": 390,
+      "document": 390,
+      "controls": [
+        {
+          "label": "打开小说库",
+          "width": 100,
+          "height": 44
+        }
+      ],
+      "taskCount": 0,
+      "screenshot": "remote-ui-disabled-390.png",
+      "disabled": true
+    },
+    {
+      "viewport": 1280,
+      "document": 1280,
+      "controls": [
+        {
+          "label": "打开小说库",
+          "width": 100,
+          "height": 44
+        }
+      ],
+      "taskCount": 0,
+      "screenshot": "remote-ui-disabled-1280.png",
+      "disabled": true
+    }
+  ]
+}

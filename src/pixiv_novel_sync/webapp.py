@@ -895,6 +895,11 @@ def create_app(
     @app.before_request
     def _check_auth():
         path = request.path
+        if request.blueprint == "remote_worker":
+            # Every worker endpoint installs its own mandatory bearer-only hook.
+            return None
+        if request.blueprint == "remote_dashboard" and request.content_length and request.content_length > 16 * 1024:
+            return jsonify({"error": "request_too_large"}), 413
         if path.startswith("/api/rescue/v1/"):
             return
         current_settings = settings_manager.load(env_path=env_path)
@@ -1004,6 +1009,9 @@ def create_app(
 
     from .rescue_web import register_rescue_routes
     register_rescue_routes(app, current_settings_for_routes, _client_addr)
+
+    from .remote.web import register_remote_routes
+    register_remote_routes(app, current_settings_for_routes)
 
     if start_auto_sync_scheduler:
         auto_sync_scheduler.start()

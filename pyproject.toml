@@ -35,6 +35,7 @@ test = ["pytest>=8.0"]
 
 [project.scripts]
 pixiv-novel-sync = "pixiv_novel_sync.cli:main"
+pixiv-remote = "pixiv_novel_sync.remote.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

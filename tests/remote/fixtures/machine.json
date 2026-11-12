@@ -1,0 +1,9 @@
+{
+  "id": "m_fixture",
+  "state": "running",
+  "operationId": null,
+  "runtime": {"ready": true},
+  "maxRunMinutes": 480,
+  "runStartedAt": "2026-11-10T12:50:00Z",
+  "cooldownUntil": null
+}

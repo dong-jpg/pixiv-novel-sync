@@ -1,0 +1,418 @@
+{% extends "base.html" %}
+
+{% block title %}远程执行 - Pixiv 小说同步器{% endblock %}
+
+{% block extra_head %}
+<style>
+  .remote-page { max-width: 1360px; margin: 0 auto; }
+  .remote-page p { line-height: 1.65; }
+  .remote-page button:disabled { opacity: .5; cursor: not-allowed; transform: none; box-shadow: none; }
+  .remote-page a { text-decoration: none; }
+  .remote-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; margin-bottom: 22px; }
+  .remote-card { display: flex; flex-direction: column; gap: 14px; }
+  .remote-card h2, .remote-runs h2 { margin: 0; }
+  .remote-card p { margin: 0; }
+  .remote-help { font-size: 13px; color: var(--library-muted); overflow-wrap: anywhere; }
+  .remote-section-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+  .remote-status { display: inline-flex; align-items: center; padding: 5px 10px; border-radius: 999px; font-size: 12px; font-weight: 800; background: var(--library-surface-soft); color: var(--library-muted); overflow-wrap: anywhere; }
+  .remote-status::before { content: ''; width: 6px; height: 6px; background: currentColor; border-radius: 50%; margin-right: 7px; flex-shrink: 0; }
+  .remote-status-ready, .remote-status-succeeded { color: #137657; background: #e7f8f0; }
+  .remote-status-active, .remote-status-starting { color: var(--library-accent-strong); background: #edf2ff; }
+  .remote-status-queued, .remote-status-cooldown, .remote-status-draining, .remote-status-suspending { color: #93600a; background: #fff5df; }
+  .remote-status-failed, .remote-status-error { color: #b52d43; background: #fff0f2; }
+  .remote-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 18px; margin: 0; }
+  .remote-facts dt, .remote-run-facts dt { font-size: 12px; color: var(--library-muted); margin-bottom: 4px; }
+  .remote-facts dd, .remote-run-facts dd { margin: 0; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+  .remote-facts > div, .remote-run-facts > div { min-width: 0; }
+  .remote-meter { width: 100%; height: 10px; accent-color: var(--library-accent); }
+  .remote-hold { padding-top: 16px; border-top: 1px solid var(--library-line); }
+  .remote-hold .library-actions { margin-top: 10px; }
+  .remote-hold [aria-pressed="true"] { border-color: var(--library-accent); background: #edf2ff; color: var(--library-accent-strong); }
+  .remote-form { display: grid; gap: 10px; }
+  .remote-form label { font-size: 13px; font-weight: 750; }
+  .remote-submit-row { display: flex; align-items: stretch; gap: 10px; }
+  .remote-submit-row .library-input { flex: 1; }
+  .remote-submit-row .library-btn { flex-shrink: 0; }
+  .remote-diagnostic { padding-bottom: 16px; border-bottom: 1px solid var(--library-line); }
+  .remote-diagnostic .library-btn { margin-top: 12px; }
+  .remote-message { padding: 14px 16px; margin: 0 0 18px; border-radius: 16px; border: 1px solid var(--library-line); overflow-wrap: anywhere; font-size: 14px; }
+  .remote-message p { margin: 0; }
+  .remote-message .library-actions { margin-top: 12px; }
+  .remote-message-error { border-color: #f2cad0; background: #fff5f6; color: #9e293b; }
+  .remote-message-info { border-color: #cddbf7; background: #f0f5ff; color: #32558e; }
+  .remote-message-pending { border-color: #efdab1; background: #fff8eb; color: #825c1c; }
+  .remote-message a { text-decoration: underline; font-weight: 750; }
+  .remote-runs { padding: 20px; }
+  .remote-run-list { list-style: none; margin: 18px 0 0; padding: 0; }
+  .remote-run { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 16px; padding: 18px 0; border-top: 1px solid var(--library-line); }
+  .remote-run:first-child { padding-top: 0; border-top: 0; }
+  .remote-run-heading { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+  .remote-run h3 { margin: 0; font-size: 15px; font-weight: 800; }
+  .remote-run-id { display: block; margin-top: 6px; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--library-faint); overflow-wrap: anywhere; }
+  .remote-run-facts { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 14px 0 0; }
+  .remote-run-facts dd { font-size: 12px; font-weight: 650; }
+  .remote-run-error { margin: 10px 0 0; color: var(--library-danger); font-size: 13px; overflow-wrap: anywhere; }
+  .remote-run-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+  .remote-empty { text-align: center; padding: 34px 12px; color: var(--library-muted); font-size: 14px; }
+  .remote-disabled { max-width: 760px; padding: 30px; }
+  .remote-disabled h2 { margin: 0 0 10px; font-size: 20px; }
+  @media (max-width: 760px) {
+    .remote-grid { grid-template-columns: minmax(0, 1fr); }
+    .remote-submit-row { flex-direction: column; }
+    .remote-run { grid-template-columns: minmax(0, 1fr); }
+    .remote-run-actions { justify-content: flex-start; }
+    .remote-runs { padding: 18px; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="library-page remote-page">
+  <header class="library-page-header">
+    <div>
+      <p class="library-kicker">Remote execution</p>
+      <h1 class="library-title">远程执行</h1>
+      <p class="library-subtitle">按需运行诊断与单本 EPUB 导出，在这里查看进度并取得结果。</p>
+    </div>
+    {% if remote_enabled %}
+    <div class="library-actions">
+      <button type="button" class="library-btn" @click="refresh" :disabled="refreshing" :aria-busy="refreshing">{{ refreshing ? '读取中…' : '刷新状态' }}</button>
+    </div>
+    {% endif %}
+  </header>
+
+  {% if not remote_enabled %}
+  <section class="library-card remote-disabled">
+    <h2>远程执行未启用</h2>
+    <p class="library-muted">此入口将在完成执行环境配置后提供诊断与导出。你可以继续使用小说库中的阅读和本地下载功能。</p>
+    <div class="library-actions"><a href="/dashboard/novels" class="library-btn library-btn-primary">打开小说库</a></div>
+  </section>
+  {% else %}
+  <div v-if="error" class="remote-message remote-message-error" role="alert">
+    <p>{{ error }}</p>
+    <a v-if="needsLogin" href="/api/auth/login?next=%2Fdashboard%2Fremote">重新登录</a>
+  </div>
+  <div v-if="notice" class="remote-message remote-message-info" role="status">{{ notice }}</div>
+  <div v-if="pendingRequest" class="remote-message remote-message-pending" role="status">
+    <p>上次请求尚未得到确认，可能已经提交。重试会沿用同一请求；开始新请求不会取消之前的任务。</p>
+    <div class="library-actions">
+      <button type="button" class="library-btn" @click="retryPending" :disabled="submitting || needsLogin">{{ submitting ? '提交中…' : '重试原请求' }}</button>
+      <button type="button" class="library-btn" @click="startNew" :disabled="submitting">开始新请求</button>
+    </div>
+  </div>
+  <div class="remote-grid">
+    <section class="library-card remote-card" aria-labelledby="remote-machine-heading">
+      <div class="remote-section-header">
+        <h2 id="remote-machine-heading" class="library-section-title">远程实例</h2>
+        <span class="remote-status" :class="statusClass(machineStatus)">{{ machineMode }}</span>
+      </div>
+      <p v-if="refreshFailed" class="remote-help">状态未更新，下方保留上次成功读取的信息。</p>
+      <dl class="remote-facts">
+        <div><dt>实例状态</dt><dd>{{ providerLabel }}</dd></div>
+        <div><dt>最后确认</dt><dd>{{ confirmedAge }}</dd></div>
+        <div><dt>待处理任务</dt><dd>{{ machine.active_runs == null ? '—' : machine.active_runs }}</dd></div>
+        <div><dt>冷却结束（北京时间）</dt><dd>{{ formatTime(machine.cooldown_until) }}</dd></div>
+      </dl>
+      <div>
+        <p class="remote-help">文件占用 {{ bytes(machine.stored_bytes) }} / {{ bytes(machine.capacity_bytes) }}，上传预留 {{ bytes(machine.reserved_bytes) }}</p>
+        <meter class="remote-meter" min="0" :max="machine.capacity_bytes || 1" :value="(machine.stored_bytes || 0) + (machine.reserved_bytes || 0)" aria-label="远程任务文件容量"></meter>
+      </div>
+      <p v-if="machine.last_error" class="remote-run-error">{{ errorLabel(machine.last_error) }}</p>
+      <p v-if="suspendPending" class="remote-help">暂停请求已发，恢复等待中；人工保留不能撤销已发送的暂停。</p>
+      <div class="remote-hold">
+        <p class="remote-help">人工保留：{{ held ? '保留至 ' + formatTime(machine.hold_until) : '未设置' }}</p>
+        <div class="library-actions" aria-label="人工保留时长">
+          <button type="button" class="library-btn" @click="setHold(0)" :aria-pressed="!held" :disabled="holding || needsLogin">取消保留</button>
+          <button type="button" class="library-btn" @click="setHold(3600)" :disabled="holding || needsLogin">保留 1 小时</button>
+          <button type="button" class="library-btn" @click="setHold(14400)" :disabled="holding || needsLogin">保留 4 小时</button>
+        </div>
+        <p class="remote-help">保留期间不自动暂停。该设置不会单独唤醒已暂停的实例。</p>
+      </div>
+    </section>
+
+    <section class="library-card remote-card" aria-labelledby="remote-submit-heading">
+      <div class="remote-section-header">
+        <h2 id="remote-submit-heading" class="library-section-title">提交任务</h2>
+        <span class="remote-status">试点</span>
+      </div>
+      <div class="remote-diagnostic">
+        <h3 class="library-section-title">连接诊断</h3>
+        <p class="remote-help">使用合成数据检查执行与结果回传。</p>
+        <button id="remote-diagnostic-submit" type="button" class="library-btn" @click="submitDiagnostic" :disabled="submitting || !!pendingRequest || needsLogin">提交诊断</button>
+      </div>
+      <form id="remote-epub-form" class="remote-form" @submit.prevent="submitEpub">
+        <h3 class="library-section-title">单本 EPUB</h3>
+        <label for="remote-novel-id">小说 ID</label>
+        <div class="remote-submit-row">
+          <input id="remote-novel-id" class="library-input" v-model.trim="novelId" inputmode="numeric" pattern="[1-9][0-9]*" autocomplete="off" placeholder="输入书库中的小说 ID" required :disabled="submitting">
+          <button type="submit" class="library-btn library-btn-primary" :disabled="submitting || !!pendingRequest || needsLogin">提交导出</button>
+        </div>
+        <p class="remote-help">使用提交时的正文与封面。正文最多 16 MiB，封面最多 5 MiB；结果保留 24 小时。</p>
+      </form>
+      <p class="remote-help">任务最多等待 1 小时。实例启动或冷却时，进度会显示为排队；原有阅读和下载仍可使用。</p>
+    </section>
+  </div>
+
+  <section class="library-panel remote-runs" aria-labelledby="remote-runs-heading">
+    <div class="remote-section-header">
+      <h2 id="remote-runs-heading" class="library-section-title">任务记录</h2>
+      <span class="remote-help">最近 50 条 · 时间为北京时间</span>
+    </div>
+    <p v-if="!loaded" class="remote-empty" role="status">{{ refreshFailed ? '暂时无法读取任务，请刷新重试。' : '正在读取任务…' }}</p>
+    <div v-else-if="!runs.length" class="remote-empty">暂无远程任务。可先提交一次连接诊断。</div>
+    <ul v-else class="remote-run-list">
+      <li v-for="run in runs" :key="run.run_id" class="remote-run">
+        <div>
+          <div class="remote-run-heading">
+            <h3>{{ run.kind === 'diagnostic.v1' ? '连接诊断' : '单本 EPUB' }}</h3>
+            <span class="remote-status" :class="statusClass(run.result_expired ? 'expired' : run.state)">{{ run.result_expired ? '结果已过期' : runLabel(run.state) }}</span>
+          </div>
+          <span class="remote-run-id">{{ run.run_id }}</span>
+          <dl class="remote-run-facts">
+            <div><dt>提交时间</dt><dd>{{ formatTime(run.created_at) }}</dd></div>
+            <div><dt>{{ terminal(run.state) ? '结束时间' : '最晚完成' }}</dt><dd>{{ formatTime(terminal(run.state) ? run.finished_at : run.deadline) }}</dd></div>
+            <div><dt>执行次数</dt><dd>{{ run.attempt_count || 0 }} / 3</dd></div>
+          </dl>
+          <p v-if="run.error_code" class="remote-run-error">{{ errorLabel(run.error_code) }}</p>
+          <p v-else-if="run.state === 'queued' && run.attempt_count" class="remote-help">上次执行已中断，等待重新领取。</p>
+        </div>
+        <div class="remote-run-actions">
+          <a v-if="run.state === 'succeeded' && run.can_download && !run.result_expired" class="library-btn" :href="downloadUrl(run)" download>下载结果</a>
+          <button v-if="!terminal(run.state)" type="button" class="library-btn" @click="cancelRun(run)" :disabled="!!changingRun || needsLogin">{{ changingRun === run.run_id ? '取消中…' : '取消任务' }}</button>
+        </div>
+      </li>
+    </ul>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+{% if remote_enabled %}
+<script id="remote-page-script" nonce="{[ csp_nonce() ]}">
+window.initVueApp({
+  setup() {
+    const { ref, computed, onMounted, onBeforeUnmount } = Vue;
+    const storageKey = 'pixivNovelSync:remote:unconfirmed:v1';
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const machine = ref({});
+    const runs = ref([]);
+    const novelId = ref('');
+    const submitting = ref(false);
+    const refreshing = ref(false);
+    const holding = ref(false);
+    const changingRun = ref('');
+    const loaded = ref(false);
+    const refreshFailed = ref(false);
+    const needsLogin = ref(false);
+    const error = ref('');
+    const notice = ref('');
+    const wallNow = ref(Date.now() / 1000);
+    let serverOffset = 0;
+    let timer;
+    let disposed = false;
+    let lastRefreshError = '';
+    const runLabels = { queued: '排队中', active: '执行中', succeeded: '成功', failed: '失败', cancelled: '已取消', expired: '已过期' };
+    const modeLabels = { disabled: '未启用', idle: '空闲', starting: '启动中', ready: '已就绪', draining: '等待暂停', suspending: '暂停中', cooldown: '冷却中', error: '需要处理' };
+    const providerLabels = { creating: '创建中', starting: '启动中', running: '运行中', stopping: '停止中', stopped: '已停止', suspending: '暂停中', suspended: '已暂停', resuming: '恢复中', deleting: '删除中', deleted: '已删除', error: '异常' };
+    const errors = {
+      invalid_novel_id: '请填写有效的小说 ID。', novel_not_found: '书库中未找到这本小说。',
+      text_missing: '这本小说还没有可导出的正文。', text_too_large: '正文超过 16 MiB，无法提交。',
+      cover_too_large: '封面超过 5 MiB，无法提交。', manifest_too_large: '小说信息过大，无法提交。',
+      queue_full: '待处理任务已满，请等待已有任务结束。', capacity_exceeded: '任务文件空间不足，请清理过期结果后重试。',
+      quota_exceeded: '任务文件空间不足，请清理过期结果后重试。', storage_unavailable: '任务存储暂时不可用，请稍后重试。',
+      machine_cooldown: '实例正在冷却，任务会等待下次可用时间。', lease_lost: '执行连接中断，正在核对租约并等待重试。',
+      worker_restarted: '执行器已重新启动，任务等待重新领取。', worker_transient: '执行器暂时不可用，任务等待重试。',
+      render_failed: 'EPUB 生成失败。', result_too_large: '生成的结果超过大小上限。',
+      input_mismatch: '输入校验失败，请重新提交任务。', protocol_mismatch: '执行器版本不匹配，请检查配置。',
+      deadline_exceeded: '任务超过最晚完成时间。', result_expired: '结果已过期，可以重新提交导出。',
+      idempotency_conflict: '请求编号已用于另一条任务，请开始新请求。',
+    };
+    function errorLabel(code) {
+      const value = String(code || '');
+      return errors[value] || (/^[a-z0-9_]{1,80}$/.test(value) ? '请求未完成（' + value + '）。' : '请求未完成，请稍后重试。');
+    }
+    function showError(err) {
+      if (err.status === 401) {
+        needsLogin.value = true;
+        error.value = '登录已失效，请重新登录后重试。未确认的提交已保留。';
+      } else if (err.status === 403) {
+        error.value = '请求验证未通过，请刷新页面后重试。';
+      } else {
+        error.value = err.code ? errorLabel(err.code) : (err.message || '网络暂时不可用，请重试。');
+      }
+    }
+    function readPending() {
+      try {
+        const saved = JSON.parse(window.sessionStorage.getItem(storageKey) || 'null');
+        if (!saved || typeof saved.body !== 'string' || !uuidPattern.test(saved.key)) return null;
+        const body = JSON.parse(saved.body);
+        if (body.kind === 'diagnostic.v1' && Object.keys(body).length === 1) return saved;
+        if (body.kind === 'epub.single.v1' && Object.keys(body).length === 2 && Number.isSafeInteger(body.novel_id) && body.novel_id > 0) return saved;
+      } catch (_) {}
+      return null;
+    }
+    const pendingRequest = ref(readPending());
+    function savePending(value) {
+      try {
+        if (value) window.sessionStorage.setItem(storageKey, JSON.stringify(value));
+        else window.sessionStorage.removeItem(storageKey);
+      } catch (_) {
+        if (value) throw new Error('浏览器无法保存请求，请允许会话存储后重试。');
+      }
+      pendingRequest.value = value;
+    }
+    async function api(path, options) {
+      const response = await window.csrfFetch('/api/dashboard/remote' + path, Object.assign({ cache: 'no-store' }, options));
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data || typeof data !== 'object') {
+        const failure = new Error(response.ok ? '服务未返回完整确认，请重试原请求。' : '请求失败，请稍后重试。');
+        failure.status = response.status;
+        failure.code = data && data.error;
+        throw failure;
+      }
+      if (typeof data.server_now === 'number' && Number.isFinite(data.server_now)) {
+        serverOffset = data.server_now - Date.now() / 1000;
+      }
+      return data;
+    }
+    async function refresh() {
+      if (refreshing.value || disposed || needsLogin.value) return;
+      refreshing.value = true;
+      const results = await Promise.allSettled([api('/machine'), api('/runs')]);
+      if (disposed) return;
+      wallNow.value = Date.now() / 1000 + serverOffset;
+      if (results[0].status === 'fulfilled') machine.value = results[0].value;
+      if (results[1].status === 'fulfilled' && !Array.isArray(results[1].value.runs)) {
+        results[1] = { status: 'rejected', reason: new Error('任务列表未返回完整结果，请刷新重试。') };
+      }
+      if (results[1].status === 'fulfilled' && Array.isArray(results[1].value.runs)) {
+        runs.value = results[1].value.runs.slice(0, 50);
+        loaded.value = true;
+      }
+      const failed = results.find(item => item.status === 'rejected');
+      refreshFailed.value = !!failed;
+      if (failed) {
+        showError(failed.reason);
+        lastRefreshError = error.value;
+      } else if (lastRefreshError && error.value === lastRefreshError) {
+        error.value = '';
+        lastRefreshError = '';
+      }
+      refreshing.value = false;
+    }
+    function jsonPost(body) {
+      return { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+    }
+    async function sendPending(request) {
+      if (submitting.value || needsLogin.value || !request) return;
+      submitting.value = true;
+      error.value = '';
+      notice.value = '';
+      try {
+        const data = await api('/runs', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': request.key }, body: request.body,
+        });
+        if (!uuidPattern.test(data.run_id) || !Object.hasOwn(runLabels, data.state)) throw new Error('服务未返回完整确认，请重试原请求。');
+        savePending(null);
+        notice.value = '任务已提交，可以在下方查看进度。';
+        await refresh();
+      } catch (err) { showError(err); }
+      finally { submitting.value = false; }
+    }
+    async function submitRemote(kind, id) {
+      if (submitting.value || needsLogin.value) return;
+      const body = JSON.stringify(kind === 'epub.single.v1' ? { kind, novel_id: id } : { kind });
+      if (pendingRequest.value && pendingRequest.value.body !== body) {
+        error.value = '上次请求尚未确认，请重试原请求或选择“开始新请求”。';
+        return;
+      }
+      try {
+        if (!pendingRequest.value) savePending({ body, key: crypto.randomUUID() });
+        await sendPending(pendingRequest.value);
+      } catch (err) { showError(err); }
+    }
+    function submitDiagnostic() { return submitRemote('diagnostic.v1'); }
+    function submitEpub() {
+      if (!/^[1-9][0-9]*$/.test(novelId.value) || !Number.isSafeInteger(Number(novelId.value))) {
+        error.value = errors.invalid_novel_id;
+        return;
+      }
+      return submitRemote('epub.single.v1', Number(novelId.value));
+    }
+    function retryPending() { return sendPending(pendingRequest.value); }
+    function startNew() {
+      if (submitting.value) return;
+      savePending(null);
+      error.value = '';
+      notice.value = '已开始新请求；之前的任务仍可能出现在下方记录中。';
+    }
+    async function setHold(seconds) {
+      if (holding.value || needsLogin.value) return;
+      holding.value = true;
+      error.value = '';
+      try { machine.value = await api('/machine/hold', jsonPost({ seconds })); }
+      catch (err) { showError(err); }
+      finally { holding.value = false; }
+    }
+    async function cancelRun(run) {
+      if (changingRun.value || needsLogin.value) return;
+      changingRun.value = run.run_id;
+      error.value = '';
+      try {
+        await api('/runs/' + encodeURIComponent(run.run_id) + '/cancel', jsonPost({}));
+        notice.value = '已收到取消请求，正在更新任务状态。';
+        await refresh();
+      } catch (err) { showError(err); }
+      finally { changingRun.value = ''; }
+    }
+    function formatTime(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+      return new Date(value * 1000).toLocaleString('zh-CN', {
+        timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+      });
+    }
+    function bytes(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+      return (Math.max(0, value) / 1048576).toFixed(1) + ' MiB';
+    }
+    const held = computed(() => Number(machine.value.hold_until) > wallNow.value);
+    const providerLabel = computed(() => providerLabels[machine.value.provider_state] || '尚未确认');
+    const machineStatus = computed(() => machine.value.mode === 'ready' && !(machine.value.gate_ready_until > wallNow.value)
+      ? 'starting' : machine.value.mode);
+    const machineMode = computed(() => machine.value.mode === 'ready' && !(machine.value.gate_ready_until > wallNow.value)
+      ? '等待就绪确认' : (modeLabels[machine.value.mode] || '等待状态'));
+    const confirmedAge = computed(() => {
+      const last = machine.value.last_provider_at;
+      if (typeof last !== 'number') return '尚未确认';
+      const seconds = Math.max(0, Math.floor(wallNow.value - last));
+      return seconds < 60 ? seconds + ' 秒前' : Math.floor(seconds / 60) + ' 分钟前';
+    });
+    const suspendPending = computed(() => machine.value.action && machine.value.action.action === 'suspend'
+      && ['sent', 'accepted', 'unknown'].includes(machine.value.action.phase));
+    const terminal = state => ['succeeded', 'failed', 'cancelled', 'expired'].includes(state);
+    const statusClass = state => /^[a-z]+$/.test(state || '') ? 'remote-status-' + state : '';
+    const runLabel = state => runLabels[state] || '状态待确认';
+    const downloadUrl = run => '/api/dashboard/remote/runs/' + encodeURIComponent(run.run_id) + '/download';
+    const onVisibility = () => { if (!document.hidden) refresh(); };
+    onMounted(() => {
+      refresh();
+      timer = setInterval(() => { wallNow.value = Date.now() / 1000 + serverOffset; if (!document.hidden) refresh(); }, 15000);
+      document.addEventListener('visibilitychange', onVisibility);
+    });
+    onBeforeUnmount(() => {
+      disposed = true;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    });
+    return { machine, runs, novelId, submitting, refreshing, holding, changingRun, loaded, refreshFailed,
+      needsLogin, error, notice, pendingRequest, refresh, submitDiagnostic, submitEpub, retryPending, startNew,
+      setHold, cancelRun, formatTime, bytes, held, providerLabel, machineStatus, machineMode, confirmedAge, suspendPending,
+      terminal, statusClass, runLabel, downloadUrl, errorLabel };
+  },
+});
+</script>
+{% else %}
+<script nonce="{[ csp_nonce() ]}">window.initVueApp({ setup() { return {}; } });</script>
+{% endif %}
+{% endblock %}
