@@ -10,7 +10,7 @@
 
 **Approved Spec:** `docs/superpowers/specs/2026-11-10-vps-instabox-execution-design.md`；用户于 2026-11-10 回复“没问题，继续”。
 
-**Status:** 实施计划，不是实现报告。功能、测试及部署步骤尚未执行；编写基线 `91c54aa`，执行基线必须包含本计划提交。
+**Status:** 2026-11-12 已在隔离分支完成一期本地实现、离线功能验证与页面验收；具体证据和审查修正见[执行记录](../execution/2026-11-10-instabox-phase-one.md)。本文件下列步骤保留原计划内容，不作为测试已经执行的证据。真实 InstaBox 联调、Linux 服务/代理语法及生产部署尚未执行。编写基线 `91c54aa`，实际执行基线 `ada9f76`。
 
 ## Global Constraints
 
