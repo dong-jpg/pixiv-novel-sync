@@ -1,30 +1,38 @@
 # 项目现状
 
-**最近更新：2026-11-12**
+**最近更新：2026-11-13**
 
 这是项目当前状态的唯一入口：版本、测试基线、部署和待办都只在这里更新。每轮审查、部署、整改的详细经过另存带日期的记录，放在 [archive/](archive/README.md)，不在多份旧文档里反复回写。
 
-## 偏好学习扩展（本地实现与验收完成，未部署）
+## 偏好学习扩展（本地验收完成，整合发布进行中）
 
-- 用户于 2026-11-12 扩展原第二阶段范围：实现个人画像 AI 总结、全库/新增作品自动分析及推荐反馈闭环。代码位于隔离分支 `codex/preference-intelligence`，基于已发布 GitHub main 的 `ada9f76`；本轮尚未合并、推送或生产部署。
+- 用户于 2026-11-12 扩展原第二阶段范围：实现个人画像 AI 总结、全库/新增作品自动分析及推荐反馈闭环。实现提交为 `1c5f8be`，位于隔离分支 `codex/preference-intelligence`，基于已发布 GitHub main 的 `ada9f76`。2026-11-13 正在整合 VPS 已部署的 remote 一期 `87020c1`（应用 `2214b22`），以保留线上远程执行能力；本次 main 合并、推送与新版本部署尚未完成。
 - `/dashboard/preferences?view=learning` 提供新入口。阅读页/系列页明确评价与当前有效作品报告共同生成版本化画像，可启用到推荐；反馈修改或来源失效后不会沿用旧画像。首次启用自动建立最小默认画像，旧本地统计不会覆盖新画像层。
 - 全库分析复用原作品执行链，系列去重、复用已有报告，持续策略默认关闭。每作品预算从批次/策略累计总授权中原子分配；停用、跨批次、配置修改及重启均不清零，子预算增额也扣总授权。已观察或已尝试的同版本目标不因删除报告而自动再次付费。
 - 新增九张业务/索引元数据表，画像父子请求预留与统一 AI 请求序号同事务；敏感输入/结果不进入普通历史或推荐查询日志。旧库正文表重建会在同一事务修复相关跨表触发器，复制不产生新的自动分析事件。
-- 独立审查发现的自动重付费、停止 CAS、提交后回执/调度衔接、停止原因分类及旧库重建问题已修复并有回归。同一份最终 LF 源码：Windows / Python 3.11.3 **2903 passed, 91 skipped**（385.71 秒），WSL 原生 Linux / Python 3.10.12 **2852 passed, 142 skipped**（310.47 秒），均零失败。跳过分类与失败修复过程见 [本轮验收记录](archive/PREFERENCE_LEARNING_ACCEPTANCE_2026-11-12.md)。
-- 全部 10 个 Node 文件 **492 passed**；显式离线 Chromium **75 passed、零跳过**（原 AI 设置36、作品分析30、新偏好学习9，375/768/1440三宽度）。最终快照与浏览器/Node验证对象的53个相关源码/资产字节相同；6张新流程截图已复核。compileall、pyflakes、CSS检查通过，离线 wheel 的143个包文件与最终源码逐字节一致。
-- 从已部署候选 `793d340d` 的旧代码建立合成库并先完成旧版本自身维护后，当前代码连续迁移两次：40个旧表的全部旧列和数据严格保留，两轮完整 integrity/FK 检查通过，新增9张表及此前作品分析4表齐全且默认不启用付费分析。该演练没有使用生产库，不能代替实际生产备份和迁移核验。
+- 独立审查发现的自动重付费、停止 CAS、提交后回执/调度衔接、停止原因分类及旧库重建问题已修复并有回归。整合 remote 前的同一份偏好学习 LF 源码：Windows / Python 3.11.3 **2903 passed, 91 skipped**（385.71 秒），WSL 原生 Linux / Python 3.10.12 **2852 passed, 142 skipped**（310.47 秒），均零失败。跳过分类与失败修复过程见 [本轮验收记录](archive/PREFERENCE_LEARNING_ACCEPTANCE_2026-11-12.md)。这些结果不替代合并后版本的集成验证。
+- 该偏好学习版本的全部 10 个 Node 文件 **492 passed**；显式离线 Chromium **75 passed、零跳过**（原 AI 设置36、作品分析30、新偏好学习9，375/768/1440三宽度）。该快照与浏览器/Node验证对象的53个相关源码/资产字节相同；6张新流程截图已复核。compileall、pyflakes、CSS检查通过，离线 wheel 的143个包文件与该验证版本源码逐字节一致。
+- 从历史部署候选 `793d340d` 的旧代码建立合成库并先完成旧版本自身维护后，偏好学习版本连续迁移两次：40个旧表的全部旧列和数据严格保留，两轮完整 integrity/FK 检查通过，新增9张表及此前作品分析4表齐全且默认不启用付费分析。该演练没有使用生产库，也未覆盖 remote 独立控制库；本次发布仍需保留并核验线上业务库、控制库与实际迁移结果。
 - 使用步骤见 [偏好学习指南](PREFERENCE_LEARNING_GUIDE.md)，扩展约束见 [本轮计划](superpowers/plans/2026-11-12-preference-learning.md) 和 [统一需求 §12.6](UNIFIED_PROJECT_REQUIREMENTS.md#126-偏好学习全库分析与推荐闭环2026-11-12-扩展)。真实模型质量/长输入/计费、远端取消、手机真机及生产大库迁移仍不由合成测试替代；本轮没有读取或外发用户小说。
 
 ## 作品分析第二阶段（Task 9 本地验收完成，已合并 main，未部署）
 
 - 实现、整阶段验收与实际部署分开记录。隔离分支 `codex/work-xp-analysis-design` 的 Tasks 1–9 已完成本地实现、逐项审查和整阶段验收；最终应用/测试提交 `d5cfb7624d59c4fe06aa2b67008cc1dacc9269d5`。后续收尾提交仅更新文档，不改该验证版本的应用/测试/资产。规格与任务边界见 [作品分析设计](superpowers/specs/2026-11-05-work-xp-analysis-design.md) 和 [实施计划](superpowers/plans/2026-11-05-work-xp-analysis.md)，完整结果见 [第二阶段验收记录](archive/WORK_ANALYSIS_ACCEPTANCE_2026-11-10.md)。
-- 2026-11-11 已将该分支与本地主目录的 InstaBox 设计及一期计划合入 `main`，合并提交 [`e87f65d`](https://github.com/dong-jpg/pixiv-novel-sync/commit/e87f65d426d0fc0fe4c9937e23a0fe99a93abb31) 已推送 GitHub 并核对远端提交。InstaBox 仍只有设计和计划，尚未实施；本次没有执行生产部署。
+- 2026-11-11 已将该分支与本地主目录的 InstaBox 设计及一期计划合入 `main`，合并提交 [`e87f65d`](https://github.com/dong-jpg/pixiv-novel-sync/commit/e87f65d426d0fc0fe4c9937e23a0fe99a93abb31) 已推送 GitHub 并核对远端提交。该次 main 合并只包含 InstaBox 设计与计划，没有执行生产部署；remote 一期后来从线上基线独立部署，见下节。
 - 本次合并复核：从合并结果的原始 Git blob 提取 424 个文件，在 Windows / Python 3.11.3 上全量运行 `2807 passed, 82 skipped`（308.38 秒），compileall、pyflakes 均 exit 0；验证前后 424 个文件字节不变，实际合并提交的 Git tree 与验证对象一致。82 个跳过为 66 个未显式启用的离线浏览器用例、10 个不适用的非流式参数组合、6 个 Windows 权限 / POSIX mode 用例。本次未重跑 Linux 或显式浏览器验收，下列跨平台及浏览器结果仍属于 2026-11-10 的验收版本。
 - 代码提供手动已归档单篇/系列报告、全文覆盖与短证据、父级累计预算和检查点；不恢复个人画像 AI 总结、推荐闭环、写作或旧 main continue。不是自动全库/新同步/定时付费分析，也不代表完整原作已核实。
 - 同一 canonical Git LF 源码全量：Windows `2807 passed, 82 skipped`（362.49 秒），原生 Linux `2756 passed, 133 skipped`（282.48 秒），均 exit 0。82/133 跳过分别属于显式浏览器 opt-in、非流式参数、Windows 权限/mode、Linux 缺浏览器及 Python 版本限制；逐类补充证据见验收记录，不把跳过计为通过。
 - 全部 9 个 Node 文件 `466 passed`、零失败/跳过，旧 reader direct、compileall、pyflakes、CSS check 均通过。明确启用的离线 Chromium 三宽度 `66 passed`、零跳过（173.08 秒）；15 张截图及配套请求轨迹通过最终复核。离线 wheel 的完整 130 个包文件与源码逐字节相等；421 个 Git 文件在所有门槛前后 hash 不变，Linux 可执行 mode 另核对。归档 SHA256 `7e3984ead610d53af5523787cfce8b3c29368ba74eea21278987f938d19862fc`；不把工作副本 CRLF 与 canonical LF 混为相同字节。
 - 整阶段审查已关闭迟到读取/写入回执复活旧状态、恢复失败阻断普通取消、返回边界缓存导致删除误分类等问题，并补齐真实 16 MiB 序列化与有效 JSON/partial 传输回归。初始候选的两项旧字段列表测试失败及修复前浏览器/超时记录保留在验收报告，不复用为最终成功。
 - 本阶段已合入并推送 GitHub main，未创建 PR、未部署。本次仅完成代码交付，没有读取/外发用户小说或调用真实 Pixiv/Provider；真实 1M 准入、计费、网络取消及真机软键盘仍待另行授权验收。下面第一阶段部署、计数与外部验收保留为历史事实，不能代替本阶段门槛。
+
+## VPS 与 InstaBox 协同（一期已部署）
+
+- VPS 已启用[远程执行页面](https://pixiv.dongboapp.com/dashboard/remote)、独立控制库与 controller；`leshao1` 已安装专用非 root worker。2026-11-13 现场核对的 VPS checkout 为 `main@87020c1`，生产应用基线为 `2214b22`，Web 与独立 controller 均在运行。此版本从线上 `e8801b0` 单独接入 remote，未携入作品分析第二阶段；与偏好学习的本轮合并发布仍在进行中。
+- 诊断与合成单本 EPUB 已完成真实 HTTPS 领取、回传、摘要校验和授权下载，各一次执行、一次发布。正文及封面 XHTML 与 VPS 本地渲染一致；worker 的 EbookLib/lxml 与 VPS 对齐为 0.20/6.1.1。人工运行保护、worker 进程重启及暂停恢复已实测；完整记录见[本次部署验收](archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md)。
+- 真实联调修复了短任务跨过两次 controller tick 时未重置空闲计时的问题；入队、执行、首次终态及上传活动均在事务内记录，幂等重放不延长保活。最后代码通过远程组 **289 passed / 1 skipped**、VPS 增量 **79 passed**；初始发布候选全量为 **2697 passed / 53 skipped**，不将其称为最终补丁全量。
+- 在线一致 SQLite 备份的 quick/FK 检查通过；停服新鲜副本与归档本地硬链接回退副本已保留。新鲜副本完整外键和全文件摘要检查通过，全库 quick_check 的三次有界检查未完成；范围详见验收记录，不宣称已完成异地备份。
+- 已部署的一期远程协议只有诊断和单本 EPUB，尚未接入签到、Pixiv 抓取迁移、生产业务 cron 或跨设备阅读进度。后续方向见[独立实施边界](superpowers/specs/2026-11-12-remote-next-phase-notes.md)；另行开发的 remote 二期 `4b8133e` 未部署，不纳入本次合并与上线范围。
 
 ## AI 设置与统一调用重构（第一阶段已部署）
 
@@ -40,13 +48,17 @@
 
 | 分支 / 组件 | 当前 | 说明 |
 |---|---|---|
-| main（生产应用） | 应用 `3c51a6c6`；切换候选 `793d340d`（2026-11-04） | 第一阶段 AI 重构已上线；随后同步 Nginx 缓存修订、测试和部署记录，不改 Python/JS/CSS 应用源码、不再次重启 |
+| 生产应用（VPS） | checkout `main@87020c1`；应用 `2214b22`（2026-11-12 部署，11-13 核对） | 保留线上 AI 第一阶段，在 `e8801b0` 上独立接入远程执行；Web 与 controller 运行，作品分析第二阶段及偏好学习尚未部署 |
+| 偏好学习整合候选 | `1c5f8be` 与 remote 一期 `87020c1` 整合中 | 偏好学习原候选已完成本地验收；本次 main 合并、推送、集成验证和新版本部署未完成 |
 | 作品分析（GitHub main） | 合并 `e87f65d`（2026-11-11）；已验证应用/测试 `d5cfb762` | Tasks 1–9 已合入 main 并推送，整阶段复审/验收通过；未部署 |
+| remote 后续二期 | `4b8133e` | 未部署；属于后续独立范围，本次不合入 |
 | ai-writing | `adb2d95`（2026-10-20） | 在 main 的基础上加写作/成人模块；只移植共享修复，不反向合入 main |
 | 审计整改 PR | [PR #2](https://github.com/dong-jpg/pixiv-novel-sync/pull/2) 已合并；候选 `8f76399` 与合并提交的树一致 | 应用代码验证基线 `122dbfe`；后续补文档及一处跨平台测试夹具，不改变应用逻辑 |
 | 救援用户脚本 | 0.12.2 已进入 GitHub main | 直装 / 自动更新来源现已包含新版；手机管理器仍须检查更新并确认角标，不能据发布推断设备已经更新 |
 
 ## 部署
+
+截至 2026-11-13 现场核对，最新已完成的生产部署仍为 2026-11-12 的远程执行一期（`main@87020c1`，应用 `2214b22`），见[部署验收记录](archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md)。本轮偏好学习与 remote 一期的整合、推送和部署尚未完成；业务库与 remote 控制库分别保留，实际切换及核验结果完成后另记。以下保留 11-04 的 AI 第一阶段历史事实。
 
 2026-11-04 **15:57（Asia/Shanghai）** 完成 `16b5b4a` → `793d340d` 的受保护部署，应用源码基线为 `3c51a6c6`，详情见 [部署记录](archive/SERVER_DEPLOYMENT_REPORT_2026-11-04.md)。代码仅 fast-forward，没有运行带强制重置的旧部署脚本。普通服务 active/running、自动重启计数 0、正常调度运行；临时禁调度覆盖和维护围栏均已移除。
 
@@ -133,7 +145,7 @@ Windows 的 6 个 skip 属于符号链接权限与 POSIX mode；本次 Linux 的
 | 作品分析第二阶段验收 | [2026-11-10](archive/WORK_ANALYSIS_ACCEPTANCE_2026-11-10.md) |
 | AI 第一阶段验收 | [2026-11-03](archive/AI_SETTINGS_ACCEPTANCE_2026-11-03.md) |
 | 代码审查 | [2026-10-28](archive/AUDIT_REPORT_2026-10-28.md) |
-| 生产部署 | [2026-11-04](archive/SERVER_DEPLOYMENT_REPORT_2026-11-04.md) |
+| 生产部署 | [2026-11-12](archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md) |
 | 整改台账 | [2026-10-08 ～ 10-20](archive/REMEDIATION_STATUS_2026-09-30.md) |
 | 计划时间线 | [2026-10-14](archive/PLAN_AUDIT_2026-10-14.md) |
 

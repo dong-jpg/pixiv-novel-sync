@@ -10,7 +10,9 @@
 
 **Approved Spec:** `docs/superpowers/specs/2026-11-10-vps-instabox-execution-design.md`；用户于 2026-11-10 回复“没问题，继续”。
 
-**Status:** 实施计划，不是实现报告。功能、测试及部署步骤尚未执行；编写基线 `91c54aa`，执行基线必须包含本计划提交。
+**Status:** 2026-11-12 已完成本地实现、离线验收及后续获准的生产启用，最终应用 `2214b22`。真实诊断、EPUB、暂停恢复及完整空闲宽限通过；Linux 服务/代理和备份验证范围见[部署验收](../../archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md)。下列步骤保留原计划内容，不以勾选代替证据；初始执行记录见[此处](../execution/2026-11-10-instabox-phase-one.md)。编写基线 `91c54aa`，执行基线 `ada9f76`。
+
+2026-11-13 发布整合边界：现场 VPS checkout 为 `main@87020c1`（应用 `2214b22`）。本轮正在将该已部署一期与偏好学习候选整合，合并、推送与新部署尚未完成；remote 二期 `4b8133e` 未部署，不纳入本次范围。当前事实继续以 [项目现状](../../STATUS.md) 为准。
 
 ## Global Constraints
 

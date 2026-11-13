@@ -198,7 +198,7 @@ test('mobile navigation: exactly four destinations plus More, with authors/serie
     ['/dashboard/follows', '作者与系列'], ['/dashboard/logs', '任务'],
   ]);
   assert.deepEqual(Array.from(mobile.moreItems, item => item.path), [
-    '/dashboard/preferences', '/dashboard/pending-deletions', '/dashboard/settings',
+    '/dashboard/preferences', '/dashboard/pending-deletions', '/dashboard/remote', '/dashboard/settings',
   ]);
   assert.equal(mobile.moreItems.at(-1).children.length, 4, 'all settings pages remain reachable');
 });
@@ -208,6 +208,7 @@ test('navigation: detail routes stay in their groups without prefix collisions',
     ['/dashboard/novels/12', '/dashboard/novels'],
     ['/dashboard/users/12', '/dashboard/follows'],
     ['/dashboard/series/12', '/dashboard/follows'],
+    ['/dashboard/remote', '/dashboard/remote'],
     ['/dashboard/settings/agents', '/dashboard/settings'],
   ]) {
     const h = harness(), sidebar = h.mount('app-sidebar-nav', {currentPath}).state;
@@ -215,6 +216,8 @@ test('navigation: detail routes stay in their groups without prefix collisions',
   }
   const h = harness(), mobile = h.mount('app-mobile-bar', {currentPath: '/dashboard/novels-unrelated'}).state;
   assert.equal(mobile.mobileItems.some(mobile.isActive), false);
+  const remote = harness().mount('app-mobile-bar', {currentPath: '/dashboard/remote'}).state;
+  assert.equal(remote.moreActive.value, true, 'remote execution stays reachable and active through More');
 });
 
 test('More: active group, open/close, pathname and desktop transitions', async () => {

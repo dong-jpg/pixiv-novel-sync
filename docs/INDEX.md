@@ -1,10 +1,10 @@
 # 项目文档索引
 
-**最近更新：2026-11-12**
+**最近更新：2026-11-13**
 
 当前版本、测试基线、部署与待办统一看 [项目现状](STATUS.md)。
 
-项目提供归档、同步、阅读、推荐与救援，以及 Provider、模型目录、模型池、统一路由和偏好关键词清洗。作品分析与偏好学习的代码、验收和实际部署进度单列于项目现状；写作和成人润色功能只在 ai-writing 分支。
+项目提供归档、同步、阅读、推荐与救援，以及 Provider、模型目录、模型池、统一路由和偏好关键词清洗。VPS 与 InstaBox 远程执行一期已部署；作品分析、偏好学习与该线上版本的整合发布进度单列于项目现状。写作和成人润色功能只在 ai-writing 分支。
 
 ## 使用
 
@@ -14,6 +14,7 @@
 | [救援使用指南](RESCUE_USER_GUIDE.md) | 救援 Token、用户脚本安装与排查 |
 | [模型路由指南](MODEL_ROUTING_GUIDE.md) | Provider、模型目录、模型池、调用预算 |
 | [偏好学习指南](PREFERENCE_LEARNING_GUIDE.md) | 作品报告、读后评价、AI 偏好 / XP 画像、全库批次与持续自动分析 |
+| [远程执行](REMOTE_EXECUTION.md) | VPS 与 InstaBox 试点、凭据隔离、运行和恢复 |
 
 ## 开发参考
 
@@ -32,7 +33,7 @@
 
 - [archive/](archive/README.md)：带日期的审计、部署、整改与计划核对记录，移动端改造记录，旧版知识图谱与 API 文档。
 - [历史报告整合](archive/HISTORY_REPORTS.md) 与 [历史执行计划整合](archive/HISTORY_PLANS.md)：按时期汇总旧结论的去向。
-- [superpowers/plans](superpowers/plans/) 与 [superpowers/specs](superpowers/specs/)：各阶段的执行计划与设计，均已执行或被替代；原文与勾选保留，不能用勾选比例推算完成度。
+- [superpowers/plans](superpowers/plans/) 与 [superpowers/specs](superpowers/specs/)：包含已执行、进行中和后续独立阶段的计划与设计；实际状态以项目现状为准，不能用勾选比例推算完成度。remote 二期未部署，不属于本次偏好学习与 remote 一期的整合发布范围。
 
 ## 维护规则
 
