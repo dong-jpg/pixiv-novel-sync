@@ -3,10 +3,13 @@ const path = require('node:path');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const templateRoot = path.resolve(__dirname, '../src/pixiv_novel_sync/templates');
-const response = (data, ok = true) => ({ok, json: async () => data});
+const response = (data, ok = true) => ({ok, status: ok ? 200 : 500, json: async () => data});
+const progressRecord = (version = 3, progress = 60, is_reset = false) => ({novel_id: 1, version, progress, is_reset,
+  status: progress === 100 ? 'completed' : progress ? 'reading' : 'unread', last_read_at: null, updated_at: null});
 const deferred = () => { let resolve; const promise = new Promise(r => {resolve = r;}); return {promise, resolve}; };
 function mount(name, saved) {
   let state;
+  let serverProgress = progressRecord();
   const mounted = [], ticks = [], calls = [], notices = [], local = new Map(), events = {};
   if (saved) local.set('pixivNovelSync:reading:1', JSON.stringify(saved));
   const window = {
@@ -15,17 +18,25 @@ function mount(name, saved) {
     scrollTo({top}) { this.scrollY = top; }, addEventListener(name, fn) {events[name] = fn;}, removeEventListener() {},
     readListQuery: defaults => defaults, writeListQuery() {},
     toast: (...args) => notices.push(args), errorText: data => data.error || 'failed',
-    csrfFetch: async (url, options) => { calls.push({url, options}); return response({ok: true}); },
+    csrfFetch: async (url, options) => {
+      calls.push({url, options});
+      if (url.endsWith('/progress')) {
+        const body = JSON.parse(options.body);
+        serverProgress = progressRecord(body.base_version + 1, options.method === 'DELETE' ? 0 : body.progress, options.method === 'DELETE');
+        return response({ok: true, success: true, record: serverProgress, applied_version: serverProgress.version, replayed: false});
+      }
+      return response({ok: true});
+    },
     confirm: () => true,
   };
-  const document = {documentElement: {scrollHeight: 2000}, referrer: ''};
-  const localStorage = {getItem: key => local.get(key) || null,
+  const document = {documentElement: {scrollHeight: 2000}, referrer: '', addEventListener(name, fn) {events[name] = fn;}, removeEventListener() {}};
+  const localStorage = {get length() {return local.size;}, key: index => [...local.keys()][index], getItem: key => local.get(key) || null,
     setItem: (key, value) => local.set(key, value), removeItem: key => local.delete(key)};
   const context = {window, document, localStorage, location: window.location, URL, URLSearchParams, AbortController,
-    setTimeout: () => 0, clearTimeout() {}, console,
+    setTimeout: () => 0, clearTimeout() {}, console, crypto: require('node:crypto').webcrypto,
     confirm: message => window.confirm(message),
     csrfFetch: (...args) => window.csrfFetch(...args),
-    fetch: async url => { calls.push({url}); return response(url.endsWith('/progress') ? {progress: 60} : {novel_id: 1, title: 'book', user_id: 1, text_raw: 'text'}); },
+    fetch: async url => { calls.push({url}); return response(url.endsWith('/progress') ? serverProgress : {novel_id: 1, title: 'book', user_id: 1, text_raw: 'text'}); },
     initVueApp: app => {state = app.setup();},
     Vue: {ref: value => ({value}), reactive: value => value,
       computed: fn => ({get value() {return fn();}}), watch() {},
@@ -34,6 +45,7 @@ function mount(name, saved) {
   const html = fs.readFileSync(path.join(templateRoot, name), 'utf8');
   const navigation = fs.readFileSync(path.join(templateRoot, 'navigation_helpers.html'), 'utf8');
   vm.runInNewContext(navigation.match(/<script(?: nonce=\"[^\"]*\")?>([\s\S]*?)<\/script>/)[1], context);
+  vm.runInNewContext(fs.readFileSync(path.join(templateRoot, '../static/js/reading_progress_sync.js'), 'utf8'), context);
   vm.runInNewContext(html.match(/<script(?: nonce=\"[^\"]*\")?>([\s\S]*?)<\/script>/)[1], context);
   return {state, window, calls, notices, local, context, html, events, async start() {
     mounted.forEach(fn => fn());
@@ -66,7 +78,7 @@ function mount(name, saved) {
       if (url.endsWith('/progress')) {
         m.window.scrollY = 150; m.events.scroll();
         m.window.scrollY = 0; m.events.scroll();
-        return response({progress: 60});
+        return response(progressRecord());
       }
       return response({novel_id: 1, title: 'book', text_raw: 'text'});
     };
@@ -75,33 +87,37 @@ function mount(name, saved) {
   }
   {
     const m = mount('dashboard_novel_detail.html');
-    const get = deferred(), post = deferred(), getStarted = deferred(), postStarted = deferred();
+    const get = deferred(), getStarted = deferred();
+    let writes = 0;
     m.context.fetch = async url => {
       if (url.endsWith('/progress')) {getStarted.resolve(); return get.promise;}
       return response({novel_id: 1, title: 'book', text_raw: 'text'});
     };
     m.window.csrfFetch = async (_url, options) => {
-      assert.equal(JSON.parse(options.body).progress, 0);
-      postStarted.resolve(); return post.promise;
+      writes++;
+      return response({ok: true, success: true, record: progressRecord(4, 0), applied_version: 4, replayed: false});
     };
     const starting = m.start();
     await getStarted.promise;
     const saving = m.state.saveServerProgress();
-    await postStarted.promise;
-    get.resolve(response({progress: 60}));
+    assert.equal(writes, 0, 'no blind write before a server version is known');
+    get.resolve(response(progressRecord()));
     await starting;
-    post.resolve(response({success: true}));
     await saving;
-    assert.equal(m.window.scrollY, 0, 'old GET cannot override an in-flight explicit save');
+    assert.equal(writes, 0, 'old intent cannot silently adopt the returned version');
+    assert.ok(m.state.progressSyncState.value.conflict);
+    assert.equal(m.window.scrollY, 0, 'late GET cannot override explicit local save intent');
     assert.equal(m.state.progressPercent.value, 0);
     assert.equal(JSON.parse(m.local.get('pixivNovelSync:reading:1')).progress, 0);
+    await m.state.keepLocalProgress();
+    assert.equal(writes, 1, 'explicit selection may CAS against the observed server version');
   }
   {
     const m = mount('dashboard_novel_detail.html');
     m.context.fetch = async url => {
       if (url.endsWith('/progress')) {
         m.window.scrollY = 150; // User scrolled while the account request was pending.
-        return response({progress: 60});
+        return response(progressRecord());
       }
       return response({novel_id: 1, title: 'book', text_raw: 'text'});
     };
@@ -112,12 +128,12 @@ function mount(name, saved) {
   {
     const m = mount('dashboard_novel_detail.html', {scrollY: 300, progress: 0.2});
     await m.start();
-    assert.equal(m.window.scrollY, 300, 'existing local position still wins');
-    assert.equal(m.calls.some(c => c.url.endsWith('/progress')), false);
+    assert.equal(m.window.scrollY, 900, 'old unversioned local cache cannot override the current account record');
+    assert.equal(m.calls.some(c => c.url.endsWith('/progress')), true);
     m.window.csrfFetch = async () => response({error: 'reset rejected'}, false);
     await m.state.resetServerProgress();
-    assert.equal(m.window.scrollY, 300);
-    assert.equal(m.state.progressPercent.value, 20);
+    assert.equal(m.window.scrollY, 900);
+    assert.equal(m.state.progressPercent.value, 60);
     assert.equal(m.local.has('pixivNovelSync:reading:1'), true);
   }
   for (const [name, method, suffix] of [

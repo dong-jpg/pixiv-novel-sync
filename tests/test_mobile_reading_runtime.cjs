@@ -7,6 +7,8 @@ const test = require('node:test');
 const root = path.resolve(__dirname, '../src/pixiv_novel_sync/templates');
 const read = name => fs.readFileSync(path.join(root, name), 'utf8');
 const response = (data, ok = true) => ({ok, status: ok ? 200 : 500, json: async () => data});
+const progressRecord = (version = 1, progress = 0, is_reset = false) => ({novel_id: 1, version, progress, is_reset,
+  status: progress === 100 ? 'completed' : progress ? 'reading' : 'unread', last_read_at: null, updated_at: null});
 const deferred = () => {
   let resolve;
   const promise = new Promise(r => { resolve = r; });
@@ -14,6 +16,7 @@ const deferred = () => {
 };
 const value = ref => ref && ref.__v_isRef ? ref.value : ref;
 const storage = map => ({
+  get length() { return map.size; }, key: index => [...map.keys()][index],
   getItem: key => map.get(key) ?? null,
   setItem: (key, data) => map.set(key, String(data)),
   removeItem: key => map.delete(key),
@@ -25,6 +28,7 @@ function environment(url = '/dashboard/novels', options = {}) {
   const events = new Map(), ticks = [], mounted = [], unmounted = [], watchers = [];
   const calls = [], notices = [], scrolls = [], timers = new Map(), errors = [];
   let timerId = 0, state;
+  let serverProgress = options.progress || progressRecord();
   const addEventListener = (name, fn) => {
     if (!events.has(name)) events.set(name, new Set());
     events.get(name).add(fn);
@@ -44,12 +48,19 @@ function environment(url = '/dashboard/novels', options = {}) {
     sessionStorage: storage(session), localStorage: storage(local),
     toast: (...args) => notices.push(args), errorText: data => data.error || 'request failed',
     confirm: () => true,
-    csrfFetch: async (url, opts) => { calls.push({url, options: opts}); return response({ok: true}); },
+    csrfFetch: async (url, opts) => { calls.push({url, options: opts});
+      if (url.endsWith('/progress')) {
+        const body = JSON.parse(opts.body);
+        serverProgress = progressRecord(body.base_version + 1, opts.method === 'DELETE' ? 0 : body.progress, opts.method === 'DELETE');
+        return response({ok: true, success: true, record: serverProgress, applied_version: serverProgress.version, replayed: false});
+      }
+      return response({ok: true});
+    },
   };
   const fakeFetch = async url => {
     const target = new URL(url, location.origin);
     const page = Number(target.searchParams.get('page') || 1);
-    if (target.pathname.endsWith('/progress')) return response({progress: 0});
+    if (target.pathname.endsWith('/progress')) return response(serverProgress);
     if (target.pathname === '/api/dashboard/novels/1') {
       return response({novel_id: 1, user_id: 9, series_id: 2, title: 'fixture book', text_raw: 'fixture only'});
     }
@@ -65,7 +76,7 @@ function environment(url = '/dashboard/novels', options = {}) {
   };
   const context = vm.createContext({
     window, document, location, history, localStorage: window.localStorage, sessionStorage: window.sessionStorage,
-    URL, URLSearchParams, AbortController, console,
+    URL, URLSearchParams, AbortController, console, crypto: require('node:crypto').webcrypto,
     setTimeout: fn => { timers.set(++timerId, fn); return timerId; },
     clearTimeout: id => timers.delete(id),
     confirm: message => window.confirm(message),
@@ -93,6 +104,7 @@ function environment(url = '/dashboard/novels', options = {}) {
   }
   const helper = path.join(root, 'navigation_helpers.html');
   if (fs.existsSync(helper)) execute(read('navigation_helpers.html'), helper);
+  vm.runInContext(fs.readFileSync(path.join(root, '../static/js/reading_progress_sync.js'), 'utf8'), context);
   const capture = result => { if (result?.catch) result.catch(error => errors.push(error)); };
   const api = {
     window, document, context, location, history, calls, notices, local, session, scrolls, events,
@@ -678,8 +690,8 @@ test('saving from the actual reader toolbar samples live scroll, never moves, an
 });
 
 test('failed save/reset/archive deletion preserves reading position, local progress and safe return', async () => {
-  const local = new Map([['pixivNovelSync:reading:1', JSON.stringify({scrollY: 720, progress: 0.3})]]);
-  const m = environment('/dashboard/novels/1?from=%2Fdashboard%2Fnovels%3Fpage%3D3', {local}).mount('dashboard_novel_detail.html');
+  const local = new Map([['pixivNovelSync:reading:1', JSON.stringify({scrollY: 720, progress: 0.3, serverVersion: 2})]]);
+  const m = environment('/dashboard/novels/1?from=%2Fdashboard%2Fnovels%3Fpage%3D3', {local, progress: progressRecord(2, 30)}).mount('dashboard_novel_detail.html');
   await m.start();
   const before = m.local.get('pixivNovelSync:reading:1');
   m.window.csrfFetch = async () => response({ok: false, error: 'fixture rejection'});
@@ -734,7 +746,7 @@ test('reader toolbar dialog bindings open and close the correct shared modal', a
 
 test('a standalone novel keeps in-place save/font tools and disables only chapter navigation', async () => {
   const m = environment('/dashboard/novels/1', {fetch: async url => response(url.endsWith('/progress')
-    ? {progress: 0} : {novel_id: 1, user_id: 9, series_id: null, title: 'standalone fixture', text_raw: 'fixture only'})}).mount('dashboard_novel_detail.html');
+    ? progressRecord() : {novel_id: 1, user_id: 9, series_id: null, title: 'standalone fixture', text_raw: 'fixture only'})}).mount('dashboard_novel_detail.html');
   await m.start();
   assert.equal(m.state.seriesInfo.value, null);
   const chapter = [...m.html.matchAll(/<button\b[^>]*>/g)].find(match => match[0].includes('@click="showChapters = true"'));
@@ -768,9 +780,13 @@ function installDownloadFixture(m) {
   return downloads;
 }
 async function readerWithOpenActions() {
-  const local = new Map([['pixivNovelSync:reading:1', JSON.stringify({scrollY: 1688, progress: 1688 / 2400})]]);
+  const local = new Map([['pixivNovelSync:reading:1', JSON.stringify({scrollY: 1688, progress: 1688 / 2400, serverVersion: 1})]]);
   const m = environment('/dashboard/novels/1?from=%2Fdashboard%2Fnovels%3Fpage%3D2%26page_size%3D10%26search%3D%25E9%259B%25A8%25E5%2590%258E', {local}).mount('dashboard_novel_detail.html');
   await m.start();
+  // Genuine post-restore reading, rather than obsolete unversioned-cache priority.
+  m.window.scrollY = 1688;
+  m.emit('wheel', {type: 'wheel'});
+  m.emit('scroll');
   m.state.showReaderActions.value = true;
   m.downloads = installDownloadFixture(m);
   return m;
@@ -831,7 +847,10 @@ for (const method of ['saveServerProgress', 'resetServerProgress', 'removeLocalB
   test(`I4: ${method} success is persistent dialog-local status`, async () => {
     const m = await readerWithOpenActions();
     const scrolls = m.scrolls.slice();
-    m.window.csrfFetch = async () => ({...response({ok: true}),
+    m.window.csrfFetch = async (url, options) => ({...response(url.endsWith('/progress')
+      ? {ok: true, success: true, applied_version: JSON.parse(options.body).base_version + 1, replayed: false,
+        record: progressRecord(JSON.parse(options.body).base_version + 1, options.method === 'DELETE' ? 0 : JSON.parse(options.body).progress, options.method === 'DELETE')}
+      : {ok: true}),
       headers: {get: () => 'application/epub+zip'}, blob: async () => ({type: 'application/epub+zip'}),
     });
     await m.state[method]();
@@ -942,4 +961,131 @@ test('I4: cancelling a native confirmation preserves the prior result and never 
     assert.equal(m.state.showReaderActions.value, true);
     assertReaderPositionKept(m, scrolls);
   }
+});
+
+test('versioned reader always checks the server and never uploads restoration, anchors or programmatic scroll', async () => {
+  const local = new Map([['pixivNovelSync:reading:1', JSON.stringify({scrollY: 300, progress: 0.125})]]);
+  const m = environment('/dashboard/novels/1', {local, progress: progressRecord(5, 70)}).mount('dashboard_novel_detail.html');
+  await m.start();
+  assert.equal(m.window.scrollY, 1680);
+  assert.ok(m.calls.some(call => call.url.endsWith('/progress') && !call.options?.body));
+  m.emit('scroll');
+  await m.runTimers();
+  m.window.scrollY = 0;
+  m.emit('scroll');
+  m.emit('pagehide');
+  await m.flush();
+  assert.equal(m.calls.filter(call => call.options?.method === 'POST').length, 0);
+  assert.equal(m.local.get('pixivNovelSync:reading:1') && JSON.parse(m.local.get('pixivNovelSync:reading:1')).progress, 0.125);
+  assert.equal(m.state.progressSyncState.value.phase, 'conflict', 'legacy cache stays available for an explicit migration choice');
+  assert.match(m.html, /reading_progress_sync\.js\?v=/);
+  assert.doesNotMatch(m.html, /sendBeacon/);
+  m.dispose();
+});
+
+test('pagehide after genuine scrolling sends CSRF keepalive CAS and retains an in-flight newer sample', async () => {
+  const m = environment('/dashboard/novels/1', {progress: progressRecord(4, 20)}).mount('dashboard_novel_detail.html');
+  await m.start();
+  const post = deferred();
+  m.window.csrfFetch = async (url, options) => {m.calls.push({url, options}); return post.promise;};
+  m.emit('wheel', {type: 'wheel'});
+  m.window.scrollY = 960;
+  m.emit('scroll');
+  m.emit('pagehide');
+  await m.flush();
+  const call = m.calls.at(-1);
+  const body = JSON.parse(call.options.body);
+  assert.equal(body.progress, 40);
+  assert.equal(body.base_version, 4);
+  assert.match(body.mutation_id, /^[0-9a-f-]{36}$/);
+  assert.equal(call.options.keepalive, true);
+  m.emit('wheel', {type: 'wheel'});
+  m.window.scrollY = 1200;
+  m.emit('scroll');
+  post.resolve(response({ok: true, success: true, record: progressRecord(5, 40), applied_version: 5, replayed: false}));
+  await m.flush();
+  assert.equal(m.window.scrollY, 1200);
+  assert.equal(m.state.progressSyncState.value.dirty.progress, 50);
+  assert.equal(m.state.progressSyncState.value.dirty.base_version, 5);
+  assert.equal(m.calls.filter(call => call.options?.method === 'POST').length, 1);
+  m.dispose();
+});
+
+test('a delayed reset response cannot jump to the top after the user continues reading', async () => {
+  const m = environment('/dashboard/novels/1', {progress: progressRecord(7, 60)}).mount('dashboard_novel_detail.html');
+  await m.start();
+  const reset = deferred();
+  m.window.csrfFetch = async (url, options) => {
+    m.calls.push({url, options});
+    if (options.method === 'DELETE') return reset.promise;
+    const body = JSON.parse(options.body);
+    return response({ok: true, success: true, record: progressRecord(body.base_version + 1, body.progress),
+      applied_version: body.base_version + 1, replayed: false});
+  };
+  const resetting = m.state.resetServerProgress();
+  m.emit('wheel', {type: 'wheel'});
+  m.window.scrollY = 1680;
+  m.emit('scroll');
+  reset.resolve(response({ok: true, success: true, record: progressRecord(8, 0, true), applied_version: 8, replayed: false}));
+  await resetting;
+  assert.equal(m.window.scrollY, 1680);
+  assert.equal(m.state.progressPercent.value, 70);
+  assert.equal(m.state.progressSyncState.value.record.version, 9);
+  m.dispose();
+});
+
+test('first GET arriving after genuine user scroll offers an explicit choice without changing position', async () => {
+  const get = deferred(), m = environment('/dashboard/novels/1', {fetch: (url, opts, fallback) =>
+    url.endsWith('/progress') ? get.promise : fallback(url, opts)}).mount('dashboard_novel_detail.html');
+  await m.start();
+  m.emit('wheel', {type: 'wheel'});
+  m.window.scrollY = 480;
+  m.emit('scroll');
+  get.resolve(response(progressRecord(9, 80)));
+  await m.flush();
+  assert.equal(m.window.scrollY, 480);
+  assert.equal(m.state.progressPercent.value, 20);
+  assert.equal(m.state.progressSyncState.value.phase, 'conflict');
+  assert.equal(m.calls.filter(call => call.options?.method === 'POST').length, 0);
+  assert.match(m.html, /使用服务器进度/);
+  assert.match(m.html, /保留本机进度/);
+  m.state.useServerProgress();
+  assert.equal(m.window.scrollY, 1920);
+  assert.equal(m.state.progressSyncState.value.hasPending, false);
+  m.dispose();
+});
+
+test('reset-button pointerdown and a stale scroll cannot revive a successful reset tombstone', async () => {
+  const m = environment('/dashboard/novels/1', {progress: progressRecord(5, 60)}).mount('dashboard_novel_detail.html');
+  await m.start();
+  const pending = deferred(), writes = [];
+  m.window.csrfFetch = async (url, options) => {writes.push({url, options}); return pending.promise;};
+  m.emit('pointerdown', {type: 'pointerdown'});
+  const resetting = m.state.resetServerProgress();
+  m.emit('scroll');
+  pending.resolve(response({ok: true, success: true, record: progressRecord(6, 0, true), applied_version: 6, replayed: false}));
+  await resetting;
+  await m.runTimers();
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].options.method, 'DELETE');
+  assert.equal(m.window.scrollY, 0);
+  assert.equal(m.state.progressSyncState.value.record.is_reset, true);
+  assert.equal(m.state.progressSyncState.value.hasPending, false);
+  m.dispose();
+});
+
+test('legacy local-only progress is preserved for migration when the account has never saved progress', async () => {
+  const saved = JSON.stringify({novelId: 1, scrollY: 1440, progress: 0.6});
+  const local = new Map([['pixivNovelSync:reading:1', saved]]);
+  const m = environment('/dashboard/novels/1', {local, progress: progressRecord(0, 0)}).mount('dashboard_novel_detail.html');
+  await m.start();
+  assert.equal(local.get('pixivNovelSync:reading:1'), saved);
+  assert.equal(m.state.progressSyncState.value.local.progress, 60);
+  assert.equal(m.state.progressSyncState.value.phase, 'conflict');
+  assert.equal(m.calls.filter(call => call.options?.method === 'POST').length, 0);
+  await m.state.keepLocalProgress();
+  const body = JSON.parse(m.calls.at(-1).options.body);
+  assert.equal(body.progress, 60);
+  assert.equal(body.base_version, 0);
+  m.dispose();
 });

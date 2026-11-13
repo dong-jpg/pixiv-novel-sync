@@ -212,7 +212,10 @@ def test_rescue_detail_pages_support_manual_override_with_csrf():
         assert "rescueOverride" in html
         assert "rescueMessage" in html
         assert "window.csrfFetch" in html
-        assert "ensureCsrfToken" not in html
+        # 页面可明确刷新共享令牌，但不能自行复制或实现一套 CSRF 缓存。
+        assert "window.ensureCsrfToken =" not in html
+        assert "let _csrfToken" not in html
+        assert "'/api/csrf-token'" not in html
         assert f"const itemType = '{item_type}'" in html
         assert "/api/dashboard/rescue-overrides/" in html
         assert "saveRescueOverride" in html
@@ -411,7 +414,9 @@ def test_sidebar_logout_and_novel_detail_actions():
     assert "/api/auth/logout" in footer
     detail = read(TEMPLATES / "dashboard_novel_detail.html")
     assert "export-epub" in detail
-    assert "/progress" in detail
+    assert "ReadingProgressSync.create" in detail
+    assert "/progress" in read(TEMPLATES.parent / "static/js/reading_progress_sync.js")
+    assert "saveServerProgress" in detail and "resetServerProgress" in detail
     assert "deleteThisNovel" in detail
 
 

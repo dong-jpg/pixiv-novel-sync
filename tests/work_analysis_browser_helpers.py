@@ -29,6 +29,8 @@ START = BODY.index(QUOTE)
 END = START + len(QUOTE)
 LIMITS = {"request_limit": 16, "token_limit": 500000, "active_seconds_limit": 600}
 APPROVALS = ("order_confirmed", "current_archive_only", "external_send_confirmed", "budget_confirmed")
+PROGRESS_RECORD = {"novel_id": 101, "progress": 0, "status": "unread", "version": 0,
+                   "is_reset": False, "last_read_at": None, "updated_at": None}
 
 
 def digest(value):
@@ -235,11 +237,15 @@ class OfflineWorkUI(OfflineUI):
             return route.fulfill(content_type="text/html", body=self.render(parsed.path + "?" + parsed.query),
                                  headers={"Content-Security-Policy": self.csp, "Cache-Control": "no-store"})
         static_names = {"/static/js/ai_settings.js", "/static/js/ai_picker.js", "/static/js/work_analysis.js",
+                        "/static/js/reading_progress_sync.js",
                         "/static/css/tailwind.css"}
         if request.method == "GET" and parsed.path in static_names:
-            assert not parsed.query or parsed.path == "/static/css/tailwind.css"
             target = (STATIC / parsed.path.removeprefix("/static/")).resolve()
             assert target.is_relative_to(STATIC.resolve()) and target.is_file()
+            if parsed.path == "/static/js/reading_progress_sync.js":
+                assert parse_qs(parsed.query) == {"v": [hashlib.sha256(target.read_bytes()).hexdigest()[:12]]}
+            else:
+                assert not parsed.query or parsed.path == "/static/css/tailwind.css"
             headers = {"Cache-Control": self.js_cache if self.cache_expression.fullmatch(parsed.path) else "no-cache"}
             return route.fulfill(body=target.read_bytes(), content_type=mimetypes.guess_type(target.name)[0], headers=headers)
         if request.method == "GET" and parsed.path == "/favicon.ico":
@@ -279,7 +285,7 @@ class OfflineWorkUI(OfflineUI):
             return self._error(route, "fixture_read_unavailable", 503)
         raw = {"/api/csrf-token": {"csrf_token": CSRF}, "/api/dashboard/shell-data": {"pending_count": 0},
                "/api/dashboard/status": {"current_user": None}, "/api/dashboard/auto-sync/status": {"running": False},
-               "/api/dashboard/novels/101/progress": {"progress": 0}}
+               "/api/dashboard/novels/101/progress": deepcopy(PROGRESS_RECORD)}
         if method == "GET" and path in raw:
             return self._json(route, raw[path], envelope=False)
         if method == "GET" and path == "/api/dashboard/preferences/profiles":
@@ -401,15 +407,22 @@ class OfflineWorkUI(OfflineUI):
             assert item["method"] == "setItem", item
             value = json.loads(item["args"][1])
             if item["kind"] == "local":
-                assert item["args"][0] == "pixivNovelSync:reading:101", item
-                assert set(value) == {"novelId", "seriesId", "title", "scrollY", "progress", "updatedAt"}
-                assert value["novelId"] == 101 and value["title"] == "Synthetic reader"
+                if item["args"][0] == "pixivNovelSync:reading-server:101":
+                    # The merged reader caches only the versioned progress DTO.
+                    # No progress writes occur in these analysis/feedback flows.
+                    assert value == PROGRESS_RECORD
+                else:
+                    assert item["args"][0] == "pixivNovelSync:reading:101", item
+                    assert set(value) == {"novelId", "seriesId", "title", "scrollY", "progress", "updatedAt", "serverVersion"}
+                    assert value["novelId"] == 101 and value["title"] == "Synthetic reader"
+                    assert value["serverVersion"] == PROGRESS_RECORD["version"]
             else:
                 assert item["kind"] == "session" and item["args"][0] == "pixivNovelSync:listScroll:/dashboard/series/501"
                 assert set(value) == {"scrollY"} and type(value["scrollY"]) in {int, float} and value["scrollY"] >= 0
         for origin in self.context.storage_state()["origins"]:
             assert origin["origin"] == ORIGIN
-            assert all(item["name"] == "pixivNovelSync:reading:101" for item in origin["localStorage"])
+            assert all(item["name"] in {"pixivNovelSync:reading:101", "pixivNovelSync:reading-server:101"}
+                       for item in origin["localStorage"])
         assert self.page.evaluate("Object.keys(sessionStorage).every(key => key === 'pixivNovelSync:listScroll:/dashboard/series/501')")
         recorded = json.dumps(self.storage_writes, ensure_ascii=False)
         assert BODY not in recorded and QUOTE not in recorded and LABEL not in recorded

@@ -100,7 +100,8 @@ function mountReader(novel) {
   };
   const context = vm.createContext({
     window, document, location: window.location, URL, URLSearchParams, AbortController, console,
-    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    crypto: require('node:crypto').webcrypto,
+    localStorage: { length: 0, key: () => null, getItem: () => null, setItem() {}, removeItem() {} },
     sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     setTimeout: () => 0, clearTimeout() {},
     fetch: async () => ({ ok: true, json: async () => novel }),
@@ -110,6 +111,8 @@ function mountReader(novel) {
       watch() {}, onMounted() {}, onUnmounted() {}, nextTick: () => Promise.resolve(),
     },
   });
+  vm.runInContext(fs.readFileSync(path.join(root, 'src/pixiv_novel_sync/static/js/reading_progress_sync.js'), 'utf8'),
+    context, { filename: 'reading_progress_sync.js' });
   for (const name of ['navigation_helpers.html', 'pixiv_markup.html', 'dashboard_novel_detail.html']) {
     for (const code of scripts(read(name))) vm.runInContext(code, context, { filename: name });
   }
