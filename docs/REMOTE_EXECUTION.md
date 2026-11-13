@@ -4,15 +4,17 @@
 
 本期仅接入 `diagnostic.v1` 和 `epub.single.v1` 手动任务。收藏同步、签到、生产 cron、阅读进度同步及全库搬迁均不在一期范围内。不要向协议添加任意 shell、Python、SQL、URL 或文件路径。
 
+2026-11-13 的后续部署已启用[跨设备阅读进度](READING_PROGRESS_SYNC.md)，并包含接入本地同步的 Pixiv 单本 DTO 和[只读签到状态网关底座](CHECKIN_STATUS_ADAPTER.md)，详见[后续阶段边界](superpowers/specs/2026-11-12-remote-next-phase-notes.md)。阅读进度留在 VPS，两个业务适配器均未增加云端任务类型，一期 worker 权限保持不变。
+
 ## 状态与验证边界
 
 指定 VPS 与 `leshao1` 已于 2026-11-12 按启用指令部署，入口为[远程执行页面](https://pixiv.dongboapp.com/dashboard/remote)。诊断、合成 EPUB、暂停恢复与完整空闲宽限的真实结果，以及备份未完成的全库结构检查，见[本次验收记录](archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md)。
 
 代码默认关闭。仓库中的服务、环境文件和 Nginx 配置都是待安装示例，运行本地测试不会启动用户实例，也不会安装或启用服务。
 
-自动测试使用临时控制数据库、合成小说、fake provider 和本地测试 HTTP transport。实际验证结果以本次执行记录 `docs/superpowers/execution/2026-11-10-instabox-phase-one.md` 为准。InstaBox 真正的 202 操作、冷启动、暂停/恢复、平台提前中断、私有输入传输和生产备份恢复仍须在明确授权的窗口分别验证。
+自动测试使用临时控制数据库、合成小说、fake provider 和本地测试 HTTP transport。初始本地实现见 `docs/superpowers/execution/2026-11-10-instabox-phase-one.md`，指定实例的真实启动/暂停恢复、合成输入回传与空闲宽限结果见上面的部署验收。完整 VM 冷启动、平台强制中断、用户选择的真实小说及独立备份恢复仍需各自证据。
 
-Windows 本地未执行 Linux `systemd-analyze verify` 或 Nginx `nginx -t` 时，不能将其写作已通过；上线前必须在目标 Linux 环境执行。该说明不表示服务已部署。
+Windows 本地测试不替代目标 Linux 的 `systemd-analyze verify` 或 Nginx `nginx -t`。指定 VPS 的安装验证已单独记录；其他部署仍应核对实际用户、路径与完整配置，示例文件不是安装结果。
 
 ## 进程、目录与凭据
 

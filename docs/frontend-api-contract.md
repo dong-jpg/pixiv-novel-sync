@@ -287,29 +287,35 @@ Expected detail fields include:
 
 ### GET /api/dashboard/novels/{novel_id}/progress
 
-Used by: 小说阅读页阅读进度恢复。本机无记录时按服务端百分比恢复实际滚动位置；已有本机位置优先。异步读取期间用户主动滚动时不强行跳回旧位置。
+Used by: 小说阅读页核对账号进度。每次打开均读取服务器版本，旧无版本本机缓存保留为待选择候选；异步读取期间已有用户操作时不强行跳回旧位置。实现及上线状态分别见[阅读进度说明](READING_PROGRESS_SYNC.md)和[项目现状](STATUS.md)。
 
 无进度记录时返回默认值：
 
 ```json
-{ "novel_id": 123, "progress": 0, "status": "unread" }
+{ "novel_id": 123, "progress": 0, "status": "unread", "version": 0, "is_reset": false, "last_read_at": null, "created_at": null, "updated_at": null }
 ```
 
-有记录时返回存储的进度对象（含 `progress`、`status` 等字段）。
+有记录时返回相同字段，时间戳为 UTC。不存在的小说返回 404。三个进度接口均沿用 Dashboard 登录/CSRF，响应为 `private, no-store`。
 
 ### POST /api/dashboard/novels/{novel_id}/progress
 
-保存阅读进度。Body：
+条件保存阅读进度。Body 严格限定为：
 
 ```json
-{ "progress": 42, "status": "unread|reading|completed" }
+{ "progress": 42, "status": "reading", "base_version": 3, "mutation_id": "81d0ec46-950e-4333-b187-0416a71ff4d1" }
 ```
 
-`progress` 会被裁剪到 0–100；`status` 非法时返回 `400 { "error": "invalid status" }`。成功返回 `{ "success": true }`。
+`progress` 必须是 0–100 整数，`status` 为 `unread|reading|completed`，`base_version` 为客户端已确认的非负整数版本，`mutation_id` 为规范 UUID。新成功写入将版本严格加一，返回 `{ "success": true, "ok": true, "record": {...}, "applied_version": 4, "replayed": false }`。
+
+相同 mutation/内容重试返回原 `applied_version` 及 `replayed=true`；`record` 可包含其他设备随后写入的更高版本。客户端不能据旧回执给后续本机样本自动换用新版本。版本不符返回 409 `progress_conflict` 和当前 `record`，相同 mutation 改变内容返回 409 `progress_idempotency_conflict`。冲突需明确选择服务器进度或按已看到的版本再次 CAS 保留本机进度。
+
+缺少版本或 mutation 标识返回 428；额外字段、重复 JSON 键及无效类型返回 400；单次写请求超过 4096 字节返回 413；存储暂不可用返回 503。失败不裁剪参数或修改进度。
 
 ### DELETE /api/dashboard/novels/{novel_id}/progress
 
-删除阅读进度记录。成功返回 `{ "success": true }`。阅读页“重置阅读进度”在确认后调用；仅成功时清除本机记录并回到页首，失败保留当前位置。
+重置阅读进度，Body 为 `{ "base_version": 3, "mutation_id": "81d0ec46-950e-4333-b187-0416a71ff4d1" }`，其余字段拒绝。成功写入递增版本的 `progress=0/status=unread/is_reset=true` 标记，保留记录以拒绝旧设备写入；响应和幂等/冲突语义与 POST 一致。
+
+阅读页确认后调用。只有本次重置仍为当前版本且用户未继续阅读时才回到页首；错误、迟到回执和之后的新位置均不触发跳转。普通重置与删除小说时清理进度/回执是不同操作。
 
 ### POST /api/dashboard/novels/export-epub
 

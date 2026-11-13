@@ -1,6 +1,6 @@
 # 项目文档索引
 
-**最近更新：2026-11-12**
+**最近更新：2026-11-13**
 
 当前版本、测试基线、部署与待办统一看 [项目现状](STATUS.md)。
 
@@ -14,6 +14,7 @@ main 提供归档、同步、阅读、规则推荐与救援，以及 Provider、
 | [救援使用指南](RESCUE_USER_GUIDE.md) | 救援 Token、用户脚本安装与排查 |
 | [模型路由指南](MODEL_ROUTING_GUIDE.md) | Provider、模型目录、模型池、调用预算 |
 | [远程执行](REMOTE_EXECUTION.md) | VPS 与 InstaBox 试点、凭据隔离、运行和恢复 |
+| [跨设备阅读进度](READING_PROGRESS_SYNC.md) | 服务器版本、自动保存、离线恢复、冲突选择与重置 |
 
 ## 开发参考
 
@@ -27,12 +28,14 @@ main 提供归档、同步、阅读、规则推荐与救援，以及 Provider、
 | [界面规范](library-os-style-guide.md) | Library OS 视觉规范 |
 | [偏好与推荐需求](PREFERENCE_RECOMMENDER_REQUIREMENTS.md) | 偏好分析与推荐模块 |
 | [AI 模型目录与模型池统一需求](superpowers/specs/2026-07-27-ai-model-catalog-pools-unified-requirements.md) | 已实施的约束，修改路由前先读 |
+| [单站签到状态适配](CHECKIN_STATUS_ADAPTER.md) | 只读网关、身份和业务日约束；尚未注册云端任务 |
+| [云端协同后续阶段](superpowers/specs/2026-11-12-remote-next-phase-notes.md) | 阅读进度、Pixiv DTO 和签到底座已实现范围与剩余接入边界 |
 
 ## 历史记录
 
 - [archive/](archive/README.md)：带日期的审计、部署、整改与计划核对记录，移动端改造记录，旧版知识图谱与 API 文档。
 - [历史报告整合](archive/HISTORY_REPORTS.md) 与 [历史执行计划整合](archive/HISTORY_PLANS.md)：按时期汇总旧结论的去向。
-- [superpowers/plans](superpowers/plans/) 与 [superpowers/specs](superpowers/specs/)：各阶段的执行计划与设计，均已执行或被替代；原文与勾选保留，不能用勾选比例推算完成度。
+- [superpowers/plans](superpowers/plans/) 与 [superpowers/specs](superpowers/specs/)：各阶段的执行计划与设计，包含已完成、被替代和待接入阶段；当前进度以现状页及带日期验收为准，不能用勾选比例推算完成度。
 
 ## 维护规则
 
