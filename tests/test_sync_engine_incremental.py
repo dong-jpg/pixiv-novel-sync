@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import json
+from copy import copy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -80,7 +82,11 @@ class _Api:
         self.bookmark_calls = []
 
     def novel_detail(self, novel_id: int) -> SimpleNamespace:
-        return SimpleNamespace(novel=self.novel)
+        detail = self.novel
+        if getattr(detail, "id", None) != novel_id:
+            detail = copy(detail)
+            detail.id = novel_id
+        return SimpleNamespace(novel=detail)
 
     def webview_novel(self, novel_id: int) -> dict:
         return {"text": self.body}
@@ -185,6 +191,83 @@ def test_unchanged_novel_skips_text_db_writes_and_repairs_missing_assets(tmp_pat
     assert storage.text_writes == []
     assert db.get_recorded_asset_urls(100) == {"https://i.pximg.net/img-original/img/1.jpg"}
     assert db.conn.execute("SELECT 1 FROM sources WHERE novel_id = 100 AND source_type = 'bookmark_public'").fetchone() is not None
+
+
+def test_local_dto_keeps_raw_archive_hash_sources_and_file_before_database_order(tmp_path):
+    metadata = SimpleNamespace(
+        id=100, title="标题", caption="<p>简介</p>", user=SimpleNamespace(id=7, name="作者", account="author"),
+        tags=[{"name": "标签", "translated_name": None}], image_urls=SimpleNamespace(large=None),
+        series=None, visible=True, x_restrict=0, text_length=10, total_bookmarks=1, total_view=2,
+        is_original=True, novel_ai_type=0, marker={"page": 2},
+        future_readonly_metadata={"labels": ["original"]}, create_date="2026-11-12T12:00:00+09:00",
+    )
+    settings = _settings(tmp_path)
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    storage = _Storage()
+    original_write = storage.write_text
+    def write_before_db(path, text):
+        assert db.conn.execute("SELECT 1 FROM novels WHERE novel_id=100").fetchone() is None
+        original_write(path, text)
+    storage.write_text = write_before_db
+    service = BookmarkNovelSyncService(_Api(metadata, "内容\r\n"), db, storage, settings)
+    expected_raw = _to_plain(metadata)
+    try:
+        result = service._sync_novel_inner(100, metadata, "private", False, True, True, "bookmark_private", "7")
+        assert result["novels"] == 1
+        row = db.conn.execute("SELECT raw_json,meta_hash,restrict_value FROM novels WHERE novel_id=100").fetchone()
+        assert row["raw_json"] == stable_json_dumps(expected_raw)
+        assert row["meta_hash"] == sha256_text(stable_json_dumps(sync_engine._stable_meta_for_hash(expected_raw)))
+        assert row["restrict_value"] == "private"
+        archive = next(text for path, text in storage.text_writes if path.name == "meta.json")
+        assert json.loads(archive) == expected_raw
+        assert db.conn.execute("SELECT text_raw FROM novel_texts WHERE novel_id=100").fetchone()[0] == "内容\n"
+        assert db.conn.execute("SELECT raw_json FROM users WHERE user_id=7").fetchone()[0] == stable_json_dumps(expected_raw["user"])
+        assert db.conn.execute("SELECT source_key FROM sources WHERE novel_id=100 AND source_type='bookmark_private'").fetchone()[0] == "7"
+        initial_writes = list(storage.text_writes)
+        metadata.total_bookmarks = 999
+        metadata.total_view = 888
+        repeated = service._sync_novel_inner(100, metadata, None, False, True, True, "following_user", "7")
+        assert repeated["skipped"] == 1 and storage.text_writes == initial_writes
+        assert db.conn.execute("SELECT restrict_value FROM novels WHERE novel_id=100").fetchone()[0] == "private"
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("failure", ["detail_error", "text_error", "wrong_id", "cancel_after_detail"])
+def test_failed_or_cancelled_fetch_cannot_overwrite_an_existing_archive(tmp_path, failure):
+    settings = _settings(tmp_path)
+    db = Database(settings.storage.db_path)
+    db.init_schema()
+    storage = _Storage()
+    api = _Api()
+    flag = {"cancel": False}
+    service = BookmarkNovelSyncService(api, db, storage, settings, stop_requested=lambda: flag["cancel"])
+    try:
+        service._sync_novel_inner(100, _Novel(), "public", False, True, True, "bookmark_public")
+        initial_writes = list(storage.text_writes)
+        original = dict(db.conn.execute("SELECT * FROM novels WHERE novel_id=100").fetchone())
+        if failure == "detail_error":
+            api.novel_detail = lambda novel_id: {"error": {"message": "Rate Limit", "user_message": ""}}
+        elif failure == "text_error":
+            api.webview_novel = lambda novel_id: {"error": {"message": "authentication failed", "user_message": ""}}
+        elif failure == "wrong_id":
+            api.novel_detail = lambda novel_id: SimpleNamespace(novel=SimpleNamespace(id=101))
+        else:
+            def detail(novel_id):
+                flag["cancel"] = True
+                return SimpleNamespace(novel=_Novel())
+            api.novel_detail = detail
+        if failure == "cancel_after_detail":
+            with pytest.raises(InterruptedError):
+                service._sync_novel(_Novel(), "public", False, True, True, "bookmark_public")
+        else:
+            assert service._sync_novel(_Novel(), "public", False, True, True, "bookmark_public")["failed"] == 1
+        assert storage.text_writes == initial_writes
+        assert dict(db.conn.execute("SELECT * FROM novels WHERE novel_id=100").fetchone()) == original
+        assert db.conn.execute("SELECT text_raw FROM novel_texts WHERE novel_id=100").fetchone()[0] == "body\n"
+    finally:
+        db.close()
 
 
 def test_sleep_with_progress_cancel_raises_when_progress_callback_requests_stop(monkeypatch) -> None:
@@ -968,7 +1051,9 @@ def test_sync_subscribed_series_counts_content_unavailable_separately(
             return None
 
         def novel_detail(self, novel_id: int):
-            return SimpleNamespace(novel=_Novel())
+            detail = _Novel()
+            detail.id = novel_id
+            return SimpleNamespace(novel=detail)
 
         def webview_novel(self, novel_id: int):
             raise PixivError(_PIXIVPY_MISLEADING_REASON, body=_UNAVAILABLE_BODY)

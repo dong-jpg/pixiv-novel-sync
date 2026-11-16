@@ -960,3 +960,13 @@ class SchemaMixin:
 
             """
         )
+        columns = {row[1] for row in self.conn.execute('PRAGMA table_info(reading_progress)')}
+        if 'version' not in columns:
+            self.conn.execute('ALTER TABLE reading_progress ADD COLUMN version INTEGER NOT NULL DEFAULT 1 CHECK(version>0)')
+        if 'is_reset' not in columns:
+            self.conn.execute('ALTER TABLE reading_progress ADD COLUMN is_reset INTEGER NOT NULL DEFAULT 0 CHECK(is_reset IN (0,1))')
+        self.conn.execute('''CREATE TABLE IF NOT EXISTS reading_progress_mutations (
+            novel_id INTEGER NOT NULL REFERENCES reading_progress(novel_id) ON DELETE CASCADE,
+            mutation_id TEXT NOT NULL, request_hash TEXT NOT NULL CHECK(length(request_hash)=64),
+            applied_version INTEGER NOT NULL CHECK(applied_version>0),
+            PRIMARY KEY(novel_id,mutation_id), UNIQUE(novel_id,applied_version))''')

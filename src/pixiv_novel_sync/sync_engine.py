@@ -11,61 +11,44 @@ from typing import Any, Callable, Iterable, TypeVar
 
 from pixivpy3 import AppPixivAPI
 
+from . import pixiv_fetch as _pixiv_fetch
 from .models import AssetRecord, NovelRecord, NovelTextRecord, SourceRecord, UserRecord
+from .pixiv_fetch import (
+    _pixiv_content_unavailable_reason,
+    fetch_novel,
+)
 from .rate_limiter import RateLimiter
 from .settings import Settings
 from .storage_db import Database
 from .storage_files import FileStorage
+from .sync import utils as _sync_helpers
 from .utils_env import secure_atomic_write
 from .sync.utils import (
     apply_pixiv_retry_patch,
     response_is_pixiv_error_page,
     _to_plain,
-    _extract_tags,
-    _extract_cover_url,
-    _extract_novel_text,
-    _collect_asset_urls,
     _filename_from_url,
     _empty_stats,
     _merge_stats,
 )
-from .utils_hashing import sha256_text, stable_json_dumps
-from .utils_text import clean_caption, normalize_text, to_markdown
+from .utils_hashing import stable_json_dumps
+from .utils_text import to_markdown
 
 logger = logging.getLogger(__name__)
 
-# 这些计数每次打开作品都会变。算进 meta_hash 会让「正文没变」的第二轮仍整篇重写。
-_VOLATILE_NOVEL_FIELDS = {
-    "total_bookmarks",
-    "total_view",
-    "total_views",
-    "total_comments",
-    "total_comment",
-    "comment_count",
-}
-
-
-def _stable_meta_for_hash(plain: Any) -> Any:
-    if not isinstance(plain, dict):
-        return plain
-    return {key: value for key, value in plain.items() if key not in _VOLATILE_NOVEL_FIELDS}
-
+# 兼容既有辅助函数导入；抓取和规范化实现统一归 pixiv_fetch 所有。
+PixivErrorPage = _pixiv_fetch.PixivErrorPage
+_parse_pixiv_error_json = _pixiv_fetch._parse_pixiv_error_json
+_stable_meta_for_hash = _pixiv_fetch._stable_meta_for_hash
+_RATE_LIMIT_ERROR_TOKENS = _pixiv_fetch._RATE_LIMIT_ERROR_TOKENS
+_extract_tags = _sync_helpers._extract_tags
+_extract_cover_url = _sync_helpers._extract_cover_url
+_extract_novel_text = _sync_helpers._extract_novel_text
+_collect_asset_urls = _sync_helpers._collect_asset_urls
 
 class RemoteListTruncated(RuntimeError):
     """远端列表翻页触顶，结果不能拿来做差集。"""
 
-
-class PixivErrorPage(RuntimeError):
-    """接口回了 ``{"error": {...}}`` 而不是数据。
-
-    pixivpy 遇到限流/鉴权失败/作品不可见时不抛异常，而是把错误 JSON 当正常结果返回。
-    ``body`` 保留原始 dict，``_parse_pixiv_error_json`` 据此区分「作品确实不可获取」
-    （有 user_message）与临时故障。
-    """
-
-    def __init__(self, endpoint: str, body: Any) -> None:
-        super().__init__(f"{endpoint} 返回错误页: {body}")
-        self.body = dict(body) if isinstance(body, dict) else body
 
 # 关注列表枚举（user_following）专用的翻页上限，每页 30 人 ⇒ 50 页 = 1500 人。
 # 它只是自引用 next_url 死循环的兜底，绝不能复用 max_pages_per_run：后者的语义是
@@ -170,11 +153,6 @@ def _stop_requested_from_progress(progress_callback: Any) -> Any:
     return _stop_requested
 
 
-# Pixiv 限流/风控时 error JSON 的 message 通常是 "Rate Limit"；这类失败是临时的，
-# 必须留在原有失败/重试路径里，绝不能被当成"正文不可获取"。
-_RATE_LIMIT_ERROR_TOKENS = ("rate limit", "rate-limit", "ratelimit", "too many requests", "429")
-
-
 def _resolve_bookmark_max_pages(settings: Any) -> int | None:
     """收藏列表专用翻页上限：优先 ``sync.bookmark_max_pages_per_run``，缺省回落。
 
@@ -266,45 +244,6 @@ def _classify_series_response(series_data: Any) -> str:
         return "unknown"
 
 
-def _parse_pixiv_error_json(exc: BaseException) -> dict[str, Any] | None:
-    """尽力从异常里解析出 Pixiv 返回的 ``{"error": {...}}`` 结构。
-
-    作品被删除或设为不可见时，webview 接口返回的是
-    ``{"error": {"user_message": "尚无此页", ...}}``；pixivpy 在 aapi.py 里用
-    ``re.search(...).groups()`` 抠正文 JSON，匹配不到就抛
-    ``PixivError("Extract novel content error: 'NoneType' object has no attribute 'groups'")``，
-    把真实原因藏进异常的 ``body`` 里。这里负责把它挖出来。
-
-    fail-safe：只有明确解析出 error 对象才返回 dict，其余一律返回 None。
-    """
-    body = getattr(exc, "body", None)
-    if isinstance(body, dict):
-        error = body.get("error")
-        return error if isinstance(error, dict) else None
-
-    candidates: list[Any] = []
-    if isinstance(body, (str, bytes, bytearray)):
-        candidates.append(body)
-    candidates.append(str(exc))
-
-    for raw in candidates:
-        if isinstance(raw, (bytes, bytearray)):
-            text = bytes(raw).decode("utf-8", "replace")
-        else:
-            text = str(raw)
-        start = text.find("{")
-        end = text.rfind("}")
-        if start < 0 or end <= start:
-            continue
-        try:
-            data = json.loads(text[start : end + 1])
-        except (ValueError, TypeError):
-            continue
-        if isinstance(data, dict) and isinstance(data.get("error"), dict):
-            return data["error"]
-    return None
-
-
 def _resolve_archive_restrict(requested: str | None, stored: Any) -> str:
     """决定作品落在 public 还是 private 归档树。
 
@@ -317,27 +256,6 @@ def _resolve_archive_restrict(requested: str | None, stored: Any) -> str:
     if requested is not None:
         return "private" if requested == "private" else "public"
     return "private" if str(stored or "") == "private" else "public"
-
-
-def _pixiv_content_unavailable_reason(exc: BaseException) -> str | None:
-    """判断异常是否代表"正文确实不可获取"，是则返回可读的中文原因。
-
-    仅当 Pixiv 明确回了 error JSON 且带非空 ``user_message``（例如「尚无此页」）时才
-    判定为不可获取——这类失败没有重试价值。限流（message 含 Rate Limit）或鉴权失败
-    （user_message 为空）属于临时故障，返回 None 走原有失败路径继续重试。
-    """
-    error = _parse_pixiv_error_json(exc)
-    if error is None:
-        return None
-    user_message = str(error.get("user_message") or "").strip()
-    message = str(error.get("message") or "").strip()
-    reason = str(error.get("reason") or "").strip()
-    blob = " ".join((user_message, message, reason)).lower()
-    if any(token in blob for token in _RATE_LIMIT_ERROR_TOKENS):
-        return None
-    if not user_message:
-        return None
-    return user_message
 
 
 class BookmarkNovelSyncService:
@@ -2215,36 +2133,14 @@ class BookmarkNovelSyncService:
         source_type: str,
         source_key: str | None = None,
     ) -> dict[str, int]:
-        detail = self.api.novel_detail(novel_id)
-        if response_is_pixiv_error_page(detail):
-            # 必须在写库前中止：错误页没有 novel 字段，继续往下会把已归档作品覆写成
-            # title=novel_<id>、user_id=0 的占位数据，而 archive_complete 仍为真、此后不再修复。
-            raise PixivErrorPage("novel_detail", detail)
-        # pixivpy 的 JsonDict 对缺键返回 None 而不是抛 AttributeError，
-        # getattr 的默认值永远不会生效，所以显式回落到列表条目
-        detail_novel = getattr(detail, "novel", None) or novel
-        user = getattr(detail_novel, "user", None)
-        if user is None:
-            user_id = getattr(novel, "user_id", 0) or 0
-            user_name = "unknown"
-            account = None
-        else:
-            user_id = int(getattr(user, "id", 0) or 0)
-            user_name = getattr(user, "name", "unknown")
-            account = getattr(user, "account", None)
-
-        caption = clean_caption(getattr(detail_novel, "caption", None))
-        tags_json = stable_json_dumps(_extract_tags(getattr(detail_novel, "tags", [])))
-        meta_plain = _to_plain(detail_novel)
-        meta_hash = sha256_text(stable_json_dumps(_stable_meta_for_hash(meta_plain)))
-        cover_url = _extract_cover_url(detail_novel)
-        series = getattr(detail_novel, "series", None)
-        series_id = int(series.id) if getattr(series, "id", None) else None
-        title = getattr(detail_novel, "title", f"novel_{novel_id}")
-
-        webview = self.api.webview_novel(novel_id)
-        body = normalize_text(_extract_novel_text(webview))
-        text_hash = sha256_text(body)
+        fetched = fetch_novel(self.api, novel_id, fallback_novel=novel,
+                              stop_requested=self.stop_requested)
+        metadata = fetched.normalized_metadata()
+        user_id, user_name, account = metadata["user_id"], metadata["user_name"], metadata["account"]
+        caption, tags_json = metadata["caption"], metadata["tags_json"]
+        cover_url, series_id, title = metadata["cover_url"], metadata["series_id"], metadata["title"]
+        meta_plain, meta_hash = fetched.metadata, fetched.meta_hash
+        body, text_hash = fetched.text, fetched.text_hash
 
         # 3.5 hash增量:读旧hash比对,未变更跳过写盘写库
         existing_row = self.db.conn.execute(
@@ -2266,7 +2162,7 @@ class BookmarkNovelSyncService:
             novel_dir = self.storage.base_dir(restrict) / archive_dir
         text_unchanged = existing_text_row and existing_text_row[0] == text_hash
 
-        expected_assets = _collect_asset_urls(detail_novel, webview) if download_assets else []
+        expected_assets = list(fetched.assets) if download_assets else []
         missing_assets = expected_assets
         if expected_assets:
             recorded_urls = self.db.get_recorded_asset_urls(novel_id)
@@ -2285,8 +2181,8 @@ class BookmarkNovelSyncService:
             assets_downloaded = self._download_and_record_assets(novel_dir=novel_dir, restrict=restrict, user_id=user_id, user_name=user_name, novel_id=novel_id, title=title, assets=missing_assets)
             return {
                 "users": 0, "novels": 0, "texts_updated": 0, "assets_downloaded": assets_downloaded,
-                "bookmarks": int(getattr(detail_novel, "total_bookmarks", 0) or 0),
-                "views": int(getattr(detail_novel, "total_view", 0) or 0),
+                "bookmarks": metadata["total_bookmarks"],
+                "views": metadata["total_views"],
                 "skipped": 1,
             }
 
@@ -2310,7 +2206,7 @@ class BookmarkNovelSyncService:
                         user_id=user_id,
                         name=user_name,
                         account=account,
-                        raw_json=stable_json_dumps(_to_plain(user) if user else "{}"),
+                        raw_json=metadata["user_raw_json"],
                     )
                 )
 
@@ -2321,15 +2217,15 @@ class BookmarkNovelSyncService:
                     series_id=series_id,
                     title=title,
                     caption=caption,
-                    visible=bool(getattr(detail_novel, "visible", True)),
+                    visible=metadata["visible"],
                     restrict=restrict,
-                    x_restrict=int(getattr(detail_novel, "x_restrict", 0) or 0),
-                    text_length=int(getattr(detail_novel, "text_length", 0) or 0),
-                    total_bookmarks=int(getattr(detail_novel, "total_bookmarks", 0) or 0),
-                    total_views=int(getattr(detail_novel, "total_view", 0) or 0),
+                    x_restrict=metadata["x_restrict"],
+                    text_length=metadata["text_length"],
+                    total_bookmarks=metadata["total_bookmarks"],
+                    total_views=metadata["total_views"],
                     cover_url=cover_url,
                     tags_json=tags_json,
-                    create_date=getattr(detail_novel, "create_date", None),
+                    create_date=metadata["create_date"],
                     raw_json=stable_json_dumps(meta_plain),
                     meta_hash=meta_hash,
                     archive_dir=archive_dir,
@@ -2353,8 +2249,8 @@ class BookmarkNovelSyncService:
             "novels": 1,
             "texts_updated": 1,
             "assets_downloaded": assets_downloaded,
-            "bookmarks": int(getattr(detail_novel, "total_bookmarks", 0) or 0),
-            "views": int(getattr(detail_novel, "total_view", 0) or 0),
+            "bookmarks": metadata["total_bookmarks"],
+            "views": metadata["total_views"],
         }
 
     def _download_and_record_assets(

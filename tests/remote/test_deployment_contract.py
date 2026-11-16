@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -60,3 +62,18 @@ def test_nginx_bootstrap_and_worker_routes_preserve_identity_streaming():
             f"client_max_body_size {limit};",
         ):
             assert directive in block, f"{location} is missing {directive}"
+
+
+@pytest.mark.parametrize("location", ("= /api/remote-worker/v1/sessions", "^~ /api/remote-worker/v1/"))
+def test_nginx_worker_routes_forward_only_the_verified_client_address(location):
+    source = (ROOT / "config/nginx/remote-worker-location.conf").read_text(encoding="utf-8")
+    block = source.split(f"location {location} {{", 1)[1].split("\n}", 1)[0]
+    assert "proxy_set_header X-Forwarded-For $remote_addr;" in block
+    assert "$proxy_add_x_forwarded_for" not in block
+
+
+def test_nginx_bootstrap_rate_limit_preserves_https_policy():
+    source = (ROOT / "config/nginx/remote-worker-location.conf").read_text(encoding="utf-8")
+    block = source.split("location @pixiv_remote_session_limited {", 1)[1].split("\n}", 1)[0]
+    # A location with its own add_header directives no longer inherits server headers.
+    assert 'add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;' in block

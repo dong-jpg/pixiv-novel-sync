@@ -84,6 +84,8 @@ class SyntheticUpstream(BaseHTTPRequestHandler):
             "sha256": hashlib.sha256(body).hexdigest(),
             "accept_encoding": self.headers.get("Accept-Encoding"),
             "connection": self.headers.get("Connection"),
+            "forwarded_for": self.headers.get("X-Forwarded-For"),
+            "real_ip": self.headers.get("X-Real-IP"),
             "forwarded_proto": self.headers.get("X-Forwarded-Proto"),
         }
         self.events.append(event)
@@ -154,7 +156,12 @@ http {{
     def request(method, path, data=b"{}"):
         conn = connection()
         try:
-            conn.request(method, path, body=data, headers={"Accept-Encoding": "gzip"})
+            conn.request(method, path, body=data, headers={
+                "Accept-Encoding": "gzip",
+                "X-Forwarded-For": "198.51.100.7, 203.0.113.9",
+                "X-Real-IP": "192.0.2.8",
+                "X-Forwarded-Proto": "http",
+            })
             response = conn.getresponse()
             return response.status, dict(response.getheaders()), response.read()
         finally:
@@ -167,8 +174,11 @@ http {{
         observed = json.loads(body)["observed"]
         assert observed["accept_encoding"] == "identity"
         assert observed["connection"] is None
+        assert observed["forwarded_for"] == "127.0.0.1", observed["forwarded_for"]
+        assert observed["real_ip"] == "127.0.0.1", observed["real_ip"]
         assert observed["forwarded_proto"] == "https"
         assert headers["Cache-Control"] == "private, no-store"
+        assert headers["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"
 
     process = subprocess.Popen(
         [nginx, "-p", str(directory), "-c", str(config)],
@@ -229,6 +239,7 @@ http {{
             if status == 429:
                 assert headers["Retry-After"] == "10"
                 assert headers["Cache-Control"] == "private, no-store"
+                assert headers["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"
                 assert json.loads(body) == {"error": "rate_limited"}
                 break
         assert 429 in statuses
@@ -237,6 +248,8 @@ http {{
         return {
             "full_config_syntax": "passed",
             "tls_identity_both_locations": "passed",
+            "verified_client_address_both_locations": "passed",
+            "https_policy_including_bootstrap_429": "passed",
             "upload_streaming_with_concurrent_heartbeat": "passed",
             "bootstrap_16k_and_upload_33m_limits": "passed",
             "bootstrap_429_retry_after_and_heartbeat_isolation": "passed",

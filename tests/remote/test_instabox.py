@@ -316,6 +316,79 @@ def test_slow_response_read1_cannot_run_past_overall_deadline(monkeypatch):
     assert response.closed
 
 
+@pytest.mark.parametrize("attached_connection", [True, False])
+@pytest.mark.parametrize("supports_read1", [True, False])
+def test_provider_body_socket_timeout_tracks_remaining_deadline(monkeypatch, attached_connection, supports_read1):
+    import http.client
+    import io
+
+    from urllib3.connection import HTTPConnection
+    from urllib3.response import HTTPResponse
+
+    clock = [100.0]
+    monkeypatch.setattr("pixiv_novel_sync.remote.instabox.time.monotonic", lambda: clock[0])
+
+    class SlowSocket:
+        timeout = 10.0
+
+        def __init__(self):
+            self.timeouts = []
+
+        def settimeout(self, value):
+            self.timeout = value
+            self.timeouts.append(value)
+
+        def makefile(self, mode):
+            return io.BufferedReader(SlowWire(self))
+
+        def close(self):
+            pass
+
+    class SlowWire(io.RawIOBase):
+        def __init__(self, sock):
+            self._sock = sock
+            self.headers_sent = False
+
+        def readable(self):
+            return True
+
+        def readinto(self, buffer):
+            if not self.headers_sent:
+                value = b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 10000\r\nRetry-After: 120\r\n\r\n"
+                self.headers_sent = True
+            else:
+                clock[0] += min(6.0, self._sock.timeout)
+                if self._sock.timeout < 6:
+                    raise TimeoutError("fixture body timed out")
+                value = b" "
+            buffer[:len(value)] = value
+            return len(value)
+
+    sock = SlowSocket()
+    original = http.client.HTTPResponse(sock)
+    original.begin()
+    connection = HTTPConnection("fixture.invalid")
+    connection.sock = sock if attached_connection else None
+    raw = HTTPResponse(body=original, original_response=original, connection=connection,
+                       headers=original.headers.items(), status=429, preload_content=False,
+                       decode_content=False)
+    if not supports_read1:
+        raw.read1 = None
+    response = requests.Response()
+    response.status_code = 429
+    response.headers.update(original.headers)
+    response.raw = raw
+
+    with pytest.raises(ProviderError, match="provider_unreachable") as caught:
+        InstaBoxClient("ibk_test", "m_fixture", Transport(response)).machine()
+
+    assert clock[0] == pytest.approx(115)
+    assert sock.timeouts == pytest.approx([10, 9, 3])
+    assert caught.value.http_status == 429
+    assert caught.value.retry_after == 120
+    assert raw.closed
+
+
 def test_provider_compression_is_rejected_before_read():
     response = Response(200, machine_payload(), {"Content-Encoding": "gzip"})
     with pytest.raises(ProviderError, match="invalid_provider_response"):

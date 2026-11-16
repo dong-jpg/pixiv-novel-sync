@@ -267,12 +267,39 @@
     //
     // 因此所有变更类请求都必须走 window.csrfFetch，不要自己拼 fetch。
     let _csrfToken = null;
-    window.ensureCsrfToken = async function () {
+    let _csrfPromise = null;
+    let _csrfGeneration = 0;
+    window.invalidateCsrfToken = function () {
+      _csrfGeneration += 1;
+      _csrfToken = null;
+      _csrfPromise = null;
+    };
+    window.ensureCsrfToken = async function (options) {
+      if (options && options.refresh) window.invalidateCsrfToken();
       if (_csrfToken) return _csrfToken;
-      const response = await fetch('/api/csrf-token');
-      const data = await response.json();
-      _csrfToken = data.csrf_token;
-      return _csrfToken;
+      if (_csrfPromise) return _csrfPromise;
+      const generation = _csrfGeneration;
+      _csrfPromise = (async function () {
+        try {
+          const response = await fetch('/api/csrf-token', {cache: 'no-store'});
+          const data = await response.json();
+          // 另一个标签页重新登录后，旧的异步回执不能恢复旧令牌。
+          if (generation !== _csrfGeneration) return window.ensureCsrfToken();
+          if (!response.ok || typeof data.csrf_token !== 'string' || !/^[!-~]{1,256}$/.test(data.csrf_token)) {
+            const error = new Error('无法获取当前登录的安全令牌，请重新登录或重试。');
+            error.status = response.status;
+            throw error;
+          }
+          _csrfToken = data.csrf_token;
+          return _csrfToken;
+        } catch (error) {
+          if (generation !== _csrfGeneration) return window.ensureCsrfToken();
+          throw error;
+        } finally {
+          if (generation === _csrfGeneration) _csrfPromise = null;
+        }
+      })();
+      return _csrfPromise;
     };
     window.csrfFetch = async function (url, options) {
       const opts = Object.assign({}, options);
