@@ -134,25 +134,31 @@ class WorkerHTTP:
                 raise RemoteError("response_too_large", 502)
         chunks, count = bytearray(), 0
         raw = getattr(response, "raw", None)
-        if raw is not None and callable(getattr(raw, "read1", None)):
-            def available_chunks():
-                while True:
-                    if self._monotonic() >= deadline:
-                        raise RemoteError("worker_transient", 503)
-                    # urllib3 read1 makes one underlying read rather than
-                    # filling 64KiB while a peer trickles one byte at a time.
-                    chunk = raw.read1(64 * 1024, decode_content=False)
-                    if not chunk:
-                        return
-                    yield chunk
-            iterator = available_chunks()
-        else:
-            # Injected transports may expose only an already-buffered iterator.
-            # Very old urllib3 lacks read1; read(1) retains a bounded slow-peer
-            # deadline there instead of waiting to fill a large chunk.
-            chunk_size = 1 if raw is not None else 64 * 1024
-            iterator = response.iter_content(chunk_size=chunk_size)
-        for chunk in iterator:
+        read1 = getattr(raw, "read1", None)
+        # 旧 urllib3 的逐字节回退也必须在每次读取前收紧 socket 超时。
+        iterator = (None if callable(read1) else
+                    response.iter_content(chunk_size=1 if raw is not None else 64 * 1024))
+        while True:
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise RemoteError("worker_transient", 503)
+            sock = getattr(getattr(raw, "connection", None), "sock", None)
+            if sock is None:
+                # Connection: close / HTTP/1.0 会将 socket 移交给尚未读完的
+                # http.client 响应，此时 urllib3.connection.sock 已为 None。
+                stream = getattr(getattr(raw, "_fp", None), "fp", None)
+                sock = getattr(getattr(stream, "raw", None), "_sock", None)
+            if sock is not None:
+                sock.settimeout(min(10.0, remaining))
+            if callable(read1):
+                # read1 只做一次底层读取，避免等待慢速响应填满 64 KiB。
+                chunk = read1(64 * 1024, decode_content=False)
+                if not chunk:
+                    break
+            else:
+                chunk = next(iterator, None)
+                if chunk is None:
+                    break
             if self._monotonic() >= deadline:
                 raise RemoteError("worker_transient", 503)
             if not chunk:

@@ -1,0 +1,99 @@
+{
+  "backup_file": "backup/final-retry1.db",
+  "size_bytes": 2840309760,
+  "started_utc": "2026-11-12T05:49:44.616000+00:00",
+  "finished_utc": "2026-11-12T05:50:46.277652+00:00",
+  "elapsed_seconds": 61.662,
+  "mode": "read_only_immutable_standalone_snapshot",
+  "query_cache_kib": 8192,
+  "mmap_bytes": 0,
+  "process_address_space_limit_mib": 256,
+  "io_priority": "idle",
+  "source_metadata_unchanged": true,
+  "preexisting_sidecars": [
+    {
+      "name": "final-retry1.db-wal",
+      "size_bytes": 0,
+      "mtime_ns": 1794454054469166530
+    },
+    {
+      "name": "final-retry1.db-shm",
+      "size_bytes": 32768,
+      "mtime_ns": 1794455071501383769
+    }
+  ],
+  "sidecars_metadata_unchanged": true,
+  "prior_check_processes_present": false,
+  "full_database_quick_check": "not_repeated; earlier full scans timed out, not a corruption finding",
+  "scope_note": "SHA256 proves file identity; foreign_key_check proves only relational constraints. Partial quick_check does not certify the entire database. online.db prior full checks concern a different snapshot.",
+  "results": [
+    {
+      "check": "foreign_key_check",
+      "sqlite_version": "3.45.1",
+      "scope": "entire_database",
+      "status": "passed",
+      "complete": true,
+      "violation_count": 0,
+      "elapsed_seconds": 12.337,
+      "max_rss_kib": 26188,
+      "wall_elapsed_seconds": 12.454
+    },
+    {
+      "check": "sha256",
+      "status": "complete",
+      "complete": true,
+      "bytes_read": 2840309760,
+      "sha256": "b8703b7564a255ce04123e593d634acaac291aad0a0e5457503c358188ae07c8",
+      "elapsed_seconds": 48.35,
+      "max_rss_kib": 19344,
+      "wall_elapsed_seconds": 48.503
+    },
+    {
+      "check": "small_table_quick_check",
+      "sqlite_version": "3.45.1",
+      "scope": "partial_table_checks_only",
+      "full_database_quick_check": false,
+      "checks": [
+        {
+          "table": "sync_watermarks",
+          "status": "passed",
+          "complete": true,
+          "elapsed_seconds": 0.002,
+          "reply_count": 1
+        },
+        {
+          "table": "web_auth_sessions",
+          "status": "passed",
+          "complete": true,
+          "elapsed_seconds": 0.002,
+          "reply_count": 1
+        }
+      ],
+      "status": "partial_checks_recorded",
+      "elapsed_seconds": 0.087,
+      "max_rss_kib": 18112,
+      "wall_elapsed_seconds": 0.705
+    }
+  ],
+  "full_quick_check_attempt": {
+    "check": "quick_check",
+    "scope": "entire_database",
+    "status": "timed_out",
+    "complete": false,
+    "timeout_source": "subprocess_hard_limit",
+    "started_utc": "2026-11-12T05:54:59.180599+00:00",
+    "finished_utc": "2026-11-12T05:57:14.284272+00:00",
+    "wall_elapsed_seconds": 135.104,
+    "sql_timeout_seconds": 120,
+    "subprocess_timeout_seconds": 135,
+    "mode": "read_only_immutable_standalone_snapshot",
+    "query_cache_kib": 8192,
+    "mmap_bytes": 0,
+    "address_space_limit_mib": 256,
+    "io_priority": "idle",
+    "source_metadata_unchanged": true,
+    "sidecars_metadata_unchanged": true,
+    "attempt_count": 1,
+    "retries": 0
+  }
+}

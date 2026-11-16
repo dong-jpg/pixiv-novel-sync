@@ -269,7 +269,7 @@ class Scenario:
         if self.worker is not None:
             self.worker.stop()
         for app in self.extra_apps:
-            app.extensions["close_work_analysis_owner"]()
+            app.extensions.get("close_work_analysis_owner", lambda: None)()
 
 
 @pytest.fixture

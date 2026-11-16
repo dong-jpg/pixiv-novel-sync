@@ -106,6 +106,13 @@ class RemoteStore:
         with self.read() as conn:
             return self._submission(conn, key, request_sha256)
 
+    @staticmethod
+    def _record_activity(conn):
+        # 短任务可能在 controller 两次观察之间完成，活动必须同事务持久化。
+        # 由下次确认无活动的 tick 开始完整宽限；幂等回执不调用此方法。
+        conn.execute("""UPDATE machine_control SET idle_since=NULL,revision=revision+1
+                        WHERE id=1 AND idle_since IS NOT NULL""")
+
     def enqueue(self, key: str, request_sha256: str, kind: str, input_sha256: str, now: float):
         require_key(key)
         require_digest(request_sha256)
@@ -132,6 +139,7 @@ class RemoteStore:
             conn.execute("""INSERT INTO runs(run_id,idempotency_key,request_sha256,kind,input_sha256,
                          state,created_at,not_before,deadline) VALUES(?,?,?,?,?,'queued',?,?,?)""",
                          (run_id, key, request_sha256, kind, input_sha256, now, now, now + RUN_SECONDS))
+            self._record_activity(conn)
             return dict(conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone())
 
     def _session(self, conn, session_id: str, now: float):
@@ -297,6 +305,7 @@ class RemoteStore:
                 now, min(now + LEASE_SECONDS, hard_deadline), hard_deadline))
             conn.execute("UPDATE meta SET next_fence=next_fence+1 WHERE id=1")
             conn.execute("UPDATE runs SET state='active',error_code=NULL WHERE run_id=?", (run["run_id"],))
+            self._record_activity(conn)
             return self._grant(self._attempt(conn, attempt_id), now)
 
     def _check_grant(self, conn, grant: Grant, now: float):
@@ -351,8 +360,11 @@ class RemoteStore:
         # into another retry merely because it won that race.
         if now >= row["hard_deadline"] or now >= row["deadline"]:
             state, code = "expired", "attempt_expired"
-        conn.execute("UPDATE attempts SET state=?,error_code=?,ended_at=? WHERE attempt_id=? AND state='active'",
-                     (state, code, now, row["attempt_id"]))
+        changed = conn.execute("UPDATE attempts SET state=?,error_code=?,ended_at=? WHERE attempt_id=? AND state='active'",
+                               (state, code, now, row["attempt_id"]))
+        if not changed.rowcount:
+            return
+        RemoteStore._record_activity(conn)
         delay = retry_delay(row["kind"], row["attempt_no"], code)
         if state == "expired" or now >= row["deadline"]:
             conn.execute("UPDATE runs SET state='expired',error_code=?,finished_at=? WHERE run_id=? AND state='active'", (code, now, row["run_id"]))
@@ -379,6 +391,7 @@ class RemoteStore:
             if row["state"] in ("queued", "active"):
                 conn.execute("UPDATE attempts SET state='cancelled',error_code='cancelled',ended_at=? WHERE run_id=? AND state='active'", (now, run_id))
                 conn.execute("UPDATE runs SET state='cancelled',error_code='cancelled',finished_at=? WHERE run_id=?", (now, run_id))
+                self._record_activity(conn)
             return dict(conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone())
 
     def _sweep(self, conn, now):
@@ -393,7 +406,10 @@ class RemoteStore:
             else:
                 continue
             changes += 1
-        changes += conn.execute("UPDATE runs SET state='expired',error_code='run_expired',finished_at=? WHERE state='queued' AND deadline<=?", (now, now)).rowcount
+        expired = conn.execute("UPDATE runs SET state='expired',error_code='run_expired',finished_at=? WHERE state='queued' AND deadline<=?", (now, now)).rowcount
+        if expired:
+            self._record_activity(conn)
+        changes += expired
         conn.execute("UPDATE sessions SET state='expired' WHERE state='active' AND expires_at<=?", (now,))
         conn.execute("DELETE FROM blob_reservations WHERE expires_at<=?", (now,))
         return changes
@@ -449,6 +465,7 @@ class RemoteStore:
                 raise RemoteError("storage_quota", 413)
             reservation_id = str(uuid.uuid4())
             conn.execute("INSERT INTO blob_reservations VALUES(?,?,?,?,?)", (reservation_id, purpose, owner_key, size_bytes, now + LEASE_SECONDS))
+            self._record_activity(conn)
             return reservation_id
 
     def _account_files(self, conn, now):

@@ -215,6 +215,7 @@ class ResultService:
                          (now, grant.attempt_id))
             conn.execute("UPDATE runs SET state='succeeded',finished_at=?,error_code=NULL WHERE run_id=?",
                          (now, grant.run_id))
+            self.store._record_activity(conn)
             run, attempt, artifact = self._records(conn, grant, now)
             return _published_receipt(run, attempt, artifact)
 

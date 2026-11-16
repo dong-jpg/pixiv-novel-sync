@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import uuid
 from dataclasses import replace
@@ -12,6 +13,7 @@ from pixiv_novel_sync.remote.control_store import ControlStore
 from pixiv_novel_sync.remote.epub_task import freeze_diagnostic
 from pixiv_novel_sync.remote.instabox import MachineView, OperationView, ProviderError
 from pixiv_novel_sync.remote.lifecycle import Controller
+from pixiv_novel_sync.remote.results import ResultService
 from pixiv_novel_sync.remote.store import RemoteStore
 
 
@@ -127,6 +129,14 @@ class Fixture:
         self.until(lambda: self.control.snapshot(self.clock.now)["mode"] == "ready")
         return run
 
+    def publish_diagnostic(self, grant):
+        with self.blobs.open_blob(grant.input_sha256) as source:
+            output = source.read()
+        results = ResultService(self.store, self.blobs, self.clock)
+        sha = digest(output)
+        results.stage(grant, io.BytesIO(output), len(output), sha, self.clock.now)
+        return results.publish(grant, sha, len(output), self.clock.now)
+
 
 @pytest.fixture
 def f(tmp_path):
@@ -217,6 +227,92 @@ def test_owned_activation_eventually_suspends_after_idle_grace(f):
     f.provider.finish()
     f.until(lambda: f.control.snapshot(f.clock.now)["action"] is None)
     assert f.control.snapshot(f.clock.now)["provider_state"] == "suspended"
+
+
+@pytest.mark.parametrize("outcome", ["succeeded", "cancelled", "failed"])
+def test_short_run_between_controller_ticks_restarts_idle_grace(f, outcome):
+    first = f.ready()
+    f.store.cancel(first["run_id"], f.clock.now)
+    f.until(lambda: f.control.snapshot(f.clock.now)["idle_since"] is not None)
+    old_idle_since = f.control.snapshot(f.clock.now)["idle_since"]
+    while f.clock.now - old_idle_since < 270:
+        f.step()
+
+    # 真正入队、领取、落盘/发布都发生在两次 controller tick 之间。
+    short = f.enqueue()
+    grant = f.store.claim(f.session_id, "short-run", f.clock.now)
+    assert grant is not None and grant.run_id == short["run_id"]
+    f.clock.now += 5
+    if outcome == "succeeded":
+        f.publish_diagnostic(grant)
+    elif outcome == "cancelled":
+        f.store.cancel(short["run_id"], f.clock.now)
+    else:
+        f.store.fail(grant, "render_failed", f.clock.now)
+    finished_at = f.store.get_run(short["run_id"])["finished_at"]
+    assert finished_at == f.clock.now
+
+    for _ in range(19):
+        f.step()
+        assert f.clock.now - finished_at < 300
+        assert all(action != "suspend" for action, _, _ in f.provider.mutations)
+    f.until(lambda: any(action == "suspend" for action, _, _ in f.provider.mutations), limit=6)
+    assert f.provider.mutations[-1][2] - finished_at >= 300
+
+
+def test_retry_claim_between_ticks_clears_retry_wait_idle_timer(f):
+    run = f.ready()
+    grant = f.store.claim(f.session_id, "first-attempt", f.clock.now)
+    f.store.fail(grant, "worker_transient", f.clock.now)
+    f.step()
+    assert f.control.snapshot(f.clock.now)["idle_since"] is not None
+    f.clock.now += 16
+    retried = f.store.claim(f.session_id, "second-attempt", f.clock.now)
+    assert retried is not None and retried.run_id == run["run_id"]
+    assert f.control.snapshot(f.clock.now)["idle_since"] is None
+    f.clock.now += 4
+    f.publish_diagnostic(retried)
+    f.step()
+    assert f.control.snapshot(f.clock.now)["idle_since"] >= f.store.get_run(run["run_id"])["finished_at"]
+
+
+def test_terminal_submission_and_publication_replays_do_not_extend_idle_grace(f):
+    run = f.ready()
+    grant = f.store.claim(f.session_id, "complete-once", f.clock.now)
+    receipt = f.publish_diagnostic(grant)
+    f.step()
+    idle_since = f.control.snapshot(f.clock.now)["idle_since"]
+    assert idle_since is not None
+    f.clock.now += 5
+    replay = f.store.enqueue(run["idempotency_key"], run["request_sha256"], run["kind"],
+                             run["input_sha256"], f.clock.now)
+    assert replay["run_id"] == run["run_id"]
+    assert f.store.cancel(run["run_id"], f.clock.now)["state"] == "succeeded"
+    results = ResultService(f.store, f.blobs, f.clock)
+    results.publish(grant, receipt["sha256"], receipt["size_bytes"], f.clock.now)
+    assert f.control.snapshot(f.clock.now)["idle_since"] == idle_since
+
+
+@pytest.mark.parametrize("activity", ["task", "upload", "hold"])
+def test_completed_activity_revokes_unsent_suspend(f, activity):
+    run = f.ready()
+    f.store.cancel(run["run_id"], f.clock.now)
+    f.until(lambda: f.control.snapshot(f.clock.now)["mode"] == "draining", limit=35)
+    activation = f.control.snapshot(f.clock.now)["activation_id"]
+    action = f.control.reserve_action("suspend", activation, f.clock.now)
+    f.clock.now += 1
+    if activity == "task":
+        short = f.enqueue()
+        f.store.cancel(short["run_id"], f.clock.now)
+    elif activity == "upload":
+        reservation = f.store.reserve_blob("input", "short-upload", 1, f.clock.now)
+        f.store.release_reservation(reservation, f.clock.now)
+    else:
+        f.control.set_hold(60, f.clock.now)
+        f.control.set_hold(0, f.clock.now)
+    assert f.control.prepare_send(action["action_id"], f.clock.now) is None
+    assert f.control.snapshot(f.clock.now)["action"] is None
+    assert all(action != "suspend" for action, _, _ in f.provider.mutations)
 
 
 def test_changed_running_identity_relinquishes_pause_permission(f):

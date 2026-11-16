@@ -6,6 +6,8 @@
 
 ## 状态与验证边界
 
+指定 VPS 与 `leshao1` 已于 2026-11-12 按启用指令部署，入口为[远程执行页面](https://pixiv.dongboapp.com/dashboard/remote)。诊断、合成 EPUB、暂停恢复与完整空闲宽限的真实结果，以及备份未完成的全库结构检查，见[本次验收记录](archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md)。
+
 代码默认关闭。仓库中的服务、环境文件和 Nginx 配置都是待安装示例，运行本地测试不会启动用户实例，也不会安装或启用服务。
 
 自动测试使用临时控制数据库、合成小说、fake provider 和本地测试 HTTP transport。实际验证结果以本次执行记录 `docs/superpowers/execution/2026-11-10-instabox-phase-one.md` 为准。InstaBox 真正的 202 操作、冷启动、暂停/恢复、平台提前中断、私有输入传输和生产备份恢复仍须在明确授权的窗口分别验证。
@@ -73,6 +75,14 @@ pixiv-remote worker
 
 正常生产入口保持循环，不使用 `--once`。worker 监督循环独立于传输线程；渲染在固定 spawn 子进程运行，子进程在调用渲染器前清除继承的敏感环境变量。SIGTERM 只停止自己的子进程与网络处理，不会把云实例直接暂停。
 
+一期渲染依赖使用[版本约束](../config/remote-renderer-constraints.txt)，与已验证的 VPS 对齐为 EbookLib 0.20、lxml 6.1.1。worker 的专用虚拟环境可安装最小依赖：
+
+```console
+python -m pip install -c config/remote-renderer-constraints.txt "requests>=2.32.3" "urllib3>=2,<3" EbookLib lxml
+```
+
+两端升级渲染依赖时，应同步更新约束并重新比较合成 EPUB 的正文、封面和格式。EbookLib 0.21 改变了默认封面样式，本次联调据此补齐版本约束。
+
 ## 服务与反向代理安装准备
 
 先核对部署目录、虚拟环境、用户及上游端口，再安装：
@@ -85,7 +95,9 @@ pixiv-remote worker
 
 Nginx 示例顶部的 `limit_req_zone` 必须放在 `http {}` 内一次，不能放进 `server {}`；其余 location 放入 HTTPS server。bootstrap `/sessions` 入口按每 IP 每分钟 6 次、burst 3 限制，返回 429 与 `Retry-After`。共享出口会共享该 IP 桶。认证后的 worker RPC 另受服务端 session 速率限制，认证仍是必要条件。
 
-上传 location 上限 33 MiB，应用继续按 endpoint 严格执行普通 JSON 16 KiB、清单 64 KiB、结果 32 MiB 等限制。不要用 Nginx 总上限替代应用校验。为 Web 配置至少两个可同时处理请求的 Waitress 线程，确保一次上传不会阻塞心跳。建议关闭此路径缓存，避免缓冲或压缩改变协议内容；服务端响应为 `private, no-store`。
+上传 location 上限 33 MiB，应用继续按 endpoint 严格执行普通 JSON 16 KiB、清单 64 KiB、结果 32 MiB 等限制。不要用 Nginx 总上限替代应用校验。为 Web 配置至少两个可同时处理请求的 Waitress 线程，确保一次上传不会阻塞心跳。
+
+bootstrap 与普通 worker location 都显式设置 `gzip off` 和上游 `Accept-Encoding identity`，使响应符合 worker 的 identity 编码要求。上游使用 `proxy_http_version 1.1` 并清空 `Connection` 头；关闭 `proxy_request_buffering`，让应用能够在接收过程中执行身份、配额及字节限制校验，避免 Nginx 先缓存完整上传。`proxy_buffering off` 与 `proxy_cache off` 关闭响应缓冲和缓存；服务端仍返回 `private, no-store`。将这两处 location 一并安装，避免精确匹配的 `/sessions` 入口遗漏相同的传输设置。
 
 配置完成后在 Linux 上独立执行两个 unit 的 `systemd-analyze verify`，并用包含该 zone、location、证书和实际 upstream 的完整测试配置执行 `nginx -t`。检查成功后，仍需获准才能启用线上服务。
 

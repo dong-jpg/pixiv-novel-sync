@@ -803,6 +803,81 @@ def test_http_slow_trickle_has_overall_deadline_and_uses_read1():
     assert response.closed
 
 
+@pytest.mark.parametrize("attached_connection", [True, False])
+@pytest.mark.parametrize("supports_read1", [True, False])
+def test_http_body_read_timeout_shrinks_to_remaining_budget(attached_connection, supports_read1):
+    import http.client
+    import io
+
+    from urllib3.connection import HTTPConnection
+    from urllib3.response import HTTPResponse
+
+    clock = Clock()
+    client, transport = enrolled_http()
+    client._monotonic = lambda: clock.mono
+
+    class SlowSocket:
+        timeout = 10.0
+
+        def __init__(self):
+            self.timeouts = []
+
+        def settimeout(self, value):
+            self.timeout = value
+            self.timeouts.append(value)
+
+        def makefile(self, mode):
+            return io.BufferedReader(SlowWire(self))
+
+        def close(self):
+            pass
+
+    class SlowWire(io.RawIOBase):
+        def __init__(self, sock):
+            self._sock = sock
+            self.headers_sent = False
+
+        def readable(self):
+            return True
+
+        def readinto(self, buffer):
+            if not self.headers_sent:
+                value = b"HTTP/1.1 200 OK\r\nContent-Length: 10000\r\n\r\n"
+                self.headers_sent = True
+            else:
+                clock.advance(min(6.0, self._sock.timeout))
+                if self._sock.timeout < 6:
+                    raise TimeoutError("fixture body read timed out")
+                value = b" "
+            buffer[:len(value)] = value
+            return len(value)
+
+    sock = SlowSocket()
+    original = http.client.HTTPResponse(sock)
+    original.begin()
+    connection = HTTPConnection("fixture.invalid")
+    # HTTP/1.0 and Connection: close detach the socket from HTTPConnection;
+    # http.client's still-live response owns it until the body has been read.
+    connection.sock = sock if attached_connection else None
+    raw = HTTPResponse(body=original, original_response=original, connection=connection,
+                       headers=original.headers.items(), status=200, preload_content=False,
+                       decode_content=False)
+    if not supports_read1:
+        raw.read1 = None
+    response = requests.Response()
+    response.status_code = 200
+    response.headers.update(original.headers)
+    response.raw = raw
+    transport.responses.append(response)
+
+    with pytest.raises(RemoteError, match="worker_transient"):
+        client.session_heartbeat()
+
+    assert clock.mono == pytest.approx(115)
+    assert sock.timeouts == pytest.approx([10, 9, 3])
+    assert raw.closed
+
+
 def test_http_raw_body_timeout_is_redacted_as_transport_failure():
     from urllib3.exceptions import ReadTimeoutError
 

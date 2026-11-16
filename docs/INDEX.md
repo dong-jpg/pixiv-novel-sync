@@ -1,6 +1,6 @@
 # 项目文档索引
 
-**最近更新：2026-10-28**
+**最近更新：2026-11-12**
 
 当前版本、测试基线、部署与待办统一看 [项目现状](STATUS.md)。
 
@@ -13,6 +13,7 @@ main 提供归档、同步、阅读、规则推荐与救援，以及 Provider、
 | [README](../README.md) | 功能、安装、部署与安全 |
 | [救援使用指南](RESCUE_USER_GUIDE.md) | 救援 Token、用户脚本安装与排查 |
 | [模型路由指南](MODEL_ROUTING_GUIDE.md) | Provider、模型目录、模型池、调用预算 |
+| [远程执行](REMOTE_EXECUTION.md) | VPS 与 InstaBox 试点、凭据隔离、运行和恢复 |
 
 ## 开发参考
 
