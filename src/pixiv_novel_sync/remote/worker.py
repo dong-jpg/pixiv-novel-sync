@@ -135,8 +135,15 @@ class Worker:
                     require_digest(value["sha256"])
                     require_int(value["size_bytes"], 1, RESULT_LIMIT)
                     self._pending_receipts.append(value)
-                except (RemoteError, ValueError, TypeError, KeyError):
-                    raise RemoteError("invalid_work_directory", 400) from None
+                    continue
+                except (RemoteError, ValueError, TypeError, KeyError, RecursionError):
+                    pass
+            # A cold boot has no authority to resume unfinished input/rendering.
+            # Truncated recovery records are also disposable: the VPS alone
+            # knows whether a result was published. Keep complete identities
+            # for reconciliation, but do not let a crash poison future boots.
+            # _remove_task validates EVERY leaf before deleting any file.
+            self._remove_task(entry)
         self._check_capacity(0)
 
     def _cleanup_stale(self) -> None:
@@ -190,6 +197,24 @@ class Worker:
         for leaf in files:
             leaf.unlink()
         directory.rmdir()
+
+    def _write_receipt(self, directory: Path, identity: dict) -> None:
+        self._check_task_directory(directory)
+        temporary = directory / ("receipt-" + uuid.uuid4().hex + ".tmp")
+        try:
+            with temporary.open("xb") as record:
+                record.write(canonical_bytes(identity))
+                record.flush()
+                os.fsync(record.fileno())
+            os.replace(temporary, directory / "receipt.json")
+            if os.name != "nt":
+                descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def _restart_session(self) -> None:
         self._enrolled = False
@@ -368,10 +393,7 @@ class Worker:
             attempt.sha256, attempt.size = hashed.hexdigest(), size
             identity = {"run_id": grant.run_id, "attempt_id": grant.attempt_id,
                         "sha256": attempt.sha256, "size_bytes": size}
-            with (root / "receipt.json").open("xb") as record:
-                record.write(canonical_bytes(identity))
-                record.flush()
-                os.fsync(record.fileno())
+            self._write_receipt(root, identity)
             self._ensure_work(attempt)
             self.state = "staging"
             self.client.stage(grant, output, attempt.sha256, size)
@@ -520,6 +542,22 @@ class Worker:
             self._reconcile_pending()
             return self.clock() + 1
         if self._claim_key is None:
+            # Keep heartbeats and receipt reconciliation alive when retained
+            # results leave too little room for another attempt. Check before
+            # creating a claim: a reply lost after sending must still be
+            # resolved with the original key, even if local capacity changed.
+            try:
+                self._check_capacity(RESULT_LIMIT + TEXT_LIMIT + COVER_LIMIT + MANIFEST_LIMIT)
+            except RemoteError as exc:
+                if exc.code != "work_quota_exceeded":
+                    raise
+                self.last_error = exc.code
+                self.state = "waiting_for_space"
+                self._next_request = self.monotonic() + 5
+                return self.clock() + 5
+            if self.last_error == "work_quota_exceeded":
+                self.last_error = None
+                self.state = "idle"
             self._claim_key, self._claim_sent = str(uuid.uuid4()), self.monotonic()
         if self.monotonic() - self._claim_sent >= STOP_SECONDS:
             self._restart_session()

@@ -206,6 +206,56 @@ def test_http_date_retry_after(monkeypatch):
     assert caught.value.retry_after == 200
 
 
+@pytest.mark.parametrize("response", [
+    Response(429, raw=b"<html>rate limited SECRET</html>", headers={"Retry-After": "120"}),
+    Response(429, {}, {"Content-Encoding": "gzip", "Retry-After": "120"}),
+    Response(429, {}, {"Content-Length": str(1024 * 1024 + 1), "Retry-After": "120"}),
+])
+def test_retry_after_is_preserved_when_error_body_is_unusable(response):
+    with pytest.raises(ProviderError) as caught:
+        InstaBoxClient("ibk_test", "m_fixture", Transport(response)).machine()
+    assert caught.value.http_status == 429
+    assert caught.value.retry_after == 120
+    assert "SECRET" not in str(caught.value)
+    assert response.closed
+
+
+def test_retry_after_is_preserved_when_rate_limit_body_times_out():
+    from urllib3.exceptions import ReadTimeoutError
+
+    class TimedOut:
+        def read1(self, size, decode_content=False):
+            raise ReadTimeoutError(None, "SECRET", "SECRET")
+
+    response = Response(429, {}, {"Retry-After": "120"})
+    response.raw = TimedOut()
+    with pytest.raises(ProviderError) as caught:
+        InstaBoxClient("ibk_test", "m_fixture", Transport(response)).machine()
+    assert caught.value.http_status == 429
+    assert caught.value.retry_after == 120
+    assert "SECRET" not in str(caught.value)
+    assert response.closed
+
+
+@pytest.mark.parametrize("status", [401, 403, 429])
+def test_error_status_survives_overall_response_deadline(monkeypatch, status):
+    clock = [100.0]
+    monkeypatch.setattr("pixiv_novel_sync.remote.instabox.time.monotonic", lambda: clock[0])
+
+    class Drip:
+        def read1(self, size, decode_content=False):
+            clock[0] += 6
+            return b" "
+
+    response = Response(status, {}, {"Retry-After": "120"})
+    response.raw = Drip()
+    with pytest.raises(ProviderError, match="provider_unreachable") as caught:
+        InstaBoxClient("ibk_test", "m_fixture", Transport(response)).machine()
+    assert caught.value.http_status == status
+    assert caught.value.retry_after == 120
+    assert response.closed
+
+
 def test_operation_conflict_is_not_cooldown():
     response = Response(409, {"error": {"code": "operation_conflict", "operationId": "op_other"}})
     with pytest.raises(ProviderError) as caught:

@@ -271,9 +271,19 @@ class RemoteStore:
             if not run:
                 return None
             output_budget = DIAGNOSTIC_LIMIT if run["kind"] == "diagnostic.v1" else RESULT_LIMIT
+            physical_extra = 0
+            if physical_free is not None:
+                try:
+                    # A process can die after fsync but before blob registration
+                    # or reservation cleanup. Those bytes still consume quota
+                    # before a new attempt spends its bounded retry allowance.
+                    physical_extra = self._account_files(conn, now)
+                except (OSError, RemoteError):
+                    physical_free = None
             used = conn.execute("SELECT coalesce(sum(size_bytes),0) FROM blob_objects").fetchone()[0]
             reserved = conn.execute("SELECT coalesce(sum(size_bytes),0) FROM blob_reservations WHERE expires_at>?", (now,)).fetchone()[0]
-            if physical_free is None or physical_free < output_budget or used + reserved + output_budget > DISK_LIMIT:
+            if (physical_free is None or physical_free < output_budget
+                    or used + reserved + physical_extra + output_budget > DISK_LIMIT):
                 conn.execute("UPDATE runs SET error_code='storage_unavailable' WHERE run_id=?", (run["run_id"],))
                 return None
             meta = conn.execute("SELECT * FROM meta WHERE id=1").fetchone()
@@ -336,6 +346,11 @@ class RemoteStore:
 
     @staticmethod
     def _end_attempt(conn, row, state, code, now):
+        # Enrollment/recovery can observe an old active row before the regular
+        # sweeper. Restarting must not turn an already exhausted hard deadline
+        # into another retry merely because it won that race.
+        if now >= row["hard_deadline"] or now >= row["deadline"]:
+            state, code = "expired", "attempt_expired"
         conn.execute("UPDATE attempts SET state=?,error_code=?,ended_at=? WHERE attempt_id=? AND state='active'",
                      (state, code, now, row["attempt_id"]))
         delay = retry_delay(row["kind"], row["attempt_no"], code)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from http.cookiejar import DefaultCookiePolicy
 import re
 import threading
 import time
@@ -45,6 +46,14 @@ def _json_object(pairs):
 
 def _json_constant(value):
     raise ValueError("nonfinite_json")
+
+
+class _NoCookies(DefaultCookiePolicy):
+    def set_ok(self, cookie, request):
+        return False
+
+    def return_ok(self, cookie, request):
+        return False
 
 
 class _DeadlineUpload:
@@ -92,6 +101,10 @@ class WorkerHTTP:
             # Do not inherit .netrc credentials or send the worker key via an
             # unexpected environment-configured proxy.
             session.trust_env = False
+            # A proxy may add Set-Cookie even though this is a bearer-only
+            # protocol. Persisting it would make all later RPCs fail the
+            # server's strict no-Cookie authentication boundary.
+            session.cookies.set_policy(_NoCookies())
             self._local.transport = session
             with self._lock:
                 self._sessions.append(session)

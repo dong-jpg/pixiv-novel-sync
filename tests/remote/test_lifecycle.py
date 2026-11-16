@@ -135,6 +135,17 @@ def f(tmp_path):
     fixture.store.close()
 
 
+def fail_next_mutation(provider, error):
+    original = provider.mutate
+
+    def fail_once(action, key):
+        provider.mutate = original
+        provider.fail_next = error
+        return original(action, key)
+
+    provider.mutate = fail_once
+
+
 def test_no_demand_does_not_start_or_wake(f):
     for _ in range(4):
         f.step()
@@ -355,6 +366,108 @@ def test_uncertain_suspend_never_retries_against_a_new_manual_run(f):
         f.step()
     assert all(name != "suspend" for name, _, _ in f.provider.mutations)
     assert f.control.snapshot(f.clock.now)["last_error"] == "suspend_uncertain"
+
+
+def test_unsent_suspend_refreshes_ownership_after_controller_pause(f):
+    run = f.ready()
+    f.store.cancel(run["run_id"], f.clock.now)
+    f.until(lambda: f.control.snapshot(f.clock.now)["mode"] == "draining", limit=35)
+    f.control.reserve_action("suspend", f.control.snapshot(f.clock.now)["activation_id"], f.clock.now)
+    # A persisted intent can survive a long controller stop. The operator starts
+    # a different run before that unsent intent is resumed.
+    f.provider.view = replace(f.provider.view, run_started_at=f.clock.now + 1)
+    f.step(seconds=61)
+    f.step()
+    assert all(name != "suspend" for name, _, _ in f.provider.mutations)
+    snapshot = f.control.snapshot(f.clock.now)
+    assert snapshot["action"] is None
+    assert snapshot["owned_run_started_at"] is None
+
+
+def test_rate_limited_suspend_refreshes_ownership_before_retry(f):
+    run = f.ready()
+    f.store.cancel(run["run_id"], f.clock.now)
+    f.until(lambda: f.control.snapshot(f.clock.now)["mode"] == "draining", limit=35)
+    fail_next_mutation(f.provider, ProviderError("rate_limited", 429, retry_after=120))
+    f.until(lambda: any(name == "suspend" for name, _, _ in f.provider.mutations))
+    f.provider.view = replace(f.provider.view, run_started_at=f.clock.now + 1)
+    for _ in range(10):
+        f.step()
+    assert sum(name == "suspend" for name, _, _ in f.provider.mutations) == 1
+    assert f.control.snapshot(f.clock.now)["action"] is None
+
+
+def test_rate_limited_suspend_retries_original_intent_if_run_is_unchanged(f):
+    run = f.ready()
+    f.store.cancel(run["run_id"], f.clock.now)
+    f.until(lambda: f.control.snapshot(f.clock.now)["mode"] == "draining", limit=35)
+    fail_next_mutation(f.provider, ProviderError("rate_limited", 429, retry_after=120))
+    f.until(lambda: sum(name == "suspend" for name, _, _ in f.provider.mutations) == 2)
+    requests = [(key, at) for name, key, at in f.provider.mutations if name == "suspend"]
+    assert requests[0][0] == requests[1][0]
+    assert requests[1][1] - requests[0][1] >= 120
+    f.provider.finish()
+    f.until(lambda: f.control.snapshot(f.clock.now)["action"] is None)
+    assert f.control.snapshot(f.clock.now)["provider_state"] == "suspended"
+
+
+def test_unsent_resume_after_manual_start_only_borrows_the_running_machine(f):
+    f.enqueue()
+    f.step()
+    f.control.reserve_action("resume", str(uuid.uuid4()), f.clock.now)
+    f.provider.view = replace(f.provider.view, state="running", runtime_ready=True,
+                              run_started_at=f.clock.now + 1)
+    f.step(seconds=61)
+    f.until(lambda: f.control.snapshot(f.clock.now)["mode"] == "ready")
+    assert f.provider.mutations == []
+    assert f.control.snapshot(f.clock.now)["owned_run_started_at"] is None
+
+
+def test_later_429_does_not_erase_an_unknown_suspend_acceptance(f):
+    run = f.ready()
+    f.store.cancel(run["run_id"], f.clock.now)
+    f.until(lambda: f.control.snapshot(f.clock.now)["mode"] == "draining", limit=35)
+    fail_next_mutation(f.provider, ProviderError("provider_unreachable"))
+    f.until(lambda: any(name == "suspend" for name, _, _ in f.provider.mutations))
+    f.until(lambda: f.control.snapshot(f.clock.now)["action"]["phase"] == "created")
+    fail_next_mutation(f.provider, ProviderError("rate_limited", 429, retry_after=120))
+    f.until(lambda: sum(name == "suspend" for name, _, _ in f.provider.mutations) == 2)
+    action = f.control.snapshot(f.clock.now)["action"]
+    assert action["phase"] == "unknown"
+    assert action["last_sent_at"] is not None
+    # A newly added hold must not make an earlier, possibly accepted request
+    # disappear; an opposite lifecycle action still has to wait for resolution.
+    f.control.set_hold(3600, f.clock.now)
+    f.step()
+    assert f.control.snapshot(f.clock.now)["action"]["action_id"] == action["action_id"]
+    assert f.control.snapshot(f.clock.now)["gate_ready_until"] is None
+
+
+def test_rate_limited_reconciliation_does_not_mark_sent_suspend_unaccepted(f):
+    run = f.ready()
+    f.store.cancel(run["run_id"], f.clock.now)
+    f.until(lambda: f.control.snapshot(f.clock.now)["mode"] == "draining", limit=35)
+    action = f.control.reserve_action("suspend", f.control.snapshot(f.clock.now)["activation_id"], f.clock.now)
+    f.control.prepare_send(action["action_id"], f.clock.now)
+    # The controller could have died after sending, before recording a response.
+    # A later GET returning 429 says nothing about that mutation's acceptance.
+    f.provider.fail_next = ProviderError("rate_limited", 429, retry_after=120)
+    f.step()
+    pending = f.control.snapshot(f.clock.now)["action"]
+    assert pending["last_sent_at"] is not None
+    assert pending["phase"] == "unknown"
+
+
+def test_failed_refresh_does_not_make_an_unsent_action_uncertain(f):
+    run = f.ready()
+    f.store.cancel(run["run_id"], f.clock.now)
+    f.until(lambda: f.control.snapshot(f.clock.now)["mode"] == "draining", limit=35)
+    f.control.reserve_action("suspend", f.control.snapshot(f.clock.now)["activation_id"], f.clock.now)
+    f.provider.fail_next = ProviderError("provider_unreachable")
+    f.step(seconds=61)
+    pending = f.control.snapshot(f.clock.now)["action"]
+    assert pending["phase"] == "created"
+    assert pending["last_sent_at"] is None
 
 
 def test_unknown_start_following_external_operation_does_not_gain_ownership(f):

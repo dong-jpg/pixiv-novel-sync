@@ -251,10 +251,18 @@ class ControlStore:
             if now - action["created_at"] >= 7 * 86400:
                 self._change(conn, row, mode="error", gate_ready_until=None, last_error="action_expired")
                 return None
+            if row["last_provider_at"] is None or not 0 <= now - row["last_provider_at"] <= 45:
+                raise RemoteError("provider_stale")
+            if row["provider_operation_id"] or (row["cooldown_until"] or 0) > now:
+                raise RemoteError("provider_busy")
             if action["last_sent_at"] is None:
                 activity = self._activity(conn, now)
-                inhibited = (not activity["has_demand"] if action["action"] != "suspend" else
+                inhibited = ((not activity["has_demand"] or row["provider_state"] !=
+                              {"start": "stopped", "resume": "suspended"}[action["action"]])
+                             if action["action"] != "suspend" else
                              activity["has_activity"] or (row["hold_until"] or 0) > now
+                             or row["provider_state"] != "running"
+                             or row["activation_id"] != action["activation_id"]
                              or row["owned_run_started_at"] is None
                              or row["owned_run_started_at"] != row["provider_run_started_at"])
                 if inhibited:
@@ -274,7 +282,10 @@ class ControlStore:
             if retry_at > now:
                 self._change(conn, row, next_poll_at=retry_at, gate_ready_until=None)
                 return None
-            action.update(phase="sent", last_sent_at=now, retry_at=now + 15)
+            # A later rejected retry cannot prove that an earlier timed-out
+            # request had no effect. Keep that uncertainty across process loss.
+            phase = "sent" if action["last_sent_at"] is None else "unknown"
+            action.update(phase=phase, last_sent_at=now, retry_at=now + 15)
             self._change(conn, row, action_json=json.dumps(action), last_write_at=now,
                          next_poll_at=now + 15, gate_ready_until=None)
             return action
@@ -376,7 +387,7 @@ class ControlStore:
             self._change(conn, row, **values)
             return True
 
-    def fail(self, error: ProviderError, now, jitter=0.0, action_id=None):
+    def fail(self, error: ProviderError, now, jitter=0.0, action_id=None, *, from_mutation=False):
         with self.store.transaction() as conn:
             row = self._row(conn)
             if not self._leader(row, now):
@@ -389,7 +400,8 @@ class ControlStore:
             retry_at = max(now + delay, now + (error.retry_after or 0), row["cooldown_until"] or 0)
             values = dict(mode="error", gate_ready_until=None, last_error=error.code,
                           next_poll_at=retry_at, backoff_count=count)
-            known_unaccepted = bool(action and not action["operation_id"]
+            known_unaccepted = bool(from_mutation and action and not action["operation_id"]
+                                    and action["phase"] == "sent"
                                     and error.http_status in (409, 429))
             if error.http_status in (401, 403):
                 values["last_error"] = "provider_authentication"
@@ -408,7 +420,7 @@ class ControlStore:
             if action:
                 if known_unaccepted:
                     action.update(phase="created", last_sent_at=None)
-                elif action["phase"] != "settled":
+                elif action["phase"] != "settled" and action["last_sent_at"] is not None:
                     action["phase"] = "unknown"
                 action["retry_at"] = retry_at
                 values["action_json"] = json.dumps(action)

@@ -351,6 +351,78 @@ def test_new_worker_boot_never_continues_saved_authority(tmp_path):
     replacement.stop()
 
 
+@pytest.mark.parametrize("receipt", [None, b'{"run_id":', b"{}", b"[]"])
+def test_cold_boot_discards_unrecoverable_owned_cache(tmp_path, receipt):
+    worker, client, clock, _ = make_worker(tmp_path)
+    root = worker.work_dir
+    worker.stop()
+    abandoned = root / client.grant.attempt_id
+    abandoned.mkdir()
+    (abandoned / "text.bin").write_bytes(b"partial task input")
+    if receipt is not None:
+        (abandoned / "receipt.json").write_bytes(receipt)
+    replacement = Worker(client, root, lambda: clock.wall, lambda: clock.mono,
+                         InlineRunner(), threaded=False)
+    try:
+        assert not abandoned.exists()
+        assert not replacement._pending_receipts
+        assert replacement.active_grant is None
+        replacement.tick()
+        assert replacement.state == "idle"
+    finally:
+        replacement.stop()
+
+
+def test_cold_boot_preserves_complete_unconfirmed_receipt(tmp_path):
+    worker, client, clock, _ = make_worker(tmp_path)
+    root = worker.work_dir
+    worker.stop()
+    pending = root / client.grant.attempt_id
+    pending.mkdir()
+    identity = {"run_id": client.grant.run_id, "attempt_id": client.grant.attempt_id,
+                "sha256": digest(b"result"), "size_bytes": 6}
+    (pending / "result.bin").write_bytes(b"result")
+    (pending / "receipt.json").write_bytes(canonical_bytes(identity))
+    replacement = Worker(client, root, lambda: clock.wall, lambda: clock.mono,
+                         InlineRunner(), threaded=False)
+    try:
+        assert list(replacement._pending_receipts) == [identity]
+        assert replacement.active_grant is None
+        assert pending.exists()
+        replacement.tick()
+        client.published = {**identity, "state": "succeeded"}
+        replacement.tick()
+        assert list(replacement.completed) == [client.grant.run_id]
+        assert not pending.exists()
+    finally:
+        replacement.stop()
+
+
+def test_interrupted_receipt_write_cannot_leave_partial_recovery_record(tmp_path, monkeypatch):
+    import pixiv_novel_sync.remote.worker as worker_module
+
+    worker, client, _, _ = make_worker(tmp_path)
+    real_fsync = worker_module.os.fsync
+    calls = 0
+
+    def interrupted(fd):
+        nonlocal calls
+        calls += 1
+        if calls == 2:  # renderer output succeeds; receipt persistence fails
+            raise OSError("simulated disk interruption")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(worker_module.os, "fsync", interrupted)
+    try:
+        worker.tick()
+        worker.tick()
+        assert client.published is None
+        assert not (worker._attempt.directory / "receipt.json").exists()
+        assert worker._attempt.done.is_set()
+    finally:
+        worker.stop()
+
+
 def test_worker_refuses_nonempty_unowned_directory(tmp_path):
     root = tmp_path / "user-data"
     root.mkdir()
@@ -498,6 +570,65 @@ def test_uncertain_receipts_are_retained_then_safely_age_out(tmp_path):
     worker.stop()
 
 
+def test_worker_waits_for_local_space_before_claiming_and_recovers(tmp_path, monkeypatch):
+    import pixiv_novel_sync.remote.worker as worker_module
+
+    worker, client, clock, _ = make_worker(tmp_path)
+    required = (worker_module.RESULT_LIMIT + worker_module.TEXT_LIMIT
+                + worker_module.COVER_LIMIT + worker_module.MANIFEST_LIMIT)
+    monkeypatch.setattr(worker_module, "WORK_LIMIT", required + 1024)
+    identity = {"run_id": str(uuid.uuid4()), "attempt_id": str(uuid.uuid4()),
+                "sha256": digest(b"x" * 2048), "size_bytes": 2048}
+    directory = worker.work_dir / identity["attempt_id"]
+    directory.mkdir()
+    (directory / "result.bin").write_bytes(b"x" * 2048)
+    (directory / "receipt.json").write_bytes(canonical_bytes(identity))
+    worker._pending_receipts.append(identity)
+    try:
+        worker.tick()  # register
+        worker.tick()  # original result is still unconfirmed
+        clock.advance(5)
+        worker.tick()
+        assert not client.claims
+        assert worker.active_grant is None
+        assert worker.last_error == "work_quota_exceeded"
+        assert directory.exists()
+
+        client.published = {"run_id": identity["run_id"], "state": "failed"}
+        clock.advance(30)
+        worker.tick()  # heartbeat and receipt reconciliation continue while full
+        assert not directory.exists()
+        assert client.heartbeats == 1
+        clock.advance(5)
+        worker.tick()
+        worker.tick()
+        assert list(worker.completed) == [client.grant.run_id]
+        assert worker.last_error is None
+    finally:
+        worker.stop()
+
+
+def test_local_capacity_check_does_not_abandon_a_claim_with_a_lost_response(tmp_path, monkeypatch):
+    worker, client, clock, _ = make_worker(tmp_path)
+    client.lost_claim = True
+    try:
+        worker.tick()
+        worker.tick()
+        claim_key = client.claims[0]
+
+        def full(extra):
+            raise RemoteError("work_quota_exceeded", 413)
+
+        monkeypatch.setattr(worker, "_check_capacity", full)
+        client.lost_claim = True
+        clock.advance(5)
+        worker.tick()
+        assert client.claims == [claim_key, claim_key]
+        assert worker._claim_key == claim_key
+    finally:
+        worker.stop()
+
+
 class Response:
     def __init__(self, payload, status=200, *, headers=None):
         self.status_code = status
@@ -549,6 +680,48 @@ def test_http_has_fixed_origin_tls_no_redirects_and_separate_session_secret():
         assert not ({"Cookie", "Origin"} & kwargs["headers"].keys())
     assert "s" * 64 not in repr(client)
     assert "b" * 64 not in repr(client)
+
+
+def test_http_never_replays_response_cookies_into_worker_auth(monkeypatch):
+    from email.message import Message
+    from types import SimpleNamespace
+
+    real_session = requests.Session
+    calls = []
+
+    class LocalAdapter(requests.adapters.BaseAdapter):
+        def send(self, request, **kwargs):
+            calls.append(request)
+            payload = {"server_now": 1000, "expires_at": 1900}
+            if len(calls) == 1:
+                payload.update(session_id=str(uuid.uuid4()), epoch=str(uuid.uuid4()))
+            response = requests.Response()
+            response.status_code = 200
+            response._content = canonical_bytes(payload)
+            response._content_consumed = True
+            response.request, response.url = request, request.url
+            headers = Message()
+            headers["Set-Cookie"] = "proxy_cookie=value; Path=/; Secure"
+            response.raw = SimpleNamespace(_original_response=SimpleNamespace(msg=headers))
+            return response
+
+        def close(self):
+            pass
+
+    def factory():
+        session = real_session()
+        session.mount("https://", LocalAdapter())
+        return session
+
+    monkeypatch.setattr(requests, "Session", factory)
+    client = WorkerHTTP("https://example.invalid", "b" * 64)
+    try:
+        client.enroll(str(uuid.uuid4()), "s" * 64)
+        client.session_heartbeat()
+        assert all("Cookie" not in call.headers for call in calls)
+        assert not client._get_transport().cookies
+    finally:
+        client.close()
 
 
 @pytest.mark.parametrize("origin", ["http://example.invalid", "https://u:p@example.invalid",

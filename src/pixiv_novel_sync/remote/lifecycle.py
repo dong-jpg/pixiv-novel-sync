@@ -23,7 +23,12 @@ class Controller:
     def _send(self, action, now):
         prepared = self.control.prepare_send(action["action_id"], now)
         if prepared:
-            response = self.provider.mutate(prepared["action"], prepared["idempotency_key"])
+            try:
+                response = self.provider.mutate(prepared["action"], prepared["idempotency_key"])
+            except ProviderError as error:
+                self.control.fail(error, self.clock(), self.jitter(), prepared["action_id"],
+                                  from_mutation=True)
+                return
             self.control.record_action(prepared["action_id"], response, self.clock(), from_mutation=True)
 
     def _pending(self, action, now):
@@ -44,7 +49,19 @@ class Controller:
             self.control.observe(machine, now)
             self.control.reconcile_unknown(action["action_id"], machine, now)
         else:
-            self._send(action, now)
+            snapshot = self.control.snapshot(now)
+            observed_at = snapshot["last_provider_at"]
+            if observed_at is None or not 0 <= now - observed_at <= 45:
+                # Persisted, unsent intents and known-rejected retries may have
+                # waited through a controller restart or a long Retry-After.
+                # Reconfirm the current VM before using its cached ownership.
+                machine = self.provider.machine()
+                now = self.clock()
+                self.control.observe(machine, now)
+                if action["last_sent_at"] is not None:
+                    self.control.reconcile_unknown(action["action_id"], machine, now)
+            else:
+                self._send(action, now)
 
     def tick(self):
         now = self.clock()

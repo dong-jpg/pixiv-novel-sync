@@ -164,3 +164,47 @@ def test_unwritable_receiver_never_allocates_attempt_and_replay_remains_valid(tm
     grant = store.claim(session["session_id"], "first", 1002)
     monkeypatch.setattr(store, "_probe_receiver", denied)
     assert store.claim(session["session_id"], "first", 1003).attempt_id == grant.attempt_id
+
+
+@pytest.mark.parametrize("orphan_name", ["content_addressed", "temporary"])
+def test_claim_accounts_crash_orphans_before_consuming_an_attempt(tmp_path, monkeypatch, orphan_name):
+    from pixiv_novel_sync.remote.contracts import DIAGNOSTIC_LIMIT, digest
+
+    store, session = ready_store(tmp_path / "queue")
+    run = enqueue(store)
+    with store.read() as conn:
+        used = conn.execute("SELECT sum(size_bytes) FROM blob_objects").fetchone()[0]
+    monkeypatch.setattr("pixiv_novel_sync.remote.store.DISK_LIMIT", used + DIAGNOSTIC_LIMIT)
+    payload = b"unregistered crash output"
+    name = digest(payload) if orphan_name == "content_addressed" else ".upload-crash"
+    (store.state_dir / "blobs" / name).write_bytes(payload)
+
+    assert store.claim(session["session_id"], "claim-with-orphan", 1001) is None
+    state = store.get_run(run["run_id"])
+    assert state["state"] == "queued"
+    assert state["attempt_count"] == 0
+    assert state["error_code"] == "storage_unavailable"
+
+
+@pytest.mark.parametrize("restart", ["worker", "recovery"])
+@pytest.mark.parametrize("elapsed", [600, 601])
+def test_restart_cannot_requeue_an_attempt_at_its_hard_deadline(tmp_path, restart, elapsed):
+    store, session = ready_store(tmp_path / "queue")
+    run = enqueue(store)
+    grant = store.claim(session["session_id"], "first", 1000)
+    # No controller sweep happened while the process or VM was down. The task
+    # deadline still precedes the one-hour run deadline at either restart path.
+    now = 1000 + elapsed
+    if restart == "worker":
+        store.enroll(str(uuid.uuid4()), hashlib.sha256(b"new-session" * 3).hexdigest(),
+                     1, "epub-v1", now)
+    else:
+        store.rotate_epoch(now)
+
+    state = store.get_run(run["run_id"])
+    assert state["state"] == "expired"
+    assert state["error_code"] == "attempt_expired"
+    with store.read() as conn:
+        attempt = conn.execute("SELECT state,error_code FROM attempts WHERE attempt_id=?",
+                               (grant.attempt_id,)).fetchone()
+    assert tuple(attempt) == ("expired", "attempt_expired")

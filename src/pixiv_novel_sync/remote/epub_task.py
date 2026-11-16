@@ -11,7 +11,7 @@ from pixiv_novel_sync.epub_exporter import create_epub_from_novel
 
 from .blobs import BlobStore, ensure_safe_directory, validate_sha256
 from .contracts import (
-    COVER_LIMIT, DIAGNOSTIC_LIMIT, MANIFEST_LIMIT, PROTOCOL, RENDERER, RESULT_LIMIT, TEXT_LIMIT,
+    COVER_LIMIT, MANIFEST_LIMIT, PROTOCOL, RENDERER, RESULT_LIMIT, TEXT_LIMIT,
     RemoteError, canonical_bytes, digest,
 )
 

@@ -270,8 +270,21 @@ class InstaBoxClient:
                     operation_id if _valid_id(operation_id) else None,
                 )
             return payload
+        except ProviderError as error:
+            # A proxy may return an HTML/oversized 429 rather than the provider
+            # JSON envelope. Already received headers remain authoritative if
+            # the body hits our overall deadline, including auth failures.
+            if response is not None:
+                if error.http_status is None:
+                    error.http_status = response.status_code
+                if error.retry_after is None:
+                    error.retry_after = _retry_after(response.headers, {}, time.time())
+            raise
         except (requests.RequestException, Urllib3Error, OSError):
-            raise ProviderError("provider_unreachable") from None
+            raise ProviderError(
+                "provider_unreachable", response.status_code if response is not None else None,
+                _retry_after(response.headers, {}, time.time()) if response is not None else None,
+            ) from None
         finally:
             if response is not None:
                 response.close()

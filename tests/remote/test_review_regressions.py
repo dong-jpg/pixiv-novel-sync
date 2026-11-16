@@ -45,7 +45,14 @@ def test_delayed_gc_cannot_unlink_a_new_reference_to_the_same_hash(tmp_path, mon
                 try:
                     other.execute("BEGIN IMMEDIATE")
                 except sqlite3.OperationalError as error:
-                    assert error.sqlite_errorcode in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+                    # Python 3.10 has neither the exception code attribute nor
+                    # the exported SQLite result constants. Still require the
+                    # precise lock failure instead of accepting arbitrary I/O.
+                    code = getattr(error, "sqlite_errorcode", None)
+                    if code is None:
+                        assert str(error) in {"database is locked", "database table is locked"}
+                    else:
+                        assert code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
                 else:
                     other.rollback()
                     collect_garbage(store, blobs, later)
