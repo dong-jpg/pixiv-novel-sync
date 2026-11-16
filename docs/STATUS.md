@@ -47,7 +47,7 @@
 | 分支 / 组件 | 当前 | 说明 |
 |---|---|---|
 | 生产应用（VPS，最新留存记录） | `4b8133e`（2026-11-13） | 远程一期与阅读进度已发布；11-16 仅核对公网可达性，未重新核对 HEAD；作品分析第二阶段未部署 |
-| 协同集成候选（本地） | `codex/remote-collaboration-audit`，基于归档快照 `31cafb5` | 保留 main 的作品分析，接续 remote / 阅读进度 / 适配底座并修复恢复边界；未合入、推送或部署 |
+| 协同集成候选（本地） | `codex/remote-collaboration-audit`，应用 `037a2af` | 基于归档快照 `31cafb5`，保留 main 作品分析并接续 remote / 阅读进度 / 适配底座；未合入、推送或部署 |
 | 作品分析（GitHub main） | 合并 `e87f65d`（2026-11-11）；已验证应用/测试 `d5cfb762` | Tasks 1–9 已合入 main 并推送，整阶段复审/验收通过；未部署 |
 | ai-writing | `adb2d95`（2026-10-20） | 在 main 的基础上加写作/成人模块；只移植共享修复，不反向合入 main |
 | 审计整改 PR | [PR #2](https://github.com/dong-jpg/pixiv-novel-sync/pull/2) 已合并；候选 `8f76399` 与合并提交的树一致 | 应用代码验证基线 `122dbfe`；后续补文档及一处跨平台测试夹具，不改变应用逻辑 |
@@ -67,6 +67,8 @@
 
 | 分支 | 命令 | 结果 | 环境 |
 |---|---|---|---|
+| 协同集成候选 | `python -m pytest -q --tb=short -ra --durations=10` | 3313 passed / 83 skipped，442.91 秒 | Windows / Python 3.11.3，2026-11-16；最后连接池清理小补丁另有定向 101 passed，最终 `037a2af` 远程组 420 passed / 1 skipped，完整边界见[复核记录](archive/REMOTE_COLLABORATION_REVIEW_2026-11-16.md) |
+| 协同集成前端 | Node 11 个 CJS 文件；阅读进度 Chromium 五流程 | Node 493 passed；浏览器五流程/五截图，无错误或意外网络请求 | 2026-11-16，合成数据、真实 Flask/CAS、390/1280px；静态检查及 WSL 部署配置测试通过 |
 | main 合并 `e87f65d` | `python -m pytest -q --tb=short -rs` | 2807 passed / 82 skipped，308.38 秒 | Windows / Python 3.11.3，2026-11-11；原始 Git blob，424 个文件验证前后字节一致；compileall / pyflakes 均通过 |
 | AI 重构应用 `3c51a6c6` | `python -m pytest -q -ra` | 2414 passed / 52 skipped，351.21 秒 | Windows / Python3.11.3，2026-11-03 |
 | AI 重构 canonical 归档 `793d340d` | `python -m pytest -q -ra` | 2363 passed / 103 skipped，176.99 秒 | 精确 Git LF / WSL 原生文件系统 / 隔离 Python3.10.12，2026-11-04 |

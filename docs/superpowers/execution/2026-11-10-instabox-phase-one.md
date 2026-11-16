@@ -1,5 +1,7 @@
 # InstaBox 一期执行记录
 
+> 本文件保留 11-11～11-12 的实现证据。后续真实启用见[11-12 部署验收](../../archive/REMOTE_EXECUTION_ACCEPTANCE_2026-11-12.md)，阅读进度上线见[11-13 验收](../../archive/READING_PROGRESS_ADAPTERS_ACCEPTANCE_2026-11-12.md)，本轮分支/归档汇合与修复见[11-16 协同集成复核](../../archive/REMOTE_COLLABORATION_REVIEW_2026-11-16.md)。当前版本与待办统一以[项目现状](../../STATUS.md)为准。
+
 - 执行日期：2026-11-11 至 2026-11-12，Asia/Shanghai。
 - 恢复来源：会话 `01a1c9f5-a5a2-79f1-8899-a3649ab5ee7a`《制定云电脑与VPS整体协同方案 (2)》，最后指令为“开始执行”。
 - 依据：[已确认设计](../specs/2026-11-10-vps-instabox-execution-design.md)与[一期计划](../plans/2026-11-10-instabox-phase-one.md)。
