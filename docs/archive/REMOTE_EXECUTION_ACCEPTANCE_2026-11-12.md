@@ -100,3 +100,5 @@ EPUB ZIP/CRC、正文与封面 XHTML 对照、下载长度与摘要均通过。�
 - VM 完整冷启动、平台强制中断与冷却需要各自证据；worker 握手或进程重启不能代替整机冷启动与外部故障验收。
 
 签到、Pixiv 抓取迁移、生产业务 cron 和跨设备阅读进度仍属于后续独立阶段。本次已审阅 `daily-checkin` 的固定入口、持久去重与未知副作用处理，形成[后续实施边界](../superpowers/specs/2026-11-12-remote-next-phase-notes.md)。部署操作与回退说明见[远程执行运维手册](../REMOTE_EXECUTION.md)。
+
+后续记录：11-12 候选 `4b8133e` 完成跨设备阅读同步、Pixiv DTO 与只读签到网关底座，并于 11-13 部署到 VPS，新增验证及发布状态见[阅读进度与适配器验收](READING_PROGRESS_ADAPTERS_ACCEPTANCE_2026-11-12.md)。本篇保留一期验收时的范围和证据，不将后续实现回填为一期已经完成的云端业务接入。
